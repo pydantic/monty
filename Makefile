@@ -267,6 +267,10 @@ vendor-stdlib: ## Download the CPython stdlib modules listed in crates/monty/std
 check-stdlib: ## Verify the vendored CPython stdlib modules match the pinned CPython release
 	uv run scripts/vendor_stdlib.py --check
 
+.PHONY: check-stdlib-patches
+check-stdlib-patches: ## Fail if a vendored CPython module passes its test case without its patches
+	uv run scripts/vendor_stdlib.py --check-patches
+
 .PHONY: stdlib-candidates
 stdlib-candidates: ## Report which CPython stdlib modules Monty can load, the first blocker of each, and every syntax blocker
 	cargo build --release -p monty-runtime --bin monty

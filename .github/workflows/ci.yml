@@ -236,6 +236,10 @@ jobs:
       # real `monty` binary: build it plainly first (outside the llvm-cov
       # target dir) and point the tests at it explicitly.
       - run: cargo build -p monty-runtime
+      # a vendored CPython module whose test case passes unpatched no longer needs its patches;
+      # this rebuilds only `monty` (with the unpatched source embedded) and the datatest harness
+      - name: Check every vendored CPython stdlib patch is still needed
+        run: python3 scripts/vendor_stdlib.py --check-patches
       - run: cargo build -p monty-pool --example cpu-test-worker --target-dir target/llvm-cov-target
       - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
         env:

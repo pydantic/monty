@@ -65,6 +65,9 @@ behaviour also needs a `limitations/` entry.
 Patches stack: each applies, with no fuzz and in file-name order, on top of the ones before it, so several may edit one
 file. `--make-patch` saves only the edits the earlier patches do not make, so it adds a new last patch or replaces the
 last one; changing an earlier patch means editing it by hand and checking the later ones still apply.
+`make check-stdlib-patches` (CI) fails once a patched module's `<module>__module.py` case passes without its patches,
+so the PR that fixes the Monty gap drops the patch; that test case must exercise the patched code. A `Permanent: <why>`
+line in a patch's reason exempts it.
 An import finds them after the native `StandardLib` modules and before the host (`module_finder.rs`), running them like
 a module from a file with no OS call. A newly vendored module also goes in `SANDBOX_MODULE_NAMES`, the typeshed
 `COPY_FILES`/`VERSIONS`, `limitations/modules.md` and a `test_cases` file.
@@ -582,6 +585,7 @@ make generate-unicode-type Regenerate the str character-property tables from the
 make check-unicode-type   Verify the checked-in str character-property tables match the current CPython
 make vendor-stdlib        Download the CPython stdlib modules listed in crates/monty/stdlib/vendor.toml
 make check-stdlib         Verify the vendored CPython stdlib modules match the pinned CPython release
+make check-stdlib-patches Fail if a vendored CPython module passes its test case without its patches
 make stdlib-candidates    Report which CPython stdlib modules Monty can load, the first blocker of each, and every syntax blocker
 make update-typeshed      Update vendored typeshed from upstream
 make bench                Run benchmarks

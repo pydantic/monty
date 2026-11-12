@@ -3,6 +3,8 @@
 # `patches/*.patch` stack: each applies, in file-name order, on top of the ones before it. To add one, edit `Lib/`,
 # then run `uv run scripts/vendor_stdlib.py --make-patch NNNN-name --reason '...'`, which saves only the edits the
 # earlier patches do not make; it can add a new last patch or replace the last one, not an earlier one.
+# `make check-stdlib-patches` fails once a patched module's `<module>__module.py` test case passes unpatched;
+# a `Permanent: <why>` line in a patch's reason exempts it.
 # Run `make stdlib-candidates` to see which modules Monty can load, and what blocks the rest.
 
 # The CPython release the files below are copied from.
