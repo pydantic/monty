@@ -75,6 +75,7 @@ assert tuple(name for name in sys.builtin_module_names if name != 'gc') == (
     'pydantic',
     'random',
     're',
+    'statistics',
     'sys',
     'time',
     'tomllib',
