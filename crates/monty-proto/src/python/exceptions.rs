@@ -98,6 +98,16 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
                 exceptions::PyValueError::new_err(msg)
             }
         }
+        ExcType::StatisticsError => {
+            if let Ok(statistics_error) = get_statistics_error(py)
+                && let Ok(exc_instance) = statistics_error.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                // Fall back to ValueError, the parent we model in `is_subclass_of`.
+                exceptions::PyValueError::new_err(msg)
+            }
+        }
         ExcType::BinasciiIncomplete => {
             if let Ok(incomplete) = get_binascii_incomplete(py)
                 && let Ok(exc_instance) = incomplete.call1((PyString::new(py, &msg),))
@@ -380,6 +390,8 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
                 ExcType::TomlDecodeError
             } else if is_binascii_error(exc) {
                 ExcType::BinasciiError
+            } else if is_statistics_error(exc) {
+                ExcType::StatisticsError
             } else if exceptions::PyUnicodeDecodeError::type_check(exc) {
                 ExcType::UnicodeDecodeError
             } else if exceptions::PyUnicodeEncodeError::type_check(exc) {
@@ -540,6 +552,22 @@ fn is_binascii_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
 fn get_binascii_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static BINASCII_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
     BINASCII_ERROR.import(py, "binascii", "Error")
+}
+
+/// Checks if an exception is a `statistics.StatisticsError` (a stdlib class,
+/// looked up lazily and cached).
+fn is_statistics_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(statistics_error_cls) = get_statistics_error(exc.py()) {
+        exc.is_instance(statistics_error_cls).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Returns the cached `statistics.StatisticsError` class, a `ValueError` subclass.
+fn get_statistics_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static STATISTICS_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    STATISTICS_ERROR.import(py, "statistics", "StatisticsError")
 }
 
 /// Checks if an exception is a `binascii.Incomplete`, which hangs off
