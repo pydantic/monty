@@ -7,8 +7,11 @@
 # a `Permanent: <why>` line in a patch's reason exempts it.
 # Run `make stdlib-candidates` to see which modules Monty can load, and what blocks the rest.
 
-# The CPython release the files below are copied from.
+# The CPython release the files below are copied from, and the commit its tag points to. Files are fetched by
+# commit, so moving the tag cannot change them; update both together
+# (`gh api repos/python/cpython/commits/<tag> --jq .sha` gives the commit).
 tag = "v3.14.10"
+commit = "b703b2c5e704341d61e367b9b940b77ed11dded0"
 
 # Paths under CPython's `Lib/`; `pkg/__init__.py` makes `pkg` a package.
 files = [

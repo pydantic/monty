@@ -1,7 +1,7 @@
 """
 Vendor the CPython stdlib modules listed in `crates/monty/stdlib/vendor.toml`.
 
-Downloads each listed file from `Lib/` at the pinned CPython tag, applies `crates/monty/stdlib/patches/*.patch` in
+Downloads each listed file from `Lib/` at the pinned CPython commit, applies `crates/monty/stdlib/patches/*.patch` in
 file-name order, and writes the result to `crates/monty/stdlib/Lib/`, along with CPython's `LICENSE`.
 It also generates `crates/monty/src/modules/vendored/sources.rs`, the table the interpreter imports them from.
 Files under `Lib/` that are no longer listed are deleted.
@@ -34,7 +34,7 @@ PATCHES = STDLIB / 'patches'
 LICENSE = STDLIB / 'LICENSE'
 TABLE = REPO / 'crates' / 'monty' / 'src' / 'modules' / 'vendored' / 'sources.rs'
 TEST_CASES = REPO / 'crates' / 'monty' / 'test_cases'
-RAW_URL = 'https://raw.githubusercontent.com/python/cpython/{tag}/{path}'
+RAW_URL = 'https://raw.githubusercontent.com/python/cpython/{commit}/{path}'
 
 
 def main() -> None:
@@ -48,8 +48,9 @@ def main() -> None:
 
     manifest = tomllib.loads(MANIFEST.read_text(encoding='utf-8'))
     tag: str = manifest['tag']
+    commit: str = manifest['commit']
     files: list[str] = sorted(manifest['files'])
-    upstream = {file: fetch(tag, f'Lib/{file}') for file in files}
+    upstream = {file: fetch(commit, f'Lib/{file}') for file in files}
 
     if args.make_patch:
         if not (args.reason or '').strip():
@@ -60,7 +61,7 @@ def main() -> None:
         check_patches(upstream, sorted(PATCHES.glob('*.patch')))
         return
 
-    expected = {LICENSE: fetch(tag, 'LICENSE'), TABLE: render_table(tag, files)}
+    expected = {LICENSE: fetch(commit, 'LICENSE'), TABLE: render_table(tag, files)}
     expected |= {LIB / file: text for file, text in apply_patches(upstream, sorted(PATCHES.glob('*.patch'))).items()}
     stale = [path for path in LIB.rglob('*') if path.is_file() and path not in expected]
 
@@ -79,9 +80,9 @@ def main() -> None:
         print(f'vendored {len(files)} files from CPython {tag}')
 
 
-def fetch(tag: str, path: str) -> str:
-    """One file from the CPython repository at `tag`."""
-    with urllib.request.urlopen(RAW_URL.format(tag=tag, path=path), timeout=30) as response:
+def fetch(commit: str, path: str) -> str:
+    """One file from the CPython repository at `commit`, which unlike a tag cannot be moved to other content."""
+    with urllib.request.urlopen(RAW_URL.format(commit=commit, path=path), timeout=30) as response:
         return response.read().decode('utf-8')
 
 
@@ -92,6 +93,10 @@ def read(path: Path) -> str | None:
 
 class PatchError(Exception):
     """A patch that is malformed or does not apply; `main` reports it and exits."""
+
+
+class PatchDoesNotApply(PatchError):
+    """A well-formed patch whose context is not in the files, e.g. because an earlier patch it builds on was dropped."""
 
 
 def apply_patches(sources: dict[str, str], patches: list[Path]) -> dict[str, str]:
@@ -134,7 +139,7 @@ def git_apply(patch: Path, root: Path) -> None:
         check=False,
     )
     if result.returncode:
-        raise PatchError(f'{patch.relative_to(REPO)} does not apply:\n{result.stderr}')
+        raise PatchDoesNotApply(f'{patch.relative_to(REPO)} does not apply:\n{result.stderr}')
 
 
 def make_patch(name: str, reason: str, upstream: dict[str, str]) -> None:
@@ -179,6 +184,8 @@ def check_patches(upstream: dict[str, str], patches: list[Path]) -> None:
     if missing := [test for test in tests.values() if not test.is_file()]:
         sys.exit('patched modules need a test case:\n' + '\n'.join(f'    {test.relative_to(REPO)}' for test in missing))
 
+    # every patch must be valid and apply in full, so a failure below can only come from a dropped patch
+    apply_patches(upstream, patches)
     originals = {file: (LIB / file).read_bytes() for file in files}
     try:
         passing = run_without(upstream, patches, set(checked), files, tests)
@@ -189,7 +196,7 @@ def check_patches(upstream: dict[str, str], patches: list[Path]) -> None:
                 continue
             try:
                 passing = run_without(upstream, patches, {patch}, files, tests, sorted(patched_files(patch)))
-            except PatchError:
+            except PatchDoesNotApply:
                 continue  # a later patch only applies on top of this one, so it stays
             if patched_files(patch) <= passing:
                 stale.append(patch)
@@ -215,7 +222,7 @@ def run_without(
     run: list[str] | None = None,
 ) -> set[str]:
     """Writes `files` to `Lib/` with every patch but `dropped` applied, rebuilds, and returns the ones of `run`
-    (default: all of `files`) whose test case passes. Raises `PatchError` if the kept patches do not apply."""
+    (default: all of `files`) whose test case passes. Raises `PatchDoesNotApply` if the kept patches do not apply."""
     lib = apply_patches(upstream, [patch for patch in patches if patch not in dropped])
     for file in files:
         (LIB / file).write_text(lib[file], encoding='utf-8', newline='\n')
