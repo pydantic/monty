@@ -16,12 +16,16 @@
 //! spawned on napi's tokio runtime via [`Env::spawn_future_with_callback`] —
 //! never on the JS event loop thread. Sandbox `print()` output streams
 //! mid-turn through a threadsafe function; the turn awaits each JS callback
-//! (`call_async`), preserving print ordering and backpressure. The checkout
+//! (`call_async`), preserving print ordering and backpressure. Calls to async
+//! host functions the worker streams are announced the same way and in order
+//! with prints, on the callback `feedRun` passes to [`NativeSession::feed`], so
+//! the host starts them mid-turn. The checkout
 //! mutex (a tokio mutex) is held for a whole turn: event-loop-thread methods
 //! must never block on it (`worker_pid` uses `try_lock`, everything else
 //! locks inside the spawned future).
 
 use std::{
+    collections::HashMap,
     future::Future,
     pin::Pin,
     result::Result as StdResult,
@@ -32,8 +36,8 @@ use std::{
 
 use monty_pool::{
     telemetry::{TelemetryAdapterHandle, TelemetryContext},
-    Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, Persistence, Pool, PoolConfig, PoolError,
-    PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, TurnEvent,
+    Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnStreamedCall, Persistence, Pool, PoolConfig,
+    PoolError, PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, StreamedCall, TurnEvent,
 };
 use monty_types::{
     unstable::{self, NodeId},
@@ -71,6 +75,10 @@ type SharedCheckout = Arc<AsyncMutex<Option<Checkout>>>;
 /// threadsafe function.
 type PrintCallback<'env> = Function<'env, FnArgs<(String, String, Option<String>)>, UnknownReturnValue>;
 
+/// The per-feed JS callback announcing a streamed call: its call ID and the
+/// span key of its telemetry context.
+type StreamedCallCallback<'env> = Function<'env, FnArgs<(u32, Option<String>)>, UnknownReturnValue>;
+
 fn callback_span_key(context: &Context) -> Option<String> {
     let span = context.span();
     let span = span.span_context();
@@ -107,7 +115,7 @@ pub struct NativePoolOptions {
     pub max_processes: u32,
     /// How long `enter()` waits for a free worker (ms). Absent: forever.
     pub checkout_timeout_ms: Option<f64>,
-    /// Parent-side hard deadline per protocol turn (ms).
+    /// Client-side hard deadline per protocol turn (ms).
     pub request_timeout_ms: Option<f64>,
     /// Grace for the automatic `maxFeedDurationSecs` backstop (ms). Absent:
     /// backstop disabled.
@@ -117,6 +125,9 @@ pub struct NativePoolOptions {
     pub turn_duration_limit_grace_ms: Option<f64>,
     /// Recycle a worker after serving this many checkouts.
     pub max_checkouts_per_worker: Option<u32>,
+    /// Stream calls to async host functions without suspending (see
+    /// `PoolConfig::stream_async_calls`). Absent: off.
+    pub stream_async_calls: Option<bool>,
 }
 
 /// Options for a pool of remote workers ([`NativePool::remote`]). Timeouts
@@ -130,7 +141,7 @@ pub struct NativeRemotePoolOptions {
     pub max_processes: Option<u32>,
     /// How long `enter()` waits for capacity (ms). Absent: forever.
     pub checkout_timeout_ms: Option<f64>,
-    /// Parent-side hard deadline per protocol turn (ms). Absent: none.
+    /// Client-side hard deadline per protocol turn (ms). Absent: none.
     pub request_timeout_ms: Option<f64>,
     /// As [`NativePoolOptions::feed_duration_limit_grace_ms`].
     pub feed_duration_limit_grace_ms: Option<f64>,
@@ -139,6 +150,8 @@ pub struct NativeRemotePoolOptions {
     /// Redial and reload a session a draining server stored, instead of
     /// reporting the shutdown (see `PoolConfig::auto_resume`).
     pub auto_resume: bool,
+    /// As [`NativePoolOptions::stream_async_calls`]. Absent: on.
+    pub stream_async_calls: Option<bool>,
 }
 
 /// One request-metadata entry for a remote checkout's stream.
@@ -219,11 +232,18 @@ pub struct NativeCheckoutOptions {
 /// Per-feed settings other than the mounts, passed by the TypeScript
 /// `MontySession` from its feed options.
 #[napi(object, js_name = "NativeFeedOptions")]
-pub struct NativeFeedOptions {
+pub struct NativeFeedOptions<'env> {
     /// Absolute virtual working directory; unset takes the first mount, else `/`.
     pub cwd: Option<String>,
     /// Skip type checking for this feed even when the session enables it.
     pub skip_type_check: bool,
+    /// `externalLookup` keys holding async functions, so a bare call to one
+    /// starts without waiting; unset makes every call suspend, as `feedStart()`
+    /// needs (see `Checkout::set_async_functions`).
+    pub async_functions: Option<Vec<String>>,
+    /// Receives the feed's streamed calls through all its turns; only `feedRun`
+    /// passes one, and without it every call suspends.
+    pub on_streamed_call: Option<StreamedCallCallback<'env>>,
 }
 
 /// One mount entry for a feed, pre-validated by the TypeScript `MountDir`.
@@ -315,6 +335,7 @@ impl NativePool {
             options.turn_duration_limit_grace_ms,
         )?;
         config.max_checkouts_per_worker = options.max_checkouts_per_worker;
+        config.stream_async_calls = options.stream_async_calls.unwrap_or(false);
         if config.min_processes > config.max_processes {
             return Err(invalid("minProcesses cannot exceed maxProcesses"));
         }
@@ -337,6 +358,7 @@ impl NativePool {
             options.turn_duration_limit_grace_ms,
         )?;
         config.auto_resume = options.auto_resume;
+        config.stream_async_calls = options.stream_async_calls.unwrap_or(true);
         Self::from_config(config, "MontyRemote")
     }
 
@@ -397,10 +419,13 @@ impl NativePool {
                     Some(false) => Persistence::Stored,
                 },
                 profile: options.profile,
+                // the pool's `streamAsyncCalls` alone decides for JS sessions
+                stream_async_calls: true,
             },
 
             checkout: Arc::new(AsyncMutex::new(None)),
             session_id: Arc::new(Mutex::new(None)),
+            announced_calls: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -485,10 +510,21 @@ pub struct NativeSession {
     /// The checkout's session ID, copied after entry and every turn so the
     /// getter never waits on the checkout lock a running turn holds.
     session_id: Arc<Mutex<Option<Vec<u8>>>>,
+    /// Streamed calls announced mid-turn, by call ID, until TypeScript takes
+    /// them with [`NativeSession::take_streamed_call`].
+    announced_calls: Arc<Mutex<HashMap<u32, StreamedCall>>>,
 }
 
 #[napi]
 impl NativeSession {
+    /// Takes the streamed call announced mid-turn to a feed's `on_streamed_call`,
+    /// converted to a JS object; `null` once taken.
+    #[napi]
+    pub fn take_streamed_call<'env>(&self, env: &'env Env, call_id: u32) -> Result<Option<Object<'env>>> {
+        let call = lock(&self.announced_calls).remove(&call_id);
+        call.map(|call| streamed_call_to_js(env, call)).transpose()
+    }
+
     /// Checks a worker out of the pool (spawning or dialing one if allowed)
     /// and creates the REPL session in it. `metadata` becomes a remote
     /// pool's stream metadata; a subprocess pool ignores them. Resolves to
@@ -558,20 +594,33 @@ impl NativeSession {
         code: String,
         inputs: Option<Object<'env>>,
         mounts: Vec<ClassInstance<'env, NativeMountDir>>,
-        options: NativeFeedOptions,
+        options: NativeFeedOptions<'env>,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let inputs = convert_inputs(env, inputs)?;
         let mounts = mount_specs(&mounts)?;
-        let NativeFeedOptions { cwd, skip_type_check } = options;
+        let NativeFeedOptions {
+            cwd,
+            skip_type_check,
+            async_functions,
+            on_streamed_call,
+        } = options;
+        let handler = on_streamed_call
+            .map(|callback| self.streamed_call_handler(callback))
+            .transpose()?;
         self.run_turn(
             env,
             on_print,
             outcome_fn(move |checkout, on_print| {
                 Box::pin(async move {
-                    checkout
+                    checkout.set_async_functions(async_functions);
+                    checkout.set_streamed_call_handler(handler);
+                    let outcome = checkout
                         .feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, on_print)
-                        .await
+                        .await;
+                    // a refused feed never adopted its handler; drop it, as monty-python does
+                    checkout.set_streamed_call_handler(None);
+                    outcome
                 })
             }),
         )
@@ -1003,6 +1052,25 @@ impl NativeSession {
         )
     }
 
+    /// The checkout handler announcing each of one feed's streamed calls to
+    /// `callback`, awaited in order with prints so TypeScript registers the call's
+    /// future before the next frame; the call waits in `announced_calls` for
+    /// `take_streamed_call`. The checkout owns the handler, so `finish` releases
+    /// it, and weak, so an idle session does not keep Node's event loop alive.
+    fn streamed_call_handler(&self, callback: StreamedCallCallback<'_>) -> Result<OnStreamedCall> {
+        let tsfn = Arc::new(callback.build_threadsafe_function().weak::<true>().build()?);
+        let announced_calls = Arc::clone(&self.announced_calls);
+        Ok(Box::new(move |call: StreamedCall| {
+            let call_id = call.call_id;
+            let span_key = callback_span_key(&call.callback_context);
+            lock(&announced_calls).insert(call_id, call);
+            let tsfn = Arc::clone(&tsfn);
+            Box::pin(async move {
+                let _ = tsfn.call_async(FnArgs::from((call_id, span_key))).await;
+            })
+        }))
+    }
+
     /// The shared turn machinery behind [`run_turn`](Self::run_turn): locks the
     /// checkout inside the spawned future, streams prints, and resolves the
     /// computed [`TurnOutcome`] to a JS turn object. `compute` returns the
@@ -1339,6 +1407,26 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
         }
     }
     Ok(obj)
+}
+
+/// One streamed call as a JS object: functionName, args, kwargs, callId and position.
+fn streamed_call_to_js(env: &Env, call: StreamedCall) -> Result<Object<'_>> {
+    let StreamedCall {
+        function_name,
+        args,
+        call_id,
+        position,
+        ..
+    } = call;
+    let mut object = Object::new(env)?;
+    object.set("functionName", function_name)?;
+    let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&args);
+    let arena = DecodedArena::new(graph, env)?;
+    object.set("args", values_to_js(env, &arena, arg_ids)?)?;
+    object.set("kwargs", pairs_to_js(env, &arena, kwarg_ids)?)?;
+    object.set("callId", call_id)?;
+    object.set("position", source_range_to_js(env, &position)?)?;
+    Ok(object)
 }
 
 /// Converts positional call arguments for a turn object.

@@ -1,5 +1,5 @@
 //! A single worker the pool drives over the wire protocol: either a local
-//! `monty subprocess` child (framed stdio) or a remote child reached over a
+//! `monty subprocess` child process (framed stdio) or a remote worker reached over a
 //! gRPC stream (see [`crate::remote`]). Both expose the same async
 //! send/recv/kill surface so the checkout turn loop is transport-agnostic.
 //!
@@ -52,6 +52,8 @@ pub(crate) struct Worker {
     kind: WorkerKind,
     /// Host-selected allocation budget for decoding each protocol frame.
     max_decode_bytes: usize,
+    /// Wire length of the last event `recv` returned, which the streamed-call budget charges.
+    last_frame_len: usize,
     /// Pool-assigned generation, independent of PID reuse.
     pub(crate) id: u64,
     /// Checkouts this worker has served, for `max_checkouts_per_worker`.
@@ -176,6 +178,7 @@ impl Worker {
         Self {
             kind,
             max_decode_bytes: DEFAULT_MAX_DECODE_BYTES,
+            last_frame_len: 0,
             id: 0,
             checkouts_served: 0,
             #[cfg(feature = "telemetry")]
@@ -192,6 +195,16 @@ impl Worker {
             .map_or_else(opentelemetry::Context::new, |recorder| recorder.callback_context())
     }
 
+    /// The span a streamed call's host callback runs under; see `Recorder::streamed_call_context`.
+    #[cfg(feature = "telemetry")]
+    pub(crate) fn streamed_call_context(&self, call_id: u32) -> opentelemetry::Context {
+        self.recorder
+            .as_ref()
+            .map_or_else(opentelemetry::Context::new, |recorder| {
+                recorder.streamed_call_context(call_id)
+            })
+    }
+
     /// Sends one request, flushed to the wire — a reply is only ever read
     /// after a request, so an unflushed frame would deadlock both sides. An
     /// oversize frame is rejected *before* any I/O so the stream stays synced
@@ -199,7 +212,7 @@ impl Worker {
     /// session, which carries `request`, a `Feed` or `Load` (see [`OpeningRequest`]).
     pub(crate) async fn send(
         &mut self,
-        request: &pb::ParentRequest,
+        request: &pb::ClientRequest,
         opening: Option<&pb::Configure>,
     ) -> Result<(), FrameError> {
         let frame = opening
@@ -244,7 +257,7 @@ impl Worker {
             }
             if matches!(
                 request.kind,
-                Some(pb::parent_request::Kind::Reset(_) | pb::parent_request::Kind::Shutdown(_))
+                Some(pb::client_request::Kind::Reset(_) | pb::client_request::Kind::Shutdown(_))
             ) {
                 self.recorder = None;
             }
@@ -284,12 +297,12 @@ impl Worker {
     }
 
     /// Receives one event. EOF/close is an error here because within a
-    /// checkout the child must never close its side first.
+    /// checkout the worker must never close its side first.
     ///
     /// Cancel-safe: partial-frame state persists in the worker (see the
     /// module docs), which is what lets `Checkout` race a turn against its
     /// deadline.
-    pub(crate) async fn recv(&mut self) -> Result<pb::ChildEvent, FrameError> {
+    pub(crate) async fn recv(&mut self) -> Result<pb::WorkerEvent, FrameError> {
         let (event, len) = match &mut self.kind {
             WorkerKind::Subprocess(w) => match w.recv.recv(self.max_decode_bytes).await? {
                 Some(framed) => Ok(framed),
@@ -310,9 +323,13 @@ impl Worker {
             metrics.frame("received", len);
             metrics.event(&event);
         }
-        #[cfg(not(feature = "telemetry"))]
-        let _ = len;
+        self.last_frame_len = len;
         Ok(event)
+    }
+
+    /// Wire length of the event the last `recv` returned.
+    pub(crate) const fn last_frame_len(&self) -> usize {
+        self.last_frame_len
     }
 
     /// The OS process id, when the worker is a local subprocess (`None` for a
@@ -333,7 +350,7 @@ impl Worker {
                 .ok_or_else(|| io::Error::other("worker was spawned without a CPU clock")),
             WorkerKind::Remote(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "remote child CPU clock is unavailable",
+                "remote worker CPU clock is unavailable",
             )),
         }
     }
@@ -448,7 +465,7 @@ impl FrameRecv {
     /// enforcing [`MAX_FRAME_LEN`] before growing the buffer to the announced
     /// size. `Ok(None)` on EOF at a frame boundary — the peer closed between
     /// messages; EOF inside a frame is [`FrameError::Truncated`].
-    async fn recv(&mut self, max_decode_bytes: usize) -> Result<Option<(pb::ChildEvent, usize)>, FrameError> {
+    async fn recv(&mut self, max_decode_bytes: usize) -> Result<Option<(pb::WorkerEvent, usize)>, FrameError> {
         // move leftover bytes from a previous coalesced read to the front so
         // the parse below always works from offset 0
         if self.consumed > 0 {
@@ -508,7 +525,7 @@ impl FrameRecv {
 /// the bytes (no copy), can't outlive a cancelled turn (unlike
 /// `spawn_blocking`), and the runtime keeps its worker count. On a
 /// current-thread runtime, where `block_in_place` panics, decode is inline.
-pub(crate) fn decode_event(body: &[u8], max_decode_bytes: usize) -> Result<pb::ChildEvent, FrameError> {
+pub(crate) fn decode_event(body: &[u8], max_decode_bytes: usize) -> Result<pb::WorkerEvent, FrameError> {
     // each decode is one synchronous call, so the thread-local decode budgets
     // (scoped by `decode_frame_with_budget`) cannot interleave
     if body.len() < DECODE_OFFLOAD_MIN || Handle::current().runtime_flavor() != RuntimeFlavor::MultiThread {

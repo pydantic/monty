@@ -8,13 +8,13 @@ use prost::{
 
 use crate::{budgeted_prost::encoding, decode_budget, pb};
 
-/// `monty.v1.ParentRequest.configure`'s field number.
+/// `monty.v1.ClientRequest.configure`'s field number.
 const CONFIGURE_TAG: u32 = 1;
 /// `monty.v1.Configure.feed`'s field number.
 const FEED_TAG: u32 = 15;
 /// `monty.v1.Configure.load`'s field number.
 const LOAD_TAG: u32 = 16;
-/// `monty.v1.ParentRequest.trace_parent`'s field number.
+/// `monty.v1.ClientRequest.trace_parent`'s field number.
 const TRACE_PARENT_TAG: u32 = 20;
 
 /// A `Configure` request carrying a session's first `Feed` / `Load` as `first`,
@@ -40,10 +40,10 @@ impl<'a> OpeningRequest<'a> {
     /// Pairs `configure` with `request`, keeping the request's `trace_parent`;
     /// `None` unless `request` is a `Feed` or `Load`, the only first requests.
     #[must_use]
-    pub fn new(configure: &'a pb::Configure, request: &'a pb::ParentRequest) -> Option<Self> {
+    pub fn new(configure: &'a pb::Configure, request: &'a pb::ClientRequest) -> Option<Self> {
         let first = match &request.kind {
-            Some(pb::parent_request::Kind::Feed(feed)) => First::Feed(feed),
-            Some(pb::parent_request::Kind::Load(load)) => First::Load(load),
+            Some(pb::client_request::Kind::Feed(feed)) => First::Feed(feed),
+            Some(pb::client_request::Kind::Load(load)) => First::Load(load),
             _ => return None,
         };
         Some(Self {

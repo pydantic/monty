@@ -1,5 +1,5 @@
 // `MontyRemote` end-to-end against in-process gRPC servers that bridge each
-// session stream to a real `monty subprocess` child (see remote_servers.ts),
+// session stream to a real `monty subprocess` worker (see remote_servers.ts),
 // mirroring crates/monty-python/tests/test_remote.py.
 
 import { AsyncLocalStorage } from 'node:async_hooks'
@@ -70,6 +70,32 @@ test('inputs, prints and async external functions cross the stream', async () =>
   })
   t.is(result, 41)
   t.deepEqual(printed, ['stdout:hi\n'])
+})
+
+test('calls to async functions start without suspending the remote worker', async () => {
+  const { url } = await server(relay)
+  const log: string[] = []
+  const fetch = async (x: number) => {
+    log.push(`fetch(${x})`)
+    const until = Date.now() + 300
+    while (Date.now() < until) {
+      // busy-wait: the sandbox only waits for this if the call suspended it
+    }
+    return x * 10
+  }
+  await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
+  await using session = await pool.checkout()
+  const code =
+    'import asyncio, time\nt0 = time.monotonic()\naws = [fetch(i) for i in range(3)]\n' +
+    "elapsed = time.monotonic() - t0\nprint('started')\n[await asyncio.gather(*aws), elapsed < 0.25]"
+  const result = await session.feedRun(code, {
+    externalLookup: { fetch },
+    printCallback: (_stream, text) => log.push(text),
+  })
+  // the sandbox did not wait for the host's 900ms of calls, so they did not suspend it
+  t.deepEqual(result, [[0, 10, 20], true])
+  // calls and prints reach the host in sandbox order, so each call started before the print after it
+  t.deepEqual(log, ['fetch(0)', 'fetch(1)', 'fetch(2)', 'started\n'])
 })
 
 test('separate checkouts are isolated', async () => {

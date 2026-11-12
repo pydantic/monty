@@ -322,7 +322,7 @@ pub(crate) struct RemoteWorker {
     /// signal a server ends the session on.
     requests: Option<mpsc::Sender<Bytes>>,
     /// Decoded events (or the terminal error) forwarded by the reader task.
-    events: mpsc::Receiver<Result<(pb::ChildEvent, usize), FrameError>>,
+    events: mpsc::Receiver<Result<(pb::WorkerEvent, usize), FrameError>>,
     /// The first failure, retained independently of queued protocol events.
     disconnect: Arc<OnceLock<RemoteDisconnect>>,
     /// The task owning the response stream; `None` once `close` detached it.
@@ -346,7 +346,7 @@ impl RemoteWorker {
     /// and reports the server's last word rather than a bare send failure.
     pub(crate) async fn send(
         &mut self,
-        request: &pb::ParentRequest,
+        request: &pb::ClientRequest,
         opening: Option<&OpeningRequest<'_>>,
     ) -> Result<usize, FrameError> {
         let body = match opening {
@@ -367,7 +367,7 @@ impl RemoteWorker {
     /// channel receive consumes nothing when dropped. A torn-down worker or a
     /// finished reader is [`FrameError::Truncated`] — a
     /// [`PoolError::Disconnected`].
-    pub(crate) async fn recv(&mut self) -> Result<(pb::ChildEvent, usize), FrameError> {
+    pub(crate) async fn recv(&mut self) -> Result<(pb::WorkerEvent, usize), FrameError> {
         if self.requests.is_none() {
             return Err(FrameError::Truncated);
         }
@@ -512,7 +512,7 @@ const EVENT_CHANNEL_DEPTH: usize = 1;
 /// keeps the request body open after the worker half-closed it.
 async fn read_events(
     mut stream: Streaming<Bytes>,
-    events: mpsc::Sender<Result<(pb::ChildEvent, usize), FrameError>>,
+    events: mpsc::Sender<Result<(pb::WorkerEvent, usize), FrameError>>,
     pongs: WeakSender<Bytes>,
     disconnect: Arc<OnceLock<RemoteDisconnect>>,
     max_decode_bytes: usize,
@@ -537,7 +537,7 @@ async fn read_events(
                         decode_event(&body, max_decode_bytes)
                     };
                     match decoded {
-                        Ok(event) if matches!(event.kind, Some(pb::child_event::Kind::Ping(_))) => {
+                        Ok(event) if matches!(event.kind, Some(pb::worker_event::Kind::Ping(_))) => {
                             // no turn deadline covers an idle stream, so a ping
                             // too large or too frequent ends it instead
                             if let Err(abuse) = pings.admit(body.len()) {
@@ -660,8 +660,8 @@ fn oversized_message(status: &Status) -> Option<FrameError> {
 
 /// The encoded `Pong` request, built once per answer (it is two bytes).
 fn pong_body() -> Bytes {
-    let pong = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Pong(pb::Pong {})),
+    let pong = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Pong(pb::Pong {})),
         trace_parent: None,
     };
     Bytes::from(encode_to_capped_vec(&pong).expect("a Pong is far below the frame cap"))

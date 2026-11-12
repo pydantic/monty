@@ -1,4 +1,4 @@
-//! Synthetic child for the Linux CPU supervisor tests. It deliberately has no VM fuel checks.
+//! Synthetic worker for the Linux CPU supervisor tests. It deliberately has no VM fuel checks.
 
 use std::{hint::black_box, io, thread, time::Duration};
 
@@ -10,33 +10,33 @@ fn main() {
     let mut reader = FrameReader::new(io::stdin().lock());
     let mut output = io::stdout().lock();
     let mut call_id = 0;
-    while let Some(request) = reader.read::<pb::ParentRequest>().unwrap() {
+    while let Some(request) = reader.read::<pb::ClientRequest>().unwrap() {
         let mut kind = request.kind.unwrap();
         let clock = match &kind {
-            pb::parent_request::Kind::Configure(config) if config.script_name == "legacy" => {
+            pb::client_request::Kind::Configure(config) if config.script_name == "legacy" => {
                 assert_eq!(
                     config.protocol_version, PROTOCOL_VERSION,
                     "legacy worker rejects newer protocol versions"
                 );
                 None
             }
-            pb::parent_request::Kind::Configure(config) => config.execution_clock,
+            pb::client_request::Kind::Configure(config) => config.execution_clock,
             _ => None,
         };
         // a `Configure` carrying the session's first request is answered by that request
-        if let pb::parent_request::Kind::Configure(config) = &mut kind {
+        if let pb::client_request::Kind::Configure(config) = &mut kind {
             match config.first.take() {
-                Some(pb::configure::First::Feed(feed)) => kind = pb::parent_request::Kind::Feed(feed),
-                Some(pb::configure::First::Load(load)) => kind = pb::parent_request::Kind::Load(load),
+                Some(pb::configure::First::Feed(feed)) => kind = pb::client_request::Kind::Feed(feed),
+                Some(pb::configure::First::Load(load)) => kind = pb::client_request::Kind::Load(load),
                 None => {}
             }
         }
         let event = match kind {
-            pb::parent_request::Kind::Feed(feed) if feed.code == "exit" => return,
-            pb::parent_request::Kind::Feed(feed) if feed.code == "fatal" => {
+            pb::client_request::Kind::Feed(feed) if feed.code == "exit" => return,
+            pb::client_request::Kind::Feed(feed) if feed.code == "fatal" => {
                 // a dying worker's last gasp reports no clock
-                let fatal = pb::ChildEvent {
-                    kind: Some(pb::child_event::Kind::FatalError(pb::FatalError {
+                let fatal = pb::WorkerEvent {
+                    kind: Some(pb::worker_event::Kind::FatalError(pb::FatalError {
                         message: "synthetic fatal error".to_owned(),
                     })),
                     ..Default::default()
@@ -44,38 +44,38 @@ fn main() {
                 write_frame(&mut output, &fatal).unwrap();
                 return;
             }
-            pb::parent_request::Kind::Feed(feed) if feed.code == "spin" => loop {
+            pb::client_request::Kind::Feed(feed) if feed.code == "spin" => loop {
                 black_box(42);
             },
-            pb::parent_request::Kind::Feed(feed) if feed.code == "block" => {
+            pb::client_request::Kind::Feed(feed) if feed.code == "block" => {
                 thread::sleep(Duration::from_secs(60));
                 unreachable!("supervisor must terminate the blocked worker");
             }
-            pb::parent_request::Kind::Feed(feed) if feed.code == "pause" => pause(&mut call_id),
-            pb::parent_request::Kind::Feed(feed) if feed.code == "typing-error" => {
-                pb::child_event::Kind::OsCall(os_call_to_proto(
+            pb::client_request::Kind::Feed(feed) if feed.code == "pause" => pause(&mut call_id),
+            pb::client_request::Kind::Feed(feed) if feed.code == "typing-error" => {
+                pb::worker_event::Kind::OsCall(os_call_to_proto(
                     IMPORT_STUBS_CALL_ID,
                     OsFunctionCall::ImportStubs(vec!["tools".to_owned()]),
                     false,
                     &SourceRange::new("supervision.py", 0, 1),
                 ))
             }
-            pb::parent_request::Kind::ResumeCall(resume) if resume.call_id == IMPORT_STUBS_CALL_ID => {
-                pb::child_event::Kind::TypingError(pb::TypingError {
+            pb::client_request::Kind::ResumeCall(resume) if resume.call_id == IMPORT_STUBS_CALL_ID => {
+                pb::worker_event::Kind::TypingError(pb::TypingError {
                     diagnostics: "synthetic typing rejection".to_owned(),
                 })
             }
-            pb::parent_request::Kind::ResumeCall(_) => pause(&mut call_id),
-            pb::parent_request::Kind::Feed(_) => {
-                pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42)))
+            pb::client_request::Kind::ResumeCall(_) => pause(&mut call_id),
+            pb::client_request::Kind::Feed(_) => {
+                pb::worker_event::Kind::Complete(pb::Complete::from(MontyObject::int(42)))
             }
-            pb::parent_request::Kind::Shutdown(_) => return,
-            _ => pb::child_event::Kind::Ok(pb::Ok {}),
+            pb::client_request::Kind::Shutdown(_) => return,
+            _ => pb::worker_event::Kind::Ok(pb::Ok {}),
         };
         write_frame(
             &mut output,
-            &pb::ChildEvent {
-                feed_suspended: matches!(event, pb::child_event::Kind::TypingError(_)).then_some(false),
+            &pb::WorkerEvent {
+                feed_suspended: matches!(event, pb::worker_event::Kind::TypingError(_)).then_some(false),
                 kind: Some(event),
                 execution_clock: clock,
                 ..Default::default()
@@ -85,13 +85,13 @@ fn main() {
     }
 }
 
-fn pause(call_id: &mut u32) -> pb::child_event::Kind {
+fn pause(call_id: &mut u32) -> pb::worker_event::Kind {
     let started = ThreadTime::now();
     while started.elapsed() < Duration::from_millis(10) {
         black_box(42);
     }
     *call_id += 1;
-    pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+    pb::worker_event::Kind::FunctionCall(WireFunctionCall::new(
         "pause".to_owned(),
         CallArgs::from(vec![]),
         *call_id,

@@ -43,15 +43,16 @@ use std::{
 
 use monty_pool::{
     Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, OnPrint,
-    Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    OnStreamedCall, Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, StreamedCall,
+    TurnEvent,
 };
 use monty_proto::{
     DEFAULT_MAX_DECODE_BYTES,
     python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value},
 };
 use monty_types::{
-    AssertMessageAnnotations, CallArgs, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, NamedValues,
-    OsPolicy, PrintStream, TypeCheckingConfig, TypeCheckingFormat,
+    AssertMessageAnnotations, CallArgs, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
+    NamedValues, OsPolicy, PrintStream, TypeCheckingConfig, TypeCheckingFormat,
 };
 use pyo3::{
     Borrowed,
@@ -70,8 +71,9 @@ use tokio::{
 
 use crate::{
     async_dispatch::{
-        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_intercepted_os_call,
-        dispatch_module_coroutine, dispatch_system_sleep, wait_for_futures,
+        AnswerFuture, CoroutineMode, Dispatched, coroutine_answer, dispatch_coroutine, dispatch_function_call,
+        dispatch_intercepted_os_call, dispatch_module_coroutine, dispatch_system_sleep, pending_module,
+        wait_for_futures,
     },
     build::{extract_metadata, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
@@ -450,7 +452,7 @@ impl PyMontySession {
             self.instances.clone_ref(py),
             print_target,
             // the dump's own script name, falling back to the session config
-            // only if the worker did not report one (e.g. an older child)
+            // only if the worker did not report one (e.g. an older worker)
             script_name.unwrap_or_else(|| self.repl_config.script_name.clone()),
             names,
             os,
@@ -544,7 +546,8 @@ impl PyAsyncMonty {
         max_checkouts_per_worker = Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER),
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
-    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0)")]
+        stream_async_calls = false,
+    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0, stream_async_calls=False)")]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
@@ -557,22 +560,25 @@ impl PyAsyncMonty {
         max_checkouts_per_worker: Option<u32>,
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
+        stream_async_calls: bool,
     ) -> PyResult<Self> {
+        let mut config = parse_pool_config(
+            py,
+            binary_path,
+            min_processes,
+            max_processes,
+            checkout_timeout,
+            request_timeout,
+            execution_clock,
+            max_checkouts_per_worker,
+            GraceArgs {
+                feed: feed_duration_limit_grace,
+                turn: turn_duration_limit_grace,
+            },
+        )?;
+        config.stream_async_calls = stream_async_calls;
         Ok(Self {
-            config: parse_pool_config(
-                py,
-                binary_path,
-                min_processes,
-                max_processes,
-                checkout_timeout,
-                request_timeout,
-                execution_clock,
-                max_checkouts_per_worker,
-                GraceArgs {
-                    feed: feed_duration_limit_grace,
-                    turn: turn_duration_limit_grace,
-                },
-            )?,
+            config,
             pool: Arc::new(Mutex::new(None)),
         })
     }
@@ -662,7 +668,7 @@ impl PyAsyncMonty {
 
 /// Async context manager owning a pool of remote `monty` workers reached over
 /// gRPC: one HTTP/2 connection to the configured URL, one stream per session.
-/// The intended peer is `monty-server` (one child per stream plus
+/// The intended peer is `monty-server` (one worker per stream plus
 /// timeout/capacity/drain policy); any server that bridges a stream to a
 /// worker fits, e.g. the dev relay script.
 ///
@@ -707,6 +713,7 @@ impl PyAsyncMontyRemote {
         auto_resume = true,
         max_decode_bytes = None,
         connect_headers = None,
+        stream_async_calls = true,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -721,6 +728,7 @@ impl PyAsyncMontyRemote {
         auto_resume: bool,
         max_decode_bytes: Option<usize>,
         connect_headers: Option<Py<PyAny>>,
+        stream_async_calls: bool,
     ) -> PyResult<Self> {
         // the keyword's former name, kept for one release
         let metadata = match (metadata, connect_headers) {
@@ -750,6 +758,7 @@ impl PyAsyncMontyRemote {
             },
             auto_resume,
         )?;
+        config.stream_async_calls = stream_async_calls;
         if let Some(bytes) = max_decode_bytes {
             if bytes > DEFAULT_MAX_DECODE_BYTES {
                 return Err(PyValueError::new_err(format!(
@@ -1074,7 +1083,7 @@ impl PyAsyncMontySession {
                 ));
             };
             // the dump's own script name, falling back to the session config
-            // only if the worker did not report one (e.g. an older child)
+            // only if the worker did not report one (e.g. an older worker)
             let script_name = restored_script_name.unwrap_or(config_script_name);
             Python::attach(|py| {
                 let ctx = DriveContext::new(checkout, instances, print_target, script_name, names, os, trace_context);
@@ -1441,6 +1450,8 @@ pub(crate) fn parse_repl_config(
         os_policy,
         persistence,
         profile,
+        // the pool's `stream_async_calls` alone decides for Python sessions
+        stream_async_calls: true,
     })
 }
 
@@ -1600,6 +1611,8 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
         &print_target,
         turn_fn(move |c, p| {
             Box::pin(async move {
+                // coroutine functions cannot run here, so their calls suspend as any call
+                c.set_async_functions(None);
                 c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                     .await
             })
@@ -1609,16 +1622,8 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
     loop {
         // `Complete` ends the loop; on any other event a failure to compute the
         // answer discards the checkout (see `sync_turn_answer`).
-        let native = py.detach(|| {
-            block_on_sync(async {
-                checkout
-                    .lock()
-                    .await
-                    .as_ref()
-                    .map(monty_pool::Checkout::callback_context)
-                    .unwrap_or_default()
-            })
-        })?;
+        // this API sets no streamed-call handler, so every call suspends
+        let native = py.detach(|| block_on_sync(checkout.callback_context()))?;
         let callback_guard = callback_context.enter(py, &native)?;
         // intercepted OS calls are answered here, ahead of mounts and `os=`
         let intercepted =
@@ -1807,8 +1812,13 @@ async fn drive_async(args: FeedArgs, names: HostNames, abandoned: Arc<AtomicBool
         started: Arc::clone(&started),
         armed: true,
     };
+    let checkout = Arc::clone(&args.checkout);
     let result = drive_async_inner(args, names, started).await;
     guard.armed = false;
+    // a handler no feed adopted (this feed was refused) would hold its host names
+    if let Some(checkout) = checkout.lock().await.as_mut() {
+        checkout.set_streamed_call_handler(None);
+    }
     result
 }
 
@@ -1863,8 +1873,19 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
         instances,
     } = args;
     let mut join_set: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
+    let async_functions = names.async_functions.clone();
+    let names = Arc::new(names);
+    let instances = Arc::new(instances);
+    let callback_context = Arc::new(callback_context);
+    // the checkout hands each streamed call to `starts` inside the turn, in order with prints
+    let starts = Arc::new(StreamedStarts::new(
+        Arc::clone(&names),
+        Arc::clone(&instances),
+        Arc::clone(&callback_context),
+    ));
+    let handler = StreamedStarts::handler(&starts);
 
-    let mut event = run_turn_async(
+    let mut event = run_turn_starting_calls(
         &checkout,
         &print_target,
         turn_fn(move |c, p| {
@@ -1873,10 +1894,13 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
             // `AbandonGuard`)
             started.store(true, Ordering::Release);
             Box::pin(async move {
+                c.set_async_functions(Some(async_functions));
+                c.set_streamed_call_handler(Some(handler));
                 c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                     .await
             })
         }),
+        &starts,
     )
     .await?;
 
@@ -1885,12 +1909,13 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
         // futures `ResolveFutures` awaits erroring) discards the checkout.
         // `Complete` and `ResolveFutures` stay inline — the latter must await
         // the pending tasks.
-        let native = checkout
-            .lock()
-            .await
-            .as_ref()
-            .map(monty_pool::Checkout::callback_context)
-            .unwrap_or_default();
+        let native = checkout.callback_context().await;
+        // the calls the last turn started, joined before its event is answered:
+        // `ResolveFutures` may name them
+        if let Err(err) = starts.drain_into(&mut join_set) {
+            discard_checkout(&checkout).await;
+            return Err(err);
+        }
         // intercepted OS calls are answered here, ahead of mounts and `os=`
         let intercepted =
             matches!(&event, TurnEvent::OsCall { function_name, .. } if is_intercepted_os_call(function_name));
@@ -1934,10 +1959,11 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                         return Err(err);
                     }
                 };
-                event = run_turn_async(
+                event = run_turn_starting_calls(
                     &checkout,
                     &print_target,
                     turn_fn(move |c, p| Box::pin(c.resume_futures(results, p))),
+                    &starts,
                 )
                 .await?;
                 continue;
@@ -1960,10 +1986,11 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                 allow_eager_await,
                 ..
             } => {
-                let mounted = run_turn_async(
+                let mounted = run_turn_starting_calls(
                     &checkout,
                     &print_target,
                     turn_fn(|c, p| Box::pin(c.resume_from_mounts(p))),
+                    &starts,
                 )
                 .await?;
                 if let Some(next) = mounted {
@@ -1992,7 +2019,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                 }
             }
         };
-        event = run_turn_async(
+        event = run_turn_starting_calls(
             &checkout,
             &print_target,
             turn_fn(move |c, p| {
@@ -2005,6 +2032,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                     }
                 })
             }),
+            &starts,
         )
         .await?;
     }
@@ -2132,6 +2160,144 @@ async fn answer_call(
     dispatched_answer(dispatched, call_id).await
 }
 
+/// Turn-boundary reads on a [`SharedCheckout`], which is an alias and so cannot have inherent methods.
+pub(crate) trait SharedCheckoutExt {
+    /// The telemetry context host callbacks answering the last turn run under;
+    /// empty once the checkout is discarded.
+    async fn callback_context(&self) -> opentelemetry::Context;
+}
+
+impl SharedCheckoutExt for SharedCheckout {
+    async fn callback_context(&self) -> opentelemetry::Context {
+        self.lock()
+            .await
+            .as_ref()
+            .map_or_else(Default::default, Checkout::callback_context)
+    }
+}
+
+/// What the async drive's streamed-call handler shares with the drive: what
+/// starting a call needs, and the calls it started for the drive to join.
+///
+/// The checkout runs the handler inside the turn, in order with prints, so a
+/// call made before a failed print never starts, and the sync part of each host
+/// function runs before the sandbox's next frame is read.
+struct StreamedStarts {
+    names: Arc<HostNames>,
+    instances: Arc<InstanceStore>,
+    callback_context: Arc<CallbackContext>,
+    /// Set by the drive's print callback on the first failed print: the feed is
+    /// aborted, so no later call may start.
+    print_failed: AtomicBool,
+    /// The futures of calls started since the drive last joined them.
+    started: Mutex<Vec<(u32, AnswerFuture)>>,
+    /// The first call that failed to start; the drive discards the checkout.
+    error: Mutex<Option<PyErr>>,
+}
+
+impl StreamedStarts {
+    fn new(names: Arc<HostNames>, instances: Arc<InstanceStore>, callback_context: Arc<CallbackContext>) -> Self {
+        Self {
+            names,
+            instances,
+            callback_context,
+            print_failed: AtomicBool::new(false),
+            started: Mutex::new(Vec::new()),
+            error: Mutex::new(None),
+        }
+    }
+
+    /// The checkout handler starting each call into `this`.
+    fn handler(this: &Arc<Self>) -> OnStreamedCall {
+        let this = Arc::clone(this);
+        Box::new(move |call| {
+            let this = Arc::clone(&this);
+            Box::pin(async move { this.start(call).await })
+        })
+    }
+
+    /// Starts one call, unless a print or an earlier start has failed.
+    async fn start(&self, call: StreamedCall) {
+        if self.print_failed.load(Ordering::Acquire) || lock(&self.error).is_some() {
+            return;
+        }
+        let call_id = call.call_id;
+        match start_streamed_call(call, &self.names, &self.instances, &self.callback_context).await {
+            Ok(future) => lock(&self.started).push((call_id, future)),
+            Err(err) => *lock(&self.error) = Some(err),
+        }
+    }
+
+    /// Moves the started calls into `join_set`, or reports the call that failed to start.
+    fn drain_into(&self, join_set: &mut JoinSet<(u32, ExtFunctionResult)>) -> PyResult<()> {
+        if let Some(err) = lock(&self.error).take() {
+            return Err(err);
+        }
+        for (call_id, future) in lock(&self.started).drain(..) {
+            join_set.spawn(async move { (call_id, future.await) });
+        }
+        Ok(())
+    }
+}
+
+/// Runs a streamed call's host function under the call's span, returning the
+/// future that settles it: the function's coroutine, already scheduled on the
+/// event loop, or its plain return value.
+async fn start_streamed_call(
+    call: StreamedCall,
+    names: &HostNames,
+    instances: &InstanceStore,
+    callback_context: &CallbackContext,
+) -> PyResult<AnswerFuture> {
+    let StreamedCall {
+        function_name,
+        args,
+        callback_context: native,
+        ..
+    } = call;
+    let started = Python::attach(|py| {
+        let _guard = callback_context.enter(py, &native)?;
+        match dispatch_function_call(&function_name, None, &args, names, instances) {
+            CallResult::Sync(result) => Ok(Ok(settled_answer(ext_to_resume(result)?, &function_name))),
+            CallResult::Coroutine(coro) => coroutine_answer(coro, instances).map(Ok),
+            CallResult::ModuleCoroutine { names, coros, then } => pending_module(names, coros, then).map(Err),
+        }
+    })?;
+    match started {
+        Ok(future) => Ok(future),
+        // a module factory to await first, outside the call's context, as at a suspension
+        Err(pending) => {
+            let settled = pending.settle().await;
+            Python::attach(|py| {
+                let _guard = callback_context.enter(py, &native)?;
+                settled.into_answer(py, names, instances)
+            })
+        }
+    }
+}
+
+/// A started call's future when its host function answered at once.
+fn settled_answer(value: ResumeValue, function_name: &str) -> AnswerFuture {
+    let result =
+        started_call_outcome(value, function_name).map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return);
+    Box::pin(ready(result))
+}
+
+/// How a started call that answered at once settles its future. A future
+/// takes only a value or an exception, so a missing function becomes the
+/// `NameError` the sandbox raises for one at a suspension.
+fn started_call_outcome(value: ResumeValue, function_name: &str) -> Result<MontyObject, MontyException> {
+    match value {
+        ResumeValue::Return(value) => Ok(value),
+        ResumeValue::Error(exc) => Err(exc),
+        ResumeValue::NotFound => Err(ExtFunctionResult::not_found_exception(function_name)),
+        ResumeValue::Future | ResumeValue::NotHandled | ResumeValue::ModuleFile(_) => Err(MontyException::new(
+            ExcType::RuntimeError,
+            Some(format!("invalid answer for '{function_name}'")),
+        )),
+    }
+}
+
 /// Awaits any coroutine a dispatch handed back, outside the callback context
 /// and the GIL, and pairs the value with the resume call that delivers it.
 async fn dispatched_answer(
@@ -2198,8 +2364,19 @@ pub(crate) async fn run_turn<T: TurnOutcome>(
     print_target: &PrintTarget,
     turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
 ) -> (Result<T, PoolError>, Option<MontyException>) {
+    run_turn_inner(checkout, print_target, turn, None).await
+}
+
+/// Body of [`run_turn`], also flagging a failed print in `print_failed` so the
+/// turn's later streamed calls do not start.
+async fn run_turn_inner<T: TurnOutcome>(
+    checkout: &SharedCheckout,
+    print_target: &PrintTarget,
+    turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
+    print_failed: Option<&AtomicBool>,
+) -> (Result<T, PoolError>, Option<MontyException>) {
     let mut guard = checkout.lock().await;
-    let Some(checkout) = guard.as_mut() else {
+    let Some(locked) = guard.as_mut() else {
         return (Err(PoolError::Finished), None);
     };
     let mut print_err: Option<MontyException> = None;
@@ -2209,10 +2386,13 @@ pub(crate) async fn run_turn<T: TurnOutcome>(
                 && let Err(err) = print_target.write_event(stream, text)
             {
                 print_err = Some(err);
+                if let Some(print_failed) = print_failed {
+                    print_failed.store(true, Ordering::Release);
+                }
             }
             Box::pin(ready(()))
         };
-        turn(checkout, &mut on_print).await
+        turn(locked, &mut on_print).await
     };
     // A print-callback failure aborts the feed. If the turn left the worker
     // suspended awaiting a resume the aborted feed will never send, drop the
@@ -2222,6 +2402,18 @@ pub(crate) async fn run_turn<T: TurnOutcome>(
         *guard = None;
     }
     (result, print_err)
+}
+
+/// [`run_turn_async`] for the async drive loop: a failed print also stops
+/// `starts` from starting the turn's later streamed calls.
+async fn run_turn_starting_calls<T: TurnOutcome>(
+    checkout: &SharedCheckout,
+    print_target: &PrintTarget,
+    turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
+    starts: &StreamedStarts,
+) -> PyResult<T> {
+    let (result, print_err) = run_turn_inner(checkout, print_target, turn, Some(&starts.print_failed)).await;
+    Python::attach(|py| finalize_turn(py, result, print_err))
 }
 
 /// Blocks on `future` using the pyo3-async-runtimes runtime, adapting to the
@@ -2346,7 +2538,7 @@ pub(crate) enum OsDispatch {
 }
 
 /// Extracts `MountDir | list[MountDir] | None` into mount specs for the pool,
-/// which services mount I/O on the parent side — nothing crosses the process
+/// which services mount I/O on the client side — nothing crosses the process
 /// boundary, and overlay writes are discarded when the feed ends.
 fn extract_mount_specs(mount: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<MountSpec>> {
     let Some(mount) = mount else {

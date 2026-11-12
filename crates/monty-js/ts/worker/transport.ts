@@ -145,12 +145,17 @@ export class WorkerTransport {
     return transport
   }
 
-  /** Feeds one snippet and eagerly converts its named inputs. */
+  /** Feeds one snippet and eagerly converts its named inputs. `options.onStreamedCall`
+   *  is never called: wasm workers suspend at every host call. */
   feed(
     code: string,
     inputs: Record<string, unknown> | null,
     mounts: readonly unknown[],
-    options: { cwd?: string; skipTypeCheck: boolean },
+    options: {
+      cwd?: string
+      skipTypeCheck: boolean
+      onStreamedCall?: (callId: number, parent?: string | null) => void
+    },
     onPrint: OnPrint,
   ): Promise<NativeTurn> {
     if (mounts.length > 0) {
@@ -195,7 +200,7 @@ export class WorkerTransport {
     return this.resumeCall({ tag: 'not-found', val: this.pendingFunctionName }, onPrint)
   }
 
-  /** Lets the child apply the pending OS call's no-handler semantics. */
+  /** Lets the worker apply the pending OS call's no-handler semantics. */
   resumeNotHandled(onPrint: OnPrint): Promise<NativeTurn> {
     return this.resumeCall({ tag: 'not-handled' }, onPrint)
   }

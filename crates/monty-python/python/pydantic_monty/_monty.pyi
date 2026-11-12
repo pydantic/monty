@@ -533,7 +533,7 @@ class MontyCrashedError(MontyError):
 
     @property
     def timed_out(self) -> bool:
-        """`True` when a parent-side elapsed-time or CPU watchdog killed the worker."""
+        """`True` when a client-side elapsed-time or CPU watchdog killed the worker."""
 
     @property
     def exit_status(self) -> int | None:
@@ -735,7 +735,7 @@ class Monty:
                 checkouts beyond it wait for a worker to be returned.
             checkout_timeout: Seconds `checkout()` waits for a free worker
                 before raising `TimeoutError`. `None` waits forever.
-            request_timeout: Per-turn parent-side deadline in seconds — a worker
+            request_timeout: Per-turn client-side deadline in seconds — a worker
                 that exceeds it is killed and the call raises `MontyCrashedError`
                 with `timed_out=True`. Trusted synchronous span and log callbacks
                 delay enforcement while they run. Backstops sandbox `limits`.
@@ -1083,11 +1083,19 @@ class AsyncMonty:
         max_checkouts_per_worker: int | None = 1000,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
+        stream_async_calls: bool = False,
     ) -> Self:
         """
         Configure a worker pool; the workers are spawned by `async with`.
 
-        Arguments are identical to `Monty`.
+        Arguments are identical to `Monty`, plus:
+
+        Arguments:
+            stream_async_calls: Let a call to an `async def` host function that
+                the sandbox does not await at once go to the host without
+                suspending the worker, saving a round trip per call; errors
+                from such calls are raised at the `await`. Off by default, unlike
+                `AsyncMontyRemote`. See [starting calls without waiting](https://pydantic.dev/docs/monty/host-functions#starting-calls-without-waiting).
         """
 
     async def __aenter__(self) -> Self: ...
@@ -1122,7 +1130,7 @@ class AsyncMontyRemote:
     Async context manager owning a pool of remote `monty` workers reached over
     gRPC: one HTTP/2 connection to the configured URL, one stream per session.
     The intended peer is `monty-server` (the production server: one
-    `monty subprocess` child per stream, plus capacity/timeout policy and
+    `monty subprocess` worker per stream, plus capacity/timeout policy and
     graceful drain), but any server that admits the stream and bridges it to
     a worker fits — e.g. the dev relay `scripts/grpc_relay.py`.
 
@@ -1166,6 +1174,7 @@ class AsyncMontyRemote:
         auto_resume: bool = True,
         max_decode_bytes: int | None = None,
         connect_headers: Callable[[], Mapping[str, str]] | None = None,
+        stream_async_calls: bool = True,
     ) -> Self:
         """
         Configure a remote worker pool; the connection is made by the first
@@ -1205,6 +1214,12 @@ class AsyncMontyRemote:
                 at construction. Excludes wire buffers and Python conversion.
                 Exhaustion ends the session with a protocol error without replay.
                 Also caps each message's size, clamped between 64 KiB and the 256 MiB frame limit.
+            stream_async_calls: Let a call to an `async def` host function that
+                the sandbox does not await at once go to the host without
+                suspending the worker, saving a network round trip per call;
+                errors from such calls are raised at the `await`. On by default,
+                unlike the subprocess `AsyncMonty`. See [starting calls without
+                waiting](https://pydantic.dev/docs/monty/host-functions#starting-calls-without-waiting).
             connect_headers: The former name of `metadata`, accepted for one
                 release with a `DeprecationWarning`; passing both raises
                 `TypeError`.

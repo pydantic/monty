@@ -31,7 +31,7 @@ pub(crate) fn callable_type_hints(obj: &Bound<'_, PyAny>) -> PyResult<MontyObjec
 /// The hints of the host class registered under `id`, from its `ClassType`
 /// wrapper's `get_type_hints()`, which an override may answer with any mapping;
 /// `{}` when nothing is registered there. The store also holds instance wrappers,
-/// which an untrusted child could name: those are a miss too.
+/// which an untrusted worker could name: those are a miss too.
 pub(crate) fn class_type_hints(py: Python<'_>, store: &InstanceStore, id: &MontyUuid) -> PyResult<MontyObject> {
     let Some(wrapper) = store.get(py, id)? else {
         return Ok(MontyObject::dict([]));

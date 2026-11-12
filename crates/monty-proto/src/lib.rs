@@ -26,24 +26,24 @@ mod wire;
 #[cfg(feature = "worker")]
 pub mod worker;
 
-/// The protocol version a parent built from this code declares in
-/// [`pb::Configure::protocol_version`], and the newest a child built from it serves.
+/// The protocol version a client built from this code declares in
+/// [`pb::Configure::protocol_version`], and the newest a worker built from it serves.
 ///
-/// Only the child checks, so this guards new parents against old children:
-/// increment it when a parent from this build could not work with a child
-/// built before the change. Old children then refuse the new parent with a
-/// version error instead of misbehaving. A change old children can safely
+/// Only the worker checks, so this guards new clients against old workers:
+/// increment it when a client from this build could not work with a worker
+/// built before the change. Old workers then refuse the new client with a
+/// version error instead of misbehaving. A change old workers can safely
 /// ignore needs no increment.
 pub const PROTOCOL_VERSION: u32 = 8;
 
-/// The oldest parent [`PROTOCOL_VERSION`] a child built from this code serves.
+/// The oldest client [`PROTOCOL_VERSION`] a worker built from this code serves.
 ///
-/// Guards new children against old parents: raise it only when this child can
-/// no longer work with parents that old. Raising it cuts off every deployed
-/// parent below it, so it is a breaking change needing a major version bump.
+/// Guards new workers against old clients: raise it only when this worker can
+/// no longer work with clients that old. Raising it cuts off every deployed
+/// client below it, so it is a breaking change needing a major version bump.
 pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 7;
 
-/// How long the child holds buffered `print()` output before emitting it as a
+/// How long the worker holds buffered `print()` output before emitting it as a
 /// `Print` event, when [`pb::Configure::print_flush_interval_ms`] says nothing.
 ///
 /// Short enough to read as live output, long enough that a printing loop emits
