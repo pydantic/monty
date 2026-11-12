@@ -13,7 +13,7 @@ use ahash::{AHashMap, AHashSet};
 use monty_types::{
     CallArgs, InvalidInputError, MontyComplex, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
     MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
-    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+    unstable::{self, ClassEq, ClassHash, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 
 use crate::{
@@ -22,6 +22,7 @@ use crate::{
     defer_drop,
     exception_private::{RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
+    intern::StringId,
     modules::dataclasses,
     types::{
         Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type,
@@ -30,7 +31,7 @@ use crate::{
         date as date_type, datetime as datetime_type, decimal as decimal_type,
         decimal::py as py_decimal,
         dict::Dict,
-        instance::class_name,
+        instance::{class_defines, class_defines_not_none, class_name},
         list::List,
         set::{FrozenSet, Set},
         str::allocate_string,
@@ -561,6 +562,8 @@ impl GraphExporter {
             host_defined: false,
             is_dataclass: dataclasses::is_dataclass_class(class_id, vm),
             attrs: Vec::new(),
+            eq: class_eq(class_id, vm),
+            hash: class_hash(class_id, vm),
         }));
         let node_id = self.push_node(node);
         self.memoize(class_id, node_id, vm);
@@ -596,6 +599,8 @@ impl GraphExporter {
             host_defined: true,
             is_dataclass: class_type.is_dataclass,
             attrs,
+            eq: class_type.eq,
+            hash: class_type.hash,
         })));
         if !self.in_progress.contains(&type_id) {
             self.memoize(type_id, node_id, vm);
@@ -621,6 +626,39 @@ impl GraphExporter {
             })
             .collect()
     }
+}
+
+/// How instances of sandbox class `class_id` compare, read the way
+/// `instance_user_eq` dispatches: a generated `__eq__` names its fields, any
+/// other `__eq__` is user code the host cannot replay.
+fn class_eq(class_id: HeapId, vm: &VM<'_>) -> ClassEq {
+    if let Some(fields) = dataclasses::generated_fields(class_id, "__eq__", vm) {
+        ClassEq::Fields(field_strings(&fields, vm))
+    } else if class_defines(class_id, "__eq__", vm) {
+        ClassEq::Custom
+    } else {
+        ClassEq::Identity
+    }
+}
+
+/// How instances of sandbox class `class_id` hash, following the precedence of
+/// `Instance::py_hash`: generated `__hash__`, then `__hash__`, then the
+/// implicit opt-out a defined `__eq__` makes, then identity.
+fn class_hash(class_id: HeapId, vm: &VM<'_>) -> ClassHash {
+    if let Some(fields) = dataclasses::generated_fields(class_id, "__hash__", vm) {
+        ClassHash::Fields(field_strings(&fields, vm))
+    } else if class_defines_not_none(class_id, "__hash__", vm) {
+        ClassHash::Custom
+    } else if class_defines(class_id, "__hash__", vm) || class_defines(class_id, "__eq__", vm) {
+        ClassHash::Unhashable
+    } else {
+        ClassHash::Identity
+    }
+}
+
+/// Resolves interned field names to the strings the wire carries.
+fn field_strings(fields: &[StringId], vm: &VM<'_>) -> Vec<String> {
+    fields.iter().map(|name| vm.interns.get_str(*name).to_owned()).collect()
 }
 
 /// Crate-internal export of call arguments: one arena for every argument.

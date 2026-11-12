@@ -23,7 +23,7 @@ use monty_types::{
     CallArgs, CompileOptions, CreateExclusiveCallArgs, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle,
     MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, OsFunctionCall, PrintWriter,
     ResourceTracker, SourceRange,
-    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+    unstable::{self, ClassEq, ClassHash, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
 use prost::{
@@ -269,6 +269,8 @@ fn graphs() -> Vec<MontyGraph> {
         host_defined: true,
         is_dataclass: true,
         attrs: vec![],
+        eq: ClassEq::Fields(vec!["x".to_owned(), "y".to_owned()]),
+        hash: ClassHash::Unhashable,
     })));
     let one = shared_class.push(MontyNode::Int(1));
     let key = shared_class.push(MontyNode::String("x".to_owned()));
@@ -426,6 +428,29 @@ fn oracle_class_type(class: &ClassTypeNode) -> oracle::Type {
         origin: origin as i32,
         is_dataclass: class.is_dataclass,
         attrs,
+        eq: oracle_class_eq(&class.eq) as i32,
+        eq_fields: class.eq.field_names().to_vec(),
+        hash: oracle_class_hash(&class.hash) as i32,
+        hash_fields: class.hash.field_names().to_vec(),
+    }
+}
+
+/// Oracle mirror of a [`ClassEq`] rule's kind.
+fn oracle_class_eq(eq: &ClassEq) -> oracle::ClassEq {
+    match eq {
+        ClassEq::Identity => oracle::ClassEq::Identity,
+        ClassEq::Fields(_) => oracle::ClassEq::Fields,
+        ClassEq::Custom => oracle::ClassEq::Custom,
+    }
+}
+
+/// Oracle mirror of a [`ClassHash`] rule's kind.
+fn oracle_class_hash(hash: &ClassHash) -> oracle::ClassHash {
+    match hash {
+        ClassHash::Identity => oracle::ClassHash::Identity,
+        ClassHash::Fields(_) => oracle::ClassHash::Fields,
+        ClassHash::Unhashable => oracle::ClassHash::Unhashable,
+        ClassHash::Custom => oracle::ClassHash::Custom,
     }
 }
 
@@ -886,6 +911,8 @@ fn present_but_empty_class_attrs_decode_as_absent() {
         host_defined: false,
         is_dataclass: false,
         attrs: vec![],
+        eq: ClassEq::Identity,
+        hash: ClassHash::Identity,
     }));
     let with_empty_attrs = oracle::Type {
         attrs: Some(oracle::NodePairs::default()),
@@ -917,6 +944,48 @@ fn present_but_empty_class_attrs_decode_as_absent() {
                 attrs: vec![],
             },
         ]
+    );
+}
+
+/// An equality rule this build does not know reads as custom, so a newer
+/// worker's rule degrades to identity on the host; field names only survive
+/// on a `FIELDS` rule.
+#[test]
+fn unknown_class_rules_decode_as_custom() {
+    let class = |eq: i32, hash: i32| oracle::Type {
+        eq,
+        eq_fields: vec!["x".to_owned()],
+        hash,
+        hash_fields: vec!["x".to_owned()],
+        ..class_type("Foo")
+    };
+    let decode_rules = |ty: oracle::Type| {
+        let bytes = oracle::Arena {
+            node_count: 1,
+            nodes: vec![oracle::MontyNode {
+                kind: Some(Kind::Type(ty)),
+            }],
+        }
+        .encode_to_vec();
+        match &decode_wire(&bytes).unwrap().nodes()[0] {
+            MontyNode::ClassType(class) => (class.eq.clone(), class.hash.clone()),
+            other => panic!("expected a class node, got {other:?}"),
+        }
+    };
+    assert_eq!(decode_rules(class(99, 99)), (ClassEq::Custom, ClassHash::Custom));
+    assert_eq!(
+        decode_rules(class(oracle::ClassEq::Fields as i32, oracle::ClassHash::Fields as i32)),
+        (
+            ClassEq::Fields(vec!["x".to_owned()]),
+            ClassHash::Fields(vec!["x".to_owned()])
+        )
+    );
+    assert_eq!(
+        decode_rules(class(
+            oracle::ClassEq::Identity as i32,
+            oracle::ClassHash::Unhashable as i32
+        )),
+        (ClassEq::Identity, ClassHash::Unhashable)
     );
 }
 

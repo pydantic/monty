@@ -191,6 +191,26 @@ with Monty() as pool, pool.checkout() as session:
     # result is MontyClassProxy(name='A', attributes={'x': 1})
 ```
 
+Host-side `==` and `hash()` on a proxy follow the sandbox class only as far as
+the host can replay it without running sandbox code:
+
+- The same sandbox object compares and hashes equal across results, but each
+    result builds its own proxy, so `a is b` is `False` across feeds.
+- A `@dataclass` compares as its generated `__eq__` does: the same class (by
+    uuid, so two classes sharing a name differ) with every field `==`. A frozen
+    one hashes its fields; any other raises `TypeError: unhashable type: 'P'`
+    from `hash()`, as in the sandbox.
+- A user-defined `__eq__` does not run on the host: proxies compare by
+    identity, so two distinct objects the sandbox calls equal are unequal on the
+    host, and a proxy never equals a non-proxy (`proxy == 5` is `False`). A user
+    `__hash__` is replaced by an identity hash, or on a dataclass by a hash of
+    its compared fields. A class with `__eq__` and no `__hash__` stays unhashable.
+- For the sandbox's own answer, compare there:
+    `session.feed_run('a == b', inputs={'a': p, 'b': q})`. This only works while
+    both objects are still referenced in the sandbox.
+- A proxy of a host-sent instance (after a restore) compares by identity: the
+    host class's own `__eq__` is not recorded.
+
 A sandbox-defined class **object** (`A` itself) still has no structural host
 representation and converts to its type text (e.g. `"<class 'A'>"`). A user
 `__repr__` is NOT consulted when an instance crosses the boundary — the host

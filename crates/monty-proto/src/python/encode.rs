@@ -5,7 +5,7 @@ use std::{collections::HashMap, vec::IntoIter};
 
 use monty_types::{
     MontyComplex, MontyDate, MontyException, MontyObject, MontyUuid,
-    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+    unstable::{self, ClassEq, ClassHash, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
 use pyo3::{
@@ -510,6 +510,10 @@ impl<'py> ClassTypeSource<'py> {
                 id: wrapper_uuid(wrapper, "ClassType")?,
                 host_defined: true,
                 is_dataclass: wrapper.call_method0(intern!(py, "is_dataclass"))?.extract()?,
+                // The host's own classes compare however Python says; the
+                // sandbox never needs a rule for them.
+                eq: ClassEq::Identity,
+                hash: ClassHash::Identity,
             },
             attrs,
             identity: Some(wrapper.clone()),
@@ -530,6 +534,8 @@ impl<'py> ClassTypeSource<'py> {
             host_defined: class_type.host_defined,
             is_dataclass: class_type.is_dataclass,
             attrs,
+            eq: class_type.eq,
+            hash: class_type.hash,
         }))
     }
 }

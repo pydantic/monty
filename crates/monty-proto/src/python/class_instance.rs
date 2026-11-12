@@ -16,12 +16,18 @@
 //! wrappers built on demand). Never `id()`, which leaks heap addresses to
 //! the worker and is reused by CPython.
 
-use monty_types::MontyUuid;
+use std::hash::{DefaultHasher, Hash, Hasher};
+
+use monty_types::{
+    MontyUuid,
+    unstable::{ClassEq, ClassHash},
+};
 use pyo3::{
     Bound,
     exceptions::{PyAttributeError, PyRuntimeError, PyTypeError, PyValueError},
     intern,
     prelude::*,
+    pyclass::CompareOp,
     sync::PyOnceLock,
     types::{PyBytes, PyDict, PyTuple},
 };
@@ -193,6 +199,10 @@ pub(super) struct ClassHeader {
     pub(super) host_defined: bool,
     /// Whether `dataclasses.is_dataclass` is true for the class.
     pub(super) is_dataclass: bool,
+    /// How the sandbox compares instances, which the proxy's `__eq__` follows.
+    pub(super) eq: ClassEq,
+    /// How the sandbox hashes instances, which the proxy's `__hash__` follows.
+    pub(super) hash: ClassHash,
 }
 
 /// Read-only proxy for a class instance the host has no original object for:
@@ -203,6 +213,10 @@ pub(super) struct ClassHeader {
 /// crossed the wire. It keeps the wire ids, so passing it back into the
 /// sandbox hands over the original object (a live sandbox instance resolves
 /// by identity; the attributes are not applied).
+///
+/// `==` and `hash()` follow the rule the class reported (see [`ClassEq`] and
+/// [`ClassHash`]): a `@dataclass` compares and hashes its fields, anything else
+/// compares by instance id, since the host cannot run a user `__eq__`.
 #[pyclass(name = "MontyClassProxy", module = "pydantic_monty", frozen)]
 pub struct PyMontyClassProxy {
     /// The instance's class as it crossed the wire (name, id, dataclass-ness).
@@ -252,16 +266,95 @@ impl PyMontyClassProxy {
         ))
     }
 
-    /// Equal when name, dataclass-ness, and attributes all match.
-    fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
-        if let Ok(other) = other.extract::<PyRef<'_, Self>>() {
-            Ok(self.class_type.name == other.class_type.name
-                && self.class_type.is_dataclass == other.class_type.is_dataclass
-                && self.attributes.bind(py).eq(other.attributes.bind(py))?)
+    /// The same sandbox object is always equal. Otherwise a `@dataclass`
+    /// `__eq__` is replayed (same class, fields `==` in order) and any other
+    /// rule is unequal; a non-proxy operand is `NotImplemented`.
+    fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let Ok(other) = other.cast::<Self>() else {
+            return Ok(py.NotImplemented());
+        };
+        let other = other.get();
+        let equal = if self.instance_id == other.instance_id {
+            true
         } else {
-            Ok(false)
+            match &self.class_type.eq {
+                ClassEq::Fields(fields) if self.class_type.id == other.class_type.id => {
+                    self.fields_equal(py, other, fields)?
+                }
+                ClassEq::Identity | ClassEq::Fields(_) | ClassEq::Custom => false,
+            }
+        };
+        Ok(equal.into_pyobject(py)?.to_owned().into_any().unbind())
+    }
+
+    /// Mirrors the sandbox's hash rule, consistently with `__eq__`: a
+    /// `@dataclass` hashes its fields, an unhashable class raises `TypeError`,
+    /// and identity hashes the instance id.
+    fn __hash__(&self, py: Python<'_>) -> PyResult<u64> {
+        match (&self.class_type.hash, &self.class_type.eq) {
+            (ClassHash::Fields(fields), _) => {
+                let mut hasher = DefaultHasher::new();
+                PyTuple::new(py, self.field_values(py, fields)?)?
+                    .hash()?
+                    .hash(&mut hasher);
+                Ok(hasher.finish())
+            }
+            (ClassHash::Unhashable, _) => Err(PyTypeError::new_err(format!(
+                "unhashable type: '{}'",
+                self.class_type.name
+            ))),
+            // A user `__hash__` beside a generated `__eq__`: the host cannot
+            // run it, so it hashes what `__eq__` compares, skipping values
+            // the host cannot hash.
+            (ClassHash::Custom, ClassEq::Fields(fields)) => {
+                let mut hasher = DefaultHasher::new();
+                for value in self.field_values(py, fields)? {
+                    match value.hash() {
+                        Ok(hash) => hash.hash(&mut hasher),
+                        Err(err) if err.is_instance_of::<PyTypeError>(py) => {}
+                        Err(err) => return Err(err),
+                    }
+                }
+                Ok(hasher.finish())
+            }
+            (ClassHash::Identity | ClassHash::Custom, _) => Ok(hash_uuid(&self.instance_id)),
         }
     }
+}
+
+impl PyMontyClassProxy {
+    /// The generated `__eq__`'s field walk: each pair compared with the `==`
+    /// operator, stopping at the first unequal one.
+    fn fields_equal(&self, py: Python<'_>, other: &Self, fields: &[String]) -> PyResult<bool> {
+        for field in fields {
+            let a = self.field_value(py, field)?;
+            let b = other.field_value(py, field)?;
+            if !a.rich_compare(&b, CompareOp::Eq)?.is_truthy()? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// The values of `fields`, in order.
+    fn field_values<'py>(&self, py: Python<'py>, fields: &[String]) -> PyResult<Vec<Bound<'py, PyAny>>> {
+        fields.iter().map(|field| self.field_value(py, field)).collect()
+    }
+
+    /// One field's value, raising the `AttributeError` the generated method
+    /// would for a field the instance no longer has.
+    fn field_value<'py>(&self, py: Python<'py>, field: &str) -> PyResult<Bound<'py, PyAny>> {
+        self.attributes.bind(py).get_item(field)?.ok_or_else(|| {
+            PyAttributeError::new_err(format!("'{}' object has no attribute '{field}'", self.class_type.name))
+        })
+    }
+}
+
+/// Hashes a wire uuid, for proxies that compare by identity.
+fn hash_uuid(uuid: &MontyUuid) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    uuid.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Read-only proxy for a host class the store has no class object for: one
@@ -317,6 +410,11 @@ impl PyMontyClassTypeProxy {
         other
             .extract::<PyRef<'_, Self>>()
             .is_ok_and(|other| self.class_type.id == other.class_type.id)
+    }
+
+    /// Hashes the class id, consistently with `__eq__`.
+    fn __hash__(&self) -> u64 {
+        hash_uuid(&self.class_type.id)
     }
 }
 

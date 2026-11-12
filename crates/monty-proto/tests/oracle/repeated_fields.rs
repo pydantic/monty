@@ -39,6 +39,20 @@ fn every_schema_repeated_field_is_budgeted() {
         |message: &WireNamedTuple| &message.values,
     );
     check_repeated(
+        "monty.v1.Type.eq_fields",
+        7,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::Type| &message.eq_fields,
+    );
+    check_repeated(
+        "monty.v1.Type.hash_fields",
+        9,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::Type| &message.hash_fields,
+    );
+    check_repeated(
         "monty.v1.RaisedException.traceback",
         3,
         WireType::LengthDelimited,

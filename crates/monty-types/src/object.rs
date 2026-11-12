@@ -30,7 +30,7 @@ use crate::{
     exceptions::ExcType,
     file_mode::FileMode,
     format::{FormatComplex, FormatFloat, StringRepr, bytes_repr_fmt, format_offset_timedelta_repr, string_repr_fmt},
-    graph::{ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
+    graph::{ClassEq, ClassHash, ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
     resource::ResourceError,
     unstable::PushValue,
     uuid::MontyUuid,
@@ -287,6 +287,8 @@ impl MontyObject {
             host_defined,
             is_dataclass,
             attrs,
+            eq: ClassEq::Identity,
+            hash: ClassHash::Identity,
         })));
         Self { graph, root }
     }

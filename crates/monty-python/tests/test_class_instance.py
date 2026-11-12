@@ -832,11 +832,130 @@ def test_sandbox_dataclass_returns_proxy(monty_run: RunMonty):
     assert result.attributes == snapshot({'x': 1, 'y': 2})
 
 
-def test_proxy_equality(monty_run: RunMonty):
-    code = 'class Foo:\n    def __init__(self, a: int):\n        self.a = a\n[Foo(1), Foo(1), Foo(2)]'
-    a, b, c = monty_run(code)
+FOO_CLASS = 'class Foo:\n    def __init__(self, a):\n        self.a = a\n'
+DATACLASS_IMPORT = 'from dataclasses import dataclass\n'
+
+
+def test_plain_class_proxies_compare_by_identity(session: MontySession):
+    """A class without `__eq__` compares by identity in the sandbox, so proxies
+    of distinct objects differ even when their attributes match."""
+    session.feed_run(FOO_CLASS + 'foo = Foo(1)')
+    first, second = session.feed_run('foo'), session.feed_run('foo')
+    a, b = session.feed_run('[Foo(1), Foo(1)]')
+    assert first == second
+    assert hash(first) == hash(second)
+    assert a != b
+    assert (a == 1, a != 1) == snapshot((False, True))
+
+
+@pytest.mark.parametrize('container', ['{Foo(1), Foo(1)}', 'frozenset([Foo(1), Foo(1)])', '{Foo(1): 1, Foo(1): 2}'])
+def test_containers_of_plain_class_proxies_keep_every_object(monty_run: RunMonty, container: str):
+    result = monty_run(FOO_CLASS + container)
+    assert len(result) == 2
+    assert all(isinstance(item, MontyClassProxy) for item in result)
+
+
+def test_dataclass_proxies_compare_fields(session: MontySession):
+    session.feed_run(DATACLASS_IMPORT + '@dataclass\nclass P:\n    x: int\n    y: list')
+    a, b, c = session.feed_run('[P(1, [2]), P(1, [2]), P(1, [3])]')
     assert a == b
     assert a != c
+    with pytest.raises(TypeError) as exc_info:
+        hash(a)
+    assert exc_info.value.args[0] == snapshot("unhashable type: 'P'")
+
+
+def test_frozen_dataclass_proxies_hash_fields(session: MontySession):
+    session.feed_run(DATACLASS_IMPORT + '@dataclass(frozen=True)\nclass F:\n    x: int')
+    one, other_one = session.feed_run('F(1)'), session.feed_run('F(1)')
+    assert one == other_one
+    assert hash(one) == hash(other_one)
+    assert len({one, other_one}) == 1
+    returned = session.feed_run('{F(1), F(2), F(1)}')
+    assert sorted(item.attributes['x'] for item in returned) == snapshot([1, 2])
+
+
+def test_dataclasses_of_different_classes_differ(session: MontySession):
+    """Two classes sharing a name are different classes: the class id decides."""
+    define = DATACLASS_IMPORT + '@dataclass(frozen=True)\nclass P:\n    x: int\n'
+    first = session.feed_run(define + 'P(1)')
+    second = session.feed_run(define + 'P(1)')
+    assert first.name == second.name
+    assert first != second
+
+
+def test_dataclass_fields_compare_nested_proxies(session: MontySession):
+    session.feed_run(FOO_CLASS + DATACLASS_IMPORT + '@dataclass\nclass P:\n    foo: Foo\nfoo = Foo(1)')
+    a, b, c = session.feed_run('[P(foo), P(foo), P(Foo(1))]')
+    assert a == b
+    assert a != c
+
+
+def test_dataclass_field_missing_from_attributes_raises(monty_run: RunMonty):
+    """A body `__init__` that never sets a field leaves it unset; the generated
+    `__eq__` then raises, on the host as in the sandbox."""
+    code = '@dataclass\nclass P:\n    x: int\n    y: int\n    def __init__(self, x):\n        self.x = x\n[P(1), P(1)]'
+    a, b = monty_run(DATACLASS_IMPORT + code)
+    with pytest.raises(AttributeError) as exc_info:
+        _ = a == b
+    assert exc_info.value.args[0] == snapshot("'P' object has no attribute 'y'")
+
+
+def test_custom_eq_proxies_compare_by_identity(session: MontySession):
+    """The host cannot run a user `__eq__`, so it falls back to identity; a
+    class defining `__eq__` without `__hash__` stays unhashable."""
+    session.feed_run(
+        'class Money:\n'
+        '    def __init__(self, cents):\n'
+        '        self.cents = cents\n'
+        '    def __eq__(self, other):\n'
+        '        return isinstance(other, Money) and self.cents == other.cents\n'
+        'm = Money(5)'
+    )
+    first, second, distinct = session.feed_run('m'), session.feed_run('m'), session.feed_run('Money(5)')
+    assert first == second
+    assert first != distinct
+    with pytest.raises(TypeError) as exc_info:
+        hash(first)
+    assert exc_info.value.args[0] == snapshot("unhashable type: 'Money'")
+
+
+def test_custom_hash_proxies_hash_by_identity(monty_run: RunMonty):
+    code = (
+        'class Key:\n'
+        '    def __init__(self, k):\n'
+        '        self.k = k\n'
+        '    def __eq__(self, other):\n'
+        '        return isinstance(other, Key) and self.k == other.k\n'
+        '    def __hash__(self):\n'
+        '        return hash(self.k)\n'
+        '{Key(1): "a", Key(2): "b"}'
+    )
+    result = monty_run(code)
+    assert sorted(result.values()) == snapshot(['a', 'b'])
+
+
+def test_dataclass_with_own_hash_hashes_compared_fields(session: MontySession):
+    """A body `__hash__` beside a generated `__eq__` cannot run on the host;
+    equal proxies still hash equal, so they work as keys."""
+    session.feed_run(
+        DATACLASS_IMPORT
+        + '@dataclass\nclass P:\n    x: int\n    tags: list\n    def __hash__(self):\n        return hash(self.x)'
+    )
+    a, b = session.feed_run('P(1, ["t"])'), session.feed_run('P(1, ["t"])')
+    assert a == b
+    assert hash(a) == hash(b)
+    assert len(session.feed_run('{P(1, ["t"]), P(2, ["t"])}')) == 2
+
+
+def test_proxy_as_host_dict_key_round_trips(session: MontySession):
+    session.feed_run(FOO_CLASS + 'foo = Foo(1)')
+    proxy = session.feed_run('foo')
+    mapping = {proxy: 'value'}
+    assert mapping[session.feed_run('foo')] == 'value'
+    assert session.feed_run('[(k is foo, v) for k, v in m.items()]', inputs={'m': mapping}) == snapshot(
+        [(True, 'value')]
+    )
 
 
 # === Async method calls ===
@@ -954,6 +1073,8 @@ def test_type_after_restore_is_class_type_proxy(pool: Monty):
         assert proxy.attributes == snapshot({})
         assert repr(proxy) == snapshot("MontyClassTypeProxy(name='Person', attributes={})")
         assert proxy == session.feed_run('type(x)')
+        assert hash(proxy) == hash(session.feed_run('type(x)'))
+        assert len({proxy, session.feed_run('type(x)')}) == 1
         assert proxy != session.feed_run('class Other:\n    pass\nOther')
         code = '(t is type(x), isinstance(x, t), t.__name__)'
         assert session.feed_run(code, inputs={'t': proxy}) == snapshot((True, True, 'Person'))

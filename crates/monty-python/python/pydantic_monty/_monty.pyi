@@ -446,6 +446,11 @@ class MontyClassProxy:
     instance's `id`, so passed back in it resolves to the live sandbox object
     (`attributes` not applied; a freed one raises) or, after a restore, re-enters
     as a host-backed copy built from `attributes`.
+
+    `==` and `hash()` follow the sandbox class where the host can replay it: a
+    `@dataclass` compares (and, when frozen, hashes) its fields; anything else
+    compares by `id`, since a user `__eq__` cannot run on the host. A class the
+    sandbox cannot hash raises `TypeError` from `hash()`.
     """
 
     @property
@@ -466,13 +471,14 @@ class MontyClassProxy:
 
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
 
 @final
 class MontyClassTypeProxy:
     """Read-only proxy for a host class the session has no class object for: a
     `ClassType`, or `type(x)` of a `ClassInstance`, returned after a session
     restore. It keeps the class `id`, so passed back in it is the same sandbox
-    type object.
+    type object. Proxies compare and hash by `id`.
     """
 
     @property
@@ -493,6 +499,7 @@ class MontyClassTypeProxy:
 
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
 
 @final
 class MontyStdTypeProxy:

@@ -294,6 +294,8 @@ Set it for untrusted code, and recycle long-lived sessions.
 A sandbox-defined instance reaches the host as a read-only [`MontyClassProxy`][pydantic_monty.MontyClassProxy] with `name`, `attributes`, `is_dataclass`
 and `id`; the host cannot call its methods.
 Passing the proxy back hands the sandbox its original object, and a proxy whose object the sandbox has freed raises.
+In Python, proxies support `==` and `hash()`, so a returned set or dict of them converts: a `@dataclass` compares its fields (and hashes them when frozen), and any other class compares by `id`.
+[classes.md](limitations/classes.md) lists where that differs from the sandbox's own `==`.
 
 ## Snapshots
 

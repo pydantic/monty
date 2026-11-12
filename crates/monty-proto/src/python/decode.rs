@@ -263,5 +263,7 @@ fn class_header(class: &ClassTypeNode) -> ClassHeader {
         id: class.id,
         host_defined: class.host_defined,
         is_dataclass: class.is_dataclass,
+        eq: class.eq.clone(),
+        hash: class.hash.clone(),
     }
 }
