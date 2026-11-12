@@ -579,11 +579,15 @@ fn mode(vm: &mut VM<'_>, args: ArgValues, all: bool) -> RunResult<Value> {
         None if all => Ok(list_value(Vec::new(), vm)),
         None => Err(ExcType::statistics_error("no mode for empty data")),
         Some(max) if all => {
-            let winners = pairs
-                .iter()
-                .filter(|(_, count)| count_of(count) == max)
-                .map(|(value, _)| value.clone_with_heap(vm.heap))
-                .collect();
+            let is_winner = |(_, count): &&(Value, Value)| count_of(count) == max;
+            // Distinct data makes every value a winner, so the result can be as large as the counter.
+            let mut winners = reserve_values(pairs.iter().filter(is_winner).count(), vm)?;
+            winners.extend(
+                pairs
+                    .iter()
+                    .filter(is_winner)
+                    .map(|(value, _)| value.clone_with_heap(vm.heap)),
+            );
             Ok(list_value(winners, vm))
         }
         Some(max) => {

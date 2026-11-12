@@ -1387,6 +1387,12 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "import random\nrandom.seed(0)\nrandom.sample(range(2**63 - 1), 2**63 - 1)",
             u64::MAX,
         ),
+        // `multimode` of distinct data returns every value, so its result is preflighted; `junk` puts
+        // that result past the limit while the counter and its pairs still fit.
+        (
+            "import statistics\njunk = [None] * 12_000\nstatistics.multimode(range(8_000))",
+            1_096_974,
+        ),
         // `itertools.batched` preflights one batch, capped at `n`.
         (
             "import itertools\nnext(itertools.batched(range(1_000_000), 1_000_000))",
