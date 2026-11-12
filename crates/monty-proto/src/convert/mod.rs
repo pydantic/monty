@@ -23,6 +23,7 @@ mod type_checking;
 
 use std::{error, fmt};
 
+pub(crate) use exception::exc_type_from_wire;
 use monty_types::{
     MontyObject, NamedValues,
     unstable::{self, MontyGraph, NodeId},
@@ -48,8 +49,6 @@ use crate::{
 pub enum ProtoConvertError {
     /// A required message field or oneof was absent.
     MissingField(&'static str),
-    /// An exception type name that monty does not know.
-    UnknownExcType(String),
     /// A type name that monty's `MontyType::from_type_name` does not know.
     UnknownType(String),
     /// A builtin function name that monty does not know.
@@ -71,7 +70,6 @@ impl fmt::Display for ProtoConvertError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingField(field) => write!(f, "missing required field {field}"),
-            Self::UnknownExcType(name) => write!(f, "unknown exception type {name:?}"),
             Self::UnknownType(name) => write!(f, "unknown type name {name:?}"),
             Self::UnknownBuiltinFunction(name) => write!(f, "unknown builtin function {name:?}"),
             Self::InvalidFileMode(mode) => write!(f, "invalid file mode {mode:?}"),

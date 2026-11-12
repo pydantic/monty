@@ -676,15 +676,29 @@ fn rejected_nodes(nodes: Vec<oracle::MontyNode>) -> String {
     decode_wire(&bytes).expect_err("hostile frame must be rejected")
 }
 
+/// An exception name a newer peer added decodes as `Exception`, its message led by the name.
+#[test]
+fn unknown_exception_names_fall_back_to_exception() {
+    let bytes = oracle::Arena {
+        node_count: 1,
+        nodes: vec![oracle::MontyNode {
+            kind: Some(Kind::Exception(oracle::Exception {
+                exc_type: "statistics.FutureError".to_owned(),
+                arg: Some("boom".to_owned()),
+            })),
+        }],
+    }
+    .encode_to_vec();
+    let mut expected = MontyGraph::new();
+    expected.push(MontyNode::Exception {
+        exc_type: ExcType::Exception,
+        arg: Some("statistics.FutureError: boom".to_owned()),
+    });
+    assert_eq!(decode_wire(&bytes).expect("unknown names decode"), expected);
+}
+
 #[test]
 fn invalid_values_are_rejected_during_decode() {
-    assert_eq!(
-        rejected(Kind::Exception(oracle::Exception {
-            exc_type: "NotARealError".to_owned(),
-            arg: None,
-        })),
-        "frame decode error: failed to decode Protobuf message: unknown exception type \"NotARealError\""
-    );
     assert_eq!(
         rejected(Kind::Type(oracle::Type {
             name: "NotAType".to_owned(),

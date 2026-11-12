@@ -49,7 +49,7 @@ pub use references::{WireIndexes, WireNamedTuple, WireNodePairs};
 use crate::{
     BudgetVec,
     budgeted_prost::encoding,
-    convert::ProtoConvertError,
+    convert::{ProtoConvertError, exc_type_from_wire},
     decode_budget,
     pb::{self, monty_node::Kind},
 };
@@ -920,13 +920,10 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
             offset_seconds: timezone_offset(value.offset_seconds, "TimeZone.offset_seconds").map_err(to_decode_err)?,
             name: value.name,
         }),
-        Kind::Exception(value) => MontyNode::Exception {
-            exc_type: value
-                .exc_type
-                .parse()
-                .map_err(|_| to_decode_err(ProtoConvertError::UnknownExcType(value.exc_type)))?,
-            arg: value.arg,
-        },
+        Kind::Exception(value) => {
+            let (exc_type, arg) = exc_type_from_wire(value.exc_type, value.arg, decode_budget::charge)?;
+            MontyNode::Exception { exc_type, arg }
+        }
         Kind::BuiltinFunction(name) => MontyNode::BuiltinFunction(
             name.parse::<BuiltinsFunctions>()
                 .map_err(|_| to_decode_err(ProtoConvertError::UnknownBuiltinFunction(name)))?,
