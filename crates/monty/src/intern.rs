@@ -68,6 +68,18 @@ impl StringId {
         self.0 as usize
     }
 
+    /// The raw ID, for compact encodings that persist it (the dumped location table).
+    #[inline]
+    pub(crate) fn raw(self) -> u32 {
+        self.0
+    }
+
+    /// Rebuilds an ID persisted with [`Self::raw`].
+    #[inline]
+    pub(crate) fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+
     /// Returns the StringId for an ASCII byte.
     #[must_use]
     pub const fn from_ascii(byte: u8) -> Self {
@@ -1253,6 +1265,8 @@ pub enum StaticStrings {
     Flush,
     /// `math.fma()` function.
     Fma,
+    /// `statistics.fmean()` function.
+    Fmean,
     /// `math.fmod()` function.
     Fmod,
     /// Module name for `import fnmatch`, and its `fnmatch()` function.
@@ -1739,10 +1753,20 @@ pub enum StaticStrings {
     Maxunicode,
     /// `hashlib.md5()` function and hash name.
     Md5,
+    /// `statistics.mean()` function.
+    Mean,
+    /// `statistics.median()` function.
+    Median,
+    /// `statistics.median_high()` function.
+    MedianHigh,
+    /// `statistics.median_low()` function.
+    MedianLow,
     /// `memo` parameter of `copy.deepcopy()`.
     Memo,
     /// `field(metadata=...)`.
     Metadata,
+    /// `method` parameter of `statistics.quantiles()`.
+    Method,
     /// `sys.version_info.micro` field.
     Micro,
     /// `datetime` / `time` `microsecond` attribute and constructor kwarg.
@@ -1816,6 +1840,8 @@ pub enum StaticStrings {
     /// `re.MULTILINE` flag
     #[strum(serialize = "MULTILINE")]
     MultilineFlag,
+    /// `statistics.multimode()` function.
+    Multimode,
     /// `Path.name` property; also `file.name`, `os.name` and `unicodedata.name()`.
     Name,
     /// The `collections.namedtuple` factory function.
@@ -2020,8 +2046,14 @@ pub enum StaticStrings {
     /// `typing.Protocol` marker.
     #[strum(serialize = "Protocol")]
     Protocol,
+    /// `statistics.pstdev()` function.
+    Pstdev,
+    /// `statistics.pvariance()` function.
+    Pvariance,
     /// `sys.pycache_prefix` attribute.
     PycachePrefix,
+    /// `statistics.quantiles()` function.
+    Quantiles,
     /// `sys.flags.quiet` field.
     Quiet,
     /// `csv.QUOTE_ALL` constant.
@@ -2353,8 +2385,15 @@ pub enum StaticStrings {
     StatMethod,
     /// `state` parameter of `Random.setstate()`.
     State,
+    /// Module name for `import statistics`.
+    Statistics,
+    /// `statistics.StatisticsError` exception class.
+    #[strum(serialize = "StatisticsError")]
+    StatisticsError,
     /// `sys.stderr` attribute and the marker it holds.
     Stderr,
+    /// `statistics.stdev()` function.
+    Stdev,
     /// `sys.stdout` attribute and the marker it holds.
     Stdout,
     /// `Path.stem` property.
@@ -2615,6 +2654,8 @@ pub enum StaticStrings {
     ValueWithFakeGlobals,
     /// `dict.values()` method.
     Values,
+    /// `statistics.variance()` function.
+    Variance,
     /// `sys.flags.verbose` field.
     Verbose,
     /// `sys.version` attribute.
@@ -2662,6 +2703,8 @@ pub enum StaticStrings {
     Writerow,
     /// `writerows()` method of the `csv` writers.
     Writerows,
+    /// `xbar` parameter of `statistics.variance()`.
+    Xbar,
     /// `date` / `datetime` `year` attribute and constructor kwarg.
     Year,
     /// `base64.z85decode()` function.

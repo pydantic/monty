@@ -582,6 +582,7 @@ export type Event =
   | EventOk
   | EventFatalError
   | EventShutdown
+  | EventSessionRefused
 export interface EventPrint {
   tag: 'print'
   val: PrintEvent
@@ -628,6 +629,10 @@ export interface EventFatalError {
 export interface EventShutdown {
   tag: 'shutdown'
   val: Uint8Array | undefined
+}
+export interface EventSessionRefused {
+  tag: 'session-refused'
+  val: string
 }
 export interface DispatchResult {
   status: Status

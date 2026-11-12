@@ -41,6 +41,7 @@ fn reaped(pid: u32) {
 }
 
 /// Emits chosen protocol frames without interpreting their contents.
+/// Its first read is the `Configure` carrying the session's first request, so `count` starts at 1 there.
 fn stand_in(action: &str, reported: u64) -> (tempfile::TempDir, PoolConfig) {
     // Resolve Python before the worker clears PATH, so CI's configured interpreter is used.
     static PYTHON: OnceLock<PathBuf> = OnceLock::new();
@@ -53,20 +54,17 @@ fn stand_in(action: &str, reported: u64) -> (tempfile::TempDir, PoolConfig) {
         PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
     });
     let dir = tempfile::Builder::new().prefix("monty cpu '").tempdir().unwrap();
-    let mut configured = child_event(pb::child_event::Kind::Ok(pb::Ok {}));
-    configured.execution_clock = Some(pb::ExecutionClock::Cpu as i32);
-    let ok = framed(&configured);
-    let mut suspended = child_event(pb::child_event::Kind::FunctionCall(WireFunctionCall {
+    let mut suspended = worker_event(pb::worker_event::Kind::FunctionCall(WireFunctionCall {
         function_name: "pause".to_owned(),
         ..WireFunctionCall::default()
     }));
     suspended.feed_execution_micros = reported;
     let suspend = framed(&suspended);
-    let complete = framed(&child_event(pb::child_event::Kind::Complete(pb::Complete {
+    let complete = framed(&worker_event(pb::worker_event::Kind::Complete(pb::Complete {
         values: Some(WireArena(vec![MontyNode::Int(1)].into())),
         value: 0,
     })));
-    let print = framed(&child_event(pb::child_event::Kind::Print(pb::Print {
+    let print = framed(&worker_event(pb::worker_event::Kind::Print(pb::Print {
         segments: vec![pb::PrintSegment {
             stream: pb::PrintStream::Stdout as i32,
             text: "go\n".to_owned(),
@@ -87,14 +85,14 @@ def read():
         data.extend(chunk)
     return data
 def send(data):
-    sys.stdout.buffer.write(bytes(data))
+    # append `execution_clock = CPU` (field 30) to acknowledge the opening `Configure`
+    body = bytes(data)[4:] + b'\xf0\x01\x01'
+    sys.stdout.buffer.write(struct.pack('<I', len(body)) + body)
     sys.stdout.buffer.flush()
 def burn(ms):
     start = time.process_time_ns()
     while time.process_time_ns() - start < ms * 1000000: pass
 open(os.path.join(os.path.dirname(__file__), 'ready'), 'w').close()
-read()
-send({ok:?})
 count = 0
 while True:
     read()
@@ -143,7 +141,7 @@ async fn cpu_mode_requires_a_finite_wall_deadline() {
     for deadline in [None, Some(Duration::MAX)] {
         let mut config = supervised(monty_binary());
         config.request_timeout = deadline;
-        assert!(matches!(Pool::new(config).await, Err(PoolError::Spawn(_))));
+        assert!(matches!(Pool::new(config).await, Err(PoolError::Configuration(_))));
     }
 }
 
@@ -199,12 +197,12 @@ async fn uncooperative_cpu_is_killed_and_reaped_for_typed_and_raw_turns() {
         let mut checkout = pool.checkout(&limits(budget_ms)).await.unwrap();
         let pid = checkout.pid().unwrap();
         let error = if raw {
-            let request = pb::ParentRequest {
-                kind: Some(pb::parent_request::Kind::Feed(pb::Feed::default())),
-                ..pb::ParentRequest::default()
+            let request = pb::ClientRequest {
+                kind: Some(pb::client_request::Kind::Feed(pb::Feed::default())),
+                ..pb::ClientRequest::default()
             };
             checkout
-                .turn_raw(&request, &mut |_: &pb::ChildEvent| Box::pin(ready(())))
+                .turn_raw(&request, &mut |_: &pb::WorkerEvent| Box::pin(ready(())))
                 .await
                 .unwrap_err()
         } else {
@@ -262,7 +260,7 @@ async fn worker_reports_cannot_spend_or_refund_the_supervisors_allowance() {
             assert!(matches!(event, Ok(TurnEvent::FunctionCall { .. })));
             completed_turns += 1;
             assert!(completed_turns < 6, "suspensions reset the feed CPU allowance");
-            // Host wait must not consume the child's CPU allowance.
+            // Host wait must not consume the worker's CPU allowance.
             thread::sleep(Duration::from_millis(60));
             event = checkout
                 .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
@@ -386,21 +384,21 @@ async fn restore_seeds_remaining_cpu_from_the_saved_vm_usage() {
         let mut checkout = pool.checkout(&limits(50)).await.unwrap();
         let state = vec![0];
         if raw {
-            let request = pb::ParentRequest {
-                kind: Some(pb::parent_request::Kind::Load(pb::Load { state: state.into() })),
-                ..pb::ParentRequest::default()
+            let request = pb::ClientRequest {
+                kind: Some(pb::client_request::Kind::Load(pb::Load { state: state.into() })),
+                ..pb::ClientRequest::default()
             };
             let event = checkout
-                .turn_raw(&request, &mut |_: &pb::ChildEvent| Box::pin(ready(())))
+                .turn_raw(&request, &mut |_: &pb::WorkerEvent| Box::pin(ready(())))
                 .await
                 .unwrap();
-            assert!(matches!(event.kind, Some(pb::child_event::Kind::FunctionCall(_))));
-            let resume = pb::ParentRequest {
-                kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall::default())),
-                ..pb::ParentRequest::default()
+            assert!(matches!(event.kind, Some(pb::worker_event::Kind::FunctionCall(_))));
+            let resume = pb::ClientRequest {
+                kind: Some(pb::client_request::Kind::ResumeCall(pb::ResumeCall::default())),
+                ..pb::ClientRequest::default()
             };
             let error = checkout
-                .turn_raw(&resume, &mut |_: &pb::ChildEvent| Box::pin(ready(())))
+                .turn_raw(&resume, &mut |_: &pb::WorkerEvent| Box::pin(ready(())))
                 .await
                 .unwrap_err();
             assert!(
@@ -499,7 +497,7 @@ async fn a_child_exit_keeps_its_original_exit_status() {
 #[tokio::test]
 async fn a_raw_host_abort_allows_a_fresh_feed() {
     let exception = MontyException::new(ExcType::RuntimeError, Some("aborted".to_owned()));
-    let error = framed(&child_event(pb::child_event::Kind::Error(pb::Error {
+    let error = framed(&worker_event(pb::worker_event::Kind::Error(pb::Error {
         exception: Some((&exception).into()),
     })));
     let action = format!("if count == 1: SUSPEND\n    elif count == 2: send({error:?})\n    else: COMPLETE");
@@ -508,15 +506,15 @@ async fn a_raw_host_abort_allows_a_fresh_feed() {
     let mut repl = limits(500);
     repl.limits.as_mut().unwrap().max_suspensions = 0;
     let mut checkout = pool.checkout(&repl).await.unwrap();
-    let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed::default())),
-        ..pb::ParentRequest::default()
+    let feed = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed::default())),
+        ..pb::ClientRequest::default()
     };
-    let mut on_event = |_: &pb::ChildEvent| -> PrintFuture { Box::pin(ready(())) };
+    let mut on_event = |_: &pb::WorkerEvent| -> PrintFuture { Box::pin(ready(())) };
     let event = checkout.turn_raw(&feed, &mut on_event).await.unwrap();
-    assert!(matches!(event.kind, Some(pb::child_event::Kind::Error(_))));
+    assert!(matches!(event.kind, Some(pb::worker_event::Kind::Error(_))));
     let event = checkout.turn_raw(&feed, &mut on_event).await.unwrap();
-    assert!(matches!(event.kind, Some(pb::child_event::Kind::Complete(_))));
+    assert!(matches!(event.kind, Some(pb::worker_event::Kind::Complete(_))));
     let event = checkout
         .feed("ignored", vec![], vec![], false, &mut no_print)
         .await
@@ -529,41 +527,41 @@ async fn a_raw_host_abort_allows_a_fresh_feed() {
 #[tokio::test]
 async fn rejected_raw_requests_cannot_clear_a_native_suspension() {
     for rejected in [
-        pb::parent_request::Kind::ResumeCall(pb::ResumeCall::default()),
-        pb::parent_request::Kind::Load(pb::Load::default()),
+        pb::client_request::Kind::ResumeCall(pb::ResumeCall::default()),
+        pb::client_request::Kind::Load(pb::Load::default()),
     ] {
         let pool = Pool::new(supervised(monty_binary())).await.unwrap();
         let mut checkout = pool.checkout(&limits(500)).await.unwrap();
-        let feed = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+        let feed = pb::ClientRequest {
+            kind: Some(pb::client_request::Kind::Feed(pb::Feed {
                 code: "missing".to_owned(),
                 cwd: "/".to_owned(),
                 ..pb::Feed::default()
             })),
-            ..pb::ParentRequest::default()
+            ..pb::ClientRequest::default()
         };
-        let mut on_event = |_: &pb::ChildEvent| -> PrintFuture { Box::pin(ready(())) };
+        let mut on_event = |_: &pb::WorkerEvent| -> PrintFuture { Box::pin(ready(())) };
         let event = checkout.turn_raw(&feed, &mut on_event).await.unwrap();
-        assert!(matches!(event.kind, Some(pb::child_event::Kind::NameLookup(_))));
-        let request = pb::ParentRequest {
+        assert!(matches!(event.kind, Some(pb::worker_event::Kind::NameLookup(_))));
+        let request = pb::ClientRequest {
             kind: Some(rejected),
-            ..pb::ParentRequest::default()
+            ..pb::ClientRequest::default()
         };
         let event = checkout.turn_raw(&request, &mut on_event).await.unwrap();
-        assert!(matches!(event.kind, Some(pb::child_event::Kind::Error(_))));
+        assert!(matches!(event.kind, Some(pb::worker_event::Kind::Error(_))));
         assert!(matches!(
             checkout.turn_raw(&feed, &mut on_event).await,
             Err(PoolError::Protocol(_))
         ));
-        let resume = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+        let resume = pb::ClientRequest {
+            kind: Some(pb::client_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
                 kind: Some(pb::resume_name_lookup::Kind::Value(0)),
                 values: Some(WireArena(vec![MontyNode::Int(42)].into())),
             })),
-            ..pb::ParentRequest::default()
+            ..pb::ClientRequest::default()
         };
         let event = checkout.turn_raw(&resume, &mut on_event).await.unwrap();
-        assert!(matches!(event.kind, Some(pb::child_event::Kind::Complete(_))));
+        assert!(matches!(event.kind, Some(pb::worker_event::Kind::Complete(_))));
         let event = checkout
             .feed("1 + 1", vec![], vec![], false, &mut no_print)
             .await
@@ -579,23 +577,23 @@ async fn raw_suspensions_cannot_mint_allowance_through_an_invalid_feed() {
     let (dir, config) = stand_in("burn(15); SUSPEND", 0);
     let pool = stand_in_pool(config, dir.path()).await;
     let mut checkout = pool.checkout(&limits(50)).await.unwrap();
-    let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed::default())),
-        ..pb::ParentRequest::default()
+    let feed = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed::default())),
+        ..pb::ClientRequest::default()
     };
-    let resume = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+    let resume = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 0,
             result: Some(pb::ExtFunctionResult {
                 kind: Some(pb::ext_function_result::Kind::ReturnValue(0)),
             }),
             values: Some(WireArena(vec![MontyNode::None].into())),
         })),
-        ..pb::ParentRequest::default()
+        ..pb::ClientRequest::default()
     };
-    let mut on_event = |_: &pb::ChildEvent| -> PrintFuture { Box::pin(ready(())) };
+    let mut on_event = |_: &pb::WorkerEvent| -> PrintFuture { Box::pin(ready(())) };
     let event = checkout.turn_raw(&feed, &mut on_event).await.unwrap();
-    assert!(matches!(event.kind, Some(pb::child_event::Kind::FunctionCall(_))));
+    assert!(matches!(event.kind, Some(pb::worker_event::Kind::FunctionCall(_))));
     let mut successful = 1;
     loop {
         assert!(matches!(
@@ -608,7 +606,7 @@ async fn raw_suspensions_cannot_mint_allowance_through_an_invalid_feed() {
         ));
         match checkout.turn_raw(&resume, &mut on_event).await {
             Ok(event) => {
-                assert!(matches!(event.kind, Some(pb::child_event::Kind::FunctionCall(_))));
+                assert!(matches!(event.kind, Some(pb::worker_event::Kind::FunctionCall(_))));
                 successful += 1;
                 assert!(successful <= 3, "invalid feeds reset the CPU ledger");
             }
@@ -627,19 +625,19 @@ async fn typed_control_errors_preserve_raw_suspension_accounting() {
         let mut repl = limits(1000);
         repl.type_check = operation == "dump";
         let mut checkout = pool.checkout(&repl).await.unwrap();
-        let feed = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+        let feed = pb::ClientRequest {
+            kind: Some(pb::client_request::Kind::Feed(pb::Feed {
                 code: if repl.type_check { "import tools" } else { "missing" }.to_owned(),
                 cwd: "/".to_owned(),
                 ..pb::Feed::default()
             })),
-            ..pb::ParentRequest::default()
+            ..pb::ClientRequest::default()
         };
-        let mut on_event = |_: &pb::ChildEvent| -> PrintFuture { Box::pin(ready(())) };
+        let mut on_event = |_: &pb::WorkerEvent| -> PrintFuture { Box::pin(ready(())) };
         let event = checkout.turn_raw(&feed, &mut on_event).await.unwrap();
         assert!(matches!(
             event.kind,
-            Some(pb::child_event::Kind::NameLookup(_) | pb::child_event::Kind::OsCall(_))
+            Some(pb::worker_event::Kind::NameLookup(_) | pb::worker_event::Kind::OsCall(_))
         ));
         let error = match operation {
             "dump" => checkout.dump().await.unwrap_err(),
@@ -667,7 +665,7 @@ async fn typed_control_errors_preserve_raw_suspension_accounting() {
 #[tokio::test]
 async fn typed_dump_errors_do_not_refund_cumulative_cpu() {
     let exception = MontyException::new(ExcType::RuntimeError, Some("dump refused".to_owned()));
-    let mut error = child_event(pb::child_event::Kind::Error(pb::Error {
+    let mut error = worker_event(pb::worker_event::Kind::Error(pb::Error {
         exception: Some((&exception).into()),
     }));
     // A control error cannot declare the suspended execution complete.
@@ -683,15 +681,15 @@ async fn typed_dump_errors_do_not_refund_cumulative_cpu() {
         .await
         .unwrap();
     assert!(matches!(event, TurnEvent::FunctionCall { .. }));
-    let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed::default())),
-        ..pb::ParentRequest::default()
+    let feed = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed::default())),
+        ..pb::ClientRequest::default()
     };
-    let resume = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall::default())),
-        ..pb::ParentRequest::default()
+    let resume = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::ResumeCall(pb::ResumeCall::default())),
+        ..pb::ClientRequest::default()
     };
-    let mut on_event = |_: &pb::ChildEvent| -> PrintFuture { Box::pin(ready(())) };
+    let mut on_event = |_: &pb::WorkerEvent| -> PrintFuture { Box::pin(ready(())) };
     let mut completed = 1;
     loop {
         assert!(matches!(checkout.dump().await, Err(PoolError::Runtime(_))));
@@ -701,7 +699,7 @@ async fn typed_dump_errors_do_not_refund_cumulative_cpu() {
         ));
         match checkout.turn_raw(&resume, &mut on_event).await {
             Ok(event) => {
-                assert!(matches!(event.kind, Some(pb::child_event::Kind::FunctionCall(_))));
+                assert!(matches!(event.kind, Some(pb::worker_event::Kind::FunctionCall(_))));
                 completed += 1;
                 assert!(completed <= 3, "typed dump errors reset the CPU ledger");
             }
@@ -718,15 +716,15 @@ async fn typed_dump_errors_do_not_refund_cumulative_cpu() {
 async fn explicit_raw_abort_validates_the_exception_and_ends_the_feed() {
     let pool = Pool::new(supervised(monty_binary())).await.unwrap();
     let mut checkout = pool.checkout(&limits(500)).await.unwrap();
-    let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+    let feed = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed {
             code: "missing".to_owned(),
             cwd: "/".to_owned(),
             ..pb::Feed::default()
         })),
-        ..pb::ParentRequest::default()
+        ..pb::ClientRequest::default()
     };
-    let mut on_event = |_: &pb::ChildEvent| -> PrintFuture { Box::pin(ready(())) };
+    let mut on_event = |_: &pb::WorkerEvent| -> PrintFuture { Box::pin(ready(())) };
     let event = checkout
         .feed("missing", vec![], vec![], false, &mut no_print)
         .await
@@ -739,9 +737,9 @@ async fn explicit_raw_abort_validates_the_exception_and_ends_the_feed() {
     let mut invalid_traceback = valid.clone();
     invalid_traceback.traceback = vec![pb::StackFrame::default()].into();
     for exception in [None, Some(unknown_type), Some(invalid_traceback)] {
-        let abort = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::AbortFeed(pb::AbortFeed { exception })),
-            ..pb::ParentRequest::default()
+        let abort = pb::ClientRequest {
+            kind: Some(pb::client_request::Kind::AbortFeed(pb::AbortFeed { exception })),
+            ..pb::ClientRequest::default()
         };
         assert!(matches!(checkout.turn_raw(&abort, &mut on_event).await,
                 Err(PoolError::Protocol(ref message)) if message == "AbortFeed requires a valid exception"));
@@ -750,14 +748,14 @@ async fn explicit_raw_abort_validates_the_exception_and_ends_the_feed() {
             Err(PoolError::Protocol(_))
         ));
     }
-    let abort = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
+    let abort = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::AbortFeed(pb::AbortFeed {
             exception: Some(valid),
         })),
-        ..pb::ParentRequest::default()
+        ..pb::ClientRequest::default()
     };
     let event = checkout.turn_raw(&abort, &mut on_event).await.unwrap();
-    let Some(pb::child_event::Kind::Error(error)) = event.kind else {
+    let Some(pb::worker_event::Kind::Error(error)) = event.kind else {
         panic!("{event:?}")
     };
     assert_eq!(
@@ -776,7 +774,7 @@ async fn explicit_raw_abort_validates_the_exception_and_ends_the_feed() {
 #[tokio::test]
 async fn raw_errors_without_suspension_metadata_do_not_refund_cpu() {
     let exception = MontyException::new(ExcType::RuntimeError, Some("legacy error".to_owned()));
-    let error = framed(&child_event(pb::child_event::Kind::Error(pb::Error {
+    let error = framed(&worker_event(pb::worker_event::Kind::Error(pb::Error {
         exception: Some((&exception).into()),
     })));
     let action = format!("if count % 2 == 1: burn(15); SUSPEND\n    else: send({error:?})");
@@ -784,20 +782,20 @@ async fn raw_errors_without_suspension_metadata_do_not_refund_cpu() {
     let pool = stand_in_pool(config, dir.path()).await;
     let mut checkout = pool.checkout(&limits(50)).await.unwrap();
     let pid = checkout.pid().unwrap();
-    let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed::default())),
-        ..pb::ParentRequest::default()
+    let feed = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed::default())),
+        ..pb::ClientRequest::default()
     };
-    let resume = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall::default())),
-        ..pb::ParentRequest::default()
+    let resume = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::ResumeCall(pb::ResumeCall::default())),
+        ..pb::ClientRequest::default()
     };
-    let mut on_event = |_: &pb::ChildEvent| -> PrintFuture { Box::pin(ready(())) };
+    let mut on_event = |_: &pb::WorkerEvent| -> PrintFuture { Box::pin(ready(())) };
     checkout.turn_raw(&feed, &mut on_event).await.unwrap();
     let mut completed = 1;
     loop {
         let event = checkout.turn_raw(&resume, &mut on_event).await.unwrap();
-        assert!(matches!(event.kind, Some(pb::child_event::Kind::Error(_))));
+        assert!(matches!(event.kind, Some(pb::worker_event::Kind::Error(_))));
         assert_eq!(event.feed_suspended, None);
         assert!(matches!(
             checkout.turn_raw(&feed, &mut on_event).await,
@@ -805,7 +803,7 @@ async fn raw_errors_without_suspension_metadata_do_not_refund_cpu() {
         ));
         match checkout.turn_raw(&resume, &mut on_event).await {
             Ok(event) => {
-                assert!(matches!(event.kind, Some(pb::child_event::Kind::FunctionCall(_))));
+                assert!(matches!(event.kind, Some(pb::worker_event::Kind::FunctionCall(_))));
                 completed += 1;
                 assert!(completed <= 3, "legacy errors reset the CPU ledger");
             }
@@ -828,18 +826,18 @@ async fn raw_terminal_errors_clear_suspensions_in_both_modes() {
                 let pool = Pool::new(config).await.unwrap();
                 let repl = limits(1000);
                 let mut checkout = pool.checkout(&repl).await.unwrap();
-                let feed = |code: &str| pb::ParentRequest {
-                    kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+                let feed = |code: &str| pb::ClientRequest {
+                    kind: Some(pb::client_request::Kind::Feed(pb::Feed {
                         code: code.to_owned(),
                         skip_type_check: true,
                         ..pb::Feed::default()
                     })),
-                    ..pb::ParentRequest::default()
+                    ..pb::ClientRequest::default()
                 };
-                let mut on_event = |_: &pb::ChildEvent| -> PrintFuture { Box::pin(ready(())) };
+                let mut on_event = |_: &pb::WorkerEvent| -> PrintFuture { Box::pin(ready(())) };
                 let call_id = if raw_start {
                     let event = checkout.turn_raw(&feed(code), &mut on_event).await.unwrap();
-                    let Some(pb::child_event::Kind::FunctionCall(call)) = event.kind else {
+                    let Some(pb::worker_event::Kind::FunctionCall(call)) = event.kind else {
                         panic!("{event:?}")
                     };
                     call.call_id
@@ -850,29 +848,29 @@ async fn raw_terminal_errors_clear_suspensions_in_both_modes() {
                     };
                     call_id
                 };
-                let invalid_abort = pb::ParentRequest {
-                    kind: Some(pb::parent_request::Kind::AbortFeed(pb::AbortFeed::default())),
-                    ..pb::ParentRequest::default()
+                let invalid_abort = pb::ClientRequest {
+                    kind: Some(pb::client_request::Kind::AbortFeed(pb::AbortFeed::default())),
+                    ..pb::ClientRequest::default()
                 };
                 assert!(matches!(
                     checkout.turn_raw(&invalid_abort, &mut on_event).await,
                     Err(PoolError::Protocol(_))
                 ));
-                let resume = |call_id| pb::ParentRequest {
-                    kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+                let resume = |call_id| pb::ClientRequest {
+                    kind: Some(pb::client_request::Kind::ResumeCall(pb::ResumeCall {
                         call_id,
                         result: Some(pb::ExtFunctionResult {
                             kind: Some(pb::ext_function_result::Kind::ReturnValue(0)),
                         }),
                         values: Some(WireArena(vec![MontyNode::None].into())),
                     })),
-                    ..pb::ParentRequest::default()
+                    ..pb::ClientRequest::default()
                 };
                 let rejected = checkout.turn_raw(&resume(call_id + 1), &mut on_event).await.unwrap();
-                assert!(matches!(rejected.kind, Some(pb::child_event::Kind::Error(_))));
+                assert!(matches!(rejected.kind, Some(pb::worker_event::Kind::Error(_))));
                 assert_eq!(rejected.feed_suspended, Some(true));
                 let event = checkout.turn_raw(&resume(call_id), &mut on_event).await.unwrap();
-                let Some(pb::child_event::Kind::Error(error)) = event.kind else {
+                let Some(pb::worker_event::Kind::Error(error)) = event.kind else {
                     panic!("{event:?}")
                 };
                 let error = MontyException::try_from(error.exception.unwrap()).unwrap();
@@ -895,7 +893,7 @@ async fn raw_terminal_errors_clear_suspensions_in_both_modes() {
                     .unwrap();
                 assert_eq!(expect_complete(event), MontyObject::int(2));
                 let event = checkout.turn_raw(&feed("2 + 2"), &mut on_event).await.unwrap();
-                let Some(pb::child_event::Kind::Complete(complete)) = event.kind else {
+                let Some(pb::worker_event::Kind::Complete(complete)) = event.kind else {
                     panic!("{event:?}")
                 };
                 assert_eq!(MontyObject::try_from(complete).unwrap(), MontyObject::int(4));
@@ -936,13 +934,13 @@ async fn invalid_typed_stub_answers_keep_the_feed_suspended() {
             checkout.resume(answer, &mut no_print).await,
             Err(PoolError::Protocol(_))
         ));
-        let feed = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::Feed(pb::Feed::default())),
-            ..pb::ParentRequest::default()
+        let feed = pb::ClientRequest {
+            kind: Some(pb::client_request::Kind::Feed(pb::Feed::default())),
+            ..pb::ClientRequest::default()
         };
         assert!(matches!(
             checkout
-                .turn_raw(&feed, &mut |_: &pb::ChildEvent| Box::pin(ready(())))
+                .turn_raw(&feed, &mut |_: &pb::WorkerEvent| Box::pin(ready(())))
                 .await,
             Err(PoolError::Protocol(_))
         ));
@@ -974,13 +972,13 @@ async fn raw_advances_cannot_leave_a_stale_typed_resume_token() {
         panic!("{event:?}")
     };
     // A non-advancing raw dump must leave the typed resume token usable.
-    let dump = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Dump(pb::Dump::default())),
-        ..pb::ParentRequest::default()
+    let dump = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Dump(pb::Dump::default())),
+        ..pb::ClientRequest::default()
     };
-    let mut on_event = |_: &pb::ChildEvent| -> PrintFuture { Box::pin(ready(())) };
+    let mut on_event = |_: &pb::WorkerEvent| -> PrintFuture { Box::pin(ready(())) };
     let event = checkout.turn_raw(&dump, &mut on_event).await.unwrap();
-    assert!(matches!(event.kind, Some(pb::child_event::Kind::DumpResult(_))));
+    assert!(matches!(event.kind, Some(pb::worker_event::Kind::DumpResult(_))));
     let event = checkout
         .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
         .await
@@ -989,18 +987,18 @@ async fn raw_advances_cannot_leave_a_stale_typed_resume_token() {
         panic!("{event:?}")
     };
     assert_ne!(call_id, second);
-    let resume = |call_id| pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+    let resume = |call_id| pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::ResumeCall(pb::ResumeCall {
             call_id,
             result: Some(pb::ExtFunctionResult {
                 kind: Some(pb::ext_function_result::Kind::ReturnValue(0)),
             }),
             values: Some(WireArena(vec![MontyNode::None].into())),
         })),
-        ..pb::ParentRequest::default()
+        ..pb::ClientRequest::default()
     };
     let event = checkout.turn_raw(&resume(second), &mut on_event).await.unwrap();
-    assert!(matches!(event.kind, Some(pb::child_event::Kind::Complete(_))));
+    assert!(matches!(event.kind, Some(pb::worker_event::Kind::Complete(_))));
     let event = checkout
         .feed("f(); f()", vec![], vec![], false, &mut no_print)
         .await
@@ -1009,7 +1007,7 @@ async fn raw_advances_cannot_leave_a_stale_typed_resume_token() {
         panic!("{event:?}")
     };
     let event = checkout.turn_raw(&resume(call_id), &mut on_event).await.unwrap();
-    let Some(pb::child_event::Kind::FunctionCall(call)) = event.kind else {
+    let Some(pb::worker_event::Kind::FunctionCall(call)) = event.kind else {
         panic!("{event:?}")
     };
     assert_ne!(call.call_id, call_id);
@@ -1017,16 +1015,16 @@ async fn raw_advances_cannot_leave_a_stale_typed_resume_token() {
         matches!(checkout.resume(ResumeValue::Return(MontyObject::none()), &mut no_print).await,
             Err(PoolError::Protocol(ref message)) if message == "no suspended call to resume")
     );
-    let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed::default())),
-        ..pb::ParentRequest::default()
+    let feed = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed::default())),
+        ..pb::ClientRequest::default()
     };
     assert!(matches!(
         checkout.turn_raw(&feed, &mut on_event).await,
         Err(PoolError::Protocol(_))
     ));
     let event = checkout.turn_raw(&resume(call.call_id), &mut on_event).await.unwrap();
-    assert!(matches!(event.kind, Some(pb::child_event::Kind::Complete(_))));
+    assert!(matches!(event.kind, Some(pb::worker_event::Kind::Complete(_))));
     let event = checkout
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await

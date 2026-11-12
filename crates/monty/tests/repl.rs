@@ -2720,9 +2720,9 @@ fn call_function_wrong_arg_count() {
         .unwrap_err();
     assert_snapshot!(err, @r#"
     Traceback (most recent call last):
-      File "<python-input-0>", line 1, in <module>
-        def add(a, b): return a + b
-            ~~~
+      File "<python-input-1>", line 1, in <module>
+        add(...)
+        ~~~~~~~~
     TypeError: add() missing 1 required positional argument: 'b'
     "#);
 }
@@ -3084,4 +3084,38 @@ fn repl_snippet_sources_survive_round_trip() {
     let first = feed_run_print(&mut repl, "first()").unwrap_err();
     let second = feed_run_print(&mut repl, "second()").unwrap_err();
     assert_snapshot!("snippet_sources", format!("{first}\n\n{second}"));
+}
+
+/// A call started within the host's turn keeps the turn clock running, so
+/// `max_turn_duration` bounds the whole turn; a plain resume starts a new turn.
+#[test]
+fn resume_pending_in_turn_keeps_the_turn_clock() {
+    let code = "for _ in range(200_000):\n    pass\na = f()\nb = f()";
+    let second_call_turn_time = |in_turn: bool| {
+        let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+        let progress = repl.feed_start(code, vec![], PrintWriter::Disabled).unwrap();
+        let first = progress.tracker().turn_elapsed();
+        let call = progress.into_function_call().expect("expected the first call");
+        let progress = if in_turn {
+            call.resume_pending_in_turn(PrintWriter::Disabled)
+        } else {
+            call.resume_pending(PrintWriter::Disabled)
+        }
+        .unwrap();
+        assert!(
+            matches!(progress, ReplProgress::FunctionCall(_)),
+            "expected the second call"
+        );
+        let second = progress.tracker().turn_elapsed();
+        // ends the suspended snippet so its heap references are released
+        let _repl = progress.into_repl();
+        (first, second)
+    };
+    let (first, second) = second_call_turn_time(true);
+    assert!(second >= first, "turn clock restarted: {second:?} < {first:?}");
+    let (first, second) = second_call_turn_time(false);
+    assert!(
+        second < first,
+        "a new turn should restart the clock: {second:?} >= {first:?}"
+    );
 }

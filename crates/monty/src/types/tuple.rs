@@ -128,6 +128,8 @@ impl Tuple {
                 // Use empty tuple singleton
                 Ok(vm.heap.get_empty_tuple())
             }
+            // Named tuples still need conversion to a plain tuple.
+            Some(v @ Value::Ref(id)) if matches!(vm.heap.get(id), HeapData::Tuple(_)) => Ok(v),
             Some(v) => {
                 let items = collect_owned_iterable(v, vm)?;
                 Ok(allocate_tuple(items, vm.heap))
@@ -566,14 +568,19 @@ fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>
         other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
     };
 
-    let iter = tuple.iter(vm)?;
+    // Nested short offset searches may never reach an iterator checkpoint.
+    vm.heap.tracker.check_time()?;
+
+    let mut iter = tuple.iter(vm)?;
+    // Excluded prefix entries need neither equality calls nor reference-count traffic.
+    iter.index = start;
     defer_drop_mut!(iter, vm);
     while let Some((idx, item)) = iter.next_with_index(vm)? {
         if idx >= end {
             // No further matches possible inside [start, end).
             break;
         }
-        if idx >= start && value.py_eq(item, vm)? {
+        if value.py_eq(item, vm)? {
             let idx_i64 = i64::try_from(idx).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx_i64));
         }

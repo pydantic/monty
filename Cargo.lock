@@ -743,9 +743,9 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "clipboard-win"
-version = "5.4.1"
+version = "5.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
+checksum = "052af7878466feccda12ba7a6a67d019d712f296809559b47c12c8cc196d3a9a"
 dependencies = [
  "error-code",
 ]
@@ -2683,7 +2683,7 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "ahash",
  "chrono",
@@ -2727,14 +2727,14 @@ dependencies = [
 
 [[package]]
 name = "monty-alloc"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "monty-types",
 ]
 
 [[package]]
 name = "monty-apidoc"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "insta",
  "rustdoc-types",
@@ -2743,7 +2743,7 @@ dependencies = [
 
 [[package]]
 name = "monty-bench"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2763,7 +2763,7 @@ dependencies = [
 
 [[package]]
 name = "monty-datatest"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "ahash",
  "datatest-stable",
@@ -2781,7 +2781,7 @@ dependencies = [
 
 [[package]]
 name = "monty-doctest"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "monty",
  "monty-pool",
@@ -2791,7 +2791,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fixture"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "insta",
  "serde",
@@ -2800,7 +2800,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fs"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "ahash",
  "cap-std",
@@ -2813,7 +2813,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fuzz"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
@@ -2823,7 +2823,7 @@ dependencies = [
 
 [[package]]
 name = "monty-js"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "monty-pool",
  "monty-types",
@@ -2840,7 +2840,7 @@ dependencies = [
 
 [[package]]
 name = "monty-macros"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "insta",
  "proc-macro2",
@@ -2850,13 +2850,14 @@ dependencies = [
 
 [[package]]
 name = "monty-pool"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "bytes",
  "cpu-time",
  "futures-util",
  "h2",
  "http",
+ "httpdate",
  "hyper",
  "insta",
  "logfire",
@@ -2864,6 +2865,7 @@ dependencies = [
  "monty-proto",
  "monty-types",
  "nix 0.31.3",
+ "num-bigint",
  "num-traits",
  "opentelemetry",
  "opentelemetry-proto",
@@ -2885,7 +2887,7 @@ dependencies = [
 
 [[package]]
 name = "monty-proto"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "allocation-counter",
  "bytes",
@@ -2907,7 +2909,7 @@ dependencies = [
 
 [[package]]
 name = "monty-runtime"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
@@ -2926,7 +2928,7 @@ dependencies = [
 
 [[package]]
 name = "monty-type-checking"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2948,7 +2950,7 @@ dependencies = [
 
 [[package]]
 name = "monty-types"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "chrono",
  "cpu-time",
@@ -2969,7 +2971,7 @@ dependencies = [
 
 [[package]]
 name = "monty-typeshed"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -2979,7 +2981,7 @@ dependencies = [
 
 [[package]]
 name = "monty-wasm-runtime"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "monty-alloc",
  "monty-proto",
@@ -3757,7 +3759,7 @@ dependencies = [
 
 [[package]]
 name = "pydantic-monty-client"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "ahash",
  "chrono",

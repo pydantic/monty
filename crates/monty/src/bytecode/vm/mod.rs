@@ -60,6 +60,7 @@ use crate::{
         release_pending_effect, resolve_call_paths, urandom_reply_error,
     },
     parse::CodeRange,
+    py_value::PyValue,
     run::{Program, SessionTables, VmEnv},
     types::{
         Dict, PyTrait, SessionRandom,
@@ -197,6 +198,8 @@ pub enum FrameExit {
         /// (without external function support), this IP is used to restore the frame pointer
         /// before raising `NameError`, so the traceback points to the name rather than the call.
         name_load_ip: Option<usize>,
+        /// The callee is an async host function (see [`CallResult::External`]).
+        is_async: bool,
     },
 
     /// Execution paused for an os function call.
@@ -1213,11 +1216,12 @@ impl<'h> VM<'h> {
                 return Ok(None);
             }
             CallResult::FramePushed => return Ok(None),
-            CallResult::External(name, args) => FrameExit::ExternalCall {
+            CallResult::External { name, args, is_async } => FrameExit::ExternalCall {
                 function_name: name,
                 args,
                 call_id: self.allocate_call_id(),
                 name_load_ip: self.ext_function_load_ip.take(),
+                is_async,
             },
             CallResult::OsCall(call) => return self.prepare_os_call(call, None),
             CallResult::OsCallWithEffect { call, effect } => return self.prepare_os_call(call, Some(effect)),
@@ -1720,7 +1724,7 @@ impl<'h> VM<'h> {
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
-                    let mut iter = self.heap.read(heap_id);
+                    let iter = self.heap.read(heap_id);
                     // A file nobody has read yet has no buffer to slice: load it from
                     // the host, then re-dispatch this instruction against the buffer.
                     if let HeapReadOutput::OpenFile(file) = &iter
@@ -1734,10 +1738,11 @@ impl<'h> VM<'h> {
                         continue;
                     }
 
+                    let mut iter = PyValue::from(iter);
                     match iter.py_next(self) {
                         Ok(Some(value)) => self.push(value),
                         Ok(None) => {
-                            // Drop the HeapRead before dec_ref to release the reader count
+                            // Release the iterator view before decrementing its owned reference.
                             drop(iter);
                             // Iterator exhausted - pop it and jump to end
                             let iter = self.pop();
@@ -2691,7 +2696,7 @@ impl<'h> VM<'h> {
             }
             // Save the load instruction's IP so NameError tracebacks point to the name
             self.ext_function_load_ip = Some(self.instruction_ip);
-            let function = self.heap.get_ext_function(self.interns.get_str(name_id));
+            let function = self.heap.get_ext_function(self.interns.get_str(name_id), false);
             self.push(function);
         } else {
             self.push(value);

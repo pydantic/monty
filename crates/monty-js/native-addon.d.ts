@@ -29,7 +29,7 @@ export declare class NativeMountDir {
 export declare class NativePool {
   constructor(options?: unknown)
   static remote(options?: unknown): NativePool
-  start(): Promise<void>
+  start(): Promise<object>
   checkout(options?: unknown): NativeSession
   close(): Promise<void>
 }
@@ -45,6 +45,7 @@ export declare class NativeSession {
   dump(...args: unknown[]): Promise<object>
   finish(): Promise<void>
   installDependencies(...args: unknown[]): Promise<object>
+  open(...args: unknown[]): Promise<object>
   resumeReturn(...args: unknown[]): Promise<object>
   resumeError(...args: unknown[]): Promise<object>
   resumeNotFound(...args: unknown[]): Promise<object>
@@ -57,4 +58,5 @@ export declare class NativeSession {
   resumeLazyAttr(...args: unknown[]): Promise<object>
   resumeNameLookupError(...args: unknown[]): Promise<object>
   resolveFutures(...args: unknown[]): Promise<object>
+  takeStreamedCall(callId: number): object | null
 }

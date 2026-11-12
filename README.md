@@ -19,9 +19,9 @@ ______________________________________________________________________
 
 Monty avoids the latency, complexity and cost of a container based sandbox for running LLM generated code.
 It comes in two forms: **OSS Monty**, the MIT licensed Python 3.14 sandbox you install as a package, and
-[**Full Monty**](https://pydantic.dev/docs/monty/commercial-support/server/), the commercial server that runs the same sandbox behind a gRPC stream as a service.
+[**Commercial Support**](https://pydantic.dev/docs/monty/commercial-support/server/), the server that runs the same sandbox behind a gRPC stream as a service.
 
-A new OSS Monty sandbox takes under **1ms** from a running pool (Full Monty: about **2ms**)
+A new OSS Monty sandbox takes under **1ms** from a running pool (Commercial Support: about **2ms**)
 [compared to](https://pydantic.dev/docs/monty/reference/alternatives/) around **1500ms** for a sandbox service.
 
 Filesystem, environment variables and network do not exist inside the sandbox: it reaches the host only through the
@@ -37,7 +37,7 @@ npm install @pydantic/monty  # JavaScript / TypeScript
 cargo add monty              # Rust
 ```
 
-The commercial [Full Monty](https://pydantic.dev/docs/monty/commercial-support/server/) runs the same workers as a container
+[Commercial Support](https://pydantic.dev/docs/monty/commercial-support/server/) runs the same workers as a container
 image.
 
 ## Example

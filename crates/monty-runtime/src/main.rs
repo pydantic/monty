@@ -116,9 +116,9 @@ pub(crate) struct Cli {
 /// Subcommands that switch `monty` out of its normal file/REPL behaviour.
 #[derive(Subcommand)]
 enum Command {
-    /// Run as a protocol child: read framed protobuf requests on stdin and
+    /// Run as a protocol worker: read framed protobuf requests on stdin and
     /// write framed events on stdout (see the monty-proto crate). Intended to
-    /// be driven by a parent process such as monty-pool, not by hand.
+    /// be driven by a client such as monty-pool, not by hand.
     Subprocess,
 }
 

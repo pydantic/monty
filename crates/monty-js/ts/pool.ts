@@ -1,4 +1,4 @@
-// The worker pool: `Monty` owns a set of `monty subprocess` children and
+// The worker pool: `Monty` owns a set of `monty subprocess` workers and
 // hands them out one-per-session via `checkout()`. The pool, watchdogs and
 // crash recovery live in the native `monty-pool` crate (shared with
 // pydantic_monty); this class normalises options, resolves the worker
@@ -7,6 +7,8 @@
 import { availableParallelism } from 'node:os'
 import { NativePool } from '../native-addon.js'
 import { findMontyBinary } from './binary.js'
+import { MontyConfigurationError, MontyConnectError } from './errors.js'
+import type { StartTurn } from './native.js'
 import {
   type AssertMessageAnnotations,
   type OsPolicy,
@@ -60,6 +62,13 @@ export interface MontyOptions {
   /** Recycle a worker after this many sessions: an integer from 0 to 4294967295.
    *  Both 0 and 1 retire after each checkout; omitted means 1000, `null` never recycles. */
   maxCheckoutsPerWorker?: number | null
+  /**
+   * Let a call to an `async` host function that the sandbox does not await at
+   * once go to the host without suspending the worker, saving a round trip per
+   * call; errors from such calls are raised at the `await`. Off by default,
+   * unlike `MontyRemote`. See [starting calls without waiting](https://pydantic.dev/docs/monty/host-functions#starting-calls-without-waiting).
+   */
+  streamAsyncCalls?: boolean
 }
 
 /** Options for [`Monty.checkout`], mirroring `pydantic_monty`. */
@@ -187,8 +196,9 @@ export class Monty {
       ...graceMs('feedDurationLimitGraceMs', options.feedDurationLimitGrace),
       ...graceMs('turnDurationLimitGraceMs', options.turnDurationLimitGrace),
       ...(maxCheckoutsPerWorker !== undefined ? { maxCheckoutsPerWorker } : {}),
+      streamAsyncCalls: options.streamAsyncCalls ?? false,
     })
-    await native.start()
+    await startPool(native)
     return new Monty(native)
   }
 
@@ -222,6 +232,25 @@ export class Monty {
 
   async [Symbol.asyncDispose](): Promise<void> {
     await this.close()
+  }
+}
+
+/**
+ * Starts a native pool: `MontyConnectError` when a remote URL cannot be used,
+ * `MontyConfigurationError` for invalid pool settings, and a plain `Error`
+ * when a worker cannot be spawned.
+ */
+export async function startPool(native: NativePool): Promise<void> {
+  const turn = (await native.start()) as StartTurn
+  switch (turn.kind) {
+    case 'ok':
+      return
+    case 'connect':
+      throw new MontyConnectError(turn.message, turn)
+    case 'configuration':
+      throw new MontyConfigurationError(turn.message)
+    case 'protocol':
+      throw new Error(turn.message)
   }
 }
 

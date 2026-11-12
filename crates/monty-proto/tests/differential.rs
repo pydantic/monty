@@ -224,6 +224,7 @@ fn corpus() -> Vec<MontyObject> {
         ),
         MontyObject::function("f".to_owned(), None),
         MontyObject::function("fetch".to_owned(), Some(String::new())),
+        MontyObject::async_function("fetch".to_owned(), Some("Fetches.".to_owned())),
         // an empty name is an implicit-presence default; id and attrs always encode
         MontyObject::module(String::new(), MontyUuid::from_u128(0), []),
         MontyObject::module(
@@ -394,9 +395,14 @@ fn node_to_oracle(node: &MontyNode) -> oracle::MontyNode {
             instance_id: Some(oracle_uuid(instance_id)),
             attrs: Some(oracle_pairs(attrs)),
         }),
-        MontyNode::Function { name, docstring } => Kind::Function(oracle::Function {
+        MontyNode::Function {
+            name,
+            docstring,
+            is_async,
+        } => Kind::Function(oracle::Function {
             name: name.clone(),
             docstring: docstring.clone(),
+            is_async: *is_async,
         }),
         MontyNode::Module { name, id, attrs } => Kind::Module(oracle::ModuleNode {
             name: name.clone(),

@@ -80,6 +80,7 @@ nav:
       - pathlib: 'limitations/pathlib.md'
       - random: 'limitations/random.md'
       - re: 'limitations/re.md'
+      - statistics: 'limitations/statistics.md'
       - sys: 'limitations/sys.md'
       - time: 'limitations/time.md'
       - tomllib: 'limitations/tomllib.md'
