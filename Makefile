@@ -190,7 +190,7 @@ test-type-checking: ## Run rust tests on monty-type-checking
 	cargo test -p monty-type-checking -p monty-typeshed
 
 .PHONY: test-subprocess
-test-subprocess: ## Run subprocess protocol, child-mode, and worker-pool tests
+test-subprocess: ## Run subprocess protocol, worker-mode, and worker-pool tests
 	cargo build -p monty-runtime
 	cargo test -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
 
@@ -304,7 +304,7 @@ bench-pool: ## Run subprocess pool benchmarks (spawn, checkout, wire round-trips
 	MONTY_TEST_BIN=$(CURDIR)/target/release/monty cargo bench -p monty-bench --bench pool
 
 .PHONY: bench-decode
-bench-decode: ## Run child-frame protobuf decode benchmarks
+bench-decode: ## Run worker-frame protobuf decode benchmarks
 	cargo bench -p monty-bench --bench decode
 
 .PHONY: dev-bench

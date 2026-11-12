@@ -389,6 +389,13 @@ pub enum ExcType {
     #[strum(serialize = "binascii.Incomplete")]
     BinasciiIncomplete,
 
+    // --- statistics module ---
+    /// `statistics.StatisticsError` - raised for empty or too-small data sets.
+    ///
+    /// A `ValueError` subclass in CPython, so `except ValueError:` catches it.
+    #[strum(serialize = "statistics.StatisticsError")]
+    StatisticsError,
+
     // --- csv module ---
     /// `csv.Error` - raised by the `csv` readers and writers for malformed data
     /// and unknown dialect names.
@@ -482,6 +489,7 @@ impl ExcType {
                     | Self::JsonDecodeError
                     | Self::TomlDecodeError
                     | Self::BinasciiError
+                    | Self::StatisticsError
                     | Self::UnsupportedOperation
             ),
             // ImportError catches ModuleNotFoundError

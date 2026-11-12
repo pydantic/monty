@@ -656,6 +656,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             return Ok(None);
         };
         let len = self.get(vm.heap).len();
+        // An empty operand yields `[]` however large `count` is; without this the
+        // loop below would spin `count` times over nothing.
+        if count == 0 || len == 0 {
+            return Ok(Some(Value::Ref(
+                vm.heap.allocate(HeapData::List(List::new(Vec::new()))),
+            )));
+        }
         let total = repeated_len(len, count, VALUE_SIZE)?;
         check_repeat_size(len.saturating_mul(VALUE_SIZE), count, &vm.heap.tracker)?;
         // The guard releases the clones built so far if the time poll trips.
@@ -1030,8 +1037,12 @@ fn list_index<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -
     let start = start_arg.map_or(0, |i| normalize_sequence_index(i, len));
     let end = end_arg.map_or(len, |i| normalize_sequence_index(i, len)).max(start);
 
-    // Search for the value in the specified range
-    let iter = list.iter(vm)?;
+    // Nested short offset searches may never reach an iterator checkpoint.
+    vm.heap.tracker.check_time()?;
+
+    let mut iter = list.iter(vm)?;
+    // Excluded prefix entries need neither equality calls nor reference-count traffic.
+    iter.index = start;
     defer_drop_mut!(iter, vm);
     while let Some((idx, item)) = iter.next_with_index(vm)? {
         if idx >= end {

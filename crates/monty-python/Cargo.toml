@@ -34,7 +34,7 @@ pyo3-async-runtimes = { workspace = true, features = ["tokio-runtime"] }
 futures-util = { workspace = true }
 # just enough to host the runtime pyo3-async-runtimes drives
 # (rt-multi-thread is needed for `block_in_place` in `block_on_sync`)
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros"] }
 
 [build-dependencies]
 pyo3-build-config = { workspace = true }

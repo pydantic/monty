@@ -141,7 +141,7 @@ with configurable access modes (ReadWrite, ReadOnly, OverlayMemory).
 
 Mounts are HOST-side code: the `monty` interpreter crate performs no filesystem
 I/O and does not depend on `monty-fs`. Sandboxed code suspends with an
-`OsFunctionCall`, which a host holding a `MountTable` (the pool parent, the CLI,
+`OsFunctionCall`, which a host holding a `MountTable` (the pool, the CLI,
 bindings) services via `MountTable::handle_os_call`.
 
 **CRITICAL SECURITY INVARIANT:** The monty runtime MUST NEVER read, write, or
@@ -186,8 +186,8 @@ subprocesses:
     can transfer them without allocating or copying.
     `tests/differential.rs` proves it
     byte-compatible against a fully prost-generated oracle (`tests/oracle/`,
-    regenerated and CI-checked together with the main codegen). Parents must
-    treat frames from a (possibly compromised) child as untrusted — wire
+    regenerated and CI-checked together with the main codegen). Clients must
+    treat frames from a (possibly compromised) worker as untrusted — wire
     decoding and proto→Rust conversions validate everything and never panic.
     Generated decoders use `budgeted_prost` via `prost_path`: generated vectors
     and byte buffers use `BudgetVec`, whose decode growth is fallible and shares
@@ -201,26 +201,35 @@ subprocesses:
     (prost's enum accessors require infallible `push`).
     `monty-proto` depends only on `monty-types` by default; its `worker` feature
     (enabled by `monty-runtime`/`monty-wasm-runtime`) pulls in the full `monty`
-    interpreter for the child-side `worker` state machine.
+    interpreter for the `worker` state machine.
     Its `grpc` feature (`monty_proto::grpc`, enabled by `monty-pool`) holds the remote transport's vocabulary:
     the `MontySession.Session` path, the opaque-bytes codec, and `Cause`, the `monty-cause` trailer a server ends a
     stream with. The remote transport is one HTTP/2 connection per pool and one bidirectional stream per session,
     carrying the same messages with no length prefix; a server sends its response headers as soon as it admits a
     stream (the client sends nothing until it sees them), refuses one with a trailers-only status, and probes
     liveness with in-band `Ping` events the client's transport answers with `Pong` (HTTP/2 PING frames are
-    hop-local and stop at a proxy). `PROTOCOL_VERSION` is the maintainer's to bump, at most once per release: alone
-    for an additive change older peers can ignore (see its doc comment), together with `MIN_SUPPORTED` when the
-    whole protocol changes; never on your own.
+    hop-local and stop at a proxy). `PROTOCOL_VERSION` is the maintainer's to bump, at most once per release, when a new client
+    could not work with an old worker; `MIN_SUPPORTED_PROTOCOL_VERSION` rises only when a new worker can no longer
+    serve old clients (see their doc comments). Never bump either on your own.
     Its `python` feature (`monty_proto::python`, PyO3 value conversion) serves `monty-python` and also
     `monty-cpython`, an embedded-CPython worker in the private `monty-private` repository, so keep shared
     conversion there and host-only binding logic in `monty-python`.
     `monty-private`'s crates (`monty-cpython`, `monty-relay`, `monty-server`, ...) also consume the wire
     protocol: check them before changing `monty_proto::python`'s API or the `OsCall` arms, which
     `monty-relay` scans by field number.
-- `monty subprocess` (in `crates/monty-runtime/src/subprocess.rs`) — the child:
+- `monty subprocess` (in `crates/monty-runtime/src/subprocess.rs`) — the worker:
     reads framed requests on stdin, writes framed events on stdout, serving one
     REPL session per checkout. Strict alternation: one request in, zero or more
-    streamed `Print` events out, then exactly one turn-ending event.
+    streamed `Print` and `StreamedCalls` events out, then exactly one turn-ending event.
+    `StreamedCalls` carries calls to async host functions the worker started
+    without suspending; it is sent only to a client that set
+    `Configure.accepts_streamed_calls`, since forwarders may drop a session on an event
+    tag they do not know, and only in a feed that set `Feed.stream_async_calls`. The
+    session's `Configure` carries its first `Feed` or `Load` (`Configure.first`),
+    so one round trip opens the session and runs it; a refused `Configure` is
+    answered `SessionRefused`, and the request does not run. The worker
+    arms the session's memory ceiling (`EventSink::session_opened`) before
+    running the request.
 - `PoolConfig::execution_clock` selects wall time (default) or native thread CPU time for all local sessions.
     A remote gRPC server selects its own clock and reports it to clients; session limits cannot override it.
     CPU mode needs Linux workers, so it needs no `unsafe`: `Pool::new` rejects it for subprocess pools elsewhere and
@@ -229,13 +238,13 @@ subprocesses:
     CPU mode requires a finite `PoolConfig::request_timeout`; remote clients do not supervise CPU locally.
     WebAssembly workers accept wall mode only.
     Snapshots retain their clock; the worker rejects a load configured with another clock.
-- `crates/monty-pool` — the parent: an async (tokio) elastic pool of workers
+- `crates/monty-pool` — the client: an async (tokio) elastic pool of workers
     with crash detection/replacement and a hard per-turn timeout. Frame reads
     are cancel-safe (partial-frame state lives in the worker, no pump task),
     and turn deadlines are tokio timers rather than a watchdog thread.
 - `crates/monty-alloc` — the `#[global_allocator]` both workers run under: it
     exposes live-byte usage for the interpreter's soft-limit checks and enforces
-    the hard ceiling selected from `Child::session_budget` after every request.
+    the hard ceiling selected from `Worker::session_budget` after every request.
     Crossing the hard limit ends the process rather than letting Rust abort. Its
     `exit-code` feature picks how:
     `monty-runtime` enables it and exits with `OOM_EXIT_CODE` for the pool to
@@ -247,8 +256,8 @@ subprocesses:
     execution surface (there is no in-process Python API): sync and async pools
     of workers (`with Monty() as pool: with pool.checkout() as session: session.feed_run(...)`, and the `async with` / `await feed_run` equivalents).
 
-The contract for crash detection: a child that exits or EOFs *without* a
-`FatalError` event crashed hard; the parent discards it and replaces it.
+The contract for crash detection: a worker that exits or EOFs *without* a
+`FatalError` event crashed hard; the client discards it and replaces it.
 Pool and protocol design belong in their crate READMEs; host-API contracts belong in the relevant
 `docs/` topic and binding reference. Value-conversion divergences belong in `limitations/host-values.md`.
 
@@ -1049,7 +1058,7 @@ The package README is an npm introduction, not a second reference.
 - `ts/shared.ts` defines common public exports; `ts/session.ts` drives both native and WASM transports.
 - `ts/worker/` implements WASM pooling, channels and value conversion. These are internal, not package exports.
     `index.ts` is the browser/default entry; `index.node.ts` selects Node worker threads. No in-process fallback.
-- `crates/monty-wasm-runtime` wraps the shared Rust protocol child as a WIT component with flat value arenas.
+- `crates/monty-wasm-runtime` wraps the shared Rust protocol worker as a WIT component with flat value arenas.
     `make build-wasm` builds `wasm32-wasip1`, applies Jco's reactor adapter, and regenerates `ts/worker/component/`.
     Never edit those generated declarations manually.
 - `native-addon.js` and `native-addon.generated.d.ts` are generated by `npm run build:napi`.

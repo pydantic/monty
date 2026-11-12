@@ -9,7 +9,7 @@
 
 use monty_types::{ExcData, ExcType, JsonErrorData, MontyException, UnicodeErrorObject, unstable::MontyNode};
 use pyo3::{
-    PyTypeCheck,
+    PyTypeCheck, PyTypeInfo,
     exceptions::{self},
     prelude::*,
     sync::PyOnceLock,
@@ -95,6 +95,16 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
                 PyErr::from_value(exc_instance)
             } else {
                 // Fall back to ValueError — the parent we model in `is_subclass_of`.
+                exceptions::PyValueError::new_err(msg)
+            }
+        }
+        ExcType::StatisticsError => {
+            if let Ok(statistics_error) = get_statistics_error(py)
+                && let Ok(exc_instance) = statistics_error.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                // Fall back to ValueError, the parent we model in `is_subclass_of`.
                 exceptions::PyValueError::new_err(msg)
             }
         }
@@ -325,10 +335,22 @@ fn exception_arg(exc: &Bound<'_, exceptions::PyBaseException>) -> Option<String>
 /// (matching the cap Monty applies when raising) while the rest is kept.
 fn json_data_from_py(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcData {
     let extract = || -> PyResult<JsonErrorData> {
-        let doc: String = exc.getattr("doc")?.extract()?;
+        let doc = exc.getattr("doc")?.cast_into::<PyString>()?;
+        // The cap counts UTF-8 bytes, which are never fewer than code points, so a
+        // document over the cap in code points is dropped without being copied.
+        // `str.__len__` is called unbound because a `str` subclass may override `__len__`.
+        // TODO: switch to `PyStringMethods::code_point_len` once on PyO3 0.30.
+        let code_points: usize = PyString::type_object(exc.py())
+            .call_method1("__len__", (&doc,))?
+            .extract()?;
+        let doc = if code_points <= JsonErrorData::MAX_DOC_LEN {
+            Some(doc.extract::<String>()?).filter(|doc| doc.len() <= JsonErrorData::MAX_DOC_LEN)
+        } else {
+            None
+        };
         Ok(JsonErrorData {
             msg: exc.getattr("msg")?.extract()?,
-            doc: (doc.len() <= JsonErrorData::MAX_DOC_LEN).then_some(doc),
+            doc,
             pos: exc.getattr("pos")?.extract()?,
             lineno: exc.getattr("lineno")?.extract()?,
             colno: exc.getattr("colno")?.extract()?,
@@ -368,6 +390,8 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
                 ExcType::TomlDecodeError
             } else if is_binascii_error(exc) {
                 ExcType::BinasciiError
+            } else if is_statistics_error(exc) {
+                ExcType::StatisticsError
             } else if exceptions::PyUnicodeDecodeError::type_check(exc) {
                 ExcType::UnicodeDecodeError
             } else if exceptions::PyUnicodeEncodeError::type_check(exc) {
@@ -528,6 +552,22 @@ fn is_binascii_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
 fn get_binascii_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static BINASCII_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
     BINASCII_ERROR.import(py, "binascii", "Error")
+}
+
+/// Checks if an exception is a `statistics.StatisticsError` (a stdlib class,
+/// looked up lazily and cached).
+fn is_statistics_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(statistics_error_cls) = get_statistics_error(exc.py()) {
+        exc.is_instance(statistics_error_cls).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Returns the cached `statistics.StatisticsError` class, a `ValueError` subclass.
+fn get_statistics_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static STATISTICS_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    STATISTICS_ERROR.import(py, "statistics", "StatisticsError")
 }
 
 /// Checks if an exception is a `binascii.Incomplete`, which hangs off

@@ -99,6 +99,7 @@ The following modules are present:
 | `random`        | [random.md](random.md)                            |
 | `re`            | [re.md](re.md)                                    |
 | `stat`          | [modules.md](modules.md#vendored-cpython-modules) |
+| `statistics`    | [statistics.md](statistics.md)                    |
 | `sys`           | [sys.md](sys.md)                                  |
 | `time`          | [time.md](time.md)                                |
 | `tomllib`       | [tomllib.md](tomllib.md)                          |

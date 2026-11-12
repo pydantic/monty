@@ -1,4 +1,4 @@
-//! Conversions for resume payloads: the parent's answers to suspension
+//! Conversions for resume payloads: the client's answers to suspension
 //! events (`ResumeCall`, `ResumeNameLookup`, `ResumeFutures`). A returned
 //! value is an index into the arena the same message carries.
 
@@ -50,8 +50,8 @@ pub fn ext_result_from_proto(
         pb::ext_function_result::Kind::NotFound(name) => Ok(ExtFunctionResult::NotFound(name)),
         pb::ext_function_result::Kind::ModuleFile(file) => Ok(ExtFunctionResult::ModuleFile(file.into())),
         // NotHandled has no monty equivalent: it resolves against the
-        // suspended OS call, so the child intercepts it before this
-        // conversion (see `Child::handle_resume_call`); anywhere else it
+        // suspended OS call, so the worker intercepts it before this
+        // conversion (see `Worker::handle_resume_call`); anywhere else it
         // is out of context
         pb::ext_function_result::Kind::NotHandled(_) => Err(ProtoConvertError::InvalidValue {
             field: "ExtFunctionResult.kind",
