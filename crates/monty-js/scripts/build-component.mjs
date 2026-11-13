@@ -21,15 +21,26 @@ const { files } = await transpile(component, {
   name: 'monty.component',
   instantiation: 'async',
 })
-const requiredFiles = [
-  'monty.component.js',
+// The core-module count depends on the Rust toolchain's wasm output (Rust 1.100 added `core5`), and
+// `ts/worker/componentModules.ts`, `ts/worker/loadModule.browser.ts` and `scripts/assemble-packages.mjs`
+// list the modules by name, so any drift must fail the build rather than the first browser load.
+const expectedCoreModules = [
   'monty.component.core.wasm',
   'monty.component.core2.wasm',
   'monty.component.core3.wasm',
   'monty.component.core4.wasm',
   'monty.component.core5.wasm',
-  'interfaces/pydantic-monty-worker.d.ts',
 ]
+const coreModules = Object.keys(files)
+  .filter((name) => name.endsWith('.wasm'))
+  .sort()
+if (coreModules.join() !== [...expectedCoreModules].sort().join()) {
+  throw new Error(
+    `Jco emitted core modules [${coreModules.join(', ')}], expected [${expectedCoreModules.join(', ')}]; ` +
+      'update this list, ts/worker/componentModules.ts, ts/worker/loadModule.browser.ts and scripts/assemble-packages.mjs',
+  )
+}
+const requiredFiles = ['monty.component.js', 'interfaces/pydantic-monty-worker.d.ts']
 const missingFiles = requiredFiles.filter((name) => !(name in files))
 if (missingFiles.length > 0) throw new Error(`Jco output is missing: ${missingFiles.join(', ')}`)
 

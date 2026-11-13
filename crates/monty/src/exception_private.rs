@@ -1549,6 +1549,16 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::csv_error("unknown dialect")
     }
 
+    /// A `statistics.StatisticsError` with the given message.
+    fn statistics_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::StatisticsError, msg).into()
+    }
+
+    /// The `ValueError` `math.isqrt` raises for a negative argument; `statistics.stdev` reaches it too.
+    fn isqrt_negative_error() -> RunError {
+        Self::value_error("isqrt() argument must be nonnegative")
+    }
+
     /// A trapped `decimal` signal: the class plus C `_decimal`'s list of conditions,
     /// `[<class 'decimal.DivisionByZero'>]`.
     fn decimal_signal(exc_type: ExcType, message: String) -> RunError {

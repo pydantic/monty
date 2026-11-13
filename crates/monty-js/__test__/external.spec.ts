@@ -240,6 +240,7 @@ const exceptionTypes: Array<[string, string]> = [
   ['re.PatternError', 're.PatternError'],
   ['binascii.Error', 'binascii.Error'],
   ['binascii.Incomplete', 'binascii.Incomplete'],
+  ['statistics.StatisticsError', 'statistics.StatisticsError'],
   ['_csv.Error', '_csv.Error'],
   ['decimal.InvalidOperation', 'decimal.InvalidOperation'],
   ['decimal.DivisionByZero', 'decimal.DivisionByZero'],
@@ -308,6 +309,7 @@ caught
 const dottedTypes: Array<[string, string, string]> = [
   ['binascii.Error', 'binascii', 'ValueError'],
   ['binascii.Incomplete', 'binascii', 'Exception'],
+  ['statistics.StatisticsError', 'statistics', 'ValueError'],
   ['json.JSONDecodeError', 'json', 'ValueError'],
   ['tomllib.TOMLDecodeError', 'tomllib', 'ValueError'],
   ['re.PatternError', 're', 'Exception'],
