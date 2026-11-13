@@ -9,9 +9,12 @@
 //! - `mount = true`: bind `DATA` to the root of the mounted [`scan_tree`]
 //! - `overlay = true`: with `mount`, also register `<name>_overlay__monty` over an overlay mount
 //! - `limits = true`: also register `<name>_limits__monty` with resource limits armed
+//!
+//! The embedded CPython has the dev virtualenv's `site-packages` on its `sys.path`, so a script
+//! can `import pydantic` on both sides.
 
 use std::{
-    fs, mem,
+    env, fs, mem,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -51,6 +54,8 @@ const ADD_TWO: &str = include_str!("python/add_two.py");
 
 /// Registers every script benchmark, then the Rust-API benchmarks.
 fn criterion_benchmark(c: &mut Criterion) {
+    #[cfg(not(feature = "codspeed"))]
+    add_site_packages();
     let tree = scan_tree();
     for script in Script::load_all() {
         script.register(c, tree.path());
@@ -292,6 +297,41 @@ fn run_cpython(bench: &mut Bencher, code: &str, filename: &str, data: Option<&st
             exec.call1((&compiled, &globals)).unwrap();
             black_box(globals);
         });
+    });
+}
+
+/// Appends the dev virtualenv's `site-packages` to the embedded CPython's `sys.path`, so a
+/// script can `import pydantic` on both sides.
+///
+/// The interpreter is the one pyo3 linked, not the virtualenv's, so the packages `uv sync`
+/// installs are otherwise invisible to it. The virtualenv is `VIRTUAL_ENV` when set, else
+/// `.venv` in the workspace root.
+#[cfg(not(feature = "codspeed"))]
+fn add_site_packages() {
+    let venv = env::var_os("VIRTUAL_ENV").map_or_else(
+        || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.venv"),
+        PathBuf::from,
+    );
+    Python::attach(|py| {
+        let venv = venv.to_str().expect("virtualenv path is not UTF-8");
+        let vars = PyDict::new(py);
+        vars.set_item("base", venv).unwrap();
+        vars.set_item("platbase", venv).unwrap();
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("vars", vars).unwrap();
+        let path: String = py
+            .import("sysconfig")
+            .and_then(|sysconfig| sysconfig.call_method("get_path", ("purelib", "venv"), Some(&kwargs)))
+            .and_then(|path| path.extract())
+            .expect("sysconfig.get_path failed");
+        assert!(
+            Path::new(&path).is_dir(),
+            "the CPython benchmarks need the dev virtualenv's {path}: run `make install-py`"
+        );
+        py.import("sys")
+            .and_then(|sys| sys.getattr("path"))
+            .and_then(|sys_path| sys_path.call_method1("append", (path,)))
+            .expect("failed to add site-packages to sys.path");
     });
 }
 

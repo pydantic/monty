@@ -187,6 +187,11 @@ impl GenericAlias {
         items.as_slice()[0].clone_with_heap(heap)
     }
 
+    /// An owned ref to the stored args tuple; for `Annotated` it holds `T` and the metadata.
+    pub(crate) fn args(&self, heap: &impl ContainsHeap) -> Value {
+        self.args.clone_with_heap(heap)
+    }
+
     /// Invokes `on_child` for the heap id this alias owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
         if let Value::Ref(id) = self.args {

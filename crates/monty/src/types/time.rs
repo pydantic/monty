@@ -19,7 +19,7 @@ use std::{
 };
 
 use chrono::{NaiveDate, NaiveTime, format::StrftimeItems};
-use monty_types::ResourceTracker;
+use monty_types::{MontyTime, ResourceTracker};
 
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
@@ -114,6 +114,22 @@ pub(crate) fn attached_timezone(time: &Time, heap: &HeapReader<'_>) -> Option<Ti
     }
 }
 
+/// The host-value form of a time, carrying its zone's offset and name when it has one.
+#[must_use]
+pub(crate) fn to_monty_time(time: &Time, heap: &HeapReader<'_>) -> MontyTime {
+    let (hour, minute, second, microsecond, fold) = time.to_components();
+    let tz = attached_timezone(time, heap);
+    MontyTime {
+        hour,
+        minute,
+        second,
+        microsecond,
+        offset_seconds: tz.as_ref().map(|tz| tz.offset_seconds),
+        timezone_name: tz.and_then(|tz| tz.name),
+        fold,
+    }
+}
+
 /// The UTC offset of an aware time, in seconds.
 ///
 /// [`attached_timezone`] without the name's `String` clone, for the comparison
@@ -202,6 +218,22 @@ fn allocate_with_tz(vm: &mut VM<'_>, mut time: Time, tz_ref: Option<HeapId>) -> 
         vm.heap.inc_ref(tz_ref);
         time.tzinfo = Some(tz_ref);
     }
+    Value::Ref(vm.heap.allocate(HeapData::Time(time)))
+}
+
+/// Allocates a `time` parsed from text or a timestamp, with a fixed-offset
+/// zone when `offset_seconds` is given. The components must be in range.
+pub(crate) fn allocate_parsed(
+    hour: i32,
+    minute: i32,
+    second: i32,
+    microsecond: i32,
+    offset_seconds: Option<i32>,
+    vm: &mut VM<'_>,
+) -> Value {
+    let mut time = from_components(hour, minute, second, microsecond, 0).expect("the parser validated the components");
+    // An owned reference, stored directly rather than through `allocate_with_tz`'s extra one.
+    time.tzinfo = offset_seconds.map(|offset| allocate_tzinfo_ref(offset, None, vm.heap));
     Value::Ref(vm.heap.allocate(HeapData::Time(time)))
 }
 

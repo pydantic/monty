@@ -19,7 +19,7 @@ use crate::{
     py_value::PyValue,
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range,
-        Set, Slice, Str, TimeZone, Tuple,
+        Set, Slice, Str, TimeZone, Tuple, TypeAdapter,
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
@@ -345,6 +345,9 @@ pub enum Type {
     /// `annotationlib.ForwardRef`, an unevaluated annotation.
     #[strum(serialize = "annotationlib.ForwardRef")]
     ForwardRef,
+    /// `pydantic.TypeAdapter`, qualified like `functools.partial`.
+    #[strum(serialize = "pydantic.type_adapter.TypeAdapter")]
+    TypeAdapter,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -838,6 +841,7 @@ impl Type {
             Self::ForwardRef => ForwardRef::init(vm, args),
             Self::Partial => Partial::init(vm, args),
             Self::Random => Random::init(vm, args),
+            Self::TypeAdapter => TypeAdapter::init(vm, args),
             Self::Blake2b => hashlib::blake2_init(Blake2Kind::Blake2b, vm, args),
             Self::Blake2s => hashlib::blake2_init(Blake2Kind::Blake2s, vm, args),
 

@@ -103,3 +103,4 @@ DecimalContext 103
 DecimalSignalDict 104
 DecimalContextManager 105
 ForwardRef 106
+TypeAdapter 107
