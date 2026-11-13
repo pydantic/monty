@@ -80,8 +80,8 @@ struct SpanState {
 static BRIDGE: OnceLock<InstalledBridge> = OnceLock::new();
 
 /// Installs standard Python OpenTelemetry components and the shared Rust pipeline.
-#[pyfunction]
-pub(crate) fn _install_telemetry(
+#[pyfunction(name = "_install_telemetry")]
+pub(crate) fn install_telemetry(
     py: Python<'_>,
     tracer: Option<Py<PyAny>>,
     meter: Option<Py<PyAny>>,

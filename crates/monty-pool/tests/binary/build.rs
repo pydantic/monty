@@ -1,9 +1,21 @@
-use std::{env, path::PathBuf, process::Command};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 pub fn binary(args: &[&str], name: &str) -> PathBuf {
+    // The test executable sits somewhere under `<target>/<profile>/`; how deep depends on
+    // Cargo's build-dir layout, so take the first component below the target directory.
     let executable = env::current_exe().unwrap();
-    let profile_dir = executable.parent().unwrap().parent().unwrap();
-    let profile = profile_dir.file_name().unwrap().to_str().unwrap();
+    let target_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).parent().unwrap();
+    let profile_dir = executable
+        .strip_prefix(target_dir)
+        .unwrap()
+        .components()
+        .next()
+        .unwrap();
+    let profile = profile_dir.as_os_str().to_str().unwrap();
     let profile = if profile == "debug" { "dev" } else { profile };
     let output = Command::new(env!("CARGO"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
