@@ -10,6 +10,12 @@ change to its Python requirement and Monty dependency:
 
 ![Report showing changes to the second package's version, Python requirement and Monty dependency](report-example.png)
 
+| Field                | Recorded                     | Replacement                  |
+| -------------------- | ---------------------------- | ---------------------------- |
+| `version`            | `recorded`                   | `what-if`                    |
+| `python`             | `>=3.10`                     | `>=3.14`                     |
+| `monty_dependencies` | `["pydantic-monty>=0.0.22"]` | `["pydantic-monty==0.0.23"]` |
+
 The screenshot uses test inputs, not current PyPI metadata.
 The other two package rows stay unchanged, and no package is fetched again.
 The program reports dependency strings containing `monty`; it does not resolve dependencies or check compatibility.

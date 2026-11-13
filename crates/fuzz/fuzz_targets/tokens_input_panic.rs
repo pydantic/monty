@@ -526,7 +526,7 @@ impl fmt::Debug for Tokens {
 impl Tokens {
     /// Convert the tokens to Python source code.
     fn to_code(&self) -> String {
-        self.0.iter().map(|t| t.to_string()).collect()
+        self.0.iter().map(std::string::ToString::to_string).collect()
     }
 }
 
