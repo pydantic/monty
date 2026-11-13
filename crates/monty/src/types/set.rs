@@ -1606,11 +1606,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
     /// Caches the computed hash on first call (frozensets are immutable).
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let frozenset = self.get(vm.heap);
-        let hash = frozenset.cached_hash.get().unwrap_or_else(|| {
-            let hash = HashValue::new(frozenset.storage.live().fold(0, |hash, entry| hash ^ entry.hash));
-            frozenset.cached_hash.set(Some(hash));
-            hash
-        });
+        if let Some(cached) = frozenset.cached_hash.get() {
+            return Ok(Some(cached));
+        }
+        let mut hash = 0;
+        for (i, entry) in frozenset.storage.live().enumerate() {
+            // A large frozenset must not delay the execution deadline.
+            vm.heap.tracker.check_time_every(i)?;
+            hash ^= entry.hash;
+        }
+        let hash = HashValue::new(hash);
+        frozenset.cached_hash.set(Some(hash));
         Ok(Some(hash))
     }
 
