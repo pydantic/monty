@@ -197,6 +197,8 @@ Where the sandbox's answer would need sandbox code (a user-defined `__eq__` or
 `__hash__`), the proxy compares and hashes by identity instead:
 
 - Each result builds its own proxy, so `a is b` is `False` across feeds.
+    Proxies that compare by id still compare and hash equal when they stand
+    for the same sandbox object.
 - A proxy is a snapshot. Two proxies of the same dataclass object compare by
     their fields, so they are unequal when a field changed between the two
     results, or holds NaN; the sandbox's `self is other` makes them equal.
