@@ -198,6 +198,7 @@ pathlib.types: 3.14-
 posixpath: 3.0-
 random: 3.0-
 re: 3.0-
+statistics: 3.4-
 sys: 3.0-
 time: 3.0-
 tomllib: 3.11-

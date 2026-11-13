@@ -7,14 +7,13 @@ license = { workspace = true }
 rust-version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
-description = "WebAssembly component that drives a Monty protocol child one turn per call."
+description = "WebAssembly component that drives a Monty protocol worker one turn per call."
 keywords = { workspace = true }
 categories = { workspace = true }
-homepage = { workspace = true }
 repository = { workspace = true }
 
 [lib]
-# A component whose instance retains one protocol child across exported calls.
+# A component whose instance retains one protocol worker across exported calls.
 crate-type = ["cdylib"]
 
 [dependencies]

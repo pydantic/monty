@@ -9,7 +9,6 @@ authors = { workspace = true }
 description = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
-homepage = { workspace = true }
 repository = { workspace = true }
 
 [lib]
@@ -89,11 +88,13 @@ path = "tests/support/cpu_worker.rs"
 [dev-dependencies]
 serde_json = { workspace = true }
 cpu-time = { workspace = true }
+# Huge integers for the telemetry encoder's byte-cap tests.
+num-bigint = { workspace = true }
 # Snapshots of the error messages the pool reports to a host.
 insta = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
-# In-process scripted gRPC servers standing in for a remote child.
+# In-process scripted gRPC servers standing in for a remote worker.
 tonic = { workspace = true, features = ["server", "router"] }
 # A self-signed certificate for the server the trust-store test dials.
 rcgen = { workspace = true }

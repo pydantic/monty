@@ -1549,6 +1549,16 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::csv_error("unknown dialect")
     }
 
+    /// A `statistics.StatisticsError` with the given message.
+    fn statistics_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::StatisticsError, msg).into()
+    }
+
+    /// The `ValueError` `math.isqrt` raises for a negative argument; `statistics.stdev` reaches it too.
+    fn isqrt_negative_error() -> RunError {
+        Self::value_error("isqrt() argument must be nonnegative")
+    }
+
     /// A trapped `decimal` signal: the class plus C `_decimal`'s list of conditions,
     /// `[<class 'decimal.DivisionByZero'>]`.
     fn decimal_signal(exc_type: ExcType, message: String) -> RunError {
@@ -2994,39 +3004,36 @@ impl ExceptionRaise {
         // filenames so a tiny `Vec` beats a HashMap on both allocations and
         // lookup cost.
         let mut cache: Vec<(StringId, SourceMap<'s>)> = Vec::new();
-        let mut traceback = self
-            .frame
-            .map(|frame| {
-                let mut frames = Vec::new();
-                let mut current = Some(&frame);
-                while let Some(f) = current {
-                    let fname_id = f.position.filename;
-                    // An `eval()` / `exec()` snippet resolves against its own
-                    // recorded source, never the host's, and prints no source
-                    // line: CPython has nothing to read back for `<string>`.
-                    let eval_source = interns.eval_source(fname_id);
-                    let sm_idx = if let Some(i) = cache.iter().position(|(k, _)| *k == fname_id) {
-                        i
-                    } else {
-                        // An imported file also carries its own source, but shows its lines.
-                        let src = eval_source
-                            .or_else(|| interns.file_source(fname_id))
-                            .unwrap_or_else(|| source_for(interns.get_filename(fname_id)).unwrap_or(""));
-                        cache.push((fname_id, SourceMap::new(src)));
-                        cache.len() - 1
-                    };
-                    let mut stack_frame = StackFrame::from_raw(f, interns, &mut cache[sm_idx].1);
-                    if eval_source.is_some() {
-                        stack_frame.preview_line = None;
-                    }
-                    frames.push(stack_frame);
-                    current = f.parent.as_deref();
+        let mut traceback = self.frame.map_or_default(|frame| {
+            let mut frames = Vec::new();
+            let mut current = Some(&frame);
+            while let Some(f) = current {
+                let fname_id = f.position.filename;
+                // An `eval()` / `exec()` snippet resolves against its own
+                // recorded source, never the host's, and prints no source
+                // line: CPython has nothing to read back for `<string>`.
+                let eval_source = interns.eval_source(fname_id);
+                let sm_idx = if let Some(i) = cache.iter().position(|(k, _)| *k == fname_id) {
+                    i
+                } else {
+                    // An imported file also carries its own source, but shows its lines.
+                    let src = eval_source
+                        .or_else(|| interns.file_source(fname_id))
+                        .unwrap_or_else(|| source_for(interns.get_filename(fname_id)).unwrap_or(""));
+                    cache.push((fname_id, SourceMap::new(src)));
+                    cache.len() - 1
+                };
+                let mut stack_frame = StackFrame::from_raw(f, interns, &mut cache[sm_idx].1);
+                if eval_source.is_some() {
+                    stack_frame.preview_line = None;
                 }
-                // Reverse so outermost frame is first (Python's "most recent call last" ordering)
-                frames.reverse();
-                frames
-            })
-            .unwrap_or_default();
+                frames.push(stack_frame);
+                current = f.parent.as_deref();
+            }
+            // Reverse so outermost frame is first (Python's "most recent call last" ordering)
+            frames.reverse();
+            frames
+        });
         if let Some(frame) = self.snippet_frame {
             traceback.push(*frame);
         }

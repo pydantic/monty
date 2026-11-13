@@ -112,6 +112,10 @@ pub enum MontyNode {
         name: String,
         /// Optional docstring.
         docstring: Option<String>,
+        /// Calls start without waiting for the host and return an awaitable;
+        /// see [`MontyObject::async_function`](crate::MontyObject::async_function).
+        #[serde(default)]
+        is_async: bool,
     },
     /// Output-only fallback: the `repr()` of a value with no other representation.
     Repr(String),
@@ -267,7 +271,7 @@ impl MontyNode {
             Self::BigInt(bi) => usize::try_from(bi.bits().div_ceil(8)).unwrap_or(usize::MAX),
             Self::Exception { arg, .. } => name_len(arg),
             Self::FileHandle(fh) => fh.path.len(),
-            Self::Function { name, docstring } => name.len().saturating_add(name_len(docstring)),
+            Self::Function { name, docstring, .. } => name.len().saturating_add(name_len(docstring)),
             Self::DateTime(dt) => name_len(&dt.timezone_name),
             Self::Time(t) => name_len(&t.timezone_name),
             Self::TimeZone(tz) => name_len(&tz.name),
@@ -422,12 +426,14 @@ impl PartialEq for MontyNode {
                 Self::Function {
                     name: a_name,
                     docstring: a_doc,
+                    is_async: a_async,
                 },
                 Self::Function {
                     name: b_name,
                     docstring: b_doc,
+                    is_async: b_async,
                 },
-            ) => a_name == b_name && a_doc == b_doc,
+            ) => a_name == b_name && a_doc == b_doc && a_async == b_async,
             (Self::List(a), Self::List(b))
             | (Self::Tuple(a), Self::Tuple(b))
             | (Self::Set(a), Self::Set(b))

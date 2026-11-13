@@ -208,14 +208,13 @@ fn run_monty_limits(bench: &mut Bencher, code: &str, filename: &str, data: Optio
 
 /// Parses `code`, declaring a `DATA` input when `data` is given.
 fn parse_with_data(code: &str, filename: &str, data: Option<&str>) -> MontyRun {
-    let input_names = data.map(|_| vec!["DATA".to_owned()]).unwrap_or_default();
+    let input_names = data.map_or_default(|_| vec!["DATA".to_owned()]);
     MontyRun::new(code.to_owned(), filename, input_names, CompileOptions::default()).unwrap()
 }
 
 /// The input values matching [`parse_with_data`]'s declaration.
 fn data_inputs(data: Option<&str>) -> Vec<MontyObject> {
-    data.map(|data| vec![MontyObject::string(data.to_owned())])
-        .unwrap_or_default()
+    data.map_or_default(|data| vec![MontyObject::string(data.to_owned())])
 }
 
 /// Runs with `host_root` mounted at `/data` in `mode`, bound to `DATA`, answering every

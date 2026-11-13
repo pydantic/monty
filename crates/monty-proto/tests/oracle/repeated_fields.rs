@@ -67,6 +67,13 @@ fn every_schema_repeated_field_is_budgeted() {
         |message: &pb::Feed| &message.inputs,
     );
     check_repeated(
+        "monty.v1.Feed.async_functions",
+        6,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::Feed| &message.async_functions,
+    );
+    check_repeated(
         "monty.v1.ResumeFutures.results",
         1,
         WireType::LengthDelimited,
@@ -100,6 +107,13 @@ fn every_schema_repeated_field_is_budgeted() {
         WireType::LengthDelimited,
         &[],
         |message: &WireFunctionCall| &message.kwargs,
+    );
+    check_repeated(
+        "monty.v1.StreamedCalls.calls",
+        1,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::StreamedCalls| &message.calls,
     );
     check_repeated(
         "monty.v1.OsCall.Scan.pattern",

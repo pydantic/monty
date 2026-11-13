@@ -707,7 +707,11 @@ impl<'e> GraphEncoder<'e> {
                 let name: String = func_obj
                     .get_named_property::<String>("name")
                     .unwrap_or_else(|_| "<anonymous>".to_string());
-                Ok(self.leaf(MontyNode::Function { name, docstring: None }))
+                Ok(self.leaf(MontyNode::Function {
+                    name,
+                    docstring: None,
+                    is_async: is_async_function(&func_obj, env).unwrap_or(false),
+                }))
             }
             ValueType::Symbol | ValueType::External => {
                 // These JS types don't have Monty equivalents
@@ -1231,4 +1235,18 @@ fn get_string_property(obj: &Object, name: &str) -> Result<Option<String>> {
     } else {
         Ok(None)
     }
+}
+
+/// Whether `func` is an `async function`, so its calls start without waiting for
+/// the host. Reads its `Object.prototype.toString` tag, as `isAsyncFunction` in
+/// `ts/asyncFunction.ts` does, which bound and proxied async functions keep.
+fn is_async_function(func: &Object, env: &Env) -> Result<bool> {
+    // `Object` is a function, so read it as `Unknown` and view it as an object
+    let object = env
+        .get_global()?
+        .get_named_property::<Unknown>("Object")?
+        .coerce_to_object()?;
+    let prototype: Object = object.get_named_property("prototype")?;
+    let to_string: Function<(), String> = prototype.get_named_property("toString")?;
+    Ok(to_string.apply(*func, ())? == "[object AsyncFunction]")
 }

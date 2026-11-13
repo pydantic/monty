@@ -1360,7 +1360,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // Anchor any namespace-overflow error to the first generator's iter,
         // since the walrus statements themselves can be scattered through the
         // comprehension and don't have a single load-bearing position.
-        let comp_pos = generators.first().map(|g| g.iter.position).unwrap_or_default();
+        let comp_pos = generators.first().map_or_default(|g| g.iter.position);
         for &name in &walrus_targets {
             self.ensure_scope_slot(name, comp_pos)?;
             self.names_assigned_in_order.insert(name);
@@ -3724,7 +3724,6 @@ fn collect_referenced_names_from_node(
     }
 }
 
-/// Collects all names referenced in an expression.
 /// Adds the transitive free-name references of a nested function definition
 /// to `referenced`, after filtering out names that the nested function binds
 /// for itself (params, body-assigned, and `global` declarations).
@@ -3752,21 +3751,31 @@ fn collect_nested_function_references(
     // Anything the nested function binds for itself does NOT propagate out.
     // We treat `global X` the same way: the nested function explicitly
     // routes X to module scope, so we don't want to capture X in this scope's
-    // cell variables.
-    let param_names: Vec<StringId> = signature.param_names().collect();
-    let nested_scope = collect_function_scope_info(body, &param_names, interner);
-    let nested_params: AHashSet<StringId> = param_names.iter().copied().collect();
+    // cell variables. Only its own bindings are needed, so this uses the
+    // non-descending `collect_scope_info_from_node`: `collect_function_scope_info`
+    // would re-walk every deeper function and make this exponential in nesting depth.
+    let mut nested_global = AHashSet::new();
+    let mut nested_nonlocal = AHashSet::new();
+    let mut nested_assigned = AHashSet::new();
+    for n in body {
+        collect_scope_info_from_node(
+            n,
+            &mut nested_global,
+            &mut nested_nonlocal,
+            &mut nested_assigned,
+            interner,
+        );
+    }
+    let nested_params: AHashSet<StringId> = signature.param_names().collect();
     for name in nested_referenced {
-        if nested_scope.assigned_names.contains(&name)
-            || nested_params.contains(&name)
-            || nested_scope.global_names.contains(&name)
-        {
+        if nested_assigned.contains(&name) || nested_params.contains(&name) || nested_global.contains(&name) {
             continue;
         }
         referenced.insert(name);
     }
 }
 
+/// Collects all names referenced in an expression.
 fn collect_referenced_names_from_expr(
     expr: &ExprLoc,
     referenced: &mut AHashSet<StringId>,

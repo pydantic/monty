@@ -145,7 +145,7 @@ impl Message for WireArena {
 /// Wire form of `monty.v1.FunctionCall`: the call's argument arena plus the
 /// ids of its positional and keyword arguments.
 ///
-/// Installed with `prost_build::extern_path`, so generated `ChildEvent`
+/// Installed with `prost_build::extern_path`, so generated `WorkerEvent`
 /// decoding still handles the envelope while this payload keeps the argument
 /// vectors as bare ids and uses `WireArena`'s incremental node decoding.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -158,7 +158,7 @@ pub struct WireFunctionCall {
     pub args: BudgetVec<NodeId>,
     /// Keyword arguments as `(key, value)` ids, preserving wire order.
     pub kwargs: BudgetVec<(NodeId, NodeId)>,
-    /// Child-assigned call id used by the matching resume request.
+    /// Worker-assigned call id used by the matching resume request.
     pub call_id: u32,
     /// Uuid of the routed receiver (a host-backed instance, or a class type
     /// for `__call__`/classmethod calls); `None` for plain external function
@@ -167,7 +167,7 @@ pub struct WireFunctionCall {
     /// The worker accepts an eagerly settled coroutine via `ResumeFutures`.
     pub allow_eager_await: bool,
     /// Where the call expression is in the source; `None` for a frame from a
-    /// child that predates the field.
+    /// worker that predates the field.
     pub position: Option<SourceRange>,
 }
 
@@ -474,14 +474,17 @@ fn encode_node(node: &MontyNode, buf: &mut impl BufMut) {
             encode_str(2, fh.mode.as_str(), buf);
             encode_uint64(3, fh.position, buf);
         }
-        MontyNode::Function { name, docstring } => {
-            encode_message_key(
-                tag::FUNCTION,
-                str_len(1, name) + opt_str_len(2, docstring.as_deref()),
-                buf,
-            );
+        MontyNode::Function {
+            name,
+            docstring,
+            is_async,
+        } => {
+            encode_message_key(tag::FUNCTION, function_len(name, docstring.as_deref(), *is_async), buf);
             encode_str(1, name, buf);
             encode_opt_str(2, docstring.as_deref(), buf);
+            if *is_async {
+                encoding::bool::encode(3, &true, buf);
+            }
         }
         MontyNode::Repr(r) => encoding::string::encode(tag::REPR, r, buf),
         MontyNode::Cycle(placeholder) => encoding::string::encode(tag::CYCLE, placeholder, buf),
@@ -536,9 +539,11 @@ fn node_len(node: &MontyNode) -> usize {
         MontyNode::Path(p) => encoding::string::encoded_len(tag::PATH, p),
         MontyNode::Decimal(d) => encoding::string::encoded_len(tag::DECIMAL, d),
         MontyNode::FileHandle(fh) => submessage_len(tag::FILE_HANDLE, file_handle_len(fh)),
-        MontyNode::Function { name, docstring } => {
-            submessage_len(tag::FUNCTION, str_len(1, name) + opt_str_len(2, docstring.as_deref()))
-        }
+        MontyNode::Function {
+            name,
+            docstring,
+            is_async,
+        } => submessage_len(tag::FUNCTION, function_len(name, docstring.as_deref(), *is_async)),
         MontyNode::Repr(r) => encoding::string::encoded_len(tag::REPR, r),
         MontyNode::Cycle(placeholder) => encoding::string::encoded_len(tag::CYCLE, placeholder),
     }
@@ -766,6 +771,17 @@ fn file_handle_len(fh: &MontyFileHandle) -> usize {
     str_len(1, &fh.path) + str_len(2, fh.mode.as_str()) + uint64_len(3, fh.position)
 }
 
+/// Body length of a `Function` message; `is_async` is skipped when false.
+fn function_len(name: &str, docstring: Option<&str>, is_async: bool) -> usize {
+    str_len(1, name)
+        + opt_str_len(2, docstring)
+        + if is_async {
+            encoding::bool::encoded_len(3, &true)
+        } else {
+            0
+        }
+}
+
 // --- proto3 field helpers, mirroring prost's generated default-skipping ---
 
 /// Implicit-presence string field: skipped when empty.
@@ -890,6 +906,7 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
         Kind::Function(value) => MontyNode::Function {
             name: value.name,
             docstring: value.docstring,
+            is_async: value.is_async,
         },
         Kind::Repr(value) => MontyNode::Repr(value),
         Kind::Cycle(value) => MontyNode::Cycle(value),
@@ -1124,7 +1141,7 @@ fn type_to_node(ty: pb::Type) -> Result<MontyNode, DecodeError> {
                 id: pb_uuid_to_monty(&id, "Type.id")?,
                 host_defined: origin == pb::TypeOrigin::Host,
                 is_dataclass: ty.is_dataclass,
-                attrs: ty.attrs.map(|attrs| attrs.0.into_inner()).unwrap_or_default(),
+                attrs: ty.attrs.map_or_default(|attrs| attrs.0.into_inner()),
                 eq: class_eq_from_pb(ty.eq, ty.eq_fields.into_inner()),
                 hash: class_hash_from_pb(ty.hash, ty.hash_fields.into_inner()),
             })?))

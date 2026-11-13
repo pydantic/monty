@@ -228,7 +228,7 @@ jobs:
 
       # coverage for `make test-type-checking`
       - run: cargo llvm-cov --no-report -p monty-type-checking -p monty-typeshed
-      # subprocess protocol + child mode + worker pool. The pool tests spawn a
+      # subprocess protocol + worker mode + worker pool. The pool tests spawn a
       # real `monty` binary: build it plainly first (outside the llvm-cov
       # target dir) and point the tests at it explicitly.
       - run: cargo build -p monty-runtime
@@ -367,7 +367,8 @@ jobs:
   # The worker has no Python ABI dependency; share one wheel per profile across the matrix.
   build-python-worker:
     name: build Python worker (${{ matrix.profile }})
-    runs-on: ubuntu-latest
+    # matches test-python's runner, so the native build's glibc is no newer than the one it runs on
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -409,7 +410,8 @@ jobs:
   test-python:
     name: test python ${{ matrix.python-version }}
     needs: [build-python-worker]
-    runs-on: ubuntu-latest
+    # grpcio has no free-threaded wheels, and its sdist fails to build with ubuntu-26.04's GCC 15
+    runs-on: ubuntu-24.04
 
     strategy:
       fail-fast: false
