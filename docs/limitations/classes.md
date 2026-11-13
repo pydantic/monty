@@ -192,7 +192,9 @@ with Monty() as pool, pool.checkout() as session:
 ```
 
 Host-side `==` and `hash()` on a proxy follow the sandbox class only as far as
-the host can replay it without running sandbox code:
+the host can replay it without running sandbox code.
+Where the sandbox's answer would need sandbox code (a user-defined `__eq__` or
+`__hash__`), the proxy compares and hashes by identity instead:
 
 - Each result builds its own proxy, so `a is b` is `False` across feeds.
 - A proxy is a snapshot. Two proxies of the same dataclass object compare by
@@ -206,11 +208,18 @@ the host can replay it without running sandbox code:
 - A field the instance never set (a body `__init__` that skips it) reads the
     class-level default in the sandbox. The host has no class defaults, so
     `==` and `hash()` raise `AttributeError` for it.
-- A user-defined `__eq__` does not run on the host: proxies compare by
-    identity, so two distinct objects the sandbox calls equal are unequal on the
-    host, and a proxy never equals a non-proxy (`proxy == 5` is `False`). A user
-    `__hash__` is replaced by an identity hash, or on a dataclass by a hash of
-    its compared fields. A class with `__eq__` and no `__hash__` stays unhashable.
+- A user-defined `__eq__`, in a plain class or a dataclass body, does not run
+    on the host: proxies compare by identity, so two distinct objects the
+    sandbox calls equal are unequal on the host, and a proxy never equals a
+    non-proxy (`proxy == 5` is `False`). This also applies to a dataclass field
+    holding such an instance.
+- A user-defined `__hash__` does not run on the host either. Proxies hash by
+    identity, except on a dataclass whose `__eq__` is generated: there they hash
+    the fields `__eq__` compares (skipping unhashable values), so equal proxies
+    hash equal.
+- A class with `__eq__` and no `__hash__` stays unhashable. A frozen dataclass
+    with a body `__eq__` keeps its generated field hash, which stays consistent
+    with identity `==`.
 - For the sandbox's own answer, compare there:
     `session.feed_run('a == b', inputs={'a': p, 'b': q})`. This only works while
     both objects are still referenced in the sandbox.

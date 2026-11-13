@@ -955,8 +955,10 @@ def test_custom_eq_proxies_compare_by_identity(session: MontySession):
     assert exc_info.value.args[0] == snapshot("unhashable type: 'Money'")
 
 
-def test_custom_hash_proxies_hash_by_identity(monty_run: RunMonty):
-    code = (
+def test_custom_hash_proxies_hash_by_identity(session: MontySession):
+    """A user `__eq__` and `__hash__` cannot run on the host, so proxies compare
+    and hash by identity."""
+    session.feed_run(
         'class Key:\n'
         '    def __init__(self, k):\n'
         '        self.k = k\n'
@@ -964,10 +966,39 @@ def test_custom_hash_proxies_hash_by_identity(monty_run: RunMonty):
         '        return isinstance(other, Key) and self.k == other.k\n'
         '    def __hash__(self):\n'
         '        return hash(self.k)\n'
-        '{Key(1): "a", Key(2): "b"}'
+        'key = Key(1)'
     )
-    result = monty_run(code)
+    first, second, distinct = session.feed_run('key'), session.feed_run('key'), session.feed_run('Key(1)')
+    assert first == second
+    assert hash(first) == hash(second)
+    assert first != distinct
+    assert len({first, second, distinct}) == 2
+    result = session.feed_run('{Key(1): "a", Key(2): "b"}')
     assert sorted(result.values()) == snapshot(['a', 'b'])
+
+
+@pytest.mark.parametrize(
+    'decorator,body,hashable',
+    [
+        pytest.param('@dataclass', '', False, id='eq'),
+        pytest.param('@dataclass(frozen=True)', '', True, id='frozen_eq'),
+        pytest.param('@dataclass', '    def __hash__(self):\n        return hash(self.x)\n', True, id='eq_and_hash'),
+    ],
+)
+def test_dataclass_with_own_eq_compares_by_identity(session: MontySession, decorator: str, body: str, hashable: bool):
+    """A body `__eq__` replaces the generated one, so the host falls back to
+    identity even though the class is a dataclass."""
+    eq = '    def __eq__(self, other):\n        return isinstance(other, P) and self.x == other.x\n'
+    session.feed_run(DATACLASS_IMPORT + f'{decorator}\nclass P:\n    x: int\n{eq}{body}p = P(1)')
+    first, second, distinct = session.feed_run('p'), session.feed_run('p'), session.feed_run('P(1)')
+    assert first == second
+    assert first != distinct
+    if hashable:
+        assert hash(first) == hash(second)
+    else:
+        with pytest.raises(TypeError) as exc_info:
+            hash(first)
+        assert exc_info.value.args[0] == snapshot("unhashable type: 'P'")
 
 
 def test_dataclass_with_own_hash_hashes_compared_fields(session: MontySession):

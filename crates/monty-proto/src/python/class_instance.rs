@@ -223,8 +223,9 @@ pub(super) struct ClassHeader {
 /// by identity; the attributes are not applied).
 ///
 /// `==` and `hash()` follow the rule the class reported (see [`ClassEq`] and
-/// [`ClassHash`]): a `@dataclass` compares and hashes its fields, anything else
-/// compares by instance id, since the host cannot run a user `__eq__`.
+/// [`ClassHash`]): a `@dataclass` compares and hashes its fields. Where the
+/// sandbox's answer needs sandbox code (a user `__eq__` or `__hash__`), the
+/// proxy falls back to instance identity rather than guess.
 #[pyclass(name = "MontyClassProxy", module = "pydantic_monty", frozen)]
 pub struct PyMontyClassProxy {
     /// The instance's class as it crossed the wire (name, id, dataclass-ness).
@@ -327,8 +328,8 @@ impl PyMontyClassProxy {
                 self.class_type.name
             ))),
             // A user `__hash__` beside a generated `__eq__`: the host cannot
-            // run it, so it hashes what `__eq__` compares, skipping values
-            // the host cannot hash.
+            // run it, and an identity hash would split equal proxies, so it
+            // hashes what `__eq__` compares, skipping values it cannot hash.
             (ClassHash::Custom, ClassEq::Fields(fields)) => {
                 let mut hasher = DefaultHasher::new();
                 for value in self.field_values(py, fields)? {
@@ -340,6 +341,8 @@ impl PyMontyClassProxy {
                 }
                 Ok(hasher.finish())
             }
+            // A user `__hash__` with identity or user `==`: identity is the
+            // only hash consistent with the proxy's `==`.
             (ClassHash::Identity | ClassHash::Custom, _) => Ok(hash_uuid(&self.instance_id)),
         }
     }

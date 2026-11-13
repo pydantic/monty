@@ -448,9 +448,11 @@ class MontyClassProxy:
     as a host-backed copy built from `attributes`.
 
     `==` and `hash()` follow the sandbox class where the host can replay it: a
-    `@dataclass` compares (and, when frozen, hashes) its fields; anything else
-    compares by `id`, since a user `__eq__` cannot run on the host. A class the
-    sandbox cannot hash raises `TypeError` from `hash()`.
+    `@dataclass` compares (and, when frozen, hashes) its fields. Sandbox code
+    never runs on the host, so a user-defined `__eq__` is replaced by `id`
+    comparison, and a user-defined `__hash__` by an `id` hash (or, beside a
+    generated `__eq__`, a hash of the compared fields). A class the sandbox
+    cannot hash raises `TypeError` from `hash()`.
     """
 
     @property

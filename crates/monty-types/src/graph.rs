@@ -335,7 +335,8 @@ pub enum ClassEq {
     /// A `@dataclass`-generated `__eq__`: equal to an instance of the same
     /// class whose named fields, in order, are all `==`.
     Fields(Vec<String>),
-    /// A user-defined `__eq__`, or a rule this peer does not know.
+    /// A user-defined `__eq__`, or a rule this peer does not know. Replaying it
+    /// would mean running sandbox code, so a host compares by identity instead.
     Custom,
 }
 
@@ -350,7 +351,9 @@ pub enum ClassHash {
     Fields(Vec<String>),
     /// `__hash__ = None`, explicit or implied by defining `__eq__`.
     Unhashable,
-    /// A user-defined `__hash__`, or a rule this peer does not know.
+    /// A user-defined `__hash__`, or a rule this peer does not know. A host
+    /// cannot run it, so it hashes by identity, or by the fields a
+    /// [`ClassEq::Fields`] rule compares, keeping equal proxies' hashes equal.
     Custom,
 }
 
