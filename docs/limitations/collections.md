@@ -1,20 +1,20 @@
 # `collections` module
 
-`deque`, `namedtuple`, `defaultdict`, and `Counter` are implemented and
+`deque`, `namedtuple`, `defaultdict`, `Counter`, and `OrderedDict` are implemented and
 feature-complete against CPython 3.14 apart from the divergences below. The
 exact supported surface is pinned by the custom typeshed stub
 (`crates/monty-typeshed/custom/collections/__init__.pyi`) and
-`crates/monty/tests/collections.rs`. `defaultdict` and `Counter` are exposed as
+`crates/monty/tests/collections.rs`. `defaultdict`, `Counter` and `OrderedDict` are exposed as
 the type objects themselves (like `deque`), so `type(d) is defaultdict` and
 `isinstance(c, Counter)` hold.
 
 ## Not implemented
 
-`OrderedDict`, `ChainMap`, `UserDict`, `UserList`, `UserString`, and the
+`ChainMap`, `UserDict`, `UserList`, `UserString`, and the
 `collections.abc` submodule. Importing one raises
-`ImportError: cannot import name 'OrderedDict' from 'collections' (unknown location)` (or `AttributeError`
+`ImportError: cannot import name 'ChainMap' from 'collections' (unknown location)` (or `AttributeError`
 as an attribute); `import collections.abc` raises `ModuleNotFoundError`. The
-narrowed typeshed stub makes `from collections import OrderedDict` a type error
+narrowed typeshed stub makes `from collections import ChainMap` a type error
 too, rather than something that type-checks and then fails at runtime.
 
 ## `deque`
@@ -29,7 +29,7 @@ too, rather than something that type-checks and then fails at runtime.
     in CPython. `2**64` or more raises `OverflowError` in both.
 - **Returned to the host as a plain `list`**, so the `maxlen` bound and the
     deque-ness are lost; sending it back yields a `list`. (Same as
-    defaultdict/Counter, which arrive as plain dicts.)
+    defaultdict/Counter/OrderedDict, which arrive as plain dicts.)
 - **Mutation during iteration is not detected through `enumerate`/`zip`/`map`/
     `filter`/`reversed`**: those are eager (see [builtins.md](builtins.md)), so
     the deque is fully read before the loop body runs. `for x in d` and explicit
@@ -70,9 +70,29 @@ divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
     can hit the memory limit where CPython would stream.
 - **Crosses the host boundary as a plain `dict`.**
 
+## `OrderedDict`
+
+- **The views are `dict_keys` / `dict_values` / `dict_items`**, where CPython's
+    are `odict_keys` / `odict_values` / `odict_items`.
+- **Reordering during iteration is only caught when the iterator would revisit an entry**, as for a
+    `dict` that has a key deleted and re-inserted. Then it raises
+    `RuntimeError: dictionary keys changed during iteration`, where CPython always raises
+    `RuntimeError: OrderedDict mutated during iteration`. A reorder that revisits nothing
+    goes unnoticed.
+- **Argument-count errors from `popitem` and `move_to_end` use Monty's wording**,
+    such as `move_to_end() missing 1 required positional argument: 'key'` where
+    CPython says `move_to_end() missing required argument 'key' (pos 1)`, and
+    `move_to_end('a', last=1, x=2)` reports the unexpected keyword where CPython says
+    `move_to_end() takes at most 2 arguments (3 given)`.
+- **A self-referencing `OrderedDict` prints its inner reference as `{...}`**,
+    where CPython prints `...`.
+- **`move_to_end(key, last=False)` is O(n)**, since it compacts the table to put
+    the entry first; `move_to_end(key)` and `popitem()` are O(1).
+- **Crosses the host boundary as a plain `dict`** (insertion order is kept).
+
 ## Qualified vs bare type names
 
-`deque` and `defaultdict` are C types, so CPython qualifies them
+`deque`, `defaultdict` and `OrderedDict` are C types, so CPython qualifies them
 (`collections.deque`) in `repr(T)` and in every type-naming error message
 (`unsupported operand type(s)`, `object is not callable`, `object has no attribute`) while `__name__` stays bare
 (`'deque'`); Monty matches both

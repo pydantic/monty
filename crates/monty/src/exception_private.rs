@@ -2220,6 +2220,14 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::IndexError, "pop index out of range").into()
     }
 
+    /// Creates a KeyError for `OrderedDict.popitem()` on an empty mapping.
+    ///
+    /// Matches CPython's format: `KeyError: 'dictionary is empty'`
+    #[must_use]
+    fn key_error_ordereddict_empty() -> RunError {
+        SimpleException::new_msg(ExcType::KeyError, "dictionary is empty").into()
+    }
+
     /// Creates a KeyError for popping from an empty dict.
     ///
     /// Matches CPython's format: `KeyError: 'popitem(): dictionary is empty'`

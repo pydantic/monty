@@ -173,7 +173,7 @@ fn search(vm: &mut VM<'_>, a: &Value, x: &Value, bounds: (i64, i64), key: &Value
         | Type::Range
         | Type::Deque
         | Type::Counter => {}
-        Type::Dict | Type::DefaultDict => {
+        Type::Dict | Type::DefaultDict | Type::OrderedDict => {
             return Err(ExcType::type_error(format!("{} is not a sequence", a.py_type_name(vm))));
         }
         _ => {

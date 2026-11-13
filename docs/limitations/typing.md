@@ -101,7 +101,7 @@ Divergences:
 
 Subscripting a builtin type builds a `types.GenericAlias`, but only for
 `list`, `tuple`, `dict`, `set`, `frozenset`, `type`, `collections.deque`,
-`collections.defaultdict`, `collections.Counter`, `functools.partial`,
+`collections.defaultdict`, `collections.Counter`, `collections.OrderedDict`, `functools.partial`,
 `re.Pattern` and `re.Match`. Every other type raises
 `TypeError: type 'int' is not subscriptable`, including ones CPython
 parameterizes:

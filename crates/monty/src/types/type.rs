@@ -345,6 +345,10 @@ pub enum Type {
     /// `annotationlib.ForwardRef`, an unevaluated annotation.
     #[strum(serialize = "annotationlib.ForwardRef")]
     ForwardRef,
+    /// `collections.OrderedDict` — a `dict` subclass (also a `DictKind`).
+    // New variants go last: the postcard index is part of the dump format and id().
+    #[strum(serialize = "collections.OrderedDict")]
+    OrderedDict,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -488,6 +492,7 @@ impl Type {
                 | Self::Dict
                 | Self::DefaultDict
                 | Self::Counter
+                | Self::OrderedDict
                 | Self::Set
                 | Self::FrozenSet
                 | Self::Type
@@ -574,8 +579,8 @@ impl Type {
         } else if self == Self::DateTime && other == Self::Date {
             // datetime is a subtype of date in Python
             true
-        } else if (self == Self::DefaultDict || self == Self::Counter) && other == Self::Dict {
-            // collections.defaultdict and collections.Counter subclass dict
+        } else if matches!(self, Self::DefaultDict | Self::Counter | Self::OrderedDict) && other == Self::Dict {
+            // collections.defaultdict, Counter and OrderedDict subclass dict
             true
         } else if self == Self::NamedTuple && other == Self::Tuple {
             // a namedtuple class is generated as a tuple subclass
@@ -651,6 +656,10 @@ impl Type {
             // factory — matching CPython's inherited `dict.fromkeys` classmethod.
             (Self::DefaultDict, Some(StaticStrings::Fromkeys)) => {
                 dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value)
+            }
+            // `OrderedDict.fromkeys(...)` builds `cls()`, an OrderedDict.
+            (Self::OrderedDict, Some(StaticStrings::Fromkeys)) => {
+                dict_fromkeys(args, DictKind::ordered(), vm).map(CallResult::Value)
             }
             // `chain.from_iterable(iterable)`, CPython's one classmethod here.
             (Self::ItertoolsChain, Some(StaticStrings::FromIterable)) => {
@@ -823,6 +832,7 @@ impl Type {
             Self::Dict => Dict::init(vm, args),
             Self::DefaultDict => collections::defaultdict_init(vm, args),
             Self::Counter => collections::counter_init(vm, args),
+            Self::OrderedDict => collections::ordereddict_init(vm, args),
             Self::Set => Set::init(vm, args),
             Self::FrozenSet => FrozenSet::init(vm, args),
             Self::Str => Str::init(vm, args),

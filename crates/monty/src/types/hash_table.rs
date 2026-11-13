@@ -343,6 +343,37 @@ impl<E: TableEntry> PyHashTable<E> {
         Some(self.tombstone_at(slot))
     }
 
+    /// Tombstones and returns the first live entry, if any — what
+    /// `OrderedDict.popitem(last=False)` takes.
+    pub(crate) fn pop_first(&mut self) -> Option<E> {
+        let slot = self.entries.iter().position(E::is_live)?;
+        Some(self.tombstone_at(slot))
+    }
+
+    /// Moves the live entry a probe found to the front of the iteration order.
+    ///
+    /// Slots are renumbered, so this compacts: it is the one reordering a
+    /// table supports besides tombstone-and-[`push`](Self::push), which can
+    /// only move to the back.
+    ///
+    /// Allocates nothing, so it needs no preflight: the tombstone just left
+    /// frees a slot that the insertion at the front takes back, and the
+    /// bucket table is cleared and refilled to the size it already had.
+    #[expect(clippy::needless_pass_by_value, reason = "taking the slot spends it")]
+    pub(crate) fn move_to_front(&mut self, slot: Slot) {
+        let entry = self.tombstone_at(slot.0);
+        self.entries.retain(E::is_live);
+        self.entries.insert(0, entry);
+        self.reindex();
+    }
+
+    /// Moves the live entry a probe found to the back of the iteration order.
+    #[expect(clippy::needless_pass_by_value, reason = "taking the slot spends it")]
+    pub(crate) fn move_to_back(&mut self, slot: Slot) {
+        let entry = self.tombstone_at(slot.0);
+        self.push(entry);
+    }
+
     /// Takes every live entry out, leaving the table empty.
     ///
     /// The entries are returned rather than dropped because they own heap

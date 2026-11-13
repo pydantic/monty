@@ -1,8 +1,8 @@
 # Based on python/typeshed's `stdlib/collections/__init__.pyi`, stripped down to
 # the members Monty actually implements at runtime: `deque`, `Counter`,
-# `defaultdict`, and `namedtuple`. `OrderedDict`, `ChainMap`, and the
+# `defaultdict`, `OrderedDict`, and `namedtuple`. `ChainMap` and the
 # `UserDict` / `UserList` / `UserString` wrappers are intentionally omitted so
-# `from collections import OrderedDict` is a type error rather than passing the
+# `from collections import ChainMap` is a type error rather than passing the
 # type checker and then failing at runtime. See `limitations/collections.md`.
 #
 # The kept signatures are copied verbatim from upstream typeshed; only the
@@ -26,6 +26,7 @@ else:
 
 __all__ = [
     'Counter',
+    'OrderedDict',
     'defaultdict',
     'deque',
     'namedtuple',
@@ -194,3 +195,35 @@ class defaultdict(dict[_KT, _VT]):
     def __ror__(self, value: dict[_KT, _VT], /) -> Self: ...
     @overload
     def __ror__(self, value: dict[_T1, _T2], /) -> defaultdict[_KT | _T1, _VT | _T2]: ...  # type: ignore[misc]
+
+@disjoint_base
+class OrderedDict(dict[_KT, _VT]):
+    def popitem(self, last: bool = True) -> tuple[_KT, _VT]: ...
+    def move_to_end(self, key: _KT, last: bool = True) -> None: ...
+    def copy(self) -> Self: ...
+    def __reversed__(self) -> Iterator[_KT]: ...
+    @classmethod
+    @overload
+    def fromkeys(cls, iterable: Iterable[_T], value: None = None, /) -> OrderedDict[_T, Any | None]: ...
+    @classmethod
+    @overload
+    def fromkeys(cls, iterable: Iterable[_T], value: _S, /) -> OrderedDict[_T, _S]: ...
+    @overload
+    def setdefault(self: OrderedDict[_KT, _T | None], key: _KT, default: None = None, /) -> _T | None: ...
+    @overload
+    def setdefault(self, key: _KT, default: _VT, /) -> _VT: ...
+    @overload
+    def pop(self, key: _KT, /) -> _VT: ...
+    @overload
+    def pop(self, key: _KT, default: _VT, /) -> _VT: ...
+    @overload
+    def pop(self, key: _KT, default: _T, /) -> _VT | _T: ...
+    def __eq__(self, value: object, /) -> bool: ...
+    @overload
+    def __or__(self, value: dict[_KT, _VT], /) -> Self: ...
+    @overload
+    def __or__(self, value: dict[_T1, _T2], /) -> OrderedDict[_KT | _T1, _VT | _T2]: ...
+    @overload
+    def __ror__(self, value: dict[_KT, _VT], /) -> Self: ...
+    @overload
+    def __ror__(self, value: dict[_T1, _T2], /) -> OrderedDict[_KT | _T1, _VT | _T2]: ...  # type: ignore[misc]
