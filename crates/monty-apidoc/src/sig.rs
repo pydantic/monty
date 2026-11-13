@@ -132,8 +132,7 @@ impl SigCtx<'_> {
             .sig
             .output
             .as_ref()
-            .map(|output| format!(" -> {}", self.type_str(output)))
-            .unwrap_or_default();
+            .map_or_default(|output| format!(" -> {}", self.type_str(output)));
         let single_line = format!("{head}({}){ret}", args.join(", "));
         let mut out = if args.is_empty() || to_plain(&single_line).len() <= MAX_SIGNATURE_WIDTH {
             single_line
@@ -186,7 +185,7 @@ impl SigCtx<'_> {
                 is_mutable,
                 type_,
             } => {
-                let lifetime = lifetime.as_ref().map(|l| format!("{l} ")).unwrap_or_default();
+                let lifetime = lifetime.as_ref().map_or_default(|l| format!("{l} "));
                 let mut_ = if *is_mutable { "mut " } else { "" };
                 format!("&{lifetime}{mut_}{}", self.type_str(type_))
             }
@@ -197,7 +196,7 @@ impl SigCtx<'_> {
                 trait_,
             } => {
                 let self_ = self.type_str(self_type);
-                let args = args.as_deref().map(|a| self.generic_args_str(a)).unwrap_or_default();
+                let args = args.as_deref().map_or_default(|a| self.generic_args_str(a));
                 match trait_ {
                     Some(trait_) => format!("<{self_} as {}>::{name}{args}", self.path_str(trait_)),
                     None => format!("{self_}::{name}{args}"),
@@ -214,11 +213,7 @@ impl SigCtx<'_> {
     /// nothing to a reference reader. Names whose id resolves to a rendered
     /// page are wrapped in link markers.
     pub fn path_str(&self, path: &Path) -> String {
-        let args = path
-            .args
-            .as_deref()
-            .map(|a| self.generic_args_str(a))
-            .unwrap_or_default();
+        let args = path.args.as_deref().map_or_default(|a| self.generic_args_str(a));
         let relative = ["crate::", "self::", "super::"];
         let name = if relative.iter().any(|prefix| path.path.starts_with(prefix)) {
             path.path.rsplit("::").next().expect("empty path")
@@ -424,7 +419,7 @@ impl SigCtx<'_> {
                     writeln!(out, "{decl}{terminator}").unwrap();
                 }
                 ItemEnum::AssocConst { type_, value, .. } => {
-                    let default = value.as_ref().map(|v| format!(" = {v}")).unwrap_or_default();
+                    let default = value.as_ref().map_or_default(|v| format!(" = {v}"));
                     writeln!(out, "    const {assoc_name}: {}{default};", self.type_str(type_)).unwrap();
                 }
                 ItemEnum::AssocType {
@@ -442,12 +437,8 @@ impl SigCtx<'_> {
                     };
                     let where_ = self
                         .where_str(generics)
-                        .map(|preds| format!(" where {}", preds.join(", ")))
-                        .unwrap_or_default();
-                    let default = type_
-                        .as_ref()
-                        .map(|t| format!(" = {}", self.type_str(t)))
-                        .unwrap_or_default();
+                        .map_or_default(|preds| format!(" where {}", preds.join(", ")));
+                    let default = type_.as_ref().map_or_default(|t| format!(" = {}", self.type_str(t)));
                     writeln!(out, "    type {assoc_name}{params}{bounds}{where_}{default};").unwrap();
                 }
                 inner => panic!("unhandled trait item in {name}: {:?}", inner.item_kind()),
@@ -468,7 +459,7 @@ impl SigCtx<'_> {
                     type_,
                 } => {
                     if matches!(&**type_, Type::Generic(self_) if self_ == "Self") {
-                        let lifetime = lifetime.as_ref().map(|l| format!("{l} ")).unwrap_or_default();
+                        let lifetime = lifetime.as_ref().map_or_default(|l| format!("{l} "));
                         let mut_ = if *is_mutable { "mut " } else { "" };
                         return format!("&{lifetime}{mut_}self");
                     }
@@ -485,11 +476,7 @@ impl SigCtx<'_> {
             GenericArgs::AngleBracketed { args, constraints } => {
                 let mut printed: Vec<String> = args.iter().map(|a| self.generic_arg_str(a)).collect();
                 for constraint in constraints {
-                    let args = constraint
-                        .args
-                        .as_deref()
-                        .map(|a| self.generic_args_str(a))
-                        .unwrap_or_default();
+                    let args = constraint.args.as_deref().map_or_default(|a| self.generic_args_str(a));
                     let binding = match &constraint.binding {
                         AssocItemConstraintKind::Equality(term) => format!(" = {}", self.term_str(term)),
                         AssocItemConstraintKind::Constraint(bounds) => format!(": {}", self.bounds_str(bounds)),
@@ -504,10 +491,7 @@ impl SigCtx<'_> {
             }
             GenericArgs::Parenthesized { inputs, output } => {
                 let inputs: Vec<String> = inputs.iter().map(|t| self.type_str(t)).collect();
-                let output = output
-                    .as_ref()
-                    .map(|t| format!(" -> {}", self.type_str(t)))
-                    .unwrap_or_default();
+                let output = output.as_ref().map_or_default(|t| format!(" -> {}", self.type_str(t)));
                 format!("({}){output}", inputs.join(", "))
             }
             GenericArgs::ReturnTypeNotation => "(..)".to_owned(),
@@ -594,7 +578,7 @@ impl SigCtx<'_> {
                 out
             }
             GenericParamDefKind::Const { type_, default } => {
-                let default = default.as_ref().map(|d| format!(" = {d}")).unwrap_or_default();
+                let default = default.as_ref().map_or_default(|d| format!(" = {d}"));
                 format!("const {}: {}{default}", param.name, self.type_str(type_))
             }
         }
@@ -618,8 +602,7 @@ impl SigCtx<'_> {
             .sig
             .output
             .as_ref()
-            .map(|t| format!(" -> {}", self.type_str(t)))
-            .unwrap_or_default();
+            .map_or_default(|t| format!(" -> {}", self.type_str(t)));
         format!(
             "{}{}fn({}){output}",
             self.hrtb_str(&fp.generic_params),

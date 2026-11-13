@@ -27,6 +27,7 @@ const requiredFiles = [
   'monty.component.core2.wasm',
   'monty.component.core3.wasm',
   'monty.component.core4.wasm',
+  'monty.component.core5.wasm',
   'interfaces/pydantic-monty-worker.d.ts',
 ]
 const missingFiles = requiredFiles.filter((name) => !(name in files))

@@ -32,9 +32,7 @@ authors = ["Samuel Colvin <samuel@pydantic.dev>"]
 description = "A secure, snapshotable Python sandbox written in Rust."
 categories = ["compilers", "emulators", "development-tools"]
 keywords = ["python", "interpreter", "sandbox", "embedded"]
-homepage = "https://github.com/pydantic/monty/"
 repository = "https://github.com/pydantic/monty/"
-documentation = "https://github.com/pydantic/monty/"
 
 [profile.release]
 lto = "fat"
@@ -83,7 +81,6 @@ ruff_db = { version = "0.0.14", features = ["serde"] }
 ty_python_semantic = "0.0.14"
 ty_python_core = "0.0.14"
 ty_module_resolver = "0.0.14"
-ty_vendored = "0.0.14"
 # salsa version matches the version ruff uses
 salsa = { version = "0.28.2", default-features = false, features = [
     "compact_str",
@@ -137,7 +134,6 @@ serde_bytes = "0.11"
 # exact pin: prost-build output must be byte-stable across contributors and CI
 # so `make check-proto` (regenerate + git diff) is reproducible
 prost = "=0.14.4"
-sha2 = "0.11"
 pretty_assertions = "1.4"
 insta = "1.47"
 clap = { version = "4", features = ["derive"] }
