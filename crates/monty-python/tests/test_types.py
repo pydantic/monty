@@ -731,6 +731,15 @@ def test_namedtuple_types_share_one_class(monty_run: RunMonty):
     assert (result[3]._type_name, result[3].a, result[3]._fields) == snapshot(('T3', 3, ('a',)))
 
 
+def test_namedtuple_same_type_shares_names(monty_run: RunMonty):
+    """Values of one type in a result share their type name and field names."""
+    result: Any = monty_run("from collections import namedtuple\nP = namedtuple('P', ['x'])\n[P(1), P(2)]")
+    first, second = result
+    assert (first.x, second.x) == (1, 2)
+    assert first._fields is second._fields
+    assert first._type_name is second._type_name
+
+
 def test_namedtuple_names_not_retained(monty_run: RunMonty):
     """Decoded namedtuple names are freed with their values: `collections.namedtuple`
     compiles field names into code, which makes them immortal on 3.12+."""
@@ -934,6 +943,16 @@ def test_namedtuple_custom_input_repr(monty_run: RunMonty):
     result = monty_run('repr(item)', inputs={'item': Item(name='widget', price=9.99)})
     # Monty uses the full qualified name (module.ClassName) for the type
     assert result == snapshot("test_types.Item(name='widget', price=9.99)")
+
+
+def test_namedtuple_custom_input_builtin_module(monty_run: RunMonty):
+    """A NamedTuple from `builtins` or a private module crosses without a module prefix."""
+
+    class Item(NamedTuple):
+        name: str
+
+    Item.__module__ = 'builtins'
+    assert monty_run('repr(item)', inputs={'item': Item(name='widget')}) == snapshot("Item(name='widget')")
 
 
 def test_namedtuple_custom_input_len(monty_run: RunMonty):
