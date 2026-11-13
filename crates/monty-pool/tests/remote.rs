@@ -3741,14 +3741,16 @@ async fn finishing_against_a_wedged_socket_does_not_leak_capacity() {
     release.send(()).expect("release the server");
     join_server(server).await;
 
-    // The slot came back: the next checkout gets as far as dialling instead
-    // of reporting no capacity. The mock is shutting down, so the dial fails
-    // (`Spawn`) or, if it still admitted the stream, the stream ends at once
-    // (`Disconnected`); only `Exhausted` would be the leak.
-    let Err(err) = pool.checkout(&ReplConfig::default()).await else {
-        panic!("the mock is shutting down, so a checkout cannot succeed");
-    };
-    assert!(!matches!(err, PoolError::Exhausted), "the slot leaked: {err:?}");
+    // The slot came back: the next checkout gets past the capacity check
+    // instead of reporting `Exhausted`. Whether it then succeeds is a race with
+    // the mock's shutdown: a checkout no longer waits for a `Configure` reply,
+    // so a dial the closing listener still accepts returns `Ok`.
+    let next = pool.checkout(&ReplConfig::default()).await;
+    assert!(
+        !matches!(next, Err(PoolError::Exhausted)),
+        "the slot leaked: {:?}",
+        next.err()
+    );
 }
 
 /// A finished checkout's slot comes back once the server has ended the stream,
