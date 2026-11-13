@@ -64,7 +64,10 @@ use crate::{
     run::{Program, SessionTables, VmEnv},
     types::{
         Dict, PyTrait, SessionRandom,
-        file::{apply_buffer_load, apply_buffer_store, apply_file_next, apply_open_name, apply_write_position},
+        file::{
+            apply_buffer_load, apply_buffer_store, apply_file_next, apply_file_seek_end, apply_open_name,
+            apply_write_position,
+        },
         random::SEED_BYTES,
         str::allocate_string,
     },
@@ -2152,8 +2155,7 @@ impl<'h> VM<'h> {
                 obj
             }
         };
-        // The sleeps ignore the host's answer, so an unconvertible one (a
-        // host object with no wire form, say) must not fail them.
+        // These effects do not import the reply: sleeps ignore it, and seek only reads the stat size.
         let obj = match self.pending_effect.take() {
             Some(PendingEffect::Post(PostConversionEffect::DiscardResult)) => {
                 self.push(Value::None);
@@ -2163,6 +2165,15 @@ impl<'h> VM<'h> {
                 let settled = self.settled_awaitable(result);
                 self.push(settled);
                 return self.run_external();
+            }
+            Some(PendingEffect::Post(PostConversionEffect::FileSeekEnd { file_id, offset })) => {
+                return match apply_file_seek_end(file_id, offset, &obj, self) {
+                    Ok(value) => {
+                        self.push(value);
+                        self.run_external()
+                    }
+                    Err(err) => self.resume_with_exception(err),
+                };
             }
             effect => {
                 self.pending_effect = effect;
@@ -2214,10 +2225,14 @@ impl<'h> VM<'h> {
             }
             Some(PendingEffect::Post(PostConversionEffect::WritePosition {
                 file_id,
+                payload_length,
                 text_length,
                 result_none,
                 ..
-            })) => apply_write_position(file_id, text_length, result_none, value, self).map(Some),
+            })) => apply_write_position(file_id, payload_length, text_length, result_none, value, self).map(Some),
+            Some(PendingEffect::Post(PostConversionEffect::FileSeekEnd { .. })) => {
+                unreachable!("file seek stat replies are handled before conversion")
+            }
             Some(PendingEffect::Post(PostConversionEffect::LoadThenCall {
                 file_id,
                 callable,
@@ -2356,6 +2371,7 @@ impl<'h> VM<'h> {
                     effect @ (PostConversionEffect::BufferLoad { .. }
                     | PostConversionEffect::FileNext { .. }
                     | PostConversionEffect::LoadThenCall { .. }
+                    | PostConversionEffect::FileSeekEnd { .. }
                     | PostConversionEffect::SeedRandom { .. }),
                 ) => effect.release(self.heap),
                 PendingEffect::Post(PostConversionEffect::SleepResult { result }) => result.drop_with(self),

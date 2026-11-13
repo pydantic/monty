@@ -369,6 +369,10 @@ impl Mount {
             args.validate()
                 .map_err(|message| MountError::InvalidArgument(message.to_owned()))?;
         }
+        if let OsFunctionCall::WriteBytesAt(args) = &call {
+            args.validate()
+                .map_err(|message| MountError::InvalidArgument(message.to_owned()))?;
+        }
         let (mut ctx, mode) = self.backend();
         dispatch::execute(dispatch::fs_request_from_call(call), &mut ctx, mode)
     }

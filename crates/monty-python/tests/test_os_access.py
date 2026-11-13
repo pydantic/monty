@@ -964,17 +964,18 @@ def test_path_open_returns_monty_file_handle():
 
 
 def test_path_open_normalizes_mode():
-    """`mode='rt'` is canonicalized to `'r'`. `+` modes are rejected (see
-    `test_path_open_rejects_plus_modes`)."""
+    """Text spellings and binary update spellings expose canonical modes."""
     fs = OSAccess([MemoryFile('/data/file.txt', content='x')])
     assert fs.path_open(P('/data/file.txt'), 'rt').mode == snapshot('r')
+    handle = fs.path_open(P('/data/file.txt'), 'wb+')
+    assert handle.mode == 'wb+'
+    assert (handle.binary, handle.readable, handle.writable) == (True, True, True)
 
 
-def test_path_open_rejects_plus_modes():
-    """`+` (update) modes are rejected — Monty's wrapper has no read-position
-    tracking, so honoring them would silently destroy data on the first write."""
+def test_path_open_rejects_deferred_update_modes():
+    """Only binary write/update mode is supported."""
     fs = OSAccess([MemoryFile('/data/file.txt', content='x')])
-    for mode in ('r+', 'rb+', 'r+b', 'w+', 'wb+', 'a+', 'ab+'):
+    for mode in ('r+', 'rb+', 'r+b', 'w+', 'a+', 'ab+'):
         with pytest.raises(ValueError) as exc_info:
             fs.path_open(P('/data/file.txt'), mode)
         assert exc_info.value.args[0] == snapshot("update modes ('+') are not yet supported")

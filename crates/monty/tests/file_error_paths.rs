@@ -292,8 +292,13 @@ except OSError:
 f.tell()
 ";
     let host_exc = MontyException::new(ExcType::OSError, Some("io".to_owned()));
-    let result = run_with_open_then_io(code, "Path.append_bytes", file_handle("/x.bin", "wb"), host_exc.into())
-        .expect("script should complete");
+    let result = run_with_open_then_io(
+        code,
+        "Path.write_bytes_at",
+        file_handle("/x.bin", "wb"),
+        host_exc.into(),
+    )
+    .expect("script should complete");
     assert_eq!(result, MontyObject::int(0));
 }
 

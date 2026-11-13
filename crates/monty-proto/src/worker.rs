@@ -42,6 +42,11 @@ use super::{
 };
 use crate::{convert::limits::micros_field, wire::uuid_to_pb};
 
+/// First client protocol version that can service `OsCall.write_bytes_at`.
+///
+/// Older clients still get sequential `wb` writes through the original write/append calls.
+const POSITIONAL_WRITES_PROTOCOL_VERSION: u32 = 9;
+
 /// A sink for framed [`pb::WorkerEvent`]s, decoupling the worker from its
 /// transport.
 ///
@@ -236,6 +241,8 @@ pub struct Worker {
     print_flush_interval: Duration,
     /// The session's `OsPolicy` from `Configure`, applied when creating the REPL or restoring one by `Load`.
     os_policy: OsPolicy,
+    /// Set for clients below [`POSITIONAL_WRITES_PROTOCOL_VERSION`], which cannot handle positional binary writes.
+    legacy_binary_writes: bool,
     /// Host module stubs received through `import_stubs` or restored by `Load`.
     module_stubs: Vec<ModuleStub>,
     /// The client set `Configure.accepts_streamed_calls`, so calls to async host
@@ -260,6 +267,7 @@ impl Default for Worker {
             type_check: None,
             print_flush_interval: DEFAULT_PRINT_FLUSH_INTERVAL,
             os_policy: OsPolicy::default(),
+            legacy_binary_writes: false,
             module_stubs: Vec::new(),
             accepts_streamed_calls: false,
             feed_streams_async_calls: false,
@@ -523,6 +531,7 @@ impl Worker {
                 return session_refused("invalid type_check_stubs: Source is too deeply nested");
             }
             let clock = configure.execution_clock.unwrap_or(pb::ExecutionClock::Wall as i32);
+            self.legacy_binary_writes = configure.protocol_version < POSITIONAL_WRITES_PROTOCOL_VERSION;
             self.state = SessionState::Configured(Some(Box::new(configure)));
             let mut event = ok_event();
             event.execution_clock = Some(clock);
@@ -618,7 +627,7 @@ impl Worker {
             // Not on the wire: every host gets the default.
             source_scan_threshold: SOURCE_SCAN_THRESHOLD,
         };
-        let repl = MontyRepl::new(
+        let mut repl = MontyRepl::new(
             &self.script_name,
             ResourceTracker::new(limits).with_execution_clock(
                 pb::ExecutionClock::try_from(execution_clock.unwrap_or_default())
@@ -628,6 +637,7 @@ impl Worker {
             options,
         )
         .with_os_policy(self.os_policy.clone());
+        repl.set_legacy_binary_writes(self.legacy_binary_writes);
         self.state = SessionState::Ready(Box::new(repl));
         Ok(())
     }
@@ -1048,6 +1058,13 @@ impl Worker {
         if tracker.is_some_and(|tracker| tracker.execution_clock() != clock) {
             return protocol_violation("snapshot execution clock differs from Configure");
         }
+        if self.legacy_binary_writes
+            && let Session::Suspended(progress) = &state
+            && let ReplProgress::OsCall(call) = progress.as_ref()
+            && requires_positional_writes(&call.function_call)
+        {
+            return protocol_violation("snapshot requires positional filesystem writes");
+        }
         // Retain snapshot clocks and stricter limits across both idle and suspended restores.
         // The checkout's `OsPolicy` replaces the dump's: the policy is the restoring host's
         // authority over the clock, zone, sleeps and entropy, not session state.
@@ -1055,10 +1072,12 @@ impl Worker {
             Session::Idle(repl) => {
                 repl.tracker_mut().tighten_limits(&limits);
                 repl.set_os_policy(self.os_policy.clone());
+                repl.set_legacy_binary_writes(self.legacy_binary_writes);
             }
             Session::Suspended(progress) => {
                 progress.tracker_mut().tighten_limits(&limits);
                 progress.set_os_policy(self.os_policy.clone());
+                progress.set_legacy_binary_writes(self.legacy_binary_writes);
             }
             Session::Running(_) => {}
         }
@@ -1267,6 +1286,16 @@ fn event(kind: pb::worker_event::Kind) -> pb::WorkerEvent {
     pb::WorkerEvent {
         kind: Some(kind),
         ..Default::default()
+    }
+}
+
+/// Whether re-emitting a suspended call requires a positional-write-capable host.
+fn requires_positional_writes(call: &OsFunctionCall) -> bool {
+    match call {
+        OsFunctionCall::WriteBytesAt(_) => true,
+        OsFunctionCall::Open(args) => args.mode.is_binary() && args.mode.readable() && args.mode.writable(),
+        OsFunctionCall::CreateExclusive(args) => args.mode.is_binary() && args.mode.readable() && args.mode.writable(),
+        _ => false,
     }
 }
 
