@@ -31,6 +31,30 @@ class CountsHashes:
         return 1
 
 
+class FailsRehash:
+    def __init__(self):
+        self.calls = 0
+
+    def __hash__(self):
+        self.calls += 1
+        if self.calls > 1:
+            raise TypeError('rehashed')
+        return 1
+
+
+class ThenRaise:
+    def __init__(self, *items):
+        self.items = list(items)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.items:
+            return self.items.pop(0)
+        return 1 / 0
+
+
 NT = namedtuple('NT', 'a b')
 
 
@@ -144,7 +168,12 @@ i = d.items()
 assert err(lambda: k & [[1]]) == "TypeError: cannot use 'list' as a dict key (unhashable type: 'list')"
 assert err(lambda: [[1]] & k) == "TypeError: cannot use 'list' as a dict key (unhashable type: 'list')"
 assert err(lambda: k & [RaisesType()]) == "TypeError: cannot use 'RaisesType' as a dict key (boom)"
-assert err(lambda: k & (x for x in [[1], 1 / 0])) == 'ZeroDivisionError: division by zero'
+# each item is probed as it is read, so an unhashable one raises before the iterator fails
+assert err(lambda: k & ThenRaise([1])) == "TypeError: cannot use 'list' as a dict key (unhashable type: 'list')"
+assert err(lambda: k & ThenRaise(5)) == 'ZeroDivisionError: division by zero'
+assert (
+    err(lambda: k.isdisjoint(ThenRaise([1]))) == "TypeError: cannot use 'list' as a dict key (unhashable type: 'list')"
+)
 assert err(lambda: k.isdisjoint([[1]])) == "TypeError: cannot use 'list' as a dict key (unhashable type: 'list')"
 assert err(lambda: k.isdisjoint(d.values())) == "TypeError: cannot use 'list' as a dict key (unhashable type: 'list')"
 assert err(lambda: i & [([1], 1)]) == "TypeError: cannot use 'list' as a dict key (unhashable type: 'list')"
@@ -189,6 +218,16 @@ assert counted.calls == 1
 counted = CountsHashes()
 assert err(lambda: cached((counted, [1]))) == "TypeError: unhashable type: 'list'"
 assert counted.calls == 1
+
+# === A frozenset hashes from its stored element hashes, never re-hashing a member ===
+counted = CountsHashes()
+fs = frozenset([counted])
+assert hash(fs) == hash(frozenset([1]))
+assert counted.calls == 1
+rehash = FailsRehash()
+fs = frozenset([rehash])
+assert {fs} == {fs}
+assert rehash.calls == 1
 
 # === Named tuples hash by element, so Literal drops a repeated one ===
 assert len(Literal[NT(1, 2), NT(1, 2)].__args__) == 1

@@ -240,7 +240,7 @@ struct StoreArgs {
 
 /// Hashes a cache key before entering the mutation-aware table probe.
 ///
-/// CPython hashes cache keys with `PyObject_Hash`, so unlike a dict key's the error is not wrapped.
+/// CPython hashes cache keys with `PyObject_Hash`, so unlike a dict key's hash error, a cache key's is not wrapped.
 fn key_hash(key: &Value, vm: &mut VM<'_>) -> RunResult<u64> {
     plain_hash(key, vm).map(HashValue::raw)
 }

@@ -1598,24 +1598,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
         }
     }
 
-    /// Hashes the frozenset by XORing all element hashes.
+    /// Hashes the frozenset by XORing the element hashes stored with its entries.
     ///
     /// XOR is commutative, so the hash is independent of insertion order — two
     /// frozensets with the same members hash equally regardless of how they were built.
+    /// Like CPython, it never re-hashes a member, so no user `__hash__` runs and none can fail.
     /// Caches the computed hash on first call (frozensets are immutable).
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        if let Some(cached) = self.get(vm.heap).cached_hash.get() {
-            return Ok(Some(cached));
-        }
-        let mut hash: u64 = 0;
-        let storage = self.storage();
-        let iter = storage.iter(vm)?;
-        defer_drop_mut!(iter, vm);
-        while let Some(item) = iter.next(vm)? {
-            hash ^= set_element_hash(item, vm)?;
-        }
-        let hash = HashValue::new(hash);
-        self.get(vm.heap).cached_hash.set(Some(hash));
+        let frozenset = self.get(vm.heap);
+        let hash = frozenset.cached_hash.get().unwrap_or_else(|| {
+            let hash = HashValue::new(frozenset.storage.live().fold(0, |hash, entry| hash ^ entry.hash));
+            frozenset.cached_hash.set(Some(hash));
+            hash
+        });
         Ok(Some(hash))
     }
 
