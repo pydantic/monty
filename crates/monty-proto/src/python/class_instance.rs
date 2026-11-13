@@ -35,7 +35,7 @@ use pyo3::{
     prelude::*,
     pyclass::CompareOp,
     sync::PyOnceLock,
-    types::{PyBytes, PyDict, PyTuple},
+    types::{PyBytes, PyDict, PyString, PyTuple},
 };
 
 /// Checks if a Python object is a `pydantic_monty.ClassInstance` wrapper.
@@ -197,7 +197,6 @@ pub fn uuid_to_py(py: Python<'_>, uuid: &MontyUuid) -> PyResult<Py<PyAny>> {
 /// the attrs, which the proxies keep as Python dicts. Proxies share one per
 /// class node through an `Arc`, so many instances of a class with many fields
 /// do not copy its rules once each.
-#[derive(Debug, Clone)]
 pub(super) struct ClassHeader {
     /// The Python-visible class name.
     pub(super) name: String,
@@ -211,6 +210,40 @@ pub(super) struct ClassHeader {
     pub(super) eq: ClassEq,
     /// How the sandbox hashes instances, which the proxy's `__hash__` follows.
     pub(super) hash: ClassHash,
+    /// The `TypeError` message for an unhashable class, built on first use.
+    /// Proxies cache their hash error, so a message per proxy would copy the
+    /// (sandbox-chosen, unbounded) class name once per instance.
+    pub(super) unhashable_message: PyOnceLock<Py<PyString>>,
+    /// The `AttributeError` message per missing field name, shared likewise.
+    pub(super) missing_field_messages: PyOnceLock<Py<PyDict>>,
+}
+
+impl ClassHeader {
+    /// `TypeError: unhashable type: '<name>'`, sharing one message string
+    /// across every proxy of the class.
+    fn unhashable_error(&self, py: Python<'_>) -> PyErr {
+        let message = self.unhashable_message.get_or_init(py, || {
+            PyString::new(py, &format!("unhashable type: '{}'", self.name)).unbind()
+        });
+        PyTypeError::new_err(message.clone_ref(py))
+    }
+
+    /// The `AttributeError` a generated method raises for a field the
+    /// instance never set, sharing one message string per class and field.
+    fn missing_field_error(&self, py: Python<'_>, field: &str) -> PyResult<PyErr> {
+        let messages = self
+            .missing_field_messages
+            .get_or_init(py, || PyDict::new(py).unbind())
+            .bind(py);
+        let message = if let Some(message) = messages.get_item(field)? {
+            message
+        } else {
+            let message = PyString::new(py, &format!("'{}' object has no attribute '{field}'", self.name)).into_any();
+            messages.set_item(field, &message)?;
+            message
+        };
+        Ok(PyAttributeError::new_err(message.unbind()))
+    }
 }
 
 /// Read-only proxy for a class instance the host has no original object for:
@@ -325,10 +358,7 @@ impl PyMontyClassProxy {
     /// The hash `__hash__` caches.
     fn compute_hash(&self, py: Python<'_>) -> PyResult<u64> {
         match (&self.class_type.hash, &self.class_type.eq) {
-            (ClassHash::Unhashable, _) => Err(PyTypeError::new_err(format!(
-                "unhashable type: '{}'",
-                self.class_type.name
-            ))),
+            (ClassHash::Unhashable, _) => Err(self.class_type.unhashable_error(py)),
             (ClassHash::Fields(fields), ClassEq::Fields(_)) => {
                 let mut hasher = DefaultHasher::new();
                 PyTuple::new(py, self.field_values(py, fields)?)?
@@ -386,9 +416,10 @@ impl PyMontyClassProxy {
     /// One field's value, raising the `AttributeError` the generated method
     /// would for a field the instance no longer has.
     fn field_value<'py>(&self, py: Python<'py>, field: &str) -> PyResult<Bound<'py, PyAny>> {
-        self.attributes.bind(py).get_item(field)?.ok_or_else(|| {
-            PyAttributeError::new_err(format!("'{}' object has no attribute '{field}'", self.class_type.name))
-        })
+        match self.attributes.bind(py).get_item(field)? {
+            Some(value) => Ok(value),
+            None => Err(self.class_type.missing_field_error(py, field)?),
+        }
     }
 }
 

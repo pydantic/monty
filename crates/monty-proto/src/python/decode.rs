@@ -12,6 +12,7 @@ use monty_types::{
 };
 use pyo3::{
     prelude::*,
+    sync::PyOnceLock,
     types::{PyBool, PyBytes, PyComplex, PyDate, PyDelta, PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple},
 };
 
@@ -286,5 +287,7 @@ fn class_header(class: &ClassTypeNode) -> ClassHeader {
         is_dataclass: class.is_dataclass,
         eq: class.eq.clone(),
         hash: class.hash.clone(),
+        unhashable_message: PyOnceLock::new(),
+        missing_field_messages: PyOnceLock::new(),
     }
 }

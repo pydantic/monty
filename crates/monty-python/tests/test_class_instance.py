@@ -1668,3 +1668,24 @@ def test_deep_proxy_chain_hashes_from_the_leaf_up(monty_run: RunMonty):
     for node in nodes:
         hash(node)
     assert hash(nodes[-1]) == hash(nodes[-1])
+
+
+def test_hash_errors_share_one_message_per_class(monty_run: RunMonty):
+    """Proxies cache their hash error, so its message is built once per class:
+    a long sandbox class name is not copied once per instance."""
+    code = (
+        "U = dataclass(type('U' * 1000, (), {}))\n"
+        '@dataclass\nclass P:\n    x: int\n    y: int\n    def __init__(self, x):\n        self.x = x\n'
+        '    def __hash__(self):\n        return 0\n'
+        '[U(), U(), P(1), P(2)]'
+    )
+    first_u, second_u, first_p, second_p = monty_run(DATACLASS_IMPORT + code)
+    messages: list[object] = []
+    for proxy in (first_u, second_u, first_p, second_p):
+        with pytest.raises((TypeError, AttributeError)) as exc_info:
+            hash(proxy)
+        messages.append(exc_info.value.args[0])
+    assert messages[0] == f'unhashable type: {"U" * 1000!r}'
+    assert messages[0] is messages[1]
+    assert messages[2] == snapshot("'P' object has no attribute 'y'")
+    assert messages[2] is messages[3]
