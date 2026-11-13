@@ -21,9 +21,11 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
+    modules::time::timetuple_value,
+    py_value::PyValue,
     string_builder::StringBuilder,
     types::{
-        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, datetime,
+        CmpOrder, LazyHeapSet, NamedTuple, PyTrait, TimeDelta, Type, datetime,
         str::{allocate_string, allocate_string_no_interning},
         timedelta,
         timezone::{format_offset_compact, format_offset_hms, tzname_string},
@@ -176,6 +178,101 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult
     Ok(Value::Ref(vm.heap.allocate(HeapData::Date(Date(local.date())))))
 }
 
+/// Classmethod `date.fromisocalendar(year, week, day)`: the date of ISO weekday
+/// `day` in ISO week `week` of ISO year `year`. Shared with
+/// `datetime.fromisocalendar()`, which CPython inherits unchanged.
+pub(crate) fn class_fromisocalendar(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let date = iso_calendar_date(args, vm)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Date(Date(date)))))
+}
+
+/// Argument shape for `fromisocalendar()`, a `PyArg_ParseTupleAndKeywords` parser.
+/// The components stay raw so each can be read as CPython's `i` format reads it.
+#[derive(FromArgs)]
+#[from_args(name = "fromisocalendar", style = c_named, at_most_total)]
+struct FromisocalendarArgs {
+    year: Value,
+    week: Value,
+    day: Value,
+}
+
+/// Parses and validates the arguments of `fromisocalendar()` in CPython's order:
+/// each component is read in turn, then year, week and weekday are checked.
+pub(crate) fn iso_calendar_date(args: ArgValues, vm: &mut VM<'_>) -> RunResult<NaiveDate> {
+    let FromisocalendarArgs { year, week, day } = FromisocalendarArgs::from_args(args, vm)?;
+    defer_drop!(year, vm);
+    defer_drop!(week, vm);
+    defer_drop!(day, vm);
+    let year = iso_component(year, vm)?;
+    let week = iso_component(week, vm)?;
+    let day = iso_component(day, vm)?;
+    if !(1..=9999).contains(&year) {
+        return Err(year_out_of_range(year));
+    }
+    let invalid_week = || SimpleException::new_msg(ExcType::ValueError, format!("Invalid week: {week}")).into();
+    if !(1..=53).contains(&week) {
+        return Err(invalid_week());
+    }
+    // Only some years have a 53rd week.
+    let week_number = u32::try_from(week).expect("week in 1..=53");
+    if week == 53 && NaiveDate::from_isoywd_opt(year, week_number, chrono::Weekday::Mon).is_none() {
+        return Err(invalid_week());
+    }
+    if !(1..=7).contains(&day) {
+        return Err(
+            SimpleException::new_msg(ExcType::ValueError, format!("Invalid weekday: {day} (range is [1, 7])")).into(),
+        );
+    }
+    let weekday = chrono::Weekday::try_from(u8::try_from(day - 1).expect("day in 1..=7")).expect("weekday in 0..=6");
+    // Day 7 of week 52 or 53 of year 9999 lands in year 10000.
+    let date = NaiveDate::from_isoywd_opt(year, week_number, weekday).ok_or_else(|| year_out_of_range(year + 1))?;
+    if date.year() > 9999 {
+        return Err(year_out_of_range(date.year()));
+    }
+    Ok(date)
+}
+
+/// Reads one `fromisocalendar()` component as a C `int`, the way CPython's `i`
+/// format does: integers and `__index__` types are accepted, and one that does
+/// not fit is the "component out of range" error the classmethod reports.
+fn iso_component(value: &Value, vm: &mut VM<'_>) -> RunResult<i32> {
+    match value.py_value(vm) {
+        PyValue::Bool(b) => Ok(i32::from(b)),
+        PyValue::Int(integer) => integer
+            .to_i64(vm)
+            .and_then(|n| i32::try_from(n).ok())
+            .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, "ISO calendar component out of range").into()),
+        _ => match value.py_index_impl(vm)? {
+            Some(index) => {
+                defer_drop!(index, vm);
+                iso_component(index, vm)
+            }
+            None => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
+        },
+    }
+}
+
+/// The `datetime.IsoCalendarDate` that `isocalendar()` returns.
+///
+/// A tuple subclass in CPython; here a named tuple like `time.struct_time`, so
+/// it has no class object (see `limitations/datetime.md`).
+pub(crate) fn isocalendar_value(date: NaiveDate, vm: &mut VM<'_>) -> Value {
+    let iso = date.iso_week();
+    let named_tuple = NamedTuple::new(
+        EitherStr::Interned(vm.interns.intern_static(StaticStrings::IsoCalendarDate)),
+        [StaticStrings::Year, StaticStrings::Week, StaticStrings::Weekday]
+            .into_iter()
+            .map(|name| EitherStr::Interned(vm.interns.intern_static(name)))
+            .collect(),
+        vec![
+            Value::Int(i64::from(iso.year())),
+            Value::Int(i64::from(iso.week())),
+            Value::Int(i64::from(date.weekday().number_from_monday())),
+        ],
+    );
+    Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named_tuple))))
+}
+
 /// Classmethod `date.fromisoformat(date_string)`.
 ///
 /// Parses ISO 8601 date strings in the formats `YYYY-MM-DD` and `YYYYMMDD`,
@@ -325,6 +422,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
                 Ok(CallResult::Value(Value::Int(i64::from(
                     date.0.weekday().number_from_monday(),
                 ))))
+            }
+            // A classmethod, so CPython also reaches it through an instance.
+            Some(StaticStrings::Fromisocalendar) => class_fromisocalendar(vm, args).map(CallResult::Value),
+            Some(StaticStrings::Isocalendar) => {
+                args.check_zero_args("date.isocalendar", vm.heap)?;
+                Ok(CallResult::Value(isocalendar_value(date.0, vm)))
+            }
+            Some(StaticStrings::Timetuple) => {
+                args.check_zero_args("date.timetuple", vm.heap)?;
+                Ok(CallResult::Value(timetuple_value(date.0.and_time(NaiveTime::MIN), vm)))
             }
             // A classmethod, so CPython also reaches it through an instance.
             Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),

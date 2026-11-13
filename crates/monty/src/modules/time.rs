@@ -229,6 +229,14 @@ pub(crate) enum ClockReading {
     Ctime,
     /// `time.strftime(format)`: the format applied to the local `struct_time`.
     Strftime(Box<str>),
+    /// `datetime.utcnow()`: the instant as a naive UTC `datetime`.
+    UtcNow,
+}
+
+/// Suspends `datetime.utcnow()` on the shared `time.time` call, since the host
+/// answers it with epoch seconds like any other clock read.
+pub(crate) fn suspend_for_utcnow() -> CallResult {
+    suspend_for_clock(TimeCaller::Time, Some(ClockReading::UtcNow))
 }
 
 impl ClockReading {
@@ -242,6 +250,7 @@ impl ClockReading {
                 let fields = local_fields(utc, vm)?;
                 Ok(allocate_string(fields.asctime(), vm.heap))
             }
+            Self::UtcNow => datetime_type::utc_naive_value(utc, vm),
             Self::Strftime(format) => {
                 let fields = local_fields(utc, vm)?;
                 let text = fields.strftime(&format, vm)?;
@@ -663,6 +672,20 @@ fn is_daylight(sandbox_zone: &SandboxTimeZone, utc: NaiveDateTime, at: &MontyTim
     sandbox_zone
         .constants(Some(utc.year()))
         .is_some_and(|constants| constants.daylight && at.offset_seconds == constants.daylight_zone.offset_seconds)
+}
+
+/// The `struct_time` that `date.timetuple()` / `datetime.timetuple()` return: the
+/// wall clock with an unknown DST flag (`-1`) and no zone fields, as CPython's
+/// `timetuple()` builds it (a fixed-offset zone's `dst()` is `None`).
+pub(crate) fn timetuple_value(wall: NaiveDateTime, vm: &mut VM<'_>) -> Value {
+    let fields = TimeFields {
+        wall,
+        weekday: i64::from(wall.weekday().num_days_from_monday()),
+        yearday: i64::from(wall.ordinal()),
+        isdst: -1,
+        zone: None,
+    };
+    struct_time_value(&fields, vm)
 }
 
 /// Builds a `time.struct_time`.
