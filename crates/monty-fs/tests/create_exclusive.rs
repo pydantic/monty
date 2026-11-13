@@ -50,7 +50,7 @@ fn writable_modes() -> [MountMode; 2] {
 
 #[test]
 fn creates_empty_file_and_returns_requested_handle() {
-    for mode in ["r", "rb", "w", "wb", "a", "ab"] {
+    for mode in ["r", "rb", "w", "wb", "a", "ab", "w+b"] {
         for backend in writable_modes() {
             let dir = TempDir::new().unwrap();
             let mut table = mount(&dir, backend);

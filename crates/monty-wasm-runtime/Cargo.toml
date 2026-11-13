@@ -10,7 +10,6 @@ authors = { workspace = true }
 description = "WebAssembly component that drives a Monty protocol worker one turn per call."
 keywords = { workspace = true }
 categories = { workspace = true }
-homepage = { workspace = true }
 repository = { workspace = true }
 
 [lib]

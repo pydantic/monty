@@ -16,12 +16,7 @@ use std::{borrow::Cow, str::FromStr};
 /// CPython form (`'r'`, `'rb+'`, `'wb'`, …), matching how CPython itself
 /// normalizes input like `'rt'` → `'r'` and `'r+b'` → `'rb+'`.
 ///
-/// `+` update modes (`ReadUpdate`/`WriteUpdate`/`AppendUpdate`) are reserved
-/// in the enum so the mode space is fully represented, but [`FromStr`]
-/// currently rejects them — properly modelling them needs read-position
-/// tracking that the file wrapper does not yet implement. Treat the `Update`
-/// variants as unreachable at runtime; do not pattern-match against them as
-/// if they were a valid result of parsing user input.
+/// Binary `WriteUpdate` is supported; other update variants remain reserved.
 ///
 /// Carried publicly by [`MontyFileHandle`](crate::MontyFileHandle) so a host servicing file
 /// operations can inspect the mode without re-parsing the raw string.
@@ -35,7 +30,7 @@ pub enum FileMode {
     /// `w` / `wb`: write-only; truncate the file (creating it if missing) on open.
     Write(bool),
     /// `w+` / `wb+`: read and write; truncate the file (creating it if missing).
-    /// Reserved; not yet produced by [`FromStr`].
+    /// [`FromStr`] accepts the binary form only.
     WriteUpdate(bool),
     /// `a` / `ab`: write-only appending; create the file if missing, preserving content.
     Append(bool),
@@ -148,9 +143,8 @@ impl FileMode {
 }
 /// Parses a Python `open()` mode string into a [`FileMode`].
 ///
-/// Monty supports the common read, write, append, and update combinations in
-/// text or binary form. Exclusive creation (`x`) is rejected for now because
-/// it needs a dedicated mount-table operation to be race-free.
+/// Supports read, write and append modes, plus binary write/update.
+/// Exclusive mode (`x`) and other update modes are rejected.
 ///
 /// The `Err` payload is a CPython-matched message — an unknown mode
 /// character, duplicated `b`/`t`/`+`, conflicting binary+text flags, more
@@ -162,6 +156,7 @@ impl FromStr for FileMode {
         let mut action = None;
         let mut binary = false;
         let mut text = false;
+        let mut update = false;
 
         for ch in mode.chars() {
             match ch {
@@ -185,12 +180,8 @@ impl FromStr for FileMode {
                     }
                     text = true;
                 }
-                // `+` modes (`r+`, `w+`, `a+`, and their `b` variants) need
-                // read-position tracking that Monty does not yet implement.
-                // Reject them outright rather than silently truncating on the
-                // first write (which would happen because the OS-level read
-                // and write ops are full-file one-shots).
-                '+' => return Err("update modes ('+') are not yet supported".into()),
+                '+' if update => return Err("invalid mode: '+' specified twice".into()),
+                '+' => update = true,
                 _ => return Err(format!("invalid mode: {ch:?}").into()),
             }
         }
@@ -201,6 +192,14 @@ impl FromStr for FileMode {
         let Some(action) = action else {
             return Err("Must have exactly one of create/read/write/append mode and at most one plus".into());
         };
+
+        if update {
+            return if action == 'w' && binary {
+                Ok(Self::WriteUpdate(true))
+            } else {
+                Err("update modes ('+') are not yet supported".into())
+            };
+        }
 
         Ok(match action {
             'w' => Self::Write(binary),

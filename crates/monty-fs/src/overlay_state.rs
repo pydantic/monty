@@ -113,6 +113,33 @@ impl OverlayState {
         }
     }
 
+    /// Overwrites retained bytes without cloning the existing file.
+    pub(super) fn write_file_at(
+        &mut self,
+        relative_path: &str,
+        offset: usize,
+        data: &[u8],
+        mtime: f64,
+        limit: u64,
+    ) -> Result<bool, MountError> {
+        let Some(OverlayEntry::File(file)) = self.entries.get_mut(relative_path) else {
+            return Ok(false);
+        };
+        let end = offset
+            .checked_add(data.len())
+            .ok_or_else(|| MountError::InvalidArgument("write range is too large".to_owned()))?;
+        let growth = end.saturating_sub(file.content.len());
+        let projected = self.memory_usage.saturating_add(as_u64(growth));
+        if projected > limit {
+            return Err(MountError::MemoryUsageLimitExceeded(limit));
+        }
+        file.content.resize(file.content.len().max(end), 0);
+        file.content[offset..end].copy_from_slice(data);
+        file.mtime = mtime;
+        self.memory_usage = projected;
+        Ok(true)
+    }
+
     /// Checks replacing `relative_path` with a file of `content_len` bytes.
     pub(super) fn check_file_replacement(
         &self,
