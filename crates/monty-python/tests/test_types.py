@@ -776,6 +776,14 @@ UNDECODABLE_RESULTS = [
         KEY_COLLISIONS_ERROR,
         id='colliding_big_int_keys',
     ),
+    pytest.param(
+        # the proxy hashes only the hashable fields, skipping the lists its `==` compares in full
+        'from dataclasses import dataclass\n'
+        '@dataclass\nclass K:\n    xs: list\n    def __hash__(self):\n        return 0\n'
+        'base = list(range(1000))\n{K(base + [k]): None for k in range(100)}',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_dataclass_list_field_keys',
+    ),
 ]
 
 
@@ -817,6 +825,15 @@ def test_keys_sharing_a_tuple_decode(monty_run: RunMonty):
     result = monty_run('t = tuple(range(1000))\n{(t, i): i for i in range(2000)}')
     assert len(result) == snapshot(2000)
     assert result[(tuple(range(1000)), 7)] == snapshot(7)
+
+
+def test_instances_sharing_a_list_decode(monty_run: RunMonty):
+    """Identity-hashed instances sharing one large list stay within the hash budget."""
+    result = monty_run(
+        'class Obj:\n    def __init__(self, cfg):\n        self.cfg = cfg\n'
+        'cfg = list(range(10000))\n{Obj(cfg) for _ in range(20000)}'
+    )
+    assert len(result) == snapshot(20000)
 
 
 def test_undecodable_result_feed_start(session: MontySession):
