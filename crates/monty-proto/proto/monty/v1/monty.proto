@@ -684,6 +684,15 @@ message Configure {
   // protocol version change is needed. A forwarder that cannot pass
   // `StreamedCalls` on must clear it before forwarding.
   bool accepts_streamed_calls = 17;
+
+  // The client accepts `LoadInfo`, which a worker sends ahead of the reply to a
+  // `Load` in place of stamping the dump's values on `WorkerEvent`
+  // (`restored_script_name` and the `max_*` echoes). Absent or false, the worker
+  // keeps stamping them, so an older client is served unchanged; a worker that
+  // predates the field ignores it and does the same, so no protocol version
+  // change is needed. A forwarder that cannot pass `LoadInfo` on must clear it
+  // before forwarding.
+  bool accepts_load_info = 18;
 }
 
 // How a serving relay treats the session's state; workers ignore it.
@@ -850,6 +859,7 @@ message WorkerEvent {
     Ping ping = 13;
     SessionRefused session_refused = 14;
     StreamedCalls streamed_calls = 15;
+    LoadInfo load_info = 16;
   }
 
   // Cumulative execution time consumed by the session's sandbox code, in
@@ -866,7 +876,9 @@ message WorkerEvent {
   reserved 21;
 
   // Echoes the client-enforced budget so a host restoring an opaque dump can
-  // recover it.
+  // recover it. Sent on every event of a session to a client that did not set
+  // `Configure.accepts_load_info`; the others read the dump's budget from
+  // `LoadInfo`.
   optional uint64 max_suspensions = 22;
 
   // Execution time consumed by the feed in progress, in microseconds — the
@@ -878,16 +890,18 @@ message WorkerEvent {
   // The session's `max_feed_duration` and `max_turn_duration` limits in
   // microseconds, when configured. Reported so a client that restored a
   // session via `Load` (where the limits travel inside the opaque state
-  // bytes) still learns its budgets.
+  // bytes) still learns its budgets. Sent as `max_suspensions` is.
   optional uint64 max_feed_duration_micros = 25;
   optional uint64 max_turn_duration_micros = 26;
-  // Client-enforced sleep budget, also reported on `Load`.
+  // Client-enforced sleep budget, also reported on `Load`. Sent as `max_suspensions` is.
   optional uint64 max_total_sleep_micros = 27;
 
   // The session's script name, surfaced on a `Load` reply so a client that
   // restored a session (whose script name, like the limits above, travels
   // inside the opaque dump bytes) learns it without parsing the dump. Set only
-  // on a successful `Load` reply; unset on all other events.
+  // on a successful `Load` reply to a client that did not set
+  // `Configure.accepts_load_info` (the others read `LoadInfo.script_name`);
+  // unset on all other events.
   optional string restored_script_name = 23;
 
   // The session this connection now holds, set only by a remote that stores
@@ -905,12 +919,8 @@ message WorkerEvent {
   // reply, when it carries one). Local CPU-mode clients require this.
   optional ExecutionClock execution_clock = 30;
 
-  // Capped system sleep the session has requested, in microseconds, including
-  // a sleep it is suspended on. Survives Dump/Load. Stamped on every event, but
-  // clients read it only on the `Load` reply, to seed their `max_total_sleep`
-  // usage; afterwards they count sleeps themselves and never trust this value.
-  // Zero outside a session and from older workers.
-  uint64 total_sleep_micros = 31;
+  // Tag 31 was `total_sleep_micros`, now `LoadInfo.total_sleep_micros`.
+  reserved 31;
 }
 
 enum PrintStream {
@@ -971,6 +981,26 @@ message FunctionCall {
 // `FunctionCall`, so the client's suspension budget still ends a runaway loop.
 message StreamedCalls {
   repeated FunctionCall calls = 1;
+}
+
+// Mid-turn, like `Print`: what a restored dump holds that the client could not
+// know. The worker sends it ahead of the reply to a `Load` that restored a
+// session, whatever that reply's kind (`Ok`, a re-announced suspension or
+// `Complete`), and only to a client that set `Configure.accepts_load_info`.
+// It never ends the turn, so the reply keeps its own tag and fields.
+message LoadInfo {
+  // The restored session's script name.
+  string script_name = 1;
+  // Capped system sleep the session has requested, in microseconds, including
+  // a sleep it is suspended on. The client seeds its `max_total_sleep` usage
+  // from it; afterwards it counts sleeps itself and never trusts the worker.
+  uint64 total_sleep_micros = 2;
+  // The dump's client-enforced limits after the `Configure`'s were applied,
+  // as `WorkerEvent` echoes them to a client that did not opt in.
+  optional uint64 max_suspensions = 3;
+  optional uint64 max_feed_duration_micros = 4;
+  optional uint64 max_turn_duration_micros = 5;
+  optional uint64 max_total_sleep_micros = 6;
 }
 
 // Suspension: the sandbox performed an OS operation, surfaced for the client

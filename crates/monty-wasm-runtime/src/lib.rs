@@ -30,9 +30,9 @@ mod value;
 
 use bindings::exports::pydantic::monty::worker::{
     CallResult, CompleteEvent, ConfigureRequest, DatetimeSource, DispatchResult, Event, FunctionCallEvent, Guest,
-    NameLookupEvent, NameLookupResult, OsCallEvent, OsPolicy, PrintEvent, ProcessTime, RaisedError, RaisedException,
-    RandomSeed, RandomStart, Request, ResolveFuturesEvent, SleepMode, SourceRange, StackFrame, Status, TimeZone,
-    TypeCheckFormat,
+    LoadInfo, NameLookupEvent, NameLookupResult, OsCallEvent, OsPolicy, PrintEvent, ProcessTime, RaisedError,
+    RaisedException, RandomSeed, RandomStart, Request, ResolveFuturesEvent, SleepMode, SourceRange, StackFrame, Status,
+    TimeZone, TypeCheckFormat,
 };
 
 thread_local! {
@@ -65,12 +65,8 @@ struct Component;
 impl Guest for Component {
     fn dispatch(request: Request) -> DispatchResult {
         let (result, allocator_ready) = WORKER.with_borrow_mut(|worker| {
-            let mut result = dispatch(worker, request);
+            let result = dispatch(worker, request);
             let budget = worker.session_budget();
-            result.max_suspensions = budget.max_suspensions.map(|limit| limit as u64);
-            result.max_total_sleep_micros = budget
-                .max_total_sleep
-                .map(|limit| u64::try_from(limit.as_micros()).unwrap_or(u64::MAX));
             let hard_memory_limit = memory_limit_with_headroom(budget.max_memory, budget.type_check);
             let allocator_ready = monty_alloc::set_hard_limit(hard_memory_limit);
             (result, allocator_ready)
@@ -97,12 +93,8 @@ fn dispatch(worker: &mut Worker, request: Request) -> DispatchResult {
                 events: vec![event_from_proto(protocol_violation(&format!(
                     "malformed component request: {error}"
                 )))],
-                max_suspensions: None,
-                max_total_sleep_micros: None,
                 feed_execution_micros: 0,
-                max_feed_duration_micros: None,
-                max_turn_duration_micros: None,
-                total_sleep_micros: 0,
+                load_info: None,
             };
         }
     };
@@ -112,12 +104,8 @@ fn dispatch(worker: &mut Worker, request: Request) -> DispatchResult {
             events: vec![event_from_proto(worker.fatal_event(&format!(
                 "request frame of {len} bytes exceeds maximum of {MAX_FRAME_LEN} bytes"
             )))],
-            max_suspensions: None,
-            max_total_sleep_micros: None,
             feed_execution_micros: 0,
-            max_feed_duration_micros: None,
-            max_turn_duration_micros: None,
-            total_sleep_micros: 0,
+            load_info: None,
         };
     }
 
@@ -141,12 +129,8 @@ fn dispatch(worker: &mut Worker, request: Request) -> DispatchResult {
             Status::Shutdown
         },
         events: sink.events,
-        max_suspensions: None,
-        max_total_sleep_micros: None,
         feed_execution_micros: sink.feed_execution_micros,
-        max_feed_duration_micros: sink.max_feed_duration_micros,
-        max_turn_duration_micros: sink.max_turn_duration_micros,
-        total_sleep_micros: sink.total_sleep_micros,
+        load_info: sink.load_info,
     }
 }
 
@@ -155,9 +139,8 @@ fn dispatch(worker: &mut Worker, request: Request) -> DispatchResult {
 struct ComponentEventSink {
     events: Vec<Event>,
     feed_execution_micros: u64,
-    max_feed_duration_micros: Option<u64>,
-    max_turn_duration_micros: Option<u64>,
-    total_sleep_micros: u64,
+    /// The `LoadInfo` streamed ahead of a restoring `Load`'s reply.
+    load_info: Option<LoadInfo>,
 }
 
 impl EventSink for ComponentEventSink {
@@ -167,6 +150,16 @@ impl EventSink for ComponentEventSink {
                 len,
                 max: MAX_FRAME_LEN,
             })
+        } else if let Some(pb::worker_event::Kind::LoadInfo(info)) = &event.kind {
+            // reported beside the events: the host's turn has no event to consume
+            self.load_info = Some(LoadInfo {
+                max_suspensions: info.max_suspensions,
+                max_total_sleep_micros: info.max_total_sleep_micros,
+                max_feed_duration_micros: info.max_feed_duration_micros,
+                max_turn_duration_micros: info.max_turn_duration_micros,
+                total_sleep_micros: info.total_sleep_micros,
+            });
+            Ok(())
         } else if let Some(pb::worker_event::Kind::Print(print)) = &event.kind {
             // A `Print` event carries a run per stream switch, while the
             // component's `PrintEvent` names one stream, so it expands into one
@@ -181,9 +174,6 @@ impl EventSink for ComponentEventSink {
             Ok(())
         } else {
             self.feed_execution_micros = event.feed_execution_micros;
-            self.max_feed_duration_micros = event.max_feed_duration_micros;
-            self.max_turn_duration_micros = event.max_turn_duration_micros;
-            self.total_sleep_micros = event.total_sleep_micros;
             let mut event = event.clone();
             let component_event = match event.kind.take() {
                 Some(pb::worker_event::Kind::OsCall(call)) => match PreparedOsEvent::from_proto(call) {
@@ -394,6 +384,8 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
         protocol_version: PROTOCOL_VERSION,
         // the component interface has no started-calls event yet
         accepts_streamed_calls: false,
+        // the host reads a dump's limits and sleep total from `dispatch-result.load-info`
+        accepts_load_info: true,
         // Frames arrive as one batch at the end of a turn, but their
         // boundaries survive it: the host gets one print callback per frame,
         // and a print collector charges its cap per frame.
@@ -507,6 +499,7 @@ fn raised_exception_from_component(error: RaisedError) -> pb::RaisedException {
 fn event_from_proto(event: pb::WorkerEvent) -> Event {
     match event.kind {
         Some(pb::worker_event::Kind::Print(_)) => invalid_event("Print event bypassed segment expansion"),
+        Some(pb::worker_event::Kind::LoadInfo(_)) => invalid_event("LoadInfo event bypassed the sink"),
         // a serving relay's liveness probe; a worker never sends one
         Some(pb::worker_event::Kind::Ping(_)) => invalid_event("Ping event is a relay's, never a worker's"),
         Some(pb::worker_event::Kind::FunctionCall(call)) => {

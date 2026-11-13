@@ -66,6 +66,9 @@ pub(crate) struct Recorder {
     max_streamed_calls: usize,
     /// The `Configure`'s `max_suspensions`, which a worker-reported limit may only lower.
     configured_streamed_calls: usize,
+    /// The session's `max_feed_duration`, from its `Configure` or a `Load`'s `LoadInfo`;
+    /// an event's own echo of it, from a worker the client did not opt in with, takes precedence.
+    max_feed_duration_micros: Option<u64>,
     /// The in-flight feed's span, held across suspension round-trips so the
     /// whole feed is one span. Closed by the turn-ending event.
     feed: Option<OpenSpan>,
@@ -92,6 +95,7 @@ impl Recorder {
             streamed_arg_bytes: 0,
             max_streamed_calls: DEFAULT_MAX_SUSPENSIONS,
             configured_streamed_calls: DEFAULT_MAX_SUSPENSIONS,
+            max_feed_duration_micros: None,
             feed: None,
             session: None,
             dump_turn: false,
@@ -127,6 +131,7 @@ impl Recorder {
         let limits = c.limits.as_ref();
         self.configured_streamed_calls = streamed_call_cap(limits.and_then(|l| l.max_suspensions));
         self.max_streamed_calls = self.configured_streamed_calls;
+        self.max_feed_duration_micros = limits.and_then(|l| l.max_feed_duration_micros);
         let (script_name, script_name_cut) = truncate_str(&c.script_name);
         let (monty_version, monty_version_cut) = truncate_str(&c.monty_version);
         let (type_check_stubs, type_check_stubs_cut) = unzip(c.type_check_stubs.as_deref().map(truncate_str));
@@ -323,14 +328,36 @@ impl Recorder {
         }
     }
 
+    /// Adopts what a restored dump reports ahead of its `Load` reply: the limits
+    /// later events are measured against, and the dump's script name for the load span.
+    fn record_load_info(&mut self, info: &pb::LoadInfo) {
+        // the worker reports the limit, so it may tighten the configured cap but not lift it
+        if let Some(max_suspensions) = info.max_suspensions {
+            self.max_streamed_calls = streamed_call_cap(Some(max_suspensions)).min(self.configured_streamed_calls);
+        }
+        self.max_feed_duration_micros = info.max_feed_duration_micros;
+        // the session span already exists with the `Configure` name, so the dump's name goes on the load span
+        if let Some(load) = &self.turn {
+            let (script_name, cut) = truncate_str(&info.script_name);
+            load.record("script_name", script_name.as_str());
+            if cut {
+                load.record("length_limit_exceeded", true);
+            }
+        }
+    }
+
     /// Records one event from the worker: suspension events open the pending
     /// span, turn-ending events close the feed and turn spans.
     pub(crate) fn event(&mut self, event: &pb::WorkerEvent) {
         let _logfire = self.logfire.clone().map(set_local_logfire);
         // the budget travels with the elapsed time so `Load`-restored sessions,
         // whose limits come from the dump, show what it is measured against
+        if let Some(pb::worker_event::Kind::LoadInfo(info)) = &event.kind {
+            self.record_load_info(info);
+            return;
+        }
         let micros = event.total_execution_micros;
-        let max_feed_duration = event.max_feed_duration_micros;
+        let max_feed_duration = event.max_feed_duration_micros.or(self.max_feed_duration_micros);
         // a `Load` reply carries the dump's limit, which the checkout re-adopts;
         // the worker reports it, so it may tighten the configured cap but not lift it
         if let Some(max_suspensions) = event.max_suspensions {
@@ -489,6 +516,8 @@ impl Recorder {
             // a bare acknowledgement ending a housekeeping turn; the turn
             // span itself is the record
             Some(pb::worker_event::Kind::Ok(_)) => self.turn = None,
+            // handled above, before the timing fields it lacks are read
+            Some(pb::worker_event::Kind::LoadInfo(_)) => {}
             Some(pb::worker_event::Kind::FatalError(f)) => {
                 let (message, cut) = truncate_str(&f.message);
                 logfire::error!(
@@ -1356,7 +1385,6 @@ mod tests {
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
             max_total_sleep_micros: None,
-            total_sleep_micros: 0,
         }
     }
 
@@ -1614,7 +1642,6 @@ mod tests {
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
             max_total_sleep_micros: None,
-            total_sleep_micros: 0,
         });
         recorder.begin_turn(&request(pb::client_request::Kind::Dump(pb::Dump {})));
         recorder.event(&event(pb::worker_event::Kind::DumpResult(pb::DumpResult {
@@ -1671,7 +1698,6 @@ mod tests {
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
             max_total_sleep_micros: None,
-            total_sleep_micros: 0,
         });
         recorder.begin_turn(&request(pb::client_request::Kind::Feed(pb::Feed {
             code: "1".to_owned(),

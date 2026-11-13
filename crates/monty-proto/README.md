@@ -148,6 +148,15 @@ for one, from seeing an event tag it does not know.
 Older workers ignore the flag, so it needs no protocol version change; a relay that cannot forward `StreamedCalls`
 must clear it.
 
+A `Load` that restores a session reports what the dump holds as a `LoadInfo` event ahead of its reply: the script name, the
+system sleep already requested and the dump's limits.
+`LoadInfo`, like `Print`, does not end the turn, so the reply is still exactly one `Ok`, re-announced suspension or `Complete`.
+The worker sends it only to a client that set `Configure.accepts_load_info`.
+Without the flag it stamps `restored_script_name` and the `max_*` limit echoes on the events as before, which keeps an
+older client from seeing an event tag it does not know.
+Older workers ignore the flag and keep stamping, so it needs no protocol version change; a client then learns no
+sleep total, which only workers newer than that field report. A relay that cannot forward `LoadInfo` must clear the flag.
+
 ## Monty crates
 
 - [`monty`](https://crates.io/crates/monty) — the core interpreter: Python parser, bytecode VM, and sandbox.

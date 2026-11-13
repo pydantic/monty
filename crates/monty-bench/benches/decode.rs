@@ -53,7 +53,6 @@ fn complete_frame(value: MontyObject) -> Vec<u8> {
         max_feed_duration_micros: None,
         max_turn_duration_micros: None,
         max_total_sleep_micros: None,
-        total_sleep_micros: 0,
         kind: Some(pb::worker_event::Kind::Complete(pb::Complete::from(value))),
     };
     encode_to_capped_vec(&event).expect("frame within MAX_FRAME_LEN")

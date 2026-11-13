@@ -108,6 +108,7 @@ export class WorkerTransport {
     readonly workerId: number,
   ) {
     this.configuredSleepLimitMicros = configuredSleepLimitMicros
+    this.sleepLimitMicros = configuredSleepLimitMicros
   }
 
   /** Creates a configured REPL session over `dispatcher`. */
@@ -429,23 +430,23 @@ export class WorkerTransport {
     try {
       const result = await this.dispatcher(request, this.backstopMs())
       this.feedExecutionMs = Math.max(this.feedExecutionMs, Number(result.feedExecutionMicros) / 1000)
-      this.feedBudgetMs ??=
-        result.maxFeedDurationMicros === undefined ? undefined : Number(result.maxFeedDurationMicros) / 1000
-      this.turnBudgetMs ??=
-        result.maxTurnDurationMicros === undefined ? undefined : Number(result.maxTurnDurationMicros) / 1000
       if (result.status === 'shutdown') {
         this.dead = true
         this.exitStatus = result.exitStatus ?? undefined
       }
-      // the component reports the limit in force (the configured one, else
-      // the 1000 default; a dump's on load), so it is adopted from the reply;
-      // so is the time a dump already slept
-      if (request.tag === 'configure' || request.tag === 'load') {
-        this.suspensionLimit = tighter(this.suspensionLimit, result.maxSuspensions)
-        this.suspensionsSeen = 0n
-        this.sleepLimitMicros = tighter(this.configuredSleepLimitMicros, result.maxTotalSleepMicros)
-        this.sleepUsedMicros = request.tag === 'load' ? result.totalSleepMicros : 0n
+      // a restored dump carries its own limits (never looser than the configured
+      // ones) and the time it already slept, which the component reports beside the reply
+      const loaded = result.loadInfo
+      if (loaded !== undefined) {
+        this.feedBudgetMs ??=
+          loaded.maxFeedDurationMicros === undefined ? undefined : Number(loaded.maxFeedDurationMicros) / 1000
+        this.turnBudgetMs ??=
+          loaded.maxTurnDurationMicros === undefined ? undefined : Number(loaded.maxTurnDurationMicros) / 1000
+        this.suspensionLimit = tighter(this.suspensionLimit, loaded.maxSuspensions)
+        this.sleepLimitMicros = tighter(this.configuredSleepLimitMicros, loaded.maxTotalSleepMicros)
+        this.sleepUsedMicros = loaded.totalSleepMicros
       }
+      if (request.tag === 'configure' || request.tag === 'load') this.suspensionsSeen = 0n
       events = result.events
     } catch (error) {
       this.dead = true

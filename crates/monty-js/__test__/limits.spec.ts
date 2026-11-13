@@ -226,18 +226,15 @@ test('a suspension answering abort-feed ends the wasm worker', async () => {
     },
   })
   const requests: string[] = []
-  const transport = await WorkerTransport.create(async (request) => {
-    requests.push(request.tag)
-    return request.tag === 'configure'
-      ? {
-          status: 'continue',
-          events: [{ tag: 'ok' }],
-          maxSuspensions: 1n,
-          feedExecutionMicros: 0n,
-          totalSleepMicros: 0n,
-        }
-      : { status: 'continue', events: [call(requests.length)], feedExecutionMicros: 0n, totalSleepMicros: 0n }
-  })
+  const transport = await WorkerTransport.create(
+    async (request) => {
+      requests.push(request.tag)
+      return request.tag === 'configure'
+        ? { status: 'continue', events: [{ tag: 'ok' }], feedExecutionMicros: 0n }
+        : { status: 'continue', events: [call(requests.length)], feedExecutionMicros: 0n }
+    },
+    { limits: { maxSuspensions: 1 } },
+  )
   let reusable: boolean | undefined
   transport.onFinish = (value) => {
     reusable = value
@@ -276,9 +273,11 @@ test.each([
                 ],
           // A malicious reply cannot rewind the clock during the same feed.
           feedExecutionMicros: request.tag === 'feed' ? 400_000n : 100_000n,
-          totalSleepMicros: 0n,
-          maxFeedDurationMicros: 2_000_000n,
-          maxTurnDurationMicros: 3_000_000n,
+          // only a restore reports the dump's limits
+          loadInfo:
+            request.tag === 'load'
+              ? { maxFeedDurationMicros: 2_000_000n, maxTurnDurationMicros: 3_000_000n, totalSleepMicros: 0n }
+              : undefined,
         }
       },
       { limits: { maxFeedDurationSecs: 1, maxTurnDurationSecs: 0.8 } },
@@ -354,7 +353,7 @@ test('a restored sleep is charged when the dump reports none slept', async () =>
                 },
               ]
             : [{ tag: 'ok' as const }]
-      return { status: 'continue', events, feedExecutionMicros: 0n, totalSleepMicros: 0n }
+      return { status: 'continue', events, feedExecutionMicros: 0n }
     },
     { limits: { maxTotalSleepSecs: 0.25 } },
   )
