@@ -9,7 +9,6 @@ authors = { workspace = true }
 description = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
-homepage = { workspace = true }
 repository = { workspace = true }
 
 [lib]
@@ -53,10 +52,9 @@ libm = "0.2"
 # `hashlib`'s SHA-1 and SHA-2, for their hardware-accelerated compression; `sha2` also backs
 # `random.seed(str | bytes)`, which extends the seed with a SHA-512 digest as CPython does
 sha1 = { version = "0.11", default-features = false }
-sha2 = { version = "0.11", default-features = false }
+sha2 = { workspace = true }
 chrono = { workspace = true }
 speedate = "0.17.0"
-itertools = "0.14.0"
 jiter = { version = "0.17.0", features = ["num-bigint"] }
 
 [features]

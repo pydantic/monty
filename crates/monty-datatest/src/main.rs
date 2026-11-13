@@ -1380,8 +1380,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
 
             let parent = Path::new(&path)
                 .parent()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
+                .map_or_default(|p| p.to_string_lossy().to_string());
             if !parent.is_empty() && !is_virtual_dir(&parent) {
                 if parents {
                     create_parent_dirs(&parent);

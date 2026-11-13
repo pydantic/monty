@@ -2581,8 +2581,7 @@ impl<'h> VM<'h> {
         self.current_frame
             .code
             .location_for_offset(self.instruction_ip)
-            .map(LocationEntry::range)
-            .unwrap_or_default()
+            .map_or_default(LocationEntry::range)
     }
 
     /// Returns the position a suspension at the current instruction reports.
@@ -2646,8 +2645,7 @@ impl<'h> VM<'h> {
         self.current_frame
             .code
             .location_for_offset(offset as usize)
-            .map(LocationEntry::range)
-            .unwrap_or_default()
+            .map_or_default(LocationEntry::range)
     }
 
     // ========================================================================
