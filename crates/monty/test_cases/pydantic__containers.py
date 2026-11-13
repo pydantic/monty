@@ -105,6 +105,19 @@ assert errors(IntSet, [[1]]) == [
 assert errors(TypeAdapter(set[Any]), [[1]]) == [
     {'type': 'set_item_not_hashable', 'loc': (0,), 'msg': 'Set items should be hashable', 'input': [1]}
 ]
+
+
+# only a `TypeError` from hashing means unhashable; any other error propagates
+class HashFails:
+    def __hash__(self):
+        raise ValueError('boom')
+
+
+try:
+    TypeAdapter(set[Any]).validate_python([HashFails()])
+    assert False, 'expected a ValueError'
+except ValueError as exc:
+    assert repr(exc) == "ValueError('boom')"
 assert errors(IntSet, [1], strict=True)[0]['type'] == 'set_type'
 assert IntSet.validate_python({1}, strict=True) == {1}
 Frozen = TypeAdapter(frozenset[str])

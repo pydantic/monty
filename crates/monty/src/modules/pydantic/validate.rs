@@ -14,7 +14,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{RunError, RunResult},
+    exception_private::{ExcType, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId},
     intern::StaticStrings,
     modules::pydantic::{
@@ -303,16 +303,24 @@ fn validate_set<I: Input>(
         defer_drop_mut!(seq, vm);
         let items = validate_items::<I>(arena, item, seq, state, vm)?;
         defer_drop_mut!(items, vm);
-        let mut set = Set::new();
-        let mut errors = Vec::new();
-        for (index, value) in items.drain(..).enumerate() {
-            let probe = value.clone_with_heap(vm.heap);
-            match set.add(value, vm) {
-                Ok(_) => probe.drop_with(vm),
-                Err(_) => errors
-                    .push(LineError::owned(ErrorType::SetItemNotHashable {}, probe).with_outer_loc(index_loc(index))),
+        let mut built = DropGuard::new((Set::new(), Vec::<LineError>::new()), vm);
+        {
+            let ((set, errors), vm) = built.as_parts_mut();
+            for (index, value) in items.drain(..).enumerate() {
+                let probe = value.clone_with_heap(vm.heap);
+                match set.add(value, vm) {
+                    // As in pydantic, only a `TypeError` means unhashable; anything else propagates.
+                    Err(err) if err.is_catchable(ExcType::TypeError) => errors.push(
+                        LineError::owned(ErrorType::SetItemNotHashable {}, probe).with_outer_loc(index_loc(index)),
+                    ),
+                    added => {
+                        probe.drop_with(vm);
+                        added?;
+                    }
+                }
             }
         }
+        let ((set, errors), vm) = built.into_parts();
         if errors.is_empty() {
             let data = if frozen {
                 HeapData::FrozenSet(FrozenSet::from_set(set))
@@ -970,8 +978,6 @@ fn read_keyword_arguments<I: Input>(
     let map = input.validate_dict(strict, vm)?.value;
     defer_drop_mut!(map, vm);
     while let Some((mut key, mut value)) = map.next(vm)? {
-        // Each key scans every field name, so poll per entry rather than every few hundred.
-        vm.heap.tracker.check_memory_time()?;
         let entry = key.to_value(vm).and_then(|key_value| {
             let key_text = key_value.as_str(vm).map(str::to_owned);
             key_value.drop_with(vm);
@@ -989,6 +995,8 @@ fn read_keyword_arguments<I: Input>(
                     .with_outer_loc(LocItem::Key(key_text.unwrap_or_default())),
             ),
         }
+        // Each key scans every field name, so poll per entry rather than every few hundred.
+        vm.heap.tracker.check_memory_time()?;
     }
     Ok(())
 }
@@ -1005,7 +1013,6 @@ fn read_positional_arguments<I: Input>(
     defer_drop_mut!(seq, vm);
     let mut index = 0usize;
     while let Some(mut element) = seq.next(vm)? {
-        vm.heap.tracker.check_memory_time_every(index)?;
         let item = element.to_value(vm);
         seq.finish_item(element, vm);
         let item = item?;
@@ -1016,6 +1023,8 @@ fn read_positional_arguments<I: Input>(
             ),
         }
         index += 1;
+        // Polled once the item is owned by `slots` or `errors`, so an error here leaks nothing.
+        vm.heap.tracker.check_memory_time_every(index)?;
     }
     Ok(())
 }
