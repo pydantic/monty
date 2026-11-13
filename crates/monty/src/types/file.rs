@@ -1150,7 +1150,7 @@ fn install_buffer<'h>(file: &HeapReadMut<'h, OpenFile>, result: Value, vm: &mut 
 
 /// Rewrites `\r\n` and lone `\r` to `\n` in one pass: universal newlines on
 /// read. The output is never longer than the input, so a plain `String` is fine.
-fn translate_newlines(text: &str) -> String {
+pub(crate) fn translate_newlines(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
