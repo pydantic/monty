@@ -130,6 +130,7 @@ The total is checked before anything is created, so a `mkdir(parents=True)` that
 nothing.
 
 Positional binary writes charge their payload against `write_bytes_limit`, including repeated overwrites.
+In `OverlayMemory`, the first positional write to a backing file charges the whole materialized file instead.
 The full charge is reserved before writing and remains charged if a partial write fails.
 
 Python's [`OSAccess`][pydantic_monty.OSAccess] caps [`MemoryFile`][pydantic_monty.MemoryFile] content instead.
