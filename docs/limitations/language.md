@@ -93,9 +93,9 @@ exactly, except for the comprehension target restriction in
     - The main script and REPL feeds have no package, even if they assign `__package__`, so a relative import there
         raises `ImportError: attempted relative import with no known parent package`.
         `exec()` with an explicit globals dict reads that dict's `__package__` and `__name__`.
-    - A package whose import raised is imported again by a later relative import only while its parent package is
-        still loaded; otherwise the import raises `ModuleNotFoundError` naming the package, where CPython would
-        import the parent first.
+    - A nested package whose import raised is imported again by a later relative import only while its parent
+        package is still loaded; otherwise the import raises `ModuleNotFoundError` naming the package, where CPython
+        would import the parent first.
 - `__import__` is not defined.
 
 ## `__future__` imports

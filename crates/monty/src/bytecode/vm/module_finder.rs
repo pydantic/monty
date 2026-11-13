@@ -13,7 +13,7 @@
 
 use std::{str::FromStr, sync::Arc};
 
-use monty_types::{ExcType, ExtFunctionResult, ImportArgs, MAX_SEARCH_DIRS, ModuleFile, OsFunctionCall};
+use monty_types::{ExcType, ExtFunctionResult, ImportArgs, MAX_SEARCH_DIRS, ModuleFile, OsFunctionCall, is_identifier};
 
 use super::{
     FrameExit, FrameNamespace, VM,
@@ -122,6 +122,10 @@ impl VM<'_> {
     /// `level` dots name, counted up from the frame's `__package__` as CPython does.
     pub(super) fn import_relative_package(&mut self, level: usize) -> RunResult<CallResult> {
         let base = self.relative_base(level)?;
+        // `exec()` globals can name anything, but only dotted identifiers may reach the host
+        if let Some(invalid) = invalid_prefix(&base) {
+            return Err(ExcType::module_not_found_error(invalid, None));
+        }
         // A built-in (`os`, or the dotted `os.path`) or top-level name loads as `import base` would.
         let static_name = StaticStrings::from_str(&base).ok();
         match base.rsplit_once('.') {
@@ -468,4 +472,18 @@ fn cannot_import(attr: &str, parent: &str, origin: &str, partial: bool) -> RunEr
     } else {
         ExcType::cannot_import_name(attr, parent, Some(origin))
     }
+}
+
+/// `name` up to its first component that is not an identifier, the module CPython fails to find;
+/// `None` when every component is one.
+fn invalid_prefix(name: &str) -> Option<&str> {
+    let mut end = 0;
+    for part in name.split('.') {
+        end += part.len();
+        if !is_identifier(part) {
+            return Some(&name[..end]);
+        }
+        end += 1;
+    }
+    None
 }

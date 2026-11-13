@@ -201,3 +201,11 @@ try:
     assert False, 'expected ModuleNotFoundError'
 except ModuleNotFoundError as e:
     assert str(e) == "No module named 'os.path.x'; 'os.path' is not a package"
+
+# === A package name that is not a dotted identifier is not found ===
+for package, missing in [('/etc/x', '/etc/x'), ('rel.a/b', 'rel.a/b'), ('a b.c', 'a b')]:
+    try:
+        exec('from . import x', {'__package__': package})
+        assert False, 'expected ModuleNotFoundError'
+    except ModuleNotFoundError as e:
+        assert str(e) == f"No module named '{missing}'"
