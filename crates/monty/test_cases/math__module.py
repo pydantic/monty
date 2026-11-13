@@ -1663,3 +1663,11 @@ for compute in [lambda: math.ldexp(1.0, big), lambda: math.ldexp(1.0, 2**31), la
         assert False, 'expected OverflowError'
     except OverflowError as e:
         assert str(e) == 'math range error'
+
+# === perm() with a bad n and a heap k ===
+# guards a reference-count leak that only the memory-model-checks build detects
+try:
+    math.perm('a long heap string of more than twenty bytes', [2**70])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'str' object cannot be interpreted as an integer"

@@ -1929,21 +1929,24 @@ fn dict_merge_from_kwargs(dict: &mut Dict, kwargs: KwargsValues, vm: &mut VM<'_>
 fn dict_setdefault<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let (key, default) = args.get_one_two_args("setdefault", vm.heap)?;
     let default = default.unwrap_or(Value::None);
-    let mut key_guard = DropGuard::new(key, vm);
-    let (key, vm) = key_guard.as_parts();
+    // One guard for both: the lookup can raise (unhashable key), and `default`
+    // must be released on that path as well.
+    let mut args_guard = DropGuard::new((key, default), vm);
+    let ((key, _), vm) = args_guard.as_parts();
 
     if let Some(existing) = dict.dict_get(key, vm)? {
-        default.drop_with(vm);
         Ok(existing)
     } else {
-        // Key doesn't exist - insert default and return it (cloned before insertion)
-        let return_value = default.clone_with_heap(vm);
-        let (key, vm) = key_guard.into_parts();
-        if let Some(old_value) = dict.set(key, default, vm)? {
-            // This shouldn't happen since we checked, but handle it anyway
-            old_value.drop_with(vm);
-        }
-        Ok(return_value)
+        // Key doesn't exist - insert default and return it (cloned before insertion).
+        // The insert can still raise (a `__hash__` or `__eq__` that fails on its
+        // second call, the growth preflight), so the clone is guarded until returned.
+        let ((key, default), vm) = args_guard.into_parts();
+        let mut return_guard = DropGuard::new(default.clone_with_heap(vm), vm);
+        // A replaced value is only possible when `__eq__` answers differently on
+        // the second lookup; release it rather than leak it.
+        let old_value = dict.set(key, default, return_guard.ctx())?;
+        old_value.drop_with(return_guard.ctx());
+        Ok(return_guard.into_inner())
     }
 }
 

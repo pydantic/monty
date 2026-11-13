@@ -24,7 +24,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, HeapData, HeapId},
+    heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::{
         ModuleFunctions,
@@ -162,12 +162,7 @@ fn call_hexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value
 /// keywords are rejected wholesale before the arity is even counted, both
 /// under the module-qualified `name`.
 fn call_unhexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value> {
-    let mut positional = args.into_pos_only(name, vm.heap)?;
-    let count = positional.len();
-    let Some(hexstr) = positional.next().filter(|_| count == 1) else {
-        positional.drop_with(vm.heap);
-        return Err(ExcType::type_error_arg_count(name, 1, count));
-    };
+    let hexstr = args.reject_kwargs(name, vm.heap)?.get_one_arg(name, vm.heap)?;
     defer_drop!(hexstr, vm);
 
     let decoded = hex_decode(decode_input_described(hexstr, vm, "bytes, buffer or ASCII string")?.as_ref())?;
@@ -252,12 +247,9 @@ fn call_b2a_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `binascii.a2b_uu(data)` — the inverse, tolerant of either padding
 /// convention and of a line truncated before its length byte promised.
 fn call_a2b_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let mut positional = args.into_pos_only("binascii.a2b_uu", vm.heap)?;
-    let count = positional.len();
-    let Some(data) = positional.next().filter(|_| count == 1) else {
-        positional.drop_with(vm.heap);
-        return Err(ExcType::type_error_arg_count("binascii.a2b_uu", 1, count));
-    };
+    let data = args
+        .reject_kwargs("binascii.a2b_uu", vm.heap)?
+        .get_one_arg("binascii.a2b_uu", vm.heap)?;
     defer_drop!(data, vm);
 
     let decoded = uu_decode(decode_input_described(data, vm, "bytes, buffer or ASCII string")?.as_ref())?;

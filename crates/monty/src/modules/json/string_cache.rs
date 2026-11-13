@@ -90,7 +90,8 @@ impl JsonStringCache {
 
     /// Drops all cached values, decrementing their refcounts.
     ///
-    /// Called during `VM::drop()` before the heap is torn down.
+    /// Called during `VM::drop()` before the heap is torn down, and by
+    /// `parse_json_bytes` to retire the cache a re-entrant `json.loads` left behind.
     pub fn drop_all(&mut self, heap: &mut impl ContainsHeap) {
         if let Some(inner) = &mut self.inner {
             for entry in &mut *inner.entries {

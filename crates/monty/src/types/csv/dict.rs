@@ -239,9 +239,17 @@ pub(super) fn reader_next<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut VM<'h>)
     let (dict, vm) = dict_guard.as_parts_mut();
     // `dict(zip(fieldnames, row))`: the surplus of the longer side stays behind.
     let paired = name_count.min(item_count);
-    for (name, item) in names.drain(..paired).zip(items.drain(..paired)) {
-        if let Some(old) = dict.set(name, item, vm)? {
-            old.drop_with(vm);
+    {
+        // An unhashable field name raises part way; the guards release the
+        // names and items the drains never reached.
+        let names_rest = names.drain(..paired);
+        defer_drop_mut!(names_rest, vm);
+        let items_rest = items.drain(..paired);
+        defer_drop_mut!(items_rest, vm);
+        for (name, item) in names_rest.by_ref().zip(items_rest.by_ref()) {
+            if let Some(old) = dict.set(name, item, vm)? {
+                old.drop_with(vm);
+            }
         }
     }
     if name_count < item_count {
@@ -251,7 +259,10 @@ pub(super) fn reader_next<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut VM<'h>)
             old.drop_with(vm);
         }
     } else {
-        for name in names.drain(..) {
+        // The surplus names take `restval`; a raise here releases the rest the same way.
+        let names_rest = names.drain(..);
+        defer_drop_mut!(names_rest, vm);
+        for name in names_rest.by_ref() {
             if let Some(old) = dict.set(name, restval.clone_with_heap(vm.heap), vm)? {
                 old.drop_with(vm);
             }

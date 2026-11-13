@@ -133,3 +133,33 @@ try:
     assert False, 'circular reference should raise ValueError'
 except ValueError as exc:
     assert str(exc) == 'Circular reference detected'
+
+# === loads called again from inside a parse_int hook ===
+# guards a reference-count leak that only the memory-model-checks build detects
+inner_results = []
+
+
+def reentrant_hook(text):
+    inner_results.append(json.loads('["a string between sixteen and sixty-four bytes"]'))
+    return int(text) + 100
+
+
+result = json.loads('{"an outer key longer than sixteen": [1, 2]}', parse_int=reentrant_hook)
+assert result == {'an outer key longer than sixteen': [101, 102]}
+assert inner_results == [
+    ['a string between sixteen and sixty-four bytes'],
+    ['a string between sixteen and sixty-four bytes'],
+]
+
+
+# the same restore path when the outer parse fails after the re-entry
+def raising_hook(text):
+    json.loads('["a string between sixteen and sixty-four bytes"]')
+    raise ValueError('hook failed')
+
+
+try:
+    json.loads('{"an outer key longer than sixteen": [1]}', parse_int=raising_hook)
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'hook failed'

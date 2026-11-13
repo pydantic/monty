@@ -52,6 +52,9 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         extra_iterables,
     } = MapArgs::from_args(args, vm)?;
     defer_drop!(function, vm);
+    // Guarded as an iterator: a non-iterable argument raises part way through
+    // the loop below, and the guard releases the arguments never reached.
+    let extra_iterables = extra_iterables.into_iter();
     defer_drop_mut!(extra_iterables, vm);
 
     let first_iter = first_iterable.into_py_iter(vm)?.require_synchronous(vm)?;
@@ -60,8 +63,7 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let extra_iterators: Vec<Value> = Vec::with_capacity(extra_iterables.len());
     defer_drop_mut!(extra_iterators, vm);
-
-    for iterable in extra_iterables.drain(..) {
+    for iterable in extra_iterables.by_ref() {
         extra_iterators.push(iterable.into_py_iter(vm)?.require_synchronous(vm)?);
     }
 

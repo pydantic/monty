@@ -18,13 +18,16 @@ use crate::{
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
 pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ZipArgs { iterables, strict } = ZipArgs::from_args(args, vm)?;
+    // Guarded as an iterator: a non-iterable argument raises part way through
+    // the loop below, and the guard releases the arguments never reached.
+    let iterables = iterables.into_iter();
     defer_drop_mut!(iterables, vm);
     // CPython's `strict` is truthy-checked (not strict typed), so test the raw
     // value rather than asking the macro to coerce to a strict `bool`.
     defer_drop!(strict, vm);
     let strict = strict.py_bool(vm)?;
 
-    if iterables.is_empty() {
+    if iterables.len() == 0 {
         // zip() with no arguments returns empty list
         let heap_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
         return Ok(Value::Ref(heap_id));
@@ -33,7 +36,7 @@ pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Create iterators for each iterable
     let iterators: Vec<Value> = Vec::with_capacity(iterables.len());
     defer_drop_mut!(iterators, vm);
-    for iterable in iterables.drain(..) {
+    for iterable in iterables.by_ref() {
         iterators.push(iterable.into_py_iter(vm)?.require_synchronous(vm)?);
     }
     let mut iterators = iterators.iter().map(|iter| iter.read(vm)).collect::<Vec<_>>();

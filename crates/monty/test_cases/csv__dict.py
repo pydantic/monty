@@ -119,6 +119,25 @@ try:
 except TypeError as exc:
     assert str(exc) == "this function got an unexpected keyword argument 'nope'"
 
+# === DictReader with an unhashable field name ===
+# guards a reference-count leak that only the memory-model-checks build detects
+try:
+    next(csv.DictReader(['a,b'], fieldnames=[[1], [2**70]]))
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "cannot use 'list' as a dict key (unhashable type: 'list')"
+try:
+    next(csv.DictReader(['a'], fieldnames=['x', [1], [2**70]]))
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "cannot use 'list' as a dict key (unhashable type: 'list')"
+# a long field value is a heap value too, so the unreached row item is covered
+try:
+    next(csv.DictReader(['a,' + 'a long heap string of more than twenty bytes' + str(1)], fieldnames=[[1], 'b']))
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "cannot use 'list' as a dict key (unhashable type: 'list')"
+
 
 # === DictWriter ===
 def dw(rows, fieldnames, **kwargs):

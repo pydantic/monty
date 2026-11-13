@@ -1645,6 +1645,9 @@ fn populate_buffer_meta<'h>(file: &HeapReadMut<'h, OpenFile>, vm: &mut VM<'h>) -
 /// matches CPython's `invalid whence` message.
 fn parse_seek_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(i64, i64)> {
     let (offset, maybe_whence) = args.get_one_two_args("seek", vm.heap)?;
+    // Either argument may be a heap value that `as_int` rejects; release both on every path.
+    defer_drop!(offset, vm);
+    defer_drop!(maybe_whence, vm);
     let offset_int = offset.as_int(vm)?;
     let whence_int = match maybe_whence {
         Some(w) => w.as_int(vm)?,

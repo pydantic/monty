@@ -135,7 +135,11 @@ fn run_min_max(
                 let result_key = evaluate_key(result.clone_with_heap(vm), key_fn, vm)?;
                 defer_drop_mut!(result_key, vm);
 
-                for item in args.drain(..) {
+                // A key call or comparison can raise; the guard releases the
+                // arguments the drain never reached.
+                let rest = args.drain(..);
+                defer_drop_mut!(rest, vm);
+                for item in rest.by_ref() {
                     defer_drop_mut!(item, vm);
                     let item_key = evaluate_key(item.clone_with_heap(vm), key_fn, vm)?;
                     defer_drop_mut!(item_key, vm);
@@ -149,16 +153,19 @@ fn run_min_max(
             Ok(result_guard.into_inner())
         } else {
             let mut result_guard = DropGuard::new(first_arg, vm);
-            let (result, vm) = result_guard.as_parts_mut();
+            {
+                let (result, vm) = result_guard.as_parts_mut();
+                // Same as above: a failed comparison must release the unreached arguments.
+                let rest = args.drain(..);
+                defer_drop_mut!(rest, vm);
+                for item in rest.by_ref() {
+                    defer_drop_mut!(item, vm);
 
-            for item in args.drain(..) {
-                defer_drop_mut!(item, vm);
-
-                if candidate_wins(result, item, is_min, vm)? {
-                    mem::swap(result, item);
+                    if candidate_wins(result, item, is_min, vm)? {
+                        mem::swap(result, item);
+                    }
                 }
             }
-
             Ok(result_guard.into_inner())
         }
     }

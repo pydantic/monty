@@ -1174,14 +1174,15 @@ fn falling_product(n: &BigInt, k: u64, binomial: bool, tracker: &ResourceTracker
 fn math_perm(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // CPython's arity errors name the bare function: `perm expected at most 2 arguments, got 3`.
     let (n_val, k_val) = args.get_one_two_args("perm", vm.heap)?;
+    // Both guards go before either conversion: a bad `n` must still release `k`.
     defer_drop!(n_val, vm);
+    defer_drop!(k_val, vm);
 
     let n = value_to_bigint(n_val, vm)?;
     // `perm(n)` is `n!`, argument errors included.
     let Some(k_val) = k_val else {
         return Ok(LongInt::new(factorial(&n, &vm.heap.tracker)?).into_value(vm.heap));
     };
-    defer_drop!(k_val, vm);
     let k = value_to_bigint(k_val, vm)?;
 
     if n.is_negative() {

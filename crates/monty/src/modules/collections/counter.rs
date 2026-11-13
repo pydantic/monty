@@ -173,11 +173,15 @@ pub(crate) fn counter_update<'h>(
     subtract: bool,
     vm: &mut VM<'h>,
 ) -> RunResult<()> {
+    // The keyword counts are folded in after `source`, and folding `source` can
+    // raise; the guard releases them on that path and is reclaimed below.
+    let mut kwargs_guard = DropGuard::new(kwargs, vm);
     // An explicit `None` source is a no-op (CPython skips it before dispatch), so
     // `Counter(None)` and `c.update(None)` only apply the keyword counts below.
     if let Some(source) = source
         && !matches!(source, Value::None)
     {
+        let vm = kwargs_guard.ctx();
         let is_mapping = matches!(&source, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_)));
         if is_mapping {
             let Value::Ref(src_id) = source else {
@@ -211,6 +215,7 @@ pub(crate) fn counter_update<'h>(
     // Keyword counts, e.g. `Counter(a=2)` / `c.update(a=5)`. CPython recurses
     // via `self.update(kwds)`, so these follow the mapping path — including the
     // empty-Counter fast path, re-evaluated after the iterable was folded in.
+    let (kwargs, vm) = kwargs_guard.into_parts();
     let kwarg_pairs = counter_kwarg_deltas(kwargs);
     counter_merge_mapping(counter, kwarg_pairs, subtract, vm)?;
     Ok(())

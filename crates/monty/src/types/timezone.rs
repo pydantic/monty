@@ -72,19 +72,15 @@ impl TimeZone {
     /// Parses timezone constructor arguments.
     pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let TimezoneInitArgs { offset, name } = TimezoneInitArgs::from_args(args, vm)?;
-        // Keep `offset` and `name` alive across the validation helpers — they
-        // own the heap refs (TimeDelta / Str) we're reading from. `name` is
-        // an `Option<Value>` so we can distinguish "omitted" from an explicit
-        // `None`: CPython accepts `timezone(td)` but rejects `timezone(td,
-        // None)` with `TypeError: timezone() argument 2 must be str, not None`.
+        // Both guards precede the offset check so a rejected offset still releases `name`.
+        // `name` stays `Option<Value>` to tell "omitted" from an explicit `None`, which
+        // CPython rejects with `timezone() argument 2 must be str, not None`.
         defer_drop!(offset, vm);
+        defer_drop!(name, vm);
         let offset_seconds = extract_offset_seconds(offset, vm.heap, vm.interns)?;
         let name_str: Option<String> = match name {
             None => None,
-            Some(name) => {
-                defer_drop!(name, vm);
-                extract_name(name, vm.heap, vm.interns)?
-            }
+            Some(name) => extract_name(name, vm.heap, vm.interns)?,
         };
 
         if offset_seconds == 0 && name_str.is_none() {
