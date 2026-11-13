@@ -354,6 +354,7 @@ impl GraphExporter {
                 defer_drop!(children, vm);
                 MontyNode::FrozenSet(self.push_all(children, vm))
             }
+            HeapReadOutput::BuiltinDescriptor(_) => self.repr_node(value, vm),
             HeapReadOutput::Cell(_) | HeapReadOutput::HostClassType(_) => {
                 unreachable!("cells and host class types are routed by push_ref")
             }
@@ -872,6 +873,7 @@ impl MontyTypeExt for MontyType {
             Type::SpecialForm => Self::SpecialForm,
             Type::Path => Self::Path,
             Type::Property => Self::Property,
+            Type::ClassMethod | Type::StaticMethod => return None,
             Type::Object => Self::Object,
             Type::RePattern => Self::RePattern,
             Type::ReMatch => Self::ReMatch,

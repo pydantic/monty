@@ -4,10 +4,16 @@ use monty_types::ExcType;
 
 use crate::{
     args::ArgValues,
+    builtins::Builtins,
     bytecode::{CallResult, PendingLookupEffect, VM},
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
+    frozen::FrozenFunction,
     heap::DropWithContext,
+    types::{
+        descriptor,
+        instance::{FastAttributeLookupResult, lookup_attribute_fast},
+    },
     value::Value,
 };
 
@@ -19,7 +25,7 @@ use crate::{
 /// Signature: `hasattr(object, name)`
 ///
 /// Note: This is implemented by calling getattr(object, name) and returning
-/// True if it succeeds, False if it raises an exception. A lazy attribute on a
+/// True if it succeeds, False if it raises AttributeError. A lazy attribute on a
 /// host-backed object suspends to the host like `obj.attr` does, with a
 /// [`PendingLookupEffect::HasAttr`] turning the answer into the bool.
 ///
@@ -46,29 +52,41 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         .into());
     };
 
-    // important: we must own the returned value if py_get_attr succeeds to drop it
+    match lookup_attribute_fast(object, &name, vm) {
+        FastAttributeLookupResult::Found(value) => {
+            value.drop_with(vm);
+            return Ok(CallResult::Value(Value::Bool(true)));
+        }
+        FastAttributeLookupResult::Missing => return Ok(CallResult::Value(Value::Bool(false))),
+        FastAttributeLookupResult::HostLookup => {}
+        FastAttributeLookupResult::Inconclusive => {
+            let name = name.as_value(vm.heap);
+            return vm.call_frozen_exact(
+                FrozenFunction::DescriptorHasattr,
+                [
+                    descriptor::attribute_helper(),
+                    object.clone_with_heap(vm.heap),
+                    name,
+                    Value::Builtin(Builtins::ExcType(ExcType::AttributeError)),
+                ],
+            );
+        }
+    }
+
+    // Only native host lookups reach this path; Undefined is handled by the pending effect.
     let has_attr = match object.py_getattr(&name, vm) {
         Ok(CallResult::Value(value)) => {
             value.drop_with(vm);
             true
         }
-        // A frame computes the attribute (`__annotations__`): run it here, so an
-        // `AttributeError` it raises answers `False` as in CPython, and discard the value.
-        Ok(CallResult::FramePushed) => match CallResult::FramePushed.require_synchronous(vm) {
-            Ok(value) => {
-                value.drop_with(vm);
-                true
-            }
-            Err(RunError::Exc(e)) if e.exc.exc_type() == ExcType::AttributeError => false,
-            Err(e) => return Err(e),
-        },
         Ok(CallResult::AttrLookup {
             name,
             class_name,
             object_id,
             type_object,
-            effect: _,
+            effect,
         }) => {
+            effect.drop_with(vm);
             return Ok(CallResult::AttrLookup {
                 name,
                 class_name,
@@ -79,13 +97,7 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         }
         Ok(other) => {
             other.drop_with(vm);
-            // hasattr() only tests attribute values — OS calls, external calls,
-            // method calls, and awaits are not supported here
-            //
-            // TODO: might need to support this case?
-            return Err(
-                SimpleException::new_msg(ExcType::TypeError, "hasattr(): attribute is not a simple value").into(),
-            );
+            return Err(RunError::internal("hasattr() lookup escaped its continuation"));
         }
         Err(RunError::Exc(e)) if e.exc.exc_type() == ExcType::AttributeError => false,
         Err(e) => return Err(e),

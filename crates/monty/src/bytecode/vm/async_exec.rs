@@ -12,7 +12,8 @@ use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTrac
 use smallvec::{SmallVec, smallvec};
 
 use super::{
-    AwaitResult, CallFrame, FrameExit, Opcode, VM, frame_code, function_namespace, recursion::frame_recursion_depth,
+    AwaitResult, CallFrame, FrameExit, Opcode, VM, frame_code, function_namespace,
+    recursion::{frame_recursion_depth, frozen_frame_depth},
     stack_index,
 };
 use crate::{
@@ -516,6 +517,7 @@ impl<'h> VM<'h> {
                 exception_stack_base: f.exception_stack_base(),
                 call_offset: f.call_offset,
                 is_initializer: f.is_initializer,
+                result: f.result,
                 namespace: f.namespace,
                 import_from_module: f.import_from_module,
             })
@@ -530,6 +532,7 @@ impl<'h> VM<'h> {
             exception_stack_base: current.exception_stack_base(),
             call_offset: current.call_offset,
             is_initializer: current.is_initializer,
+            result: current.result,
             namespace: mem::take(&mut current.namespace),
             import_from_module: current.import_from_module,
         });
@@ -538,6 +541,7 @@ impl<'h> VM<'h> {
         // the global counter so the next task gets a clean budget.
         let task_depth = frame_recursion_depth(frames.iter().map(|f| f.function_id), self.interns);
         self.recursion_depth -= task_depth;
+        self.frozen_frame_depth -= frozen_frame_depth(frames.iter().map(|f| f.function_id), self.interns);
 
         // Save VM state into the task
         let task = self.scheduler.get_task_mut(task_id);
@@ -574,6 +578,7 @@ impl<'h> VM<'h> {
         // Restore this task's recursion depth contribution to the global counter
         let task_depth = frame_recursion_depth(frames.iter().map(|f| f.function_id), self.interns);
         self.recursion_depth += task_depth;
+        self.frozen_frame_depth += frozen_frame_depth(frames.iter().map(|f| f.function_id), self.interns);
 
         if !frames.is_empty() {
             // Task has existing context - restore it
@@ -599,6 +604,7 @@ impl<'h> VM<'h> {
                         is_parked: false,
                         namespace: sf.namespace,
                         is_initializer: sf.is_initializer,
+                        result: sf.result,
                         import_from_module: sf.import_from_module,
                     }
                 })
@@ -634,6 +640,7 @@ impl<'h> VM<'h> {
     ///
     /// Similar to exec_get_awaitable's coroutine handling, but for task initialization.
     fn init_task_from_coroutine(&mut self, coroutine_id: HeapId) -> Result<(), RunError> {
+        debug_assert_eq!(self.frozen_frame_depth, 0, "previous task's frames must be saved");
         let HeapReadOutput::Coroutine(coro) = self.heap.read(coroutine_id) else {
             panic!("task coroutine_id doesn't point to a Coroutine")
         };

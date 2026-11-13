@@ -88,6 +88,8 @@ macro_rules! heap_payloads {
             /// An instance of a user-defined class.
             #[serde(rename = "I")]
             Instance(boxed $crate::types::Instance),
+            /// A builtin property, classmethod or staticmethod.
+            BuiltinDescriptor(boxed $crate::types::BuiltinDescriptor),
             /// A method bound to an instance.
             #[serde(rename = "M")]
             BoundMethod(inline $crate::types::BoundMethod),
@@ -255,6 +257,7 @@ impl HeapData {
             | Self::HostClassType(_)
             | Self::Class(_)
             | Self::Instance(_)
+            | Self::BuiltinDescriptor(_)
             | Self::BoundMethod(_)
             | Self::DataclassField(_)
             | Self::DataclassMethod(_)
@@ -318,6 +321,9 @@ impl HeapData {
     /// so it is not simply the list of `py_call` overrides.
     #[must_use]
     pub(crate) fn is_callable(&self) -> bool {
+        if let Self::BuiltinDescriptor(d) = self {
+            return d.kind() == Type::StaticMethod;
+        }
         matches!(
             self,
             Self::Class(_)
@@ -369,6 +375,7 @@ impl HeapData {
             // A class object's type is `type`; an instance's carries its class id.
             Self::Class(_) => Type::Type,
             Self::Instance(instance) => Type::Instance(instance.class()),
+            Self::BuiltinDescriptor(d) => d.kind(),
             Self::BoundMethod(_) => Type::Function,
             Self::DataclassField(_) => Type::DataclassField,
             Self::DataclassMethod(_) => Type::Function,

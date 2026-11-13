@@ -19,7 +19,7 @@ use crate::{
     py_value::PyValue,
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range,
-        Set, Slice, Str, TimeZone, Tuple,
+        Set, Slice, Str, TimeZone, Tuple, builtin_descriptor,
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
@@ -345,6 +345,10 @@ pub enum Type {
     /// `annotationlib.ForwardRef`, an unevaluated annotation.
     #[strum(serialize = "annotationlib.ForwardRef")]
     ForwardRef,
+    #[strum(serialize = "classmethod")]
+    ClassMethod,
+    #[strum(serialize = "staticmethod")]
+    StaticMethod,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -438,6 +442,8 @@ impl Type {
             Self::Iterator => Some("iter"),
             Self::Type => Some("type"),
             Self::Property => Some("property"),
+            Self::ClassMethod => Some("classmethod"),
+            Self::StaticMethod => Some("staticmethod"),
             _ => None,
         }
     }
@@ -466,6 +472,8 @@ impl Type {
             "frozenset" => Some(Self::FrozenSet),
             "range" => Some(Self::Range),
             "slice" => Some(Self::Slice),
+            "classmethod" => Some(Self::ClassMethod),
+            "staticmethod" => Some(Self::StaticMethod),
             "iter" => Some(Self::Iterator),
             "type" => Some(Self::Type),
             "property" => Some(Self::Property),
@@ -692,9 +700,7 @@ impl Type {
             // `object.__setattr__(obj, name, value)` called directly, which is
             // how it is nearly always reached; `object.__setattr__` as a value
             // is handled by `class_getattr`.
-            (Self::Object, _) if attr.as_str(vm.interns) == "__setattr__" => {
-                builtin_object_setattr(vm, args).map(CallResult::Value)
-            }
+            (Self::Object, _) if attr.as_str(vm.interns) == "__setattr__" => builtin_object_setattr(vm, args),
             (Self::DateTime, Some(StaticStrings::Combine)) => datetime::class_combine(vm, args).map(CallResult::Value),
             (Self::Time, Some(StaticStrings::Fromisoformat)) => {
                 time::class_fromisoformat(vm, args).map(CallResult::Value)
@@ -829,6 +835,9 @@ impl Type {
             Self::Bytes => Bytes::init(vm, args),
             Self::Range => Range::init(vm, args),
             Self::Slice => Slice::init(vm, args),
+            Self::Property => builtin_descriptor::property_init(vm, args),
+            Self::ClassMethod => builtin_descriptor::classmethod_init(vm, args),
+            Self::StaticMethod => builtin_descriptor::staticmethod_init(vm, args),
             Self::Date => date::init(vm, args),
             Self::DateTime => datetime::init(vm, args),
             Self::Time => time::init(vm, args),

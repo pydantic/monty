@@ -1,3 +1,4 @@
+pub(crate) mod builtin_descriptor;
 mod builtin_type;
 /// Type definitions for Python runtime values.
 ///
@@ -15,6 +16,7 @@ pub mod date;
 pub mod datetime;
 pub mod decimal;
 pub mod deque;
+pub(crate) mod descriptor;
 pub mod dict;
 pub mod dict_view;
 pub mod dir_scan;
@@ -56,6 +58,7 @@ mod unicode_type;
 mod unicode_type_data;
 pub mod union;
 
+pub(crate) use builtin_descriptor::BuiltinDescriptor;
 pub(crate) use builtin_type::BuiltinType;
 pub(crate) use bytes::{Bytes, BytesIterator};
 pub(crate) use class::Class;

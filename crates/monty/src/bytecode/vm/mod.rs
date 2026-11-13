@@ -29,8 +29,8 @@ pub(crate) use module_cache::ModuleCache;
 pub(crate) use module_finder::PendingImport;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
 pub(crate) use namespace::{FrameGlobals, FrameNamespace, MissingNames, function_namespace};
-use recursion::frame_recursion_depth;
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
+use recursion::{frame_recursion_depth, frozen_frame_depth};
 use scheduler::Scheduler;
 
 use crate::{
@@ -303,6 +303,20 @@ impl<C: ContainsHeap> DropWithContext<C> for FrameExit {
     }
 }
 
+/// Closed set of opcode stack effects for descriptor continuations.
+/// MatchAttr is shared by attribute and class-pattern metadata reads; other continuations
+/// must return one ordinary value rather than introduce new return-stack shapes.
+#[derive(Debug, Default, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub(crate) enum FrameResult {
+    #[default]
+    /// Push one ordinary result; also the default for frames from older dumps.
+    Value,
+    /// A statement assignment ignores its setter's result.
+    Discard,
+    /// Unpack the frozen pattern helper's (value, matched) pair for the pattern opcode.
+    MatchAttr,
+}
+
 /// A single function activation record.
 ///
 /// Each frame represents one level in the call stack and owns its own
@@ -365,6 +379,8 @@ pub struct CallFrame<'code> {
     /// construction or import. Threaded through serialization (`SerializedFrame`)
     /// so a suspended initializer resumes correctly.
     is_initializer: bool,
+    /// Post-process a descriptor continuation after restoring its caller.
+    result: FrameResult,
 
     /// Module name for `LoadAttrImport` errors, set by `LoadModule`/`LoadSubmodule`.
     /// Keeping it on the frame avoids another opcode operand; the compiler emits
@@ -408,6 +424,7 @@ impl<'code> CallFrame<'code> {
             is_parked: false,
             namespace: None,
             is_initializer: false,
+            result: FrameResult::Value,
             import_from_module: None,
         }
     }
@@ -432,6 +449,7 @@ impl<'code> CallFrame<'code> {
         self.should_return = false;
         self.is_parked = true;
         self.is_initializer = false;
+        self.result = FrameResult::Value;
         debug_assert!(self.namespace.is_none(), "parked frame still owns a namespace");
     }
 
@@ -465,6 +483,7 @@ impl<'code> CallFrame<'code> {
             is_parked: false,
             namespace,
             is_initializer: false,
+            result: FrameResult::Value,
             import_from_module: None,
         }
     }
@@ -607,6 +626,8 @@ pub struct SerializedFrame {
     /// `None` instead of leaving the instance on the stack.
     #[serde(rename = "I")]
     is_initializer: bool,
+    #[serde(default, rename = "R")]
+    result: FrameResult,
 
     /// Frame namespace, with ownership of its dict references (see
     /// `CallFrame.namespace`).
@@ -635,6 +656,7 @@ impl CallFrame<'_> {
             exception_stack_base: self.exception_stack_base(),
             call_offset: self.call_offset,
             is_initializer: self.is_initializer,
+            result: self.result,
             namespace: mem::take(&mut self.namespace),
             import_from_module: self.import_from_module,
         }
@@ -868,6 +890,8 @@ pub struct VM<'h> {
     /// maintain it. Not serialized: it is reconstructed from the active frame
     /// count, excluding root and frozen frames, on `restore` and async switches.
     recursion_depth: usize,
+    /// Active implementation frames, independently bounded and reconstructed on restore/task switches.
+    frozen_frame_depth: usize,
 
     /// Reusable scratch buffer for building a sync call's locals, avoiding a
     /// `malloc`/`free` per call. Only held transiently within
@@ -927,6 +951,7 @@ impl<'h> VM<'h> {
             pending_effect: None,
             pending_lookup_effect: None,
             recursion_depth: 0,
+            frozen_frame_depth: 0,
             namespace_scratch: Vec::new(),
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
@@ -969,12 +994,14 @@ impl<'h> VM<'h> {
                     is_parked: false,
                     namespace: sf.namespace,
                     is_initializer: sf.is_initializer,
+                    result: sf.result,
                     import_from_module: sf.import_from_module,
                 }
             })
             .collect();
 
         let current_frame_depth = frame_recursion_depth(frames.iter().map(|f| f.function_id), interns);
+        let current_frozen_depth = frozen_frame_depth(frames.iter().map(|f| f.function_id), interns);
         let mut frames = frames;
         let current_frame = frames
             .pop()
@@ -998,6 +1025,7 @@ impl<'h> VM<'h> {
             pending_effect: snapshot.pending_effect,
             pending_lookup_effect: snapshot.pending_lookup_effect,
             recursion_depth: current_frame_depth,
+            frozen_frame_depth: current_frozen_depth,
             namespace_scratch: Vec::new(),
             // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
@@ -1646,7 +1674,15 @@ impl<'h> VM<'h> {
                 Opcode::StoreAttr => {
                     let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
-                    try_catch!(self, self.store_attr(name_id));
+                    match self.store_attr(name_id) {
+                        Ok(CallResult::Value(value)) => value.drop_with(self),
+                        Ok(CallResult::FramePushed) => self.current_frame_mut().result = FrameResult::Discard,
+                        Ok(other) => {
+                            let error = self.unsupported_call_result(other);
+                            catch!(self, error);
+                        }
+                        Err(error) => catch!(self, error),
+                    }
                 }
                 // Control Flow - use self.current_frame.ip directly for jumps
                 Opcode::Jump => {
@@ -1993,6 +2029,7 @@ impl<'h> VM<'h> {
                         continue;
                     }
                     // Read the initializer flag before popping the frame.
+                    let result = self.current_frame().result;
                     let is_init = self.current_frame().is_initializer;
                     // Pop current frame; `stop` requests returning to the host
                     // (e.g. `evaluate_function`).
@@ -2029,6 +2066,23 @@ impl<'h> VM<'h> {
                         // Instance (or imported module) already on the caller's
                         // stack — push nothing.
                         try_catch!(self, self.finish_module_init());
+                    } else if matches!(result, FrameResult::MatchAttr) && !stop {
+                        let Value::Ref(id) = &value else {
+                            unreachable!("match continuation returns a tuple")
+                        };
+                        let HeapData::Tuple(pair) = self.heap.get(*id) else {
+                            unreachable!("match continuation returns a tuple")
+                        };
+                        let [attr, found] = pair.as_slice() else {
+                            unreachable!("match continuation returns a pair")
+                        };
+                        let attr = attr.clone_with_heap(self.heap);
+                        let found = found.clone_with_heap(self.heap);
+                        value.drop_with(self);
+                        self.push(attr);
+                        self.push(found);
+                    } else if matches!(result, FrameResult::Discard) && !stop {
+                        value.drop_with(self);
                     } else if stop {
                         // This frame indicated evaluation should stop - return to host with value
                         // e.g. `evaluate_function`
@@ -2471,7 +2525,10 @@ impl<'h> VM<'h> {
         // Sync instruction_ip to the restored caller so exception table lookups
         // target the correct frame after returning from a nested run() call.
         self.instruction_ip = self.current_frame.ip;
-        if !self.current_frame.is_parked && !is_frozen {
+        if is_frozen {
+            debug_assert!(self.frozen_frame_depth > 0, "frozen frame must own a depth reservation");
+            self.frozen_frame_depth -= 1;
+        } else if !self.current_frame.is_parked {
             self.decr_recursion();
         }
         should_return
@@ -2507,6 +2564,7 @@ impl<'h> VM<'h> {
         }
         self.current_frame.namespace.take().drop_with(self.heap);
         self.current_frame.park(self.module_code);
+        self.frozen_frame_depth = 0;
     }
 
     /// Runs the trial-deletion cycle collector.

@@ -210,6 +210,8 @@ pub(crate) enum BuiltinType {
     DecimalContextManager,
     #[strum(serialize = "annotationlib.ForwardRef")]
     ForwardRef,
+    ClassMethod,
+    StaticMethod,
 }
 
 impl From<BuiltinType> for Type {
@@ -259,6 +261,8 @@ impl From<BuiltinType> for Type {
             BuiltinType::SpecialForm => Self::SpecialForm,
             BuiltinType::Path => Self::Path,
             BuiltinType::Property => Self::Property,
+            BuiltinType::ClassMethod => Self::ClassMethod,
+            BuiltinType::StaticMethod => Self::StaticMethod,
             BuiltinType::RePattern => Self::RePattern,
             BuiltinType::ReMatch => Self::ReMatch,
             BuiltinType::DirEntry => Self::DirEntry,
@@ -374,6 +378,8 @@ impl TryFrom<Type> for BuiltinType {
             Type::SpecialForm => Self::SpecialForm,
             Type::Path => Self::Path,
             Type::Property => Self::Property,
+            Type::ClassMethod => Self::ClassMethod,
+            Type::StaticMethod => Self::StaticMethod,
             Type::RePattern => Self::RePattern,
             Type::ReMatch => Self::ReMatch,
             Type::DirEntry => Self::DirEntry,

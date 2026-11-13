@@ -26,6 +26,16 @@ use crate::{
     intern::{FunctionId, Interns},
 };
 
+/// Bounds implementation-only call cycles without reducing the user's Python recursion budget.
+const MAX_FROZEN_FRAME_DEPTH: usize = 1024;
+
+/// Reconstructs the independent implementation-frame budget on restore and task switches.
+pub(super) fn frozen_frame_depth(frames: impl Iterator<Item = Option<FunctionId>>, interns: &Interns) -> usize {
+    frames
+        .filter(|id| id.is_some_and(|id| interns.is_internal_function(id)))
+        .count()
+}
+
 /// Counts charged frames when restoring a VM or switching tasks.
 /// The first frame is the uncharged root; frozen implementation frames never contribute.
 pub(super) fn frame_recursion_depth(frames: impl Iterator<Item = Option<FunctionId>>, interns: &Interns) -> usize {
@@ -36,6 +46,19 @@ pub(super) fn frame_recursion_depth(frames: impl Iterator<Item = Option<Function
 }
 
 impl<'h> VM<'h> {
+    /// Reserve one implementation frame until it returns or unwinds.
+    pub(super) fn enter_frozen_frame(&mut self) -> Result<(), ResourceError> {
+        if self.frozen_frame_depth >= MAX_FROZEN_FRAME_DEPTH {
+            Err(ResourceError::Recursion {
+                limit: MAX_FROZEN_FRAME_DEPTH,
+                depth: self.frozen_frame_depth,
+            })
+        } else {
+            self.frozen_frame_depth += 1;
+            Ok(())
+        }
+    }
+
     /// Enters a lexically-scoped recursive operation, returning a guard that
     /// releases the depth level when dropped.
     ///

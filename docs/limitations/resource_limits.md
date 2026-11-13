@@ -158,6 +158,10 @@ indistinguishable from a stack overflow.
 - Production sandbox code cannot change the recursion limit. Test builds may
     expose `sys.setrecursionlimit()` as a lowering-only fixture hook; it cannot
     raise the host-configured ceiling.
+- Internal implementation calls, including descriptor binding and cache misses, have a separate cap of **1024 active frames
+    per task**.
+    They do not consume the Python call-depth budget, but exceeding this cap raises `RecursionError` even if the host
+    configured a higher Python recursion limit.
 - Async stacks count toward the limit but each `await` boundary is treated
     as one frame, so `await`-chains do not amplify depth.
 - Callbacks evaluated synchronously by the interpreter itself re-enter on the

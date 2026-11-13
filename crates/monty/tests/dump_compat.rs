@@ -234,7 +234,11 @@ fn fixture_dump_loads_and_resumes() {
             path.display()
         )
     });
-    let loaded = Dump::load(&bytes).expect("a fixture at the current DUMP_VERSION loads");
+    check_fixture(&bytes);
+}
+
+fn check_fixture(bytes: &[u8]) {
+    let loaded = Dump::load(bytes).expect("a supported fixture loads");
     assert_eq!(loaded.script_name, "fixture.py");
     assert!(loaded.type_check.is_none());
     let Session::Suspended(progress) = loaded.state else {
@@ -811,4 +815,24 @@ fn fresh_location_tracebacks() -> Vec<String> {
                 .to_string()
         })
         .collect()
+}
+
+/// Classes written before descriptor hints existed still apply data-getter precedence.
+#[test]
+fn legacy_classes_default_to_descriptor_lookup() {
+    let loaded = Dump::load(&fs::read(fixture_path_for(14)).unwrap()).unwrap();
+    let Session::Suspended(progress) = loaded.state else {
+        panic!("legacy fixture was suspended")
+    };
+    let progress = progress
+        .into_function_call()
+        .unwrap()
+        .resume(MontyObject::int(41), PrintWriter::Disabled)
+        .unwrap();
+    let (mut repl, _) = progress.into_complete().unwrap();
+    repl.feed_run(
+        "assert c.value == 11\nCounter.value = property(lambda self: 42)\nassert c.value == 42\nassert getattr(c, 'value') == 42",
+        vec![],
+        PrintWriter::Disabled,
+    ).unwrap();
 }
