@@ -47,11 +47,11 @@ jobs:
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
-          toolchain: stable
+          toolchain: '1.99.0'
           components: clippy
 
       - name: Set stable as the default toolchain (clippy on stable; fmt pins +nightly)
-        run: rustup default stable
+        run: rustup default 1.99.0
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -135,7 +135,7 @@ jobs:
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
-          toolchain: stable
+          toolchain: '1.99.0'
           components: llvm-tools
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -201,7 +201,7 @@ jobs:
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
-          toolchain: stable
+          toolchain: '1.99.0'
           components: llvm-tools
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -260,7 +260,7 @@ jobs:
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
-          toolchain: stable
+          toolchain: '1.99.0'
           components: llvm-tools
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -380,7 +380,7 @@ jobs:
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
-          toolchain: stable
+          toolchain: '1.99.0'
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -427,7 +427,7 @@ jobs:
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
-          toolchain: stable
+          toolchain: '1.99.0'
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -485,7 +485,7 @@ jobs:
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
-          toolchain: stable
+          toolchain: '1.99.0'
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -538,7 +538,7 @@ jobs:
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
-          toolchain: stable
+          toolchain: '1.99.0'
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -674,7 +674,7 @@ jobs:
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
-          toolchain: stable
+          toolchain: '1.99.0'
 
       # rustdoc JSON is nightly-only and format-unstable, see the lint job
       - name: Install the nightly pinned for rustdoc JSON
@@ -747,14 +747,14 @@ jobs:
         with:
           command: sdist
           args: --out dist
-          rust-toolchain: stable
+          rust-toolchain: '1.99.0'
           working-directory: crates/monty-python
 
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           command: sdist
           args: --out dist
-          rust-toolchain: stable
+          rust-toolchain: '1.99.0'
           working-directory: crates/monty-runtime
 
       # the sdist carries only the client crate and its Rust path dependencies,
@@ -854,7 +854,7 @@ jobs:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'manylinux_2_28' }}
           args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14 3.14t 3.15 3.15t
-          rust-toolchain: stable
+          rust-toolchain: '1.99.0'
           docker-options: -e CI
           working-directory: crates/monty-python
 
@@ -908,7 +908,7 @@ jobs:
             --release
             ${{ matrix.pgo-runtime && format('--pgo -i "{0}"', matrix.os == 'linux' && '/opt/pgo-python' || steps.pgo-python.outputs.python) || '' }}
             --out dist
-          rust-toolchain: stable
+          rust-toolchain: '1.99.0'
           rustup-components: ${{ matrix.pgo-runtime && 'llvm-tools-preview' || '' }}
           docker-options: -e CI -e UV_PYTHON -e PGO_RUNTIME -e RUSTFLAGS -e CFLAGS_s390x_unknown_linux_gnu
           working-directory: crates/monty-runtime
@@ -1129,7 +1129,7 @@ jobs:
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
-          toolchain: stable
+          toolchain: '1.99.0'
 
       # exchanges the GitHub OIDC token for a short-lived crates.io token,
       # exported as CARGO_REGISTRY_TOKEN for the publish step
@@ -1167,7 +1167,7 @@ jobs:
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
-          toolchain: stable
+          toolchain: '1.99.0'
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -1238,7 +1238,7 @@ jobs:
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
-          toolchain: stable
+          toolchain: '1.99.0'
           targets: ${{ matrix.settings.target }}
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -1296,7 +1296,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
-          toolchain: stable
+          toolchain: '1.99.0'
           targets: wasm32-wasip1
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -1366,7 +1366,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
-          toolchain: stable
+          toolchain: '1.99.0'
 
       - name: Setup node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

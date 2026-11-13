@@ -4,7 +4,11 @@ pub fn binary(args: &[&str], name: &str) -> PathBuf {
     let executable = env::current_exe().unwrap();
     let profile_dir = executable.parent().unwrap().parent().unwrap();
     let profile = profile_dir.file_name().unwrap().to_str().unwrap();
-    let profile = if profile == "debug" { "dev" } else { profile };
+    let profile = if matches!(profile, "release" | "bench" | "profiling" | "codspeed") {
+        profile
+    } else {
+        "dev"
+    };
     let output = Command::new(env!("CARGO"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args(["build", "--profile", profile, "--message-format=json"])

@@ -24,6 +24,7 @@ use std::{
 };
 
 use crate::{
+    ResourceError, ResourceTracker,
     graph::{MontyGraph, MontyNode, NodeId},
     object::MontyObject,
     os::MontyPath,
@@ -1017,11 +1018,26 @@ impl SegmentPattern {
     /// Whether `name` matches the whole pattern.
     #[must_use]
     pub fn matches(&self, name: &str) -> bool {
+        self.matches_with_tracker(name, None).unwrap_or(false)
+    }
+
+    /// Whether `name` matches the whole pattern, polling `tracker` periodically
+    /// to avoid long blocking on pathological backtracking inputs.
+    ///
+    /// # Errors
+    /// Returns `ResourceError` if the execution-time limit tracked by `tracker`
+    /// is exceeded.
+    pub fn matches_with_tracker(&self, name: &str, tracker: Option<&ResourceTracker>) -> Result<bool, ResourceError> {
         // `t` is a byte offset into `name`, always on a character boundary.
         let (mut p, mut t) = (0, 0);
         // The last `*` seen and the text position it is currently absorbing up to.
         let mut star: Option<(usize, usize)> = None;
+        let mut steps = 0;
         while let Some(c) = name[t..].chars().next() {
+            if let Some(tracker) = tracker {
+                tracker.check_time_every(steps)?;
+                steps += 1;
+            }
             match self.tokens.get(p) {
                 Some(Token::Star) => {
                     star = Some((p, t));
@@ -1039,11 +1055,11 @@ impl SegmentPattern {
                         t = star_t + absorbed;
                         star = Some((star_p, t));
                     }
-                    None => return false,
+                    None => return Ok(false),
                 },
             }
         }
-        self.tokens[p..].iter().all(|token| *token == Token::Star)
+        Ok(self.tokens[p..].iter().all(|token| *token == Token::Star))
     }
 
     /// Whether a single-character token accepts `c`.
