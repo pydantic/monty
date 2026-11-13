@@ -58,6 +58,10 @@ class MontyNamedTuple(tuple[Any, ...]):
     def __reduce__(self) -> tuple[Any, ...]:
         return MontyNamedTuple, (self._type_name, self._fields, tuple(self))
 
+    def __getnewargs__(self) -> tuple[Any, ...]:
+        # as on `collections.namedtuple`; pickling itself goes through `__reduce__`
+        return tuple(self)
+
     def __dir__(self) -> list[str]:
         return sorted({*super().__dir__(), *self._fields})
 

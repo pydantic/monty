@@ -109,7 +109,8 @@ rather than of a class per sandbox type, so the sandbox cannot make the host bui
 Field access, indexing, equality, `repr`, `_fields`, `_asdict()`, `_replace()` and `_make()` behave as on a
 `collections.namedtuple` instance, but:
 
-- `type(p)` is `MontyNamedTuple`; the sandbox type name, qualified by its module, is `p._type_name`.
+- `type(p)` is `MontyNamedTuple`; the sandbox type name is `p._type_name`, such as `'Point'` for a namedtuple defined
+    in sandbox code or `'sys.version_info'`.
 - `isinstance` against the sandbox type and class-level API such as `type(p)._make(...)` or `type(p)(...)` do not
     work, and `__match_args__` is not set, so only keyword class patterns match.
 - Setting any attribute raises `AttributeError: '<name>' object is immutable`, and `vars(p)` returns the instance's
@@ -117,7 +118,7 @@ Field access, indexing, equality, `repr`, `_fields`, `_asdict()`, `_replace()` a
 - `_field_defaults` is always empty.
 - Fields starting with `_`, which `rename=True` produces, are kept, though a host namedtuple class cannot have them.
 - Each instance carries a `__dict__`, so it costs more memory than a `collections.namedtuple` instance, and field
-    access goes through `__getattr__`.
+    access runs Python code rather than a C accessor, so it is slower.
 
 ## Message size
 

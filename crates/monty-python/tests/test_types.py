@@ -792,6 +792,7 @@ def test_namedtuple_matches_collections(monty_run: RunMonty, real_type: Any):
     assert repr(copy.copy(decoded)) == repr(real)
     assert repr(pickle.loads(pickle.dumps(decoded))) == repr(real)
     assert hasattr(decoded, '__replace__') == hasattr(real, '__replace__')
+    assert decoded.__getnewargs__() == real.__getnewargs__()
 
 
 def test_namedtuple_fields_shadow_tuple_methods(monty_run: RunMonty):
