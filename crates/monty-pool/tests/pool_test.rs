@@ -4022,3 +4022,43 @@ async fn a_host_decode_budget_rejects_a_subprocess_result() {
     assert_eq!(expect_complete(result), MontyObject::int(42));
     next.finish().await.unwrap();
 }
+
+/// A cached gather failure awaited many times under `return_exceptions` copies its
+/// message once per item; those copies must hit the memory limit, not the worker's
+/// hard limit.
+#[tokio::test]
+async fn gather_return_exceptions_charges_cloned_exceptions() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_memory(10 * 1024 * 1024)),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let code = "\
+import asyncio
+
+async def boom():
+    raise ValueError('x' * 200_000)
+
+async def main():
+    failed = asyncio.gather(boom())
+    try:
+        await failed
+    except ValueError:
+        pass
+    return len(await asyncio.gather(*[failed] * 1000, return_exceptions=True))
+
+await main()";
+    let error = session
+        .feed(code, vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    // The soft limit names itself; the worker's hard limit reports "allocation of N bytes" instead.
+    assert!(
+        matches!(error, PoolError::Runtime(ref exc) if exc.exc_type() == ExcType::MemoryError
+            && exc.message().is_some_and(|m| m.starts_with("memory limit exceeded"))),
+        "expected the soft memory limit, got {error:?}"
+    );
+}
