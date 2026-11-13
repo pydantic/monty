@@ -11,7 +11,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use monty_types::{MontyPath, scan::SegmentPattern};
+use monty_types::{MontyPath, ResourceTracker, scan::SegmentPattern};
 use smallvec::SmallVec;
 
 use crate::{
@@ -203,7 +203,7 @@ impl Path {
     ///
     /// # Errors
     /// Returns `ValueError` if the pattern has no parts (e.g. `""` or `"."`).
-    pub fn match_pattern(&self, pattern: &str, case_sensitive: bool) -> RunResult<bool> {
+    pub fn match_pattern(&self, pattern: &str, case_sensitive: bool, tracker: &ResourceTracker) -> RunResult<bool> {
         let pattern_path = Self::new(pattern.to_owned());
         let pattern_parts = pattern_path.parts();
         if pattern_parts.is_empty() {
@@ -219,7 +219,13 @@ impl Path {
         }
 
         for (path_part, pattern_part) in path_parts.iter().rev().zip(pattern_parts.iter().rev()) {
-            if !SegmentPattern::new(pattern_part, case_sensitive).matches(path_part) {
+            if *path_part == "/" || *pattern_part == "/" {
+                if path_part != pattern_part {
+                    return Ok(false);
+                }
+            } else if !SegmentPattern::new(pattern_part, case_sensitive)
+                .matches_with_tracker(path_part, Some(tracker))?
+            {
                 return Ok(false);
             }
         }
@@ -709,7 +715,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
                         path_pattern.py_type_name(vm)
                     )));
                 };
-                let matched = self.get(vm.heap).match_pattern(pattern_text, case_sensitive)?;
+                let matched = self
+                    .get(vm.heap)
+                    .match_pattern(pattern_text, case_sensitive, &vm.heap.tracker)?;
                 Ok(Value::Bool(matched))
             }
             StaticStrings::Joinpath => {

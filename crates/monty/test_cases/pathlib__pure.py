@@ -256,9 +256,15 @@ assert Path('file5.txt').match('file[1-3].txt') is False
 assert Path('a.py').match('?.py') is True
 assert Path('ab.py').match('?.py') is False
 assert Path('/').match('/') is True
+assert Path('/').match('*') is False
+assert Path('/').match('/*') is False
 assert Path('/a').match('/') is False
 assert Path('/a').match('/*') is True
+assert Path('/a').match('*') is True
 assert Path('/a/b').match('/*') is False
+assert Path('/a/b').match('*/b') is True
+assert Path('/a/b').match('/*/b') is True
+assert Path('a' * 50).match('*' + 'a' * 25 + 'b') is False
 
 # match with Path pattern
 assert Path('a/b/c.py').match(Path('*.py')) is True
