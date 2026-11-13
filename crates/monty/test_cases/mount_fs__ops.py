@@ -255,6 +255,31 @@ os.replace(root / 'os_move_b.txt', root / 'os_move_c.txt')
 assert (root / 'os_move_b.txt').exists() == False
 assert (root / 'os_move_c.txt').read_text() == 'move me'
 
+# === same-path rename is a POSIX no-op ===
+# Renaming an entry onto itself succeeds without touching it, whatever it
+# holds, on every POSIX system. Guarded off Windows CPython, which raises
+# FileExistsError for a rename onto an existing path.
+if posix_messages:
+    d = root / 'same_dir'
+    d.mkdir()
+    (d / 'x.txt').write_text('stay')
+    assert os.rename(d, d) is None
+    assert os.replace(d, d) is None
+    assert d.rename(d) == d
+    assert d.replace(d) == d
+    assert (d / 'x.txt').read_text() == 'stay'
+    assert d.is_dir()
+    f = root / 'same_file.txt'
+    f.write_text('same')
+    assert os.rename(f, f) is None
+    assert os.replace(f, f) is None
+    assert f.rename(f) == f
+    assert f.replace(f) == f
+    assert f.read_text() == 'same'
+    # An aliasing path names the same entry, so it no-ops too.
+    assert os.rename(d, root / 'same_dir' / '..' / 'same_dir') is None
+    assert (d / 'x.txt').read_text() == 'stay'
+
 
 # Path mutation return values and options use the same mount calls as os.
 source = root / 'rename_source.txt'
