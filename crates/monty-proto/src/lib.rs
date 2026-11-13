@@ -89,7 +89,7 @@ pub use budget_vec::BudgetVec;
 pub use convert::{
     ProtoConvertError, ext_result_from_proto, ext_result_to_proto, future_results_from_proto, future_results_to_proto,
     import_stubs_from_answer, named_values_from_proto, named_values_to_proto, os_call_from_proto, os_call_to_proto,
-    resume_call_from_proto,
+    resume_call_from_proto, validate_import_stubs_answer,
 };
 #[cfg(feature = "test-util")]
 #[doc(hidden)]
