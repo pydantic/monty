@@ -104,24 +104,74 @@ pub mod encoding {
 
     /// UTF-8 strings backed by a fallible byte buffer during decoding.
     pub mod string {
-        use std::mem;
+        use std::str;
 
         pub use prost::encoding::string::{encode, encode_repeated, encoded_len, encoded_len_repeated};
 
-        use super::{BudgetVec, Buf, DecodeContext, DecodeError, WireType, check_wire_type, error};
+        use super::{BudgetVec, Buf, DecodeContext, DecodeError, WireType, check_wire_type, decode_varint, error};
+        use crate::decode_budget::{charge, exhausted};
 
-        /// Reuses the string's allocation without exposing invalid UTF-8 on error or unwind.
+        /// Window size for validating and copying a string payload.
+        const UTF8_WINDOW: usize = 4 * 1024 * 1024;
+
+        /// Appends a contiguous UTF-8 payload while validating it in cache-sized windows.
+        fn append_utf8(value: &mut String, src: &[u8]) -> Result<(), DecodeError> {
+            let mut pos = 0;
+            while pos < src.len() {
+                let mut end = src.len().min(pos + UTF8_WINDOW);
+                for _ in 0..3 {
+                    if end > pos && end < src.len() && src[end] & 0xC0 == 0x80 {
+                        end -= 1;
+                    }
+                }
+                value.push_str(
+                    str::from_utf8(&src[pos..end])
+                        .map_err(|_| error("invalid string value: data is not UTF-8 encoded"))?,
+                );
+                pos = end;
+            }
+            Ok(())
+        }
+
+        /// Validates and copies a string payload in cache-sized windows.
         pub fn merge(
             wire_type: WireType,
             value: &mut String,
             buf: &mut impl Buf,
-            ctx: DecodeContext,
+            _ctx: DecodeContext,
         ) -> Result<(), DecodeError> {
-            let mut bytes = BudgetVec::from(mem::take(value).into_bytes());
-            super::bytes::merge(wire_type, &mut bytes, buf, ctx)?;
-            *value = String::from_utf8(bytes.into_inner())
-                .map_err(|_| error("invalid string value: data is not UTF-8 encoded"))?;
-            Ok(())
+            check_wire_type(WireType::LengthDelimited, wire_type)?;
+            let len = decode_varint(buf)?;
+            let len = usize::try_from(len)
+                .ok()
+                .filter(|len| *len <= buf.remaining())
+                .ok_or_else(|| error("buffer underflow"))?;
+
+            // A singular protobuf string replaces the previous value. A
+            // larger replacement is charged in full, matching BudgetVec's
+            // replacement allocation accounting. Allocate a fresh exact
+            // buffer here: String growth may round small allocations up.
+            if len > value.capacity() {
+                let mut replacement = String::new();
+                charge(len)?;
+                replacement.try_reserve_exact(len).map_err(|_| exhausted())?;
+                *value = replacement;
+            } else {
+                value.clear();
+            }
+            if buf.chunk().len() >= len {
+                append_utf8(value, &buf.chunk()[..len])?;
+                buf.advance(len);
+                Ok(())
+            } else {
+                // A Buf can expose a length-delimited payload in pieces. Gather
+                // that uncommon path before validating it as one string.
+                let mut bytes = vec![0u8; len];
+                buf.copy_to_slice(&mut bytes);
+                *value =
+                    String::from_utf8(bytes).map_err(|_| error("invalid string value: data is not UTF-8 encoded"))?;
+                Ok(())
+            }
         }
 
         repeated!(String);
