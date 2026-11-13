@@ -61,7 +61,7 @@ use pyo3::{
     sync::PyOnceLock,
     types::{PyBool, PyBytes, PyDict, PyInt, PyList, PyString, PyTuple},
 };
-use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
+use pyo3_async_runtimes::tokio::get_runtime;
 use tokio::{
     runtime::{Handle, RuntimeFlavor},
     sync::Mutex as AsyncMutex,
@@ -91,6 +91,7 @@ use crate::{
     mount::PyMountDir,
     os_policy::OsPolicyArg,
     print_target::PrintTarget,
+    py_future::{ensure_original_process, future_into_py},
     snapshot::{DriveContext, build_snapshot, feed_start_async, feed_start_sync},
     telemetry::{capture_otel_context, capture_telemetry_context, pool_metrics},
 };
@@ -585,6 +586,7 @@ impl PyAsyncMonty {
 
     /// Spawns the pool's workers (off the event loop) and returns `self`.
     fn __aenter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+        ensure_original_process()?;
         let config = slf.get().config.clone();
         let slot = Arc::clone(&slf.get().pool);
         future_into_py(py, async move {
@@ -600,6 +602,7 @@ impl PyAsyncMonty {
     /// still checked out keep their workers until they exit.
     #[pyo3(signature = (*_args))]
     fn __aexit__<'py>(&self, py: Python<'py>, _args: &Bound<'_, PyTuple>) -> PyResult<Bound<'py, PyAny>> {
+        ensure_original_process()?;
         let pool = lock(&self.pool).take();
         future_into_py(py, async move {
             close_pool(pool).await;
@@ -776,6 +779,7 @@ impl PyAsyncMontyRemote {
 
     /// Initializes the pool (off the event loop) and returns `self`.
     fn __aenter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+        ensure_original_process()?;
         let config = slf.get().config.clone();
         let slot = Arc::clone(&slf.get().pool);
         future_into_py(py, async move {
@@ -791,6 +795,7 @@ impl PyAsyncMontyRemote {
     /// connections until finished.
     #[pyo3(signature = (*_args))]
     fn __aexit__<'py>(&self, py: Python<'py>, _args: &Bound<'_, PyTuple>) -> PyResult<Bound<'py, PyAny>> {
+        ensure_original_process()?;
         let pool = lock(&self.pool).take();
         future_into_py(py, async move {
             close_pool(pool).await;
@@ -901,6 +906,7 @@ impl PyAsyncMontySession {
     /// is captured here, on the caller's task with the GIL held, before the
     /// future moves to tokio.
     fn __aenter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+        ensure_original_process()?;
         let this = slf.get();
         let pool = active_pool(&this.pool)?;
         let repl_config = this.repl_config.clone();
@@ -931,6 +937,7 @@ impl PyAsyncMontySession {
     /// discards the worker instead of returning it.
     #[pyo3(signature = (*_args))]
     fn __aexit__<'py>(&self, py: Python<'py>, _args: &Bound<'_, PyTuple>) -> PyResult<Bound<'py, PyAny>> {
+        ensure_original_process()?;
         let slot = Arc::clone(&self.checkout);
         let session_id = Arc::clone(&self.session_id);
         future_into_py(py, async move {
