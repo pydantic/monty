@@ -21,7 +21,7 @@ static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 /// Monty — a secure Python sandbox written in Rust.
 ///
 /// Run `monty` to start an empty interactive REPL. Run a python file with `monty <file>`.
-/// Execute a command with `monty -c <cmd>`.
+/// Execute a command with `monty -c <cmd>`, or read the program from standard input with `monty -`.
 #[derive(Parser)]
 #[command(version)]
 pub(crate) struct Cli {
@@ -42,7 +42,7 @@ pub(crate) struct Cli {
     #[arg(short = 'c')]
     command: Option<String>,
 
-    /// Python file to execute.
+    /// Python file to execute, or `-` to read the program from standard input.
     file: Option<String>,
 
     /// Mount a host directory into the sandbox.
