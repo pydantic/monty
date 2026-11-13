@@ -4,6 +4,7 @@
 import functools
 from collections import Counter, defaultdict, namedtuple
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -165,6 +166,8 @@ assert k.isdisjoint([1, [1]]) is False
 assert i.isdisjoint([(3, [4])]) is False
 assert i.isdisjoint({(1, 2), (5, 6), (7, 8)}) is False
 assert i.isdisjoint({(9, 9)}) is True
+assert k.isdisjoint(frozenset({7, 8, 9})) is True
+assert k.isdisjoint(frozenset({1, 8, 9})) is False
 assert i & [[1]] == set()
 assert i & [(1, 2)] == {(1, 2)}
 assert i & k == set()
@@ -186,6 +189,9 @@ assert counted.calls == 1
 counted = CountsHashes()
 assert err(lambda: cached((counted, [1]))) == "TypeError: unhashable type: 'list'"
 assert counted.calls == 1
+
+# === Named tuples hash by element, so Literal drops a repeated one ===
+assert len(Literal[NT(1, 2), NT(1, 2)].__args__) == 1
 
 # === Counter hashes each counted element once ===
 counted = CountsHashes()

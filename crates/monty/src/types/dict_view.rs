@@ -681,18 +681,20 @@ impl SetLikeView {
     }
 
     fn len(self, vm: &VM<'_>) -> usize {
-        let HeapData::Dict(dict) = vm.heap.get(self.dict_id()) else {
+        self.dict(vm).get(vm.heap).len()
+    }
+
+    fn dict<'h>(self, vm: &VM<'h>) -> HeapObjectRead<'h, Dict> {
+        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id()) else {
             panic!("dict view must always reference a dict");
         };
-        dict.len()
+        dict
     }
 
     /// The view's `__contains__`: a key lookup, or for items a `(key, value)`
     /// probe whose key is looked up and whose stored value is compared.
     fn contains(self, item: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
-        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id()) else {
-            panic!("dict view must always reference a dict");
-        };
+        let dict = self.dict(vm);
         match self {
             Self::Keys(_) => dict.contains_key(item, vm),
             Self::Items(_) => {
@@ -732,11 +734,9 @@ impl SetLikeView {
 fn view_intersection(view: SetLikeView, other: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     let len = view.len(vm);
     if let Value::Ref(set_id) = other
-        && matches!(vm.heap.get(*set_id), HeapData::Set(set) if len <= set.len())
+        && let HeapReadOutput::Set(set) = vm.heap.read(*set_id)
+        && len <= set.get(vm.heap).len()
     {
-        let HeapReadOutput::Set(set) = vm.heap.read(*set_id) else {
-            unreachable!("checked to be a set");
-        };
         let view_value = view.to_value(vm);
         return set.intersection_with(view_value, vm);
     }
