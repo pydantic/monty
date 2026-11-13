@@ -1025,8 +1025,8 @@ impl SegmentPattern {
     /// to avoid long blocking on pathological backtracking inputs.
     ///
     /// # Errors
-    /// Returns `ResourceError` if resource limits (e.g. execution time or step count)
-    /// are exceeded.
+    /// Returns `ResourceError` if the execution-time limit tracked by `tracker`
+    /// is exceeded.
     pub fn matches_with_tracker(&self, name: &str, tracker: Option<&ResourceTracker>) -> Result<bool, ResourceError> {
         // `t` is a byte offset into `name`, always on a character boundary.
         let (mut p, mut t) = (0, 0);

@@ -4,7 +4,7 @@ pub fn binary(args: &[&str], name: &str) -> PathBuf {
     let executable = env::current_exe().unwrap();
     let profile_dir = executable.parent().unwrap().parent().unwrap();
     let profile = profile_dir.file_name().unwrap().to_str().unwrap();
-    let profile = if matches!(profile, "release" | "bench") {
+    let profile = if matches!(profile, "release" | "bench" | "profiling" | "codspeed") {
         profile
     } else {
         "dev"

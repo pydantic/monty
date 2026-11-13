@@ -202,7 +202,8 @@ impl Path {
     /// Returns `true` if this path matches the given glob pattern.
     ///
     /// # Errors
-    /// Returns `ValueError` if the pattern has no parts (e.g. `""` or `"."`).
+    /// Returns `ValueError` if the pattern has no parts (e.g. `""` or `"."`),
+    /// or a resource error if execution-time limits are exceeded.
     pub fn match_pattern(&self, pattern: &str, case_sensitive: bool, tracker: &ResourceTracker) -> RunResult<bool> {
         let pattern_path = Self::new(pattern.to_owned());
         let pattern_parts = pattern_path.parts();
