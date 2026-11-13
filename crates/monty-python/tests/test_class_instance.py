@@ -27,6 +27,7 @@ from pydantic_monty import (
     MontyClassTypeProxy,
     MontyComplete,
     MontyConversionError,
+    MontyRuntimeError,
     MontySession,
     NameLookupSnapshot,
 )
@@ -1636,3 +1637,34 @@ except NameError as e:
 result
 """
     assert monty_run(code, inputs={'x': x}) == snapshot(('USD', "name 'Decimal' is not defined"))
+
+
+def test_deep_proxy_chain_hash_raises_recursion_error(monty_run: RunMonty):
+    """CPython's `hash()` has no recursion guard, so a long chain of proxies
+    hashed through their fields would overflow the host's stack; a sandbox
+    `__hash__` that never recursed lets the sandbox build such a key."""
+    code = (
+        '@dataclass\nclass N:\n    nxt: object\n    def __hash__(self):\n        return 1\n'
+        'nodes = [N(None)]\nfor _ in range(5000):\n    nodes.append(N(nodes[-1]))\n'
+        '(nodes, {nodes[-1]: 0})'
+    )
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(DATACLASS_IMPORT + code)
+    assert repr(exc_info.value) == snapshot(
+        'MontyRuntimeError(RecursionError: cannot convert the result to a Python value: maximum recursion depth exceeded while hashing a MontyClassProxy)'
+    )
+
+
+def test_deep_proxy_chain_hashes_from_the_leaf_up(monty_run: RunMonty):
+    """A depth error is not cached, so hashing a deep chain bottom-up works."""
+    code = (
+        '@dataclass\nclass N:\n    nxt: object\n    def __hash__(self):\n        return 1\n'
+        'nodes = [N(None)]\nfor _ in range(5000):\n    nodes.append(N(nodes[-1]))\nnodes'
+    )
+    nodes = monty_run(DATACLASS_IMPORT + code)
+    with pytest.raises(RecursionError) as exc_info:
+        hash(nodes[-1])
+    assert exc_info.value.args[0] == snapshot('maximum recursion depth exceeded while hashing a MontyClassProxy')
+    for node in nodes:
+        hash(node)
+    assert hash(nodes[-1]) == hash(nodes[-1])

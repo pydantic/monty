@@ -193,8 +193,8 @@ with Monty() as pool, pool.checkout() as session:
 
 Host-side `==` and `hash()` on a proxy follow the sandbox class only as far as
 the host can replay it without running sandbox code.
-Where the sandbox's answer would need sandbox code (a user-defined `__eq__` or
-`__hash__`), the proxy compares and hashes by identity instead:
+A user-defined `__eq__` would need sandbox code, so the proxy compares by
+identity instead, and its hash follows whatever `==` it ends up with:
 
 - Each result builds its own proxy, so `a is b` is `False` across feeds.
     Proxies that compare by id still compare and hash equal when they stand
@@ -220,8 +220,12 @@ Where the sandbox's answer would need sandbox code (a user-defined `__eq__` or
     the fields `__eq__` compares (skipping unhashable values), so equal proxies
     hash equal.
 - A class with `__eq__` and no `__hash__` stays unhashable. A frozen dataclass
-    with a body `__eq__` keeps its generated field hash, which stays consistent
-    with identity `==`.
+    with a body `__eq__` hashes by identity, since its proxies compare by
+    identity.
+- Hashing a chain of proxies nested through their fields more than 1000 deep
+    raises `RecursionError` on the host, even where the sandbox's own
+    `__hash__` never recursed. A returned dict or set keyed by such a proxy
+    fails to convert.
 - For the sandbox's own answer, compare there:
     `session.feed_run('a == b', inputs={'a': p, 'b': q})`. This only works while
     both objects are still referenced in the sandbox.

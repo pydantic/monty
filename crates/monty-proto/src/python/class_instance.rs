@@ -17,7 +17,7 @@
 //! the worker and is reused by CPython.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashSet,
     hash::{DefaultHasher, Hash, Hasher},
     ptr,
@@ -30,7 +30,7 @@ use monty_types::{
 };
 use pyo3::{
     Bound,
-    exceptions::{PyAttributeError, PyRuntimeError, PyTypeError, PyValueError},
+    exceptions::{PyAttributeError, PyRecursionError, PyRuntimeError, PyTypeError, PyValueError},
     intern,
     prelude::*,
     pyclass::CompareOp,
@@ -223,9 +223,10 @@ pub(super) struct ClassHeader {
 /// by identity; the attributes are not applied).
 ///
 /// `==` and `hash()` follow the rule the class reported (see [`ClassEq`] and
-/// [`ClassHash`]): a `@dataclass` compares and hashes its fields. Where the
-/// sandbox's answer needs sandbox code (a user `__eq__` or `__hash__`), the
-/// proxy falls back to instance identity rather than guess.
+/// [`ClassHash`]). A generated `__eq__` is replayed over the fields; a user
+/// `__eq__` would need sandbox code, so the proxy compares instance ids. The
+/// hash follows `==`: fields where `==` compares fields (a user `__hash__`
+/// included), the id otherwise, and `TypeError` where the sandbox's is too.
 #[pyclass(name = "MontyClassProxy", module = "pydantic_monty", frozen)]
 pub struct PyMontyClassProxy {
     /// The instance's class as it crossed the wire (name, id, dataclass-ness).
@@ -298,14 +299,22 @@ impl PyMontyClassProxy {
     }
 
     /// Mirrors the sandbox's hash rule, consistently with `__eq__`: a
-    /// `@dataclass` hashes its fields, an unhashable class raises `TypeError`,
-    /// and identity hashes the instance id. The result, error included, is
-    /// cached.
+    /// `@dataclass` that compares fields hashes them, an unhashable class
+    /// raises `TypeError`, and anything compared by id hashes the instance id.
+    /// The result is cached, errors included except the depth limit's.
     fn __hash__(&self, py: Python<'_>) -> PyResult<u64> {
         let cached = if let Some(cached) = self.hash.get() {
             cached
         } else {
-            let computed = self.compute_hash(py);
+            let computed = HashDepth::enter().and_then(|_depth| self.compute_hash(py));
+            // Hitting the depth limit depends on where hashing started, not
+            // on this proxy, so a later, shallower hash may still succeed.
+            if computed
+                .as_ref()
+                .is_err_and(|err| err.is_instance_of::<PyRecursionError>(py))
+            {
+                return computed;
+            }
             self.hash.get_or_init(|| computed)
         };
         cached.as_ref().copied().map_err(|err| err.clone_ref(py))
@@ -316,21 +325,21 @@ impl PyMontyClassProxy {
     /// The hash `__hash__` caches.
     fn compute_hash(&self, py: Python<'_>) -> PyResult<u64> {
         match (&self.class_type.hash, &self.class_type.eq) {
-            (ClassHash::Fields(fields), _) => {
+            (ClassHash::Unhashable, _) => Err(PyTypeError::new_err(format!(
+                "unhashable type: '{}'",
+                self.class_type.name
+            ))),
+            (ClassHash::Fields(fields), ClassEq::Fields(_)) => {
                 let mut hasher = DefaultHasher::new();
                 PyTuple::new(py, self.field_values(py, fields)?)?
                     .hash()?
                     .hash(&mut hasher);
                 Ok(hasher.finish())
             }
-            (ClassHash::Unhashable, _) => Err(PyTypeError::new_err(format!(
-                "unhashable type: '{}'",
-                self.class_type.name
-            ))),
             // A user `__hash__` beside a generated `__eq__`: the host cannot
             // run it, and an identity hash would split equal proxies, so it
             // hashes what `__eq__` compares, skipping values it cannot hash.
-            (ClassHash::Custom, ClassEq::Fields(fields)) => {
+            (ClassHash::Identity | ClassHash::Custom, ClassEq::Fields(fields)) => {
                 let mut hasher = DefaultHasher::new();
                 for value in self.field_values(py, fields)? {
                     match value.hash() {
@@ -341,9 +350,10 @@ impl PyMontyClassProxy {
                 }
                 Ok(hasher.finish())
             }
-            // A user `__hash__` with identity or user `==`: identity is the
-            // only hash consistent with the proxy's `==`.
-            (ClassHash::Identity | ClassHash::Custom, _) => Ok(hash_uuid(&self.instance_id)),
+            // `==` compares instance ids here, so only an id hash stays
+            // consistent with it: a field hash (a frozen dataclass with a body
+            // `__eq__`) could differ between snapshots of one object.
+            (_, ClassEq::Identity | ClassEq::Custom) => Ok(hash_uuid(&self.instance_id)),
         }
     }
 
@@ -385,6 +395,38 @@ impl PyMontyClassProxy {
 thread_local! {
     /// See [`EqualPairs`].
     static EQUAL_PAIRS: RefCell<EqualPairs> = RefCell::new(EqualPairs::default());
+    /// See [`HashDepth`].
+    static HASH_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// How many proxy hashes may nest on one thread, matching the default
+/// recursion limit.
+const MAX_HASH_DEPTH: usize = 1000;
+
+/// One level of nested proxy hashing. CPython's `hash()` has no recursion
+/// guard (unlike `==`), so a long chain of proxies linked through fields would
+/// otherwise overflow the host's native stack.
+struct HashDepth;
+
+impl HashDepth {
+    /// Enters one level, raising `RecursionError` past [`MAX_HASH_DEPTH`].
+    fn enter() -> PyResult<Self> {
+        let depth = HASH_DEPTH.get();
+        if depth < MAX_HASH_DEPTH {
+            HASH_DEPTH.set(depth + 1);
+            Ok(Self)
+        } else {
+            Err(PyRecursionError::new_err(
+                "maximum recursion depth exceeded while hashing a MontyClassProxy",
+            ))
+        }
+    }
+}
+
+impl Drop for HashDepth {
+    fn drop(&mut self) {
+        HASH_DEPTH.set(HASH_DEPTH.get() - 1);
+    }
 }
 
 /// Proxy pairs found equal during the outermost proxy `==` on this thread.

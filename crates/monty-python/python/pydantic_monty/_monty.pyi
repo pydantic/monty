@@ -450,9 +450,10 @@ class MontyClassProxy:
     `==` and `hash()` follow the sandbox class where the host can replay it: a
     `@dataclass` compares (and, when frozen, hashes) its fields. Sandbox code
     never runs on the host, so a user-defined `__eq__` is replaced by `id`
-    comparison, and a user-defined `__hash__` by an `id` hash (or, beside a
-    generated `__eq__`, a hash of the compared fields). A class the sandbox
-    cannot hash raises `TypeError` from `hash()`.
+    comparison. The hash follows `==`: the compared fields, or the `id` (even
+    for a user-defined `__hash__`). A class the sandbox cannot hash raises
+    `TypeError` from `hash()`, and proxies nested over 1000 deep through their
+    fields raise `RecursionError`.
     """
 
     @property
