@@ -34,8 +34,9 @@ mod disconnect_tests;
 use std::sync::OnceLock;
 
 pub use exceptions::{
-    MontyConversionError, MontyCrashedError, MontyDisconnectError, MontyError, MontyRefusedError, MontyRuntimeError,
-    MontyShutdown, MontySyntaxError, MontyTypingError, PyFrame, PySourceRange,
+    MontyConfigurationError, MontyConnectError, MontyConversionError, MontyCrashedError, MontyDisconnectError,
+    MontyError, MontyRefusedError, MontyRuntimeError, MontyShutdown, MontySyntaxError, MontyTypingError, PyFrame,
+    PySourceRange,
 };
 pub use mount::PyMountDir;
 pub use pool::{PyAsyncMonty, PyAsyncMontyRemote, PyAsyncMontySession, PyMonty, PyMontySession};
@@ -108,6 +109,10 @@ mod _monty {
 
     #[pymodule_export]
     use super::MontyComplete;
+    #[pymodule_export]
+    use super::MontyConfigurationError;
+    #[pymodule_export]
+    use super::MontyConnectError;
     #[pymodule_export]
     use super::MontyConversionError;
     #[pymodule_export]

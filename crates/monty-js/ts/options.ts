@@ -17,7 +17,7 @@ export type TypeCheckFormat =
 
 /**
  * `Configure.type_check_format` wire numbers (see
- * proto/monty/v1/monty.proto); 0 is UNSPECIFIED, which the child renders as
+ * proto/monty/v1/monty.proto); 0 is UNSPECIFIED, which the worker renders as
  * `full`. Only the wasm transport needs these — the napi binding passes the
  * name through to Rust.
  */
@@ -60,7 +60,7 @@ export type AssertMessageAnnotations = boolean | number
 /**
  * Normalizes {@link AssertMessageAnnotations} to the wire encoding of
  * `Configure.assert_message_annotations`: `undefined`/`true` → absent (the
- * child's default, a 120-byte truncation), `false` → `0` (off), an integer →
+ * worker's default, a 120-byte truncation), `false` → `0` (off), an integer →
  * a custom truncation length. Throws `RangeError` for numbers the wire's
  * uint32 cannot carry (non-integers, `< 1`, `> 2**32 - 1`).
  */
@@ -119,6 +119,9 @@ export interface OsPolicy {
   sleep?: SleepMode
   /**
    * Maximum seconds per `'system'` sleep (default 10; `Infinity` disables the cap).
+   * Longer sleeps return normally at the cap without a warning, unless the
+   * capped delay would exceed `maxTotalSleepSecs`.
+   * This is independent of `requestTimeout`.
    * Raises `RangeError` with other sleep modes.
    */
   sleepSystemMax?: number

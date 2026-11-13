@@ -271,8 +271,8 @@ fn timezone_to_proto(tz: MontyTimeZone) -> TimeZone {
     }
 }
 
-/// Validates a child-supplied fixed offset into the range `datetime.timezone`
-/// accepts, so a compromised child cannot hand the host an impossible zone.
+/// Validates a worker-supplied fixed offset into the range `datetime.timezone`
+/// accepts, so a compromised worker cannot hand the host an impossible zone.
 fn timezone_from_proto(tz: TimeZone) -> Result<MontyTimeZone, ProtoConvertError> {
     if !(MIN_TIMEZONE_OFFSET_SECONDS..=MAX_TIMEZONE_OFFSET_SECONDS).contains(&tz.offset_seconds) {
         return Err(ProtoConvertError::InvalidValue {
@@ -291,7 +291,7 @@ fn timezone_from_proto(tz: TimeZone) -> Result<MontyTimeZone, ProtoConvertError>
 
 /// Validates wire seconds into a `Duration`.
 ///
-/// A child may be compromised, so a NaN, negative or unrepresentable delay is
+/// A worker may be compromised, so a NaN, negative or unrepresentable delay is
 /// refused here rather than reaching a host that would convert it — and panic
 /// doing so.
 fn field_sleep_duration(seconds: f64, field: &'static str) -> Result<Duration, ProtoConvertError> {

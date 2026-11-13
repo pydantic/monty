@@ -10,6 +10,7 @@ import json
 import os
 import random
 import re
+import statistics
 import sys
 import tomllib
 from collections.abc import Iterator
@@ -831,3 +832,17 @@ forward.evaluate(format=annotationlib.Format.STRING)
 annotationlib.get_annotations(annotated, format=annotationlib.Format.STRING)
 assert_type(annotationlib.get_annotations(annotated), dict[str, Any])
 assert_type(get_type_hints(annotated, format=annotationlib.Format.FORWARDREF), dict[str, Any])
+
+
+# === statistics ===
+
+assert_type(statistics.mean([1, 2, 3]), float)
+assert_type(statistics.fmean([1, 2.5], weights=[1, 2]), float)
+assert_type(statistics.median([1.5, 2.5]), float)
+assert_type(statistics.median_low(['a', 'b']), str)
+assert_type(statistics.mode(['a', 'b']), str)
+assert_type(statistics.multimode([1, 1, 2]), list[int])
+assert_type(statistics.stdev([1.0, 2.0], xbar=1.5), float)
+assert_type(statistics.pvariance([1, 2]), float)
+assert_type(statistics.quantiles([1, 2, 3, 4], n=4, method='inclusive'), list[float])
+assert_type(statistics.StatisticsError('x'), statistics.StatisticsError)

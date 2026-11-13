@@ -16,12 +16,16 @@
 //! spawned on napi's tokio runtime via [`Env::spawn_future_with_callback`] —
 //! never on the JS event loop thread. Sandbox `print()` output streams
 //! mid-turn through a threadsafe function; the turn awaits each JS callback
-//! (`call_async`), preserving print ordering and backpressure. The checkout
+//! (`call_async`), preserving print ordering and backpressure. Calls to async
+//! host functions the worker streams are announced the same way and in order
+//! with prints, on the callback `feedRun` passes to [`NativeSession::feed`], so
+//! the host starts them mid-turn. The checkout
 //! mutex (a tokio mutex) is held for a whole turn: event-loop-thread methods
 //! must never block on it (`worker_pid` uses `try_lock`, everything else
 //! locks inside the spawned future).
 
 use std::{
+    collections::HashMap,
     future::Future,
     pin::Pin,
     result::Result as StdResult,
@@ -32,8 +36,8 @@ use std::{
 
 use monty_pool::{
     telemetry::{TelemetryAdapterHandle, TelemetryContext},
-    Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, Persistence, Pool, PoolConfig, PoolError,
-    PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, TurnEvent,
+    Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnStreamedCall, Persistence, Pool, PoolConfig,
+    PoolError, PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, StreamedCall, TurnEvent,
 };
 use monty_types::{
     unstable::{self, NodeId},
@@ -71,6 +75,10 @@ type SharedCheckout = Arc<AsyncMutex<Option<Checkout>>>;
 /// threadsafe function.
 type PrintCallback<'env> = Function<'env, FnArgs<(String, String, Option<String>)>, UnknownReturnValue>;
 
+/// The per-feed JS callback announcing a streamed call: its call ID and the
+/// span key of its telemetry context.
+type StreamedCallCallback<'env> = Function<'env, FnArgs<(u32, Option<String>)>, UnknownReturnValue>;
+
 fn callback_span_key(context: &Context) -> Option<String> {
     let span = context.span();
     let span = span.span_context();
@@ -107,7 +115,7 @@ pub struct NativePoolOptions {
     pub max_processes: u32,
     /// How long `enter()` waits for a free worker (ms). Absent: forever.
     pub checkout_timeout_ms: Option<f64>,
-    /// Parent-side hard deadline per protocol turn (ms).
+    /// Client-side hard deadline per protocol turn (ms).
     pub request_timeout_ms: Option<f64>,
     /// Grace for the automatic `maxFeedDurationSecs` backstop (ms). Absent:
     /// backstop disabled.
@@ -117,6 +125,9 @@ pub struct NativePoolOptions {
     pub turn_duration_limit_grace_ms: Option<f64>,
     /// Recycle a worker after serving this many checkouts.
     pub max_checkouts_per_worker: Option<u32>,
+    /// Stream calls to async host functions without suspending (see
+    /// `PoolConfig::stream_async_calls`). Absent: off.
+    pub stream_async_calls: Option<bool>,
 }
 
 /// Options for a pool of remote workers ([`NativePool::remote`]). Timeouts
@@ -130,7 +141,7 @@ pub struct NativeRemotePoolOptions {
     pub max_processes: Option<u32>,
     /// How long `enter()` waits for capacity (ms). Absent: forever.
     pub checkout_timeout_ms: Option<f64>,
-    /// Parent-side hard deadline per protocol turn (ms). Absent: none.
+    /// Client-side hard deadline per protocol turn (ms). Absent: none.
     pub request_timeout_ms: Option<f64>,
     /// As [`NativePoolOptions::feed_duration_limit_grace_ms`].
     pub feed_duration_limit_grace_ms: Option<f64>,
@@ -139,6 +150,8 @@ pub struct NativeRemotePoolOptions {
     /// Redial and reload a session a draining server stored, instead of
     /// reporting the shutdown (see `PoolConfig::auto_resume`).
     pub auto_resume: bool,
+    /// As [`NativePoolOptions::stream_async_calls`]. Absent: on.
+    pub stream_async_calls: Option<bool>,
 }
 
 /// One request-metadata entry for a remote checkout's stream.
@@ -219,11 +232,18 @@ pub struct NativeCheckoutOptions {
 /// Per-feed settings other than the mounts, passed by the TypeScript
 /// `MontySession` from its feed options.
 #[napi(object, js_name = "NativeFeedOptions")]
-pub struct NativeFeedOptions {
+pub struct NativeFeedOptions<'env> {
     /// Absolute virtual working directory; unset takes the first mount, else `/`.
     pub cwd: Option<String>,
     /// Skip type checking for this feed even when the session enables it.
     pub skip_type_check: bool,
+    /// `externalLookup` keys holding async functions, so a bare call to one
+    /// starts without waiting; unset makes every call suspend, as `feedStart()`
+    /// needs (see `Checkout::set_async_functions`).
+    pub async_functions: Option<Vec<String>>,
+    /// Receives the feed's streamed calls through all its turns; only `feedRun`
+    /// passes one, and without it every call suspends.
+    pub on_streamed_call: Option<StreamedCallCallback<'env>>,
 }
 
 /// One mount entry for a feed, pre-validated by the TypeScript `MountDir`.
@@ -315,6 +335,7 @@ impl NativePool {
             options.turn_duration_limit_grace_ms,
         )?;
         config.max_checkouts_per_worker = options.max_checkouts_per_worker;
+        config.stream_async_calls = options.stream_async_calls.unwrap_or(false);
         if config.min_processes > config.max_processes {
             return Err(invalid("minProcesses cannot exceed maxProcesses"));
         }
@@ -337,19 +358,29 @@ impl NativePool {
             options.turn_duration_limit_grace_ms,
         )?;
         config.auto_resume = options.auto_resume;
+        config.stream_async_calls = options.stream_async_calls.unwrap_or(true);
         Self::from_config(config, "MontyRemote")
     }
 
-    /// Spawns the prewarmed workers off the event loop.
+    /// Spawns the prewarmed workers off the event loop. Resolves to an `ok`
+    /// turn, or a `connect` / `configuration` / `protocol` turn saying why not.
     #[napi]
-    pub fn start<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, ()>> {
+    pub fn start<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, Object<'env>>> {
         let config = self.config.clone();
         let slot = Arc::clone(&self.pool);
-        env.spawn_future(async move {
-            let pool = Pool::new(config).await.map_err(pool_error)?;
-            *lock(&slot) = Some(Arc::new(pool));
-            Ok(())
-        })
+        env.spawn_future_with_callback(
+            async move {
+                let outcome = match Pool::new(config).await {
+                    Ok(pool) => {
+                        *lock(&slot) = Some(Arc::new(pool));
+                        TurnOutcome::Ok
+                    }
+                    Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
+                };
+                Ok((outcome, None))
+            },
+            turn_to_js,
+        )
     }
 
     /// Prepares a session; its worker is checked out by `NativeSession.enter`.
@@ -388,10 +419,13 @@ impl NativePool {
                     Some(false) => Persistence::Stored,
                 },
                 profile: options.profile,
+                // the pool's `streamAsyncCalls` alone decides for JS sessions
+                stream_async_calls: true,
             },
 
             checkout: Arc::new(AsyncMutex::new(None)),
             session_id: Arc::new(Mutex::new(None)),
+            announced_calls: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -476,10 +510,21 @@ pub struct NativeSession {
     /// The checkout's session ID, copied after entry and every turn so the
     /// getter never waits on the checkout lock a running turn holds.
     session_id: Arc<Mutex<Option<Vec<u8>>>>,
+    /// Streamed calls announced mid-turn, by call ID, until TypeScript takes
+    /// them with [`NativeSession::take_streamed_call`].
+    announced_calls: Arc<Mutex<HashMap<u32, StreamedCall>>>,
 }
 
 #[napi]
 impl NativeSession {
+    /// Takes the streamed call announced mid-turn to a feed's `on_streamed_call`,
+    /// converted to a JS object; `null` once taken.
+    #[napi]
+    pub fn take_streamed_call<'env>(&self, env: &'env Env, call_id: u32) -> Result<Option<Object<'env>>> {
+        let call = lock(&self.announced_calls).remove(&call_id);
+        call.map(|call| streamed_call_to_js(env, call)).transpose()
+    }
+
     /// Checks a worker out of the pool (spawning or dialing one if allowed)
     /// and creates the REPL session in it. `metadata` becomes a remote
     /// pool's stream metadata; a subprocess pool ignores them. Resolves to
@@ -498,7 +543,6 @@ impl NativeSession {
         let pool_name = self.pool_name;
         let repl_config = self.repl_config.clone();
         let slot = Arc::clone(&self.checkout);
-        let session_id = Arc::clone(&self.session_id);
         let telemetry_context =
             telemetry_context.and_then(|context| configured_tracing_adapter().map(|adapter| context.parse(adapter)));
         let metadata = metadata
@@ -529,7 +573,6 @@ impl NativeSession {
                 };
                 let outcome = match checkout {
                     Ok(checkout) => {
-                        *lock(&session_id) = checkout.session_id().map(<[u8]>::to_vec);
                         *slot.lock().await = Some(checkout);
                         TurnOutcome::Ok
                     }
@@ -551,20 +594,33 @@ impl NativeSession {
         code: String,
         inputs: Option<Object<'env>>,
         mounts: Vec<ClassInstance<'env, NativeMountDir>>,
-        options: NativeFeedOptions,
+        options: NativeFeedOptions<'env>,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let inputs = convert_inputs(env, inputs)?;
         let mounts = mount_specs(&mounts)?;
-        let NativeFeedOptions { cwd, skip_type_check } = options;
+        let NativeFeedOptions {
+            cwd,
+            skip_type_check,
+            async_functions,
+            on_streamed_call,
+        } = options;
+        let handler = on_streamed_call
+            .map(|callback| self.streamed_call_handler(callback))
+            .transpose()?;
         self.run_turn(
             env,
             on_print,
             outcome_fn(move |checkout, on_print| {
                 Box::pin(async move {
-                    checkout
+                    checkout.set_async_functions(async_functions);
+                    checkout.set_streamed_call_handler(handler);
+                    let outcome = checkout
                         .feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, on_print)
-                        .await
+                        .await;
+                    // a refused feed never adopted its handler; drop it, as monty-python does
+                    checkout.set_streamed_call_handler(None);
+                    outcome
                 })
             }),
         )
@@ -908,6 +964,25 @@ impl NativeSession {
         )
     }
 
+    /// Opens the session if no request has yet, sending its `Configure` alone,
+    /// so a storing server's `sessionId` is set once this resolves. Resolves to
+    /// an `ok` turn, or what a refused first request would.
+    #[napi]
+    pub fn open<'env>(&self, env: &'env Env, on_print: PrintCallback<'env>) -> Result<PromiseRaw<'env, Object<'env>>> {
+        self.run_outcome(
+            env,
+            on_print,
+            outcome_fn(move |checkout, _on_print| {
+                Box::pin(async move {
+                    match checkout.open().await {
+                        Ok(()) => TurnOutcome::Ok,
+                        Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
+                    }
+                })
+            }),
+        )
+    }
+
     /// Ends the session and returns the worker to the pool (best effort — a
     /// crashed worker has already been discarded and replaced).
     #[napi]
@@ -975,6 +1050,25 @@ impl NativeSession {
                 Box::pin(async move { TurnOutcome::from(turn(checkout, on_print).await) })
             }),
         )
+    }
+
+    /// The checkout handler announcing each of one feed's streamed calls to
+    /// `callback`, awaited in order with prints so TypeScript registers the call's
+    /// future before the next frame; the call waits in `announced_calls` for
+    /// `take_streamed_call`. The checkout owns the handler, so `finish` releases
+    /// it, and weak, so an idle session does not keep Node's event loop alive.
+    fn streamed_call_handler(&self, callback: StreamedCallCallback<'_>) -> Result<OnStreamedCall> {
+        let tsfn = Arc::new(callback.build_threadsafe_function().weak::<true>().build()?);
+        let announced_calls = Arc::clone(&self.announced_calls);
+        Ok(Box::new(move |call: StreamedCall| {
+            let call_id = call.call_id;
+            let span_key = callback_span_key(&call.callback_context);
+            lock(&announced_calls).insert(call_id, call);
+            let tsfn = Arc::clone(&tsfn);
+            Box::pin(async move {
+                let _ = tsfn.call_async(FnArgs::from((call_id, span_key))).await;
+            })
+        }))
     }
 
     /// The shared turn machinery behind [`run_turn`](Self::run_turn): locks the
@@ -1048,6 +1142,13 @@ enum TurnOutcome {
     },
     /// The worker (or caller) violated the protocol; the session is lost.
     Protocol(String),
+    /// A remote connection failed before the session opened.
+    Connect {
+        message: String,
+        details: Box<RemoteDisconnect>,
+    },
+    /// The pool or request configuration is invalid or incompatible with the server.
+    Configuration(String),
     /// A remote worker's stream ended mid-session; the session is lost.
     /// `details` is the status or transport failure that ended it, when known.
     Disconnected {
@@ -1072,7 +1173,8 @@ enum TurnOutcome {
     /// [`NativeSession::resume_from_mounts`].
     NotMounted,
     /// A non-feed request succeeded with no value or suspension. Produced by
-    /// [`NativeSession::install_dependencies`] and [`NativeSession::enter`].
+    /// [`NativePool::start`], [`NativeSession::install_dependencies`] and
+    /// [`NativeSession::enter`].
     Ok,
     /// No worker became available within the checkout timeout. Only produced
     /// by [`NativeSession::enter`].
@@ -1091,44 +1193,35 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
             Ok(event) => Self::Event(event),
             Err(PoolError::Runtime(exc)) => Self::Runtime(exc),
             Err(PoolError::Typing(diagnostics)) => Self::Typing(diagnostics),
-            Err(err @ (PoolError::Timeout { .. } | PoolError::CpuLimit { .. })) => Self::Crashed {
-                message: err.to_string(),
-                timed_out: true,
-                exit_status: None,
-            },
-            // `status` is `Copy`, so it can be reported *and* handed back to
-            // the error, whose own Display picks between "while <doing X>"
-            // and the worker's stated reason — don't re-derive that here.
-            Err(PoolError::Crashed { status, cause }) => Self::Crashed {
-                exit_status: status.map(|status| status.to_string()),
-                message: PoolError::Crashed { status, cause }.to_string(),
-                timed_out: false,
-            },
-            Err(PoolError::Disconnected { context, remote }) => Self::Disconnected {
-                message: PoolError::Disconnected { context, remote: None }.to_string(),
-                details: remote,
-            },
-            // rendered before the status is taken back out, as for `Shutdown`
-            Err(err @ PoolError::Refused { .. }) => {
+            Err(PoolError::Configuration(message)) => Self::Configuration(message),
+            // rendered before the match: these variants' Display reads fields
+            // (status, dump, remote details) that the outcome then takes back out
+            Err(err) => {
                 let message = err.to_string();
-                let PoolError::Refused { refusal, .. } = err else {
-                    unreachable!("matched as Refused above")
-                };
-                Self::Refused {
-                    message,
-                    details: refusal,
+                match err {
+                    PoolError::Timeout { .. } | PoolError::CpuLimit { .. } => Self::Crashed {
+                        message,
+                        timed_out: true,
+                        exit_status: None,
+                    },
+                    PoolError::Crashed { status, .. } => Self::Crashed {
+                        message,
+                        timed_out: false,
+                        exit_status: status.map(|status| status.to_string()),
+                    },
+                    PoolError::Disconnected { remote, .. } => Self::Disconnected {
+                        message,
+                        details: remote,
+                    },
+                    PoolError::Connect { details, .. } => Self::Connect { message, details },
+                    PoolError::Refused { refusal, .. } => Self::Refused {
+                        message,
+                        details: refusal,
+                    },
+                    PoolError::Shutdown { dump } => Self::Shutdown { message, dump },
+                    _ => Self::Protocol(message),
                 }
             }
-            // the error's Display notes whether a dump came with it, so render
-            // it before taking the dump back out
-            Err(err @ PoolError::Shutdown { .. }) => {
-                let message = err.to_string();
-                let PoolError::Shutdown { dump } = err else {
-                    unreachable!("matched as Shutdown above")
-                };
-                Self::Shutdown { message, dump }
-            }
-            Err(other) => Self::Protocol(other.to_string()),
         }
     }
 }
@@ -1143,7 +1236,7 @@ fn set_remote_details(obj: &mut Object, details: RemoteDisconnect) -> Result<()>
         obj.set("statusMessage", status_message)?;
     }
     if let Some(cause) = details.cause {
-        obj.set("cause", cause.as_str())?;
+        obj.set("remoteCause", cause.as_str())?;
     }
     if let Some(error) = details.transport_error {
         obj.set("transportError", error)?;
@@ -1250,6 +1343,15 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("kind", "protocol")?;
             obj.set("message", message)?;
         }
+        TurnOutcome::Configuration(message) => {
+            obj.set("kind", "configuration")?;
+            obj.set("message", message)?;
+        }
+        TurnOutcome::Connect { message, details } => {
+            obj.set("kind", "connect")?;
+            obj.set("message", message)?;
+            set_remote_details(&mut obj, *details)?;
+        }
         TurnOutcome::Disconnected { message, details } => {
             obj.set("kind", "disconnected")?;
             obj.set("message", message)?;
@@ -1260,6 +1362,11 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
         TurnOutcome::Refused { message, details } => {
             obj.set("kind", "refused")?;
             obj.set("message", message)?;
+            // retry hints only mean something before a session exists
+            obj.set("retryable", details.retryable())?;
+            if let Some(delay) = details.retry_after {
+                obj.set("retryAfter", delay.as_secs_f64())?;
+            }
             set_remote_details(&mut obj, *details)?;
         }
         TurnOutcome::Shutdown { message, dump } => {
@@ -1300,6 +1407,26 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
         }
     }
     Ok(obj)
+}
+
+/// One streamed call as a JS object: functionName, args, kwargs, callId and position.
+fn streamed_call_to_js(env: &Env, call: StreamedCall) -> Result<Object<'_>> {
+    let StreamedCall {
+        function_name,
+        args,
+        call_id,
+        position,
+        ..
+    } = call;
+    let mut object = Object::new(env)?;
+    object.set("functionName", function_name)?;
+    let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&args);
+    let arena = DecodedArena::new(graph, env)?;
+    object.set("args", values_to_js(env, &arena, arg_ids)?)?;
+    object.set("kwargs", pairs_to_js(env, &arena, kwarg_ids)?)?;
+    object.set("callId", call_id)?;
+    object.set("position", source_range_to_js(env, &position)?)?;
+    Ok(object)
 }
 
 /// Converts positional call arguments for a turn object.

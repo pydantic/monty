@@ -42,6 +42,8 @@ __all__ = [
     'MontyError',
     'MontyFileHandle',
     'MontyRefusedError',
+    'MontyConfigurationError',
+    'MontyConnectError',
     'MontySession',
     'MontyShutdown',
     'MontySyntaxError',
@@ -531,7 +533,7 @@ class MontyCrashedError(MontyError):
 
     @property
     def timed_out(self) -> bool:
-        """`True` when a parent-side elapsed-time or CPU watchdog killed the worker."""
+        """`True` when a client-side elapsed-time or CPU watchdog killed the worker."""
 
     @property
     def exit_status(self) -> int | None:
@@ -574,6 +576,45 @@ class MontyDisconnectError(MontyError):
         """The recorded transport or protocol error, or `None` when the server sent a status."""
 
 @final
+class MontyConnectError(MontyError):
+    """Raised when a remote connection fails before a session opens.
+
+    This includes invalid URLs, DNS and TLS failures, timeouts, HTTP responses
+    that are not gRPC, and unexpected gRPC statuses. Nothing ran.
+    Cannot be constructed directly from Python.
+    """
+
+    @property
+    def status_code(self) -> str | None:
+        """The canonical gRPC code, or `None` when the server sent no status."""
+
+    @property
+    def status_message(self) -> str | None:
+        """The server's status message, or `None`."""
+
+    @property
+    def cause(self) -> str | None:
+        """The recognized policy reason in `monty-cause`, in `snake_case`, or `None`."""
+
+    @property
+    def transport_error(self) -> str | None:
+        """The underlying transport error, or `None` when the server sent a status."""
+
+@final
+class MontyConfigurationError(MontyError):
+    """Raised for invalid pool settings, malformed request metadata, or settings incompatible with the remote server.
+
+    CPU-mode pools and servers require a finite client `request_timeout`.
+    A worker or server refusing the session's configuration (deeply nested
+    `type_check_stubs`, an unknown profile) raises it as `session refused: …`
+    from the session's first request, which did not run, or from
+    `get_session_id()` when it opens the session alone; the session is lost.
+    Options the binding checks itself, such as `os_policy`, raise `TypeError`
+    or `ValueError` from `checkout()` instead.
+    Cannot be constructed directly from Python.
+    """
+
+@final
 class MontyRefusedError(MontyError):
     """Raised when the remote server refused to open a session's stream (remote transport only).
 
@@ -582,10 +623,10 @@ class MontyRefusedError(MontyError):
     the caller's credentials (`unauthenticated`) or what a valid credential
     asked for (`permission_denied`); it says which in `status_code`,
     `status_message` and `cause`. No session existed,
-    so nothing ran, and unlike `MontyDisconnectError` retrying is safe. A
+    so nothing ran. `retryable` identifies temporary refusals. A
     server that could not be reached, that answered with any other status
     (such as `UNIMPLEMENTED` from a URL that is no Monty server), or that is
-    no gRPC server at all (such as a web server's page), raises `RuntimeError`
+    no gRPC server at all (such as a web server's page), raises `MontyConnectError`
     instead.
 
     Cannot be constructed directly from Python.
@@ -605,6 +646,22 @@ class MontyRefusedError(MontyError):
         """The policy reason the server attached to the status, in `snake_case`
         (`capacity`, `caller_cap`, `unauthenticated`, `permission_denied`,
         `worker_unavailable`, ...), or `None` when it attached none this client knows."""
+
+    @property
+    def retryable(self) -> bool:
+        """`True` for `RESOURCE_EXHAUSTED` or `UNAVAILABLE`, not for credential errors.
+
+        No automatic retry is performed. A disconnected request must not be replayed.
+        """
+
+    @property
+    def retry_after(self) -> float | None:
+        """Suggested delay in seconds from `Retry-After`, or `None` if absent or invalid.
+
+        Both delay-seconds and HTTP dates are accepted. Past dates give zero;
+        delays are capped at one hour.
+        A retry delay does not make a permanent refusal retryable.
+        """
 
 @final
 class MontyShutdown(MontyError):
@@ -678,7 +735,7 @@ class Monty:
                 checkouts beyond it wait for a worker to be returned.
             checkout_timeout: Seconds `checkout()` waits for a free worker
                 before raising `TimeoutError`. `None` waits forever.
-            request_timeout: Per-turn parent-side deadline in seconds — a worker
+            request_timeout: Per-turn client-side deadline in seconds — a worker
                 that exceeds it is killed and the call raises `MontyCrashedError`
                 with `timed_out=True`. Trusted synchronous span and log callbacks
                 delay enforcement while they run. Backstops sandbox `limits`.
@@ -1026,11 +1083,19 @@ class AsyncMonty:
         max_checkouts_per_worker: int | None = 1000,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
+        stream_async_calls: bool = False,
     ) -> Self:
         """
         Configure a worker pool; the workers are spawned by `async with`.
 
-        Arguments are identical to `Monty`.
+        Arguments are identical to `Monty`, plus:
+
+        Arguments:
+            stream_async_calls: Let a call to an `async def` host function that
+                the sandbox does not await at once go to the host without
+                suspending the worker, saving a round trip per call; errors
+                from such calls are raised at the `await`. Off by default, unlike
+                `AsyncMontyRemote`. See [starting calls without waiting](https://pydantic.dev/docs/monty/host-functions#starting-calls-without-waiting).
         """
 
     async def __aenter__(self) -> Self: ...
@@ -1065,7 +1130,7 @@ class AsyncMontyRemote:
     Async context manager owning a pool of remote `monty` workers reached over
     gRPC: one HTTP/2 connection to the configured URL, one stream per session.
     The intended peer is `monty-server` (the production server: one
-    `monty subprocess` child per stream, plus capacity/timeout policy and
+    `monty subprocess` worker per stream, plus capacity/timeout policy and
     graceful drain), but any server that admits the stream and bridges it to
     a worker fits — e.g. the dev relay `scripts/grpc_relay.py`.
 
@@ -1081,7 +1146,7 @@ class AsyncMontyRemote:
     status and raises `MontyDisconnectError` naming its `cause`; a stream it
     refuses to open raises `MontyRefusedError` the same way.
 
-    A server that stores sessions gives each one an ID (`session.session_id`)
+    A server that stores sessions gives each one an ID (`await session.get_session_id()`)
     instead of handing state back: `dump()` writes the current state to a
     record that never changes and returns its ID, and `load_session` /
     `load_snapshot` start a new session from either ID, in any process.
@@ -1109,6 +1174,7 @@ class AsyncMontyRemote:
         auto_resume: bool = True,
         max_decode_bytes: int | None = None,
         connect_headers: Callable[[], Mapping[str, str]] | None = None,
+        stream_async_calls: bool = True,
     ) -> Self:
         """
         Configure a remote worker pool; the connection is made by the first
@@ -1127,10 +1193,17 @@ class AsyncMontyRemote:
                 worker that exceeds it has its connection killed and the call
                 raises `MontyCrashedError` with `timed_out=True`. It also bounds
                 opening the stream, including the server's admission (30
-                seconds when `None`). CPU-mode servers require a finite value.
+                seconds when `None`). CPU-mode servers require a finite value;
+                otherwise checkout raises `MontyConfigurationError`.
                 Pass `None` to wait indefinitely with wall-mode servers.
                 Under contention, this wall deadline can expire before a server
                 CPU budget. Choose it for the expected budgets and scheduling delays.
+
+                This deadline does not set the sleep cap. System sleeps return
+                normally after at most `sleep_system_max` (default ten seconds),
+                even if sandbox code asks for longer, unless `max_total_sleep_secs`
+                would be exceeded. Use `os_policy` with
+                `sleep='call_host'` and `OSAccess(max_sleep=None)` to handle full sleeps.
 
                 Note that `install_dependencies` is a turn too, so the default
                 10.0 is often too low for it — a real `uv pip install` can exceed
@@ -1141,6 +1214,12 @@ class AsyncMontyRemote:
                 at construction. Excludes wire buffers and Python conversion.
                 Exhaustion ends the session with a protocol error without replay.
                 Also caps each message's size, clamped between 64 KiB and the 256 MiB frame limit.
+            stream_async_calls: Let a call to an `async def` host function that
+                the sandbox does not await at once go to the host without
+                suspending the worker, saving a network round trip per call;
+                errors from such calls are raised at the `await`. On by default,
+                unlike the subprocess `AsyncMonty`. See [starting calls without
+                waiting](https://pydantic.dev/docs/monty/host-functions#starting-calls-without-waiting).
             connect_headers: The former name of `metadata`, accepted for one
                 release with a `DeprecationWarning`; passing both raises
                 `TypeError`.
@@ -1153,7 +1232,7 @@ class AsyncMontyRemote:
                 are lowercase ASCII and values ASCII, duplicate names are
                 last-wins, also over the `traceparent` the Logfire integration
                 adds, a `user-agent` entry is put in front of the default one,
-                and a malformed name or value raises `RuntimeError` as the
+                and a malformed name or value raises `MontyConfigurationError` as the
                 session is entered.
             feed_duration_limit_grace: Client wall-time grace beyond
                 `max_feed_duration_secs` when the server uses wall time.
@@ -1414,13 +1493,26 @@ class AsyncMontySession:
         on another thread (the getter never blocks on a running turn).
         """
 
-    @property
-    def session_id(self) -> bytes | None:
+    async def get_session_id(self) -> bytes | None:
         """The opaque ID a server that stores sessions gave this session.
 
         Pass it to `load_session` / `load_snapshot` to start a new session from
         the state as of this one's last park, from any process. `None` for local
         workers, ephemeral sessions and servers that store nothing.
+
+        Opens the session if no request has yet, which costs one round trip and
+        raises what that request would on a refused configuration. Waits for a
+        running turn, and after the session exits returns the last ID seen.
+        Raises `RuntimeError` before the session is entered.
+        """
+
+    @property
+    @deprecated('`session_id` is `None` until the first request opens the session; use `await get_session_id()`.')
+    def session_id(self) -> bytes | None:
+        """Deprecated: use `get_session_id()`.
+
+        The ID as last seen, which is `None` until the session's first request
+        (`feed_run`, `feed_start`, `load_*`, ...) opens it.
         """
 
 @final

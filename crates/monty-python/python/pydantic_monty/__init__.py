@@ -25,6 +25,8 @@ from ._monty import (
     MontyClassProxy,
     MontyClassTypeProxy,
     MontyComplete,
+    MontyConfigurationError,
+    MontyConnectError,
     MontyConversionError,
     MontyCrashedError,
     MontyDisconnectError,
@@ -99,6 +101,8 @@ __all__ = (
     'MontyError',
     'MontyFileHandle',
     'MontyRefusedError',
+    'MontyConfigurationError',
+    'MontyConnectError',
     'MontySession',
     'MontyShutdown',
     'MontySyntaxError',
@@ -294,6 +298,7 @@ ExcType = Literal[
     're.PatternError',
     'binascii.Error',
     'binascii.Incomplete',
+    'statistics.StatisticsError',
     'decimal.DecimalException',
     'decimal.Clamped',
     'decimal.InvalidOperation',
@@ -314,7 +319,7 @@ ExcType = Literal[
 Used by `ExternalExceptionData` to identify an exception by name rather than
 passing a concrete Python exception instance. Names match Python's built-in
 exception classes, except for `json.JSONDecodeError`, `tomllib.TOMLDecodeError`,
-`re.PatternError`, `binascii.Error`, `binascii.Incomplete`, `_csv.Error` and the
+`re.PatternError`, `binascii.Error`, `binascii.Incomplete`, `statistics.StatisticsError`, `_csv.Error` and the
 `decimal` signals (`decimal.InvalidOperation`, ...), which are dotted to
 disambiguate from their `ValueError` / `Exception` / `ArithmeticError` parents.
 """

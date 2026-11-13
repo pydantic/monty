@@ -19,7 +19,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
     hash::{HashValue, hash_f64, hash_named, hash_one, hash_python_str},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
@@ -851,18 +851,22 @@ fn cmp_heap_pair(id1: HeapId, id2: HeapId, vm: &mut VM<'_>) -> RunResult<CmpOrde
         // A namedtuple orders like the tuple it subclasses, including
         // against a plain tuple in either direction. Both sides are
         // cloned first because the comparison needs `&mut VM`, which
-        // cannot coexist with two live `HeapRead`s.
+        // cannot coexist with two live `HeapRead`s. Guard the first clone
+        // while the second clone's memory check can still fail.
         (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => {
-            let (a, b) = (a.cloned_items(vm)?, b.cloned_items(vm)?);
-            cmp_item_seqs(a, b, vm)
+            let mut a_items = DropGuard::new(a.cloned_items(vm)?, vm);
+            let b_items = b.cloned_items(a_items.ctx())?;
+            cmp_item_seqs(a_items.into_inner(), b_items, vm)
         }
         (HeapReadOutput::NamedTuple(a), HeapReadOutput::Tuple(b)) => {
-            let (a, b) = (a.cloned_items(vm)?, b.cloned_items(vm)?);
-            cmp_item_seqs(a, b, vm)
+            let mut a_items = DropGuard::new(a.cloned_items(vm)?, vm);
+            let b_items = b.cloned_items(a_items.ctx())?;
+            cmp_item_seqs(a_items.into_inner(), b_items, vm)
         }
         (HeapReadOutput::Tuple(a), HeapReadOutput::NamedTuple(b)) => {
-            let (a, b) = (a.cloned_items(vm)?, b.cloned_items(vm)?);
-            cmp_item_seqs(a, b, vm)
+            let mut a_items = DropGuard::new(a.cloned_items(vm)?, vm);
+            let b_items = b.cloned_items(a_items.ctx())?;
+            cmp_item_seqs(a_items.into_inner(), b_items, vm)
         }
         (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_cmp(&b, vm),
         (HeapReadOutput::Deque(a), HeapReadOutput::Deque(b)) => a.py_cmp(&b, vm),

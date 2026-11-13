@@ -5,6 +5,7 @@ from __future__ import annotations
 import binascii
 import csv
 import json
+import statistics
 import sys
 
 import pytest
@@ -171,6 +172,16 @@ def test_binascii_error(monty_run: RunMonty):
     assert isinstance(inner, binascii.Error)
     assert isinstance(inner, ValueError)
     assert str(inner) == snapshot('Incorrect padding')
+
+
+def test_statistics_error(monty_run: RunMonty):
+    # A sandbox `statistics` failure surfaces as the real stdlib class, a `ValueError` subclass.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import statistics\nstatistics.mean([])')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, statistics.StatisticsError)
+    assert isinstance(inner, ValueError)
+    assert str(inner) == snapshot('mean requires at least one data point')
 
 
 def test_csv_error(monty_run: RunMonty):
@@ -429,7 +440,7 @@ ValueError: test message\
 
 def test_multiline_span_traceback(monty_run: RunMonty):
     # Regression test for #631: a frame spanning multiple lines can end on a
-    # lower column than it starts (hanging-indent `)`); the parent-side wire
+    # lower column than it starts (hanging-indent `)`); the client-side wire
     # validation used to reject the whole exception payload as malformed.
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run('def f(a):\n    raise ValueError("boom")\n\nr = f(\n    a=1,\n)\n')

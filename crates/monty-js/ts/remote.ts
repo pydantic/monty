@@ -1,12 +1,12 @@
 // The remote pool: `MontyRemote` holds one HTTP/2 connection to a gRPC
 // server and opens a session stream per checkout instead of spawning local
-// `monty subprocess` children. Dialing, framing, auto-resume after a server
+// `monty subprocess` workers. Dialing, framing, auto-resume after a server
 // drain and the per-turn watchdog all live in the native `monty-pool` crate
 // (shared with pydantic_monty's AsyncMontyRemote); sessions are the same
 // `MontySession` a local pool hands out.
 
 import { NativePool } from '../native-addon.js'
-import { type CheckoutOptions, graceMs, nativeCheckoutOptions } from './pool.js'
+import { type CheckoutOptions, graceMs, nativeCheckoutOptions, startPool } from './pool.js'
 import { enterSession, HostModules, MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
 
@@ -26,7 +26,13 @@ export interface MontyRemoteOptions {
    * the stream but never answers blocks the turn until the far end ends it.
    * It also bounds opening the stream, including the server's admission (30s
    * when `null`). `installDependencies` is a turn too, and a real install can exceed 10s.
-   * CPU-mode servers require a finite `requestTimeout`.
+   * CPU-mode servers require a finite `requestTimeout`, otherwise checkout
+   * throws `MontyConfigurationError`.
+   * This deadline does not set the sleep cap. System sleeps return normally
+   * after at most `sleepSystemMax` (default ten seconds), even when sandbox
+   * code asks for longer, unless the capped delay would exceed `maxTotalSleepSecs`.
+   * Set `osPolicy.sleepSystemMax: Infinity` on checkout
+   * to request uncapped sleeps, subject to the server's policy.
    */
   requestTimeout?: number | null
   /**
@@ -55,6 +61,13 @@ export interface MontyRemoteOptions {
    * sessions can be resumed; see `MontyShutdown`.
    */
   autoResume?: boolean
+  /**
+   * Let a call to an `async` host function that the sandbox does not await at
+   * once go to the host without suspending the worker, saving a network round
+   * trip per call; errors from such calls are raised at the `await`. On by
+   * default, unlike the subprocess `Monty`. See [starting calls without waiting](https://pydantic.dev/docs/monty/host-functions#starting-calls-without-waiting).
+   */
+  streamAsyncCalls?: boolean
 }
 
 /** Options for [`MontyRemote.checkout`]: the local options plus the server's session settings. */
@@ -118,18 +131,20 @@ export class MontyRemote {
       ...graceMs('feedDurationLimitGraceMs', options.feedDurationLimitGrace),
       ...graceMs('turnDurationLimitGraceMs', options.turnDurationLimitGrace),
       autoResume: options.autoResume ?? true,
+      streamAsyncCalls: options.streamAsyncCalls ?? true,
     })
-    await native.start()
+    await startPool(native)
     return new MontyRemote(native, metadata)
   }
 
   /**
    * Opens a session stream to the server and creates a REPL session there.
-   * Rejects with a plain `Error` when the connection fails;
+   * Rejects with `MontyConnectError` when the connection fails;
    * `MontyRefusedError` when the server refuses the stream, e.g. one at
-   * capacity; `MontyRuntimeError` when the server refuses the session; and
-   * `MontyDisconnectError` / `MontyShutdown` when it is lost while being
-   * created. Release the stream with `session.close()` (or `await using`).
+   * capacity; and `MontyDisconnectError` / `MontyShutdown` when it is lost
+   * while being created. A server refusing the session's configuration
+   * fails its first request with `MontyConfigurationError`. Release the
+   * stream with `session.close()` (or `await using`).
    */
   async checkout(options: RemoteCheckoutOptions = {}): Promise<MontySession> {
     if (this.closing !== undefined) {
