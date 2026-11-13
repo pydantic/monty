@@ -1081,3 +1081,94 @@ fn function_with_too_many_closure_variables_returns_syntax_error() {
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
     assert_eq!(err.message(), Some("more than 255 closure variables (256)"));
 }
+
+#[test]
+fn await_in_sync_function_raises_syntax_error() {
+    let err = get_parse_err("def f():\n    await g()");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"'await' outside async function");
+}
+
+#[test]
+fn await_in_lambda_raises_syntax_error() {
+    let err = get_parse_err("f = lambda: await g()");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"'await' outside async function");
+}
+
+#[test]
+fn await_in_sync_nested_function_inside_async_raises_syntax_error() {
+    let code = "\
+async def outer():
+    def inner():
+        return await g()
+    return inner()";
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"'await' outside async function");
+}
+
+#[test]
+fn await_in_sync_comprehension_inside_sync_function_raises_syntax_error() {
+    let code = "\
+def f():
+    return [await g() for _ in [1]]";
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"'await' outside async function");
+}
+
+#[test]
+fn await_in_class_body_raises_syntax_error() {
+    let err = get_parse_err("class C:\n    x = await g()");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"'await' outside function");
+}
+
+#[test]
+fn await_in_class_body_inside_async_function_raises_syntax_error() {
+    let code = "\
+async def f():
+    class C:
+        x = await g()";
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"'await' outside function");
+}
+
+#[test]
+fn await_in_sync_method_raises_syntax_error() {
+    let code = "\
+class C:
+    def method(self):
+        await g()";
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"'await' outside async function");
+}
+
+#[test]
+fn await_in_async_method_compiles_successfully() {
+    let code = "\
+class C:
+    async def method(self):
+        return await g()";
+    let result = MontyRun::new(code.to_string(), "test.py", vec![], CompileOptions::default());
+    assert!(result.is_ok());
+}
+
+#[test]
+fn await_in_async_function_compiles_successfully() {
+    let code = "\
+async def f():
+    return await g()";
+    let result = MontyRun::new(code.to_string(), "test.py", vec![], CompileOptions::default());
+    assert!(result.is_ok());
+}
+
+#[test]
+fn await_at_script_top_level_compiles_successfully() {
+    let code = "x = await g()";
+    let result = MontyRun::new(code.to_string(), "test.py", vec![], CompileOptions::default());
+    assert!(result.is_ok());
+}

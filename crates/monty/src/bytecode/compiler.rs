@@ -292,12 +292,19 @@ pub struct Compiler<'a, 'i> {
     flags: ScopeFlags,
 }
 
-/// Compiler settings inherited by nested scopes, with await restrictions reset for functions.
+/// Scope-level permission for `await` expressions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AwaitScope {
+    /// `await` is permitted (in an `async def` body or top-level script).
+    Allowed,
+    /// In a synchronous function (`def`, `lambda`): raises "'await' outside async function".
+    OutsideAsyncFunction,
+    /// In a non-script snippet (`eval()`, `exec()`) or class body: raises "'await' outside function".
+    OutsideFunction,
+}
+
+/// Compiler settings inherited by nested scopes, with await restrictions updated for functions.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent switches copied into nested scopes"
-)]
 struct ScopeFlags {
     /// Whether to compile pytest-style assert failure annotations.
     assert_message_annotations: bool,
@@ -305,9 +312,8 @@ struct ScopeFlags {
     /// `NAME_GLOBAL_ONLY`) because the running frame's globals are an explicit
     /// `exec()` / `eval()` dict.
     globals_by_name: bool,
-    /// Rejects `await` at snippet top level and in its class bodies.
-    /// Nested function bodies reset this restriction.
-    forbid_await: bool,
+    /// Controls whether and how `await` expressions are rejected.
+    await_scope: AwaitScope,
     /// Whether the compile unit runs under `from __future__ import annotations`,
     /// stamped on every `Code` it produces.
     future_annotations: bool,
@@ -582,10 +588,15 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // Module frames have `locals_count = 0` at runtime (globals live in
         // `self.globals`), so comp-var offsets are emitted as plain operand-
         // stack indices.
+        let await_scope = if snippet.is_some() {
+            AwaitScope::OutsideFunction
+        } else {
+            AwaitScope::Allowed
+        };
         let flags = ScopeFlags {
             assert_message_annotations: options.assert_message_annotations.enabled(),
             globals_by_name: snippet.unwrap_or(false),
-            forbid_await: snippet.is_some(),
+            await_scope,
             future_annotations,
         };
         let mut compiler = Compiler::new(interns, true, 0, flags);
@@ -621,10 +632,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // Function frames have `locals_count = num_locals` at runtime, so
         // comp-var load/store opcodes use `num_locals + offset` to skip past
         // the locals region into the operand-stack region.
-        let flags = ScopeFlags {
-            forbid_await: false,
-            ..flags
+        let await_scope = if func_def.is_async {
+            AwaitScope::Allowed
+        } else {
+            AwaitScope::OutsideAsyncFunction
         };
+        let flags = ScopeFlags { await_scope, ..flags };
         let mut compiler = Compiler::new(interns, false, num_locals, flags);
         // Parameters, and the cells captured parameters live in, are named up
         // front: a body that never mentions one still reports it from `locals()`.
@@ -1090,7 +1103,10 @@ impl<'a, 'i> Compiler<'a, 'i> {
         class_name: &Identifier,
         position: CodeRange,
     ) -> Result<(), CompileError> {
-        let flags = self.flags;
+        let flags = ScopeFlags {
+            await_scope: AwaitScope::OutsideFunction,
+            ..self.flags
+        };
         self.emit_make_callable(body, "class body", |interns, namespace_size| {
             Self::compile_class_body(
                 &body.body,
@@ -1478,8 +1494,14 @@ impl<'a, 'i> Compiler<'a, 'i> {
             }
 
             Expr::Await(value) => {
-                if self.flags.forbid_await {
-                    return Err(CompileError::new("'await' outside function", expr_loc.position));
+                match self.flags.await_scope {
+                    AwaitScope::OutsideAsyncFunction => {
+                        return Err(CompileError::new("'await' outside async function", expr_loc.position));
+                    }
+                    AwaitScope::OutsideFunction => {
+                        return Err(CompileError::new("'await' outside function", expr_loc.position));
+                    }
+                    AwaitScope::Allowed => {}
                 }
                 // Await expressions: compile the inner expression, then emit Await
                 // Await handles ExternalFuture, Coroutine, and GatherFuture
