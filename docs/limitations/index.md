@@ -73,6 +73,7 @@ The following modules are present:
 
 | Module          | Divergences                          |
 | --------------- | ------------------------------------ |
+| `_heapq`        | [heapq.md](heapq.md)                 |
 | `annotationlib` | [annotationlib.md](annotationlib.md) |
 | `asyncio`       | [asyncio.md](asyncio.md)             |
 | `base64`        | [base64.md](base64.md)               |
@@ -87,6 +88,7 @@ The following modules are present:
 | `fnmatch`       | [fnmatch.md](fnmatch.md)             |
 | `functools`     | [functools.md](functools.md)         |
 | `hashlib`       | [hashlib.md](hashlib.md)             |
+| `heapq`         | [heapq.md](heapq.md)                 |
 | `itertools`     | [itertools.md](itertools.md)         |
 | `json`          | [json.md](json.md)                   |
 | `math`          | [math.md](math.md)                   |

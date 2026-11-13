@@ -14,6 +14,7 @@ use crate::{
     intern::StaticStrings,
 };
 
+pub(crate) mod _heapq;
 pub(crate) mod annotationlib;
 pub(crate) mod asyncio;
 pub(crate) mod base64;
@@ -30,6 +31,7 @@ pub(crate) mod functools;
 #[cfg(feature = "test-hooks")]
 pub(crate) mod gc;
 pub(crate) mod hashlib;
+pub(crate) mod heapq;
 pub(crate) mod itertools;
 pub(crate) mod json;
 pub(crate) mod math;
@@ -106,6 +108,10 @@ pub(crate) enum StandardLib {
     Decimal,
     /// The `fnmatch` module: shell-style pattern matching.
     Fnmatch,
+    /// The `heapq` module: binary heaps over lists.
+    Heapq,
+    /// The `_heapq` module: CPython's native heap accelerator, which `heapq` re-exports.
+    UnderscoreHeapq,
     /// The `annotationlib` module: `Format`, `ForwardRef` and `get_annotations()`.
     Annotationlib,
     /// The `statistics` module: means, medians, modes, variances and quantiles.
@@ -147,6 +153,8 @@ impl StandardLib {
             StaticStrings::Tomllib => Some(Self::Tomllib),
             StaticStrings::DecimalMod => Some(Self::Decimal),
             StaticStrings::Fnmatch => Some(Self::Fnmatch),
+            StaticStrings::Heapq => Some(Self::Heapq),
+            StaticStrings::UnderscoreHeapq => Some(Self::UnderscoreHeapq),
             StaticStrings::Annotationlib => Some(Self::Annotationlib),
             StaticStrings::Statistics => Some(Self::Statistics),
             #[cfg(feature = "test-hooks")]
@@ -192,6 +200,8 @@ impl StandardLib {
             Self::Tomllib => tomllib::create_module(vm),
             Self::Decimal => decimal::create_module(vm),
             Self::Fnmatch => fnmatch::create_module(vm),
+            Self::Heapq => heapq::create_module(vm),
+            Self::UnderscoreHeapq => _heapq::create_module(vm),
             Self::Annotationlib => annotationlib::create_module(vm),
             Self::Statistics => statistics::create_module(vm),
             #[cfg(feature = "test-hooks")]
@@ -230,6 +240,8 @@ pub(crate) enum ModuleFunctions {
     Tomllib(tomllib::TomllibFunctions),
     Decimal(decimal::DecimalFunctions),
     Fnmatch(fnmatch::FnmatchFunctions),
+    Heapq(heapq::HeapqFunctions),
+    UnderscoreHeapq(_heapq::HeapqFunctions),
     Typing(typing::TypingFunctions),
     Annotationlib(annotationlib::AnnotationlibFunctions),
     Statistics(statistics::StatisticsFunctions),
@@ -272,6 +284,8 @@ impl fmt::Display for ModuleFunctions {
             Self::Tomllib(func) => write!(f, "{func}"),
             Self::Decimal(func) => write!(f, "{func}"),
             Self::Fnmatch(func) => write!(f, "{func}"),
+            Self::Heapq(func) => write!(f, "{func}"),
+            Self::UnderscoreHeapq(func) => write!(f, "{func}"),
             Self::Typing(func) => write!(f, "{func}"),
             Self::Annotationlib(func) => write!(f, "{func}"),
             Self::Statistics(func) => write!(f, "{func}"),
@@ -313,6 +327,8 @@ impl ModuleFunctions {
             Self::Tomllib(functions) => tomllib::call(vm, functions, args),
             Self::Decimal(functions) => decimal::call(vm, functions, args).map(CallResult::Value),
             Self::Fnmatch(functions) => fnmatch::call(vm, functions, args).map(CallResult::Value),
+            Self::Heapq(functions) => heapq::call(vm, functions, args).map(CallResult::Value),
+            Self::UnderscoreHeapq(functions) => _heapq::call(vm, functions, args).map(CallResult::Value),
             Self::Typing(functions) => typing::call(vm, functions, args),
             Self::Annotationlib(functions) => annotationlib::call(vm, functions, args),
             Self::Statistics(functions) => statistics::call(vm, functions, args).map(CallResult::Value),
