@@ -1,7 +1,10 @@
 //! Sandbox values flowing OUT to the host: [`DecodedArena`] turns one
 //! message's node arena into Python objects.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+};
 
 use monty_types::{
     BuiltinsFunctions, MontyException, MontyObject,
@@ -51,6 +54,7 @@ impl DecodedArena {
             store,
             built: Vec::with_capacity(graph.len()),
             namedtuple_types: HashMap::new(),
+            classes: HashMap::new(),
         };
         for node in graph.nodes() {
             let obj = decoder.decode(node)?;
@@ -75,6 +79,9 @@ struct Decoder<'a, 'py> {
     built: Vec<Py<PyAny>>,
     /// Namedtuple types built for this arena, by `(type_name, field_names)`.
     namedtuple_types: HashMap<(String, Vec<String>), Py<PyAny>>,
+    /// Each class node's header and eager attrs, built once and shared by
+    /// its proxies so their cost does not scale with the instance count.
+    classes: HashMap<NodeId, (Arc<ClassHeader>, Py<PyDict>)>,
 }
 
 impl Decoder<'_, '_> {
@@ -148,10 +155,10 @@ impl Decoder<'_, '_> {
                 if let Some(class) = self.store.get_class(py, &class.id)? {
                     Ok(class)
                 } else {
-                    let proxy = PyMontyClassTypeProxy {
-                        class_type: class_header(class),
-                        attributes: self.attrs_dict(&class.attrs)?,
-                    };
+                    // this node's id: nodes decode in order
+                    let id = NodeId(u32::try_from(self.built.len()).expect("arena node ids fit in u32"));
+                    let (class_type, attributes) = self.class_parts(id)?;
+                    let proxy = PyMontyClassTypeProxy { class_type, attributes };
                     Ok(Py::new(py, proxy)?.into_any())
                 }
             }
@@ -165,14 +172,13 @@ impl Decoder<'_, '_> {
                 if let Some(wrapper) = self.store.get(py, instance_id)? {
                     wrapper.bind(py).getattr("value").map(Bound::unbind)
                 } else {
-                    let MontyNode::ClassType(class) = self.graph.node(*class_type) else {
-                        unreachable!("the arena's validation makes class_type a ClassType node")
-                    };
+                    let (class_type, class_attributes) = self.class_parts(*class_type)?;
                     let proxy = PyMontyClassProxy {
-                        class_type: class_header(class),
+                        class_type,
                         instance_id: *instance_id,
                         attributes: self.attrs_dict(attrs)?,
-                        class_attributes: self.attrs_dict(&class.attrs)?,
+                        class_attributes,
+                        hash: OnceLock::new(),
                     };
                     Ok(Py::new(py, proxy)?.into_any())
                 }
@@ -219,6 +225,21 @@ impl Decoder<'_, '_> {
             }
         }
         Ok(dict.unbind())
+    }
+
+    /// The shared header and eager attrs of class node `id`, built on first use.
+    fn class_parts(&mut self, id: NodeId) -> PyResult<(Arc<ClassHeader>, Py<PyDict>)> {
+        let py = self.py;
+        if let Some((header, attrs)) = self.classes.get(&id) {
+            return Ok((Arc::clone(header), attrs.clone_ref(py)));
+        }
+        let MontyNode::ClassType(class) = self.graph.node(id) else {
+            unreachable!("the arena's validation makes class_type a ClassType node")
+        };
+        let header = Arc::new(class_header(class));
+        let attrs = self.attrs_dict(&class.attrs)?;
+        self.classes.insert(id, (Arc::clone(&header), attrs.clone_ref(py)));
+        Ok((header, attrs))
     }
 
     /// A real Python namedtuple type via `collections.namedtuple`, one per

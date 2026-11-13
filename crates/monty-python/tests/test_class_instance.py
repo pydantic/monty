@@ -983,6 +983,43 @@ def test_dataclass_with_own_hash_hashes_compared_fields(session: MontySession):
     assert len(session.feed_run('{P(1, ["t"]), P(2, ["t"])}')) == 2
 
 
+def test_object_changed_between_results_compares_its_fields(session: MontySession):
+    """Two proxies of one object are snapshots: once it changes between
+    results they differ, so `==` agrees with the field hash; a proxy still
+    equals itself with a NaN field, as `self is other` makes it in the sandbox."""
+    session.feed_run(
+        DATACLASS_IMPORT + '@dataclass\nclass P:\n    x: float\n    def __hash__(self):\n        return 0\np = P(1.0)'
+    )
+    before, same = session.feed_run('p'), session.feed_run('p')
+    after = session.feed_run('p.x = 2.0\np')
+    assert before == same
+    assert before != after
+    assert len({before, same, after}) == 2
+    nan = session.feed_run('p.x = float("nan")\np')
+    assert nan == nan
+
+
+@pytest.mark.parametrize(
+    'decorator,body',
+    [
+        pytest.param('@dataclass(frozen=True)', '', id='frozen'),
+        pytest.param('@dataclass', '    def __hash__(self):\n        return 0\n', id='own_hash'),
+    ],
+)
+def test_shared_dataclass_graph_hashes_and_compares_quickly(session: MontySession, decorator: str, body: str):
+    """A shared sub-object is one proxy, so a graph with 2**60 paths hashes
+    and compares in time linear in its 60 objects."""
+    session.feed_run(
+        DATACLASS_IMPORT
+        + f'{decorator}\nclass N:\n    a: object\n    b: object\n{body}'
+        + 'def chain():\n    x = None\n    for _ in range(60):\n        x = N(x, x)\n    return x'
+    )
+    first, second = session.feed_run('[chain(), chain()]')
+    assert first == second
+    assert hash(first) == hash(second)
+    assert len({first, second}) == 1
+
+
 def test_proxy_as_host_dict_key_round_trips(session: MontySession):
     session.feed_run(FOO_CLASS + 'foo = Foo(1)')
     proxy = session.feed_run('foo')
@@ -1124,6 +1161,8 @@ def test_class_type_after_restore_keeps_eager_class_attrs(pool: Monty):
         assert session.load_session(blob) is None
         proxy = session.feed_run('S')
         assert isinstance(proxy, MontyClassTypeProxy)
+        assert proxy.attributes == snapshot({'SIDES': 4, 'KIND': 'polygon'})
+        proxy.attributes['SIDES'] = 5
         assert proxy.attributes == snapshot({'SIDES': 4, 'KIND': 'polygon'})
         assert session.feed_run('(t is S, t.SIDES)', inputs={'t': proxy}) == snapshot((True, 4))
 
