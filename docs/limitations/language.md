@@ -96,6 +96,8 @@ exactly, except for the comprehension target restriction in
     - A nested package whose import raised is imported again by a later relative import only while its parent
         package is still loaded; otherwise the import raises `ModuleNotFoundError` naming the package, where CPython
         would import the parent first.
+        Likewise an `exec()` `__package__` with dots whose parent is not loaded raises `ModuleNotFoundError` naming
+        the whole package, where CPython names the first parent it fails to import.
 - `__import__` is not defined.
 
 ## `__future__` imports
