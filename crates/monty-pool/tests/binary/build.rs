@@ -37,17 +37,19 @@ pub fn binary(args: &[&str], name: &str) -> PathBuf {
 
 /// The cargo profile the running test was built with, read from its executable's location.
 ///
-/// The executable lives somewhere below `<target>/[<triple>/]<profile-dir>/`; the profile directory
-/// is the first one below the target directory with a `deps` subdirectory. Cargo 1.100 moved test
-/// executables from `<profile-dir>/deps/` to `<profile-dir>/build/<pkg>/<hash>/out/`, so a fixed
-/// number of parents is not enough.
+/// Test executables live in `<profile-dir>/deps/` before Cargo 1.100 and in
+/// `<profile-dir>/build/<pkg>/<hash>/out/` from it, and a fresh 1.100 target has no `deps`
+/// directory, so the profile directory is the parent of the outermost `deps` or `build` ancestor.
 fn test_profile() -> String {
     let executable = env::current_exe().unwrap();
     let target_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).parent().unwrap();
     let profile_dir = executable
         .ancestors()
-        .filter(|dir| dir.starts_with(target_dir) && dir.join("deps").is_dir())
+        .filter(|dir| {
+            dir.starts_with(target_dir) && matches!(dir.file_name().and_then(|n| n.to_str()), Some("deps" | "build"))
+        })
         .last()
+        .and_then(Path::parent)
         .unwrap_or_else(|| panic!("no profile directory above {}", executable.display()));
     match profile_dir.file_name().unwrap().to_str().unwrap() {
         "debug" => "dev".to_owned(),
