@@ -2281,7 +2281,7 @@ fn run_traceback_script(path: &Path, test_name: &str, config: &TestConfig) -> Re
         // Call run_file_and_get_traceback with the recursion limit, iter_mode, and async_mode flags.
         // Only `CPythonTestTimeout` escapes the script's own `except BaseException`; its
         // traceback becomes the actual output so the case fails naming the watchdog.
-        match run_traceback.call_method1(
+        let traceback = match run_traceback.call_method1(
             "run_file_and_get_traceback",
             (
                 path_str,
@@ -2297,7 +2297,11 @@ fn run_traceback_script(path: &Path, test_name: &str, config: &TestConfig) -> Re
             Ok(result) => result
                 .extract()
                 .expect("Failed to extract string from return value of run_file_and_get_traceback"),
+        };
+        if let Some(tmpdir) = &mount_tmpdir {
+            forget_mount_imports(py, tmpdir.path());
         }
+        traceback
     });
     watchdog.check(test_name).map(|()| traceback)
 }

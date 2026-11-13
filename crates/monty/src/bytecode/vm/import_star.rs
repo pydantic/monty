@@ -68,15 +68,19 @@ impl VM<'_> {
         let mut names_guard = DropGuard::new(Vec::new(), self);
         let (names, this) = names_guard.as_parts_mut();
         for index in 0_i64.. {
+            // A `__getitem__` call runs its own `VM::run()`, whose instruction
+            // countdown restarts, so this loop polls the time limit itself.
+            this.heap.tracker.check_time_every(names.len())?;
+            // Checked before reading the entry, so an error leaves nothing to release.
+            this.heap
+                .tracker
+                .check_growth(names.len(), names.capacity(), size_of::<Value>())?;
             let item = match all.py_getitem(&Value::Int(index), this) {
                 Ok(item) => item,
                 Err(error) if error.is_catchable(ExcType::IndexError) => break,
                 Err(error) => return Err(error),
             };
             let is_str = item.as_str(this).is_some();
-            this.heap
-                .tracker
-                .check_growth(names.len(), names.capacity(), size_of::<Value>())?;
             names.push(item);
             if !is_str {
                 break;

@@ -36,7 +36,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - f-strings (including the `=` debug form), `str.format()` and `format()`, with `!r` / `!s` / `!a` conversions,
     format specs and nested replacement fields
 - `async` / `await`, and `asyncio.run` / `asyncio.gather` / `asyncio.sleep`
-- `import x`, `import x.y`, `from x import y, z as w`, `from x import *` (see [modules.md](modules.md#star-imports)); a module the sandbox does not have is requested from the host,
+- `import x`, `import x.y`, `from x import y, z as w`, `from x import *` (see
+    [modules.md](modules.md#star-imports)); a module the sandbox does not have is requested from the host,
     see [modules.md](modules.md#host-modules), which may answer with the module's `.py` file from the working
     directory instead, see [modules from files](modules.md#modules-from-files)
 - Starred unpacking everywhere CPython allows it

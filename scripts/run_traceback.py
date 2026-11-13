@@ -45,6 +45,7 @@ def run_file_and_get_traceback(
             top-level await that Monty supports but CPython doesn't.
         mount_root: For `mount-fs` tests, the temp directory bound to `root`
             and put first on `sys.path`, as Monty imports from its mount.
+            The caller removes it and the modules imported from it afterwards.
 
     Returns:
         Formatted traceback string with '^' replaced by '~', or None if no exception.
@@ -146,8 +147,6 @@ def run_file_and_get_traceback(
                 return '\n'.join(map(normalize_debug_range, lines)).rstrip()
         finally:
             os.unlink(tmp_file.name)
-            if mount_root is not None and mount_root in sys.path:
-                sys.path.remove(mount_root)
 
 
 def _adjust_async_frame(frame: str, tmp_path: str, file_name: str, line_offset: int) -> str | None:

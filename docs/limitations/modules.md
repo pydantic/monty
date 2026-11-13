@@ -99,7 +99,8 @@ file modules alike, with these differences from CPython:
 - A bundled module's `__all__` holds only the names of CPython's `__all__` that Monty implements, and is always a
     `list` (CPython's is a tuple for `asyncio`, `datetime`, `hashlib` and `tomllib`), in the order Monty defines them.
     Modules whose CPython counterpart has no `__all__` have none.
-    Host modules have no `__all__` (their dunders raise `AttributeError`), so all their attributes are bound.
+    Host modules have no `__all__` (their dunders raise `AttributeError`), so every attribute not starting with `_` is
+    bound.
 - `__all__` is read in full before the first name is bound, where CPython reads entry `i` just before binding it.
     The difference shows only through a class whose `__getitem__` has side effects, which all happen first, or when
     binding an earlier name fails, which CPython stops at before asking for the later entries.
