@@ -2,8 +2,8 @@
 //! search reads, and how each read is classified.
 
 use monty_types::{
-    ExcType, ExtFunctionResult, ImportArgs, ModuleFile, ModuleRead, MontyException, MontyObject, MontyPath,
-    OsFunctionCall, find_module_file,
+    ExcType, ExtFunctionResult, ImportArgs, MAX_SEARCH_DIRS, ModuleFile, ModuleRead, MontyException, MontyObject,
+    MontyPath, OsFunctionCall, find_module_file,
 };
 
 fn args(module: &str, search_path: &[&str]) -> ImportArgs {
@@ -46,6 +46,22 @@ fn candidates_reject_untrusted_names_and_directories() {
             .collect::<Vec<_>>(),
         ["/ok/m/__init__.py", "/ok/m.py"]
     );
+}
+
+/// A sandbox-set `__path__` is untrusted: directories past the cap are not
+/// searched, and skipped directories do not count towards it.
+#[test]
+fn candidates_stop_at_the_search_dir_cap() {
+    let mut dirs = vec!["relative".to_owned()];
+    dirs.extend((0..MAX_SEARCH_DIRS + 10).map(|i| format!("/d{i}")));
+    let search = ImportArgs {
+        module: "m".to_owned(),
+        search_path: dirs,
+    };
+    let candidates = search.candidates().collect::<Vec<_>>();
+    assert_eq!(candidates.len(), 2 * MAX_SEARCH_DIRS);
+    assert_eq!(candidates[0], "/d0/m/__init__.py");
+    assert_eq!(candidates.last().unwrap(), &format!("/d{}/m.py", MAX_SEARCH_DIRS - 1));
 }
 
 /// Candidates keep the directory as sent, so a mount checks its length and

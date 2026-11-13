@@ -184,6 +184,21 @@ impl MontyObject {
         Self::leaf(MontyNode::Function {
             name: name.into(),
             docstring,
+            is_async: false,
+        })
+    }
+
+    /// A host function whose calls start without waiting for the host.
+    ///
+    /// A call returns an awaitable at once and the worker streams the call to
+    /// the host, which settles it later as a future. Errors, including an
+    /// unknown name, surface at the `await` rather than at the call.
+    #[must_use]
+    pub fn async_function(name: impl Into<String>, docstring: Option<String>) -> Self {
+        Self::leaf(MontyNode::Function {
+            name: name.into(),
+            docstring,
+            is_async: true,
         })
     }
 

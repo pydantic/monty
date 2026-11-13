@@ -26,6 +26,7 @@ use crate::{
     intern::{FunctionId, StaticStrings, StringId},
     modules::dataclasses,
     os_dispatch::{PendingEffect, release_pending_effect},
+    py_value::PyValue,
     resource_checks::check_estimated_size,
     types::{Dict, Instance, PyTrait, Type, instance::class_name},
     value::{EitherStr, VALUE_SIZE, Value},
@@ -46,8 +47,14 @@ pub(crate) enum CallResult {
     /// Propagate or require synchronous completion; dropping this result does not pop the frame.
     FramePushed,
     /// External function call requested - VM should pause and return to caller.
-    /// The `EitherStr` is the name of the external function (interned or heap-owned).
-    External(EitherStr, ArgValues),
+    External {
+        /// The external function's name (interned or heap-owned).
+        name: EitherStr,
+        args: ArgValues,
+        /// The callee is an async host function, so a supporting host may
+        /// start the call without waiting (see [`crate::types::ExtFunction::is_async`]).
+        is_async: bool,
+    },
     /// OS operation call requested - VM should yield `FrameExit::OsCall` to host.
     ///
     /// The host executes the OS operation and resumes the VM with the result.
@@ -165,7 +172,7 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
     fn drop_with(self, heap: &mut C) {
         match self {
             Self::Value(value) | Self::AwaitValue(value) => value.drop_with(heap),
-            Self::External(_, args) | Self::MethodCall { args, .. } => {
+            Self::External { args, .. } | Self::MethodCall { args, .. } => {
                 args.drop_with(heap);
             }
             Self::OsCall(call) => call.drop_with(heap),
@@ -454,9 +461,9 @@ impl<'h> VM<'h> {
     #[cold]
     fn unsupported_call_result(&mut self, result: CallResult) -> RunError {
         let error = match &result {
-            CallResult::External(function_name, _) => {
-                ExcType::not_implemented_synchronous_call("external function", function_name.as_str(self.interns))
-            }
+            CallResult::External {
+                name: function_name, ..
+            } => ExcType::not_implemented_synchronous_call("external function", function_name.as_str(self.interns)),
             CallResult::OsCall(call) | CallResult::OsCallWithEffect { call, .. } => {
                 ExcType::not_implemented_synchronous_call("OS function", call.name())
             }
@@ -567,7 +574,7 @@ impl<'h> VM<'h> {
     /// the same `TypeError` the rejected arm used to, so a value that is not
     /// callable is refused without a branch of its own.
     fn call_heap_callable(&mut self, heap_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
-        self.heap.read(heap_id).py_call(args, self)
+        PyValue::from_heap(heap_id, self.heap).py_call(args, self)
     }
 
     /// Calls a function with unpacked args tuple and optional kwargs dict.
@@ -1326,7 +1333,7 @@ fn dispatch_dunder(
         StaticStrings::Enter => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");
             args.check_zero_args("__enter__", vm.heap)
-                .and_then(|()| vm.heap.read(heap_id).py_enter(vm))
+                .and_then(|()| PyValue::from_heap(heap_id, vm.heap).py_enter(vm))
         }
         StaticStrings::Exit => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");
@@ -1366,7 +1373,7 @@ fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<Ca
         Value::Ref(id) => Some(*id),
         _ => None,
     };
-    vm.heap.read(heap_id).py_exit(vm, exc)
+    PyValue::from_heap(heap_id, vm.heap).py_exit(vm, exc)
 }
 
 /// What a Python function value is called with: its id, captured cells, owned

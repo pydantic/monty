@@ -487,6 +487,32 @@ except dataclasses.FrozenInstanceError as e:
     .unwrap();
 }
 
+/// The snippet in `eval_offsets_v14_suspended.bin`, kept for reference: a
+/// version 14 build fed it and dumped it suspended on `host_value`. That build
+/// measured eval positions after stripping all leading whitespace. Never
+/// regenerate it.
+#[expect(dead_code, reason = "documents what the checked-in fixture holds")]
+const LEGACY_EVAL_OFFSETS_SNIPPET: &str = r"x = eval('\u2000\n(host_value,\n 1/0)')";
+
+/// A version 14 eval snippet's positions are rebased onto its full source, so
+/// the `1/0` raised after resuming is located on line 3 rather than inside the
+/// stripped `\u2000`.
+#[test]
+fn legacy_eval_offsets_upgrade() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/eval_offsets_v14_suspended.bin");
+    let loaded = Dump::load(&fs::read(&path).unwrap()).expect("a version 14 suspended dump loads");
+    let Session::Suspended(progress) = loaded.state else {
+        panic!("the fixture was dumped suspended");
+    };
+    let lookup = progress.into_name_lookup().expect("suspended on `host_value`");
+    let err = lookup
+        .resume(NameLookupResult::Value(MontyObject::int(42)), PrintWriter::Stdout)
+        .expect_err("1/0 raises");
+    let frame = err.error.traceback().last().expect("the eval frame");
+    assert_eq!(frame.filename, "<string>");
+    assert_snapshot!(format!("{:?}..{:?}", frame.start, frame.end), @"CodeLoc { line: 3, column: 2 }..CodeLoc { line: 3, column: 5 }");
+}
+
 /// A current-version dump runs no upgrade, so a dataclass whose generated
 /// methods were all rebound keeps its own hooks across a reload.
 #[test]
@@ -661,4 +687,128 @@ fn legacy_wall_clock_snapshot_preserves_consumption() {
     let (repl, value) = completed.into_complete().unwrap();
     assert_eq!(value, MontyObject::int(42));
     assert!(repl.tracker().elapsed() >= consumed);
+}
+
+/// Functions whose tracebacks read the location table: a binary operator, a call
+/// after a loop, and an `exec()` body compiled from a second source.
+const LOCATIONS_STATE: &str = r"
+def add(a, b):
+    return a + b
+
+
+def outer(x):
+    total = 0
+    for i in range(3):
+        total += i
+    return add(x, total) * 2
+
+
+def run_exec(src):
+    exec(src)
+";
+
+/// Calls that raise through the functions in [`LOCATIONS_STATE`].
+const LOCATIONS_CALLS: [&str; 2] = ["outer('x')", "run_exec('y = 1\\nz = y + None')"];
+
+/// A dumped location table restores the tracebacks of freshly compiled code.
+#[test]
+fn location_tables_round_trip_tracebacks() {
+    let repl = locations_repl();
+    let bytes = dump("locations.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    assert_eq!(location_tracebacks(&bytes), fresh_location_tracebacks());
+}
+
+/// The first byte-string layout of the location table still loads.
+/// `location_table_v1.bin` must never be regenerated: it pins that layout once a new one lands.
+#[test]
+fn location_table_v1_fixture_loads() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/location_table_v1.bin");
+    if env::var_os(UPDATE_FIXTURE).is_some() && !path.exists() {
+        let repl = locations_repl();
+        fs::write(&path, dump("locations.py", None, &[], SessionRef::Idle(&repl)).unwrap()).unwrap();
+    }
+    let tracebacks = location_tracebacks(&fs::read(&path).unwrap());
+    assert_eq!(tracebacks, fresh_location_tracebacks());
+    assert_snapshot!(tracebacks.join("\n"), @r#"
+    Traceback (most recent call last):
+      File "<python-input-1>", line 1, in <module>
+        outer('x')
+        ~~~~~~~~~~
+      File "<python-input-0>", line 10, in outer
+        return add(x, total) * 2
+               ~~~~~~~~~~~~~
+      File "<python-input-0>", line 3, in add
+        return a + b
+               ~~~~~
+    TypeError: can only concatenate str (not "int") to str
+    Traceback (most recent call last):
+      File "<python-input-1>", line 1, in <module>
+        run_exec('y = 1\nz = y + None')
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      File "<python-input-0>", line 14, in run_exec
+        exec(src)
+        ~~~~~~~~~
+      File "<string>", line 2, in <module>
+    TypeError: unsupported operand type(s) for +: 'int' and 'NoneType'
+    "#);
+}
+
+/// Dumps written before the byte-string layout hold a map per entry, which still loads.
+#[test]
+fn per_entry_location_maps_still_load() {
+    let loaded = Dump::load(&fs::read(fixture_path_for(14)).unwrap()).unwrap();
+    let Session::Suspended(progress) = loaded.state else {
+        panic!("fixture was dumped suspended on a host call");
+    };
+    let call = progress.into_function_call().unwrap();
+    let progress = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
+    let (mut repl, _) = progress.into_complete().unwrap();
+    let err = repl
+        .feed_run("with_default(None)", vec![], PrintWriter::Stdout)
+        .unwrap_err();
+    assert_snapshot!(err.to_string(), @r#"
+    Traceback (most recent call last):
+      File "<python-input-2>", line 1, in <module>
+        with_default(None)
+        ~~~~~~~~~~~~~~~~~~
+      File "<python-input-0>", line 114, in with_default
+        return x + len(y)
+               ~~~~~~~~~~
+    TypeError: unsupported operand type(s) for +: 'NoneType' and 'int'
+    "#);
+}
+
+/// A session holding [`LOCATIONS_STATE`].
+fn locations_repl() -> MontyRepl {
+    let mut repl = MontyRepl::new("locations.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(LOCATIONS_STATE, vec![], PrintWriter::Stdout).unwrap();
+    repl
+}
+
+/// The traceback of each of [`LOCATIONS_CALLS`] in the session `bytes` restores.
+fn location_tracebacks(bytes: &[u8]) -> Vec<String> {
+    LOCATIONS_CALLS
+        .iter()
+        .map(|call| {
+            let Session::Idle(mut repl) = Dump::load(bytes).unwrap().state else {
+                panic!("locations were dumped idle");
+            };
+            repl.feed_run(call, vec![], PrintWriter::Stdout)
+                .unwrap_err()
+                .to_string()
+        })
+        .collect()
+}
+
+/// The traceback of each of [`LOCATIONS_CALLS`] in a session that was never dumped.
+fn fresh_location_tracebacks() -> Vec<String> {
+    LOCATIONS_CALLS
+        .iter()
+        .map(|call| {
+            locations_repl()
+                .feed_run(call, vec![], PrintWriter::Stdout)
+                .unwrap_err()
+                .to_string()
+        })
+        .collect()
 }

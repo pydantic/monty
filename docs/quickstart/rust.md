@@ -25,7 +25,7 @@ cargo add monty monty-types --features monty-types/tzdb
 | [`monty-fs`](https://crates.io/crates/monty-fs)                       | Host-side filesystem mounts                                 |
 | [`monty-runtime`](https://crates.io/crates/monty-runtime)             | The `monty` binary: REPL, file runner, subprocess worker    |
 | [`monty-pool`](https://crates.io/crates/monty-pool)                   | Elastic pool of crash-isolated worker subprocesses          |
-| [`monty-proto`](https://crates.io/crates/monty-proto)                 | The protobuf wire protocol between pool parents and workers |
+| [`monty-proto`](https://crates.io/crates/monty-proto)                 | The protobuf wire protocol between clients and workers      |
 | [`monty-type-checking`](https://crates.io/crates/monty-type-checking) | Type checking, powered by ty                                |
 | [`monty-typeshed`](https://crates.io/crates/monty-typeshed)           | Trimmed typeshed stubs for Monty's stdlib subset            |
 
@@ -58,7 +58,7 @@ The `monty` crate enables the `monty-types/cpu-clock` feature for native CPU rea
 Off Linux a CPU-mode `ResourceTracker` charges elapsed time instead, so check it before selecting CPU mode directly.
 CPU-mode [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) pools independently measure child process CPU.
 They require a finite `PoolConfig::request_timeout` as a wall deadline.
-Remote deployments enable CPU enforcement in the server's local subprocess pool; WebSocket clients adopt its clock.
+Remote deployments enable CPU enforcement in the server's local subprocess pool; remote clients adopt its clock.
 See [resource limits](../resource-limits.md#time) for platform support, sampling, fallback, and snapshot compatibility.
 
 A Monty process can never be made fully crash-proof against memory errors — a stack-overflow abort or an allocator abort
@@ -122,6 +122,20 @@ It returns a [`TurnEvent`](../api/rust/monty-pool.md#turnevent):
 Every suspension variant also carries `position`, a `SourceRange` locating the suspending expression: the call, the
 name, or the `await` the main task is blocked on.
 
+With [`PoolConfig::stream_async_calls`](../api/rust/monty-pool.md#poolconfig) (on by default for remote pools, off by
+default for subprocess pools) and a handler passed to
+[`Checkout::set_streamed_call_handler`](../api/rust/monty-pool.md#checkout), calls to async host functions that the
+sandbox does not await at once do not suspend: a `MontyObject::async_function` value, or a name passed to
+[`Checkout::set_async_functions`](../api/rust/monty-pool.md#checkout) for the feeds that follow.
+The worker sends them mid-turn and keeps running, and the turn hands each to the handler in order with prints.
+Start the call there, and settle it with `resume_futures` once `ResolveFutures` names it.
+Each counts against `max_suspensions`: once that budget is spent, the next call suspends instead and the feed is
+aborted there.
+Without a handler, or after `set_async_functions(None)`, calls suspend like any other call.
+Calls whose results the host has not sent may hold at most a quarter of
+[`PoolConfig::max_decode_bytes`](../api/rust/monty-pool.md#poolconfig) of arguments; past that the session ends with a
+`MemoryError`.
+
 A [`Checkout`](../api/rust/monty-pool.md#checkout) dropped without `finish()` kills its worker rather than returning it — mid-execution state cannot be
 trusted back into the pool.
 
@@ -139,19 +153,19 @@ see [snapshot security](../security.md#deserializing-snapshots).
 
 - **Crash isolation** — a segfault, stack-overflow abort or allocator abort in the sandbox becomes [`PoolError::Crashed`](../api/rust/monty-pool.md#poolerror);
     the pool discards the worker and spawns a replacement.
-- **Hard timeouts** — a parent-side deadline kills any worker whose turn exceeds `request_timeout`
+- **Hard timeouts** — a client-side deadline kills any worker whose turn exceeds `request_timeout`
     ([`PoolError::Timeout`](../api/rust/monty-pool.md#poolerror)), catching hangs the in-sandbox limits cannot see.
     With a `max_feed_duration` or `max_turn_duration` budget the deadline also enforces that from
-    outside the child, each plus its own grace (`feed_duration_limit_grace`, `turn_duration_limit_grace`).
+    outside the worker, each plus its own grace (`feed_duration_limit_grace`, `turn_duration_limit_grace`).
     [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) sets neither `request_timeout` nor `checkout_timeout` by default; set `request_timeout`
     yourself for untrusted code.
 - **Suspension limits** — the pool counts external calls, OS calls, name lookups and future-resolution turns against
     [`ResourceLimits::max_suspensions`](../api/rust/monty-types.md#resourcelimits).
     The first suspension over the limit ends the feed with an uncatchable `RuntimeError`.
-- **Untrusted children** — every frame from a possibly compromised worker is validated; wire decoding never panics, and
+- **Untrusted workers** — every frame from a possibly compromised worker is validated; wire decoding never panics, and
     a protocol violation discards the worker.
 - **Worker recycling** — `max_checkouts_per_worker` replaces a worker after [`DEFAULT_MAX_CHECKOUTS_PER_WORKER`](../api/rust/monty-pool.md#default_max_checkouts_per_worker) (1000) checkouts; `None` never recycles, and with `PoolConfig::subprocess` `Some(1)` gives every session a fresh process.
-    WebSocket checkouts are single-use, so the setting does not apply to them.
+    Remote checkouts are single-use, so the setting does not apply to them.
     While a subprocess pool is open, recycled, crashed and discarded workers are replaced in the background until `min_processes` are live again, so checkouts usually find a warm worker.
 
 Runtime errors inside the sandbox ([`PoolError::Runtime`](../api/rust/monty-pool.md#poolerror)) are not crashes: the worker and its session stay alive and
@@ -174,13 +188,13 @@ Raw `prost::Message::decode` calls fail if they attempt an allocation without a 
 Protocol repeated fields and byte buffers use [`BudgetVec`](../api/rust/monty-proto.md#budgetvec); convert standard vectors with `.into()` and recover them with `.into_inner()` without copying.
 Reference containers use [`WireIndexes`](../api/rust/monty-proto.md#wireindexes), [`WireNodePairs`](../api/rust/monty-proto.md#wirenodepairs) and [`WireNamedTuple`](../api/rust/monty-proto.md#wirenamedtuple), with domain `NodeId`s rather than raw protobuf integers.
 Host construction and cloning do not use the decode budget.
-See the [monty-proto README](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#children-are-untrusted)
+See the [monty-proto README](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#workers-are-untrusted)
 for the budget's scope.
 
-[`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) spawns local `monty subprocess` children over framed stdio.
+[`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) spawns local `monty subprocess` workers over framed stdio.
 These are the poolable workers: prewarmed, reused across checkouts, replaced on crash.
 
-[`PoolConfig::websocket`](../api/rust/monty-pool.md#poolconfig) dials a remote child over `ws://`/`wss://`.
+[`PoolConfig::remote`](../api/rust/monty-pool.md#poolconfig) reaches a remote worker over gRPC at an `http://`/`https://` URL: one HTTP/2 connection per pool, one `MontySession.Session` stream per checkout.
 Those workers are single-use, never prewarmed or returned to the pool, and isolation becomes the remote host's
 responsibility.
 See [the security model](../security.md#remote-workers) before using it.
@@ -188,9 +202,10 @@ See [the security model](../security.md#remote-workers) before using it.
 ### Host decode budget
 
 `PoolConfig::max_decode_bytes` can lower the default 1 GiB allocation budget for
-each protocol frame from a subprocess or WebSocket worker. Values above 1 GiB do not
+each protocol frame from a subprocess or remote worker. Values above 1 GiB do not
 raise the ceiling. The budget excludes wire buffers and host-language conversion.
 Exhaustion discards the worker without replaying the request.
+On the remote transport it also caps each message's size, clamped between 64 KiB and the 256 MiB frame limit, so a larger message is refused before it is buffered.
 
 ## The in-process interpreter
 
@@ -293,6 +308,8 @@ assert_eq!(result, MontyObject::tuple([MontyObject::int(2023), MontyObject::floa
 ```
 
 Every pool session takes the same struct as `ReplConfig::os_policy` (see [the clock](../security.md#the-clock)).
+A loaded dump keeps the policy it was taken under; call `MontyRepl::set_os_policy`, or `ReplProgress::set_os_policy`
+for a suspended dump, to apply your own, as pool workers do with the restoring checkout's policy.
 `os.urandom()` is the one call with no in-process answer: under `run` it raises `NotImplementedError`, under `start`
 it pauses for the host (see [random](../limitations/random.md)).
 
@@ -413,5 +430,10 @@ assert_eq!(result, MontyObject::int(42));
 
 ## Remote disconnects
 
-`PoolError::Disconnected` retains optional `websocket` details with the observed I/O stage, peer Close code and reason, or transport error.
+`PoolError::Disconnected` retains optional `remote` details with the gRPC status that ended the stream (code and message, plus the server's `RemoteCause` when it sent one), or the transport error.
 The peer reason is unverified text, and a disconnect does not establish whether the request ran.
+The display text includes that reason.
+`PoolError::Refused` identifies a server refusal before a session exists.
+Its details provide `retryable()` and `retry_after` (a `Duration` from `Retry-After`, capped at one hour), with no automatic retry.
+`PoolError::Connect` retains the status or transport error for other connection failures.
+`PoolError::Configuration` identifies invalid or incompatible settings, such as no finite `request_timeout` for a CPU-mode pool or server.

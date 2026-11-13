@@ -215,6 +215,9 @@ assert b'hello'.split(b'x') == [b'hello']
 assert b'a,b,c'.rsplit(b',') == [b'a', b'b', b'c']
 assert b'a,b,c'.rsplit(b',', 1) == [b'a,b', b'c']
 assert b'a b c'.rsplit() == [b'a', b'b', b'c']
+# Overlapping separators pair up from the right
+assert b'aaa'.rsplit(b'aa') == [b'a', b'']
+assert 'aaa'.rsplit('aa') == ['a', '']
 
 # === bytes.splitlines() ===
 assert b'a\nb\nc'.splitlines() == [b'a', b'b', b'c']

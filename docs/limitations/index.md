@@ -96,6 +96,7 @@ The following modules are present:
 | `posixpath`     | [os.md](os.md)                       |
 | `random`        | [random.md](random.md)               |
 | `re`            | [re.md](re.md)                       |
+| `statistics`    | [statistics.md](statistics.md)       |
 | `sys`           | [sys.md](sys.md)                     |
 | `time`          | [time.md](time.md)                   |
 | `tomllib`       | [tomllib.md](tomllib.md)             |
@@ -127,7 +128,7 @@ Each links to the page that owns it, which is where the full account lives:
 - **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager**, not lazy.
     So `map(f, itertools.count())` runs until a resource limit trips
     ([builtins.md](builtins.md)).
-- **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `VERBOSE` flag, and some
+- **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `re.VERBOSE` constant, and some
     error messages differ ([re.md](re.md)).
 - **Only the class dunders listed above are dispatched.** `__lt__` and `__len__` raise
     `TypeError` as if undefined, while in-place arithmetic dunders are skipped in favor of binary arithmetic

@@ -46,15 +46,15 @@ Monty enforces hard limits on memory, execution time and recursion depth, config
 
 ## Settings
 
-| Key                      | Meaning                                                                                                               |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `max_memory`             | Maximum heap memory in bytes                                                                                          |
-| `max_feed_duration_secs` | Maximum execution time per `feed_run`, in seconds                                                                     |
-| `max_turn_duration_secs` | Maximum execution time per host round trip, in seconds                                                                |
-| `max_recursion_depth`    | Maximum function call stack depth (default 1000)                                                                      |
-| `gc_interval`            | Run garbage collection every N allocations                                                                            |
-| `max_suspensions`        | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000) |
-| `max_total_sleep_secs`   | Maximum cumulative time the host waits on `time.sleep()` and `asyncio.sleep()`, in seconds                            |
+| Key                      | Meaning                                                                                                                                                                           |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `max_memory`             | Maximum heap memory in bytes                                                                                                                                                      |
+| `max_feed_duration_secs` | Maximum execution time per `feed_run`, in seconds                                                                                                                                 |
+| `max_turn_duration_secs` | Maximum execution time per host round trip, in seconds                                                                                                                            |
+| `max_recursion_depth`    | Maximum function call stack depth (default 1000)                                                                                                                                  |
+| `gc_interval`            | Run garbage collection every N allocations                                                                                                                                        |
+| `max_suspensions`        | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000), counting calls to async host functions started without one |
+| `max_total_sleep_secs`   | Maximum cumulative time the host waits on `time.sleep()` and `asyncio.sleep()`, in seconds                                                                                        |
 
 Every key is optional.
 Omit `max_memory`, either duration key or `max_total_sleep_secs`, or set them to `None`, to disable that limit.
@@ -89,10 +89,9 @@ Containers a program grows one element at a time are pre-checked as well, at the
 rather than on every push: `list.append` and `list.insert`, `deque.append` and `deque.appendleft`, `set.add`, and
 assigning a new dict key.
 So are the value buffers a single call fills: the argument pack behind `f(*args)`, the array `json.loads` parses, the
-text `json.dumps` and `json.dump` build, the pieces `re.split` collects, and the list `re.findall` builds for a pattern
-with at most one capture group.
-A wider `findall`, and `re.finditer`, allocate an object per match and are not covered — see
-[the limitations note](limitations/resource_limits.md).
+text `json.dumps` and `json.dump` build, the pieces `str.split`, `bytes.split` and `re.split` collect, the matches
+`re.finditer` builds, and the list `re.findall` builds for a pattern with at most one capture group.
+A wider `findall` allocates a tuple per match and is not covered — see [the limitations note](limitations/resource_limits.md).
 
 A few integer operations carry their own caps regardless of `max_memory`:
 
@@ -109,7 +108,7 @@ CPU mode uses the executing thread's CPU counter. It is supported only on Linux.
 Native OS counters exclude scheduling delays, CPU throttling, and work on other threads.
 Virtualized counters can approximate CPU consumption. gVisor can still misattribute time and report coarse samples.
 Local subprocess pools on macOS and Windows reject CPU mode, as do WebAssembly workers, which have no thread CPU counter.
-A WebSocket client on any platform can still use a Linux server's CPU clock.
+A remote client on any platform can still use a Linux server's CPU clock.
 Workers reject CPU configuration if the initial thread CPU counter read fails.
 If the counter later fails or reverses during execution, Monty conservatively charges elapsed time for that window.
 
@@ -172,6 +171,10 @@ Host-side deadlines cover that:
     A worker that exceeds it is killed and the call raises [`MontyCrashedError`][pydantic_monty.MontyCrashedError] with `timed_out=True`.
     Each resume after a host-function or mount call starts a new deadline, so a program that suspends often can outlive
     any single timeout.
+    This deadline does not set the sleep cap: default system sleeps return normally after at most ten seconds,
+    without a warning, even when sandbox code asks for longer, unless the capped delay would exceed `max_total_sleep_secs`.
+    Configure `sleep_system_max` (`sleepSystemMax` in JavaScript) in the session's OS policy to change that cap.
+    See [waiting](security.md#waiting).
 - **A duration backstop per limit.** For each duration budget a session sets, the worker reports its consumed time on
     every protocol turn. The host uses the selected execution clock for the remaining budget plus grace.
     Local CPU supervision reads the child's OS counter rather than trusting its reported time.
@@ -214,19 +217,19 @@ OS counter resolution and scheduling can delay detection. This is approximate ac
 
 Restore starts from the trusted snapshot's saved VM consumption and takes a fresh OS baseline.
 Snapshots do not store protocol CPU or spent CPU grace separately.
-For WebSocket sessions, the server's pool or profile selects the clock beside the actual child.
+For remote sessions, the server's pool or profile selects the clock beside the actual child.
 Clients do not select or override it. The server reports its clock with the configuration reply.
 The client uses that metadata to avoid deriving wall deadlines from CPU budgets.
 Use clients that understand the clock metadata with CPU-mode server profiles for this noisy-neighbor protection.
 Older clients ignore this metadata and can retain premature wall-time backstops under contention.
 Default wall-mode servers remain compatible with those clients.
 A CPU-mode server requires a finite client `request_timeout`, independent of its own supervisor deadline.
-Python and Node WebSocket clients default to 10 seconds. Rust clients have no default deadline.
+Python and Node remote clients default to 10 seconds. Rust clients have no default deadline.
 Choose this wall deadline for the expected budgets and scheduling delays.
 It can expire before a CPU budget under severe contention. CPU accounting does not extend it.
 A missing clock means a legacy wall-time server. Unknown clock values fail configuration.
-Local CPU pools require the child to acknowledge CPU mode before executing code.
-A WebSocket client cannot independently measure a remote process.
+Local CPU pools require the worker to acknowledge CPU mode before executing code.
+A remote client cannot independently measure a remote process.
 See [`PoolConfig`](api/rust/monty-pool.md#poolconfig) for the pool settings.
 
 ## Recursion
@@ -248,6 +251,15 @@ could abort the process.
 `max_suspensions` counts external calls, host-object method calls and construction, lazy attribute lookups, `os`
 callbacks (the sleeps among them in every mode but `'zero'`, the clock only under `'call_host'`), name lookups and
 future-resolution events.
+Each call to an [async host function](host-functions.md#starting-calls-without-waiting) counts too, though it starts
+without a suspension.
+Once a session has started `max_suspensions` such calls, the next one suspends, so the limit still ends a loop that
+never awaits them.
+When those calls start without suspending, the pool also caps the arguments they hold on the host: within a feed,
+calls whose results it has not yet sent back may hold at most a quarter of its per-frame decode budget between them
+(256 MiB by default; `max_decode_bytes` sets the budget on [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote]).
+A call past that never reaches the host: the pool discards the worker, so unlike a `MemoryError` from `max_memory`,
+the session cannot run later feeds.
 These host round trips are outside `max_memory`; each [`ClassType`](host-objects.md) construction with `init=True` also
 adds an instance-store entry.
 Because the duration limits pause during suspensions, a snippet could otherwise retry rejected calls indefinitely.
@@ -266,7 +278,7 @@ caps the dump's, so a worker cannot report a looser one.
 Local pools replace a worker after 1000 checkouts, bounding how long a slow leak or a compromised worker survives.
 Set `max_checkouts_per_worker` (`maxCheckoutsPerWorker` in JavaScript) to change the count: `0` and `1` both give
 every session a fresh worker, and `None` (`null`) never recycles.
-WebSocket checkouts are single-use, so the count does not apply to them.
+Remote checkouts are single-use, so the count does not apply to them.
 
 ## What is not covered
 

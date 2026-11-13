@@ -45,6 +45,7 @@ use crate::{
 };
 
 mod aggregate;
+pub(crate) use aggregate::{fsum, sumprod};
 
 // ==========================
 // Shared constants and error helpers
@@ -438,7 +439,7 @@ fn math_isqrt(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let n = value_to_bigint(value, vm)?;
     if n.is_negative() {
-        Err(SimpleException::new_msg(ExcType::ValueError, "isqrt() argument must be nonnegative").into())
+        Err(ExcType::isqrt_negative_error())
     } else if let Some(n) = n.to_i64() {
         Ok(Value::Int(isqrt_i64(n)))
     } else {
@@ -1041,7 +1042,7 @@ fn factorial(n: &BigInt, tracker: &ResourceTracker) -> RunResult<BigInt> {
     };
     let n = n.unsigned_abs();
     // `n!` has fewer than `n * bits(n)` bits.
-    check_product_size(n.saturating_mul(u64::from(u64::BITS - n.leading_zeros())), tracker)?;
+    check_product_size(n.saturating_mul(u64::from(n.bit_width())), tracker)?;
     product_range(2, n, &mut 0, tracker)
 }
 

@@ -16,7 +16,7 @@ because the interpreter implements no such operation.
 
 !!! note
 
-    If you want Monty combined with OS-level isolation, see [Full Monty](server.md), the commercial version of Monty.
+    If you want Monty combined with OS-level isolation, see [Commercial Support](server.md), the commercial version of Monty.
 
 In practice that means:
 
@@ -314,6 +314,10 @@ Under `datetime='call_host'` it learns whatever your handler answers; the defaul
 [`OSAccess`][pydantic_monty.OSAccess] handler answers with the host's real clock and zone.
 See [datetime](limitations/datetime.md#reading-the-clock).
 
+A restored session uses the whole `os_policy` of the `checkout()` that restored it, not the one it was dumped under:
+its clock, zone, sleep, process clock and entropy settings (see
+[snapshots](snapshots.md#what-restoring-does-and-does-not-carry)).
+
 ### Entropy
 
 `os.urandom()` is the only call that reads entropy from the host.
@@ -333,6 +337,8 @@ See [random](limitations/random.md).
 
 Default system sleeps bypass your `os=` handler.
 The sandbox caps each delay at `sleep_system_max`, ten seconds by default (`--max-sleep` in the CLI).
+A longer sleep returns normally at the cap without a warning, unless the capped delay would exceed `max_total_sleep_secs`.
+This cap is independent of `PoolConfig::request_timeout` (`request_timeout` in Python, `requestTimeout` in JavaScript).
 The pool waits on the calling thread under `Monty`, or with a timer under `AsyncMonty` and JavaScript, including browsers.
 All pools answer `asyncio.sleep()` with futures, so gathered sleeps overlap and other sandbox tasks can run meanwhile.
 Manual suspension drivers receive capped `system.sleep` or `system.async_sleep` calls.
@@ -404,7 +410,7 @@ Its return value is ignored: the sandbox itself produces the `result` argument o
 Python's local [`Monty`][pydantic_monty.Monty] / [`AsyncMonty`][pydantic_monty.AsyncMonty] pools and the native
 `@pydantic/monty` binding run every session in a `monty` worker subprocess.
 Worker panics and aborts terminate the worker rather than the host.
-For WebSocket sessions, see [remote workers](#remote-workers).
+For remote sessions, see [remote workers](#remote-workers).
 
 The WebAssembly build runs off-thread in a browser Web Worker or Node `worker_threads` worker.
 Both support hard termination and replacement after WASM traps; environments without workers are rejected.
@@ -420,11 +426,11 @@ Two more properties of the subprocess worker boundary matter:
 
 - **Workers spawn with an empty environment** (Windows keeps only `SystemRoot`), so host secrets are never in a worker's
     memory to begin with.
-- **The parent treats every frame from a worker as untrusted input.** A worker could in principle be compromised.
+- **The client treats every frame from a worker as untrusted input.** A worker could in principle be compromised.
     Wire decoding validates values and enforces allocation budgets before growing decoded buffers.
     Generated repeated fields, including empty traceback entries and print segments, share the value decoder's budget.
     A worker that violates the protocol is discarded.
-    See the [protocol allocation budget](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#children-are-untrusted)
+    See the [protocol allocation budget](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#workers-are-untrusted)
     for what the per-frame budget counts and excludes.
 - **Workers are reused, then recycled.** A compromised worker could see later sessions until it is replaced, after
     1000 checkouts by default.
@@ -459,13 +465,13 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
     Across feeds neither applies — every in-sandbox budget restarts at the next feed, so a session fed repeatedly is
     bounded only by what the host counts and ends itself.
     Every local pool ([`Monty`][pydantic_monty.Monty], [`AsyncMonty`][pydantic_monty.AsyncMonty], JavaScript `Monty.create()`, [`PoolConfig::subprocess`](api/rust/monty-pool.md#poolconfig)) defaults
-    `request_timeout` to no deadline; only the WebSocket pools ([`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket],
-    JavaScript `MontyWebsocket.create()`) set one, at 10 seconds.
+    `request_timeout` to no deadline; only the remote pools ([`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote],
+    JavaScript `MontyRemote.create()`) set one, at 10 seconds.
     Local Python, JavaScript and Rust subprocess pools support [CPU execution clocks](resource-limits.md#cpu-execution-clock)
     on Linux only. Their graces use an independent process CPU counter.
     CPU mode requires a finite wall deadline: `request_timeout` in Python, `requestTimeout` in JavaScript,
     or `PoolConfig::request_timeout` in Rust.
-    WebSocket clients adopt the server's clock; only the server's local CPU-mode subprocess pool enforces CPU.
+    Remote clients adopt the server's clock; only the server's local CPU-mode subprocess pool enforces CPU.
 - **After a memory or time limit fires, no guarantees are made about heap state or reference counts.** Discard the
     session rather than continuing to run code in it.
     The pool does not do this for you, and neither limit stops you: the duration budgets restart at the next feed, and
@@ -506,11 +512,16 @@ process. The Python and JavaScript APIs do not offer an in-process execution mod
 
 ### Remote workers
 
-[`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket] (Python), `MontyWebsocket` (JavaScript) and [`PoolConfig::websocket`](api/rust/monty-pool.md#poolconfig) (Rust) dial a remote worker instead of spawning a local one.
+[`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote] (Python), `MontyRemote` (JavaScript) and [`PoolConfig::remote`](api/rust/monty-pool.md#poolconfig) (Rust) reach a remote worker over gRPC instead of spawning a local one: one HTTP/2 connection per pool, one stream per session.
+An `https://` server's certificate is verified against the operating system's trust store, not roots bundled into the client, so a root the OS has distrusted is refused without a Monty release.
+macOS and Windows verify with the OS and apply its revocation data; Linux checks the chain against the distro CA bundle only, with no revocation checking, and a Linux host with no CA bundle cannot create an `https://` pool.
 **A remote peer need not be a Monty sandbox at all.** It may be real CPython with no sandbox, no resource limits and
 full host access, relying on deployment isolation — a container or VM per session — rather than on the interpreter.
 None of the guarantees on this page transfer across that boundary; they become properties of whatever is running on the
 other end.
+
+Closing a remote pool waits, up to one second each, for the server to end the streams of sessions already finished.
+If the server checks a session's credentials when it ends the stream, keep them valid until the pool's close returns.
 
 ### Pin the worker binary
 

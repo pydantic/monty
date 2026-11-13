@@ -109,6 +109,9 @@ pub enum OsFunctionCall {
     /// handle across calls.
     #[strum(serialize = "open")]
     Open(OpenCallArgs),
+    /// Create a new empty file, refusing every existing entry, and return its file handle.
+    #[strum(serialize = "Path.create_exclusive")]
+    CreateExclusive(CreateExclusiveCallArgs),
     /// Create directory (`parents`/`exist_ok` kwargs).
     #[strum(serialize = "Path.mkdir")]
     Mkdir(MkdirCallArgs),
@@ -238,6 +241,7 @@ impl OsFunctionCall {
             Self::WriteText(a) | Self::AppendText(a) => a.to_args(),
             Self::WriteBytes(a) | Self::AppendBytes(a) => a.to_args(),
             Self::Open(a) => a.to_args(),
+            Self::CreateExclusive(a) => a.to_args(),
             Self::Mkdir(a) => a.to_args(),
             Self::Rename(a) => a.to_args(),
             Self::Scan(a) => a.to_args(),
@@ -271,6 +275,7 @@ impl OsFunctionCall {
             | Self::AppendText(_)
             | Self::AppendBytes(_)
             | Self::Mkdir(_)
+            | Self::CreateExclusive(_)
             | Self::Unlink(_)
             | Self::Rmdir(_)
             | Self::Rename(_) => true,
@@ -363,6 +368,7 @@ impl OsFunctionCall {
             Self::WriteText(a) | Self::AppendText(a) => Some(a.path.as_str()),
             Self::WriteBytes(a) | Self::AppendBytes(a) => Some(a.path.as_str()),
             Self::Open(a) => Some(a.path.as_str()),
+            Self::CreateExclusive(a) => Some(a.path.as_str()),
             Self::Mkdir(a) => Some(a.path.as_str()),
             Self::Scan(a) => Some(a.path.as_str()),
             Self::Rename(a) => Some(a.src.as_str()),
@@ -414,6 +420,7 @@ impl OsFunctionCall {
             Self::WriteText(a) | Self::AppendText(a) => (Some(&mut a.path), None),
             Self::WriteBytes(a) | Self::AppendBytes(a) => (Some(&mut a.path), None),
             Self::Open(a) => (Some(&mut a.path), None),
+            Self::CreateExclusive(a) => (Some(&mut a.path), None),
             Self::Mkdir(a) => (Some(&mut a.path), None),
             Self::Scan(a) => (Some(&mut a.path), None),
             Self::Rename(a) => (Some(&mut a.src), Some(&mut a.dst)),
@@ -624,6 +631,36 @@ pub struct PathBytesDataArgs {
 pub struct OpenCallArgs {
     pub path: MontyPath,
     pub mode: FileMode,
+}
+
+/// Exclusive file creation, independent of the access mode of the returned handle.
+/// Native hosts apply `permissions` at creation, subject to umask; virtual filesystems use their access policy.
+/// Backends must validate these arguments before modifying storage.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
+pub struct CreateExclusiveCallArgs {
+    pub path: MontyPath,
+    pub mode: FileMode,
+    /// Owner, group and other read/write bits; execute bits are rejected.
+    #[from_args(kw_only)]
+    pub permissions: u32,
+}
+
+impl CreateExclusiveCallArgs {
+    /// Rejects update modes, execute bits and permission bits outside the access mask.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.permissions > 0o777 {
+            Err("permissions must be between 0 and 0o777")
+        } else if self.permissions & 0o111 != 0 {
+            Err("execute permission bits are not supported")
+        } else if matches!(
+            self.mode,
+            FileMode::ReadUpdate(_) | FileMode::WriteUpdate(_) | FileMode::AppendUpdate(_)
+        ) {
+            Err("update modes ('+') are not yet supported")
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// `mkdir(path, parents=False, exist_ok=False)` shape. `parents`/`exist_ok`

@@ -6,9 +6,9 @@
 use std::{collections::HashSet, time::Duration};
 
 use monty_types::{
-    GetenvArgs, ImportArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MkdirCallArgs, MontyPath,
-    MontyTimeZone, MontyUuid, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs,
-    ScanArgs, SourceRange, TypeHintsTarget, UrandomArgs, sleep_duration, unstable,
+    CreateExclusiveCallArgs, GetenvArgs, ImportArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS,
+    MkdirCallArgs, MontyPath, MontyTimeZone, MontyUuid, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
+    PathStringDataArgs, RenameCallArgs, ScanArgs, SourceRange, TypeHintsTarget, UrandomArgs, sleep_duration, unstable,
 };
 
 use crate::{
@@ -77,6 +77,11 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
         OsFunctionCall::Open(a) => Call::Open(os_call::Open {
             path: a.path.into_string(),
             mode: a.mode.as_str().to_owned(),
+        }),
+        OsFunctionCall::CreateExclusive(a) => Call::CreateExclusive(os_call::CreateExclusive {
+            path: a.path.into_string(),
+            mode: a.mode.as_str().to_owned(),
+            permissions: a.permissions,
         }),
         OsFunctionCall::Mkdir(a) => Call::Mkdir(os_call::Mkdir {
             path: a.path.into_string(),
@@ -168,6 +173,18 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
                 mode: o.mode.parse().map_err(|_| ProtoConvertError::InvalidFileMode(o.mode))?,
                 path: MontyPath::new(o.path),
             }),
+            os_call::Call::CreateExclusive(c) => {
+                let args = CreateExclusiveCallArgs {
+                    path: MontyPath::new(c.path),
+                    mode: c.mode.parse().map_err(|_| ProtoConvertError::InvalidFileMode(c.mode))?,
+                    permissions: c.permissions,
+                };
+                args.validate().map_err(|reason| ProtoConvertError::InvalidValue {
+                    field: "CreateExclusive.permissions",
+                    reason: reason.to_owned(),
+                })?;
+                Self::CreateExclusive(args)
+            }
             os_call::Call::Mkdir(m) => Self::Mkdir(MkdirCallArgs {
                 path: MontyPath::new(m.path),
                 parents: m.parents,
@@ -254,8 +271,8 @@ fn timezone_to_proto(tz: MontyTimeZone) -> TimeZone {
     }
 }
 
-/// Validates a child-supplied fixed offset into the range `datetime.timezone`
-/// accepts, so a compromised child cannot hand the host an impossible zone.
+/// Validates a worker-supplied fixed offset into the range `datetime.timezone`
+/// accepts, so a compromised worker cannot hand the host an impossible zone.
 fn timezone_from_proto(tz: TimeZone) -> Result<MontyTimeZone, ProtoConvertError> {
     if !(MIN_TIMEZONE_OFFSET_SECONDS..=MAX_TIMEZONE_OFFSET_SECONDS).contains(&tz.offset_seconds) {
         return Err(ProtoConvertError::InvalidValue {
@@ -274,7 +291,7 @@ fn timezone_from_proto(tz: TimeZone) -> Result<MontyTimeZone, ProtoConvertError>
 
 /// Validates wire seconds into a `Duration`.
 ///
-/// A child may be compromised, so a NaN, negative or unrepresentable delay is
+/// A worker may be compromised, so a NaN, negative or unrepresentable delay is
 /// refused here rather than reaching a host that would convert it — and panic
 /// doing so.
 fn field_sleep_duration(seconds: f64, field: &'static str) -> Result<Duration, ProtoConvertError> {

@@ -255,32 +255,62 @@ def replay(
     }
 
 
-def json_value(value: Any, depth: int = 0) -> Any:
-    if depth > 32:
-        raise ReplayError('Value nesting exceeds 32 levels')
-    if type(value) is str:
-        try:
-            value.encode('utf-8')
-        except UnicodeError as error:
-            raise ReplayError('Invalid UTF-8 string') from error
-        return value
-    if value is None or type(value) in (bool, int):
-        return value
-    if type(value) is float and math.isfinite(value):
-        return value
-    if type(value) is list:
-        return [json_value(item, depth + 1) for item in cast(list[Any], value)]
-    if type(value) is dict:
-        mapping = cast(dict[Any, Any], value)
-        if all(type(key) is str for key in mapping):
-            return {json_value(key, depth + 1): json_value(item, depth + 1) for key, item in mapping.items()}
-    raise ReplayError('Only finite JSON values are supported')
+def json_value(value: Any, depth: int = 0, *, max_size: int = MAX_FILE) -> Any:
+    """Validate in place, charging repeated references before visiting their children."""
+    remaining = max_size
+
+    def spend(size: int) -> None:
+        nonlocal remaining
+        remaining -= size
+        if remaining < 0:
+            raise ReplayError('Value exceeds 256 KiB' if max_size == MAX_VALUE else f'JSON exceeds {max_size} bytes')
+
+    def visit(item: Any, level: int) -> None:
+        if level > 32:
+            raise ReplayError('Value nesting exceeds 32 levels')
+        if type(item) is str:
+            spend(len(item) + 2)
+            try:
+                item.encode('utf-8')
+            except UnicodeError as error:
+                raise ReplayError('Invalid UTF-8 string') from error
+        elif item is None or type(item) in (bool, int):
+            spend(1)
+        elif type(item) is float and math.isfinite(item):
+            spend(1)
+        elif type(item) is list:
+            items = cast(list[Any], item)
+            spend(2 + max(0, len(items) - 1))
+            for child in items:
+                visit(child, level + 1)
+        elif type(item) is dict:
+            mapping = cast(dict[Any, Any], item)
+            spend(2 + max(0, len(mapping) - 1) + len(mapping))
+            for key, child in mapping.items():
+                if type(key) is not str:
+                    raise ReplayError('Only finite JSON values are supported')
+                visit(key, level + 1)
+                visit(child, level + 1)
+        else:
+            raise ReplayError('Only finite JSON values are supported')
+
+    visit(value, depth)
+    return value
 
 
-def encode(value: Any) -> bytes:
+def encode(value: Any, *, max_size: int = MAX_FILE) -> bytes:
     try:
+        json_value(value, max_size=max_size)
         # Python can observe mapping order, including the order of keyword arguments.
-        return json.dumps(json_value(value), separators=(',', ':'), allow_nan=False).encode()
+        chunks = json.JSONEncoder(separators=(',', ':'), allow_nan=False).iterencode(value)
+        data = bytearray()
+        for chunk in chunks:
+            if len(chunk) > max_size - len(data):
+                raise ReplayError(
+                    'Value exceeds 256 KiB' if max_size == MAX_VALUE else f'JSON exceeds {max_size} bytes'
+                )
+            data.extend(chunk.encode('ascii'))
+        return bytes(data)
     except (ValueError, RecursionError) as error:
         raise ReplayError(str(error)) from error
 
@@ -402,8 +432,7 @@ class Output:
 
 
 def bounded_value(value: Any) -> Any:
-    if len(encode(value)) > MAX_VALUE:
-        raise ReplayError('Value exceeds 256 KiB')
+    encode(value, max_size=MAX_VALUE)
     return value
 
 

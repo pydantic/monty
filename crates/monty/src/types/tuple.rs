@@ -35,11 +35,10 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
-    resource_checks::check_repeat_size,
+    resource_checks::{check_repeat_size, repeated_len},
     types::{
         LazyHeapSet, Type,
         list::repr_sequence_fmt,
-        long_int::repeat_count,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -129,6 +128,8 @@ impl Tuple {
                 // Use empty tuple singleton
                 Ok(vm.heap.get_empty_tuple())
             }
+            // Named tuples still need conversion to a plain tuple.
+            Some(v @ Value::Ref(id)) if matches!(vm.heap.get(id), HeapData::Tuple(_)) => Ok(v),
             Some(v) => {
                 let items = collect_owned_iterable(v, vm)?;
                 Ok(allocate_tuple(items, vm.heap))
@@ -437,30 +438,40 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
         let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
-        let mut items = self.clone_all_items(vm)?;
-        items.extend(other.clone_all_items(vm)?);
+        // The guard releases our clones if cloning `other` hits the memory limit.
+        let mut items = DropGuard::new(self.clone_all_items(vm)?, vm);
+        let (left, vm) = items.as_parts_mut();
+        left.extend(other.clone_all_items(vm)?);
+        let (items, vm) = items.into_parts();
         Ok(Some(allocate_tuple(items, vm.heap)))
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(count) = repeat_count(other, vm)? else {
+        let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(None);
         };
-        let value = self.get(vm.heap);
-        if count == 0 || value.as_slice().is_empty() {
+        let len = self.get(vm.heap).as_slice().len();
+        if count == 0 || len == 0 {
             return Ok(Some(vm.heap.get_empty_tuple()));
         }
-        check_repeat_size(
-            value.as_slice().len().saturating_mul(mem::size_of::<Value>()),
-            count,
-            &vm.heap.tracker,
-        )?;
-        let mut result = SmallVec::with_capacity(value.as_slice().len() * count);
+        let total = repeated_len(len, count, VALUE_SIZE)?;
+        check_repeat_size(len.saturating_mul(VALUE_SIZE), count, &vm.heap.tracker)?;
+        let mut items = TupleVec::new();
+        items
+            .try_reserve_exact(total)
+            .map_err(|_| ExcType::allocation_too_large())?;
+        // The guard releases the clones built so far if the time poll trips.
+        let mut result = DropGuard::new(items, vm);
         for rep in 0..count {
-            result.extend(value.as_slice().iter().map(|value| value.clone_with_heap(vm.heap)));
+            let (items, vm) = result.as_parts_mut();
+            // Pushes, not `extend`: its per-call reserve dominates when each pass adds one item.
+            for value in self.get(vm.heap).as_slice() {
+                items.push(value.clone_with_heap(vm.heap));
+            }
             vm.heap.tracker.check_time_every(rep)?;
         }
-        Ok(Some(allocate_tuple(result, vm.heap)))
+        let (items, vm) = result.into_parts();
+        Ok(Some(allocate_tuple(items, vm.heap)))
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -557,14 +568,19 @@ fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>
         other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
     };
 
-    let iter = tuple.iter(vm)?;
+    // Nested short offset searches may never reach an iterator checkpoint.
+    vm.heap.tracker.check_time()?;
+
+    let mut iter = tuple.iter(vm)?;
+    // Excluded prefix entries need neither equality calls nor reference-count traffic.
+    iter.index = start;
     defer_drop_mut!(iter, vm);
     while let Some((idx, item)) = iter.next_with_index(vm)? {
         if idx >= end {
             // No further matches possible inside [start, end).
             break;
         }
-        if idx >= start && value.py_eq(item, vm)? {
+        if value.py_eq(item, vm)? {
             let idx_i64 = i64::try_from(idx).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx_i64));
         }

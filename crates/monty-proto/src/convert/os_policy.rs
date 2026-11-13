@@ -1,6 +1,6 @@
 //! `OsPolicy` ↔ `pb::OsPolicy` conversions.
 //!
-//! Unset wire arms use field defaults for compatibility with older parents.
+//! Unset wire arms use field defaults for compatibility with older clients.
 //! Encoding sets every arm; decoding validates microseconds, zone offsets and seeds.
 
 use std::time::Duration;

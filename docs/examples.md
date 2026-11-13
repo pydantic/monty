@@ -102,9 +102,10 @@ Each directory under [`examples/`](https://github.com/pydantic/monty/tree/main/e
 - [`expense_analysis`](https://github.com/pydantic/monty/tree/main/examples/expense_analysis): Anthropic's [programmatic
     tool calling](https://platform.claude.com/cookbook/tool-use-programmatic-tool-calling-ptc) cookbook example, run on
     Monty.
-- [`web_scraper`](https://github.com/pydantic/monty/tree/main/examples/web_scraper): Playwright and BeautifulSoup
-    exposed to the sandbox as [host objects](host-objects.md) so the model can extract prices from model labs' websites;
-    `example_code.py` is the code Claude Sonnet 4.5 wrote for it.
+- [`browser_cdp`](https://github.com/pydantic/monty/tree/main/examples/browser_cdp): a Pydantic AI agent using the
+    `CodeMode` capability from `pydantic-ai-harness` to drive Chrome through one `browser_cdp` tool, which sends Chrome
+    DevTools Protocol commands from the sandbox.
+    An allowlist of commands keeps the browser from reading or writing host files.
 - [`spreadsheet`](https://github.com/pydantic/monty/tree/main/examples/spreadsheet): an untidy Excel workbook read
     through the [`openpyxl`](https://openpyxl.readthedocs.io/) objects themselves, wrapped as
     [host objects](host-objects.md), and returned as a list of `Row` instances, a dataclass the sandbox code defines.

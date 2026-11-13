@@ -74,8 +74,8 @@ impl From<io::Error> for FrameError {
 ///
 /// [`write_frame`] rejects an oversize frame anyway, but only once the caller
 /// is committed to sending. Peers that must not mutate their own state until
-/// the frame is known sendable — a parent about to mark a suspension answered,
-/// a child about to enter one — check it with this first.
+/// the frame is known sendable — a client about to mark a suspension answered,
+/// a worker about to enter one — check it with this first.
 pub fn exceeds_max_frame_len(msg: &impl Message) -> Option<u32> {
     let len = u32::try_from(msg.encoded_len()).unwrap_or(u32::MAX);
     (len > MAX_FRAME_LEN).then_some(len)
@@ -99,7 +99,7 @@ pub fn write_frame(writer: &mut impl Write, msg: &impl Message) -> Result<(), Fr
 /// Encodes `msg` to a `Vec<u8>`, enforcing [`MAX_FRAME_LEN`] *before* encoding
 /// (so a >256 MiB message is rejected without allocating it).
 ///
-/// Message-oriented transports (e.g. a WebSocket, where the message boundary is
+/// Message-oriented transports (e.g. a gRPC stream, where the message boundary is
 /// the frame) use this directly instead of [`write_frame`]: they send the bytes
 /// with no length prefix but still need the same oversize guard so the wire size
 /// cap is identical across transports.
@@ -147,7 +147,7 @@ pub fn encode_framed_into(msg: &impl Message, buf: &mut Vec<u8>) -> Result<(), F
 /// Decodes one already-deframed message from `bytes`.
 ///
 /// The message-oriented counterpart to one [`FrameReader::read`]: a transport
-/// whose boundary *is* the frame (a WebSocket) hands the payload straight here.
+/// whose boundary *is* the frame (a gRPC message) hands the payload straight here.
 /// Rejects payloads over [`MAX_FRAME_LEN`] and scopes the decode allocation
 /// budget, restoring any enclosing budget on return or unwind. The budget
 /// applies to this crate's protocol types, not arbitrary third-party messages.

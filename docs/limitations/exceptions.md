@@ -54,6 +54,9 @@ not supported; passing more than one argument raises an internal error.
     itself, so `str(exc)` and `repr(exc)` quote non-string keys:
     `{}[1]` gives `KeyError('1')` where CPython gives `KeyError(1)`, and a
     `bytes` key gives `KeyError("b'a'")`.
+    The key's `__str__` therefore runs when the `KeyError` is raised, which CPython never does.
+    An exception from it is replaced by the type name (`KeyError('<K>')`), but a resource limit hit inside it
+    ends the run with `MemoryError` or `TimeoutError` where CPython raises a plain `KeyError`.
 
 - `repr(exc)` — `ClassName('message')` matching CPython, **except**
     `UnicodeDecodeError`/`UnicodeEncodeError`: CPython reprs these from their
@@ -62,7 +65,8 @@ not supported; passing more than one argument raises an internal error.
     `repr()` uses the generic single-message form instead.
 
 - The dotted exception classes — `json.JSONDecodeError`, `tomllib.TOMLDecodeError`, `re.PatternError`,
-    `binascii.Error`, `binascii.Incomplete`, `_csv.Error` — repr under their qualified name:
+    `binascii.Error`, `binascii.Incomplete`, `_csv.Error`, `statistics.StatisticsError` — repr under their qualified
+    name:
     `binascii.Error('bad')` where CPython gives `Error('bad')`.
     `type(exc).__name__` and `str(type(exc))` match CPython.
 

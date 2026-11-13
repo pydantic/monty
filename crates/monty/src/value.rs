@@ -19,7 +19,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
     hash::{HashValue, hash_f64, hash_named, hash_one, hash_python_str},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
@@ -117,7 +117,7 @@ pub(crate) enum ValueRead<'h, 'v> {
     Immediate(&'v Value),
     /// Heap values retain the typed heap object handle.
     Heap {
-        value: HeapReadOutput<'h>,
+        value: PyValue<'h>,
         /// `py_next` calls made through this view, keying its amortized
         /// time check.
         steps: usize,
@@ -149,47 +149,47 @@ impl<'h> ValueRead<'h, '_> {
     pub(crate) fn iter_size_hint(&self, vm: &VM<'h>) -> usize {
         match self {
             Self::Heap {
-                value: HeapReadOutput::ListIterator(iter),
+                value: PyValue::ListIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(vm.heap),
             Self::Heap {
-                value: HeapReadOutput::DequeIterator(iter),
+                value: PyValue::DequeIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(vm.heap),
             Self::Heap {
-                value: HeapReadOutput::TupleIterator(iter),
+                value: PyValue::TupleIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(vm.heap),
             Self::Heap {
-                value: HeapReadOutput::StringIterator(iter),
+                value: PyValue::StringIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(vm),
             Self::Heap {
-                value: HeapReadOutput::BytesIterator(iter),
+                value: PyValue::BytesIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(vm),
             Self::Heap {
-                value: HeapReadOutput::RangeIterator(iter),
+                value: PyValue::RangeIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(),
             Self::Heap {
-                value: HeapReadOutput::DictKeyIterator(iter),
+                value: PyValue::DictKeyIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(),
             Self::Heap {
-                value: HeapReadOutput::DictItemIterator(iter),
+                value: PyValue::DictItemIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(),
             Self::Heap {
-                value: HeapReadOutput::DictValueIterator(iter),
+                value: PyValue::DictValueIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(),
             Self::Heap {
-                value: HeapReadOutput::SetIterator(iter),
+                value: PyValue::SetIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(),
             Self::Heap {
-                value: HeapReadOutput::Itertools(iter),
+                value: PyValue::Itertools(iter),
                 ..
             } => iter.get(vm.heap).size_hint(),
             _ => 0,
@@ -265,7 +265,7 @@ impl<'h> PyTrait<'h> for Value {
             Self::DefFunction(_) => Type::Function,
             Self::Marker(m) => m.py_type(),
             Self::Property(_) => Type::Property,
-            Self::Ref(id) => vm.heap.read(*id).py_type(vm),
+            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_type(vm),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
@@ -319,7 +319,7 @@ impl<'h> PyTrait<'h> for Value {
                 Self::Property(o) => Some(p == o),
                 _ => None,
             }),
-            Self::Ref(id) => vm.heap.read(*id).py_eq_impl(other, vm),
+            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_eq_impl(other, vm),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
@@ -486,14 +486,67 @@ impl<'h> PyTrait<'h> for Value {
             Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Str(_)) => Ok(self.clone_with_heap(vm.heap)),
             // Instances dispatch to a user `__str__`/`__repr__` (needs the heap id).
             Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_)) => instance_str(*id, vm),
-            Self::Ref(id) => PyValue::from(vm.heap.read(*id)).py_str(vm),
+            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_str(vm),
             _ => self.py_repr(vm),
         }
     }
 
+    /// For lists/deques, tries user `__radd__` before native extension from an iterable.
+    /// A reflected result replaces the value; native extension preserves the container's identity.
     fn py_iadd_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        // CPython tries numeric addition, including the RHS's `__radd__`, before
+        // sequence in-place concatenation. A user operand can therefore replace
+        // the assigned value even if it is iterable; aliases keep the original container.
+        // Only an absent or declined `__radd__` permits native extension; errors propagate.
+        let sequence = matches!(self.py_type_heap(vm.heap), Type::List | Type::Deque);
+        if sequence
+            && matches!(other.py_type_heap(vm.heap), Type::Instance(_))
+            && let Some(result) = other.py_radd_impl(self, vm)?
+        {
+            let old = mem::replace(self, result);
+            old.drop_with(vm);
+            return Ok(true);
+        }
+
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_iadd_impl(other, vm)
+            PyValue::from_heap(*id, vm.heap).py_iadd_impl(other, vm)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// For lists/deques, tries user `__rmul__` before native repetition through `__index__`.
+    /// A reflected result replaces the value; native repetition preserves the container's identity.
+    fn py_imul_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        // CPython tries numeric multiplication, including the RHS's `__rmul__`, before
+        // sequence in-place repetition. A user operand can therefore replace
+        // the assigned value even if it implements `__index__`; aliases keep the original container.
+        // Only an absent or declined `__rmul__` permits native repetition; errors propagate.
+        let sequence = matches!(self.py_type_heap(vm.heap), Type::List | Type::Deque);
+        if sequence
+            && matches!(other.py_type_heap(vm.heap), Type::Instance(_))
+            && let Some(result) = other.py_rmul_impl(self, vm)?
+        {
+            let old = mem::replace(self, result);
+            old.drop_with(vm);
+            return Ok(true);
+        }
+
+        if let Self::Ref(id) = self {
+            let handled = PyValue::from_heap(*id, vm.heap).py_imul_impl(other, vm)?;
+            if !handled && sequence && matches!(other.py_type_heap(vm.heap), Type::Instance(_)) {
+                // `__rmul__` already declined; binary dispatch would call it a second time.
+                return Err(ExcType::type_error_sequence_repeat(other.py_type_name(vm)));
+            }
+            Ok(handled)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn py_ixor_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        if let Self::Ref(id) = self {
+            PyValue::from_heap(*id, vm.heap).py_ixor_impl(other, vm)
         } else {
             Ok(false)
         }
@@ -501,7 +554,7 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_isub_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_isub_impl(other, vm)
+            PyValue::from_heap(*id, vm.heap).py_isub_impl(other, vm)
         } else {
             Ok(false)
         }
@@ -509,7 +562,7 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_iand_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_iand_impl(other, vm)
+            PyValue::from_heap(*id, vm.heap).py_iand_impl(other, vm)
         } else {
             Ok(false)
         }
@@ -517,7 +570,7 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_ior_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_ior_impl(other, vm)
+            PyValue::from_heap(*id, vm.heap).py_ior_impl(other, vm)
         } else {
             Ok(false)
         }
@@ -525,7 +578,7 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_cmp_op(&self, other: &Self, op: CmpOperator, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_cmp_op(other, op, vm)
+            PyValue::from_heap(*id, vm.heap).py_cmp_op(other, op, vm)
         } else {
             Ok(None)
         }
@@ -708,7 +761,7 @@ impl<'h> PyTrait<'h> for Value {
     /// One-sided implementation of matrix multiplication.
     fn py_matmul_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_matmul_impl(other, vm)
+            PyValue::from_heap(*id, vm.heap).py_matmul_impl(other, vm)
         } else {
             Ok(None)
         }
@@ -717,7 +770,7 @@ impl<'h> PyTrait<'h> for Value {
     /// Reflected implementation of matrix multiplication.
     fn py_rmatmul_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_rmatmul_impl(other, vm)
+            PyValue::from_heap(*id, vm.heap).py_rmatmul_impl(other, vm)
         } else {
             Ok(None)
         }
@@ -729,7 +782,7 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_setitem(&mut self, key: Self, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_setitem(key, value, vm)
+            PyValue::from_heap(*id, vm.heap).py_setitem(key, value, vm)
         } else {
             key.drop_with(vm);
             value.drop_with(vm);
@@ -741,7 +794,7 @@ impl<'h> PyTrait<'h> for Value {
         // No immediate value is an iterator; interned `str`/`bytes` are iterable
         // but, as in CPython, are not their own iterators.
         match self {
-            Self::Ref(id) => vm.heap.read(*id).py_is_iterator(vm),
+            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_is_iterator(vm),
             _ => false,
         }
     }
@@ -749,16 +802,16 @@ impl<'h> PyTrait<'h> for Value {
     fn py_is_iterable(&self, vm: &VM<'_>) -> bool {
         match self {
             // Interned string and bytes literals iterate without ever reaching
-            // the heap, so they answer here rather than in `HeapReadOutput`.
+            // the heap, so they answer here rather than through a heap-backed `PyValue`.
             Self::InternString(_) | Self::InlineString(_) | Self::InternBytes(_) => true,
-            Self::Ref(id) => vm.heap.read(*id).py_is_iterable(vm),
+            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_is_iterable(vm),
             _ => false,
         }
     }
 
     fn py_iter(&self, vm: &mut VM<'_>) -> RunResult<CallResult> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_iter(vm)
+            PyValue::from_heap(*id, vm.heap).py_iter(vm)
         } else {
             match self {
                 Self::InternString(id) => Ok(CallResult::Value(StringIterator::from_intern(*id, vm))),
@@ -771,7 +824,7 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_next(&mut self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_next(vm)
+            PyValue::from_heap(*id, vm.heap).py_next(vm)
         } else {
             Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
         }
@@ -798,18 +851,22 @@ fn cmp_heap_pair(id1: HeapId, id2: HeapId, vm: &mut VM<'_>) -> RunResult<CmpOrde
         // A namedtuple orders like the tuple it subclasses, including
         // against a plain tuple in either direction. Both sides are
         // cloned first because the comparison needs `&mut VM`, which
-        // cannot coexist with two live `HeapRead`s.
+        // cannot coexist with two live `HeapRead`s. Guard the first clone
+        // while the second clone's memory check can still fail.
         (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => {
-            let (a, b) = (a.cloned_items(vm)?, b.cloned_items(vm)?);
-            cmp_item_seqs(a, b, vm)
+            let mut a_items = DropGuard::new(a.cloned_items(vm)?, vm);
+            let b_items = b.cloned_items(a_items.ctx())?;
+            cmp_item_seqs(a_items.into_inner(), b_items, vm)
         }
         (HeapReadOutput::NamedTuple(a), HeapReadOutput::Tuple(b)) => {
-            let (a, b) = (a.cloned_items(vm)?, b.cloned_items(vm)?);
-            cmp_item_seqs(a, b, vm)
+            let mut a_items = DropGuard::new(a.cloned_items(vm)?, vm);
+            let b_items = b.cloned_items(a_items.ctx())?;
+            cmp_item_seqs(a_items.into_inner(), b_items, vm)
         }
         (HeapReadOutput::Tuple(a), HeapReadOutput::NamedTuple(b)) => {
-            let (a, b) = (a.cloned_items(vm)?, b.cloned_items(vm)?);
-            cmp_item_seqs(a, b, vm)
+            let mut a_items = DropGuard::new(a.cloned_items(vm)?, vm);
+            let b_items = b.cloned_items(a_items.ctx())?;
+            cmp_item_seqs(a_items.into_inner(), b_items, vm)
         }
         (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_cmp(&b, vm),
         (HeapReadOutput::Deque(a), HeapReadOutput::Deque(b)) => a.py_cmp(&b, vm),
@@ -854,7 +911,7 @@ impl Value {
             Self::InternBytes(id) => PyValue::Bytes(PyBytes::Interned(*id)),
             Self::Int(value) => PyValue::Int(PyInt::Small(*value)),
             Self::InternLongInt(id) => PyValue::Int(PyInt::Interned(*id)),
-            Self::Ref(id) => vm.heap.read(*id).into(),
+            Self::Ref(id) => PyValue::from_heap(*id, vm.heap),
             Self::Undefined => PyValue::Undefined,
             Self::Ellipsis => PyValue::Ellipsis,
             Self::NotImplemented => PyValue::NotImplemented,
@@ -1092,7 +1149,7 @@ impl Value {
     pub(crate) fn read<'h, 'v>(&'v self, vm: &VM<'h>) -> ValueRead<'h, 'v> {
         match self {
             Self::Ref(id) => ValueRead::Heap {
-                value: vm.heap.read(*id),
+                value: PyValue::from_heap(*id, vm.heap),
                 steps: 0,
             },
             _ => ValueRead::Immediate(self),
@@ -1136,7 +1193,7 @@ impl Value {
             // impl. Types that benefit from caching (Str/Bytes/Tuple/
             // NamedTuple/FrozenSet/Path) carry an inline `cached_hash`;
             // cheap-to-hash types recompute each call.
-            Self::Ref(id) => vm.heap.read(*id).py_hash(vm),
+            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_hash(vm),
             // Values with no heap identity hash by name, never by discriminant:
             // dict and set entries persist their hash, so a hash tied to an
             // enum's declaration order would break lookups in older dumps.
@@ -1211,7 +1268,7 @@ impl Value {
                 return instance_getattr(*heap_id, attr, vm);
             }
             Self::Ref(heap_id) => {
-                if let Some(call_result) = vm.heap.read(*heap_id).py_getattr(attr, vm)? {
+                if let Some(call_result) = PyValue::from_heap(*heap_id, vm.heap).py_getattr(attr, vm)? {
                     return Ok(call_result);
                 }
                 // CPython names the module, not its type, for a missing module attribute.
@@ -1246,7 +1303,7 @@ impl Value {
     /// Sets an attribute, consuming `value` on both success and error.
     pub fn py_set_attr(&self, name: &EitherStr, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
         if let Self::Ref(heap_id) = self {
-            vm.heap.read(*heap_id).py_set_attr(name, value, vm)
+            PyValue::from_heap(*heap_id, vm.heap).py_set_attr(name, value, vm)
         } else {
             value.drop_with(vm);
             let type_name = self.py_type_name(vm);
@@ -1471,8 +1528,24 @@ impl Value {
         )
     }
 
-    /// Performs Python `*` with reflected-operation fallback.
+    /// Performs Python `*`, trying the left implementation then the right reflected implementation.
+    /// Same-class user instances skip the reflected retry. For a builtin sequence on the left
+    /// and a user instance on the right, `__rmul__` precedes `__index__`-based repetition.
+    /// Absent or declined methods allow fallback; exceptions propagate immediately.
     pub(crate) fn py_mul(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+        if matches!(other, Self::Ref(_))
+            && matches!(other.py_type_heap(vm.heap), Type::Instance(_))
+            && self.py_type_heap(vm.heap).has_sequence_repeat()
+        {
+            // Numeric reflected multiplication precedes the sequence's `__index__` conversion.
+            if let Some(result) = other.py_rmul_impl(self, vm)? {
+                return Ok(result);
+            }
+            return self
+                .py_mul_impl(other, vm)?
+                .ok_or_else(|| ExcType::type_error_sequence_repeat(other.py_type_name(vm)));
+        }
+
         self.binary_op(
             other,
             vm,
@@ -1882,7 +1955,7 @@ impl Value {
 // representation as needed. They return `None` (NotImplemented) when `other`
 // is not a compatible Python type, so the reflected comparison can run. These
 // are shared by `Value::py_eq_impl` (inline operands) and
-// `HeapReadOutput::py_eq_impl` (heap operands) so the interned-vs-heap and
+// `PyValue::py_eq_impl` (heap operands) so the interned-vs-heap and
 // numeric-tower logic lives once.
 // ---------------------------------------------------------------------------
 

@@ -28,8 +28,8 @@ export declare class NativeMountDir {
 
 export declare class NativePool {
   constructor(options?: unknown)
-  static websocket(options?: unknown): NativePool
-  start(): Promise<void>
+  static remote(options?: unknown): NativePool
+  start(): Promise<object>
   checkout(options?: unknown): NativeSession
   close(): Promise<void>
 }
@@ -38,13 +38,14 @@ export declare class NativeSession {
   readonly workerId?: number
   readonly workerPid?: number
   readonly sessionId?: Uint8Array | null
-  enter(telemetryContext?: unknown, connectHeaders?: unknown): Promise<object>
+  enter(telemetryContext?: unknown, metadata?: unknown): Promise<object>
   feed(...args: unknown[]): Promise<object>
   feedStart(...args: unknown[]): Promise<object>
   restore(...args: unknown[]): Promise<object>
   dump(...args: unknown[]): Promise<object>
   finish(): Promise<void>
   installDependencies(...args: unknown[]): Promise<object>
+  open(...args: unknown[]): Promise<object>
   resumeReturn(...args: unknown[]): Promise<object>
   resumeError(...args: unknown[]): Promise<object>
   resumeNotFound(...args: unknown[]): Promise<object>
@@ -57,4 +58,5 @@ export declare class NativeSession {
   resumeLazyAttr(...args: unknown[]): Promise<object>
   resumeNameLookupError(...args: unknown[]): Promise<object>
   resolveFutures(...args: unknown[]): Promise<object>
+  takeStreamedCall(callId: number): object | null
 }

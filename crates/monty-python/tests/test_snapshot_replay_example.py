@@ -336,6 +336,45 @@ def test_json_boundary() -> None:
     assert str(error.value) == snapshot('Value exceeds 256 KiB')
 
 
+@pytest.mark.parametrize('text', ['plain', '"\\\n', '\u0000', '\u00e9', '\U0001f40d'])
+def test_json_encoding_enforces_the_exact_byte_budget(text: str) -> None:
+    shared = [text, None, True, 1, 1.0]
+    value = {'first': shared, 'second': shared}
+    encoded = json.dumps(value, separators=(',', ':'), allow_nan=False).encode()
+    assert (r.encode(value, max_size=len(encoded)) == encoded) == snapshot(True)
+    with pytest.raises(r.ReplayError) as error:
+        r.encode(value, max_size=len(encoded) - 1)
+    assert (str(error.value) == f'JSON exceeds {len(encoded) - 1} bytes') == snapshot(True)
+
+
+@pytest.mark.parametrize('container', ['list', 'dict'])
+def test_shared_values_are_rejected_before_json_encoding(container: str) -> None:
+    value: Any = [0]
+    for _ in range(25):
+        value = [value, value] if container == 'list' else {'first': value, 'second': value}
+    with patch.object(json.JSONEncoder, 'iterencode', side_effect=AssertionError('encoding started')):
+        with pytest.raises(r.ReplayError) as error:
+            r.bounded_value(value)
+    assert str(error.value) == snapshot('Value exceeds 256 KiB')
+
+
+@pytest.mark.parametrize('boundary', ['argument', 'result', 'response', 'edited-source'])
+def test_shared_guest_values_are_bounded(case: Any, boundary: str) -> None:
+    code = 'x = [0]\nfor _ in range(25):\n    x = [x, x]\n'
+    if boundary == 'edited-source':
+        case.capture('1')
+        with pytest.raises(r.ReplayError) as error:
+            r.replay(r.load(case.path), code=code + 'x', binary=case.binary)
+    else:
+        value: Any = [0]
+        for _ in range(25):
+            value = [value, value]
+        source = 'fetch()' if boundary == 'response' else code + ('fetch(x)' if boundary == 'argument' else 'x')
+        with pytest.raises(r.ReplayError) as error:
+            r.capture(source, case.path, lambda call: {'return_value': value}, binary=case.binary)
+    assert str(error.value) == snapshot('Value exceeds 256 KiB')
+
+
 @pytest.mark.parametrize(
     'response, message',
     [

@@ -115,12 +115,12 @@ static TURN_DURATION: Instrument = Instrument {
     description: "Wall time of one non-execution turn, by kind.",
 };
 
-/// Suspensions the sandbox raised.
+/// Suspensions the sandbox raised, plus async host calls it started without one.
 static SUSPENSIONS: Instrument = Instrument {
     kind: MetricKind::Counter,
     name: "monty.run.suspensions",
     unit: "{suspension}",
-    description: "Suspensions the sandbox raised for the host to answer, by kind.",
+    description: "Suspensions the sandbox raised for the host to answer, and host calls it started without suspending (kind `started`), by kind.",
 };
 
 /// Round-trip time of one suspension, whoever answers it.
@@ -501,54 +501,59 @@ impl TurnMetrics {
         );
     }
 
+    /// Resets for a new session on this worker, opened by a `Configure` sent
+    /// alone or carried by its first request. Its execution clock restarts, so
+    /// the delta ratchet has to as well.
+    pub(crate) fn begin_session(&mut self) {
+        self.feed = None;
+        self.run_active = false;
+        self.abandon_pending();
+        self.reported_micros = 0;
+    }
+
     /// Starts timing one turn; called once the request is on the wire.
     ///
     /// The resume family opens nothing — it *answers* the open suspension, so
     /// it closes that instead, which is what makes the recorded duration the
     /// host round-trip.
-    pub(crate) fn begin_turn(&mut self, request: &pb::ParentRequest) {
+    pub(crate) fn begin_turn(&mut self, request: &pb::ClientRequest) {
         let now = Instant::now();
         match &request.kind {
-            // a new session on this worker; its execution clock restarts, so
-            // the delta ratchet has to as well
-            Some(pb::parent_request::Kind::Configure(_)) => {
-                self.feed = None;
-                self.run_active = false;
-                self.abandon_pending();
+            Some(pb::client_request::Kind::Configure(_)) => {
+                self.begin_session();
                 self.turn = Some(("configure", now));
-                self.reported_micros = 0;
             }
-            Some(pb::parent_request::Kind::Feed(_)) => {
+            Some(pb::client_request::Kind::Feed(_)) => {
                 self.abandon_pending();
                 self.feed = Some(now);
                 self.run_active = true;
             }
-            Some(pb::parent_request::Kind::Load(_)) => {
+            Some(pb::client_request::Kind::Load(_)) => {
                 // a load adopts the dumped session's clock, which may be ahead
                 // of or behind this worker's; the first reply re-bases it
                 self.run_active = false;
                 self.reported_micros = 0;
                 self.turn = Some(("load", now));
             }
-            Some(pb::parent_request::Kind::Dump(_)) => self.turn = Some(("dump", now)),
-            Some(pb::parent_request::Kind::InstallDependencies(_)) => {
+            Some(pb::client_request::Kind::Dump(_)) => self.turn = Some(("dump", now)),
+            Some(pb::client_request::Kind::InstallDependencies(_)) => {
                 self.turn = Some(("install_dependencies", now));
             }
-            Some(pb::parent_request::Kind::Reset(_)) => {
+            Some(pb::client_request::Kind::Reset(_)) => {
                 self.feed = None;
                 self.run_active = false;
                 self.abandon_pending();
                 self.turn = Some(("reset", now));
             }
             // no reply is awaited, so nothing is left open to close
-            Some(pb::parent_request::Kind::Shutdown(_)) => {
+            Some(pb::client_request::Kind::Shutdown(_)) => {
                 self.feed = None;
                 self.run_active = false;
                 self.abandon_pending();
                 self.turn = None;
             }
-            Some(pb::parent_request::Kind::ResumeCall(r)) => self.close_suspension(ext_result(r.result.as_ref())),
-            Some(pb::parent_request::Kind::ResumeNameLookup(r)) => {
+            Some(pb::client_request::Kind::ResumeCall(r)) => self.close_suspension(ext_result(r.result.as_ref())),
+            Some(pb::client_request::Kind::ResumeNameLookup(r)) => {
                 let outcome = match r.kind {
                     Some(pb::resume_name_lookup::Kind::Value(_)) => "value",
                     Some(pb::resume_name_lookup::Kind::Undefined(_)) => "undefined",
@@ -557,7 +562,7 @@ impl TurnMetrics {
                 };
                 self.close_suspension(outcome);
             }
-            Some(pb::parent_request::Kind::ResumeFutures(r)) => {
+            Some(pb::client_request::Kind::ResumeFutures(r)) => {
                 let outcome = match (&self.pending, r.results.as_slice()) {
                     (
                         Some(Suspension {
@@ -570,14 +575,16 @@ impl TurnMetrics {
                 };
                 self.close_suspension(outcome);
             }
-            Some(pb::parent_request::Kind::AbortFeed(_)) => self.close_suspension("aborted"),
+            Some(pb::client_request::Kind::AbortFeed(_)) => self.close_suspension("aborted"),
+            // liveness, not a turn (sent by the transport, never through here)
+            Some(pb::client_request::Kind::Pong(_)) => {}
             None => {}
         }
     }
 
     /// Records one event from the worker: a suspension opens the pending
     /// round-trip, a turn-ending event closes the run or housekeeping turn.
-    pub(crate) fn event(&mut self, event: &pb::ChildEvent) {
+    pub(crate) fn event(&mut self, event: &pb::WorkerEvent) {
         // a load's reply stamps the restored session's cumulative clock, spent
         // in another process: re-base the delta ratchet so the next run
         // records only its own cost
@@ -585,7 +592,7 @@ impl TurnMetrics {
             self.reported_micros = self.reported_micros.max(event.total_execution_micros);
         }
         match &event.kind {
-            Some(pb::child_event::Kind::Print(p)) => {
+            Some(pb::worker_event::Kind::Print(p)) => {
                 // One measurement per stream rather than per run: the
                 // instrument is a counter, so the totals sum identically, and a
                 // sandbox alternating the streams starts a run per fragment.
@@ -600,14 +607,20 @@ impl TurnMetrics {
                     }
                 }
             }
-            Some(pb::child_event::Kind::FunctionCall(c)) => {
+            // no round-trip to time: the worker kept running
+            Some(pb::worker_event::Kind::StreamedCalls(started)) => self.metrics.record(
+                &SUSPENSIONS,
+                MetricValue::I64(i64::try_from(started.calls.len()).unwrap_or(i64::MAX)),
+                &[KeyValue::new("kind", "started")],
+            ),
+            Some(pb::worker_event::Kind::FunctionCall(c)) => {
                 self.suspend(SuspensionKind::FunctionCall(c.allow_eager_await.then_some(c.call_id)));
             }
-            Some(pb::child_event::Kind::OsCall(c)) => self.suspend(SuspensionKind::OsCall(os_call(c.call.as_ref()))),
-            Some(pb::child_event::Kind::NameLookup(_)) => self.suspend(SuspensionKind::NameLookup),
-            Some(pb::child_event::Kind::ResolveFutures(_)) => self.suspend(SuspensionKind::ResolveFutures),
-            Some(pb::child_event::Kind::Complete(_)) => self.end_run("complete", event),
-            Some(pb::child_event::Kind::Error(_)) => {
+            Some(pb::worker_event::Kind::OsCall(c)) => self.suspend(SuspensionKind::OsCall(os_call(c.call.as_ref()))),
+            Some(pb::worker_event::Kind::NameLookup(_)) => self.suspend(SuspensionKind::NameLookup),
+            Some(pb::worker_event::Kind::ResolveFutures(_)) => self.suspend(SuspensionKind::ResolveFutures),
+            Some(pb::worker_event::Kind::Complete(_)) => self.end_run("complete", event),
+            Some(pb::worker_event::Kind::Error(_)) => {
                 // an error answering an open housekeeping turn (`Dump`,
                 // `Load`, `InstallDependencies`, ...) is that turn's outcome,
                 // not a run's — no run happened, so recording an execution
@@ -619,8 +632,8 @@ impl TurnMetrics {
                     self.end_run("error", event);
                 }
             }
-            Some(pb::child_event::Kind::TypingError(_)) => self.end_run("typing_error", event),
-            Some(pb::child_event::Kind::DumpResult(d)) => {
+            Some(pb::worker_event::Kind::TypingError(_)) => self.end_run("typing_error", event),
+            Some(pb::worker_event::Kind::DumpResult(d)) => {
                 self.metrics.record(
                     &SNAPSHOT_BYTES,
                     MetricValue::bytes(d.state.len()),
@@ -628,10 +641,18 @@ impl TurnMetrics {
                 );
                 self.end_turn("ok");
             }
-            Some(pb::child_event::Kind::Ok(_)) => self.end_turn("ok"),
+            Some(pb::worker_event::Kind::Ok(_)) => self.end_turn("ok"),
+            // the request a refused `Configure` carried never ran, so it is no run
+            Some(pb::worker_event::Kind::SessionRefused(_)) => {
+                self.feed = None;
+                self.run_active = false;
+                self.end_turn("refused");
+            }
             // the worker is about to exit; the pool counts the termination
-            Some(pb::child_event::Kind::FatalError(_)) => self.end_terminal("fatal_error", event),
-            Some(pb::child_event::Kind::Shutdown(_)) => self.end_terminal("shutdown", event),
+            Some(pb::worker_event::Kind::FatalError(_)) => self.end_terminal("fatal_error", event),
+            Some(pb::worker_event::Kind::Shutdown(_)) => self.end_terminal("shutdown", event),
+            // liveness, not a turn (answered by the transport, never seen here)
+            Some(pb::worker_event::Kind::Ping(_)) => {}
             None => {}
         }
     }
@@ -702,7 +723,7 @@ impl TurnMetrics {
     ///
     /// A feed restored mid-suspension has no start instant in this process, so
     /// it contributes execution time but no wall time.
-    fn end_run(&mut self, outcome: &'static str, event: &pb::ChildEvent) {
+    fn end_run(&mut self, outcome: &'static str, event: &pb::WorkerEvent) {
         self.run_active = false;
         self.abandon_pending();
         self.end_turn(outcome);
@@ -723,7 +744,7 @@ impl TurnMetrics {
     }
 
     /// Ends a terminal event as a run or housekeeping turn.
-    fn end_terminal(&mut self, outcome: &'static str, event: &pb::ChildEvent) {
+    fn end_terminal(&mut self, outcome: &'static str, event: &pb::WorkerEvent) {
         if self.run_active {
             self.end_run(outcome, event);
         } else {
@@ -757,7 +778,7 @@ struct Suspension {
     kind: SuspensionKind,
 }
 
-/// One variant per suspension the protocol has: the four child events that
+/// One variant per suspension the protocol has: the four worker events that
 /// hand control to the host and wait for a `Resume*`.
 ///
 /// Function call IDs correlate eager replies but are never metric attributes.
@@ -822,6 +843,7 @@ fn os_call(call: Option<&Call>) -> &'static str {
         Some(Call::WriteBytes(_)) => "write_bytes",
         Some(Call::AppendBytes(_)) => "append_bytes",
         Some(Call::Open(_)) => "open",
+        Some(Call::CreateExclusive(_)) => "create_exclusive",
         Some(Call::Mkdir(_)) => "mkdir",
         Some(Call::Rename(_)) => "rename",
         Some(Call::Getenv(_)) => "getenv",
@@ -1093,15 +1115,15 @@ mod tests {
         (metrics, Arc::new(Capture { logfire, exporter }))
     }
 
-    fn request(kind: pb::parent_request::Kind) -> pb::ParentRequest {
-        pb::ParentRequest {
+    fn request(kind: pb::client_request::Kind) -> pb::ClientRequest {
+        pb::ClientRequest {
             kind: Some(kind),
             trace_parent: None,
         }
     }
 
-    fn event(kind: pb::child_event::Kind) -> pb::ChildEvent {
-        pb::ChildEvent {
+    fn event(kind: pb::worker_event::Kind) -> pb::WorkerEvent {
+        pb::WorkerEvent {
             kind: Some(kind),
             total_execution_micros: 0,
             max_suspensions: None,
@@ -1116,18 +1138,20 @@ mod tests {
         }
     }
 
-    fn feed() -> pb::ParentRequest {
-        request(pb::parent_request::Kind::Feed(pb::Feed {
+    fn feed() -> pb::ClientRequest {
+        request(pb::client_request::Kind::Feed(pb::Feed {
             code: "double(2)".to_owned(),
             inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         }))
     }
 
-    fn call_event(function_name: &str) -> pb::ChildEvent {
-        event(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+    fn call_event(function_name: &str) -> pb::WorkerEvent {
+        event(pb::worker_event::Kind::FunctionCall(WireFunctionCall::new(
             function_name.to_owned(),
             CallArgs::new(),
             1,
@@ -1137,8 +1161,8 @@ mod tests {
         )))
     }
 
-    fn resume_call(kind: pb::ext_function_result::Kind) -> pb::ParentRequest {
-        request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+    fn resume_call(kind: pb::ext_function_result::Kind) -> pb::ClientRequest {
+        request(pb::client_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
             result: Some(pb::ExtFunctionResult { kind: Some(kind) }),
             values: None,
@@ -1146,9 +1170,9 @@ mod tests {
     }
 
     /// A `ResumeCall` returning `value`, with the arena it indexes.
-    fn resume_return(value: MontyObject) -> pb::ParentRequest {
+    fn resume_return(value: MontyObject) -> pb::ClientRequest {
         let (result, values) = ext_result_to_proto(ExtFunctionResult::Return(value));
-        request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+        request(pb::client_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: 1,
             result: Some(result),
             values,
@@ -1184,7 +1208,7 @@ mod tests {
         metrics.begin_turn(&feed());
         metrics.event(&call_event("double"));
         metrics.begin_turn(&resume_return(MontyObject::int(4)));
-        metrics.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
+        metrics.event(&event(pb::worker_event::Kind::Complete(pb::Complete::from(
             MontyObject::int(4),
         ))));
 
@@ -1267,7 +1291,7 @@ mod tests {
         let capture = Arc::new(MeasurementCapture::default());
         let mut metrics = TurnMetrics::new(Metrics::for_adapter(capture.clone()));
         metrics.begin_turn(&feed());
-        metrics.event(&event(pb::child_event::Kind::Print(pb::Print {
+        metrics.event(&event(pb::worker_event::Kind::Print(pb::Print {
             segments: alternating.into(),
         })));
 
@@ -1288,7 +1312,7 @@ mod tests {
         let capture = Arc::new(MeasurementCapture::default());
         let mut metrics = TurnMetrics::new(Metrics::for_adapter(capture.clone()));
         metrics.begin_turn(&feed());
-        metrics.event(&event(pb::child_event::Kind::Print(pb::Print {
+        metrics.event(&event(pb::worker_event::Kind::Print(pb::Print {
             segments: vec![pb::PrintSegment {
                 stream: pb::PrintStream::Stdout as i32,
                 text: "hello\n".to_owned(),
@@ -1306,7 +1330,7 @@ mod tests {
     fn os_calls_carry_their_protocol_name() {
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&feed());
-        metrics.event(&event(pb::child_event::Kind::OsCall(pb::OsCall {
+        metrics.event(&event(pb::worker_event::Kind::OsCall(pb::OsCall {
             call_id: 1,
             values: None,
             allow_eager_await: false,
@@ -1332,8 +1356,11 @@ mod tests {
         let (mut metrics, capture) = recorder();
         for total in [100, 250] {
             metrics.begin_turn(&feed());
-            metrics.event(&pb::ChildEvent {
-                kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: 0, values: None })),
+            metrics.event(&pb::WorkerEvent {
+                kind: Some(pb::worker_event::Kind::Complete(pb::Complete {
+                    value: 0,
+                    values: None,
+                })),
                 total_execution_micros: total,
                 max_suspensions: None,
                 restored_script_name: None,
@@ -1363,7 +1390,7 @@ mod tests {
     fn an_exception_ends_the_run_without_describing_itself() {
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&feed());
-        metrics.event(&event(pb::child_event::Kind::Error(pb::Error {
+        metrics.event(&event(pb::worker_event::Kind::Error(pb::Error {
             exception: Some(pb::RaisedException {
                 exc_type: "MyCustomError".to_owned(),
                 message: None,
@@ -1384,13 +1411,13 @@ mod tests {
     fn terminal_events_end_runs_and_housekeeping_turns() {
         let terminal_events = [
             (
-                pb::child_event::Kind::FatalError(pb::FatalError {
+                pb::worker_event::Kind::FatalError(pb::FatalError {
                     message: "worker failed".to_owned(),
                 }),
                 "fatal_error",
             ),
             (
-                pb::child_event::Kind::Shutdown(pb::ShutdownDump { dump: None }),
+                pb::worker_event::Kind::Shutdown(pb::ShutdownDump { dump: None }),
                 "shutdown",
             ),
         ];
@@ -1406,12 +1433,14 @@ mod tests {
         }
 
         let (mut metrics, capture) = recorder();
-        metrics.begin_turn(&request(pb::parent_request::Kind::InstallDependencies(
+        metrics.begin_turn(&request(pb::client_request::Kind::InstallDependencies(
             pb::InstallDependencies {
                 requirements: vec![].into(),
             },
         )));
-        metrics.event(&event(pb::child_event::Kind::Shutdown(pb::ShutdownDump { dump: None })));
+        metrics.event(&event(pb::worker_event::Kind::Shutdown(pb::ShutdownDump {
+            dump: None,
+        })));
         assert_eq!(
             capture.attributes("monty.turn.duration"),
             [[
@@ -1428,11 +1457,11 @@ mod tests {
     #[test]
     fn a_load_rebases_the_execution_clock() {
         let (mut metrics, capture) = recorder();
-        metrics.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
+        metrics.begin_turn(&request(pb::client_request::Kind::Load(pb::Load {
             state: vec![].into(),
         })));
-        metrics.event(&pb::ChildEvent {
-            kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
+        metrics.event(&pb::WorkerEvent {
+            kind: Some(pb::worker_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 10_000_000,
             max_suspensions: None,
             restored_script_name: Some("dumped.py".to_owned()),
@@ -1445,8 +1474,11 @@ mod tests {
             max_total_sleep_micros: None,
         });
         metrics.begin_turn(&feed());
-        metrics.event(&pb::ChildEvent {
-            kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: 0, values: None })),
+        metrics.event(&pb::WorkerEvent {
+            kind: Some(pb::worker_event::Kind::Complete(pb::Complete {
+                value: 0,
+                values: None,
+            })),
             total_execution_micros: 10_000_100,
             max_suspensions: None,
             restored_script_name: None,
@@ -1472,11 +1504,11 @@ mod tests {
     #[test]
     fn a_restored_suspension_closes_the_load_turn() {
         let (mut metrics, capture) = recorder();
-        metrics.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load {
+        metrics.begin_turn(&request(pb::client_request::Kind::Load(pb::Load {
             state: vec![].into(),
         })));
-        metrics.event(&pb::ChildEvent {
-            kind: Some(pb::child_event::Kind::NameLookup(pb::NameLookup {
+        metrics.event(&pb::WorkerEvent {
+            kind: Some(pb::worker_event::Kind::NameLookup(pb::NameLookup {
                 name: "value".to_owned(),
                 object_id: None,
                 position: Some((&position()).into()),
@@ -1501,11 +1533,14 @@ mod tests {
             ]]
         );
 
-        metrics.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
+        metrics.begin_turn(&request(pb::client_request::Kind::ResumeNameLookup(
             NameLookupResult::from(MontyObject::int(1)).into(),
         )));
-        metrics.event(&pb::ChildEvent {
-            kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: 0, values: None })),
+        metrics.event(&pb::WorkerEvent {
+            kind: Some(pb::worker_event::Kind::Complete(pb::Complete {
+                value: 0,
+                values: None,
+            })),
             total_execution_micros: 10_000_050,
             max_suspensions: None,
             restored_script_name: None,
@@ -1528,12 +1563,12 @@ mod tests {
     #[test]
     fn a_failed_housekeeping_turn_is_not_a_run() {
         let (mut metrics, capture) = recorder();
-        metrics.begin_turn(&request(pb::parent_request::Kind::InstallDependencies(
+        metrics.begin_turn(&request(pb::client_request::Kind::InstallDependencies(
             pb::InstallDependencies {
                 requirements: vec!["pydantic".to_owned()].into(),
             },
         )));
-        metrics.event(&event(pb::child_event::Kind::Error(pb::Error {
+        metrics.event(&event(pb::worker_event::Kind::Error(pb::Error {
             exception: Some(pb::RaisedException {
                 exc_type: "ValueError".to_owned(),
                 message: None,
@@ -1549,6 +1584,19 @@ mod tests {
                 ("turn".to_owned(), "install_dependencies".to_owned())
             ]]
         );
+        assert!(!capture.has("monty.run.duration"));
+        assert!(!capture.has("monty.run.execution_time"));
+    }
+
+    /// A refused `Configure` never ran the feed it carried, so no run records.
+    #[test]
+    fn a_refused_session_is_not_a_run() {
+        let (mut metrics, capture) = recorder();
+        metrics.begin_session();
+        metrics.begin_turn(&feed());
+        metrics.event(&event(pb::worker_event::Kind::SessionRefused(pb::SessionRefused {
+            message: "invalid os_policy".to_owned(),
+        })));
         assert!(!capture.has("monty.run.duration"));
         assert!(!capture.has("monty.run.execution_time"));
     }
@@ -1597,7 +1645,7 @@ mod tests {
         assert_eq!(capture.i64_sum("monty.pool.workers.suspended"), 0);
 
         metrics.event(&call_event("double"));
-        metrics.begin_turn(&request(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
+        metrics.begin_turn(&request(pb::client_request::Kind::AbortFeed(pb::AbortFeed {
             exception: None,
         })));
         assert_eq!(capture.i64_sum("monty.pool.workers.suspended"), 0);
@@ -1605,7 +1653,7 @@ mod tests {
             ("kind".to_owned(), "function".to_owned()),
             ("outcome".to_owned(), "aborted".to_owned()),
         ]));
-        metrics.event(&event(pb::child_event::Kind::Error(pb::Error { exception: None })));
+        metrics.event(&event(pb::worker_event::Kind::Error(pb::Error { exception: None })));
 
         // a worker dropped mid-suspension is no longer waiting on anyone
         metrics.begin_turn(&feed());
@@ -1621,8 +1669,8 @@ mod tests {
     fn a_dump_reports_its_size_without_ending_the_run() {
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&feed());
-        metrics.begin_turn(&request(pb::parent_request::Kind::Dump(pb::Dump {})));
-        metrics.event(&event(pb::child_event::Kind::DumpResult(pb::DumpResult {
+        metrics.begin_turn(&request(pb::client_request::Kind::Dump(pb::Dump {})));
+        metrics.event(&event(pb::worker_event::Kind::DumpResult(pb::DumpResult {
             state: vec![0; 32].into(),
         })));
 
@@ -1654,7 +1702,7 @@ mod tests {
         metrics.begin_turn(&feed());
         metrics.event(&call_event("double"));
         metrics.begin_turn(&resume_return(MontyObject::int(4)));
-        metrics.event(&event(pb::child_event::Kind::Complete(pb::Complete {
+        metrics.event(&event(pb::worker_event::Kind::Complete(pb::Complete {
             value: 0,
             values: None,
         })));

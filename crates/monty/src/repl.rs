@@ -109,8 +109,8 @@ pub struct MontyRepl {
 
 impl MontyRepl {
     /// The session heap and interns, for a dump upgrade of an idle session.
-    pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &Interns) {
-        (&mut self.heap, &self.interns)
+    pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &mut Interns) {
+        (&mut self.heap, &mut self.interns)
     }
 
     /// Creates an empty REPL session with no code parsed or executed.
@@ -165,8 +165,14 @@ impl MontyRepl {
     /// [`MontyRun::with_os_policy`](crate::MontyRun::with_os_policy).
     #[must_use]
     pub fn with_os_policy(mut self, os_policy: OsPolicy) -> Self {
-        self.os_policy = Arc::new(os_policy);
+        self.set_os_policy(os_policy);
         self
+    }
+
+    /// Replaces the session's OS-call policies in place, for a host restoring
+    /// a dump under its own policy (see [`ReplProgress::set_os_policy`]).
+    pub fn set_os_policy(&mut self, os_policy: OsPolicy) {
+        self.os_policy = Arc::new(os_policy);
     }
 
     /// Switches the sandbox working directory (initially `/`).
@@ -531,7 +537,15 @@ impl MontyRepl {
                         let mut run_result = vm.run_external();
                         loop {
                             run_result = match run_result {
-                                Ok(FrameExit::Return(value)) => break Ok(MontyObject::export(value, vm)),
+                                Ok(FrameExit::Return(value)) => {
+                                    break vm
+                                        .export_on_clock(|vm| MontyObject::export(value, vm))
+                                        .map_err(|error| {
+                                            error.into_python_exception(vm.interns, |fname| {
+                                                self.sources.get(fname).map(|source| &**source)
+                                            })
+                                        });
+                                }
                                 // No host answers inside a host-driven call, so the
                                 // lookup is `Undefined`: `hasattr()` is False,
                                 // `getattr()` yields its default.
@@ -718,15 +732,15 @@ pub struct ReplStartError {
 impl ReplProgress {
     /// The session heap and the interns its values refer to, for a dump upgrade.
     /// While a snippet is in flight the executor holds the session's interns.
-    pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &Interns) {
+    pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &mut Interns) {
         match self {
             Self::FunctionCall(ReplFunctionCall { snapshot, .. })
             | Self::OsCall(ReplOsCall { snapshot, .. })
             | Self::NameLookup(ReplNameLookup { snapshot, .. }) => {
-                (&mut snapshot.repl.heap, &snapshot.executor.tables.interns)
+                (&mut snapshot.repl.heap, &mut snapshot.executor.tables.interns)
             }
             Self::ResolveFutures(ReplResolveFutures { repl, executor, .. }) => {
-                (&mut repl.heap, &executor.tables.interns)
+                (&mut repl.heap, &mut executor.tables.interns)
             }
             Self::Complete { repl, .. } => repl.heap_and_interns(),
         }
@@ -811,6 +825,22 @@ impl ReplProgress {
             Self::Complete { repl, .. } => repl.tracker_mut(),
         }
     }
+
+    /// Replaces the OS-call policies of the session and of a suspended snippet.
+    ///
+    /// A dump carries the policy it was taken under; hosts restoring it call this
+    /// so the restoring side's clock, zone, sleep and entropy policy governs every
+    /// later call. A call already suspended keeps the shape it was issued with.
+    pub fn set_os_policy(&mut self, os_policy: OsPolicy) {
+        let os_policy = Arc::new(os_policy);
+        match self {
+            Self::FunctionCall(call) => call.snapshot.set_os_policy(os_policy),
+            Self::OsCall(call) => call.snapshot.set_os_policy(os_policy),
+            Self::ResolveFutures(state) => state.set_os_policy(os_policy),
+            Self::NameLookup(lookup) => lookup.snapshot.set_os_policy(os_policy),
+            Self::Complete { repl, .. } => repl.os_policy = os_policy,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -835,6 +865,10 @@ pub struct ReplFunctionCall {
     pub object_id: Option<MontyUuid>,
     /// The host may await a coroutine and answer with [`Self::resume_eager`].
     pub allow_eager_await: bool,
+    /// The callee is an async host function: the host may answer with
+    /// [`Self::resume_pending`] without running it first.
+    #[serde(default)]
+    pub is_async: bool,
     /// Where the call expression is in the source.
     pub position: SourceRange,
     /// Internal REPL execution snapshot.
@@ -866,6 +900,23 @@ impl ReplFunctionCall {
         self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
     }
 
+    /// [`Self::resume_pending`] without starting a new turn, for a call the sandbox
+    /// starts without suspending: sandbox execution time so far keeps counting
+    /// against `max_turn_duration`. Host time is never counted.
+    pub fn resume_pending_in_turn(self, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.snapshot
+            .run_inner(ExtFunctionResult::Future(self.call_id), None, Turn::Continue, print)
+    }
+
+    /// [`Self::resume`] without starting a new turn; see [`Self::resume_pending_in_turn`].
+    pub fn resume_in_turn(
+        self,
+        result: impl Into<ExtFunctionResult>,
+        print: PrintWriter<'_>,
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.snapshot.run_inner(result.into(), None, Turn::Continue, print)
+    }
+
     /// Resumes with a settled coroutine, preserving its awaitable value and exception timing.
     /// Only use when [`Self::allow_eager_await`] is true; synchronous returns use [`Self::resume`].
     pub fn resume_eager(
@@ -876,6 +927,7 @@ impl ReplFunctionCall {
         self.snapshot.run_inner(
             result.map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return),
             Some(self.call_id),
+            Turn::New,
             print,
         )
     }
@@ -951,6 +1003,7 @@ impl ReplOsCall {
         self.snapshot.run_inner(
             result.map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return),
             Some(self.call_id),
+            Turn::New,
             print,
         )
     }
@@ -1086,6 +1139,12 @@ pub struct ReplResolveFutures {
 }
 
 impl ReplResolveFutures {
+    /// Points the session and the blocked snippet's program at `os_policy`,
+    /// as [`ReplSnapshot`] does for the other suspensions.
+    fn set_os_policy(&mut self, os_policy: Arc<OsPolicy>) {
+        set_session_os_policy(&mut self.repl, &mut self.executor, os_policy);
+    }
+
     /// Extracts the REPL session, restoring globals from the suspended VM state.
     ///
     /// As with the other REPL snapshot types, globals live inside the VM
@@ -1306,6 +1365,15 @@ fn starts_with_triple_quote(source: &str) -> bool {
 // ReplSnapshot — internal execution state for suspend/resume
 // ---------------------------------------------------------------------------
 
+/// Whether a resume starts a new turn, resetting the `max_turn_duration` clock of sandbox execution time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Turn {
+    /// The sandbox suspended and the host answered.
+    New,
+    /// The sandbox started a call without suspending, so the turn goes on.
+    Continue,
+}
+
 /// Restores the REPL VM and aborts uncatchably, preserving its globals.
 ///
 /// Any armed OS effect is rolled back.
@@ -1358,6 +1426,12 @@ pub(crate) struct ReplSnapshot {
 }
 
 impl ReplSnapshot {
+    /// Points both the session and the suspended snippet's program at `os_policy`,
+    /// which a resumed VM reads from the program.
+    fn set_os_policy(&mut self, os_policy: Arc<OsPolicy>) {
+        set_session_os_policy(&mut self.repl, &mut self.executor, os_policy);
+    }
+
     /// Raises `exc` uncatchably at the suspension point.
     fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
@@ -1396,15 +1470,16 @@ impl ReplSnapshot {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
-        self.run_inner(result.into(), None, print)
+        self.run_inner(result.into(), None, Turn::New, print)
     }
 
-    /// Shared body of [`Self::run`] and [`ReplFunctionCall::resume_eager`];
-    /// `eager_call_id` is set only for the latter.
+    /// Shared body of [`Self::run`], the eager resumes and the in-turn resumes;
+    /// `eager_call_id` is set only for an eager resume.
     fn run_inner(
         self,
         ext_result: ExtFunctionResult,
         eager_call_id: Option<u32>,
+        turn: Turn,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
@@ -1413,7 +1488,9 @@ impl ReplSnapshot {
             vm_state,
         } = self;
 
-        repl.heap.tracker.on_turn_start();
+        if turn == Turn::New {
+            repl.heap.tracker.on_turn_start();
+        }
         let (converted, vm_state) = HeapReader::with(
             &mut repl.heap,
             &mut (&mut executor, print),
@@ -1529,6 +1606,7 @@ fn build_repl_progress(
             call_id,
             object_id,
             allow_eager_await,
+            is_async,
             position,
         } => Ok(ReplProgress::FunctionCall(ReplFunctionCall {
             function_name,
@@ -1536,6 +1614,7 @@ fn build_repl_progress(
             call_id,
             object_id,
             allow_eager_await,
+            is_async,
             position,
             snapshot: new_repl_snapshot!(),
         })),
@@ -1629,4 +1708,11 @@ fn is_callable(value: &Value, heap: &Heap) -> bool {
         ),
         _ => false,
     }
+}
+
+/// Gives a suspended session and its snippet's program the same `os_policy`;
+/// the resumed VM reads the program's copy, later snippets the session's.
+fn set_session_os_policy(repl: &mut MontyRepl, executor: &mut Executor, os_policy: Arc<OsPolicy>) {
+    executor.program.os_policy = Arc::clone(&os_policy);
+    repl.os_policy = os_policy;
 }

@@ -122,7 +122,7 @@ pub fn dump(
 ///
 /// The metadata travels with the state because a restored session is otherwise
 /// silently downgraded — losing `script_name` corrupts tracebacks, and losing
-/// `type_check` disables enforcement the parent asked for.
+/// `type_check` disables enforcement the client asked for.
 #[derive(Debug, Deserialize)]
 pub struct Dump {
     /// Script name used for tracebacks and type-check diagnostics.
@@ -213,7 +213,7 @@ pub enum Session {
 
 impl Session {
     /// The session heap and its interns, or `None` for a one-shot run that has completed.
-    fn heap_and_interns(&mut self) -> Option<(&mut Heap, &Interns)> {
+    fn heap_and_interns(&mut self) -> Option<(&mut Heap, &mut Interns)> {
         match self {
             Self::Idle(repl) => Some(repl.heap_and_interns()),
             Self::Suspended(progress) => Some(progress.heap_and_interns()),

@@ -20,8 +20,9 @@ use std::time::Instant;
 use monty::{MontyRun, RunProgress};
 use monty_proto::{WireArena, WireFunctionCall, decode_frame, os_call_to_proto, pb};
 use monty_types::{
-    CallArgs, CompileOptions, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker, SourceRange,
+    CallArgs, CompileOptions, CreateExclusiveCallArgs, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle,
+    MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, OsFunctionCall, PrintWriter,
+    ResourceTracker, SourceRange,
     unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
@@ -223,6 +224,7 @@ fn corpus() -> Vec<MontyObject> {
         ),
         MontyObject::function("f".to_owned(), None),
         MontyObject::function("fetch".to_owned(), Some(String::new())),
+        MontyObject::async_function("fetch".to_owned(), Some("Fetches.".to_owned())),
         // an empty name is an implicit-presence default; id and attrs always encode
         MontyObject::module(String::new(), MontyUuid::from_u128(0), []),
         MontyObject::module(
@@ -392,9 +394,14 @@ fn node_to_oracle(node: &MontyNode) -> oracle::MontyNode {
             instance_id: Some(oracle_uuid(instance_id)),
             attrs: Some(oracle_pairs(attrs)),
         }),
-        MontyNode::Function { name, docstring } => Kind::Function(oracle::Function {
+        MontyNode::Function {
+            name,
+            docstring,
+            is_async,
+        } => Kind::Function(oracle::Function {
             name: name.clone(),
             docstring: docstring.clone(),
+            is_async: *is_async,
         }),
         MontyNode::Module { name, id, attrs } => Kind::Module(oracle::ModuleNode {
             name: name.clone(),
@@ -1249,4 +1256,30 @@ fn repeated_position_fields_merge_like_the_oracle() {
     let expected = filename[..SourceRange::MAX_FILENAME_LEN].to_owned();
     assert_eq!(hand.position.map(|p| p.filename), Some(expected));
     assert!(started.elapsed().as_secs() < 5, "repeats amplified decode work");
+}
+
+#[test]
+fn exclusive_creation_is_byte_compatible_with_generated_oracle() {
+    let hand = os_call_to_proto(
+        42,
+        OsFunctionCall::CreateExclusive(CreateExclusiveCallArgs {
+            path: "/data/new".into(),
+            mode: "wb".parse().unwrap(),
+            permissions: 0o600,
+        }),
+        false,
+        &SourceRange::unknown(),
+    );
+    let oracle = oracle::OsCall::decode(hand.encode_to_vec().as_slice()).unwrap();
+    let Some(oracle::os_call::Call::CreateExclusive(args)) = &oracle.call else {
+        panic!("exclusive creation arm missing");
+    };
+    assert_eq!(args.path, "/data/new");
+    assert_eq!(args.mode, "wb");
+    assert_eq!(args.permissions, 0o600);
+    assert_eq!(oracle.encode_to_vec(), hand.encode_to_vec());
+    assert_eq!(
+        decode_frame::<pb::OsCall>(oracle.encode_to_vec().as_slice()).unwrap(),
+        hand
+    );
 }

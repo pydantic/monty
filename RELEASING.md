@@ -2,7 +2,8 @@
 
 ## 1. Bump Version
 
-Edit `Cargo.toml` to bump the version (both the main `version` and the package versions)
+Edit `Cargo.toml` to bump the version: the main `version` and every internal crate in `[workspace.dependencies]`.
+Keep the internal crates' `=` prefix: each published crate must depend on exactly its own release of the others.
 
 Run
 
@@ -14,12 +15,12 @@ This will update `Cargo.lock`, sync `package.json`/`package-lock.json` (via `cra
 and sync the `pydantic-monty` metapackage's version and its exact pins on
 `pydantic-monty-client`/`pydantic-monty-runtime` (via `crates/monty-python/build.rs`).
 
-## 2. Commit and Push
+## 2. Commit and Push a new branch
 
 ```bash
 git checkout -b prepare-release-vX.Y.Z
 git commit -am "Bump version to vX.Y.Z"
-git push
+git push --set-upstream origin HEAD
 ```
 
 ## 3. Create Release via GitHub UI

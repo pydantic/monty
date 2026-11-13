@@ -286,3 +286,14 @@ try:
     assert False, 'groupdict pos + kwarg should raise'
 except TypeError as e:
     assert str(e) == 'groupdict() takes at most 1 argument (2 given)', f'dup: {e}'
+
+# === Named group repeated zero times ===
+# fancy-regex before 0.19.2 panicked building a match for this pattern
+p = re.compile('(?P<n>a){0}')
+m = p.match('b')
+assert m is not None
+assert m.span() == (0, 0)
+assert m.group('n') is None
+assert m.groupdict() == {'n': None}
+assert re.findall('(?P<n>a){0}b', 'ab b') == ['', '']
+assert re.sub('(?P<n>a){0}b', 'X', 'abb') == 'aXX'

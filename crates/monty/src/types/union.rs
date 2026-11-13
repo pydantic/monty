@@ -24,7 +24,7 @@ use crate::{
     },
     intern::StaticStrings,
     types::{
-        BuiltinType, LazyHeapSet, PyTrait, Type, generic_alias::repr_type_arg, list::repr_check_time,
+        BuiltinType, LazyHeapSet, PyTrait, Type, generic_alias::repr_type_arg, list::repr_should_truncate,
         tuple::allocate_tuple,
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -364,7 +364,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
         let count = args.get(vm.heap).as_slice().len();
         for index in 0..count {
             if index > 0 {
-                if repr_check_time(index, vm) {
+                if repr_should_truncate(index, vm)? {
                     f.write_str(" | ...[timeout]")?;
                     break;
                 }

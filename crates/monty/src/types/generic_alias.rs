@@ -34,7 +34,7 @@ use crate::{
     types::{
         BuiltinType, LazyHeapSet, PyTrait, Type, Union,
         instance::class_name,
-        list::repr_check_time,
+        list::repr_should_truncate,
         set::unhashable_type_name,
         tuple::{TupleVec, allocate_tuple},
     },
@@ -376,7 +376,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         }
         for index in 0..count {
             if index > 0 {
-                if repr_check_time(index, vm) {
+                if repr_should_truncate(index, vm)? {
                     f.write_str(", ...[timeout]")?;
                     break;
                 }
@@ -897,7 +897,7 @@ fn repr_list_arg(item: &Value, f: &mut impl Write, vm: &mut VM<'_>, heap_ids: &m
     f.write_char('[')?;
     for index in 0..list.get(vm.heap).as_slice().len() {
         if index > 0 {
-            if repr_check_time(index, vm) {
+            if repr_should_truncate(index, vm)? {
                 f.write_str(", ...[timeout]")?;
                 break;
             }

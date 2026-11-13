@@ -236,10 +236,10 @@ def test_position_inside_a_function_from_an_earlier_feed(session: MontySession):
     assert snap.position.dict() == snapshot({'filename': '<python-input-0>', 'start': 26, 'end': 34})
 
 
-def test_position_inside_eval_indexes_the_stripped_string(session: MontySession):
+def test_position_inside_eval_indexes_the_unstripped_string(session: MontySession):
     snap = session.feed_start("eval('  1 + fetch()')")
     assert isinstance(snap, FunctionSnapshot)
-    assert snap.position.dict() == snapshot({'filename': '<string>', 'start': 4, 'end': 11})
+    assert snap.position.dict() == snapshot({'filename': '<string>', 'start': 6, 'end': 13})
 
 
 def test_name_lookup_position(session: MontySession):
@@ -457,7 +457,7 @@ def test_load_snapshot_mid_os_call_retains_payload(pool: Monty, tmp_path: Path):
 
 
 def test_load_without_resupplied_mount_degrades_to_os_calls(pool: Monty, tmp_path: Path):
-    # Mounts are host configuration serviced by the parent and never part of a
+    # Mounts are host configuration serviced by the client and never part of a
     # dump. A restore that omits them is not validated — the resumed feed's
     # filesystem calls simply surface as unhandled OS calls.
     (tmp_path / 'hello.txt').write_text('hi')

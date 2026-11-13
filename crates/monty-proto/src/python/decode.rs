@@ -184,7 +184,7 @@ impl Decoder<'_, '_> {
                 Ok(Py::new(py, module)?.into_any())
             }
             MontyNode::Path(p) => Ok(get_pure_posix_path(py)?.call1((p,))?.into_any().unbind()),
-            // The child's text is untrusted; a malformed one raises from the
+            // The worker's text is untrusted; a malformed one raises from the
             // host's own `Decimal()` rather than panicking here.
             MontyNode::Decimal(d) => Ok(get_decimal_type(py)?.call1((d,))?.into_any().unbind()),
             // a sandbox file is not an OS file, so it decodes to a

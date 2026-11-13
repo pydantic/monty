@@ -1,24 +1,24 @@
-# Full Monty
+# Commercial Support
 
-Full Monty is a WebSocket server that hosts Monty sandbox workers: each connection gets its own `monty` worker
-subprocess from an elastic pool.
+The commercial support server is a gRPC server that hosts Monty sandbox workers: a client holds one HTTP/2 connection and each session
+is one stream on it, served by its own `monty` worker subprocess from an elastic pool.
 A worker serves one session at a time and is reset or replaced between sessions, so no sandbox state crosses from one
 client to another.
-`pydantic_monty.AsyncMontyWebsocket` connects directly from Python, and `MontyWebsocket` from Node with
+`pydantic_monty.AsyncMontyRemote` connects directly from Python, and `MontyRemote` from Node with
 `@pydantic/monty`; the package's WebAssembly build cannot dial a remote server.
 The server adds capacity limits, timeouts, per-caller quotas, health probes, graceful drain and tracing to [Pydantic
 Logfire](https://pydantic.dev/logfire). The `monty` worker provides the sandboxing.
-Additionally, Full Monty can act as a reverse proxy, forwarding requests to a full sandbox running CPython.
+Additionally, the server can act as a reverse proxy, forwarding requests to a full sandbox running CPython.
 
 The server is closed-source and distributed as a container image.
 
 !!! tip "Design partners"
 
-    If you're interested in being an early design partner for Full Monty, please
-    [contact us](https://pydantic.dev/contact). We're currently offering Full Monty free to a select set of
+    If you're interested in being an early design partner for commercial support, please
+    [contact us](https://pydantic.dev/contact). We're currently offering it free to a select set of
     organizations while we finalize the commercial platform.
 
-## Why Full Monty over OSS Monty
+## Why Commercial Support over OSS Monty
 
 Running Monty on a remote server provides:
 
@@ -68,7 +68,7 @@ with `no matching manifest for linux/arm64/v8`.
 When the server is ready, it prints its bound URL to stdout:
 
 ```text
-ws://0.0.0.0:8000/
+http://0.0.0.0:8000/
 ```
 
 In another terminal, create a Python client project and add `pydantic-monty`:
@@ -85,11 +85,11 @@ Create `client.py`:
 ```python test="skip"
 import asyncio
 
-from pydantic_monty import AsyncMontyWebsocket
+from pydantic_monty import AsyncMontyRemote
 
 
 async def main() -> None:
-    async with AsyncMontyWebsocket('ws://localhost:8000/') as pool:
+    async with AsyncMontyRemote('http://localhost:8000/') as pool:
         async with pool.checkout() as session:
             result = await session.feed_run('1 + 1')
             print(result)
@@ -139,27 +139,32 @@ Docker port is reachable. Arguments after the image name in `docker run <image> 
 include `--host 0.0.0.0` when passing any flags. Hostnames are accepted, but `--host localhost` resolves to the
 container's loopback interface and is not reachable through `-p 8000:8000`.
 
-| Flag                            | Meaning                                                            | Default                               |
-| ------------------------------- | ------------------------------------------------------------------ | ------------------------------------- |
-| `--host <address>`              | interface to bind                                                  | image: `0.0.0.0`; binary: `127.0.0.1` |
-| `--port <port>`                 | port to bind; 0 selects an ephemeral port                          | 8000                                  |
-| `--monty-bin <path>`            | worker binary                                                      | image: `/usr/local/bin/monty`         |
-| `--max-sessions <n>`            | concurrent sessions across the server                              | 64                                    |
-| `--max-sessions-per-client <n>` | concurrent sessions per caller; 0 disables                         | 10                                    |
-| `--idle-timeout <seconds>`      | maximum gap between requests; 0 disables                           | 60                                    |
-| `--keepalive <seconds>`         | WebSocket ping interval for detecting vanished clients; 0 disables | 5                                     |
-| `--session-timeout <seconds>`   | maximum total session lifetime; 0 disables                         | 3600                                  |
-| `--turn-timeout <seconds>`      | wall-clock cap on one request; 0 disables                          | 300                                   |
-| `--drain-grace <seconds>`       | time after SIGTERM for existing sessions to collect a dump         | 30                                    |
-| `--max-memory-mib <MiB>`        | per-session memory ceiling; 0 disables                             | 64                                    |
-| `--max-duration <seconds>`      | sandbox execution time per feed; 0 disables                        | 60                                    |
-| `--max-recursion-depth <n>`     | per-session call-stack ceiling; cannot be disabled                 | 1000                                  |
-| `--trust-forwarded-for`         | use the last `X-Forwarded-For` entry as the caller identity        | off                                   |
-| `--dump-key <key>`              | required key of at least 16 bytes for signing session dumps        | none (required)                       |
-| `--logfire-token <token>`       | export traces to Logfire                                           | off                                   |
+| Flag                            | Meaning                                                          | Default                               |
+| ------------------------------- | ---------------------------------------------------------------- | ------------------------------------- |
+| `--host <address>`              | interface to bind                                                | image: `0.0.0.0`; binary: `127.0.0.1` |
+| `--port <port>`                 | port to bind; 0 selects an ephemeral port                        | 8000                                  |
+| `--monty-bin <path>`            | worker binary                                                    | image: `/usr/local/bin/monty`         |
+| `--max-sessions <n>`            | concurrent sessions across the server                            | 64                                    |
+| `--max-sessions-per-client <n>` | concurrent sessions per caller; 0 disables                       | 10                                    |
+| `--idle-timeout <seconds>`      | maximum gap between requests; 0 disables                         | 60                                    |
+| `--keepalive <seconds>`         | in-band ping interval for detecting vanished clients; 0 disables | 5                                     |
+| `--session-timeout <seconds>`   | maximum total session lifetime; 0 disables                       | 3600                                  |
+| `--turn-timeout <seconds>`      | wall-clock cap on one request; 0 disables                        | 300                                   |
+| `--drain-grace <seconds>`       | time after SIGTERM for existing sessions to collect a dump       | 30                                    |
+| `--max-memory-mib <MiB>`        | per-session memory ceiling; 0 disables                           | 64                                    |
+| `--max-duration <seconds>`      | sandbox execution time per feed; 0 disables                      | 60                                    |
+| `--max-recursion-depth <n>`     | per-session call-stack ceiling; cannot be disabled               | 1000                                  |
+| `--trust-forwarded-for`         | use the last `X-Forwarded-For` entry as the caller identity      | off                                   |
+| `--dump-key <key>`              | required key of at least 16 bytes for signing session dumps      | none (required)                       |
+| `--logfire-token <token>`       | export traces to Logfire                                         | off                                   |
 
-When the global session limit is full, a new WebSocket upgrade gets `503 Service Unavailable`; exceeding the
-per-client limit gets `429 Too Many Requests`.
+When the global session limit is full, a new stream is refused with the gRPC status `RESOURCE_EXHAUSTED` and the
+cause `capacity`; exceeding the per-client limit refuses it with `RESOURCE_EXHAUSTED` and the cause `caller_cap`.
+A deployment that authenticates callers (the image itself does not; see [Security](#security)) refuses a caller
+without valid credentials with `UNAUTHENTICATED` and the cause `unauthenticated`, and one whose credentials are valid
+but not allowed the project or profile it asked for with `PERMISSION_DENIED` and the cause `permission_denied`.
+Every status the server ends or refuses a stream with carries its cause in a `monty-cause` trailer, which the
+clients expose (see [disconnect diagnostics](api/python/remote.md#disconnect-diagnostics)).
 
 Run the image's `--help` for the authoritative list for the version you pulled:
 
@@ -193,11 +198,11 @@ ceiling:
 ```python test="skip"
 import asyncio
 
-from pydantic_monty import AsyncMontyWebsocket
+from pydantic_monty import AsyncMontyRemote
 
 
 async def main() -> None:
-    async with AsyncMontyWebsocket('ws://localhost:8000/') as pool:
+    async with AsyncMontyRemote('http://localhost:8000/') as pool:
         async with pool.checkout(
             limits={
                 'max_feed_duration_secs': 30,
@@ -223,7 +228,9 @@ callback. Keep the server's turn timeout above the clients' `request_timeout` so
 specific failure first.
 
 A keepalive ping that goes unanswered for one further `--keepalive` interval ends the session. Keep that interval below
-half of `--idle-timeout` if keepalive should detect a vanished client first.
+half of `--idle-timeout` if keepalive should detect a vanished client first. The ping is a protocol message on the
+stream rather than an HTTP/2 PING frame, because a PING stops at the nearest proxy while the client sits beyond it;
+the same message also keeps a proxy's idle timeout from cutting a quiet stream.
 
 The worker enforces the effective limits. Memory and duration errors include the effective byte or time ceiling in
 their messages.
@@ -251,11 +258,13 @@ container bound. Lower `--max-sessions` or `--max-memory-mib` to fit your instan
 While the server is accepting traffic, `GET /health` returns an empty 200 response and `GET /` returns a 200 info page.
 Use `/health` for readiness and `/` for liveness.
 
-On SIGTERM, the server stops listening immediately, so new HTTP and WebSocket connections are refused rather than
-receiving a 503 response. Existing WebSocket sessions remain connected while the server drains. Each existing session's
-next request is answered with a shutdown instead of being run.
+On SIGTERM, the server sends `GOAWAY` on every open connection, so a client's next stream is dialed afresh, which a
+balancer that has stopped routing to the draining replica sends to a live one; a connection that still arrives is
+answered with a shutdown on its first stream.
+Existing sessions remain connected while the server drains. Each existing session's next request is answered with a
+shutdown instead of being run.
 With a session store, the server parks the session first and the client resumes it on another replica without the
-caller noticing; see [stored sessions](api/python/websocket.md#stored-sessions).
+caller noticing; see [stored sessions](api/python/remote.md#stored-sessions).
 Otherwise, or when the session has no ID, or when that resume fails or is disabled, the request raises
 `pydantic_monty.MontyShutdown`; it did not run and can be resent after restoration.
 Its `dump` is the session's ID, which restores the session on another replica sharing the store, or `None` when
@@ -280,19 +289,24 @@ Stored sessions only load into a worker of the same Monty version, so roll clien
 Pass `--logfire-token` (or set `LOGFIRE_TOKEN`) to export traces to [Pydantic Logfire](https://pydantic.dev/logfire).
 Without a token, execution is unchanged. Traces and logs are written to stderr but not exported.
 
-The server records one span per connection. Beneath it are the same session, run and host-call spans emitted by other
-Monty clients, so existing Monty dashboards work with the server.
-Policy outcomes (capacity rejections, timeouts, drain) are logged as events on the connection span, one line each naming
+The server records one span per session stream. Beneath it are the same session, run and host-call spans emitted by
+other Monty clients, so existing Monty dashboards work with the server.
+Policy outcomes (capacity rejections, timeouts, drain) are logged as events on the stream span, one line each naming
 the limit that fired.
 
-Traces carry WebSocket handshake request headers, the code fed to each session, call arguments, results and print
+Traces carry each stream's request metadata, the code fed to each session, call arguments, results and print
 output. There is no option to disable collection of these fields.
 Only export to a Logfire project that is authorized to receive this caller data.
 
 ## Security
 
-There is no authentication and the listener speaks plain `ws://`.
+There is no authentication and the listener speaks plain `http://` (HTTP/2 without TLS, `h2c`).
 Terminate TLS at an ingress or load balancer and keep the listener on a private network.
+The ingress must carry HTTP/2 end to end: gRPC does not survive a proxy that speaks HTTP/1.1 to the service.
+On a GKE Gateway, set the Service's `appProtocol` to `kubernetes.io/h2c` and raise the backend service timeout with a
+`GCPBackendPolicy` to at least `--session-timeout`, since it bounds the life of a stream.
+Behind Cloudflare, enable the zone's gRPC setting and serve the origin on port 443 with TLS and HTTP/2 advertised over
+ALPN; its origin read timeout (120 seconds by default) is what `--keepalive` keeps a quiet stream clear of.
 By default, `--max-sessions-per-client` identifies a caller by the direct peer IP. A proxy or NAT can therefore make
 many callers share one quota. Behind a proxy you control, set `--trust-forwarded-for` to identify callers by the last
 `X-Forwarded-For` entry instead. Configure that proxy to sanitize the header, and never enable this flag on a directly
