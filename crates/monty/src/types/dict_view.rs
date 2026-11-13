@@ -36,6 +36,16 @@ pub(crate) trait DictView {
     }
 }
 
+/// Reads the dict behind a keys, items or values view.
+///
+/// Panics if `dict_id` is not a dict, which a view's constructor rules out.
+fn read_view_dict<'h>(dict_id: HeapId, vm: &VM<'h>) -> HeapObjectRead<'h, Dict> {
+    let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
+        panic!("dict view must always reference a dict");
+    };
+    dict
+}
+
 /// Live view returned by `dict.keys()`.
 ///
 /// `dict_keys` is set-like in CPython, so this view supports the shared live-view
@@ -67,10 +77,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
     }
 
     fn dict(&self, vm: &mut VM<'h>) -> HeapObjectRead<'h, Dict> {
-        let HeapReadOutput::Dict(dict) = vm.heap.read(self.get(vm.heap).dict_id) else {
-            panic!("dict_keys view must always reference a dict");
-        };
-        dict
+        read_view_dict(self.get(vm.heap).dict_id, vm)
     }
 
     /// Compares this keys view to a mutable set using set membership semantics.
@@ -141,9 +148,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictKeysView> {
     /// Delegates to the backing dict's key lookup.
     fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let dict_id = self.get(vm.heap).dict_id();
-        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
-            panic!("dict_keys view must reference a dict");
-        };
+        let dict = read_view_dict(dict_id, vm);
         dict.contains_key(item, vm).map(Some)
     }
 
@@ -274,10 +279,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
     }
 
     fn dict(&self, vm: &mut VM<'h>) -> HeapObjectRead<'h, Dict> {
-        let HeapReadOutput::Dict(dict) = vm.heap.read(self.get(vm.heap).dict_id) else {
-            panic!("dict_items view must always reference a dict");
-        };
-        dict
+        read_view_dict(self.get(vm.heap).dict_id, vm)
     }
 
     /// Compares this items view to a mutable set using set membership semantics.
@@ -473,10 +475,7 @@ impl DictView for DictValuesView {
 
 impl<'h> HeapRead<'h, DictValuesView> {
     fn dict(&self, vm: &mut VM<'h>) -> HeapObjectRead<'h, Dict> {
-        let HeapReadOutput::Dict(dict) = vm.heap.read(self.get(vm.heap).dict_id) else {
-            panic!("dict_values view must always reference a dict");
-        };
-        dict
+        read_view_dict(self.get(vm.heap).dict_id, vm)
     }
 }
 
@@ -488,9 +487,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictValuesView> {
     /// Values are not indexed, so this is a linear scan of the backing dict.
     fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let dict_id = self.get(vm.heap).dict_id();
-        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
-            panic!("dict_values view must reference a dict");
-        };
+        let dict = read_view_dict(dict_id, vm);
         let iter = dict.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some(value) = iter.next_value(vm)? {
@@ -685,10 +682,7 @@ impl SetLikeView {
     }
 
     fn dict<'h>(self, vm: &VM<'h>) -> HeapObjectRead<'h, Dict> {
-        let HeapReadOutput::Dict(dict) = vm.heap.read(self.dict_id()) else {
-            panic!("dict view must always reference a dict");
-        };
-        dict
+        read_view_dict(self.dict_id(), vm)
     }
 
     /// The view's `__contains__`: a key lookup, or for items a `(key, value)`
