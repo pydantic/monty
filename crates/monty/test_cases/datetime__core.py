@@ -1678,3 +1678,159 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == 'date.fromtimestamp() takes no keyword arguments'
+
+# === toordinal and fromordinal ===
+# Boundary checks
+d_min = datetime.date(1, 1, 1)
+assert d_min.toordinal() == 1
+assert datetime.date.fromordinal(1) == d_min
+
+d_max = datetime.date(9999, 12, 31)
+assert d_max.toordinal() == 3652059
+assert datetime.date.fromordinal(3652059) == d_max
+
+# Known historical / epoch dates
+d_epoch = datetime.date(1970, 1, 1)
+assert d_epoch.toordinal() == 719163
+assert datetime.date.fromordinal(719163) == d_epoch
+
+d_leap = datetime.date(2024, 2, 29)
+assert d_leap.toordinal() == 738945
+assert datetime.date.fromordinal(738945) == d_leap
+
+# datetime equivalents (ignore time, midnight returned)
+dt_min = datetime.datetime(1, 1, 1, 0, 0, 0)
+assert dt_min.toordinal() == 1
+assert datetime.datetime.fromordinal(1) == dt_min
+
+dt_with_time = datetime.datetime(2024, 2, 29, 15, 30, 45, 123456)
+assert dt_with_time.toordinal() == 738945
+assert datetime.datetime.fromordinal(738945) == datetime.datetime(2024, 2, 29, 0, 0, 0)
+
+# Calling fromordinal through instance
+assert d_epoch.fromordinal(1) == d_min
+assert dt_with_time.fromordinal(1) == dt_min
+
+# __index__ coercion
+assert datetime.date.fromordinal(True) == d_min
+
+
+class _Ordinal:
+    def __index__(self):
+        return 738945
+
+
+assert datetime.date.fromordinal(_Ordinal()) == d_leap
+assert datetime.datetime.fromordinal(_Ordinal()) == datetime.datetime(2024, 2, 29)
+
+# Error: ordinal < 1
+for invalid_ord in (0, -1, -100):
+    try:
+        datetime.date.fromordinal(invalid_ord)
+        assert False, f'expected ValueError for {invalid_ord}'
+    except ValueError as e:
+        assert str(e) == 'ordinal must be >= 1'
+
+    try:
+        datetime.datetime.fromordinal(invalid_ord)
+        assert False, f'expected ValueError for {invalid_ord}'
+    except ValueError as e:
+        assert str(e) == 'ordinal must be >= 1'
+
+# Error: ordinal > 3652059 (within i32)
+try:
+    datetime.date.fromordinal(3652060)
+    assert False
+except ValueError as e:
+    assert str(e) == 'year must be in 1..9999, not 10000'
+
+try:
+    datetime.datetime.fromordinal(10000000)
+    assert False
+except ValueError as e:
+    assert str(e) == 'year must be in 1..9999, not 27380'
+
+try:
+    datetime.date.fromordinal(2147483647)
+    assert False
+except ValueError as e:
+    assert str(e) == 'year must be in 1..9999, not 5879611'
+
+# Error: i32 overflow on 64-bit platform
+if sys.platform != 'win32' and sys.maxsize > 2**32:
+    try:
+        datetime.date.fromordinal(2**31)
+        assert False
+    except OverflowError as e:
+        assert str(e) == 'signed integer is greater than maximum'
+
+    try:
+        datetime.date.fromordinal(-(2**31) - 1)
+        assert False
+    except OverflowError as e:
+        assert str(e) == 'signed integer is less than minimum'
+
+# Error: BigInt overflow
+try:
+    datetime.date.fromordinal(2**63)
+    assert False
+except OverflowError as e:
+    assert str(e) == 'Python int too large to convert to C long'
+
+# Error: Wrong argument types
+for bad_arg in (1.0, '738945', None):
+    try:
+        datetime.date.fromordinal(bad_arg)
+        assert False
+    except TypeError as e:
+        assert 'cannot be interpreted as an integer' in str(e)
+
+# Error: Keyword arguments rejected
+try:
+    datetime.date.fromordinal(ordinal=1)
+    assert False
+except TypeError as e:
+    assert str(e) == 'fromordinal() takes no keyword arguments'
+
+try:
+    datetime.datetime.fromordinal(ordinal=1)
+    assert False
+except TypeError as e:
+    assert str(e) == 'fromordinal() takes no keyword arguments'
+
+# Error: Arity checks
+try:
+    datetime.date.fromordinal()
+    assert False
+except TypeError as e:
+    assert str(e) == 'fromordinal() takes exactly 1 argument (0 given)'
+
+try:
+    datetime.date.fromordinal(1, 2)
+    assert False
+except TypeError as e:
+    assert str(e) == 'fromordinal() takes exactly 1 argument (2 given)'
+
+try:
+    datetime.datetime.fromordinal()
+    assert False
+except TypeError as e:
+    assert str(e) == 'fromordinal() takes exactly 1 argument (0 given)'
+
+try:
+    datetime.datetime.fromordinal(1, 2)
+    assert False
+except TypeError as e:
+    assert str(e) == 'fromordinal() takes exactly 1 argument (2 given)'
+
+try:
+    datetime.date(2020, 1, 1).toordinal(1)
+    assert False
+except TypeError as e:
+    assert str(e) == 'date.toordinal() takes no arguments (1 given)'
+
+try:
+    datetime.datetime(2020, 1, 1).toordinal(1)
+    assert False
+except TypeError as e:
+    assert str(e) == 'date.toordinal() takes no arguments (1 given)'

@@ -1308,6 +1308,8 @@ pub enum StaticStrings {
     Fromisoformat,
     /// `dict.fromkeys()` classmethod.
     Fromkeys,
+    /// `date.fromordinal()` / `datetime.fromordinal()` classmethod.
+    Fromordinal,
     /// `date.fromtimestamp()` / `datetime.fromtimestamp()` classmethod.
     Fromtimestamp,
     /// `@dataclass(frozen=...)`.
@@ -2529,6 +2531,8 @@ pub enum StaticStrings {
     TomlDecodeError,
     /// Module name for `import tomllib`.
     Tomllib,
+    /// `date.toordinal()` / `datetime.toordinal()` method.
+    Toordinal,
     /// Kwarg name `top` — `os.walk(top=...)`.
     Top,
     /// Kwarg name `top_down` — `Path.walk(top_down=...)`.

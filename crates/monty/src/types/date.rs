@@ -176,6 +176,52 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult
     Ok(Value::Ref(vm.heap.allocate(HeapData::Date(Date(local.date())))))
 }
 
+/// Computes the proleptic Gregorian year for a 1-based day ordinal.
+///
+/// Used to format the year in `ValueError: year must be in 1..9999, not {year}`
+/// when `ordinal > 3_652_059`.
+pub(crate) fn ord_to_year(mut n: i64) -> i64 {
+    n -= 1;
+    let n400 = n / 146_097;
+    n %= 146_097;
+    let mut n100 = n / 36_524;
+    n %= 36_524;
+    if n100 == 4 {
+        n100 = 3;
+        n += 36_524;
+    }
+    let n4 = n / 1_461;
+    n %= 1_461;
+    let mut n1 = n / 365;
+    if n1 == 4 {
+        n1 = 3;
+    }
+    400 * n400 + 100 * n100 + 4 * n4 + n1 + 1
+}
+
+/// Constructs a `Date` from a proleptic Gregorian day ordinal.
+pub(crate) fn date_from_ordinal(ordinal: i32) -> RunResult<Date> {
+    if ordinal < 1 {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "ordinal must be >= 1").into());
+    }
+    if ordinal > 3_652_059 {
+        let year = ord_to_year(i64::from(ordinal));
+        return Err(
+            SimpleException::new_msg(ExcType::ValueError, format!("year must be in 1..9999, not {year}")).into(),
+        );
+    }
+    let date = NaiveDate::from_num_days_from_ce_opt(ordinal)
+        .expect("ordinal in 1..=3_652_059 is always a valid Gregorian date");
+    Ok(Date(date))
+}
+
+/// Classmethod `date.fromordinal(ordinal)`: construct a `date` from a proleptic Gregorian ordinal.
+pub(crate) fn class_fromordinal(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let FromOrdinalArgs { ordinal } = FromOrdinalArgs::from_args(args, vm)?;
+    let date = date_from_ordinal(ordinal)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Date(date))))
+}
+
 /// Classmethod `date.fromisoformat(date_string)`.
 ///
 /// Parses ISO 8601 date strings in the formats `YYYY-MM-DD` and `YYYYMMDD`,
@@ -326,7 +372,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
                     date.0.weekday().number_from_monday(),
                 ))))
             }
+            Some(StaticStrings::Toordinal) => {
+                args.check_zero_args("date.toordinal", vm.heap)?;
+                Ok(CallResult::Value(Value::Int(i64::from(to_ordinal(date)))))
+            }
             // A classmethod, so CPython also reaches it through an instance.
+            Some(StaticStrings::Fromordinal) => class_fromordinal(vm, args).map(CallResult::Value),
             Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
             _ => Err(ExcType::attribute_error_method(Type::Date, attr, args, vm)),
         }
@@ -537,4 +588,12 @@ struct DateReplaceArgs {
     month: Option<i32>,
     #[from_args(kw_only, default)]
     day: Option<i32>,
+}
+
+/// Argument shape for `date.fromordinal(ordinal)` and `datetime.fromordinal(ordinal)`.
+#[derive(FromArgs)]
+#[from_args(name = "fromordinal", style = parse_tuple)]
+pub(crate) struct FromOrdinalArgs {
+    #[from_args(pos_only)]
+    pub(crate) ordinal: i32,
 }

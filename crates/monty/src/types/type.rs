@@ -676,8 +676,12 @@ impl Type {
             (Self::Date, Some(StaticStrings::Fromisoformat)) => {
                 date::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
             }
+            (Self::Date, Some(StaticStrings::Fromordinal)) => date::class_fromordinal(vm, args).map(CallResult::Value),
             (Self::Date, Some(StaticStrings::Fromtimestamp)) => {
                 date::class_fromtimestamp(vm, args).map(CallResult::Value)
+            }
+            (Self::DateTime, Some(StaticStrings::Fromordinal)) => {
+                datetime::class_fromordinal(vm, args).map(CallResult::Value)
             }
             (Self::DateTime, Some(StaticStrings::Fromtimestamp)) => {
                 datetime::class_fromtimestamp(vm, args).map(CallResult::Value)
