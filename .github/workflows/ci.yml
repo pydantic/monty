@@ -108,6 +108,10 @@ jobs:
       - name: Check generated str Unicode tables are in sync
         run: make check-unicode-type
 
+      # the type checker's warm-up snippet is generated from the vendored builtins stub
+      - name: Check the type checker warm-up snippet is in sync
+        run: make check-type-check-warm-up
+
       # rustdoc JSON is nightly-only and format-unstable, so the API reference
       # is generated with the exact nightly matching monty-apidoc's pinned
       # `rustdoc-types` (see crates/monty-apidoc/src/main.rs)
