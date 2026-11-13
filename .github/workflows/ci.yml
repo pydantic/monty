@@ -65,7 +65,7 @@ jobs:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           save-cache: ${{ env.SAVE_CI_CACHE }}
 
-      - run: uv sync --all-packages --only-dev
+      - run: make install-py
 
       - uses: ./.github/actions/install-js
         with:
@@ -287,7 +287,7 @@ jobs:
 
       - run: rustc --version --verbose
       - run: python3 -V
-      - run: uv sync --all-packages --only-dev
+      - run: make install-py
 
       # the tests need the `monty` worker binary on PATH; build it from the
       # workspace (plain build, outside the llvm-cov env, so the worker binary
@@ -367,8 +367,7 @@ jobs:
   # The worker has no Python ABI dependency; share one wheel per profile across the matrix.
   build-python-worker:
     name: build Python worker (${{ matrix.profile }})
-    # matches test-python's runner, so the native build's glibc is no newer than the one it runs on
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -410,8 +409,7 @@ jobs:
   test-python:
     name: test python ${{ matrix.python-version }}
     needs: [build-python-worker]
-    # grpcio has no free-threaded wheels, and its sdist fails to build with ubuntu-26.04's GCC 15
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
@@ -420,6 +418,9 @@ jobs:
 
     env:
       UV_PYTHON: ${{ matrix.python-version }}
+      # grpcio has no free-threaded wheels and its sdist does not build with GCC 15, so skip the
+      # relay there; the remote-transport tests skip without it
+      UV_NO_GROUP: ${{ endsWith(matrix.python-version, 't') && 'grpc' || '' }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -454,7 +455,7 @@ jobs:
           pattern: python-worker-*
           path: runtime-wheels
 
-      - run: uv sync --all-packages --only-dev
+      - run: make install-py
       # workaround for https://github.com/PyO3/maturin/pull/3299
       # (dev-py doesn't invalidate all cache properly)
       - run: cargo clean -p pyo3-ffi
