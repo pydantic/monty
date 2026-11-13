@@ -7,7 +7,7 @@ use std::fmt::Write;
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, Session, SessionRef, dump};
 use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
-use sha2::digest::{Digest, common::hazmat::SerializableState};
+use sha2::digest::{Digest, common::hazmat};
 
 /// Runs `code` as one feed of a fresh session.
 fn run(code: &str) -> MontyObject {
@@ -49,7 +49,7 @@ fn shake_length_errors_use_the_sha3_wording() {
 /// is a `DUMP_VERSION` bump.
 #[test]
 fn rustcrypto_serialized_state_layout_is_pinned() {
-    fn state<D: Digest + SerializableState>() -> String {
+    fn state<D: Digest + hazmat::SerializableState>() -> String {
         let mut hasher = D::new();
         Digest::update(&mut hasher, b"abc");
         hasher.serialize().iter().fold(String::new(), |mut hex, byte| {
