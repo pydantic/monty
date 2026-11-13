@@ -611,9 +611,7 @@ fn load_info_precedes_the_reply_and_replaces_its_stamps() {
             ..Default::default()
         }));
         dispatch_frame(&mut worker, &configure);
-        let request = frame_request(pb::client_request::Kind::Load(pb::Load {
-            state: state.clone().into(),
-        }));
+        let request = frame_request(pb::client_request::Kind::Load(pb::Load { state: state.into() }));
         let (bytes, _) = dispatch_frame(&mut worker, &request);
         let events = decode_full_events(&bytes);
         let [info, reply] = events.as_slice() else {
