@@ -744,8 +744,7 @@ impl PyFunctionSnapshot {
                         .lock()
                         .await
                         .as_ref()
-                        .map(Checkout::callback_context)
-                        .unwrap_or_default()
+                        .map_or_default(Checkout::callback_context)
                 })
             })?;
             context.enter(py, &native)
@@ -921,8 +920,7 @@ impl PyAsyncFunctionSnapshot {
                 .lock()
                 .await
                 .as_ref()
-                .map(Checkout::callback_context)
-                .unwrap_or_default();
+                .map_or_default(Checkout::callback_context);
             let mut eager = false;
             // Dispatch inside the future: a coroutine's `into_future` needs the
             // asyncio task-locals that `future_into_py`'s scope establishes.
@@ -1166,8 +1164,7 @@ impl PyNameLookupSnapshot {
                         .lock()
                         .await
                         .as_ref()
-                        .map(Checkout::callback_context)
-                        .unwrap_or_default()
+                        .map_or_default(Checkout::callback_context)
                 })
             })?;
             context.enter(py, &native)
@@ -1247,8 +1244,7 @@ impl PyAsyncNameLookupSnapshot {
                 .lock()
                 .await
                 .as_ref()
-                .map(Checkout::callback_context)
-                .unwrap_or_default();
+                .map_or_default(Checkout::callback_context);
             let value = match Python::attach(|py| {
                 let _guard = context.enter(py, &native)?;
                 resolve_captured_name(py, &ctx, &name, object_id)

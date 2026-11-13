@@ -12,6 +12,7 @@ export async function loadModule(): Promise<ComponentModules> {
     WebAssembly.compileStreaming(fetch(new URL('./component/monty.component.core2.wasm', import.meta.url))),
     WebAssembly.compileStreaming(fetch(new URL('./component/monty.component.core3.wasm', import.meta.url))),
     WebAssembly.compileStreaming(fetch(new URL('./component/monty.component.core4.wasm', import.meta.url))),
+    WebAssembly.compileStreaming(fetch(new URL('./component/monty.component.core5.wasm', import.meta.url))),
   ])
   return Object.fromEntries(COMPONENT_MODULE_NAMES.map((name, index) => [name, modules[index]]))
 }
