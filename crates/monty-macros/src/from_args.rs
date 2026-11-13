@@ -318,11 +318,11 @@ impl Signature {
         // what reproduces CPython's error orderings), so `*args` elements are
         // handed over unconverted.
         if let Some(idx) = self.varargs_idx
-            && !is_vec_of_value(&self.fields[idx].ty)
+            && !is_varargs_type(&self.fields[idx].ty)
         {
             return Err(syn::Error::new(
                 self.fields[idx].ident.span(),
-                "`varargs` fields must be `Vec<Value>` — coerce elements in the function body",
+                "`varargs` fields must be `Vec<Value>` or `OwnedIntoIter` — coerce elements in the function body",
             ));
         }
 
@@ -649,8 +649,10 @@ fn resolve_field_roles(fields: &mut [Field]) -> syn::Result<(Option<usize>, Opti
 fn render_build_field(field: &Field) -> TokenStream {
     let ident = &field.ident;
     match field.kind {
-        FieldKind::Varargs => quote! { #ident: __slots.raw.take_varargs(), },
-        FieldKind::Varkwargs => quote! { #ident: __slots.raw.take_varkwargs(), },
+        // `Into` is the identity for `Vec<Value>` and builds an `OwnedIntoIter`.
+        FieldKind::Varargs => quote! { #ident: ::core::convert::Into::into(__slots.raw.take_varargs()), },
+        // Likewise the identity for `KwargsValues`, and builds an `OwnedKwargs`.
+        FieldKind::Varkwargs => quote! { #ident: ::core::convert::Into::into(__slots.raw.take_varkwargs()), },
         _ => match &field.default {
             None => quote! {
                 #ident: __slots.#ident.take().expect("required FromArgs slot checked before build"),
@@ -728,6 +730,12 @@ fn snake_to_pascal(s: &str) -> String {
         }
     }
     out
+}
+
+/// True for `OwnedIntoIter` or a literal `Vec<Value>`; the build line converts either with `Into::into`.
+fn is_varargs_type(ty: &Type) -> bool {
+    is_vec_of_value(ty)
+        || matches!(ty, Type::Path(p) if p.path.segments.last().is_some_and(|s| s.ident == "OwnedIntoIter"))
 }
 
 /// True for a literal `Vec<Value>` type (by final path segments — the only
@@ -1103,7 +1111,7 @@ mod tests {
                 args: Vec<i64>,
             }
         });
-        assert_snapshot!(err, @"`varargs` fields must be `Vec<Value>` — coerce elements in the function body");
+        assert_snapshot!(err, @"`varargs` fields must be `Vec<Value>` or `OwnedIntoIter` — coerce elements in the function body");
     }
 
     #[test]

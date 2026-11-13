@@ -8,6 +8,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     intern::StaticStrings,
+    owned::Owned,
     py_value::PyValue,
     types::PyTrait,
     value::{Marker, Value},
@@ -31,15 +32,12 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         flush: _,
     } = PrintArgs::from_args(args, vm)?;
     defer_drop!(objects, vm);
-    defer_drop!(sep, vm);
-    defer_drop!(end, vm);
-    defer_drop!(file, vm);
 
     // `sep` and `end` are checked before `file` because CPython reports them in
     // that order: `print(x, sep=1, file=3)` raises about `sep`, not the file.
-    let sep_str = extract_string_kwarg(sep, "sep", vm)?;
-    let end_str = extract_string_kwarg(end, "end", vm)?;
-    let stream = print_stream(file, vm)?;
+    let sep_str = extract_string_kwarg(&sep, "sep", vm)?;
+    let end_str = extract_string_kwarg(&end, "end", vm)?;
+    let stream = print_stream(&file, vm)?;
 
     let mut first = true;
     for value in objects.as_slice() {
@@ -91,7 +89,7 @@ fn print_stream(file: &Value, vm: &VM<'_>) -> RunResult<PrintStream> {
 
 /// Argument shape for `print(*objects, sep=' ', end='\n', file=sys.stdout, flush=False)`.
 ///
-/// Every kwarg is held as a raw `Value` so the caller can do the
+/// Every kwarg is held as a raw [`Owned`] value so the caller can do the
 /// "must be None or str" coercion inline, and so `flush` can be accepted
 /// without forcing a type check. `file` is resolved by `print_stream`.
 #[derive(FromArgs)]
@@ -99,17 +97,18 @@ fn print_stream(file: &Value, vm: &VM<'_>) -> RunResult<PrintStream> {
 struct PrintArgs {
     #[from_args(varargs)]
     objects: Vec<Value>,
-    #[from_args(default = Value::None)]
-    sep: Value,
-    #[from_args(default = Value::None)]
-    end: Value,
-    #[from_args(default = Value::None)]
-    file: Value,
+    #[from_args(default = Owned::new(Value::None))]
+    sep: Owned,
+    #[from_args(default = Owned::new(Value::None))]
+    end: Owned,
+    #[from_args(default = Owned::new(Value::None))]
+    file: Owned,
     /// Accepted from Python for CPython compatibility but never consumed:
-    /// Monty doesn't buffer stdout, so there is nothing to flush.
+    /// Monty doesn't buffer stdout, so there is nothing to flush. Discarding it
+    /// with `_` is safe because an `Owned` releases itself.
     #[expect(dead_code, reason = "accepted but ignored — Monty doesn't buffer stdout")]
-    #[from_args(default = Value::None)]
-    flush: Value,
+    #[from_args(default = Owned::new(Value::None))]
+    flush: Owned,
 }
 
 /// Extracts a string value from a print() kwarg.

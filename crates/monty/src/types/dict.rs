@@ -32,6 +32,7 @@ use crate::{
         },
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
     },
+    owned::Owned,
     types::{
         Type,
         hash_table::{Live, PyHashTable, Slot, TableCursor, TableEntry, TableProbe, TableScan, TableSource, TableWalk},
@@ -1928,22 +1929,23 @@ fn dict_merge_from_kwargs(dict: &mut Dict, kwargs: KwargsValues, vm: &mut VM<'_>
 /// If not, insert key with a value of default (or None) and return default.
 fn dict_setdefault<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let (key, default) = args.get_one_two_args("setdefault", vm.heap)?;
-    let default = default.unwrap_or(Value::None);
-    let mut key_guard = DropGuard::new(key, vm);
-    let (key, vm) = key_guard.as_parts();
+    let key = Owned::new(key);
+    let default = Owned::new(default.unwrap_or(Value::None));
 
-    if let Some(existing) = dict.dict_get(key, vm)? {
-        default.drop_with(vm);
+    if let Some(existing) = dict.dict_get(&key, vm)? {
+        // Optional fast path: the common hit skips the release queue.
+        key.release(vm);
+        default.release(vm);
         Ok(existing)
     } else {
-        // Key doesn't exist - insert default and return it (cloned before insertion)
-        let return_value = default.clone_with_heap(vm);
-        let (key, vm) = key_guard.into_parts();
-        if let Some(old_value) = dict.set(key, default, vm)? {
+        // Key doesn't exist - insert default and return it (cloned before insertion,
+        // and owned until returned since the insert can still raise).
+        let return_value = Owned::new(default.clone_with_heap(vm));
+        if let Some(old_value) = dict.set(key.into_value(), default.into_value(), vm)? {
             // This shouldn't happen since we checked, but handle it anyway
             old_value.drop_with(vm);
         }
-        Ok(return_value)
+        Ok(return_value.into_value())
     }
 }
 

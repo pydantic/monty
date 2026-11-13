@@ -7,7 +7,8 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData},
+    heap::{DropWithContext, HeapData},
+    owned::{Owned, OwnedIntoIter},
     types::{List, iter::checked_preallocation_hint},
     value::Value,
 };
@@ -49,20 +50,19 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let MapArgs {
         function,
         first_iterable,
-        extra_iterables,
+        mut extra_iterables,
     } = MapArgs::from_args(args, vm)?;
-    defer_drop!(function, vm);
-    defer_drop_mut!(extra_iterables, vm);
 
-    let first_iter = first_iterable.into_py_iter(vm)?.require_synchronous(vm)?;
+    let first_iter = first_iterable.into_value().into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(first_iter, vm);
     let mut first_iter = first_iter.read(vm);
 
     let extra_iterators: Vec<Value> = Vec::with_capacity(extra_iterables.len());
     defer_drop_mut!(extra_iterators, vm);
 
-    for iterable in extra_iterables.drain(..) {
-        extra_iterators.push(iterable.into_py_iter(vm)?.require_synchronous(vm)?);
+    // A non-iterable argument raises here; `extra_iterables` releases the rest when dropped.
+    for iterable in extra_iterables.by_ref() {
+        extra_iterators.push(iterable.into_value().into_py_iter(vm)?.require_synchronous(vm)?);
     }
 
     // Validate and clamp the iterator's hint before reserving native memory.
@@ -77,19 +77,18 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         [] => {
             while let Some(item) = first_iter.py_next(vm)? {
                 let args = ArgValues::One(item);
-                out.push(vm.evaluate_function(function, args)?);
+                out.push(vm.evaluate_function(&function, args)?);
             }
         }
         // map(f, iter1, iter2)
         [single] => {
             while let Some(arg1) = first_iter.py_next(vm)? {
-                let mut arg1_guard = DropGuard::new(arg1, vm);
-                let Some(arg2) = single.py_next(arg1_guard.ctx())? else {
+                let arg1 = Owned::new(arg1);
+                let Some(arg2) = single.py_next(vm)? else {
                     break;
                 };
-                let (arg1, vm) = arg1_guard.into_parts();
-                let args = ArgValues::Two(arg1, arg2);
-                out.push(vm.evaluate_function(function, args)?);
+                let args = ArgValues::Two(arg1.into_value(), arg2);
+                out.push(vm.evaluate_function(&function, args)?);
             }
         }
         // map(f, iter1, iter2, *iterables)
@@ -110,7 +109,7 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                 kwargs: KwargsValues::Empty,
             };
 
-            out.push(vm.evaluate_function(function, args)?);
+            out.push(vm.evaluate_function(&function, args)?);
         },
     }
 
@@ -127,9 +126,9 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 #[from_args(name = "map")]
 struct MapArgs {
     #[from_args(pos_only)]
-    function: Value,
+    function: Owned,
     #[from_args(pos_only)]
-    first_iterable: Value,
+    first_iterable: Owned,
     #[from_args(varargs)]
-    extra_iterables: Vec<Value>,
+    extra_iterables: OwnedIntoIter,
 }

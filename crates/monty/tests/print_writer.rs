@@ -65,6 +65,56 @@ outer()
     assert_eq!(run_with_checkpoint_failure(code), MontyObject::int(42));
 }
 
+/// A print callback may run another program on the same thread while the outer VM still has
+/// deferred heap releases queued; those must stay with the outer heap.
+#[test]
+fn nested_run_inside_print_callback_keeps_releases_per_vm() {
+    let outer = r"
+d = {'key': 1}
+for i in range(20):
+    # The existing key leaves `default` to be released after the call returns.
+    d.setdefault('key', [i, 'an outer heap string of more than twenty bytes' + str(i)])
+    print('nest')
+d
+";
+    let mut runner = MontyRun::new(outer.to_owned(), "outer.py", vec![], CompileOptions::default()).unwrap();
+    let mut writer = NestedRun::default();
+    let result = runner
+        .run(vec![], ResourceTracker::default(), PrintWriter::Callback(&mut writer))
+        .unwrap();
+    assert_eq!(result.to_string(), "{'key': 1}");
+    assert_eq!(writer.results.len(), 20);
+    for inner in &writer.results {
+        assert_eq!(
+            inner.to_string(),
+            "an inner heap string of more than twenty bytes0|an inner heap string of more than twenty bytes1"
+        );
+    }
+}
+
+/// Runs a small allocating program from inside `print`, as an embedder's callback might.
+#[derive(Default)]
+struct NestedRun {
+    results: Vec<MontyObject>,
+}
+
+impl PrintWriterCallback for NestedRun {
+    fn stdout_write(&mut self, _output: Cow<'_, str>) -> Result<(), MontyException> {
+        let inner = r"
+items = ['an inner heap string of more than twenty bytes' + str(i) for i in range(30)]
+'|'.join(items[:2])
+";
+        let mut runner = MontyRun::new(inner.to_owned(), "inner.py", vec![], CompileOptions::default()).unwrap();
+        self.results
+            .push(runner.run(vec![], ResourceTracker::default(), PrintWriter::Disabled)?);
+        Ok(())
+    }
+
+    fn stdout_push(&mut self, _end: char) -> Result<(), MontyException> {
+        Ok(())
+    }
+}
+
 /// Arms a single failure from Python so setup cannot consume it before synchronous re-entry.
 fn run_with_checkpoint_failure(code: &str) -> MontyObject {
     let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();

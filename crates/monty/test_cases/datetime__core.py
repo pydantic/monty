@@ -1678,3 +1678,11 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == 'date.fromtimestamp() takes no keyword arguments'
+
+# === timezone() with a bad offset and a heap name ===
+# guards a reference-count leak that only the memory-model-checks build detects
+try:
+    datetime.timezone([1], 'a long heap string of more than twenty bytes' + str(1))
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'timezone() argument 1 must be datetime.timedelta, not list'

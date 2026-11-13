@@ -24,6 +24,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapData},
+    owned::Owned,
     types::PyTrait,
     value::Value,
 };
@@ -192,6 +193,17 @@ impl FromValue for Value {
 
     fn drop_extracted(self, heap: &mut impl ContainsHeap) {
         self.drop_with(heap);
+    }
+}
+
+/// Identity conversion into an [`Owned`], so the function body needs no guards.
+impl FromValue for Owned {
+    fn from_value(value: Value, _vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        Ok(Self::new(value))
+    }
+
+    fn drop_extracted(self, heap: &mut impl ContainsHeap) {
+        self.release(heap);
     }
 }
 

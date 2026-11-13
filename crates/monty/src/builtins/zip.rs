@@ -3,9 +3,10 @@
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
-    defer_drop, defer_drop_mut,
+    defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{DropGuard, HeapData},
+    owned::{Owned, OwnedIntoIter},
     types::{List, PyTrait, allocate_tuple, tuple::TupleVec},
     value::Value,
 };
@@ -17,14 +18,12 @@ use crate::{
 /// When `strict=True`, raises `ValueError` if any iterable has a different length.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
 pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ZipArgs { iterables, strict } = ZipArgs::from_args(args, vm)?;
-    defer_drop_mut!(iterables, vm);
+    let ZipArgs { mut iterables, strict } = ZipArgs::from_args(args, vm)?;
     // CPython's `strict` is truthy-checked (not strict typed), so test the raw
     // value rather than asking the macro to coerce to a strict `bool`.
-    defer_drop!(strict, vm);
     let strict = strict.py_bool(vm)?;
 
-    if iterables.is_empty() {
+    if iterables.len() == 0 {
         // zip() with no arguments returns empty list
         let heap_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
         return Ok(Value::Ref(heap_id));
@@ -33,8 +32,9 @@ pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Create iterators for each iterable
     let iterators: Vec<Value> = Vec::with_capacity(iterables.len());
     defer_drop_mut!(iterators, vm);
-    for iterable in iterables.drain(..) {
-        iterators.push(iterable.into_py_iter(vm)?.require_synchronous(vm)?);
+    // A non-iterable argument raises here; `iterables` releases the rest when dropped.
+    for iterable in iterables.by_ref() {
+        iterators.push(iterable.into_value().into_py_iter(vm)?.require_synchronous(vm)?);
     }
     let mut iterators = iterators.iter().map(|iter| iter.read(vm)).collect::<Vec<_>>();
 
@@ -88,15 +88,15 @@ pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// Argument shape for `zip(*iterables, strict=False)`.
 ///
-/// `strict` is held as a `Value` because CPython evaluates it via truthiness
+/// `strict` is held as a raw value because CPython evaluates it via truthiness
 /// (`py_bool`), not strict-type equality, so accepting any value is correct.
 #[derive(FromArgs)]
 #[from_args(name = "zip")]
 struct ZipArgs {
     #[from_args(varargs)]
-    iterables: Vec<Value>,
-    #[from_args(default = Value::Bool(false))]
-    strict: Value,
+    iterables: OwnedIntoIter,
+    #[from_args(default = Owned::new(Value::Bool(false)))]
+    strict: Owned,
 }
 
 /// Builds the `ValueError` for `zip(strict=True)` when iterables have different lengths.

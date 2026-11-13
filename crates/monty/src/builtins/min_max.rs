@@ -5,9 +5,9 @@ use std::{cmp::Ordering, mem};
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::DropGuard,
+    owned::{Owned, OwnedIntoIter},
     types::{CmpOrder, PyTrait},
     value::Value,
 };
@@ -37,137 +37,96 @@ pub fn builtin_max(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Shared implementation for min() and max() after argument extraction.
 ///
 /// When `is_min` is true, returns the minimum; otherwise returns the maximum.
+/// Values are held as [`Owned`], so every early return releases them without guards.
 fn run_min_max(
     vm: &mut VM<'_>,
-    args: Vec<Value>,
-    key: Value,
-    default: Option<Value>,
+    mut args: OwnedIntoIter,
+    key: Owned,
+    default: Option<Owned>,
     is_min: bool,
 ) -> RunResult<Value> {
     let func_name = if is_min { "min" } else { "max" };
 
     // Normalise `key=None` to "no key function" so the comparison path can
     // skip the call entirely.
-    let key_fn = match key {
-        Value::None => {
-            key.drop_with(vm);
-            None
-        }
-        _ => Some(key),
-    };
-    defer_drop!(key_fn, vm);
+    let key_fn = (!matches!(*key, Value::None)).then_some(key);
 
-    defer_drop_mut!(default, vm);
-    defer_drop_mut!(args, vm);
-
-    if args.is_empty() {
+    let Some(first_arg) = args.next() else {
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("{func_name} expected at least 1 argument, got 0"),
         )
         .into());
-    }
+    };
 
-    let first_arg = args.remove(0);
-
-    if args.is_empty() {
+    if args.len() == 0 {
         // Single argument: iterate over it
-        let iter = first_arg.into_py_iter(vm)?.require_synchronous(vm)?;
+        let iter = first_arg.into_value().into_py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iter, vm);
         let mut iter = iter.read(vm);
 
-        let Some(result) = iter.py_next(vm)? else {
-            if let Some(default) = default.take() {
-                return Ok(default);
-            }
-            return Err(SimpleException::new_msg(
-                ExcType::ValueError,
-                format!("{func_name}() iterable argument is empty"),
-            )
-            .into());
+        let Some(first) = iter.py_next(vm)? else {
+            return match default {
+                Some(default) => Ok(default.into_value()),
+                None => Err(SimpleException::new_msg(
+                    ExcType::ValueError,
+                    format!("{func_name}() iterable argument is empty"),
+                )
+                .into()),
+            };
         };
-
-        if let Some(key_fn) = key_fn {
-            let mut result_guard = DropGuard::new(result, vm);
-            {
-                let (result, vm) = result_guard.as_parts_mut();
-                let result_key = evaluate_key(result.clone_with_heap(vm), key_fn, vm)?;
-                defer_drop_mut!(result_key, vm);
-
-                while let Some(item) = iter.py_next(vm)? {
-                    defer_drop_mut!(item, vm);
-                    let item_key = evaluate_key(item.clone_with_heap(vm), key_fn, vm)?;
-                    defer_drop_mut!(item_key, vm);
-
-                    if candidate_wins(result_key, item_key, is_min, vm)? {
-                        mem::swap(result, item);
-                        mem::swap(result_key, item_key);
-                    }
-                }
-            }
-            Ok(result_guard.into_inner())
-        } else {
-            let mut result_guard = DropGuard::new(result, vm);
-            let (result, vm) = result_guard.as_parts_mut();
-
-            while let Some(item) = iter.py_next(vm)? {
-                defer_drop_mut!(item, vm);
-
-                if candidate_wins(result, item, is_min, vm)? {
-                    mem::swap(result, item);
-                }
-            }
-
-            Ok(result_guard.into_inner())
-        }
+        let first = Owned::new(first);
+        select_best(first, key_fn.as_ref(), is_min, vm, |vm| {
+            Ok(iter.py_next(vm)?.map(Owned::new))
+        })
+    } else if default.is_some() {
+        Err(default_with_multiple_args(func_name))
     } else {
         // Multiple arguments: compare them directly
-        if default.is_some() {
-            first_arg.drop_with(vm);
-            // The deferred drops release `default` and remaining arguments.
-            return Err(default_with_multiple_args(func_name));
+        select_best(first_arg, key_fn.as_ref(), is_min, vm, |_| Ok(args.next()))
+    }
+}
+
+/// Folds the candidates from `next` into the min/max, starting from `best`.
+///
+/// With a key function, candidates are compared by their keys; ties keep the
+/// first-seen item, matching CPython. Replaced candidates drop as [`Owned`].
+fn select_best<'h>(
+    mut best: Owned,
+    key_fn: Option<&Owned>,
+    is_min: bool,
+    vm: &mut VM<'h>,
+    mut next: impl FnMut(&mut VM<'h>) -> RunResult<Option<Owned>>,
+) -> RunResult<Value> {
+    // The explicit `release` calls are only a fast path; dropping would also be correct.
+    if let Some(key_fn) = key_fn {
+        let mut best_key = evaluate_key(&best, key_fn, vm)?;
+        while let Some(item) = next(vm)? {
+            let item_key = evaluate_key(&item, key_fn, vm)?;
+            if candidate_wins(&best_key, &item_key, is_min, vm)? {
+                mem::replace(&mut best, item).release(vm);
+                mem::replace(&mut best_key, item_key).release(vm);
+            } else {
+                item.release(vm);
+                item_key.release(vm);
+            }
         }
-
-        if let Some(key_fn) = key_fn {
-            let mut result_guard = DropGuard::new(first_arg, vm);
-            {
-                let (result, vm) = result_guard.as_parts_mut();
-                let result_key = evaluate_key(result.clone_with_heap(vm), key_fn, vm)?;
-                defer_drop_mut!(result_key, vm);
-
-                for item in args.drain(..) {
-                    defer_drop_mut!(item, vm);
-                    let item_key = evaluate_key(item.clone_with_heap(vm), key_fn, vm)?;
-                    defer_drop_mut!(item_key, vm);
-
-                    if candidate_wins(result_key, item_key, is_min, vm)? {
-                        mem::swap(result, item);
-                        mem::swap(result_key, item_key);
-                    }
-                }
+    } else {
+        while let Some(item) = next(vm)? {
+            if candidate_wins(&best, &item, is_min, vm)? {
+                mem::replace(&mut best, item).release(vm);
+            } else {
+                item.release(vm);
             }
-            Ok(result_guard.into_inner())
-        } else {
-            let mut result_guard = DropGuard::new(first_arg, vm);
-            let (result, vm) = result_guard.as_parts_mut();
-
-            for item in args.drain(..) {
-                defer_drop_mut!(item, vm);
-
-                if candidate_wins(result, item, is_min, vm)? {
-                    mem::swap(result, item);
-                }
-            }
-
-            Ok(result_guard.into_inner())
         }
     }
+    Ok(best.into_value())
 }
 
 /// Argument shape for `min(*args, key=None, default=...)`.
 ///
-/// `key` is held as `Value` so `key=None` can be normalised to "no key
-/// function". `default` is `Option<Value>` (with `default` attr) so the
+/// `key` is held as a raw value so `key=None` can be normalised to "no key
+/// function". `default` is an `Option` (with `default` attr) so the
 /// implementation can distinguish "not provided" from "provided with any
 /// value" — that distinction matters because `default=` is only valid with a
 /// single iterable argument.
@@ -175,11 +134,11 @@ fn run_min_max(
 #[from_args(name = "min")]
 struct MinArgs {
     #[from_args(varargs)]
-    args: Vec<Value>,
-    #[from_args(default = Value::None)]
-    key: Value,
+    args: OwnedIntoIter,
+    #[from_args(default = Owned::new(Value::None))]
+    key: Owned,
     #[from_args(default)]
-    default: Option<Value>,
+    default: Option<Owned>,
 }
 
 /// Argument shape for `max(*args, key=None, default=...)`.
@@ -190,20 +149,20 @@ struct MinArgs {
 #[from_args(name = "max")]
 struct MaxArgs {
     #[from_args(varargs)]
-    args: Vec<Value>,
-    #[from_args(default = Value::None)]
-    key: Value,
+    args: OwnedIntoIter,
+    #[from_args(default = Owned::new(Value::None))]
+    key: Owned,
     #[from_args(default)]
-    default: Option<Value>,
+    default: Option<Owned>,
 }
 
 /// Calls the user-provided key function for a single candidate value.
 ///
-/// The caller passes an owned clone of the candidate so this helper can forward it
-/// into the function call without changing ownership of the original item being
-/// tracked as the eventual min/max result.
-fn evaluate_key(item: Value, key_fn: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    vm.evaluate_function(key_fn, ArgValues::One(item))
+/// Passes a clone so the candidate itself stays owned by the caller.
+fn evaluate_key(item: &Owned, key_fn: &Owned, vm: &mut VM<'_>) -> RunResult<Owned> {
+    let arg = item.clone_with_heap(vm);
+    let key = vm.evaluate_function(key_fn, ArgValues::One(arg))?;
+    Ok(Owned::new(key))
 }
 
 /// Returns whether `candidate` should replace `current` as the best value seen so far.

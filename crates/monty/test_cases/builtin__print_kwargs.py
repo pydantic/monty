@@ -32,3 +32,7 @@ try:
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == 'end must be None or a string, not int'
+
+# === flush with a heap value ===
+# guards a reference-count leak that only the memory-model-checks build detects
+assert print('x', flush=[2**70]) is None
