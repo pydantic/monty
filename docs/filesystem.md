@@ -144,6 +144,7 @@ The divergences are in [`limitations/os.md`](limitations/os.md).
 `import helpers` runs the package `helpers/__init__.py`, or else `helpers.py`, from the working directory when no
 [host module](host-functions.md#importing-host-modules) of that name exists, so a module file in a mount imports
 directly.
+Modules inside a package can import each other with relative imports (`from . import sibling`, `from ..pkg import x`).
 The host reads each candidate itself, as a `Path.read_text` call to the `os` callback first and through the mounts when
 the callback declines it, so the whole search costs one round trip; each module that imports successfully runs once per
 session.

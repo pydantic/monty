@@ -9,7 +9,6 @@ authors = { workspace = true }
 description = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
-homepage = { workspace = true }
 repository = { workspace = true }
 
 [lib]
@@ -56,7 +55,6 @@ sha1 = { version = "0.11", default-features = false }
 sha2 = { version = "0.11", default-features = false }
 chrono = { workspace = true }
 speedate = "0.17.0"
-itertools = "0.14.0"
 jiter = { version = "0.17.0", features = ["num-bigint"] }
 
 [features]

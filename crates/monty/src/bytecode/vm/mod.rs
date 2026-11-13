@@ -2093,7 +2093,7 @@ impl<'h> VM<'h> {
                     let module_id = self.current_frame.fetch_u16();
                     // for the `LoadAttrImport`s of a `from ... import`; harmless for a bare `import`
                     self.current_frame.import_from_module = Some(StringId::from_index(module_id));
-                    handle_call_result!(self, Ok(self.load_module(module_id)));
+                    handle_call_result!(self, self.load_module(module_id));
                 }
                 // Context Managers
                 Opcode::BeforeWith => {
@@ -2109,15 +2109,27 @@ impl<'h> VM<'h> {
         }
     }
 
-    /// Loads a top-level built-in or a cached file module, or suspends with
-    /// [`OsFunctionCall::Import`]: the host's value becomes the module, and a
-    /// host with no such module falls back to a `.py` file (see `module_finder`).
-    /// `LoadSubmodule` resolves the remaining dotted components.
-    fn load_module(&mut self, module_id: u16) -> CallResult {
+    /// Loads a top-level built-in, a cached file module or a relative import's
+    /// package, or suspends with [`OsFunctionCall::Import`]: the host's value
+    /// becomes the module, and a host with no such module falls back to a `.py`
+    /// file (see `module_finder`). `LoadSubmodule` resolves the remaining dotted components.
+    fn load_module(&mut self, module_id: u16) -> RunResult<CallResult> {
         let name_id = StringId::from_index(module_id);
-        match self.interns.static_string(name_id).and_then(StandardLib::from_static) {
+        let name = self.interns.get_str(name_id);
+        if name.starts_with('.') {
+            // `from . import x`: the compiler names the package by its dots alone
+            self.import_relative_package(name.len())
+        } else {
+            Ok(self.import_absolute(name, self.interns.static_string(name_id)))
+        }
+    }
+
+    /// The module `name` (`static_name` when it is a static string): a built-in, else
+    /// what [`VM::import_top_level`] finds. Also loads a relative import's package.
+    pub(super) fn import_absolute(&mut self, name: &str, static_name: Option<StaticStrings>) -> CallResult {
+        match static_name.and_then(StandardLib::from_static) {
             Some(module) => CallResult::Value(Value::Ref(module.create(self))),
-            None => self.import_top_level(self.interns.get_str(name_id)),
+            None => self.import_top_level(name),
         }
     }
 
@@ -2565,8 +2577,7 @@ impl<'h> VM<'h> {
         self.current_frame
             .code
             .location_for_offset(self.instruction_ip)
-            .map(LocationEntry::range)
-            .unwrap_or_default()
+            .map_or_default(LocationEntry::range)
     }
 
     /// Returns the position a suspension at the current instruction reports.
@@ -2630,8 +2641,7 @@ impl<'h> VM<'h> {
         self.current_frame
             .code
             .location_for_offset(offset as usize)
-            .map(LocationEntry::range)
-            .unwrap_or_default()
+            .map_or_default(LocationEntry::range)
     }
 
     // ========================================================================

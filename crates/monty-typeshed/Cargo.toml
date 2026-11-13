@@ -9,7 +9,6 @@ license = { workspace = true }
 description = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
-homepage = { workspace = true }
 repository = { workspace = true }
 
 # Explicit lib name keeps the Rust import path `monty_typeshed` even though the
@@ -20,6 +19,8 @@ path = "src/lib.rs"
 
 [dependencies]
 ruff_db = { workspace = true }
+
+[dev-dependencies]
 zip = { version = "0.6.6", default-features = false }
 
 [build-dependencies]

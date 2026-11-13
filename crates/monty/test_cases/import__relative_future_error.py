@@ -1,6 +1,6 @@
 # `from __future__ import ...` is a compiler directive Monty accepts as a no-op,
 # but only in its absolute form: a relative import of a module that happens to
-# share the name is an ordinary import, and there is no package system.
+# share the name is an ordinary import, which the main script cannot make.
 from .__future__ import annotations
 
 """

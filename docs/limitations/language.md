@@ -87,9 +87,17 @@ exactly, except for the comprehension target restriction in
 
 - Only the bundled stdlib modules listed in [modules.md](modules.md) can be
     imported. Importing anything else raises `ModuleNotFoundError`.
-- Relative imports (`from . import x`) raise `ImportError: "attempted relative import with no known parent package"`;
-    there is no package
-    system.
+- Relative imports (`from . import x`, `from ..pkg import y`) resolve against the importing module's `__package__`,
+    else its `__name__` (less the last component unless `__path__` is set), as CPython does, with these differences:
+    - `__spec__` is never consulted, and falling back on `__name__` issues no `ImportWarning`.
+    - The main script and REPL feeds have no package, even if they assign `__package__`, so a relative import there
+        raises `ImportError: attempted relative import with no known parent package`.
+        `exec()` with an explicit globals dict reads that dict's `__package__` and `__name__`.
+    - A nested package whose import raised is imported again by a later relative import only while its parent
+        package is still loaded; otherwise the import raises `ModuleNotFoundError` naming the package, where CPython
+        would import the parent first.
+        Likewise an `exec()` `__package__` with dots whose parent is not loaded raises `ModuleNotFoundError` naming
+        the whole package, where CPython names the first parent it fails to import.
 - `__import__` is not defined.
 
 ## `__future__` imports
