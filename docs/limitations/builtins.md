@@ -136,6 +136,9 @@ These raise `NameError`:
     and multi-iterable `map` stop at the shortest input, so pairing an infinite
     iterable with a finite or empty one stays bounded. A plain `for x in container` is lazy and does detect mutation.
     See [itertools.md](itertools.md).
+    The type stubs keep upstream's iterator classes, so `-t` accepts `next(map(f, xs))` and `map(f, xs, ys, strict=True)`;
+    at runtime the first raises `TypeError: 'list' object is not an iterator` and the second
+    `TypeError: map() got an unexpected keyword argument 'strict'`, since `map` has no `strict` parameter.
 - **Arity-error wording for some str/bytes methods** — a handful of
     keyword-accepting methods (e.g. `str.split`, `str.rsplit` and the `bytes`
     equivalents) report too-many-arguments as `split expected at most 2 arguments, got 3`, where CPython 3.14's Argument

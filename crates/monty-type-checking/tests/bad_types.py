@@ -188,3 +188,6 @@ import annotationlib
 annotationlib.call_annotate_function
 annotationlib.ForwardRef(1)
 annotationlib.get_annotations(takes_int, eval_str='yes')
+
+map(1, [1])
+getattr(1)

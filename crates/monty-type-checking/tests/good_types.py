@@ -846,3 +846,29 @@ assert_type(statistics.stdev([1.0, 2.0], xbar=1.5), float)
 assert_type(statistics.pvariance([1, 2]), float)
 assert_type(statistics.quantiles([1, 2, 3, 4], n=4, method='inclusive'), list[float])
 assert_type(statistics.StatisticsError('x'), statistics.StatisticsError)
+
+
+# === builtins restored to the allow list (`map`, `filter`, `format`, `getattr`, `hasattr`, `setattr`, `ImportError`,
+# `ModuleNotFoundError`, `UnboundLocalError`) ===
+class Holder:
+    value: int = 0
+
+
+holder = Holder()
+assert_type(list(map(str, [1, 2])), list[str])
+assert_type(list(filter(None, [0, 1])), list[int])
+assert_type(format(1.5, '.1f'), str)
+assert_type(hasattr(holder, 'value'), bool)
+setattr(holder, 'value', getattr(holder, 'value') + 1)
+fallback = getattr(holder, 'missing', None)
+try:
+    from json import dumps as json_dumps
+except ModuleNotFoundError:
+    json_dumps = repr
+except ImportError:
+    json_dumps = str
+assert_type(json_dumps(holder), str)
+try:
+    print(holder)
+except UnboundLocalError:
+    pass
