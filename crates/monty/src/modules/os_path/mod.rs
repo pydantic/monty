@@ -26,7 +26,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData},
     intern::{StaticStrings, StringId},
     modules::{
         ModuleFunctions,
@@ -80,10 +80,10 @@ pub(crate) enum OsPathFunctions {
     Splitroot,
 }
 
-/// Creates the `os.path` module (named `posixpath`, as CPython's is) and
-/// allocates it on the heap. `os.create_module` hangs one off `os.path`;
-/// `import os.path` / `import posixpath` build their own.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `os.path` module (named `posixpath`, as CPython's is).
+/// `os.create_module` hangs one off `os.path`; `import os.path` /
+/// `import posixpath` build their own.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     /// Shorthand for the function-attribute entries in the table below.
     fn function(f: OsPathFunctions) -> Value {
         Value::ModuleFunction(ModuleFunctions::OsPath(f))
@@ -147,7 +147,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     for (attr, value) in attrs {
         module.set_attr(attr, value, vm);
     }
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to an `os.path` function.

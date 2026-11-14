@@ -33,15 +33,15 @@ const COPY_FUNCTIONS: &[(StaticStrings, CopyFunctions)] = &[
     (StaticStrings::Deepcopy, CopyFunctions::Deepcopy),
 ];
 
-/// Creates the `copy` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `copy` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Copy, vm.interns);
 
     for (name, func) in COPY_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Copy(*func)), vm);
     }
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `copy` module function.

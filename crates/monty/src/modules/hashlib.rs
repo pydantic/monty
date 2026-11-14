@@ -23,7 +23,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithContext, HeapData, HeapId},
+    heap::{ContainsHeap, DropWithContext, HeapData},
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
@@ -78,8 +78,8 @@ const HASHLIB_FUNCTIONS: &[(StaticStrings, HashlibFunctions)] = &[
     (StaticStrings::Pbkdf2Hmac, HashlibFunctions::Pbkdf2Hmac),
 ];
 
-/// Creates the `hashlib` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `hashlib` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Hashlib, vm.interns);
     for (name, func) in HASHLIB_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Hashlib(*func)), vm);
@@ -98,7 +98,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     for name in [StaticStrings::AlgorithmsGuaranteed, StaticStrings::AlgorithmsAvailable] {
         module.set_attr(name, algorithm_names(vm), vm);
     }
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// A fresh `set` of every algorithm name.

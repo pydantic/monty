@@ -922,6 +922,22 @@ pub enum Node<F> {
         /// Source position for error reporting.
         position: CodeRange,
     },
+    /// Wildcard import (`from m import *`), binding the names in `m.__all__`,
+    /// or every public name of `m` when it has none.
+    ///
+    /// The names are only known at runtime, so the compiler emits a loop that
+    /// binds each one by name; see `Opcode::ImportStar`. Only allowed at module
+    /// level: preparation rejects it in a function or class body.
+    ImportStar {
+        /// The top-level module to load (`a` for `from a.b import *`).
+        module_name: StringId,
+        /// The further components of a dotted module name, in order.
+        submodules: Vec<Submodule>,
+        /// Source position of the whole statement, for runtime errors.
+        position: CodeRange,
+        /// Position of the `*`, where CPython anchors the module-level `SyntaxError`.
+        star_position: CodeRange,
+    },
 }
 
 /// A prepared function definition with resolved names and scope information.

@@ -9,7 +9,7 @@ use crate::{
     builtins::Builtins,
     bytecode::VM,
     exception_private::{ExcType, RunResult},
-    heap::{HeapData, HeapId},
+    heap::HeapData,
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
@@ -66,7 +66,7 @@ const ROUNDING_NAMES: [StaticStrings; 8] = [
 ];
 
 /// Creates the `decimal` module.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::DecimalMod, vm.interns);
     module.set_attr(
         StaticStrings::DecimalType,
@@ -120,7 +120,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     );
     let decimal_tuple = decimal_tuple_class(vm);
     module.set_attr(StaticStrings::DecimalTuple, decimal_tuple, vm);
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// `decimal.DecimalTuple`, the named tuple class `Decimal.as_tuple()` builds.

@@ -65,8 +65,8 @@ pub(crate) enum DataclassesFunctions {
     Configured(DataclassOptions),
 }
 
-/// Creates the `dataclasses` module and allocates it on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `dataclasses` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Dataclasses, vm.interns);
     module.set_attr(
         StaticStrings::Dataclass,
@@ -95,7 +95,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::Marker(Marker(StaticStrings::Missing)),
         vm,
     );
-    vm.heap.allocate_as(module).into_id()
+    module
 }
 
 /// Dispatches a `dataclasses` module function call.

@@ -10,7 +10,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::RunResult,
     frozen::{self, FrozenFunctions},
-    heap::HeapId,
+    heap::{HeapData, HeapId},
     intern::StaticStrings,
 };
 
@@ -163,9 +163,10 @@ impl StandardLib {
             .filter_map(|name| Self::from_static(name).map(|_| <&'static str>::from(name)))
     }
 
-    /// Creates a new instance of this module on the heap.
+    /// Creates a new instance of this module on the heap, with an `__all__`
+    /// when CPython's module defines one.
     pub fn create(self, vm: &mut VM<'_>) -> HeapId {
-        match self {
+        let mut module = match self {
             Self::Sys => sys::create_module(vm),
             Self::Typing => typing::create_module(vm),
             Self::Asyncio => asyncio::create_module(vm),
@@ -196,6 +197,48 @@ impl StandardLib {
             Self::Statistics => statistics::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
+        };
+        if let Some(excluded) = self.excluded_from_all() {
+            module.set_dunder_all(excluded, vm);
+        }
+        vm.heap.allocate(HeapData::Module(Box::new(module)))
+    }
+
+    /// For a module whose CPython counterpart defines `__all__`, the public
+    /// names Monty's module has that CPython's `__all__` leaves out; `None`
+    /// when CPython defines none, so `from m import *` binds every public name.
+    fn excluded_from_all(self) -> Option<&'static [StaticStrings]> {
+        match self {
+            Self::Sys
+            | Self::Math
+            | Self::Unicodedata
+            | Self::Itertools
+            | Self::Binascii
+            | Self::Time
+            | Self::Bisect
+            | Self::Decimal => None,
+            #[cfg(feature = "test-hooks")]
+            Self::Gc => None,
+            Self::Base64 => Some(&[StaticStrings::MaxBinSize, StaticStrings::MaxLineSize]),
+            Self::Typing
+            | Self::Asyncio
+            | Self::Pathlib
+            | Self::Os
+            | Self::OsPath
+            | Self::Json
+            | Self::Re
+            | Self::Datetime
+            | Self::Dataclasses
+            | Self::Collections
+            | Self::Functools
+            | Self::Random
+            | Self::Copy
+            | Self::Hashlib
+            | Self::Csv
+            | Self::Tomllib
+            | Self::Fnmatch
+            | Self::Annotationlib
+            | Self::Statistics => Some(&[]),
         }
     }
 }

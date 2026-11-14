@@ -22,7 +22,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData},
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
@@ -133,8 +133,8 @@ const BASE64_FUNCTIONS: &[(StaticStrings, Base64Functions)] = &[
     (StaticStrings::A85Decode, Base64Functions::A85Decode),
 ];
 
-/// Creates the `base64` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `base64` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Base64, vm.interns);
 
     for (name, func) in BASE64_FUNCTIONS {
@@ -144,7 +144,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     module.set_attr(StaticStrings::MaxBinSize, Value::Int(i64::from(MAX_BIN_SIZE)), vm);
     module.set_attr(StaticStrings::MaxLineSize, Value::Int(i64::from(MAX_LINE_SIZE)), vm);
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `base64` module function.

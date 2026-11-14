@@ -154,14 +154,16 @@ fn dump_header_rejects_incompatible_data() {
 /// relies on establishing Gray/White itself, even when the snapshot is invalid.
 #[test]
 fn dump_rejects_transient_gc_colors() {
-    // The microsecond 444555 as a CBOR u32 is distinctive; the heap entry's
-    // `color` field follows its time payload.
-    const MICROSECOND: [u8; 5] = [0x1a, 0x00, 0x06, 0xc8, 0x8b];
+    // A string built at runtime is a heap entry whose text appears nowhere else in
+    // the dump; the entry's `color` field follows it. The heap must hold no
+    // `Value::Ref`: rejected entries are dropped without `Heap::drop`'s cleanup,
+    // which `memory-model-checks` reports as a refcount bug.
+    const MARKER: &[u8] = b"gc-color-marker-12345";
     // `color` is serialized as key `C`, `Black` as `B`, `Gray`/`White` as `G`/`W`.
     const BLACK: &[u8] = b"\x61C\x61B";
-    let bytes = dump_repl("import datetime\nt = datetime.time(11, 22, 33, 444555)");
-    let after_time = offset_of(&bytes, &MICROSECOND) + MICROSECOND.len();
-    let color = after_time + offset_of(&bytes[after_time..], BLACK) + b"\x61C".len();
+    let bytes = dump_repl("s = 'gc-color-marker-' + str(12345)");
+    let after_marker = offset_of(&bytes, MARKER) + MARKER.len();
+    let color = after_marker + offset_of(&bytes[after_marker..], BLACK) + b"\x61C".len();
     assert!(Dump::load(&bytes).is_ok());
 
     let rejections: Vec<String> = [&b"\x61G"[..], b"\x61W"]
@@ -203,6 +205,19 @@ fn repl_persists_state_and_definitions() {
     feed_run_print(&mut repl, "x = 20").unwrap();
     let output = feed_run_print(&mut repl, "add(22)").unwrap();
     assert_eq!(output, MontyObject::int(42));
+}
+
+/// Names a star import binds are global slots later feeds compile against,
+/// including a builtin it shadows (`math.pow`), and they survive a dump.
+#[test]
+fn repl_star_import_binds_names_for_later_feeds() {
+    let (mut repl, _) = init_repl("def early():\n    return comb(4, 2)");
+    feed_run_print(&mut repl, "from math import *").unwrap();
+    assert_eq!(feed_run_print(&mut repl, "early()").unwrap(), MontyObject::int(6));
+    assert_eq!(feed_run_print(&mut repl, "factorial(4)").unwrap(), MontyObject::int(24));
+    assert_eq!(feed_run_print(&mut repl, "pow(2, 3)").unwrap(), MontyObject::float(8.0));
+    let mut repl = round_trip_repl(&repl);
+    assert_eq!(feed_run_print(&mut repl, "gcd(4, 6)").unwrap(), MontyObject::int(2));
 }
 
 /// `from __future__ import annotations` in one feed governs every later feed, as
@@ -3057,7 +3072,7 @@ fn repl_rejected_snippet_locations() {
     let mut errors = Vec::new();
     for source in [
         "\n\nfrom . import missing",
-        "\n\nfrom math import *",
+        "\n\ntype Alias = int",
         "\n\ndel missing",
         "\n\n__name__ = 'changed'",
     ] {

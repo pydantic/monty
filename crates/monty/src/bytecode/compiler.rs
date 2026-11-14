@@ -16,7 +16,10 @@ use super::{
     RESERVED_MODULE_DUNDERS,
     builder::{CodeBuilder, JumpLabel, JumpTarget, Offset},
     code::{Code, HandlerKind},
-    op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode, assert_flags},
+    op::{
+        FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, IMPORT_STAR_BIND, IMPORT_STAR_LOAD, IMPORT_STAR_NAMES,
+        NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode, assert_flags,
+    },
 };
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
@@ -831,6 +834,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 names,
                 position,
             } => self.compile_import_from(*module_name, submodules, names, *position)?,
+            Node::ImportStar {
+                module_name,
+                submodules,
+                position,
+                ..
+            } => self.compile_import_star(*module_name, submodules, *position)?,
             Node::Break { position } => self.compile_break(*position)?,
             Node::Continue { position } => self.compile_continue(*position)?,
             // These are handled during the prepare phase and produce no bytecode
@@ -1205,6 +1214,42 @@ impl<'a, 'i> Compiler<'a, 'i> {
             self.code.emit_u16(Opcode::LoadAttrImport, name_idx)?;
             self.compile_store(binding)?;
         }
+        Ok(())
+    }
+
+    /// Compiles `from m import *` as a loop over the names the module exports,
+    /// binding each by name since none is known at compile time:
+    ///
+    /// ```text
+    /// LoadModule m (+ LoadSubmodule ...)   [m]
+    /// ImportStar NAMES; GetIter            [m, iter]
+    /// loop: ForIter end                    [m, iter, name]
+    /// ImportStar LOAD                      [m, iter, name, value]  (may suspend)
+    /// ImportStar BIND; Jump loop           [m, iter]
+    /// end: Pop                             []
+    /// ```
+    ///
+    /// `LOAD` is separate from `BIND` so a property such as `os.environ` can
+    /// suspend for the host and resume with its value on the stack.
+    fn compile_import_star(
+        &mut self,
+        module_name: StringId,
+        submodules: &[Submodule],
+        position: CodeRange,
+    ) -> Result<(), CompileError> {
+        self.code.set_location(position, None);
+        let module_idx = check_name_index_u16(module_name, position)?;
+        self.code.emit_u16(Opcode::LoadModule, module_idx)?;
+        self.compile_submodules(submodules, position)?;
+        self.code.emit_u8(Opcode::ImportStar, IMPORT_STAR_NAMES)?;
+        self.code.emit(Opcode::GetIter)?;
+        let loop_start = self.code.current_jump_target();
+        let end_jump = self.code.emit_jump(Opcode::ForIter)?;
+        self.code.emit_u8(Opcode::ImportStar, IMPORT_STAR_LOAD)?;
+        self.code.emit_u8(Opcode::ImportStar, IMPORT_STAR_BIND)?;
+        self.code.emit_jump_to(Opcode::Jump, loop_start)?;
+        self.code.patch_jump(end_jump)?;
+        self.code.emit(Opcode::Pop)?;
         Ok(())
     }
 

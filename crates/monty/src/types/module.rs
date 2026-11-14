@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings, StringId},
-    types::Dict,
+    types::{Dict, List},
     value::{EitherStr, Value},
 };
 
@@ -98,6 +98,20 @@ impl Module {
         }
     }
 
+    /// The name CPython gives this module in error messages: the `__name__` in a
+    /// file module's namespace, which its code may rebind, else the import name.
+    /// `Err` holds a rebound `__name__` that is not a `str`.
+    pub fn error_name<'a>(&'a self, vm: &'a VM<'_>) -> Result<&'a str, &'a Value> {
+        let rebound = self.namespace().and_then(|namespace| match vm.heap.get(namespace) {
+            HeapData::Dict(dict) => dict.get_by_str("__name__", vm.heap, vm.interns),
+            _ => None,
+        });
+        match rebound {
+            Some(name) => name.as_str(vm).ok_or(name),
+            None => Ok(self.name_str(vm.interns)),
+        }
+    }
+
     /// `<module 'name'>`, or `<module 'name' from 'path'>` for a file module,
     /// both quoted as `repr()` quotes a string.
     pub fn repr(&self, interns: &Interns) -> String {
@@ -139,6 +153,26 @@ impl Module {
         self.attrs
             .set_without_growth_check(key, value, vm)
             .expect("module attribute keys are interned, so hashing cannot fail");
+    }
+
+    /// Sets `__all__` to the module's public attribute names in the order they
+    /// were set, less `excluded`: CPython's `__all__` cut to what Monty implements.
+    /// Call it last, once every attribute is set.
+    pub fn set_dunder_all(&mut self, excluded: &[StaticStrings], vm: &mut VM<'_>) {
+        let names = (&self.attrs)
+            .into_iter()
+            .filter_map(|(key, _)| match key {
+                Value::InternString(id) => Some(*id),
+                _ => None,
+            })
+            .filter(|&id| {
+                !vm.interns.get_str(id).starts_with('_')
+                    && !excluded.iter().any(|&name| vm.interns.intern_static(name) == id)
+            })
+            .map(Value::InternString)
+            .collect();
+        let all = Value::Ref(vm.heap.allocate(HeapData::List(List::new(names))));
+        self.set_attr(StaticStrings::DunderAll, all, vm);
     }
 
     /// Calls `on_child` for every heap reference the module holds, for the cycle collector.
@@ -201,7 +235,7 @@ impl<'h> HeapRead<'h, Module> {
                 vm.call_function(value, args)
             }
             None => Err(ExcType::attribute_error_module(
-                self.get(vm.heap).name_str(vm.interns),
+                self.get(vm.heap).error_name(vm).ok(),
                 attr.as_str(vm.interns),
             )),
         }
