@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 from collections.abc import Iterator
 from typing import Any, Callable, Literal, Protocol
 
@@ -16,6 +17,10 @@ from pydantic_monty import (
     OsHandler,
     ResourceLimits,
 )
+
+# grpcio is in the optional `grpc` dependency group, which free-threaded CI jobs skip
+# since it has no free-threaded wheels; its relay drives every test in `test_remote.py`
+collect_ignore = [] if importlib.util.find_spec('grpc') else ['test_remote.py']
 
 
 class RunMonty(Protocol):
