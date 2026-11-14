@@ -368,6 +368,7 @@ impl PoolInner {
     /// Counts one worker leaving the pool. Every path that drops a worker
     /// records here or in [`crate::checkout`], so the reasons add up to the
     /// pool's whole turnover.
+    #[cfg_attr(not(feature = "telemetry"), expect(clippy::unused_self))]
     pub(crate) fn count_termination(&self, reason: &'static str) {
         #[cfg(feature = "telemetry")]
         if let Some(metrics) = &self.config.metrics {
@@ -381,6 +382,7 @@ impl PoolInner {
     ///
     /// Call with the pool lock released to keep telemetry outside pool
     /// synchronization. Recording only updates Rust SDK aggregates.
+    #[cfg_attr(not(feature = "telemetry"), expect(clippy::unused_self))]
     pub(crate) fn record_worker_delta(&self, live: i64, idle: i64) {
         #[cfg(feature = "telemetry")]
         if let Some(metrics) = &self.config.metrics {

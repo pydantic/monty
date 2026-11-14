@@ -19,14 +19,14 @@ crate-type = ["cdylib"]
 
 [dependencies]
 monty-types = { workspace = true, features = ["tzdb"] }
-opentelemetry = "0.33"
-opentelemetry_sdk = "0.33"
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
 monty-pool = { workspace = true, features = ["telemetry"] }
-napi = { version = "3.8", default-features = false, features = ["napi8", "compat-mode", "tokio_rt"] }
+napi = { version = "3.16.2", default-features = false, features = ["napi8", "compat-mode", "tokio_rt"] }
 # The pool is async; the binding shares napi's tokio runtime and only needs
 # the sync primitives (the per-session checkout mutex) itself.
 tokio = { workspace = true, features = ["sync", "time", "macros"] }
-napi-derive = "3.0.0"
+napi-derive = "3.7.1"
 num-bigint = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

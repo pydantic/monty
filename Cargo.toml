@@ -187,9 +187,12 @@ rcgen = { version = "0.14", default-features = false, features = [
 tokio = { version = "1" }
 # Feature-free: monty-pool builds telemetry only, while monty-runtime adds its network exporter.
 logfire = { version = "0.13", default-features = false }
+# Match Logfire's OpenTelemetry types across the pool and language bindings.
+opentelemetry = "0.32"
+opentelemetry_sdk = "0.32"
 # Canonical OTLP batches cross the Python and Node extension boundaries after
 # Rust's metrics SDK has aggregated them.
-opentelemetry-proto = { version = "0.33", default-features = false, features = [
+opentelemetry-proto = { version = "0.32", default-features = false, features = [
     "gen-tonic-messages",
     "metrics",
 ] }

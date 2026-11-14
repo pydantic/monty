@@ -33,7 +33,8 @@ pretty_assertions = { workspace = true }
 insta = { workspace = true }
 # Use codspeed-criterion-compat for CI benchmarks, real criterion for local flamegraphs
 codspeed-criterion-compat = "6.0.0"
-criterion = "0.8"
+# pprof 0.15's profiler integration requires Criterion 0.5.
+criterion = "0.5"
 
 [target.'cfg(unix)'.dev-dependencies]
 pprof = { version = "0.15", features = ["flamegraph", "criterion"] }

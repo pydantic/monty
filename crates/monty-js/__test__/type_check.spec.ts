@@ -163,10 +163,7 @@ test('failing snippet does not execute and session survives', async () => {
     await using session = await pool().checkout({ typeCheck: true })
     await session.feedRun('x = 1')
     const error = await t.throwsAsync(() => session.feedRun('x = 2\n"hello" + 1'), { instanceOf: MontyTypingError })
-    t.is(
-      error.message,
-      'TypeError: error[invalid-assignment]: Object of type `Literal[2]` is not assignable to `Literal[1]`',
-    )
+    t.is(error.message, 'TypeError: error[unsupported-operator]: Unsupported `+` operation')
     t.is(await session.feedRun('x'), 1)
   }
 })
