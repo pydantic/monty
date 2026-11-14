@@ -133,7 +133,7 @@ pub fn get_byte_at_index(bytes: &[u8], index: i64) -> Option<u8> {
 /// See the module-level documentation for implemented and unimplemented methods.
 ///
 /// Carries an inline `cached_hash` field (skipped on serde) so a `Bytes` only
-/// computes its Python hash once. See [`super::Str`] for the same pattern.
+/// computes its Python hash once. See [`super::HeapStr`] for the same pattern.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub(crate) struct Bytes(
