@@ -75,11 +75,21 @@ exactly, except for the comprehension target restriction in
 - The scan also enters string literals, because the type checker parses a forward-reference annotation such as
     `x: "list[int]"` from the text between the quotes; a string longer than 200 bytes holding more than 200 unbalanced
     brackets is rejected the same way even when it is plain data.
+- A source longer than 2,000 bytes whose AST nests more than 2,000 levels deep (300 in debug builds) is rejected with
+    the same `SyntaxError` as soon as it is parsed.
+    A flat chain such as `1 + 1 + ...` or `a.b.b...` nests one level per link without tripping the scan, and so does
+    source the parser recovers from a syntax error in, such as a repeated `not a <`.
+    That check runs before any syntax error is reported, so such a source raises
+    `Source is too deeply nested` where CPython reports the syntax error.
+    It also covers parts of the AST the cap above never reaches, such as an annotation the compiler discards.
 - With type checking on, the whole AST is checked against the cap before the type checker runs, whatever the source's
     length.
     That includes function parameter and return annotations.
     Every string literal longer than the remaining budget is parsed as a forward-reference annotation and counted
     from the depth it sits at, so a string that parses as a deeply nested expression is rejected even when it is data.
+    A string that does not parse is rejected only when the AST recovered from it nests more than 20,000 levels deep
+    (3,000 in debug builds), which takes data that lexes as one long operator chain, such as several thousand absolute
+    paths on consecutive lines.
 - Only Rust hosts can change the threshold, with `CompileOptions { source_scan_threshold: n, ..CompileOptions::default() }`
     (`0` scans every source, `usize::MAX` never scans); Python and JavaScript sessions use the default.
 

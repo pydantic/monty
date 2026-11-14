@@ -18,7 +18,7 @@ use monty_types::{
     unstable::{self, MontyGraph, NodeId},
 };
 use ruff_python_ast::token::TokenKind;
-use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
+use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, Mode, ParseErrorType};
 
 use crate::{
     args::{ArgValues, KwargsValues},
@@ -35,7 +35,7 @@ use crate::{
         ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
         resume_lookup, resume_with_result,
     },
-    source_nesting::source_within_nesting_bound,
+    source_nesting::{parse_shallow, source_within_nesting_bound},
     types::{SessionRandom, tuple::allocate_tuple},
     value::Value,
     virtual_path::canonical_cwd,
@@ -1338,7 +1338,11 @@ pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
     if !source_within_nesting_bound(source, SOURCE_SCAN_THRESHOLD) {
         return ReplContinuationMode::Complete;
     }
-    let Err(error) = parse_module(source) else {
+    // Complete for the same reason when its AST is too deep to drop.
+    let Ok(parsed) = parse_shallow(source, Mode::Module) else {
+        return ReplContinuationMode::Complete;
+    };
+    let Some(error) = parsed.errors().first() else {
         return ReplContinuationMode::Complete;
     };
     let error_is_at_end = error.location.is_empty() && error.location.start().to_usize() == source.len();
@@ -1346,7 +1350,7 @@ pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
         .get(error.location.start().to_usize()..error.location.end().to_usize())
         .unwrap_or_default();
 
-    match error.error {
+    match &error.error {
         ParseErrorType::OtherError(msg) => {
             if msg.starts_with("Expected an indented block after ") {
                 ReplContinuationMode::IncompleteBlock
