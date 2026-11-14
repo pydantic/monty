@@ -2768,6 +2768,44 @@ fn type_checked_session_rejects_deep_asts_from_flat_source() {
     child.shutdown();
 }
 
+/// ruff parses a flat chain, or source it recovers from a syntax error in, to
+/// an AST one level deeper per link. Dropping that AST recursed once per level
+/// and overflowed the worker's stack; each feed now ends in a SyntaxError and
+/// the session survives, whether or not the import scan and ty also parse it.
+#[test]
+fn session_survives_asts_too_deep_to_drop() {
+    for type_check in [false, true] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(pb::Configure {
+            type_check,
+            ..configure()
+        });
+
+        for (source, message) in [
+            (
+                format!("import os\nx = 1{}", " + 1".repeat(400_000)),
+                "Source is too deeply nested",
+            ),
+            (
+                format!("{}a", "not a < ".repeat(400_000)),
+                "Source is too deeply nested",
+            ),
+            (
+                "eval('1' + '+1' * 400_000)".to_owned(),
+                "Source is too deeply nested (<string>, line 1)",
+            ),
+        ] {
+            let (_, event) = child.feed(&source);
+            let error = expect_error(event);
+            assert_eq!(error.exc_type, "SyntaxError");
+            assert_eq!(error.message.as_deref(), Some(message));
+        }
+
+        assert_eq!(child.feed_complete("1"), MontyObject::int(1));
+        child.shutdown();
+    }
+}
+
 #[test]
 fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
     let mut child = ChildProc::spawn();
