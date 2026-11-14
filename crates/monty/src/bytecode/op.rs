@@ -600,6 +600,17 @@ pub enum Opcode {
     /// `raise exc from cause`: stack `[exc, cause] -> []`. The cause becomes the
     /// raised exception's `__cause__` and suppresses its `__context__`.
     RaiseFrom = 130,
+    /// Subscripts two local/frame-stack slots encoded as u8 operands.
+    LoadSubscrLocal = 131,
+    /// Subscripts a slot below 128 by a string ID or i16 constant.
+    /// The u8 operand holds the object slot and a high bit selecting a string key.
+    LoadSubscrConst = 132,
+    /// Subscripts two u8 local slots and assigns the result to a third u8 slot.
+    SubscrToLocal = 133,
+    /// Borrows a global and the following key load for native subscripting.
+    /// Low 13 operand bits hold the global slot; high 3 bits select the key-load kind.
+    /// Fallback behaves as LoadGlobal and executes the original continuation.
+    LoadGlobalSubscr = 134,
 }
 
 /// `LoadName` flag: the load is in call position, so an unresolved name under
@@ -639,6 +650,10 @@ impl Opcode {
     /// Returns this opcode's serialized operand shape.
     fn operand_shape(self) -> OperandShape {
         match self {
+            Self::LoadGlobalSubscr => OperandShape::U16,
+            Self::SubscrToLocal => OperandShape::U16U8,
+            Self::LoadSubscrLocal => OperandShape::U8U8,
+            Self::LoadSubscrConst => OperandShape::U16U8,
             Self::Pop
             | Self::Dup
             | Self::Dup2
@@ -935,6 +950,9 @@ impl Opcode {
                 -(i32::from(pos_count) + kw_count)
             }
 
+            (LoadSubscrLocal, Operand::U8U8(..)) | (LoadSubscrConst, Operand::U16U8(..)) => 1,
+            (SubscrToLocal, Operand::U16U8(..)) => 0,
+
             // === Fixed-effect, no operand ===
             (Pop, Operand::None) => -1,
             (Dup, Operand::None) => 1,
@@ -1011,7 +1029,7 @@ impl Opcode {
             (WithExceptStart, Operand::None) => 1,
 
             // === Fixed-effect, U16 operand ===
-            (LoadConst | LoadModule, Operand::U16(_)) => 1,
+            (LoadConst | LoadModule | LoadGlobalSubscr, Operand::U16(_)) => 1,
             (LoadLocalW | LoadGlobal | LoadCell, Operand::U16(_)) => 1,
             (StoreLocalW | StoreGlobal | StoreCell, Operand::U16(_)) => -1,
             (DeleteGlobal | DeleteCell, Operand::U16(_)) => 0,

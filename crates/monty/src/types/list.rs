@@ -1243,6 +1243,25 @@ impl HeapItem for ListIterator {
     }
 }
 
+impl<'h> HeapObjectRead<'h, ListIterator> {
+    /// Advances without Python callbacks or an exception payload.
+    #[inline]
+    pub(crate) fn next_item(&mut self, heap: &mut HeapReader<'h>) -> Option<Value> {
+        let (list_id, index) = {
+            let iterator = self.get(heap);
+            (iterator.list, iterator.index)
+        };
+        let item = match heap.get(list_id) {
+            HeapData::List(list) => list.items.get(index).map(|item| item.clone_with_heap(heap)),
+            _ => unreachable!("list iterator must reference a list"),
+        };
+        if item.is_some() {
+            self.get_mut(heap).index += 1;
+        }
+        item
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, ListIterator> {
     fn py_is_iterator(&self, _: &VM<'h>) -> bool {
         true
@@ -1269,18 +1288,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ListIterator> {
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let (list_id, index) = {
-            let iterator = self.get(vm.heap);
-            (iterator.list, iterator.index)
-        };
-        let item = match vm.heap.get(list_id) {
-            HeapData::List(list) => list.items.get(index).map(|item| item.clone_with_heap(vm.heap)),
-            _ => unreachable!("list iterator must reference a list"),
-        };
-        if item.is_some() {
-            self.get_mut(vm.heap).index += 1;
-        }
-        Ok(item)
+        Ok(self.next_item(vm.heap))
     }
 }
 

@@ -676,8 +676,42 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 self.compile_return(expr.as_ref())?;
             }
             Node::Assign { target, object } => {
-                self.compile_expr(object)?;
-                self.compile_store(target)?;
+                let slots = if !self.is_module_scope
+                    && target.scope == NameScope::Local
+                    && let Expr::Subscript {
+                        object: container,
+                        index,
+                    } = &object.expr
+                    && let Expr::Name(container_name) = &container.expr
+                    && let Expr::Name(key_name) = &index.expr
+                    && container_name.scope == NameScope::Local
+                    && key_name.scope == NameScope::Local
+                    && let Ok(container_slot) = u8::try_from(container_name.namespace_id().as_u16())
+                    && let Ok(key_slot) = u8::try_from(key_name.namespace_id().as_u16())
+                    && let Ok(destination) = u8::try_from(target.namespace_id().as_u16())
+                {
+                    self.code
+                        .register_local_name(u16::from(container_slot), container_name.name_id);
+                    self.code.register_local_name(u16::from(key_slot), key_name.name_id);
+                    self.code.register_local_name(u16::from(destination), target.name_id);
+                    Some((
+                        container_slot,
+                        key_slot,
+                        destination,
+                        container.position,
+                        index.position,
+                    ))
+                } else {
+                    None
+                };
+                if let Some((container, key, destination, container_range, key_range)) = slots {
+                    self.code.set_location(object.position, None);
+                    self.code
+                        .emit_subscript_to_local(container, key, destination, container_range, key_range)?;
+                } else {
+                    self.compile_expr(object)?;
+                    self.compile_store(target)?;
+                }
             }
             Node::UnpackAssign {
                 targets,
@@ -1397,11 +1431,67 @@ impl<'a, 'i> Compiler<'a, 'i> {
             }
 
             Expr::Subscript { object, index } => {
-                self.compile_expr(object)?;
-                self.compile_expr(index)?;
-                // Restore the full subscript expression's position for traceback
-                self.code.set_location(expr_loc.position, None);
-                self.code.emit(Opcode::BinarySubscr)?;
+                let global = if let Expr::Name(name) = &object.expr {
+                    self.subscript_global_slot(name).map(|slot| (slot, name.name_id))
+                } else {
+                    None
+                };
+                let key_kind = match &index.expr {
+                    Expr::Name(name) if self.subscript_global_slot(name).is_some() => Some(0_u8),
+                    Expr::Name(name) => self.subscript_stack_slot(name).map(|slot| {
+                        if slot < 4 {
+                            3
+                        } else if u8::try_from(slot).is_ok() {
+                            4
+                        } else {
+                            5
+                        }
+                    }),
+                    Expr::Literal(Literal::Int(value)) => Some(if i8::try_from(*value).is_ok() { 2 } else { 1 }),
+                    Expr::Literal(Literal::Str(_)) => Some(1),
+                    _ => None,
+                };
+                if let Some(((slot, name), kind)) = global.filter(|(slot, _)| *slot < 8192).zip(key_kind) {
+                    if self.is_module_scope {
+                        self.code.register_local_name(slot, name);
+                    }
+                    self.code.set_location(expr_loc.position, None);
+                    self.code
+                        .emit_subscript_global(slot | (u16::from(kind) << 13), object.position)?;
+                    self.compile_expr(index)?;
+                    self.code.set_location(expr_loc.position, None);
+                    self.code.emit(Opcode::BinarySubscr)?;
+                } else {
+                    let operands = if let Expr::Name(name) = &object.expr
+                        && let Some(object_slot) = self.subscript_stack_slot(name)
+                    {
+                        match &index.expr {
+                            Expr::Name(name) if u8::try_from(object_slot).is_ok() => self
+                                .subscript_stack_slot(name)
+                                .filter(|key| u8::try_from(*key).is_ok())
+                                .map(|key| (object_slot, key, 0)),
+                            Expr::Literal(Literal::Str(id)) if object_slot < 128 => {
+                                u16::try_from(id.index()).ok().map(|key| (object_slot, key, 1))
+                            }
+                            Expr::Literal(Literal::Int(value)) if object_slot < 128 => i16::try_from(*value)
+                                .ok()
+                                .map(|key| (object_slot, key.cast_unsigned(), 2)),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some((object_slot, key, flags)) = operands {
+                        self.code.set_location(expr_loc.position, None);
+                        self.code
+                            .emit_subscript_locals(object_slot, key, flags, object.position, index.position)?;
+                    } else {
+                        self.compile_expr(object)?;
+                        self.compile_expr(index)?;
+                        self.code.set_location(expr_loc.position, None);
+                        self.code.emit(Opcode::BinarySubscr)?;
+                    }
+                }
             }
 
             Expr::IfElse { test, body, orelse } => {
@@ -1565,6 +1655,30 @@ impl<'a, 'i> Compiler<'a, 'i> {
     // ========================================================================
     // Variable Operations
     // ========================================================================
+
+    fn subscript_global_slot(&self, name: &Identifier) -> Option<u16> {
+        match name.scope {
+            NameScope::Local if self.is_module_scope => Some(name.namespace_id().as_u16()),
+            NameScope::Global if !self.flags.globals_by_name => Some(name.namespace_id().as_u16()),
+            _ => None,
+        }
+    }
+
+    /// Cell and dynamic-name loads retain their original resolution behavior.
+    fn subscript_stack_slot(&mut self, name: &Identifier) -> Option<u16> {
+        let slot = name.namespace_id().as_u16();
+        match name.scope {
+            NameScope::Local if !self.is_module_scope => {
+                self.code.register_local_name(slot, name.name_id);
+                Some(slot)
+            }
+            NameScope::CompVar => match self.comp_slots.get(usize::from(slot)).copied().flatten() {
+                Some(CompSlot::Value(offset)) => Some(offset),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 
     /// Compiles loading a variable onto the stack.
     ///

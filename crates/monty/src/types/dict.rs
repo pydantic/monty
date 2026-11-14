@@ -17,6 +17,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::CmpOperator,
+    hash::{HashValue, hash_python_str},
     heap::{
         ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
         HeapReadMut, HeapReadOutput, HeapReader,
@@ -542,6 +543,42 @@ impl<'h> HeapRead<'h, Dict> {
 }
 
 impl Dict {
+    /// Returns a native hit without running Python; misses and custom comparisons fall back.
+    pub(crate) fn native_subscript<'a>(&'a self, key: &Value, vm: &VM<'_>) -> Option<&'a Value> {
+        let hash = match key {
+            Value::Int(value) => HashValue::new(value.cast_unsigned()),
+            Value::Bool(value) => HashValue::new(u64::from(*value)),
+            Value::InternString(id) => vm.interns.str_hash(*id),
+            Value::InlineString(text) => hash_python_str(text.as_str()),
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::Str(text) => text.hash_value(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+
+        // Stop at the first comparison requiring Python, preserving probe order on retry.
+        let mut needs_vm = false;
+        let entry = self.table.find_entry(hash.raw(), |entry| {
+            // The hash guard admits only int/bool/string keys; cross-kind identities differ.
+            let equal = match (&entry.key, key) {
+                (Value::Bool(left), Value::Bool(right)) => Some(left == right),
+                (Value::Int(left), Value::Int(right)) => Some(left == right),
+                (Value::InternString(left), Value::InternString(right)) => Some(left == right),
+                (Value::InlineString(left), Value::InlineString(right)) => Some(left == right),
+                (Value::Ref(left), Value::Ref(right)) if left == right => Some(true),
+                _ => probe_native_eq_by_value(&entry.key, key, vm),
+            };
+            if let Some(equal) = equal {
+                equal
+            } else {
+                needs_vm = true;
+                true
+            }
+        })?;
+        if needs_vm { None } else { Some(&entry.value) }
+    }
+
     /// Gets a value from the dict by string key name (immutable lookup).
     ///
     /// This is an O(1) lookup that doesn't require mutable heap access.
@@ -789,27 +826,31 @@ struct DictInitArgs {
 /// caller then falls back to the guarded snapshot path. Runs no user code, so
 /// it is safe to call while the index-table borrow is held.
 pub(crate) fn probe_native_eq(candidate: &Value, key: &Value, vm: &VM<'_>) -> Option<bool> {
-    // `py_eq` starts with identity, so this must too (it is what makes a NaN
-    // key findable).
     if candidate.is(key) {
         Some(true)
     } else {
-        match candidate {
-            Value::Bool(b) => eq_i64(i64::from(*b), key, vm),
-            Value::Int(i) => eq_i64(*i, key, vm),
-            Value::Float(f) => eq_f64(*f, key, vm),
-            Value::InternLongInt(id) => eq_bigint(vm.interns.get_long_int(*id), key, vm),
-            Value::InternString(id) => eq_str(vm.interns.get_str(*id), key, vm),
-            Value::InlineString(text) => eq_str(text.as_str(), key, vm),
-            Value::InternBytes(id) => eq_bytes(vm.interns.get_bytes(*id), key, vm),
-            Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Str(s) => eq_str(s.as_str(), key, vm),
-                HeapData::Bytes(b) => eq_bytes(b.as_slice(), key, vm),
-                HeapData::LongInt(li) => eq_bigint(li.inner(), key, vm),
-                _ => None,
-            },
+        probe_native_eq_by_value(candidate, key, vm)
+    }
+}
+
+#[inline(always)]
+#[expect(clippy::inline_always, reason = "keep native comparison inside the table probe")]
+fn probe_native_eq_by_value(candidate: &Value, key: &Value, vm: &VM<'_>) -> Option<bool> {
+    match candidate {
+        Value::Bool(b) => eq_i64(i64::from(*b), key, vm),
+        Value::Int(i) => eq_i64(*i, key, vm),
+        Value::Float(f) => eq_f64(*f, key, vm),
+        Value::InternLongInt(id) => eq_bigint(vm.interns.get_long_int(*id), key, vm),
+        Value::InternString(id) => eq_str(vm.interns.get_str(*id), key, vm),
+        Value::InlineString(text) => text.eq_value(key, vm),
+        Value::InternBytes(id) => eq_bytes(vm.interns.get_bytes(*id), key, vm),
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Str(s) => eq_str(s.as_str(), key, vm),
+            HeapData::Bytes(b) => eq_bytes(b.as_slice(), key, vm),
+            HeapData::LongInt(li) => eq_bigint(li.inner(), key, vm),
             _ => None,
-        }
+        },
+        _ => None,
     }
 }
 

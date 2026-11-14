@@ -385,6 +385,22 @@ impl<E: TableEntry> PyHashTable<E> {
         self.position(hash, matches).map(Slot)
     }
 
+    /// Borrows the matching entry while the table cannot change.
+    #[inline]
+    pub(crate) fn find_entry(&self, hash: u64, mut matches: impl FnMut(&E) -> bool) -> Option<&E> {
+        let mut found = None;
+        let _ = self.indices.find(hash, |&index| {
+            let entry = &self.entries[index];
+            if entry.hash() == hash && matches(entry) {
+                found = Some(entry);
+                true
+            } else {
+                false
+            }
+        });
+        found
+    }
+
     /// [`find`](Self::find) with a fallible comparison, stopping at the first error.
     ///
     /// For running user `__eq__` against a table guest code cannot reach — a
