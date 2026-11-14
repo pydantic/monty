@@ -123,6 +123,14 @@ assert dynamic_value._fields[0] is dynamic_field
 assert dynamic_value._replace(**{dynamic_field: 8})._fields[0] is dynamic_field
 assert dynamic_value._make([9])._fields[0] is dynamic_field
 assert next(iter(dynamic_value._asdict())) is dynamic_field
+dynamic_copies = (
+    dynamic_value._replace(**{dynamic_field: [8]}),
+    Dynamic._make([[9]]),
+    dynamic_value._make([[10]]),
+)
+for copied in dynamic_copies:
+    assert type(copied) is Dynamic
+    assert copied._fields[0] is dynamic_field
 try:
     Dynamic(1, 2)
     assert False, 'expected too many arguments'
@@ -143,6 +151,10 @@ dynamic_name = dynamic_field = Dynamic = None
 assert getattr(dynamic_value, saved_fields[0]) == 7
 assert type(dynamic_value).__name__ == ''.join(['Dynamic', 'IdentityName'])
 dynamic_value = None
+for copied, expected in zip(dynamic_copies, [8, 9, 10]):
+    assert getattr(copied, saved_fields[0]) == [expected]
+    assert type(copied).__name__ == ''.join(['Dynamic', 'IdentityName'])
+dynamic_copies = copied = None
 assert saved_fields == (''.join(['dynamic', '_identity_field']),)
 
 # === rename ===

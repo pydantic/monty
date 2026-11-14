@@ -390,11 +390,13 @@ fn resolve_keyword(name: &str, arguments: &FormatArguments, vm: &mut VM<'_>) -> 
 /// Resolves an attribute without allowing a suspending lookup.
 fn resolve_attribute(value: Value, name: &str, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(value, vm);
-    let name = allocate_string(name, vm.heap);
+    let name = if let Some(id) = vm.interns.get_string_id_by_name(name) {
+        Value::InternString(id)
+    } else {
+        allocate_string(name, vm.heap)
+    };
     defer_drop!(name, vm);
-    let name = PyStr::from_value(name, vm)
-        .expect("allocated a string")
-        .resolve_interned(vm);
+    let name = PyStr::from_value(name, vm).expect("allocated a string");
     match value.py_getattr(&name, vm)? {
         CallResult::Value(value) => Ok(value),
         other => {

@@ -778,8 +778,8 @@ impl<'h> HeapRead<'h, NamedTuple> {
         let name = self.get(vm.heap).name.clone_with_heap(vm.heap);
         let field_names = clone_names(&self.get(vm.heap).field_names, vm.heap);
         let class_id = self.get(vm.heap).class_id;
-        defer_drop!(name, vm);
-        defer_drop!(field_names, vm);
+        let mut names_guard = DropGuard::new((name, field_names), vm);
+        let ((_, field_names), vm) = names_guard.as_parts();
         let n = field_names.len();
         let mut items: Vec<Value> = (0..n)
             .map(|i| self.get(vm.heap).items[i].clone_with_heap(vm.heap))
@@ -819,6 +819,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
                 py_list_repr(&unexpected)
             )));
         }
+        let ((name, field_names), vm) = names_guard.into_parts();
         Ok(build_namedtuple(name, field_names, items, class_id, vm))
     }
 
@@ -1191,8 +1192,8 @@ fn construct_namedtuple(class_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> R
         .iter()
         .map(|v| v.clone_with_heap(vm.heap))
         .collect::<Vec<_>>();
-    defer_drop!(name, vm);
-    defer_drop!(field_names, vm);
+    let mut names_guard = DropGuard::new((name, field_names), vm);
+    let ((name, field_names), vm) = names_guard.as_parts();
     let n = field_names.len();
     let n_required = n - defaults.len();
     // Construction errors are reported against the generated `__new__`, e.g.
@@ -1277,6 +1278,7 @@ fn construct_namedtuple(class_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> R
     }
 
     let items: Vec<Value> = slots.into_iter().map(|s| s.expect("all slots bound")).collect();
+    let ((name, field_names), vm) = names_guard.into_parts();
     Ok(build_namedtuple(name, field_names, items, Some(class_id), vm))
 }
 
@@ -1298,8 +1300,8 @@ fn make_from_iterable(
     vm: &mut VM<'_>,
     args: ArgValues,
 ) -> RunResult<Value> {
-    defer_drop!(name, vm);
-    defer_drop!(field_names, vm);
+    let mut names_guard = DropGuard::new((name, field_names), vm);
+    let ((_, field_names), vm) = names_guard.as_parts();
     let n = field_names.len();
     let iterable = args.get_one_arg("_make", vm.heap)?;
     let items = collect_owned_iterable::<Vec<Value>>(iterable, vm)?;
@@ -1308,23 +1310,19 @@ fn make_from_iterable(
         items.drop_with(vm);
         return Err(ExcType::type_error(format!("Expected {n} arguments, got {got}")));
     }
+    let ((name, field_names), vm) = names_guard.into_parts();
     Ok(build_namedtuple(name, field_names, items, class_id, vm))
 }
 
-/// Allocates an instance, retaining its names and class and taking ownership of `items`.
-pub(crate) fn build_namedtuple(
-    name: &EitherStr,
-    field_names: &[EitherStr],
+/// Allocates an instance, taking ownership of its names and items and retaining its class.
+fn build_namedtuple(
+    name: EitherStr,
+    field_names: Vec<EitherStr>,
     items: Vec<Value>,
     class_id: Option<HeapId>,
     vm: &mut VM<'_>,
 ) -> Value {
-    let nt = NamedTuple::with_class(
-        name.clone_with_heap(vm.heap),
-        clone_names(field_names, vm.heap),
-        items,
-        class_id,
-    );
+    let nt = NamedTuple::with_class(name, field_names, items, class_id);
     let id = vm.heap.allocate(HeapData::NamedTuple(Box::new(nt)));
     // The instance owns a reference to its class object (see `py_dec_ref_ids`).
     if let Some(cid) = class_id {
