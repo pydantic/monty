@@ -203,3 +203,32 @@ try:
     assert False, 'expected NameError'
 except NameError as e:
     assert str(e) == "name 'missing_name' is not defined"
+
+
+# === Comprehensions skip the class namespace after evaluating the first
+# iterable, matching the nested-scope behavior used by CPython. ===
+comp_scope_value = 10
+
+
+class ComprehensionScope:
+    comp_scope_value = 20
+    first_iterable = [value for value in [comp_scope_value]]
+    body_lookup = [comp_scope_value for _ in range(1)]
+    filter_lookup = [comp_scope_value for _ in range(1) if comp_scope_value == 10]
+    later_iterable = [value for _ in range(1) for value in [comp_scope_value]]
+
+
+assert ComprehensionScope.first_iterable == [20]
+assert ComprehensionScope.body_lookup == [10]
+assert ComprehensionScope.filter_lookup == [10]
+assert ComprehensionScope.later_iterable == [10]
+
+
+def make_capturing_comprehension(comp_outer_value):
+    class Inner:
+        body_lookup = [comp_outer_value for _ in range(1)]
+
+    return Inner
+
+
+assert make_capturing_comprehension(30).body_lookup == [30]
