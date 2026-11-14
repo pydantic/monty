@@ -10,8 +10,11 @@ use crate::{
     fstring::decimal_digit_value,
     heap::{ContainsHeap, DropGuard, DropWithContext},
     string_builder::StringBuilder,
-    types::{PyTrait, str::allocate_string},
-    value::{EitherStr, Value},
+    types::{
+        PyTrait,
+        str::{PyStr, allocate_string},
+    },
+    value::Value,
 };
 
 const MAX_FORMAT_RECURSION: u8 = 2;
@@ -387,7 +390,14 @@ fn resolve_keyword(name: &str, arguments: &FormatArguments, vm: &mut VM<'_>) -> 
 /// Resolves an attribute without allowing a suspending lookup.
 fn resolve_attribute(value: Value, name: &str, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(value, vm);
-    match value.py_getattr(&EitherStr::from(name.to_owned()), vm)? {
+    let name = if let Some(id) = vm.interns.get_string_id_by_name(name) {
+        Value::InternString(id)
+    } else {
+        allocate_string(name, vm.heap)
+    };
+    defer_drop!(name, vm);
+    let name = PyStr::from_value(name, vm).expect("allocated a string");
+    match value.py_getattr(&name, vm)? {
         CallResult::Value(value) => Ok(value),
         other => {
             other.drop_with(vm);

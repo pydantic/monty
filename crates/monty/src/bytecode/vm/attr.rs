@@ -7,7 +7,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData},
     intern::{Interns, StringId},
-    value::{EitherStr, Value},
+    types::str::PyStr,
+    value::Value,
 };
 
 /// What a suspended lazy attribute lookup does with the host's answer when it
@@ -79,7 +80,7 @@ impl VM<'_> {
         let obj = this.pop();
         defer_drop!(obj, this);
 
-        let attr = EitherStr::Interned(name_id);
+        let attr = PyStr::Interned(name_id);
         obj.py_getattr(&attr, this)
     }
 
@@ -92,7 +93,7 @@ impl VM<'_> {
         let obj = this.pop();
         defer_drop!(obj, this);
 
-        let attr = EitherStr::Interned(name_id);
+        let attr = PyStr::Interned(name_id);
         match obj.py_getattr(&attr, this) {
             Ok(result) => Ok(result),
             Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
@@ -125,7 +126,7 @@ impl VM<'_> {
         }
         let package = module_package(obj, this.heap);
         let is_builtin = package == Some(false);
-        let attr = EitherStr::Interned(name_id);
+        let attr = PyStr::Interned(name_id);
         match obj.py_getattr(&attr, this) {
             Ok(CallResult::Value(value)) if package.is_some() && module_package(&value, this.heap).is_some() => {
                 Ok(CallResult::Value(value))
@@ -182,7 +183,7 @@ impl VM<'_> {
 
         let value = this.pop();
         // py_set_attr takes ownership of value and drops it on error
-        obj.py_set_attr(&EitherStr::Interned(name_id), value, this)
+        obj.py_set_attr(&PyStr::Interned(name_id), value, this)
     }
 }
 

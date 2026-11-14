@@ -651,18 +651,16 @@ fn bind_keyword_args(
     defer_drop_mut!(kwargs, vm);
     for (key, value) in kwargs.by_ref() {
         defer_drop!(key, vm);
+        let mut value = DropGuard::new(value, vm);
+        let vm = value.ctx();
         let name = key
-            .as_either_str(vm.heap)
-            .expect("DictMerge rejects non-string keys before the call")
-            .as_str(vm.interns)
-            .to_owned();
-        // Resolved before the value is guarded, which borrows the VM.
+            .as_str(vm)
+            .expect("DictMerge rejects non-string keys before the call");
         let slot = params.iter().position(|(param, _)| *param == name);
-        let value = DropGuard::new(value, vm);
         match slot {
             Some(idx) if slots[idx].is_none() => slots[idx] = Some(value.into_inner()),
-            Some(_) => return Err(ExcType::type_error_duplicate_arg(qualname, &name)),
-            None => return Err(ExcType::type_error_unexpected_keyword(qualname, &name)),
+            Some(_) => return Err(ExcType::type_error_duplicate_arg(qualname, name)),
+            None => return Err(ExcType::type_error_unexpected_keyword(qualname, name)),
         }
     }
     Ok(())

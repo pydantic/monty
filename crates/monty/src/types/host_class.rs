@@ -2,16 +2,18 @@ use std::{
     borrow::Cow,
     fmt::Write,
     hash::{DefaultHasher, Hash, Hasher},
+    iter::once,
     mem,
 };
 
 use monty_types::{MontyUuid, unstable::ClassTypeNode};
 
-use super::{Dict, LazyHeapSet, PyTrait, list::repr_should_truncate, str::allocate_string};
+use super::{Dict, LazyHeapSet, PyTrait, list::repr_should_truncate};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
+    dump_upgrade::names::StoredNames,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{
@@ -20,7 +22,7 @@ use crate::{
         heap_read_ref_as_field_mut,
     },
     intern::Interns,
-    types::{Type, Union},
+    types::{Type, Union, str::PyStr},
     value::{EitherStr, Value},
 };
 
@@ -71,7 +73,7 @@ impl HostClass {
     /// Returns the class name, read from the shared class entry.
     #[must_use]
     pub fn name<'a>(&self, heap: &'a Heap, interns: &'a Interns) -> &'a str {
-        host_class_type(heap, self.class_id).name(interns)
+        host_class_type(heap, self.class_id).name(heap, interns)
     }
 
     /// Returns the identity of the instance.
@@ -140,7 +142,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
     fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
         host_class_type(vm.heap, self.get(vm.heap).class_id())
             .name_either()
-            .to_cow(vm.interns)
+            .to_cow(vm.heap, vm.interns)
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -148,9 +150,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
         None
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut value_guard = DropGuard::new(value, vm);
-        let name = name.as_value(value_guard.ctx().heap);
+        let name = name.clone_value(value_guard.ctx().heap);
         let (value, vm) = value_guard.into_parts();
         let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);
@@ -218,7 +220,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
     /// is callable, and what calling it does, is the host's decision.
     fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         Ok(CallResult::MethodCall {
-            name: EitherStr::Heap("__call__".to_owned()),
+            name: "__call__".to_owned(),
             args,
             object_id: self.get(vm.heap).instance_id(),
         })
@@ -232,8 +234,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
     /// - Attributes that exist in attrs are called as-is (unbound, like an
     ///   instance attribute on a user class); a non-callable one raises `TypeError`
     /// - Private/dunder attributes that aren't in attrs produce `AttributeError`
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let attr_str = attr.as_str(vm.interns);
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        let attr_str = attr.as_str(vm);
         // Only public methods (no underscore prefix = no dunders, no private)
         if !attr_str.starts_with('_')
             && self
@@ -245,13 +247,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
             // The receiver is not passed along — the host resolves it by id.
             let object_id = self.get(vm.heap).instance_id();
             Ok(CallResult::MethodCall {
-                name: attr.clone(),
+                name: attr.as_str(vm).to_owned(),
                 args,
                 object_id,
             })
         } else {
             // Not a method call — handle directly
-            let method_name = attr.as_str(vm.interns);
+            let method_name = attr.as_str(vm);
 
             // An eager attr (e.g. a sandbox-set lambda) is called as-is;
             // `call_function` raises `TypeError` if it is not callable.
@@ -264,12 +266,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
                 defer_drop!(callable, vm);
                 vm.call_function(callable, args)
             } else {
-                args.drop_with(vm);
                 // Attribute doesn't exist — use the class name (e.g., "Point") not "HostClass"
-                Err(ExcType::attribute_error(
-                    self.get(vm.heap).name(vm.heap, vm.interns),
-                    method_name,
-                ))
+                let error = ExcType::attribute_error(self.get(vm.heap).name(vm.heap, vm.interns), method_name);
+                args.drop_with(vm);
+                Err(error)
             }
         }
     }
@@ -281,8 +281,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
     /// `AttributeError` locally (dunder probes must never suspend). `__class__`
     /// is always the shared type object (`x.__class__ is type(x)`), whatever
     /// the attrs hold under that name.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let attr_name = attr.as_str(vm.interns);
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let attr_name = attr.as_str(vm);
         // Checked before attrs so a host-sent or sandbox-assigned `__class__`
         // entry cannot shadow the type object.
         if attr_name == "__class__" {
@@ -293,7 +293,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
         match self.get(vm.heap).attrs.get_by_str(attr_name, vm.heap, vm.interns) {
             Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),
             None if !attr_name.starts_with('_') => Ok(Some(CallResult::AttrLookup {
-                name: attr.clone(),
+                name: attr.as_str(vm).to_owned(),
                 class_name: self.get(vm.heap).name(vm.heap, vm.interns).to_owned(),
                 object_id: self.get(vm.heap).instance_id(),
                 type_object: false,
@@ -407,8 +407,8 @@ impl HostClassType {
 
     /// Returns the class name.
     #[must_use]
-    pub fn name<'a>(&'a self, interns: &'a Interns) -> &'a str {
-        self.name.as_str(interns)
+    pub fn name<'a>(&'a self, heap: &'a Heap, interns: &'a Interns) -> &'a str {
+        self.name.as_str(heap, interns)
     }
 
     /// The class name as stored — for callers that need to branch on
@@ -434,9 +434,9 @@ impl HostClassType {
     /// minus `attrs`, which hold heap `Value`s: the object bridge converts
     /// and appends them when the type crosses out as a value.
     #[must_use]
-    pub fn class_type(&self, interns: &Interns) -> ClassTypeNode {
+    pub fn class_type(&self, heap: &Heap, interns: &Interns) -> ClassTypeNode {
         ClassTypeNode {
-            name: self.name.as_str(interns).to_owned(),
+            name: self.name.as_str(heap, interns).to_owned(),
             id: self.type_id,
             host_defined: true,
             is_dataclass: self.is_dataclass,
@@ -466,9 +466,11 @@ impl<'h> HeapReadMut<'h, HostClassType> {
         heap: &mut HeapReader<'h>,
     ) -> Option<Dict> {
         let ty = self.get_mut(heap);
-        ty.name = name;
+        let old_name = mem::replace(&mut ty.name, name);
         ty.is_dataclass = is_dataclass;
-        attrs.map(|attrs| mem::replace(&mut ty.attrs, attrs))
+        let old_attrs = attrs.map(|attrs| mem::replace(&mut ty.attrs, attrs));
+        old_name.drop_with(heap);
+        old_attrs
     }
 }
 
@@ -477,7 +479,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
     /// is the host's own policy decision, not the sandbox's.
     fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         Ok(CallResult::MethodCall {
-            name: EitherStr::Heap("__call__".to_owned()),
+            name: "__call__".to_owned(),
             args,
             object_id: self.get(vm.heap).type_id(),
         })
@@ -503,7 +505,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
     /// sandbox never asks it, so this is the wording for a type without one.
     fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         Err(ExcType::type_error_type_not_subscriptable(
-            self.get(vm.heap).name(vm.interns),
+            self.get(vm.heap).name(vm.heap, vm.interns),
         ))
     }
 
@@ -529,29 +531,29 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        Ok(write!(f, "<class '{}'>", self.get(vm.heap).name(vm.interns))?)
+        Ok(write!(f, "<class '{}'>", self.get(vm.heap).name(vm.heap, vm.interns))?)
     }
 
     /// Resolves `Type.attr`: `__name__`, then eager class attrs, then a lazy
     /// host lookup for public names.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let attr_name = attr.as_str(vm.interns);
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let attr_name = attr.as_str(vm);
         if attr_name == "__name__" {
-            let name = self.get(vm.heap).name(vm.interns).to_owned();
-            return Ok(Some(CallResult::Value(allocate_string(name, vm.heap))));
+            let name = self.get(vm.heap).name.clone_with_heap(vm.heap).into_value();
+            return Ok(Some(CallResult::Value(name)));
         }
         match self.get(vm.heap).attrs.get_by_str(attr_name, vm.heap, vm.interns) {
             Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),
             None if !attr_name.starts_with('_') => Ok(Some(CallResult::AttrLookup {
-                name: attr.clone(),
-                class_name: self.get(vm.heap).name(vm.interns).to_owned(),
+                name: attr.as_str(vm).to_owned(),
+                class_name: self.get(vm.heap).name(vm.heap, vm.interns).to_owned(),
                 object_id: self.get(vm.heap).type_id(),
                 type_object: true,
                 effect: None,
             })),
             // CPython wording for missing attrs on a type object.
             None => Err(ExcType::attribute_error_type(
-                self.get(vm.heap).name(vm.interns),
+                self.get(vm.heap).name(vm.heap, vm.interns),
                 attr_name,
             )),
         }
@@ -560,8 +562,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
     /// Mirrors [`HostClass`]'s lazy method detection for classmethods: a
     /// public name missing from the eager class attrs suspends to the host
     /// (routed by the class uuid); an eager class attr is called as-is.
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let attr_str = attr.as_str(vm.interns);
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        let attr_str = attr.as_str(vm);
         if !attr_str.starts_with('_')
             && self
                 .get(vm.heap)
@@ -571,7 +573,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
         {
             let object_id = self.get(vm.heap).type_id();
             Ok(CallResult::MethodCall {
-                name: attr.clone(),
+                name: attr.as_str(vm).to_owned(),
                 args,
                 object_id,
             })
@@ -586,18 +588,22 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
             defer_drop!(callable, vm);
             vm.call_function(callable, args)
         } else {
+            let error = ExcType::attribute_error_type(self.get(vm.heap).name(vm.heap, vm.interns), attr_str);
             args.drop_with(vm);
-            Err(ExcType::attribute_error_type(
-                self.get(vm.heap).name(vm.interns),
-                attr_str,
-            ))
+            Err(error)
         }
+    }
+}
+
+impl StoredNames for HostClassType {
+    fn names_mut(&mut self) -> impl Iterator<Item = &mut EitherStr> {
+        once(&mut self.name)
     }
 }
 
 impl HeapItem for HostClassType {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        // The eager class attrs are the only heap references.
+        self.name.py_dec_ref_ids(stack);
         self.attrs.py_dec_ref_ids(stack);
     }
 }

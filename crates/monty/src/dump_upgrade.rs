@@ -14,6 +14,8 @@
 //! - It is tested against a fixture the *older* build wrote, which must never be
 //!   regenerated (see `tests/dump_compat.rs`).
 
+pub(crate) mod names;
+
 use ahash::AHashMap;
 use ruff_python_parser::parse_module;
 

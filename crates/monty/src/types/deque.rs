@@ -20,8 +20,9 @@ use crate::{
         LazyHeapSet, Type,
         list::repr_items_fmt,
         slice::{normalize_sequence_index, value_to_i64_bound},
+        str::PyStr,
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// `deque([iterable[, maxlen]])` — both positional-or-keyword, both defaulted.
@@ -407,13 +408,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         Type::Deque
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         value.drop_with(vm);
         let type_name = self.py_type(vm).name(vm.heap, vm.interns);
-        if name.static_string(vm.interns) == Some(StaticStrings::Maxlen) {
+        if name.static_string(vm) == Some(StaticStrings::Maxlen) {
             Err(ExcType::attribute_error_not_writable("maxlen", &type_name))
         } else {
-            Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
+            Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm)))
         }
     }
 
@@ -645,9 +646,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         self.py_mul_impl(other, vm)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // `maxlen` is the deque's only data attribute (read-only in CPython).
-        if attr.static_string(vm.interns) == Some(StaticStrings::Maxlen) {
+        if attr.static_string(vm) == Some(StaticStrings::Maxlen) {
             let value = match self.get(vm.heap).maxlen() {
                 Some(max) => Value::Int(i64::try_from(max).expect("maxlen fits in i64")),
                 None => Value::None,
@@ -657,10 +658,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         Ok(None)
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string(vm.interns) else {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        let Some(method) = attr.static_string(vm) else {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(Type::Deque, attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(Type::Deque, attr.as_str(vm)));
         };
         call_deque_method(self, method, args, vm).map(CallResult::Value)
     }

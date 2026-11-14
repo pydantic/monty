@@ -19,8 +19,8 @@ use crate::{
     hash::HashValue,
     heap::{HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{PyTrait, Type},
-    value::{EitherStr, Value},
+    types::{PyTrait, Type, str::PyStr},
+    value::Value,
 };
 
 /// Python slice object representing start:stop:step indices.
@@ -273,9 +273,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Slice> {
         Ok(f.write_char(')')?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let this = self.get(vm.heap);
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm) {
             Some(StaticStrings::Start) => Ok(Some(CallResult::Value(option_i64_to_value(this.start)))),
             Some(StaticStrings::Stop) => Ok(Some(CallResult::Value(option_i64_to_value(this.stop)))),
             Some(StaticStrings::Step) => Ok(Some(CallResult::Value(option_i64_to_value(this.step)))),

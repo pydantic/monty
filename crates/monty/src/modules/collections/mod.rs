@@ -20,7 +20,7 @@
 pub(crate) mod counter;
 pub(crate) mod defaultdict;
 
-use std::iter::once;
+use std::{iter::once, mem};
 
 use ruff_python_stdlib::keyword::is_keyword;
 
@@ -31,7 +31,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     types::{
         BuiltinType, Dict, Module, NamedTupleClass, PyTrait,
@@ -222,22 +222,22 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // CPython applies `str(typename)` before validating, so any object whose
     // `__str__` yields a valid identifier is accepted. `validate_names` below
     // then rejects the non-identifier cases with CPython's own message.
-    let type_name = if let Some(name) = typename.as_either_str(vm.heap) {
-        name
-    } else {
-        let as_str = typename.py_str(vm)?;
-        let owned = as_str.try_to_str(vm).map(str::to_owned);
-        as_str.drop_with(vm);
-        EitherStr::from(owned?)
-    };
+    let type_name = typename.py_str(vm)?;
+    defer_drop!(type_name, vm);
 
     // CPython tests `if rename:`, so any truthy value enables it — not just `True`.
     let rename = rename.py_bool(vm)?;
-    let mut names = parse_field_names(field_names, vm)?;
+    let mut names_guard = DropGuard::new(parse_field_names(field_names, vm)?, vm);
+    let (names, vm) = names_guard.as_parts_mut();
     if rename {
-        apply_rename(&mut names);
+        apply_rename(names, vm);
     }
-    validate_names(type_name.as_str(vm.interns), &names, rename)?;
+    validate_names(
+        type_name.as_str(vm).expect("py_str returns a string"),
+        names,
+        rename,
+        vm,
+    )?;
 
     // Collect defaults (rightmost fields), then validate the count.
     let default_values = collect_defaults(defaults, vm)?;
@@ -253,38 +253,41 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         other => other.clone_with_heap(vm.heap),
     };
 
-    let field_names: Vec<EitherStr> = names.into_iter().map(EitherStr::Heap).collect();
+    let type_name = type_name.clone_either_str(vm.heap).expect("py_str returns a string");
+    let (field_names, vm) = names_guard.into_parts();
     let class = NamedTupleClass::new(type_name, field_names, default_values, module);
     Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTupleClass(Box::new(class)))))
 }
 
-/// Parses the `field_names` argument into owned strings.
+/// Parses field names, retaining existing string identities where possible.
 ///
 /// A single string is split on commas and whitespace (`'x y'`, `'x,y'`,
 /// `'x, y'` all yield `['x', 'y']`); any other value is iterated and each
 /// element is `str()`-converted, matching CPython's `list(map(str, ...))`.
-fn parse_field_names(field_names: &Value, vm: &mut VM<'_>) -> RunResult<Vec<String>> {
-    if let Some(text) = field_names.as_either_str(vm.heap) {
+fn parse_field_names(field_names: &Value, vm: &mut VM<'_>) -> RunResult<Vec<EitherStr>> {
+    if let Some(text) = field_names.as_str(vm) {
         Ok(text
-            .as_str(vm.interns)
-            .replace(',', " ")
-            .split_whitespace()
-            .map(str::to_owned)
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|name| !name.is_empty())
+            .map(|name| EitherStr::new(name, vm.heap))
             .collect())
     } else {
         let items = collect_owned_iterable::<Vec<Value>>(field_names.clone_with_heap(vm.heap), vm)?;
-        let mut names = Vec::with_capacity(items.len());
+        let mut names_guard = DropGuard::new(Vec::with_capacity(items.len()), vm);
+        let (names, vm) = names_guard.as_parts_mut();
         // A failing `str()` (a field's `__str__` raising) must release the
         // current item *and* the un-iterated remainder; the guards cover both.
-        let iter = items.into_iter();
-        defer_drop_mut!(iter, vm);
-        for item in iter.by_ref() {
-            defer_drop!(item, vm);
-            let as_str = item.py_str(vm)?;
-            defer_drop!(as_str, vm);
-            names.push(as_str.as_str(vm).expect("py_str returns str").to_owned());
+        {
+            let iter = items.into_iter();
+            defer_drop_mut!(iter, vm);
+            for item in iter.by_ref() {
+                defer_drop!(item, vm);
+                let as_str = item.py_str(vm)?;
+                defer_drop!(as_str, vm);
+                names.push(as_str.clone_either_str(vm.heap).expect("py_str returns a string"));
+            }
         }
-        Ok(names)
+        Ok(names_guard.into_inner())
     }
 }
 
@@ -303,14 +306,18 @@ fn collect_defaults(defaults: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> 
 /// A name is replaced when it is not a valid identifier, is a keyword, starts
 /// with an underscore, or duplicates an earlier name. Duplicate detection uses
 /// the original names, so `['x', 'x']` becomes `['x', '_1']`.
-fn apply_rename(names: &mut [String]) {
-    let mut seen: Vec<String> = Vec::with_capacity(names.len());
+fn apply_rename(names: &mut [EitherStr], vm: &mut VM<'_>) {
+    let original: Vec<EitherStr> = names.iter().map(|name| name.clone_with_heap(vm.heap)).collect();
+    defer_drop!(original, vm);
     for (index, name) in names.iter_mut().enumerate() {
-        let invalid =
-            !str_isidentifier(name) || is_keyword(name) || name.starts_with('_') || seen.iter().any(|s| s == name);
-        seen.push(name.clone());
+        let text = name.as_str(vm.heap, vm.interns);
+        let invalid = !str_isidentifier(text)
+            || is_keyword(text)
+            || text.starts_with('_')
+            || original[..index].iter().any(|s| s.as_str(vm.heap, vm.interns) == text);
         if invalid {
-            *name = format!("_{index}");
+            let replacement = EitherStr::new(format!("_{index}"), vm.heap);
+            mem::replace(name, replacement).drop_with(vm);
         }
     }
 }
@@ -321,8 +328,8 @@ fn apply_rename(names: &mut [String]) {
 ///
 /// When `rename` is true the underscore check is skipped, matching CPython —
 /// `rename=True` deliberately produces `_0`, `_1`, ... placeholders.
-fn validate_names(type_name: &str, field_names: &[String], rename: bool) -> RunResult<()> {
-    for name in once(type_name).chain(field_names.iter().map(String::as_str)) {
+fn validate_names(type_name: &str, field_names: &[EitherStr], rename: bool, vm: &VM<'_>) -> RunResult<()> {
+    for name in once(type_name).chain(field_names.iter().map(|name| name.as_str(vm.heap, vm.interns))) {
         if !str_isidentifier(name) {
             return Err(ExcType::value_error(format!(
                 "Type names and field names must be valid identifiers: {}",
@@ -339,13 +346,14 @@ fn validate_names(type_name: &str, field_names: &[String], rename: bool) -> RunR
 
     let mut seen: Vec<&str> = Vec::with_capacity(field_names.len());
     for name in field_names {
+        let name = name.as_str(vm.heap, vm.interns);
         if name.starts_with('_') && !rename {
             return Err(ExcType::value_error(format!(
                 "Field names cannot start with an underscore: {}",
                 repr_name(name)
             )));
         }
-        if seen.contains(&name.as_str()) {
+        if seen.contains(&name) {
             return Err(ExcType::value_error(format!(
                 "Encountered duplicate field name: {}",
                 repr_name(name)

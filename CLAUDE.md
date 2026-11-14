@@ -359,7 +359,7 @@ Key borrowing rules:
 - `get_mut(&self, &mut HeapReader)` → `&mut T` — mutable access through `HeapReadMut`, exclusive via the reader
 - Both accessors borrow the capability and reader for the returned reference's lifetime, retaining the owner or protected source
 - Multiple capability aliases can coexist; their payload borrows cannot conflict
-- `dec_ref()` panics if any reader is active — prevents use-after-free
+- `dec_ref()` panics if the refcount would reach zero while a reader is active — prevents use-after-free
 
 #### Implementing type methods with HeapRead
 

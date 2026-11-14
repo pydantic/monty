@@ -4,7 +4,7 @@ mod heap_str;
 mod inline_str;
 mod iterator;
 
-use std::{fmt::Write, str};
+use std::{fmt::Write, str, str::FromStr};
 
 pub(crate) use heap_str::HeapStr;
 pub(crate) use inline_str::InlineStr;
@@ -25,7 +25,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapObjectRead},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapObjectRead, HeapReader},
     identity::Identity,
     intern::{Interns, StaticStrings, StringId},
     percent_format::percent_format,
@@ -37,7 +37,7 @@ use crate::{
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
-    value::{EitherStr, VALUE_SIZE, Value, eq_str},
+    value::{VALUE_SIZE, Value, eq_str},
 };
 
 /// A string view that preserves Python identity.
@@ -104,6 +104,45 @@ impl<'h> PyStr<'h> {
             Value::InlineString(text) => Some(Self::Inline(*text)),
             Value::Ref(id) => vm.heap.read_as(*id).map(Self::Heap),
             _ => None,
+        }
+    }
+
+    /// Retains the string for storage beyond this scoped view.
+    pub(crate) fn clone_value(&self, heap: &HeapReader<'h>) -> Value {
+        match self {
+            Self::Interned(id) => Value::InternString(*id),
+            Self::Inline(text) => Value::InlineString(*text),
+            Self::Heap(value) => value.clone_value(heap),
+        }
+    }
+
+    /// Resolves a computed attribute name against existing interned names, without inserting it.
+    #[must_use]
+    pub(crate) fn resolve_interned(self, vm: &VM<'h>) -> Self {
+        if !matches!(self, Self::Interned(_))
+            && let Some(id) = vm.interns.get_string_id_by_name(self.as_str(vm))
+        {
+            Self::Interned(id)
+        } else {
+            self
+        }
+    }
+
+    /// Matches a parameter name, retaining the fast path for two interned strings.
+    pub(crate) fn matches(&self, target: StringId, vm: &VM<'h>) -> bool {
+        match self {
+            Self::Interned(id) => *id == target,
+            Self::Inline(text) => text.as_bytes() == vm.interns.get_str(target).as_bytes(),
+            Self::Heap(_) => self.as_str(vm) == vm.interns.get_str(target),
+        }
+    }
+
+    /// Recognizes builtin names without allocating or growing the interner.
+    pub(crate) fn static_string(&self, vm: &VM<'h>) -> Option<StaticStrings> {
+        match self {
+            Self::Interned(id) => vm.interns.static_string(*id),
+            Self::Inline(text) => StaticStrings::from_str(text.as_str()).ok(),
+            Self::Heap(_) => StaticStrings::from_str(self.as_str(vm)).ok(),
         }
     }
 
@@ -226,11 +265,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
     }
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(match self {
-            Self::Interned(id) => Value::InternString(*id),
-            Self::Inline(text) => Value::InlineString(*text),
-            Self::Heap(heap_string) => heap_string.clone_value(vm.heap),
-        })
+        Ok(self.clone_value(vm.heap))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -273,10 +308,10 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
         percent_format(&template, other, vm).map(Some)
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string(vm.interns) else {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &Self, args: ArgValues) -> RunResult<CallResult> {
+        let Some(method) = attr.static_string(vm) else {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm)));
         };
         call_str_method_impl(self, method, args, vm).map(CallResult::Value)
     }

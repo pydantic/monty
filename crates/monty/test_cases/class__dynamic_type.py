@@ -63,6 +63,9 @@ assert E.w == 6
 name = 'Dyn' + 'Cls'
 DC = type(name, (), {})
 assert DC.__name__ == 'DynCls'
+assert DC.__name__ is name
+name = None
+assert DC.__name__ == 'DynCls'
 try:
     DC.nope
     assert False, 'expected attribute error'

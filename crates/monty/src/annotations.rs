@@ -16,7 +16,7 @@ use crate::{
     heap_data::FunctionDefaults,
     intern::{FunctionId, StaticStrings},
     modules::ModuleFunctions,
-    types::{Dict, dict},
+    types::{Dict, dict, str::PyStr},
     value::Value,
 };
 
@@ -36,13 +36,13 @@ def __monty_class_annotations(cls, annotate, classdict, call_annotate, cache):
 /// `f.__annotate__` and `f.__annotations__` of a `def`, the only attributes
 /// Monty's functions have (see `limitations/language.md`); `None` for any other
 /// name. `globals` is the exec dict the `def` was made under, if any.
-pub(crate) fn function_getattr(
+pub(crate) fn function_getattr<'h>(
     func_id: FunctionId,
     globals: Option<HeapId>,
-    attr: &str,
-    vm: &mut VM<'_>,
+    attr: &PyStr<'h>,
+    vm: &mut VM<'h>,
 ) -> Option<RunResult<CallResult>> {
-    match attr {
+    match attr.as_str(vm) {
         "__annotate__" => Some(Ok(CallResult::Value(function_annotate(func_id, globals, vm)))),
         "__annotations__" => Some(function_annotations(func_id, globals, vm)),
         _ => None,
@@ -51,12 +51,12 @@ pub(crate) fn function_getattr(
 
 /// `f.__annotate__(format)` and `f.__annotations__(...)`: the attribute, called.
 /// `None` for any other name, which has no attribute to call.
-pub(crate) fn function_call_attr(
+pub(crate) fn function_call_attr<'h>(
     func_id: FunctionId,
     globals: Option<HeapId>,
-    attr: &str,
+    attr: &PyStr<'h>,
     args: ArgValues,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> Option<RunResult<CallResult>> {
     // The guard releases `args` when there is no attribute or computing it fails.
     let mut args_guard = DropGuard::new(args, vm);

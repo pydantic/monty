@@ -22,7 +22,8 @@ use crate::{
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_attrs},
         dataclasses,
     },
-    value::{EitherStr, Value},
+    types::str::PyStr,
+    value::Value,
 };
 
 /// An instance of a user-defined class.
@@ -360,9 +361,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         None
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut value_guard = DropGuard::new(value, vm);
-        let name = name.as_value(value_guard.ctx().heap);
+        let name = name.clone_value(value_guard.ctx().heap);
         let (value, vm) = value_guard.into_parts();
         let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);
@@ -413,8 +414,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let attr_str = attr.as_str(vm.interns);
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        let attr_str = attr.as_str(vm);
 
         // 1. An instance attribute shadows class methods; call it as-is (unbound).
         if let Some(callable) = self
@@ -448,11 +449,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         }
 
         // 4. No such attribute.
+        let error = ExcType::attribute_error(class_name(class_id, vm.heap, vm.interns), attr_str);
         args.drop_with(vm);
-        Err(ExcType::attribute_error(
-            class_name(class_id, vm.heap, vm.interns),
-            attr_str,
-        ))
+        Err(error)
     }
 
     fn py_is_iterable(&self, vm: &VM<'h>) -> bool {
@@ -613,8 +612,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
 
     /// `obj.method.__annotations__` and `__annotate__` are the function's, as
     /// CPython's method type forwards them.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        if !matches!(attr.as_str(vm.interns), "__annotations__" | "__annotate__") {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        if !matches!(attr.as_str(vm), "__annotations__" | "__annotate__") {
             return Ok(None);
         }
         let func = self.get(vm.heap).func.clone_with_heap(vm);
@@ -622,10 +621,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
         func.py_getattr(attr, vm).map(Some)
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if !matches!(attr.as_str(vm.interns), "__annotations__" | "__annotate__") {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        if !matches!(attr.as_str(vm), "__annotations__" | "__annotate__") {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error("function", attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error("function", attr.as_str(vm)));
         }
         let func = self.get(vm.heap).func.clone_with_heap(vm);
         defer_drop!(func, vm);
@@ -648,8 +647,8 @@ impl HeapItem for BoundMethod {
 /// attribute raises `AttributeError` with the real class name. Takes `self_id`
 /// (available at the `Value` level) because binding a method needs the instance's
 /// `HeapId`.
-pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    let attr_str = attr.as_str(vm.interns);
+pub(crate) fn instance_getattr<'h>(self_id: HeapId, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    let attr_str = attr.as_str(vm);
     if let Some(value) = instance_attr(self_id, attr_str, vm) {
         Ok(CallResult::Value(value))
     } else {
@@ -997,7 +996,7 @@ fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
 /// programmer-error tripwire.
 pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
     match heap.get(class_id) {
-        HeapData::Class(class) => class.name().to_cow(interns),
+        HeapData::Class(class) => class.name().to_cow(heap, interns),
         _ => unreachable!("class_name called with a non-class heap id"),
     }
 }

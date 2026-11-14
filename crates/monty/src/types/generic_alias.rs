@@ -36,9 +36,10 @@ use crate::{
         instance::class_name,
         list::repr_should_truncate,
         set::unhashable_type_name,
+        str::PyStr,
         tuple::{TupleVec, allocate_tuple},
     },
-    value::{EitherStr, Marker, VALUE_SIZE, Value},
+    value::{Marker, VALUE_SIZE, Value},
 };
 
 /// The origin of `typing.Literal[...]`, whose values compare as a set.
@@ -395,9 +396,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     /// no `TypeVar`s) and, for `Annotated`, `__metadata__`; everything else
     /// resolves on a builtin origin type, so `list[int].__name__` is `'list'`
     /// and unknown names report `list`, and is an error on a `typing` form.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let origin = self.get(vm.heap).origin;
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm) {
             Some(StaticStrings::DunderOrigin) => Ok(Some(CallResult::Value(self.get(vm.heap).origin_value(vm.heap)))),
             Some(StaticStrings::DunderArgs) => Ok(Some(CallResult::Value(self.dunder_args(vm)))),
             Some(StaticStrings::DunderParameters) => Ok(Some(CallResult::Value(vm.heap.get_empty_tuple()))),
@@ -420,12 +421,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
                 // CPython's `_BaseGenericAlias.__getattr__`: a dunder raises with
                 // the bare name, anything else is looked up on the origin.
                 AliasOrigin::Special(_) => {
-                    let name = attr.as_str(vm.interns);
+                    let name = attr.as_str(vm);
                     if is_dunder(name) {
                         Err(SimpleException::new_msg(ExcType::AttributeError, name).into())
                     } else {
                         let origin = self.get(vm.heap).origin_value(vm.heap);
                         defer_drop!(origin, vm);
+                        let name = attr.as_str(vm);
                         match origin {
                             // The forms standing in for a `collections.abc` class
                             // report it as the class CPython forwards to.
@@ -449,9 +451,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     /// `dict[str, int].fromkeys(...)` and `list[int].__class_getitem__(str)`
     /// dispatch to the origin's classmethods, and `list[int].__name__()` to
     /// the origin's own attributes.
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         let own_attribute = matches!(
-            attr.static_string(vm.interns),
+            attr.static_string(vm),
             Some(
                 StaticStrings::DunderOrigin
                     | StaticStrings::DunderArgs
@@ -467,7 +469,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
             // lookup may suspend for the host, which only a call-attr carries. A
             // form's own markers take the lookup path below, for its errors.
             AliasOrigin::Special(_)
-                if !own_attribute && !is_dunder(attr.as_str(vm.interns)) && !matches!(origin, Value::Marker(_)) =>
+                if !own_attribute && !is_dunder(attr.as_str(vm)) && !matches!(origin, Value::Marker(_)) =>
             {
                 origin.py_value(vm).py_call_attr(vm, attr, args)
             }
@@ -878,8 +880,8 @@ pub(crate) fn repr_type_arg(
         Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Ok(f.write_str("type")?),
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Class(_) => Ok(f.write_str(&class_name(*id, vm.heap, vm.interns))?),
-            HeapData::NamedTupleClass(class) => Ok(f.write_str(class.name(vm.interns))?),
-            HeapData::HostClassType(class) => Ok(f.write_str(class.name(vm.interns))?),
+            HeapData::NamedTupleClass(class) => Ok(f.write_str(class.name(vm.heap, vm.interns))?),
+            HeapData::HostClassType(class) => Ok(f.write_str(class.name(vm.heap, vm.interns))?),
             _ => item.py_repr_fmt(f, vm, heap_ids),
         },
         _ => item.py_repr_fmt(f, vm, heap_ids),

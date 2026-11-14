@@ -34,9 +34,9 @@ use crate::{
     types::{
         LazyHeapSet, List, Path, PyTrait, Type, allocate_tuple,
         list::ListIterator,
-        str::{allocate_string, string_repr_fmt},
+        str::{PyStr, allocate_string, string_repr_fmt},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// The heap payload for every object a directory scan produces.
@@ -267,34 +267,31 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let value = match (self.get(vm.heap), attr.static_string(vm.interns)) {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let value = match (self.get(vm.heap), attr.static_string(vm)) {
             (DirScan::Entry(entry), Some(StaticStrings::Name)) => allocate_string(entry.name.as_str(), vm.heap),
             (DirScan::Entry(entry), Some(StaticStrings::Path)) => allocate_string(entry.path.as_str(), vm.heap),
-            _ => return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
+            _ => return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm))),
         };
         Ok(Some(CallResult::Value(value)))
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         value.drop_with(vm);
         let readonly = matches!(self.get(vm.heap), DirScan::Entry(_))
-            && matches!(
-                name.static_string(vm.interns),
-                Some(StaticStrings::Name | StaticStrings::Path)
-            );
+            && matches!(name.static_string(vm), Some(StaticStrings::Name | StaticStrings::Path));
         if readonly {
             Err(ExcType::attribute_error_readonly())
         } else {
             Err(ExcType::attribute_error_no_setattr(
                 &self.py_type_name(vm),
-                name.as_str(vm.interns),
+                name.as_str(vm),
             ))
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let method = attr.static_string(vm.interns);
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        let method = attr.static_string(vm);
         match (self.get(vm.heap), method) {
             (DirScan::Entry(entry), Some(method)) if ENTRY_METHODS.contains(&method) => {
                 let (info, path) = (entry.info, entry.path.clone());

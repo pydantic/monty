@@ -24,10 +24,10 @@ use crate::{
     },
     intern::StaticStrings,
     types::{
-        BuiltinType, LazyHeapSet, PyTrait, Type, generic_alias::repr_type_arg, list::repr_should_truncate,
+        BuiltinType, LazyHeapSet, PyTrait, Type, generic_alias::repr_type_arg, list::repr_should_truncate, str::PyStr,
         tuple::allocate_tuple,
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// A union of two or more members, such as `int | None`.
@@ -384,8 +384,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
     /// `__args__`, `__origin__` (the `typing.Union` type) and `__parameters__`
     /// (always `()`); nothing is delegated, so any other name is an
     /// `AttributeError` on the union.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        match attr.static_string(vm.interns) {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        match attr.static_string(vm) {
             Some(StaticStrings::DunderArgs) => Ok(Some(CallResult::Value(self.get(vm.heap).args(vm.heap)))),
             Some(StaticStrings::DunderOrigin) => Ok(Some(CallResult::Value(Value::Builtin(Builtins::Type(
                 BuiltinType::Union,

@@ -71,7 +71,7 @@ use crate::{
         random::SEED_BYTES,
         str::allocate_string,
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Result of executing Await opcode.
@@ -185,8 +185,8 @@ pub enum FrameExit {
     /// with the result. The `call_id` allows the host to use async resolution
     /// by calling `run_pending()` instead of `run(result)`.
     ExternalCall {
-        /// Name of the external function to call (interned or heap-owned).
-        function_name: EitherStr,
+        /// Name of the external function to call, ready to cross to the host.
+        function_name: String,
         /// Arguments for the external function (includes both positional and keyword args).
         args: ArgValues,
         /// Unique ID for this call, used for async correlation.
@@ -229,7 +229,7 @@ pub enum FrameExit {
     /// result. The receiver is NOT included in `args`.
     MethodCall {
         /// Method name (e.g. "distance", or "__call__" for construction).
-        method_name: EitherStr,
+        method_name: String,
         /// Arguments for the call (the receiver is not among them).
         args: ArgValues,
         /// Unique ID for this call, used for async correlation.
@@ -247,7 +247,7 @@ pub enum FrameExit {
     /// `AttributeError` naming `class_name` unless `effect` says otherwise.
     AttrLookup {
         /// The attribute name being looked up.
-        name: EitherStr,
+        name: String,
         /// Class name for the AttributeError message.
         class_name: String,
         /// Uuid of the object whose attribute is read.

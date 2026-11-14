@@ -310,12 +310,12 @@ impl GraphExporter {
                 MontyNode::Tuple(items)
             }
             HeapReadOutput::NamedTuple(nt) => {
-                let type_name = nt.get(vm.heap).name(vm.interns).to_owned();
+                let type_name = nt.get(vm.heap).name(vm.heap, vm.interns).to_owned();
                 let field_names = nt
                     .get(vm.heap)
                     .field_names()
                     .iter()
-                    .map(|fname| fname.as_str(vm.interns).to_owned())
+                    .map(|fname| fname.as_str(vm.heap, vm.interns).to_owned())
                     .collect::<Vec<_>>();
                 let len = nt.get(vm.heap).len();
                 let mut values = Vec::with_capacity(len);
@@ -584,7 +584,7 @@ impl GraphExporter {
         let HeapReadOutput::HostClassType(ty) = vm.heap.read(type_id) else {
             unreachable!("host class ids always point at a HostClassType entry");
         };
-        let class_type = ty.get(vm.heap).class_type(vm.interns);
+        let class_type = ty.get(vm.heap).class_type(vm.heap, vm.interns);
         let attrs = if self.in_progress.insert(type_id) {
             let children = snapshot_dict_pairs(ty.get(vm.heap).attrs(), vm.heap);
             defer_drop!(children, vm);
@@ -923,8 +923,11 @@ fn import_node(
                 ));
             }
             let values = clone_children(&values, built, vm);
-            let field_name_strs: Vec<EitherStr> = field_names.into_iter().map(Into::into).collect();
-            let nt = NamedTuple::new(type_name, field_name_strs, values);
+            let field_name_strs = field_names
+                .into_iter()
+                .map(|name| EitherStr::new(name, vm.heap))
+                .collect();
+            let nt = NamedTuple::new(EitherStr::new(type_name, vm.heap), field_name_strs, values);
             Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(nt)))))
         }
         MontyNode::Dict(pairs) => {
@@ -1169,7 +1172,7 @@ fn intern_host_class_type(
 ) -> Result<HeapId, InvalidInputError> {
     let attrs =
         Dict::from_pairs(attr_pairs, vm).map_err(|_| InvalidInputError::invalid_type("unhashable class attr keys"))?;
-    let name = EitherStr::Heap(name);
+    let name = EitherStr::new(name, vm.heap);
     match vm.heap.resolve_host_type(&type_id) {
         Some(class_id) => {
             vm.heap.inc_ref(class_id);

@@ -95,7 +95,7 @@ assert_eq!(result, MontyObject::int(42));
 
 Serialize a REPL session with `dump()` and restore it with `Dump::load()` to continue in another process or machine.
 The dump includes the interpreter state and the supplied script name, type-check state and module stubs.
-Loading checks the dump version:
+Current builds write dump format 16 and load formats 13–16, upgrading older state as needed:
 
 ```rust
 use monty::{Dump, MontyRepl, Session, SessionRef, dump};

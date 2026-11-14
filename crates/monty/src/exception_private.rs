@@ -20,9 +20,9 @@ use crate::{
     types::{
         PyTrait, Type, allocate_tuple,
         long_int::INT_MAX_STR_DIGITS,
-        str::{StringRepr, allocate_string, string_repr_fmt},
+        str::{PyStr, StringRepr, allocate_string, string_repr_fmt},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Result type alias for operations that can produce a runtime error.
@@ -66,9 +66,14 @@ pub(crate) trait ExcTypeExt: Sized {
     /// a `py_call_attr` fall-through leaks a reference per call — something
     /// sandboxed code can repeat in a loop.
     #[must_use]
-    fn attribute_error_method(type_name: impl Display, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunError {
+    fn attribute_error_method<'h>(
+        type_name: impl Display,
+        attr: &PyStr<'h>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunError {
         args.drop_with(vm);
-        Self::attribute_error(type_name, attr.as_str(vm.interns))
+        Self::attribute_error(type_name, attr.as_str(vm))
     }
 
     /// Creates an AttributeError for a missing attribute on a class object.
@@ -2876,16 +2881,16 @@ impl<'h> HeapRead<'h, SimpleException> {
     /// Gets an attribute from this exception: `args` (a tuple of the message, if
     /// any), `__cause__`, `__context__` and `__suppress_context__`. Returns `None`
     /// for all other attributes.
-    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
+    pub fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<CallResult> {
         // Interned names match by ID; only `args` can also arrive as a dynamic string.
-        let name = attr.static_string(vm.interns);
+        let name = attr.static_string(vm);
         let exc = self.get(vm.heap);
         let value = match name {
             Some(StaticStrings::DunderCause) => chained_value(exc.cause(), vm),
             Some(StaticStrings::DunderContext) => chained_value(exc.context(), vm),
             Some(StaticStrings::DunderSuppressContext) => Value::Bool(exc.suppress_context()),
             Some(StaticStrings::Args) => args_tuple(exc.arg.as_deref(), vm),
-            None if attr.as_str(vm.interns) == "args" => args_tuple(exc.arg.as_deref(), vm),
+            None if attr.as_str(vm) == "args" => args_tuple(exc.arg.as_deref(), vm),
             _ => return None,
         };
         Some(CallResult::Value(value))

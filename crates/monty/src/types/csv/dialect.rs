@@ -12,8 +12,11 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData},
     intern::StaticStrings,
-    types::{CsvObject, PyTrait, Type, str::allocate_string},
-    value::{EitherStr, Value},
+    types::{
+        CsvObject, PyTrait, Type,
+        str::{PyStr, allocate_string},
+    },
+    value::Value,
 };
 
 /// The `csv.QUOTE_*` constants; the discriminants are CPython's values, which the module
@@ -281,7 +284,7 @@ impl Base<'_> {
             Self::Defaults => Ok(None),
             Self::Dialect(dialect) => Ok(dialect.attr(attr, vm)),
             Self::Object(object) => {
-                let name = EitherStr::Interned(vm.interns.intern_static(attr));
+                let name = PyStr::Interned(vm.interns.intern_static(attr));
                 match object.py_getattr(&name, vm) {
                     Ok(CallResult::Value(value)) => Ok(Some(value)),
                     // A missing attribute means "use the default", as CPython's `PyErr_Clear` does.

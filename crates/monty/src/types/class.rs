@@ -1,4 +1,4 @@
-use std::fmt::Write;
+use std::{fmt::Write, iter::once};
 
 use monty_types::MontyUuid;
 
@@ -9,6 +9,7 @@ use crate::{
     boundary_uuid::create_uuid,
     bytecode::{CallResult, VM},
     defer_drop,
+    dump_upgrade::names::StoredNames,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
@@ -16,7 +17,7 @@ use crate::{
         heap_read_ref_as_field_mut,
     },
     intern::{Interns, StringId},
-    types::{Union, str::allocate_string},
+    types::{Union, str::PyStr},
     value::{EitherStr, Value},
 };
 
@@ -33,10 +34,8 @@ use crate::{
 /// the rest of the design.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Class {
-    /// Class name (e.g. `Foo`), used for `repr` and `__name__`. Interned for
-    /// compiled `class` statements; heap-owned for classes created at runtime
-    /// via the 3-arg `type(name, bases, dict)` form, whose name cannot be
-    /// interned because the intern table is frozen after prepare.
+    /// Owned name identity for `repr` and `__name__`: interned for compiled
+    /// `class` statements, or a retained string from `type(name, bases, dict)`.
     name: EitherStr,
     /// Members: method name / class-variable name -> value.
     namespace: Dict,
@@ -149,16 +148,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
     /// wording is CPython's for a type without one.
     fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         Err(ExcType::type_error_type_not_subscriptable(
-            self.get(vm.heap).name.as_str(vm.interns),
+            self.get(vm.heap).name.as_str(vm.heap, vm.interns),
         ))
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        if name.as_str(vm.interns) == "__annotations__" {
+    fn py_set_attr(&mut self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        if name.as_str(vm) == "__annotations__" {
             return annotations::set_class_annotations(self.id(), value, vm);
         }
         let mut value_guard = DropGuard::new(value, vm);
-        let name = name.as_value(value_guard.ctx().heap);
+        let name = name.clone_value(value_guard.ctx().heap);
         let (value, vm) = value_guard.into_parts();
         let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);
@@ -177,18 +176,22 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        Ok(write!(f, "<class '{}'>", self.get(vm.heap).name.as_str(vm.interns))?)
+        Ok(write!(
+            f,
+            "<class '{}'>",
+            self.get(vm.heap).name.as_str(vm.heap, vm.interns)
+        )?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let attr_str = attr.as_str(vm.interns);
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let attr_str = attr.as_str(vm);
         // `Foo.__name__` returns the class name — before the namespace lookup
         // because in CPython `type.__name__` is a metaclass data descriptor that
         // shadows a same-named class-dict member (`class Foo: __name__ = 'bar'`
         // still reads `'Foo'`; only instances see the member).
         if attr_str == "__name__" {
-            let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
-            return Ok(Some(CallResult::Value(allocate_string(name, vm.heap))));
+            let name = self.get(vm.heap).name.clone_with_heap(vm.heap).into_value();
+            return Ok(Some(CallResult::Value(name)));
         }
         // `Foo.__annotations__` is computed from the class's `__annotate__` on
         // first access (PEP 649), another metaclass descriptor in CPython.
@@ -199,21 +202,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         match self.get(vm.heap).namespace.get_by_str(attr_str, vm.heap, vm.interns) {
             Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),
             None => Err(ExcType::attribute_error_type(
-                self.get(vm.heap).name.as_str(vm.interns),
+                self.get(vm.heap).name.as_str(vm.heap, vm.interns),
                 attr_str,
             )),
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let attr_str = attr.as_str(vm.interns);
-        // `__name__` is a synthesized string, not a namespace member (see
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        let attr_str = attr.as_str(vm);
+        // `__name__` is a retained string, not a namespace member (see
         // `py_getattr`), so calling it goes through the normal callable
         // dispatch and raises CPython's `TypeError: 'str' object is not
         // callable` rather than a spurious `AttributeError`.
         if attr_str == "__name__" {
-            let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
-            let name_val = allocate_string(name, vm.heap);
+            let name_val = self.get(vm.heap).name.clone_with_heap(vm.heap).into_value();
             defer_drop!(name_val, vm);
             return vm.call_function(name_val, args);
         }
@@ -228,17 +230,22 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
             defer_drop!(member, vm);
             vm.call_function(member, args)
         } else {
+            let error = ExcType::attribute_error_type(self.get(vm.heap).name.as_str(vm.heap, vm.interns), attr_str);
             args.drop_with(vm);
-            Err(ExcType::attribute_error_type(
-                self.get(vm.heap).name.as_str(vm.interns),
-                attr_str,
-            ))
+            Err(error)
         }
+    }
+}
+
+impl StoredNames for Class {
+    fn names_mut(&mut self) -> impl Iterator<Item = &mut EitherStr> {
+        once(&mut self.name)
     }
 }
 
 impl HeapItem for Class {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        self.name.py_dec_ref_ids(stack);
         self.namespace.py_dec_ref_ids(stack);
     }
 }

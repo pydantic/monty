@@ -399,6 +399,7 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     version 15 builds rebase the source positions of `eval()` code in version 13 and 14 dumps.
     An older `eval()` whose source is also a valid module, because only blank or comment-only lines precede unindented
     code, cannot be told apart from an `exec()`, and keeps positions that can point a few lines early.
+    Version 16 builds also load version 13–15 dumps, restoring copied class and namedtuple names as Python strings.
     Otherwise it refuses them as too old, and the session has to be rebuilt by replaying its feeds.
     The same bytes load in-process, in a subprocess and over gRPC.
 

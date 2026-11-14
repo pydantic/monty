@@ -28,8 +28,8 @@ use crate::{
     os_dispatch::{PendingEffect, release_pending_effect},
     py_value::PyValue,
     resource_checks::check_estimated_size,
-    types::{Dict, Instance, PyTrait, Type, instance::class_name},
-    value::{EitherStr, VALUE_SIZE, Value},
+    types::{Dict, Instance, PyTrait, Type, instance::class_name, str::PyStr},
+    value::{VALUE_SIZE, Value},
 };
 
 /// Result of executing a call or attribute method.
@@ -48,8 +48,8 @@ pub(crate) enum CallResult {
     FramePushed,
     /// External function call requested - VM should pause and return to caller.
     External {
-        /// The external function's name (interned or heap-owned).
-        name: EitherStr,
+        /// The external function's name, materialized for the host boundary.
+        name: String,
         args: ArgValues,
         /// The callee is an async host function, so a supporting host may
         /// start the call without waiting (see [`crate::types::ExtFunction::is_async`]).
@@ -67,13 +67,12 @@ pub(crate) enum CallResult {
     ///
     /// The receiver is NOT included in `args`: the host routes the call by
     /// `object_id`, the receiver's uuid (stored on the [`HostClass`] /
-    /// [`HostClassType`]). Unlike `External`, `name` is an `EitherStr`
-    /// because method names are only known at runtime.
+    /// [`HostClassType`]). The method name is materialized for the host boundary.
     ///
     /// [`HostClass`]: crate::types::HostClass
     /// [`HostClassType`]: crate::types::HostClassType
     MethodCall {
-        name: EitherStr,
+        name: String,
         args: ArgValues,
         object_id: MontyUuid,
     },
@@ -86,7 +85,7 @@ pub(crate) enum CallResult {
     /// resume-undefined AttributeError names the real class without touching
     /// the heap.
     AttrLookup {
-        name: EitherStr,
+        name: String,
         class_name: String,
         object_id: MontyUuid,
         /// True for a lookup on a class type object — selects CPython's
@@ -413,7 +412,7 @@ impl<'h> VM<'h> {
     /// dispatch table here without touching individual types.
     pub(crate) fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<CallResult, RunError> {
         let this = self;
-        let attr = EitherStr::Interned(name_id);
+        let attr = PyStr::Interned(name_id);
 
         // Centralised dunder dispatch — see `dispatch_dunder`. Wrap `args`
         // in an `Option` so the helper can `take()` it only when it
@@ -463,12 +462,12 @@ impl<'h> VM<'h> {
         let error = match &result {
             CallResult::External {
                 name: function_name, ..
-            } => ExcType::not_implemented_synchronous_call("external function", function_name.as_str(self.interns)),
+            } => ExcType::not_implemented_synchronous_call("external function", function_name.as_str()),
             CallResult::OsCall(call) | CallResult::OsCallWithEffect { call, .. } => {
                 ExcType::not_implemented_synchronous_call("OS function", call.name())
             }
             CallResult::MethodCall { name, .. } => {
-                ExcType::not_implemented_synchronous_call("method call", name.as_str(self.interns))
+                ExcType::not_implemented_synchronous_call("method call", name.as_str())
             }
             // A lazy attribute lookup cannot suspend in a synchronous nested
             // context; report the attribute as missing rather than a
@@ -481,9 +480,9 @@ impl<'h> VM<'h> {
                 ..
             } => {
                 let error = if *type_object {
-                    ExcType::attribute_error_type(class_name, name.as_str(self.interns))
+                    ExcType::attribute_error_type(class_name, name.as_str())
                 } else {
-                    ExcType::attribute_error(class_name, name.as_str(self.interns))
+                    ExcType::attribute_error(class_name, name.as_str())
                 };
                 result.drop_with(self);
                 return error;
@@ -501,13 +500,13 @@ impl<'h> VM<'h> {
         let error = match &exit {
             FrameExit::Return(_) => unreachable!("return exits are handled above"),
             FrameExit::ExternalCall { function_name, .. } => {
-                ExcType::not_implemented_synchronous_call("external function", function_name.as_str(self.interns))
+                ExcType::not_implemented_synchronous_call("external function", function_name.as_str())
             }
             FrameExit::OsCall { function_call, .. } => {
                 ExcType::not_implemented_synchronous_call("OS function", function_call.name())
             }
             FrameExit::MethodCall { method_name, .. } => {
-                ExcType::not_implemented_synchronous_call("method call", method_name.as_str(self.interns))
+                ExcType::not_implemented_synchronous_call("method call", method_name.as_str())
             }
             // Same as the `CallResult::AttrLookup` arm above.
             FrameExit::AttrLookup {
@@ -517,9 +516,9 @@ impl<'h> VM<'h> {
                 ..
             } => {
                 let error = if *type_object {
-                    ExcType::attribute_error_type(class_name, name.as_str(self.interns))
+                    ExcType::attribute_error_type(class_name, name.as_str())
                 } else {
-                    ExcType::attribute_error(class_name, name.as_str(self.interns))
+                    ExcType::attribute_error(class_name, name.as_str())
                 };
                 exit.drop_with(self);
                 return error;

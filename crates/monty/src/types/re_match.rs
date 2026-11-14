@@ -22,9 +22,9 @@ use crate::{
     intern::StaticStrings,
     types::{
         Dict, LazyHeapSet, PyTrait, Type, allocate_tuple,
-        str::{allocate_string, string_repr_fmt},
+        str::{PyStr, allocate_string, string_repr_fmt},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// A regex match result, storing captured groups and positions.
@@ -341,20 +341,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
         Ok(f.write_char('>')?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        match attr.static_string(vm.interns) {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        match attr.static_string(vm) {
             Some(StaticStrings::StringAttr) => {
                 // Hand back the same subject object (CPython's `m.string is s`),
                 // bumping its refcount rather than allocating a fresh copy.
                 let v = self.get(vm.heap).subject.clone_with_heap(vm);
                 Ok(Some(CallResult::Value(v)))
             }
-            _ => Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
+            _ => Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm))),
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let result = match attr.static_string(vm.interns) {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        let result = match attr.static_string(vm) {
             Some(StaticStrings::Group) => call_group(self, args, vm)?,
             Some(StaticStrings::Groups) => {
                 args.check_zero_args("re.Match.groups", vm.heap)?;

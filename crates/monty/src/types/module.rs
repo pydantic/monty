@@ -9,8 +9,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings, StringId},
-    types::Dict,
-    value::{EitherStr, Value},
+    types::{Dict, str::PyStr},
+    value::Value,
 };
 
 /// A Python module with a name and attribute dictionary.
@@ -173,8 +173,8 @@ impl<'h> HeapRead<'h, Module> {
     /// Returns the attribute value if found, or `None` if the attribute doesn't exist.
     /// For `Property` values, invokes the property getter rather than returning
     /// the Property itself - this implements Python's descriptor protocol.
-    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
-        let value = self.attr_value(attr.as_str(vm.interns), vm)?;
+    pub fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<CallResult> {
+        let value = self.attr_value(attr.as_str(vm), vm)?;
         // If the value is a Property, invoke its getter to compute the actual value
         if let Value::Property(prop) = value {
             Some(prop.get())
@@ -190,11 +190,11 @@ impl<'h> HeapRead<'h, Module> {
     ///
     /// Returns `CallResult` because module functions may need OS operations
     /// (e.g., `os.getenv()`) that require host involvement.
-    pub fn py_call_attr(&self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    pub fn py_call_attr(&self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         let mut args_guard = DropGuard::new(args, vm);
         let vm = args_guard.ctx();
 
-        match self.attr_value(attr.as_str(vm.interns), vm) {
+        match self.attr_value(attr.as_str(vm), vm) {
             Some(value) => {
                 let (args, vm) = args_guard.into_parts();
                 defer_drop!(value, vm);
@@ -202,19 +202,19 @@ impl<'h> HeapRead<'h, Module> {
             }
             None => Err(ExcType::attribute_error_module(
                 self.get(vm.heap).name_str(vm.interns),
-                attr.as_str(vm.interns),
+                attr.as_str(vm),
             )),
         }
     }
 
     /// Binds an attribute on a file module's namespace, so the module's own
     /// functions see it; other modules reject assignment.
-    pub fn py_set_attr(&self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    pub fn py_set_attr(&self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let Some(namespace) = self.get(vm.heap).namespace() else {
             value.drop_with(vm);
-            return Err(ExcType::attribute_error_no_setattr("module", name.as_str(vm.interns)));
+            return Err(ExcType::attribute_error_no_setattr("module", name.as_str(vm)));
         };
-        let key = name.as_value(vm.heap);
+        let key = name.clone_value(vm.heap);
         let HeapReadOutput::Dict(dict) = vm.heap.read(namespace) else {
             key.drop_with(vm);
             value.drop_with(vm);

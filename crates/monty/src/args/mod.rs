@@ -22,7 +22,7 @@ use crate::{
     object_bridge::{CallArgsExt, GraphExporter},
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Type for method call arguments.
@@ -414,7 +414,7 @@ impl KwargsValues {
     /// The value passed under `name`, if any; a non-string key (only possible via `**`
     /// unpacking) never matches.
     pub(crate) fn get(&self, name: &str, heap: &Heap, interns: &Interns) -> Option<&Value> {
-        let is_name = |key: &Value| key.as_either_str(heap).is_some_and(|key| key.as_str(interns) == name);
+        let is_name = |key: &Value| key.as_str_heap(heap, interns).is_some_and(|key| key == name);
         match self {
             Self::Empty => None,
             Self::Inline(kvs) => kvs
@@ -433,7 +433,7 @@ impl KwargsValues {
         let key = match self {
             Self::Empty => return Ok(None),
             Self::Inline(kvs) => {
-                return Ok(kvs.first().map(|(id, _)| EitherStr::Interned(*id).into_string(interns)));
+                return Ok(kvs.first().map(|(id, _)| interns.get_str(*id).to_owned()));
             }
             Self::Pairs(kvs) => kvs.first().map(|(key, _)| key),
             Self::Dict(dict) => dict.iter().next().map(|(key, _)| key),
@@ -441,8 +441,8 @@ impl KwargsValues {
         match key {
             None => Ok(None),
             Some(key) => key
-                .as_either_str(heap)
-                .map(|key| Some(key.into_string(interns)))
+                .as_str_heap(heap, interns)
+                .map(|key| Some(key.to_owned()))
                 .ok_or_else(ExcType::type_error_kwargs_nonstring_key),
         }
     }

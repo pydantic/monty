@@ -22,10 +22,10 @@ use crate::{
     py_value::PyValue,
     types::{
         LazyHeapSet, PyTrait, Type,
-        str::{StringRepr, allocate_string},
+        str::{PyStr, StringRepr, allocate_string},
         r#type::strip_underscores,
     },
-    value::{EitherStr, Value, eq_f64},
+    value::{Value, eq_f64},
 };
 
 /// A Python `complex`: real and imaginary IEEE doubles.
@@ -378,8 +378,8 @@ fn init_single(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
         return Ok(value);
     }
     defer_drop!(value, vm);
-    let parsed = match value.as_either_str(vm.heap) {
-        Some(text) => Some(parse(text.as_str(vm.interns))?),
+    let parsed = match value.as_str(vm) {
+        Some(text) => Some(parse(text)?),
         // `Decimal.__complex__`; Decimals take no part in complex arithmetic.
         None if let PyValue::Decimal(d) = value.py_value(vm) => Some(Complex::new(d.get(vm.heap).to_f64()?, 0.0)),
         None => operand(value, vm)?.map(widen),
@@ -737,8 +737,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         Ok(Some(widen(base).pow(c)?.into_value(vm.heap)))
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::Conjugate) {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        if attr.static_string(vm) == Some(StaticStrings::Conjugate) {
             let c = *self.get(vm.heap);
             args.check_zero_args("complex.conjugate", vm.heap)?;
             return Ok(CallResult::Value(c.conjugate().into_value(vm.heap)));
@@ -746,9 +746,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         Err(ExcType::attribute_error_method(Type::Complex, attr, args, vm))
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let c = *self.get(vm.heap);
-        Ok(match attr.static_string(vm.interns) {
+        Ok(match attr.static_string(vm) {
             Some(StaticStrings::Real) => Some(CallResult::Value(Value::Float(c.real))),
             Some(StaticStrings::Imag) => Some(CallResult::Value(Value::Float(c.imag))),
             _ => None,
@@ -757,11 +757,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
 
     /// `real` and `imag` exist but are read-only, which CPython words differently
     /// from a missing attribute.
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         value.drop_with(vm);
-        Err(match name.static_string(vm.interns) {
+        Err(match name.static_string(vm) {
             Some(StaticStrings::Real | StaticStrings::Imag) => ExcType::attribute_error_readonly(),
-            _ => ExcType::attribute_error_no_setattr(&self.py_type_name(vm), name.as_str(vm.interns)),
+            _ => ExcType::attribute_error_no_setattr(&self.py_type_name(vm), name.as_str(vm)),
         })
     }
 }

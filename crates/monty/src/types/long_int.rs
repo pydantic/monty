@@ -38,10 +38,10 @@ use crate::{
         LazyHeapSet, PyTrait, Type,
         numeric::{round_bigint, round_digits, round_int},
         py_trait::PyObjectIdentity,
-        str::allocate_string,
+        str::{PyStr, allocate_string},
         tuple::allocate_tuple,
     },
-    value::{EitherStr, Value, eq_bigint, float_pow_value},
+    value::{Value, eq_bigint, float_pow_value},
 };
 
 /// Maximum number of decimal digits allowed for integer-string conversion.
@@ -474,8 +474,8 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm.interns) {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        match attr.static_string(vm) {
             Some(StaticStrings::BitLength) => {
                 args.check_zero_args("int.bit_length", vm.heap)?;
                 Ok(CallResult::Value(self.bit_length(vm)))
@@ -486,7 +486,7 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
             }
             _ => {
                 args.drop_with(vm.heap);
-                Err(ExcType::attribute_error("int", attr.as_str(vm.interns)))
+                Err(ExcType::attribute_error("int", attr.as_str(vm)))
             }
         }
     }
@@ -1042,8 +1042,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         IntArithmetic::rshift(self.get(vm.heap).inner(), other, vm, true)
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm.interns) {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        match attr.static_string(vm) {
             Some(StaticStrings::BitLength) => {
                 args.check_zero_args("int.bit_length", vm.heap)?;
                 let bits = self.get(vm.heap).bits();
@@ -1064,7 +1064,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
             }
             _ => {
                 args.drop_with(vm.heap);
-                Err(ExcType::attribute_error("int", attr.as_str(vm.interns)))
+                Err(ExcType::attribute_error("int", attr.as_str(vm)))
             }
         }
     }

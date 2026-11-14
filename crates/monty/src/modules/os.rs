@@ -322,10 +322,11 @@ fn chdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// than as a shared helper.
 fn getenv(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let (key_value, default_value) = args.get_one_two_args("os.getenv", vm.heap)?;
-    if let Some(key) = key_value.as_either_str(vm.heap) {
+    if let Some(key) = key_value.as_str(vm) {
+        let key = key.to_owned();
         key_value.drop_with(vm.heap);
         Ok(CallResult::OsCall(OsFunctionCall::Getenv(GetenvArgs {
-            key: key.into_string(vm.interns),
+            key,
             default: MontyObject::export(default_value.unwrap_or(Value::None), vm)?,
         })))
     } else {

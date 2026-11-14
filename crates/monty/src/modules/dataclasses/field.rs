@@ -13,8 +13,11 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::{StaticStrings, StringId},
-    types::{LazyHeapSet, PyTrait, Type, str::allocate_string},
-    value::{EitherStr, Marker, Value},
+    types::{
+        LazyHeapSet, PyTrait, Type,
+        str::{PyStr, allocate_string},
+    },
+    value::{Marker, Value},
 };
 
 /// One entry of a class's `__dataclass_fields__`: CPython's `dataclasses.Field`.
@@ -328,8 +331,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassField> {
     /// Everything but `name`/`type`/`default`/`default_factory` is a constant,
     /// because the arguments that would vary them are refused by `field()`, so
     /// every field Monty builds carries CPython's defaults.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let attr_str = attr.as_str(vm.interns);
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let attr_str = attr.as_str(vm);
         let value = match attr_str {
             // `None` until a decorator adopts the field, as in CPython.
             "name" => match self.get(vm.heap).name {

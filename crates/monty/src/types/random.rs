@@ -27,8 +27,8 @@ use crate::{
         random::{RandomFunctions, random_dispatch},
     },
     py_value::PyValue,
-    types::{LazyHeapSet, PyTrait, Type, py_trait::PyObjectIdentity},
-    value::{EitherStr, Value},
+    types::{LazyHeapSet, PyTrait, Type, py_trait::PyObjectIdentity, str::PyStr},
+    value::Value,
 };
 
 /// Words in the MT19937 state vector.
@@ -628,20 +628,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Random> {
     }
 
     /// `VERSION`, the state-format number `getstate()` reports.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        Ok((attr.static_string(vm.interns) == Some(StaticStrings::RandomVersion))
-            .then_some(CallResult::Value(Value::Int(3))))
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        Ok((attr.static_string(vm) == Some(StaticStrings::RandomVersion)).then_some(CallResult::Value(Value::Int(3))))
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if let Some(function) = attr
-            .static_string(vm.interns)
-            .and_then(RandomFunctions::from_static_string)
-        {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        if let Some(function) = attr.static_string(vm).and_then(RandomFunctions::from_static_string) {
             random_dispatch(RandomTarget::Instance(self.id()), function, args, vm)
         } else {
             args.drop_with(vm);
-            Err(ExcType::attribute_error("Random", attr.as_str(vm.interns)))
+            Err(ExcType::attribute_error("Random", attr.as_str(vm)))
         }
     }
 }

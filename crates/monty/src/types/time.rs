@@ -33,10 +33,10 @@ use crate::{
         CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type,
         date::{self, StrftimeArgs},
         datetime::{allocate_tzinfo_ref, tzinfo_from_value},
-        str::{StringRepr, allocate_string, allocate_string_no_interning},
+        str::{PyStr, StringRepr, allocate_string, allocate_string_no_interning},
         timezone,
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// `datetime.time` storage.
@@ -556,8 +556,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
         Ok(allocate_string_no_interning(s, vm.heap))
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm.interns) {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        match attr.static_string(vm) {
             Some(StaticStrings::Isoformat) => {
                 let IsoformatArgs { timespec } = IsoformatArgs::from_args(args, vm)?;
                 defer_drop!(timespec, vm);
@@ -601,11 +601,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // Read only the field being asked for: cloning the whole `Time` would
         // copy the timezone name's `String` on every `t.hour`.
         let int_attr = |value: u32| Ok(Some(CallResult::Value(Value::Int(i64::from(value)))));
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm) {
             Some(StaticStrings::Hour) => int_attr(u32::from(self.get(vm.heap).hour)),
             Some(StaticStrings::Minute) => int_attr(u32::from(self.get(vm.heap).minute)),
             Some(StaticStrings::Second) => int_attr(u32::from(self.get(vm.heap).second)),

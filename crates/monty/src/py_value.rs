@@ -32,7 +32,7 @@ use crate::{
         py_trait::PyObjectIdentity,
         str::PyStr,
     },
-    value::{EitherStr, Marker, Value, float_divmod_tuple, float_pow_value, py_float_divmod, py_float_mod},
+    value::{Marker, Value, float_divmod_tuple, float_pow_value, py_float_divmod, py_float_mod},
 };
 
 /// Normalizes the three multi-representation types and keeps every other heap type flat.
@@ -388,7 +388,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         )
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         if let Self::Module(module) = self {
             return module.py_set_attr(name, value, vm);
         }
@@ -400,13 +400,13 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                 let type_name = self.py_type_name(vm);
                 Err(ExcType::attribute_error_no_setattr(
                     &type_name,
-                    name.as_str(vm.interns),
+                    name.as_str(vm),
                 ))
             }
         )
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         forward_py_value!(
             self,
             |value| value.py_getattr(attr, vm),
@@ -772,18 +772,18 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         })
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
             Self::Builtin(Builtins::Type(ty)) => Type::from(*ty).call_class_method(attr, args, vm),
             Self::DefFunction(func_id) => {
-                match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
+                match annotations::function_call_attr(*func_id, None, attr, args, vm) {
                     Some(result) => result,
-                    None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
+                    None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm))),
                 }
             }
             Self::Bool(value) => {
-                match attr.static_string(vm.interns) {
+                match attr.static_string(vm) {
                     Some(StaticStrings::BitLength) => {
                         args.check_zero_args("int.bit_length", vm.heap)?;
                         Ok(CallResult::Value(Value::Int(i64::from(*value))))
@@ -794,13 +794,13 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                     }
                     _ => {
                         args.drop_with(vm);
-                        Err(ExcType::attribute_error("bool", attr.as_str(vm.interns)))
+                        Err(ExcType::attribute_error("bool", attr.as_str(vm)))
                     }
                 }
             }
             _ => {
                 args.drop_with(vm);
-                Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
+                Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm)))
             }
         })
     }
@@ -1029,7 +1029,7 @@ mod tests {
                 defer_drop!(payload, vm);
                 let subjects = vec![Value::None, Value::InlineString(InlineStr::new("text").unwrap())];
                 defer_drop!(subjects, vm);
-                let name = EitherStr::Heap("missing".to_owned());
+                let name = PyStr::Inline(InlineStr::new("missing").unwrap());
                 for subject in subjects {
                     let mut view = subject.py_value(vm);
                     assert!(!view.py_is_context_manager(vm));
