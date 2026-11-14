@@ -35,7 +35,7 @@ impl StringIterator {
 
     /// Allocates an iterator over a string stored inside its `Value`.
     pub(crate) fn from_inline(text: InlineStr, vm: &mut VM<'_>) -> Value {
-        Self::allocate(StringIteratorSource::Inline(text), text.as_bytes().is_ascii(), vm)
+        Self::allocate(StringIteratorSource::Inline(text), text.is_ascii(), vm)
     }
 
     /// Allocates an iterator retaining a heap string.
@@ -63,7 +63,7 @@ impl StringIterator {
 
     /// Returns the number of Unicode code points not yet yielded.
     pub(crate) fn size_hint(&self, vm: &VM<'_>) -> usize {
-        self.as_str(vm).chars().count()
+        bytecount::num_chars(self.as_str(vm).as_bytes())
     }
 
     /// Borrows the unconsumed string suffix.

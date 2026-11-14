@@ -374,16 +374,29 @@ pub fn type_check_nesting_exception(
     }
 }
 
-/// Rejects a source over `source_scan_threshold` bytes whose estimated parser
-/// nesting exceeds [`MAX_NESTING_DEPTH`] before ruff can grow its stack on it.
-///
-/// Same message as the converter's exact check, so either path reads alike.
+/// Rejects source lengths that Ruff's 32-bit offsets cannot represent.
+pub(crate) fn check_source_length(byte_len: usize, filename_id: StringId) -> Result<(), ParseError> {
+    u32::try_from(byte_len).map(|_| ()).map_err(|_| {
+        ParseError::syntax(
+            "source exceeds maximum length of 4294967295 bytes",
+            CodeRange {
+                filename: filename_id,
+                ..CodeRange::default()
+            },
+        )
+    })
+}
+
+/// Rejects source above `u32::MAX` bytes regardless of `source_scan_threshold`.
+/// Sources above `source_scan_threshold` also get a nesting check against [`MAX_NESTING_DEPTH`].
 fn check_source_nesting(
     code: &str,
     mode: Mode,
     filename_id: StringId,
     source_scan_threshold: usize,
 ) -> Result<(), ParseError> {
+    check_source_length(code.len(), filename_id)?;
+
     if code.len() > source_scan_threshold
         && let Some(range) = nesting_bound_exceeded(code, mode, MAX_NESTING_DEPTH)
     {
@@ -3406,3 +3419,7 @@ impl ConstantNumber {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/source_length.rs"]
+mod source_length_tests;
