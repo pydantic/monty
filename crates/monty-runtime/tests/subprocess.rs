@@ -2963,11 +2963,11 @@ fn reset_isolates_type_check_state_from_the_next_session() {
         };
         assert_eq!(
             probe(format!("from {module} import LEAKY")),
-            format!("b.py:1:6: error[unresolved-import] Cannot resolve imported module `{module}`\n"),
+            format!("b.py:1:6: error[import-not-found] Cannot resolve imported module `{module}`\n"),
         );
         assert_eq!(
             probe("from repl_type_stubs import STUB_SECRET".to_owned()),
-            "b.py:1:6: error[unresolved-import] Cannot resolve imported module `repl_type_stubs`\n",
+            "b.py:1:6: error[import-not-found] Cannot resolve imported module `repl_type_stubs`\n",
         );
         // The new session can still check and execute valid code.
         assert_eq!(child.feed_complete("x: int = 1\nx"), MontyObject::int(1));

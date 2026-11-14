@@ -448,7 +448,7 @@ impl Scanner {
         };
         self.prev_ends_operand = matches!(
             kind,
-            TokenKind::Name
+            TokenKind::Identifier
                 | TokenKind::Int
                 | TokenKind::Float
                 | TokenKind::Complex

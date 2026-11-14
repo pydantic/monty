@@ -715,7 +715,7 @@ assert_type(functools.lru_cache(get_list_int)(), list[int])
 # Loop variables keep their element type for every iterable, not just lists
 for x_list in get_list_int():
     assert_type(x_list, int)
-for k_dict, v_dict in {'a': 1}.items():
+for k_dict, v_dict in get_dict_str_int().items():
     assert_type(k_dict, str)
     assert_type(v_dict, int)
 assert_type([y_comp for y_comp in [1, 2]], list[int])
