@@ -70,7 +70,7 @@
     "create-platform-packages": "node scripts/create-platform-packages.mjs"
   },
   "dependencies": {
-    "@bytecodealliance/preview2-shim": "^0.19.0",
+    "@bytecodealliance/preview2-shim": "^0.31.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/api-logs": "^0.222.0"
   },
@@ -89,14 +89,14 @@
     "@opentelemetry/sdk-trace-base": "^2.11.0",
     "@playwright/test": "^1.49.1",
     "@tybys/wasm-util": "^0.10.0",
-    "@types/node": "^25.0.9",
-    "@vitest/browser": "^3.2.4",
-    "npm-run-all2": "^8.0.4",
+    "@types/node": "^26.6.6",
+    "@vitest/browser": "^5.1.0",
+    "npm-run-all2": "^9.0.4",
     "oxlint": "^1.14.0",
     "prettier": "^3.6.2",
-    "typescript": "^5.9.2",
-    "vite": "^6.3.5",
-    "vitest": "^3.2.4"
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6",
+    "vitest": "^5.1.0"
   },
   "prettier": {
     "printWidth": 120,
