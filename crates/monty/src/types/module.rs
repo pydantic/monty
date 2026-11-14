@@ -9,8 +9,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, HeapId, HeapItem, HeapRead},
     intern::{Interns, StaticStrings, StringId},
-    types::Dict,
-    value::{EitherStr, Value},
+    types::{Dict, str::PyStr},
+    value::Value,
 };
 
 /// A Python module with a name and attribute dictionary.
@@ -110,11 +110,11 @@ impl<'h> HeapRead<'h, Module> {
     /// Returns the attribute value if found, or `None` if the attribute doesn't exist.
     /// For `Property` values, invokes the property getter rather than returning
     /// the Property itself - this implements Python's descriptor protocol.
-    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
+    pub fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<CallResult> {
         let value = self
             .get(vm.heap)
             .attrs
-            .get_by_str(attr.as_str(vm.interns), vm.heap, vm.interns)?;
+            .get_by_str(attr.as_str(vm), vm.heap, vm.interns)?;
 
         // If the value is a Property, invoke its getter to compute the actual value
         if let Value::Property(prop) = *value {
@@ -131,16 +131,16 @@ impl<'h> HeapRead<'h, Module> {
     ///
     /// Returns `CallResult` because module functions may need OS operations
     /// (e.g., `os.getenv()`) that require host involvement.
-    pub fn py_call_attr(&self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    pub fn py_call_attr(&self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         let mut args_guard = DropGuard::new(args, vm);
         let vm = args_guard.ctx();
 
         let attr_str = match attr {
-            EitherStr::Interned(id) => vm.interns.get_str(*id),
-            EitherStr::Heap(s) => {
+            PyStr::Interned(id) => vm.interns.get_str(*id),
+            PyStr::Heap(_) => {
                 return Err(ExcType::attribute_error_module(
                     self.get(vm.heap).name_str(vm.interns),
-                    s,
+                    attr.as_str(vm),
                 ));
             }
         };
@@ -154,7 +154,7 @@ impl<'h> HeapRead<'h, Module> {
             }
             None => Err(ExcType::attribute_error_module(
                 self.get(vm.heap).name_str(vm.interns),
-                attr.as_str(vm.interns),
+                attr.as_str(vm),
             )),
         }
     }

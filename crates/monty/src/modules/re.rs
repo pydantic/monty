@@ -494,8 +494,8 @@ impl PatternArg {
     /// Coerces the raw `pattern` value, consuming it on every path (the
     /// `Compiled` variant transfers ownership in rather than dropping).
     fn extract(value: Value, vm: &mut VM<'_>) -> RunResult<Self> {
-        if let Some(either) = value.as_either_str(vm.heap) {
-            let pattern = either.into_string(vm.interns);
+        if let Ok(text) = value.to_str(vm) {
+            let pattern = text.to_owned();
             value.drop_with(vm);
             Ok(Self::Str(pattern))
         } else if value.py_type_heap(vm.heap) == Type::RePattern {

@@ -26,12 +26,12 @@ use crate::{
         instance::class_name,
         long_int::INT_MAX_STR_DIGITS,
         path,
-        str::{StringRepr, allocate_string},
+        str::{PyStr, StringRepr, allocate_string},
         time,
         timedelta::{self, DAY_MICROSECONDS, MAX_TIMEDELTA_DAYS, MIN_TIMEDELTA_DAYS},
         timezone::{self, MAX_TIMEZONE_CONSTANT_SECONDS},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Represents the Python type of a value.
@@ -683,7 +683,7 @@ impl Type {
             // The type's plain attributes (`list.__name__`); a missing name
             // raises the lookup's `type object 'list' has no attribute` error.
             _ => {
-                let attr = EitherStr::Interned(method_id);
+                let attr = PyStr::Interned(method_id);
                 if let Some(value) = self.class_getattr(&attr, vm) {
                     defer_drop!(value, vm);
                     vm.call_function(value, args)
@@ -698,23 +698,22 @@ impl Type {
     /// Resolves an attribute read on a builtin type object itself — `list.__name__`,
     /// `date.max`, `chain.from_iterable` — returning `None` when there is no such
     /// member so the caller raises [`Self::attribute_error`].
-    pub(crate) fn class_getattr(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-        let is_dunder_name = attr.static_string(vm.interns).map_or_else(
-            || attr.as_str(vm.interns) == "__name__",
-            |ss| ss == StaticStrings::DunderName,
-        );
+    pub(crate) fn class_getattr<'h>(self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<Value> {
+        let is_dunder_name = attr
+            .static_string(vm)
+            .map_or_else(|| attr.as_str(vm) == "__name__", |ss| ss == StaticStrings::DunderName);
         if is_dunder_name {
             Some(allocate_string(self.dunder_name(vm.heap, vm.interns), vm.heap))
         } else if let Some(constant) = self.class_constant(attr, vm) {
             Some(constant)
-        } else if self == Self::ItertoolsChain && attr.static_string(vm.interns) == Some(StaticStrings::FromIterable) {
+        } else if self == Self::ItertoolsChain && attr.static_string(vm) == Some(StaticStrings::FromIterable) {
             // `chain.from_iterable`, the one attribute an `itertools` type
             // carries. Handed out as a value so it can be bound and called
             // later, not only called in place.
             Some(Value::ModuleFunction(ModuleFunctions::Itertools(
                 ItertoolsFunctions::ChainFromIterable,
             )))
-        } else if self == Self::Object && attr.as_str(vm.interns) == "__setattr__" {
+        } else if self == Self::Object && attr.as_str(vm) == "__setattr__" {
             // `object.__setattr__` is the only member `object` carries: it
             // exists so a class that hooks attribute writes has a way to
             // perform one (see `limitations/classes.md`).
@@ -728,8 +727,8 @@ impl Type {
     ///
     /// CPython names the class rather than the metaclass here:
     /// `type object 'list' has no attribute 'nonexistent'`.
-    pub(crate) fn attribute_error(self, attr: &EitherStr, vm: &VM<'_>) -> RunError {
-        ExcType::attribute_error_type(&self.name(vm.heap, vm.interns), attr.as_str(vm.interns))
+    pub(crate) fn attribute_error<'h>(self, attr: &PyStr<'h>, vm: &VM<'h>) -> RunError {
+        ExcType::attribute_error_type(&self.name(vm.heap, vm.interns), attr.as_str(vm))
     }
 
     /// Resolves a class-level constant on a builtin type object (`time.max`,
@@ -738,14 +737,14 @@ impl Type {
     ///
     /// Every lookup allocates a fresh object, so `date.min is date.min` is
     /// `False` where CPython caches (see limitations/datetime.md).
-    pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+    pub(crate) fn class_constant<'h>(self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<Value> {
         // One microsecond short of `MAX_TIMEDELTA_DAYS + 1` days, which
         // normalizes to CPython's `timedelta(days=999999999, seconds=86399,
         // microseconds=999999)`.
         const MAX_TIMEDELTA_MICROS: i128 = ((MAX_TIMEDELTA_DAYS as i128) + 1) * DAY_MICROSECONDS - 1;
         const MIN_TIMEDELTA_MICROS: i128 = (MIN_TIMEDELTA_DAYS as i128) * DAY_MICROSECONDS;
 
-        Some(match (self, attr.static_string(vm.interns)?) {
+        Some(match (self, attr.static_string(vm)?) {
             (Self::Date, StaticStrings::Min) => date::allocate_ymd(1, 1, 1, vm.heap),
             (Self::Date, StaticStrings::Max) => date::allocate_ymd(9999, 12, 31, vm.heap),
             (Self::Date, StaticStrings::Resolution) => timedelta::allocate_micros(DAY_MICROSECONDS, vm.heap),

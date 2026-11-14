@@ -36,7 +36,7 @@ use crate::{
     run::CompileOptions,
     source_map::{SourceMap, StackFrameExt},
     types::Type,
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Maximum number of arguments allowed in a function call.
@@ -722,7 +722,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                         *target_position,
                     ));
                 };
-                let name_id = attr.string_id().expect("LoadAttr requires interned attr name");
+                let name_id = *attr;
                 let name_idx = check_name_index_u16(name_id, *target_position)?;
                 // Stack: compile object, dup for later store, load attr, apply op, rotate, store
                 self.compile_expr(object)?; // [obj]
@@ -742,7 +742,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 value,
             } => {
                 self.compile_expr(value)?;
-                self.emit_attr_store(object, attr, *target_position)?;
+                self.emit_attr_store(object, *attr, *target_position)?;
             }
             Node::ChainAssign { targets, object } => {
                 // Python evaluates the RHS once, then assigns to each target in
@@ -1337,7 +1337,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 self.compile_expr(object)?;
                 // Restore the full expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
-                let name_id = attr.string_id().expect("LoadAttr requires interned attr name");
+                let name_id = *attr;
                 let name_idx = check_name_index_u16(name_id, expr_loc.position)?;
                 self.code.emit_u16(Opcode::LoadAttr, name_idx)?;
             }
@@ -1351,7 +1351,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 self.compile_expr(object)?;
 
                 // Compile the attribute call arguments and emit CallAttr
-                self.compile_method_call(attr, args, expr_loc.position)?;
+                self.compile_method_call(*attr, args, expr_loc.position)?;
             }
 
             Expr::IndirectCall { callable, args } => {
@@ -2305,14 +2305,13 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// and emits a CallAttr opcode with the attribute name and arg count.
     fn compile_method_call(
         &mut self,
-        attr: &EitherStr,
+        attr: StringId,
         args: &ArgExprs,
         call_pos: CodeRange,
     ) -> Result<(), CompileError> {
         // Get the interned attribute name, converted up-front so the limit check
         // happens once per method call rather than at every emit-site below.
-        let name_id = attr.string_id().expect("CallAttr requires interned attr name");
-        let name_idx = check_name_index_u16(name_id, call_pos)?;
+        let name_idx = check_name_index_u16(attr, call_pos)?;
 
         // Compile arguments based on the argument type
         match args {
@@ -2372,7 +2371,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 // Check if there's unpacking - use CallAttrExtended
                 if var_args.is_some() || var_kwargs.is_some() {
                     return self.compile_method_call_with_unpacking(
-                        name_id,
+                        attr,
                         args.as_ref(),
                         var_args.as_ref(),
                         kwargs.as_ref(),
@@ -3320,7 +3319,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 // captured value is stored like any other target.
                 self.compile_unpack_target(inner)?;
             }
-            UnpackTarget::Attr { object, attr, position } => self.emit_attr_store(object, attr, *position)?,
+            UnpackTarget::Attr { object, attr, position } => self.emit_attr_store(object, *attr, *position)?,
             UnpackTarget::Subscript {
                 container,
                 index,
@@ -3372,7 +3371,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 object,
                 attr,
                 target_position,
-            } => self.emit_attr_store(object, attr, *target_position)?,
+            } => self.emit_attr_store(object, *attr, *target_position)?,
             AssignTarget::Unpack {
                 targets,
                 targets_position,
@@ -3407,11 +3406,10 @@ impl<'a, 'i> Compiler<'a, 'i> {
     fn emit_attr_store(
         &mut self,
         object: &ExprLoc,
-        attr: &EitherStr,
+        attr: StringId,
         target_position: CodeRange,
     ) -> Result<(), CompileError> {
-        let name_id = attr.string_id().expect("attribute name in AST must be interned");
-        let name_idx = check_name_index_u16(name_id, target_position)?;
+        let name_idx = check_name_index_u16(attr, target_position)?;
         self.compile_expr(object)?;
         self.code.set_location(target_position, None);
         self.code.emit_u16(Opcode::StoreAttr, name_idx)?;

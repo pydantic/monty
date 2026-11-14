@@ -8,6 +8,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::DropWithContext,
+    types::str::PyStr,
     value::Value,
 };
 
@@ -38,7 +39,7 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         other => return Err(ExcType::type_error_arg_count("hasattr", 2, other.len())),
     };
 
-    let Some(name) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
+    let Some(name) = PyStr::from_value(name, vm).map(|s| s.resolve_interned(vm)) else {
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("attribute name must be string, not '{}'", name.py_type_name(vm)),

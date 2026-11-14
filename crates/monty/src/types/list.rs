@@ -25,8 +25,9 @@ use crate::{
         LazyHeapSet, Type,
         long_int::repeat_count,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
+        str::PyStr,
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// Python list type, wrapping a Vec of Values.
@@ -703,15 +704,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     }
 
     /// Delegates methods to `call_list_method`.
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::Sort) {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        if attr.static_string(vm) == Some(StaticStrings::Sort) {
             do_list_sort(self, args, vm)?;
             return Ok(CallResult::Value(Value::None));
         }
 
-        let Some(method) = attr.static_string(vm.interns) else {
+        let Some(method) = attr.static_string(vm) else {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(Type::List, attr.as_str(vm)));
         };
 
         call_list_method(self, method, args, vm).map(CallResult::Value)

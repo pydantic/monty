@@ -41,8 +41,9 @@ use crate::{
         list::repr_sequence_fmt,
         long_int::repeat_count,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
+        str::PyStr,
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// Inline capacity for small tuples. Tuples with 2 or fewer elements avoid
@@ -467,13 +468,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
         self.py_mul_impl(other, vm)
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm.interns) {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        match attr.static_string(vm) {
             Some(StaticStrings::Index) => tuple_index(self, args, vm).map(CallResult::Value),
             Some(StaticStrings::Count) => tuple_count(self, args, vm).map(CallResult::Value),
             _ => {
                 args.drop_with(vm);
-                Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)))
+                Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm)))
             }
         }
     }

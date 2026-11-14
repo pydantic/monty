@@ -1850,6 +1850,11 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::NamedTuple(nt) => {
+            for name in once(nt.name_either()).chain(nt.field_names()) {
+                if let Some(id) = name.heap_id() {
+                    on_child(id);
+                }
+            }
             // Report the owned reference to the class object (factory instances
             // only) before the `contains_refs` early-out — that flag is computed
             // from `items` alone, so an all-primitive instance like `Point(1, 2)`
@@ -1871,6 +1876,11 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         // A namedtuple *class* owns its default values and its `__module__`.
         // MUST report the same ids as `NamedTupleClass::py_dec_ref_ids`.
         HeapData::NamedTupleClass(class) => {
+            for name in once(class.name_either()).chain(class.field_names()) {
+                if let Some(id) = name.heap_id() {
+                    on_child(id);
+                }
+            }
             if !class.contains_refs() {
                 return;
             }
@@ -1970,6 +1980,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::HostClassType(t) => {
+            if let Some(id) = t.name_either().heap_id() {
+                on_child(id);
+            }
             // Eager class attrs can hold containers the sandbox can reach
             // (`Klass.data`) and mutate to close a cycle back to this type
             // object, so they must be traced like `HostClass` attrs.
@@ -1983,6 +1996,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::Class(class) => {
+            if let Some(id) = class.name().heap_id() {
+                on_child(id);
+            }
             // The class namespace holds method/class-variable values.
             for (k, v) in class.namespace() {
                 if let Value::Ref(id) = k {

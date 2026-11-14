@@ -412,7 +412,7 @@ impl KwargsValues {
     /// The value passed under `name`, if any; a non-string key (only possible via `**`
     /// unpacking) never matches.
     pub(crate) fn get(&self, name: &str, heap: &Heap, interns: &Interns) -> Option<&Value> {
-        let is_name = |key: &Value| key.as_either_str(heap).is_some_and(|key| key.as_str(interns) == name);
+        let is_name = |key: &Value| key.to_str_heap(heap, interns).is_ok_and(|key| key == name);
         match self {
             Self::Empty => None,
             Self::Inline(kvs) => kvs
@@ -437,9 +437,9 @@ impl KwargsValues {
         match key {
             None => Ok(None),
             Some(key) => key
-                .as_either_str(heap)
-                .map(|key| Some(key.as_str(interns).to_owned()))
-                .ok_or_else(ExcType::type_error_kwargs_nonstring_key),
+                .to_str_heap(heap, interns)
+                .map(|key| Some(key.to_owned()))
+                .map_err(|_| ExcType::type_error_kwargs_nonstring_key()),
         }
     }
 

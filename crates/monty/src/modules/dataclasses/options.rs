@@ -8,8 +8,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{HeapId, HeapItem, HeapObjectRead},
-    types::{LazyHeapSet, PyTrait, Type},
-    value::{EitherStr, Value},
+    types::{LazyHeapSet, PyTrait, Type, str::PyStr},
+    value::Value,
 };
 
 /// The `@dataclass(...)` options Monty implements.
@@ -99,8 +99,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassParams> {
 
     /// Every flag CPython exposes; the unimplemented ones read as the defaults
     /// the decorator insists on.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let attr_str = attr.as_str(vm.interns);
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let attr_str = attr.as_str(vm);
         let options = self.get(vm.heap).options;
         let value = match attr_str {
             "eq" => Value::Bool(options.eq),

@@ -742,7 +742,7 @@ impl Program {
                     if let Some(load_ip) = name_load_ip {
                         vm.set_instruction_ip(load_ip);
                     }
-                    let err = ExcType::name_error(function_name.as_str(vm.interns)).into();
+                    let err = ExcType::name_error(function_name.as_str()).into();
                     args.drop_with(vm);
                     frame_exit_result = vm.resume_with_exception(err);
                 }
@@ -804,7 +804,7 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
         FrameExit::Return(_) => unreachable!("returns are handled above"),
         FrameExit::ExternalCall { function_name, .. } => ExcType::not_implemented(format!(
             "External function '{}' not implemented with standard execution",
-            function_name.as_str(vm.interns)
+            function_name.as_str()
         ))
         .into(),
         FrameExit::OsCall { function_call, .. } => ExcType::not_implemented(format!(
@@ -813,7 +813,7 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
         ))
         .into(),
         FrameExit::MethodCall { method_name, .. } => {
-            let name = method_name.as_str(vm.interns);
+            let name = method_name.as_str();
             ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution")).into()
         }
         FrameExit::ResolveFutures(_) => {

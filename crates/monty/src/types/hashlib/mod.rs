@@ -38,8 +38,10 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
-    types::{LazyHeapSet, PyTrait, Type, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity},
-    value::{EitherStr, Value},
+    types::{
+        LazyHeapSet, PyTrait, Type, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity, str::PyStr,
+    },
+    value::Value,
 };
 
 /// Lowercase hex digits for `hexdigest()`.
@@ -466,8 +468,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
 
     /// `name`, `digest_size` and `block_size`, plus the size constants a
     /// BLAKE2 instance inherits from its class.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let Some(name) = attr.static_string(vm.interns) else {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let Some(name) = attr.static_string(vm) else {
             return Ok(None);
         };
         let hash = self.get(vm.heap);
@@ -483,29 +485,26 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
         Ok(Some(CallResult::Value(value)))
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let readonly = matches!(
-            name.static_string(vm.interns),
+            name.static_string(vm),
             Some(StaticStrings::Name | StaticStrings::DigestSize | StaticStrings::BlockSize)
         );
         if readonly {
             value.drop_with(vm);
             let type_name = self.py_type(vm).name(vm.heap, vm.interns);
-            Err(ExcType::attribute_error_not_writable(
-                name.as_str(vm.interns),
-                &type_name,
-            ))
+            Err(ExcType::attribute_error_not_writable(name.as_str(vm), &type_name))
         } else {
             value.drop_with(vm);
             let type_name = self.py_type_name(vm);
-            Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
+            Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm)))
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         let algorithm = self.get(vm.heap).algorithm;
         let method = |name: &str| format!("{}.{name}", algorithm.method_prefix());
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm) {
             Some(StaticStrings::Update) => {
                 if matches!(args, ArgValues::Kwargs(_) | ArgValues::ArgsKargs { .. }) {
                     args.drop_with(vm);
@@ -549,7 +548,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
             }
             _ => {
                 args.drop_with(vm);
-                Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
+                Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm)))
             }
         }
     }

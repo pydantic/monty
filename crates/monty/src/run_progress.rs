@@ -613,7 +613,7 @@ pub(crate) fn answer_unserved_lookups(mut result: RunResult<FrameExit>, vm: &mut
                     class_name,
                     type_object,
                 };
-                (scope, name.into_string(vm.interns), effect)
+                (scope, name, effect)
             }
             other => return Ok(other),
         };
@@ -1110,10 +1110,9 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             ..
         }) => {
             let position = vm.suspension_position();
-            let name = function_name.into_string(vm.interns);
             let args = args.into_call_args(vm);
             ConvertedExit::FunctionCall {
-                function_name: name,
+                function_name,
                 args,
                 call_id: call_id.raw(),
                 object_id: None,
@@ -1146,10 +1145,9 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             object_id,
         }) => {
             let position = vm.suspension_position();
-            let name = method_name.into_string(vm.interns);
             let args = args.into_call_args(vm);
             ConvertedExit::FunctionCall {
-                function_name: name,
+                function_name: method_name,
                 args,
                 call_id: call_id.raw(),
                 object_id: Some(object_id),
@@ -1189,7 +1187,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             // consume the effect (or the next `convert_frame_exit` releases it).
             vm.pending_lookup_effect = effect;
             ConvertedExit::NameLookup {
-                name: name.into_string(vm.interns),
+                name,
                 scope: LookupScope::Attr {
                     object_id,
                     class_name,

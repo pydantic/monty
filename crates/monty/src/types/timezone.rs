@@ -22,11 +22,11 @@ use crate::{
     intern::{Interns, StaticStrings},
     types::{
         LazyHeapSet, PyTrait, Type,
-        str::{StringRepr, allocate_string},
+        str::{PyStr, StringRepr, allocate_string},
         timedelta,
         timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Magnitude of the `timezone.min` / `timezone.max` class constants: 23:59.
@@ -339,10 +339,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
         Ok(allocate_string(s, vm.heap))
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         // Each method takes the `dt` it would need to resolve a DST rule. A fixed
         // offset has no such rule, so `take_dt_arg` validates and discards it.
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm) {
             Some(StaticStrings::Utcoffset) => {
                 take_dt_arg("timezone.utcoffset", args, vm)?;
                 let offset_seconds = self.get(vm.heap).offset_seconds;

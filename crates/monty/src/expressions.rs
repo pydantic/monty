@@ -8,7 +8,7 @@ use crate::{
     intern::{BytesId, LongIntId, StringId},
     namespace::NamespaceId,
     parse::{CodeRange, ParsedSignature, Try},
-    value::{EitherStr, Marker},
+    value::Marker,
 };
 
 /// Indicates which namespace a variable reference belongs to.
@@ -210,7 +210,7 @@ pub enum Expr {
     /// like `a.b.c.method()`.
     AttrCall {
         object: Box<ExprLoc>,
-        attr: EitherStr,
+        attr: StringId,
         /// same as above for Box
         args: Box<ArgExprs>,
     },
@@ -230,7 +230,7 @@ pub enum Expr {
     /// special attribute handling. Supports chained attribute access.
     AttrGet {
         object: Box<ExprLoc>,
-        attr: EitherStr,
+        attr: StringId,
     },
     Op {
         left: Box<ExprLoc>,
@@ -426,7 +426,7 @@ pub enum UnpackTarget {
         /// Expression evaluating to the object whose attribute is being set.
         object: Box<ExprLoc>,
         /// The attribute name.
-        attr: EitherStr,
+        attr: StringId,
         /// Position of the full attribute expression (for traceback carets).
         position: CodeRange,
     },
@@ -574,7 +574,7 @@ pub enum AssignTarget {
         /// Expression evaluating to the object whose attribute is being set.
         object: ExprLoc,
         /// The attribute name.
-        attr: EitherStr,
+        attr: StringId,
         /// Position of the full attribute expression (for traceback carets).
         target_position: CodeRange,
     },
@@ -727,7 +727,7 @@ pub enum Node<F> {
     /// or a chained attribute access.
     AttrOpAssign {
         object: ExprLoc,
-        attr: EitherStr,
+        attr: StringId,
         op: Operator,
         value: ExprLoc,
         /// Position of the attribute expression (e.g., `point.x`) for traceback carets.
@@ -740,7 +740,7 @@ pub enum Node<F> {
     /// Supports chained attribute access on the left-hand side.
     AttrAssign {
         object: ExprLoc,
-        attr: EitherStr,
+        attr: StringId,
         target_position: CodeRange,
         value: ExprLoc,
     },

@@ -92,8 +92,9 @@ use crate::{
         long_int::repeat_count,
         py_trait::PyObjectIdentity,
         slice::{optional_sequence_bound, slice_collect_iterator},
+        str::PyStr,
     },
-    value::{EitherStr, Value, eq_bytes},
+    value::{Value, eq_bytes},
 };
 
 // =============================================================================
@@ -356,12 +357,12 @@ impl<'h> PyTrait<'h> for PyBytes<'h> {
         percent_format_bytes(&template, other, vm).map(Some)
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         match self {
             Self::Interned(id) => {
-                let Some(method) = attr.static_string(vm.interns) else {
+                let Some(method) = attr.static_string(vm) else {
                     args.drop_with(vm);
-                    return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm.interns)));
+                    return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm)));
                 };
                 let bytes = vm.heap.protect(vm.interns.get_bytes(*id));
                 call_bytes_method_impl(&*bytes, method, args, vm).map(CallResult::Value)
@@ -472,10 +473,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
         percent_format_bytes(&template, other, vm).map(Some)
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string(vm.interns) else {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        let Some(method) = attr.static_string(vm) else {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm)));
         };
 
         let field = heap_read_ref_as_field!(self, Bytes, 0);

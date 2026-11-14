@@ -7,7 +7,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::HeapObjectRead,
     types::{LazyHeapSet, PyTrait, Type},
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// A host-provided callable identified by its external lookup name.
@@ -34,8 +34,8 @@ impl ExtFunction {
     }
 
     /// Clones the function name for an external call suspension.
-    pub(crate) fn clone_name(&self) -> EitherStr {
-        self.0.to_string().into()
+    pub(crate) fn clone_name(&self) -> String {
+        self.0.to_string()
     }
 }
 

@@ -111,6 +111,40 @@ _tmp = namedtuple('Tmp', ['a'], defaults=[[1, 2]])
 assert _tmp() == ([1, 2],), 'temporary class heap-ref default applied'
 _tmp = 0
 
+# === Computed names retain their identities across instance construction and copying ===
+dynamic_name = ''.join(['Dynamic', 'IdentityName'])
+dynamic_field = ''.join(['dynamic', '_identity_field'])
+Dynamic = namedtuple(dynamic_name, [dynamic_field])
+assert Dynamic.__name__ is dynamic_name
+assert Dynamic.__qualname__ is dynamic_name
+assert Dynamic._fields[0] is dynamic_field
+dynamic_value = Dynamic(**{dynamic_field: 7})
+assert dynamic_value._fields[0] is dynamic_field
+assert dynamic_value._replace(**{dynamic_field: 8})._fields[0] is dynamic_field
+assert dynamic_value._make([9])._fields[0] is dynamic_field
+assert next(iter(dynamic_value._asdict())) is dynamic_field
+try:
+    Dynamic(1, 2)
+    assert False, 'expected too many arguments'
+except TypeError as e:
+    assert str(e) == 'DynamicIdentityName.__new__() takes 2 positional arguments but 3 were given'
+try:
+    Dynamic._make([])
+    assert False, 'expected missing field'
+except TypeError as e:
+    assert str(e) == 'Expected 1 arguments, got 0'
+try:
+    dynamic_value._replace(**{''.join(['unknown', '_field']): 1})
+    assert False, 'expected unknown field'
+except TypeError as e:
+    assert str(e) == "Got unexpected field names: ['unknown_field']"
+saved_fields = dynamic_value._fields
+dynamic_name = dynamic_field = Dynamic = None
+assert getattr(dynamic_value, saved_fields[0]) == 7
+assert type(dynamic_value).__name__ == ''.join(['Dynamic', 'IdentityName'])
+dynamic_value = None
+assert saved_fields == (''.join(['dynamic', '_identity_field']),)
+
 # === rename ===
 R = namedtuple('R', ['abc', 'def', 'x', 'x'], rename=True)
 assert R._fields == ('abc', '_1', 'x', '_3'), 'rename replaces keyword/dup fields by position'

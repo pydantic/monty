@@ -26,8 +26,8 @@ use crate::{
     },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
-    types::{Dict, LazyHeapSet, PyTrait, Type, list::repr_check_time, tuple::allocate_tuple},
-    value::{EitherStr, VALUE_SIZE, Value},
+    types::{Dict, LazyHeapSet, PyTrait, Type, list::repr_check_time, str::PyStr, tuple::allocate_tuple},
+    value::{VALUE_SIZE, Value},
 };
 
 /// A callable that prepends bound arguments to `func` on every call.
@@ -413,13 +413,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
     ///
     /// `args` and `keywords` are rebuilt on each access, so mutating the
     /// returned dict does not change what the partial passes on.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let attr = match attr.static_string(vm.interns) {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let attr = match attr.static_string(vm) {
             Some(StaticStrings::Func) => "func",
             Some(StaticStrings::Args) => "args",
             Some(StaticStrings::Keywords) => "keywords",
             Some(_) => return Ok(None),
-            None => attr.as_str(vm.interns),
+            None => attr.as_str(vm),
         };
         match attr {
             "func" => {

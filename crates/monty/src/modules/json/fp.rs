@@ -12,8 +12,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapId, HeapReadOutput},
     intern::StaticStrings,
-    types::str::allocate_string,
-    value::{EitherStr, Value},
+    types::str::{PyStr, allocate_string},
+    value::Value,
 };
 
 /// Where `json.load` reads from or `json.dump` writes to.
@@ -78,7 +78,7 @@ impl FileTarget {
         {
             Ok(Self::OpenFile(*id))
         } else {
-            let attr = EitherStr::Interned(vm.interns.intern_static(method));
+            let attr = PyStr::Interned(vm.interns.intern_static(method));
             match fp.py_getattr(&attr, vm)? {
                 CallResult::Value(callable) => Ok(Self::Method(callable)),
                 // A host object's attribute would need a round trip the module
@@ -87,7 +87,7 @@ impl FileTarget {
                     suspended.drop_with(vm);
                     Err(SimpleException::new_msg(
                         ExcType::NotImplementedError,
-                        format!("json: `{}` of a host object is not supported", attr.as_str(vm.interns)),
+                        format!("json: `{}` of a host object is not supported", attr.as_str(vm)),
                     )
                     .into())
                 }

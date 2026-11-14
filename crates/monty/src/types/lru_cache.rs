@@ -24,6 +24,7 @@ use crate::{
     types::{
         Dict, LazyHeapSet, NamedTuple, PyTrait, Type,
         hash_table::{PyHashTable, Slot, TableEntry, TableProbe, TableSource},
+        str::PyStr,
         tuple::{TupleVec, allocate_tuple},
     },
     value::{EitherStr, Value},
@@ -408,8 +409,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LruCache> {
     }
 
     /// `__wrapped__` — the callable being cached.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::DunderWrapped)
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        if attr.static_string(vm) == Some(StaticStrings::DunderWrapped)
             && let Some(func) = self.get(vm.heap).func.as_ref()
         {
             let func = func.clone_with_heap(vm);
@@ -419,8 +420,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LruCache> {
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let value = match attr.static_string(vm.interns) {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        let value = match attr.static_string(vm) {
             Some(StaticStrings::CacheInfo) => {
                 args.check_zero_args("_lru_cache_wrapper.cache_info", vm.heap)?;
                 self.cache_info(vm)
@@ -444,7 +445,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LruCache> {
             }
             _ => {
                 args.drop_with(vm);
-                return Err(ExcType::attribute_error(Type::LruCacheWrapper, attr.as_str(vm.interns)));
+                return Err(ExcType::attribute_error(Type::LruCacheWrapper, attr.as_str(vm)));
             }
         };
         Ok(CallResult::Value(value))

@@ -498,10 +498,7 @@ fn annotations_dict<'a, 'h>(class: &HeapRead<'h, Class>, vm: &'a VM<'h>) -> Opti
 /// A stringized annotation as text, or `""` for the non-string annotations
 /// Monty never produces (it always stores annotations as source text).
 fn annotation_text(annotation: &Value, vm: &VM<'_>) -> String {
-    annotation
-        .as_either_str(vm.heap)
-        .map(|s| s.as_str(vm.interns).to_owned())
-        .unwrap_or_default()
+    annotation.to_str(vm).map(str::to_owned).unwrap_or_default()
 }
 
 /// Rejects field lists Monty cannot honour, in CPython's checking order.
@@ -707,9 +704,9 @@ pub(crate) fn frozen_assignment_error(class_id: HeapId, name: &Value, vm: &VM<'_
     }
     // Refused for any attribute, declared field or not, as CPython's generated
     // `__setattr__` does.
-    let message = match name.as_either_str(vm.heap) {
-        Some(field) => format!("cannot assign to field '{}'", field.as_str(vm.interns)),
-        None => "cannot assign to field".to_owned(),
+    let message = match name.to_str(vm) {
+        Ok(field) => format!("cannot assign to field '{field}'"),
+        Err(_) => "cannot assign to field".to_owned(),
     };
     Some(SimpleException::new_msg(ExcType::FrozenInstanceError, message).into())
 }
@@ -855,7 +852,7 @@ fn bind_dataclass_fields<'h>(
     args: ArgValues,
 ) -> Result<Vec<Value>, RunError> {
     let n_fields = fields.len();
-    let init_name = format!("{}.__init__", class.get(vm.heap).name().as_str(vm.interns));
+    let init_name = format!("{}.__init__", class.get(vm.heap).name().as_str(vm.heap, vm.interns));
     let (pos_iter, kwargs) = args.into_parts();
 
     // Every bound argument lands in `values`, guarded so each error below is a
@@ -958,18 +955,16 @@ fn bind_keyword_args(
     defer_drop_mut!(kwargs, vm);
     for (key, value) in kwargs.by_ref() {
         defer_drop!(key, vm);
+        let mut value = DropGuard::new(value, vm);
+        let vm = value.ctx();
         let name = key
-            .as_either_str(vm.heap)
-            .expect("DictMerge rejects non-string keys before the call")
-            .as_str(vm.interns)
-            .to_owned();
-        // Resolved before the value is guarded, which borrows the VM.
+            .to_str(vm)
+            .expect("DictMerge rejects non-string keys before the call");
         let slot = fields.iter().position(|(id, _)| vm.interns.get_str(*id) == name);
-        let value = DropGuard::new(value, vm);
         match slot {
             Some(idx) if values[idx].is_none() => values[idx] = Some(value.into_inner()),
-            Some(_) => return Err(ExcType::type_error_duplicate_arg(init_name, &name)),
-            None => return Err(ExcType::type_error_unexpected_keyword(init_name, &name)),
+            Some(_) => return Err(ExcType::type_error_duplicate_arg(init_name, name)),
+            None => return Err(ExcType::type_error_unexpected_keyword(init_name, name)),
         }
     }
     Ok(())

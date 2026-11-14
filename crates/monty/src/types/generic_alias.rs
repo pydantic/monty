@@ -25,8 +25,11 @@ use crate::{
     hash::HashValue,
     heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{LazyHeapSet, PyTrait, Type, Union, instance::class_name, list::repr_check_time, tuple::allocate_tuple},
-    value::{EitherStr, Value},
+    types::{
+        LazyHeapSet, PyTrait, Type, Union, instance::class_name, list::repr_check_time, str::PyStr,
+        tuple::allocate_tuple,
+    },
+    value::Value,
 };
 
 /// A parameterized builtin type such as `list[int]`.
@@ -198,10 +201,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     /// `__origin__`, `__args__` and `__parameters__` (always `()`, Monty
     /// having no `TypeVar`s); everything else resolves on the origin type, so
     /// `list[int].__name__` is `'list'` and unknown names report `list`.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (origin, args) = self.parts(vm);
         defer_drop!(args, vm);
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm) {
             Some(StaticStrings::DunderOrigin) => Ok(Some(CallResult::Value(self.get(vm.heap).origin_value()))),
             Some(StaticStrings::DunderArgs) => Ok(Some(CallResult::Value(args.clone_with_heap(vm)))),
             Some(StaticStrings::DunderParameters) => Ok(Some(CallResult::Value(vm.heap.get_empty_tuple()))),
@@ -213,9 +216,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     /// `dict[str, int].fromkeys(...)` and `list[int].__class_getitem__(str)`
     /// dispatch to the origin's classmethods, and `list[int].__name__()` to
     /// the origin's own attributes.
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         if matches!(
-            attr.static_string(vm.interns),
+            attr.static_string(vm),
             Some(StaticStrings::DunderOrigin | StaticStrings::DunderArgs | StaticStrings::DunderParameters)
         ) {
             let Some(CallResult::Value(value)) = self.py_getattr(attr, vm)? else {
@@ -226,11 +229,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         }
         let origin = self.get(vm.heap).origin;
         match attr {
-            EitherStr::Interned(method_id) => origin.call_class_method(*method_id, args, vm),
+            PyStr::Interned(method_id) => origin.call_class_method(*method_id, args, vm),
             // Classmethod names are all interned, so a heap string never names one.
-            EitherStr::Heap(name) => {
+            PyStr::Heap(_) => {
                 args.drop_with(vm);
-                Err(ExcType::attribute_error_type(&origin.name(vm.heap, vm.interns), name))
+                Err(ExcType::attribute_error_type(
+                    &origin.name(vm.heap, vm.interns),
+                    attr.as_str(vm),
+                ))
             }
         }
     }
@@ -267,8 +273,8 @@ pub(crate) fn repr_type_arg(
         Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Ok(f.write_str("type")?),
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Class(_) => Ok(f.write_str(&class_name(*id, vm.heap, vm.interns))?),
-            HeapData::NamedTupleClass(class) => Ok(f.write_str(class.name(vm.interns))?),
-            HeapData::HostClassType(class) => Ok(f.write_str(class.name(vm.interns))?),
+            HeapData::NamedTupleClass(class) => Ok(f.write_str(class.name(vm.heap, vm.interns))?),
+            HeapData::HostClassType(class) => Ok(f.write_str(class.name(vm.heap, vm.interns))?),
             _ => item.py_repr_fmt(f, vm, heap_ids),
         },
         _ => item.py_repr_fmt(f, vm, heap_ids),

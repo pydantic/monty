@@ -22,7 +22,8 @@ use crate::{
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_attrs},
         dataclasses::{self, DataclassHash},
     },
-    value::{EitherStr, Value},
+    types::str::PyStr,
+    value::Value,
 };
 
 /// An instance of a user-defined class.
@@ -360,7 +361,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         None
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut value_guard = DropGuard::new(value, vm);
         let name = attribute_name_value(name, value_guard.ctx());
         let (value, vm) = value_guard.into_parts();
@@ -425,8 +426,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let attr_str = attr.as_str(vm.interns);
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        let attr_str = attr.as_str(vm);
 
         // 1. An instance attribute shadows class methods; call it as-is (unbound).
         if let Some(callable) = self
@@ -460,11 +461,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         }
 
         // 4. No such attribute.
+        let error = ExcType::attribute_error(class_name(class_id, vm.heap, vm.interns), attr_str);
         args.drop_with(vm);
-        Err(ExcType::attribute_error(
-            class_name(class_id, vm.heap, vm.interns),
-            attr_str,
-        ))
+        Err(error)
     }
 
     fn py_is_iterable(&self, vm: &VM<'h>) -> bool {
@@ -639,8 +638,8 @@ impl HeapItem for BoundMethod {
 /// attribute raises `AttributeError` with the real class name. Takes `self_id`
 /// (available at the `Value` level) because binding a method needs the instance's
 /// `HeapId`.
-pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    let attr_str = attr.as_str(vm.interns);
+pub(crate) fn instance_getattr<'h>(self_id: HeapId, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    let attr_str = attr.as_str(vm);
     if let Some(value) = instance_attr(self_id, attr_str, vm) {
         Ok(CallResult::Value(value))
     } else {
@@ -994,10 +993,7 @@ fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
 /// programmer-error tripwire.
 pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
     match heap.get(class_id) {
-        HeapData::Class(class) => match class.name() {
-            EitherStr::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
-            EitherStr::Heap(s) => Cow::Owned(s.clone()),
-        },
+        HeapData::Class(class) => class.name().to_cow(heap, interns),
         _ => unreachable!("class_name called with a non-class heap id"),
     }
 }

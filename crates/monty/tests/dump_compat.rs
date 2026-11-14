@@ -42,6 +42,11 @@ fs = frozenset({'x', 'y'})
 dq = collections.deque([1, 2, 3], maxlen=5)
 Point = collections.namedtuple('Point', ['x', 'y'])
 p = Point(1, 2)
+shared_name = ''.join(['Shared', 'Name'])
+Dynamic = type(shared_name, (), {})
+Named = collections.namedtuple(shared_name, [shared_name])
+named = Named(5)
+Dynamic.self_ref = Dynamic
 
 
 @dataclasses.dataclass
@@ -168,6 +173,11 @@ assert d == {'a': 1, 'b': [2, 3], 3: 'int key'}
 assert st == {1, 2, 3} and fs == frozenset({'x', 'y'})
 assert list(dq) == [1, 2, 3] and dq.maxlen == 5
 assert p == Point(1, 2) and p.x == 1
+assert Dynamic.__name__ is shared_name
+assert Dynamic.self_ref is Dynamic
+assert Named.__name__ is shared_name
+assert named._fields[0] is shared_name
+assert getattr(named, shared_name) == 5
 assert item == Item('widget', 3)
 assert c.value == 11 and c.bump() == 12 and Counter.total == 0
 assert add5(1) == 6 and part() == 6

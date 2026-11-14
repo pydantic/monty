@@ -19,8 +19,8 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::FunctionId,
-    types::{LazyHeapSet, LongInt, PyTrait, Type},
-    value::{EitherStr, Value},
+    types::{LazyHeapSet, LongInt, PyTrait, Type, str::PyStr},
+    value::Value,
 };
 
 macro_rules! heap_storage_type {
@@ -893,7 +893,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         heap_read_output_py_trait_forward!(
             self,
             |item| item.py_set_attr(name, value, vm),
@@ -902,13 +902,13 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 let type_name = self.py_type_name(vm);
                 Err(ExcType::attribute_error_no_setattr(
                     &type_name,
-                    name.as_str(vm.interns),
+                    name.as_str(vm),
                 ))
             }
         )
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_getattr(attr, vm),

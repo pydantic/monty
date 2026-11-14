@@ -114,7 +114,7 @@ fn create_class(
     defer_drop!(namespace, vm);
     defer_drop!(kwargs, vm);
 
-    let Some(class_name) = name.as_either_str(vm.heap) else {
+    let Ok(class_name) = name.to_str(vm) else {
         let got = name.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
         return Err(ExcType::type_error_bad_arg_pos("type.__new__", 1, "str", got));
     };
@@ -146,8 +146,9 @@ fn create_class(
     if !kwargs.is_empty() {
         // CPython forwards extra keywords to `__init_subclass__`, which
         // `object` rejects with this message — synthesize the equivalent.
-        let name_str = class_name.as_str(vm.interns);
-        return Err(ExcType::type_error_no_kwargs(&format!("{name_str}.__init_subclass__")));
+        return Err(ExcType::type_error_no_kwargs(&format!(
+            "{class_name}.__init_subclass__"
+        )));
     }
 
     // Monty divergence: CPython only emits a `RuntimeWarning` for non-string
@@ -155,10 +156,9 @@ fn create_class(
     // them would hide the mistake — raise instead. Validated before cloning
     // any pairs so the error path has nothing to clean up.
     if let Some((bad_key, _)) = source.iter().find(|(k, _)| !k.is_str(vm.heap)) {
-        let name_str = class_name.as_str(vm.interns);
         let key_type = bad_key.py_type_heap(vm.heap).name(vm.heap, vm.interns);
         return Err(ExcType::type_error(format!(
-            "non-string key ({key_type}) in the namespace of class '{name_str}'"
+            "non-string key ({key_type}) in the namespace of class '{class_name}'"
         )));
     }
 
@@ -177,6 +177,7 @@ fn create_class(
     }
     let namespace_dict = Dict::from_pairs(pairs, vm)?;
 
+    let class_name = name.clone_either_str(vm.heap).expect("class name was validated");
     let class_id = vm
         .heap
         .allocate(HeapData::Class(Box::new(Class::new(class_name, namespace_dict))));

@@ -882,7 +882,7 @@ impl Value {
             HeapData::Random(_) => return Some(Cow::Borrowed("Random")),
             _ => return None,
         };
-        Some(name.to_cow(interns))
+        Some(name.to_cow(heap, interns))
     }
 
     /// Returns the Python `Type` for immediate (non-heap) values without VM access.
@@ -1143,10 +1143,10 @@ impl Value {
     /// Gets an attribute from this value.
     ///
     /// Dispatches to `py_getattr` on the underlying types where appropriate.
-    /// Accepts `EitherStr` to support both interned and heap-allocated attribute names.
+    /// Accepts `PyStr` to borrow interned or heap-allocated names without copying text.
     ///
     /// Returns `AttributeError` for other types or unknown attributes.
-    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    pub fn py_getattr<'h>(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<CallResult> {
         match self {
             // Instances resolve attributes (instance dict → class methods/vars,
             // binding methods) in a dedicated path that has the heap id needed to
@@ -1162,7 +1162,7 @@ impl Value {
                 if let HeapData::Module(module) = vm.heap.get(*heap_id) {
                     return Err(ExcType::attribute_error_module(
                         module.name_str(vm.interns),
-                        attr.as_str(vm.interns),
+                        attr.as_str(vm),
                     ));
                 }
             }
@@ -1178,17 +1178,17 @@ impl Value {
             _ => {}
         }
         let type_name = self.py_type_name(vm);
-        Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
+        Err(ExcType::attribute_error(type_name, attr.as_str(vm)))
     }
 
     /// Sets an attribute, consuming `value` on both success and error.
-    pub fn py_set_attr(&self, name: &EitherStr, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
+    pub fn py_set_attr<'h>(&self, name: &PyStr<'h>, value: Self, vm: &mut VM<'h>) -> RunResult<()> {
         if let Self::Ref(heap_id) = self {
             vm.heap.read(*heap_id).py_set_attr(name, value, vm)
         } else {
             value.drop_with(vm);
             let type_name = self.py_type_name(vm);
-            Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
+            Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm)))
         }
     }
 
@@ -1735,15 +1735,16 @@ impl Value {
         }
     }
 
-    /// Converts the value into a keyword string representation if possible.
-    ///
-    /// Returns `Some(KeywordStr)` for `InternString` values or heap `str`
-    /// objects, otherwise returns `None`.
-    pub fn as_either_str(&self, heap: &Heap) -> Option<EitherStr> {
+    /// Retains a string identity without copying its text. The caller owns the result
+    /// and must transfer it into a heap object or release it with `drop_with`.
+    pub fn clone_either_str(&self, heap: &Heap) -> Option<EitherStr> {
         match self {
             Self::InternString(id) => Some(EitherStr::Interned(*id)),
             Self::Ref(heap_id) => match heap.get(*heap_id) {
-                HeapData::Str(s) => Some(EitherStr::Heap(s.as_str().to_owned())),
+                HeapData::Str(_) => {
+                    heap.inc_ref(*heap_id);
+                    Some(EitherStr::Heap(*heap_id))
+                }
                 _ => None,
             },
             _ => None,
@@ -1752,12 +1753,9 @@ impl Value {
 
     /// Borrows the value as a `&str` if it is a string (interned or heap `str`).
     ///
-    /// Unlike [`as_either_str`](Self::as_either_str) this never allocates — both
-    /// interned and heap strings are returned by borrow — and it errors rather
-    /// than returning `None` for non-strings, with CPython's generic `expected
-    /// string, not <type>` message. Use it wherever a function reads a `str`
-    /// argument it does not need to own; the borrow keeps `self` and the heap
-    /// pinned, so drop/allocate only once it ends.
+    /// Borrows without retaining an owned reference, unlike [`clone_either_str`](Self::clone_either_str).
+    /// Non-strings raise CPython's generic `expected string, not <type>` error.
+    /// Use for read-only arguments; release the borrow before mutating the heap.
     pub(crate) fn to_str<'a>(&'a self, vm: &'a VM<'_>) -> RunResult<&'a str> {
         self.to_str_heap(vm.heap, vm.interns)
     }
@@ -1876,16 +1874,16 @@ pub(crate) fn eq_bytes(b: &[u8], other: &Value, vm: &VM<'_>) -> Option<bool> {
     }
 }
 
-/// Interned or heap-owned string identifier.
+/// Owned string identity for names retained by objects.
 ///
-/// Used when a string value can come from either the intern table (for known
-/// static strings and keywords) or from a heap-allocated Python string object.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// Heap references must be released through `DropWithContext` or enumerated by
+/// the containing object's `HeapItem` implementation. Cloning retains the identity.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum EitherStr {
     /// Interned string identifier (cheap comparisons and no allocation).
     Interned(StringId),
-    /// Heap-owned string extracted from a `str` object.
-    Heap(String),
+    /// Owned reference to a heap `Str`.
+    Heap(HeapId),
 }
 
 impl From<StringId> for EitherStr {
@@ -1894,84 +1892,73 @@ impl From<StringId> for EitherStr {
     }
 }
 
-/// Converts owned text without assuming an executor-local intern ID.
-impl From<String> for EitherStr {
-    fn from(s: String) -> Self {
-        Self::Heap(s)
+impl<C: ContainsHeap> DropWithContext<C> for EitherStr {
+    fn drop_with(self, ctx: &mut C) {
+        self.into_value().drop_with(ctx);
     }
 }
 
 impl EitherStr {
-    /// Returns the keyword as a str slice for error messages or comparisons.
-    pub fn as_str<'a>(&'a self, interns: &'a Interns) -> &'a str {
+    /// Allocates a name supplied from outside the interpreter.
+    pub fn new(text: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Self {
+        match allocate_string(text, heap) {
+            Value::InternString(id) => Self::Interned(id),
+            value @ Value::Ref(_) => Self::Heap(value.into_ref_id().expect("matched a heap reference")),
+            _ => unreachable!("allocate_string always returns a string"),
+        }
+    }
+
+    /// Retains this name's identity for another owner.
+    pub fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
+        match self {
+            Self::Interned(id) => Self::Interned(*id),
+            Self::Heap(id) => {
+                heap.heap().inc_ref(*id);
+                Self::Heap(*id)
+            }
+        }
+    }
+
+    /// Transfers ownership to a Python value without copying text.
+    pub fn into_value(self) -> Value {
+        match self {
+            Self::Interned(id) => Value::InternString(id),
+            Self::Heap(id) => Value::Ref(id),
+        }
+    }
+
+    /// The owned heap edge, for traversal by the containing object's GC implementation.
+    pub fn heap_id(&self) -> Option<HeapId> {
+        match self {
+            Self::Interned(_) => None,
+            Self::Heap(id) => Some(*id),
+        }
+    }
+
+    /// Enumerates the owned reference for iterative destruction.
+    pub fn py_dec_ref_ids(&self, stack: &mut Vec<HeapId>) {
+        if let Some(id) = self.heap_id() {
+            stack.push(id);
+        }
+    }
+
+    /// Borrows a stored name for error messages or comparisons.
+    pub fn as_str<'a>(&'a self, heap: &'a Heap, interns: &'a Interns) -> &'a str {
         match self {
             Self::Interned(id) => interns.get_str(*id),
-            Self::Heap(s) => s.as_str(),
+            Self::Heap(id) => match heap.get(*id) {
+                HeapData::Str(s) => s.as_str(),
+                _ => unreachable!("EitherStr always holds a str"),
+            },
         }
     }
 
     /// The text as a `Cow` borrowing only `interns`, so it outlives heap
     /// borrows — error messages format the name after `drop_with` cleanup.
-    pub fn to_cow<'i>(&self, interns: &'i Interns) -> Cow<'i, str> {
+    pub fn to_cow<'i>(&self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
         match self {
             Self::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
-            Self::Heap(s) => Cow::Owned(s.clone()),
-        }
-    }
-
-    /// Re-resolves a heap string to its interned id when the interner already
-    /// knows the text.
-    ///
-    /// Builtin attribute dispatch matches on `StringId`, so a name computed at
-    /// runtime (`getattr(x, 'up' + 'per')`) arrives as [`Heap`](Self::Heap) and
-    /// misses every builtin attribute — while still resolving on instances and
-    /// modules, which compare by text. Interning is a lookup, never an insert,
-    /// so sandboxed code cannot grow the interner by guessing names.
-    #[must_use]
-    pub fn resolve_interned(self, interns: &Interns) -> Self {
-        match self {
-            Self::Heap(s) => match interns.get_string_id_by_name(&s) {
-                Some(id) => Self::Interned(id),
-                None => Self::Heap(s),
-            },
-            already @ Self::Interned(_) => already,
-        }
-    }
-
-    /// Checks whether this keyword matches the given interned identifier.
-    pub fn matches(&self, target: StringId, interns: &Interns) -> bool {
-        match self {
-            Self::Interned(id) => *id == target,
-            Self::Heap(s) => s == interns.get_str(target),
-        }
-    }
-
-    /// Returns the `StringId` if this is an interned attribute.
-    #[inline]
-    pub fn string_id(&self) -> Option<StringId> {
-        match self {
-            Self::Interned(id) => Some(*id),
-            Self::Heap(_) => None,
-        }
-    }
-
-    /// Returns the static classification of this name, if recognized.
-    #[inline]
-    pub fn static_string(&self, interns: &Interns) -> Option<StaticStrings> {
-        match self {
-            Self::Interned(id) => interns.static_string(*id),
-            Self::Heap(value) => StaticStrings::from_str(value).ok(),
-        }
-    }
-
-    /// Converts this `EitherStr` into an owned `String`.
-    ///
-    /// For interned strings, looks up and clones the string content.
-    /// For heap strings, returns the owned string directly.
-    pub fn into_string(self, interns: &Interns) -> String {
-        match self {
-            Self::Interned(id) => interns.get_str(id).to_owned(),
-            Self::Heap(s) => s,
+            Self::Heap(_) => Cow::Owned(self.as_str(heap, interns).to_owned()),
         }
     }
 }

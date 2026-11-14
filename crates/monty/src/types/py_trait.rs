@@ -11,7 +11,8 @@ use crate::{
     hash::HashValue,
     heap::{DropWithContext, HeapId, HeapObjectRead, HeapReadOutput},
     identity::Identity,
-    value::{EitherStr, Value},
+    types::str::PyStr,
+    value::Value,
 };
 
 /// Outcome of an ordering comparison ([`PyTrait::py_cmp`] / [`Value::py_cmp`]).
@@ -551,14 +552,14 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// - `Ok(CallResult::External(name, args))` - Method needs external function call
     /// - `Ok(CallResult::MethodCall { .. })` - Host-class method call; VM yields to host
     /// - `Err(e)` - Method call failed with error
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         // `py_call_attr` takes ownership of the argument bundle. Implementations that
         // do not recognize the attribute still need to release those values before
         // reporting `AttributeError`, otherwise method calls on unsupported types leak
         // references on the error path (caught by `memory-model-checks`).
 
         args.drop_with(vm);
-        Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
+        Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm)))
     }
 
     /// Whether this type implements the context-manager protocol.
@@ -662,10 +663,10 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// The default rejects assignment. Mutable attribute-bearing types override
     /// this method and are responsible for releasing any replaced value.
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         value.drop_with(vm);
         let type_name = self.py_type_name(vm);
-        Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
+        Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm)))
     }
 
     /// Python attribute get operation (`__getattr__`), e.g., `obj.attr`.
@@ -684,7 +685,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// Default implementation returns `Ok(None)`, indicating the type doesn't support
     /// attribute access and a generic `AttributeError` should be raised by the caller.
-    fn py_getattr(&self, _attr: &EitherStr, _vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, _attr: &PyStr<'h>, _vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         Ok(None)
     }
 
@@ -726,12 +727,9 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     }
 }
 
-/// Converts an attribute name into an owned dict key, preserving interned names.
-pub(crate) fn attribute_name_value(name: &EitherStr, vm: &VM<'_>) -> Value {
-    match name {
-        EitherStr::Interned(string_id) => Value::InternString(*string_id),
-        EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap),
-    }
+/// Retains an attribute name as a dict key without copying its text.
+pub(crate) fn attribute_name_value<'h>(name: &PyStr<'h>, vm: &VM<'h>) -> Value {
+    name.clone_value(vm.heap)
 }
 
 /// Lazy wrapper around [`AHashSet`] that only allocates the set when needed.

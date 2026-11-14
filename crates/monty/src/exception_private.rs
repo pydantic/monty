@@ -19,9 +19,9 @@ use crate::{
     types::{
         PyTrait, Type, allocate_tuple,
         long_int::INT_MAX_STR_DIGITS,
-        str::{StringRepr, allocate_string, string_repr_fmt},
+        str::{PyStr, StringRepr, allocate_string, string_repr_fmt},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Result type alias for operations that can produce a runtime error.
@@ -65,9 +65,14 @@ pub(crate) trait ExcTypeExt: Sized {
     /// a `py_call_attr` fall-through leaks a reference per call — something
     /// sandboxed code can repeat in a loop.
     #[must_use]
-    fn attribute_error_method(type_name: impl Display, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunError {
+    fn attribute_error_method<'h>(
+        type_name: impl Display,
+        attr: &PyStr<'h>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunError {
         args.drop_with(vm);
-        Self::attribute_error(type_name, attr.as_str(vm.interns))
+        Self::attribute_error(type_name, attr.as_str(vm))
     }
 
     /// Creates an AttributeError for a missing attribute on a class object.
@@ -2665,11 +2670,11 @@ impl<'h> HeapRead<'h, SimpleException> {
     ///
     /// Handles the `.args` attribute by allocating a tuple containing the message.
     /// Returns `None` for all other attributes.
-    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
+    pub fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<CallResult> {
         // Fast path: interned strings can be matched by ID
         let is_args = attr
-            .static_string(vm.interns)
-            .map_or_else(|| attr.as_str(vm.interns) == "args", |ss| ss == StaticStrings::Args);
+            .static_string(vm)
+            .map_or_else(|| attr.as_str(vm) == "args", |ss| ss == StaticStrings::Args);
 
         if is_args {
             // Construct tuple with 0 or 1 elements based on whether arg exists
