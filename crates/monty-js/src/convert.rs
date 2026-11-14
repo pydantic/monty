@@ -36,7 +36,7 @@
 use std::{borrow::Cow, collections::HashMap, ptr, vec::IntoIter};
 
 use monty_types::{
-    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+    unstable::{self, ClassEq, ClassHash, ClassTypeNode, MontyGraph, MontyNode, NodeId},
     BuiltinsFunctions, ExcType, FileMode, MontyComplex, MontyDate, MontyDateTime, MontyFileHandle, MontyObject,
     MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
 };
@@ -1051,6 +1051,10 @@ impl ClassHeader {
             host_defined: self.host_defined,
             is_dataclass: self.is_dataclass,
             attrs,
+            // JS proxies compare by reference, and the sandbox reads no rule
+            // for a class it receives, so none is sent.
+            eq: ClassEq::Identity,
+            hash: ClassHash::Identity,
         }))
     }
 }

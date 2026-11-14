@@ -15,7 +15,7 @@ use monty_proto::{
 };
 use monty_types::{
     MontyUuid,
-    unstable::{ClassTypeNode, MontyNode, NodeId},
+    unstable::{ClassEq, ClassHash, ClassTypeNode, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
 use prost::{
@@ -472,6 +472,8 @@ fn value_allocations_are_measured_independently() {
         host_defined: false,
         is_dataclass: false,
         attrs: vec![(NodeId(0), NodeId(1))],
+        eq: ClassEq::Fields(vec!["x".to_owned()]),
+        hash: ClassHash::Fields(vec!["x".to_owned()]),
     };
     let values = [
         MontyNode::None,
