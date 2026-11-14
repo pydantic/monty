@@ -73,40 +73,43 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 The following modules are present:
 
-| Module          | Divergences                          |
-| --------------- | ------------------------------------ |
-| `annotationlib` | [annotationlib.md](annotationlib.md) |
-| `asyncio`       | [asyncio.md](asyncio.md)             |
-| `base64`        | [base64.md](base64.md)               |
-| `binascii`      | [base64.md](base64.md)               |
-| `bisect`        | [bisect.md](bisect.md)               |
-| `collections`   | [collections.md](collections.md)     |
-| `copy`          | [copy.md](copy.md)                   |
-| `csv`           | [csv.md](csv.md)                     |
-| `dataclasses`   | [dataclasses.md](dataclasses.md)     |
-| `datetime`      | [datetime.md](datetime.md)           |
-| `decimal`       | [decimal.md](decimal.md)             |
-| `fnmatch`       | [fnmatch.md](fnmatch.md)             |
-| `functools`     | [functools.md](functools.md)         |
-| `hashlib`       | [hashlib.md](hashlib.md)             |
-| `itertools`     | [itertools.md](itertools.md)         |
-| `json`          | [json.md](json.md)                   |
-| `math`          | [math.md](math.md)                   |
-| `os`            | [os.md](os.md)                       |
-| `os.path`       | [os.md](os.md)                       |
-| `pathlib`       | [pathlib.md](pathlib.md)             |
-| `posixpath`     | [os.md](os.md)                       |
-| `random`        | [random.md](random.md)               |
-| `re`            | [re.md](re.md)                       |
-| `statistics`    | [statistics.md](statistics.md)       |
-| `sys`           | [sys.md](sys.md)                     |
-| `time`          | [time.md](time.md)                   |
-| `tomllib`       | [tomllib.md](tomllib.md)             |
-| `typing`        | [typing.md](typing.md)               |
-| `unicodedata`   | [unicodedata.md](unicodedata.md)     |
+| Module          | Divergences                                       |
+| --------------- | ------------------------------------------------- |
+| `annotationlib` | [annotationlib.md](annotationlib.md)              |
+| `asyncio`       | [asyncio.md](asyncio.md)                          |
+| `base64`        | [base64.md](base64.md)                            |
+| `binascii`      | [base64.md](base64.md)                            |
+| `bisect`        | [bisect.md](bisect.md)                            |
+| `collections`   | [collections.md](collections.md)                  |
+| `colorsys`      | [modules.md](modules.md#vendored-cpython-modules) |
+| `copy`          | [copy.md](copy.md)                                |
+| `csv`           | [csv.md](csv.md)                                  |
+| `dataclasses`   | [dataclasses.md](dataclasses.md)                  |
+| `datetime`      | [datetime.md](datetime.md)                        |
+| `decimal`       | [decimal.md](decimal.md)                          |
+| `fnmatch`       | [fnmatch.md](fnmatch.md)                          |
+| `functools`     | [functools.md](functools.md)                      |
+| `hashlib`       | [hashlib.md](hashlib.md)                          |
+| `itertools`     | [itertools.md](itertools.md)                      |
+| `json`          | [json.md](json.md)                                |
+| `keyword`       | [modules.md](modules.md#vendored-cpython-modules) |
+| `math`          | [math.md](math.md)                                |
+| `os`            | [os.md](os.md)                                    |
+| `os.path`       | [os.md](os.md)                                    |
+| `pathlib`       | [pathlib.md](pathlib.md)                          |
+| `posixpath`     | [os.md](os.md)                                    |
+| `random`        | [random.md](random.md)                            |
+| `re`            | [re.md](re.md)                                    |
+| `stat`          | [modules.md](modules.md#vendored-cpython-modules) |
+| `statistics`    | [statistics.md](statistics.md)                    |
+| `sys`           | [sys.md](sys.md)                                  |
+| `time`          | [time.md](time.md)                                |
+| `tomllib`       | [tomllib.md](tomllib.md)                          |
+| `typing`        | [typing.md](typing.md)                            |
+| `unicodedata`   | [unicodedata.md](unicodedata.md)                  |
 
-Each covers only part of its CPython surface — often a small part. `itertools`,
-`hashlib`, `tomllib` and `fnmatch` are the exceptions: `itertools` implements every name it exports, `hashlib` every
+Each covers only part of its CPython surface — often a small part. `colorsys`, `keyword` and `stat` run CPython's own source.
+`itertools`, `hashlib`, `tomllib` and `fnmatch` are the other exceptions: `itertools` implements every name it exports, `hashlib` every
 guaranteed algorithm, and `tomllib` and `fnmatch` their whole three- and four-name surfaces.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.

@@ -159,6 +159,11 @@ COPY_FILES = [
     # the host-backed functions from `genericpath`
     'posixpath.pyi',
     'genericpath.pyi',
+    # vendored from CPython's source (crates/monty/stdlib); `stat` re-exports from `_stat`
+    'colorsys.pyi',
+    'keyword.pyi',
+    'stat.pyi',
+    '_stat.pyi',
 ]
 # content for typeshed's `VERSIONS` file
 VERSIONS = """\
@@ -169,6 +174,7 @@ VERSIONS = """\
 
 _collections_abc: 3.3-
 _io: 3.0-  # not importable at runtime, only for type checking
+_stat: 3.0-  # not importable at runtime, only for type checking (stat re-exports from it)
 _typeshed: 3.0-  # not present at runtime, only for type checking
 abc: 3.0-  # not importable at runtime, only for type checking
 annotationlib: 3.14-  # narrowed to Monty's surface by custom/annotationlib.pyi
@@ -178,6 +184,7 @@ binascii: 3.0-
 bisect: 3.0-
 builtins: 3.0-
 collections: 3.0-
+colorsys: 3.0-
 copy: 3.0-
 csv: 3.0-
 dataclasses: 3.7-
@@ -190,6 +197,7 @@ hashlib: 3.0-
 io: 3.0-  # not importable at runtime, only for type checking
 itertools: 3.0-
 json: 3.0-
+keyword: 3.0-
 math: 3.0-
 os: 3.0-
 os.path: 3.0-
@@ -198,6 +206,7 @@ pathlib.types: 3.14-
 posixpath: 3.0-
 random: 3.0-
 re: 3.0-
+stat: 3.0-
 statistics: 3.4-
 sys: 3.0-
 time: 3.0-

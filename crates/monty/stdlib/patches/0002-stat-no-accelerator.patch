@@ -1,0 +1,17 @@
+stat: drop the optional `from _stat import *`.
+Monty rejects wildcard imports at parse time and has no _stat, so the pure-Python
+definitions above are the module; drop this patch once `from m import *` parses.
+
+--- a/stat.py
++++ b/stat.py
+@@ -203,10 +203,3 @@
+ FILE_ATTRIBUTE_SYSTEM = 4
+ FILE_ATTRIBUTE_TEMPORARY = 256
+ FILE_ATTRIBUTE_VIRTUAL = 65536
+-
+-
+-# If available, use C implementation
+-try:
+-    from _stat import *
+-except ImportError:
+-    pass

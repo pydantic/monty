@@ -69,6 +69,8 @@ RULES: list[tuple[str, Category]] = [
     ('clippy.toml', OTHER),
     ('Makefile', OTHER),
     ('LICENSE', OTHER),
+    ('crates/monty/stdlib/LICENSE', OTHER),
+    ('crates/monty/stdlib/vendor.toml', OTHER),
     ('crates/monty-proto/tests/oracle/**', OTHER),
     ('crates/monty-js/ts/worker/component/**', OTHER),
     # tests, benchmarks, the crates that only exist to run them and the scripts the test harness imports
@@ -114,6 +116,9 @@ RULES: list[tuple[str, Category]] = [
     ('crates/monty-wasm-runtime/wit/**', PRODUCTION),
     ('crates/monty-typeshed/custom/**', PRODUCTION),
     ('crates/monty-typeshed/vendor/**', PRODUCTION),
+    # vendored CPython stdlib modules and their patches, embedded in the interpreter
+    ('crates/monty/stdlib/Lib/**', PRODUCTION),
+    ('crates/monty/stdlib/patches/**', PRODUCTION),
 ]
 
 

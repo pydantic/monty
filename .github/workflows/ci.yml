@@ -98,6 +98,10 @@ jobs:
       - name: Check vendored typeshed stubs are in sync
         run: make check-typeshed
 
+      # the vendored CPython modules must be the pinned release's files, unmodified
+      - name: Check vendored CPython stdlib modules are in sync
+        run: make check-stdlib
+
       # packaging resolves every crate's dependencies against crates.io, which
       # catches manifests that only break at release time (e.g. a versioned
       # path dependency on a crate that is not published yet)
@@ -232,6 +236,10 @@ jobs:
       # real `monty` binary: build it plainly first (outside the llvm-cov
       # target dir) and point the tests at it explicitly.
       - run: cargo build -p monty-runtime
+      # a vendored CPython module whose test case passes unpatched no longer needs its patches;
+      # this rebuilds only `monty` (with the unpatched source embedded) and the datatest harness
+      - name: Check every vendored CPython stdlib patch is still needed
+        run: python3 scripts/vendor_stdlib.py --check-patches
       - run: cargo build -p monty-pool --example cpu-test-worker --target-dir target/llvm-cov-target
       - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
         env:
