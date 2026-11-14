@@ -812,3 +812,43 @@ p = functools.partial(len, Mutator())
         "[[[1, 2, 3]], Repr('functools.partial(<built-in function len>, m)'), Holder(x=[9])]"
     );
 }
+
+#[test]
+fn test_slice_indices() {
+    let code = r"
+s1 = slice(1, 10, 2)
+assert s1.indices(5) == (1, 5, 2)
+
+s2 = slice(None, None, -1)
+assert s2.indices(5) == (4, -1, -1)
+
+s3 = slice(-100, 100)
+assert s3.indices(10) == (0, 10, 1)
+
+s4 = slice(10, -10, -2)
+assert s4.indices(5) == (4, -1, -2)
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    ex.run_no_limits(vec![]).unwrap();
+}
+
+#[test]
+fn test_slice_indices_errors() {
+    // Negative length
+    let code = "slice(1).indices(-1)";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::ValueError);
+
+    // Step cannot be zero
+    let code = "slice(0, 5, 0).indices(10)";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::ValueError);
+
+    // Bad argument type
+    let code = "slice(1).indices('5')";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::TypeError);
+}

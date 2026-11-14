@@ -1460,6 +1460,8 @@ pub enum StaticStrings {
     Indent,
     /// `index()` method, shared by `str`, `bytes`, `list`, `tuple` and `deque`.
     Index,
+    /// `slice.indices()` method.
+    Indices,
     /// `decimal.Inexact` signal.
     #[strum(serialize = "Inexact")]
     Inexact,
