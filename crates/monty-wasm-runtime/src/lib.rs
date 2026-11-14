@@ -102,6 +102,7 @@ fn dispatch(worker: &mut Worker, request: Request) -> DispatchResult {
                 feed_execution_micros: 0,
                 max_feed_duration_micros: None,
                 max_turn_duration_micros: None,
+                total_sleep_micros: 0,
             };
         }
     };
@@ -116,6 +117,7 @@ fn dispatch(worker: &mut Worker, request: Request) -> DispatchResult {
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
+            total_sleep_micros: 0,
         };
     }
 
@@ -144,6 +146,7 @@ fn dispatch(worker: &mut Worker, request: Request) -> DispatchResult {
         feed_execution_micros: sink.feed_execution_micros,
         max_feed_duration_micros: sink.max_feed_duration_micros,
         max_turn_duration_micros: sink.max_turn_duration_micros,
+        total_sleep_micros: sink.total_sleep_micros,
     }
 }
 
@@ -154,6 +157,7 @@ struct ComponentEventSink {
     feed_execution_micros: u64,
     max_feed_duration_micros: Option<u64>,
     max_turn_duration_micros: Option<u64>,
+    total_sleep_micros: u64,
 }
 
 impl EventSink for ComponentEventSink {
@@ -179,6 +183,7 @@ impl EventSink for ComponentEventSink {
             self.feed_execution_micros = event.feed_execution_micros;
             self.max_feed_duration_micros = event.max_feed_duration_micros;
             self.max_turn_duration_micros = event.max_turn_duration_micros;
+            self.total_sleep_micros = event.total_sleep_micros;
             let mut event = event.clone();
             let component_event = match event.kind.take() {
                 Some(pb::worker_event::Kind::OsCall(call)) => match PreparedOsEvent::from_proto(call) {

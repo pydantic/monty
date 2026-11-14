@@ -1016,6 +1016,7 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
                 max_feed_duration_micros: Some(100_000),
                 max_turn_duration_micros: None,
                 max_total_sleep_micros: None,
+                total_sleep_micros: 0,
                 kind: Some(pb::worker_event::Kind::Ok(pb::Ok {})),
             },
         );
@@ -1310,6 +1311,7 @@ async fn restored_session_rearms_the_duration_backstop() {
                 max_feed_duration_micros: Some(100_000),
                 max_turn_duration_micros: None,
                 max_total_sleep_micros: None,
+                total_sleep_micros: 0,
             },
         );
         assert!(matches!(read_request(&mut socket), pb::client_request::Kind::Feed(_)));
@@ -1919,6 +1921,59 @@ async fn restored_session_readopts_the_suspension_limit() {
         panic!("expected Runtime, got {err:?}");
     };
     assert_eq!(exc.message(), Some("suspension limit 1 exceeded"));
+    drop(checkout);
+    join_server(server).await;
+}
+
+/// A dump from before slept time was recorded reports none, so the sleep its
+/// re-announced suspension asks for is still charged in full.
+#[tokio::test]
+async fn restored_sleep_is_charged_when_the_dump_reports_none_slept() {
+    let (mock, config) = mock_pool_config().await;
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::client_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::worker_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::client_request::Kind::Load(_)));
+        let sleep = pb::os_call::Call::SystemSleep(pb::os_call::Sleep { seconds: 10.0 });
+        send_event(
+            &mut socket,
+            &event_kind(pb::worker_event::Kind::OsCall(pb::OsCall {
+                call: Some(sleep),
+                ..Default::default()
+            })),
+        );
+        let pb::client_request::Kind::AbortFeed(abort) = read_request(&mut socket) else {
+            panic!("expected AbortFeed");
+        };
+        send_event(
+            &mut socket,
+            &event_kind(pb::worker_event::Kind::Error(pb::Error {
+                exception: abort.exception,
+            })),
+        );
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_total_sleep(Duration::from_millis(250))),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let err = checkout
+        .restore(vec![1, 2, 3], vec![], &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("sleep limit exceeded: 10s > 250ms"));
     drop(checkout);
     join_server(server).await;
 }

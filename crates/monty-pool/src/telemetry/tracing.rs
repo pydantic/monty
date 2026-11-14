@@ -1366,6 +1366,7 @@ mod tests {
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
             max_total_sleep_micros: None,
+            total_sleep_micros: 0,
         }
     }
 
@@ -1623,6 +1624,7 @@ mod tests {
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
             max_total_sleep_micros: None,
+            total_sleep_micros: 0,
         });
         recorder.begin_turn(&request(pb::client_request::Kind::Dump(pb::Dump {})));
         recorder.event(&event(pb::worker_event::Kind::DumpResult(pb::DumpResult {
@@ -1679,6 +1681,7 @@ mod tests {
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
             max_total_sleep_micros: None,
+            total_sleep_micros: 0,
         });
         recorder.begin_turn(&request(pb::client_request::Kind::Feed(pb::Feed {
             code: "1".to_owned(),

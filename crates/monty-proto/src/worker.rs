@@ -1369,6 +1369,7 @@ fn stamp_budget(event: &mut pb::WorkerEvent, tracker: &ResourceTracker) {
     event.max_feed_duration_micros = micros_field(tracker.max_feed_duration());
     event.max_turn_duration_micros = micros_field(tracker.max_turn_duration());
     event.max_total_sleep_micros = micros_field(tracker.max_total_sleep());
+    event.total_sleep_micros = u64::try_from(tracker.total_sleep().as_micros()).unwrap_or(u64::MAX);
     event.max_suspensions = Some(tracker.max_suspensions() as u64);
 }
 
