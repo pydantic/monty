@@ -177,6 +177,23 @@ fn amplifying_globs_reply_with_the_tree() {
     assert_eq!(shallow, entries(&[("y/", 'm'), ("y/e.py", 'm')]));
 }
 
+/// `**/..` re-queues every parent at each of its steps; each directory is still
+/// matched once, in every mode.
+#[test]
+fn recursive_steps_after_dot_dot_walk_each_directory_once() {
+    let dir = TempDir::new().unwrap();
+    for chain in 0..40 {
+        fs::create_dir_all(dir.path().join(format!("c{chain}")).join(["d"; 60].join("/"))).unwrap();
+    }
+    let parts = [["**", ".."]; 8].concat();
+    for mode in all_modes() {
+        let mut table = mount(&dir, mode);
+        let reply = scan(&mut table, glob("/mnt", &parts)).unwrap();
+        // the root and every directory with a child
+        assert_eq!(reply.len(), 1 + 40 * 60);
+    }
+}
+
 #[test]
 fn dot_dot_in_a_pattern_stays_below_the_scan_root() {
     let dir = create_tree();
@@ -398,8 +415,8 @@ fn glob_states_are_charged_to_the_mount_memory_limit() {
     // reading every entry, and matching them, fits
     assert_eq!(scan(&mut table, glob("/mnt", &["*"])).unwrap().len(), 500);
     assert_eq!(scan(&mut table, glob("/mnt", &["*", "..", "*"])).unwrap().len(), 500);
-    // 31 wildcards hold the 500 entries' paths 62 times over
-    let pattern = "*/../".repeat(31) + "*";
+    // 8 wildcards hold the 500 entries' paths 16 times over
+    let pattern = "*/../".repeat(7) + "*";
     let parts: Vec<&str> = pattern.split('/').collect();
     let err = scan(&mut table, glob("/mnt", &parts)).unwrap_err();
     assert_eq!(err.into_exception().exc_type(), ExcType::MemoryError);
@@ -532,7 +549,10 @@ fn huge_pattern_parts_are_refused_without_copying_them() {
 fn scan_limit_is_a_runtime_error() {
     let exc = MountError::ScanLimitExceeded(10).into_exception();
     assert_eq!(exc.exc_type(), ExcType::RuntimeError);
-    assert_eq!(exc.message(), Some("directory scan examined more than 10 entries"));
+    assert_eq!(
+        exc.message(),
+        Some("directory scan exceeded its work limit of 10 steps")
+    );
 }
 
 /// A link leaving its own directory but not the mount is listed through the

@@ -16,6 +16,7 @@ name = "monty_types"
 
 [dependencies]
 monty-macros = { workspace = true }
+ahash = { workspace = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }
 strum = { workspace = true }

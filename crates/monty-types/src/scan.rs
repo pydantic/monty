@@ -17,11 +17,13 @@
 
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     convert::Infallible,
     rc::Rc,
     sync::Arc,
 };
+
+use ahash::AHashSet;
 
 use crate::{
     graph::{MontyGraph, MontyNode, NodeId},
@@ -331,18 +333,19 @@ pub trait ScanSource {
     /// `None` when it does not exist.
     fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, Self::Error>;
 
-    /// Called once per entry a scan examines, so a host can cap the work a
-    /// pathological pattern (`*/**/*/**/...`) or a symlink cycle costs.
+    /// Charged with the work a scan does, so a host can cap it whatever shape
+    /// the pattern or the tree has. A unit is about one byte matched, hashed
+    /// or copied; every loop of a scan spends in proportion to what it does.
     ///
     /// No default: a host-side source, or a wrapper that fails to forward
     /// this, would leave that work unbounded without anything failing.
-    fn visit(&mut self) -> Result<(), Self::Error>;
+    fn spend(&mut self, units: usize) -> Result<(), Self::Error>;
 
     /// Charged with the bytes of each glob state a scan holds, which a pattern
     /// can multiply per entry read (`*/../*/../*`), so a host can bound them
     /// with the entries.
     ///
-    /// No default, for the same reason as [`Self::visit`].
+    /// No default, for the same reason as [`Self::spend`].
     fn charge(&mut self, bytes: usize) -> Result<(), Self::Error>;
 
     /// Most matches [`GlobSelector::select`] collects from this source before
@@ -404,11 +407,15 @@ fn walk_to_depth<E>(
         if max_depth.is_some_and(|max| depth >= max) {
             continue;
         }
+        source.spend(1 + dir.len())?;
         for (name, info) in source.list(&dir)?.unwrap_or_default().iter() {
-            source.visit()?;
+            let mut work = 1;
             if info.is_dir && (follow_symlinks || !info.is_symlink) {
-                stack.push((join(&dir, name), depth + 1));
+                let child = join(&dir, name);
+                work += child.len();
+                stack.push((child, depth + 1));
             }
+            source.spend(work)?;
         }
     }
     Ok(())
@@ -469,8 +476,8 @@ impl<E, S: ScanSource<Error = E>> ScanSource for Recorder<'_, S> {
         Ok(info)
     }
 
-    fn visit(&mut self) -> Result<(), E> {
-        self.source.visit()
+    fn spend(&mut self, units: usize) -> Result<(), E> {
+        self.source.spend(units)
     }
 
     fn charge(&mut self, bytes: usize) -> Result<(), E> {
@@ -570,11 +577,11 @@ impl ScanSource for ScanTree {
     }
 
     /// Unbounded: a reply already received, whose reader applies its own limits.
-    fn visit(&mut self) -> Result<(), Infallible> {
+    fn spend(&mut self, _units: usize) -> Result<(), Infallible> {
         Ok(())
     }
 
-    /// Free, as [`Self::visit`] is.
+    /// Free, as [`Self::spend`] is.
     fn charge(&mut self, _bytes: usize) -> Result<(), Infallible> {
         Ok(())
     }
@@ -615,7 +622,8 @@ pub fn split_literal_prefix(parts: &[String], case_sensitive: Option<bool>) -> (
 /// over a host's reply gives what CPython gives over the real tree. Unlike
 /// CPython it works through an explicit stack over normalized paths and visits
 /// each pattern state once, so the work is bounded by pattern parts × entries
-/// × depth however the pattern is shaped (see [`Self::select`] for the cost).
+/// × depth however the pattern is shaped, and reports it to
+/// [`ScanSource::spend`] as it goes (see [`Self::select`] for the cost).
 #[derive(Debug)]
 pub struct GlobSelector<'p> {
     /// Parsed pattern parts.
@@ -684,12 +692,13 @@ impl<'p> GlobSelector<'p> {
     /// `pathlib` does.
     ///
     /// `None` when the matches outgrew [`ScanSource::match_capacity`]: the run
-    /// then stops collecting them but still reads everything it would have, so
-    /// a host can reply with what it read instead.
+    /// then stops collecting them but still reads every directory it would
+    /// have, so a host can reply with what it read instead.
     pub fn select<E>(&self, source: &mut impl ScanSource<Error = E>) -> Result<Option<Vec<String>>, E> {
         let mut run = Run {
             stack: Vec::new(),
-            seen: HashSet::new(),
+            seen: AHashSet::new(),
+            walked: self.steps.iter().map(|_| AHashSet::new()).collect(),
             out: Some(Vec::new()),
         };
         self.run(source, &mut run)?;
@@ -700,68 +709,105 @@ impl<'p> GlobSelector<'p> {
     fn run<E>(&self, source: &mut impl ScanSource<Error = E>, run: &mut Run) -> Result<(), E> {
         run.push(0, "", false, source)?;
         while let Some((index, path, exists)) = run.stack.pop() {
-            let step = self.steps[index]
-                .as_ref()
-                .expect("states are only pushed by the step chain compiled from part 0");
-            match step {
-                Step::Exists => {
-                    if exists || lexists(&path, source)? {
-                        run.emit(path.to_string(), source);
-                    }
-                }
-                Step::Special => {
-                    let mut path = format!("{path}{}", self.parts[index]);
-                    if index + 1 < self.parts.len() {
-                        path.push('/');
-                    }
-                    run.push(index + 1, &path, exists, source)?;
-                }
-                Step::Literal { joined, next } => run.push(*next, &format!("{path}{joined}"), false, source)?,
-                Step::Wildcard { matcher, next } => {
-                    let dir_only = *next < self.parts.len();
-                    for (name, info) in source.list(path.trim_end_matches('/'))?.unwrap_or_default().iter() {
-                        source.visit()?;
-                        if matcher.as_ref().is_none_or(|matcher| matcher.matches(name)) {
-                            let entry = join(&path, name);
-                            if !dir_only {
-                                run.emit(entry, source);
-                            } else if info.is_dir {
-                                run.push(*next, &(entry + "/"), true, source)?;
-                            }
-                        }
-                    }
-                }
-                Step::Recursive { matcher, next } => {
-                    self.select_recursive(matcher.as_ref(), *next, &path, exists, source, run)?;
-                }
-            }
+            self.process(index, &path, exists, source, run)?;
         }
         Ok(())
     }
 
-    /// Runs a `**` step: the path itself, then each descendant, depth first.
-    fn select_recursive<E>(
+    /// Runs one state's step.
+    fn process<E>(
         &self,
-        matcher: Option<&MultiPattern>,
-        next: usize,
+        index: usize,
         path: &str,
         exists: bool,
         source: &mut impl ScanSource<Error = E>,
         run: &mut Run,
     ) -> Result<(), E> {
+        let step = self.steps[index]
+            .as_ref()
+            .expect("states are only pushed by the step chain compiled from part 0");
+        match step {
+            Step::Exists => {
+                if exists || lexists(path, source)? {
+                    run.emit(path.to_owned(), source);
+                }
+            }
+            Step::Special => {
+                let mut path = format!("{path}{}", self.parts[index]);
+                if index + 1 < self.parts.len() {
+                    path.push('/');
+                }
+                run.push(index + 1, &path, exists, source)?;
+            }
+            Step::Literal { joined, next } => run.push(*next, &format!("{path}{joined}"), false, source)?,
+            Step::Wildcard { matcher, next } => {
+                let dir_only = *next < self.parts.len();
+                // A listing costs work even when empty, so empty directories are not free to revisit.
+                source.spend(1 + path.len())?;
+                for (name, info) in source.list(path.trim_end_matches('/'))?.unwrap_or_default().iter() {
+                    let mut work = 1;
+                    if matcher
+                        .as_ref()
+                        .is_none_or(|matcher| matcher.matches_counted(name, &mut work))
+                    {
+                        let entry = join(path, name);
+                        work += entry.len();
+                        if !dir_only {
+                            run.emit(entry, source);
+                        } else if info.is_dir {
+                            run.push(*next, &(entry + "/"), true, source)?;
+                        }
+                    }
+                    source.spend(work)?;
+                }
+            }
+            Step::Recursive { .. } => self.select_recursive(index, path, exists, source, run)?,
+        }
+        Ok(())
+    }
+
+    /// Runs `**` step `index`: the path itself, then each descendant, depth first.
+    ///
+    /// With more parts to come, a directory this step already walked is skipped
+    /// (see [`Run::claim_walk`]): its states are queued, and re-walking it from
+    /// every ancestor would cost depth × entries per step (`**/..` repeated).
+    /// A final `**` re-walks, as CPython yields its repeats (`**/*/**` gives
+    /// `a/b` twice), and so does one with a merged matcher, whose matches
+    /// depend on where the walk started.
+    fn select_recursive<E>(
+        &self,
+        index: usize,
+        path: &str,
+        exists: bool,
+        source: &mut impl ScanSource<Error = E>,
+        run: &mut Run,
+    ) -> Result<(), E> {
+        let Some(Step::Recursive { matcher, next }) = &self.steps[index] else {
+            unreachable!("only `**` steps walk");
+        };
+        let (matcher, next) = (matcher.as_ref(), *next);
         let dir_only = next < self.parts.len();
+        let walk_once = dir_only && matcher.is_none();
         let match_pos = path.len();
-        if matcher.is_none_or(|matcher| matcher.matches("")) {
+        let mut work = 0;
+        if matcher.is_none_or(|matcher| matcher.matches_counted("", &mut work)) {
             run.push(next, path, exists, source)?;
         }
+        source.spend(work)?;
         let mut dirs = vec![path.to_owned()];
         while let Some(dir) = dirs.pop() {
-            for (name, info) in source.list(dir.trim_end_matches('/'))?.unwrap_or_default().iter() {
-                source.visit()?;
+            let dir_key = dir.trim_end_matches('/');
+            if walk_once && !run.claim_walk(index, dir_key, source)? {
+                continue;
+            }
+            source.spend(1 + dir.len())?;
+            for (name, info) in source.list(dir_key)?.unwrap_or_default().iter() {
+                let mut work = 1;
                 let is_dir = info.is_dir && (self.recurse_symlinks || !info.is_symlink);
                 if is_dir || !dir_only {
                     let entry = join(&dir, name);
-                    let matched = matcher.is_none_or(|matcher| matcher.matches(&entry[match_pos..]));
+                    work += entry.len();
+                    let matched = matcher.is_none_or(|matcher| matcher.matches_counted(&entry[match_pos..], &mut work));
                     let entry = if dir_only { entry + "/" } else { entry };
                     if is_dir {
                         if matched {
@@ -777,6 +823,7 @@ impl<'p> GlobSelector<'p> {
                         run.emit(entry, source);
                     }
                 }
+                source.spend(work)?;
             }
         }
         Ok(())
@@ -791,17 +838,38 @@ type State = (usize, Rc<str>, bool);
 /// the seen set, plus the path's reference counts.
 const STATE_OVERHEAD: usize = 2 * size_of::<State>() + 2 * size_of::<usize>();
 
+/// Bytes a [`Run::walked`] entry holds beside its path.
+const WALKED_OVERHEAD: usize = size_of::<String>();
+
 /// The pending states and results of one [`GlobSelector`] run.
 struct Run {
     /// States still to process.
     stack: Vec<State>,
     /// Every state ever queued, so each is processed once.
-    seen: HashSet<State>,
+    seen: AHashSet<State>,
+    /// Per `**` step, each directory it has walked (see [`Self::claim_walk`]).
+    walked: Vec<AHashSet<String>>,
     /// Matches, until they outgrow the source's [`ScanSource::match_capacity`].
     out: Option<Vec<String>>,
 }
 
 impl Run {
+    /// Records that `**` step `step` is listing `dir`; `false` if it already did.
+    ///
+    /// A walk lists every descendant before returning, so a directory already
+    /// walked has queued every state below it. Only for a step without a
+    /// merged matcher, whose states do not depend on the walk's origin.
+    fn claim_walk<E>(&mut self, step: usize, dir: &str, source: &mut impl ScanSource<Error = E>) -> Result<bool, E> {
+        let walked = &mut self.walked[step];
+        Ok(if walked.contains(dir) {
+            false
+        } else {
+            source.charge(WALKED_OVERHEAD + dir.len())?;
+            walked.insert(dir.to_owned());
+            true
+        })
+    }
+
     /// Queues a state with its path normalized (keeping a trailing `/`) unless
     /// it was queued before; one climbing above the root is dropped.
     ///
@@ -815,6 +883,8 @@ impl Run {
         exists: bool,
         source: &mut impl ScanSource<Error = E>,
     ) -> Result<(), E> {
+        // Normalizing and hashing the path cost its length, queued before or not.
+        source.spend(1 + path.len())?;
         let trimmed_len = path.trim_end_matches('/').len();
         let dir = trimmed_len > 0 && trimmed_len < path.len();
         let normalized: Rc<str> = match normalize_relative(&path[..trimmed_len]) {
@@ -960,7 +1030,7 @@ pub fn normalize_relative(path: &str) -> Option<Cow<'_, str>> {
 ///
 /// Matching backtracks over `*` only, so it costs at most pattern length ×
 /// name length (the regex CPython compiles the pattern to backtracks the same
-/// way), never exponential. Mounts bound both lengths by their name limit.
+/// way), never exponential. [`Self::matches_counted`] reports the steps taken.
 #[derive(Debug, Clone)]
 pub struct SegmentPattern {
     tokens: Vec<Token>,
@@ -1017,11 +1087,22 @@ impl SegmentPattern {
     /// Whether `name` matches the whole pattern.
     #[must_use]
     pub fn matches(&self, name: &str) -> bool {
+        self.matches_counted(name, &mut 0)
+    }
+
+    /// [`Self::matches`], adding the steps the match took to `work` (see
+    /// [`ScanSource::spend`]): what a pattern built to backtrack costs.
+    pub fn matches_counted(&self, name: &str, work: &mut usize) -> bool {
         // `t` is a byte offset into `name`, always on a character boundary.
         let (mut p, mut t) = (0, 0);
         // The last `*` seen and the text position it is currently absorbing up to.
         let mut star: Option<(usize, usize)> = None;
         while let Some(c) = name[t..].chars().next() {
+            // A class is compared item by item, so it costs what it holds.
+            *work += match self.tokens.get(p) {
+                Some(Token::Class { items, .. }) => 1 + items.len(),
+                _ => 1,
+            };
             match self.tokens.get(p) {
                 Some(Token::Star) => {
                     star = Some((p, t));
@@ -1157,13 +1238,16 @@ impl MultiPart {
 
 impl MultiPattern {
     /// Whether `path` (relative, no trailing `/`) matches; dynamic programming
-    /// over (part, segment), so linear in each.
-    fn matches(&self, path: &str) -> bool {
+    /// over (part, segment), so linear in each. Adds its steps to `work`, as
+    /// [`SegmentPattern::matches_counted`] does.
+    fn matches_counted(&self, path: &str, work: &mut usize) -> bool {
         let segments: Vec<&str> = if path.is_empty() {
             Vec::new()
         } else {
             path.split('/').collect()
         };
+        // Splitting the path, then one row of the table per part.
+        *work += path.len() + self.0.len() * (segments.len() + 1);
         let mut reachable = vec![false; segments.len() + 1];
         reachable[0] = true;
         for (index, part) in self.0.iter().enumerate() {
@@ -1184,7 +1268,7 @@ impl MultiPattern {
                 }
                 MultiPart::Segment(pattern) => {
                     for (position, segment) in segments.iter().enumerate() {
-                        if reachable[position] && pattern.matches(segment) {
+                        if reachable[position] && pattern.matches_counted(segment, work) {
                             next[position + 1] = true;
                         }
                     }

@@ -2951,6 +2951,7 @@ dependencies = [
 name = "monty-types"
 version = "1.6.0"
 dependencies = [
+ "ahash",
  "chrono",
  "cpu-time",
  "jiff",
