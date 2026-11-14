@@ -207,6 +207,7 @@ pub(crate) fn collect_bytes_from_iterator(iterator: Value, vm: &mut VM<'_>) -> R
                 _ => return Err(ExcType::value_error_bytes_range()),
             }
         };
+        vm.heap.tracker.check_growth(bytes.len(), bytes.capacity(), 1)?;
         bytes.push(byte);
         check_estimated_size(bytes.len(), &vm.heap.tracker)
             .and_then(|()| vm.heap.tracker.check_time_every(bytes.len()))?;
