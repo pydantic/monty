@@ -104,7 +104,7 @@ jobs:
 
       # Disable ASLR for benchmark processes and their worker children.
       - name: Run benchmarks
-        uses: CodSpeedHQ/action@f842b9a3ffe213dbb81768fd7f7eeb4dfcf1c369 # v5.4.2
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
         with:
           mode: ${{ matrix.mode }}
           run: setarch $(uname -m) -R cargo codspeed run -p monty-bench
@@ -204,7 +204,7 @@ jobs:
       # Fixed malloc thresholds prevent earlier benchmarks from changing later costs.
       # Disable ASLR for benchmark processes and their worker children.
       - name: Run benchmarks
-        uses: CodSpeedHQ/action@f842b9a3ffe213dbb81768fd7f7eeb4dfcf1c369 # v5.4.2
+        uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
         with:
           mode: walltime
           run: setarch $(uname -m) -R cargo codspeed run -p monty-bench
