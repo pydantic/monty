@@ -32,13 +32,13 @@ postcard = { workspace = true }
 minicbor-serde = { workspace = true }
 serde_bytes = { workspace = true }
 strum = { workspace = true }
-hashbrown = "0.16"
+hashbrown = "0.17"
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 num-integer = { workspace = true }
 unicode-general-category = { workspace = true }
 # `unicodedata` backing tables; their Unicode version may differ from CPython's
-unicode_names2 = "1"
+unicode_names2 = "4"
 unicode-normalization = "0.1"
 memchr = { workspace = true }
 # `union` keeps `Tuple` within `HeapData`'s 56-byte 32-bit limit (heap_data.rs);
@@ -47,14 +47,14 @@ smallvec = { version = "1.13", features = ["serde", "union"] }
 fancy-regex = "0.20.0"
 # worker-side uuid generation for sandbox-defined classes/instances crossing the
 # boundary; supports native and wasm32-wasip1 (WASI random)
-getrandom = "0.3"
+getrandom = "0.4"
 libm = "0.2"
 # `hashlib`'s SHA-1 and SHA-2, for their hardware-accelerated compression; `sha2` also backs
 # `random.seed(str | bytes)`, which extends the seed with a SHA-512 digest as CPython does
 sha1 = { version = "0.11", default-features = false }
 sha2 = { workspace = true }
 chrono = { workspace = true }
-speedate = "0.17.0"
+speedate = "0.18.0"
 jiter = { version = "0.17.0", features = ["num-bigint"] }
 
 [features]

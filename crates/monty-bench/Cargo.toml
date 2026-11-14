@@ -35,8 +35,8 @@ monty-proto = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 pyo3 = { workspace = true, features = ["auto-initialize"], optional = true }
 tempfile = { workspace = true }
-codspeed-criterion-compat = { version = "5.0.1", features = ["async_tokio"], optional = true }
-criterion = { version = "0.5", features = ["async_tokio"], optional = true }
+codspeed-criterion-compat = { version = "6.0.0", features = ["async_tokio"], optional = true }
+criterion = { version = "0.8", features = ["async_tokio"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 pprof = { version = "0.15", features = ["flamegraph", "criterion"], optional = true }
