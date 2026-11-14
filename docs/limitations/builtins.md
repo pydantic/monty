@@ -160,7 +160,7 @@ These raise `NameError`:
     all work. A count above `i64` (`bytes(2**70)`) raises the same shape of `TypeError`
     (`cannot convert 'int' object to bytes`), not CPython's
     `OverflowError: cannot fit 'int' into an index-sized integer`.
-- **`slice`** — slice bounds and `length` in `slice.indices(length)` outside the `i64` range are saturated to `i64`, matching Monty's internal sequence representation.
+- **`slice`** — slice bounds and the `length` argument to `slice.indices(length)` are saturated to `i64::MIN`/`i64::MAX` when outside the `i64` range; sequence lengths are represented as `usize`.
 - **`isinstance(obj, T)`** — `T` must be a built-in type (`int`, `str`,
     `list`, ...), a built-in exception class, a sandbox-defined class (see
     [classes.md](classes.md)), a `|` union of those (see [typing.md](typing.md)),
