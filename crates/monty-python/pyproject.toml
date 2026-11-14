@@ -37,7 +37,7 @@ dependencies = ["typing_extensions>=4.5"]
 dynamic = ["license", "version"]
 
 [project.optional-dependencies]
-opentelemetry = ["opentelemetry-api>=1.39.0"]
+opentelemetry = ["opentelemetry-api>=1.45.2"]
 
 [project.urls]
 Homepage = "https://github.com/pydantic/monty"
