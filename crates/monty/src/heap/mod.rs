@@ -534,24 +534,6 @@ impl<'a, T> HeapView<'a, [T]> for HeapSliceRead<'_, 'a, T> {
     }
 }
 
-impl<'a, T: ?Sized> HeapRead<'a, Box<T>> {
-    /// Projects the current box allocation without retaining its address.
-    pub fn as_box_value(&self) -> HeapBoxRead<'_, 'a, T> {
-        HeapBoxRead { source: self }
-    }
-}
-
-/// A box projection that observes replacement between reader borrows.
-pub struct HeapBoxRead<'source, 'a, T: ?Sized> {
-    source: &'source HeapRead<'a, Box<T>>,
-}
-
-impl<'a, T: ?Sized> HeapView<'a, T> for HeapBoxRead<'_, 'a, T> {
-    fn get<'r>(&'r self, reader: &'r HeapReader<'a>) -> &'r T {
-        self.source.get(reader).as_ref()
-    }
-}
-
 /// Shared capability whose source borrow stays alive through every payload access.
 pub struct BorrowedHeapRead<'original, 'a, U: ?Sized> {
     inner: HeapRead<'a, U>,
