@@ -78,8 +78,8 @@ armed[0] = False
 # A shallow copy re-inserts every pair into the new dict, so a key that raises
 # while being hashed abandons the pairs the loop had not reached; those are
 # owned by the copier and must be released, not left counted. The `except` is
-# tolerant because only Monty gets here: `dict.copy()` re-hashes where CPython's
-# copies the table, a divergence `copy` inherits rather than introduces.
+# tolerant because only Monty gets here: `copy.copy()` re-hashes where CPython
+# copies the table.
 boom_dict = {Boom(): 'first', 'kept': inner}
 armed[0] = True
 boom_dict_copy = None

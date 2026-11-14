@@ -18,9 +18,9 @@ use std::{
 
 // Use codspeed-criterion-compat under the `codspeed` feature (CI), real criterion otherwise (for flamegraphs)
 #[cfg(feature = "codspeed")]
-use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
+use codspeed_criterion_compat::{BatchSize, Bencher, Criterion, black_box, criterion_group, criterion_main};
 #[cfg(not(feature = "codspeed"))]
-use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BatchSize, Bencher, Criterion, black_box, criterion_group, criterion_main};
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, SessionRef};
 use monty_fixture::{Bench, Header};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
@@ -64,6 +64,145 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("repl_feed_after_2k_snippets__monty", repl_feed_after_2k_snippets);
     c.bench_function("session_dump__monty", session_dump);
     c.bench_function("session_load__monty", session_load);
+    container_copy_and_lookup(c);
+    dictionary_fastpaths_and_snapshots(c);
+}
+
+/// Builds the source once so retained capacity and tombstone scans stay visible in copy timings.
+fn container_copy_and_lookup(c: &mut Criterion) {
+    for (shape, setup, repeats) in [
+        ("empty", "source = set()", 1_000),
+        (
+            "drained",
+            "source = set(range(2048))\nfor i in range(2048):\n    source.remove(i)",
+            1_000,
+        ),
+        (
+            "sparse",
+            "source = set(range(2048))\nfor i in range(2047):\n    source.remove(i)",
+            1_000,
+        ),
+        ("dense128", "source = set(range(128))", 500),
+        ("dense2048", "source = set(range(2048))", 100),
+        (
+            "heap128",
+            "source = {(i, 'heap-backed set member') for i in range(128)}",
+            500,
+        ),
+    ] {
+        for (method, expression) in [
+            ("copy", "source.copy()"),
+            ("set", "set(source)"),
+            ("frozenset", "frozenset(source)"),
+            ("copy_module", "copy.copy(source)"),
+        ] {
+            let batch = format!(
+                "for _ in range({repeats}):\n    result = {expression}\nassert result == source\nassert result is not source"
+            );
+            bench_repl_snippet(
+                c,
+                &format!("set_copy_{shape}_{method}__monty"),
+                &format!("import copy\n{setup}"),
+                &batch,
+            );
+        }
+    }
+    for size in [0, 128] {
+        bench_repl_snippet(
+            c,
+            &format!("frozenset_copy_identity{size}__monty"),
+            &format!("source = frozenset(range({size}))\noriginal_hash = hash(source)"),
+            "for _ in range(1000):\n    result = source.copy()\nassert result is source\nassert hash(result) == original_hash",
+        );
+    }
+    bench_repl_snippet(
+        c,
+        "dict_copy_dense128__monty",
+        "source = {i: i for i in range(128)}",
+        "for _ in range(500):\n    result = source.copy()\nassert result == source\nassert result is not source",
+    );
+    for (method, expression) in [("get", "source.get(i % 128)"), ("index", "source[i % 128]")] {
+        bench_repl_snippet(
+            c,
+            &format!("dict_lookup_{method}__monty"),
+            "source = dict.fromkeys(range(128), 3)",
+            &format!("total = 0\nfor i in range(10000):\n    total += {expression}\nassert total == 30000"),
+        );
+    }
+}
+
+/// Retain sources so self-merges and drained snapshot scans are measured without setup.
+fn dictionary_fastpaths_and_snapshots(c: &mut Criterion) {
+    for size in [0, 128, 2048] {
+        bench_repl_snippet(
+            c,
+            &format!("dict_self_update{size}__monty"),
+            &format!("source = dict.fromkeys(range({size}), 3)"),
+            "for _ in range(1000):\n    source.update(source)",
+        );
+    }
+    for (keys, setup) in [
+        ("int", "keys = list(range(128))"),
+        ("heap", "keys = [(i, 'heap-backed key') for i in range(128)]"),
+    ] {
+        bench_repl_snippet(
+            c,
+            &format!("dict_setdefault_{keys}_hits__monty"),
+            &format!("{setup}\nsource = dict.fromkeys(keys, 3)"),
+            "total = 0\nfor i in range(5000):\n    total += source.setdefault(keys[i % 128], 4)\nassert total == 15000",
+        );
+        bench_repl_snippet(
+            c,
+            &format!("dict_setdefault_{keys}_misses__monty"),
+            &format!("{setup}\nsource = {{}}"),
+            "for _ in range(30):\n    source.clear()\n    for key in keys:\n        source.setdefault(key, 3)\nassert len(source) == 128",
+        );
+    }
+    for (shape, setup) in [
+        ("empty", "source = set()"),
+        (
+            "drained",
+            "source = set(range(2048))\nfor i in range(2048):\n    source.remove(i)",
+        ),
+        (
+            "sparse",
+            "source = set(range(2048))\nfor i in range(1, 2048):\n    source.remove(i)",
+        ),
+        ("dense128", "source = set(range(128))"),
+        ("heap128", "source = {(i, 'heap-backed member') for i in range(128)}"),
+    ] {
+        bench_repl_snippet(
+            c,
+            &format!("set_update_{shape}__monty"),
+            &format!("{setup}\ntarget = set()"),
+            "for _ in range(500):\n    target.clear()\n    target.update(source)\nassert target == source",
+        );
+    }
+    bench_repl_snippet(
+        c,
+        "dict_pair_snapshot__monty",
+        "from collections import Counter\nsource = Counter(range(128))",
+        "for _ in range(300):\n    result = source.most_common()\nassert len(result) == 128",
+    );
+}
+
+/// Prepares each sample separately so REPL source history cannot grow between measurements.
+fn bench_repl_snippet(c: &mut Criterion, name: &str, setup: &str, batch: &str) {
+    c.bench_function(name, |bench| {
+        // Borrowing the input keeps both source construction and REPL teardown outside timing.
+        bench.iter_batched_ref(
+            || {
+                let mut repl = MontyRepl::new("bench.py", ResourceTracker::default(), CompileOptions::default());
+                repl.feed_run(setup, vec![], PrintWriter::Stdout).unwrap();
+                repl
+            },
+            |repl| {
+                let result = repl.feed_run(black_box(batch), vec![], PrintWriter::Stdout).unwrap();
+                black_box(result);
+            },
+            BatchSize::PerIteration,
+        );
+    });
 }
 
 /// A benchmark script with the options from its header's `[bench]` table.

@@ -2242,6 +2242,30 @@ fn repl_abandoned_lookup_releases_in_flight_state() {
     assert_eq!(repl.heap_entry_count(), control);
 }
 
+#[cfg(feature = "ref-count-return")]
+#[test]
+fn repl_unknown_frozenset_method_releases_arguments() {
+    for call in [
+        "frozen.missing([1])",
+        "frozen.missing([1], {'nested': [2]})",
+        "frozen.missing([1], {'nested': [2]}, ([],))",
+        "frozen.missing([1], nested=[2])",
+    ] {
+        let (mut repl, _) = init_repl("frozen = frozenset({('heap-backed member',)})");
+        let baseline = repl.heap_entry_count();
+
+        let error = feed_run_print(&mut repl, call).expect_err("unknown methods must raise AttributeError");
+        assert_eq!(error.exc_type(), ExcType::AttributeError, "{call}");
+        assert_eq!(
+            error.message(),
+            Some("'frozenset' object has no attribute 'missing'"),
+            "{call}"
+        );
+        assert_eq!(repl.heap_entry_count(), baseline, "{call}: arguments must be released");
+        assert_eq!(feed_run_print(&mut repl, "len(frozen)").unwrap(), MontyObject::int(1));
+    }
+}
+
 /// A sandbox class or instance the host hands back (by the uuid it crossed
 /// out with) resolves to the original object rather than a host-backed copy,
 /// including after a dump/restore rebuilds the uuid index; one the sandbox has
