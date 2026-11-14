@@ -782,6 +782,22 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                     None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
                 }
             }
+            Self::Bool(value) => {
+                match attr.static_string(vm.interns) {
+                    Some(StaticStrings::BitLength) => {
+                        args.check_zero_args("int.bit_length", vm.heap)?;
+                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
+                    }
+                    Some(StaticStrings::BitCount) => {
+                        args.check_zero_args("int.bit_count", vm.heap)?;
+                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
+                    }
+                    _ => {
+                        args.drop_with(vm);
+                        Err(ExcType::attribute_error("bool", attr.as_str(vm.interns)))
+                    }
+                }
+            }
             _ => {
                 args.drop_with(vm);
                 Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))

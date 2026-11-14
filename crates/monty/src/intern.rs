@@ -700,6 +700,10 @@ pub enum StaticStrings {
     Binascii,
     /// `random.binomialvariate()` function.
     Binomialvariate,
+    /// `int.bit_count()` method.
+    BitCount,
+    /// `int.bit_length()` method.
+    BitLength,
     /// `bisect` in the bisect module.
     Bisect,
     /// `bisect_left` in the bisect module.
