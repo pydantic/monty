@@ -14,7 +14,7 @@ use monty_proto::{
     with_decode_budget,
 };
 use monty_types::{
-    MontyUuid,
+    ExcType, MontyUuid,
     unstable::{ClassTypeNode, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
@@ -593,6 +593,26 @@ fn invalid_value_diagnostics_have_bounded_overhead() {
     });
     assert!(allocations.bytes_total < (name_len + 2048) as u64, "{allocations:?}");
     assert_snapshot!(error.unwrap(), @"failed to decode Protobuf message: invalid wire value (error message exceeds 512 bytes)");
+}
+
+/// An unknown exception name's fallback message is built within the charge made for it.
+#[test]
+fn unknown_exception_fallback_is_charged() {
+    let name = "x".repeat(1024 * 1024);
+    let payload = pb::Exception {
+        exc_type: name.clone(),
+        arg: Some(String::new()),
+    }
+    .encode_to_vec();
+    let node = repeated_field(22, WireType::LengthDelimited, &payload, 1);
+    let wire = repeated_field(2, WireType::LengthDelimited, &node, 1);
+    let (decoded, charged) = measured_decode::<WireArena>(&wire);
+    let expected = MontyNode::Exception {
+        exc_type: ExcType::Exception,
+        arg: Some(format!("{name}: ")),
+    };
+    assert_eq!(decoded.0, vec![expected]);
+    with_decode_budget(charged - 1, || assert!(WireArena::decode(wire.as_slice()).is_err()));
 }
 
 /// Allocation attempts outside framing cannot consume a stale or implicit budget.

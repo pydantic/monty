@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use monty_types::{
-    CodeLoc, ExcData, JsonErrorData, MontyException, SourceRange, StackFrame, UnicodeErrorData, UnicodeErrorObject,
+    CodeLoc, ExcData, ExcType, JsonErrorData, MontyException, SourceRange, StackFrame, UnicodeErrorData,
+    UnicodeErrorObject,
 };
 
 use crate::{convert::ProtoConvertError, pb};
@@ -25,10 +26,7 @@ impl TryFrom<pb::RaisedException> for MontyException {
     type Error = ProtoConvertError;
 
     fn try_from(err: pb::RaisedException) -> Result<Self, ProtoConvertError> {
-        let exc_type = err
-            .exc_type
-            .parse()
-            .map_err(|_| ProtoConvertError::UnknownExcType(err.exc_type))?;
+        let (exc_type, message) = exc_type_from_wire(err.exc_type, err.message, |_| Ok::<_, ProtoConvertError>(()))?;
         let traceback = err
             .traceback
             .into_iter()
@@ -43,11 +41,36 @@ impl TryFrom<pb::RaisedException> for MontyException {
                 sanitize_unicode_data(unicode).map_or(ExcData::None, ExcData::Unicode)
             }
             Some(pb::exc_data::Kind::Json(json)) => {
-                sanitize_json_data(json, err.message.as_deref()).map_or(ExcData::None, ExcData::Json)
+                sanitize_json_data(json, message.as_deref()).map_or(ExcData::None, ExcData::Json)
             }
             None => ExcData::None,
         };
-        Ok(Self::with_traceback(exc_type, err.message, traceback).with_data(data))
+        Ok(Self::with_traceback(exc_type, message, traceback).with_data(data))
+    }
+}
+
+/// Resolves a wire exception name, falling back to `Exception` for one this build does not know.
+///
+/// A newer peer can send a type this build predates, and failing the frame would end the session.
+/// The fallback's message leads with the original name; `charge` pays for that new message first.
+pub(crate) fn exc_type_from_wire<E>(
+    name: String,
+    message: Option<String>,
+    charge: impl FnOnce(usize) -> Result<(), E>,
+) -> Result<(ExcType, Option<String>), E> {
+    if let Ok(exc_type) = name.parse() {
+        Ok((exc_type, message))
+    } else if let Some(message) = message {
+        let len = name.len().saturating_add(2).saturating_add(message.len());
+        charge(len)?;
+        // Sized once: `format!` would grow by doubling past what was charged.
+        let mut combined = String::with_capacity(len);
+        combined.push_str(&name);
+        combined.push_str(": ");
+        combined.push_str(&message);
+        Ok((ExcType::Exception, Some(combined)))
+    } else {
+        Ok((ExcType::Exception, Some(name)))
     }
 }
 
