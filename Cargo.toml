@@ -97,7 +97,7 @@ unicode-general-category = "1"
 # Already linked transitively via ruff/fancy-regex; this just names it directly.
 memchr = "2.7"
 # bigint and related crates
-num-bigint = { version = "0.5", features = ["serde"] }
+num-bigint = { version = "0.4", features = ["serde"] }
 num-traits = "0.2"
 num-integer = "0.1"
 # PyO3: one workspace pin so `pyo3` and `pyo3-build-config` (whose versions

@@ -1128,7 +1128,7 @@ dependencies = [
  "asn1-rs",
  "displaydoc",
  "nom",
- "num-bigint 0.4.8",
+ "num-bigint",
  "num-traits",
  "rusticata-macros",
 ]
@@ -2185,7 +2185,7 @@ dependencies = [
  "ahash",
  "bitvec",
  "lexical-parse-float",
- "num-bigint 0.4.8",
+ "num-bigint",
  "num-traits",
  "pyo3",
  "smallvec",
@@ -2612,7 +2612,7 @@ dependencies = [
  "minicbor-serde",
  "monty-macros",
  "monty-types",
- "num-bigint 0.5.1",
+ "num-bigint",
  "num-integer",
  "num-traits",
  "postcard",
@@ -2741,7 +2741,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
- "num-bigint 0.5.1",
+ "num-bigint",
  "opentelemetry 0.33.1",
  "opentelemetry_sdk 0.33.1",
  "serde",
@@ -2776,7 +2776,7 @@ dependencies = [
  "monty-proto",
  "monty-types",
  "nix 0.31.3",
- "num-bigint 0.5.1",
+ "num-bigint",
  "num-traits",
  "opentelemetry 0.33.1",
  "opentelemetry-proto 0.33.1",
@@ -2808,7 +2808,7 @@ dependencies = [
  "monty-proto",
  "monty-type-checking",
  "monty-types",
- "num-bigint 0.5.1",
+ "num-bigint",
  "prost",
  "prost-build",
  "protox",
@@ -2869,7 +2869,7 @@ dependencies = [
  "minicbor-serde",
  "monty-macros",
  "nix 0.31.3",
- "num-bigint 0.5.1",
+ "num-bigint",
  "num-traits",
  "ruff_python_stdlib 0.0.21",
  "serde",
@@ -3027,16 +3027,6 @@ name = "num-bigint"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
-dependencies = [
- "num-integer",
- "num-traits",
-]
-
-[[package]]
-name = "num-bigint"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93e7820bc0a80a0238e650327316f929ba18d5be054b647490a3a6a339f3e7c0"
 dependencies = [
  "num-integer",
  "num-traits",
@@ -3759,7 +3749,7 @@ dependencies = [
  "monty-pool",
  "monty-proto",
  "monty-types",
- "num-bigint 0.5.1",
+ "num-bigint",
  "opentelemetry 0.33.1",
  "opentelemetry_sdk 0.33.1",
  "pyo3",
@@ -3776,7 +3766,7 @@ checksum = "4688ddedf473e32662b9b067670129a8afb8c18e351482c70d62ba4a88171e8b"
 dependencies = [
  "indexmap",
  "libc",
- "num-bigint 0.4.8",
+ "num-bigint",
  "num-traits",
  "once_cell",
  "portable-atomic",
