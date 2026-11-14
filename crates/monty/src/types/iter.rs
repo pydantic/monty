@@ -11,6 +11,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HeapReadOutput},
+    heap_data::HeapData,
     resource_checks::check_estimated_size,
     types::PyTrait,
     value::{VALUE_SIZE, Value, ValueRead},
@@ -176,4 +177,40 @@ pub fn collect_iterable_bounded(value: &Value, limit: usize, vm: &mut VM<'_>) ->
         }
     }
     Ok(items_guard.into_inner())
+}
+
+/// Drains an owned Python iterator of byte values (integers in 0..=255) into a `Vec<u8>`.
+pub(crate) fn collect_bytes_from_iterator(iterator: Value, vm: &mut VM<'_>) -> RunResult<Vec<u8>> {
+    defer_drop!(iterator, vm);
+    let mut iterator = iterator.read(vm);
+    let preallocation_hint = checked_preallocation_hint(iterator.iter_size_hint(vm), 1, &vm.heap.tracker)?;
+    let mut bytes = Vec::with_capacity(preallocation_hint);
+
+    while let Some(item) = iterator.py_next(vm)? {
+        let byte = {
+            defer_drop!(item, vm);
+            let index_val = item.py_index(vm)?;
+            defer_drop!(index_val, vm);
+            match index_val {
+                Value::Int(n) => match u8::try_from(*n) {
+                    Ok(b) => b,
+                    Err(_) => return Err(ExcType::value_error_bytes_range()),
+                },
+                Value::Bool(b) => u8::from(*b),
+                Value::Ref(id) => match vm.heap.get(*id) {
+                    HeapData::LongInt(li) => match li.to_i64().and_then(|n| u8::try_from(n).ok()) {
+                        Some(b) => b,
+                        None => return Err(ExcType::value_error_bytes_range()),
+                    },
+                    _ => return Err(ExcType::value_error_bytes_range()),
+                },
+                _ => return Err(ExcType::value_error_bytes_range()),
+            }
+        };
+        bytes.push(byte);
+        check_estimated_size(bytes.len(), &vm.heap.tracker)
+            .and_then(|()| vm.heap.tracker.check_time_every(bytes.len()))?;
+    }
+
+    Ok(bytes)
 }

@@ -90,6 +90,7 @@ use crate::{
     resource_checks::{check_repeat_size, check_replace_size, push_checked, repeated_len, try_vec_with_capacity},
     types::{
         List,
+        iter::collect_bytes_from_iterator,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
@@ -167,6 +168,7 @@ impl Bytes {
     /// - `bytes(string, encoding, errors)` encodes via the codec registry —
     ///   like CPython, a str source *requires* an encoding
     /// - `bytes(bytes)` returns the existing bytes object
+    /// - `bytes(iterable)` builds bytes from an iterable of integers in `0..256`
     pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let BytesInitArgs {
             source,
@@ -198,33 +200,70 @@ impl Bytes {
         }
         let new_data = match source {
             None => Vec::new(),
-            Some(Value::Int(n)) => {
-                if *n < 0 {
-                    return Err(ExcType::value_error_negative_bytes_count());
-                }
-                // Fallible on a 32-bit target (`wasm32-wasip1`), where `bytes(2**40)`
-                // is a count no `usize` can hold. On 64-bit the conversion always
-                // succeeds and the size check below rejects it with `MemoryError`.
-                let size = usize::try_from(*n).map_err(|_| ExcType::overflow_index_sized_int())?;
-                // Pre-check the requested size against resource limits before
-                // touching the global allocator. Without this, `bytes(n)` for a
-                // very large `n` would attempt the native allocation directly
-                // and abort the host on failure rather than raising MemoryError.
-                // Mirrors the guard already used by `bytes.ljust`/`zfill`/`*`.
-                check_repeat_size(size, 1, &vm.heap.tracker)?;
-                vec![0u8; size]
-            }
+            Some(Value::Int(n)) => bytes_from_count(*n, vm)?,
+            Some(Value::Bool(b)) => vec![0u8; usize::from(*b)],
             // Reuse immutable bytes after validating encoding/errors above.
             Some(v @ Value::InternBytes(_)) => return Ok(v.clone_with_heap(vm.heap)),
-            Some(v @ Value::Ref(id)) => match vm.heap.get(*id) {
-                HeapData::Bytes(_) => return Ok(v.clone_with_heap(vm.heap)),
-                _ => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
-            },
-            Some(v) => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
+            Some(v @ Value::Ref(id)) if matches!(vm.heap.get(*id), HeapData::Bytes(_)) => {
+                return Ok(v.clone_with_heap(vm.heap));
+            }
+            Some(v) => {
+                if let Some(data) = try_bytes_from_size(v, vm)? {
+                    data
+                } else {
+                    let iterator = match v.py_iter(vm).and_then(|call| call.require_synchronous(vm)) {
+                        Ok(iter) => iter,
+                        Err(e) if e.is_catchable(ExcType::TypeError) => {
+                            return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm)));
+                        }
+                        Err(e) => return Err(e),
+                    };
+                    collect_bytes_from_iterator(iterator, vm)?
+                }
+            }
         };
         let heap_id = vm.heap.allocate(HeapData::Bytes(Self::new(new_data)));
         Ok(Value::Ref(heap_id))
     }
+}
+
+/// Allocates a zero-filled byte buffer for `bytes(count)`.
+fn bytes_from_count(count: i64, vm: &VM<'_>) -> RunResult<Vec<u8>> {
+    if count < 0 {
+        return Err(ExcType::value_error_negative_bytes_count());
+    }
+    // Fallible on a 32-bit target (`wasm32-wasip1`), where `bytes(2**40)`
+    // is a count no `usize` can hold. On 64-bit the conversion always
+    // succeeds and the size check below rejects it with `MemoryError`.
+    let size = usize::try_from(count).map_err(|_| ExcType::overflow_index_sized_int())?;
+    // Pre-check the requested size against resource limits before
+    // touching the global allocator. Without this, `bytes(n)` for a
+    // very large `n` would attempt the native allocation directly
+    // and abort the host on failure rather than raising MemoryError.
+    // Mirrors the guard already used by `bytes.ljust`/`zfill`/`*`.
+    check_repeat_size(size, 1, &vm.heap.tracker)?;
+    Ok(vec![0u8; size])
+}
+
+/// Attempts to interpret `source` as an integer count for `bytes(count)` via `__index__`.
+fn try_bytes_from_size(source: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<u8>>> {
+    let index = match source.py_index_impl(vm) {
+        Ok(Some(index)) => index,
+        Ok(None) => return Ok(None),
+        Err(e) if e.is_catchable(ExcType::TypeError) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    defer_drop!(index, vm);
+    let count = match index {
+        Value::Int(n) => *n,
+        Value::Bool(b) => i64::from(*b),
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::LongInt(li) => li.to_i64().ok_or_else(ExcType::overflow_index_sized_int)?,
+            _ => return Err(ExcType::overflow_index_sized_int().into()),
+        },
+        _ => return Err(ExcType::overflow_index_sized_int().into()),
+    };
+    bytes_from_count(count, vm).map(Some)
 }
 
 /// Argument shape for `bytes(source=..., encoding=..., errors=...)`, all
