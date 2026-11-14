@@ -52,7 +52,7 @@ exclude = ["python/pydantic_monty/*.so", "python/pydantic_monty/__pycache__/**"]
 [dependency-groups]
 dev = [
     "anyio>=4.0",
-    "black>=25.12.0",
+    "black>=26.10.1",
     "dirty-equals>=0.11",
     "inline-snapshot>=0.31.1",
     "opentelemetry-sdk>=1.39.0",
