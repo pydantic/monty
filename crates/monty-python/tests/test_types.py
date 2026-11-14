@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import collections
+import copy
 import datetime
+import gc
 import itertools
 import json
 import pathlib
+import pickle
 import re
 import sys
+import tracemalloc
 import types
 import zoneinfo
-from typing import NamedTuple
+from collections.abc import Callable
+from typing import Any, NamedTuple
 
 import pytest
 from conftest import RunMonty
@@ -19,6 +24,7 @@ from pydantic_monty import (
     AsyncMonty,
     MontyComplete,
     MontyConversionError,
+    MontyNamedTuple,
     MontyRuntimeError,
     MontySession,
     MontyStdTypeProxy,
@@ -714,6 +720,137 @@ def test_namedtuple_sys_version_info_tuple_comparison(monty_run: RunMonty):
     assert result == snapshot((3, 14, 0))
 
 
+def test_namedtuple_types_share_one_class(monty_run: RunMonty):
+    """Every sandbox namedtuple type decodes to `MontyNamedTuple`, so the sandbox cannot make the host
+    build classes, however many types it uses."""
+    result = monty_run(
+        "from collections import namedtuple\nts = [namedtuple(f'T{i}', ['a']) for i in range(2000)]\n[t(i) for i, t in enumerate(ts)]"
+    )
+    assert len(result) == 2000
+    assert {r.__class__ for r in result} == {MontyNamedTuple}
+    assert (result[3]._type_name, result[3].a, result[3]._fields) == snapshot(('T3', 3, ('a',)))
+
+
+def test_namedtuple_same_type_shares_names(monty_run: RunMonty):
+    """Values of one type in a result share their type name and field names."""
+    result: Any = monty_run("from collections import namedtuple\nP = namedtuple('P', ['x'])\n[P(1), P(2)]")
+    first, second = result
+    assert (first.x, second.x) == (1, 2)
+    assert first._fields is second._fields
+    assert first._type_name is second._type_name
+
+
+def test_namedtuple_names_not_retained(monty_run: RunMonty):
+    """Decoded namedtuple names are freed with their values: `collections.namedtuple`
+    compiles field names into code, which makes them immortal on 3.12+."""
+    code = "from collections import namedtuple\nnamedtuple('T', ['f' + 'y' * 100_000 + str(i)])(i)"
+    monty_run(code, inputs={'i': 1000})  # warm up the pool
+    gc.collect()
+    tracemalloc.start()
+    try:
+        for i in range(30):
+            assert monty_run(code, inputs={'i': i}) == (i,)
+        gc.collect()
+        retained, _ = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert retained < 1_000_000
+
+
+class P0(NamedTuple):
+    pass
+
+
+class P1(NamedTuple):
+    a: object
+
+
+class P2(NamedTuple):
+    a: object
+    b: object
+
+
+def _error(func: Callable[[], object]) -> str:
+    """The type and message of the exception `func` raises."""
+    with pytest.raises(Exception) as exc_info:
+        func()
+    return f'{type(exc_info.value).__name__}: {exc_info.value}'
+
+
+@pytest.mark.parametrize('real_type', [P0, P1, P2], ids=['no_fields', 'one_field', 'two_fields'])
+def test_namedtuple_matches_collections(monty_run: RunMonty, real_type: Any):
+    """A decoded namedtuple behaves like an instance of the host's own namedtuple class."""
+    fields = list(real_type._fields)
+    values = tuple(range(len(fields)))
+    code = f'from collections import namedtuple\nnamedtuple({real_type.__name__!r}, {fields!r})(*{values!r})'
+    decoded: Any = monty_run(code)
+    real: Any = real_type(*values)
+    assert decoded.__class__ is MontyNamedTuple
+    assert decoded == real
+    assert hash(decoded) == hash(real)
+    assert repr(decoded) == repr(real)
+    assert decoded._fields == real._fields
+    assert decoded._field_defaults == real._field_defaults
+    assert decoded._asdict() == real._asdict()
+    assert [getattr(decoded, f) for f in fields] == [getattr(real, f) for f in fields]
+    assert repr(decoded._make(reversed(values))) == repr(real._make(reversed(values)))
+    assert repr(decoded._replace(**dict.fromkeys(fields, 'r'))) == repr(real._replace(**dict.fromkeys(fields, 'r')))
+    assert _error(lambda: decoded._replace(z=1)) == _error(lambda: real._replace(z=1))
+    assert _error(lambda: decoded._make([*values, 9])) == _error(lambda: real._make([*values, 9]))
+    assert _error(lambda: decoded.z) == _error(lambda: real.z)
+    assert repr(copy.copy(decoded)) == repr(real)
+    assert repr(pickle.loads(pickle.dumps(decoded))) == repr(real)
+    assert hasattr(decoded, '__replace__') == hasattr(real, '__replace__')
+    assert decoded.__getnewargs__() == real.__getnewargs__()
+
+
+def test_namedtuple_fields_shadow_tuple_methods(monty_run: RunMonty):
+    """A field named like a tuple method wins, as on a real namedtuple; otherwise the method is there."""
+    code = "from collections import namedtuple\n[namedtuple('C', ['count', 'index'])(5, 6), namedtuple('D', ['a'])(1)]"
+    result: Any = monty_run(code)
+    with_fields, without = result
+    assert (with_fields.count, with_fields.index) == (5, 6)
+    assert (without.count(1), without.index(1)) == (1, 0)
+
+
+def test_namedtuple_is_immutable(monty_run: RunMonty):
+    p: Any = monty_run("from collections import namedtuple\nnamedtuple('Point', ['x'])(1)")
+    assert _error(lambda: setattr(p, 'x', 2)) == snapshot("AttributeError: 'Point' object is immutable")
+    assert _error(lambda: setattr(p, 'y', 2)) == snapshot("AttributeError: 'Point' object is immutable")
+
+
+def test_namedtuple_renamed_field(monty_run: RunMonty):
+    """`rename=True` gives fields starting with `_`, which a host namedtuple class could not have."""
+    p: Any = monty_run("from collections import namedtuple\nnamedtuple('P', ['a', 'a'], rename=True)(1, 2)")
+    assert (p.a, p._1, repr(p)) == snapshot((1, 2, 'P(a=1, _1=2)'))
+
+
+def test_namedtuple_keeps_type_name_back_into_sandbox(monty_run: RunMonty):
+    """A decoded namedtuple crosses back under its sandbox type name, not `MontyNamedTuple`."""
+    p = monty_run('import sys\nsys.version_info')
+    assert monty_run('import sys\n(repr(p), p.major, p == sys.version_info)', inputs={'p': p}) == snapshot(
+        (
+            "sys.version_info(major=3, minor=14, micro=0, releaselevel='final', serial=0)",
+            3,
+            True,
+        )
+    )
+
+
+def test_namedtuple_call_arguments_many_types(monty_run: RunMonty):
+    """Host-call arguments may use any number of namedtuple types."""
+    calls: list[tuple[object, ...]] = []
+
+    def f(*args: object) -> None:
+        calls.append(args)
+
+    code = "from collections import namedtuple\nf([namedtuple(f'T{i}', ['a'])(i) for i in range(2000)])"
+    monty_run(code, external_lookup={'f': f})
+    [(arg,)] = calls
+    items: Any = arg
+    assert (len(items), repr(items[1999])) == snapshot((2000, 'T1999(a=1999)'))
+
+
 # === Results the host cannot build ===
 
 # the `TypeError` comes from the host's own CPython, which reworded it in 3.14
@@ -723,11 +860,6 @@ else:
     PROXY_DICT_KEY_ERROR = "MontyRuntimeError(TypeError: cannot convert the result to a Python value: unhashable type: 'pydantic_monty.MontyClassProxy')"
 
 UNDECODABLE_RESULTS = [
-    pytest.param(
-        "from collections import namedtuple\nnamedtuple('P', ['a', 'a'], rename=True)(1, 2)",
-        "MontyRuntimeError(ValueError: cannot convert the result to a Python value: Field names cannot start with an underscore: '_1')",
-        id='namedtuple_underscore_field',
-    ),
     pytest.param(
         'class K:\n    pass\n{K(): 1}',
         PROXY_DICT_KEY_ERROR,
@@ -811,6 +943,16 @@ def test_namedtuple_custom_input_repr(monty_run: RunMonty):
     result = monty_run('repr(item)', inputs={'item': Item(name='widget', price=9.99)})
     # Monty uses the full qualified name (module.ClassName) for the type
     assert result == snapshot("test_types.Item(name='widget', price=9.99)")
+
+
+def test_namedtuple_custom_input_builtin_module(monty_run: RunMonty):
+    """A NamedTuple from `builtins` or a private module crosses without a module prefix."""
+
+    class Item(NamedTuple):
+        name: str
+
+    Item.__module__ = 'builtins'
+    assert monty_run('repr(item)', inputs={'item': Item(name='widget')}) == snapshot("Item(name='widget')")
 
 
 def test_namedtuple_custom_input_len(monty_run: RunMonty):
