@@ -255,28 +255,31 @@ pub(crate) trait ExcTypeExt: Sized {
     /// This matches Python 3.14's error message: `TypeError: unhashable type: 'list'`
     #[must_use]
     fn type_error_unhashable(type_: &str) -> RunError {
-        SimpleException::new_msg(ExcType::TypeError, format!("unhashable type: '{type_}'")).into()
+        SimpleException::new_msg(ExcType::TypeError, unhashable_type_message(type_)).into()
     }
 
-    /// Creates a TypeError for unhashable types used as dict keys.
+    /// Creates CPython's TypeError for a dict key that will not hash, e.g.
+    /// `cannot use 'tuple' as a dict key (unhashable type: 'list')`.
     ///
-    /// This matches Python 3.14's error message:
-    /// `TypeError: cannot use 'list' as a dict key (unhashable type: 'list')`
+    /// `reason` is the message of the hashing `TypeError`; see [`unhashable_type_message`].
     #[must_use]
-    fn type_error_unhashable_dict_key(type_: &str) -> RunError {
+    fn type_error_unhashable_dict_key(key_type: &str, reason: &str) -> RunError {
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("cannot use '{type_}' as a dict key (unhashable type: '{type_}')"),
+            format!("cannot use '{key_type}' as a dict key ({reason})"),
         )
         .into()
     }
 
-    /// Creates a TypeError for an unhashable value used as a set element.
+    /// Creates CPython's TypeError for a set element that will not hash, e.g.
+    /// `cannot use 'tuple' as a set element (unhashable type: 'list')`.
+    ///
+    /// `reason` is the message of the hashing `TypeError`; see [`unhashable_type_message`].
     #[must_use]
-    fn type_error_unhashable_set_element(element_type: &str, unhashable_type: &str) -> RunError {
+    fn type_error_unhashable_set_element(element_type: &str, reason: &str) -> RunError {
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("cannot use '{element_type}' as a set element (unhashable type: '{unhashable_type}')"),
+            format!("cannot use '{element_type}' as a set element ({reason})"),
         )
         .into()
     }
@@ -3186,6 +3189,12 @@ impl RunError {
     pub fn internal(msg: impl Into<Cow<'static, str>>) -> Self {
         Self::Internal(msg.into())
     }
+}
+
+/// CPython's `unhashable type: 'T'` message, raised by `hash()` and wrapped by
+/// the set element and dict key errors.
+pub(crate) fn unhashable_type_message(type_: &str) -> String {
+    format!("unhashable type: '{type_}'")
 }
 
 /// CPython's `ModuleNotFoundError` message for `module_name`.

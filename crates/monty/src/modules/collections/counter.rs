@@ -22,7 +22,9 @@ use crate::{
     py_value::PyValue,
     resource_checks::check_repeat_size,
     sorting::{py_eq_item, py_lt, sort_indices, sort_indices_by},
-    types::{Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder},
+    types::{
+        Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder, unhashable::plain_hash,
+    },
     value::{VALUE_SIZE, Value},
 };
 
@@ -203,7 +205,12 @@ pub(crate) fn counter_update<'h>(
             // items it never reached.
             defer_drop_mut!(items, vm);
             for item in items.by_ref() {
-                counter_bump(counter, item, &Value::Int(1), subtract, false, vm)?;
+                // `subtract` is pure Python (`self.get(elem, 0) - 1`), keeping the dict key error.
+                if subtract {
+                    counter_bump(counter, item, &Value::Int(1), true, false, vm)?;
+                } else {
+                    counter_count_element(counter, item, vm)?;
+                }
             }
         }
     }
@@ -213,6 +220,24 @@ pub(crate) fn counter_update<'h>(
     // empty-Counter fast path, re-evaluated after the iterable was folded in.
     let kwarg_pairs = counter_kwarg_deltas(kwargs);
     counter_merge_mapping(counter, kwarg_pairs, subtract, vm)?;
+    Ok(())
+}
+
+/// Counts one occurrence of `item` as `_count_elements` does: one bare
+/// `PyObject_Hash`, reused for the lookup and the store, so an unhashable item
+/// raises `hash()`'s error rather than the dict key one.
+fn counter_count_element<'h>(counter: &mut HeapObjectRead<'h, Dict>, item: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    let mut item_guard = DropGuard::new(item, vm);
+    let (item, vm) = item_guard.as_parts_mut();
+    let hash = plain_hash(item, vm)?.raw();
+    let base = counter.get_known_hash(item, hash, vm)?.unwrap_or(Value::Int(0));
+    let total = count_arith(&base, &Value::Int(1), false, vm);
+    base.drop_with(vm);
+    let total = total?;
+    let (item, vm) = item_guard.into_parts();
+    if let Some(old) = counter.set_known_hash(item, total, hash, vm)? {
+        old.drop_with(vm);
+    }
     Ok(())
 }
 

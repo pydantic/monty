@@ -30,6 +30,7 @@ use crate::{
         instance::{class_dunder, class_name, instance_attr},
         py_trait::PyObjectIdentity,
         str::allocate_string,
+        unhashable::plain_hash,
     },
     value::Value,
 };
@@ -738,10 +739,7 @@ pub(crate) fn dataclass_hash(self_id: HeapId, field_names: &[StringId], vm: &mut
             let class_name = class_name(class_id, vm.heap, vm.interns).into_owned();
             return Err(ExcType::attribute_error(&class_name, &field_name));
         };
-        match value.py_hash(vm)? {
-            Some(h) => h.hash(&mut hasher),
-            None => return Err(ExcType::type_error_unhashable(&value.py_type_name(vm))),
-        }
+        plain_hash(value, vm)?.hash(&mut hasher);
     }
     Ok(HashValue::new(hasher.finish()))
 }

@@ -25,7 +25,7 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException, unhashable_type_message},
     hash::HashValue,
     heap::{
         ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput,
@@ -35,8 +35,8 @@ use crate::{
         BuiltinType, LazyHeapSet, PyTrait, Type, Union,
         instance::class_name,
         list::repr_should_truncate,
-        set::unhashable_type_name,
         tuple::{TupleVec, allocate_tuple},
+        unhashable::hash_or_culprit,
     },
     value::{EitherStr, Marker, VALUE_SIZE, Value},
 };
@@ -694,9 +694,14 @@ fn literal_eq(args: &Value, other_args: &Value, vm: &mut VM<'_>) -> RunResult<bo
     let mut buckets: AHashMap<(Type, u64), SmallVec<[usize; 1]>> = AHashMap::new();
     for (index, item) in items.iter().chain(others.iter()).enumerate() {
         vm.heap.tracker.check_time_every(index)?;
-        let Some(hash) = item.py_hash(vm)? else {
-            let unhashable_type = unhashable_type_name(item, vm)?;
-            return Err(ExcType::type_error_unhashable_set_element("tuple", &unhashable_type));
+        let hash = match hash_or_culprit(item, vm)? {
+            Ok(hash) => hash,
+            Err(culprit) => {
+                return Err(ExcType::type_error_unhashable_set_element(
+                    "tuple",
+                    &unhashable_type_message(&culprit),
+                ));
+            }
         };
         if index >= items.len() {
             buckets
