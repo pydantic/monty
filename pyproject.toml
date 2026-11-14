@@ -333,6 +333,8 @@ skip = [
     "Cargo.lock",
     "crates/monty-js/package-lock.json",
     "crates/monty-bench/benches/python/pyperformance_*.py",
+    # The multilingual corpus contains valid non-English words.
+    "crates/monty-bench/benches/data/string_corpus.json",
 
     "crates/monty-typeshed/vendor/typeshed/stdlib/*",
     "crates/monty/src/types/str.rs",
