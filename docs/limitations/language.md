@@ -90,6 +90,8 @@ exactly, except for the comprehension target restriction in
     A string that does not parse is rejected only when the AST recovered from it nests more than 20,000 levels deep
     (3,000 in debug builds), which takes data that lexes as one long operator chain, such as several thousand absolute
     paths on consecutive lines.
+    A string over the remaining budget that sits inside eight enclosing string literals is rejected without being
+    parsed.
 - Only Rust hosts can change the threshold, with `CompileOptions { source_scan_threshold: n, ..CompileOptions::default() }`
     (`0` scans every source, `usize::MAX` never scans); Python and JavaScript sessions use the default.
 

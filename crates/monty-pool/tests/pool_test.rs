@@ -51,7 +51,10 @@ use tokio::{
     time::sleep,
 };
 
-use crate::{binary::monty_binary, common::wait_for_idle};
+use crate::{
+    binary::monty_binary,
+    common::{kill_pid, wait_for_idle},
+};
 
 /// Held by each test that allocates hundreds of MiB (oversize frames, oversize
 /// dumps), so the parallel test runner never holds two such buffers at once.
@@ -111,23 +114,6 @@ fn try_symlink_dir(original: &Path, link: &Path) -> io::Result<()> {
     return symlink(original, link);
     #[cfg(windows)]
     return symlink_dir(original, link);
-}
-
-/// Kills a process by pid with SIGKILL — simulates a hard crash.
-fn kill_pid(pid: u32) {
-    #[cfg(unix)]
-    {
-        let status = Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap();
-        assert!(status.success());
-    }
-    #[cfg(windows)]
-    {
-        let status = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/F"])
-            .status()
-            .unwrap();
-        assert!(status.success());
-    }
 }
 
 /// Writes the executable stand-in for `monty` that a test drives, from a child shell rather than
@@ -1509,11 +1495,10 @@ async fn worker_killed_while_idle_is_replaced_transparently() {
     session.finish().await.unwrap();
 }
 
-/// A deep postfix spine (`a.x.x.x…`) currently overflows the worker's stack
-/// (recursive AST handling) — a REAL memory crash, exactly what subprocess
-/// isolation exists for. If monty core gains AST-depth protection this
-/// becomes a `Runtime`/`Crashed` either way; the invariant under test is
-/// that the client survives and the pool keeps serving.
+/// A deep postfix spine (`a.x.x.x…`) once overflowed the worker's stack
+/// (recursive AST handling) and is now rejected as a `SyntaxError`. Either
+/// outcome is accepted; the invariant under test is that the client survives
+/// and the pool keeps serving.
 #[tokio::test]
 async fn hard_worker_crash_does_not_harm_the_pool() {
     let pool = Pool::new(config()).await.unwrap();
