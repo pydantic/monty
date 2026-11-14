@@ -14,15 +14,19 @@
 //!
 //! # Naming contract
 //!
+//! Within one dump version, compatibility must hold in both directions: newer
+//! builds must read and resume older dumps, and older builds must read and resume
+//! newer dumps. Breaking either direction requires a [`DUMP_VERSION`] bump.
+//!
 //! The payload is self-describing: structs are maps keyed by field name and
-//! enums are keyed by variant name, so serde's derive evolves the schema on
-//! its own. A dumped type may gain a field with `#[serde(default)]`, lose a
-//! field, or have variants inserted anywhere, and older dumps still load.
-//! Tuple structs and tuple variants are positional, so their fields may only
-//! be appended.
-//! The names themselves are the contract: renaming a serialized field or
-//! variant needs `#[serde(alias = "old")]` (or a [`DUMP_VERSION`] bump), and
-//! `#[serde(deny_unknown_fields)]` must never be added to a dumped type.
+//! enums are keyed by variant name. Adding a field with `#[serde(default)]`
+//! is compatible when older readers ignore it. Removing a field requires older
+//! readers to tolerate its absence; writing a new variant or renaming a serialized
+//! field is not automatically compatible. An alias only lets newer readers accept
+//! an older name; it does not make older readers accept a new name.
+//! Tuple structs and tuple variants are positional, so appending fields also
+//! requires compatibility in both directions. `#[serde(deny_unknown_fields)]`
+//! must never be added to a dumped type.
 
 use std::{convert::Infallible, error::Error, fmt, mem::size_of};
 
@@ -46,10 +50,11 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 
 /// Version of the dump schema.
 ///
-/// The payload names its fields and variants, so adding a field with a default,
-/// removing one or reordering them does not need a bump (see the module docs).
-/// Bump for every release where
-/// the *meaning* of serialized data changes: opcodes or their operand shapes,
+/// Keep the version only when older and newer builds can read and resume each
+/// other's dumps (see the module docs). A decoder that accepts an older encoding
+/// does not excuse writing a new encoding that older readers cannot read.
+/// Bump for every release that breaks this contract through layout changes or
+/// changes to the *meaning* of serialized data: opcodes or their operand shapes,
 /// `BuiltinsFunctions` order (its discriminants are bytecode operands),
 /// `CmpOperator` values, the compiler's constant layout, how a dict or set key
 /// hashes (entries persist their hash), or a semantic change to a stored value.
