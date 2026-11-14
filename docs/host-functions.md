@@ -174,6 +174,11 @@ Not every value crosses unchanged: unsupported sandbox values become strings, an
 are truncated.
 See [host-value limitations](limitations/host-values.md) for conversion failures, identity rules and size caps.
 
+`typing.get_type_hints(f)` in the sandbox asks a Python host for the function's type hints, which it evaluates only then.
+Builtin types on the [data-type allowlist](limitations/host-values.md#lossy-outputs) arrive as type objects and
+anything else as text; JavaScript functions have none.
+See [type hints](limitations/host-values.md#type-hints) for the conversion rules.
+
 ## Raising into the sandbox
 
 An exception raised by a host function crosses the boundary and behaves like an ordinary Python exception inside the
@@ -297,6 +302,88 @@ In JavaScript every host function may be async, and there is no separate pool cl
 The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions — use `AsyncMonty`, or resolve the pending futures by hand with
 [`feed_start`](snapshots.md).
 
+### Starting calls without waiting
+
+A call to an ordinary host function suspends the worker until the host answers it.
+Against a remote worker each answer is a network round trip, so a `gather` over 20 calls would wait for 21 of them.
+With `stream_async_calls` (`streamAsyncCalls` in JavaScript), calls to `async` host functions (`async def` in Python,
+`async function` in JavaScript) skip that wait when the sandbox does not await them at once: `feed_run` / `feedRun`
+lets the worker send the call to the host and keep running, and the sandbox blocks once, when every task is waiting.
+The 20-call `gather` then costs one round trip plus the slowest call.
+The host starts each call as it arrives, so the call's own I/O overlaps whatever the sandbox does before its `await`.
+Calls and `print()` output reach the host in the order the sandbox made them, so a call made after a failed
+`print_callback` never starts.
+A call awaited at once, as in `await fetch(url)`, still suspends, since nothing else could run in the meantime.
+The option is set on the pool: it is on by default for [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote] and
+`MontyRemote`, where each round trip crosses the network, and off by default for subprocess pools.
+
+=== "Python"
+
+    ```python
+    import asyncio
+
+    import pydantic_monty
+
+
+    async def fetch(url: str) -> str:
+        return f'contents of {url}'
+
+
+    code = """
+    import asyncio
+
+    results = await asyncio.gather(*[fetch(str(i)) for i in range(20)])
+    len(results)
+    """
+
+
+    async def main():
+        async with pydantic_monty.AsyncMonty(stream_async_calls=True) as pool:
+            async with pool.checkout() as session:
+                print(await session.feed_run(code, external_lookup={'fetch': fetch}))
+                #> 20
+
+
+    asyncio.run(main())
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { Monty } from '@pydantic/monty'
+
+    async function fetch(url: string): Promise<string> {
+      return `contents of ${url}`
+    }
+
+    const code = `
+    import asyncio
+
+    results = await asyncio.gather(*[fetch(str(i)) for i in range(20)])
+    len(results)
+    `
+
+    await using pool = await Monty.create({ streamAsyncCalls: true })
+    await using session = await pool.checkout()
+    console.log(await session.feedRun(code, { externalLookup: { fetch } })) // 20
+    ```
+
+Python detects these functions with `inspect.iscoroutinefunction`, which also accepts a `functools.partial` of an
+`async def` and, on Python 3.12+, a function marked with `inspect.markcoroutinefunction`.
+JavaScript reads the function's `AsyncFunction` tag, which bound functions keep; an `async function` transpiled to an
+older target is a plain function returning a promise, so its calls suspend.
+
+The cost is control at the call site.
+The sandbox has moved on by the time the host sees the call, so the host cannot stop execution there, and an error the
+call raises, including a name the host cannot resolve, surfaces at the `await` instead
+(see [asyncio limitations](limitations/asyncio.md#calls-to-async-host-functions-raise-at-the-await)).
+Each started call counts against `max_suspensions` like the suspension it replaces.
+This applies to `external_lookup` and to [`ExternalModule`][pydantic_monty.ExternalModule] functions, on local and
+remote pools.
+`feed_start()` / `feedStart()` suspend at every call so that each reaches a snapshot, and the sync
+[`Monty`][pydantic_monty.Monty] pool suspends because it cannot run coroutines.
+The WebAssembly worker cannot start calls either: it suspends at each one, with the same results.
+
 ## Importing host modules
 
 Imports of unknown modules ask the host for them.
@@ -369,10 +456,11 @@ an awaitable.
 Factory exceptions and invalid return values raise at the requesting import, stub request or call, and the next use
 runs the factory again.
 `from tools import add` reads the attribute of that object and raises `ImportError` for a name it does not have.
-An import of a module absent from `external_modules` raises `ModuleNotFoundError`; the sandbox's own modules, `json`
-or `math`, are never looked up here.
-Every `import` statement asks again: the sandbox has no module cache, and a module bound by an earlier feed is a
-plain global.
+An import of a module absent from `external_modules` reads its `.py` file from the working directory
+(see [importing modules](filesystem.md#importing-modules)) and raises `ModuleNotFoundError` without one; the sandbox's
+own modules, `json` or `math`, are never looked up here.
+Every `import` of a host module asks again: the sandbox caches only modules read from files, and a module bound by an
+earlier feed is a plain global.
 Each import sends the entry the mapping holds at that moment, so replacing an entry changes what the next import
 binds, while a module's own `attrs` never change after construction.
 The bound value is a module object: `type(tools)` is `module`, a missing attribute raises
@@ -392,12 +480,25 @@ Submodules must be values, not factories, because they cross with their parent.
 
 The bindings answer two [OS calls](snapshots.md#the-snapshot-kinds) from `external_modules`, before mounts or `os`:
 
-- `import` requests the top-level module name and returns its value; `not_found` raises `ModuleNotFoundError`.
-    Dotted imports read subsequent components as attributes.
+- `import` requests a module by its dotted name and returns its value.
+    Its second argument is the module's search path: the working directory for a top-level name, or a file
+    package's `__path__` for one of its submodules.
+    When `external_modules` lacks the module, the bindings search each directory on that path for `<name>/__init__.py`,
+    then `<name>.py` (see [importing modules](filesystem.md#importing-modules)), and answer `module_file` with the
+    first found, which the sandbox runs as sandbox code, or `not_found`, which raises the statement's miss error:
+    `ModuleNotFoundError`, or `ImportError` for `from pkg import sub`.
+    A read raising `FileNotFoundError`, `NotADirectoryError`, `IsADirectoryError` or `PermissionError` moves on to the
+    next candidate; a factory exception or any other read error is raised at the import, and nothing else is tried.
+    A host module's submodules are its attributes and are never requested.
 - `import_stubs` requests stubs for imported host modules the session has not asked about, once before type checking.
     Return a dict of dotted paths to `.pyi` sources, including submodules, with `None` for missing stubs.
 
 A host driving suspensions itself answers both like any other OS call.
+It also answers `typing.get_type_hints`, whose arguments are `('function', name)` or `('class', id)`, with a dict of
+hints; `NOT_HANDLED` gives `{}` (see [type hints](limitations/host-values.md#type-hints)).
+In Rust, `ImportArgs::candidates` lists the files to read and `find_module_file` runs the search; reply with
+`ExtFunctionResult::ModuleFile` only to an `import` with a non-empty search path, which a worker from a release before
+file imports never sends.
 To type-check code that imports a host module, give the entry its `stubs`; see
 [type checking](type-checking.md#declaring-what-the-host-provides).
 

@@ -76,10 +76,9 @@ assert f != g
 f.close()
 g.close()
 
-# === '+' modes rejected on Monty (CPython accepts them; Monty's wrapper lacks
-# read-position tracking so they would silently destroy data on first write) ===
+# === Other update modes remain unsupported ===
 if is_monty:
-    for mode in ('r+', 'rb+', 'r+b', 'w+', 'wb+', 'a+', 'ab+'):
+    for mode in ('r+', 'rb+', 'r+b', 'w+', 'a+', 'ab+'):
         try:
             open(root / 'open_bytes.bin', mode)
             assert False, f'expected ValueError for + mode {mode!r}'

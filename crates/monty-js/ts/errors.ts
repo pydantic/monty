@@ -1,7 +1,8 @@
 // Error classes thrown by the pool client, mirroring pydantic_monty's
 // exception hierarchy: MontyError is the base, with MontySyntaxError /
 // MontyRuntimeError / MontyTypingError for sandbox failures and
-// MontyCrashedError for worker death. The full Python traceback is rendered
+// MontyCrashedError for worker death (MontyDisconnectError / MontyShutdown
+// for a remote worker's stream). The full Python traceback is rendered
 // once, in the worker (monty's `MontyException` Display), and carried across
 // as a string — never re-implemented here. Structured frames travel alongside
 // it for programmatic access via `MontyRuntimeError.traceback()`.
@@ -206,9 +207,172 @@ export class MontyCrashedError extends MontyError {
 
   constructor(message: string, options: { timedOut?: boolean; exitStatus?: string | null } = {}) {
     super('RuntimeError', message)
+    this.message = message
     this.name = 'MontyCrashedError'
     this.timedOut = options.timedOut ?? false
     this.exitStatus = options.exitStatus ?? null
+  }
+}
+
+/** The status or transport failure that ended a remote session's stream. */
+export interface DisconnectDetails {
+  /**
+   * The gRPC status code the server ended the stream with, by its canonical
+   * name (`DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, ...); `OK` when it simply
+   * finished the stream. Absent for a transport failure.
+   */
+  statusCode?: string
+  /** The message on that status. */
+  statusMessage?: string
+  /**
+   * The policy reason the server attached, in `snake_case` (`idle_timeout`,
+   * `session_timeout`, `turn_timeout`, `capacity`, ...), when it is one this
+   * client knows.
+   */
+  remoteCause?: string
+  /** The transport or protocol error, when the server sent no status. */
+  transportError?: string
+}
+
+/**
+ * Raised when a remote worker's stream ended mid-session (`MontyRemote` only;
+ * the local analogue is `MontyCrashedError`). The sandbox may have died, the
+ * connection may have dropped, or the server may have ended the session by
+ * policy — an idle, session or turn timeout, or being over capacity — which
+ * it says in `statusCode`, `statusMessage` and `remoteCause`. None of them says
+ * whether the in-flight request ran. The session is lost; check out a new one.
+ */
+export class MontyDisconnectError extends MontyError {
+  /** The status code the server ended the stream with, by name, or `null`. */
+  readonly statusCode: string | null
+  /** The message on that status, or `null`. */
+  readonly statusMessage: string | null
+  /** The policy reason the server named, in `snake_case`, or `null`. */
+  readonly remoteCause: string | null
+  /** The transport or protocol error when the server sent no status, or `null`. */
+  readonly transportError: string | null
+
+  constructor(message: string, details: DisconnectDetails = {}) {
+    super('RuntimeError', message)
+    this.message = message
+    this.name = 'MontyDisconnectError'
+    this.statusCode = details.statusCode ?? null
+    this.statusMessage = details.statusMessage ?? null
+    this.remoteCause = details.remoteCause ?? null
+    this.transportError = details.transportError ?? null
+  }
+}
+
+/** The status a server refused a session with. */
+export interface RefusalDetails {
+  /** The gRPC status code, by its canonical name (`RESOURCE_EXHAUSTED`, ...). */
+  statusCode?: string
+  /** The message on that status. */
+  statusMessage?: string
+  /** The policy reason the server named, in `snake_case`. */
+  remoteCause?: string
+  /** Suggested retry delay in seconds, parsed from `Retry-After`. */
+  retryAfter?: number
+  /** Whether the server returned `RESOURCE_EXHAUSTED` or `UNAVAILABLE`. */
+  retryable?: boolean
+}
+
+/**
+ * Raised when the remote server refused to open a session's stream
+ * (`MontyRemote` only): at capacity (`capacity`, or `caller_cap` for this
+ * caller's share), with no worker to serve it (`worker_unavailable`), or
+ * rejecting the caller's credentials (`unauthenticated`) or what a valid
+ * credential asked for (`permission_denied`), or returning `FAILED_PRECONDITION`.
+ * The server gives details in `statusCode`,
+ * `statusMessage` and `remoteCause`. No session existed, so
+ * nothing ran. `retryable` identifies temporary refusals; `retryAfter` is
+ * the server's suggested delay, not an automatic retry. A server that
+ * cannot be reached, that answers with any other status (such as
+ * `UNIMPLEMENTED` from a URL that is no Monty server), or that is no gRPC
+ * server at all (a web server's error page), rejects with `MontyConnectError`
+ * instead.
+ */
+export class MontyRefusedError extends MontyError {
+  /** The status code the server refused with, by name, or `null`. */
+  readonly statusCode: string | null
+  /** The message on that status, or `null`. */
+  readonly statusMessage: string | null
+  /** The policy reason the server named, in `snake_case`, or `null`. */
+  readonly remoteCause: string | null
+  /** True for `RESOURCE_EXHAUSTED` or `UNAVAILABLE`; credentials must be fixed separately. */
+  readonly retryable: boolean
+  /** Suggested delay in seconds, or `null` for absent or invalid `Retry-After`. */
+  readonly retryAfter: number | null
+
+  constructor(message: string, details: RefusalDetails = {}) {
+    super('RuntimeError', message)
+    this.message = message
+    this.name = 'MontyRefusedError'
+    this.statusCode = details.statusCode ?? null
+    this.statusMessage = details.statusMessage ?? null
+    this.remoteCause = details.remoteCause ?? null
+    this.retryable = details.retryable ?? ['RESOURCE_EXHAUSTED', 'UNAVAILABLE'].includes(this.statusCode ?? '')
+    this.retryAfter = details.retryAfter ?? null
+  }
+}
+
+/** Raised when a remote connection fails before a session opens. */
+export class MontyConnectError extends MontyError {
+  /** The gRPC status code, or `null` without a server status. */
+  readonly statusCode: string | null
+  /** The server's status message, or `null`. */
+  readonly statusMessage: string | null
+  /** The policy reason the server named, in `snake_case`, or `null`. */
+  readonly remoteCause: string | null
+  /** The underlying transport error, or `null` when the server sent a status. */
+  readonly transportError: string | null
+
+  constructor(message: string, details: DisconnectDetails = {}) {
+    super('RuntimeError', message)
+    this.message = message
+    this.name = 'MontyConnectError'
+    this.statusCode = details.statusCode ?? null
+    this.statusMessage = details.statusMessage ?? null
+    this.remoteCause = details.remoteCause ?? null
+    this.transportError = details.transportError ?? null
+  }
+}
+
+/**
+ * Raised for invalid pool settings, malformed request metadata, or settings incompatible with the remote server.
+ * A worker or server refusing the session's configuration (`session refused: …`) raises it from the session's first
+ * request, which did not run, or from `getSessionId()` when it opens the session alone, and the session is lost;
+ * the WASM worker raises it from `checkout()`.
+ */
+export class MontyConfigurationError extends MontyError {
+  constructor(message: string) {
+    super('ValueError', message)
+    this.message = message
+    this.name = 'MontyConfigurationError'
+  }
+}
+
+/**
+ * Raised when the remote server is shutting down (`MontyRemote` only). The
+ * request that raised it **did not run**, so re-running it is safe; the
+ * session is lost. Against a server that stores sessions the pool resumes the
+ * session itself first (see `MontyRemoteOptions.autoResume`), so this is
+ * raised only when that fails or is disabled.
+ *
+ * `dump` restores the session on a fresh one, with `loadSession` (idle) or
+ * `loadSnapshot` (suspended mid-feed); `null` when the server stored nothing.
+ * Restoring a suspended call re-announces it, so a host callback the
+ * interrupted request was answering runs again.
+ */
+export class MontyShutdown extends MontyError {
+  /** What `loadSession` / `loadSnapshot` restores, or `null` when there is nothing to load. */
+  readonly dump: Buffer | null
+
+  constructor(message: string, dump: Buffer | null = null) {
+    super('RuntimeError', message)
+    this.message = message
+    this.name = 'MontyShutdown'
+    this.dump = dump
   }
 }
 
@@ -269,7 +433,22 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   're.PatternError',
   'binascii.Error',
   'binascii.Incomplete',
+  'statistics.StatisticsError',
   '_csv.Error',
+  'decimal.DecimalException',
+  'decimal.Clamped',
+  'decimal.InvalidOperation',
+  'decimal.ConversionSyntax',
+  'decimal.DivisionByZero',
+  'decimal.DivisionImpossible',
+  'decimal.DivisionUndefined',
+  'decimal.Inexact',
+  'decimal.InvalidContext',
+  'decimal.Rounded',
+  'decimal.Subnormal',
+  'decimal.Overflow',
+  'decimal.Underflow',
+  'decimal.FloatOperation',
 ])
 
 /**

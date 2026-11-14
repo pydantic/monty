@@ -225,90 +225,6 @@ fn same_path_rerun_does_not_see_previous_source() {
     assert_snapshot!(second, @"main.py:1:10: error[unresolved-reference] Name `GOOD` used when not defined");
 }
 
-/// Security-critical: `reset` must scrub every file a session wrote, so a
-/// worker recycled onto the next session cannot import the previous one's
-/// modules.
-#[test]
-fn reset_removes_previous_modules() {
-    let mut checker = TypeChecker::default();
-    let first = checker
-        .run(&SourceFile::new("SECRET = 'hunter2'\n", "leaky.py"), None, concise())
-        .unwrap()
-        .map(|d| d.to_string());
-    assert!(first.is_none(), "first run should succeed: {first:#?}");
-    checker.reset().expect("reset");
-
-    let second = checker
-        .run(
-            &SourceFile::new("from leaky import SECRET\nprint(SECRET)\n", "main.py"),
-            None,
-            concise(),
-        )
-        .unwrap()
-        .expect("second run must raise unresolved-import for the scrubbed module")
-        .to_string();
-    assert_snapshot!(second, @"main.py:1:6: error[unresolved-import] Cannot resolve imported module `leaky`");
-}
-
-/// Security-critical: stubs are files too — they must not survive `reset`
-/// either, or the next session could import the previous session's stubs.
-#[test]
-fn reset_removes_stubs() {
-    let mut checker = TypeChecker::default();
-    let first = checker
-        .run(
-            &SourceFile::new("from type_stubs import Widget\nw: Widget\n", "main.py"),
-            Some(&SourceFile::new("class Widget:\n    x: int\n", "type_stubs.pyi")),
-            concise(),
-        )
-        .unwrap()
-        .map(|d| d.to_string());
-    assert!(first.is_none(), "first run with stubs should succeed: {first:#?}");
-    checker.reset().expect("reset");
-
-    let second = checker
-        .run(
-            &SourceFile::new("from type_stubs import Widget\n", "main.py"),
-            None,
-            concise(),
-        )
-        .unwrap()
-        .expect("second run must error — `type_stubs` was only provided in the first run")
-        .to_string();
-    assert_snapshot!(second, @"main.py:1:6: error[unresolved-import] Cannot resolve imported module `type_stubs`");
-}
-
-/// Security-critical: nested paths must be accepted and fully scrubbed
-/// (including the intermediate directories) so the next session cannot see
-/// the previous one's module structure.
-#[test]
-fn reset_removes_nested_paths() {
-    let mut checker = TypeChecker::default();
-    let first = checker
-        .run(
-            &SourceFile::new("LEAKY: int = 1\n", "sub_dir/leaky.py"),
-            None,
-            concise(),
-        )
-        .unwrap()
-        .map(|d| d.to_string());
-    assert!(first.is_none(), "first nested-path run should succeed: {first:#?}");
-    checker.reset().expect("reset");
-
-    // A different nested path importing the scrubbed module: the containing
-    // directory must be gone too, not just the file.
-    let second = checker
-        .run(
-            &SourceFile::new("from sub_dir.leaky import LEAKY\n", "other.py"),
-            None,
-            concise(),
-        )
-        .unwrap()
-        .expect("second run must error — sub_dir/leaky.py was scrubbed by reset")
-        .to_string();
-    assert_snapshot!(second, @"other.py:1:6: error[unresolved-import] Cannot resolve imported module `sub_dir.leaky`");
-}
-
 /// Security-critical: checkers hold no shared state, so concurrent sessions
 /// (workers in one process, or just several threads) must never observe each
 /// other's files. Guards against a process-wide cache creeping back in.
@@ -669,9 +585,6 @@ fn dotted_module_stubs_form_a_package() {
     assert_snapshot!(wrong.unwrap(), @r#"main.py:2:5: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`"#);
     let unresolved = render_with(&mut checker, "from pkg import add\n", &context);
     assert_snapshot!(unresolved.unwrap(), @"main.py:1:17: error[unresolved-import] Module `pkg` has no member `add`");
-    checker.reset().unwrap();
-    let gone = render_with(&mut checker, "import pkg.tools\n", &TypeCheckContext::default());
-    assert_snapshot!(gone.unwrap(), @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `pkg.tools`");
 }
 
 /// Host stubs must not shadow the checker's vendored typeshed definitions.
@@ -695,26 +608,6 @@ fn reserved_names_cover_the_vendored_typeshed() {
     for name in CHECKER_MODULE_NAMES {
         assert!(!SANDBOX_MODULE_NAMES.contains(name), "{name} is in both lists");
     }
-}
-
-/// Reset must remove module stubs to prevent reuse across sessions.
-#[test]
-fn reset_removes_module_stubs() {
-    let stubs = [tools_stub()];
-    let context = TypeCheckContext {
-        module_stubs: &stubs,
-        ..TypeCheckContext::default()
-    };
-    let mut checker = TypeChecker::default();
-    let first = render_with(&mut checker, "import tools\n", &context);
-    assert!(
-        first.is_none(),
-        "first run with a module stub should succeed: {first:#?}"
-    );
-    checker.reset().expect("reset");
-
-    let second = render_with(&mut checker, "import tools\n", &TypeCheckContext::default());
-    assert_snapshot!(second.unwrap(), @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`");
 }
 
 #[test]

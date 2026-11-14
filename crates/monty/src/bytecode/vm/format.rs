@@ -6,18 +6,19 @@ use super::VM;
 use crate::{
     bytecode::op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC},
     defer_drop,
-    exception_private::{ExcType, RunError, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, SimpleException},
     fstring::{
         ParseFormatSpecReason, ParsedFormatSpec, decode_format_spec, format_string, format_with_spec,
         validate_string_spec,
     },
-    heap::HeapReadOutput,
+    heap::{HeapData, HeapReadOutput},
     intern::StringId,
     string_builder::StringBuilder,
     types::{
         PyTrait, Type,
         date::format_date_strftime,
         datetime::format_datetime_strftime,
+        decimal,
         str::allocate_string,
         time::{attached_timezone, format_time_strftime},
     },
@@ -41,7 +42,9 @@ impl VM<'_> {
 
         let mut total_len = 0_usize;
         for part in parts.as_slice() {
-            let s = part.to_str_heap(this.heap, this.interns)?;
+            let s = part
+                .as_str_heap(this.heap, this.interns)
+                .expect("f-string parts are strings");
             total_len = total_len.saturating_add(s.len());
         }
 
@@ -49,7 +52,9 @@ impl VM<'_> {
         let mut result = String::with_capacity(total_len);
 
         for part in parts.as_slice() {
-            let s = part.to_str_heap(this.heap, this.interns)?;
+            let s = part
+                .as_str_heap(this.heap, this.interns)
+                .expect("f-string parts are strings");
             result.push_str(s);
         }
 
@@ -84,7 +89,8 @@ impl VM<'_> {
                     let spec = decode_format_spec(*encoded);
                     this.format_parsed_value(value, conversion, &spec)?
                 } else {
-                    let spec = str_value_into_string(spec_value.py_str(this)?, this)?;
+                    // The compiler builds dynamic specs from f-string parts, which are strings.
+                    let spec = spec_value.as_str(this).expect("format spec is a string").to_owned();
                     this.format_runtime_value(value, conversion, Some(&spec))?
                 }
             }
@@ -110,16 +116,21 @@ impl VM<'_> {
             } else {
                 Ok(converted)
             }
-        } else if let Some(format_spec) = format_spec {
-            if let Some(formatted) = self.try_format_temporal(value, format_spec)? {
-                Ok(formatted)
-            } else {
-                let value_type = value.py_type_name(self);
-                let spec = self.parse_runtime_spec(format_spec, &value_type)?;
-                self.format_parsed_value(value, 0, &spec)
-            }
         } else {
-            self.convert_value(value, 0)
+            self.reject_stringifier(value)?;
+            if let Some(format_spec) = format_spec {
+                if let Some(formatted) = self.try_format_temporal(value, format_spec)? {
+                    Ok(formatted)
+                } else if let Some(formatted) = self.try_format_decimal(value, format_spec)? {
+                    Ok(formatted)
+                } else {
+                    let value_type = value.py_type_name(self);
+                    let spec = self.parse_runtime_spec(format_spec, &value_type)?;
+                    self.format_parsed_value(value, 0, &spec)
+                }
+            } else {
+                self.convert_value(value, 0)
+            }
         }
     }
 
@@ -137,10 +148,34 @@ impl VM<'_> {
         spec: &ParsedFormatSpec,
     ) -> Result<String, RunError> {
         if conversion == 0 {
+            self.reject_stringifier(value)?;
+            // Only a `Decimal` needs the spec back as text; checking first keeps the
+            // render off every other value's path.
+            if decimal::py::as_decimal(value, self).is_some()
+                && let Some(formatted) = self.try_format_decimal(value, &spec.to_spec_string())?
+            {
+                return Ok(formatted);
+            }
             format_with_spec(value, spec, self)
         } else {
             let s = self.convert_value(value, conversion)?;
             self.format_parsed_string(&s, spec)
+        }
+    }
+
+    /// CPython's `_Stringifier.__format__` error: an f-string cannot render an
+    /// unresolved name while a `FORWARDREF` annotation evaluation composes text.
+    /// A `!r` / `!s` / `!a` conversion goes through the stringifier's repr instead,
+    /// which is its text, so only the unconverted paths check this.
+    fn reject_stringifier(&self, value: &Value) -> Result<(), RunError> {
+        if matches!(value, Value::Ref(id) if matches!(self.heap.get(*id), HeapData::ForwardRef(r) if r.is_stringifier()))
+            && self.in_forward_ref_evaluation()
+        {
+            Err(ExcType::type_error(
+                "Cannot stringify annotation containing string formatting",
+            ))
+        } else {
+            Ok(())
         }
     }
 
@@ -153,10 +188,12 @@ impl VM<'_> {
     /// Applies the f-string and `str.format()` conversion flags to a value.
     pub(crate) fn convert_value(&mut self, value: &Value, conversion: u8) -> Result<String, RunError> {
         match conversion {
-            0 | 1 if value.py_type(self) == Type::Str => Ok(value.to_str(self)?.to_owned()),
-            2 => str_value_into_string(value.py_repr(self)?, self),
+            0 | 1 if value.py_type(self) == Type::Str => {
+                Ok(value.as_str(self).expect("string type checked above").to_owned())
+            }
+            2 => Ok(str_value_into_string(value.py_repr(self)?, self)),
             3 => {
-                let value = str_value_into_string(value.py_repr(self)?, self)?;
+                let value = str_value_into_string(value.py_repr(self)?, self);
                 let mut escaped = StringBuilder::with_capacity(value.len(), &self.heap.tracker)?;
                 for (index, character) in value.chars().enumerate() {
                     self.heap.tracker.check_time_every(index)?;
@@ -179,7 +216,7 @@ impl VM<'_> {
                 escaped.finish_raw()
             }
             // No conversion and `!s` both use `str()`.
-            _ => str_value_into_string(value.py_str(self)?, self),
+            _ => Ok(str_value_into_string(value.py_str(self)?, self)),
         }
     }
 
@@ -212,6 +249,22 @@ impl VM<'_> {
             _ => unreachable!("temporal-ness checked above"),
         };
         formatted.map(Some)
+    }
+
+    /// Formats a `Decimal` with its own spec grammar (`Decimal.__format__`), under the
+    /// current context's rounding and capitals; `None` for any other value.
+    fn try_format_decimal(&mut self, value: &Value, spec: &str) -> Result<Option<String>, RunError> {
+        if decimal::py::as_decimal(value, self).is_some() {
+            let ctx_id = decimal::py_context::current_context(self);
+            decimal::py::with_ctx(self, ctx_id, |ctx, vm| {
+                decimal::py::as_decimal(value, vm)
+                    .expect("checked above")
+                    .format_spec(spec, ctx)
+            })
+            .map(Some)
+        } else {
+            Ok(None)
+        }
     }
 
     /// Parses a runtime spec without copying it onto an error path.
@@ -256,7 +309,7 @@ impl VM<'_> {
 /// `String`, dropping the value's heap reference on every path. Used by the
 /// f-string conversion arms, which need the text in an owned buffer to feed
 /// the mini-language formatter.
-fn str_value_into_string(value: Value, vm: &mut VM<'_>) -> Result<String, RunError> {
+fn str_value_into_string(value: Value, vm: &mut VM<'_>) -> String {
     defer_drop!(value, vm);
-    Ok(value.to_str(vm)?.to_owned())
+    value.as_str(vm).expect("py_str and py_repr return str").to_owned()
 }

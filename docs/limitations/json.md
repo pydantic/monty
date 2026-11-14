@@ -7,18 +7,17 @@ hand-written encoder matching CPython byte-for-byte for the supported keyword se
 ## What's NOT in the module
 
 `json.JSONEncoder` and `json.JSONDecoder` are not implemented, and the `cls=`
-keyword is rejected.
+keyword is rejected. Fallback encoding is available through `dumps(default=...)`.
 
 ## `json.loads(s, **kwargs)`
 
 - Accepts `str` or `bytes` as input.
     `bytes` are always decoded as UTF-8 (a leading BOM is skipped, as CPython's `utf-8-sig` does):
     CPython also detects UTF-16 and UTF-32 input, which Monty rejects with `json.JSONDecodeError`.
-- **No keyword arguments are accepted.** Passing any of `cls`,
-    `object_hook`, `parse_float`, `parse_int`, `parse_constant`, or
-    `object_pairs_hook` raises
+- `parse_float` and `parse_int` are the only keyword arguments accepted (`parse_float=Decimal` works).
+    Passing any of `cls`, `object_hook`, `parse_constant`, or `object_pairs_hook` raises
     `TypeError: JSONDecoder.__init__() got an unexpected keyword argument '...'`.
-    CPython accepts all six and uses this message only for a keyword the decoder does not know.
+    CPython accepts all four and uses this message only for a keyword the decoder does not know.
 - `NaN`, `Infinity`, `-Infinity` are *always* accepted, with no toggle to
     reject them.
 - Nesting depth is capped at 200 levels; deeper inputs raise
@@ -27,10 +26,11 @@ keyword is rejected.
     with `ValueError` (matching CPython's `int_max_str_digits` behaviour)
     rather than `JSONDecodeError`.
 
-## `json.load(fp, **kwargs)`
+## `json.load(fp)`
 
-`json.load(fp)` is `json.loads(fp.read())` and takes the same keyword policy as
-`loads`. A file from `open()` or `Path.open()` is read to EOF through the file's
+`json.load(fp)` is `json.loads(fp.read())`, but accepts no keyword arguments at all:
+`parse_float` and `parse_int` raise the same `TypeError` as the other keywords.
+A file from `open()` or `Path.open()` is read to EOF through the file's
 own buffering, so `load` suspends to the host only when the buffer has not
 been loaded yet by a read, `seek()` or iteration step (see [open.md](open.md)).
 It sees the same errors as `fp.read()` (`ValueError` on a closed file,
@@ -77,13 +77,20 @@ has its `write` attribute called synchronously, under the same restrictions as
 ## `json.dumps(obj, **kwargs)`
 
 Supported kwargs, with CPython semantics: `indent`, `sort_keys`,
-`ensure_ascii`, `allow_nan`, `separators`, `skipkeys`.
+`ensure_ascii`, `allow_nan`, `separators`, `skipkeys`, `default`.
+
+`default` is called synchronously, with the restrictions of a synchronous call (see [classes.md](classes.md)): a
+callback that calls an external function or does host I/O raises `NotImplementedError`.
+A `default` that returns its own argument raises `ValueError: Circular reference detected` for a heap value, as in
+CPython, but for a value without a heap identity (a builtin function, say) the recursion limit is what stops it, with
+`RecursionError`.
+A dict's entries are collected before any of its values is encoded, so a `default` that adds, removes or replaces
+entries of a dict still being encoded does not affect the output; CPython's encoder reads the live dict unless
+`sort_keys=True`, and emits the mutated entries.
 
 Rejected with `TypeError` if passed:
 
 - `cls` — custom encoder classes are not supported.
-- `default` — there is no fallback encoder callback. Non-serializable
-    values raise `TypeError` instead of routing through one.
 - `check_circular` — circular reference detection is always on.
 
 ## `JSONDecodeError`

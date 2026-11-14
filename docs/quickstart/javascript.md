@@ -73,6 +73,11 @@ const data = await session.feedRun('await fetch_data()', {
 console.log(data) // data
 ```
 
+With `streamAsyncCalls: true` (off by default for `Monty`, on by default for `MontyRemote`), native and remote
+workers start calls to an `async` host function without waiting for the host when the sandbox does not await them at once (the WebAssembly worker suspends at
+each), so a `gather` over many calls costs one round trip; see [starting calls without
+waiting](../host-functions.md#starting-calls-without-waiting).
+
 Keyword arguments from the sandbox arrive as a trailing object on the call.
 An error thrown by a host function crosses into the sandbox as a Python exception, using the error's `name` when it
 matches a Python exception type and `RuntimeError` otherwise.
@@ -103,6 +108,7 @@ See [importing host modules](../host-functions.md#importing-host-modules).
 | `int`               | `number` within ±2^53, otherwise `BigInt`       |
 | `float`             | `number`                                        |
 | `complex`           | `{ __monty_type__: 'Complex', real, imag }`     |
+| `decimal.Decimal`   | `{ __monty_type__: 'Decimal', value }`          |
 | `str`               | `string`                                        |
 | `bytes`             | `Buffer`                                        |
 | `list`              | `Array`                                         |
@@ -113,6 +119,9 @@ See [importing host modules](../host-functions.md#importing-host-modules).
 | builtin types       | `{ __monty_type__: 'Type', value }`             |
 | builtin functions   | `{ __monty_type__: 'BuiltinFunction', value }`  |
 | file handles        | `MontyFileHandle`                               |
+
+A `Decimal` marker's `value` is its exact canonical string (`'1.20'`, `'1E+5'`, `'NaN'`), never a `number`.
+That is `str(d)` under the default context; the exponent is always an uppercase `E`, whatever the context's `capitals`.
 
 Builtin type and function markers carry the builtin's name, never a JavaScript callable.
 Passing a marker back resolves it to that builtin; unrecognized names are rejected with `unknown type name` or
@@ -222,27 +231,53 @@ This instrumentation is native-only; WASM still preserves caller context through
 import { MontyError, MontyRuntimeError, MontySyntaxError, MontyCrashedError } from '@pydantic/monty'
 ```
 
-| Class               | Raised when                                                              | Session survives |
-| ------------------- | ------------------------------------------------------------------------ | ---------------- |
-| `MontySyntaxError`  | The snippet does not parse                                               | yes              |
-| `MontyTypingError`  | Type checking rejected the snippet                                       | yes              |
-| `MontyRuntimeError` | The code raised at runtime                                               | yes              |
-| `MontyCrashedError` | The worker died, or the watchdog killed it                               | no               |
-| `ProtocolError`     | The worker, or a caller misusing the session, violated the wire protocol | no               |
+| Class                     | Raised when                                                                           | Session survives |
+| ------------------------- | ------------------------------------------------------------------------------------- | ---------------- |
+| `MontySyntaxError`        | The snippet does not parse                                                            | yes              |
+| `MontyTypingError`        | Type checking rejected the snippet                                                    | yes              |
+| `MontyRuntimeError`       | The code raised at runtime                                                            | yes              |
+| `MontyCrashedError`       | The worker died, or the watchdog killed it                                            | no               |
+| `MontyDisconnectError`    | A [remote worker's](#remote-workers) connection closed                                | no               |
+| `MontyRefusedError`       | A [remote worker's](#remote-workers) server refused to open the session's stream      | no               |
+| `MontyConnectError`       | A remote connection failed before a session opened                                    | no               |
+| `MontyConfigurationError` | The client settings are incompatible with the worker or server                        | no               |
+| `MontyShutdown`           | A [remote worker's](#remote-workers) server is shutting down; the request did not run | no               |
+| `ProtocolError`           | The worker, or a caller misusing the session, violated the wire protocol              | no               |
 
 `MontyError` is the base class of everything above except `ProtocolError`, which extends `Error`.
 `err.exception` carries `{ typeName, message }`, and `err.display(format)` renders the error.
 Which formats a class accepts differs; passing one a class does not accept throws, except `MontyTypingError.display()`,
 which ignores any argument:
 
-| Class                             | `display` formats                              |
-| --------------------------------- | ---------------------------------------------- |
-| `MontyError`, `MontyCrashedError` | `'msg'` (default), `'type-msg'`                |
-| `MontySyntaxError`                | `'msg'` (default), `'type-msg'`, `'traceback'` |
-| `MontyRuntimeError`               | `'traceback'` (default), `'type-msg'`, `'msg'` |
-| `MontyTypingError`                | takes no argument; returns the diagnostics     |
+| Class                                                                                           | `display` formats                              |
+| ----------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `MontyError`, `MontyCrashedError`, `MontyDisconnectError`, `MontyRefusedError`, `MontyShutdown` | `'msg'` (default), `'type-msg'`                |
+| `MontySyntaxError`                                                                              | `'msg'` (default), `'type-msg'`, `'traceback'` |
+| `MontyRuntimeError`                                                                             | `'traceback'` (default), `'type-msg'`, `'msg'` |
+| `MontyTypingError`                                                                              | takes no argument; returns the diagnostics     |
+| `MontyConnectError`, `MontyConfigurationError`                                                  | `'msg'` (default), `'type-msg'`                |
 
-`MontyCrashedError` adds `timedOut` and `exitStatus`.
+`MontyCrashedError` adds `timedOut` and `exitStatus`; `MontyShutdown` adds `dump`; `MontyRefusedError` adds
+`statusCode`, `statusMessage`, `remoteCause`, `retryable` and `retryAfter`.
+`retryAfter` is the server's suggested delay in seconds, capped at one hour, or `null` if absent or invalid.
+`retryable` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not for credential errors.
+`checkout()` rejects with the same classes when the session cannot be created.
+Options the binding can check, such as `osPolicy`, are rejected by `checkout()` itself.
+A worker or server rejecting the rest of the session's configuration (deeply nested `typeCheckStubs`, an unknown
+profile) raises `MontyConfigurationError` from the session's first request, which did not run, or from `getSessionId()`
+when it opens the session alone.
+On the WASM worker it is raised from `checkout()`, which configures the session there.
+When no worker becomes free within `checkoutTimeout` it rejects with a `DOMException` named `TimeoutError`; a worker
+that fails to spawn rejects with a plain `Error`.
+A remote connection failure raises `MontyConnectError`, with `statusCode`, `statusMessage` and `remoteCause` when the server sent a status, or `transportError` otherwise.
+`MontyConfigurationError` identifies settings incompatible with the worker or server.
+`Monty.create()` raises it for a CPU `executionClock` without a `requestTimeout`, or off Linux;
+a `MontyRemote` checkout raises it when the server's CPU clock needs a `requestTimeout` the client did not set.
+A `requestTimeout` that is negative or not finite, such as `Infinity`, is rejected with a plain `Error` instead.
+Invalid gRPC header names or string values also raise `MontyConfigurationError`.
+If `metadata` returns a non-object, `null`, an array, or an object with non-string values, checkout raises `TypeError` instead.
+Host-side error messages do not have a `RuntimeError:` prefix.
+Remote policy reasons use `remoteCause`, leaving the standard `Error.cause` available for error chains.
 
 ## Limits and type checking
 
@@ -333,7 +368,7 @@ import { Monty } from '@pydantic/monty'
 
 await using pool = await Monty.create({
   binaryPath: undefined, // explicit path to the `monty` worker binary
-  minProcesses: 1, // workers spawned up front
+  minProcesses: 1, // workers spawned up front, and replaced in the background as they leave
   maxProcesses: 8, // cap on live workers; defaults to the CPU count
   checkoutTimeout: 5, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline; kills the worker
@@ -346,7 +381,8 @@ await using pool = await Monty.create({
 Closing a pool rejects pending/new checkouts and reaps idle workers; checked-out sessions remain usable until closed.
 `session.workerId` identifies the worker within its pool, including during turns and after the session closes.
 Replacement workers get new IDs, even if the OS reuses a PID.
-`maxCheckoutsPerWorker` accepts integers from 0 to 4294967295; 0 and 1 both retire a worker after each checkout.
+`maxCheckoutsPerWorker` accepts integers from 0 to 4294967295 and defaults to 1000; 0 and 1 both retire a worker after
+each checkout, and `null` never recycles.
 `workerPid` is a native-only OS diagnostic and may be unavailable during a turn.
 
 The worker binary is resolved from `binaryPath`, then the `MONTY_BIN` environment variable, then the installed platform
@@ -368,6 +404,45 @@ Only restore unmodified snapshots from a trusted, compatible producer; the calle
 See [snapshot security](../security.md#deserializing-snapshots) before accepting bytes through an untrusted channel.
 
 See [snapshots](../snapshots.md) for manual handlers, restoration and OpenTelemetry context propagation.
+
+## Remote workers
+
+`MontyRemote` is a pool of remote workers, usually the [Commercial Support](../server.md) server: the pool holds one HTTP/2 connection to the URL, each checkout opens a gRPC stream on it, and no
+connection is pre-warmed or reused.
+Sessions are the same `MontySession` a local pool returns:
+
+```ts test="skip"
+import { MontyRemote } from '@pydantic/monty'
+
+await using pool = await MontyRemote.create('http://localhost:8000/')
+await using session = await pool.checkout({ limits: { maxFeedDurationSecs: 30 } })
+console.log(await session.feedRun('1 + 1')) // 2
+```
+
+`metadata` is called at each checkout, and may return a promise, for the metadata on that checkout's session stream.
+`requestTimeout` defaults to 10 seconds rather than no deadline; `null` disables it.
+`checkout()` also takes `ephemeral` and `profile`, which the server interprets.
+A server that refuses the stream rejects `checkout()` with `MontyRefusedError`; one that cannot be reached, with a
+`MontyConnectError`.
+Use `MontyRefusedError.retryable` and `MontyRefusedError.retryAfter` to decide whether and when to try a new checkout.
+No automatic retry is performed for these errors.
+
+A dropped connection raises `MontyDisconnectError`, and a draining server raises `MontyShutdown`; both lose the session.
+Disconnect text includes the server's code, `remoteCause` and message, or the transport error.
+It does not establish whether the request ran, so do not replay a disconnected request automatically.
+A connection that cannot be opened rejects `checkout()` itself; the session's configuration travels with its first
+request, so a server refusing it fails that first `feedRun`, `feedStart` or `load*` call with
+`MontyConfigurationError`.
+Against a server that stores sessions, `await session.getSessionId()` names the session, sending the configuration
+alone if no request has yet (one round trip); the `sessionId` getter is deprecated, since it is unset until then.
+`session.dump()` returns the ID of a stored record, and either ID loads into a fresh session with the loader matching
+the stored state: `loadSession` for an idle session, `loadSnapshot` for one suspended mid-feed.
+When such a server drains, the pool resumes the session on a new connection instead of raising `MontyShutdown`,
+unless `autoResume: false` is passed to `MontyRemote.create()`.
+These behave as in the Python client; see [stored sessions](../api/python/remote.md#stored-sessions).
+The transport adds no isolation of its own: see [remote workers](../security.md#remote-workers).
+`MontyRemote` is native-only; `@pydantic/monty/wasm` does not export it.
+`MontyWebsocket` is the same class under its deprecated former name, and still accepts `ws://`/`wss://` URLs.
 
 ## Browsers and WebAssembly
 
@@ -395,6 +470,9 @@ Differences from the native path:
 - **Workers are required.** There is no in-process fallback; see [isolation guarantees](../security.md#crash-isolation).
     Startup has a separate 30-second deadline; request deadlines start after the worker is ready.
 - **Browser `maxProcesses` defaults to `navigator.hardwareConcurrency`**, or 4 when unavailable; Node uses its CPU count.
+- **`minProcesses` only prewarms.** A worker that is recycled, crashes or is discarded is replaced only when a checkout
+    is already waiting for it, so the pool can fall below `minProcesses` and a checkout that finds no idle worker
+    spawns a cold one.
 - **`binaryPath` is ignored.** The bundled WASM asset is used instead.
 - **OS diagnostics are backend-specific.** Browser crashes have no OS exit status.
     A hard allocator limit traps WASM and raises `MontyCrashedError`, not the native worker's classified `MemoryError`;
@@ -405,6 +483,7 @@ Differences from the native path:
 
 The package includes declarations with option and method documentation, maintained alongside the implementation:
 [pool options](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/pool.ts),
+[remote pools](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/remote.ts),
 [sessions and snapshots](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/session.ts),
 [host objects](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/classInstance.ts),
 [OS policies](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/options.ts) and

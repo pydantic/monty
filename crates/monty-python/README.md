@@ -7,7 +7,7 @@ instead, which pulls in this package plus
 [`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/) and
 is documented in full on its PyPI page.
 
-Install this package directly to use the websocket client alone,
+Install this package directly to use the remote client alone,
 or if you're installing the `monty` binary another way.
 
 ```bash
@@ -16,17 +16,18 @@ uv add pydantic-monty-client
 pip install pydantic-monty-client
 ```
 
-## Usage with a remote monty server and websockets
+## Usage with a remote monty server
 
-You can use this library alone to connect to a remote monty server via websockets.
+You can use this library alone to connect to a remote monty server over gRPC: one HTTP/2 connection per pool, one
+stream per session. `AsyncMontyWebsocket` is the same class under its former name, deprecated.
 
 ```python test="skip"
-from pydantic_monty import AsyncMontyWebsocket
+from pydantic_monty import AsyncMontyRemote
 
 
 async def main() -> None:
-    url = '...'
-    async with AsyncMontyWebsocket(url) as pool:
+    url = 'http://...'
+    async with AsyncMontyRemote(url) as pool:
         async with pool.checkout() as session:
             output = await session.feed_run('1 + 1')
             print('output ->', output)
@@ -38,7 +39,36 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
+`MontyDisconnectError` exposes `status_code`, `status_message`, `cause` and `transport_error` when available.
+These fields preserve the status the server ended the stream with, or the transport or protocol failure, not proof that
+the request did or did not run.
+The client does not automatically replay a disconnected request.
+Disconnect messages include the server's status, cause and message, or the transport error.
+`MontyRefusedError`, with `status_code`, `status_message` and `cause`, is a server refusing to open the session at all;
+nothing ran.
+It subclasses `MontyError`, not `RuntimeError`, so a retry loop around `checkout()` must catch it by name.
+Its `retryable` attribute identifies temporary refusals, and `retry_after` gives the server's suggested delay in seconds, when present.
+Remote connection failures raise `MontyConnectError`, a `MontyError` subclass with `status_code`,
+`status_message`, `cause` and `transport_error` attributes.
+A CPU-mode remote server requires a finite client `request_timeout`; without one, checkout raises `MontyConfigurationError`.
+Malformed request metadata also raises `MontyConfigurationError` before any connection attempt.
+Creating a pool with invalid settings raises it too: `min_processes` above `max_processes`, or a local CPU clock
+off Linux or without a finite `request_timeout`.
+
+## Host decode budget
+
+`AsyncMontyRemote(max_decode_bytes=...)` can lower the default 1 GiB allocation budget for each decoded protocol frame.
+Values above 1 GiB are rejected when the client is constructed.
+The budget excludes wire buffers and Python conversion, and does not change
+sandbox memory limits. Exhaustion ends the session with a protocol error;
+the client does not replay the request.
+Separately, the transport refuses any message larger than the budget, clamped between 64 KiB and the 256 MiB frame limit, before buffering it.
+
 ## Usage with a local monty worker
+
+`AsyncFutureSnapshot.resume_auto()` raises without consuming the snapshot when no host coroutines remain to await,
+including after `load_snapshot()`.
+Resolve the pending calls manually with `await snapshot.resume({call_id: {'return_value': value}})` instead.
 
 Host objects and classes cross the boundary through the `ClassInstance` / `ClassType` wrappers; see the
 `pydantic-monty` README.
@@ -48,7 +78,14 @@ first import, and a factory runs once, when a feed first needs it, and may be as
 An `ExternalModule` copies its `attrs` dict at construction and imports as a `module` object: callables become host
 functions, nested `ExternalModule` values become importable submodules, and other values are converted normally.
 Its `id` identifies the module when it crosses back out of the sandbox.
+With `stream_async_calls` (on by default for `AsyncMontyRemote`, off for `AsyncMonty`), a `feed_run` call to a
+coroutine function (by `inspect.iscoroutinefunction`) in `external_lookup`
+or an `ExternalModule` that is not awaited at once starts without suspending the worker: the call returns an awaitable
+at once, and the host's result or error arrives at the `await`.
+`feed_start()` and the sync `Monty` suspend at every call.
 The optional `.pyi` source in `stubs` is requested at the first type-checked import and retained for the session.
+An import of a non-bundled name the mapping does not answer reads `<cwd>/name/__init__.py` (or `name.py`) through the
+`os` handler, then the feed's mounts, and runs it as the module, once per session.
 
 This requires the `pydantic-monty-runtime` package, which is generally
 installed as part of the `pydantic-monty` meta-package.
@@ -167,6 +204,7 @@ Setting `cwd` does not grant filesystem access; provide `mount=` or `os=` to han
 
 `OSAccess(max_urandom_bytes=...)` sets the largest `os.urandom()` request the default handler serves, 1 MiB by default.
 Larger requests raise `MemoryError` before allocating.
+`max_total_file_bytes` (50 MB) caps the `MemoryFile` content all files may grow to; a larger write raises `OSError`.
 Unseeded `random` generators request host entropy only under `os_policy={'random_start': 'call_host'}`.
 Otherwise they use worker OS entropy or the configured seed.
 
@@ -179,9 +217,35 @@ Every `time` module clock then reaches `AbstractOS.time(caller)` as the one OS f
 naming the function that asked (`'time.monotonic'`, `'time.localtime'`, ...).
 A subclass that overrides `def time(self)` without the `caller` parameter raises `TypeError` on any clock read.
 `OSAccess` answers from the host process and caps each wait at `max_sleep`.
+When either cap shortens a sleep, the call returns normally without a warning.
+System sleeps that exceed `max_total_sleep_secs` instead raise an uncatchable `TimeoutError`.
+These caps are independent of `request_timeout`.
 
 A `random.Random` instance or the `random.Random` class returned from the sandbox converts to its repr string.
 Return the generated values or `rng.getstate()` instead.
 
 See the [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) README for
 more details.
+
+## Execution time
+
+Execution duration limits use wall time by default.
+Both clocks charge bytecode and native builtin execution, excluding host suspension.
+Enable CPU mode with `Monty(execution_clock='cpu', request_timeout=2)` or the same options on `AsyncMonty`.
+CPU mode needs Linux workers: on macOS or Windows, entering a CPU-mode `Monty` (`with`) or `AsyncMonty`
+(`async with`) raises `MontyConfigurationError`.
+Remote clients on any platform adopt the server's clock.
+The clock applies to the whole pool; checkouts cannot override it.
+CPU mode uses the executing thread's CPU time, sampled with a cache of up to 1 ms.
+Smaller remaining budgets shorten that interval.
+Execution boundaries take fresh samples. WebAssembly workers support wall time only.
+Workers reject CPU configuration if the initial thread CPU counter read fails.
+If the counter later becomes unusable during execution, the VM uses elapsed time for that window.
+The OS controls CPU counter accuracy and resolution.
+Native pool backstops use the selected clock and configured grace.
+CPU mode uses an independent OS process counter and requires a finite wall-clock `request_timeout`.
+Snapshots retain their clock and VM consumption.
+CPU restore approximates prior supervisor usage from saved VM consumption.
+The snapshot does not record protocol CPU or supervisor grace separately.
+Load them through a pool with the same execution clock.
+Snapshots without a clock use wall time.

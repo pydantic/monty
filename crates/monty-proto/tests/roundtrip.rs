@@ -7,12 +7,13 @@ use monty_proto::{
     named_values_to_proto, os_call_from_proto, os_call_to_proto, pb,
 };
 use monty_types::{
-    CodeLoc, CompileOptions, DateTimeSource, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData,
-    MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
-    MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, NamedValues,
-    OpenCallArgs, OsFunctionCall, OsPolicy, PathBytesDataArgs, PathStringDataArgs, ProcessTime, RandomSeed,
-    RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, ScanArgs, SleepMode, SourceRange, StackFrame,
-    TimeCaller, UnicodeErrorData, UrandomArgs, sleep_duration, sleep_duration_saturating,
+    CodeLoc, CompileOptions, CreateExclusiveCallArgs, DateTimeSource, ExcData, ExcType, ExtFunctionResult, GetenvArgs,
+    ImportArgs, JsonErrorData, MAX_SLEEP_SECONDS, MkdirCallArgs, ModuleFile, MontyDate, MontyDateTime, MontyException,
+    MontyFileHandle, MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
+    NameLookupResult, NamedValues, OpenCallArgs, OsFunctionCall, OsPolicy, PathBytesDataArgs, PathStringDataArgs,
+    ProcessTime, RandomSeed, RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, ScanArgs, SleepMode,
+    SourceRange, StackFrame, TimeCaller, TypeHintsTarget, UnicodeErrorData, UrandomArgs, sleep_duration,
+    sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
@@ -141,6 +142,9 @@ fn datetime_values_round_trip() {
     assert_value_round_trip(&MontyObject::complex(f64::NAN, f64::NEG_INFINITY));
     // A plain `double` field would drop `-0.0` as its default.
     assert_value_round_trip(&MontyObject::complex(-0.0, -0.0));
+    for decimal in ["1.20", "-0", "1E+5", "-NaN12", "sNaN", "Infinity"] {
+        assert_value_round_trip(&MontyObject::decimal(decimal));
+    }
     assert_value_round_trip(&MontyObject::timezone(MontyTimeZone {
         offset_seconds: 19800,
         name: Some("IST".to_owned()),
@@ -314,7 +318,7 @@ fn repr_and_cycle_round_trip() {
     assert_value_round_trip(&MontyObject::repr("<unrepresentable>".to_owned()));
 
     // Cycles appear in worker outputs (e.g. a returned cyclic list), so the
-    // parent must decode them; produce one via execution and round-trip it.
+    // client must decode them; produce one via execution and round-trip it.
     // Using one as an *execution input* is rejected by `MontyObject::to_value`.
     let mut run = MontyRun::new(
         "a = []\na.append(a)\na".to_owned(),
@@ -451,7 +455,7 @@ fn exception_without_traceback_round_trips() {
     assert_eq!(back, exc);
 }
 
-/// Builds a wire `UnicodeDecodeError` whose payload fields a byzantine child
+/// Builds a wire `UnicodeDecodeError` whose payload fields a byzantine worker
 /// controls, for probing the receive-side sanitizer.
 fn unicode_exception(encoding: String, object: Vec<u8>, start: u64, end: u64, reason: String) -> pb::RaisedException {
     pb::RaisedException {
@@ -474,7 +478,7 @@ fn unicode_exception(encoding: String, object: Vec<u8>, start: u64, end: u64, re
 fn bogus_unicode_payloads_are_dropped_not_trusted() {
     let oversized = "x".repeat(UnicodeErrorData::MAX_OBJECT_LEN + 1);
     // Every rejected payload still converts — only the structured data is
-    // dropped, since a hostile child must not be able to block error reporting.
+    // dropped, since a hostile worker must not be able to block error reporting.
     let bogus = [
         unicode_exception(oversized.clone(), vec![0xFF], 0, 1, "reason".to_owned()),
         unicode_exception("utf-8".to_owned(), vec![0xFF], 0, 1, oversized.clone()),
@@ -534,7 +538,7 @@ fn json_error_payload_round_trips() {
 }
 
 /// Builds a wire `json.JSONDecodeError` whose payload fields a byzantine
-/// child controls, for probing the receive-side sanitizer.
+/// worker controls, for probing the receive-side sanitizer.
 /// The message is `msg` with a location suffix, as both decode errors format it.
 fn json_exception(msg: String, doc: Option<String>, pos: u64, lineno: u64, colno: u64) -> pb::RaisedException {
     pb::RaisedException {
@@ -669,7 +673,7 @@ fn os_policy_round_trip() {
         };
         assert_eq!(OsPolicy::try_from(pb::OsPolicy::from(&calls)).unwrap(), calls);
     }
-    // the UTC default has its own arm, so an explicit UTC survives a parent with a different default
+    // the UTC default has its own arm, so an explicit UTC survives a client with a different default
     let utc = pb::OsPolicy::from(&OsPolicy::default());
     assert_eq!(
         utc.timezone,
@@ -678,7 +682,7 @@ fn os_policy_round_trip() {
         })
     );
     assert_eq!(OsPolicy::try_from(utc).unwrap().timezone, SandboxTimeZone::utc());
-    // a named zone crosses as its IANA name, which the child resolves against its own database
+    // a named zone crosses as its IANA name, which the worker resolves against its own database
     let london = pb::OsPolicy::from(&OsPolicy {
         timezone: SandboxTimeZone::named("Europe/London").unwrap(),
         ..OsPolicy::default()
@@ -782,6 +786,10 @@ fn ext_results_round_trip() {
         ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("no".to_owned()))),
         ExtFunctionResult::Future(7),
         ExtFunctionResult::NotFound("missing".to_owned()),
+        ExtFunctionResult::ModuleFile(ModuleFile {
+            path: "/proj/m.py".to_owned(),
+            source: "x = 1\n".to_owned(),
+        }),
     ];
     for case in cases {
         let expected = format!("{case:?}");
@@ -864,18 +872,20 @@ fn deep_values_cross_the_wire() {
     let mut inputs = NamedValues::new();
     inputs.push("v", unstable::object_from_graph(graph, id).unwrap());
     let (refs, values) = named_values_to_proto(inputs.clone());
-    let request = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+    let request = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed {
             code: String::new(),
             inputs: refs,
             values: Some(values),
             skip_type_check: false,
             cwd: "/work".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         })),
         trace_parent: None,
     };
-    let back = decode_frame::<pb::ParentRequest>(request.encode_to_vec().as_slice()).expect("deep feed decodes");
-    let Some(pb::parent_request::Kind::Feed(feed)) = back.kind else {
+    let back = decode_frame::<pb::ClientRequest>(request.encode_to_vec().as_slice()).expect("deep feed decodes");
+    let Some(pb::client_request::Kind::Feed(feed)) = back.kind else {
         panic!("expected a feed");
     };
     assert_eq!(named_values_from_proto(feed.inputs, feed.values).unwrap(), inputs);
@@ -1049,6 +1059,13 @@ fn os_calls_round_trip_all_variants() {
         // the longest length either sleep accepts survives the f64 seconds on the wire
         OsFunctionCall::Sleep(sleep_duration(MAX_SLEEP_SECONDS).unwrap()),
         OsFunctionCall::AsyncSleep(sleep_duration_saturating(f64::INFINITY).unwrap()),
+        OsFunctionCall::Import(ImportArgs::new("tools")),
+        OsFunctionCall::Import(ImportArgs {
+            module: "pkg.sub".to_owned(),
+            search_path: vec!["/proj/pkg".to_owned(), "/lib".to_owned()],
+        }),
+        OsFunctionCall::GetTypeHints(TypeHintsTarget::Function("fetch".to_owned())),
+        OsFunctionCall::GetTypeHints(TypeHintsTarget::Class(MontyUuid::from_u128(7))),
     ]
     .into_iter()
     // every caller, so a new one cannot be added without a wire round trip
@@ -1068,8 +1085,8 @@ fn os_calls_round_trip_all_variants() {
     }
 }
 
-/// The byte count is unsigned on the wire, so the parent cannot see a
-/// negative one; a count above `i64::MAX` from a compromised child still
+/// The byte count is unsigned on the wire, so the client cannot see a
+/// negative one; a count above `i64::MAX` from a compromised worker still
 /// converts, reaching the host handler as an exact `BigInt` for its cap to
 /// reject.
 #[test]
@@ -1084,7 +1101,7 @@ fn os_call_urandom_size_above_i64_converts_exactly() {
     assert_eq!(args.arg(0).unwrap(), MontyObject::int(2496));
 }
 
-/// A child that lies about a sleep length is refused rather than handed on: a
+/// A worker that lies about a sleep length is refused rather than handed on: a
 /// host would convert these to its own duration type, and the obvious
 /// conversions panic on all three.
 #[test]
@@ -1128,8 +1145,83 @@ fn os_call_open_round_trips_all_modes() {
 }
 
 #[test]
+fn os_call_create_exclusive_round_trips_modes_and_permissions() {
+    for mode in ["r", "rb", "w", "wb", "a", "ab", "w+b"] {
+        for permissions in [0, 0o600, 0o666] {
+            assert_os_call_round_trip(OsFunctionCall::CreateExclusive(CreateExclusiveCallArgs {
+                path: "/mnt/new".into(),
+                mode: mode.parse().unwrap(),
+                permissions,
+            }));
+        }
+    }
+}
+
+#[test]
+fn positional_writes_round_trip_and_reject_overflow() {
+    assert_os_call_round_trip(OsFunctionCall::WriteBytesAt(monty_types::WriteBytesAtArgs {
+        path: "/mnt/file".into(),
+        offset: 7,
+        data: b"abc".to_vec(),
+    }));
+    for (offset, data) in [(u64::MAX, vec![]), (i64::MAX as u64, vec![0])] {
+        let call = pb::os_call::Call::WriteBytesAt(pb::os_call::WriteBytesAt {
+            path: "/mnt/file".to_owned(),
+            offset,
+            data: data.into(),
+        });
+        assert!(matches!(
+            OsFunctionCall::try_from(call),
+            Err(ProtoConvertError::InvalidValue {
+                field: "WriteBytesAt.offset",
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
+fn os_call_create_exclusive_rejects_malformed_arguments() {
+    for mode in ["x", "w+", "", "invalid"] {
+        let call = pb::os_call::Call::CreateExclusive(pb::os_call::CreateExclusive {
+            path: "/mnt/new".to_owned(),
+            mode: mode.to_owned(),
+            permissions: 0o600,
+        });
+        assert!(matches!(
+            OsFunctionCall::try_from(call),
+            Err(ProtoConvertError::InvalidFileMode(_))
+        ));
+    }
+    for permissions in [0o001, 0o010, 0o100, 0o777, 0o1000, 0o7777, u32::MAX] {
+        let call = pb::os_call::Call::CreateExclusive(pb::os_call::CreateExclusive {
+            path: "/mnt/new".to_owned(),
+            mode: "w".to_owned(),
+            permissions,
+        });
+        assert!(matches!(
+            OsFunctionCall::try_from(call),
+            Err(ProtoConvertError::InvalidValue {
+                field: "CreateExclusive.permissions",
+                ..
+            })
+        ));
+    }
+    // An older schema discards the unknown arm. Conversion must reject a missing call,
+    // never reinterpret it as an ordinary open that could truncate an existing file.
+    let missing = pb::OsCall {
+        call: None,
+        ..Default::default()
+    };
+    assert!(matches!(
+        os_call_from_proto(missing),
+        Err(ProtoConvertError::MissingField("OsCall.call"))
+    ));
+}
+
+#[test]
 fn os_call_conversion_rejects_invalid_payloads() {
-    // A bogus open mode the child could never produce.
+    // A bogus open mode the worker could never produce.
     let bad_mode = pb::os_call::Call::Open(pb::os_call::Open {
         path: "/mnt/data/f.txt".to_owned(),
         mode: "q".to_owned(),
@@ -1163,25 +1255,25 @@ fn os_call_conversion_rejects_invalid_payloads() {
 
 #[test]
 fn shutdown_event_round_trips() {
-    let event = pb::ChildEvent {
-        kind: Some(pb::child_event::Kind::Shutdown(pb::ShutdownDump {
+    let event = pb::WorkerEvent {
+        kind: Some(pb::worker_event::Kind::Shutdown(pb::ShutdownDump {
             dump: Some(vec![1, 2, 3].into()),
         })),
         ..Default::default()
     };
-    let back = decode_frame::<pb::ChildEvent>(event.encode_to_vec().as_slice()).expect("ShutdownDump event decodes");
+    let back = decode_frame::<pb::WorkerEvent>(event.encode_to_vec().as_slice()).expect("ShutdownDump event decodes");
     assert_eq!(back, event);
     // a shutdown with nothing to dump (no session yet) also round-trips
-    let bare = pb::ChildEvent {
-        kind: Some(pb::child_event::Kind::Shutdown(pb::ShutdownDump { dump: None })),
+    let bare = pb::WorkerEvent {
+        kind: Some(pb::worker_event::Kind::Shutdown(pb::ShutdownDump { dump: None })),
         ..Default::default()
     };
-    let back = decode_frame::<pb::ChildEvent>(bare.encode_to_vec().as_slice()).expect("bare ShutdownDump decodes");
+    let back = decode_frame::<pb::WorkerEvent>(bare.encode_to_vec().as_slice()).expect("bare ShutdownDump decodes");
     assert_eq!(back, bare);
 }
 
 /// A stubs ask naming a module twice is refused: a host runs one factory per
-/// name, and a compromised child must not multiply that work.
+/// name, and a compromised worker must not multiply that work.
 #[test]
 fn a_stubs_ask_repeating_a_module_is_rejected() {
     let call = pb::os_call::Call::ImportStubs(pb::os_call::ImportStubs {
@@ -1193,7 +1285,40 @@ fn a_stubs_ask_repeating_a_module_is_rejected() {
     );
 }
 
-/// A child-supplied fixed offset outside `datetime.timezone`'s range is refused
+/// A `get_type_hints` ask needs a target, and a class id must be a 16-byte uuid.
+#[test]
+fn a_malformed_type_hints_ask_is_rejected() {
+    let call = |target| pb::os_call::Call::GetTypeHints(pb::os_call::GetTypeHints { target });
+    assert_eq!(
+        OsFunctionCall::try_from(call(None)).unwrap_err().to_string(),
+        "missing required field GetTypeHints.target"
+    );
+    let short_id = pb::os_call::get_type_hints::Target::ClassId(pb::Uuid {
+        data: vec![1, 2, 3].into(),
+    });
+    assert_eq!(
+        OsFunctionCall::try_from(call(Some(short_id))).unwrap_err().to_string(),
+        "invalid value for GetTypeHints.class_id: uuid must be 16 bytes, got 3"
+    );
+}
+
+/// A worker predating file imports sends an `import` with no search path, which
+/// decodes as one only host modules can answer.
+#[test]
+fn an_import_without_a_search_path_is_host_modules_only() {
+    let legacy = pb::os_call::Import {
+        module: "tools".to_owned(),
+        ..Default::default()
+    };
+    let call = OsFunctionCall::try_from(pb::os_call::Call::Import(legacy)).unwrap();
+    let OsFunctionCall::Import(args) = call else {
+        panic!("expected an import");
+    };
+    assert_eq!(args, ImportArgs::new("tools"));
+    assert_eq!(args.candidates().count(), 0);
+}
+
+/// A worker-supplied fixed offset outside `datetime.timezone`'s range is refused
 /// before it can reach a host as a `MontyTimeZone`.
 #[test]
 fn out_of_range_now_timezone_is_rejected() {

@@ -1,16 +1,16 @@
-//! The transport-agnostic Monty protocol-child state machine.
+//! The transport-agnostic Monty protocol worker state machine.
 //!
-//! [`Child`] is the REPL session worker that both `monty subprocess` (native,
+//! [`Worker`] is the REPL session worker that both `monty subprocess` (native,
 //! over stdio pipes) and the browser wasm worker (over `postMessage`) drive. It
-//! consumes [`pb::ParentRequest`]s and emits [`pb::ChildEvent`]s through an
+//! consumes [`pb::ClientRequest`]s and emits [`pb::WorkerEvent`]s through an
 //! [`EventSink`], so the same turn logic serves any byte channel — the only
 //! difference between transports is the sink and how requests are read.
 //!
-//! The child is strictly turn-based: one request in, zero or more streamed
-//! `Print` events out, then exactly one turn-ending event (see `monty-proto`
-//! for the schema and protocol rules).
+//! The worker is strictly turn-based: one request in, zero or more streamed
+//! `Print` and `StreamedCalls` events out, then exactly one turn-ending event
+//! (see `monty-proto` for the schema and protocol rules).
 //!
-//! Crash isolation is the entire point: a host must treat a child that exits
+//! Crash isolation is the entire point: a host must treat a worker that exits
 //! (or EOFs) *without* a `FatalError` event as crashed — stack overflows and
 //! allocator aborts produce no final frame. This crate has no opinion on how
 //! the host transport surfaces that; it only ensures every *graceful* turn ends
@@ -18,6 +18,7 @@
 
 use std::{
     borrow::Cow,
+    collections::HashSet,
     mem,
     time::{Duration, Instant},
 };
@@ -28,20 +29,25 @@ use monty::{
 };
 use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker, scan_imports};
 use monty_types::{
-    AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExtFunctionResult, IMPORT_STUBS_CALL_ID,
-    ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream, PrintWriter,
-    PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES, SOURCE_SCAN_THRESHOLD, SourceRange,
-    TypeCheckState, TypeCheckingConfig, allocate_into_baseline,
+    AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExecutionClock, ExtFunctionResult,
+    IMPORT_STUBS_CALL_ID, ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
+    PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES, SOURCE_SCAN_THRESHOLD,
+    SourceRange, TypeCheckState, TypeCheckingConfig,
 };
 
 use super::{
     BudgetVec, DEFAULT_PRINT_FLUSH_INTERVAL, FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError,
     WireFunctionCall, check_protocol_version, exceeds_max_frame_len, ext_result_from_proto, future_results_from_proto,
-    named_values_from_proto, os_call_from_proto, os_call_to_proto, pb, write_frame,
+    import_stubs_from_answer, named_values_from_proto, os_call_from_proto, os_call_to_proto, pb, write_frame,
 };
 use crate::{convert::limits::micros_field, wire::uuid_to_pb};
 
-/// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
+/// First client protocol version that can service `OsCall.write_bytes_at`.
+///
+/// Older clients still get sequential `wb` writes through the original write/append calls.
+const POSITIONAL_WRITES_PROTOCOL_VERSION: u32 = 9;
+
+/// A sink for framed [`pb::WorkerEvent`]s, decoupling the worker from its
 /// transport.
 ///
 /// The native subprocess implements this over stdout; the wasm worker buffers
@@ -50,19 +56,24 @@ use crate::{convert::limits::micros_field, wire::uuid_to_pb};
 /// [`write_frame`] does.
 ///
 /// `Err` is a transport failure the caller treats as terminal: a broken pipe
-/// (the parent is gone) for stdout, or — for an in-memory buffer that cannot
+/// (the client is gone) for stdout, or — for an in-memory buffer that cannot
 /// fail on I/O — only an oversize frame, which [`write_frame`] rejects *before*
-/// buffering any bytes, so the stream stays in sync and the child can recover.
+/// buffering any bytes, so the stream stays in sync and the worker can recover.
 pub trait EventSink {
     /// Frames and emits one event.
-    fn send(&mut self, event: &pb::ChildEvent) -> Result<(), FrameError>;
+    fn send(&mut self, event: &pb::WorkerEvent) -> Result<(), FrameError>;
+
+    /// Called once a `Configure` carrying a first request is accepted, before
+    /// that request runs: a host bounding the process from outside (the
+    /// subprocess shell's allocator ceiling) must apply the session's budget first.
+    fn session_opened(&mut self, _budget: SessionBudget) {}
 }
 
 /// An [`EventSink`] that appends framed events to an in-memory buffer.
 ///
 /// Used by the wasm worker, which collects a turn's frames and hands the whole
 /// buffer back to the host in one `postMessage`, and by tests that drive
-/// [`Child`] in-process. [`Self::take`] yields the accumulated frames and
+/// [`Worker`] in-process. [`Self::take`] yields the accumulated frames and
 /// resets the buffer for the next turn.
 #[derive(Default)]
 pub struct VecEventSink {
@@ -82,7 +93,7 @@ impl VecEventSink {
 }
 
 impl EventSink for VecEventSink {
-    fn send(&mut self, event: &pb::ChildEvent) -> Result<(), FrameError> {
+    fn send(&mut self, event: &pb::WorkerEvent) -> Result<(), FrameError> {
         // `Vec<u8>: io::Write` never fails on I/O, so the only error this can
         // surface is `FrameTooLarge`, which `write_frame` raises before
         // appending anything.
@@ -90,21 +101,21 @@ impl EventSink for VecEventSink {
     }
 }
 
-/// What the host loop should do after [`Child::handle`] returns.
+/// What the host loop should do after [`Worker::handle`] returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandleOutcome {
     /// Keep serving the next request.
     Continue,
-    /// The child received `Shutdown` and should exit cleanly.
+    /// The worker received `Shutdown` and should exit cleanly.
     Shutdown,
-    /// The child emitted a `FatalError` (e.g. parent/child version skew) and
+    /// The worker emitted a `FatalError` (e.g. client/worker version skew) and
     /// must terminate. Distinct from `Shutdown` so a native host can exit with
     /// a non-zero status; a message-based host treats it like `Shutdown`.
     Fatal,
 }
 
-/// Runs one buffered turn: reads exactly one framed `ParentRequest` from
-/// `request_frame`, handles it on `child`, and returns the concatenated framed
+/// Runs one buffered turn: reads exactly one framed `ClientRequest` from
+/// `request_frame`, handles it on `worker`, and returns the concatenated framed
 /// events (zero or more `Print`s then one turn-ending event) plus what the host
 /// should do next.
 ///
@@ -117,27 +128,28 @@ pub enum HandleOutcome {
 ///
 /// Unlike a streaming transport, `Print` events are buffered for the whole turn
 /// and returned together rather than delivered incrementally.
-pub fn dispatch_frame(child: &mut Child, request_frame: &[u8]) -> (Vec<u8>, HandleOutcome) {
+pub fn dispatch_frame(worker: &mut Worker, request_frame: &[u8]) -> (Vec<u8>, HandleOutcome) {
     let mut sink = VecEventSink::new();
-    let outcome = dispatch_into(child, request_frame, &mut sink);
+    let outcome = dispatch_into(worker, request_frame, &mut sink);
     (sink.take(), outcome)
 }
 
 /// Decodes and handles one request frame, sending all resulting frames to
 /// `sink`. Factored out of [`dispatch_frame`] so the framing/recovery decisions
 /// stay separate from buffer ownership.
-fn dispatch_into(child: &mut Child, request_frame: &[u8], sink: &mut VecEventSink) -> HandleOutcome {
+fn dispatch_into(worker: &mut Worker, request_frame: &[u8], sink: &mut VecEventSink) -> HandleOutcome {
     let mut reader = FrameReader::new(request_frame);
-    match reader.read::<pb::ParentRequest>() {
-        Ok(Some(request)) => match child.handle(request, sink) {
+    match reader.read::<pb::ClientRequest>() {
+        Ok(Some(request)) => match worker.handle(request, sink) {
             Ok(outcome) => outcome,
             // an oversize turn-ending event was rejected before any bytes were
             // buffered, so the reply is still parseable — but an oversize
             // suspension (or any unrecoverable error) leaves no resume point,
             // so emit a fatal last gasp and stop the worker
             Err(FrameError::FrameTooLarge { len, max }) => {
-                let _ = sink
-                    .send(&child.fatal_event(&format!("response frame of {len} bytes exceeds maximum of {max} bytes")));
+                let _ = sink.send(
+                    &worker.fatal_event(&format!("response frame of {len} bytes exceeds maximum of {max} bytes")),
+                );
                 HandleOutcome::Shutdown
             }
             // `VecEventSink` cannot fail on I/O, so this is unreachable in
@@ -155,7 +167,7 @@ fn dispatch_into(child: &mut Child, request_frame: &[u8], sink: &mut VecEventSin
         }
         // framing itself is broken — unrecoverable by design
         Err(err) => {
-            let _ = sink.send(&child.fatal_event(&format!("malformed request frame: {err}")));
+            let _ = sink.send(&worker.fatal_event(&format!("malformed request frame: {err}")));
             HandleOutcome::Shutdown
         }
     }
@@ -171,14 +183,14 @@ pub struct SessionBudget {
     pub max_memory: Option<usize>,
     /// Whether the session type checks each fed snippet.
     pub type_check: bool,
-    /// Maximum suspensions the host may service; enforced outside the child.
+    /// Maximum suspensions the host may service; enforced outside the worker.
     /// `None` only when no session exists.
     pub max_suspensions: Option<usize>,
     /// Host-enforced sleep budget; `None` when unlimited or no session exists.
     pub max_total_sleep: Option<Duration>,
 }
 
-/// REPL session state of the child.
+/// REPL session state of the worker.
 enum SessionState {
     /// No repl materialized yet. `Some` once `Configure` has stored the config
     /// (the repl is built lazily on the first `Feed` / `Dump`); `None` on a
@@ -194,7 +206,7 @@ enum SessionState {
     AwaitingStubs(Box<PendingFeed>),
 }
 
-/// A feed held until the parent answers `import_stubs`.
+/// A feed held until the client answers `import_stubs`.
 struct PendingFeed {
     repl: Box<MontyRepl>,
     code: String,
@@ -203,25 +215,23 @@ struct PendingFeed {
     asked: Vec<String>,
 }
 
-/// All state of one protocol child: the current REPL session plus the
+/// All state of one protocol worker: the current REPL session plus the
 /// per-session metadata (script name, type-check context) that lives outside
 /// the repl.
 ///
-/// The child performs no filesystem I/O: mounts are host configuration the
-/// parent handles entirely by servicing filesystem `OsCall` events itself, so
-/// no mount state (or host path) ever reaches the child.
+/// The worker performs no filesystem I/O: mounts are host configuration the
+/// client handles entirely by servicing filesystem `OsCall` events itself, so
+/// no mount state (or host path) ever reaches the worker.
 ///
-/// Drive it by reading framed [`pb::ParentRequest`]s from the host transport
-/// and passing each to [`Self::handle`] along with an [`EventSink`]; the child
-/// streams `Print` events and one turn-ending event per request.
-pub struct Child {
+/// Drive it by reading framed [`pb::ClientRequest`]s from the host transport
+/// and passing each to [`Self::handle`] along with an [`EventSink`]; the worker
+/// streams `Print` and `StreamedCalls` events and one turn-ending event per request.
+pub struct Worker {
     state: SessionState,
     /// Script name of the current session (used for error and type-check
     /// diagnostics).
     script_name: String,
-    /// Built by the first type-checked feed and kept for the worker's life; what
-    /// building it allocates joins the baseline rather than that session's budget.
-    /// What its first run caches is charged to the session, as it always was.
+    /// Built by the first type-checked feed and dropped when the session resets.
     type_checker: Option<TypeChecker>,
     /// `Some` when the session was created with `type_check: true`.
     type_check: Option<TypeCheckState>,
@@ -229,13 +239,26 @@ pub struct Child {
     /// `Configure`. `Duration::ZERO` means line buffering (see the field's
     /// documentation in the schema).
     print_flush_interval: Duration,
-    /// The session's `OsPolicy` from `Configure`, applied when creating the REPL.
+    /// The session's `OsPolicy` from `Configure`, applied when creating the REPL or restoring one by `Load`.
     os_policy: OsPolicy,
+    /// Set for clients below [`POSITIONAL_WRITES_PROTOCOL_VERSION`], which cannot handle positional binary writes.
+    legacy_binary_writes: bool,
     /// Host module stubs received through `import_stubs` or restored by `Load`.
     module_stubs: Vec<ModuleStub>,
+    /// The client set `Configure.accepts_streamed_calls`, so calls to async host
+    /// functions stream as `StreamedCalls` instead of suspending.
+    accepts_streamed_calls: bool,
+    /// The current feed's `Feed.stream_async_calls`; started calls also need `accepts_streamed_calls`.
+    feed_streams_async_calls: bool,
+    /// The current feed's `Feed.async_functions`: calls to these names start
+    /// like calls to an async host function value. Replaced by every `Feed`.
+    feed_async_functions: HashSet<String>,
+    /// Calls this session has started without suspending, held under
+    /// `max_suspensions` as the client holds its suspension count.
+    calls_streamed: usize,
 }
 
-impl Default for Child {
+impl Default for Worker {
     fn default() -> Self {
         Self {
             state: SessionState::Configured(None),
@@ -244,19 +267,24 @@ impl Default for Child {
             type_check: None,
             print_flush_interval: DEFAULT_PRINT_FLUSH_INTERVAL,
             os_policy: OsPolicy::default(),
+            legacy_binary_writes: false,
             module_stubs: Vec::new(),
+            accepts_streamed_calls: false,
+            feed_streams_async_calls: false,
+            feed_async_functions: HashSet::new(),
+            calls_streamed: 0,
         }
     }
 }
 
-impl Child {
-    /// Handles one request: streams any `Print` events and emits exactly one
+impl Worker {
+    /// Handles one request: streams any mid-turn events and emits exactly one
     /// turn-ending event through `sink`, then reports what the host loop should
-    /// do next. `Err` means the sink is broken (for stdout, the parent is
+    /// do next. `Err` means the sink is broken (for stdout, the client is
     /// gone).
     pub fn handle(
         &mut self,
-        request: pb::ParentRequest,
+        request: pb::ClientRequest,
         sink: &mut dyn EventSink,
     ) -> Result<HandleOutcome, FrameError> {
         let Some(kind) = request.kind else {
@@ -265,46 +293,46 @@ impl Child {
         };
 
         let mut event = match kind {
-            pb::parent_request::Kind::Configure(configure) => {
-                // An unsupported protocol version is fatal: the parent may frame
+            pb::client_request::Kind::Configure(mut configure) => {
+                // An unsupported protocol version is fatal: the client may frame
                 // or interpret later messages differently, so serving it risks a
-                // silent desync. Emit the fatal last gasp and stop the child.
+                // silent desync. Emit the fatal last gasp and stop the worker.
                 if let Err(refusal) = check_protocol_version(configure.protocol_version) {
                     sink.send(&self.fatal_event(&refusal))?;
                     return Ok(HandleOutcome::Fatal);
                 }
-                self.handle_configure(configure)
+                let first = configure.first.take();
+                let reply = self.handle_configure(configure);
+                match first {
+                    Some(first) => self.handle_first(first, reply, sink),
+                    None => reply,
+                }
             }
-            pb::parent_request::Kind::Feed(feed) => self.handle_repl_feed(feed, sink),
+            pb::client_request::Kind::Feed(feed) => self.handle_repl_feed(feed, sink),
             // The Monty sandbox has no host interpreter to install packages for;
             // dependency installation is only supported by the CPython worker.
             // Answer with a session-preserving error rather than a hard failure.
-            pb::parent_request::Kind::InstallDependencies(_) => error_event(
+            pb::client_request::Kind::InstallDependencies(_) => error_event(
                 ExcType::RuntimeError,
                 "dependency installation is only supported by the CPython worker",
             ),
-            pb::parent_request::Kind::ResumeCall(resume) => self.handle_resume_call(resume, sink),
-            pb::parent_request::Kind::ResumeNameLookup(resume) => self.handle_resume_name_lookup(resume, sink),
-            pb::parent_request::Kind::ResumeFutures(resume) => self.handle_resume_futures(resume, sink),
-            pb::parent_request::Kind::AbortFeed(abort) => self.handle_abort_feed(abort, sink),
-            pb::parent_request::Kind::Dump(_) => self.handle_dump(),
-            pb::parent_request::Kind::Load(load) => self.handle_load(&load),
-            pb::parent_request::Kind::Reset(_) => match self.reset() {
-                Ok(()) => ok_event(),
-                // A failed scrub leaves the finished session's files in the
-                // type checker, so this worker must never serve another one:
-                // the next session could resolve the previous session's
-                // modules. Die with an explanation the parent can log rather
-                // than carry on — or panic, which it would only see as a crash.
-                Err(err) => {
-                    sink.send(&self.fatal_event(&format!("type-check cleanup failed: {err}")))?;
-                    return Ok(HandleOutcome::Fatal);
-                }
-            },
-            pb::parent_request::Kind::Shutdown(_) => {
+            pb::client_request::Kind::ResumeCall(resume) => self.handle_resume_call(resume, sink),
+            pb::client_request::Kind::ResumeNameLookup(resume) => self.handle_resume_name_lookup(resume, sink),
+            pb::client_request::Kind::ResumeFutures(resume) => self.handle_resume_futures(resume, sink),
+            pb::client_request::Kind::AbortFeed(abort) => self.handle_abort_feed(abort, sink),
+            pb::client_request::Kind::Dump(_) => self.handle_dump(),
+            pb::client_request::Kind::Load(load) => self.handle_load(&load),
+            pb::client_request::Kind::Reset(_) => {
+                self.reset();
+                ok_event()
+            }
+            pb::client_request::Kind::Shutdown(_) => {
                 sink.send(&ok_event())?;
                 return Ok(HandleOutcome::Shutdown);
             }
+            // a liveness answer meant for a serving relay; it opens no turn,
+            // so it gets no reply
+            pb::client_request::Kind::Pong(_) => return Ok(HandleOutcome::Continue),
         };
         self.stamp_session_budget(&mut event);
         let sent = sink.send(&event);
@@ -331,18 +359,18 @@ impl Child {
     /// with only timing stamps and print draining in between.
     ///
     /// `Err` means the wire arms and [`OsFunctionCall`] have drifted apart —
-    /// the conversion back is total for a payload this child just produced, so
-    /// a failure would leave a suspension the parent's answer can no longer be
+    /// the conversion back is total for a payload this worker just produced, so
+    /// a failure would leave a suspension the client's answer can no longer be
     /// applied to. The caller makes that fatal rather than serving on.
-    fn reclaim_suspension_payload(&mut self, event: &mut pb::ChildEvent) -> Result<(), ProtoConvertError> {
+    fn reclaim_suspension_payload(&mut self, event: &mut pb::WorkerEvent) -> Result<(), ProtoConvertError> {
         let SessionState::Suspended(progress) = &mut self.state else {
             return Ok(());
         };
         match (progress.as_mut(), &mut event.kind) {
-            (ReplProgress::FunctionCall(call), Some(pb::child_event::Kind::FunctionCall(announced))) => {
+            (ReplProgress::FunctionCall(call), Some(pb::worker_event::Kind::FunctionCall(announced))) => {
                 call.args = mem::take(announced).into_call_args()?;
             }
-            (ReplProgress::OsCall(call), Some(pb::child_event::Kind::OsCall(announced)))
+            (ReplProgress::OsCall(call), Some(pb::worker_event::Kind::OsCall(announced)))
                 if announced.call.is_some() =>
             {
                 call.function_call = os_call_from_proto(mem::take(announced))?.1;
@@ -353,7 +381,7 @@ impl Child {
         Ok(())
     }
 
-    /// What the session the child is *currently* holding would run under.
+    /// What the session the worker is *currently* holding would run under.
     ///
     /// A host that bounds the worker process from outside the interpreter (the
     /// subprocess shell caps its own allocator) sizes that bound from this,
@@ -396,9 +424,9 @@ impl Child {
 
     /// Builds a timing-stamped `FatalError` event for an unrecoverable
     /// condition the host detected (frame desync, oversize request). The host
-    /// sends it and exits right after; it is the child's parseable last gasp.
+    /// sends it and exits right after; it is the worker's parseable last gasp.
     #[must_use]
-    pub fn fatal_event(&self, message: &str) -> pb::ChildEvent {
+    pub fn fatal_event(&self, message: &str) -> pb::WorkerEvent {
         let mut event = fatal_error_event(message);
         // fatal paths bypass `handle`, so stamp timing here to keep the
         // "every turn-ending event carries timing" contract intact
@@ -412,22 +440,22 @@ impl Child {
     /// the stream stays synced and an oversize event (a large `Complete`, or a
     /// `DumpResult` while suspended) can be answered with a clean,
     /// session-preserving error. An oversize *suspension announcement* is
-    /// unrecoverable — the worker is suspended but the parent never learned the
+    /// unrecoverable — the worker is suspended but the client never learned the
     /// resume point — so it propagates to the host loop's fatal handling, as
     /// does any genuine I/O break.
     fn recover_send_error(
         &mut self,
-        failed: &pb::ChildEvent,
+        failed: &pb::WorkerEvent,
         err: FrameError,
         sink: &mut dyn EventSink,
     ) -> Result<(), FrameError> {
         let announces_suspension = matches!(
             failed.kind,
             Some(
-                pb::child_event::Kind::FunctionCall(_)
-                    | pb::child_event::Kind::OsCall(_)
-                    | pb::child_event::Kind::NameLookup(_)
-                    | pb::child_event::Kind::ResolveFutures(_)
+                pb::worker_event::Kind::FunctionCall(_)
+                    | pb::worker_event::Kind::OsCall(_)
+                    | pb::worker_event::Kind::NameLookup(_)
+                    | pb::worker_event::Kind::ResolveFutures(_)
             )
         );
         match err {
@@ -443,11 +471,20 @@ impl Child {
         }
     }
 
-    /// Stamps session timing and parent-enforced limits onto an event.
+    /// Stamps session timing and client-enforced limits onto an event.
     ///
-    /// Reported timing drives the parent's backstop. Fields are absent without
+    /// Reported timing drives the client's backstop. Fields are absent without
     /// a session.
-    fn stamp_session_budget(&self, event: &mut pb::ChildEvent) {
+    fn stamp_session_budget(&self, event: &mut pb::WorkerEvent) {
+        if matches!(
+            event.kind,
+            Some(pb::worker_event::Kind::Error(_) | pb::worker_event::Kind::TypingError(_))
+        ) {
+            event.feed_suspended = Some(matches!(
+                self.state,
+                SessionState::Suspended(_) | SessionState::AwaitingStubs(_)
+            ));
+        }
         let tracker = match &self.state {
             SessionState::Ready(repl) => repl.tracker(),
             SessionState::Suspended(progress) => progress.tracker(),
@@ -460,34 +497,71 @@ impl Child {
 
     /// Stores the session config; the repl is built lazily by [`ensure_repl`]
     /// on the first feed/dump (or restored by `Load` instead). Valid only on a
-    /// not-yet-configured worker.
-    fn handle_configure(&mut self, configure: pb::Configure) -> pb::ChildEvent {
+    /// not-yet-configured worker; invalid settings are a `SessionRefused`.
+    fn handle_configure(&mut self, configure: pb::Configure) -> pb::WorkerEvent {
         if matches!(self.state, SessionState::Configured(None)) {
             // Applied on arrival rather than in `ensure_repl`, which a `Load`
             // never reaches: a dump restores the repl directly, and print
             // pacing is a delivery setting the dump does not carry.
-            // Absent means an older parent, or one with no opinion; both get
+            // Absent means an older client, or one with no opinion; both get
             // the default rather than the line buffering that predates it.
             self.print_flush_interval = configure
                 .print_flush_interval_ms
                 .map_or(DEFAULT_PRINT_FLUSH_INTERVAL, |ms| Duration::from_millis(u64::from(ms)));
+            // Also a delivery setting: a `Load` after this `Configure` gets it too.
+            self.accepts_streamed_calls = configure.accepts_streamed_calls;
+            if let Some(clock) = configure.execution_clock {
+                let Ok(clock) = pb::ExecutionClock::try_from(clock) else {
+                    return session_refused("invalid execution_clock");
+                };
+                if !ExecutionClock::from(clock).is_available() {
+                    return session_refused("CPU execution clock is unavailable");
+                }
+            }
             // Reject invalid settings on the Configure turn.
             self.os_policy = match configure.os_policy.clone().map(OsPolicy::try_from) {
                 None => OsPolicy::default(),
                 Some(Ok(os_policy)) => os_policy,
-                Some(Err(err)) => return protocol_violation(&format!("invalid os_policy: {err}")),
+                Some(Err(err)) => return session_refused(&format!("invalid os_policy: {err}")),
             };
             // ty walks the stubs with every feed, unguarded.
             if let Some(stubs) = &configure.type_check_stubs
                 && type_check_nesting_exception(stubs, "repl_type_stubs.pyi", SOURCE_SCAN_THRESHOLD).is_err()
             {
-                return protocol_violation("invalid type_check_stubs: Source is too deeply nested");
+                return session_refused("invalid type_check_stubs: Source is too deeply nested");
             }
+            let clock = configure.execution_clock.unwrap_or(pb::ExecutionClock::Wall as i32);
+            self.legacy_binary_writes = configure.protocol_version < POSITIONAL_WRITES_PROTOCOL_VERSION;
             self.state = SessionState::Configured(Some(Box::new(configure)));
-            ok_event()
+            let mut event = ok_event();
+            event.execution_clock = Some(clock);
+            event
         } else {
+            // the worker still holds a session, so this is the client's bug, not a refusal
             protocol_violation("Configure while a session already exists")
         }
+    }
+
+    /// Runs the first request a `Configure` carried, given that `Configure`'s
+    /// reply: any other reply than `Ok` answers for the request, which never
+    /// runs, while an accepted session arms its budget first and lends its
+    /// clock to the reply.
+    fn handle_first(
+        &mut self,
+        first: pb::configure::First,
+        configured: pb::WorkerEvent,
+        sink: &mut dyn EventSink,
+    ) -> pb::WorkerEvent {
+        if !matches!(configured.kind, Some(pb::worker_event::Kind::Ok(_))) {
+            return configured;
+        }
+        sink.session_opened(self.session_budget());
+        let mut event = match first {
+            pb::configure::First::Feed(feed) => self.handle_repl_feed(feed, sink),
+            pb::configure::First::Load(load) => self.handle_load(&load),
+        };
+        event.execution_clock = configured.execution_clock;
+        event
     }
 
     /// Materializes the repl from the stored config the first time the session
@@ -495,7 +569,7 @@ impl Child {
     /// type-check setup. A no-op once the repl exists; errors only if the
     /// worker was never configured (which the pool's `Configure`-first checkout
     /// prevents in normal operation).
-    fn ensure_repl(&mut self) -> Result<(), Box<pb::ChildEvent>> {
+    fn ensure_repl(&mut self) -> Result<(), Box<pb::WorkerEvent>> {
         let config = match &mut self.state {
             SessionState::Configured(config) => config.take(),
             // already materialized (or mid-feed) — nothing to do here
@@ -506,10 +580,11 @@ impl Child {
         };
         let type_check_config = TypeCheckingConfig::from(config.as_ref());
         // Destructured exhaustively on purpose: a new `Configure` field must
-        // fail to compile here until the child decides what to do with it.
+        // fail to compile here until the worker decides what to do with it.
         let pb::Configure {
             script_name,
             limits,
+            execution_clock,
             type_check,
             type_check_stubs,
             assert_message_annotations,
@@ -524,10 +599,14 @@ impl Child {
             print_flush_interval_ms: _,
             // validated and stored when the `Configure` arrived
             os_policy: _,
-            // a relay's concern; the child never stores sessions
+            // a relay's concern; the worker never stores sessions
             persistence: _,
-            // a relay's concern; the child has no profiles
+            // a relay's concern; the worker has no profiles
             profile: _,
+            // applied when the `Configure` arrived, so a `Load` honors it too
+            accepts_streamed_calls: _,
+            // taken and run when the `Configure` arrived
+            first: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;
@@ -539,7 +618,7 @@ impl Child {
             pending_imports: String::new(),
             asked_modules: Vec::new(),
         });
-        // Missing field means an older parent; the feature defaults to on.
+        // Missing field means an older client; the feature defaults to on.
         let options = CompileOptions {
             assert_message_annotations: assert_message_annotations.map_or_else(
                 AssertMessageAnnotations::default,
@@ -548,14 +627,23 @@ impl Child {
             // Not on the wire: every host gets the default.
             source_scan_threshold: SOURCE_SCAN_THRESHOLD,
         };
-        let repl = MontyRepl::new(&self.script_name, ResourceTracker::new(limits), options)
-            .with_os_policy(self.os_policy.clone());
+        let mut repl = MontyRepl::new(
+            &self.script_name,
+            ResourceTracker::new(limits).with_execution_clock(
+                pb::ExecutionClock::try_from(execution_clock.unwrap_or_default())
+                    .expect("validated clock")
+                    .into(),
+            ),
+            options,
+        )
+        .with_os_policy(self.os_policy.clone());
+        repl.set_legacy_binary_writes(self.legacy_binary_writes);
         self.state = SessionState::Ready(Box::new(repl));
         Ok(())
     }
 
     /// Checks source nesting and requests missing host stubs before starting a feed.
-    fn handle_repl_feed(&mut self, feed: pb::Feed, sink: &mut dyn EventSink) -> pb::ChildEvent {
+    fn handle_repl_feed(&mut self, feed: pb::Feed, sink: &mut dyn EventSink) -> pb::WorkerEvent {
         if let Err(event) = self.ensure_repl() {
             return *event;
         }
@@ -569,6 +657,8 @@ impl Child {
         let SessionState::Ready(mut repl) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked Ready above");
         };
+        self.feed_streams_async_calls = feed.stream_async_calls;
+        self.feed_async_functions = feed.async_functions.into_inner().into_iter().collect();
         // Check nesting before the import scan, ty or the compiler parses the snippet.
         let code = feed.code;
         let checked = match repl.check_source(&code) {
@@ -578,7 +668,7 @@ impl Child {
                 return error_event_from(&error);
             }
         };
-        // The working directory persists in the REPL (including `os.chdir`); the parent
+        // The working directory persists in the REPL (including `os.chdir`); the client
         // sends one only to switch it, and the switch holds whatever the feed's outcome.
         if !feed.cwd.is_empty() {
             repl.set_cwd(&feed.cwd);
@@ -587,6 +677,12 @@ impl Child {
         // the caller explicitly excluded them from checking, so later snippets
         // must not be checked against their (unchecked) bindings either
         let type_checked = !feed.skip_type_check && self.type_check.is_some();
+        // The import scan and ty both parse the snippet and recurse through its AST unguarded.
+        // `check_source` already ran the lexer scan, so only the AST walk is left.
+        if type_checked && let Err(error) = type_check_nesting_exception(&code, &self.script_name, usize::MAX) {
+            self.state = SessionState::Ready(repl);
+            return error_event_from(&error);
+        }
         if type_checked && let Some(state) = &mut self.type_check {
             let imports = scan_imports(&code);
             state.pending_snippet = Some(code.clone());
@@ -597,6 +693,8 @@ impl Child {
                     && !CHECKER_MODULE_NAMES.contains(&name)
                     && !state.asked_modules.iter().any(|asked| asked == name)
             };
+            // TODO(site-packages): resolve modules imported from `.py` files against
+            // the same files the import reads, rather than only host stubs.
             if let Some(first) = imports.modules.iter().find(|module| unasked(&module.name)) {
                 let asked: Vec<String> = imports
                     .modules
@@ -616,7 +714,7 @@ impl Child {
                     inputs,
                     asked,
                 }));
-                return event(pb::child_event::Kind::OsCall(os_call_to_proto(
+                return event(pb::worker_event::Kind::OsCall(os_call_to_proto(
                     IMPORT_STUBS_CALL_ID,
                     ask,
                     false,
@@ -635,7 +733,7 @@ impl Child {
         inputs: NamedValues,
         type_checked: bool,
         sink: &mut dyn EventSink,
-    ) -> pb::ChildEvent {
+    ) -> pb::WorkerEvent {
         if type_checked && let Some(event) = self.type_check_feed(checked.code()) {
             self.state = SessionState::Ready(repl);
             self.discard_pending_snippet();
@@ -643,13 +741,13 @@ impl Child {
         }
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let result = repl.feed_start_checked(checked, inputs, PrintWriter::Callback(&mut print));
-        let event = self.drive(result);
+        let event = self.drive(result, &mut print);
         print.drain();
         event
     }
 
     /// Records the stubs and starts the pending feed; an exception answer ends it before execution.
-    fn handle_resume_stubs(&mut self, resume: pb::ResumeCall, sink: &mut dyn EventSink) -> pb::ChildEvent {
+    fn handle_resume_stubs(&mut self, resume: pb::ResumeCall, sink: &mut dyn EventSink) -> pb::WorkerEvent {
         if resume.call_id != IMPORT_STUBS_CALL_ID {
             return protocol_violation(&format!(
                 "ResumeCall call_id {} does not match {IMPORT_STUBS_CALL_ID}",
@@ -672,13 +770,16 @@ impl Child {
             }
         };
         let stubs = match result {
-            ExtFunctionResult::Return(answer) => match stubs_from_answer(&answer, &pending.asked) {
+            ExtFunctionResult::Return(answer) => match import_stubs_from_answer(&answer, &pending.asked) {
                 Ok(stubs) => stubs,
                 Err(message) => return protocol_violation(&message),
             },
             ExtFunctionResult::NotFound(_) => Vec::new(),
             ExtFunctionResult::Future(_) => {
                 return protocol_violation("import_stubs cannot be answered with a future");
+            }
+            ExtFunctionResult::ModuleFile(_) => {
+                return protocol_violation("import_stubs cannot be answered with a module file");
             }
             ExtFunctionResult::Error(exc) => {
                 let SessionState::AwaitingStubs(pending) =
@@ -719,7 +820,7 @@ impl Child {
     }
 
     /// Returns the exception and readies the session after a feed fails before execution.
-    fn fail_pending_feed(&mut self, pending: PendingFeed, exc: &MontyException) -> pb::ChildEvent {
+    fn fail_pending_feed(&mut self, pending: PendingFeed, exc: &MontyException) -> pb::WorkerEvent {
         self.state = SessionState::Ready(pending.repl);
         self.discard_pending_snippet();
         error_event_from(exc)
@@ -733,9 +834,9 @@ impl Child {
         }
     }
 
-    /// Answers a suspended external function or OS call with the parent's
+    /// Answers a suspended external function or OS call with the client's
     /// result, checking the `call_id` matches, then resumes execution.
-    fn handle_resume_call(&mut self, resume: pb::ResumeCall, sink: &mut dyn EventSink) -> pb::ChildEvent {
+    fn handle_resume_call(&mut self, resume: pb::ResumeCall, sink: &mut dyn EventSink) -> pb::WorkerEvent {
         if matches!(self.state, SessionState::AwaitingStubs(_)) {
             return self.handle_resume_stubs(resume, sink);
         }
@@ -759,9 +860,9 @@ impl Child {
         let Some(wire_result) = resume.result else {
             return protocol_violation("ResumeCall has no result");
         };
-        // NotHandled resolves against the suspended call itself — the child
+        // NotHandled resolves against the suspended call itself — the worker
         // owns the no-handler semantics (`OsFunctionCall::on_no_handler`), so
-        // the parent never has to compute or echo the default exception.
+        // the client never has to compute or echo the default exception.
         let result: ExtFunctionResult =
             if matches!(wire_result.kind, Some(pb::ext_function_result::Kind::NotHandled(_))) {
                 let SessionState::Suspended(progress) = &self.state else {
@@ -770,7 +871,7 @@ impl Child {
                 let ReplProgress::OsCall(call) = progress.as_ref() else {
                     return protocol_violation("NotHandled is only valid answering a suspended OS call");
                 };
-                ExtFunctionResult::Error(call.function_call.on_no_handler())
+                call.function_call.no_handler_result()
             } else {
                 match ext_result_from_proto(wire_result, resume.values) {
                     Ok(result) => result,
@@ -786,14 +887,14 @@ impl Child {
             ReplProgress::OsCall(call) => call.resume(result, PrintWriter::Callback(&mut print)),
             _ => unreachable!("checked above"),
         };
-        let event = self.drive(outcome);
+        let event = self.drive(outcome, &mut print);
         print.drain();
         event
     }
 
-    /// Answers a suspended name lookup with the value (or absence) the parent
+    /// Answers a suspended name lookup with the value (or absence) the client
     /// resolved, then resumes execution.
-    fn handle_resume_name_lookup(&mut self, resume: pb::ResumeNameLookup, sink: &mut dyn EventSink) -> pb::ChildEvent {
+    fn handle_resume_name_lookup(&mut self, resume: pb::ResumeNameLookup, sink: &mut dyn EventSink) -> pb::WorkerEvent {
         let SessionState::Suspended(progress) = &self.state else {
             return protocol_violation("ResumeNameLookup without a suspended name lookup");
         };
@@ -812,14 +913,14 @@ impl Child {
         };
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let outcome = lookup.resume(result, PrintWriter::Callback(&mut print));
-        let event = self.drive(outcome);
+        let event = self.drive(outcome, &mut print);
         print.drain();
         event
     }
 
-    /// Raises the parent's exception uncatchably at any pending suspension.
+    /// Raises the client's exception uncatchably at any pending suspension.
     /// The `Error` reply returns the session to `Ready`.
-    fn handle_abort_feed(&mut self, abort: pb::AbortFeed, sink: &mut dyn EventSink) -> pb::ChildEvent {
+    fn handle_abort_feed(&mut self, abort: pb::AbortFeed, sink: &mut dyn EventSink) -> pb::WorkerEvent {
         // Guard against a corrupt `Complete` state instead of crashing.
         let suspended = matches!(&self.state, SessionState::Suspended(progress)
             if !matches!(progress.as_ref(), ReplProgress::Complete { .. }));
@@ -847,14 +948,14 @@ impl Child {
             ReplProgress::ResolveFutures(state) => state.abort(exc, PrintWriter::Callback(&mut print)),
             ReplProgress::Complete { .. } => unreachable!("checked above"),
         };
-        let event = self.drive(outcome);
+        let event = self.drive(outcome, &mut print);
         print.drain();
         event
     }
 
     /// Delivers settled futures to a `ResolveFutures` suspension, or one
     /// settled coroutine to the function call that allowed an eager reply.
-    fn handle_resume_futures(&mut self, resume: pb::ResumeFutures, sink: &mut dyn EventSink) -> pb::ChildEvent {
+    fn handle_resume_futures(&mut self, resume: pb::ResumeFutures, sink: &mut dyn EventSink) -> pb::WorkerEvent {
         let results = match future_results_from_proto(resume.results, resume.values) {
             Ok(results) => results,
             Err(err) => return protocol_violation(&format!("invalid results: {err}")),
@@ -891,14 +992,14 @@ impl Child {
             }
             _ => unreachable!("reply shaped by the suspension above"),
         };
-        let event = self.drive(outcome);
+        let event = self.drive(outcome, &mut print);
         print.drain();
         event
     }
 
     /// Serializes the current session, and the metadata that lives outside it,
     /// into monty's dump format. The session stays live — dumping is read-only.
-    fn handle_dump(&mut self) -> pb::ChildEvent {
+    fn handle_dump(&mut self) -> pb::WorkerEvent {
         // a never-fed session is materialized into an empty repl so it can be
         // dumped; a never-configured worker has nothing to dump
         if let Err(event) = self.ensure_repl() {
@@ -917,15 +1018,15 @@ impl Child {
             SessionState::Configured(_) => unreachable!("ensure_repl materialized the repl or errored"),
         };
         match dump(&self.script_name, self.type_check.as_ref(), &self.module_stubs, session) {
-            Ok(state) => event(pb::child_event::Kind::DumpResult(pb::DumpResult {
+            Ok(state) => event(pb::worker_event::Kind::DumpResult(pb::DumpResult {
                 state: state.into(),
             })),
             Err(err) => protocol_violation(&format!("dump failed: {err}")),
         }
     }
 
-    /// Restores a dump produced by [`Self::handle_dump`] into this child. A
-    /// restored suspension re-emits its suspension event so the parent learns
+    /// Restores a dump produced by [`Self::handle_dump`] into this worker. A
+    /// restored suspension re-emits its suspension event so the client learns
     /// the resume point.
     ///
     /// `Load` is valid only when no repl has been materialized yet — a freshly
@@ -933,10 +1034,15 @@ impl Child {
     /// instead of feeding. Once a feed has run (or a prior `Load` restored a
     /// session), the repl exists and `Load` is rejected rather than silently
     /// discarding it.
-    fn handle_load(&mut self, load: &pb::Load) -> pb::ChildEvent {
-        let limits = match &self.state {
+    fn handle_load(&mut self, load: &pb::Load) -> pb::WorkerEvent {
+        let (limits, clock) = match &self.state {
             SessionState::Configured(config) => {
-                ResourceLimits::from(config.as_ref().and_then(|config| config.limits).unwrap_or_default())
+                let configured = config.as_ref();
+                let clock = configured.and_then(|config| config.execution_clock).unwrap_or_default();
+                (
+                    ResourceLimits::from(configured.and_then(|config| config.limits).unwrap_or_default()),
+                    pb::ExecutionClock::try_from(clock).expect("validated clock").into(),
+                )
             }
             _ => return protocol_violation("Load requires a session that has not started (a feed has already run)"),
         };
@@ -950,10 +1056,35 @@ impl Child {
             module_stubs,
             mut state,
         } = restored;
+        let tracker = match &state {
+            Session::Idle(repl) => Some(repl.tracker()),
+            Session::Suspended(progress) => Some(progress.tracker()),
+            Session::Running(_) => None,
+        };
+        if tracker.is_some_and(|tracker| tracker.execution_clock() != clock) {
+            return protocol_violation("snapshot execution clock differs from Configure");
+        }
+        if self.legacy_binary_writes
+            && let Session::Suspended(progress) = &state
+            && let ReplProgress::OsCall(call) = progress.as_ref()
+            && requires_positional_writes(&call.function_call)
+        {
+            return protocol_violation("snapshot requires positional filesystem writes");
+        }
         // Retain snapshot clocks and stricter limits across both idle and suspended restores.
+        // The checkout's `OsPolicy` replaces the dump's: the policy is the restoring host's
+        // authority over the clock, zone, sleeps and entropy, not session state.
         match &mut state {
-            Session::Idle(repl) => repl.tracker_mut().tighten_limits(&limits),
-            Session::Suspended(progress) => progress.tracker_mut().tighten_limits(&limits),
+            Session::Idle(repl) => {
+                repl.tracker_mut().tighten_limits(&limits);
+                repl.set_os_policy(self.os_policy.clone());
+                repl.set_legacy_binary_writes(self.legacy_binary_writes);
+            }
+            Session::Suspended(progress) => {
+                progress.tracker_mut().tighten_limits(&limits);
+                progress.set_os_policy(self.os_policy.clone());
+                progress.set_legacy_binary_writes(self.legacy_binary_writes);
+            }
             Session::Running(_) => {}
         }
         // In-process Rust producers can dump suspensions exceeding the wire size limit;
@@ -987,9 +1118,9 @@ impl Child {
             },
         };
         // adopt the restored metadata only once the payload actually loaded
-        // (state is now Ready/Suspended) — a failed load leaves the child in
+        // (state is now Ready/Suspended) — a failed load leaves the worker in
         // its prior un-started state, re-loadable. Surface the adopted script
-        // name so the parent can report it without parsing the opaque dump.
+        // name so the client can report it without parsing the opaque dump.
         if matches!(self.state, SessionState::Ready(_) | SessionState::Suspended(_)) {
             self.script_name = script_name;
             // the dump's stubs, not this worker's `Configure`: the session was checked against them
@@ -1001,8 +1132,29 @@ impl Child {
     }
 
     /// Runs until a turn-ending event. OS calls not answered by `OsPolicy`
-    /// go to the parent, including all filesystem I/O.
-    fn drive(&mut self, result: Result<ReplProgress, Box<ReplStartError>>) -> pb::ChildEvent {
+    /// go to the client, including all filesystem I/O. Calls to async host
+    /// functions stream through `print` and continue (see [`start_call`]).
+    fn drive(
+        &mut self,
+        mut result: Result<ReplProgress, Box<ReplStartError>>,
+        print: &mut ProtoPrint<'_>,
+    ) -> pb::WorkerEvent {
+        let result = loop {
+            let starts = match &result {
+                Ok(progress @ ReplProgress::FunctionCall(call)) => {
+                    self.starts_without_waiting(call, progress.tracker())
+                }
+                _ => false,
+            };
+            if !starts {
+                break result;
+            }
+            let Ok(ReplProgress::FunctionCall(call)) = result else {
+                unreachable!("checked above")
+            };
+            self.calls_streamed += 1;
+            result = start_call(call, print);
+        };
         match result {
             Ok(ReplProgress::Complete { repl, value }) => {
                 self.state = SessionState::Ready(Box::new(repl));
@@ -1065,22 +1217,33 @@ impl Child {
         }
     }
 
+    /// Whether `call` streams as a started call: the client accepts them in
+    /// this feed, the callee is an async host function value or a name the feed declared,
+    /// the call is not awaited at once and the session has started fewer calls than `max_suspensions`.
+    ///
+    /// An immediate `await` with nothing else to run gains nothing from starting,
+    /// so it suspends for the host to answer eagerly, costing one suspension, not two.
+    ///
+    /// Past the limit the call suspends instead, so the client's suspension
+    /// budget aborts the feed: a loop of started calls never suspends otherwise.
+    fn starts_without_waiting(&self, call: &monty::ReplFunctionCall, tracker: &ResourceTracker) -> bool {
+        self.accepts_streamed_calls
+            && self.feed_streams_async_calls
+            && !call.allow_eager_await
+            && self.calls_streamed < tracker.max_suspensions()
+            && (call.is_async || (call.object_id.is_none() && self.feed_async_functions.contains(&call.function_name)))
+    }
+
     /// Ends the current feed with a runtime error while keeping the REPL usable.
-    fn abort_feed_with_runtime_error(&mut self, repl: MontyRepl, message: &str) -> pb::ChildEvent {
+    fn abort_feed_with_runtime_error(&mut self, repl: MontyRepl, message: &str) -> pb::WorkerEvent {
         self.state = SessionState::Ready(Box::new(repl));
         self.discard_pending_snippet();
         error_event(ExcType::RuntimeError, message)
     }
 
     /// Checks against accumulated stubs and imports, returning an event on failure.
-    fn type_check_feed(&mut self, code: &str) -> Option<pb::ChildEvent> {
+    fn type_check_feed(&mut self, code: &str) -> Option<pb::WorkerEvent> {
         let state = self.type_check.as_ref()?;
-        // `check_source` already ran the lexer scan, so only the AST walk is left.
-        if let Err(error) = type_check_nesting_exception(code, &self.script_name, usize::MAX) {
-            return Some(event(pb::child_event::Kind::Error(pb::Error {
-                exception: Some((&error).into()),
-            })));
-        }
         let stubs =
             (!state.committed_stubs.is_empty()).then(|| SourceFile::new(&state.committed_stubs, "repl_type_stubs.pyi"));
         let context = TypeCheckContext {
@@ -1088,12 +1251,10 @@ impl Child {
             module_stubs: &self.module_stubs,
             prelude: &state.committed_imports,
         };
-        let type_checker = self
-            .type_checker
-            .get_or_insert_with(|| allocate_into_baseline(TypeChecker::default));
+        let type_checker = self.type_checker.get_or_insert_with(TypeChecker::default);
         match type_checker.run_with(&SourceFile::new(code, &self.script_name), &context, state.config) {
             Ok(None) => None,
-            Ok(Some(diagnostics)) => Some(event(pb::child_event::Kind::TypingError(pb::TypingError {
+            Ok(Some(diagnostics)) => Some(event(pb::worker_event::Kind::TypingError(pb::TypingError {
                 diagnostics: diagnostics.to_string(),
             }))),
             Err(err) => Some(protocol_violation(&format!("type checker failed: {err}"))),
@@ -1102,39 +1263,51 @@ impl Child {
 
     /// Drops all session state, returning to the unconfigured state ready for
     /// the next `Configure` (or `Load`).
-    ///
-    /// `Err` means the type checker still holds this session's files, which is
-    /// terminal for the worker — see the `Reset` arm in [`Self::handle`].
-    fn reset(&mut self) -> Result<(), String> {
+    fn reset(&mut self) {
         self.state = SessionState::Configured(None);
+        // Invalidating source files leaves Salsa caches and interned data allocated.
+        self.type_checker = None;
         self.type_check = None;
         self.script_name = String::new();
         self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;
         self.os_policy = OsPolicy::default();
         self.module_stubs = Vec::new();
-        self.type_checker.as_mut().map_or(Ok(()), TypeChecker::reset)
+        self.accepts_streamed_calls = false;
+        self.feed_streams_async_calls = false;
+        self.feed_async_functions.clear();
+        self.calls_streamed = 0;
     }
 }
 
-/// Wraps an event kind into a `ChildEvent` with zeroed timing fields;
-/// [`Child::handle`] (and [`Child::fatal_event`]) stamps the timing fields onto
+/// Wraps an event kind into a `WorkerEvent` with zeroed timing fields;
+/// [`Worker::handle`] (and [`Worker::fatal_event`]) stamps the timing fields onto
 /// every turn-ending event just before it is sent.
-fn event(kind: pb::child_event::Kind) -> pb::ChildEvent {
-    pb::ChildEvent {
+fn event(kind: pb::worker_event::Kind) -> pb::WorkerEvent {
+    pb::WorkerEvent {
         kind: Some(kind),
         ..Default::default()
     }
 }
 
+/// Whether re-emitting a suspended call requires a positional-write-capable host.
+fn requires_positional_writes(call: &OsFunctionCall) -> bool {
+    match call {
+        OsFunctionCall::WriteBytesAt(_) => true,
+        OsFunctionCall::Open(args) => args.mode.is_binary() && args.mode.readable() && args.mode.writable(),
+        OsFunctionCall::CreateExclusive(args) => args.mode.is_binary() && args.mode.readable() && args.mode.writable(),
+        _ => false,
+    }
+}
+
 /// Builds the turn-ending event for a recoverable protocol violation (wrong
-/// state, bad call id, invalid payload). The child's state is unchanged.
+/// state, bad call id, invalid payload). The worker's state is unchanged.
 ///
 /// Public so a host transport can answer a frame that decoded but is not a
-/// valid request (e.g. a malformed parent message) without reaching into the
+/// valid request (e.g. a malformed client message) without reaching into the
 /// event-kind types.
 #[must_use]
-pub fn protocol_violation(message: &str) -> pb::ChildEvent {
-    event(pb::child_event::Kind::Error(pb::Error {
+pub fn protocol_violation(message: &str) -> pb::WorkerEvent {
+    event(pb::worker_event::Kind::Error(pb::Error {
         exception: Some(pb::RaisedException {
             exc_type: ExcType::RuntimeError.to_string(),
             message: Some(format!("protocol violation: {message}")),
@@ -1144,25 +1317,33 @@ pub fn protocol_violation(message: &str) -> pb::ChildEvent {
     }))
 }
 
-/// Builds an *unstamped* `FatalError` event.
-///
-/// Public for hosts that cannot stamp timing because no [`Child`] is in scope —
-/// notably a panic hook firing on a thread that no longer owns the child. When
-/// a child is available, prefer [`Child::fatal_event`], which stamps timing.
-#[must_use]
-pub fn fatal_error_event(message: &str) -> pb::ChildEvent {
-    event(pb::child_event::Kind::FatalError(pb::FatalError {
+/// Builds the turn-ending refusal of a `Configure` whose settings are invalid:
+/// no session exists, and any `first` request does not run.
+fn session_refused(message: &str) -> pb::WorkerEvent {
+    event(pb::worker_event::Kind::SessionRefused(pb::SessionRefused {
         message: message.to_owned(),
     }))
 }
 
-fn ok_event() -> pb::ChildEvent {
-    event(pb::child_event::Kind::Ok(pb::Ok {}))
+/// Builds an *unstamped* `FatalError` event.
+///
+/// Public for hosts that cannot stamp timing because no [`Worker`] is in scope —
+/// notably a panic hook firing on a thread that no longer owns the worker. When
+/// a worker is available, prefer [`Worker::fatal_event`], which stamps timing.
+#[must_use]
+pub fn fatal_error_event(message: &str) -> pb::WorkerEvent {
+    event(pb::worker_event::Kind::FatalError(pb::FatalError {
+        message: message.to_owned(),
+    }))
+}
+
+fn ok_event() -> pb::WorkerEvent {
+    event(pb::worker_event::Kind::Ok(pb::Ok {}))
 }
 
 /// Builds a turn-ending `Error` event from an exception type and message.
-fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
-    event(pb::child_event::Kind::Error(pb::Error {
+fn error_event(exc_type: ExcType, message: &str) -> pb::WorkerEvent {
+    event(pb::worker_event::Kind::Error(pb::Error {
         exception: Some(pb::RaisedException {
             exc_type: exc_type.to_string(),
             message: Some(message.to_owned()),
@@ -1173,42 +1354,16 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
 }
 
 /// Preserves the exception's traceback in the error event.
-fn error_event_from(exc: &MontyException) -> pb::ChildEvent {
-    event(pb::child_event::Kind::Error(pb::Error {
+fn error_event_from(exc: &MontyException) -> pb::WorkerEvent {
+    event(pb::worker_event::Kind::Error(pb::Error {
         exception: Some(exc.into()),
     }))
 }
 
-/// Validates a dict of dotted module paths to `.pyi` source or `None`.
-/// Paths must belong to a requested module; errors are protocol-violation messages.
-fn stubs_from_answer(answer: &MontyObject, asked: &[String]) -> Result<Vec<ModuleStub>, String> {
-    let answer = answer.as_ref();
-    let pairs = match answer.pairs() {
-        Some(pairs) if answer.type_name() == "dict" => pairs,
-        _ => return Err("import_stubs must be answered with a dict of module to stub source".to_owned()),
-    };
-    let mut stubs = Vec::new();
-    for (key, value) in pairs {
-        let Some(module) = key.as_str() else {
-            return Err("import_stubs answer keys must be module names".to_owned());
-        };
-        let top_level = module.split('.').next().unwrap_or_default();
-        if !asked.iter().any(|name| name == top_level) {
-            return Err(format!("import_stubs answered for {module:?}, which was not asked for"));
-        }
-        if let Some(source) = value.as_str() {
-            stubs.push(ModuleStub::new(module, source).map_err(|err| format!("import_stubs: {err}"))?);
-        } else if value.type_name() != "NoneType" {
-            return Err(format!("import_stubs answer for {module:?} must be a str or None"));
-        }
-    }
-    Ok(stubs)
-}
-
-/// Stamps `tracker`'s timing and parent-enforced limits onto an event. Called
-/// again by [`Child::handle`] just before sending, so a suspension announcement
+/// Stamps `tracker`'s timing and client-enforced limits onto an event. Called
+/// again by [`Worker::handle`] just before sending, so a suspension announcement
 /// is size-checked with the stamps it will carry.
-fn stamp_budget(event: &mut pb::ChildEvent, tracker: &ResourceTracker) {
+fn stamp_budget(event: &mut pb::WorkerEvent, tracker: &ResourceTracker) {
     event.total_execution_micros = u64::try_from(tracker.elapsed().as_micros()).unwrap_or(u64::MAX);
     event.feed_execution_micros = u64::try_from(tracker.feed_elapsed().as_micros()).unwrap_or(u64::MAX);
     event.max_feed_duration_micros = micros_field(tracker.max_feed_duration());
@@ -1219,10 +1374,10 @@ fn stamp_budget(event: &mut pb::ChildEvent, tracker: &ResourceTracker) {
 
 /// Describes a suspension announcement that would exceed the wire frame limit.
 ///
-/// The child turns this into a host-visible error before entering the
-/// suspension, because the parent cannot resume a call it never received.
+/// The worker turns this into a host-visible error before entering the
+/// suspension, because the client cannot resume a call it never received.
 /// The event must already carry its session stamps (see [`stamp_budget`]).
-fn oversize_suspension_error_message(event: &pb::ChildEvent) -> Option<String> {
+fn oversize_suspension_error_message(event: &pb::WorkerEvent) -> Option<String> {
     exceeds_max_frame_len(event)
         .map(|len| format!("argument frame of {len} bytes exceeds the maximum of {MAX_FRAME_LEN} bytes"))
 }
@@ -1232,14 +1387,14 @@ fn oversize_suspension_error_message(event: &pb::ChildEvent) -> Option<String> {
 ///
 /// The suspension keeps its args — a `Dump` of the suspended state (and its
 /// replay on `Load`) needs them — so they come back via
-/// [`Child::reclaim_suspension_payload`] once the event has been sent. They are
+/// [`Worker::reclaim_suspension_payload`] once the event has been sent. They are
 /// lent rather than copied because they are the largest thing a suspension
 /// carries and are already live twice over here (the interpreter's own values,
 /// plus this converted copy): a third copy for the announcement, on top of the
 /// encode buffer, is what used to push a large host-call argument past the
 /// session's memory limit.
-fn suspension_event_function_call(call: &mut monty::ReplFunctionCall) -> pb::ChildEvent {
-    event(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+fn suspension_event_function_call(call: &mut monty::ReplFunctionCall) -> pb::WorkerEvent {
+    event(pb::worker_event::Kind::FunctionCall(WireFunctionCall::new(
         call.function_name.clone(),
         mem::take(&mut call.args),
         call.call_id,
@@ -1249,14 +1404,46 @@ fn suspension_event_function_call(call: &mut monty::ReplFunctionCall) -> pb::Chi
     )))
 }
 
+/// Streams a call to an async host function as `StreamedCalls` and resumes it
+/// with a pending future, without waiting for the client.
+///
+/// A call that cannot be sent (its frame is oversize, or the sink failed)
+/// raises `RuntimeError` at the call site instead: the client never saw it,
+/// so no future could ever settle.
+fn start_call(
+    mut call: monty::ReplFunctionCall,
+    print: &mut ProtoPrint<'_>,
+) -> Result<ReplProgress, Box<ReplStartError>> {
+    let wire = WireFunctionCall::new(
+        call.function_name.clone(),
+        mem::take(&mut call.args),
+        call.call_id,
+        call.object_id,
+        false,
+        call.position.clone(),
+    );
+    let event = event(pb::worker_event::Kind::StreamedCalls(pb::StreamedCalls {
+        calls: vec![wire].into(),
+    }));
+    let sent = match oversize_suspension_error_message(&event) {
+        Some(message) => Err(MontyException::new(ExcType::RuntimeError, Some(message))),
+        None => print.send_event(&event),
+    };
+    match sent {
+        // the sandbox never suspended, so the same turn's execution clock keeps running
+        Ok(()) => call.resume_pending_in_turn(PrintWriter::Callback(print)),
+        Err(exc) => call.resume_in_turn(ExtFunctionResult::Error(exc), PrintWriter::Callback(print)),
+    }
+}
+
 /// Builds the suspension event for an `OsCall`, **moving** the call payload
 /// into it — see
 /// [`suspension_event_function_call`] for why, and
-/// [`Child::reclaim_suspension_payload`] for how it comes back. `GetEnviron` is
+/// [`Worker::reclaim_suspension_payload`] for how it comes back. `GetEnviron` is
 /// the placeholder left behind: a unit variant, so the swap allocates nothing.
-fn suspension_event_os_call(call: &mut monty::ReplOsCall) -> pb::ChildEvent {
+fn suspension_event_os_call(call: &mut monty::ReplOsCall) -> pb::WorkerEvent {
     let function_call = mem::replace(&mut call.function_call, OsFunctionCall::GetEnviron);
-    event(pb::child_event::Kind::OsCall(os_call_to_proto(
+    event(pb::worker_event::Kind::OsCall(os_call_to_proto(
         call.call_id,
         function_call,
         call.allow_eager_await,
@@ -1264,24 +1451,24 @@ fn suspension_event_os_call(call: &mut monty::ReplOsCall) -> pb::ChildEvent {
     )))
 }
 
-fn complete_event(value: MontyObject) -> pb::ChildEvent {
-    event(pb::child_event::Kind::Complete(value.into()))
+fn complete_event(value: MontyObject) -> pb::WorkerEvent {
+    event(pb::worker_event::Kind::Complete(value.into()))
 }
 
 /// Builds the suspension event for a non-`Complete` progress state. Used on
 /// `Load` to re-announce a restored suspension; fresh suspensions go through
 /// `drive`, which adds the oversize check before delegating to the same
 /// per-variant builders.
-fn suspension_event(progress: &mut ReplProgress) -> pb::ChildEvent {
+fn suspension_event(progress: &mut ReplProgress) -> pb::WorkerEvent {
     match progress {
         ReplProgress::FunctionCall(call) => suspension_event_function_call(call),
         ReplProgress::OsCall(call) => suspension_event_os_call(call),
-        ReplProgress::NameLookup(lookup) => event(pb::child_event::Kind::NameLookup(pb::NameLookup {
+        ReplProgress::NameLookup(lookup) => event(pb::worker_event::Kind::NameLookup(pb::NameLookup {
             name: lookup.name.clone(),
             object_id: lookup.object_id().as_ref().map(uuid_to_pb),
             position: Some((&lookup.position).into()),
         })),
-        ReplProgress::ResolveFutures(state) => event(pb::child_event::Kind::ResolveFutures(pb::ResolveFutures {
+        ReplProgress::ResolveFutures(state) => event(pb::worker_event::Kind::ResolveFutures(pb::ResolveFutures {
             pending_call_ids: state.pending_call_ids().to_vec().into(),
             position: Some(state.position().into()),
         })),
@@ -1312,19 +1499,20 @@ fn eager_result(
 }
 
 /// Streams sandbox `print()` output as `Print` events through an
-/// [`EventSink`].
+/// [`EventSink`], along with the other mid-turn events (`StreamedCalls`),
+/// which flush the buffer first so output and calls keep their order.
 ///
 /// Debounced: a frame is written once the buffer reaches
 /// [`Self::FLUSH_BYTES`] or its oldest byte has waited out `interval`, so the
 /// number of events a turn produces follows elapsed time and output volume
 /// rather than how many times the program called `print()` — which is what
-/// makes a loop of tiny prints cost the parent (and its telemetry) roughly
+/// makes a loop of tiny prints cost the client (and its telemetry) roughly
 /// what one large print costs. [`Self::drain`] empties the buffer before every
 /// turn-ending event, so ordering against suspensions stays exact.
 ///
 /// Output on both streams shares the buffer, held as one segment per run, so
 /// alternating between them batches like any other output and still reaches
-/// the parent in the order the sandbox produced it.
+/// the client in the order the sandbox produced it.
 ///
 /// A zero `interval` disables the timer and restores line buffering, one event
 /// per completed line.
@@ -1399,9 +1587,21 @@ impl<'a> ProtoPrint<'a> {
             .find_map(|(index, segment)| segment.text.find('\n').map(|at| (index, at + 1)))
     }
 
+    /// Sends a mid-turn event after any buffered output, so output and the
+    /// event keep the order the sandbox produced them in.
+    fn send_event(&mut self, event: &pb::WorkerEvent) -> Result<(), MontyException> {
+        self.flush()?;
+        self.sink.send(event).map_err(|err| {
+            MontyException::new(
+                ExcType::RuntimeError,
+                Some(format!("failed to send call to host: {err}")),
+            )
+        })
+    }
+
     /// Sends `segments` as one `Print` event.
     fn send(&mut self, segments: Vec<pb::PrintSegment>) -> Result<(), MontyException> {
-        let event = event(pb::child_event::Kind::Print(pb::Print {
+        let event = event(pb::worker_event::Kind::Print(pb::Print {
             segments: segments.into(),
         }));
         self.sink.send(&event).map_err(|err| {

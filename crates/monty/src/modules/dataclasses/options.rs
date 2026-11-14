@@ -40,11 +40,9 @@ impl Default for DataclassOptions {
 /// The `__dataclass_params__` object `@dataclass` writes into a class
 /// namespace: CPython's `dataclasses._DataclassParams`.
 ///
-/// Also what the synthesized dunders read the options from, so rebinding
-/// `__dataclass_params__` changes the class's behaviour where CPython's would
-/// not (see `limitations/dataclasses.md`). Holds no heap references, so it is
-/// the cheap half of a class's metadata; `__dataclass_fields__` owns the
-/// captured defaults.
+/// A record of the decoration only: the generated methods were built from the
+/// options, so rebinding `__dataclass_params__` changes nothing, as in CPython.
+/// Holds no heap references.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DataclassParams {
     options: DataclassOptions,
@@ -57,9 +55,10 @@ impl DataclassParams {
         Self { options }
     }
 
-    /// The options the class was decorated with.
+    /// The options the class was decorated with, which `legacy` rebuilds the
+    /// generated methods from.
     #[must_use]
-    pub fn options(&self) -> DataclassOptions {
+    pub(super) fn options(&self) -> DataclassOptions {
         self.options
     }
 }

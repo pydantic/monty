@@ -120,6 +120,7 @@ export type ValueNode =
   | ValueNodeRepr
   | ValueNodeCycle
   | ValueNodeModule
+  | ValueNodeDecimal
 export interface ValueNodeEllipsis {
   tag: 'ellipsis'
 }
@@ -244,6 +245,10 @@ export interface ValueNodeCycle {
 export interface ValueNodeModule {
   tag: 'module'
   val: ModuleNode
+}
+export interface ValueNodeDecimal {
+  tag: 'decimal'
+  val: string
 }
 export interface Arena {
   nodes: Array<ValueNode>
@@ -398,12 +403,17 @@ export interface RaisedError {
   excType: string
   message: string
 }
+export interface ModuleFile {
+  path: string
+  source: string
+}
 export type CallResult =
   | CallResultReturnValue
   | CallResultError
   | CallResultPendingFuture
   | CallResultNotFound
   | CallResultNotHandled
+  | CallResultModuleFile
 export interface CallResultReturnValue {
   tag: 'return-value'
   val: number
@@ -422,6 +432,10 @@ export interface CallResultNotFound {
 }
 export interface CallResultNotHandled {
   tag: 'not-handled'
+}
+export interface CallResultModuleFile {
+  tag: 'module-file'
+  val: ModuleFile
 }
 export interface ResumeCallRequest {
   callId: number
@@ -568,6 +582,7 @@ export type Event =
   | EventOk
   | EventFatalError
   | EventShutdown
+  | EventSessionRefused
 export interface EventPrint {
   tag: 'print'
   val: PrintEvent
@@ -614,6 +629,10 @@ export interface EventFatalError {
 export interface EventShutdown {
   tag: 'shutdown'
   val: Uint8Array | undefined
+}
+export interface EventSessionRefused {
+  tag: 'session-refused'
+  val: string
 }
 export interface DispatchResult {
   status: Status

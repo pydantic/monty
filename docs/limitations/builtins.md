@@ -65,14 +65,19 @@ These raise `NameError`:
     Monty also stops a set walk once it has yielded the set's starting length,
     where CPython keeps going: replacing each element as it is visited yields
     every replacement in CPython but only the original elements in Monty.
+- **`is` and `id()` on short strings** — equal strings of 2–15 UTF-8 bytes stored
+    inline share identity by content. Separate runtime results such as `bin(4)` can therefore
+    compare identical and return the same `id()`, where CPython gives those
+    results distinct identities.
 - **copying a dict or rebuilding a set re-hashes the keys** — CPython copies the
     hash table, so `d.copy()`, `dict(d)`, `{**d}`, `defaultdict.copy()`,
     `Counter.copy()`, `set(s)` and `frozenset(s)` never call a key's `__hash__`.
     Monty re-inserts each element, so a key with a custom `__hash__` sees it
     called again — observable through a counter or other side effect, and a
-    `__hash__` that raises makes the copy fail where CPython's succeeds. Only
-    `set.copy()` clones the storage directly and matches CPython. `copy.copy`
-    inherits this for dicts (see [copy.md](copy.md)).
+    `__hash__` that raises makes the copy fail where CPython's succeeds.
+    `set.copy()` clones the storage directly, and `frozenset(f)` returns `f`
+    unchanged when `f` is already a frozenset; neither re-hashes its elements.
+    `copy.copy` inherits this for dicts (see [copy.md](copy.md)).
 - **dict/set lookups under a mutating `__eq__`** — like CPython, a lookup
     (`in`, `d[k]`, `set.remove`, …) whose user `__eq__` mutates the container
     keeps probing rather than raising, and a mutation that only *adds* colliding
@@ -85,7 +90,7 @@ These raise `NameError`:
     on *every* comparison never finishes in either engine; under a duration
     limit Monty raises `TimeoutError`. No mutation pattern can panic or corrupt either
     engine.
-- **Set algebra under a mutating `__eq__`** — `-`, `&`, `^` and their method
+- **Set algebra under a mutating `__eq__`** — `-`, `&`, `^`, in-place intersection (`&=`), and their method
     forms walk one of the two sets while user `__eq__` code can run. Monty
     raises `RuntimeError: Set changed size during iteration` if that code adds
     or removes an element from the set being walked, where CPython carries on
@@ -99,6 +104,8 @@ These raise `NameError`:
     `s.isdisjoint(t)` is `False` in Monty, which keeps the comparison that
     matched, and `True` in CPython, which restarts the probe and finds the set
     empty.
+    In-place `|=`, `-=`, `^=`, and `&=` also snapshot their right operand before mutation.
+    Changes to that operand made by user `__eq__` are not observed.
 - **Dict-view set operators re-hash the view's own keys** — `d.keys() - s`,
     `|`, `^`, `isdisjoint` and the reflected forms collect those keys through a
     live, resize-checked walk that calls `__hash__` on each one. CPython probes
@@ -145,6 +152,8 @@ These raise `NameError`:
 - **`int(x, base=10)`** — string/bytes parsing accepts ASCII digits only;
     CPython also accepts non-ASCII Unicode decimal digits (`int('١٢')` == 12),
     which Monty rejects with `invalid literal for int() with base 10`.
+- **`float(x)`** — string parsing accepts ASCII digits only; CPython also accepts Unicode decimal digits
+    (`float('١.٥')` == 1.5), which Monty rejects with `could not convert string to float`.
 - **`bytes(source)`** — an iterable of ints is not supported: CPython's
     `bytes([65, 66])` == `b'AB'`, Monty raises `TypeError: cannot convert 'list' object to bytes`. The int /
     str-with-encoding / bytes source forms

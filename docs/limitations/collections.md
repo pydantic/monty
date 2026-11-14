@@ -34,8 +34,6 @@ too, rather than something that type-checks and then fails at runtime.
     `filter`/`reversed`**: those are eager (see [builtins.md](builtins.md)), so
     the deque is fully read before the loop body runs. `for x in d` and explicit
     `iter()`/`next()` detect it exactly as CPython does.
-- `d += <any iterable>` works (it is `extend`), even though `list`'s `+=` still
-    accepts only another list.
 - **Extending from an eager builtin loses the partial result when it raises.**
     `extend`/`extendleft`/`+=` append each item as the source yields it, so an
     iterator raising part-way leaves the earlier items in place, as in CPython.
@@ -84,3 +82,8 @@ surfaces.
 except `repr(Counter)`, which is `<class 'collections.Counter'>` where Monty
 writes `<class 'Counter'>`. Everywhere else — `__name__`, the `cannot use ...`
 unhashable clause, other type-naming errors — the bare name matches.
+
+Counting an unhashable element (`Counter([[1]])`, `Counter().update([[1]])`) raises
+`TypeError: cannot use 'list' as a dict key (unhashable type: 'list')`, where CPython's `_count_elements` says only
+`unhashable type: 'list'`.
+`Counter.subtract()` matches CPython, which counts through `dict.get()` there.

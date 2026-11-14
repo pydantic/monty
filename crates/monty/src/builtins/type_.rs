@@ -88,7 +88,12 @@ pub(crate) fn type_of_ref(vm: &mut VM<'_>, value: &Value) -> Value {
         vm.heap.inc_ref(class_id);
         Value::Ref(class_id)
     } else {
-        Value::Builtin(Builtins::Type(value.py_type(vm)))
+        Value::Builtin(Builtins::Type(
+            value
+                .py_type(vm)
+                .try_into()
+                .expect("instances return their class object"),
+        ))
     }
 }
 
@@ -114,7 +119,7 @@ fn create_class(
     defer_drop!(namespace, vm);
     defer_drop!(kwargs, vm);
 
-    let Ok(class_name) = name.to_str(vm) else {
+    let Some(class_name) = name.as_str(vm) else {
         let got = name.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
         return Err(ExcType::type_error_bad_arg_pos("type.__new__", 1, "str", got));
     };

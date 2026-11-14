@@ -52,6 +52,25 @@ pub(super) fn is_space(c: char) -> bool {
     type_record(c).is_space()
 }
 
+/// The value of a Unicode decimal digit (`unicodedata.decimal`), `None` for other characters.
+///
+/// Decimal digits come in contiguous runs of ten starting at zero, so the value is the
+/// distance from the start of the run, modulo ten for blocks that stack several runs.
+pub(super) fn decimal_value(c: char) -> Option<u32> {
+    if c.is_ascii_digit() {
+        Some(u32::from(c) - u32::from('0'))
+    } else if type_record(c).is_decimal() {
+        let cp = u32::from(c);
+        let mut start = cp;
+        while start > 0 && char::from_u32(start - 1).is_some_and(|prev| type_record(prev).is_decimal()) {
+            start -= 1;
+        }
+        Some((cp - start) % 10)
+    } else {
+        None
+    }
+}
+
 /// Looks up the record of `c`: two index reads and no data-dependent branches.
 pub(super) fn type_record(c: char) -> &'static TypeRecord {
     let cp = c as usize;

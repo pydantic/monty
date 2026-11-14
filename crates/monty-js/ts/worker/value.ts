@@ -180,6 +180,11 @@ export class ArenaEncoder {
           throw new TypeError('Complex marker requires numeric real and imag')
         }
         return this.leaf({ tag: 'complex', val: { real: object.real, imag: object.imag } })
+      case 'Decimal':
+        if (typeof object.value !== 'string') {
+          throw new TypeError('Decimal marker requires a string value')
+        }
+        return this.leaf({ tag: 'decimal', val: object.value })
       case 'TimeDelta':
         return this.leaf({
           tag: 'timedelta',
@@ -537,6 +542,8 @@ function decodeNode(node: ValueNode, holder: number, child: (index: number, hold
       return { [TYPE_MARKER]: 'TimeDelta', ...node.val }
     case 'complex':
       return { [TYPE_MARKER]: 'Complex', ...node.val }
+    case 'decimal':
+      return { [TYPE_MARKER]: 'Decimal', value: node.val }
     case 'timezone':
       return { [TYPE_MARKER]: 'TimeZone', ...node.val }
     case 'exception':

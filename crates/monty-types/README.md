@@ -36,6 +36,10 @@ implementation**.
 
 ## Who should depend on it
 
+The `monty` interpreter enables the `cpu-clock` feature for native CPU accounting, which is Linux-only.
+Host-only users do not need this feature or its platform CPU dependencies.
+`ExecutionClock::is_available()` reports whether the current thread can read the selected clock.
+
 Host-side crates that need these types without linking the interpreter —
 `monty-fs` (which services `OsFunctionCall`s locally via
 `MountTable::handle_os_call`), `monty-pool` (which talks to Monty workers
@@ -59,10 +63,23 @@ assert_eq!(value.py_repr(), "[1, 'x']");
 - [`monty-fs`](https://crates.io/crates/monty-fs) — host-side filesystem mounts: maps virtual sandbox paths to real host directories.
 - [`monty-runtime`](https://crates.io/crates/monty-runtime) — the `monty` binary: REPL, file runner, and subprocess worker mode.
 - [`monty-pool`](https://crates.io/crates/monty-pool) — an elastic pool of crash-isolated `monty` worker subprocesses.
-- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between pool parents and workers.
+- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between clients and workers.
 - [`monty-type-checking`](https://crates.io/crates/monty-type-checking) — type checking of sandboxed code, powered by [ty](https://docs.astral.sh/ty/).
 - [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
 - [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing.
+
+## Execution time
+
+Execution budgets charge bytecode and native builtins, excluding host suspension.
+They use `ExecutionClock::Wall` by default. Native callers can select
+`ExecutionClock::Cpu` with `ResourceTracker::with_execution_clock`.
+Subprocess hosts set `PoolConfig::execution_clock` once for the pool; CPU enforcement needs a local Linux subprocess
+worker, so remote (gRPC) setups enable it in the server's local pool. CPU mode samples the executing
+thread with a cache of up to 1 ms and reads exact execution boundaries.
+Unavailable or unusable counters use conservative elapsed time for that window; off Linux the counter is always
+unavailable, so check `ExecutionClock::is_available()` before selecting CPU mode directly.
+The OS controls counter accuracy and resolution. Snapshots preserve clock selection
+and recorded consumption. WebAssembly workers accept wall mode only.
 
 ## License
 

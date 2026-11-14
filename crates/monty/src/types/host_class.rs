@@ -2,16 +2,18 @@ use std::{
     borrow::Cow,
     fmt::Write,
     hash::{DefaultHasher, Hash, Hasher},
+    iter::once,
     mem,
 };
 
 use monty_types::{MontyUuid, unstable::ClassTypeNode};
 
-use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value};
+use super::{Dict, LazyHeapSet, PyTrait, list::repr_should_truncate};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
+    dump_upgrade::names::StoredNames,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{
@@ -150,7 +152,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
 
     fn py_set_attr(&mut self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut value_guard = DropGuard::new(value, vm);
-        let name = attribute_name_value(name, value_guard.ctx());
+        let name = name.clone_value(value_guard.ctx().heap);
         let (value, vm) = value_guard.into_parts();
         let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);
@@ -193,12 +195,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
             defer_drop!(key, vm);
             // Keys are strings in practice; render a non-string key (possible
             // in host-built attrs) via repr rather than fail.
-            let key_str = if let Ok(s) = key.to_str(vm) {
+            let key_str = if let Some(s) = key.as_str(vm) {
                 s.to_owned()
             } else {
                 let repr = key.py_repr(vm)?;
                 defer_drop!(repr, vm);
-                repr.to_str(vm)?.to_owned()
+                repr.as_str(vm).expect("py_repr returns str").to_owned()
             };
             // The value is cloned only after the fallible key formatting, so a
             // formatting error cannot strand an unguarded clone; re-reading at
@@ -312,7 +314,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
 ///
 /// Each caller supplies its own field list via `field`, mapping an index to that
 /// field's name and a cloned value (dropped here). A cycle renders `...`, a
-/// `None` value `<?>`, and exhausting a time limit truncates `...[timeout]`.
+/// `None` value `<?>`, and exhausting a time limit truncates `...[timeout]`
+/// (a memory limit raises instead, see [`repr_should_truncate`]).
 ///
 /// `field` is resolved immediately before that field is written, never all up
 /// front, so a `__repr__` that mutates a later field is observed — matching the
@@ -335,7 +338,7 @@ pub(crate) fn write_dataclass_repr<'h>(
         if i > 0 {
             // Same between-item checkpoint as sequence repr, so a wide instance
             // cannot outrun its time limit.
-            if vm.heap.tracker.check_memory_time_every(i).is_err() {
+            if repr_should_truncate(i, vm)? {
                 f.write_str(", ...[timeout]")?;
                 break;
             }
@@ -589,6 +592,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
             args.drop_with(vm);
             Err(error)
         }
+    }
+}
+
+impl StoredNames for HostClassType {
+    fn names_mut(&mut self) -> impl Iterator<Item = &mut EitherStr> {
+        once(&mut self.name)
     }
 }
 

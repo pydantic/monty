@@ -28,7 +28,7 @@ Python receives a read-only [`MontyStdTypeProxy`][pydantic_monty.MontyStdTypePro
 JavaScript a `{ __monty_type__, value }` marker.
 The Python proxy and both JavaScript markers re-enter the sandbox as the builtin they name.
 The allowlist is `type`, `object`, `bool`, `int`, `float`, `complex`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`,
-`frozenset`, `range`, `slice`, `NoneType`, `ellipsis`, `NotImplementedType`, the `datetime` classes,
+`frozenset`, `range`, `slice`, `NoneType`, `ellipsis`, `NotImplementedType`, the `datetime` classes, `decimal.Decimal`,
 `collections.deque`, `re.Pattern`, `re.Match`, `types.GenericAlias`, `types.UnionType`,
 `pathlib.PurePosixPath` and the exception classes.
 So `open`, `functools.partial` and `type(iter([]))` reach a Python host as proxies, while `int` and `datetime.date`
@@ -50,11 +50,46 @@ The turn completes and the session remains usable; the wire format itself has no
 A host-function proxy dispatches by name against the current feed's `external_lookup`, not to a fixed callable.
 Replacing an entry changes the target of every retained proxy for that name.
 Replacing it with a non-callable makes calls raise `TypeError`.
+A proxy also remembers whether the host function is `async`.
+When the pool streams async calls (`stream_async_calls` in Python, `streamAsyncCalls` in JavaScript: off for
+subprocess pools, on for remote ones), that decides whether its calls start without waiting; otherwise every call
+suspends (see [asyncio.md](asyncio.md#calls-to-async-host-functions-raise-at-the-await)).
+A sync and an async host function sharing one name are two distinct proxies (`f is g` is `False`), each keeping its own behaviour.
 
 Non-callable values resolved through `external_lookup` are cached in the sandbox namespace.
 Later host-side changes to that entry are not observed by reads of the cached value.
 Only undefined names trigger lookup: an entry named `len`, for example, does not override the builtin.
 Use `inputs` to bind such a name explicitly.
+
+## `decimal.Decimal`
+
+A `Decimal` crosses as its exact string form, so the value, its exponent (`1.20` stays `1.20`) and NaN payloads
+survive; the string always uses `E`, whatever the sandbox context's `capitals` is.
+A host `Decimal` subclass arrives in the sandbox, and comes back, as plain `decimal.Decimal`.
+A host `Decimal` whose coefficient exceeds 4300 digits is rejected as an invalid input
+(see [decimal.md](decimal.md)).
+A trapped decimal signal reaching a Python host is the real `decimal` exception class, but its `args` hold the
+message string rather than CPython's list of condition classes.
+
+## Type hints
+
+`typing.get_type_hints()` of a host function or host class in the sandbox asks the host for its hints (see [typing.md](typing.md#get_type_hints)).
+The host evaluates them only then, never when the function or class crosses, and the sandbox returns them as the host answers.
+
+- **Hints other than builtin types become text.**
+    A type outside the allowlist above crosses as its dotted name (`'mymod.User'`), and an alias or union as its repr (`'list[str]'`, `'int | None'`); `None` crosses as `NoneType`.
+    The sandbox cannot resolve the text back to an object.
+- **`globalns` and `localns` are not sent to the host.**
+    A host that stores its annotations as strings (`from __future__ import annotations`) resolves them in its own module, where CPython would use the namespaces given.
+- **An error from the host's `typing.get_type_hints` is raised in the sandbox**, as CPython raises it: a `NameError` for an unresolvable forward reference, say.
+    Only a hint that cannot be converted (its `repr()` raises, say) is left out rather than failing the call.
+- **A host function is looked up by name, as a call to it would be.**
+    A function the sandbox could not call (a callable passed in `inputs` rather than `external_lookup`) has no hints.
+- **A class wrapped in [`ClassType`][pydantic_monty.ClassType] answers through [`ClassType.get_type_hints`][pydantic_monty.ClassType.get_type_hints]**, called each time the sandbox asks.
+    `HostCls.__annotations__` is not set in the sandbox.
+    An unwrapped host class enters as a host function: `get_type_hints(HostCls)` returns its hints too.
+- **JavaScript hosts send no hints**, so `get_type_hints` of a JavaScript function is `{}`.
+- **A Rust host answers the `typing.get_type_hints` OS call itself**; a host that does not handle it gives `{}`.
 
 ## Conversion failures
 
@@ -63,6 +98,11 @@ A cyclic result raises a catchable `ValueError` from Python hosts, or `TypeError
 An uncaught conversion exception ends the feed as a runtime error.
 Values supplied through `inputs` or `external_lookup` instead fail host-side;
 see [Python error handling](../quickstart/python.md#errors).
+
+Some sandbox results have no CPython equivalent: a namedtuple field starting with `_` (which `rename=True` produces),
+or a dict keyed by, or a set containing, a class-instance proxy, which is unhashable.
+A Python host raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] for such a result, with the original
+exception type and the message prefixed `cannot convert the result to a Python value: `.
 
 ## Message size
 
@@ -74,7 +114,7 @@ that sandboxed code cannot catch.
 
 On protobuf transports, the receiver also limits cumulative decoded allocation requests to 1 GiB per frame.
 A message can exceed this budget even if its final decoded values occupy less than 1 GiB.
-A parent receiving such a frame discards the worker with a protocol error.
+A client receiving such a frame discards the worker with a protocol error.
 The browser component separately limits its WIT value arenas to an estimated 1 GiB.
 Protocol validation and accounting are described in the
-[`monty-proto` README](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#children-are-untrusted).
+[`monty-proto` README](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#workers-are-untrusted).

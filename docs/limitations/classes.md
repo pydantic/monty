@@ -40,8 +40,8 @@ and function-attributes-become-methods), bound methods, class variables
 `__call__`, `__getitem__`/`__setitem__`, unary `+`/`-`, and binary numeric operators
 (including `@`, `divmod()` and `pow()`) with their reflected forms,
 `obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
-`Foo.__annotations__` (ordered; values stringized and provisional, see
-[typing.md](typing.md)), `type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
+`Foo.__annotations__` (evaluated lazily, see [typing.md](typing.md#annotations)),
+`type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
 `type()` constructor. The `__enter__`/`__exit__` divergences are in
 [with.md](with.md).
 
@@ -373,9 +373,9 @@ every construction request. Divergences:
     decorator on a `def` inside a class body (rejected at parse time). Decorators
     on classes and on non-method functions are supported.
 - **Classes are barely introspectable**: `__dict__`, `__bases__` and `dir()`
-    are all unavailable (`cls.__name__` and `cls.__annotations__` work, the
-    latter with stringized values, see [typing.md](typing.md)). A class decorator
-    can therefore discover fields and nothing else.
+    are all unavailable (`cls.__name__` and `cls.__annotations__` work, see
+    [typing.md](typing.md#annotations)). A class decorator can therefore
+    discover fields and nothing else.
 - **Tracebacks from decorator application point at the whole `class` statement**
     (a span from the first decorator through the body, with the body elided as
     `...<N lines>...`), where CPython pins the individual decorator that raised.
@@ -386,9 +386,6 @@ every construction request. Divergences:
     Augmented assignment falls back to binary arithmetic rather than calling an in-place dunder,
     except `@=`, which is rejected at compile time.
     `__ne__` is always the negation of `__eq__`, so a custom `__ne__` is ignored.
-- **Sequence repetition does not consult `__index__`.**
-    `'ab' * obj` and `[0] * obj` raise `TypeError: can't multiply sequence by non-int of type 'Foo'`
-    for an instance of `Foo`, where CPython repeats.
 - **Returning `bool` from `__int__` or `__index__` does not emit a `DeprecationWarning`.**
 - **Subscript assignment does not dispatch `__index__`.** `lst[obj] = x` raises
     `TypeError: list indices must be integers or slices, not Foo` where CPython
@@ -434,14 +431,17 @@ every construction request. Divergences:
     `__getattribute__`, `__setattr__`, `__delattr__`, and `__del__`. A missing
     attribute always raises the default `AttributeError` even when the class
     defines `__getattr__`, and attribute writes always go straight to the
-    instance `__dict__`. `object.__setattr__` exists (see below) and, since
-    there are no hooks to skip, differs from a plain `obj.x = v` only on a
+    instance `__dict__`. The one exception is the `__setattr__` that
+    `@dataclass(frozen=True)` generates, which assignment honours (see
+    [dataclasses.md](dataclasses.md)).
+    `object.__setattr__` exists (see below) and, since there are no hooks to skip, differs from a plain `obj.x = v` only on a
     `@dataclass(frozen=True)` instance, which it writes to and `obj.x = v`
     refuses — the same escape hatch CPython's generated `__init__` uses. On a
     class object it does not write at all, where `Foo.x = v` sets a class member.
 - Introspection attributes other than `__name__`, `__doc__`, `__annotations__`
     and `obj.__class__`: `Foo.__dict__`, `obj.__dict__`, `Foo.__bases__`,
-    `Foo.__mro__`, `Foo.__qualname__`, `Foo.__module__`, and explicit
+    `Foo.__mro__`, `Foo.__qualname__`, `Foo.__module__`, `Foo.__annotate__` of a compiled class
+    (a `type()` namespace may bind its own; see [typing.md](typing.md#annotations)), and explicit
     `obj.__repr__()` / `obj.__str__()` calls when the class defines none, all
     raise `AttributeError`.
 - Class-body statements other than a `def`, a simple `name [: T] = <expr>`
@@ -456,12 +456,7 @@ every construction request. Divergences:
     rather than silently dropping the binding. A walrus inside a lambda *body*
     (`f = lambda: (z := 1)`) binds in the lambda's own scope and works. A walrus
     in a comprehension in the class body is also rejected (CPython rejects that
-    too, but as a `SyntaxError` with different wording). A walrus in an
-    *annotation* (`x: (y := int) = 5`) runs in Monty, since annotation
-    expressions are captured as source text (stringized) and never evaluated, so
-    the walrus never binds; CPython raises `SyntaxError`. This follows from
-    annotations never being evaluated, so it would change if they ever are (see
-    [typing.md](typing.md)).
+    too, but as a `SyntaxError` with different wording).
 - `del obj.attr` (the `del` statement is unsupported generally).
 
 ## `object`
@@ -489,7 +484,8 @@ type: Monty has no inheritance, so there is no base class for it to be.
 ## `FrozenInstanceError`
 
 Raised when assigning to a field of a dataclass declared in the sandbox with
-`@dataclass(frozen=True)` (see [dataclasses.md](dataclasses.md)); host-supplied instances
+`@dataclass(frozen=True)`, or by calling its generated `__delattr__` directly
+(see [dataclasses.md](dataclasses.md)); host-supplied instances
 are never frozen in the sandbox (see "Host class instances" above). Subclass
 of `AttributeError`, so `except AttributeError:` catches it, as in CPython's
 `dataclasses` module. A plain `class` is never frozen, and

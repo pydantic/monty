@@ -36,6 +36,35 @@ assert Counter('aabbc').most_common(False) == [], 'False means top 0'
 assert Counter('aab').most_common(2**70) == [('a', 2), ('b', 1)], 'huge n returns all'
 assert Counter('aab').most_common(-(2**70)) == [], 'huge negative n returns none'
 assert Counter('aab').most_common(-1) == [], 'negative n returns none'
+# NaN counts are not ordered, and stay where CPython's sort leaves them
+nan_counts = Counter({'a': 1.0, 'b': float('nan'), 'c': 3.0, 'd': 2.0, 'e': float('nan'), 'f': 0.5, 'g': 3.0})
+assert [k for k, _ in nan_counts.most_common()] == ['a', 'b', 'c', 'g', 'd', 'e', 'f']
+# with `n`, CPython picks with `heapq.nlargest`: `max()` for 1, a heap below the length
+assert [k for k, _ in nan_counts.most_common(1)] == ['c']
+assert [k for k, _ in nan_counts.most_common(2)] == ['b', 'a']
+assert [k for k, _ in nan_counts.most_common(3)] == ['g', 'b', 'c']
+assert [k for k, _ in nan_counts.most_common(6)] == ['a', 'e', 'g', 'd', 'b', 'c']
+nan_many = Counter({i: float('nan') if i % 3 == 0 else float(i % 7) for i in range(40)})
+assert [k for k, _ in nan_many.most_common(9)] == [6, 5, 4, 2, 8, 7, 0, 3, 1]
+# frozensets are only partially ordered, by subset
+set_counts = Counter(
+    {k: frozenset(v) for k, v in zip('abcdefgh', [{1}, {1, 2}, set(), {2}, {1, 2, 3}, {3}, {1, 3}, {2, 3}])}
+)
+assert [k for k, _ in set_counts.most_common(1)] == ['e']
+assert [k for k, _ in set_counts.most_common(3)] == ['e', 'b', 'h']
+assert [k for k, _ in set_counts.most_common(5)] == ['e', 'h', 'b', 'g', 'd']
+# incomparable counts raise from the comparison CPython makes: `>` in `max()`, then `<` in the heap
+mixed_counts = Counter({'a': 1, 'b': 'x', 'c': 2})
+try:
+    mixed_counts.most_common(1)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'>' not supported between instances of 'str' and 'int'"
+try:
+    mixed_counts.most_common(2)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'<' not supported between instances of 'int' and 'str'"
 try:
     Counter('aab').most_common(1.5)
     assert False, 'expected a float n to fail'
@@ -181,6 +210,9 @@ assert type(+Counter(a=1)).__name__ == 'Counter', 'unary plus returns a Counter'
 assert repr(Counter('aab')) == "Counter({'a': 2, 'b': 1})", 'repr in count-descending order'
 assert repr(Counter({'a': -1, 'b': 2})) == "Counter({'b': 2, 'a': -1})", 'repr orders by count, negatives last'
 assert repr(Counter()) == 'Counter()', 'empty repr'
+# Counts that cannot be ordered are shown in insertion order, as CPython's repr catches the TypeError
+assert repr(Counter({'a': 1, 'b': None})) == "Counter({'a': 1, 'b': None})"
+assert str(Counter({'b': 'x', 'a': 1})) == "Counter({'b': 'x', 'a': 1})"
 assert type(Counter()).__name__ == 'Counter', 'type name is Counter'
 assert isinstance(Counter(), dict), 'Counter is a dict subclass'
 

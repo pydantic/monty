@@ -22,14 +22,14 @@ use strum::{IntoEnumIterator, VariantNames};
 
 use super::exceptions::exc_class_to_py;
 
-/// Inverse of [`host_type_object`]: maps a host class passed *into* the sandbox
+/// Inverse of `host_type_object`: maps a host class passed *into* the sandbox
 /// to the Monty [`MontyType`] it represents, so it round-trips instead of degrading to
 /// a callable. Matches by type-object **identity**, not `__module__`/`__name__` —
 /// the latter is spoofable and churns across Python versions (e.g. `pathlib` paths
 /// report `pathlib._local` on 3.13). Every `pathlib` path class collapses to
-/// [`MontyType::Path`]. Returns `None` for classes Monty does not model, which the
-/// caller then represents as a function node.
-pub(super) fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option<MontyType>> {
+/// [`MontyType::Path`]. Returns `None` for classes Monty does not model: the encoder
+/// sends those as a function node, a type hint as the class's dotted name.
+pub fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option<MontyType>> {
     let py = ty.py();
     for (obj, t) in round_trip_type_table(py)? {
         if ty.is(obj) {
@@ -112,6 +112,7 @@ pub(super) fn host_type_object(py: Python<'_>, t: MontyType) -> PyResult<Option<
         MontyType::Time => cached!("datetime", "time"),
         MontyType::TimeDelta => cached!("datetime", "timedelta"),
         MontyType::TimeZone => cached!("datetime", "timezone"),
+        MontyType::Decimal => cached!("decimal", "Decimal"),
         MontyType::Deque => cached!("collections", "deque"),
         // Consistent with the Path *instance* arm, which marshals as PurePosixPath
         // and is instantiable on every host OS (unlike PosixPath on Windows).
@@ -359,6 +360,13 @@ fn timezone_offset_seconds(delta: &MontyTimeDelta) -> PyResult<i32> {
     i32::try_from(total_seconds).map_err(|_| PyTypeError::new_err("datetime.timezone offset is out of range"))
 }
 
+/// Returns Python's `decimal.Decimal` class.
+pub(super) fn get_decimal_type(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DECIMAL: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    DECIMAL.import(py, "decimal", "Decimal")
+}
+
 /// Returns the Python `datetime.timezone` type object.
 pub(super) fn get_datetime_timezone_type(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static TIMEZONE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
@@ -493,6 +501,24 @@ pub fn get_name(f: &Bound<'_, PyAny>) -> String {
     f.getattr(intern!(f.py(), "__name__"))
         .and_then(|n| n.extract::<String>())
         .unwrap_or_else(|_| "<unknown>".to_string())
+}
+
+/// Classifies host callables for the sandbox, which must know a function is
+/// async before calling it so its calls can start without waiting for the host.
+pub trait CoroutineFunctionExt {
+    /// Whether this is a coroutine function by `inspect.iscoroutinefunction`
+    /// (an `async def`, or a `functools.partial` of one). A failing check counts as not async.
+    fn is_coroutine_function(&self) -> bool;
+}
+
+impl CoroutineFunctionExt for Bound<'_, PyAny> {
+    fn is_coroutine_function(&self) -> bool {
+        let py = self.py();
+        py.import(intern!(py, "inspect"))
+            .and_then(|inspect| inspect.call_method1(intern!(py, "iscoroutinefunction"), (self,)))
+            .and_then(|result| result.is_truthy())
+            .unwrap_or(false)
+    }
 }
 
 /// get the `__doc__` attribute from a (hopefully) function

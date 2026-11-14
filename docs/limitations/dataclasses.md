@@ -36,8 +36,8 @@ around a decoration will not catch these.
     imply.
 - **`InitVar[...]`** — raises
     `NotImplementedError: dataclass() does not yet support InitVar (field <name>), which would become an ordinary field`.
-    Detected textually, since annotations are never evaluated: the name need not
-    be imported to be rejected.
+    Matched by name in a string or unresolved (`ForwardRef`) annotation, Monty
+    having no `InitVar` object: the name need not be imported to be rejected.
 - **Every `field(...)` argument except `default` and `default_factory`** —
     `init`, `repr`, `hash`, `compare`, `metadata`, `kw_only` and `doc`. Setting one
     away from its CPython default raises
@@ -52,6 +52,8 @@ around a decoration will not catch these.
     `dataclasses._FIELD`), the objects behind them being unimplemented.
 - **Module helpers** — `fields`, `asdict`, `astuple` and `replace` do not exist: accessing them raises
     `AttributeError`, not `NotImplementedError`, since the module has no such attribute.
+- **`__replace__`** is never generated, so `C.__replace__` raises `AttributeError` where CPython gives a method;
+    `copy.replace` is covered in [copy.md](copy.md).
 
 Mutable defaults are rejected as CPython rejects them
 (`ValueError: mutable default <class 'list'> for field xs is not allowed: use default_factory`), and so is a non-default
@@ -60,18 +62,21 @@ field after a defaulted one
 
 ## Divergences from CPython
 
-- **Annotations are stringized.** Fields come from the class's
-    `__annotations__`, which Monty stores as never-evaluated source text (always
-    PEP 563); see [typing.md](typing.md). Field
-    discovery and the generated methods are unaffected, the field *type* being
-    inert metadata, but `C.__dataclass_fields__['x'].type` is the string `'int'`,
-    not the `int` type object.
+- **Annotations are evaluated at decoration, synchronously.** `@dataclass` reads
+    `annotationlib.get_annotations(cls, format=Format.FORWARDREF)` as CPython does, so `Field.type` is the evaluated
+    object, a `ForwardRef` for a name not yet defined, or the string a `from __future__ import annotations` class
+    stores (see [typing.md](typing.md#annotations)). The
+    evaluation runs in the synchronous position of `default_factory` below, so an annotation that calls an external
+    function raises `NotImplementedError` where CPython evaluates it.
+- **An annotation key that is not a string literal is skipped.** A `type()` namespace whose `__annotations__`
+    has a key such as `1` is decorated without it, where CPython raises
+    `TypeError: attribute name must be string, not 'int'`; a key built at run time (`'a' + b`) is skipped too,
+    where CPython makes it a field.
 - **`__dataclass_fields__` holds only real fields.** CPython keeps `ClassVar`
     (and `InitVar`) entries in the mapping, marked `_FIELD_CLASSVAR`, and filters
     them in `fields()`. Monty has no field kinds, so the mapping *is* the field
     list and class variables never appear in it.
-- **`Field` renders differently.** `repr(field)` follows CPython's layout but
-    writes the stringized `type`.
+- **`Field` renders differently.** `repr(field)` follows CPython's layout, but
     `repr(type(field))` is `<class 'Field'>`,
     not `<class 'dataclasses.Field'>` (`Field.__name__` matches either way, so
     attribute errors read the same).
@@ -86,20 +91,27 @@ field after a defaulted one
     `NotImplementedError: external function 'f' cannot suspend in this synchronous context`.
     The traceback identifies the calling code.
     Ordinary in-sandbox code in them runs normally.
-- **`ClassVar` / `InitVar` detection is purely textual.** Monty matches the
-    annotation text (bare, dotted, subscripted, or quoted) without checking that
-    the name is actually imported, where CPython resolves a *string* annotation
-    through the defining module's namespace. So `c: "ClassVar[int]"` without
-    `ClassVar` in scope is excluded by Monty but is an ordinary field to CPython.
-    Conversely any dotted spelling matches, so a same-named attribute on an
-    unrelated module (`mymod.ClassVar`) is treated as `typing.ClassVar`.
+- **A string or unresolved `ClassVar` / `InitVar` is matched by text.** A
+    `ClassVar` object or `ClassVar[...]` alias is recognised as in CPython. A
+    string or `ForwardRef` annotation is matched by its text (bare, dotted,
+    subscripted or quoted) without checking that the name is imported, where
+    CPython resolves a *string* annotation through the defining module's
+    namespace. So `c: "ClassVar[int]"` without `ClassVar` in scope is excluded by
+    Monty but is an ordinary field to CPython; any dotted spelling matches, so a
+    same-named attribute on an unrelated module (`mymod.ClassVar`) is treated as
+    `typing.ClassVar`; and an undefined `InitVar` is rejected where CPython would
+    make the field ordinary.
 - **A field holding a function or bound method reprs differently**, since
     Monty's own `repr` for those differs (see [classes.md](classes.md)). Only the
     text differs; the value and its equality match CPython.
-- **A class-body `__setattr__` never runs for the synthesized `__init__`**,
-    which writes fields straight into the instance `__dict__`. This is the
-    never-dispatched attribute hook described in [classes.md](classes.md) rather than
-    something dataclass-specific, so `@dataclass` does not reject it.
+- **The generated `__repr__` uses the class's `__name__`**, since Monty classes
+    have no `__qualname__` (see [classes.md](classes.md)). A dataclass defined in
+    a function reprs as `Local(x=1)` where CPython gives
+    `make.<locals>.Local(x=1)`.
+- **A class-body `__setattr__` never runs for the generated `__init__`** of a
+    non-frozen dataclass, which writes fields straight into the instance
+    `__dict__`. This is the never-dispatched attribute hook described in
+    [classes.md](classes.md) rather than something dataclass-specific.
 - **`@dataclass` on a non-class** (e.g. `dataclasses.dataclass(5)`) raises
     `TypeError: dataclass() should be called on a class, not '<type>'`. CPython
     instead raises an incidental `AttributeError` about `__module__` from its
@@ -116,40 +128,30 @@ field after a defaulted one
     closure. Fixable only if Monty gains closures over native functions; nothing
     else depends on that, so it is not planned.
 - **`del obj.field` on a frozen instance never raises `cannot delete field`**,
-    because Monty's parser has no `del` statement at all. (Assignment matches
-    CPython, message included, and `dataclasses.FrozenInstanceError` is
-    importable.)
+    because Monty's parser has no `del` statement at all. Calling the generated
+    `C.__delattr__(obj, 'x')` directly raises it as CPython does, and assignment
+    matches CPython, message included.
 - **`__dataclass_params__` reads back normalised.** `C.__dataclass_params__`
     exists, reprs like CPython's and answers all ten flags, but each is the `bool`
     Monty acted on: `@dataclass(frozen=1)` reports `frozen=True` where CPython
     echoes the `1` you passed.
-- **The class's metadata is read at use time, not built in at decoration.**
-    CPython's `@dataclass` generates `__init__`, `__eq__`, `__hash__`, `__repr__`
-    and `__setattr__` with the decoration's choices built in, and leaves
-    `__dataclass_fields__` and `__dataclass_params__` behind as records nothing
-    reads again. Monty generates no methods. It acts on those two namespace entries
-    and on `__post_init__` each time an instance is built, compared, hashed,
-    printed or assigned to. Changing any of them after decoration therefore changes
-    the class in Monty and nothing in CPython:
-    - **Rebinding `__dataclass_params__`** switches the `eq` and `frozen` in force.
-        `C.__dataclass_params__ = Frozen.__dataclass_params__` freezes `C` and makes
-        it hashable; borrowing an `eq=False` class's params makes `C(1) == C(1)`
-        false. Binding anything that is not a params object (`None`) puts `C` on
-        the defaults, `eq=True, frozen=False`, unfreezing a frozen class.
-    - **Overwriting `__dataclass_fields__`** with a non-dict un-marks the class:
-        `is_dataclass(C)` is false and `C(...)` constructs like a plain class.
-        Rebinding it to another dict changes the fields, defaults and factories
-        the next construction uses. Every default and factory is read out before
-        the first factory runs, so a factory that rebinds it mid-construction
-        changes nothing, as in CPython.
-    - **A `__post_init__` added to a class that had none when decorated** runs on
-        the next construction; CPython's generated `__init__` never calls it.
-        Replacing a hook the class already had matches CPython, which also looks
-        `self.__post_init__` up when it calls it.
-    - **Re-decorating rebuilds the class.** `C = dataclass(frozen=True)(C)` gives
-        Monty a fully frozen class that constructs normally. CPython keeps the
-        `__init__` its first decoration generated, which writes fields through the
-        new frozen `__setattr__` and so raises `FrozenInstanceError` on construction.
+- **The generated methods follow Monty's function conventions.** Each method
+    `@dataclass` generates (`__init__`, `__repr__`, `__eq__`, `__hash__`, and
+    `__setattr__`/`__delattr__` when frozen, as CPython's options and the class
+    body decide) reports `function` from `type()`, reprs as
+    `<function 'C.__init__' at 0x..>` and lacks `__name__`, as every Monty
+    function does (see [language.md](language.md)).
+- **Calling a generated method directly needs an instance of a sandbox class
+    as `self`.** `C.__repr__(5)` raises
+    `TypeError: C.__repr__() requires a class instance as self, not 'int'`, where
+    CPython's generated code reads the fields off whatever it is given and fails
+    on the first one (`AttributeError: 'int' object has no attribute 'x'`).
+    Argument binding and its error messages match CPython.
+- **A frozen `__setattr__` refuses every attribute on any instance.** CPython's
+    refuses only when `self` is an instance of the decorated class or the name is
+    a field, and otherwise defers to `super()`. So `F.__setattr__(other, 'w', 1)`,
+    or `Q.__setattr__ = F.__setattr__` followed by `Q().w = 1`, raises
+    `FrozenInstanceError` where CPython raises a `TypeError` from `super()`.
 
 ## Architectural gaps (cannot match)
 

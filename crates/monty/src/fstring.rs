@@ -564,6 +564,64 @@ impl ParsedFormatSpec {
     }
 }
 
+impl ParsedFormatSpec {
+    /// Renders the spec back into source form, for types such as `Decimal` that parse
+    /// their own spec grammar.
+    ///
+    /// The parse is lossy where `0` meets an explicit alignment (`<020` and `0<20` both
+    /// render as `0<20`) and in redundant spellings (`001`, ` <5`), so the compiler keeps
+    /// a static spec that does not round-trip as its source text instead.
+    pub(crate) fn to_spec_string(&self) -> String {
+        let mut out = String::new();
+        if let Some(align) = self.align {
+            if self.fill != ' ' {
+                out.push(self.fill);
+            }
+            out.push(match align {
+                Align::Left => '<',
+                Align::Right => '>',
+                Align::Center => '^',
+                Align::SignAware => '=',
+            });
+        }
+        if let Some(sign) = self.sign {
+            out.push(match sign {
+                Sign::Plus => '+',
+                Sign::Minus => '-',
+                Sign::Space => ' ',
+            });
+        }
+        if self.z {
+            out.push('z');
+        }
+        if self.alternate {
+            out.push('#');
+        }
+        if self.zero_pad {
+            out.push('0');
+        }
+        if self.width > 0 {
+            out.push_str(&self.width.to_string());
+        }
+        if let Some(grouping) = self.grouping {
+            out.push(grouping.separator());
+        }
+        if self.precision.is_some() || self.frac_grouping.is_some() {
+            out.push('.');
+            if let Some(precision) = self.precision {
+                out.push_str(&precision.to_string());
+            }
+            if let Some(grouping) = self.frac_grouping {
+                out.push(grouping.separator());
+            }
+        }
+        if let Some(type_char) = self.type_char {
+            out.push(type_char.as_char());
+        }
+        out
+    }
+}
+
 impl FromStr for ParsedFormatSpec {
     type Err = ParseFormatSpecError;
 
@@ -640,7 +698,11 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
         validate_string_spec(spec)?;
         // `value` is already a `str`, so borrow it directly — no `py_str`
         // round-trip (which would allocate a fresh heap copy just to drop it).
-        return format_string(value.to_str(vm)?, spec, &vm.heap.tracker);
+        return format_string(
+            value.as_str(vm).expect("string type checked above"),
+            spec,
+            &vm.heap.tracker,
+        );
     }
 
     // A grouping option (`,`/`_`) is only legal for certain presentation
@@ -810,7 +872,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
         (_, None) => {
             let s = value.py_str(vm)?;
             defer_drop!(s, vm);
-            format_string(s.to_str(vm)?, spec, &vm.heap.tracker)
+            format_string(s.as_str(vm).expect("py_str returns str"), spec, &vm.heap.tracker)
         }
 
         // Type mismatch errors
@@ -1578,12 +1640,17 @@ fn format_complex_part(f: f64, spec: &ParsedFormatSpec, tracker: &ResourceTracke
 /// Right-aligned by default. NaN and infinity are formatted as `nan`/`inf` (or `NAN`/`INF` for `F`).
 pub fn format_float_f(f: f64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
     let is_negative = f.is_sign_negative() && !f.is_nan();
+    let precision = spec.precision.unwrap_or(6);
+    let abs_val = f.abs();
+    if let Some(digits) = short_float_digits(abs_val, precision, spec, |out| write!(out, "{abs_val:.precision$}")) {
+        let sign = numeric_sign(is_negative, digits.as_str(), spec);
+        return pad_signed_numeric(sign, "", digits.as_str(), spec, tracker);
+    }
     let uppercase = spec.type_char == Some(TypeChar::FUpper);
     let abs_str = if let Some(word) = non_finite_repr(f, uppercase) {
         word.to_owned()
     } else {
-        let abs_val = f.abs();
-        let abs_str = fmt_float_fixed(abs_val, spec.precision.unwrap_or(6), tracker)?;
+        let abs_str = fmt_float_fixed(abs_val, precision, tracker)?;
         maybe_alternate_point(abs_str, abs_val, spec)
     };
     let sign = numeric_sign(is_negative, &abs_str, spec);
@@ -1779,12 +1846,19 @@ pub fn ascii_escape(s: &str) -> String {
 pub fn format_float_percent(f: f64, spec: &ParsedFormatSpec, tracker: &ResourceTracker) -> RunResult<String> {
     let percent_val = f * 100.0;
     let is_negative = percent_val.is_sign_negative() && !percent_val.is_nan();
+    let precision = spec.precision.unwrap_or(6);
+    let abs_val = percent_val.abs();
+    if let Some(digits) = short_float_digits(abs_val, precision, spec, |out| write!(out, "{abs_val:.precision$}%")) {
+        let sign = numeric_sign(is_negative, digits.as_str(), spec);
+        return pad_signed_numeric(sign, "", digits.as_str(), spec, tracker);
+    }
     // The `%` presentation has no uppercase variant, so `inf`/`nan` stay lower.
     let abs_str = if let Some(word) = non_finite_repr(percent_val, false) {
         format!("{word}%")
     } else {
-        let abs_val = percent_val.abs();
-        let digits = fmt_float_fixed(abs_val, spec.precision.unwrap_or(6), tracker)?;
+        let digits = fmt_float_fixed(abs_val, precision, tracker)?;
+        // A builder rather than `push`: digits past `u16::MAX` precision fill their buffer exactly,
+        // so growing it in place would skip the soft memory check.
         let mut output = format_builder(digits.len().saturating_add(1), tracker)?;
         push_format_str(&mut output, &digits, tracker)?;
         output.push('%')?;
@@ -2233,7 +2307,23 @@ const MAX_FMT_PRECISION_EXP: usize = (u16::MAX as usize) - 1;
 /// every additional digit Python would emit is a zero anyway.
 fn fmt_float_fixed(abs_val: f64, precision: usize, tracker: &ResourceTracker) -> RunResult<String> {
     if precision <= MAX_FMT_PRECISION || !abs_val.is_finite() {
-        return Ok(format!("{abs_val:.precision$}"));
+        let int_digits = if abs_val >= 1.0 && abs_val.is_finite() {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "`log10` of a finite value >= 1 is in 0..309"
+            )]
+            let digits = abs_val.log10() as usize;
+            digits + 1
+        } else {
+            1
+        };
+        return Ok(write_float(
+            abs_val,
+            int_digits,
+            precision,
+            format_args!("{abs_val:.precision$}"),
+        ));
     }
     let base = format!("{abs_val:.MAX_FMT_PRECISION$}");
     let extra = precision - MAX_FMT_PRECISION;
@@ -2254,9 +2344,9 @@ fn fmt_float_fixed(abs_val: f64, precision: usize, tracker: &ResourceTracker) ->
 fn fmt_float_exp(abs_val: f64, precision: usize, uppercase: bool, tracker: &ResourceTracker) -> RunResult<String> {
     if precision <= MAX_FMT_PRECISION_EXP || !abs_val.is_finite() {
         return Ok(if uppercase {
-            format!("{abs_val:.precision$E}")
+            write_float(abs_val, 1, precision, format_args!("{abs_val:.precision$E}"))
         } else {
-            format!("{abs_val:.precision$e}")
+            write_float(abs_val, 1, precision, format_args!("{abs_val:.precision$e}"))
         });
     }
     let base = if uppercase {
@@ -2279,6 +2369,80 @@ fn fmt_float_exp(abs_val: f64, precision: usize, uppercase: bool, tracker: &Reso
     } else {
         Ok(base)
     }
+}
+
+/// Formats a finite float's digits on the stack when they are short and need no `#` point.
+///
+/// This skips a heap allocation per float in the common case; `None` sends the caller to
+/// its general path, which handles non-finite values, `#` and long results. `write` runs only
+/// once `precision` is known to be small, since `fmt` panics on one above `u16::MAX`.
+fn short_float_digits(
+    abs_val: f64,
+    precision: usize,
+    spec: &ParsedFormatSpec,
+    write: impl FnOnce(&mut StackDigits) -> fmt::Result,
+) -> Option<StackDigits> {
+    if abs_val.is_finite() && !spec.alternate && precision < StackDigits::CAPACITY {
+        let mut digits = StackDigits::new();
+        write(&mut digits).ok().map(|()| digits)
+    } else {
+        None
+    }
+}
+
+/// A fixed-size stack buffer for a short formatted number; writes past its capacity fail.
+struct StackDigits {
+    buf: [u8; Self::CAPACITY],
+    len: usize,
+}
+
+impl StackDigits {
+    /// Bytes held; a longer result makes the write fail and the caller fall back to a `String`.
+    const CAPACITY: usize = 64;
+
+    fn new() -> Self {
+        Self {
+            buf: [0; Self::CAPACITY],
+            len: 0,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        str::from_utf8(&self.buf[..self.len]).expect("only whole `str` fragments are written")
+    }
+}
+
+impl Write for StackDigits {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let end = self.len + s.len();
+        self.buf
+            .get_mut(self.len..end)
+            .ok_or(fmt::Error)?
+            .copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+/// Room [`write_float`] reserves beyond the digits: the point, an exponent like `e+308`,
+/// a rounding carry and an estimate of the integer digits that is off by one.
+const FLOAT_DIGITS_SLACK: usize = 9;
+
+/// Writes formatted float `args` into a buffer sized for `int_digits` before the point and
+/// `precision` after it.
+///
+/// `format!` sizes its buffer from the literal text, which is empty for a bare float, so its
+/// buffer would grow through several reallocations. The sizes only apply to finite values:
+/// non-finite ones ignore precision, which may be huge.
+fn write_float(abs_val: f64, int_digits: usize, precision: usize, args: fmt::Arguments<'_>) -> String {
+    let capacity = if abs_val.is_finite() {
+        int_digits.saturating_add(precision).saturating_add(FLOAT_DIGITS_SLACK)
+    } else {
+        3
+    };
+    let mut output = String::with_capacity(capacity);
+    output.write_fmt(args).expect("writing to a String cannot fail");
+    output
 }
 
 /// Pads a string to a given width with alignment.

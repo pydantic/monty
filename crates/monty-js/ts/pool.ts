@@ -1,4 +1,4 @@
-// The worker pool: `Monty` owns a set of `monty subprocess` children and
+// The worker pool: `Monty` owns a set of `monty subprocess` workers and
 // hands them out one-per-session via `checkout()`. The pool, watchdogs and
 // crash recovery live in the native `monty-pool` crate (shared with
 // pydantic_monty); this class normalises options, resolves the worker
@@ -7,6 +7,8 @@
 import { availableParallelism } from 'node:os'
 import { NativePool } from '../native-addon.js'
 import { findMontyBinary } from './binary.js'
+import { MontyConfigurationError, MontyConnectError } from './errors.js'
+import type { StartTurn } from './native.js'
 import {
   type AssertMessageAnnotations,
   type OsPolicy,
@@ -14,16 +16,22 @@ import {
   type TypeCheckFormat,
   encodeAssertMessageAnnotations,
   encodeOsPolicy,
-  validateMaxCheckouts,
+  resolveMaxCheckouts,
 } from './options.js'
-import { type ExternalModules, HostModules, MontySession } from './session.js'
+import { enterSession, type ExternalModules, HostModules, MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
 
 /** Options for [`Monty`]. */
 export interface MontyOptions {
+  /** Clock for every session (default `'wall'`). CPU mode is Linux-only and requires a finite `requestTimeout`. */
+  executionClock?: 'wall' | 'cpu'
   /** Path to the `monty` binary; resolved automatically when omitted. */
   binaryPath?: string
-  /** Workers spawned up front by `create()` (default 1). */
+  /**
+   * Workers spawned up front by `create()`, kept as a floor on live workers
+   * by background refills while the pool is open (default 1). The wasm pool
+   * only prewarms: it replaces a departed worker only for a waiting checkout.
+   */
   minProcesses?: number
   /** Worker cap; checkouts beyond it wait (default: CPU count). */
   maxProcesses?: number
@@ -33,22 +41,16 @@ export interface MontyOptions {
    */
   checkoutTimeout?: number
   /**
-   * Hard per-turn deadline in seconds: a worker that does not answer a
-   * protocol request in time is killed and the session fails with
-   * `MontyCrashedError` (`timedOut: true`). Off by default — prefer the
-   * in-sandbox `maxFeedDurationSecs` limit; this is the backstop for code that
-   * wedges the interpreter itself.
+   * Wall deadline in seconds for each protocol turn (default off).
+   * Expiry kills the worker and raises `MontyCrashedError` (`timedOut: true`).
+   * CPU mode requires a finite value. `maxFeedDurationSecs` bounds execution across repeated suspensions.
    */
   requestTimeout?: number
   /**
-   * Grace period in seconds for the automatic `maxFeedDurationSecs` backstop
-   * (default 1, `null` disables). For sessions with a `maxFeedDurationSecs`
-   * limit, the worker reports the running feed's execution time each turn (the
-   * sandbox clock runs only while the interpreter executes, never while
-   * suspended on the host) and the host kills the worker this long after the
-   * budget expires — covering cases the in-sandbox limit cannot catch (its
-   * check only runs at interpreter checkpoints). Surfaces as `MontyCrashedError`
-   * (`timedOut: true`), losing the session. `requestTimeout` is independent.
+   * Seconds beyond `maxFeedDurationSecs` on the selected clock (default 1, `null` disables).
+   * CPU mode uses an independent OS process counter. Resuming does not renew feed grace.
+   * Exhaustion kills the worker and raises `MontyCrashedError` with `timedOut: true`.
+   * `requestTimeout` remains independent.
    */
   feedDurationLimitGrace?: number | null
   /**
@@ -58,8 +60,15 @@ export interface MontyOptions {
    */
   turnDurationLimitGrace?: number | null
   /** Recycle a worker after this many sessions: an integer from 0 to 4294967295.
-   *  Both 0 and 1 retire after each checkout; omitted means no recycling. */
-  maxCheckoutsPerWorker?: number
+   *  Both 0 and 1 retire after each checkout; omitted means 1000, `null` never recycles. */
+  maxCheckoutsPerWorker?: number | null
+  /**
+   * Let a call to an `async` host function that the sandbox does not await at
+   * once go to the host without suspending the worker, saving a round trip per
+   * call; errors from such calls are raised at the `await`. Off by default,
+   * unlike `MontyRemote`. See [starting calls without waiting](https://pydantic.dev/docs/monty/host-functions#starting-calls-without-waiting).
+   */
+  streamAsyncCalls?: boolean
 }
 
 /** Options for [`Monty.checkout`], mirroring `pydantic_monty`. */
@@ -78,9 +87,11 @@ export interface CheckoutOptions {
   /** Global type-checking stubs. Supply module stubs through `ExternalModule.stubs` in `externalModules`. */
   typeCheckStubs?: string
   /**
-   * Importable host modules for every feed of the session (see [`ExternalModules`]); missing
-   * imports raise `ModuleNotFoundError`. The record is read live, each entry validated when a
-   * snippet first imports it, so modules may be added later; a factory runs once per session.
+   * Importable host modules for every feed of the session (see [`ExternalModules`]); non-bundled
+   * names the record lacks read the package `<cwd>/name/__init__.py`, else `<cwd>/name.py`, through
+   * the `os` handler and then the mounts, and run the file as sandbox code, raising
+   * `ModuleNotFoundError` when neither exists. The record is read live, each entry validated when a snippet first imports it,
+   * so modules may be added later; a factory runs once per session.
    */
   externalModules?: ExternalModules
   /**
@@ -125,10 +136,9 @@ export interface CheckoutOptions {
  * The pool counts `maxSuspensions` per checkout and aborts an over-budget
  * feed with an uncatchable `RuntimeError`.
  *
- * Both duration limits share one clock, which runs only while sandboxed
- * code executes, never while suspended on the host; they differ in when it
- * restarts: at each feed, at each host round trip. Exceeding either raises
- * `TimeoutError` in the sandbox.
+ * Duration limits use the pool's clock (default wall time), paused on the host.
+ * The feed budget resets at each feed; the turn budget resets at each host answer.
+ * Exceeding either raises `TimeoutError` in the sandbox.
  */
 export interface ResourceLimits {
   /**
@@ -174,19 +184,21 @@ export class Monty {
 
   /** Creates the pool and prewarms `minProcesses` workers. */
   static async create(options: MontyOptions = {}): Promise<Monty> {
-    validateMaxCheckouts(options.maxCheckoutsPerWorker)
+    const maxCheckoutsPerWorker = resolveMaxCheckouts(options.maxCheckoutsPerWorker)
     const native = new NativePool({
       binaryPath: findMontyBinary(options.binaryPath),
       minProcesses: options.minProcesses ?? 1,
       maxProcesses: options.maxProcesses ?? availableParallelism(),
+      executionClock: options.executionClock,
       ...(options.checkoutTimeout !== undefined ? { checkoutTimeoutMs: options.checkoutTimeout * 1000 } : {}),
       ...(options.requestTimeout !== undefined ? { requestTimeoutMs: options.requestTimeout * 1000 } : {}),
       // `null` disables a backstop; omitted means the 1s default
       ...graceMs('feedDurationLimitGraceMs', options.feedDurationLimitGrace),
       ...graceMs('turnDurationLimitGraceMs', options.turnDurationLimitGrace),
-      ...(options.maxCheckoutsPerWorker !== undefined ? { maxCheckoutsPerWorker: options.maxCheckoutsPerWorker } : {}),
+      ...(maxCheckoutsPerWorker !== undefined ? { maxCheckoutsPerWorker } : {}),
+      streamAsyncCalls: options.streamAsyncCalls ?? false,
     })
-    await native.start()
+    await startPool(native)
     return new Monty(native)
   }
 
@@ -199,22 +211,10 @@ export class Monty {
     if (this.closed) {
       throw new Error('the pool is closed — create a new Monty pool')
     }
-    const assertAnnotations = encodeAssertMessageAnnotations(options.assertMessageAnnotations)
-    const osPolicy = encodeOsPolicy(options.osPolicy ?? {})
     const modules = new HostModules(options.externalModules)
-    const native = this.native.checkout({
-      scriptName: options.scriptName ?? 'main.py',
-      ...(options.limits !== undefined ? { limits: options.limits } : {}),
-      typeCheck: options.typeCheck ?? false,
-      ...(options.typeCheckStubs !== undefined ? { typeCheckStubs: options.typeCheckStubs } : {}),
-      ...(options.typeCheckFormat !== undefined ? { typeCheckFormat: options.typeCheckFormat } : {}),
-      ...(options.typeCheckColor !== undefined ? { typeCheckColor: options.typeCheckColor } : {}),
-      ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),
-      ...(options.printFlushInterval !== undefined ? { printFlushIntervalMs: options.printFlushInterval * 1000 } : {}),
-      ...nativeOsPolicy(osPolicy),
-    })
+    const native = this.native.checkout(nativeCheckoutOptions(options))
     const telemetryContext = captureTelemetryContext()
-    await native.enter(telemetryContext)
+    await enterSession(native, telemetryContext)
     return new MontySession(native, modules)
   }
 
@@ -236,10 +236,48 @@ export class Monty {
 }
 
 /**
+ * Starts a native pool: `MontyConnectError` when a remote URL cannot be used,
+ * `MontyConfigurationError` for invalid pool settings, and a plain `Error`
+ * when a worker cannot be spawned.
+ */
+export async function startPool(native: NativePool): Promise<void> {
+  const turn = (await native.start()) as StartTurn
+  switch (turn.kind) {
+    case 'ok':
+      return
+    case 'connect':
+      throw new MontyConnectError(turn.message, turn)
+    case 'configuration':
+      throw new MontyConfigurationError(turn.message)
+    case 'protocol':
+      throw new Error(turn.message)
+  }
+}
+
+/**
+ * Encodes checkout options as the native binding's fields; shared by `Monty`
+ * and `MontyRemote`, which add their own transport-specific fields.
+ */
+export function nativeCheckoutOptions(options: CheckoutOptions): Record<string, unknown> {
+  const assertAnnotations = encodeAssertMessageAnnotations(options.assertMessageAnnotations)
+  return {
+    scriptName: options.scriptName ?? 'main.py',
+    ...(options.limits !== undefined ? { limits: options.limits } : {}),
+    typeCheck: options.typeCheck ?? false,
+    ...(options.typeCheckStubs !== undefined ? { typeCheckStubs: options.typeCheckStubs } : {}),
+    ...(options.typeCheckFormat !== undefined ? { typeCheckFormat: options.typeCheckFormat } : {}),
+    ...(options.typeCheckColor !== undefined ? { typeCheckColor: options.typeCheckColor } : {}),
+    ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),
+    ...(options.printFlushInterval !== undefined ? { printFlushIntervalMs: options.printFlushInterval * 1000 } : {}),
+    ...nativeOsPolicy(encodeOsPolicy(options.osPolicy ?? {})),
+  }
+}
+
+/**
  * Renders one duration-backstop grace as the native option the pool takes:
  * `null` yields no key at all, and an absent grace falls back to 1s.
  */
-function graceMs(key: string, seconds: number | null | undefined): Record<string, number> {
+export function graceMs(key: string, seconds: number | null | undefined): Record<string, number> {
   return seconds === null ? {} : { [key]: (seconds ?? 1) * 1000 }
 }
 

@@ -34,7 +34,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     types::{
-        Dict, Module, NamedTupleClass, PyTrait, Type,
+        BuiltinType, Dict, Module, NamedTupleClass, PyTrait,
         iter::collect_owned_iterable,
         str::{StringRepr, str_isidentifier},
     },
@@ -46,7 +46,11 @@ use crate::{
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Collections, vm.interns);
 
-    module.set_attr(StaticStrings::Deque, Value::Builtin(Builtins::Type(Type::Deque)), vm);
+    module.set_attr(
+        StaticStrings::Deque,
+        Value::Builtin(Builtins::Type(BuiltinType::Deque)),
+        vm,
+    );
     module.set_attr(
         StaticStrings::Namedtuple,
         Value::ModuleFunction(super::ModuleFunctions::Collections(CollectionsFunctions::Namedtuple)),
@@ -56,12 +60,12 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     // functions, so `type(d) is defaultdict` and `isinstance(c, Counter)` hold.
     module.set_attr(
         StaticStrings::Defaultdict,
-        Value::Builtin(Builtins::Type(Type::DefaultDict)),
+        Value::Builtin(Builtins::Type(BuiltinType::DefaultDict)),
         vm,
     );
     module.set_attr(
         StaticStrings::Counter,
-        Value::Builtin(Builtins::Type(Type::Counter)),
+        Value::Builtin(Builtins::Type(BuiltinType::Counter)),
         vm,
     );
 
@@ -228,7 +232,12 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if rename {
         apply_rename(names, vm);
     }
-    validate_names(type_name.to_str(vm)?, names, rename, vm)?;
+    validate_names(
+        type_name.as_str(vm).expect("py_str returns a string"),
+        names,
+        rename,
+        vm,
+    )?;
 
     // Collect defaults (rightmost fields), then validate the count.
     let default_values = collect_defaults(defaults, vm)?;
@@ -256,7 +265,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `'x, y'` all yield `['x', 'y']`); any other value is iterated and each
 /// element is `str()`-converted, matching CPython's `list(map(str, ...))`.
 fn parse_field_names(field_names: &Value, vm: &mut VM<'_>) -> RunResult<Vec<EitherStr>> {
-    if let Ok(text) = field_names.to_str(vm) {
+    if let Some(text) = field_names.as_str(vm) {
         Ok(text
             .split(|c: char| c == ',' || c.is_whitespace())
             .filter(|name| !name.is_empty())

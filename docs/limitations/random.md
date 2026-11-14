@@ -36,7 +36,9 @@ An unseeded generator seeds itself on its first draw from the session's `random_
 `random.seed()` and `random.seed(None)` use that policy; `getstate()` also seeds a never-seeded generator first.
 
 The module-level generator is session state like the globals: a seed set in one `feed_run` applies to the next, and
-it is included in a dump, as is the session's `random_start`.
+it is included in a dump.
+The session's `random_start` is not restored: a restored session takes the restoring `checkout()`'s policy (see
+[snapshots](../snapshots.md#what-restoring-does-and-does-not-carry)).
 
 ## Behavioural notes
 

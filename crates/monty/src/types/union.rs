@@ -24,7 +24,7 @@ use crate::{
     },
     intern::StaticStrings,
     types::{
-        LazyHeapSet, PyTrait, Type, generic_alias::repr_type_arg, list::repr_check_time, str::PyStr,
+        BuiltinType, LazyHeapSet, PyTrait, Type, generic_alias::repr_type_arg, list::repr_should_truncate, str::PyStr,
         tuple::allocate_tuple,
     },
     value::{VALUE_SIZE, Value},
@@ -109,7 +109,9 @@ impl Union {
             defer_drop!(key, vm);
             let repr = key.py_repr(vm)?;
             defer_drop!(repr, vm);
-            Err(ExcType::optional_requires_single_type(repr.to_str(vm)?))
+            Err(ExcType::optional_requires_single_type(
+                repr.as_str(vm).expect("py_repr returns str"),
+            ))
         } else {
             Self::from_members(vec![key, Value::None], vm)
         }
@@ -122,7 +124,7 @@ impl Union {
     /// Deduplication is a linear scan per member, so a union built from a
     /// huge tuple is quadratic; the loop polls the time limit rather than
     /// running to completion.
-    fn from_members(members: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Value> {
+    pub(crate) fn from_members(members: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Value> {
         defer_drop!(members, vm);
         let mut guard = DropGuard::new(Vec::new(), vm);
         let (flat, vm) = guard.as_parts_mut();
@@ -191,7 +193,7 @@ impl Union {
 /// `None` is stored as `NoneType`, which is what `__args__` reports.
 fn push_unique(flat: &mut Vec<Value>, member: &Value, vm: &mut VM<'_>) -> RunResult<()> {
     let member = match member {
-        Value::None => Value::Builtin(Builtins::Type(Type::NoneType)),
+        Value::None => Value::Builtin(Builtins::Type(BuiltinType::NoneType)),
         other => other.clone_with_heap(vm),
     };
     defer_drop!(member, vm);
@@ -362,7 +364,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
         let count = args.get(vm.heap).as_slice().len();
         for index in 0..count {
             if index > 0 {
-                if repr_check_time(index, vm) {
+                if repr_should_truncate(index, vm)? {
                     f.write_str(" | ...[timeout]")?;
                     break;
                 }
@@ -370,7 +372,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
             }
             let member = args.clone_item(index, vm);
             defer_drop!(member, vm);
-            if matches!(member, Value::Builtin(Builtins::Type(Type::NoneType))) {
+            if matches!(member, Value::Builtin(Builtins::Type(BuiltinType::NoneType))) {
                 f.write_str("None")?;
             } else {
                 repr_type_arg(member, f, vm, heap_ids)?;
@@ -385,9 +387,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
     fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         match attr.static_string(vm) {
             Some(StaticStrings::DunderArgs) => Ok(Some(CallResult::Value(self.get(vm.heap).args(vm.heap)))),
-            Some(StaticStrings::DunderOrigin) => {
-                Ok(Some(CallResult::Value(Value::Builtin(Builtins::Type(Type::Union)))))
-            }
+            Some(StaticStrings::DunderOrigin) => Ok(Some(CallResult::Value(Value::Builtin(Builtins::Type(
+                BuiltinType::Union,
+            ))))),
             Some(StaticStrings::DunderParameters) => Ok(Some(CallResult::Value(vm.heap.get_empty_tuple()))),
             _ => Ok(None),
         }

@@ -19,22 +19,20 @@ members = [
     "crates/monty-type-checking",
     "crates/monty-typeshed",
     "crates/monty-macros",
-    "crates/fuzz"
+    "crates/fuzz",
 ]
 default-members = ["crates/monty-runtime"]
 
 [workspace.package]
 edition = "2024"
-version = "1.2.0"
-rust-version = "1.96"
+version = "1.6.0"
+rust-version = "1.98"
 license = "MIT"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]
 description = "A secure, snapshotable Python sandbox written in Rust."
 categories = ["compilers", "emulators", "development-tools"]
 keywords = ["python", "interpreter", "sandbox", "embedded"]
-homepage = "https://github.com/pydantic/monty/"
 repository = "https://github.com/pydantic/monty/"
-documentation = "https://github.com/pydantic/monty/"
 
 [profile.release]
 lto = "fat"
@@ -60,16 +58,18 @@ strip = false
 # is required so the crates can be published to crates.io (`cargo publish`
 # rejects path-only dependencies). These versions MUST be kept in lockstep with
 # `workspace.package.version` above and bumped together on each release — see
-# RELEASING.md.
-monty = { path = "crates/monty", version = "1.2.0" }
-monty-types = { path = "crates/monty-types", version = "1.2.0" }
-monty-alloc = { path = "crates/monty-alloc", version = "1.2.0" }
-monty-fs = { path = "crates/monty-fs", version = "1.2.0" }
-monty-macros = { path = "crates/monty-macros", version = "1.2.0" }
-monty-proto = { path = "crates/monty-proto", version = "1.2.0" }
-monty-pool = { path = "crates/monty-pool", version = "1.2.0" }
-monty-type-checking = { path = "crates/monty-type-checking", version = "1.2.0" }
-monty-typeshed = { path = "crates/monty-typeshed", version = "1.2.0" }
+# RELEASING.md. They are exact (`=`) because the crates' APIs change between
+# minor releases: a caret range lets a published `monty` resolve a newer,
+# incompatible `monty-types` (#981).
+monty = { path = "crates/monty", version = "=1.6.0" }
+monty-types = { path = "crates/monty-types", version = "=1.6.0" }
+monty-alloc = { path = "crates/monty-alloc", version = "=1.6.0" }
+monty-fs = { path = "crates/monty-fs", version = "=1.6.0" }
+monty-macros = { path = "crates/monty-macros", version = "=1.6.0" }
+monty-proto = { path = "crates/monty-proto", version = "=1.6.0" }
+monty-pool = { path = "crates/monty-pool", version = "=1.6.0" }
+monty-type-checking = { path = "crates/monty-type-checking", version = "=1.6.0" }
+monty-typeshed = { path = "crates/monty-typeshed", version = "=1.6.0" }
 # ruff, ty and related crates
 ruff_python_parser = "0.0.14"
 ruff_python_stdlib = "0.0.14"
@@ -81,7 +81,6 @@ ruff_db = { version = "0.0.14", features = ["serde"] }
 ty_python_semantic = "0.0.14"
 ty_python_core = "0.0.14"
 ty_module_resolver = "0.0.14"
-ty_vendored = "0.0.14"
 # salsa version matches the version ruff uses
 salsa = { version = "0.28.2", default-features = false, features = [
     "compact_str",
@@ -112,8 +111,12 @@ pyo3-build-config = { version = "0.29.2", features = ["resolve-config"] }
 # others
 chrono = { version = "0.4", features = ["serde"] }
 # The zone rules for `SandboxTimeZone::Named`; database features are enabled per binary.
-jiff = { version = "0.2", default-features = false, features = ["std", "serde"] }
-strum = { version = "0.27", features = ["derive"] }
+jiff = { version = "0.2", default-features = false, features = [
+    "std",
+    "serde",
+] }
+# `phf` backs `#[strum(use_phf)]`, used only on large `EnumString` enums (see CLAUDE.md).
+strum = { version = "0.27", features = ["derive", "phf"] }
 itoa = "1"
 ahash = { version = "0.8.0", features = ["serde"] }
 indexmap = "2"
@@ -123,24 +126,31 @@ serde_json = "1.0"
 toml = "1"
 postcard = { version = "1.1", features = ["alloc"] }
 # session dump codec: self-describing, so struct fields and enum variants evolve without a `DUMP_VERSION` bump
-minicbor-serde = { version = "0.7", default-features = false, features = ["alloc"] }
+minicbor-serde = { version = "0.7", default-features = false, features = [
+    "alloc",
+] }
 # CBOR byte strings for persisted `Vec<u8>` / `[u8; N]` fields instead of one integer per byte
 serde_bytes = "0.11"
 # exact pin: prost-build output must be byte-stable across contributors and CI
 # so `make check-proto` (regenerate + git diff) is reproducible
 prost = "=0.14.4"
-sha2 = "0.11"
+sha2 = { version = "0.11", default-features = false }
 pretty_assertions = "1.4"
 insta = "1.47"
 clap = { version = "4", features = ["derive"] }
-# WebSocket client with rustls for `wss://`, used by the pool's remote
-# transport (monty-pool). The sync `tungstenite` is dev-only (mock servers in
-# monty-pool's tests); the pool itself dials with `tokio-tungstenite`. Both
-# pins must track the same underlying tungstenite version.
-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
-tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
-# Stream/sink combinators (splitting the WebSocket into read/write halves).
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+# gRPC over HTTP/2 for the pool's remote transport. Only the version is pinned
+# here: monty-proto takes the core (codec and status types) with no features,
+# monty-pool adds the `channel` client with rustls (`aws-lc` to match the
+# `rustls` pin below), and tests add `server` for in-process mock servers.
+tonic = { version = "0.14.9", default-features = false }
+# `Bytes` payloads for the opaque gRPC codec and the pool's event channel.
+bytes = "1"
+# `ReceiverStream` turns the pool's request channel into a gRPC request body.
+tokio-stream = { version = "0.1", default-features = false }
+# `PathAndQuery` for the session RPC path.
+http = "1"
+# Stream combinators for the pool's gRPC event reader and the Python driver.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # Unique, exclusively-created temp dirs (pool tests).
 tempfile = "3"
 # Capability-based filesystem access for monty-fs: every mount operation runs
@@ -152,11 +162,23 @@ cap-std = "4.0"
 rustix = { version = "1.1", features = ["fs"] }
 # `mkfifo` for the tests behind that guard — rustix gates its own out on Apple.
 nix = { version = "0.31", features = ["fs"] }
+cpu-time = "1.0"
 # Pulled in only to install a process-level rustls `CryptoProvider` before the
-# first `wss://` dial: rustls 0.23 panics on first TLS use when it can't pick a
+# first `https://` dial: rustls 0.23 panics on first TLS use when it can't pick a
 # provider automatically (both `aws-lc-rs` and `ring`, or neither, in the dep
 # tree), so naming `aws_lc_rs` explicitly removes the ambiguity.
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
+# Server certificates are checked against the operating system's trust store
+# rather than a root list bundled at build time, so a root the OS has distrusted
+# is refused without a monty release. macOS (Security framework) and Windows
+# (CryptoAPI) also apply the OS's revocation data; Linux checks the chain against
+# the distro CA bundle through webpki, with no revocation checking.
+rustls-platform-verifier = "0.7"
+# Self-signed certificates for the pool's TLS test server.
+rcgen = { version = "0.14", default-features = false, features = [
+    "aws_lc_rs",
+    "pem",
+] }
 # Async runtime. Only the version is pinned here — tokio has no default
 # features and each consumer needs a very different slice of it.
 tokio = { version = "1" }
@@ -164,12 +186,42 @@ tokio = { version = "1" }
 logfire = { version = "0.12", default-features = false }
 # Canonical OTLP batches cross the Python and Node extension boundaries after
 # Rust's metrics SDK has aggregated them.
-opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "metrics"] }
+opentelemetry-proto = { version = "0.32", default-features = false, features = [
+    "gen-tonic-messages",
+    "metrics",
+] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(codspeed)', 'cfg(heap_reader_compile_fail_tests)', 'cfg(heap_reader_compile_fail_test_dec_ref_while_reading)', 'cfg(heap_reader_compile_fail_test_smuggle_heap_read)', 'cfg(heap_reader_compile_fail_test_double_get_mut)', 'cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)', 'cfg(heap_reader_compile_fail_test_mutation_in_map_closure)', 'cfg(heap_reader_compile_fail_test_smuggle_vm)', 'cfg(heap_reader_compile_fail_test_smuggle_and_swap_reader)', 'cfg(heap_reader_compile_fail_test_protected_get_escape)', 'cfg(heap_reader_compile_fail_test_protected_mut_get_escape)', 'cfg(heap_reader_compile_fail_test_protected_get_mut_escape)', 'cfg(heap_reader_compile_fail_test_protected_get_alias)', 'cfg(heap_reader_compile_fail_test_protected_mut_get_alias)', 'cfg(heap_reader_compile_fail_test_protected_get_mut_alias)', 'cfg(heap_reader_compile_fail_test_projected_get_escape)', 'cfg(heap_reader_compile_fail_test_slice_get_escape)', 'cfg(heap_reader_compile_fail_test_box_get_escape)', 'cfg(heap_reader_compile_fail_test_mutable_inner_swap)', 'cfg(heap_reader_compile_fail_test_shared_inner_swap)', 'cfg(heap_reader_compile_fail_test_counted_inner_swap)', 'cfg(heap_reader_compile_fail_test_readonly_mutation)', 'cfg(heap_reader_compile_fail_test_readonly_mutable_projection)', 'cfg(heap_reader_compile_fail_test_aliased_payload_borrows)', 'cfg(heap_reader_compile_fail_test_projected_get_mut_escape)', 'cfg(heap_reader_compile_fail_test_projection_live_borrow)'] }
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(codspeed)',
+    'cfg(heap_reader_compile_fail_tests)',
+    'cfg(heap_reader_compile_fail_test_dec_ref_while_reading)',
+    'cfg(heap_reader_compile_fail_test_smuggle_heap_read)',
+    'cfg(heap_reader_compile_fail_test_double_get_mut)',
+    'cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)',
+    'cfg(heap_reader_compile_fail_test_mutation_in_map_closure)',
+    'cfg(heap_reader_compile_fail_test_smuggle_vm)',
+    'cfg(heap_reader_compile_fail_test_smuggle_and_swap_reader)',
+    'cfg(heap_reader_compile_fail_test_protected_get_escape)',
+    'cfg(heap_reader_compile_fail_test_protected_mut_get_escape)',
+    'cfg(heap_reader_compile_fail_test_protected_get_mut_escape)',
+    'cfg(heap_reader_compile_fail_test_protected_get_alias)',
+    'cfg(heap_reader_compile_fail_test_protected_mut_get_alias)',
+    'cfg(heap_reader_compile_fail_test_protected_get_mut_alias)',
+    'cfg(heap_reader_compile_fail_test_projected_get_escape)',
+    'cfg(heap_reader_compile_fail_test_slice_get_escape)',
+    'cfg(heap_reader_compile_fail_test_box_get_escape)',
+    'cfg(heap_reader_compile_fail_test_mutable_inner_swap)',
+    'cfg(heap_reader_compile_fail_test_shared_inner_swap)',
+    'cfg(heap_reader_compile_fail_test_counted_inner_swap)',
+    'cfg(heap_reader_compile_fail_test_readonly_mutation)',
+    'cfg(heap_reader_compile_fail_test_readonly_mutable_projection)',
+    'cfg(heap_reader_compile_fail_test_aliased_payload_borrows)',
+    'cfg(heap_reader_compile_fail_test_projected_get_mut_escape)',
+    'cfg(heap_reader_compile_fail_test_projection_live_borrow)',
+] }
 
 [workspace.lints.rustdoc]
 invalid_codeblock_attributes = "allow"

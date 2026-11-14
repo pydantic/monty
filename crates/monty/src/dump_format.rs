@@ -7,6 +7,11 @@
 //! and [`Dump::load`]; whether the session was idle or suspended is the
 //! [`Session`] discriminant, not a separate tag.
 //!
+//! Inline builtin types serialize through `Type`, preserving the names and payloads
+//! written before `BuiltinType` was split out. Its own enum order is not the wire
+//! order: postcard encoding for builtin `id()` retains `Type::Instance`'s slot.
+//! See `builtin_type_tests` in `types/builtin_type.rs` and the legacy serialization fixture.
+//!
 //! # Naming contract
 //!
 //! The payload is self-describing: structs are maps keyed by field name and
@@ -29,6 +34,9 @@ use monty_types::{ModuleStub, TypeCheckState};
 use serde::{Deserialize, Serialize, de::Error as _};
 
 use crate::{
+    dump_upgrade,
+    heap::Heap,
+    intern::Interns,
     repl::{MontyRepl, ReplProgress},
     run_progress::RunProgress,
 };
@@ -48,14 +56,16 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// Frozen code is persisted too: incompatible changes to its Rust entry arguments or
 /// private native helper contracts need compatibility handling or a bump. Compatible
 /// source-body changes do not require one; restored sessions retain their captured code.
-/// Older dumps are then rejected instead of misexecuting.
+/// Older builds then reject the new dumps instead of misexecuting them, and this
+/// build rejects dumps below [`MIN_SUPPORTED_DUMP_VERSION`].
 ///
 /// Before bumping, check there's already been a bump since the last release - multiple bumps
 /// between releases is unnecessary and can lead to confusion.
-pub const DUMP_VERSION: u16 = 14;
+pub const DUMP_VERSION: u16 = 16;
 
-/// Set to [`DUMP_VERSION`], the current dump version, until this crate can load older dumps.
-pub const MIN_SUPPORTED_DUMP_VERSION: u16 = DUMP_VERSION;
+/// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
+/// over an older dump, rebuilding what the newer versions changed.
+pub const MIN_SUPPORTED_DUMP_VERSION: u16 = 13;
 
 // The supported range must be non-empty, and must exclude zero
 const _: () = assert!(MIN_SUPPORTED_DUMP_VERSION >= 1);
@@ -112,7 +122,7 @@ pub fn dump(
 ///
 /// The metadata travels with the state because a restored session is otherwise
 /// silently downgraded — losing `script_name` corrupts tracebacks, and losing
-/// `type_check` disables enforcement the parent asked for.
+/// `type_check` disables enforcement the client asked for.
 #[derive(Debug, Deserialize)]
 pub struct Dump {
     /// Script name used for tracebacks and type-check diagnostics.
@@ -138,8 +148,8 @@ impl Dump {
     /// Successful decoding does not authenticate or fully validate a snapshot.
     /// The same contract applies to direct serde deserialization.
     ///
-    /// Accepts [`MIN_SUPPORTED_DUMP_VERSION`]`..=`[`DUMP_VERSION`], which is one
-    /// version wide until a compatibility mechanism lowers the floor.
+    /// Accepts [`MIN_SUPPORTED_DUMP_VERSION`]`..=`[`DUMP_VERSION`], upgrading a
+    /// dump older than [`DUMP_VERSION`] before returning it.
     ///
     /// # Errors
     /// Returns [`DumpError`] for a dump this build cannot read. The version
@@ -165,10 +175,16 @@ impl Dump {
         } else {
             let payload = &bytes[HEADER_LEN..];
             let mut deserializer = Deserializer::new(payload);
-            let value = Self::deserialize(&mut deserializer).map_err(|err| DumpError::Payload(DumpDecodeError(err)))?;
+            let mut value =
+                Self::deserialize(&mut deserializer).map_err(|err| DumpError::Payload(DumpDecodeError(err)))?;
             // trailing bytes are rejected rather than ignored, so a padded dump
             // cannot decode as the shorter valid one it starts with
             if deserializer.into_decoder().position() == payload.len() {
+                if version < DUMP_VERSION
+                    && let Some((heap, interns)) = value.state.heap_and_interns()
+                {
+                    dump_upgrade::upgrade(version, heap, interns);
+                }
                 Ok(value)
             } else {
                 Err(DumpError::Payload(DumpDecodeError::custom(
@@ -193,6 +209,17 @@ pub enum Session {
     /// A one-shot [`crate::MontyRun`] execution paused at a suspension. Not a
     /// repl, so it cannot be fed further — only resumed to completion.
     Running(Box<RunProgress>),
+}
+
+impl Session {
+    /// The session heap and its interns, or `None` for a one-shot run that has completed.
+    fn heap_and_interns(&mut self) -> Option<(&mut Heap, &mut Interns)> {
+        match self {
+            Self::Idle(repl) => Some(repl.heap_and_interns()),
+            Self::Suspended(progress) => Some(progress.heap_and_interns()),
+            Self::Running(progress) => progress.heap_and_interns(),
+        }
+    }
 }
 
 /// Borrowed counterpart of [`Session`] used when dumping, so a live session can
@@ -345,7 +372,7 @@ mod tests {
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0xa78a_9e6c_3fab_abed,
+            0x47f4_8e5e_55da_518f,
             "opcodes changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(opcode_fingerprint())
         );
@@ -371,14 +398,14 @@ mod tests {
         );
         assert_eq!(
             variant_name_fingerprint(&type_names),
-            0x482e_2879_5906_a694,
+            0x4db8_c44f_dbcb_fb2a,
             "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&type_names))
         );
         let monty_type_names = serde_variant_names(MontyType::VARIANTS, &[MontyType::Exception(ExcType::ValueError)]);
         assert_eq!(
             variant_name_fingerprint(&monty_type_names),
-            0x83d0_7660_e7c8_86bd,
+            0xa95a_cc16_8f6c_5e31,
             "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&monty_type_names))
         );

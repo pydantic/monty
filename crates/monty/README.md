@@ -95,7 +95,7 @@ assert_eq!(result, MontyObject::int(42));
 
 Serialize a REPL session with `dump()` and restore it with `Dump::load()` to continue in another process or machine.
 The dump includes the interpreter state and the supplied script name, type-check state and module stubs.
-Loading checks the dump version:
+Current builds write dump format 16 and load formats 13–16, upgrading older state as needed:
 
 ```rust
 use monty::{Dump, MontyRepl, Session, SessionRef, dump};
@@ -122,11 +122,20 @@ Successful decoding is not evidence of authenticity or validity.
 
 Async host functions are supported too: `FunctionCall::resume_pending` continues execution with a pending future the sandboxed code can `await`; when all tasks are blocked, execution yields `RunProgress::ResolveFutures` for the host to supply results. When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the result can pass it to `FunctionCall::resume_eager` and skip the `ResolveFutures` round trip. `OsCall::allow_eager_await` says the same of an `asyncio.sleep` the host has already waited out.
 
-Imports of unknown modules suspend with `OsFunctionCall::Import` and the top-level module name.
-The host's answer becomes the module; dotted imports read subsequent components as attributes of that value.
+Imports of unknown modules suspend with `OsFunctionCall::Import`, whose `ImportArgs` carry the dotted module name and
+its search path: the working directory for a top-level name, or a file package's `__path__` for its submodules.
+A returned value becomes the module; dotted imports read subsequent components as attributes of that value.
 Hosts usually return a host-backed class instance containing the module's attributes.
-`ExtFunctionResult::NotFound`, or running without a host, raises `ModuleNotFoundError`.
+A host with no such module can answer `ExtFunctionResult::ModuleFile` with the module's `.py` file instead:
+`ImportArgs::candidates` lists `<dir>/name/__init__.py`, then `<dir>/name.py`, for each search directory,
+`find_module_file` reads them in turn with a function the host supplies (a missing file moves on, any other read error
+is the answer), and `MountTable::read_module` reads one through the mounts.
+The sandbox runs the file as the module and caches it for the session.
+`ExtFunctionResult::NotFound` (what `OsFunctionCall::no_handler_result` answers), or running without a host, raises
+`ModuleNotFoundError`; an exception the host raises for the import is raised as it is.
 The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the interpreter never raises it.
+`typing.get_type_hints()` of a host function or class suspends with `OsFunctionCall::GetTypeHints`; the host's dict
+answer is the call's result, and running without a host gives `{}`.
 
 ## Other pieces
 
@@ -149,6 +158,8 @@ The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the
   Defaults use the system clock, UTC and OS entropy, with sleeps capped at ten seconds.
   System sleeps suspend for the host to wait without its `os` handler; standard execution waits inline.
   `CallHost` delegates to the host through `RunProgress::OsCall`.
+  A loaded dump keeps the policy it was taken under until the host calls `MontyRepl::set_os_policy` or
+  `ReplProgress::set_os_policy`; the worker applies the restoring checkout's policy this way.
 
 ## Monty crates
 
@@ -157,7 +168,7 @@ The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the
 - [`monty-fs`](https://crates.io/crates/monty-fs) — host-side filesystem mounts: maps virtual sandbox paths to real host directories.
 - [`monty-runtime`](https://crates.io/crates/monty-runtime) — the `monty` binary: REPL, file runner, and subprocess worker mode.
 - [`monty-pool`](https://crates.io/crates/monty-pool) — an elastic pool of crash-isolated `monty` worker subprocesses.
-- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between pool parents and workers.
+- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between clients and workers.
 - [`monty-type-checking`](https://crates.io/crates/monty-type-checking) — type checking of sandboxed code, powered by [ty](https://docs.astral.sh/ty/).
 - [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
 - [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing.

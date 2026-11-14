@@ -36,7 +36,7 @@ use crate::{
     modules::ModuleFunctions,
     os_dispatch::{PostConversionEffect, urandom_reply_error},
     types::{
-        List, LongInt, Module, PyTrait, Type,
+        BuiltinType, List, LongInt, Module, PyTrait, Type,
         bytes::allocate_bytes,
         iter::collect_owned_iterable,
         long_int::bigint_to_f64_checked,
@@ -122,7 +122,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     }
     module.set_attr(
         StaticStrings::RandomClass,
-        Value::Builtin(Builtins::Type(Type::Random)),
+        Value::Builtin(Builtins::Type(BuiltinType::Random)),
         vm,
     );
     vm.heap.allocate(HeapData::Module(Box::new(module)))
@@ -376,7 +376,7 @@ fn setstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
         other => {
             let text = other.py_str(vm)?;
             defer_drop!(text, vm);
-            let text = text.to_str_heap(vm.heap, vm.interns)?;
+            let text = text.as_str_heap(vm.heap, vm.interns).expect("py_str returns str");
             return Err(ExcType::value_error(format!(
                 "state with version {text} passed to Random.setstate() of version 3"
             )));
@@ -971,7 +971,7 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
             defer_drop!(k, vm);
             return Err(ExcType::type_error(format!(
                 "The number of choices must be a keyword argument: k={}",
-                k.to_str_heap(vm.heap, vm.interns)?
+                k.as_str_heap(vm.heap, vm.interns).expect("py_str returns str")
             )));
         } else {
             Some(cumulative_weights(weights, vm)?)

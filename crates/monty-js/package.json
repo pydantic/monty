@@ -1,6 +1,6 @@
 {
   "name": "@pydantic/monty",
-  "version": "1.2.0",
+  "version": "1.6.0",
   "type": "module",
   "description": "Python sandbox running in crash-isolated subprocess workers",
   "main": "dist/index.js",
@@ -82,6 +82,7 @@
     "@napi-rs/wasm-runtime": "^1.1.5",
     "@opentelemetry/context-async-hooks": "^2.11.0",
     "@opentelemetry/instrumentation": "^0.222.0",
+    "@grpc/grpc-js": "^1.14.7",
     "@opentelemetry/sdk-logs": "^0.222.0",
     "@opentelemetry/sdk-metrics": "^2.11.0",
     "@opentelemetry/sdk-node": "^0.222.0",

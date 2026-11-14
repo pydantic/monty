@@ -1,9 +1,10 @@
 import { test } from 'vitest'
 import { assertMemoryError, t } from './assertions.js'
-import { isWasm } from './env.js'
+import { isWasm, supportsCpuClock } from './env.js'
 
 import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
 import { WorkerTransport } from '../ts/worker/transport.js'
+import { createWorkerPoolFromFactory } from '../ts/worker/poolOptions.js'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -72,14 +73,14 @@ len(result)
 `
   const maxMemory = 64 * 1024
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory } }), isRuntimeError)
-  assertMemoryError(error, isWasm ? 83_812 : 67_550, maxMemory)
+  assertMemoryError(error, isWasm ? 83_812 : 65_823, maxMemory)
 })
 
 test('an allocation refused at an interpreter checkpoint leaves the session usable', async () => {
   const maxMemory = 1024 * 1024
   await using session = await pool().checkout({ limits: { maxMemory } })
   const error = await t.throwsAsync(() => session.feedRun('[str(i) for i in range(131_072)]'), isRuntimeError)
-  assertMemoryError(error, isWasm ? 1_068_412 : 1_162_198, maxMemory)
+  assertMemoryError(error, isWasm ? 1_081_440 : 1_092_675, maxMemory)
   t.is(await session.feedRun('1 + 1'), 2)
 })
 
@@ -101,12 +102,12 @@ test('limits with inputs', async () => {
 
 test('pow memory limit', async () => {
   const error = await t.throwsAsync(() => run('2 ** 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, isWasm ? 10_032_301 : 10_042_127, 1_000_000)
+  assertMemoryError(error, isWasm ? 10_032_301 : 10_043_864, 1_000_000)
 })
 
 test('lshift memory limit', async () => {
   const error = await t.throwsAsync(() => run('1 << 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, isWasm ? 1_282_302 : 1_292_128, 1_000_000)
+  assertMemoryError(error, isWasm ? 1_282_302 : 1_293_865, 1_000_000)
 })
 
 test('mult memory limit', async () => {
@@ -115,7 +116,7 @@ big = 2 ** 4000000
 result = big * big
 `
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, isWasm ? 4_032_933 : 4_042_767, 1_000_000)
+  assertMemoryError(error, isWasm ? 4_032_933 : 4_044_228, 1_000_000)
 })
 
 test('small operations within limit', async () => {
@@ -331,4 +332,91 @@ test('restored session keeps its suspension limit with a fresh count', async () 
   t.is(await restored.feedRun("fetch('y')", { externalLookup: { fetch } }), 'ok')
   const error = await t.throwsAsync(() => restored.feedRun("fetch('z')", { externalLookup: { fetch } }), isRuntimeError)
   t.is(error.display('msg'), 'suspension limit 1 exceeded')
+})
+
+test('execution clock is fixed by the pool', async () => {
+  const { Monty } = await import('@pydantic/monty')
+  await using wall = await Monty.create({ executionClock: 'wall' })
+  await using session = await wall.checkout()
+  t.is(await session.feedRun('1 + 1'), 2)
+  if (isWasm) {
+    await t.throwsAsync(() => Monty.create({ executionClock: 'cpu' }), {
+      message: 'WebAssembly workers require executionClock: wall',
+    })
+  } else if (!supportsCpuClock) {
+    const error = await t.throwsAsync(() => Monty.create({ requestTimeout: 2, executionClock: 'cpu' }))
+    t.true(String(error).includes('CPU execution clock is only supported for subprocess workers on Linux'))
+  } else {
+    await using bounded = await Monty.create({ requestTimeout: 2, executionClock: 'cpu' })
+    for (const budget of [0.05, 0.1]) {
+      await using session = await bounded.checkout({ limits: { maxFeedDurationSecs: budget } })
+      t.is(await session.feedRun('sum(range(1000))'), 499_500)
+      const error = await t.throwsAsync(() => session.feedRun('while True:\n    pass'), isRuntimeError)
+      t.is(error.exception.typeName, 'TimeoutError')
+      t.regex(error.display('msg'), new RegExp(`^feed time limit exceeded: \\d+(\\.\\d+)?ms > ${budget * 1000}ms$`))
+      t.is(await session.feedRun('1 + 1'), 2)
+    }
+  }
+})
+
+test('WASM pool refuses CPU configuration before spawning workers', () => {
+  let spawned = false
+  t.throws(
+    () =>
+      createWorkerPoolFromFactory(
+        () => {
+          spawned = true
+          throw new Error('must not spawn')
+        },
+        { executionClock: 'cpu' },
+        1,
+      ),
+    {
+      message: 'WebAssembly workers require executionClock: wall',
+    },
+  )
+  t.false(spawned)
+})
+
+test('WASM pool validates unknown execution clocks before spawning workers', () => {
+  let spawned = false
+  t.throws(
+    () =>
+      createWorkerPoolFromFactory(
+        () => {
+          spawned = true
+          throw new Error('must not spawn')
+        },
+        // @ts-expect-error Verify the runtime boundary for untyped callers.
+        { executionClock: 'processor' },
+        1,
+      ),
+    { message: "executionClock must be 'wall' or 'cpu'" },
+  )
+  t.false(spawned)
+})
+
+test.skipIf(isWasm)('native pool validates its clock and CPU wall deadline', async () => {
+  const { Monty, MontyConfigurationError } = await import('@pydantic/monty')
+  const invalid = await t.throwsAsync(() =>
+    Monty.create({
+      // @ts-expect-error Verify the runtime boundary for untyped callers.
+      executionClock: 'processor',
+    }),
+  )
+  t.true(String(invalid).includes("executionClock must be 'wall' or 'cpu'"))
+  const unbounded = await t.throwsAsync(() => Monty.create({ executionClock: 'cpu' }), {
+    instanceOf: MontyConfigurationError,
+  })
+  t.true(
+    String(unbounded).includes(
+      supportsCpuClock
+        ? 'finite request_timeout'
+        : 'CPU execution clock is only supported for subprocess workers on Linux',
+    ),
+  )
+  // a non-finite timeout is an invalid argument, not an incompatible setting
+  const infinite = await t.throwsAsync(() => Monty.create({ executionClock: 'cpu', requestTimeout: Infinity }))
+  t.false(infinite instanceof MontyConfigurationError)
+  t.true(String(infinite).includes('invalid requestTimeout'))
 })

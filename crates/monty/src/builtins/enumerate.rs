@@ -149,7 +149,7 @@ fn take_kwarg(kv: (Value, Value), expected: &str, vm: &mut VM<'_>) -> RunResult<
 /// `check_keyword`: a non-string key raises `keywords must be strings`, any
 /// other name the `invalid keyword argument` wording.
 fn key_check(key: &Value, expected: &str, vm: &VM<'_>) -> RunResult<()> {
-    let Ok(key) = key.to_str(vm) else {
+    let Some(key) = key.as_str(vm) else {
         return Err(ExcType::type_error_kwargs_nonstring_key());
     };
     if key == expected {

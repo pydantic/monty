@@ -25,6 +25,7 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
+    py_value::PyValue,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
         date::{self, StrftimeArgs},
@@ -318,6 +319,179 @@ pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
     .ok_or_else(date_out_of_range)?;
     attach_or_allocate_tzinfo_ref(&mut dt, tz_ref, vm.heap);
     Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt)))))
+}
+
+/// `datetime.fromtimestamp(timestamp, tz=None)`: the instant `timestamp` seconds
+/// after the Unix epoch, as wall-clock time in `tz`, or in the session zone when
+/// `tz` is `None` (CPython reads the host's zone there).
+pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let FromtimestampArgs { timestamp, tz } = FromtimestampArgs::from_args(args, vm)?;
+    defer_drop!(timestamp, vm);
+    defer_drop!(tz, vm);
+    let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
+    let utc = timestamp_to_utc(timestamp, TimestampRounding::HalfEven, vm)?
+        .ok_or_else(|| timestamp_not_a_number(timestamp, vm))?;
+    let mut dt = if let Some(tz) = tz {
+        // CPython builds the UTC value first, so its year error comes first, and a
+        // shifted result that leaves the range is `fromutc()`'s overflow.
+        if !year_in_python_range(utc.year()) {
+            return Err(date::year_out_of_range(utc.year()));
+        }
+        DateTime {
+            naive: wall_clock_at(utc, tz.offset_seconds).map_err(|_| date_out_of_range())?,
+            offset_seconds: Some(tz.offset_seconds),
+            timezone_name: tz.name,
+            tzinfo_ref: None,
+        }
+    } else {
+        let offset = vm.env.os_policy.timezone.at(utc).offset_seconds;
+        let naive = wall_clock_at(utc, offset)?;
+        // CPython detects a DST fold by then converting the instant a day earlier,
+        // so the first representable day raises its year error; reproduce that.
+        let probe = utc
+            .checked_sub_signed(ChronoTimeDelta::days(1))
+            .ok_or_else(|| date::year_out_of_range(utc.year()))?;
+        wall_clock_at(probe, offset)?;
+        DateTime {
+            naive,
+            offset_seconds: None,
+            timezone_name: None,
+            tzinfo_ref: None,
+        }
+    };
+    attach_or_allocate_tzinfo_ref(&mut dt, tz_ref, vm.heap);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))))
+}
+
+/// Argument shape for `datetime.fromtimestamp(timestamp, tz=None)`, a
+/// `PyArg_ParseTupleAndKeywords` parser: `at_most_total` gives CPython's
+/// `fromtimestamp() takes at most 2 arguments (3 given)` for a duplicated `tz`.
+#[derive(FromArgs)]
+#[from_args(name = "fromtimestamp", style = c_named, at_most_total)]
+struct FromtimestampArgs {
+    timestamp: Value,
+    #[from_args(default = Value::None)]
+    tz: Value,
+}
+
+/// How a float `fromtimestamp()` argument is cut to the result's precision:
+/// `datetime` rounds half-even to microseconds, `date` floors to whole seconds.
+#[derive(Clone, Copy)]
+pub(crate) enum TimestampRounding {
+    HalfEven,
+    Floor,
+}
+
+/// The UTC instant a `fromtimestamp()` argument denotes. Integers, floats and
+/// anything with `__index__` are accepted, as CPython's `PyLong_AsLongLong` path
+/// accepts them; `None` for anything else, so the caller can word the type error.
+pub(crate) fn timestamp_to_utc(
+    value: &Value,
+    rounding: TimestampRounding,
+    vm: &mut VM<'_>,
+) -> RunResult<Option<NaiveDateTime>> {
+    let Some((seconds, microseconds)) = timestamp_parts(value, rounding, vm)? else {
+        return Ok(None);
+    };
+    chrono::DateTime::from_timestamp(seconds, microseconds * 1_000)
+        .map(|instant| Some(instant.naive_utc()))
+        .ok_or_else(|| beyond_chrono_range(seconds))
+}
+
+/// The error for a timestamp past chrono's ±262143 years. CPython's `localtime()` still
+/// holds the year while `year - 1900` fits a C `int`, so it raises the year error;
+/// past that it raises `OSError`, which Monty words as the `time_t` overflow.
+/// The zone offset is ignored: it can only move the year within hours of a new year.
+#[cold]
+fn beyond_chrono_range(seconds: i64) -> RunError {
+    let year = civil_year(seconds);
+    if i32::try_from(year - 1900).is_ok() {
+        date::year_out_of_range(year)
+    } else {
+        ExcType::timestamp_out_of_range()
+    }
+}
+
+/// The proleptic Gregorian year of the instant `seconds` after the Unix epoch, for any
+/// `i64` (Howard Hinnant's `civil_from_days`), where chrono stops at ±262143 years.
+fn civil_year(seconds: i64) -> i64 {
+    let shifted = seconds.div_euclid(86_400) + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    // Years run March to February here, so January and February belong to the next one.
+    let march_based_month = (5 * day_of_year + 2) / 153;
+    year_of_era + era * 400 + i64::from(march_based_month >= 10)
+}
+
+/// Whole seconds and microseconds of a timestamp argument, as CPython's
+/// `_PyTime_ObjectToTimeval` / `_PyTime_ObjectToTime_t` read it; shared with the
+/// `time` module. `None` when it is not a number and has no `__index__`.
+pub(crate) fn timestamp_parts(
+    value: &Value,
+    rounding: TimestampRounding,
+    vm: &mut VM<'_>,
+) -> RunResult<Option<(i64, u32)>> {
+    match value.py_value(vm) {
+        PyValue::Bool(b) => Ok(Some((i64::from(b), 0))),
+        PyValue::Int(integer) => Ok(Some((
+            integer.to_i64(vm).ok_or_else(ExcType::timestamp_out_of_range)?,
+            0,
+        ))),
+        PyValue::Float(f) => split_float_timestamp(f, rounding).map(Some),
+        _ => match value.py_index_impl(vm)? {
+            Some(index) => {
+                defer_drop!(index, vm);
+                timestamp_parts(index, rounding, vm)
+            }
+            None => Ok(None),
+        },
+    }
+}
+
+/// Splits a float timestamp into whole seconds and microseconds in `0..1_000_000`,
+/// following CPython's `_PyTime_DoubleToDenominator` (half-even) or its
+/// `_PyTime_ROUND_FLOOR` conversion to whole seconds.
+// Both casts are range-checked: `whole` fits `i64` and `fraction` is a rounded value in `0..1_000_000`.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn split_float_timestamp(value: f64, rounding: TimestampRounding) -> RunResult<(i64, u32)> {
+    if value.is_nan() {
+        return Err(ExcType::invalid_nan());
+    }
+    let (mut whole, mut fraction) = match rounding {
+        TimestampRounding::HalfEven => {
+            let whole = value.trunc();
+            (whole, ((value - whole) * 1_000_000.0).round_ties_even())
+        }
+        TimestampRounding::Floor => (value.floor(), 0.0),
+    };
+    if fraction >= 1_000_000.0 {
+        fraction -= 1_000_000.0;
+        whole += 1.0;
+    } else if fraction < 0.0 {
+        fraction += 1_000_000.0;
+        whole -= 1.0;
+    }
+    // `time_t` is 64 bits on every supported platform; the comparison also rejects infinities.
+    if !(-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&whole) {
+        return Err(ExcType::timestamp_out_of_range());
+    }
+    Ok((whole as i64, fraction as u32))
+}
+
+/// The wall clock at `offset_seconds` from the UTC instant `utc`, raising CPython's
+/// `year must be in 1..9999` when the result leaves `datetime`'s range.
+pub(crate) fn wall_clock_at(utc: NaiveDateTime, offset_seconds: i32) -> RunResult<NaiveDateTime> {
+    local_wall_clock(utc, offset_seconds).ok_or_else(|| {
+        // Computed from seconds, since the shifted instant may be past chrono's range.
+        date::year_out_of_range(civil_year(utc.and_utc().timestamp() + i64::from(offset_seconds)))
+    })
+}
+
+#[cold]
+fn timestamp_not_a_number(value: &Value, vm: &VM<'_>) -> RunError {
+    ExcType::type_error(format!("argument must be int or float, not {}", value.py_type_name(vm)))
 }
 
 /// `datetime.astimezone(tz=None)`: the same instant in `tz`, or in the sandbox
@@ -882,40 +1056,30 @@ fn chrono_strptime_formats(fmt: &str) -> Vec<String> {
     vec![chrono_fmt]
 }
 
-/// `datetime + timedelta`
-pub(crate) fn py_add(datetime: &DateTime, delta: &TimeDelta, heap: &mut Heap) -> Option<Value> {
-    let chrono_delta = timedelta::chrono_delta(delta);
-
-    let next = if let Some(offset) = datetime.offset_seconds {
-        let utc = to_utc_naive(datetime)?;
-        let next_utc = utc.checked_add_signed(chrono_delta)?;
-        from_utc_naive_with_timezone_parts(next_utc, offset, datetime.timezone_name.clone())
-    } else {
-        let next_local = datetime.naive.checked_add_signed(chrono_delta)?;
-        from_local_naive(next_local)
-    };
-
-    let mut next = next?;
-    attach_or_allocate_tzinfo_ref(&mut next, datetime.tzinfo_ref, heap);
-    Some(Value::Ref(heap.allocate(HeapData::DateTime(next))))
+/// `datetime + timedelta`, raising CPython's `OverflowError` outside years 1 to 9999.
+pub(crate) fn py_add(datetime: &DateTime, delta: &TimeDelta, heap: &mut Heap) -> RunResult<Value> {
+    offset_datetime(datetime, timedelta::chrono_delta(delta), heap)
 }
 
-/// `datetime - timedelta`
-pub(crate) fn py_sub_timedelta(datetime: &DateTime, delta: &TimeDelta, heap: &mut Heap) -> Option<Value> {
-    let chrono_delta = timedelta::chrono_delta(delta);
+/// `datetime - timedelta`, raising CPython's `OverflowError` outside years 1 to 9999.
+pub(crate) fn py_sub_timedelta(datetime: &DateTime, delta: &TimeDelta, heap: &mut Heap) -> RunResult<Value> {
+    // Negate the Chrono duration, not the Python `timedelta`, which would overflow for `timedelta.max`
+    offset_datetime(datetime, -timedelta::chrono_delta(delta), heap)
+}
 
+/// The datetime `delta` after `datetime`, or CPython's `OverflowError` outside years 1 to 9999.
+fn offset_datetime(datetime: &DateTime, delta: ChronoTimeDelta, heap: &mut Heap) -> RunResult<Value> {
     let next = if let Some(offset) = datetime.offset_seconds {
-        let utc = to_utc_naive(datetime)?;
-        let next_utc = utc.checked_sub_signed(chrono_delta)?;
-        from_utc_naive_with_timezone_parts(next_utc, offset, datetime.timezone_name.clone())
+        to_utc_naive(datetime)
+            .and_then(|utc| utc.checked_add_signed(delta))
+            .and_then(|next_utc| from_utc_naive_with_timezone_parts(next_utc, offset, datetime.timezone_name.clone()))
     } else {
-        let next_local = datetime.naive.checked_sub_signed(chrono_delta)?;
-        from_local_naive(next_local)
+        datetime.naive.checked_add_signed(delta).and_then(from_local_naive)
     };
 
-    let mut next = next?;
+    let mut next = next.ok_or_else(date::date_value_out_of_range)?;
     attach_or_allocate_tzinfo_ref(&mut next, datetime.tzinfo_ref, heap);
-    Some(Value::Ref(heap.allocate(HeapData::DateTime(next))))
+    Ok(Value::Ref(heap.allocate(HeapData::DateTime(next))))
 }
 
 /// `datetime - datetime` returns a timedelta with the difference.
@@ -1130,9 +1294,9 @@ struct IsoformatArgs {
 /// with the argument's length rather than its type.
 fn isoformat_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<char> {
     let Some(sep) = sep else { return Ok('T') };
-    // `to_str_heap`'s own message is the generic `expected string, not X`, so
+    // `try_to_str_heap`'s own message is the generic `expected string, not X`, so
     // only its success is used and the rejection is reworded here.
-    match sep.to_str_heap(vm.heap, vm.interns).ok() {
+    match sep.try_to_str_heap(vm.heap, vm.interns).ok() {
         Some(s) if s.chars().count() == 1 => Ok(s.chars().next().expect("just counted one char")),
         Some(s) => Err(ExcType::type_error_bad_arg_pos(
             "isoformat",
@@ -1299,7 +1463,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         };
         let value = self.get(vm.heap).clone();
         let other = *other.get(vm.heap);
-        Ok(py_add(&value, &other, vm.heap))
+        py_add(&value, &other, vm.heap).map(Some)
     }
 
     fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -1312,7 +1476,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
             Some(HeapReadOutput::TimeDelta(other)) => {
                 let value = self.get(vm.heap).clone();
                 let other = *other.get(vm.heap);
-                Ok(py_sub_timedelta(&value, &other, vm.heap))
+                py_sub_timedelta(&value, &other, vm.heap).map(Some)
             }
             _ => Ok(None),
         }
@@ -1389,6 +1553,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
                 Ok(CallResult::Value(Value::Float(ts)))
             }
             Some(StaticStrings::Astimezone) => astimezone(&dt, vm, args),
+            // A classmethod, so CPython also reaches it through an instance.
+            Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
             Some(StaticStrings::Utcoffset) => {
                 args.check_zero_args("datetime.utcoffset", vm.heap)?;
                 Ok(CallResult::Value(timezone::utcoffset_value(dt.offset_seconds, vm.heap)))

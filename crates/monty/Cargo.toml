@@ -9,7 +9,6 @@ authors = { workspace = true }
 description = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
-homepage = { workspace = true }
 repository = { workspace = true }
 
 [lib]
@@ -18,7 +17,7 @@ path = "src/lib.rs"
 
 [dependencies]
 monty-macros = { workspace = true }
-monty-types = { workspace = true }
+monty-types = { workspace = true, features = ["cpu-clock"] }
 ruff_python_parser = { workspace = true }
 ruff_python_stdlib = { workspace = true }
 ruff_python_ast = { workspace = true }
@@ -42,8 +41,10 @@ unicode-general-category = { workspace = true }
 unicode_names2 = "1"
 unicode-normalization = "0.1"
 memchr = { workspace = true }
-smallvec = { version = "1.13", features = ["serde"] }
-fancy-regex = "0.17.0"
+# `union` keeps `Tuple` within `HeapData`'s 56-byte 32-bit limit (heap_data.rs);
+# without it wasm32 builds that do not also link ty fail that assert
+smallvec = { version = "1.13", features = ["serde", "union"] }
+fancy-regex = "0.20.0"
 # worker-side uuid generation for sandbox-defined classes/instances crossing the
 # boundary; supports native and wasm32-wasip1 (WASI random)
 getrandom = "0.3"
@@ -51,10 +52,9 @@ libm = "0.2"
 # `hashlib`'s SHA-1 and SHA-2, for their hardware-accelerated compression; `sha2` also backs
 # `random.seed(str | bytes)`, which extends the seed with a SHA-512 digest as CPython does
 sha1 = { version = "0.11", default-features = false }
-sha2 = { version = "0.11", default-features = false }
+sha2 = { workspace = true }
 chrono = { workspace = true }
 speedate = "0.17.0"
-itertools = "0.14.0"
 jiter = { version = "0.17.0", features = ["num-bigint"] }
 
 [features]
@@ -78,3 +78,6 @@ serde_json = { workspace = true }
 
 [lints]
 workspace = true
+
+[target.'cfg(any(unix, windows))'.dev-dependencies]
+cpu-time = { workspace = true }

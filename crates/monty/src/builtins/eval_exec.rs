@@ -6,9 +6,11 @@
 
 use std::{str, sync::Arc};
 
+use ruff_text_size::TextSize;
+
 use crate::{
     args::{ArgValues, FromArgs, Signature},
-    bytecode::{CallResult, Compiler, FrameNamespace, VM},
+    bytecode::{CallResult, Compiler, FrameGlobals, FrameNamespace, MissingNames, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::{Identifier, Node},
@@ -16,7 +18,10 @@ use crate::{
     heap::{DropGuard, HeapData, HeapId},
     intern::{CompileInterns, FunctionId, StaticStrings},
     name_map::NameMap,
-    parse::{CodeRange, parse_expression_with_interner, parse_module_with_filename_id},
+    parse::{
+        CodeRange, ParseError, ParsedModule, parse_expression_with_interner, parse_module_with_filename_id,
+        reject_leading_bom,
+    },
     prepare::{SnippetNames, prepare_snippet},
     types::{Type, py_trait::PyTrait},
     value::Value,
@@ -112,49 +117,210 @@ fn run_snippet(
     locals: Option<HeapId>,
     vm: &mut VM<'_>,
 ) -> RunResult<CallResult> {
-    if source.contains('\0') {
-        return Err(
-            SimpleException::new_msg(ExcType::SyntaxError, "source code string cannot contain null bytes").into(),
-        );
-    }
+    reject_null_bytes(source)?;
     for dict in globals.into_iter().chain(locals) {
         vm.heap.inc_ref(dict);
     }
     let (names, namespace) = vm.snippet_namespace(globals, locals)?;
-    let globals_len = vm.global_names.len();
-    let result = compile_and_push(builtin, source, names, namespace, vm);
-    if result.is_err() {
-        vm.global_names.truncate(globals_len);
+    let kind = match builtin {
+        Builtin::Eval => SnippetSource::Eval,
+        Builtin::Exec => SnippetSource::Exec,
+    };
+    compile_and_push(kind, source, names, namespace, vm)?;
+    Ok(CallResult::FramePushed)
+}
+
+/// Evaluates one annotation string for `typing.get_type_hints()`, `ForwardRef.evaluate()`
+/// and `get_annotations(eval_str=True)`.
+///
+/// Runs in borrowed `globals` / `locals` dicts (`None` globals means the module slots),
+/// with `globals_first` letting bound slot globals shadow `locals`, and `missing`
+/// choosing between `NameError` and a `ForwardRef` stringifier for an unresolved
+/// name. A `forward_ref` compiles as CPython's `ForwardRef` does: a compile error or
+/// leading indentation raises its "must be an expression" error.
+///
+/// Each distinct text and mode compiles once per session, so names are always
+/// resolved at run time: a snippet compiled when `int` was the builtin must see a
+/// later `int = str`. The namespace is built here, not by `snippet_namespace`,
+/// which would inherit the calling frame's: the caller is frozen code.
+pub(crate) fn eval_hint(
+    source: &Value,
+    globals: Option<HeapId>,
+    locals: Option<HeapId>,
+    globals_first: bool,
+    forward_ref: bool,
+    missing: MissingNames,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
+    let mut missing_guard = DropGuard::new(missing, vm);
+    let (_, vm) = missing_guard.as_parts_mut();
+    let text = snippet_source("eval", source, vm)?;
+    if forward_ref && first_code_line_indented(&text) {
+        return Err(ExcType::forward_ref_not_expression(&text));
     }
-    result
+    let not_expression = |err: RunError| {
+        if forward_ref && err.is_catchable(ExcType::SyntaxError) {
+            ExcType::forward_ref_not_expression(&text)
+        } else {
+            err
+        }
+    };
+    reject_null_bytes(&text).map_err(not_expression)?;
+    // The namespace owns `missing` from here, on every path.
+    let (missing, vm) = missing_guard.into_parts();
+    for dict in globals.into_iter().chain(locals) {
+        vm.heap.inc_ref(dict);
+    }
+    let (globals, names) = match globals {
+        Some(dict) => (FrameGlobals::Dict(dict), SnippetNames::NameOverDict),
+        None => (FrameGlobals::Slots, SnippetNames::NameOverSlots),
+    };
+    let namespace = Box::new(FrameNamespace::Snippet {
+        globals,
+        locals,
+        globals_first,
+        missing,
+    });
+    if let Some(func_id) = vm.interns.hint_snippet(names, &text) {
+        vm.push_snippet_frame(func_id, None, namespace)?;
+    } else {
+        let func_id = compile_and_push(SnippetSource::Eval, &text, names, namespace, vm).map_err(not_expression)?;
+        vm.interns.set_hint_snippet(names, text, func_id);
+    }
+    Ok(CallResult::FramePushed)
+}
+
+/// What runtime-compiled source is: it decides how the source parses, the
+/// filename its frames show and how its compile errors read.
+#[derive(Clone, Copy)]
+pub(crate) enum SnippetSource<'a> {
+    /// An `eval()` expression, shown as `<string>`.
+    Eval,
+    /// An `exec()` module body, shown as `<string>`.
+    Exec,
+    /// An imported `.py` file's module body, shown as its virtual `path`.
+    File { path: &'a str },
 }
 
 /// Compiles privately and publishes only after the snippet's frame is admitted.
-fn compile_and_push(
-    builtin: Builtin,
+///
+/// Provisional global slots are released if compilation or admission fails.
+pub(crate) fn compile_and_push(
+    kind: SnippetSource<'_>,
     source: &Arc<str>,
     names: SnippetNames,
     namespace: Box<FrameNamespace>,
     vm: &mut VM<'_>,
-) -> RunResult<CallResult> {
+) -> RunResult<FunctionId> {
+    let globals_len = vm.global_names.len();
     let mut namespace_guard = DropGuard::new(namespace, vm);
     let (_, vm) = namespace_guard.as_parts_mut();
-    let mut overlay = CompileInterns::new(vm.interns);
-    let filename_id = overlay.add_eval_source(Arc::clone(source));
-    let options = vm.env.options;
-    let nodes = match builtin {
-        Builtin::Exec => {
-            parse_module_with_filename_id(source, filename_id, &mut overlay, options.source_scan_threshold)
+    match compile_snippet(kind, source, names, vm) {
+        Ok((func_id, overlay)) => {
+            // `push_snippet_frame` owns the namespace from here, on every path.
+            let (namespace, vm) = namespace_guard.into_parts();
+            let pushed = vm.push_snippet_frame(func_id, Some(overlay), namespace);
+            if pushed.is_ok() {
+                vm.globals.resize_with(vm.global_names.len(), || Value::Undefined);
+            } else {
+                vm.global_names.truncate(globals_len);
+            }
+            pushed.map(|()| func_id)
         }
-        Builtin::Eval => {
-            let trimmed = source.trim_start();
-            let skipped = u32::try_from(source.len() - trimmed.len()).unwrap_or(u32::MAX);
-            parse_expression_with_interner(trimmed, filename_id, &mut overlay, options.source_scan_threshold)
-                .map(|expr| vec![Node::Return(Some(expr))])
-                .map_err(|e| e.shifted(skipped))
+        // The guard releases the namespace's dict references.
+        Err(err) => {
+            let (_, vm) = namespace_guard.as_parts_mut();
+            vm.global_names.truncate(globals_len);
+            Err(err)
         }
     }
-    .map_err(|e| e.into_run_error(source))?;
+}
+
+/// The `SyntaxError` for snippet source holding a NUL, checked before any namespace is built.
+fn reject_null_bytes(source: &str) -> RunResult<()> {
+    if source.contains('\0') {
+        Err(SimpleException::new_msg(ExcType::SyntaxError, "source code string cannot contain null bytes").into())
+    } else {
+        Ok(())
+    }
+}
+
+/// Whether the first line of code in `source` is indented, which `compile()` rejects
+/// but `eval()` strips. Like CPython's tokenizer, it skips blank and comment-only
+/// lines, and a form feed resets the column.
+fn first_code_line_indented(source: &str) -> bool {
+    source
+        .lines()
+        .find_map(|line| {
+            let mut indented = false;
+            for c in line.chars() {
+                match c {
+                    ' ' | '\t' => indented = true,
+                    '\x0c' => indented = false,
+                    '#' => return None,
+                    _ => return Some(indented),
+                }
+            }
+            None
+        })
+        .unwrap_or(false)
+}
+
+/// Parses, prepares and compiles `source` into an unpublished overlay, returning
+/// the snippet function's ID within it.
+fn compile_snippet<'h>(
+    kind: SnippetSource<'_>,
+    source: &Arc<str>,
+    names: SnippetNames,
+    vm: &mut VM<'h>,
+) -> RunResult<(FunctionId, CompileInterns<'h>)> {
+    let mut overlay = CompileInterns::new(vm.interns);
+    let filename_id = match kind {
+        SnippetSource::File { path } => overlay.add_file_source(Arc::from(path), Arc::clone(source)),
+        SnippetSource::Eval | SnippetSource::Exec => overlay.add_eval_source(Arc::clone(source)),
+    };
+    let options = vm.env.options;
+    let compile_error = |e: ParseError| match kind {
+        SnippetSource::File { path } => e.into_file_run_error(path, source),
+        SnippetSource::Eval | SnippetSource::Exec => e.into_run_error(source),
+    };
+    // `eval()` / `exec()` inherit the caller's `from __future__ import annotations`,
+    // as CPython's do; an imported file starts afresh.
+    let inherited_future = match kind {
+        SnippetSource::Eval | SnippetSource::Exec => vm.frame_future_annotations(),
+        SnippetSource::File { .. } => false,
+    };
+    let ParsedModule {
+        nodes,
+        future_annotations,
+    } = match kind {
+        // A file read from disk may open with a BOM; an `exec()` string may not.
+        SnippetSource::Exec => reject_leading_bom(source, TextSize::default(), filename_id).and_then(|()| {
+            parse_module_with_filename_id(
+                source,
+                filename_id,
+                &mut overlay,
+                options.source_scan_threshold,
+                inherited_future,
+            )
+        }),
+        SnippetSource::File { .. } => parse_module_with_filename_id(
+            source,
+            filename_id,
+            &mut overlay,
+            options.source_scan_threshold,
+            inherited_future,
+        ),
+        SnippetSource::Eval => {
+            parse_expression_with_interner(source, filename_id, &mut overlay, options.source_scan_threshold).map(
+                |expr| ParsedModule {
+                    nodes: vec![Node::Return(Some(expr))],
+                    future_annotations: inherited_future,
+                },
+            )
+        }
+    }
+    .map_err(compile_error)?;
 
     let globals_by_name = names == SnippetNames::NameOverDict;
     let mut scratch = NameMap::new();
@@ -163,9 +329,19 @@ fn compile_and_push(
     } else {
         &mut *vm.global_names
     };
-    let nodes = prepare_snippet(nodes, &overlay, globals, names).map_err(|e| e.into_run_error(source))?;
-    let code = Compiler::compile_snippet(&nodes, &mut overlay, globals, options, globals_by_name)
-        .map_err(|e| e.into_run_error(source))?;
+    let nodes = prepare_snippet(nodes, &overlay, globals, names).map_err(compile_error)?;
+    let code = Compiler::compile_snippet(
+        &nodes,
+        &mut overlay,
+        globals,
+        options,
+        globals_by_name,
+        future_annotations,
+    )
+    .map_err(|e| match kind {
+        SnippetSource::File { path } => e.into_file_run_error(path, source),
+        SnippetSource::Eval | SnippetSource::Exec => e.into_run_error(source),
+    })?;
 
     let position = CodeRange {
         filename: filename_id,
@@ -193,19 +369,18 @@ fn compile_and_push(
     })?;
 
     overlay.push_function(function);
-    let (namespace, vm) = namespace_guard.into_parts();
-    vm.push_snippet_frame(func_id, overlay, namespace)?;
-    vm.globals.resize_with(vm.global_names.len(), || Value::Undefined);
-    Ok(CallResult::FramePushed)
+    Ok((func_id, overlay))
 }
 
 /// The snippet's text: a `str`, or `bytes` decoded as UTF-8.
 fn snippet_source(name: &str, source: &Value, vm: &mut VM<'_>) -> RunResult<Arc<str>> {
+    if let Some(text) = source.as_str(vm) {
+        return Ok(Arc::from(text));
+    }
+
     let bytes: &[u8] = match source {
-        Value::InternString(id) => return Ok(Arc::from(vm.interns.get_str(*id))),
         Value::InternBytes(id) => vm.interns.get_bytes(*id),
         Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Str(s) => return Ok(Arc::from(s.as_str())),
             HeapData::Bytes(b) => b.as_slice(),
             _ => return Err(source_type_error(name)),
         },

@@ -20,14 +20,15 @@ use crate::{
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
-    exception_private::{RunError, SimpleException},
+    exception_private::{RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     modules::dataclasses,
     types::{
         Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type,
         allocate_tuple,
         bytes::Bytes,
-        date as date_type, datetime as datetime_type,
+        date as date_type, datetime as datetime_type, decimal as decimal_type,
+        decimal::py as py_decimal,
         dict::Dict,
         instance::class_name,
         list::List,
@@ -46,8 +47,10 @@ use crate::{
 /// [`MontyGraphExt::to_values`] directly so their values share one arena.
 pub(crate) trait MontyObjectExt: Sized {
     /// Exports a `Value` into its own arena, taking ownership of the `Value`
-    /// and dropping it via `drop_with`.
-    fn export(value: Value, vm: &mut VM<'_>) -> Self;
+    /// and dropping it via `drop_with`. Fails only with a resource limit hit
+    /// during export, where a user `__repr__` can run (see [`GraphExporter::finish`]);
+    /// callers outside the run loop wrap it in [`VM::export_on_clock`].
+    fn export(value: Value, vm: &mut VM<'_>) -> RunResult<Self>;
 
     /// Imports this value into the heap. Fails with `InvalidInputError` on
     /// output-only nodes (`Repr`, `Cycle`), on a sandbox class or instance
@@ -57,10 +60,11 @@ pub(crate) trait MontyObjectExt: Sized {
 }
 
 impl MontyObjectExt for MontyObject {
-    fn export(value: Value, vm: &mut VM<'_>) -> Self {
+    fn export(value: Value, vm: &mut VM<'_>) -> RunResult<Self> {
         let mut exporter = GraphExporter::new();
         let root = exporter.push_owned(value, vm);
-        unstable::object_from_graph(exporter.finish(vm), root).expect("exported root is valid")
+        let graph = exporter.finish(vm)?;
+        Ok(unstable::object_from_graph(graph, root).expect("exported root is valid"))
     }
 
     fn to_value(self, vm: &mut VM<'_>) -> Result<Value, InvalidInputError> {
@@ -119,9 +123,12 @@ pub(crate) struct GraphExporter {
     /// [`MontyNode::Cycle`] leaf rather than infinite recursion.
     in_progress: AHashSet<HeapId>,
     /// A reference to every memoized object, released by [`finish`](Self::finish):
-    /// a user `__repr__` run by [`repr_node`] can free an exported object
+    /// a user `__repr__` run by [`repr_node`](Self::repr_node) can free an exported object
     /// mid-message, and a new object in the reused slot would inherit its node.
     pinned: Vec<Value>,
+    /// The first uncatchable error (a resource limit) raised by a user
+    /// `__repr__`; once set no more user code runs and `finish` returns it.
+    error: Option<RunError>,
 }
 
 impl GraphExporter {
@@ -131,6 +138,7 @@ impl GraphExporter {
             memo: AHashMap::new(),
             in_progress: AHashSet::new(),
             pinned: Vec::new(),
+            error: None,
         }
     }
 
@@ -147,9 +155,15 @@ impl GraphExporter {
     }
 
     /// The finished arena, releasing the pins on the memoized objects.
-    pub(crate) fn finish(self, vm: &mut VM<'_>) -> MontyGraph {
+    ///
+    /// Fails with the uncatchable error a user `__repr__` raised during export,
+    /// so a resource limit ends the run rather than becoming a repr string.
+    pub(crate) fn finish(self, vm: &mut VM<'_>) -> RunResult<MontyGraph> {
         self.pinned.drop_with(vm);
-        self.graph
+        match self.error {
+            Some(err) => Err(err),
+            None => Ok(self.graph),
+        }
     }
 
     /// Records `id`'s node in the memo and pins the object until `finish`.
@@ -162,6 +176,10 @@ impl GraphExporter {
     /// Exports a borrowed value and returns its node. Non-`Ref` values need
     /// only the interner; heap objects go through [`push_ref`](Self::push_ref).
     pub(crate) fn push(&mut self, value: &Value, vm: &mut VM<'_>) -> NodeId {
+        // `finish` discards the graph after an uncatchable error, so skip the rest of the walk.
+        if self.error.is_some() {
+            return self.push_node(MontyNode::Repr(String::new()));
+        }
         // Check depth limit before processing
         let Ok(mut guard) = vm.recursion_guard() else {
             return self.push_node(MontyNode::Repr("<deeply nested>".to_owned()));
@@ -178,19 +196,19 @@ impl GraphExporter {
             Value::Int(i) => MontyNode::Int(*i),
             Value::Float(f) => MontyNode::Float(*f),
             Value::InternString(string_id) => MontyNode::String(interns.get_str(*string_id).to_owned()),
+            Value::InlineString(text) => MontyNode::String(text.as_str().to_owned()),
             Value::InternBytes(bytes_id) => MontyNode::Bytes(interns.get_bytes(*bytes_id).to_owned()),
             Value::InternLongInt(li_id) => MontyNode::BigInt(interns.get_long_int(*li_id).clone()),
             Value::Ref(id) => return self.push_ref(*id, value, vm),
-            Value::Builtin(Builtins::Type(Type::Instance(class_id))) => return self.sandbox_class_node(*class_id, vm),
-            Value::Builtin(Builtins::Type(t)) => match MontyType::from_internal_static(*t) {
+            Value::Builtin(Builtins::Type(t)) => match MontyType::from_internal_static(Type::from(*t)) {
                 Some(ty) => MontyNode::Type(ty),
-                None => repr_node(value, vm),
+                None => self.repr_node(value, vm),
             },
             Value::Builtin(Builtins::ExcType(e)) => MontyNode::Type(MontyType::Exception(*e)),
             Value::Builtin(Builtins::Function(f)) => MontyNode::BuiltinFunction(*f),
             #[cfg(feature = "memory-model-checks")]
             Value::Dereferenced => panic!("Dereferenced found while exporting a value"),
-            _ => repr_node(value, vm),
+            _ => self.repr_node(value, vm),
         };
         self.push_node(node)
     }
@@ -238,7 +256,7 @@ impl GraphExporter {
     }
 
     /// Converts one heap object into its node, pushing container children first.
-    /// Recursing can run a user `__repr__` ([`repr_node`] on e.g. a
+    /// Recursing can run a user `__repr__` ([`repr_node`](Self::repr_node) on e.g. a
     /// `functools.partial` bound to an instance), so mutable containers clone
     /// every child before recursing: the clones keep the children alive and the
     /// iteration valid if that `__repr__` mutates the container. Immutable
@@ -349,7 +367,7 @@ impl GraphExporter {
             }
             HeapReadOutput::DateTime(dt) => match datetime_type::to_monty_datetime(dt.get(vm.heap)) {
                 Some(datetime) => MontyNode::DateTime(datetime),
-                None => repr_node(value, vm),
+                None => self.repr_node(value, vm),
             },
             HeapReadOutput::Time(t) => {
                 let time = t.get(vm.heap);
@@ -373,6 +391,9 @@ impl GraphExporter {
                     microseconds,
                 })
             }
+            // The canonical string, with an upper-case exponent whatever the context's
+            // `capitals`, so the host parses back the exact value.
+            HeapReadOutput::Decimal(d) => MontyNode::Decimal(d.get(vm.heap).to_sci_string(false, true)),
             HeapReadOutput::TimeZone(tz) => {
                 let tz_ref = tz.get(vm.heap);
                 MontyNode::TimeZone(MontyTimeZone {
@@ -447,10 +468,10 @@ impl GraphExporter {
                     imag: c.imag,
                 })
             }
-            // A host module crosses back with its id and attrs; a bundled one
-            // has no host identity and crosses as its repr.
-            HeapReadOutput::Module(m) => match m.get(vm.heap).id() {
-                Some(id) => {
+            // A host module crosses back with its id and attrs; a bundled or
+            // file one has no host identity and crosses as its repr.
+            HeapReadOutput::Module(m) => {
+                if let Some(id) = m.get(vm.heap).id() {
                     let name = m.get(vm.heap).name_str(vm.interns).to_owned();
                     let children = snapshot_dict_pairs(m.get(vm.heap).attrs(), vm.heap);
                     defer_drop!(children, vm);
@@ -459,9 +480,10 @@ impl GraphExporter {
                         id,
                         attrs: self.push_pairs(children, vm),
                     }
+                } else {
+                    MontyNode::Repr(m.get(vm.heap).repr(vm.interns))
                 }
-                None => MontyNode::Repr(format!("<module '{}'>", m.get(vm.heap).name_str(vm.interns))),
-            },
+            }
             HeapReadOutput::Coroutine(coro) => {
                 let func_id = coro.get(vm.heap).func_id;
                 let func = vm.interns.get_function(func_id);
@@ -483,11 +505,45 @@ impl GraphExporter {
                     position: file.position(),
                 })
             }
-            HeapReadOutput::ExtFunction(function) => MontyNode::Function {
-                name: function.get(vm.heap).as_str().to_owned(),
-                docstring: None,
-            },
-            _ => repr_node(value, vm),
+            HeapReadOutput::ExtFunction(function) => {
+                let function = function.get(vm.heap);
+                MontyNode::Function {
+                    name: function.as_str().to_owned(),
+                    docstring: None,
+                    is_async: function.is_async(),
+                }
+            }
+            _ => self.repr_node(value, vm),
+        }
+    }
+
+    /// Converts a value to its repr node, falling back to a descriptive error
+    /// message if `py_repr` fails (e.g. INT_MAX_STR_DIGITS). An uncatchable
+    /// error is stashed for [`finish`](Self::finish) instead, and after one no
+    /// further `__repr__` runs.
+    fn repr_node(&mut self, value: &Value, vm: &mut VM<'_>) -> MontyNode {
+        if self.error.is_some() {
+            MontyNode::Repr(String::new())
+        } else {
+            match value.py_repr(vm) {
+                Ok(s) => {
+                    // `py_repr` yields a heap `str` `Value`; extract its text and drop it.
+                    defer_drop!(s, vm);
+                    MontyNode::Repr(s.try_to_str(vm).map_or_default(str::to_owned))
+                }
+                Err(err @ RunError::UncatchableExc(_)) => {
+                    self.error = Some(err);
+                    MontyNode::Repr(String::new())
+                }
+                Err(RunError::Internal(msg)) => {
+                    let ty = value.py_type_name(vm);
+                    MontyNode::Repr(format!("<{ty} object, error on repr(): {msg}>"))
+                }
+                Err(RunError::Exc(exc)) => {
+                    let ty = value.py_type_name(vm);
+                    MontyNode::Repr(format!("<{ty} object, error on repr(): {}>", exc.exc))
+                }
+            }
         }
     }
 
@@ -695,6 +751,7 @@ impl MontyTypeExt for MontyType {
             Self::ReMatch => Type::ReMatch,
             Self::Field => Type::DataclassField,
             Self::DataclassParams => Type::DataclassParams,
+            Self::Decimal => Type::Decimal,
         }
     }
 
@@ -778,7 +835,12 @@ impl MontyTypeExt for MontyType {
             | Type::CsvWriter
             | Type::CsvDictReader
             | Type::CsvDictWriter
-            | Type::CsvDialect => return None,
+            | Type::CsvDialect
+            | Type::DecimalContext
+            | Type::DecimalSignalDict
+            | Type::DecimalContextManager
+            | Type::ForwardRef => return None,
+            Type::Decimal => Self::Decimal,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
             Type::Dict => Self::Dict,
@@ -956,6 +1018,13 @@ fn import_node(
                 .map_err(|_| InvalidInputError::invalid_type("timedelta"))?;
             Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))))
         }
+        // The host's text is untrusted: it must parse as `Decimal(text)` would,
+        // a malformed literal or out-of-range exponent being rejected rather than
+        // turned into a NaN.
+        MontyNode::Decimal(text) => match decimal_type::parse::parse_str(&text) {
+            Ok(Ok(decimal)) => Ok(py_decimal::decimal_value(decimal, vm)),
+            Ok(Err(_)) | Err(_) => Err(InvalidInputError::invalid_type("Decimal")),
+        },
         MontyNode::TimeZone(tz) => {
             if tz.offset_seconds == 0 && tz.name.is_none() {
                 Ok(vm.heap.get_timezone_utc())
@@ -1041,9 +1110,11 @@ fn import_node(
             let file = OpenFile::with_state(handle.path, handle.mode, handle.position);
             Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(Box::new(file)))))
         }
-        MontyNode::Type(t) => Ok(Value::Builtin(Builtins::Type(t.to_internal()))),
+        MontyNode::Type(t) => Ok(Value::Builtin(Builtins::Type(
+            t.to_internal().try_into().expect("host types are static"),
+        ))),
         MontyNode::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
-        MontyNode::Function { name, .. } => Ok(vm.heap.get_ext_function(&name)),
+        MontyNode::Function { name, is_async, .. } => Ok(vm.heap.get_ext_function(&name, is_async)),
         MontyNode::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
         MontyNode::Cycle(_) => Err(InvalidInputError::invalid_type("'Cycle' is not a valid input value")),
     }
@@ -1125,24 +1196,4 @@ fn snapshot_dict_pairs(dict: &Dict, heap: &Heap) -> Vec<(Value, Value)> {
     dict.iter()
         .map(|(key, value)| (key.clone_with_heap(heap), value.clone_with_heap(heap)))
         .collect()
-}
-
-/// Converts a value to its repr node, falling back to a descriptive error
-/// message if `py_repr` fails (e.g. INT_MAX_STR_DIGITS).
-fn repr_node(value: &Value, vm: &mut VM<'_>) -> MontyNode {
-    match value.py_repr(vm) {
-        Ok(s) => {
-            // `py_repr` yields a heap `str` `Value`; extract its text and drop it.
-            defer_drop!(s, vm);
-            MontyNode::Repr(s.to_str(vm).map(str::to_owned).unwrap_or_default())
-        }
-        Err(e) => {
-            let ty = value.py_type_name(vm);
-            let msg = match &e {
-                RunError::Internal(s) => s.to_string(),
-                RunError::Exc(exc) | RunError::UncatchableExc(exc) => exc.exc.to_string(),
-            };
-            MontyNode::Repr(format!("<{ty} object, error on repr(): {msg}>"))
-        }
-    }
 }

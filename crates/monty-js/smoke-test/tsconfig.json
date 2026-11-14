@@ -6,7 +6,7 @@
     "strict": true,
     "outDir": "dist",
     "skipLibCheck": false,
-    "lib": ["ES2022", "DOM"]
+    "lib": ["ES2022", "ESNext.Disposable", "DOM"]
   },
   "include": ["test.ts", "node.ts", "wasm-types.ts"]
 }

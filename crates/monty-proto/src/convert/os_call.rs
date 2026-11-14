@@ -6,18 +6,19 @@
 use std::{collections::HashSet, time::Duration};
 
 use monty_types::{
-    GetenvArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MkdirCallArgs, MontyPath, MontyTimeZone,
-    OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ScanArgs, SourceRange,
-    UrandomArgs, sleep_duration, unstable,
+    CreateExclusiveCallArgs, GetenvArgs, ImportArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS,
+    MkdirCallArgs, MontyPath, MontyTimeZone, MontyUuid, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
+    PathStringDataArgs, RenameCallArgs, ScanArgs, SourceRange, TypeHintsTarget, UrandomArgs, WriteBytesAtArgs,
+    sleep_duration, unstable,
 };
 
 use crate::{
     convert::{ProtoConvertError, root_object},
     pb::{
         self, TimeZone, Unit,
-        os_call::{self, Call},
+        os_call::{self, Call, get_type_hints},
     },
-    wire::WireArena,
+    wire::{WireArena, uuid_to_pb},
 };
 
 /// Builds the `OsCall` envelope: call id, typed arm, the eager-await hint,
@@ -74,9 +75,19 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
         OsFunctionCall::AppendText(a) => Call::AppendText(text_write(a)),
         OsFunctionCall::WriteBytes(a) => Call::WriteBytes(bytes_write(a)),
         OsFunctionCall::AppendBytes(a) => Call::AppendBytes(bytes_write(a)),
+        OsFunctionCall::WriteBytesAt(a) => Call::WriteBytesAt(os_call::WriteBytesAt {
+            path: a.path.into_string(),
+            offset: a.offset,
+            data: a.data.into(),
+        }),
         OsFunctionCall::Open(a) => Call::Open(os_call::Open {
             path: a.path.into_string(),
             mode: a.mode.as_str().to_owned(),
+        }),
+        OsFunctionCall::CreateExclusive(a) => Call::CreateExclusive(os_call::CreateExclusive {
+            path: a.path.into_string(),
+            mode: a.mode.as_str().to_owned(),
+            permissions: a.permissions,
         }),
         OsFunctionCall::Mkdir(a) => Call::Mkdir(os_call::Mkdir {
             path: a.path.into_string(),
@@ -116,9 +127,18 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
         OsFunctionCall::AsyncSystemSleep(delay) => Call::AsyncSystemSleep(os_call::AsyncSleep {
             delay: delay.as_secs_f64(),
         }),
-        OsFunctionCall::Import(module) => Call::Import(os_call::Import { module }),
+        OsFunctionCall::Import(a) => Call::Import(os_call::Import {
+            module: a.module,
+            search_path: a.search_path.into(),
+        }),
         OsFunctionCall::ImportStubs(modules) => Call::ImportStubs(os_call::ImportStubs {
             modules: modules.into(),
+        }),
+        OsFunctionCall::GetTypeHints(target) => Call::GetTypeHints(os_call::GetTypeHints {
+            target: Some(match target {
+                TypeHintsTarget::Function(name) => get_type_hints::Target::Function(name),
+                TypeHintsTarget::Class(id) => get_type_hints::Target::ClassId(uuid_to_pb(&id)),
+            }),
         }),
         OsFunctionCall::Scan(a) => Call::Scan(os_call::Scan {
             path: a.path.into_string(),
@@ -155,10 +175,34 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             os_call::Call::AppendText(a) => Self::AppendText(text_args(a)),
             os_call::Call::WriteBytes(a) => Self::WriteBytes(bytes_args(a)),
             os_call::Call::AppendBytes(a) => Self::AppendBytes(bytes_args(a)),
+            os_call::Call::WriteBytesAt(a) => {
+                let args = WriteBytesAtArgs {
+                    path: MontyPath::new(a.path),
+                    offset: a.offset,
+                    data: a.data.into(),
+                };
+                args.validate().map_err(|reason| ProtoConvertError::InvalidValue {
+                    field: "WriteBytesAt.offset",
+                    reason: reason.to_owned(),
+                })?;
+                Self::WriteBytesAt(args)
+            }
             os_call::Call::Open(o) => Self::Open(OpenCallArgs {
                 mode: o.mode.parse().map_err(|_| ProtoConvertError::InvalidFileMode(o.mode))?,
                 path: MontyPath::new(o.path),
             }),
+            os_call::Call::CreateExclusive(c) => {
+                let args = CreateExclusiveCallArgs {
+                    path: MontyPath::new(c.path),
+                    mode: c.mode.parse().map_err(|_| ProtoConvertError::InvalidFileMode(c.mode))?,
+                    permissions: c.permissions,
+                };
+                args.validate().map_err(|reason| ProtoConvertError::InvalidValue {
+                    field: "CreateExclusive.permissions",
+                    reason: reason.to_owned(),
+                })?;
+                Self::CreateExclusive(args)
+            }
             os_call::Call::Mkdir(m) => Self::Mkdir(MkdirCallArgs {
                 path: MontyPath::new(m.path),
                 parents: m.parents,
@@ -191,7 +235,10 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             os_call::Call::AsyncSystemSleep(s) => {
                 Self::AsyncSystemSleep(field_sleep_duration(s.delay, "AsyncSleep.delay")?)
             }
-            os_call::Call::Import(i) => Self::Import(i.module),
+            os_call::Call::Import(i) => Self::Import(ImportArgs {
+                module: i.module,
+                search_path: i.search_path.into_iter().collect(),
+            }),
             os_call::Call::ImportStubs(i) => {
                 // the worker asks about each module once; a repeat would multiply the host's factory work
                 let modules: Vec<String> = i.modules.into_iter().collect();
@@ -204,6 +251,22 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
                 }
                 Self::ImportStubs(modules)
             }
+            os_call::Call::GetTypeHints(hints) => Self::GetTypeHints(
+                match hints
+                    .target
+                    .ok_or(ProtoConvertError::MissingField("GetTypeHints.target"))?
+                {
+                    get_type_hints::Target::Function(name) => TypeHintsTarget::Function(name),
+                    get_type_hints::Target::ClassId(id) => {
+                        TypeHintsTarget::Class(MontyUuid::try_from_slice(&id.data).ok_or_else(|| {
+                            ProtoConvertError::InvalidValue {
+                                field: "GetTypeHints.class_id",
+                                reason: format!("uuid must be 16 bytes, got {}", id.data.len()),
+                            }
+                        })?)
+                    }
+                },
+            ),
             // An empty pattern reads as a plain listing. The interpreter sends `listing(Some(0))`
             // for a fully literal glob, and `glob` with no parts derives `max_depth: Some(0)` too,
             // so either way the host lists the root alone.
@@ -226,8 +289,8 @@ fn timezone_to_proto(tz: MontyTimeZone) -> TimeZone {
     }
 }
 
-/// Validates a child-supplied fixed offset into the range `datetime.timezone`
-/// accepts, so a compromised child cannot hand the host an impossible zone.
+/// Validates a worker-supplied fixed offset into the range `datetime.timezone`
+/// accepts, so a compromised worker cannot hand the host an impossible zone.
 fn timezone_from_proto(tz: TimeZone) -> Result<MontyTimeZone, ProtoConvertError> {
     if !(MIN_TIMEZONE_OFFSET_SECONDS..=MAX_TIMEZONE_OFFSET_SECONDS).contains(&tz.offset_seconds) {
         return Err(ProtoConvertError::InvalidValue {
@@ -246,7 +309,7 @@ fn timezone_from_proto(tz: TimeZone) -> Result<MontyTimeZone, ProtoConvertError>
 
 /// Validates wire seconds into a `Duration`.
 ///
-/// A child may be compromised, so a NaN, negative or unrepresentable delay is
+/// A worker may be compromised, so a NaN, negative or unrepresentable delay is
 /// refused here rather than reaching a host that would convert it — and panic
 /// doing so.
 fn field_sleep_duration(seconds: f64, field: &'static str) -> Result<Duration, ProtoConvertError> {

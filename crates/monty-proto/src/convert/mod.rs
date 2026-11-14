@@ -32,6 +32,7 @@ pub use resume::{
     ext_result_from_proto, ext_result_to_proto, future_results_from_proto, future_results_to_proto,
     resume_call_from_proto,
 };
+pub use type_checking::import_stubs_from_answer;
 
 use crate::{
     BudgetVec, pb,
@@ -41,8 +42,8 @@ use crate::{
 /// Why a wire value could not be converted into its monty equivalent.
 ///
 /// Returned by all `TryFrom<pb::...>` impls in this crate. The variants are
-/// deliberately specific so a parent can log exactly which field a misbehaving
-/// child produced.
+/// deliberately specific so a client can log exactly which field a misbehaving
+/// worker produced.
 #[derive(Debug)]
 pub enum ProtoConvertError {
     /// A required message field or oneof was absent.

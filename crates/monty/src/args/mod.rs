@@ -227,8 +227,10 @@ impl ArgValues {
     }
 
     /// Exports the arguments into one arena for delivery to an external
-    /// function, so an object passed twice crosses once.
-    pub fn into_call_args(self, vm: &mut VM<'_>) -> CallArgs {
+    /// function, so an object passed twice crosses once. Fails only with a
+    /// resource limit hit during export, where a user `__repr__` can run;
+    /// callers outside the run loop wrap it in [`VM::export_on_clock`].
+    pub fn into_call_args(self, vm: &mut VM<'_>) -> RunResult<CallArgs> {
         let mut exporter = GraphExporter::new();
         let mut call = CallArgs::new();
         match self {
@@ -246,8 +248,8 @@ impl ArgValues {
                 kwargs.export_into(&mut call, &mut exporter, vm);
             }
         }
-        *unstable::call_args_parts_mut(&mut call).0 = exporter.finish(vm);
-        call
+        *unstable::call_args_parts_mut(&mut call).0 = exporter.finish(vm)?;
+        Ok(call)
     }
 
     /// The first positional argument, if any, without consuming the arguments.
@@ -412,7 +414,7 @@ impl KwargsValues {
     /// The value passed under `name`, if any; a non-string key (only possible via `**`
     /// unpacking) never matches.
     pub(crate) fn get(&self, name: &str, heap: &Heap, interns: &Interns) -> Option<&Value> {
-        let is_name = |key: &Value| key.to_str_heap(heap, interns).is_ok_and(|key| key == name);
+        let is_name = |key: &Value| key.as_str_heap(heap, interns).is_some_and(|key| key == name);
         match self {
             Self::Empty => None,
             Self::Inline(kvs) => kvs
@@ -430,16 +432,18 @@ impl KwargsValues {
     pub fn first_key(&self, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
         let key = match self {
             Self::Empty => return Ok(None),
-            Self::Inline(kvs) => return Ok(kvs.first().map(|(id, _)| interns.get_str(*id).to_owned())),
+            Self::Inline(kvs) => {
+                return Ok(kvs.first().map(|(id, _)| interns.get_str(*id).to_owned()));
+            }
             Self::Pairs(kvs) => kvs.first().map(|(key, _)| key),
             Self::Dict(dict) => dict.iter().next().map(|(key, _)| key),
         };
         match key {
             None => Ok(None),
             Some(key) => key
-                .to_str_heap(heap, interns)
+                .as_str_heap(heap, interns)
                 .map(|key| Some(key.to_owned()))
-                .map_err(|_| ExcType::type_error_kwargs_nonstring_key()),
+                .ok_or_else(ExcType::type_error_kwargs_nonstring_key),
         }
     }
 

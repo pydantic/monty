@@ -31,6 +31,7 @@ fn json_output_primitives() {
     assert_snapshot!(to_json(&MontyObject::string("hi")), @r#"{"graph":{"nodes":[{"String":"hi"}]},"root":0}"#);
     assert_snapshot!(to_json(&MontyObject::bool(true)), @r#"{"graph":{"nodes":[{"Bool":true}]},"root":0}"#);
     assert_snapshot!(to_json(&MontyObject::none()), @r#"{"graph":{"nodes":["None"]},"root":0}"#);
+    assert_snapshot!(to_json(&eval("import decimal\ndecimal.Decimal('1.20')")), @r#"{"graph":{"nodes":[{"Decimal":"1.20"}]},"root":0}"#);
 }
 
 #[test]
@@ -107,6 +108,7 @@ fn json_roundtrip() {
         eval("[1, {'k': (2, 3.5)}, None, b'x', ...]"),
         eval("a = []; a.append(a); b = {}; b['b'] = b; [a, b]"),
         MontyObject::exception(ExcType::TypeError, Some("bad".to_owned())),
+        MontyObject::decimal("-1.5E-7"),
     ];
     for value in values {
         let json = to_json(&value);

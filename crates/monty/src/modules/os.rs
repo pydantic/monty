@@ -178,12 +178,8 @@ fn scandir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     } else {
         extract_os_path(path, "scandir", "path", PathAccepts::FdOrNone, vm)?
     };
-    if path.is_empty() {
-        // The host would scan the working directory; CPython fails with ENOENT.
-        Err(ExcType::file_not_found_error(""))
-    } else {
-        Ok(scandir_call(path))
-    }
+    // An empty path fails with ENOENT at the VM's OS-call exit, as in CPython.
+    Ok(scandir_call(path))
 }
 
 /// `os.walk(top, topdown=True, onerror=None, followlinks=False)` argument
@@ -326,12 +322,12 @@ fn chdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// than as a shared helper.
 fn getenv(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let (key_value, default_value) = args.get_one_two_args("os.getenv", vm.heap)?;
-    if let Ok(key) = key_value.to_str(vm) {
+    if let Some(key) = key_value.as_str(vm) {
         let key = key.to_owned();
         key_value.drop_with(vm.heap);
         Ok(CallResult::OsCall(OsFunctionCall::Getenv(GetenvArgs {
             key,
-            default: MontyObject::export(default_value.unwrap_or(Value::None), vm),
+            default: MontyObject::export(default_value.unwrap_or(Value::None), vm)?,
         })))
     } else {
         let type_name = key_value.py_type_name_heap(vm.heap, vm.interns);

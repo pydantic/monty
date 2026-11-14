@@ -137,6 +137,53 @@ export interface ProtocolTurn {
   message: string
 }
 
+/** A remote worker's stream ended mid-session; the session is lost. The
+ *  details are the status or transport failure that ended it, when known;
+ *  none of them says whether the in-flight request ran. Remote pools only. */
+export interface DisconnectedTurn {
+  kind: 'disconnected'
+  message: string
+  statusCode?: string
+  statusMessage?: string
+  remoteCause?: string
+  transportError?: string
+}
+
+/** The remote server refused to open the session's stream, so no session
+ *  existed and nothing ran; the details are the status it refused with.
+ *  Only produced by `enter`. Remote pools only. */
+export interface RefusedTurn {
+  kind: 'refused'
+  message: string
+  statusCode?: string
+  statusMessage?: string
+  remoteCause?: string
+  transportError?: string
+  retryable?: boolean
+  retryAfter?: number
+}
+
+/** A connection failure before the session opens. */
+export interface ConnectTurn extends Omit<DisconnectedTurn, 'kind'> {
+  kind: 'connect'
+}
+
+/** The client configuration is incompatible with the remote server; reported
+ *  by the session's first request, which carries its `Configure`. */
+export interface ConfigurationTurn {
+  kind: 'configuration'
+  message: string
+}
+
+/** A draining server declined the request, which did not run; the session is
+ *  lost. `dump` restores it on a fresh session, when the server stored it.
+ *  Remote pools only. */
+export interface ShutdownTurn {
+  kind: 'shutdown'
+  message: string
+  dump?: Uint8Array
+}
+
 /** A restore of an idle (between-feeds) dump — no suspension to resume. Only
  *  produced by `NativeSession.restore`, surfaced by `MontySession.loadSession`. */
 export interface LoadedTurn {
@@ -144,9 +191,40 @@ export interface LoadedTurn {
 }
 
 /** A non-feed request succeeded with no value or suspension. Only produced by
- *  `NativeSession.installDependencies`. */
+ *  `NativePool.start`, `NativeSession.installDependencies` and `NativeSession.enter`. */
 export interface OkTurn {
   kind: 'ok'
+}
+
+/** No worker became available within the checkout timeout. Only produced by
+ *  `NativeSession.enter`. */
+export interface ExhaustedTurn {
+  kind: 'exhausted'
+  message: string
+}
+
+/** What `NativePool.start` resolves to: started, or why not. */
+export type StartTurn = OkTurn | ProtocolTurn | ConnectTurn | ConfigurationTurn
+
+/** What `NativeSession.enter` resolves to: entered, or why not. */
+export type EnterTurn =
+  | OkTurn
+  | ExhaustedTurn
+  | ErrorTurn
+  | TypingErrorTurn
+  | CrashedTurn
+  | ProtocolTurn
+  | DisconnectedTurn
+  | RefusedTurn
+  | ConnectTurn
+  | ConfigurationTurn
+  | ShutdownTurn
+
+/** The session's dump, or a storing server's record ID. Only produced by
+ *  `NativeSession.dump`. */
+export interface DumpedTurn {
+  kind: 'dumped'
+  state: Uint8Array
 }
 
 /** No mount covered the pending OS call, which stays suspended for the caller
@@ -154,6 +232,14 @@ export interface OkTurn {
 export interface NotMountedTurn {
   kind: 'notMounted'
 }
+
+/** A mount's answer to reading one candidate file of an `import`. Only
+ *  produced by `NativeSession.readFromMounts`, which resolves to a
+ *  `NotMountedTurn` when no mount covers the path. */
+export type ModuleReadTurn =
+  | { kind: 'moduleText'; text: string }
+  | { kind: 'moduleMissing' }
+  | { kind: 'moduleReadError'; excType: string; message: string }
 
 /** Everything one protocol turn can resolve to. */
 export type NativeTurn =
@@ -166,6 +252,22 @@ export type NativeTurn =
   | TypingErrorTurn
   | CrashedTurn
   | ProtocolTurn
+  | ConfigurationTurn
+  | DisconnectedTurn
+  | ShutdownTurn
+
+/**
+ * A call to an async host function the sandbox started without suspending.
+ * The sandbox already holds a pending future for `callId`, settled through
+ * `resolveFutures` once a `resolveFutures` turn names it.
+ */
+export interface NativeStreamedCall {
+  functionName: string
+  args: unknown[]
+  kwargs: [unknown, unknown][]
+  callId: number
+  position: NativeSourceRange
+}
 
 /** One settled promise outcome delivered to `resolveFutures`. */
 export interface NativeFutureResult {

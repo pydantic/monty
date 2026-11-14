@@ -217,7 +217,7 @@ fn bind_slow<const N: usize>(
                 // C families raise unknown-kwarg *last* (after every missing,
                 // conversion, and conflict error); stash the first for `finish`.
                 if bound.deferred.as_ref().is_none_or(|d| d.unknown.is_none()) {
-                    let key_str = key.to_str(vm).expect("keyword validated above");
+                    let key_str = key.as_str(vm).expect("keyword validated above");
                     let err = match spec.family {
                         ErrorFamily::C { .. } => ExcType::type_error_c_unexpected_keyword(key_str),
                         _ => ExcType::type_error_unexpected_keyword(spec.func_name, key_str),
@@ -229,7 +229,7 @@ fn bind_slow<const N: usize>(
             None => {
                 let err_name = spec.kwarg_error_name.unwrap_or(spec.func_name);
                 let error =
-                    ExcType::type_error_unexpected_keyword(err_name, key.to_str(vm).expect("keyword validated above"));
+                    ExcType::type_error_unexpected_keyword(err_name, key.as_str(vm).expect("keyword validated above"));
                 (key, value).drop_with(vm);
                 return Err(error);
             }

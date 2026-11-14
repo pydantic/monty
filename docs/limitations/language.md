@@ -60,9 +60,8 @@ exactly, except for the comprehension target restriction in
     see [with.md](with.md).
 - The message differs from CPython, which uses construct-specific wording (`too many nested parentheses`,
     `too many statically nested blocks`, …).
-- Class-body annotations count against the budget even though they are stringized rather than evaluated (see
-    [typing.md](typing.md)), as do class-variable values and method parameter defaults; all three are walked before
-    being parsed. CPython imposes no comparable limit on a stringized annotation.
+- Class-body annotations count against the budget, as do class-variable values and method parameter defaults; all
+    three are walked before being parsed.
 - A source longer than `CompileOptions::source_scan_threshold` bytes (4 KiB by default) is first scanned token by
     token and rejected with the same `SyntaxError` when its estimated parser nesting exceeds the cap.
     The scan bounds how much native stack the parser grows on a long source, memory the sandbox allocator does not
@@ -76,12 +75,23 @@ exactly, except for the comprehension target restriction in
 - The scan also enters string literals, because the type checker parses a forward-reference annotation such as
     `x: "list[int]"` from the text between the quotes; a string longer than 200 bytes holding more than 200 unbalanced
     brackets is rejected the same way even when it is plain data.
+- A source longer than 2,000 bytes whose AST nests more than 2,000 levels deep (300 in debug builds) is rejected with
+    the same `SyntaxError` as soon as it is parsed.
+    A flat chain such as `1 + 1 + ...` or `a.b.b...` nests one level per link without tripping the scan, and so does
+    source the parser recovers from a syntax error in, such as a repeated `not a <`.
+    That check runs before any syntax error is reported, so such a source raises
+    `Source is too deeply nested` where CPython reports the syntax error.
+    It also covers parts of the AST the cap above never reaches, such as an annotation the compiler discards.
 - With type checking on, the whole AST is checked against the cap before the type checker runs, whatever the source's
     length.
-    That includes function parameter and return annotations, which the compiler otherwise drops unchecked, so
-    `def f(a: A | B | ...)` with more than 200 members is rejected only when type checking.
+    That includes function parameter and return annotations.
     Every string literal longer than the remaining budget is parsed as a forward-reference annotation and counted
     from the depth it sits at, so a string that parses as a deeply nested expression is rejected even when it is data.
+    A string that does not parse is rejected only when the AST recovered from it nests more than 20,000 levels deep
+    (3,000 in debug builds), which takes data that lexes as one long operator chain, such as several thousand absolute
+    paths on consecutive lines.
+    A string over the remaining budget that sits inside eight enclosing string literals is rejected without being
+    parsed.
 - Only Rust hosts can change the threshold, with `CompileOptions { source_scan_threshold: n, ..CompileOptions::default() }`
     (`0` scans every source, `usize::MAX` never scans); Python and JavaScript sessions use the default.
 
@@ -97,10 +107,13 @@ exactly, except for the comprehension target restriction in
 ## `__future__` imports
 
 `from __future__ import ...` is a compiler directive, not a real import: it
-binds nothing and is accepted as a no-op. Of CPython's ten features, eight
-became mandatory in Python 3.7 or earlier and so are inert there too, and
-`annotations` is a no-op here because Monty already stringizes annotations
-(see [typing.md](typing.md)). Divergences:
+binds nothing. Of CPython's ten features, eight became mandatory in Python 3.7
+or earlier and so are inert there too. `annotations` is recorded on the
+module's code, and on the `exec()` snippets and later REPL feeds that inherit
+it: a class body under it stores its annotations as PEP 563 strings in
+`__annotations__` and a `def`'s `__annotate__` returns the strings, which
+`typing.get_type_hints()` evaluates as forward references (see
+[typing.md](typing.md#annotations)). Divergences:
 
 - **`barry_as_FLUFL`** (PEP 401) raises
     `NotImplementedError: "The monty syntax parser does not yet support the 'barry_as_FLUFL' future feature"`.
@@ -111,9 +124,6 @@ became mandatory in Python 3.7 or earlier and so are inert there too, and
     `` NotImplementedError: "The monty syntax parser does not yet support aliasing a `__future__` feature" ``.
     CPython binds `ann` to a `__future__._Feature` object; a no-op would bind nothing and surface as a `NameError`
     far from the import, so it is rejected at the import instead.
-- **Position is not enforced.** CPython requires `__future__` imports to
-    precede all other statements (`SyntaxError: "from __future__ imports must occur at the beginning of the file"`);
-    Monty accepts them anywhere.
 - `import __future__` (as opposed to `from __future__ import ...`) raises
     `ModuleNotFoundError`; there is no `__future__` module object.
 
@@ -172,8 +182,9 @@ nor safe to surface in the sandbox.
 
 ## Function objects
 
-A function exposes **no** attributes: `__name__`, `__doc__`, `__qualname__` and
-`__module__` all raise `AttributeError: 'function' object has no attribute '<name>'`, and new ones cannot be set —
+A function exposes only `__annotations__` and `__annotate__` (see [typing.md](typing.md#annotations)):
+`__name__`, `__doc__`, `__qualname__` and `__module__` all raise
+`AttributeError: 'function' object has no attribute '<name>'`, and attributes cannot be set —
 `fn.tag = True` raises
 `AttributeError: 'function' object has no attribute 'tag' and no __dict__ for setting new attributes`. CPython supports
 all of these.
@@ -182,6 +193,29 @@ This bounds what a decorator can do: it can call, wrap, store or replace the
 function it receives, but cannot ask the function about itself, so
 `functools.wraps`-style metadata copying, registries keyed by `fn.__name__`, and
 attribute tagging for later discovery all have no equivalent.
+
+## Walrus assignments in lambda defaults
+
+Monty does not recognize a new enclosing local introduced only by a lambda default.
+
+For example, Monty raises `SyntaxError: no binding for nonlocal 'name' found` for this code:
+
+```python test="skip"
+def outer():
+    assert (lambda value=(name := 0): value)() == 0
+
+    def inner():
+        nonlocal name
+        name += 1
+
+    inner()
+    return name
+
+
+assert outer() == 1
+```
+
+CPython accepts this code, and `outer()` returns `1`.
 
 ## Ordering comparisons
 
@@ -217,6 +251,11 @@ comparison therefore differs when the *same* `NaN` object appears on both sides:
 unequal to itself. *Distinct* `NaN` objects agree on both
 (`[1, float('nan')] < [1, float('nan'), 3]` is `False` either way), as does a
 direct `x == x` (`False` on both). Named tuples inherit all of this from `tuple`.
+
+`Counter.most_common(n)` differs the same way: CPython ranks equal counts by
+tuple comparison, so the same `NaN` held as several counts can come back in
+another order (`Counter(a=x, b=x, c=x).most_common(2)` is
+`[('a', x), ('b', x)]` in CPython, `[('b', x), ('a', x)]` in Monty).
 
 ## What *does* work
 

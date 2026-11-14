@@ -12,7 +12,13 @@
 import { context as ContextAPI, type Context } from '@opentelemetry/api'
 
 import type { NativeSession } from '../native-addon.js'
-import { bindPrintCallback, getCallbackContext, runWithCallbackContext } from './callbackContext.js'
+import { isAsyncFunction } from './asyncFunction.js'
+import {
+  bindPrintCallback,
+  bindStreamedCallCallback,
+  getCallbackContext,
+  runWithCallbackContext,
+} from './callbackContext.js'
 import {
   AttrNotExposed,
   attributeErrorMessage,
@@ -24,8 +30,13 @@ import {
 } from './classInstance.js'
 import {
   MontyCrashedError,
+  MontyDisconnectError,
   MontyError,
   montyErrorFromNative,
+  MontyRefusedError,
+  MontyConfigurationError,
+  MontyConnectError,
+  MontyShutdown,
   MontyTypingError,
   notCallableMessage,
   ProtocolError,
@@ -36,15 +47,22 @@ import { checkModuleName, ExternalModule, kindOf } from './externalModule.js'
 import { mountsToNative } from './mount.js'
 import type { MountDir } from './mountDir.js'
 import {
+  type CrashedTurn,
+  type DisconnectedTurn,
+  type DumpedTurn,
+  type EnterTurn,
   type FunctionCallTurn,
   type LoadedTurn,
+  type ModuleReadTurn,
   type NameLookupTurn,
   type NativeFutureResult,
+  type NativeStreamedCall,
   type NativeTurn,
   type OkTurn,
   type NotMountedTurn,
   type OsCallTurn,
   type ResolveFuturesTurn,
+  type ShutdownTurn,
   osCallAcceptsFuture,
 } from './native.js'
 import { CollectString, CollectStreams } from './print.js'
@@ -212,14 +230,42 @@ export class MontySession {
     this.ensureUsable()
     this.driven = true
     const printTarget = new PrintTarget(options.printCallback)
-    const onPrint = bindPrintCallback(printTarget.write.bind(printTarget))
     // Discard pending futures between feeds.
     const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, this.modules, options.os)
+    const onPrint = bindPrintCallback((stream, text) => printTarget.write(stream, text))
+    // streamed calls arrive mid-turn, so each starts while the sandbox runs
+    const onStreamedCall = bindStreamedCallCallback((callId) => {
+      if (printTarget.hasFailed()) {
+        // a failed print ends the feed, so no host call may start after one;
+        // still take the call, or the session holds its arguments until it closes
+        this.native.takeStreamedCall(callId)
+      } else {
+        answerer.startStreamedCall(callId)
+      }
+    })
+    return this.driveFeed(code, options, printTarget, answerer, onPrint, onStreamedCall)
+  }
+
+  /** `feedRun`'s drive loop: feeds `code`, then answers each suspension until the turn ends. */
+  private async driveFeed(
+    code: string,
+    options: FeedOptions,
+    printTarget: PrintTarget,
+    answerer: TurnAnswerer,
+    onPrint: ReturnType<typeof bindPrintCallback>,
+    onStreamedCall: ReturnType<typeof bindStreamedCallCallback>,
+  ): Promise<unknown> {
     let turn = (await this.native.feed(
       code,
       prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
-      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false },
+      {
+        cwd: options.cwd,
+        skipTypeCheck: options.skipTypeCheck ?? false,
+        asyncFunctions: asyncFunctionNames(options.externalLookup),
+        // the native checkout keeps it for this feed's later turns and drops it with the session
+        onStreamedCall,
+      },
       onPrint,
     )) as NativeTurn
     for (;;) {
@@ -234,9 +280,13 @@ export class MontySession {
           printTarget.throwIfFailed()
           throw new MontyTypingError(turn.diagnostics)
         case 'crashed':
-          throw this.poison(new MontyCrashedError(turn.message, turn))
+        case 'disconnected':
+        case 'shutdown':
+          throw this.poison(lostSessionError(turn))
         case 'protocol':
           throw this.poison(new ProtocolError(turn.message))
+        case 'configuration':
+          throw this.poison(new MontyConfigurationError(turn.message))
       }
       // Print failures take precedence. On a suspension the worker is waiting
       // for a resume we will never send — poison so the next feed fails cleanly
@@ -288,7 +338,11 @@ export class MontySession {
       code,
       prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
-      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false },
+      {
+        cwd: options.cwd,
+        skipTypeCheck: options.skipTypeCheck ?? false,
+        // no `asyncFunctions`: every call suspends, so each reaches a snapshot
+      },
       driver.onPrint,
     )) as NativeTurn
     return driver.advance(turn)
@@ -300,8 +354,10 @@ export class MontySession {
    * taken mid-execution.
    *
    * Valid only on a fresh session, before any feed or load (it replaces the
-   * whole session); throws otherwise. The dump restores its own resource limits
-   * and type-check state. Throws if the dump is actually a suspended snapshot.
+   * whole session); throws otherwise. Checkout limits cap the restored limits.
+   * The execution clock must match the dump. Type-check state comes from the dump.
+   * The checkout's `osPolicy` replaces the dump's.
+   * Throws if the dump is actually a suspended snapshot.
    *
    * Only load unmodified bytes from a trusted, compatible Monty producer.
    * The caller must establish provenance and integrity; Monty does not authenticate
@@ -318,9 +374,13 @@ export class MontySession {
       case 'loaded':
         return
       case 'crashed':
-        throw await this.failedLoad(new MontyCrashedError(turn.message, turn))
+      case 'disconnected':
+      case 'shutdown':
+        throw await this.failedLoad(lostSessionError(turn))
       case 'protocol':
         throw await this.failedLoad(new ProtocolError(turn.message))
+      case 'configuration':
+        throw await this.failedLoad(new MontyConfigurationError(turn.message))
       case 'error':
         throw await this.failedLoad(montyErrorFromNative(turn.exception))
       default:
@@ -332,12 +392,15 @@ export class MontySession {
    * Restores a dumped **suspended** snapshot — bytes from `feedStart` +
    * `snapshot.dump()` — and resolves to the snapshot to resume. Use
    * [`loadSession`] for a dump taken between feeds. Its snapshot trust requirements
-   * also apply here.
+   * also apply here. Checkout limits cap the restored limits, and the execution
+   * clock must match the dump.
    *
    * Valid only on a fresh session, before any feed or load; throws otherwise.
    * Re-supply the same `mount`s the paused feed used (their host paths are not
    * in the dump), or its filesystem calls degrade into unhandled OS calls.
-   * Throws if the dump is actually an idle session.
+   * The checkout's `osPolicy` replaces the dump's, so the rest of the feed reads
+   * its clock, zone, sleep, process-time and random settings. Throws if the dump
+   * is actually an idle session.
    */
   async loadSnapshot(state: Uint8Array, options: LoadSnapshotOptions = {}): Promise<Snapshot> {
     this.claimFresh()
@@ -394,10 +457,16 @@ export class MontySession {
    * Serializes the worker's session state into opaque bytes via monty's dump
    * format. The session stays usable; the bytes can only be restored by a
    * monty worker of the same version.
+   *
+   * Against a `MontyRemote` server that stores sessions, returns the ID of
+   * a record holding the current state instead; `loadSession` / `loadSnapshot`
+   * accept it like dump bytes. A server that stores nothing may refuse with
+   * `MontyRuntimeError`, and the session carries on.
    */
   async dump(): Promise<Buffer> {
     this.ensureUsable()
-    return bufferFrom(await this.native.dump())
+    const printTarget = new PrintTarget(undefined)
+    return dumpSession(this.native, printTarget.write.bind(printTarget), (err) => this.poison(err))
   }
 
   /**
@@ -426,9 +495,13 @@ export class MontySession {
       case 'error':
         throw montyErrorFromNative(turn.exception)
       case 'crashed':
-        throw this.poison(new MontyCrashedError(turn.message, turn))
+      case 'disconnected':
+      case 'shutdown':
+        throw this.poison(lostSessionError(turn))
       case 'protocol':
         throw this.poison(new ProtocolError(turn.message))
+      case 'configuration':
+        throw this.poison(new MontyConfigurationError(turn.message))
       default:
         throw this.poison(new ProtocolError(`unexpected turn kind: ${(turn as { kind: string }).kind}`))
     }
@@ -440,6 +513,54 @@ export class MontySession {
    */
   get workerPid(): number | undefined {
     return this.native.workerPid ?? undefined
+  }
+
+  /**
+   * The opaque ID a `MontyRemote` server that stores sessions gave this
+   * session, or `undefined`: local workers, ephemeral sessions and servers that
+   * store nothing. Pass it to `loadSession` / `loadSnapshot` on a fresh session
+   * to start a new session from the state stored under it. Changes when the
+   * pool resumes the session after a server shutdown.
+   *
+   * Before any request this opens the session, costing one round trip and
+   * raising what a refused first request would. Waits for a running turn;
+   * after `close()`, resolves to the last ID seen.
+   */
+  async getSessionId(): Promise<Buffer | undefined> {
+    if (!this.closed) {
+      const turn = (await this.native.open(() => {})) as NativeTurn | OkTurn
+      switch (turn.kind) {
+        case 'ok':
+          break
+        case 'error':
+          throw this.poison(montyErrorFromNative(turn.exception))
+        case 'crashed':
+        case 'disconnected':
+        case 'shutdown':
+          throw this.poison(lostSessionError(turn))
+        case 'protocol':
+          throw this.poison(new ProtocolError(turn.message))
+        case 'configuration':
+          throw this.poison(new MontyConfigurationError(turn.message))
+        default:
+          throw this.poison(new ProtocolError(`unexpected turn kind: ${(turn as { kind: string }).kind}`))
+      }
+    }
+    return this.cachedSessionId()
+  }
+
+  /**
+   * @deprecated `undefined` until the session's first request has been
+   * answered, so it races that request; use `await getSessionId()`.
+   */
+  get sessionId(): Buffer | undefined {
+    return this.cachedSessionId()
+  }
+
+  /** The ID as of the last completed turn, without opening the session. */
+  private cachedSessionId(): Buffer | undefined {
+    const id = this.native.sessionId
+    return id === undefined || id === null ? undefined : bufferFrom(id)
   }
 
   /**
@@ -532,7 +653,10 @@ class TurnAnswerer {
           next = this.native.resumeNameLookup(null, null, onPrint)
         } else {
           const v = lookup[turn.name]
-          if (typeof v === 'function') {
+          if (isAsyncFunction(v)) {
+            // by value, so the native converter sees that it is async
+            next = this.native.resumeNameLookup(null, { value: v }, onPrint)
+          } else if (typeof v === 'function') {
             next = this.native.resumeNameLookup((v as ExternalFunction).name || '<anonymous>', null, onPrint)
           } else {
             next = this.native.resumeNameLookup(null, { value: prepare(v, this.instances) }, onPrint)
@@ -611,6 +735,52 @@ class TurnAnswerer {
   }
 
   /**
+   * Starts a call the native session announced mid-turn to the feed's streamed-call
+   * callback (see `NativeSession::feed` in src/pool.rs), registering its future at once so a later `resolveFutures`
+   * finds it. Runs in the call's callback context, in order with the turn's prints.
+   */
+  startStreamedCall(callId: number): void {
+    const call = this.native.takeStreamedCall(callId) as NativeStreamedCall | null
+    if (call !== null) {
+      this.registerFuture(
+        call.callId,
+        this.startCall(call).then(({ promise }) => promise),
+      )
+    }
+  }
+
+  /** Resolves and calls one started call's function; the promise settles with its outcome. */
+  private async startCall(call: NativeStreamedCall): Promise<{ promise: Promise<unknown> }> {
+    let resolved: { value: unknown } | undefined
+    try {
+      resolved = await this.hostEntry(call.functionName)
+    } catch (err) {
+      return { promise: Promise.reject(err) }
+    }
+    if (resolved === undefined) {
+      // a future settles only with a value or an error, so "not found" is the NameError a suspension raises
+      return { promise: Promise.reject(pythonError('NameError', `name '${call.functionName}' is not defined`)) }
+    }
+    if (typeof resolved.value !== 'function') {
+      return { promise: Promise.reject(pythonError('TypeError', notCallableMessage(resolved.value))) }
+    }
+    return { promise: this.callAsPromise(resolved.value as ExternalFunction, call) }
+  }
+
+  /** Calls `fn` with the call's arguments, folding a synchronous return or throw into a promise. */
+  private callAsPromise(
+    fn: ExternalFunction,
+    call: { args: unknown[]; kwargs: [unknown, unknown][] },
+  ): Promise<unknown> {
+    try {
+      const [args, kwargs] = restoreCallArgs(call, this.instances)
+      return Promise.resolve(fn(...(buildCallArgs(args, kwargs) as never[])))
+    } catch (err) {
+      return Promise.reject(err)
+    }
+  }
+
+  /**
    * Resolves a module, caching each factory's result for the session.
    * Await only real Promises. Invalid results raise TypeError at the requesting
    * import, call or stub request (see [`HostModules.install`]).
@@ -632,7 +802,8 @@ class TurnAnswerer {
   }
 
   /**
-   * Returns the host module, or not-found for the sandbox to raise `ModuleNotFoundError`.
+   * Returns the host module, else the module's `.py` file from its search path
+   * (see `answerImportFile`), else not-found for `ModuleNotFoundError`.
    */
   private async answerImport(call: OsCallTurn, onPrint: PrintCallback): Promise<object> {
     const [args] = restoreCallArgs(call, this.instances)
@@ -645,7 +816,7 @@ class TurnAnswerer {
       // Raise factory and getter errors at the sandbox import.
       const entry = await this.module(name)
       if (entry === undefined) {
-        return this.native.resumeNotFound(onPrint)
+        return this.answerImportFile(name, args[1], onPrint)
       }
       value = moduleValue(name, entry)
     } catch (err) {
@@ -653,6 +824,63 @@ class TurnAnswerer {
       return this.native.resumeError(excType, message, onPrint)
     }
     return this.resumeWithValue(value, onPrint)
+  }
+
+  /**
+   * Answers an import no host module serves with the module's `.py` file: each
+   * candidate on its search path is read through `os` first, then the feed's
+   * mounts. A call with no search path, from a worker predating file imports,
+   * gets not-found.
+   */
+  private async answerImportFile(name: string, searchPath: unknown, onPrint: PrintCallback): Promise<object> {
+    for (const path of importCandidates(name, searchPath)) {
+      const read = await this.readImportCandidate(path, onPrint)
+      switch (read.kind) {
+        case 'moduleText':
+          return this.native.resumeModuleFile(path, read.text, onPrint)
+        case 'moduleReadError':
+          return this.native.resumeError(read.excType, read.message, onPrint)
+        case 'moduleMissing':
+        case 'notMounted':
+          continue
+        default:
+          // the mount read lost the worker: that is the turn's outcome
+          return read
+      }
+    }
+    return this.native.resumeNotFound(onPrint)
+  }
+
+  /** Reads one candidate file of an import: `os` first, the feed's mounts when it declines. */
+  private async readImportCandidate(
+    path: string,
+    onPrint: PrintCallback,
+  ): Promise<ModuleReadTurn | NotMountedTurn | NativeTurn> {
+    if (this.os !== undefined) {
+      let returned: unknown
+      try {
+        // normalized as for any OS call, so a handler checking a prefix never sees `..`
+        returned = this.os(READ_TEXT_CALL, [normalizeVirtualPath(path)], kwargsToRecord([]))
+        if (isThenable(returned)) {
+          returned = await returned
+        }
+      } catch (err) {
+        const { excType, message } = jsErrorParts(err)
+        return MISSING_FILE_ERRORS.has(excType)
+          ? { kind: 'moduleMissing' }
+          : { kind: 'moduleReadError', excType, message }
+      }
+      if (returned !== NOT_HANDLED) {
+        return typeof returned === 'string'
+          ? { kind: 'moduleText', text: returned }
+          : {
+              kind: 'moduleReadError',
+              excType: 'RuntimeError',
+              message: 'invalid return type: Path.read_text for an import must return a str',
+            }
+      }
+    }
+    return (await this.native.readFromMounts(path, onPrint)) as ModuleReadTurn | NotMountedTurn | NativeTurn
   }
 
   /**
@@ -772,7 +1000,7 @@ class TurnAnswerer {
   }
 
   /**
-   * Handles imports and sleeps locally; other calls try mounts, `os`, then the sandbox default.
+   * Handles imports, type hints and sleeps locally; other calls try mounts, `os`, then the sandbox default.
    */
   async answerOsCall(call: OsCallTurn, onPrint: PrintCallback): Promise<object> {
     if (call.functionName === IMPORT_CALL) {
@@ -780,6 +1008,10 @@ class TurnAnswerer {
     }
     if (call.functionName === IMPORT_STUBS_CALL) {
       return this.answerImportStubs(call, onPrint)
+    }
+    if (call.functionName === GET_TYPE_HINTS_CALL) {
+      // JavaScript functions and classes carry no type hints, which the sandbox reads as `{}`.
+      return this.native.resumeNotHandled(onPrint)
     }
     const wait = this.systemSleepFor(call)
     if (wait !== null) {
@@ -955,6 +1187,11 @@ class PrintTarget {
     }
   }
 
+  /** Whether a print callback has failed this feed. */
+  hasFailed(): boolean {
+    return this.failed
+  }
+
   /** Print failures take precedence over the turn's own outcome. */
   throwIfFailed(): void {
     if (this.failed) {
@@ -975,7 +1212,7 @@ class SnapshotDriver {
 
   /** Exposed so the session's first turn can stream prints through it. */
   get onPrint(): PrintCallback {
-    return bindPrintCallback(this.printTarget.write.bind(this.printTarget))
+    return bindPrintCallback((stream, text) => this.printTarget.write(stream, text))
   }
 
   constructor(
@@ -1002,9 +1239,13 @@ class SnapshotDriver {
           this.printTarget.throwIfFailed()
           throw new MontyTypingError(turn.diagnostics)
         case 'crashed':
-          throw this.poison(new MontyCrashedError(turn.message, turn))
+        case 'disconnected':
+        case 'shutdown':
+          throw this.poison(lostSessionError(turn))
         case 'protocol':
           throw this.poison(new ProtocolError(turn.message))
+        case 'configuration':
+          throw this.poison(new MontyConfigurationError(turn.message))
         case 'osCall':
           // Every OS call surfaces; mounts and the `os` callback are consulted
           // only by `resumeAuto`.
@@ -1053,6 +1294,11 @@ class SnapshotDriver {
     return this.advance(next)
   }
 
+  /** Whether host promises remain for automatic resolution. */
+  get hasPendingFutures(): boolean {
+    return this.answerer.futures.size > 0
+  }
+
   // resume primitives — each runs one turn, then advances to the next snapshot
 
   async resumeReturn(value: unknown): Promise<Snapshot> {
@@ -1095,11 +1341,15 @@ class SnapshotDriver {
   }
 
   async resolveFutures(results: NativeFutureResult[]): Promise<Snapshot> {
-    return this.advance((await this.native.resolveFutures(results, this.onPrint)) as NativeTurn)
+    const next = (await this.native.resolveFutures(results, this.onPrint)) as NativeTurn
+    for (const result of results) {
+      this.answerer.futures.delete(result.callId)
+    }
+    return this.advance(next)
   }
 
   async dump(): Promise<Buffer> {
-    return bufferFrom(await this.native.dump())
+    return dumpSession(this.native, this.onPrint, this.poison)
   }
 }
 
@@ -1131,7 +1381,7 @@ class SingleUse {
   }
 
   /** Rejects operations on a suspension the caller has already answered. */
-  private ensureUnused(): void {
+  protected ensureUnused(): void {
     if (this.used) {
       throw new Error('snapshot has already been resumed')
     }
@@ -1321,13 +1571,17 @@ export class FutureSnapshot extends SingleUse {
   }
 
   /**
-   * Waits for one or more of the pending promises registered by earlier
-   * `resumeAuto` calls to settle, delivers them, and resolves to the next
-   * snapshot. Throws if there are no tracked promises for these ids — e.g. on a
-   * snapshot restored via `loadSnapshot`, whose promises lived in the previous
-   * process (resolve those manually with `resume([...])`). Resumes at most once.
+   * Waits for registered host promises, delivers their outcomes, and returns
+   * the next snapshot. With no registered promises (e.g. after `loadSnapshot`),
+   * rejects without consuming the snapshot or invalidating the session;
+   * use `resume([...])` instead. Once automatic resolution starts, the snapshot
+   * is consumed even if it fails.
    */
   resumeAuto(): Promise<Snapshot> {
+    this.ensureUnused()
+    if (this.turn.pendingCallIds.length > 0 && !this.driver.hasPendingFutures) {
+      return Promise.reject(new Error('no pending host promises to resume; use resume([...])'))
+    }
     this.claim()
     return this.driver.resumeAuto(this.turn)
   }
@@ -1348,6 +1602,9 @@ const IMPORT_CALL = 'import'
 
 /** The OS call a type-checked feed makes for the stubs of the host modules it imports. */
 const IMPORT_STUBS_CALL = 'import_stubs'
+
+/** The OS call `typing.get_type_hints()` makes for a host function or class. */
+const GET_TYPE_HINTS_CALL = 'typing.get_type_hints'
 
 /** Modules keyed by import name, read when a snippet first imports one: invalid identifiers, keywords
  *  and sandbox-provided names throw there. Factories run at most once per session and may return a Promise. */
@@ -1454,10 +1711,35 @@ function moduleValue(path: string, entry: ExternalModule): HostModuleValue {
   return new HostModuleValue(path, entry.id, attrs)
 }
 
+/** A proxy named by its dotted path; async when `fn` is, so its calls still start without waiting. */
 function namedHostFunction(name: string, fn: ExternalFunction): ExternalFunction {
-  const proxy: ExternalFunction = (...args: unknown[]) => fn(...(args as never[]))
+  const proxy: ExternalFunction = isAsyncFunction(fn)
+    ? async (...args: unknown[]) => await fn(...(args as never[]))
+    : (...args: unknown[]) => fn(...(args as never[]))
   Object.defineProperty(proxy, 'name', { value: name })
   return proxy
+}
+
+/**
+ * The own `externalLookup` keys holding async functions, sent with the feed so
+ * a bare call to one starts without waiting for the host.
+ * Reads data properties only: a getter runs lazily, when the sandbox reads its
+ * name, and the converter checks the value it returns then.
+ */
+function asyncFunctionNames(lookup: Record<string, unknown> | undefined): string[] {
+  if (lookup === undefined) {
+    return []
+  }
+  return Object.entries(Object.getOwnPropertyDescriptors(lookup))
+    .filter(([, descriptor]) => 'value' in descriptor && isAsyncFunction(descriptor.value))
+    .map(([key]) => key)
+}
+
+/** A JS error the sandbox re-raises as Python's `excType` (see [`jsErrorParts`]). */
+function pythonError(excType: string, message: string): Error {
+  const err = new Error(message)
+  err.name = excType
+  return err
 }
 
 /** Positional args, with kwargs appended as an object when present. */
@@ -1536,8 +1818,145 @@ function jsErrorParts(err: unknown): { excType: string; message: string } {
   return { excType: 'RuntimeError', message: String(err) }
 }
 
+/** The OS call an import's candidate file is read with, as `open()`'s handler sees it. */
+const READ_TEXT_CALL = 'Path.read_text'
+
+/** The most search-path directories an import searches, as `MAX_SEARCH_DIRS` in monty-types. */
+const MAX_SEARCH_DIRS = 32
+
+/** Errors reading a candidate that mean its file is not there, so the search moves on. */
+const MISSING_FILE_ERRORS = new Set(['FileNotFoundError', 'NotADirectoryError', 'IsADirectoryError', 'PermissionError'])
+
+/**
+ * An import's candidate files, mirroring `ImportArgs::candidates` in
+ * monty-types: per directory, the package `name/__init__.py` before the module
+ * `name.py`. The call comes from an untrusted worker, so a name that is not
+ * dotted identifiers, or a directory that is not absolute, yields nothing, and
+ * only the first `MAX_SEARCH_DIRS` remaining directories are searched. The
+ * paths are built one at a time, so a long name times many directories never
+ * sits in memory, and kept as sent, so mounts check them before collapsing `..`.
+ */
+function* importCandidates(name: string, searchPath: unknown): Generator<string> {
+  if (!Array.isArray(searchPath) || !name.split('.').every((part) => IDENTIFIER.test(part))) {
+    return
+  }
+  const leaf = name.slice(name.lastIndexOf('.') + 1)
+  let searched = 0
+  for (const dir of searchPath) {
+    if (searched === MAX_SEARCH_DIRS) {
+      return
+    }
+    if (typeof dir === 'string' && dir.startsWith('/') && !dir.includes('\0')) {
+      searched++
+      const base = dir.endsWith('/') ? dir.slice(0, -1) : dir
+      yield `${base}/${leaf}/__init__.py`
+      yield `${base}/${leaf}.py`
+    }
+  }
+}
+
+/** An absolute POSIX path with `.` removed and `..` resolved, stopping at `/`, as `normalize_virtual_path` in monty-types. */
+function normalizeVirtualPath(path: string): string {
+  const parts: string[] = []
+  for (const segment of path.split('/')) {
+    if (segment === '..') {
+      parts.pop()
+    } else if (segment !== '' && segment !== '.') {
+      parts.push(segment)
+    }
+  }
+  return `/${parts.join('/')}`
+}
+
+/** A Python identifier, as far as a module name component needs one. */
+const IDENTIFIER = /^[\p{XID_Start}_]\p{XID_Continue}*$/u
+
 function isThenable(value: unknown): value is PromiseLike<unknown> {
   return typeof value === 'object' && value !== null && typeof (value as { then?: unknown }).then === 'function'
+}
+
+/**
+ * Checks `native` out of its pool, raising what a turn would for the same
+ * failure: `MontyRuntimeError` when the server rejects the session's
+ * configuration, `MontyRefusedError` when a remote server refuses to open
+ * the stream at all (no session existed, so retrying is safe),
+ * `MontyCrashedError` / `MontyDisconnectError` / `MontyShutdown` when the worker
+ * is lost, and a `TimeoutError` `DOMException` when no worker became available
+ * within the checkout timeout. Remote connection failures raise `MontyConnectError`;
+ * incompatible client settings raise `MontyConfigurationError`.
+ */
+export async function enterSession(
+  native: NativeSession,
+  telemetryContext: unknown,
+  metadata?: { name: string; value: string }[],
+): Promise<void> {
+  const turn = (await native.enter(telemetryContext, metadata)) as EnterTurn
+  switch (turn.kind) {
+    case 'ok':
+      return
+    case 'exhausted':
+      throw new DOMException(turn.message, 'TimeoutError')
+    case 'error':
+      throw montyErrorFromNative(turn.exception)
+    case 'crashed':
+    case 'disconnected':
+    case 'shutdown':
+      throw lostSessionError(turn)
+    case 'refused':
+      throw new MontyRefusedError(turn.message, turn)
+    case 'connect':
+      throw new MontyConnectError(turn.message, turn)
+    case 'configuration':
+      throw new MontyConfigurationError(turn.message)
+    case 'typingError':
+      throw new Error(turn.diagnostics)
+    case 'protocol':
+      throw new Error(turn.message)
+  }
+}
+
+/**
+ * The error for a turn that lost the session's worker: a crash, a dropped
+ * remote connection, or a remote server shutting down.
+ */
+function lostSessionError(turn: CrashedTurn | DisconnectedTurn | ShutdownTurn): MontyError {
+  switch (turn.kind) {
+    case 'crashed':
+      return new MontyCrashedError(turn.message, turn)
+    case 'disconnected':
+      return new MontyDisconnectError(turn.message, turn)
+    case 'shutdown':
+      return new MontyShutdown(turn.message, turn.dump === undefined ? null : bufferFrom(turn.dump))
+  }
+}
+
+/**
+ * Runs a dump turn, resolving to the session's state or a storing server's
+ * record ID. A refused dump throws `MontyRuntimeError` and leaves the session
+ * usable; a lost worker or protocol failure poisons it.
+ */
+async function dumpSession(
+  native: NativeSession,
+  onPrint: PrintCallback,
+  poison: (err: Error) => Error,
+): Promise<Buffer> {
+  const turn = (await native.dump(onPrint)) as NativeTurn | DumpedTurn
+  switch (turn.kind) {
+    case 'dumped':
+      return bufferFrom(turn.state)
+    case 'error':
+      throw montyErrorFromNative(turn.exception)
+    case 'crashed':
+    case 'disconnected':
+    case 'shutdown':
+      throw poison(lostSessionError(turn))
+    case 'protocol':
+      throw poison(new ProtocolError(turn.message))
+    case 'configuration':
+      throw poison(new MontyConfigurationError(turn.message))
+    default:
+      throw poison(new ProtocolError(`unexpected turn kind: ${(turn as { kind: string }).kind}`))
+  }
 }
 
 function bytesForNative(bytes: Uint8Array): Buffer {

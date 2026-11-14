@@ -6,6 +6,8 @@ export declare function _installTelemetry(
   metricsEnabled: boolean,
 ): void
 
+export declare function _defaultMaxCheckoutsPerWorker(): number
+
 export declare function _montyVersion(): string
 
 export declare function _setTelemetryMetricsEnabled(enabled: boolean): void
@@ -26,7 +28,8 @@ export declare class NativeMountDir {
 
 export declare class NativePool {
   constructor(options?: unknown)
-  start(): Promise<void>
+  static remote(options?: unknown): NativePool
+  start(): Promise<object>
   checkout(options?: unknown): NativeSession
   close(): Promise<void>
 }
@@ -34,21 +37,26 @@ export declare class NativePool {
 export declare class NativeSession {
   readonly workerId?: number
   readonly workerPid?: number
-  enter(telemetryContext?: unknown): Promise<void>
+  readonly sessionId?: Uint8Array | null
+  enter(telemetryContext?: unknown, metadata?: unknown): Promise<object>
   feed(...args: unknown[]): Promise<object>
   feedStart(...args: unknown[]): Promise<object>
   restore(...args: unknown[]): Promise<object>
-  dump(): Promise<Uint8Array>
+  dump(...args: unknown[]): Promise<object>
   finish(): Promise<void>
   installDependencies(...args: unknown[]): Promise<object>
+  open(...args: unknown[]): Promise<object>
   resumeReturn(...args: unknown[]): Promise<object>
   resumeError(...args: unknown[]): Promise<object>
   resumeNotFound(...args: unknown[]): Promise<object>
   resumeNotHandled(...args: unknown[]): Promise<object>
   resumeFromMounts(...args: unknown[]): Promise<object>
+  readFromMounts(...args: unknown[]): Promise<object>
+  resumeModuleFile(...args: unknown[]): Promise<object>
   resumeFuture(...args: unknown[]): Promise<object>
   resumeNameLookup(...args: unknown[]): Promise<object>
   resumeLazyAttr(...args: unknown[]): Promise<object>
   resumeNameLookupError(...args: unknown[]): Promise<object>
   resolveFutures(...args: unknown[]): Promise<object>
+  takeStreamedCall(callId: number): object | null
 }

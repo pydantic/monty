@@ -17,7 +17,7 @@ export type TypeCheckFormat =
 
 /**
  * `Configure.type_check_format` wire numbers (see
- * proto/monty/v1/monty.proto); 0 is UNSPECIFIED, which the child renders as
+ * proto/monty/v1/monty.proto); 0 is UNSPECIFIED, which the worker renders as
  * `full`. Only the wasm transport needs these — the napi binding passes the
  * name through to Rust.
  */
@@ -60,7 +60,7 @@ export type AssertMessageAnnotations = boolean | number
 /**
  * Normalizes {@link AssertMessageAnnotations} to the wire encoding of
  * `Configure.assert_message_annotations`: `undefined`/`true` → absent (the
- * child's default, a 120-byte truncation), `false` → `0` (off), an integer →
+ * worker's default, a 120-byte truncation), `false` → `0` (off), an integer →
  * a custom truncation length. Throws `RangeError` for numbers the wire's
  * uint32 cannot carry (non-integers, `< 1`, `> 2**32 - 1`).
  */
@@ -119,6 +119,9 @@ export interface OsPolicy {
   sleep?: SleepMode
   /**
    * Maximum seconds per `'system'` sleep (default 10; `Infinity` disables the cap).
+   * Longer sleeps return normally at the cap without a warning, unless the
+   * capped delay would exceed `maxTotalSleepSecs`.
+   * This is independent of `requestTimeout`.
    * Raises `RangeError` with other sleep modes.
    */
   sleepSystemMax?: number
@@ -269,11 +272,20 @@ function encodeRandomSeed(start: RandomStart): EncodedRandomSeed {
   throw new TypeError("randomStart must be 'system', 'call_host' or { seed: number | bigint | string | Uint8Array }")
 }
 
-/** Rejects recycle counts that native integer conversion would truncate or wrap. */
-export function validateMaxCheckouts(value: number | undefined): void {
-  if (value !== undefined && (!Number.isInteger(value) || value < 0 || value > 0xffffffff)) {
+/** Default `maxCheckoutsPerWorker`, matching `monty_pool::DEFAULT_MAX_CHECKOUTS_PER_WORKER`. */
+export const DEFAULT_MAX_CHECKOUTS_PER_WORKER = 1000
+
+/**
+ * Resolves `maxCheckoutsPerWorker`: omitted means the default, `null` never recycles.
+ * Rejects counts that native integer conversion would truncate or wrap.
+ */
+export function resolveMaxCheckouts(value: number | null | undefined): number | undefined {
+  if (value === null) return undefined
+  const count = value ?? DEFAULT_MAX_CHECKOUTS_PER_WORKER
+  if (!Number.isInteger(count) || count < 0 || count > 0xffffffff) {
     throw new TypeError('maxCheckoutsPerWorker must be an integer between 0 and 4294967295')
   }
+  return count
 }
 
 /** Two's-complement little-endian bytes of `n`, as `BigInt::from_signed_bytes_le` reads them. */

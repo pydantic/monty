@@ -16,8 +16,8 @@ endif
 
 .PHONY: install-py
 install-py: .uv ## Install python dependencies
-	# --only-dev avoids building the python packages; --inexact preserves builds installed by make dev-py
-	uv sync --all-packages --only-dev --inexact
+	# --only-group avoids building the python packages; --inexact preserves builds installed by make dev-py
+	uv sync --all-packages --only-group dev --only-group grpc --inexact
 
 .PHONY: install-js
 install-js: ## Install JS package dependencies
@@ -190,7 +190,7 @@ test-type-checking: ## Run rust tests on monty-type-checking
 	cargo test -p monty-type-checking -p monty-typeshed
 
 .PHONY: test-subprocess
-test-subprocess: ## Run subprocess protocol, child-mode, and worker-pool tests
+test-subprocess: ## Run subprocess protocol, worker-mode, and worker-pool tests
 	cargo build -p monty-runtime
 	cargo test -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
 
@@ -235,7 +235,7 @@ testcov: ## Run Rust tests with coverage, print table, and generate HTML report
 	@cargo llvm-cov --version > /dev/null 2>&1 || echo 'Please run: `cargo install cargo-llvm-cov`'
 	cargo llvm-cov clean --workspace
 	echo "coverage for `make test-no-features`"
-	cargo llvm-cov --no-report -p monty
+	cargo llvm-cov --no-report -p monty -p monty-fs -p monty-types
 	cargo llvm-cov run --no-report -p monty-datatest
 	echo "coverage for `make test-memory-model-checks`"
 	cargo llvm-cov --no-report -p monty --features memory-model-checks
@@ -287,7 +287,7 @@ bench-pool: ## Run subprocess pool benchmarks (spawn, checkout, wire round-trips
 	MONTY_TEST_BIN=$(CURDIR)/target/release/monty cargo bench -p monty-bench --bench pool
 
 .PHONY: bench-decode
-bench-decode: ## Run child-frame protobuf decode benchmarks
+bench-decode: ## Run worker-frame protobuf decode benchmarks
 	cargo bench -p monty-bench --bench decode
 
 .PHONY: dev-bench
