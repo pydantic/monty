@@ -99,10 +99,25 @@ An uncaught conversion exception ends the feed as a runtime error.
 Values supplied through `inputs` or `external_lookup` instead fail host-side;
 see [Python error handling](../quickstart/python.md#errors).
 
-Some sandbox results have no CPython equivalent: a namedtuple field starting with `_` (which `rename=True` produces),
-or a dict keyed by, or a set containing, a class-instance proxy, which is unhashable.
+Some sandbox results have no CPython equivalent, such as a namedtuple field starting with `_` (which `rename=True`
+produces).
+A Python host also rejects a value whose dict and set keys share too many CPython hashes, with `ValueError`.
+The sandbox hashes `int`s differently, so on 64-bit hosts keys like `k * (2**61 - 1)` are cheap to build there,
+but all hash to 0 in CPython, where inserting n of them costs O(n²).
+The limit is about a million key comparisons summed over every dict and set in the value (around 1,400 such `int` keys),
+each weighted by the key's size, so fewer colliding tuple or long `int` keys reach it.
+A key's size counts each value it holds at any depth, including list, dict and instance attribute values, plus one
+per 8 bytes of a long `int`, `str` or `bytes`.
+It also rejects a value whose keys nest one tuple many times, like `a = (a, a)` repeated: counting repeats, the sizes
+of all its dict and set keys may total 16 million, or four times the size of the whole value, whichever is larger.
+This total leaves out values inside lists, dicts and sets, which hashing never reaches.
 A Python host raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] for such a result, with the original
 exception type and the message prefixed `cannot convert the result to a Python value: `.
+
+JavaScript hosts cannot see engine hashes, so they bound time instead: inserting a value's `Map` and `Set` keys may take
+250 ms plus 1 µs per key, after which decoding fails with an `Error`.
+Keys that share a bucket in the host engine, such as BigInts with equal low 64 bits in V8, reach this limit.
+Because the limit is a time limit, a heavily loaded host could, rarely, reject a large value whose keys do not collide.
 
 ## Message size
 

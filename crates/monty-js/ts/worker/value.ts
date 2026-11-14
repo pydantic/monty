@@ -20,6 +20,15 @@ export const TUPLE_MARKER = '__tuple__'
 /** Memo entry for a container whose children are still being pushed. */
 const IN_PROGRESS = -1
 
+/** Insert time every arena may spend on `Map` and `Set` keys, whatever its size. */
+const INSERT_TIME_FLOOR_MS = 250
+/** Insert time each `Map` or `Set` key adds to its arena's allowance. */
+const INSERT_TIME_PER_KEY_MS = 0.001
+/** Keys inserted between clock reads, so timing stays cheap next to the inserts. */
+const INSERT_CHECK_INTERVAL = 256
+/** The error message for a value whose keys exceed the insert budget, matching the napi decoder. */
+const INSERT_BUDGET_EXCEEDED = 'dict and set keys took too long to insert on the host, likely from hash collisions'
+
 /** Encodes one value as its own arena: the single-value form of [`ArenaEncoder`]. */
 export function encodeValue(value: unknown): { root: number; nodes: ValueNode[] } {
   const encoder = new ArenaEncoder()
@@ -483,6 +492,7 @@ function fileHandleNode(object: Record<string, unknown>): ValueNode {
  */
 export function decodeArena(arena: Arena): (index: number) => unknown {
   const built: unknown[] = []
+  const budget = new InsertBudget()
   const child = (index: number, holder: number): unknown => {
     if (!(index < holder) || !Number.isInteger(index) || index < 0) {
       throw new Error(`component value node index ${index} is not lower than its holder ${holder}`)
@@ -490,7 +500,7 @@ export function decodeArena(arena: Arena): (index: number) => unknown {
     return built[index]
   }
   for (const [holder, node] of arena.nodes.entries()) {
-    built.push(decodeNode(node, holder, child))
+    built.push(decodeNode(node, holder, child, budget))
   }
   return (index) => {
     if (index >= built.length) {
@@ -501,7 +511,12 @@ export function decodeArena(arena: Arena): (index: number) => unknown {
 }
 
 /** Converts one node, resolving its children (already built) through `child`. */
-function decodeNode(node: ValueNode, holder: number, child: (index: number, holder: number) => unknown): unknown {
+function decodeNode(
+  node: ValueNode,
+  holder: number,
+  child: (index: number, holder: number) => unknown,
+  budget: InsertBudget,
+): unknown {
   const items = (indexes: Uint32Array): unknown[] => [...indexes].map((index) => child(index, holder))
   const pair = ({ key, value }: NodePair): [unknown, unknown] => [child(key, holder), child(value, holder)]
   switch (node.tag) {
@@ -527,11 +542,17 @@ function decodeNode(node: ValueNode, holder: number, child: (index: number, hold
       return asTuple(items(node.val))
     case 'named-tuple':
       return asTuple(items(node.val.items))
-    case 'dict':
-      return new Map(node.val.map(pair))
+    case 'dict': {
+      const map = new Map<unknown, unknown>()
+      budget.insertAll(node.val.map(pair), ([key, value]) => map.set(key, value))
+      return map
+    }
     case 'set':
-    case 'frozen-set':
-      return new Set(items(node.val))
+    case 'frozen-set': {
+      const set = new Set<unknown>()
+      budget.insertAll(items(node.val), (item) => set.add(item))
+      return set
+    }
     case 'date':
       return { [TYPE_MARKER]: 'Date', ...node.val }
     case 'datetime':
@@ -595,6 +616,44 @@ function decodeNode(node: ValueNode, holder: number, child: (index: number, hold
         id: node.val.id,
         attrs: attrPairs(node.val.attrs, pair),
       }
+  }
+}
+
+/**
+ * Bounds the time one arena spends inserting `Map` and `Set` keys, like
+ * `InsertBudget` in `convert.rs`: engines hash numbers and BigInts without a
+ * secret seed, so the sandbox can pick keys sharing one bucket and make each
+ * insert walk every earlier key. Engines expose no hashes, so this bounds time.
+ */
+class InsertBudget {
+  /** Insert time charged so far, in milliseconds. */
+  private spent = 0
+  /** Keys inserted so far, each widening the allowance. */
+  private keys = 0
+
+  /** Runs `insert` on each item, reading the clock once per `INSERT_CHECK_INTERVAL` inserts. */
+  insertAll<T>(items: Iterable<T>, insert: (item: T) => void): void {
+    let start = performance.now()
+    let pending = 0
+    for (const item of items) {
+      insert(item)
+      pending += 1
+      if (pending === INSERT_CHECK_INTERVAL) {
+        this.charge(performance.now() - start, pending)
+        start = performance.now()
+        pending = 0
+      }
+    }
+    this.charge(performance.now() - start, pending)
+  }
+
+  /** Charges `elapsed` ms for `keys` inserts, throwing once the arena exceeds its allowance. */
+  private charge(elapsed: number, keys: number): void {
+    this.spent += elapsed
+    this.keys += keys
+    if (this.spent > INSERT_TIME_FLOOR_MS + this.keys * INSERT_TIME_PER_KEY_MS) {
+      throw new Error(INSERT_BUDGET_EXCEEDED)
+    }
   }
 }
 

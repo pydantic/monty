@@ -1,11 +1,11 @@
 //! Host values flowing INTO the sandbox: [`GraphEncoder`] turns Python
 //! objects into one post-order node arena per message.
 
-use std::{collections::HashMap, vec::IntoIter};
+use std::{collections::HashMap, sync::Arc, vec::IntoIter};
 
 use monty_types::{
     MontyComplex, MontyDate, MontyException, MontyObject, MontyUuid,
-    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+    unstable::{self, ClassEq, ClassHash, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
 use pyo3::{
@@ -239,7 +239,7 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
             // sandbox resolves it to its original object
             let proxy = proxy.get();
             let class = ClassTypeSource {
-                class_type: proxy.class_type.clone(),
+                class_type: Arc::clone(&proxy.class_type),
                 attrs: proxy.class_attributes.bind(py).clone(),
                 identity: None,
                 register: None,
@@ -253,7 +253,7 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
         } else if let Ok(proxy) = obj.cast::<PyMontyClassTypeProxy>() {
             let proxy = proxy.get();
             self.enter_class_type(ClassTypeSource {
-                class_type: proxy.class_type.clone(),
+                class_type: Arc::clone(&proxy.class_type),
                 attrs: proxy.attributes.bind(py).clone(),
                 identity: Some(obj.clone()),
                 register: None,
@@ -475,7 +475,7 @@ enum Pending {
     /// Children alternate key, value.
     Dict,
     /// Children alternate attr name, value.
-    ClassType(ClassHeader),
+    ClassType(Arc<ClassHeader>),
     /// The first child is the class node, then attr name, value pairs.
     ClassInstance {
         instance_id: MontyUuid,
@@ -485,7 +485,7 @@ enum Pending {
 /// Where a class node comes from: a `ClassType` wrapper, a proxy, or the
 /// class recorded on an instance proxy.
 struct ClassTypeSource<'py> {
-    class_type: ClassHeader,
+    class_type: Arc<ClassHeader>,
     /// Eager class attrs, `name -> value`.
     attrs: Bound<'py, PyDict>,
     /// The host object to memoize by identity, when there is one.
@@ -506,12 +506,16 @@ impl<'py> ClassTypeSource<'py> {
             .call_method0(intern!(py, "get_eager_attrs"))?
             .cast_into::<PyDict>()?;
         Ok(Self {
-            class_type: ClassHeader {
+            class_type: Arc::new(ClassHeader {
                 name: class.getattr(intern!(py, "__name__"))?.extract()?,
                 id: wrapper_uuid(wrapper, "ClassType")?,
                 host_defined: true,
                 is_dataclass: wrapper.call_method0(intern!(py, "is_dataclass"))?.extract()?,
-            },
+                // The host's own classes compare however Python says; the
+                // sandbox never needs a rule for them.
+                eq: ClassEq::Identity,
+                hash: ClassHash::Identity,
+            }),
             attrs,
             identity: Some(wrapper.clone()),
             register: Some((wrapper.clone(), overwrite)),
@@ -520,17 +524,20 @@ impl<'py> ClassTypeSource<'py> {
 
     /// The class node with the given attr pairs.
     fn node(&self, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
-        Self::node_from(self.class_type.clone(), attrs)
+        Self::node_from(Arc::clone(&self.class_type), attrs)
     }
 
     /// The class node for a header and its attr pairs.
-    fn node_from(class_type: ClassHeader, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
+    fn node_from(class_type: Arc<ClassHeader>, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
+        let class_type = Arc::unwrap_or_clone(class_type);
         MontyNode::ClassType(Box::new(ClassTypeNode {
             name: class_type.name,
             id: class_type.id,
             host_defined: class_type.host_defined,
             is_dataclass: class_type.is_dataclass,
             attrs,
+            eq: class_type.eq,
+            hash: class_type.hash,
         }))
     }
 }

@@ -316,6 +316,20 @@ pub struct Type {
     /// for a sandbox class.
     #[prost(message, optional, tag = "5")]
     pub attrs: ::core::option::Option<NodePairs>,
+    /// How the sandbox compares instances with `==`, so a host proxy can follow
+    /// it. Only the worker sets it, for sandbox classes; the zero value (and an
+    /// older worker's absent field) means identity.
+    #[prost(enumeration = "ClassEq", tag = "6")]
+    pub eq: i32,
+    /// The fields a CLASS_EQ_FIELDS rule compares, in order; empty otherwise.
+    #[prost(string, repeated, tag = "7")]
+    pub eq_fields: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// How the sandbox hashes instances; zero means identity, as for `eq`.
+    #[prost(enumeration = "ClassHash", tag = "8")]
+    pub hash: i32,
+    /// The fields a CLASS_HASH_FIELDS rule hashes, in order; empty otherwise.
+    #[prost(string, repeated, tag = "9")]
+    pub hash_fields: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// A class instance crossing the sandbox boundary. Host-backed instances route
 /// method calls and lazy attribute lookups back to the real object by uuid
@@ -1657,6 +1671,80 @@ impl TypeOrigin {
             "TYPE_ORIGIN_BUILTIN" => Some(Self::Builtin),
             "TYPE_ORIGIN_SANDBOX" => Some(Self::Sandbox),
             "TYPE_ORIGIN_HOST" => Some(Self::Host),
+            _ => None,
+        }
+    }
+}
+/// How a class's instances compare with `==` in the sandbox. A host cannot run
+/// sandbox code, so only rules it can replay exactly carry detail. A value this
+/// peer does not know reads as CUSTOM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ClassEq {
+    /// No `__eq__`: equal only to the same object.
+    Identity = 0,
+    /// A `@dataclass`-generated `__eq__`: equal to an instance of the same class
+    /// whose `eq_fields` are all `==`.
+    Fields = 1,
+    /// A user-defined `__eq__`.
+    Custom = 2,
+}
+impl ClassEq {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Identity => "CLASS_EQ_IDENTITY",
+            Self::Fields => "CLASS_EQ_FIELDS",
+            Self::Custom => "CLASS_EQ_CUSTOM",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CLASS_EQ_IDENTITY" => Some(Self::Identity),
+            "CLASS_EQ_FIELDS" => Some(Self::Fields),
+            "CLASS_EQ_CUSTOM" => Some(Self::Custom),
+            _ => None,
+        }
+    }
+}
+/// How a class's instances hash in the sandbox. A value this peer does not
+/// know reads as CUSTOM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ClassHash {
+    /// No `__hash__` and no `__eq__`: hashed by identity.
+    Identity = 0,
+    /// A `@dataclass`-generated `__hash__` over `hash_fields`.
+    Fields = 1,
+    /// `__hash__ = None`, explicit or implied by defining `__eq__`.
+    Unhashable = 2,
+    /// A user-defined `__hash__`.
+    Custom = 3,
+}
+impl ClassHash {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Identity => "CLASS_HASH_IDENTITY",
+            Self::Fields => "CLASS_HASH_FIELDS",
+            Self::Unhashable => "CLASS_HASH_UNHASHABLE",
+            Self::Custom => "CLASS_HASH_CUSTOM",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CLASS_HASH_IDENTITY" => Some(Self::Identity),
+            "CLASS_HASH_FIELDS" => Some(Self::Fields),
+            "CLASS_HASH_UNHASHABLE" => Some(Self::Unhashable),
+            "CLASS_HASH_CUSTOM" => Some(Self::Custom),
             _ => None,
         }
     }

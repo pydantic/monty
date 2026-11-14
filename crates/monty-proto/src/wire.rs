@@ -34,7 +34,7 @@ use std::{
 use monty_types::{
     BuiltinsFunctions, CallArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyComplex, MontyDate,
     MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, SourceRange,
-    unstable::{self, ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
+    unstable::{self, ClassEq, ClassHash, ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
 use prost::{
@@ -633,7 +633,8 @@ fn named_tuple_len(type_name: &str, field_names: &[String], values: &[NodeId]) -
 
 /// `Type` body for a class node: `string name = 1; Uuid id = 2; TypeOrigin
 /// origin = 3; bool is_dataclass = 4; NodePairs attrs = 5`, attrs only when
-/// non-empty (matching the generated encoder's absent field).
+/// non-empty (matching the generated encoder's absent field), then the
+/// equality rule in fields 6–9.
 fn class_type_len(class: &ClassTypeNode) -> usize {
     str_len(1, &class.name)
         + encoding::message::encoded_len(2, &uuid_to_pb(&class.id))
@@ -648,6 +649,10 @@ fn class_type_len(class: &ClassTypeNode) -> usize {
         } else {
             submessage_len(5, node_pairs_len(1, &class.attrs))
         }
+        + int32_len(6, class_eq_to_pb(&class.eq) as i32)
+        + repeated_str_len(7, class.eq.field_names())
+        + int32_len(8, class_hash_to_pb(&class.hash) as i32)
+        + repeated_str_len(9, class.hash.field_names())
 }
 
 fn encode_class_type(class: &ClassTypeNode, buf: &mut impl BufMut) {
@@ -661,6 +666,10 @@ fn encode_class_type(class: &ClassTypeNode, buf: &mut impl BufMut) {
         encode_message_key(5, node_pairs_len(1, &class.attrs), buf);
         encode_node_pairs(1, &class.attrs, buf);
     }
+    encode_int32(6, class_eq_to_pb(&class.eq) as i32, buf);
+    encode_repeated_str(7, class.eq.field_names(), buf);
+    encode_int32(8, class_hash_to_pb(&class.hash) as i32, buf);
+    encode_repeated_str(9, class.hash.field_names(), buf);
 }
 
 fn class_origin(class: &ClassTypeNode) -> pb::TypeOrigin {
@@ -668,6 +677,23 @@ fn class_origin(class: &ClassTypeNode) -> pb::TypeOrigin {
         pb::TypeOrigin::Host
     } else {
         pb::TypeOrigin::Sandbox
+    }
+}
+
+fn class_eq_to_pb(eq: &ClassEq) -> pb::ClassEq {
+    match eq {
+        ClassEq::Identity => pb::ClassEq::Identity,
+        ClassEq::Fields(_) => pb::ClassEq::Fields,
+        ClassEq::Custom => pb::ClassEq::Custom,
+    }
+}
+
+fn class_hash_to_pb(hash: &ClassHash) -> pb::ClassHash {
+    match hash {
+        ClassHash::Identity => pb::ClassHash::Identity,
+        ClassHash::Fields(_) => pb::ClassHash::Fields,
+        ClassHash::Unhashable => pb::ClassHash::Unhashable,
+        ClassHash::Custom => pb::ClassHash::Custom,
     }
 }
 
@@ -1116,8 +1142,31 @@ fn type_to_node(ty: pb::Type) -> Result<MontyNode, DecodeError> {
                 host_defined: origin == pb::TypeOrigin::Host,
                 is_dataclass: ty.is_dataclass,
                 attrs: ty.attrs.map_or_default(|attrs| attrs.0.into_inner()),
+                eq: class_eq_from_pb(ty.eq, ty.eq_fields.into_inner()),
+                hash: class_hash_from_pb(ty.hash, ty.hash_fields.into_inner()),
             })?))
         }
+    }
+}
+
+/// Reads a `Type`'s `eq` rule. An unknown value is a rule this build cannot
+/// replay, so it reads as [`ClassEq::Custom`]; field names only count for
+/// `CLASS_EQ_FIELDS`.
+fn class_eq_from_pb(eq: i32, fields: Vec<String>) -> ClassEq {
+    match pb::ClassEq::try_from(eq) {
+        Ok(pb::ClassEq::Identity) => ClassEq::Identity,
+        Ok(pb::ClassEq::Fields) => ClassEq::Fields(fields),
+        Ok(pb::ClassEq::Custom) | Err(_) => ClassEq::Custom,
+    }
+}
+
+/// Reads a `Type`'s `hash` rule, as [`class_eq_from_pb`] reads `eq`.
+fn class_hash_from_pb(hash: i32, fields: Vec<String>) -> ClassHash {
+    match pb::ClassHash::try_from(hash) {
+        Ok(pb::ClassHash::Identity) => ClassHash::Identity,
+        Ok(pb::ClassHash::Fields) => ClassHash::Fields(fields),
+        Ok(pb::ClassHash::Unhashable) => ClassHash::Unhashable,
+        Ok(pb::ClassHash::Custom) | Err(_) => ClassHash::Custom,
     }
 }
 

@@ -6,7 +6,6 @@ import itertools
 import json
 import pathlib
 import re
-import sys
 import types
 import zoneinfo
 from typing import NamedTuple
@@ -716,22 +715,74 @@ def test_namedtuple_sys_version_info_tuple_comparison(monty_run: RunMonty):
 
 # === Results the host cannot build ===
 
-# the `TypeError` comes from the host's own CPython, which reworded it in 3.14
-if sys.version_info >= (3, 14):
-    PROXY_DICT_KEY_ERROR = "MontyRuntimeError(TypeError: cannot convert the result to a Python value: cannot use 'pydantic_monty.MontyClassProxy' as a dict key (unhashable type: 'pydantic_monty.MontyClassProxy'))"
-else:
-    PROXY_DICT_KEY_ERROR = "MontyRuntimeError(TypeError: cannot convert the result to a Python value: unhashable type: 'pydantic_monty.MontyClassProxy')"
+UNDERSCORE_FIELD_CODE = "from collections import namedtuple\nnamedtuple('P', ['a', 'a'], rename=True)(1, 2)"
+UNDERSCORE_FIELD_ERROR = "MontyRuntimeError(ValueError: cannot convert the result to a Python value: Field names cannot start with an underscore: '_1')"
+
+# keys `k * (2**61 - 1)` all hash to 0 in CPython, but not in the sandbox
+KEY_COLLISIONS_ERROR = (
+    'MontyRuntimeError(ValueError: cannot convert the result to a Python value: '
+    'too many hash collisions among dict or set keys)'
+)
+SHARED_KEYS_ERROR = (
+    'MontyRuntimeError(ValueError: cannot convert the result to a Python value: '
+    'dict or set keys nest too many shared values to hash)'
+)
 
 UNDECODABLE_RESULTS = [
+    pytest.param(UNDERSCORE_FIELD_CODE, UNDERSCORE_FIELD_ERROR, id='namedtuple_underscore_field'),
     pytest.param(
-        "from collections import namedtuple\nnamedtuple('P', ['a', 'a'], rename=True)(1, 2)",
-        "MontyRuntimeError(ValueError: cannot convert the result to a Python value: Field names cannot start with an underscore: '_1')",
-        id='namedtuple_underscore_field',
+        '{k * (2**61 - 1): None for k in range(1, 2000)}',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_dict_keys',
     ),
     pytest.param(
-        'class K:\n    pass\n{K(): 1}',
-        PROXY_DICT_KEY_ERROR,
-        id='proxy_dict_key',
+        '{k * (2**61 - 1) for k in range(1, 2000)}',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_set_items',
+    ),
+    pytest.param(
+        'frozenset(k * (2**61 - 1) for k in range(1, 2000))',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_frozenset_items',
+    ),
+    pytest.param(
+        # each dict is under the budget alone; the result's arena is not
+        '[{k * (2**61 - 1): None for k in range(1, 1000)} for _ in range(3)]',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_keys_across_dicts',
+    ),
+    pytest.param(
+        # 300 colliding int keys fit the budget; wrapped with a 100-item tuple, each comparison costs more
+        '{(tuple(range(100)), k * (2**61 - 1)): None for k in range(1, 300)}',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_tuple_keys',
+    ),
+    pytest.param(
+        # `a` and `b` are 41 tuple nodes each but 2**40 leaves to hash or compare
+        'a = (0,)\nb = (0,)\nfor _ in range(40):\n    a = (a, a)\n    b = (b, b)\n'
+        '{(a, 2**61 - 1): None, (b, 2 * (2**61 - 1)): None}',
+        SHARED_KEYS_ERROR,
+        id='shared_nested_tuple_keys',
+    ),
+    pytest.param(
+        # 2**22 leaves, each a million-bit int that CPython before 3.14 rehashes
+        'a = (1 << 1_000_000,)\nfor _ in range(22):\n    a = (a, a)\n{a: None}',
+        SHARED_KEYS_ERROR,
+        id='shared_big_int_key',
+    ),
+    pytest.param(
+        # colliding big ints differ only in their low digits, so each comparison scans them all
+        '{(1 << 80_000) + k * (2**61 - 1): None for k in range(1, 300)}',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_big_int_keys',
+    ),
+    pytest.param(
+        # the proxy hashes only the hashable fields, skipping the lists its `==` compares in full
+        'from dataclasses import dataclass\n'
+        '@dataclass\nclass K:\n    xs: list\n    def __hash__(self):\n        return 0\n'
+        'base = list(range(1000))\n{K(base + [k]): None for k in range(100)}',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_dataclass_list_field_keys',
     ),
 ]
 
@@ -755,12 +806,42 @@ async def test_undecodable_result_async(code: str, expected: str):
     assert repr(exc_info.value) == expected
 
 
+def test_colliding_keys_under_budget(monty_run: RunMonty):
+    """Colliding keys decode while the arena stays under the collision budget."""
+    result = monty_run('{k * (2**61 - 1): k for k in range(1, 1000)}')
+    assert len(result) == snapshot(999)
+    assert result[5 * (2**61 - 1)] == snapshot(5)
+
+
+def test_big_int_keys_decode(monty_run: RunMonty):
+    """Big `int` keys that do not collide stay within the hash budget."""
+    result = monty_run('{(1 << 80_000) + k: k for k in range(300)}')
+    assert len(result) == snapshot(300)
+    assert result[(1 << 80_000) + 7] == snapshot(7)
+
+
+def test_keys_sharing_a_tuple_decode(monty_run: RunMonty):
+    """Keys sharing one large tuple stay within the hash budget."""
+    result = monty_run('t = tuple(range(1000))\n{(t, i): i for i in range(2000)}')
+    assert len(result) == snapshot(2000)
+    assert result[(tuple(range(1000)), 7)] == snapshot(7)
+
+
+def test_instances_sharing_a_list_decode(monty_run: RunMonty):
+    """Identity-hashed instances sharing one large list stay within the hash budget."""
+    result = monty_run(
+        'class Obj:\n    def __init__(self, cfg):\n        self.cfg = cfg\n'
+        'cfg = list(range(10000))\n{Obj(cfg) for _ in range(20000)}'
+    )
+    assert len(result) == snapshot(20000)
+
+
 def test_undecodable_result_feed_start(session: MontySession):
-    complete = session.feed_start('class K:\n    pass\n{K(): 1}')
+    complete = session.feed_start(UNDERSCORE_FIELD_CODE)
     assert isinstance(complete, MontyComplete)
     with pytest.raises(MontyRuntimeError) as exc_info:
         complete.output
-    assert repr(exc_info.value) == PROXY_DICT_KEY_ERROR
+    assert repr(exc_info.value) == UNDERSCORE_FIELD_ERROR
 
 
 # === User-defined NamedTuple input ===
