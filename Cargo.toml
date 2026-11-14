@@ -71,18 +71,21 @@ monty-pool = { path = "crates/monty-pool", version = "=1.6.0" }
 monty-type-checking = { path = "crates/monty-type-checking", version = "=1.6.0" }
 monty-typeshed = { path = "crates/monty-typeshed", version = "=1.6.0" }
 # ruff, ty and related crates
-ruff_python_parser = "0.0.14"
-ruff_python_stdlib = "0.0.14"
-ruff_python_ast = "0.0.14"
-ruff_python_codegen = "0.0.14"
-ruff_source_file = "0.0.14"
-ruff_text_size = "0.0.14"
-ruff_db = { version = "0.0.14", features = ["serde"] }
-ty_python_semantic = "0.0.14"
-ty_python_core = "0.0.14"
-ty_module_resolver = "0.0.14"
-# salsa version matches the version ruff uses
-salsa = { version = "0.28.2", default-features = false, features = [
+# TODO: we might wish to remove stacker and have custom protections against
+# stack overflow which don't rely on stack manipulation. (e.g. by limiting
+# parse recursion.)
+ruff_python_parser = { version = "0.0.21", features = ["stacker"] }
+ruff_python_stdlib = "0.0.21"
+ruff_python_ast = "0.0.21"
+ruff_python_codegen = "0.0.21"
+ruff_source_file = "0.0.21"
+ruff_text_size = "0.0.21"
+ruff_db = { version = "0.0.21", features = ["serde"] }
+ty_python_semantic = "0.0.21"
+ty_python_core = "0.0.21"
+ty_module_resolver = "0.0.21"
+# Match the Salsa version used by Ruff and ty.
+salsa = { version = "0.28.5", default-features = false, features = [
     "compact_str",
     "macros",
     "salsa_unstable",
@@ -107,7 +110,7 @@ num-integer = "0.1"
 # the extension module and conversion layers).
 pyo3 = "0.29.2"
 pyo3-async-runtimes = "0.29.0"
-pyo3-build-config = { version = "0.29.2", features = ["resolve-config"] }
+pyo3-build-config = { version = "0.30.1", features = ["resolve-config"] }
 # others
 chrono = { version = "0.4", features = ["serde"] }
 # The zone rules for `SandboxTimeZone::Named`; database features are enabled per binary.
@@ -116,7 +119,7 @@ jiff = { version = "0.2", default-features = false, features = [
     "serde",
 ] }
 # `phf` backs `#[strum(use_phf)]`, used only on large `EnumString` enums (see CLAUDE.md).
-strum = { version = "0.27", features = ["derive", "phf"] }
+strum = { version = "0.28", features = ["derive", "phf"] }
 itoa = "1"
 ahash = { version = "0.8.0", features = ["serde"] }
 indexmap = "2"
@@ -183,7 +186,10 @@ rcgen = { version = "0.14", default-features = false, features = [
 # features and each consumer needs a very different slice of it.
 tokio = { version = "1" }
 # Feature-free: monty-pool builds telemetry only, while monty-runtime adds its network exporter.
-logfire = { version = "0.12", default-features = false }
+logfire = { version = "0.13", default-features = false }
+# Match Logfire's OpenTelemetry types across the pool and language bindings.
+opentelemetry = "0.32"
+opentelemetry_sdk = "0.32"
 # Canonical OTLP batches cross the Python and Node extension boundaries after
 # Rust's metrics SDK has aggregated them.
 opentelemetry-proto = { version = "0.32", default-features = false, features = [

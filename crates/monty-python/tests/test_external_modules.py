@@ -649,7 +649,7 @@ def test_a_module_without_stubs_does_not_type_check(pool: Monty):
         with pytest.raises(MontyTypingError) as exc_info:
             session.feed_run('import tools')
         assert str(exc_info.value) == snapshot(
-            'main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`\n'
+            'main.py:1:8: error[import-not-found] Cannot resolve imported module `tools`\n'
         )
         blob = session.dump()
     # the answer is final for the session and travels in its dump: a stub supplied later is not asked for
@@ -658,7 +658,7 @@ def test_a_module_without_stubs_does_not_type_check(pool: Monty):
         with pytest.raises(MontyTypingError) as exc_info:
             session.feed_run('import tools')
         assert str(exc_info.value) == snapshot(
-            'main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`\n'
+            'main.py:1:8: error[import-not-found] Cannot resolve imported module `tools`\n'
         )
 
 

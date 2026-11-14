@@ -101,6 +101,7 @@ impl Default for MemoryDb {
             },
             python_platform: PythonPlatform::default(),
             search_paths,
+            python_environment: Ok(None),
         };
 
         db
