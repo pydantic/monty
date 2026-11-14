@@ -810,10 +810,12 @@ jobs:
             pgo-runtime: true
           - os: linux
             target: aarch64
-            runs-on: ubuntu-24.04-arm
+            runs-on: ubuntu-26.04-arm
             pgo-runtime: true
           - os: linux
             target: i686
+            # pinned back: https://github.com/actions/runner-images/issues/14790
+            runs-on: ubuntu-24.04
             pgo-runtime: false
           - os: linux
             target: armv7
@@ -1431,7 +1433,7 @@ jobs:
             triple: darwin-arm64
           - os: ubuntu-latest
             triple: linux-x64-gnu
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-26.04-arm
             triple: linux-arm64-gnu
           - os: windows-latest
             triple: win32-x64-msvc
