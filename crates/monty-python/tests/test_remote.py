@@ -206,6 +206,8 @@ _REQUEST_CONFIGURE, _REQUEST_DUMP, _REQUEST_LOAD = 1, 7, 8
 # `Configure.first`'s `Load` arm
 _CONFIGURE_LOAD = 16
 _EVENT_PRINT, _EVENT_DUMP_RESULT, _EVENT_OK, _EVENT_SHUTDOWN = 1, 9, 10, 12
+# events a worker sends before a turn's last: `Print`, `StreamedCalls` and `LoadInfo`
+_MID_TURN_EVENTS = frozenset({_EVENT_PRINT, 15, 16})
 # `WorkerEvent.kind` arms own the tags below this; the message-level fields start here
 _FIRST_EVENT_FIELD = 20
 _EVENT_SESSION_ID = 28
@@ -277,11 +279,11 @@ class _StoringServer:
                 while True:
                     reply = await from_child()
                     kind = min(field for field in _proto_fields(reply) if field < _FIRST_EVENT_FIELD)
-                    if kind != _EVENT_PRINT and names:
+                    if kind not in _MID_TURN_EVENTS and names:
                         session_id = self._mint()
                         reply += _bytes_field(_EVENT_SESSION_ID, session_id)
                     yield reply
-                    if kind != _EVENT_PRINT:
+                    if kind not in _MID_TURN_EVENTS:
                         break
         finally:
             await self.relay.reap(child)

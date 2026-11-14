@@ -634,12 +634,16 @@ export interface EventSessionRefused {
   tag: 'session-refused'
   val: string
 }
+export interface LoadInfo {
+  maxSuspensions?: bigint
+  maxTotalSleepMicros?: bigint
+  maxFeedDurationMicros?: bigint
+  maxTurnDurationMicros?: bigint
+  totalSleepMicros: bigint
+}
 export interface DispatchResult {
   status: Status
   events: Array<Event>
-  maxSuspensions?: bigint
-  maxTotalSleepMicros?: bigint
   feedExecutionMicros: bigint
-  maxFeedDurationMicros?: bigint
-  maxTurnDurationMicros?: bigint
+  loadInfo?: LoadInfo
 }

@@ -872,6 +872,15 @@ pub struct Configure {
     /// `StreamedCalls` on must clear it before forwarding.
     #[prost(bool, tag = "17")]
     pub accepts_streamed_calls: bool,
+    /// The client accepts `LoadInfo`, which a worker sends ahead of the reply to a
+    /// `Load` in place of stamping the dump's values on `WorkerEvent`
+    /// (`restored_script_name` and the `max_*` echoes). Absent or false, the worker
+    /// keeps stamping them, so an older client is served unchanged; a worker that
+    /// predates the field ignores it and does the same, so no protocol version
+    /// change is needed. A forwarder that cannot pass `LoadInfo` on must clear it
+    /// before forwarding.
+    #[prost(bool, tag = "18")]
+    pub accepts_load_info: bool,
     /// The session's first request, so that one round trip opens the session and
     /// runs it. If the `Configure` is refused, the request does not run and the
     /// reply is `SessionRefused`; otherwise the reply is the request's own,
@@ -1067,7 +1076,9 @@ pub struct WorkerEvent {
     #[prost(uint64, tag = "20")]
     pub total_execution_micros: u64,
     /// Echoes the client-enforced budget so a host restoring an opaque dump can
-    /// recover it.
+    /// recover it. Sent on every event of a session to a client that did not set
+    /// `Configure.accepts_load_info`; the others read the dump's budget from
+    /// `LoadInfo`.
     #[prost(uint64, optional, tag = "22")]
     pub max_suspensions: ::core::option::Option<u64>,
     /// Execution time consumed by the feed in progress, in microseconds — the
@@ -1079,18 +1090,20 @@ pub struct WorkerEvent {
     /// The session's `max_feed_duration` and `max_turn_duration` limits in
     /// microseconds, when configured. Reported so a client that restored a
     /// session via `Load` (where the limits travel inside the opaque state
-    /// bytes) still learns its budgets.
+    /// bytes) still learns its budgets. Sent as `max_suspensions` is.
     #[prost(uint64, optional, tag = "25")]
     pub max_feed_duration_micros: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "26")]
     pub max_turn_duration_micros: ::core::option::Option<u64>,
-    /// Client-enforced sleep budget, also reported on `Load`.
+    /// Client-enforced sleep budget, also reported on `Load`. Sent as `max_suspensions` is.
     #[prost(uint64, optional, tag = "27")]
     pub max_total_sleep_micros: ::core::option::Option<u64>,
     /// The session's script name, surfaced on a `Load` reply so a client that
     /// restored a session (whose script name, like the limits above, travels
     /// inside the opaque dump bytes) learns it without parsing the dump. Set only
-    /// on a successful `Load` reply; unset on all other events.
+    /// on a successful `Load` reply to a client that did not set
+    /// `Configure.accepts_load_info` (the others read `LoadInfo.script_name`);
+    /// unset on all other events.
     #[prost(string, optional, tag = "23")]
     pub restored_script_name: ::core::option::Option<
         crate::budgeted_prost::alloc::string::String,
@@ -1112,7 +1125,7 @@ pub struct WorkerEvent {
     pub execution_clock: ::core::option::Option<i32>,
     #[prost(
         oneof = "worker_event::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16"
     )]
     pub kind: ::core::option::Option<worker_event::Kind>,
 }
@@ -1151,6 +1164,8 @@ pub mod worker_event {
         SessionRefused(super::SessionRefused),
         #[prost(message, tag = "15")]
         StreamedCalls(super::StreamedCalls),
+        #[prost(message, tag = "16")]
+        LoadInfo(super::LoadInfo),
     }
 }
 /// One run of print() output on a single stream, as one `Print` event may
@@ -1188,6 +1203,33 @@ pub struct Print {
 pub struct StreamedCalls {
     #[prost(message, repeated, tag = "1")]
     pub calls: crate::budgeted_prost::alloc::vec::Vec<crate::WireFunctionCall>,
+}
+/// Mid-turn, like `Print`: what a restored dump holds that the client could not
+/// know. The worker sends it ahead of the reply to a `Load` that restored a
+/// session, whatever that reply's kind (`Ok`, a re-announced suspension or
+/// `Complete`), and only to a client that set `Configure.accepts_load_info`.
+/// It never ends the turn, so the reply keeps its own tag and fields.
+#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct LoadInfo {
+    /// The restored session's script name.
+    #[prost(string, tag = "1")]
+    pub script_name: crate::budgeted_prost::alloc::string::String,
+    /// Capped system sleep the session has requested, in microseconds, including
+    /// a sleep it is suspended on. The client seeds its `max_total_sleep` usage
+    /// from it; afterwards it counts sleeps itself and never trusts the worker.
+    #[prost(uint64, tag = "2")]
+    pub total_sleep_micros: u64,
+    /// The dump's client-enforced limits after the `Configure`'s were applied,
+    /// as `WorkerEvent` echoes them to a client that did not opt in.
+    #[prost(uint64, optional, tag = "3")]
+    pub max_suspensions: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "4")]
+    pub max_feed_duration_micros: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    pub max_turn_duration_micros: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "6")]
+    pub max_total_sleep_micros: ::core::option::Option<u64>,
 }
 /// Suspension: the sandbox performed an OS operation, surfaced for the client
 /// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm

@@ -108,6 +108,7 @@ export class WorkerTransport {
     readonly workerId: number,
   ) {
     this.configuredSleepLimitMicros = configuredSleepLimitMicros
+    this.sleepLimitMicros = configuredSleepLimitMicros
   }
 
   /** Creates a configured REPL session over `dispatcher`. */
@@ -318,7 +319,13 @@ export class WorkerTransport {
     }
     const event = await this.run({ tag: 'load', val: state }, onPrint)
     if (!event) return this.crash()
-    return event.tag === 'ok' ? { kind: 'loaded' } : this.enforceLimits(this.toTurn(event), onPrint)
+    if (event.tag === 'ok') return { kind: 'loaded' }
+    const turn = this.toTurn(event)
+    // The dump's total counts a re-announced sleep: take it off so `chargeSleep` charges it again.
+    // Older dumps report nothing, and an aborted re-announcement is refunded by the worker.
+    const pending = sleepMicros(turn)
+    this.sleepUsedMicros = this.sleepUsedMicros > pending ? this.sleepUsedMicros - pending : 0n
+    return this.enforceLimits(turn, onPrint)
   }
 
   /** Resets a live worker for reuse and disposes a dead worker. */
@@ -386,8 +393,7 @@ export class WorkerTransport {
    */
   private chargeSleep(turn: NativeTurn): string | null {
     if (turn.kind !== 'osCall' || turn.systemSleepSecs === undefined) return null
-    const micros = BigInt(Math.round(turn.systemSleepSecs * 1_000_000))
-    const total = this.sleepUsedMicros + micros
+    const total = this.sleepUsedMicros + sleepMicros(turn)
     if (this.sleepLimitMicros !== undefined && total > this.sleepLimitMicros) {
       return `sleep limit exceeded: ${durationDebug(total)} > ${durationDebug(this.sleepLimitMicros)}`
     }
@@ -424,22 +430,23 @@ export class WorkerTransport {
     try {
       const result = await this.dispatcher(request, this.backstopMs())
       this.feedExecutionMs = Math.max(this.feedExecutionMs, Number(result.feedExecutionMicros) / 1000)
-      this.feedBudgetMs ??=
-        result.maxFeedDurationMicros === undefined ? undefined : Number(result.maxFeedDurationMicros) / 1000
-      this.turnBudgetMs ??=
-        result.maxTurnDurationMicros === undefined ? undefined : Number(result.maxTurnDurationMicros) / 1000
       if (result.status === 'shutdown') {
         this.dead = true
         this.exitStatus = result.exitStatus ?? undefined
       }
-      // the component reports the limit in force (the configured one, else
-      // the 1000 default; a dump's on load), so it is adopted from the reply
-      if (request.tag === 'configure' || request.tag === 'load') {
-        this.suspensionLimit = tighter(this.suspensionLimit, result.maxSuspensions)
-        this.suspensionsSeen = 0n
-        this.sleepLimitMicros = tighter(this.configuredSleepLimitMicros, result.maxTotalSleepMicros)
-        this.sleepUsedMicros = 0n
+      // a restored dump carries its own limits (never looser than the configured
+      // ones) and the time it already slept, which the component reports beside the reply
+      const loaded = result.loadInfo
+      if (loaded !== undefined) {
+        this.feedBudgetMs ??=
+          loaded.maxFeedDurationMicros === undefined ? undefined : Number(loaded.maxFeedDurationMicros) / 1000
+        this.turnBudgetMs ??=
+          loaded.maxTurnDurationMicros === undefined ? undefined : Number(loaded.maxTurnDurationMicros) / 1000
+        this.suspensionLimit = tighter(this.suspensionLimit, loaded.maxSuspensions)
+        this.sleepLimitMicros = tighter(this.configuredSleepLimitMicros, loaded.maxTotalSleepMicros)
+        this.sleepUsedMicros = loaded.totalSleepMicros
       }
+      if (request.tag === 'configure' || request.tag === 'load') this.suspensionsSeen = 0n
       events = result.events
     } catch (error) {
       this.dead = true
@@ -666,6 +673,13 @@ function isSuspension(turn: NativeTurn): boolean {
     turn.kind === 'nameLookup' ||
     turn.kind === 'resolveFutures'
   )
+}
+
+/** The capped `'system'` sleep a turn asks for, in microseconds; zero for any other turn. */
+function sleepMicros(turn: NativeTurn): bigint {
+  return turn.kind === 'osCall' && turn.systemSleepSecs !== undefined
+    ? BigInt(Math.round(turn.systemSleepSecs * 1_000_000))
+    : 0n
 }
 
 /** Converts a host return value and its arena, turning conversion failures

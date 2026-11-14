@@ -326,9 +326,14 @@ pub(crate) enum HostSleep {
 
 /// Applies the sleep policy, returning `None` for `SleepMode::Zero`.
 /// The call kind tells the host who waits without needing the session policy.
+/// Records a system sleep on the tracker, so a dump carries it; aborting the call refunds it.
 pub(crate) fn host_sleep(vm: &VM<'_>, delay: Duration) -> Option<HostSleep> {
     match vm.env.os_policy.sleep {
-        SleepMode::System(max) => Some(HostSleep::System(delay.min(max))),
+        SleepMode::System(max) => {
+            let delay = delay.min(max);
+            vm.heap.tracker.record_sleep(delay);
+            Some(HostSleep::System(delay))
+        }
         SleepMode::CallHost => Some(HostSleep::CallHost(delay)),
         SleepMode::Zero => None,
     }

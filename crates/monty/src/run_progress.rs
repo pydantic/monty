@@ -306,8 +306,12 @@ impl OsCall {
     /// Ends the feed by raising `exc` uncatchably at the suspended call.
     ///
     /// The exception builds a traceback but bypasses sandbox handlers. Pending
-    /// file effects roll back. Always returns `Err`.
+    /// file effects roll back, and a refused system sleep leaves the tracker's
+    /// [`total_sleep`](ResourceTracker::total_sleep). Always returns `Err`.
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
+        if let Some(delay) = self.function_call.system_sleep() {
+            self.snapshot.heap.tracker.refund_sleep(delay);
+        }
         self.snapshot.abort(exc, print)
     }
 

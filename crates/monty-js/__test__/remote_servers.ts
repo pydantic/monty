@@ -158,6 +158,10 @@ const EVENT_OK = 10
 const EVENT_SHUTDOWN = 12
 const EVENT_PING = 13
 const EVENT_SESSION_REFUSED = 14
+const EVENT_STREAMED_CALLS = 15
+const EVENT_LOAD_INFO = 16
+// events a worker sends before a turn's last:
+const MID_TURN_EVENTS = new Set([EVENT_PRINT, EVENT_STREAMED_CALLS, EVENT_LOAD_INFO])
 // `WorkerEvent`'s message-level fields:
 const FIRST_EVENT_FIELD = 20
 const EVENT_SESSION_ID = 28
@@ -269,13 +273,13 @@ export class StoringServer {
         for (;;) {
           let reply = (await child.next())!
           const kind = Math.min(...[...protoFields(reply).keys()].filter((field) => field < FIRST_EVENT_FIELD))
-          if (kind !== EVENT_PRINT && names) {
+          if (!MID_TURN_EVENTS.has(kind) && names) {
             this.minted += 1
             sessionId = Buffer.from(`sess-${this.minted}`)
             reply = Buffer.concat([reply, bytesField(EVENT_SESSION_ID, sessionId)])
           }
           stream.write(reply)
-          if (kind !== EVENT_PRINT) break
+          if (!MID_TURN_EVENTS.has(kind)) break
         }
       }
       stream.end()
@@ -292,7 +296,7 @@ async function forwardReplies(child: ChildFrames, stream: Stream): Promise<void>
     if (reply === null) return
     stream.write(reply)
     const kind = Math.min(...[...protoFields(reply).keys()].filter((field) => field < FIRST_EVENT_FIELD))
-    if (kind !== EVENT_PRINT) return
+    if (!MID_TURN_EVENTS.has(kind)) return
   }
 }
 

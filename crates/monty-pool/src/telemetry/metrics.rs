@@ -607,6 +607,8 @@ impl TurnMetrics {
                     }
                 }
             }
+            // restored-session metadata with nothing to measure
+            Some(pb::worker_event::Kind::LoadInfo(_)) => {}
             // no round-trip to time: the worker kept running
             Some(pb::worker_event::Kind::StreamedCalls(started)) => self.metrics.record(
                 &SUSPENSIONS,

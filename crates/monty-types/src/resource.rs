@@ -331,6 +331,10 @@ pub struct ResourceTracker {
     /// tighten the bound from Python code without escaping the
     /// host-configured ceiling. `None` means the configured limit applies.
     recursion_limit_override: Cell<Option<usize>>,
+    /// Capped system sleep the sandbox has requested, so `max_total_sleep` survives a dump.
+    /// Hosts enforce the limit; older dumps load as zero.
+    #[serde(default)]
+    total_sleep: Cell<Duration>,
 }
 
 impl Default for ResourceTracker {
@@ -374,6 +378,7 @@ impl ResourceTracker {
             turn_execution_time: Cell::new(Duration::ZERO),
             running_since: Cell::new(None),
             recursion_limit_override: Cell::new(None),
+            total_sleep: Cell::new(Duration::ZERO),
         }
     }
 
@@ -472,6 +477,23 @@ impl ResourceTracker {
     #[must_use]
     pub fn max_total_sleep(&self) -> Option<Duration> {
         self.limits.max_total_sleep
+    }
+
+    /// Capped system sleep requested so far, which hosts charge against
+    /// [`max_total_sleep`](Self::max_total_sleep); restored with the session.
+    #[must_use]
+    pub fn total_sleep(&self) -> Duration {
+        self.total_sleep.get()
+    }
+
+    /// Records a capped system sleep as the sandbox requests it.
+    pub fn record_sleep(&self, delay: Duration) {
+        self.total_sleep.set(self.total_sleep.get().saturating_add(delay));
+    }
+
+    /// Takes back a recorded sleep the host refused, so it never waited.
+    pub fn refund_sleep(&self, delay: Duration) {
+        self.total_sleep.set(self.total_sleep.get().saturating_sub(delay));
     }
 
     /// Returns whether the VM has a memory or time limit configured.

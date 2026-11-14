@@ -248,6 +248,9 @@ pub struct Worker {
     /// The client set `Configure.accepts_streamed_calls`, so calls to async host
     /// functions stream as `StreamedCalls` instead of suspending.
     accepts_streamed_calls: bool,
+    /// The client set `Configure.accepts_load_info`, so a `Load` reply is preceded by `LoadInfo`
+    /// rather than carrying the dump's values on `WorkerEvent`.
+    accepts_load_info: bool,
     /// The current feed's `Feed.stream_async_calls`; started calls also need `accepts_streamed_calls`.
     feed_streams_async_calls: bool,
     /// The current feed's `Feed.async_functions`: calls to these names start
@@ -270,6 +273,7 @@ impl Default for Worker {
             legacy_binary_writes: false,
             module_stubs: Vec::new(),
             accepts_streamed_calls: false,
+            accepts_load_info: false,
             feed_streams_async_calls: false,
             feed_async_functions: HashSet::new(),
             calls_streamed: 0,
@@ -304,7 +308,7 @@ impl Worker {
                 let first = configure.first.take();
                 let reply = self.handle_configure(configure);
                 match first {
-                    Some(first) => self.handle_first(first, reply, sink),
+                    Some(first) => self.handle_first(first, reply, sink)?,
                     None => reply,
                 }
             }
@@ -321,7 +325,7 @@ impl Worker {
             pb::client_request::Kind::ResumeFutures(resume) => self.handle_resume_futures(resume, sink),
             pb::client_request::Kind::AbortFeed(abort) => self.handle_abort_feed(abort, sink),
             pb::client_request::Kind::Dump(_) => self.handle_dump(),
-            pb::client_request::Kind::Load(load) => self.handle_load(&load),
+            pb::client_request::Kind::Load(load) => self.handle_load(&load, sink)?,
             pb::client_request::Kind::Reset(_) => {
                 self.reset();
                 ok_event()
@@ -492,7 +496,7 @@ impl Worker {
             // no repl materialized yet → no tracker to report
             SessionState::Configured(_) => return,
         };
-        stamp_budget(event, tracker);
+        stamp_budget(event, tracker, !self.accepts_load_info);
     }
 
     /// Stores the session config; the repl is built lazily by [`ensure_repl`]
@@ -510,6 +514,7 @@ impl Worker {
                 .map_or(DEFAULT_PRINT_FLUSH_INTERVAL, |ms| Duration::from_millis(u64::from(ms)));
             // Also a delivery setting: a `Load` after this `Configure` gets it too.
             self.accepts_streamed_calls = configure.accepts_streamed_calls;
+            self.accepts_load_info = configure.accepts_load_info;
             if let Some(clock) = configure.execution_clock {
                 let Ok(clock) = pb::ExecutionClock::try_from(clock) else {
                     return session_refused("invalid execution_clock");
@@ -551,17 +556,17 @@ impl Worker {
         first: pb::configure::First,
         configured: pb::WorkerEvent,
         sink: &mut dyn EventSink,
-    ) -> pb::WorkerEvent {
+    ) -> Result<pb::WorkerEvent, FrameError> {
         if !matches!(configured.kind, Some(pb::worker_event::Kind::Ok(_))) {
-            return configured;
+            return Ok(configured);
         }
         sink.session_opened(self.session_budget());
         let mut event = match first {
             pb::configure::First::Feed(feed) => self.handle_repl_feed(feed, sink),
-            pb::configure::First::Load(load) => self.handle_load(&load),
+            pb::configure::First::Load(load) => self.handle_load(&load, sink)?,
         };
         event.execution_clock = configured.execution_clock;
-        event
+        Ok(event)
     }
 
     /// Materializes the repl from the stored config the first time the session
@@ -605,6 +610,8 @@ impl Worker {
             profile: _,
             // applied when the `Configure` arrived, so a `Load` honors it too
             accepts_streamed_calls: _,
+            // applied when the `Configure` arrived, so a `Load` honors it too
+            accepts_load_info: _,
             // taken and run when the `Configure` arrived
             first: _,
         } = *config;
@@ -1025,6 +1032,42 @@ impl Worker {
         }
     }
 
+    /// Restores a dump produced by [`Self::handle_dump`] into this worker and
+    /// answers with the reply [`Self::restore_dump`] chose, preceded by
+    /// `LoadInfo` when the client opted in and a session was restored.
+    ///
+    /// `Err` means the sink is broken, as for [`Self::handle`].
+    fn handle_load(&mut self, load: &pb::Load, sink: &mut dyn EventSink) -> Result<pb::WorkerEvent, FrameError> {
+        let reply = self.restore_dump(load);
+        // a refusal restored nothing, even when an earlier `Load` left a session to describe
+        let restored = !matches!(reply.kind, Some(pb::worker_event::Kind::Error(_)));
+        if self.accepts_load_info
+            && restored
+            && let Some(info) = self.load_info()
+        {
+            sink.send(&event(pb::worker_event::Kind::LoadInfo(info)))?;
+        }
+        Ok(reply)
+    }
+
+    /// What a restored session holds that its client could not know, or `None`
+    /// while the worker has no session (a refused `Load` leaves it unstarted).
+    fn load_info(&self) -> Option<pb::LoadInfo> {
+        let tracker = match &self.state {
+            SessionState::Ready(repl) => repl.tracker(),
+            SessionState::Suspended(progress) => progress.tracker(),
+            SessionState::Configured(_) | SessionState::AwaitingStubs(_) => return None,
+        };
+        Some(pb::LoadInfo {
+            script_name: self.script_name.clone(),
+            total_sleep_micros: u64::try_from(tracker.total_sleep().as_micros()).unwrap_or(u64::MAX),
+            max_suspensions: Some(tracker.max_suspensions() as u64),
+            max_feed_duration_micros: micros_field(tracker.max_feed_duration()),
+            max_turn_duration_micros: micros_field(tracker.max_turn_duration()),
+            max_total_sleep_micros: micros_field(tracker.max_total_sleep()),
+        })
+    }
+
     /// Restores a dump produced by [`Self::handle_dump`] into this worker. A
     /// restored suspension re-emits its suspension event so the client learns
     /// the resume point.
@@ -1034,7 +1077,7 @@ impl Worker {
     /// instead of feeding. Once a feed has run (or a prior `Load` restored a
     /// session), the repl exists and `Load` is rejected rather than silently
     /// discarding it.
-    fn handle_load(&mut self, load: &pb::Load) -> pb::WorkerEvent {
+    fn restore_dump(&mut self, load: &pb::Load) -> pb::WorkerEvent {
         let (limits, clock) = match &self.state {
             SessionState::Configured(config) => {
                 let configured = config.as_ref();
@@ -1107,7 +1150,7 @@ impl Worker {
                 mut progress => {
                     let mut event = suspension_event(&mut progress);
                     // size-checked with the stamps `handle` sends it with
-                    stamp_budget(&mut event, progress.tracker());
+                    stamp_budget(&mut event, progress.tracker(), !self.accepts_load_info);
                     if let Some(message) = oversize_suspension_error_message(&event) {
                         protocol_violation(&message)
                     } else {
@@ -1119,14 +1162,16 @@ impl Worker {
         };
         // adopt the restored metadata only once the payload actually loaded
         // (state is now Ready/Suspended) — a failed load leaves the worker in
-        // its prior un-started state, re-loadable. Surface the adopted script
-        // name so the client can report it without parsing the opaque dump.
+        // its prior un-started state, re-loadable. The client learns the script
+        // name from `LoadInfo`, or from this event if it did not opt in.
         if matches!(self.state, SessionState::Ready(_) | SessionState::Suspended(_)) {
             self.script_name = script_name;
             // the dump's stubs, not this worker's `Configure`: the session was checked against them
             self.module_stubs = module_stubs;
             self.type_check = type_check;
-            event.restored_script_name = Some(self.script_name.clone());
+            if !self.accepts_load_info {
+                event.restored_script_name = Some(self.script_name.clone());
+            }
         }
         event
     }
@@ -1184,7 +1229,7 @@ impl Worker {
                 let progress = ReplProgress::OsCall(call);
                 // stamped before the size check, so the frame measured is
                 // the frame `handle` sends
-                stamp_budget(&mut event, progress.tracker());
+                stamp_budget(&mut event, progress.tracker(), !self.accepts_load_info);
                 if let Some(message) = oversize_suspension_error_message(&event) {
                     self.abort_feed_with_runtime_error(progress.into_repl(), &message)
                 } else {
@@ -1195,7 +1240,7 @@ impl Worker {
             Ok(ReplProgress::FunctionCall(mut call)) => {
                 let mut event = suspension_event_function_call(&mut call);
                 let progress = ReplProgress::FunctionCall(call);
-                stamp_budget(&mut event, progress.tracker());
+                stamp_budget(&mut event, progress.tracker(), !self.accepts_load_info);
                 if let Some(message) = oversize_suspension_error_message(&event) {
                     self.abort_feed_with_runtime_error(progress.into_repl(), &message)
                 } else {
@@ -1360,16 +1405,20 @@ fn error_event_from(exc: &MontyException) -> pb::WorkerEvent {
     }))
 }
 
-/// Stamps `tracker`'s timing and client-enforced limits onto an event. Called
-/// again by [`Worker::handle`] just before sending, so a suspension announcement
-/// is size-checked with the stamps it will carry.
-fn stamp_budget(event: &mut pb::WorkerEvent, tracker: &ResourceTracker) {
+/// Stamps `tracker`'s timing onto an event, and its client-enforced limits too
+/// when `echo_limits` (a client that did not opt in to `LoadInfo` reads the
+/// dump's limits from every event). Called again by [`Worker::handle`] just
+/// before sending, so a suspension announcement is size-checked with the stamps
+/// it will carry.
+fn stamp_budget(event: &mut pb::WorkerEvent, tracker: &ResourceTracker, echo_limits: bool) {
     event.total_execution_micros = u64::try_from(tracker.elapsed().as_micros()).unwrap_or(u64::MAX);
     event.feed_execution_micros = u64::try_from(tracker.feed_elapsed().as_micros()).unwrap_or(u64::MAX);
-    event.max_feed_duration_micros = micros_field(tracker.max_feed_duration());
-    event.max_turn_duration_micros = micros_field(tracker.max_turn_duration());
-    event.max_total_sleep_micros = micros_field(tracker.max_total_sleep());
-    event.max_suspensions = Some(tracker.max_suspensions() as u64);
+    if echo_limits {
+        event.max_feed_duration_micros = micros_field(tracker.max_feed_duration());
+        event.max_turn_duration_micros = micros_field(tracker.max_turn_duration());
+        event.max_total_sleep_micros = micros_field(tracker.max_total_sleep());
+        event.max_suspensions = Some(tracker.max_suspensions() as u64);
+    }
 }
 
 /// Describes a suspension announcement that would exceed the wire frame limit.
