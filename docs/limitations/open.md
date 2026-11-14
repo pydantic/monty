@@ -17,7 +17,7 @@ calls. `open()` itself yields an `OsFunction::Open` round-trip whose effect
 closes; every subsequent `read()`/`write()`/`append()` is a separate
 one-shot OS call that the host opens, acts on, and closes again. The Monty
 heap stores only path, mode, and small Python-visible state: no OS
-handle, no buffered data, no descriptor number.
+handle or descriptor number; read buffers are ordinary serialized heap data.
 
 This is what makes subprocess `dump()` / `load()` safe: a session can be
 serialized at a pause point and resumed later without dangling references to
@@ -25,13 +25,14 @@ host resources, including when using WASM worker sessions and snapshots.
 It also means external processes can observe partial state
 between calls, and that there is no protection against the underlying file
 being changed or removed between calls, both documented further down.
+Access permissions are also checked again on later operations; permission changes can make a read or write fail
+after `open()` succeeded, unlike access through CPython's retained descriptor.
 
 ## Mode strings
 
-- `+` update modes (`r+`, `w+`, `a+`, and their `b` variants) are rejected at
+- Update modes other than binary write/update modes are rejected at
     parse time with `ValueError: update modes ('+') are not yet supported`.
-    Monty has no read-position state, so a write after a read would silently
-    truncate the file via the one-shot OS write that backs `write()`.
+    Accepted spellings such as `w+b`, `wb+` and `+bw` normalize to `wb+`.
 - Exclusive creation mode (`x`) is rejected with `ValueError: exclusive creation mode is not supported`; it would need a
     dedicated race-free
     mount-table operation.
@@ -106,7 +107,7 @@ methods and attributes are:
 - `seek(offset, whence=0)` — reposition within the buffer for readable
     files (loading it on demand), or within tracked logical write state for
     write-only files. Returns the new absolute position.
-- `write(data)` — full-file or appending write.
+- `write(data)` — positional binary writes, text writes, or appends according to mode.
 - `close()`, `flush()`, `readable()`, `writable()`, `seekable()`.
 - `__enter__()` / `__exit__()` — `with open(...) as f:` works; see
     [with.md](with.md) for the shared protocol divergences.
@@ -124,12 +125,19 @@ Everything else raises `AttributeError`, including: `truncate()`,
 
 - All reads (bare `read()`, sized `read(N)`, `readline`, `readlines`),
     iteration and `seek()` share a single heap-resident buffer populated on
-    the first such call. The host serves only one full-file
-    `ReadText`/`ReadBytes` per file; everything after is sliced in pure
-    Monty. Memory cost: the whole file remains allocated and counts against
-    the worker's allocator-backed `max_memory`. The buffer is **never
-    invalidated**, so external modifications to the underlying file after
-    the first read are not visible to subsequent reads.
+    the first such call. Reads and seeks reuse that full-file
+    `ReadText`/`ReadBytes` result until a write invalidates it.
+    Memory cost: the whole file remains allocated and counts against
+    the worker's allocator-backed `max_memory`.
+    A write through the same file object invalidates its buffer, including when the host raises an error.
+    Modifications through other handles or external tools do not invalidate it.
+- Writing bytes after seeking past the end of a `wb` or `w+b` file raises
+    `NotImplementedError: writing past the end of a file is not supported`; CPython fills the gap with zero bytes.
+    The host also refuses such writes, so it holds if the sandbox's view of the file length is stale.
+- A failed binary write keeps the previous logical cursor because the host did not return a count.
+    It can still change the file on storage.
+    A subsequent seek from EOF in `wb` refreshes the file length with a host stat call;
+    readable files reload their buffer as usual.
 - Iterating a file that has not been read yet needs that host load, which
     only the `for` statement and the `next()` builtin can issue. Any other
     consumer of the iterator protocol (`list(f)`, `enumerate(f)`, `zip(f, …)`,
@@ -175,11 +183,8 @@ Everything else raises `AttributeError`, including: `truncate()`,
 - `read(N)` accepts only int or `None`. The `TypeError` message differs
     from CPython (CPython: `"argument should be integer or None, not 'str'"`;
     Monty: `"'str' object cannot be interpreted as an integer"`).
-- Write-only `seek()`/`tell()` maintain logical position state, so common
-    `write(); tell()` and `seek(0, 2)` cases match CPython. Writes are still
-    full-file or append one-shot host operations, so seeking backwards and then
-    writing does **not** overwrite at that offset the way CPython's live file
-    descriptor would.
+- Write-only text `seek()`/`tell()` maintain logical position state, but text writes append after open.
+    Seeking backwards and then writing text does not overwrite at that offset.
 - `readline(size)` and `readlines(hint)` are zero-argument only; passing
     a size/hint argument raises `TypeError`. CPython accepts both and uses
     them to cap the returned bytes/chars.

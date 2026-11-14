@@ -3,9 +3,15 @@
 //! Sources over `CompileOptions::source_scan_threshold` bytes are lexed once and
 //! rejected when the estimated parser recursion exceeds the nesting limit;
 //! shorter sources rely on the converter's exact check.
+//!
+//! The scan cannot see how deep an AST ruff builds from flat source, so every
+//! parse also measures the AST and tears a deep one down without recursion.
 
 use insta::assert_snapshot;
-use monty::{MontyRepl, MontyRun, ReplProgress, source_within_nesting_bound, type_check_nesting_exception};
+use monty::{
+    MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, detect_repl_continuation_mode,
+    source_within_nesting_bound, type_check_nesting_exception,
+};
 use monty_types::{
     CompileOptions, ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker, SOURCE_SCAN_THRESHOLD,
 };
@@ -93,6 +99,58 @@ fn string_annotation_chain_is_rejected() {
 #[test]
 fn triple_quoted_string_annotation_chain_is_rejected() {
     assert_too_deeply_nested(format!("x: \"\"\"\n{}1{}\"\"\"", "(".repeat(5000), ")".repeat(5000)));
+}
+
+// === flat sources ruff parses to a deep AST ===
+//
+// None nests a bracket, an indent or a prefix operator, so each passes the
+// scan, and dropping its AST once overflowed the native stack.
+
+/// How many links each chain below has: enough to overflow a test thread's
+/// stack if the AST were ever dropped or walked recursively.
+const LINKS: usize = 50_000;
+
+#[test]
+fn operator_chain_is_rejected() {
+    assert_too_deeply_nested(format!("x = 1{}", " + 1".repeat(LINKS)));
+    assert_too_deeply_nested(format!("x = a{}", " | a".repeat(LINKS)));
+    assert_too_deeply_nested(format!("x = 1{}", " * 1 - 1".repeat(LINKS)));
+}
+
+#[test]
+fn postfix_chain_is_rejected() {
+    assert_too_deeply_nested(format!("y = a{}", ".x".repeat(LINKS)));
+    assert_too_deeply_nested(format!("y = f{}", "()".repeat(LINKS)));
+    assert_too_deeply_nested(format!("y = d{}", "[0]".repeat(LINKS)));
+}
+
+#[test]
+fn chain_after_another_error_is_rejected() {
+    // The converter stops at the first statement, leaving the second to be dropped.
+    assert_too_deeply_nested(format!("del x\ny = 1{}", " + 1".repeat(LINKS)));
+}
+
+#[test]
+fn ast_recovered_from_a_syntax_error_is_rejected() {
+    // ruff parses on past each error, nesting once per repeat.
+    for unit in [
+        "not a < ",
+        "*a < ",
+        "*a and ",
+        "lambda @ ",
+        "yield a + ",
+        "a if >> / ",
+        "- is % ",
+    ] {
+        assert_too_deeply_nested(format!("{}a", unit.repeat(LINKS)));
+    }
+    assert_too_deeply_nested(format!("x = 1{}", " |".repeat(LINKS)));
+}
+
+#[test]
+fn chain_within_the_limit_compiles() {
+    assert_compiles("x = a.b(1)[2].c + 3 * 4 - 5 | 6\n".repeat(400));
+    assert_compiles(format!("x = [{}]", "a.b + c.d(1), ".repeat(1000)));
 }
 
 // === long but flat sources the scan must not reject ===
@@ -200,6 +258,22 @@ fn eval_of_a_long_nested_string_is_rejected() {
 }
 
 #[test]
+fn eval_and_exec_of_a_long_operator_chain_are_rejected() {
+    for code in [
+        "eval('1' + '+1' * 400_000)",
+        "exec('x = 1' + '+1' * 400_000)",
+        // ruff drops the AST of an expression that fails to parse itself
+        "eval('1' + '+1' * 400_000 + '+')",
+        "eval('not a < ' * 100_000 + 'a')",
+    ] {
+        let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let err = run.run_no_limits(vec![]).expect_err("expected the snippet to fail");
+        assert_eq!(err.exc_type(), ExcType::SyntaxError);
+        assert_eq!(err.message().unwrap(), "Source is too deeply nested (<string>, line 1)");
+    }
+}
+
+#[test]
 fn exec_of_a_long_flat_string_runs() {
     let mut run = MontyRun::new(
         "exec('x = [' + '-1, ' * 3000 + ']')\nlen(x)".to_owned(),
@@ -242,6 +316,19 @@ fn repl_feeds_scan_unless_given_a_checked_source() {
     assert!(matches!(progress, ReplProgress::Complete { .. }));
 }
 
+#[test]
+fn repl_rejects_a_long_operator_chain() {
+    let mut repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
+    let chain = format!("x = 1{}", " + 1".repeat(LINKS));
+    // Complete, so that feeding it reports the error.
+    assert_eq!(detect_repl_continuation_mode(&chain), ReplContinuationMode::Complete);
+    let err = repl
+        .feed_run(&chain, vec![], PrintWriter::Disabled)
+        .expect_err("expected the feed to reject");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(err.message().unwrap(), "Source is too deeply nested");
+}
+
 // === type checking ===
 
 #[track_caller]
@@ -263,6 +350,25 @@ fn type_check_rejects_deep_asts_from_flat_source() {
     assert_type_check_rejects(&format!("x: \"list['{}']\"", vec!["int"; 1000].join(" | ")));
     // ty also type-checks the AST it recovers from a syntax error
     assert_type_check_rejects(&format!("x = {} +", vec!["1"; 1000].join("+")));
+}
+
+#[test]
+fn type_check_rejects_asts_too_deep_to_drop() {
+    assert_type_check_rejects(&format!("x = 1{}", " + 1".repeat(LINKS)));
+    assert_type_check_rejects(&format!("{}a", "not a < ".repeat(LINKS)));
+    assert_type_check_rejects(&format!("x: '1{}'", " + 1".repeat(LINKS)));
+    // ty drops the AST of an annotation that fails to parse without walking it
+    assert_type_check_rejects(&format!("x: '1{} +'", " + 1".repeat(LINKS)));
+    assert_type_check_rejects(&format!("x: \"\"\"\n{}\"\"\"", "/usr/lib\n".repeat(LINKS)));
+}
+
+#[test]
+fn type_check_accepts_data_strings_that_do_not_parse() {
+    // Each recovers to a chain, but ty only parses a literal used as an annotation.
+    for text in ["/usr/lib/python3 ".repeat(300), "0x1f+0x2a-".repeat(300)] {
+        let code = format!("s = '{text}'\n");
+        assert!(type_check_nesting_exception(&code, "test.py", SOURCE_SCAN_THRESHOLD).is_ok());
+    }
 }
 
 #[test]

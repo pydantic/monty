@@ -32,6 +32,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`
 - `with` statements, for files and for classes implementing `__enter__` / `__exit__`
+- Binary write/update files (`open(path, 'w+b')`); other update modes remain unsupported.
+    See [open.md](open.md) for file buffering and method limitations.
 - `match` statements with every PEP 634 pattern kind and guards, see [match.md](match.md)
 - f-strings (including the `=` debug form), `str.format()` and `format()`, with `!r` / `!s` / `!a` conversions,
     format specs and nested replacement fields
@@ -96,6 +98,7 @@ The following modules are present:
 | `posixpath`     | [os.md](os.md)                       |
 | `random`        | [random.md](random.md)               |
 | `re`            | [re.md](re.md)                       |
+| `statistics`    | [statistics.md](statistics.md)       |
 | `sys`           | [sys.md](sys.md)                     |
 | `time`          | [time.md](time.md)                   |
 | `tomllib`       | [tomllib.md](tomllib.md)             |

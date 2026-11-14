@@ -1360,7 +1360,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // Anchor any namespace-overflow error to the first generator's iter,
         // since the walrus statements themselves can be scattered through the
         // comprehension and don't have a single load-bearing position.
-        let comp_pos = generators.first().map(|g| g.iter.position).unwrap_or_default();
+        let comp_pos = generators.first().map_or_default(|g| g.iter.position);
         for &name in &walrus_targets {
             self.ensure_scope_slot(name, comp_pos)?;
             self.names_assigned_in_order.insert(name);

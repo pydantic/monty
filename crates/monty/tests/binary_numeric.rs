@@ -1,5 +1,5 @@
 use monty::MontyRun;
-use monty_types::CompileOptions;
+use monty_types::{CompileOptions, ExcType};
 
 #[test]
 fn numeric_fast_paths_and_fallbacks() {
@@ -196,4 +196,80 @@ fn run_checked(code: &str) {
 
     #[cfg(not(feature = "ref-count-return"))]
     runner.run_no_limits(vec![]).unwrap();
+}
+
+#[test]
+fn test_int_bit_length() {
+    run_checked(
+        r"
+assert (0).bit_length() == 0
+assert (1).bit_length() == 1
+assert (-1).bit_length() == 1
+assert (2).bit_length() == 2
+assert (-2).bit_length() == 2
+assert (37).bit_length() == 6
+assert (-37).bit_length() == 6
+assert (1024).bit_length() == 11
+assert (2**62).bit_length() == 63
+assert (2**63 - 1).bit_length() == 63
+assert (-(2**63 - 1)).bit_length() == 63
+assert (-9223372036854775808).bit_length() == 64
+assert (2**63).bit_length() == 64
+assert (-(2**63)).bit_length() == 64
+assert (2**100).bit_length() == 101
+assert (-2**100).bit_length() == 101
+assert (True).bit_length() == 1
+assert (False).bit_length() == 0
+",
+    );
+}
+
+#[test]
+fn test_int_bit_count() {
+    run_checked(
+        r"
+assert (0).bit_count() == 0
+assert (1).bit_count() == 1
+assert (-1).bit_count() == 1
+assert (2).bit_count() == 1
+assert (3).bit_count() == 2
+assert (37).bit_count() == 3
+assert (-37).bit_count() == 3
+assert (15).bit_count() == 4
+assert (-15).bit_count() == 4
+assert (-9223372036854775808).bit_count() == 1
+assert (2**63 - 1).bit_count() == 63
+assert (-(2**63 - 1)).bit_count() == 63
+assert (2**100).bit_count() == 1
+assert (-2**100).bit_count() == 1
+assert (2**100 - 1).bit_count() == 100
+assert (-(2**100 - 1)).bit_count() == 100
+assert (True).bit_count() == 1
+assert (False).bit_count() == 0
+",
+    );
+}
+
+#[test]
+fn test_int_bit_methods_arguments() {
+    for code in [
+        "(37).bit_length(1)",
+        "(37).bit_count(1)",
+        "(2**100).bit_length(1)",
+        "(2**100).bit_count(1)",
+        "True.bit_length(1)",
+        "True.bit_count(1)",
+        "(37).bit_length(x=1)",
+        "(37).bit_count(x=1)",
+    ] {
+        let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let err = ex.run_no_limits(vec![]).unwrap_err();
+        assert_eq!(err.exc_type(), ExcType::TypeError, "failed for code: {code}");
+    }
+
+    for code in ["(37).foo()", "(2**100).foo()", "True.foo()"] {
+        let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let err = ex.run_no_limits(vec![]).unwrap_err();
+        assert_eq!(err.exc_type(), ExcType::AttributeError, "failed for code: {code}");
+    }
 }

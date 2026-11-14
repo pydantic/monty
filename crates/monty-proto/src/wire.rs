@@ -1112,7 +1112,7 @@ fn type_to_node(ty: pb::Type) -> Result<MontyNode, DecodeError> {
                 id: pb_uuid_to_monty(&id, "Type.id")?,
                 host_defined: origin == pb::TypeOrigin::Host,
                 is_dataclass: ty.is_dataclass,
-                attrs: ty.attrs.map(|attrs| attrs.0.into_inner()).unwrap_or_default(),
+                attrs: ty.attrs.map_or_default(|attrs| attrs.0.into_inner()),
             })?))
         }
     }

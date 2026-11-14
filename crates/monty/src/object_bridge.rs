@@ -270,7 +270,7 @@ impl GraphExporter {
         vm: &mut VM<'h>,
     ) -> MontyNode {
         match output {
-            HeapReadOutput::Str(s) => MontyNode::String(s.get(vm.heap).as_str().to_owned()),
+            HeapReadOutput::Str(heap_string) => MontyNode::String(heap_string.get(vm.heap).as_str().to_owned()),
             HeapReadOutput::Bytes(b) => MontyNode::Bytes(b.get(vm.heap).as_slice().to_owned()),
             HeapReadOutput::List(list) => {
                 // Snapshot before recursing: a nested `__repr__` may mutate this list.
@@ -529,7 +529,7 @@ impl GraphExporter {
                 Ok(s) => {
                     // `py_repr` yields a heap `str` `Value`; extract its text and drop it.
                     defer_drop!(s, vm);
-                    MontyNode::Repr(s.try_to_str(vm).map(str::to_owned).unwrap_or_default())
+                    MontyNode::Repr(s.try_to_str(vm).map_or_default(str::to_owned))
                 }
                 Err(err @ RunError::UncatchableExc(_)) => {
                     self.error = Some(err);

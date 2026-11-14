@@ -1,0 +1,158 @@
+use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
+use monty_types::{
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyFileHandle, MontyObject, OsFunctionCall,
+    PrintWriter, ResourceTracker, file_stat,
+};
+
+fn run(code: &str, snapshot: bool) {
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let mut content = b"old contents".to_vec();
+    loop {
+        if snapshot && matches!(progress, RunProgress::OsCall(_)) {
+            let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+            let Session::Running(loaded) = Dump::load(&bytes).unwrap().state else {
+                panic!("wrong session kind")
+            };
+            let original = progress.into_os_call().unwrap();
+            assert!(
+                original
+                    .abort(
+                        MontyException::new(ExcType::RuntimeError, Some("discard original".to_owned())),
+                        PrintWriter::Stdout
+                    )
+                    .is_err()
+            );
+            progress = *loaded;
+        }
+        progress = match progress {
+            RunProgress::Complete(_) => break,
+            RunProgress::OsCall(call) => {
+                let mut partial_error = false;
+                let result = match &call.function_call {
+                    OsFunctionCall::Open(args) => {
+                        assert!(args.mode.truncate());
+                        content.clear();
+                        MontyObject::file_handle(MontyFileHandle {
+                            path: args.path.to_string(),
+                            mode: args.mode,
+                            position: 0,
+                        })
+                    }
+                    OsFunctionCall::WriteBytesAt(args) => {
+                        args.validate().unwrap();
+                        partial_error = args.data == b"XYZ";
+                        let data = if partial_error { &args.data[..1] } else { &args.data };
+                        if !data.is_empty() {
+                            let offset = usize::try_from(args.offset).unwrap();
+                            let end = offset + data.len();
+                            content.resize(content.len().max(end), 0);
+                            content[offset..end].copy_from_slice(data);
+                        }
+                        MontyObject::int(i64::try_from(args.data.len()).unwrap())
+                    }
+                    OsFunctionCall::ReadBytes(_) => MontyObject::bytes(content.clone()),
+                    OsFunctionCall::Stat(_) => file_stat(0o600, i64::try_from(content.len()).unwrap(), 0.0),
+                    other => panic!("unexpected call: {other:?}"),
+                };
+                if partial_error {
+                    call.resume(
+                        ExtFunctionResult::Error(MontyException::new(
+                            ExcType::OSError,
+                            Some("injected partial write".to_owned()),
+                        )),
+                        PrintWriter::Stdout,
+                    )
+                    .unwrap()
+                } else {
+                    call.resume(result, PrintWriter::Stdout).unwrap()
+                }
+            }
+            other => panic!("unexpected progress: {other:?}"),
+        };
+    }
+}
+
+#[test]
+fn binary_update_switches_between_reads_and_writes_across_snapshots() {
+    let code = r"
+with open('/file', 'w+b') as f:
+    assert f.read() == b''
+    assert f.write(b'abcdef') == 6
+    assert f.read() == b''
+    f.seek(0)
+    old = f.read()
+    f.seek(2)
+    f.write(b'XY')
+    assert f.tell() == 4
+    assert f.read() == b'ef'
+    f.seek(0)
+    assert f.read() == b'abXYef'
+    assert old == b'abcdef'
+    f.write(b'Z')
+    f.seek(100)
+    assert f.write(b'') == 0
+    assert f.seek(0, 2) == 7
+    f.seek(0)
+    assert f.read() == b'abXYefZ'
+";
+    run(code, false);
+    run(code, true);
+}
+
+/// CPython zero-fills the gap; Monty refuses it so hosts never grow a file past the bytes sent.
+#[test]
+fn writes_past_eof_raise_before_reaching_the_host() {
+    let code = r"
+with open('/file', 'w+b') as f:
+    f.write(b'abc')
+    f.seek(5)
+    try:
+        f.write(b'x')
+        assert False, 'expected NotImplementedError'
+    except NotImplementedError as exc:
+        assert str(exc) == 'writing past the end of a file is not supported'
+    assert f.tell() == 5
+    assert f.write(b'') == 0
+    f.seek(0)
+    assert f.read() == b'abc'
+";
+    run(code, false);
+    run(code, true);
+}
+
+#[test]
+fn write_only_binary_mode_overwrites_at_the_cursor() {
+    run(
+        r"
+with open('/file', 'wb') as f:
+    f.write(b'abcdef')
+    f.seek(2)
+    f.write(b'XY')
+    assert f.tell() == 4
+    assert f.seek(0, 2) == 6
+",
+        true,
+    );
+}
+
+#[test]
+fn partial_write_recovery_and_eof_refresh_survive_snapshots() {
+    let code = r"
+with open('/file', 'wb') as f:
+    f.write(b'abcdefgh')
+    try:
+        f.write(b'XYZ')
+    except OSError:
+        pass
+    assert f.tell() == 8
+    assert f.seek(-1, 2) == 8
+    assert f.seek(0, 2) == 9
+    f.write(b'!')
+    assert f.seek(0, 2) == 10
+";
+    run(code, false);
+    run(code, true);
+}

@@ -941,7 +941,7 @@ The surface is `Monty` (sync pool) and `AsyncMonty` (async pool), each with
 ### Building and Testing
 
 Dependencies needed for python testing are installed in `crates/monty-python/pyproject.toml`.
-To install these dependencies, use `uv sync --all-packages --only-dev`.
+To install these dependencies, use `make install-py`.
 
 ```bash
 # Build the Python package for development (required before running tests)
