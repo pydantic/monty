@@ -265,9 +265,16 @@ Snapshots store function IDs and offsets, rebuilding code borrows on restore.
 
 Dumps (`crates/monty/src/dump_format.rs`) are CBOR through serde: derived structs are maps keyed by field name and
 enums by variant name (a `#[serde(transparent)]` newtype or a hand-written impl chooses its own shape and must keep
-it). Adding a field (`#[serde(default)]`), removing one, or inserting a variant anywhere keeps older dumps
-loading, while tuple structs and tuple variants are positional and may only grow at the end; the names are the
-persistence contract, so renaming a serialized field or variant needs `#[serde(alias = "old")]`, and `#[serde(deny_unknown_fields)]` must never go on a dumped type.
+it).
+Within one dump version, compatibility MUST hold in both directions: newer builds must read and resume older dumps,
+and older builds must read and resume newer dumps.
+Breaking either direction requires a `DUMP_VERSION` bump, even if a new decoder still accepts the old encoding.
+Adding a field with `#[serde(default)]` is compatible when older readers ignore it.
+Removing a field requires older readers to tolerate its absence; writing a new variant or renaming a serialized field
+is not automatically compatible.
+An alias only lets newer readers accept an older name; preserve the serialized name if older readers still need it.
+Tuple structs and tuple variants are positional, so appending fields also requires compatibility in both directions.
+`#[serde(deny_unknown_fields)]` must never go on a dumped type.
 Persisted `Vec<u8>` / `[u8; N]` data takes `#[serde(with = "serde_bytes")]` so it is written as one byte string.
 Types written many times (`Value`, `HeapEntry`, `CcColor`, the hot `HeapData` variants, `List`, `Tuple`, `Dict`,
 `DictEntry`, `SetEntry`, `CodeRange`, `CodeLoc`, `Instance`, `Closure`, `FunctionDefaults`,
@@ -276,8 +283,9 @@ rename every field and variant to one upper-case letter, since key strings other
 or variant on them takes an unused letter.
 `Code`'s location table is the exception: `bytecode/code/location_table.rs` writes it as one byte string of
 delta-encoded varints led by a format byte, which serde attributes cannot evolve. A layout change takes a new format
-byte and keeps the old decoder; `LocationEntry`'s derived `Deserialize` only reads the per-entry maps of older dumps.
-`DUMP_VERSION` still bumps when the *meaning* of stored data changes: opcodes, `BuiltinsFunctions` order (its
+byte and keeps the old decoder; a new encoding unreadable by older builds also requires a `DUMP_VERSION` bump.
+`LocationEntry`'s derived `Deserialize` only reads the per-entry maps of older dumps.
+`DUMP_VERSION` also bumps when the *meaning* of stored data changes: opcodes, `BuiltinsFunctions` order (its
 discriminants are bytecode operands), `CmpOperator` values, the compiler's constant layout, how a key hashes (dict and
 set entries persist their hash, which is why keys without a heap identity hash by name or a persisted id such as a
 `FunctionId`, never by discriminant), a semantic change to a stored value, or a `sha1` / `sha2` crate upgrade that

@@ -388,11 +388,11 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     load only dumps this host produced.
 - **Dumps carry a format version.** The bytes are Monty's own dump format, a `MONTY\0` magic followed by a dump-format
     version, then the state encoded as CBOR with every field and variant named.
-    A release that only changes the layout of stored data, adding fields that default when absent or removing and
-    reordering named fields, keeps the version, so its builds still load dumps written by earlier releases at that
-    version.
-    A release that changes what stored data means, such as the bytecode, bumps the version and says so in its release
-    notes.
+    Within one dump version, compatibility holds in both directions: newer builds can read and resume older dumps,
+    and older builds can read and resume newer dumps.
+    A release keeps the version only if changes to the encoding and stored meaning preserve both directions.
+    A release that breaks either direction bumps the version and says so in its release notes.
+    This includes writing a new encoding that older readers cannot read, even if the new reader still accepts old dumps.
     Older builds then refuse the new dumps as too new.
     Where the old data still holds everything the new meaning needs, the newer build upgrades older dumps as it loads
     them: version 14 builds load version 13 dumps from 1.0 and 1.1, generating the methods their dataclasses lack, and
