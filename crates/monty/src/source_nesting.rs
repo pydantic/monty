@@ -6,13 +6,25 @@
 //! ([`MAX_NESTING_DEPTH`]) ever runs. One lexer pass over-approximates the
 //! parser's recursion depth; a source of at most `source_scan_threshold` bytes
 //! skips it, its depth being bounded by its length.
+//!
+//! The scan cannot bound the AST itself: ruff folds `1+1+...` and `a.x.x...`
+//! in a loop, one level deeper per link, and recovers from a syntax error into
+//! trees as deep. Dropping one recurses once per level, so [`parse_shallow`]
+//! measures every AST parsed here and tears a deep one down iteratively.
+
+use std::{cell::RefCell, mem};
 
 use ruff_python_ast::{
-    Expr, Mod, Stmt, StringLiteral,
+    AtomicNodeIndex, Expr, ExprEllipsisLiteral, Mod, Pattern, PatternMatchStar, Stmt, StmtPass, StringFlags,
+    StringLiteral,
     token::TokenKind,
-    visitor::{Visitor, walk_expr, walk_stmt},
+    visitor::{
+        Visitor,
+        transformer::{self, Transformer},
+        walk_expr, walk_pattern, walk_stmt,
+    },
 };
-use ruff_python_parser::{Mode, ParseOptions, lexer::lex, parse_string_annotation, parse_unchecked};
+use ruff_python_parser::{Mode, ParseOptions, Parsed, lexer::lex, parse_unchecked};
 use ruff_text_size::{Ranged, TextLen, TextRange};
 
 use crate::parse::MAX_NESTING_DEPTH;
@@ -27,6 +39,183 @@ use crate::parse::MAX_NESTING_DEPTH;
 #[must_use]
 pub fn source_within_nesting_bound(source: &str, source_scan_threshold: usize) -> bool {
     source.len() <= source_scan_threshold || nesting_bound_exceeded(source, Mode::Module, MAX_NESTING_DEPTH).is_none()
+}
+
+/// Deepest AST [`parse_shallow`] returns: one that drops, and unwinds a
+/// visitor stopped part way, within a 1 MiB native stack.
+const DROP_SAFE_DEPTH: usize = MAX_NESTING_DEPTH as usize * 10;
+
+/// Deepest AST a string literal that fails to parse may recover to.
+///
+/// ty drops that AST itself, on the worker's 16 MiB stack, and only for a
+/// literal in an annotation; most are data, such as a list of absolute paths,
+/// so the bound is as loose as that stack allows.
+const UNPARSED_STRING_DEPTH: usize = DROP_SAFE_DEPTH * 10;
+
+/// Parses `source` as ruff would, syntax errors included, unless its AST nests
+/// deeper than [`DROP_SAFE_DEPTH`]; then returns the range of the node that
+/// crossed it.
+///
+/// Every parse of untrusted source goes through here, because Rust drops an
+/// AST recursively: one from `'1' + '+1' * 400_000` overflows the stack. The
+/// deep AST is torn down without recursion before the error is returned, so
+/// callers may drop what they get, or abandon a conversion of it part way.
+pub(crate) fn parse_shallow(source: &str, mode: Mode) -> Result<Parsed<Mod>, TextRange> {
+    let parsed = parse_unchecked(source, ParseOptions::from(mode));
+    // ruff nests at most one level per byte, so a short source needs no walk.
+    let too_deep = if source.len() <= DROP_SAFE_DEPTH {
+        None
+    } else {
+        DeepAstCheck::exceeded(parsed.syntax(), DROP_SAFE_DEPTH)
+    };
+    match too_deep {
+        Some(range) => {
+            Dismantler::dismantle(parsed.into_syntax());
+            Err(range)
+        }
+        None => Ok(parsed),
+    }
+}
+
+/// [`parse_shallow`] for a caller that must hand `source` to a ruff entry
+/// point which drops the AST itself, as `parse_expression_range` does on a
+/// syntax error: the range of the node nested too deep to let it.
+///
+/// Costs a second parse, but only of a source longer than [`DROP_SAFE_DEPTH`].
+pub(crate) fn ast_too_deep(source: &str, mode: Mode) -> Option<TextRange> {
+    if source.len() <= DROP_SAFE_DEPTH {
+        None
+    } else {
+        parse_shallow(source, mode).err()
+    }
+}
+
+/// Finds a statement, expression or pattern nested more than `limit` deep.
+///
+/// Walks from a worklist rather than by recursion, which an AST that deep
+/// would overflow as surely as dropping it.
+struct DeepAstCheck<'a> {
+    /// Nodes still to walk, each with its depth.
+    pending: Vec<(Nested<'a>, usize)>,
+    /// Depth of the node being walked; its children are one deeper.
+    depth: usize,
+}
+
+/// A statement, expression or pattern: the nodes an AST nests without limit.
+enum Nested<'a> {
+    Stmt(&'a Stmt),
+    Expr(&'a Expr),
+    Pattern(&'a Pattern),
+}
+
+impl DeepAstCheck<'_> {
+    fn exceeded(module: &Mod, limit: usize) -> Option<TextRange> {
+        let mut check = DeepAstCheck {
+            pending: Vec::new(),
+            depth: 0,
+        };
+        match module {
+            Mod::Module(module) => check.visit_body(&module.body),
+            Mod::Expression(expression) => check.visit_expr(&expression.body),
+        }
+        while let Some((node, depth)) = check.pending.pop() {
+            check.depth = depth;
+            match node {
+                _ if depth > limit => return Some(node.range()),
+                Nested::Stmt(stmt) => walk_stmt(&mut check, stmt),
+                Nested::Expr(expr) => walk_expr(&mut check, expr),
+                Nested::Pattern(pattern) => walk_pattern(&mut check, pattern),
+            }
+        }
+        None
+    }
+}
+
+impl Nested<'_> {
+    fn range(&self) -> TextRange {
+        match self {
+            Self::Stmt(stmt) => stmt.range(),
+            Self::Expr(expr) => expr.range(),
+            Self::Pattern(pattern) => pattern.range(),
+        }
+    }
+}
+
+impl<'a> Visitor<'a> for DeepAstCheck<'a> {
+    fn visit_stmt(&mut self, stmt: &'a Stmt) {
+        self.pending.push((Nested::Stmt(stmt), self.depth + 1));
+    }
+
+    fn visit_expr(&mut self, expr: &'a Expr) {
+        self.pending.push((Nested::Expr(expr), self.depth + 1));
+    }
+
+    fn visit_pattern(&mut self, pattern: &'a Pattern) {
+        self.pending.push((Nested::Pattern(pattern), self.depth + 1));
+    }
+}
+
+/// Drops an AST of any depth in constant stack: each node is detached from its
+/// parent onto a worklist, leaving a leaf behind, before either is dropped.
+#[derive(Default)]
+struct Dismantler {
+    /// Detached nodes whose own children are still attached.
+    detached: RefCell<Vec<Detached>>,
+}
+
+/// An owned [`Nested`] node, taken out of its parent.
+enum Detached {
+    Stmt(Stmt),
+    Expr(Expr),
+    Pattern(Pattern),
+}
+
+impl Dismantler {
+    fn dismantle(module: Mod) {
+        let dismantler = Self::default();
+        match module {
+            Mod::Module(mut module) => dismantler.visit_body(&mut module.body),
+            Mod::Expression(mut expression) => dismantler.visit_expr(&mut expression.body),
+        }
+        loop {
+            // Popped in its own statement: the walk below pushes to the worklist.
+            let next = dismantler.detached.borrow_mut().pop();
+            match next {
+                Some(Detached::Stmt(mut stmt)) => transformer::walk_stmt(&dismantler, &mut stmt),
+                Some(Detached::Expr(mut expr)) => transformer::walk_expr(&dismantler, &mut expr),
+                Some(Detached::Pattern(mut pattern)) => transformer::walk_pattern(&dismantler, &mut pattern),
+                None => break,
+            }
+        }
+    }
+
+    fn detach(&self, node: Detached) {
+        self.detached.borrow_mut().push(node);
+    }
+}
+
+impl Transformer for Dismantler {
+    fn visit_stmt(&self, stmt: &mut Stmt) {
+        let leaf = Stmt::Pass(StmtPass {
+            node_index: AtomicNodeIndex::NONE,
+            range: TextRange::default(),
+        });
+        self.detach(Detached::Stmt(mem::replace(stmt, leaf)));
+    }
+
+    fn visit_expr(&self, expr: &mut Expr) {
+        let leaf = Expr::EllipsisLiteral(ExprEllipsisLiteral::default());
+        self.detach(Detached::Expr(mem::replace(expr, leaf)));
+    }
+
+    fn visit_pattern(&self, pattern: &mut Pattern) {
+        let leaf = Pattern::MatchStar(PatternMatchStar {
+            node_index: AtomicNodeIndex::NONE,
+            range: TextRange::default(),
+            name: None,
+        });
+        self.detach(Detached::Pattern(mem::replace(pattern, leaf)));
+    }
 }
 
 /// Estimates ruff's peak parser recursion from one lexer pass, returning the
@@ -364,7 +553,10 @@ impl Level {
 /// bounded ruff's own recursion with that scan.
 pub(crate) fn ast_depth_exceeded(source: &str, limit: u16) -> Option<TextRange> {
     // Recovered from any syntax error, as ty type-checks the recovered AST too.
-    let parsed = parse_unchecked(source, ParseOptions::from(Mode::Module));
+    let parsed = match parse_shallow(source, Mode::Module) {
+        Ok(parsed) => parsed,
+        Err(range) => return Some(range),
+    };
     let mut check = AstDepth {
         source,
         remaining: limit,
@@ -418,10 +610,33 @@ impl<'a> Visitor<'a> for AstDepth<'_> {
             self.exceeded = Some(literal.range());
             return;
         }
-        if let Ok(parsed) = parse_string_annotation(self.source, literal) {
+        // As `parse_string_annotation` parses it, but keeping hold of the AST,
+        // which may be of any depth.
+        let contents = literal
+            .range()
+            .add_start(literal.flags.opener_len())
+            .sub_end(literal.flags.closer_len());
+        let contents = &self.source[contents];
+        let mode = if literal.flags.is_triple_quoted() {
+            Mode::ParenthesizedExpression
+        } else {
+            Mode::Expression
+        };
+        let parsed = parse_unchecked(contents, ParseOptions::from(mode));
+        if let (true, Mod::Expression(expression)) = (parsed.has_valid_syntax(), parsed.syntax()) {
+            // Ranges in this AST count from the start of the contents.
+            let source = mem::replace(&mut self.source, contents);
             self.string_depth += 1;
-            self.visit_expr(parsed.expr());
+            self.visit_expr(&expression.body);
             self.string_depth -= 1;
+            self.source = source;
+            self.exceeded = self.exceeded.map(|_| literal.range());
+        } else if DeepAstCheck::exceeded(parsed.syntax(), UNPARSED_STRING_DEPTH).is_some() {
+            // ty would fail to parse it too, and ruff then drops the AST recursively.
+            self.exceeded = Some(literal.range());
+        }
+        if contents.len() > DROP_SAFE_DEPTH {
+            Dismantler::dismantle(parsed.into_syntax());
         }
     }
 }

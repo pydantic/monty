@@ -2768,6 +2768,44 @@ fn type_checked_session_rejects_deep_asts_from_flat_source() {
     child.shutdown();
 }
 
+/// ruff parses a flat chain, or source it recovers from a syntax error in, to
+/// an AST one level deeper per link. Dropping that AST recursed once per level
+/// and overflowed the worker's stack; each feed now ends in a SyntaxError and
+/// the session survives, whether or not the import scan and ty also parse it.
+#[test]
+fn session_survives_asts_too_deep_to_drop() {
+    for type_check in [false, true] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(pb::Configure {
+            type_check,
+            ..configure()
+        });
+
+        for (source, message) in [
+            (
+                format!("import os\nx = 1{}", " + 1".repeat(400_000)),
+                "Source is too deeply nested",
+            ),
+            (
+                format!("{}a", "not a < ".repeat(400_000)),
+                "Source is too deeply nested",
+            ),
+            (
+                "eval('1' + '+1' * 400_000)".to_owned(),
+                "Source is too deeply nested (<string>, line 1)",
+            ),
+        ] {
+            let (_, event) = child.feed(&source);
+            let error = expect_error(event);
+            assert_eq!(error.exc_type, "SyntaxError");
+            assert_eq!(error.message.as_deref(), Some(message));
+        }
+
+        assert_eq!(child.feed_complete("1"), MontyObject::int(1));
+        child.shutdown();
+    }
+}
+
 #[test]
 fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
     let mut child = ChildProc::spawn();
@@ -3253,6 +3291,194 @@ fn undeclared_protocol_version_is_a_fatal_error() {
         message.contains("try updating to a newer client version"),
         "message should tell the client to update: {message}"
     );
+}
+
+/// Clients below protocol 9 receive only the original sequential byte-write operations.
+#[test]
+fn legacy_binary_writes_remain_sequential() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_protocol_version(8, env!("CARGO_PKG_VERSION")));
+    let (_, event) = child.feed("f = open('/file', 'wb')\nf.write(b'abc')\nf.write(b'def')\nf.tell()");
+    let event = resume_binary_open(&mut child, event);
+    let event = resume_legacy_append(&mut child, event, b"abc");
+    let event = resume_legacy_append(&mut child, event, b"def");
+    assert_eq!(expect_complete(event), MontyObject::int(6));
+    child.shutdown();
+}
+
+/// Unsupported binary update mode fails before the host receives an opening call.
+#[test]
+fn legacy_binary_update_is_rejected_before_open() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_protocol_version(8, env!("CARGO_PKG_VERSION")));
+    for mode in ["w+b", "wb+"] {
+        let (_, event) = child.feed(&format!("open('/file', '{mode}')"));
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "NotImplementedError");
+        assert_eq!(
+            error.message.as_deref(),
+            Some("binary update mode requires positional filesystem writes")
+        );
+    }
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// Rejected overwrites and gaps leave the tracked EOF available for a later append.
+#[test]
+fn legacy_binary_writes_away_from_eof_are_rejected() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_protocol_version(8, env!("CARGO_PKG_VERSION")));
+    let (_, event) = child.feed("f = open('/file', 'wb')\nf.write(b'abc')");
+    let event = resume_binary_open(&mut child, event);
+    let event = resume_legacy_append(&mut child, event, b"abc");
+    assert_eq!(expect_complete(event), MontyObject::int(3));
+    for offset in [0, 100] {
+        let (_, event) = child.feed(&format!("f.seek({offset})\nf.write(b'x')"));
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "NotImplementedError");
+        assert_eq!(
+            error.message.as_deref(),
+            Some("writing away from EOF requires positional filesystem writes")
+        );
+        assert_eq!(child.feed_complete("f.tell()"), MontyObject::int(offset));
+        assert_eq!(child.feed_complete("f.write(b'')"), MontyObject::int(0));
+        assert_eq!(child.feed_complete("f.tell()"), MontyObject::int(offset));
+    }
+    let (_, event) = child.feed("f.seek(3)\nf.write(b'd')");
+    let event = resume_legacy_append(&mut child, event, b"d");
+    assert_eq!(expect_complete(event), MontyObject::int(1));
+    child.shutdown();
+}
+
+#[test]
+fn legacy_binary_write_capability_overrides_loaded_snapshots() {
+    assert_restored_binary_write(9, 8, false);
+    assert_restored_binary_write(9, 8, true);
+}
+
+#[test]
+fn modern_binary_write_capability_overrides_loaded_snapshots() {
+    assert_restored_binary_write(8, 9, false);
+    assert_restored_binary_write(8, 9, true);
+}
+
+/// A legacy client must never receive a new operation re-emitted by Load.
+#[test]
+fn legacy_hosts_refuse_snapshots_pending_positional_file_io() {
+    for code in ["open('/file', 'w+b')", "open('/file', 'wb').write(b'x')"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl();
+        let (_, mut event) = child.feed(code);
+        if code.contains("'wb'") {
+            event = resume_binary_open(&mut child, event);
+        }
+        assert!(matches!(event, pb::worker_event::Kind::OsCall(_)));
+        child.send(pb::client_request::Kind::Dump(pb::Dump {}));
+        let pb::worker_event::Kind::DumpResult(dump) = child.recv() else {
+            panic!("expected DumpResult");
+        };
+        child.shutdown();
+        let mut fresh = ChildProc::spawn();
+        fresh.create_repl_with(configure_with_protocol_version(8, env!("CARGO_PKG_VERSION")));
+        fresh.send(pb::client_request::Kind::Load(pb::Load { state: dump.state }));
+        let error = expect_error(fresh.recv());
+        assert!(
+            error
+                .message
+                .unwrap()
+                .contains("snapshot requires positional filesystem writes")
+        );
+        assert_eq!(fresh.feed_complete("1 + 1"), MontyObject::int(2));
+        fresh.shutdown();
+    }
+}
+
+/// Services only the legacy Open request; the host returns no native descriptor.
+fn resume_binary_open(child: &mut ChildProc, event: pb::worker_event::Kind) -> pb::worker_event::Kind {
+    let pb::worker_event::Kind::OsCall(call) = event else {
+        panic!("expected Open, got {event:?}");
+    };
+    assert!(matches!(&call.call, Some(pb::os_call::Call::Open(args)) if args.mode == "wb"));
+    let (_, event) = child.resume_return(
+        call.call_id,
+        MontyObject::file_handle(MontyFileHandle {
+            path: "/file".to_owned(),
+            mode: FileMode::Write(true),
+            position: 0,
+        }),
+    );
+    event
+}
+
+/// A legacy-only host rejects every operation other than AppendBytes here.
+fn resume_legacy_append(
+    child: &mut ChildProc,
+    event: pb::worker_event::Kind,
+    expected: &[u8],
+) -> pb::worker_event::Kind {
+    let pb::worker_event::Kind::OsCall(call) = event else {
+        panic!("expected AppendBytes, got {event:?}");
+    };
+    let Some(pb::os_call::Call::AppendBytes(args)) = &call.call else {
+        panic!("expected AppendBytes, got {call:?}");
+    };
+    assert_eq!(args.path, "/file");
+    assert_eq!(args.data.as_slice(), expected);
+    child
+        .resume_return(call.call_id, MontyObject::int(i64::try_from(expected.len()).unwrap()))
+        .1
+}
+
+/// Both idle sessions and suspended executors adopt the restoring host's capability.
+fn assert_restored_binary_write(producer: u32, consumer: u32, suspended: bool) {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_protocol_version(producer, env!("CARGO_PKG_VERSION")));
+    let code = if suspended {
+        "f = open('/file', 'wb')\ncheckpoint()\nf.write(b'abc')"
+    } else {
+        "f = open('/file', 'wb')"
+    };
+    let (_, event) = child.feed(code);
+    let event = resume_binary_open(&mut child, event);
+    assert!(if suspended {
+        matches!(event, pb::worker_event::Kind::FunctionCall(_))
+    } else {
+        matches!(event, pb::worker_event::Kind::Complete(_))
+    });
+    child.send(pb::client_request::Kind::Dump(pb::Dump {}));
+    let pb::worker_event::Kind::DumpResult(dump) = child.recv() else {
+        panic!("expected DumpResult");
+    };
+    child.shutdown();
+    let mut fresh = ChildProc::spawn();
+    fresh.create_repl_with(configure_with_protocol_version(consumer, env!("CARGO_PKG_VERSION")));
+    fresh.send(pb::client_request::Kind::Load(pb::Load { state: dump.state }));
+    let event = fresh.recv();
+    let event = if suspended {
+        let pb::worker_event::Kind::FunctionCall(call) = event else {
+            panic!("expected checkpoint")
+        };
+        fresh.resume_return(call.call_id, MontyObject::none()).1
+    } else {
+        assert!(matches!(event, pb::worker_event::Kind::Ok(_)));
+        fresh.feed("f.write(b'abc')").1
+    };
+    let event = if consumer < 9 {
+        resume_legacy_append(&mut fresh, event, b"abc")
+    } else {
+        let pb::worker_event::Kind::OsCall(call) = event else {
+            panic!("expected WriteBytesAt")
+        };
+        let Some(pb::os_call::Call::WriteBytesAt(args)) = &call.call else {
+            panic!("expected WriteBytesAt")
+        };
+        assert_eq!(args.offset, 0);
+        assert_eq!(args.data.as_slice(), b"abc");
+        fresh.resume_return(call.call_id, MontyObject::int(3)).1
+    };
+    assert_eq!(expect_complete(event), MontyObject::int(3));
+    fresh.shutdown();
 }
 
 /// The oldest served version still works: the point of a bump is to refuse a

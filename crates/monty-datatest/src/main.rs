@@ -1300,6 +1300,44 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
             });
             MontyObject::int(byte_count as i64).into()
         }
+        OsFunctionCall::WriteBytesAt(args) => {
+            if let Err(message) = args.validate() {
+                return MontyException::new(ExcType::ValueError, Some(message.to_owned())).into();
+            }
+            let path = args.path.as_str();
+            let Some(mut file) = get_virtual_file(path) else {
+                let exc = if is_virtual_dir(path) {
+                    ExcType::IsADirectoryError
+                } else {
+                    ExcType::FileNotFoundError
+                };
+                return MontyException::new(exc, Some(path.to_owned())).into();
+            };
+            if !args.data.is_empty() {
+                let Some(end) = usize::try_from(args.offset)
+                    .ok()
+                    .and_then(|offset| offset.checked_add(args.data.len()))
+                else {
+                    return MontyException::new(ExcType::ValueError, Some("write range is too large".to_owned()))
+                        .into();
+                };
+                if end > 50_000_000 {
+                    return MontyException::new(
+                        ExcType::MemoryError,
+                        Some("virtual fixture file is too large".to_owned()),
+                    )
+                    .into();
+                }
+                file.content.resize(file.content.len().max(end), 0);
+                file.content[end - args.data.len()..end].copy_from_slice(&args.data);
+                MUTABLE_VFS.with(|vfs| {
+                    vfs.borrow_mut()
+                        .files
+                        .insert(path.to_owned(), (file.content, file.mode));
+                });
+            }
+            MontyObject::int(args.data.len() as i64).into()
+        }
         OsFunctionCall::AppendText(args) => {
             let path = args.path.as_str().to_owned();
             let text = args.data.as_str();
@@ -1342,8 +1380,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
 
             let parent = Path::new(&path)
                 .parent()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
+                .map_or_default(|p| p.to_string_lossy().to_string());
             if !parent.is_empty() && !is_virtual_dir(&parent) {
                 if parents {
                     create_parent_dirs(&parent);
