@@ -170,6 +170,84 @@ assert isinstance(round(1.5, 1), float)
 assert round(1.25, 1) == 1.2
 assert round(1.35, 1) == 1.4
 
+
+# Float ndigits must round the original binary value without intermediate error.
+def check_float_round(value, digits, expected):
+    """Check an exact float result, including the sign of zero."""
+    actual = round(value, digits)
+    assert type(actual) == float
+    assert actual == expected
+    if expected == 0.0:
+        assert repr(actual) == repr(expected)
+
+
+for value, digits, expected in [
+    (1e20, 3, 1e20),
+    (710.8655, 3, 710.865),
+    (2.675, 2, 2.67),
+    (2.685, 2, 2.69),
+    (1.125, 2, 1.12),
+    (1.375, 2, 1.38),
+    (2.5, 0, 2.0),
+    (3.5, 0, 4.0),
+    (1250.0, -2, 1200.0),
+    (1350.0, -2, 1400.0),
+    (1e20, -20, 1e20),
+    (1e20, -21, 0.0),
+    (1.7976931348623157e308, 3, 1.7976931348623157e308),
+    (1e308, -308, 1e308),
+    (1.49e308, -308, 1e308),
+    (2.2250738585072014e-308, 308, 2e-308),
+    (5e-324, 309, 0.0),
+    (5e-324, 323, 0.0),
+    (5e-324, 324, 5e-324),
+    (1.5e-323, 323, 1e-323),
+    (0.0, 3, 0.0),
+    (0.5, 0, 0.0),
+    (0.04, 1, 0.0),
+    (4.0, -1, 0.0),
+]:
+    for sign in (1.0, -1.0):
+        check_float_round(sign * value, digits, sign * expected)
+
+# Checked fixed-width scaling and exact-ratio conversion must agree with fallback.
+for value, digits, expected in [
+    (2.0**-75, 0, 0.0),
+    (2.0**-76, 0, 0.0),
+    (2.0**127, 0, 2.0**127),
+    (2.0**128, 0, 2.0**128),
+    (1.25, 22, 1.25),
+    (7.0, 22, 7.0),
+    (7.0, 23, 7.0),
+    (2.0**127, -38, 2e38),
+    (2.0**127, -39, 0.0),
+    (0.1, 20, 0.1),
+    (3.4028236692093843e38, -35, 3.403e38),
+]:
+    for sign in (1.0, -1.0):
+        check_float_round(sign * value, digits, sign * expected)
+
+# Precision cutoffs, both sides of i64, and arbitrary-sized precision integers.
+for value in (0.0, 1.2345678901234567, 5e-324, 1.7976931348623157e308):
+    for sign in (1.0, -1.0):
+        for digits in (324, 2**63 - 1, 2**63, 10**100):
+            check_float_round(sign * value, digits, sign * value)
+        for digits in (-309, -(2**63), -(2**63) - 1, -(10**100)):
+            check_float_round(sign * value, digits, sign * 0.0)
+
+for digits in (0, 3, -3, 323, 324, -308, -309, 2**63 - 1, 2**63, -(2**63), -(2**63) - 1, 10**100, -(10**100)):
+    assert round(float('inf'), digits) == float('inf')
+    assert round(float('-inf'), digits) == float('-inf')
+    assert repr(round(float('nan'), digits)) == 'nan'
+
+for value in (1.79e308, -1.79e308):
+    try:
+        round(value, -308)
+        assert False, 'expected OverflowError'
+    except OverflowError as exc:
+        assert str(exc) == 'rounded value too large to represent'
+
+
 # === divmod() ===
 # Basic divmod operations
 assert divmod(17, 5) == (3, 2)
