@@ -67,7 +67,7 @@ num-traits = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 # Typed values used when recording attributes; version must match logfire's.
-opentelemetry = { version = "0.32", optional = true }
+opentelemetry = { workspace = true, optional = true }
 # Aggregated metrics cross language-extension boundaries as standard OTLP protobuf.
 opentelemetry-proto = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
@@ -75,7 +75,7 @@ prost = { workspace = true, optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-opentelemetry = { version = "0.33", optional = true }
 # Host-neutral processors used by Python, Node, and third-party adapters.
-opentelemetry_sdk = { version = "0.32", optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
 
 # CPU supervision is Linux-only: `nix` reads the child's CPU clock without `unsafe`.
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -100,7 +100,7 @@ tonic = { workspace = true, features = ["server", "router"] }
 rcgen = { workspace = true }
 tokio-stream = { workspace = true, features = ["net"] }
 # In-memory exporters for the telemetry recorder's structural tests.
-opentelemetry_sdk = { version = "0.32", features = ["testing"] }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

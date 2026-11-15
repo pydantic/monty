@@ -160,6 +160,6 @@ Differences from CPython:
 - No bytecode is cached: each session compiles every module it imports.
     The source of an imported module stays allocated for the rest of the session, counted against `max_memory`.
 - The type checker does not read module files, so a type-checked feed that imports a file module fails with
-    `unresolved-import`.
+    `import-not-found`.
     [Module stubs](../type-checking.md) come only with host modules, which would shadow the file; feed such code with
     `skip_type_check=True`.

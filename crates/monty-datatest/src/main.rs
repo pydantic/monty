@@ -3044,14 +3044,10 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 // Generate tests for all fixture files using datatest-stable harness macro
-datatest_stable::harness!(
-    run_test_cases_monty,
-    TEST_CASES_DIR,
-    r"^.*\.py$",
-    run_test_cases_cpython,
-    TEST_CASES_DIR,
-    r"^.*\.py$",
-);
+datatest_stable::harness! {
+    { test = run_test_cases_monty, root = TEST_CASES_DIR, pattern = r"^.*\.py$" },
+    { test = run_test_cases_cpython, root = TEST_CASES_DIR, pattern = r"^.*\.py$" },
+}
 
 #[cfg(test)]
 #[path = "../tests/units/create_exclusive.rs"]
