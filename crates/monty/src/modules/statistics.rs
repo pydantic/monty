@@ -22,7 +22,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, HeapData, HeapId, HeapReadOutput},
+    heap::{DropGuard, HeapData, HeapReadOutput},
     intern::StaticStrings,
     modules::{ModuleFunctions, collections::counter_init, math},
     resource_checks::try_vec_with_capacity,
@@ -54,7 +54,7 @@ pub(crate) enum StatisticsFunctions {
 }
 
 /// Creates the module and its `StatisticsError` exception type.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Statistics, vm.interns);
     for (name, function) in [
         (StaticStrings::Mean, StatisticsFunctions::Mean),
@@ -77,7 +77,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::Builtin(Builtins::ExcType(ExcType::StatisticsError)),
         vm,
     );
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `statistics` function.

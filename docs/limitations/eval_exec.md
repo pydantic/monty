@@ -19,6 +19,10 @@ The snippet can call host functions and raise into the caller; top-level `await`
 
 ## Namespace divergences
 
+- **A builtin rebound at module scope only by a snippet is not seen by the rest of that module scope.**
+    After `exec('len = 5')` or `exec('from math import *')`, `len` and `pow` read at module level in the same feed
+    are still the builtins; functions and later REPL feeds see the new bindings.
+    Module-level reads of a builtin name the module never assigns are resolved to the builtin at compile time.
 - **`__builtins__` is never inserted into a `globals` dict.** `exec('x = 1', ns)` leaves `ns == {'x': 1}`, where
     CPython adds a `'__builtins__'` entry; reading it in Monty raises `NameError` unless it was explicitly supplied or assigned.
 - **Module dunders under a `globals` dict raise `NameError`** unless the dict defines them.

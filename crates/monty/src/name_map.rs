@@ -186,11 +186,14 @@ impl NameMap {
 #[cold]
 #[inline(never)]
 pub(crate) fn namespace_overflow(position: CodeRange) -> ParseError {
-    ParseError::syntax(
-        format!(
-            "too many distinct names in scope; maximum is {} per scope",
-            (u16::MAX as usize) + 1
-        ),
-        position,
+    ParseError::syntax(namespace_overflow_message(), position)
+}
+
+/// The message of the `SyntaxError` for a scope past the `u16` slot limit,
+/// also raised at runtime when `from m import *` adds one global too many.
+pub(crate) fn namespace_overflow_message() -> String {
+    format!(
+        "too many distinct names in scope; maximum is {} per scope",
+        (u16::MAX as usize) + 1
     )
 }
