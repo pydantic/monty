@@ -1,6 +1,7 @@
 //! The gRPC transport's shared vocabulary: the session RPC's path, the
 //! opaque-bytes codec both ends frame messages with, and the status a server
-//! ends a stream with when it drops a session by policy.
+//! ends a stream with when it drops a session by policy (a [`Cause`]'s code
+//! and trailer).
 //!
 //! The RPC carries the same `ClientRequest` / `WorkerEvent` messages as the
 //! stdio transport, one per gRPC message. Both ends keep the payload opaque at
@@ -11,50 +12,17 @@
 //! service: a client calls [`SESSION_PATH`] through `tonic::client::Grpc`.
 
 use bytes::{Buf, BufMut, Bytes};
-use strum::{Display, EnumIter, EnumString, IntoStaticStr};
 use tonic::{
     Code, Status,
     codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder},
     metadata::MetadataValue,
 };
 
+pub use crate::cause::{CAUSE_METADATA_KEY, Cause};
+
 /// Path of the one RPC: `MontySession.Session`, a bidirectional stream per
 /// session.
 pub const SESSION_PATH: &str = "/monty.v1.MontySession/Session";
-
-/// Trailer metadata key naming why a server ended a stream, a [`Cause`].
-pub const CAUSE_METADATA_KEY: &str = "monty-cause";
-
-/// Why a server ended a session's stream, or refused to open one. Rides on the
-/// [`CAUSE_METADATA_KEY`] trailer beside the canonical gRPC code so a client
-/// can act on the reason rather than parse the message. Its string form,
-/// the variant in `snake_case`, is the trailer value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, EnumIter, IntoStaticStr)]
-#[strum(serialize_all = "snake_case")]
-pub enum Cause {
-    /// No request arrived within the server's idle timeout.
-    IdleTimeout,
-    /// The session outlived the server's lifetime limit.
-    SessionTimeout,
-    /// One turn exceeded the server's wall-clock cap.
-    TurnTimeout,
-    /// The worker exceeded its memory limit; the server ended the session.
-    OutOfMemory,
-    /// The server is draining and the idle session had nothing to hand back.
-    ServerShutdown,
-    /// The server's session capacity is full.
-    Capacity,
-    /// The caller already holds its maximum number of sessions.
-    CallerCap,
-    /// The caller presented no acceptable credentials.
-    Unauthenticated,
-    /// The caller's credential is valid but not allowed this project or profile.
-    PermissionDenied,
-    /// No worker could be reached to serve the session.
-    WorkerUnavailable,
-    /// The client broke the protocol (a malformed frame, a second request mid-turn).
-    ProtocolViolation,
-}
 
 impl Cause {
     /// The canonical gRPC code paired with this cause.
@@ -68,12 +36,6 @@ impl Cause {
             Self::PermissionDenied => Code::PermissionDenied,
             Self::ProtocolViolation => Code::InvalidArgument,
         }
-    }
-
-    /// The trailer value: the variant in `snake_case`.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        self.into()
     }
 
     /// Builds the status a server ends (or refuses) a stream with: this

@@ -10,7 +10,7 @@ latter into this crate's `OOM_EXIT_CODE` so a client can classify them).
 The subprocess architecture isolates those crashes: a client — the
 [`monty-pool`](https://crates.io/crates/monty-pool) crate, and through it the
 Python and JavaScript packages — drives `monty subprocess` workers over
-framed stdio (or a gRPC stream), and a dead worker is simply replaced. This crate
+framed stdio (or a remote session), and a dead worker is simply replaced. This crate
 defines the protocol both sides speak.
 
 The protocol is protobuf (rather than Monty's internal CBOR dump format) so a
@@ -51,12 +51,15 @@ for the schema and the protocol rules documented alongside it.
   Snapshot compatibility is checked separately using the dump-format version.
   `OsCall.create_exclusive` (field 35) returns a file-handle value.
   A host must reject an unsupported operation rather than fall back to ordinary, potentially truncating `open`.
-- `grpc` (cargo feature, off by default) — the `grpc` module: the remote
+- `Cause` — why a remote server ended or refused a session, shared by both remote
+  transports (see [Remote transports](#remote-transports)).
+- `grpc` (cargo feature, off by default) — the `grpc` module: the gRPC
   transport's vocabulary. `SESSION_PATH` names the `MontySession.Session`
   bidirectional stream, `BytesCodec` moves each message as opaque bytes so both
-  ends decode with the frame helpers above, and `Cause` is the `monty-cause`
-  trailer a server attaches to the status it ends or refuses a stream with.
-  Pulls in `tonic`'s core only (no transport); `monty-pool` enables it.
+  ends decode with the frame helpers above, and `Cause::status` / `Cause::of`
+  write and read the `monty-cause` trailer on the status a server ends or
+  refuses a stream with. Pulls in `tonic`'s core only (no transport);
+  `monty-pool` enables it.
 - `python` (cargo feature, off by default) — the `python` module: PyO3-based
   conversions between live Python objects and `MontyObject`/`MontyException`,
   used by the `pydantic-monty-client` extension module and by the embedded-CPython worker `monty-cpython`
@@ -67,6 +70,26 @@ for the schema and the protocol rules documented alongside it.
 Repeated fields and byte buffers in protocol messages use `BudgetVec<T>`.
 Construct them from standard vectors with `.into()` or collect an iterator directly; use `.into_inner()` to recover a standard vector without copying.
 Host construction and cloning are unbudgeted; fallible `try_push` charges any growth to the active decode budget.
+
+## Remote transports
+
+A remote server carries the same `ClientRequest` / `WorkerEvent` messages, one per transport message with no length
+prefix, over either of two transports; `monty-pool` picks one by the URL's scheme.
+
+- **gRPC** (`http://`, `https://`): one `MontySession.Session` stream per session. A server refuses a stream with a
+  trailers-only status and ends one with a status; either may carry a `monty-cause` trailer naming a `Cause`.
+- **WebSocket** (`ws://`, `wss://`): one connection per session, one binary message per protocol message.
+  - A 101 upgrade admits the session. A server refuses with any other HTTP status, optionally with a `monty-cause`
+    header and `Retry-After`. A client reads the status as gRPC's HTTP mapping does (401 `UNAUTHENTICATED`, 403
+    `PERMISSION_DENIED`, 429/502/503/504 `UNAVAILABLE`), and a known `monty-cause` as that cause and its code.
+  - A server ends a session with a Close frame. Each `Cause` has its own close code in RFC 6455's private range,
+    `Cause::close_code` (4000 `idle_timeout` to 4010 `protocol_violation`); these numbers are wire contract.
+    The reason text is for people and is never parsed. Of the standard codes, 1000 is a plain finish (`OK`), 1001
+    `UNAVAILABLE`, 1008 `PERMISSION_DENIED`, 1009 `RESOURCE_EXHAUSTED` and 1011 `INTERNAL`.
+  - Text messages are a protocol violation. A client answers WebSocket ping frames, and ends its side with a 1000
+    Close frame.
+
+On both, a server may send in-band `Ping` events between turns, which a client answers with `Pong`.
 
 ## Positional writes and protocol compatibility
 

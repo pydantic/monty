@@ -27,8 +27,8 @@ prost = { workspace = true }
 monty-type-checking = { workspace = true, optional = true }
 # Optional: powers the `python` feature's Python ↔ MontyObject conversion layer
 pyo3 = { workspace = true, optional = true, features = ["num-bigint"] }
-# Optional: the `python` feature iterates `MontyType` to build its round-trip table
-strum = { workspace = true, optional = true }
+# `Cause`'s wire strings and close codes; the `python` feature also iterates `MontyType`
+strum = { workspace = true }
 # Optional: the `grpc` feature's codec and status vocabulary (no transport)
 tonic = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
@@ -47,11 +47,11 @@ generate = ["dep:prost-build", "dep:protox", "dep:heck"]
 # Enables the `python` module: PyO3-based conversions between Python objects
 # and `MontyObject`/`MontyException`. Off by default so pure-Rust consumers
 # (monty-pool, monty-runtime) never build or link against libpython.
-python = ["dep:pyo3", "dep:strum"]
+python = ["dep:pyo3"]
 # Enables the `grpc` module: the session RPC path, the opaque-bytes codec and
 # the status a server ends a stream with. Off by default so the stdio-only
 # runtime never links tonic.
-grpc = ["dep:tonic", "dep:bytes", "dep:strum"]
+grpc = ["dep:tonic", "dep:bytes"]
 # Enables the `worker` module: the `Worker` state machine that drives
 # the interpreter. Off by default so host-side consumers (monty-pool, the
 # bindings) never link the interpreter itself.
