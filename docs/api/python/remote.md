@@ -7,14 +7,16 @@ tableOfContents:
 
 # Remote Client
 
-A pool of remote `monty` workers reached over gRPC instead of local subprocesses — the intended peer is
-`monty-server`.
-The pool holds one HTTP/2 connection to the server and each checkout opens one `MontySession.Session` stream on it;
-a stream is never reused.
+A pool of remote `monty` workers instead of local subprocesses — the intended peer is `monty-server`.
+The URL's scheme picks the transport.
+For `http://` and `https://` (gRPC) the pool holds one HTTP/2 connection to the server and each checkout opens one
+`MontySession.Session` stream on it.
+For `ws://` and `wss://` (WebSocket) each checkout dials its own connection to the URL as given, path and query
+included, and `metadata` becomes the upgrade request's headers.
+A session is never reused.
 See [running monty-server](../../server.md) and the [remote-worker trust boundary](../../security.md#remote-workers).
 A remote peer may be CPython rather than a Monty sandbox; the transport does not provide isolation.
-[`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyRemote] is the same class under its deprecated former name, and a `ws://` or
-`wss://` URL is read as `http://` or `https://`.
+[`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyRemote] is the same class under its deprecated former name.
 
 `checkout(profile='...')` names a server-side profile to run the session under; `None` takes the server's default.
 The client sends the name to the server unchecked; what a profile means is the server's choice, and the `monty` worker
@@ -22,14 +24,14 @@ ignores it.
 
 ## Connection loss and shutdown
 
-[`MontyRefusedError`][pydantic_monty.MontyRefusedError] means the server refused to open the session's stream: at
+[`MontyRefusedError`][pydantic_monty.MontyRefusedError] means the server refused to open the session: at
 capacity, with no worker to serve it, or rejecting the caller; its `status_code`, `status_message` and `cause` say
 why, and no session existed.
 `retryable` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not for credential errors.
 `retry_after` is the suggested delay in seconds from `Retry-After`, capped at one hour, or `None` if absent or invalid.
 The client accepts delay-seconds and HTTP dates but does not retry automatically.
 A server that cannot be reached, that answers with any other status (such as `UNIMPLEMENTED` from a URL that is
-no Monty server), or that is no gRPC server at all (such as a web server's page), raises
+no Monty server), or that is no Monty server at all (such as a web server's page), raises
 [`MontyConnectError`][pydantic_monty.MontyConnectError].
 It retains `status_code`, `status_message` and `cause` when the server sent a status, or `transport_error` otherwise.
 Both errors subclass [`MontyError`][pydantic_monty.MontyError].
@@ -96,9 +98,13 @@ the resume fail.
 
 [`MontyDisconnectError`][pydantic_monty.MontyDisconnectError] exposes `status_code`, `status_message`, `cause` and
 `transport_error`.
-If the server ended the stream with a gRPC status, `status_code` holds its canonical name (`DEADLINE_EXCEEDED`,
-`RESOURCE_EXHAUSTED`, `UNAVAILABLE`, ...), or `OK` when the server simply finished the stream, and `status_message` its
+If the server ended the session with a gRPC status, `status_code` holds its canonical name (`DEADLINE_EXCEEDED`,
+`RESOURCE_EXHAUSTED`, `UNAVAILABLE`, ...), or `OK` when the server simply finished the session, and `status_message` its
 message.
+Over WebSocket, the server's Close frame is mapped onto the same fields: each `cause` below has its own close code
+(4000 to 4010), and the frame's reason becomes `status_message`.
+A refused upgrade's HTTP status maps onto `status_code` as gRPC's HTTP mapping does (401 `UNAUTHENTICATED`, 403
+`PERMISSION_DENIED`, 429 and 503 `UNAVAILABLE`), with `cause` from a `monty-cause` header.
 A `monty-server` names why in `cause`: `idle_timeout`, `session_timeout`, `turn_timeout`, `out_of_memory`,
 `server_shutdown`, `capacity`, `caller_cap`, `unauthenticated`, `permission_denied`, `worker_unavailable` or
 `protocol_violation`.
