@@ -27,9 +27,8 @@ supported_flags = [
     (['re.I', 're.IGNORECASE'], re.IGNORECASE),
     (['re.M', 're.MULTILINE'], re.MULTILINE),
     (['re.S', 're.DOTALL'], re.DOTALL),
+    (['re.NOFLAG'], re.NOFLAG),
 ]
-if sys.version_info >= (3, 11):
-    supported_flags.append((['re.NOFLAG'], re.NOFLAG))
 
 
 @pytest.mark.parametrize(

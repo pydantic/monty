@@ -414,7 +414,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.14t', '3.15', '3.15t']
+        python-version: ['3.11', '3.12', '3.13', '3.14', '3.14t', '3.15', '3.15t']
 
     env:
       UV_PYTHON: ${{ matrix.python-version }}
@@ -858,7 +858,7 @@ jobs:
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'manylinux_2_28' }}
-          args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14 3.14t 3.15 3.15t
+          args: --release --out dist -i 3.11 3.12 3.13 3.14 3.14t 3.15 3.15t
           rust-toolchain: stable
           docker-options: -e CI
           working-directory: crates/monty-python
@@ -957,7 +957,7 @@ jobs:
         name: install & test
         with:
           arch: ${{ matrix.target }}
-          distro: ubuntu22.04
+          distro: ubuntu24.04
           dockerRunArgs: --volume "${{ github.workspace }}/dist:/dist"
           install: |
             apt-get update
@@ -1054,8 +1054,8 @@ jobs:
         run: |
           ls -lhR dist/
           count=$(find dist/ -maxdepth 1 -type f | wc -l)
-          echo "Found $count files; expected 112 (8 Python variants × 12 platforms + 12 runtime wheels + 2 sdists + 2 metapackage files)"
-          test "$count" -eq 112
+          echo "Found $count files; expected 100 (7 Python variants × 12 platforms + 12 runtime wheels + 2 sdists + 2 metapackage files)"
+          test "$count" -eq 100
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:

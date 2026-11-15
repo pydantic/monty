@@ -286,11 +286,16 @@ fn fixture_dump_loads_and_resumes() {
     );
 }
 
-/// The permanent upstream fixtures remain readable after names become heap references.
+/// Upstream fixtures remain readable after names become heap references.
+/// Its independent v16 fixture is kept alongside this branch's v16; never regenerate it.
 #[test]
-fn older_fixtures_load_after_name_ownership_bump() {
-    for version in [14, 15] {
-        let bytes = fs::read(fixture_path_for(version)).expect("the permanent fixture exists");
+fn upstream_fixtures_load_after_name_ownership_bump() {
+    for path in [
+        fixture_path_for(14),
+        fixture_path_for(15),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v16_main.bin"),
+    ] {
+        let bytes = fs::read(path).expect("the permanent fixture exists");
         let loaded = Dump::load(&bytes).expect("older dumps remain supported");
         assert_eq!(loaded.script_name, "fixture.py");
         let Session::Suspended(progress) = loaded.state else {

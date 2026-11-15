@@ -1,7 +1,7 @@
 [project]
 name = "monty-workspace"
 version = "0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 
 [tool.uv.workspace]
 members = ["crates/monty-python", "crates/monty-runtime", "packages/pydantic-monty"]
@@ -33,7 +33,7 @@ examples = [
     "types-openpyxl>=3.1.5",
     "logfire>=4.25.0",
     "pydantic-ai-slim[anthropic,openai]>=1.63.0",
-    "pydantic-ai-harness[code-mode]>=0.60.0; python_version >= '3.11'",
+    "pydantic-ai-harness[code-mode]>=0.60.0",
     "websockets>=15.0",
 ]
 build = [
@@ -107,8 +107,6 @@ mccabe = { max-complexity = 14 }
 [tool.ruff.lint.isort]
 combine-as-imports = true
 known-first-party = ["pydantic_monty"]
-# stdlib since 3.11, which the 3.10 floor hides from ruff's classification
-extra-standard-library = ["tomllib"]
 
 [tool.ruff.lint.per-file-ignores]
 "crates/monty/test_cases/{str,bytes}__percent_format.py" = [
@@ -118,6 +116,11 @@ extra-standard-library = ["tomllib"]
 ]
 "crates/monty/test_cases/import__future_{late,nested}.py" = [
     "F404", # late `__future__` import - the SyntaxError these cases expect
+]
+"crates/monty/test_cases/import__star*.py" = [
+    "F403", # `from m import *` - the behaviour under test
+    "F405", # names bound by `from m import *` - the behaviour under test
+    "F406", # `import *` in a function - the SyntaxError `import__star_function.py` expects
 ]
 "crates/monty/test_cases/*.py" = [
     "E722", # bare except - needed for testing try/except with bare except clauses
@@ -138,7 +141,6 @@ extra-standard-library = ["tomllib"]
     "F823", # chained-assign test intentionally reads a local before its first assignment
     "F841", # unused variable - needed for testing exception variable cleanup
     "F401", # Intentionally imports unknown typing constructs to test silent ignore behavior
-    "F403", # star import test intentionally uses `from sys import *`
     "F407", # unknown `__future__` feature - the point of the test is that it's a SyntaxError
     "E402", # Typing test file has multiple import sections to test different import patterns
     "E401", # Multiple imports on one line - needed for testing `import a, b` syntax
@@ -208,6 +210,8 @@ exclude = [
     "crates/monty/test_cases/async__control_flow.py",
     "crates/monty/test_cases/refcount__finally_swallow.py",
     "crates/monty/test_cases/try_finally__control_flow.py",
+    # `import *` in a function is the SyntaxError under test
+    "crates/monty/test_cases/import__star_function.py",
     # break/continue outside loop tests intentionally test error handling
     "crates/monty/test_cases/loop__break_outside_error.py",
     "crates/monty/test_cases/loop__continue_outside_error.py",

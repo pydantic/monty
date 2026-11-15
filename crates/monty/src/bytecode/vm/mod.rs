@@ -12,6 +12,7 @@ mod compare;
 mod context_manager;
 mod exceptions;
 mod format;
+mod import_star;
 mod module_cache;
 mod module_finder;
 mod namespace;
@@ -39,7 +40,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{
         code::{Code, LocationEntry},
-        op::{MATCH_KEYS_REST, Opcode, decode_assert_flags},
+        op::{IMPORT_STAR_BIND, MATCH_KEYS_REST, Opcode, decode_assert_flags},
     },
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -2086,6 +2087,14 @@ impl<'h> VM<'h> {
                 Opcode::MatchAttr => {
                     let index = usize::from(self.current_frame.fetch_u8());
                     handle_call_result!(self, self.match_attr(index));
+                }
+                Opcode::ImportStar => {
+                    let mode = self.current_frame.fetch_u8();
+                    if mode == IMPORT_STAR_BIND {
+                        try_catch!(self, self.import_star_bind());
+                    } else {
+                        handle_call_result!(self, self.import_star_value(mode));
+                    }
                 }
                 // Special
                 Opcode::Nop => {

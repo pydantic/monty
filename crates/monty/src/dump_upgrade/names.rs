@@ -1,4 +1,4 @@
-//! Restores names copied into pre-v16 dumps as ordinary Python string values.
+//! Restores legacy copied names, including upstream v16 dumps, as ordinary Python string values.
 //!
 //! The legacy text exists only during decoding; replace it before any other
 //! upgrade or Python execution can read the names or traverse their heap edges.

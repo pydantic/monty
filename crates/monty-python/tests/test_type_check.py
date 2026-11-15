@@ -103,7 +103,7 @@ def test_type_check_module_not_leaked_to_later_session():
             with pytest.raises(MontyTypingError) as exc_info:
                 session.feed_run('from a import SECRET')
             assert str(exc_info.value) == snapshot(
-                'b.py:1:6: error[unresolved-import] Cannot resolve imported module `a`\n'
+                'b.py:1:6: error[import-not-found] Cannot resolve imported module `a`\n'
             )
 
 
@@ -122,7 +122,7 @@ def test_type_check_stubs_not_leaked_to_later_session():
             with pytest.raises(MontyTypingError) as exc_info:
                 session.feed_run('from repl_type_stubs import call1_stub_var')
             assert str(exc_info.value) == snapshot(
-                'main.py:1:6: error[unresolved-import] Cannot resolve imported module `repl_type_stubs`\n'
+                'main.py:1:6: error[import-not-found] Cannot resolve imported module `repl_type_stubs`\n'
             )
 
 

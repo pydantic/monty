@@ -1210,23 +1210,29 @@ fn committing_a_deep_gather_nest_reaches_the_soft_limit() {
     }
 }
 
-/// A container built just under the limit and then deep-copied is the shape
-/// that jumps the allocator's headroom in one uninterrupted span: nothing
-/// between entering `deepcopy` and returning re-reads the budget except the
-/// fill loop itself. Sized so the source fits and the copy does not, which
-/// before the destination preflight killed the worker outright
-/// (`allocation of 2621440 bytes exceeds the memory limit`) instead of raising.
+/// A dict that fits under the soft limit must refuse an oversized copy
+/// before allocation can cross the worker's hard ceiling.
 #[test]
-fn deep_copy_of_a_near_limit_dict_raises_rather_than_dying() {
+fn copy_of_a_near_limit_dict_raises_rather_than_dying() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
-    let (_, event) = child.feed("import copy\nd = {i: i for i in range(100_000)}");
+    let (_, event) =
+        child.feed("import copy\nfrom collections import Counter, defaultdict\nd = {i: i for i in range(100_000)}");
     assert!(
         !matches!(event, pb::worker_event::Kind::Error(_)),
         "the source must fit for this to test the copy, got {event:?}"
     );
-    let (_, event) = child.feed("copy.deepcopy(d)");
-    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    for code in [
+        "copy.deepcopy(d)",
+        "d.copy()",
+        "dict(d)",
+        "Counter(d)",
+        "defaultdict(None, d)",
+    ] {
+        let (_, event) = child.feed(code);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("len(d)"), MontyObject::int(100_000));
+    }
     // The session survives, which is the whole point: a hard-limit exit would
     // have taken the worker with it.
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
@@ -1296,9 +1302,11 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "s = 'x' * 200\nd = dict.fromkeys(range(5_000), s)\nlen(repr(d))",
             1_495_358,
         ),
+        // The mapping copy reserves 4,000 entries instead of retaining the
+        // 4,096-entry buffer from incremental insertion, lowering repr's baseline.
         (
             "from collections import Counter\ns = 'x' * 200\nc = Counter({(i, s): 1 for i in range(4_000)})\nlen(repr(c))",
-            1_104_574,
+            1_100_974,
         ),
         (
             "import functools\ns = 'x' * 200\np = functools.partial(print, *([s] * 5_000))\nlen(repr(p))",
@@ -1446,7 +1454,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // message must still respect the budget.
         (
             "import csv\nclass S:\n    def write(self, t):\n        pass\ntext = 'x' * 400_000\nclass Key:\n    def __repr__(self):\n        return text\nrow = {Key(): None, Key(): None}\ncsv.DictWriter(S(), []).writerow(row)",
-            1_253_825,
+            1_254_895,
         ),
         // `decimal` preflights results whose size scales with an exponent or the
         // precision: an integer conversion, `f` formatting, and division, `sqrt`,
@@ -1573,7 +1581,7 @@ fn expandvars_growth_is_rejected_before_the_hard_limit() {
     let error = expect_error(event);
     assert_eq!(error.exc_type, "MemoryError", "{code}");
     let message = error.message.expect("MemoryError should have a message");
-    assert_reported_usage(&message, 1_372_668, code);
+    assert_reported_usage(&message, 1_374_212, code);
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
     child.shutdown();
 }
@@ -1697,18 +1705,21 @@ for _ in range(2000):
     child.shutdown();
 }
 
-/// `set(s)` and `frozenset(s)` copy a set's storage wholesale, so the whole
-/// copy runs between two execution checkpoints and has to be charged first.
-/// The source is sized as a fraction of the limit: uncharged, one that fits
-/// under the soft limit jumps the hard ceiling and the worker is killed where
-/// a catchable `MemoryError` belongs.
+/// Full set copies preflight entry and index storage while the source remains live.
 #[test]
 fn copying_a_large_set_fails_softly() {
-    for expr in ["set(s)", "frozenset(s)"] {
+    for expr in [
+        "set(s)",
+        "frozenset(s)",
+        "s.copy()",
+        "copy.copy(s)",
+        "s | set()",
+        "s.issubset(s)",
+    ] {
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
         // the source fits; its copy is what crosses the limit
-        child.feed_complete("s = set(range(400_000))");
+        child.feed_complete("import copy\ns = set(range(400_000))");
 
         let (_, event) = child.feed(expr);
         let error = expect_error(event);
@@ -1716,6 +1727,21 @@ fn copying_a_large_set_fails_softly() {
 
         // the session survives, i.e. the copy never reached the hard ceiling
         assert_eq!(child.feed_complete("len(s)"), MontyObject::int(400_000), "{expr}");
+        child.shutdown();
+    }
+}
+
+/// Large set/frozenset updates preflight their snapshot and leave the worker usable after MemoryError.
+#[test]
+fn set_update_snapshot_fails_softly() {
+    for kind in ["set", "frozenset"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
+        child.feed_complete(&format!("s = {kind}(range(400_000))"));
+        let (_, event) = child.feed("set().update(s)");
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{kind}");
+        assert_eq!(child.feed_complete("len(s)"), MontyObject::int(400_000), "{kind}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
         child.shutdown();
     }
 }
@@ -1728,13 +1754,16 @@ fn copying_an_emptied_set_costs_nothing() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
     // grown, then emptied: the entries are gone, the table that indexed them is not
-    child.feed_complete("s = set(range(200_000))\ns.clear()");
+    child.feed_complete("import copy\ns = set(range(200_000))\nfor i in range(200_000):\n    s.remove(i)");
 
-    assert_eq!(
-        child.feed_complete("copies = [set(s) for _ in range(20)]\nlen(copies)"),
-        MontyObject::int(20)
-    );
-    assert_eq!(child.feed_complete("len(copies[0])"), MontyObject::int(0));
+    for expr in ["set(s)", "frozenset(s)", "s.copy()", "copy.copy(s)"] {
+        assert_eq!(
+            child.feed_complete(&format!("copies = [{expr} for _ in range(20)]\nlen(copies)")),
+            MontyObject::int(20),
+            "{expr}"
+        );
+        assert_eq!(child.feed_complete("len(copies[0])"), MontyObject::int(0));
+    }
     child.shutdown();
 }
 
@@ -2963,11 +2992,11 @@ fn reset_isolates_type_check_state_from_the_next_session() {
         };
         assert_eq!(
             probe(format!("from {module} import LEAKY")),
-            format!("b.py:1:6: error[unresolved-import] Cannot resolve imported module `{module}`\n"),
+            format!("b.py:1:6: error[import-not-found] Cannot resolve imported module `{module}`\n"),
         );
         assert_eq!(
             probe("from repl_type_stubs import STUB_SECRET".to_owned()),
-            "b.py:1:6: error[unresolved-import] Cannot resolve imported module `repl_type_stubs`\n",
+            "b.py:1:6: error[import-not-found] Cannot resolve imported module `repl_type_stubs`\n",
         );
         // The new session can still check and execute valid code.
         assert_eq!(child.feed_complete("x: int = 1\nx"), MontyObject::int(1));

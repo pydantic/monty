@@ -1273,7 +1273,7 @@ impl Value {
                 // CPython names the module, not its type, for a missing module attribute.
                 if let HeapData::Module(module) = vm.heap.get(*heap_id) {
                     return Err(ExcType::attribute_error_module(
-                        module.name_str(vm.interns),
+                        module.error_name(vm).ok(),
                         attr.as_str(vm),
                     ));
                 }
@@ -2031,7 +2031,7 @@ pub(crate) enum EitherStr {
     /// Owned reference to a heap `Str`.
     #[serde(rename = "Ref")]
     Heap(HeapId),
-    /// Text from a pre-v16 dump, replaced before the restored session is used.
+    /// Legacy copied text, replaced before the restored session is used.
     #[serde(rename = "Heap", skip_serializing)]
     LegacyText(Box<str>),
 }

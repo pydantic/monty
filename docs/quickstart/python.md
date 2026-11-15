@@ -12,7 +12,7 @@ Or with pip:
 pip install pydantic-monty
 ```
 
-Requires Python 3.10 or newer.
+Requires Python 3.11 or newer.
 The download is about 4.5 MB and there is nothing else to run: no daemon, no image, no API key.
 
 `pydantic-monty` is a metapackage with no code of its own; it pins two distributions:

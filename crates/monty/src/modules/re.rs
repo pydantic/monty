@@ -40,7 +40,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData},
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
@@ -88,9 +88,9 @@ pub(crate) enum ReFunctions {
     Escape,
 }
 
-/// Allocates the `re` module — every [`ReFunctions`] variant plus the flag
-/// constants — and returns its `HeapId`.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `re` module: every [`ReFunctions`] variant plus the flag
+/// constants.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Re, vm.interns);
 
     // Functions
@@ -176,7 +176,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `re` module function. Always `CallResult::Value` — regex
