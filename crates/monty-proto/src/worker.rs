@@ -677,6 +677,12 @@ impl Worker {
         // the caller explicitly excluded them from checking, so later snippets
         // must not be checked against their (unchecked) bindings either
         let type_checked = !feed.skip_type_check && self.type_check.is_some();
+        // The import scan and ty both parse the snippet and recurse through its AST unguarded.
+        // `check_source` already ran the lexer scan, so only the AST walk is left.
+        if type_checked && let Err(error) = type_check_nesting_exception(&code, &self.script_name, usize::MAX) {
+            self.state = SessionState::Ready(repl);
+            return error_event_from(&error);
+        }
         if type_checked && let Some(state) = &mut self.type_check {
             let imports = scan_imports(&code);
             state.pending_snippet = Some(code.clone());
@@ -1238,12 +1244,6 @@ impl Worker {
     /// Checks against accumulated stubs and imports, returning an event on failure.
     fn type_check_feed(&mut self, code: &str) -> Option<pb::WorkerEvent> {
         let state = self.type_check.as_ref()?;
-        // `check_source` already ran the lexer scan, so only the AST walk is left.
-        if let Err(error) = type_check_nesting_exception(code, &self.script_name, usize::MAX) {
-            return Some(event(pb::worker_event::Kind::Error(pb::Error {
-                exception: Some((&error).into()),
-            })));
-        }
         let stubs =
             (!state.committed_stubs.is_empty()).then(|| SourceFile::new(&state.committed_stubs, "repl_type_stubs.pyi"));
         let context = TypeCheckContext {

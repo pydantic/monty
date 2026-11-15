@@ -18,7 +18,10 @@ dev = [
     "mdformat-mkdocs>=5.2.1",
     "mdformat-frontmatter>=2.1.2",
     "httpx2>=2.12.0",
-    # the dev relay (`scripts/grpc_relay.py`) and the remote-pool test fakes
+]
+# the dev relay (`scripts/grpc_relay.py`) and the remote-pool test fakes; `make install-py` installs it.
+# grpcio has no free-threaded wheels, so CI's free-threaded jobs skip it with `UV_NO_GROUP=grpc`
+grpc = [
     "grpcio>=1.75",
     "types-grpcio>=1.0.0.20250603",
 ]
@@ -83,6 +86,8 @@ extend-exclude = [
 [tool.uv]
 # this is a monorepo without a root package
 package = false
+# plain `uv sync` / `uv run` install the relay too
+default-groups = ["dev", "grpc"]
 # https://docs.astral.sh/uv/reference/settings/#exclude-newer
 # make sure to use relative durations:
 exclude-newer = "7 days"
@@ -333,6 +338,8 @@ skip = [
     "Cargo.lock",
     "crates/monty-js/package-lock.json",
     "crates/monty-bench/benches/python/pyperformance_*.py",
+    # The multilingual corpus contains valid non-English words.
+    "crates/monty-bench/benches/data/string_corpus.json",
 
     "crates/monty-typeshed/vendor/typeshed/stdlib/*",
     "crates/monty/src/types/str.rs",
