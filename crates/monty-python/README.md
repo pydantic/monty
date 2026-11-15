@@ -17,6 +17,15 @@ uv add pydantic-monty-client
 pip install pydantic-monty-client
 ```
 
+## Compile without executing
+
+`session.compile(code, input_names=...)` validates a standalone program in the worker without running it or changing
+session globals.
+It returns `None` or raises the usual compiler exception with source locations; async sessions use
+`await session.compile(code)`.
+Compilation does not resolve imports or run the type checker.
+It works with local and remote pools whose workers support the `Compile` request; older workers reject it safely.
+
 ## Usage with a remote monty server
 
 You can use this library alone to connect to a remote monty server over gRPC: one HTTP/2 connection per pool, one

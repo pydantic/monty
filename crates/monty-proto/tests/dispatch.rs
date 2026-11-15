@@ -1462,3 +1462,80 @@ fn streamed_calls_stop_at_max_suspensions() {
     };
     assert_eq!(call.function_name, "fetch");
 }
+
+/// Compile requests must neither execute source nor publish definitions.
+#[test]
+fn compile_only_checks_without_execution_or_session_changes() {
+    // Encode the request independently so older workers exercise their real
+    // response to the compile request, including unknown-field handling.
+    /// Request envelope independent of the generated schema.
+    #[derive(prost::Message)]
+    struct CompileRequest {
+        #[prost(message, optional, tag = "13")]
+        compile: Option<CompileSource>,
+    }
+    /// Source and declared inputs carried by the compile request.
+    #[derive(prost::Message)]
+    struct CompileSource {
+        #[prost(string, tag = "1")]
+        code: String,
+        #[prost(string, repeated, tag = "2")]
+        input_names: Vec<String>,
+    }
+    let mut worker = Worker::default();
+    create_repl(&mut worker);
+    feed(&mut worker, "kept = 41");
+    for code in [
+        "print('RAN')\nkept = 0\ndef f(x=print('default ran')): pass",
+        "@unknown_decorator()\ndef f(): pass\nunknown_callback()",
+        "while True: pass",
+    ] {
+        let mut request = Vec::new();
+        write_frame(
+            &mut request,
+            &CompileRequest {
+                compile: Some(CompileSource {
+                    code: code.to_owned(),
+                    input_names: vec![],
+                }),
+            },
+        )
+        .unwrap();
+        let (bytes, outcome) = dispatch_frame(&mut worker, &request);
+        assert_eq!(outcome, HandleOutcome::Continue);
+        let (prints, event) = split_turn(&bytes);
+        assert!(prints.is_empty(), "compilation executed print statements");
+        assert!(
+            matches!(event, pb::worker_event::Kind::Ok(_)),
+            "compile-only should succeed without executing code: {event:?}"
+        );
+    }
+    for (code, expected) in [
+        ("class B(A): pass", "NotImplementedError"),
+        ("def broken(:", "SyntaxError"),
+    ] {
+        let mut request = Vec::new();
+        write_frame(
+            &mut request,
+            &CompileRequest {
+                compile: Some(CompileSource {
+                    code: code.to_owned(),
+                    input_names: vec![],
+                }),
+            },
+        )
+        .unwrap();
+        let (bytes, _) = dispatch_frame(&mut worker, &request);
+        let pb::worker_event::Kind::Error(error) = split_turn(&bytes).1 else {
+            panic!("expected a compiler error");
+        };
+        let exception = error.exception.unwrap();
+        assert_eq!(exception.exc_type, expected);
+        assert!(!exception.traceback.is_empty());
+    }
+    assert_eq!(expect_complete(feed(&mut worker, "kept + 1").1), MontyObject::int(42));
+    assert!(matches!(
+        feed(&mut worker, "f").1,
+        pb::worker_event::Kind::NameLookup(lookup) if lookup.name == "f"
+    ));
+}

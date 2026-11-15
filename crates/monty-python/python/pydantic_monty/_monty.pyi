@@ -831,6 +831,17 @@ class MontySession:
 
     def __enter__(self) -> Self: ...
     def __exit__(self, *args: Any) -> None: ...
+    def compile(self, code: str, *, input_names: list[str] | None = None) -> None:
+        """Compile a standalone program without executing it or changing session globals.
+
+        Returns `None` on success. Raises `MontySyntaxError` for invalid syntax
+        or `MontyRuntimeError` for unsupported constructs, with source locations.
+        `input_names` declares inputs without supplying values. Does not resolve
+        imports or run the type checker, even when the session enables it.
+        Works with local and remote workers supporting the `Compile` request;
+        older workers reject it without executing the program.
+        """
+
     def feed_run(
         self,
         code: str,
@@ -1299,6 +1310,9 @@ class AsyncMontySession:
 
     async def __aenter__(self) -> Self: ...
     async def __aexit__(self, *args: Any) -> None: ...
+    async def compile(self, code: str, *, input_names: list[str] | None = None) -> None:
+        """Async counterpart of `MontySession.compile`, resolving to `None`."""
+
     async def feed_run(
         self,
         code: str,

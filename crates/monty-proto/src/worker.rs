@@ -24,7 +24,7 @@ use std::{
 };
 
 use monty::{
-    CheckedSource, Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump,
+    CheckedSource, Dump, MontyRepl, MontyRun, ReplProgress, ReplStartError, Session, SessionRef, dump,
     type_check_nesting_exception,
 };
 use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker, scan_imports};
@@ -193,11 +193,11 @@ pub struct SessionBudget {
 /// REPL session state of the worker.
 enum SessionState {
     /// No repl materialized yet. `Some` once `Configure` has stored the config
-    /// (the repl is built lazily on the first `Feed` / `Dump`); `None` on a
+    /// (built lazily on the first `Compile` / `Feed` / `Dump`); `None` on a
     /// freshly spawned or just-`Reset` worker, before `Configure`. `Load` is
     /// valid only from here — it cannot clobber a started session.
     Configured(Option<Box<pb::Configure>>),
-    /// Session ready for the next `Feed`.
+    /// Session ready for compilation or the next `Feed`.
     Ready(Box<MontyRepl>),
     /// Mid-feed, waiting for a resume request. Never holds
     /// `ReplProgress::Complete` — completion ends the turn immediately.
@@ -309,6 +309,7 @@ impl Worker {
                 }
             }
             pb::client_request::Kind::Feed(feed) => self.handle_repl_feed(feed, sink),
+            pb::client_request::Kind::Compile(source) => self.handle_compile(source),
             // The Monty sandbox has no host interpreter to install packages for;
             // dependency installation is only supported by the CPython worker.
             // Answer with a session-preserving error rather than a hard failure.
@@ -565,7 +566,7 @@ impl Worker {
     }
 
     /// Materializes the repl from the stored config the first time the session
-    /// runs (feed/dump), applying the config's script name, limits, and
+    /// compiles, feeds or dumps, applying the config's script name, limits, and
     /// type-check setup. A no-op once the repl exists; errors only if the
     /// worker was never configured (which the pool's `Configure`-first checkout
     /// prevents in normal operation).
@@ -640,6 +641,25 @@ impl Worker {
         repl.set_legacy_binary_writes(self.legacy_binary_writes);
         self.state = SessionState::Ready(Box::new(repl));
         Ok(())
+    }
+
+    /// Compiles a standalone program, retaining no definitions or executable state.
+    fn handle_compile(&mut self, source: pb::Compile) -> pb::WorkerEvent {
+        if let Err(event) = self.ensure_repl() {
+            return *event;
+        }
+        let SessionState::Ready(repl) = &self.state else {
+            return protocol_violation("Compile without a session ready for input");
+        };
+        match MontyRun::new(
+            source.code,
+            &self.script_name,
+            source.input_names.into_inner(),
+            repl.options(),
+        ) {
+            Ok(_) => ok_event(),
+            Err(error) => error_event_from(&error),
+        }
     }
 
     /// Checks source nesting and requests missing host stubs before starting a feed.

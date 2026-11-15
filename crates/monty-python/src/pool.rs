@@ -470,6 +470,16 @@ impl PyMontySession {
         Ok(PyBytes::new(py, &state))
     }
 
+    /// Compiles a standalone program without executing it or changing session globals.
+    /// Raises compiler errors with source locations. Does not run the type checker.
+    #[pyo3(signature = (code, *, input_names=None))]
+    fn compile(&self, py: Python<'_>, code: &Bound<'_, PyString>, input_names: Option<Vec<String>>) -> PyResult<()> {
+        let code = extract_source_code(py, code)?;
+        self.used.store(true, Ordering::Relaxed);
+        py.detach(|| block_on_sync(compile_checkout(&self.checkout, code, input_names.unwrap_or_default())))?
+            .map_err(|e| pool_err_to_py(py, e))
+    }
+
     /// Installs third-party Python packages into the session via the worker's
     /// `uv`, making them importable by subsequent `feed_run` calls.
     /// Session-scoped and repeatable; an empty list is a no-op.
@@ -1104,6 +1114,25 @@ impl PyAsyncMontySession {
         })
     }
 
+    /// Async counterpart of [`PyMontySession::compile`], resolving to `None`.
+    #[pyo3(signature = (code, *, input_names=None))]
+    fn compile<'py>(
+        &self,
+        py: Python<'py>,
+        code: &Bound<'_, PyString>,
+        input_names: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let code = extract_source_code(py, code)?;
+        self.used.store(true, Ordering::Relaxed);
+        let checkout = Arc::clone(&self.checkout);
+        future_into_py(py, async move {
+            compile_checkout(&checkout, code, input_names.unwrap_or_default())
+                .await
+                .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+            Ok(None::<()>)
+        })
+    }
+
     /// Async counterpart of [`PyMontySession::install_dependencies`]: the
     /// coroutine installs the packages off the event loop, resolving to `None`.
     /// Raises `MontyRuntimeError` against the `monty` sandbox worker or on a uv
@@ -1521,6 +1550,15 @@ async fn dump_checkout(checkout: &SharedCheckout) -> Result<Vec<u8>, PoolError> 
     let mut guard = checkout.lock().await;
     match guard.as_mut() {
         Some(checkout) => checkout.dump().await,
+        None => Err(PoolError::Finished),
+    }
+}
+
+/// Compiles source in a live worker, shared by sync and async sessions.
+async fn compile_checkout(checkout: &SharedCheckout, code: String, input_names: Vec<String>) -> Result<(), PoolError> {
+    let mut guard = checkout.lock().await;
+    match guard.as_mut() {
+        Some(checkout) => checkout.compile(code, input_names).await,
         None => Err(PoolError::Finished),
     }
 }

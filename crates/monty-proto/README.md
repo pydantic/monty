@@ -38,6 +38,9 @@ for the schema and the protocol rules documented alongside it.
   Dotted imports read further components as attributes of that value.
   Before type checking, `import_stubs` requests host stubs once per module per session.
   Answer with a dict of dotted module paths to `.pyi` source or `None`.
+- Compile-only validation: `Compile` checks a standalone program without execution or changes to session globals.
+  It returns `Ok` or an `Error` with compiler source locations, without resolving imports or type-checking.
+  Older workers reject this request instead of executing the program.
 - Type hints: `OsCall.get_type_hints` asks for the hints of a host function (by name) or host class
   (by `ClassType` id) when sandbox code calls `typing.get_type_hints()` on it.
   Answer with a dict of hints; `not_handled` means `{}`.

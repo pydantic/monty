@@ -1381,6 +1381,30 @@ impl Checkout {
         }
     }
 
+    /// Compiles a standalone program without executing it or changing session globals.
+    /// Returns syntax and compiler errors with their source locations; does not type-check.
+    pub async fn compile(&mut self, code: String, input_names: Vec<String>) -> Result<(), PoolError> {
+        self.ensure_ready()?;
+        if self.pending.is_some() {
+            return Err(PoolError::Protocol(
+                "compile called while a suspension is awaiting an answer".into(),
+            ));
+        }
+        self.open().await?;
+        let request = request(pb::client_request::Kind::Compile(pb::Compile {
+            code,
+            input_names: input_names.into(),
+        }));
+        let mut no_print = on_print_sync(|_, _| {});
+        match self
+            .request_turn(&request, self.pool.config.request_timeout, &mut no_print)
+            .await?
+        {
+            ControlEvent::Ok => Ok(()),
+            other => Err(self.protocol_violation(format!("unexpected reply to Compile: {other:?}"))),
+        }
+    }
+
     /// Serializes the session (idle or suspended) into opaque bytes that
     /// [`Checkout::restore`] can restore — including into a
     /// different worker after this one crashes. The session stays live.

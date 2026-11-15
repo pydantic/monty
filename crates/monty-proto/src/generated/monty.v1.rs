@@ -750,7 +750,7 @@ pub struct ClientRequest {
     >,
     #[prost(
         oneof = "client_request::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
     )]
     pub kind: ::core::option::Option<client_request::Kind>,
 }
@@ -783,6 +783,8 @@ pub mod client_request {
         AbortFeed(super::AbortFeed),
         #[prost(message, tag = "12")]
         Pong(super::Pong),
+        #[prost(message, tag = "13")]
+        Compile(super::Compile),
     }
 }
 /// Configures the REPL session this worker will serve until `Reset`, sent once
@@ -895,6 +897,19 @@ pub mod configure {
         #[prost(message, tag = "16")]
         Load(super::Load),
     }
+}
+/// Validates a standalone program without execution or changes to session state.
+/// Returns Ok, or Error with the compiler exception and source locations.
+/// Does not type-check or resolve imports; older workers reject the unknown request.
+#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct Compile {
+    #[prost(string, tag = "1")]
+    pub code: crate::budgeted_prost::alloc::string::String,
+    #[prost(string, repeated, tag = "2")]
+    pub input_names: crate::budgeted_prost::alloc::vec::Vec<
+        crate::budgeted_prost::alloc::string::String,
+    >,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.

@@ -46,6 +46,13 @@ fn every_schema_repeated_field_is_budgeted() {
         |message: &pb::RaisedException| &message.traceback,
     );
     check_repeated(
+        "monty.v1.Compile.input_names",
+        2,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::Compile| &message.input_names,
+    );
+    check_repeated(
         "monty.v1.Feed.inputs",
         2,
         WireType::LengthDelimited,

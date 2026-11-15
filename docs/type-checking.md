@@ -277,3 +277,16 @@ the flag is `--type-check-format`.
     Modules the stubs need, such as `abc`, `io` and `collections.abc`, resolve during checking, then raise
     `ModuleNotFoundError` at runtime.
     See [`limitations/modules.md`](limitations/modules.md).
+
+## Compile without executing
+
+[`session.compile(code)`][pydantic_monty.MontySession.compile] checks whether Monty's compiler accepts a standalone
+program without running it.
+It returns `None` on success and raises the usual [`MontySyntaxError`][pydantic_monty.MontySyntaxError] or
+[`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] with source locations on failure.
+Top-level statements, decorators and default argument expressions do not execute, and session globals remain unchanged.
+Use `await session.compile(code)` with an async session.
+Optional `input_names` declares program inputs without supplying values.
+
+Compilation does not resolve imports or run the type checker, even when the session enables type checking.
+Local and remote pools use the same `Compile` protocol request; older workers reject it without executing the code.

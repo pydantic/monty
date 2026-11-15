@@ -536,6 +536,7 @@ impl TurnMetrics {
                 self.turn = Some(("load", now));
             }
             Some(pb::client_request::Kind::Dump(_)) => self.turn = Some(("dump", now)),
+            Some(pb::client_request::Kind::Compile(_)) => self.turn = Some(("compile", now)),
             Some(pb::client_request::Kind::InstallDependencies(_)) => {
                 self.turn = Some(("install_dependencies", now));
             }

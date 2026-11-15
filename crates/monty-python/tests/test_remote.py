@@ -1021,3 +1021,11 @@ async def test_out_of_memory_status_raises_memory_error():
                 with pytest.raises(MontyRuntimeError) as exc_info:
                     await session.feed_run("x = 'a' * 10**9")
     assert exc_info.value.display(format='msg') == snapshot('the worker exceeded its memory limit and was terminated')
+
+
+async def test_compile_only_remote(relay_url: str):
+    async with AsyncMontyRemote(relay_url) as pool, pool.checkout(type_check=True) as session:
+        assert await session.compile("print('RAN')\ndef f(x=callback()): pass\nwhile True: pass") is None
+        with pytest.raises(MontyRuntimeError, match='NotImplementedError'):
+            await session.compile('class B(A): pass')
+        assert await session.feed_run('40 + 2') == snapshot(42)

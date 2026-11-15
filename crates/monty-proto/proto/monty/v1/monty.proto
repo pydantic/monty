@@ -596,6 +596,7 @@ message ClientRequest {
     Shutdown shutdown = 10;
     AbortFeed abort_feed = 11;
     Pong pong = 12;
+    Compile compile = 13;
   }
 
   // W3C `traceparent` identifying the caller's span, so a worker that exports
@@ -710,6 +711,14 @@ enum TypeCheckFormat {
   TYPE_CHECK_FORMAT_PYLINT = 7;
   TYPE_CHECK_FORMAT_GITLAB = 8;
   TYPE_CHECK_FORMAT_GITHUB = 9;
+}
+
+// Validates a standalone program without execution or changes to session state.
+// Returns Ok, or Error with the compiler exception and source locations.
+// Does not type-check or resolve imports; older workers reject the unknown request.
+message Compile {
+  string code = 1;
+  repeated string input_names = 2;
 }
 
 // Executes one snippet against the session. Turn ends with `Complete`,

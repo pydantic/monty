@@ -28,9 +28,13 @@ state cannot be trusted back into the pool. The session's `Configure` carries it
 invalid `os_policy`, a clock it cannot serve) replies `SessionRefused`: that request never runs,
 fails with `PoolError::Configuration`, and ends the session; a checkout that is finished without a
 request never configures its worker.
-`Checkout::open`, and a first `dump` or non-empty `install_dependencies`, send it alone and wait for
+`Checkout::open`, and a first `compile`, `dump` or non-empty `install_dependencies`, send it alone and wait for
 the reply. The first request's duration backstop also covers a freshly spawned worker's start-up:
 the process is spawned before the checkout, but it may still be loading when the request goes out.
+
+`Checkout::compile(code, input_names)` validates a standalone program without executing it or changing session globals.
+It returns `Ok(())` or a compiler error with source locations, without resolving imports or running the type checker.
+It works on subprocess and remote pools; older workers reject the new `Compile` request without executing code.
 
 Use `Checkout::terminate` when cleanup must wait for subprocess exit.
 It discards the worker and returns `Some(ExitStatus)` only after the OS confirms exit.

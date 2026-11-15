@@ -741,7 +741,7 @@ pub struct ClientRequest {
     /// not depend on it, and it is absent whenever the client is not tracing.
     #[prost(string, optional, tag = "20")]
     pub trace_parent: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(oneof = "client_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
+    #[prost(oneof = "client_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13")]
     pub kind: ::core::option::Option<client_request::Kind>,
 }
 /// Nested message and enum types in `ClientRequest`.
@@ -772,6 +772,8 @@ pub mod client_request {
         AbortFeed(super::AbortFeed),
         #[prost(message, tag = "12")]
         Pong(super::Pong),
+        #[prost(message, tag = "13")]
+        Compile(super::Compile),
     }
 }
 /// Configures the REPL session this worker will serve until `Reset`, sent once
@@ -880,6 +882,16 @@ pub mod configure {
         #[prost(message, tag = "16")]
         Load(super::Load),
     }
+}
+/// Validates a standalone program without execution or changes to session state.
+/// Returns Ok, or Error with the compiler exception and source locations.
+/// Does not type-check or resolve imports; older workers reject the unknown request.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Compile {
+    #[prost(string, tag = "1")]
+    pub code: ::prost::alloc::string::String,
+    #[prost(string, repeated, tag = "2")]
+    pub input_names: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.

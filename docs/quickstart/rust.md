@@ -52,6 +52,11 @@ carry no API compatibility guarantee.
 - **[`monty`](../api/rust/monty.md)** is the in-process interpreter.
     Use it when you control the code being run, or when subprocesses are impossible.
 
+Use [`Checkout::compile`](../api/rust/monty-pool.md#checkout) to validate a standalone program in a worker without
+executing it or changing session globals.
+The async method accepts source and input names, returning `Ok(())` or a compiler error with source locations.
+It does not resolve imports or run the type checker.
+
 Execution limits use wall time by default. CPU mode, Linux only, uses sampled thread CPU time.
 The `monty` crate enables the `monty-types/cpu-clock` feature for native CPU reads.
 `ExecutionClock::is_available()` checks whether this thread can read the selected clock.

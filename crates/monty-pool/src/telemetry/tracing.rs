@@ -200,6 +200,9 @@ impl Recorder {
                 self.feed = None;
                 self.session = None;
             }
+            Some(pb::client_request::Kind::Compile(_)) => {
+                self.turn = Some(start_span(logfire::span!(parent: self.context_span(), "compile")));
+            }
             Some(pb::client_request::Kind::InstallDependencies(d)) => {
                 let (requirements, cut) = render_str_list(&d.requirements);
                 self.turn = Some(start_span(logfire::span!(
