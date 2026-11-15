@@ -544,7 +544,7 @@ def test_load_after_feed_raises(pool: Monty):
         with pytest.raises(RuntimeError) as exc_info:
             session.load_snapshot(blob)
         assert str(exc_info.value) == snapshot(
-            'load_session / load_snapshot is only valid on a fresh session, before any feed_run / feed_start / load_session / load_snapshot'
+            'load_session / load_snapshot is only valid on a fresh session, before feed_run / feed_start / load_session / load_snapshot / install_dependencies'
         )
 
 
