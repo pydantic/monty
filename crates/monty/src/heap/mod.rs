@@ -503,7 +503,7 @@ impl<'a, T: ?Sized> HeapReadMut<'a, T> {
 
 /// Read-only payload access, including projections that must re-resolve their storage.
 ///
-/// A vector or box may be replaced between accesses through another capability;
+/// A vector may be replaced between accesses through another capability;
 /// its projection must borrow the current allocation rather than cache a pointer.
 pub(crate) trait HeapView<'a, T: ?Sized> {
     /// Borrows the current payload for the joint lifetime of the view and reader.

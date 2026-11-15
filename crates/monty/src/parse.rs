@@ -358,7 +358,7 @@ pub(crate) fn source_nesting_exception(
 /// as `1+1+...` builds one deep enough to overflow the stack.
 ///
 /// # Errors
-/// The `SyntaxError: Source is too deeply nested` located in the source.
+/// A located `SyntaxError` if source exceeds `u32::MAX` UTF-8 bytes or its nesting/depth limit.
 pub fn type_check_nesting_exception(
     code: &str,
     script_name: &str,

@@ -330,7 +330,7 @@ Changes to this module require careful review of the safety invariants documente
 - **`HeapObjectRead<'a, T>`** — A typed heap-object guard holding its identity and reader count. `heap.read(id)` returns a `HeapReadOutput<'a>` variant containing one.
 - **`HeapReadMut<'a, T>`** — A mutable-access capability exposed only by shared reference from object guards and `protect_mut` wrappers. Its `get_mut(&self, &mut HeapReader)` serializes payload access through the reader.
 - **`HeapRead<'a, T>`** — A read-only capability exposed by shared dereference from mutable capabilities and `protect` wrappers. Capabilities must never be extracted, cloned or exposed via `DerefMut`: swapping them would detach their pointers from their owners.
-- **`HeapView<'a, T>`** — Shared payload access for generic helpers. Slice and box projections resolve their current storage on each access rather than cache pointers invalidated by parent mutation.
+- **`HeapView<'a, T>`** — Shared payload access for generic helpers. Slice projections resolve their current storage on each access rather than cache pointers invalidated by parent mutation.
 
 #### Reading and mutating heap data
 

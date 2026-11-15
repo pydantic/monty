@@ -10,6 +10,7 @@ The other pages in this section are the exhaustive record, one per builtin, modu
 They list every known divergence, including the ones that feel obvious, so a behaviour missing from them can be
 assumed to match CPython 3.14.
 They exist for development and for agents debugging code that runs on Monty; most users need only this page.
+For compilation and runtime limits, see [resource limits](resource_limits.md).
 
 !!! tip
 
@@ -56,9 +57,6 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - PEP 695 `type` aliases
 - `async with`, `async for` and async comprehensions
 - t-strings
-
-Source code is limited to `u32::MAX` UTF-8 bytes; exceeding this limit raises `SyntaxError`
-([resource limits](resource_limits.md#memory--size-limits)).
 
 **Missing in other ways:**
 
