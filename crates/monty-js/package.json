@@ -91,13 +91,15 @@
     "@playwright/test": "^1.49.1",
     "@tybys/wasm-util": "^0.10.0",
     "@types/node": "^26.6.6",
+    "@types/ws": "^8.18.2",
     "@vitest/browser-playwright": "^5.1.0",
     "npm-run-all2": "^9.0.4",
     "oxlint": "^1.14.0",
     "prettier": "^3.6.2",
     "typescript": "^7.0.2",
     "vite": "^8.3.6",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.0",
+    "ws": "^8.23.0"
   },
   "prettier": {
     "printWidth": 120,

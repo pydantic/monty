@@ -214,12 +214,13 @@ export class MontyCrashedError extends MontyError {
   }
 }
 
-/** The status or transport failure that ended a remote session's stream. */
+/** The status or transport failure that ended a remote session. */
 export interface DisconnectDetails {
   /**
-   * The gRPC status code the server ended the stream with, by its canonical
+   * The gRPC status code the server ended the session with, by its canonical
    * name (`DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, ...); `OK` when it simply
-   * finished the stream. Absent for a transport failure.
+   * finished the session. A WebSocket Close frame's code is mapped onto one.
+   * Absent for a transport failure.
    */
   statusCode?: string
   /** The message on that status. */
@@ -265,7 +266,10 @@ export class MontyDisconnectError extends MontyError {
 
 /** The status a server refused a session with. */
 export interface RefusalDetails {
-  /** The gRPC status code, by its canonical name (`RESOURCE_EXHAUSTED`, ...). */
+  /**
+   * The gRPC status code, by its canonical name (`RESOURCE_EXHAUSTED`, ...);
+   * a refused WebSocket upgrade's HTTP status is mapped onto one.
+   */
   statusCode?: string
   /** The message on that status. */
   statusMessage?: string
@@ -286,11 +290,13 @@ export interface RefusalDetails {
  * The server gives details in `statusCode`,
  * `statusMessage` and `remoteCause`. No session existed, so
  * nothing ran. `retryable` identifies temporary refusals; `retryAfter` is
- * the server's suggested delay, not an automatic retry. A server that
+ * the server's suggested delay, not an automatic retry. A WebSocket server
+ * refuses with an HTTP status (401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`,
+ * 429/503 `UNAVAILABLE`) and an optional `monty-cause` header. A server that
  * cannot be reached, that answers with any other status (such as
- * `UNIMPLEMENTED` from a URL that is no Monty server), or that is no gRPC
- * server at all (a web server's error page), rejects with `MontyConnectError`
- * instead.
+ * `UNIMPLEMENTED` from a URL that is no Monty server, or a 404 upgrade), or
+ * that is no Monty server at all (a web server's error page), rejects with
+ * `MontyConnectError` instead.
  */
 export class MontyRefusedError extends MontyError {
   /** The status code the server refused with, by name, or `null`. */

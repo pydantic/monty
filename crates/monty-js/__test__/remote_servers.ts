@@ -1,11 +1,12 @@
-// In-process gRPC servers for the `MontyRemote` specs, the Node counterparts
-// of the fixtures in crates/monty-python/tests/test_remote.py. Each session
+// In-process gRPC (and WebSocket) servers for the `MontyRemote` specs, the Node counterparts
+// of the fixtures in crates/monty-python/tests/test_remote.py and test_websocket.py. Each session
 // stream is bridged to a real `monty subprocess` worker: the worker
 // length-prefixes each protocol frame on stdio, gRPC carries one frame per
 // message, so the bridge only adds and strips the prefix. The service is
 // declared by hand over raw bytes — no schema, nothing generated.
 
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
+import type { AddressInfo } from 'node:net'
 
 import {
   Metadata,
@@ -16,6 +17,7 @@ import {
   status,
 } from '@grpc/grpc-js'
 import { findMontyBinary } from '@pydantic/monty/node'
+import { type WebSocket, WebSocketServer } from 'ws'
 
 /** One session stream, from the server's side. */
 export type Stream = ServerDuplexStream<Buffer, Buffer>
@@ -76,6 +78,77 @@ export async function serve(handle: (stream: Stream) => Promise<void> | void): P
         resolve()
       }),
   }
+}
+
+/** A listening WebSocket test server. */
+export interface TestWebSocketServer {
+  url: string
+  /** The path and query of every upgrade, in arrival order. */
+  paths: string[]
+  /** The headers of every upgrade, in arrival order. */
+  headers: Record<string, string | string[] | undefined>[]
+  close(): Promise<void>
+}
+
+/** An HTTP response an upgrade is refused with. */
+export interface Refusal {
+  status: number
+  headers?: Record<string, string>
+  body?: string
+}
+
+/**
+ * Serves `handle` for each WebSocket connection on an ephemeral loopback port,
+ * or refuses every upgrade with `refusal`.
+ */
+export async function serveWebSocket(
+  handle: (socket: WebSocket) => void,
+  refusal?: Refusal,
+): Promise<TestWebSocketServer> {
+  const paths: string[] = []
+  const headers: TestWebSocketServer['headers'] = []
+  const server = new WebSocketServer({
+    host: '127.0.0.1',
+    port: 0,
+    maxPayload: MAX_MESSAGE_BYTES,
+    verifyClient: (info, callback) => {
+      paths.push(info.req.url ?? '')
+      headers.push({ ...info.req.headers })
+      if (refusal === undefined) callback(true)
+      else callback(false, refusal.status, refusal.body ?? '', refusal.headers)
+    },
+  })
+  server.on('connection', handle)
+  await new Promise<void>((resolve) => server.once('listening', resolve))
+  const { port } = server.address() as AddressInfo
+  return {
+    url: `ws://127.0.0.1:${port}`,
+    paths,
+    headers,
+    close: () =>
+      new Promise<void>((resolve) => {
+        for (const client of server.clients) client.terminate()
+        server.close(() => resolve())
+      }),
+  }
+}
+
+/** The plain relay over WebSocket: one binary message per frame, passed through unchanged. */
+export function websocketRelay(socket: WebSocket): void {
+  const child = new ChildFrames()
+  socket.on('message', (data: Buffer) => child.send(data))
+  socket.on('close', () => {
+    child.endInput()
+    child.kill()
+  })
+  void (async () => {
+    for (;;) {
+      const frame = await child.next()
+      if (frame === null) break
+      socket.send(frame)
+    }
+    socket.close(1000)
+  })()
 }
 
 /** The ASCII entries of a stream's request metadata, as a plain record. */

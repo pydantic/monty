@@ -1,7 +1,7 @@
 # @pydantic/monty
 
 Run Python in Monty's sandbox from JavaScript or TypeScript.
-Node uses subprocess workers, or remote workers over gRPC with `MontyRemote`; `@pydantic/monty/wasm` uses
+Node uses subprocess workers, or remote workers over gRPC or WebSocket with `MontyRemote`; `@pydantic/monty/wasm` uses
 Node worker threads or browser Web Workers.
 Requires Node.js 22.18 or later when running under Node.
 
