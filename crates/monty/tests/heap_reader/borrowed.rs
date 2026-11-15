@@ -39,7 +39,7 @@ fn protected_mutable_borrow() {
     });
 }
 
-/// Nested field, slice and box projections remain usable within their source borrow.
+/// Nested field and slice projections remain usable within their source borrow.
 #[test]
 fn protected_projections() {
     let mut heap = Heap::new(16, ResourceTracker::default());
@@ -51,10 +51,9 @@ fn protected_projections() {
             let field = heap_read_ref_as_field!(read, (Vec<u64>, Box<u64>), 0);
             let slice = field.as_slice();
             let field = heap_read_ref_as_field!(read, (Vec<u64>, Box<u64>), 1);
-            let boxed = field.as_box_value();
             heap.collect_cycles();
             assert_eq!(slice.get(heap), &[123]);
-            assert_eq!(*boxed.get(heap), 456);
+            assert_eq!(**field.get(heap), 456);
         }
         {
             let protected = heap.protect_mut(&mut source);
@@ -78,14 +77,13 @@ fn projections_follow_replacement() {
         let vector = heap_read_ref_as_field_mut!(read, (Vec<u64>, Box<u64>), 0);
         let slice = vector.as_slice();
         let boxed_field = heap_read_ref_as_field!(read, (Vec<u64>, Box<u64>), 1);
-        let boxed = boxed_field.as_box_value();
         assert_eq!(slice.get(heap), &[123]);
-        assert_eq!(*boxed.get(heap), 456);
+        assert_eq!(**boxed_field.get(heap), 456);
 
         *read.get_mut(heap) = (vec![789, 1011], Box::new(1213));
         heap.collect_cycles();
         assert_eq!(slice.get(heap), &[789, 1011]);
-        assert_eq!(*boxed.get(heap), 1213);
+        assert_eq!(**boxed_field.get(heap), 1213);
 
         *vector.get_mut(heap) = vec![1415];
         assert_eq!(slice.get(heap), &[1415]);

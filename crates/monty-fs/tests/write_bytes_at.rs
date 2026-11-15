@@ -1,0 +1,352 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::{
+    fs,
+    io::{ErrorKind, Read, Seek, SeekFrom, Write},
+};
+
+use monty_fs::{Mount, MountCallOutcome, MountMode, MountTable, OverlayState};
+use monty_types::{ExcType, MontyObject, OpenCallArgs, OsFunctionCall, WriteBytesAtArgs};
+use proptest::{
+    prelude::*,
+    test_runner::{FileFailurePersistence, TestCaseResult},
+};
+use tempfile::TempDir;
+
+#[expect(dead_code, reason = "shared helpers; these tests only create file symlinks")]
+mod common;
+
+fn write(offset: u64, data: &[u8]) -> OsFunctionCall {
+    OsFunctionCall::WriteBytesAt(WriteBytesAtArgs {
+        path: "/mnt/file".into(),
+        offset,
+        data: data.to_vec(),
+    })
+}
+
+fn dispatch(table: &mut MountTable, call: OsFunctionCall) -> Result<MontyObject, monty_fs::MountError> {
+    let MountCallOutcome::Handled(result) = table.handle_os_call(call) else {
+        panic!("unmounted test path")
+    };
+    result
+}
+
+fn table(dir: &TempDir, overlay: bool, limit: Option<u64>) -> MountTable {
+    let mode = if overlay {
+        MountMode::OverlayMemory(OverlayState::new())
+    } else {
+        MountMode::ReadWrite
+    };
+    let mount = Mount::new("/mnt", dir.path(), mode, limit).unwrap();
+    let mut table = MountTable::new();
+    table.push_mount(mount).unwrap();
+    table
+}
+
+#[test]
+fn overwrites_preserve_suffixes_without_writing_through_overlays() {
+    for overlay in [false, true] {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("file"), b"abcdef").unwrap();
+        let mut table = table(&dir, overlay, None);
+        assert_eq!(dispatch(&mut table, write(2, b"XY")).unwrap(), MontyObject::int(2));
+        assert_eq!(dispatch(&mut table, write(6, b"Z")).unwrap(), MontyObject::int(1));
+        dispatch(&mut table, write(100, b"")).unwrap();
+        assert_eq!(
+            dispatch(&mut table, OsFunctionCall::ReadBytes("/mnt/file".into())).unwrap(),
+            MontyObject::bytes(b"abXYefZ".to_vec())
+        );
+        if overlay {
+            assert_eq!(fs::read(dir.path().join("file")).unwrap(), b"abcdef");
+        }
+    }
+}
+
+/// A gap would let one sandbox byte grow the file by the whole offset.
+#[test]
+fn writes_past_eof_are_rejected_without_changing_the_file() {
+    for overlay in [false, true] {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("file"), b"abc").unwrap();
+        let mut table = table(&dir, overlay, None);
+        for offset in [4, 1_u64 << 40] {
+            let error = dispatch(&mut table, write(offset, b"x")).unwrap_err().into_exception();
+            assert_eq!(error.exc_type(), ExcType::ValueError);
+            assert_eq!(error.message(), Some("write offset is past the end of the file"));
+        }
+        assert_eq!(
+            dispatch(&mut table, write(1_u64 << 40, b"")).unwrap(),
+            MontyObject::int(0)
+        );
+        assert_eq!(
+            dispatch(&mut table, OsFunctionCall::ReadBytes("/mnt/file".into())).unwrap(),
+            MontyObject::bytes(b"abc".to_vec())
+        );
+        assert_eq!(fs::read(dir.path().join("file")).unwrap(), b"abc");
+        // Writing exactly at EOF still extends the file.
+        dispatch(&mut table, write(3, b"d")).unwrap();
+        assert_eq!(
+            dispatch(&mut table, OsFunctionCall::ReadBytes("/mnt/file".into())).unwrap(),
+            MontyObject::bytes(b"abcd".to_vec())
+        );
+    }
+}
+
+#[test]
+fn materialization_is_charged_before_mutation() {
+    for overlay in [false, true] {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("file"), b"abc").unwrap();
+        let mut table = table(&dir, overlay, Some(4));
+        // Native: two payload bytes. Overlay: five materialized bytes.
+        let result = dispatch(&mut table, write(3, b"xy"));
+        assert_eq!(result.is_err(), overlay);
+        let expected: &[u8] = if overlay { b"abc" } else { b"abcxy" };
+        assert_eq!(
+            dispatch(&mut table, OsFunctionCall::ReadBytes("/mnt/file".into())).unwrap(),
+            MontyObject::bytes(expected.to_vec())
+        );
+    }
+}
+
+#[test]
+fn invalid_ranges_missing_files_and_read_only_mounts_are_rejected() {
+    for overlay in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let mut table = table(&dir, overlay, None);
+        let error = dispatch(&mut table, write(0, b"x")).unwrap_err();
+        assert_eq!(error.into_exception().exc_type(), ExcType::FileNotFoundError);
+        fs::write(dir.path().join("file"), b"abc").unwrap();
+        assert!(dispatch(&mut table, write(i64::MAX as u64, b"x")).is_err());
+        assert_eq!(fs::read(dir.path().join("file")).unwrap(), b"abc");
+    }
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("file"), b"abc").unwrap();
+    let mut table = MountTable::new();
+    table.mount("/mnt", dir.path(), MountMode::ReadOnly, None).unwrap();
+    assert!(dispatch(&mut table, write(0, b"x")).is_err());
+}
+
+#[test]
+fn native_update_open_checks_access_before_truncating() {
+    for write_only in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("file");
+        fs::write(&path, b"unchanged").unwrap();
+        let original = fs::metadata(&path).unwrap().permissions();
+        let mut restricted = original.clone();
+        if write_only {
+            #[cfg(unix)]
+            {
+                restricted = fs::Permissions::from_mode(0o200);
+            }
+            // Windows' readonly attribute cannot represent a write-only file.
+            #[cfg(not(unix))]
+            {
+                continue;
+            }
+        } else {
+            restricted.set_readonly(true);
+        }
+        fs::set_permissions(&path, restricted).unwrap();
+        let denied = match fs::OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(file) => {
+                drop(file);
+                false
+            }
+            Err(error) => {
+                assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+                true
+            }
+        };
+        if !denied {
+            // Elevated processes can bypass mode bits, so there is no denial to test.
+            fs::set_permissions(&path, original).unwrap();
+            continue;
+        }
+        let mut table = table(&dir, false, None);
+        let result = dispatch(
+            &mut table,
+            OsFunctionCall::Open(OpenCallArgs {
+                path: "/mnt/file".into(),
+                mode: "w+b".parse().unwrap(),
+            }),
+        );
+        fs::set_permissions(&path, original).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"unchanged", "write_only={write_only}");
+        assert_eq!(
+            result.unwrap_err().into_exception().exc_type(),
+            ExcType::PermissionError
+        );
+    }
+}
+
+#[test]
+fn escaping_symlinks_cannot_be_overwritten() {
+    if !common::symlinks_supported() {
+        return;
+    }
+    for overlay in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("secret"), b"unchanged").unwrap();
+        common::symlink_file(outside.path().join("secret"), dir.path().join("file"));
+        let mut table = table(&dir, overlay, None);
+        assert!(dispatch(&mut table, write(0, b"changed")).is_err());
+        assert_eq!(fs::read(outside.path().join("secret")).unwrap(), b"unchanged");
+    }
+}
+
+#[test]
+fn nested_overlay_routes_writes_without_touching_either_backing_directory() {
+    let parent = TempDir::new().unwrap();
+    let child = TempDir::new().unwrap();
+    fs::create_dir(parent.path().join("nested")).unwrap();
+    fs::write(parent.path().join("nested/file"), b"parent").unwrap();
+    fs::write(child.path().join("file"), b"child").unwrap();
+    let mut table = table(&parent, false, None);
+    table
+        .mount(
+            "/mnt/nested",
+            child.path(),
+            MountMode::OverlayMemory(OverlayState::new()),
+            None,
+        )
+        .unwrap();
+    let call = OsFunctionCall::WriteBytesAt(WriteBytesAtArgs {
+        path: "/mnt/nested/file".into(),
+        offset: 1,
+        data: b"X".to_vec(),
+    });
+    dispatch(&mut table, call).unwrap();
+    assert_eq!(
+        dispatch(&mut table, OsFunctionCall::ReadBytes("/mnt/nested/file".into())).unwrap(),
+        MontyObject::bytes(b"cXild".to_vec())
+    );
+    assert_eq!(fs::read(parent.path().join("nested/file")).unwrap(), b"parent");
+    assert_eq!(fs::read(child.path().join("file")).unwrap(), b"child");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 128,
+        failure_persistence: Some(Box::new(FileFailurePersistence::WithSource("proptest-regressions"))),
+        ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn native_positional_writes_match_a_reference_file(
+        initial in prop::collection::vec(any::<u8>(), 0..129),
+        writes in prop::collection::vec(write_operation(), 1..33),
+    ) {
+        assert_positional_writes_match_reference(&initial, &writes, false)?;
+    }
+
+    #[test]
+    fn overlay_positional_writes_match_a_reference_file(
+        initial in prop::collection::vec(any::<u8>(), 0..129),
+        writes in prop::collection::vec(write_operation(), 1..33),
+    ) {
+        assert_positional_writes_match_reference(&initial, &writes, true)?;
+    }
+}
+
+/// Checks one backend against a reference file after every write in a generated history.
+fn assert_positional_writes_match_reference(
+    initial: &[u8],
+    writes: &[(WriteOffset, Vec<u8>)],
+    overlay: bool,
+) -> TestCaseResult {
+    let dir = TempDir::new()?;
+    fs::write(dir.path().join("file"), initial)?;
+    let mut table = table(&dir, overlay, None);
+    let mut reference = tempfile::tempfile()?;
+    reference.write_all(initial)?;
+
+    for (index, (position, data)) in writes.iter().enumerate() {
+        let length = reference.metadata()?.len();
+        let offset = match position {
+            WriteOffset::Absolute(offset) => u64::from(*offset),
+            WriteOffset::BeforeEnd => length.saturating_sub(1),
+            WriteOffset::End => length,
+            WriteOffset::BeyondEnd(gap) => length + u64::from(*gap),
+        };
+        if offset > length && !data.is_empty() {
+            let error = dispatch(&mut table, write(offset, data)).unwrap_err().into_exception();
+            prop_assert_eq!(
+                error.exc_type(),
+                ExcType::ValueError,
+                "overlay={} step={}",
+                overlay,
+                index
+            );
+            continue;
+        }
+        reference.seek(SeekFrom::Start(offset))?;
+        reference.write_all(data)?;
+        let count = dispatch(&mut table, write(offset, data))?;
+        prop_assert_eq!(
+            count,
+            MontyObject::int(i64::try_from(data.len())?),
+            "overlay={} step={} offset={}",
+            overlay,
+            index,
+            offset
+        );
+
+        reference.rewind()?;
+        let mut expected = Vec::new();
+        reference.read_to_end(&mut expected)?;
+        let content = dispatch(&mut table, OsFunctionCall::ReadBytes("/mnt/file".into()))?;
+        prop_assert_eq!(
+            content,
+            MontyObject::bytes(expected),
+            "overlay={} step={} offset={}",
+            overlay,
+            index,
+            offset
+        );
+        let stat = dispatch(&mut table, OsFunctionCall::Stat("/mnt/file".into()))?;
+        let fields = stat.as_ref().items().expect("stat returns a namedtuple");
+        prop_assert_eq!(
+            fields[6].as_int(),
+            Some(i64::try_from(reference.metadata()?.len())?),
+            "overlay={} step={}",
+            overlay,
+            index
+        );
+
+        if overlay {
+            prop_assert_eq!(
+                fs::read(dir.path().join("file"))?,
+                initial,
+                "overlay wrote through to backing file at step={}",
+                index
+            );
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+enum WriteOffset {
+    Absolute(u16),
+    BeforeEnd,
+    End,
+    BeyondEnd(u16),
+}
+
+fn write_operation() -> impl Strategy<Value = (WriteOffset, Vec<u8>)> {
+    let offset = prop_oneof![
+        Just(WriteOffset::Absolute(0)),
+        (0_u16..257).prop_map(WriteOffset::Absolute),
+        Just(WriteOffset::BeforeEnd),
+        Just(WriteOffset::End),
+        (1_u16..65).prop_map(WriteOffset::BeyondEnd),
+    ];
+    let data = prop_oneof![
+        1 => Just(Vec::new()),
+        3 => prop::collection::vec(any::<u8>(), 1..65),
+    ];
+    (offset, data)
+}

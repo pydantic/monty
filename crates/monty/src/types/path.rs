@@ -45,7 +45,7 @@ pub(crate) struct Path {
     path: String,
     /// Lazily-computed Python hash. Paths are immutable (all "modifying"
     /// operations return new `Path` objects). Skipped on serde — see
-    /// [`super::Str::cached_hash`] for the rationale.
+    /// [`super::HeapStr`] for the rationale.
     #[serde(skip)]
     cached_hash: Cell<Option<HashValue>>,
 }

@@ -8,13 +8,12 @@ build-backend = "maturin"
 name = "pydantic-monty-client"
 description = "Python client for the Monty sandbox"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -37,7 +36,7 @@ dependencies = ["typing_extensions>=4.5"]
 dynamic = ["license", "version"]
 
 [project.optional-dependencies]
-opentelemetry = ["opentelemetry-api>=1.39.0"]
+opentelemetry = ["opentelemetry-api>=1.45.2"]
 
 [project.urls]
 Homepage = "https://github.com/pydantic/monty"
@@ -52,7 +51,7 @@ exclude = ["python/pydantic_monty/*.so", "python/pydantic_monty/__pycache__/**"]
 [dependency-groups]
 dev = [
     "anyio>=4.0",
-    "black>=25.12.0",
+    "black>=26.10.1",
     "dirty-equals>=0.11",
     "inline-snapshot>=0.31.1",
     "opentelemetry-sdk>=1.39.0",

@@ -1,7 +1,7 @@
 [project]
 name = "monty-workspace"
 version = "0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 
 [tool.uv.workspace]
 members = ["crates/monty-python", "crates/monty-runtime", "packages/pydantic-monty"]
@@ -18,7 +18,10 @@ dev = [
     "mdformat-mkdocs>=5.2.1",
     "mdformat-frontmatter>=2.1.2",
     "httpx2>=2.12.0",
-    # the dev relay (`scripts/grpc_relay.py`) and the remote-pool test fakes
+]
+# the dev relay (`scripts/grpc_relay.py`) and the remote-pool test fakes; `make install-py` installs it.
+# grpcio has no free-threaded wheels, so CI's free-threaded jobs skip it with `UV_NO_GROUP=grpc`
+grpc = [
     "grpcio>=1.75",
     "types-grpcio>=1.0.0.20250603",
 ]
@@ -30,7 +33,7 @@ examples = [
     "types-openpyxl>=3.1.5",
     "logfire>=4.25.0",
     "pydantic-ai-slim[anthropic,openai]>=1.63.0",
-    "pydantic-ai-harness[code-mode]>=0.60.0; python_version >= '3.11'",
+    "pydantic-ai-harness[code-mode]>=0.60.0",
     "websockets>=15.0",
 ]
 build = [
@@ -83,6 +86,8 @@ extend-exclude = [
 [tool.uv]
 # this is a monorepo without a root package
 package = false
+# plain `uv sync` / `uv run` install the relay too
+default-groups = ["dev", "grpc"]
 # https://docs.astral.sh/uv/reference/settings/#exclude-newer
 # make sure to use relative durations:
 exclude-newer = "7 days"
@@ -102,8 +107,6 @@ mccabe = { max-complexity = 14 }
 [tool.ruff.lint.isort]
 combine-as-imports = true
 known-first-party = ["pydantic_monty"]
-# stdlib since 3.11, which the 3.10 floor hides from ruff's classification
-extra-standard-library = ["tomllib"]
 
 [tool.ruff.lint.per-file-ignores]
 "crates/monty/test_cases/{str,bytes}__percent_format.py" = [
@@ -339,6 +342,8 @@ skip = [
     "Cargo.lock",
     "crates/monty-js/package-lock.json",
     "crates/monty-bench/benches/python/pyperformance_*.py",
+    # The multilingual corpus contains valid non-English words.
+    "crates/monty-bench/benches/data/string_corpus.json",
 
     "crates/monty-typeshed/vendor/typeshed/stdlib/*",
     "crates/monty/src/types/str.rs",

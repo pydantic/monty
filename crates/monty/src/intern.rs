@@ -700,6 +700,10 @@ pub enum StaticStrings {
     Binascii,
     /// `random.binomialvariate()` function.
     Binomialvariate,
+    /// `int.bit_count()` method.
+    BitCount,
+    /// `int.bit_length()` method.
+    BitLength,
     /// `bisect` in the bisect module.
     Bisect,
     /// `bisect_left` in the bisect module.
@@ -1463,6 +1467,8 @@ pub enum StaticStrings {
     Indent,
     /// `index()` method, shared by `str`, `bytes`, `list`, `tuple` and `deque`.
     Index,
+    /// `slice.indices()` method.
+    Indices,
     /// `decimal.Inexact` signal.
     #[strum(serialize = "Inexact")]
     Inexact,

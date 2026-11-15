@@ -117,7 +117,7 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
                 release_on_error(Value::Ref(copy_id), filled, vm)
             }
             HeapReadOutput::Set(set) => {
-                let copy = set.copy(vm);
+                let copy = set.copy(vm)?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Set(copy))))
             }
             HeapReadOutput::Deque(deque) => {

@@ -115,6 +115,7 @@ packAndValidate(mainDirectory, 'monty-main.tgz', [
   'dist/worker/component/monty.component.core2.wasm',
   'dist/worker/component/monty.component.core3.wasm',
   'dist/worker/component/monty.component.core4.wasm',
+  'dist/worker/component/monty.component.core5.wasm',
   'native-addon.js',
   'native-addon.d.ts',
 ])

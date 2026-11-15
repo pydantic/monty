@@ -85,6 +85,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
         Value::Builtin(Builtins::ExcType(ExcType::CsvError)),
         vm,
     );
+    module.set_attr(StaticStrings::DunderVersion, allocate_string("1.0", vm.heap), vm);
     // CPython's are classes; Monty exposes the resolved dialects, which `dialect=` accepts alike.
     for (name, dialect) in [
         (StaticStrings::Excel, Dialect::excel()),

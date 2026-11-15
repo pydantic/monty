@@ -1,6 +1,7 @@
 # pydantic-monty-client
 
 Python client for the Monty sandbox.
+Requires Python 3.11 or newer.
 
 Most users want [`pydantic-monty`](https://pypi.org/project/pydantic-monty/)
 instead, which pulls in this package plus

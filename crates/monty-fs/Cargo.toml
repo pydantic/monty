@@ -9,7 +9,6 @@ authors = { workspace = true }
 description = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
-homepage = { workspace = true }
 repository = { workspace = true }
 
 [lib]
@@ -29,6 +28,7 @@ rustix = { workspace = true }
 nix = { workspace = true }
 
 [dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
 tempfile = { workspace = true }
 
 [lints]

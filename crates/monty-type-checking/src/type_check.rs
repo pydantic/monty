@@ -4,8 +4,11 @@ use monty_types::{ModuleStub, TypeCheckingConfig, TypeCheckingFormat};
 use ruff_db::{
     Db as _,
     diagnostic::{
-        Annotation, Diagnostic, DiagnosticFormat, DiagnosticId, DisplayDiagnosticConfig, DisplayDiagnostics,
-        UnifiedFile,
+        Annotation, Diagnostic, DiagnosticId, DisplayDiagnosticConfig, UnifiedFile,
+        render::{
+            AzureRenderer, ConciseRenderer, FullRenderer, GithubRenderer, GitlabRenderer, JsonLinesRenderer,
+            JsonRenderer, PylintRenderer, RdjsonRenderer, Renderer,
+        },
     },
     file_revision::FileRevision,
     files::{File, system_path_to_file},
@@ -243,22 +246,20 @@ pub struct TypeCheckingDiagnostics<'a> {
 
 impl fmt::Display for TypeCheckingDiagnostics<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let format = match self.config.format {
-            TypeCheckingFormat::Full => DiagnosticFormat::Full,
-            TypeCheckingFormat::Concise => DiagnosticFormat::Concise,
-            TypeCheckingFormat::Azure => DiagnosticFormat::Azure,
-            TypeCheckingFormat::Json => DiagnosticFormat::Json,
-            TypeCheckingFormat::JsonLines => DiagnosticFormat::JsonLines,
-            TypeCheckingFormat::Rdjson => DiagnosticFormat::Rdjson,
-            TypeCheckingFormat::Pylint => DiagnosticFormat::Pylint,
-            TypeCheckingFormat::Gitlab => DiagnosticFormat::Gitlab,
-            TypeCheckingFormat::Github => DiagnosticFormat::Github,
-        };
-
-        let config = DisplayDiagnosticConfig::new("monty")
-            .format(format)
-            .color(self.config.color);
-        DisplayDiagnostics::new(&self.type_checker.db, &config, &self.diagnostics).fmt(f)
+        let config = DisplayDiagnosticConfig::new("monty").color(self.config.color);
+        let db = &self.type_checker.db;
+        let diagnostics = &self.diagnostics;
+        match self.config.format {
+            TypeCheckingFormat::Full => FullRenderer::new(db, &config).render(f, diagnostics),
+            TypeCheckingFormat::Concise => ConciseRenderer::new(db, &config).render(f, diagnostics),
+            TypeCheckingFormat::Azure => AzureRenderer::new(db, &config).render(f, diagnostics),
+            TypeCheckingFormat::Json => JsonRenderer::new(db, &config).render(f, diagnostics),
+            TypeCheckingFormat::JsonLines => JsonLinesRenderer::new(db, &config).render(f, diagnostics),
+            TypeCheckingFormat::Rdjson => RdjsonRenderer::new(db, &config).render(f, diagnostics),
+            TypeCheckingFormat::Pylint => PylintRenderer::new(db, &config).render(f, diagnostics),
+            TypeCheckingFormat::Gitlab => GitlabRenderer::new(db, &config).render(f, diagnostics),
+            TypeCheckingFormat::Github => GithubRenderer::new(db, &config).render(f, diagnostics),
+        }
     }
 }
 
