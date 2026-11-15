@@ -108,8 +108,8 @@ num-integer = "0.1"
 # workspace-dep features are additive, and each crate needs a different set
 # (`auto-initialize` embeds CPython, `generate-import-lib`/`num-bigint`/... for
 # the extension module and conversion layers).
-pyo3 = "0.29.2"
-pyo3-async-runtimes = "0.29.0"
+pyo3 = "0.30.1"
+pyo3-async-runtimes = "0.30.0"
 pyo3-build-config = { version = "0.30.1", features = ["resolve-config"] }
 # others
 chrono = { version = "0.4", features = ["serde"] }
