@@ -45,7 +45,7 @@
     "dtsHeaderFile": "./index-header.d.ts"
   },
   "engines": {
-    "node": ">= 20"
+    "node": ">= 22.18"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
