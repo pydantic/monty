@@ -2,8 +2,9 @@
 //!
 //! This is the browser analog of `monty subprocess`: a persistent [`Worker`]
 //! consumes semantic WIT requests and returns semantic events. The worker still
-//! shares `monty-proto`'s state machine, but protobuf bytes never cross the
-//! component boundary or enter the TypeScript host.
+//! shares `monty-proto`'s state machine, but protobuf bytes never enter the
+//! TypeScript pool. `dispatch-frame` ([`frame`]) is the exception, for hosts
+//! that relay the wire protocol unchanged.
 #![expect(unsafe_code, reason = "generated canonical-ABI exports require unsafe code")]
 
 use std::{cell::RefCell, collections::hash_map::RandomState, io, time::Instant};
@@ -26,13 +27,14 @@ mod bindings {
     wit_bindgen::generate!({ world: "monty-runtime" });
 }
 
+mod frame;
 mod value;
 
 use bindings::exports::pydantic::monty::worker::{
-    CallResult, CompleteEvent, ConfigureRequest, DatetimeSource, DispatchResult, Event, FunctionCallEvent, Guest,
-    NameLookupEvent, NameLookupResult, OsCallEvent, OsPolicy, PrintEvent, ProcessTime, RaisedError, RaisedException,
-    RandomSeed, RandomStart, Request, ResolveFuturesEvent, SleepMode, SourceRange, StackFrame, Status, TimeZone,
-    TypeCheckFormat,
+    CallResult, CompleteEvent, ConfigureRequest, DatetimeSource, DispatchResult, Event, FrameResult, FunctionCallEvent,
+    Guest, NameLookupEvent, NameLookupResult, OsCallEvent, OsPolicy, PrintEvent, ProcessTime, RaisedError,
+    RaisedException, RandomSeed, RandomStart, Request, ResolveFuturesEvent, SleepMode, SourceRange, StackFrame, Status,
+    TimeZone, TypeCheckFormat,
 };
 
 thread_local! {
@@ -84,6 +86,20 @@ impl Guest for Component {
         } else {
             result
         }
+    }
+
+    fn dispatch_frame(request: Vec<u8>) -> FrameResult {
+        WORKER.with_borrow_mut(|worker| {
+            let mut result = frame::dispatch_frame(worker, &request);
+            let budget = worker.session_budget();
+            if let Err(error) =
+                monty_alloc::set_hard_limit(memory_limit_with_headroom(budget.max_memory, budget.type_check))
+            {
+                result.status = Status::Shutdown;
+                result.events = frame::encode_events(&[worker.fatal_event(error)]);
+            }
+            result
+        })
     }
 }
 
