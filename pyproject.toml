@@ -13,10 +13,10 @@ dev = [
     "mypy>=2.1.0",
     "ruff>=0.14.7",
     # markdown formatting (`make format-md`); style is in .mdformat.toml
-    "mdformat>=0.7.22",
-    "mdformat-tables>=1.0.0",
-    "mdformat-mkdocs>=5.2.1",
-    "mdformat-frontmatter>=2.1.2",
+    "mdformat>=1.0.0",
+    "mdformat-gfm>=1.0.0",
+    "mdformat-mkdocs>=5.3.0",
+    "mdformat-frontmatter>=2.2.0",
     "httpx2>=2.12.0",
 ]
 # the dev relay (`scripts/grpc_relay.py`) and the remote-pool test fakes; `make install-py` installs it.
