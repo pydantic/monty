@@ -19,8 +19,9 @@ pip install pydantic-monty-client
 
 ## Usage with a remote monty server
 
-You can use this library alone to connect to a remote monty server over gRPC: one HTTP/2 connection per pool, one
-stream per session. `AsyncMontyWebsocket` is the same class under its former name, deprecated.
+You can use this library alone to connect to a remote monty server, over gRPC for an `http://`/`https://` URL (one
+HTTP/2 connection per pool, one stream per session) or WebSocket for a `ws://`/`wss://` URL (one connection per
+session). `AsyncMontyWebsocket` is the same class under its former name, deprecated.
 
 ```python test="skip"
 from pydantic_monty import AsyncMontyRemote
