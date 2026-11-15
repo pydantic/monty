@@ -388,7 +388,7 @@ impl PyMontySession {
     /// between feeds — so you can keep feeding it. Use
     /// [`load_snapshot`](Self::load_snapshot) for a dump taken mid-execution.
     ///
-    /// Valid only on a fresh session, before any feed or load; raises
+    /// Valid only on a fresh session, before any feed, load, or dependency installation; raises
     /// `RuntimeError` otherwise. The dump restores its own `script_name` /
     /// limits / type-check state (the `checkout()` config for those is not
     /// applied). The class-instance store starts empty — it is host state and
@@ -409,7 +409,7 @@ impl PyMontySession {
     /// `snapshot.dump()` — and returns the re-announced snapshot to resume. Use
     /// [`load_session`](Self::load_session) for a dump taken between feeds.
     ///
-    /// Valid only on a fresh session, before any feed or load; raises
+    /// Valid only on a fresh session, before any feed, load, or dependency installation; raises
     /// `RuntimeError` otherwise. `mount` re-establishes the suspended feed's
     /// mounts, which are never part of the dump — pass the same mounts the
     /// original feed used, or its filesystem calls degrade into unhandled OS
@@ -475,7 +475,6 @@ impl PyMontySession {
     #[pyo3(signature = (code, *, input_names=None))]
     fn compile(&self, py: Python<'_>, code: &Bound<'_, PyString>, input_names: Option<Vec<String>>) -> PyResult<()> {
         let code = extract_source_code(py, code)?;
-        self.used.store(true, Ordering::Relaxed);
         py.detach(|| block_on_sync(compile_checkout(&self.checkout, code, input_names.unwrap_or_default())))?
             .map_err(|e| pool_err_to_py(py, e))
     }
@@ -1123,7 +1122,6 @@ impl PyAsyncMontySession {
         input_names: Option<Vec<String>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let code = extract_source_code(py, code)?;
-        self.used.store(true, Ordering::Relaxed);
         let checkout = Arc::clone(&self.checkout);
         future_into_py(py, async move {
             compile_checkout(&checkout, code, input_names.unwrap_or_default())
@@ -1294,11 +1292,11 @@ fn check_callable(py: Python<'_>, callback: Option<&Py<PyAny>>) -> PyResult<()> 
 }
 
 /// The error raised when `load_session` / `load_snapshot` is called on a
-/// session that has already been fed or restored (it would otherwise silently
-/// discard work).
+/// session that has already been fed, restored, or had dependencies installed
+/// (it would otherwise silently discard work).
 fn session_used_err() -> PyErr {
     PyRuntimeError::new_err(
-        "load_session / load_snapshot is only valid on a fresh session, before any feed_run / feed_start / load_session / load_snapshot",
+        "load_session / load_snapshot is only valid on a fresh session, before feed_run / feed_start / load_session / load_snapshot / install_dependencies",
     )
 }
 

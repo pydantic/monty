@@ -193,7 +193,7 @@ pub struct SessionBudget {
 /// REPL session state of the worker.
 enum SessionState {
     /// No repl materialized yet. `Some` once `Configure` has stored the config
-    /// (built lazily on the first `Compile` / `Feed` / `Dump`); `None` on a
+    /// (built lazily on the first `Feed` / `Dump`); `None` on a
     /// freshly spawned or just-`Reset` worker, before `Configure`. `Load` is
     /// valid only from here — it cannot clobber a started session.
     Configured(Option<Box<pb::Configure>>),
@@ -566,7 +566,7 @@ impl Worker {
     }
 
     /// Materializes the repl from the stored config the first time the session
-    /// compiles, feeds or dumps, applying the config's script name, limits, and
+    /// feeds or dumps, applying the config's script name, limits, and
     /// type-check setup. A no-op once the repl exists; errors only if the
     /// worker was never configured (which the pool's `Configure`-first checkout
     /// prevents in normal operation).
@@ -645,18 +645,24 @@ impl Worker {
 
     /// Compiles a standalone program, retaining no definitions or executable state.
     fn handle_compile(&mut self, source: pb::Compile) -> pb::WorkerEvent {
-        if let Err(event) = self.ensure_repl() {
-            return *event;
-        }
-        let SessionState::Ready(repl) = &self.state else {
-            return protocol_violation("Compile without a session ready for input");
+        // Compilation must leave a new session loadable, even if compilation fails.
+        let (script_name, options) = match &self.state {
+            SessionState::Configured(Some(config)) => (
+                // Fresh REPL inputs start at zero; do not materialize it here.
+                "<python-input-0>".to_owned(),
+                CompileOptions {
+                    assert_message_annotations: config.assert_message_annotations.map_or_else(
+                        AssertMessageAnnotations::default,
+                        AssertMessageAnnotations::from_max_bytes,
+                    ),
+                    source_scan_threshold: SOURCE_SCAN_THRESHOLD,
+                },
+            ),
+            SessionState::Configured(None) => return protocol_violation("session has not been configured"),
+            SessionState::Ready(repl) => (repl.next_script_name(), repl.options()),
+            _ => return protocol_violation("Compile without a session ready for input"),
         };
-        match MontyRun::new(
-            source.code,
-            &self.script_name,
-            source.input_names.into_inner(),
-            repl.options(),
-        ) {
+        match MontyRun::new(source.code, &script_name, source.input_names.into_inner(), options) {
             Ok(_) => ok_event(),
             Err(error) => error_event_from(&error),
         }

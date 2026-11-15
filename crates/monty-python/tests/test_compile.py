@@ -45,6 +45,19 @@ def test_compile_only(pool: Monty, capfd: pytest.CaptureFixture[str]):
     assert capfd.readouterr().out == snapshot('')
 
 
+def test_compile_keeps_fresh_session_restorable(pool: Monty):
+    with pool.checkout() as original:
+        original.feed_run('kept = 41')
+        saved = original.dump()
+
+    with pool.checkout() as fresh:
+        assert fresh.compile('print("not executed")') is None
+        with pytest.raises(MontySyntaxError):
+            fresh.compile('def broken(:')
+        fresh.load_session(saved)
+        assert fresh.feed_run('kept + 1') == snapshot(42)
+
+
 async def test_compile_only_async(capfd: pytest.CaptureFixture[str]):
     async with AsyncMonty() as pool, pool.checkout() as session:
         assert await session.compile(CODE) is None

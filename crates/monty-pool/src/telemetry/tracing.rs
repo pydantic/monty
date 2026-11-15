@@ -200,8 +200,17 @@ impl Recorder {
                 self.feed = None;
                 self.session = None;
             }
-            Some(pb::client_request::Kind::Compile(_)) => {
-                self.turn = Some(start_span(logfire::span!(parent: self.context_span(), "compile")));
+            Some(pb::client_request::Kind::Compile(c)) => {
+                let (code, code_cut) = truncate_str(&c.code);
+                let (input_names, inputs_cut) = render_str_list(&c.input_names);
+                self.turn = Some(start_span(logfire::span!(
+                    parent: self.context_span(),
+                    "compile",
+                    code = &code,
+                    code.language = "python",
+                    input_names = input_names,
+                    length_limit_exceeded = (code_cut | inputs_cut).then_some(true),
+                )));
             }
             Some(pb::client_request::Kind::InstallDependencies(d)) => {
                 let (requirements, cut) = render_str_list(&d.requirements);

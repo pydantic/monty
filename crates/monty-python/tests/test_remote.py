@@ -1026,6 +1026,9 @@ async def test_out_of_memory_status_raises_memory_error():
 async def test_compile_only_remote(relay_url: str):
     async with AsyncMontyRemote(relay_url) as pool, pool.checkout(type_check=True) as session:
         assert await session.compile("print('RAN')\ndef f(x=callback()): pass\nwhile True: pass") is None
-        with pytest.raises(MontyRuntimeError, match='NotImplementedError'):
+        with pytest.raises(MontyRuntimeError, match='NotImplementedError') as exc_info:
             await session.compile('class B(A): pass')
+        frame = exc_info.value.traceback()[0]
+        assert frame.line == snapshot(1)
+        assert frame.column == snapshot(1)
         assert await session.feed_run('40 + 2') == snapshot(42)

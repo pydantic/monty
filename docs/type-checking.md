@@ -290,3 +290,4 @@ Optional `input_names` declares program inputs without supplying values.
 
 Compilation does not resolve imports or run the type checker, even when the session enables type checking.
 Local and remote pools use the same `Compile` protocol request; older workers reject it without executing the code.
+A compile request during a suspended feed raises a plain `RuntimeError` until that feed is resumed or aborted.

@@ -1466,8 +1466,8 @@ fn streamed_calls_stop_at_max_suspensions() {
 /// Compile requests must neither execute source nor publish definitions.
 #[test]
 fn compile_only_checks_without_execution_or_session_changes() {
-    // Encode the request independently so older workers exercise their real
-    // response to the compile request, including unknown-field handling.
+    // Hand-encode this request independently of the generated schema: the test
+    // pins the wire representation but does not execute an older worker.
     /// Request envelope independent of the generated schema.
     #[derive(prost::Message)]
     struct CompileRequest {
