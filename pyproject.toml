@@ -1,7 +1,7 @@
 [project]
 name = "monty-workspace"
 version = "0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 
 [tool.uv.workspace]
 members = ["crates/monty-python", "crates/monty-runtime", "packages/pydantic-monty"]
@@ -33,7 +33,7 @@ examples = [
     "types-openpyxl>=3.1.5",
     "logfire>=4.25.0",
     "pydantic-ai-slim[anthropic,openai]>=1.63.0",
-    "pydantic-ai-harness[code-mode]>=0.60.0; python_version >= '3.11'",
+    "pydantic-ai-harness[code-mode]>=0.60.0",
     "websockets>=15.0",
 ]
 build = [
@@ -107,8 +107,6 @@ mccabe = { max-complexity = 14 }
 [tool.ruff.lint.isort]
 combine-as-imports = true
 known-first-party = ["pydantic_monty"]
-# stdlib since 3.11, which the 3.10 floor hides from ruff's classification
-extra-standard-library = ["tomllib"]
 
 [tool.ruff.lint.per-file-ignores]
 "crates/monty/test_cases/{str,bytes}__percent_format.py" = [

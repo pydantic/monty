@@ -199,8 +199,7 @@ fn decimal_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> Option<ExcT
 pub(super) fn exc_class_to_py(py: Python<'_>, exc_type: ExcType) -> PyResult<Py<PyAny>> {
     match exc_type {
         ExcType::JsonDecodeError => get_json_decode_error(py).map(|b| b.clone().unbind()),
-        // A host Python without `tomllib` (3.10) gets the `ValueError` parent,
-        // matching the instance fallback.
+        // If importing the class fails, match the instance fallback.
         ExcType::TomlDecodeError => Ok(get_toml_decode_error(py).map_or_else(
             |_| py.get_type::<exceptions::PyValueError>().into_any().unbind(),
             |cls| cls.clone().unbind(),
@@ -270,8 +269,7 @@ fn json_decode_error_to_py(py: Python<'_>, exc_data: ExcData, msg: String) -> Py
 /// payload, which it shares with `json.JSONDecodeError`. Every attribute is
 /// set explicitly: before Python 3.14 the constructor stores only `args`, and
 /// on 3.14 it derives `lineno` / `colno` from `doc`, which is wrong for a
-/// dropped (oversized) document, as is the message it formats. Absent the
-/// module (Python 3.10) this degrades to the `ValueError` parent.
+/// dropped (oversized) document, as is the message it formats.
 fn toml_decode_error_to_py(py: Python<'_>, exc_data: ExcData, msg: String) -> PyErr {
     if let ExcData::Json(data) = exc_data
         && let Ok(exc_cls) = get_toml_decode_error(py)
