@@ -12,7 +12,7 @@
   "devDependencies": {
     "@playwright/test": "^1.49.1",
     "@types/node": "^26.6.6",
-    "@vitest/browser": "^5.1.0",
+    "@vitest/browser-playwright": "^5.1.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.6",
     "vitest": "^5.1.0"
