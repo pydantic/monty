@@ -71,7 +71,7 @@ assert early() == 2
 # === bundled submodule ===
 from os.path import *
 
-assert join('a', 'b') == 'a/b'
+assert join('a', 'b') == 'a' + sep + 'b'
 assert basename('/x/y.txt') == 'y.txt'
 
 # === module file without `__all__`: names starting with `_` are skipped ===
