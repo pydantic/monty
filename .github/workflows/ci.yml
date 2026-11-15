@@ -957,7 +957,7 @@ jobs:
         name: install & test
         with:
           arch: ${{ matrix.target }}
-          distro: ubuntu22.04
+          distro: ubuntu24.04
           dockerRunArgs: --volume "${{ github.workspace }}/dist:/dist"
           install: |
             apt-get update
