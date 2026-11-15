@@ -7,6 +7,8 @@
 mod binary;
 #[path = "support/grpc_mock.rs"]
 mod grpc_mock;
+#[path = "support/opening.rs"]
+mod opening;
 
 #[cfg(feature = "telemetry")]
 use std::sync::Arc;
