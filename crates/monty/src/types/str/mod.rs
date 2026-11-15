@@ -2112,7 +2112,7 @@ mod tests {
             let encoded = minicbor_serde::to_vec(&value).unwrap();
             assert_eq!(encoded, minicbor_serde::to_vec(text).unwrap());
             let restored: HeapStr = minicbor_serde::from_slice(&encoded).unwrap();
-            for value in [value.clone(), restored] {
+            for value in [value, restored] {
                 assert_eq!(value.char_len(), text.chars().count());
                 assert_eq!(value.is_ascii(), text.is_ascii());
             }
