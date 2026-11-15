@@ -13,7 +13,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, HEAP_ENTRY_SIZE, HeapData, HeapId},
+    heap::{DropGuard, DropWithContext, HEAP_ENTRY_SIZE, HeapData},
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
@@ -73,8 +73,8 @@ const ITERTOOLS_TYPES: &[(StaticStrings, BuiltinType)] = &[
     (StaticStrings::TeeDataObject, BuiltinType::ItertoolsTeeDataObject),
 ];
 
-/// Creates the `itertools` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `itertools` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Itertools, vm.interns);
 
     for (name, type_) in ITERTOOLS_TYPES {
@@ -86,7 +86,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to one of the module's two plain functions.

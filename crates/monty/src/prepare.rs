@@ -54,7 +54,9 @@ pub(crate) fn prepare_with_existing_names(
     interner: &CompileInterns<'_>,
     globals: &mut NameMap,
 ) -> Result<Vec<PreparedNode>, ParseError> {
-    let mut prepared_nodes = Prepare::new_module(globals, interner).prepare_nodes(nodes)?;
+    let mut prepare = Prepare::new_module(globals, interner);
+    prepare.has_star_import = has_star_import(&nodes);
+    let mut prepared_nodes = prepare.prepare_nodes(nodes)?;
 
     // In the root frame, the last expression is implicitly returned if it
     // is not `None`. This matches Python REPL behavior where the last
@@ -98,6 +100,7 @@ pub(crate) fn prepare_snippet(
     names: SnippetNames,
 ) -> Result<Vec<PreparedNode>, ParseError> {
     let mut prepare = Prepare::new_module(globals, interner);
+    prepare.has_star_import = has_star_import(&nodes);
     if names != SnippetNames::Slots {
         prepare.top_level_by_name = true;
         // `global x` at the top level binds in the globals (CPython emits
@@ -116,6 +119,32 @@ pub(crate) fn prepare_snippet(
     prepare.prepare_nodes(nodes)
 }
 
+/// Whether any module-level statement, however nested in control flow, is a
+/// `from m import *`. Function and class bodies are skipped: preparation
+/// rejects a star import there.
+fn has_star_import(nodes: &[ParseNode]) -> bool {
+    nodes.iter().any(|node| match node {
+        Node::ImportStar { .. } => true,
+        Node::For { body, or_else, .. } | Node::While { body, or_else, .. } | Node::If { body, or_else, .. } => {
+            has_star_import(body) || has_star_import(or_else)
+        }
+        Node::With { body, .. } => has_star_import(body),
+        Node::Try(Try {
+            body,
+            handlers,
+            or_else,
+            finally,
+        }) => {
+            has_star_import(body)
+                || handlers.iter().any(|handler| has_star_import(&handler.body))
+                || has_star_import(or_else)
+                || has_star_import(finally)
+        }
+        Node::Match { cases, .. } => cases.iter().any(|case| has_star_import(&case.body)),
+        _ => false,
+    })
+}
+
 /// State machine for the preparation phase that transforms parsed AST nodes into a prepared form.
 ///
 /// Resolves names to namespace slots and rewrites the AST so the bytecode
@@ -126,6 +155,10 @@ pub(crate) fn prepare_snippet(
 /// The interner is borrowed immutably — every `StringId` we need already
 /// arrived through the AST (parse-time interning), so no new strings are
 /// allocated during prepare.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent scope flags, not a state machine"
+)]
 struct Prepare<'i, 'g> {
     /// String interner for resolving names in error messages.
     interner: &'i CompileInterns<'i>,
@@ -192,6 +225,9 @@ struct Prepare<'i, 'g> {
     /// Names declared `global` at a by-name snippet's top level; they keep
     /// slot resolution. Empty otherwise.
     module_global_names: AHashSet<StringId>,
+    /// Whether the module runs a `from m import *`, which may rebind any
+    /// builtin name, so module-scope reads never substitute builtins.
+    has_star_import: bool,
     /// Class members whose binding statement has already been prepared, in
     /// source order (only populated when `is_class_scope`).
     ///
@@ -525,6 +561,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             comp_name_scopes: Vec::new(),
             top_level_by_name: false,
             module_global_names: AHashSet::new(),
+            has_star_import: false,
             is_class_scope: false,
             bound_class_members: AHashSet::new(),
             is_annotate: false,
@@ -640,6 +677,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             comp_name_scopes: Vec::new(),
             top_level_by_name: false,
             module_global_names: AHashSet::new(),
+            has_star_import: false,
             is_class_scope: false,
             bound_class_members: AHashSet::new(),
             is_annotate: false,
@@ -1048,6 +1086,27 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         position,
                     });
                 }
+                // Binds names unknown until runtime, so it never reaches the slot
+                // resolution that function and class bodies depend on.
+                Node::ImportStar {
+                    module_name,
+                    submodules,
+                    position,
+                    star_position,
+                } => {
+                    if !self.is_module_scope() {
+                        return Err(ParseError::syntax(
+                            "import * only allowed at module level",
+                            star_position,
+                        ));
+                    }
+                    new_nodes.push(Node::ImportStar {
+                        module_name,
+                        submodules,
+                        position,
+                        star_position,
+                    });
+                }
             }
         }
         Ok(new_nodes)
@@ -1294,7 +1353,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
         //
         // A by-name snippet top level never has it either: its namespace dict
         // may shadow the builtin, so the read is deferred to runtime too.
-        if self.is_module_scope() && !self.top_level_by_name {
+        // A star import can bind any name. A later REPL snippet sees the slots it
+        // bound, but within this snippet nothing tells which names it binds.
+        if self.is_module_scope() && !self.top_level_by_name && !self.has_star_import {
             let name_str = self.interner.get_str(name.name_id);
             let already_bound =
                 self.names_assigned_in_order.contains(&name.name_id) || self.globals.globals.contains(name.name_id);
@@ -2791,6 +2852,8 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
+        // A star import is rejected in function scopes, which this walks.
+        Node::ImportStar { .. } => {}
         // Import creates bindings for each module name (or alias)
         Node::Import { names, .. } => {
             for import_name in names {
@@ -3203,7 +3266,8 @@ fn collect_cell_vars_from_node(
         | Node::Global { .. }
         | Node::Nonlocal { .. }
         | Node::Import { .. }
-        | Node::ImportFrom { .. } => {}
+        | Node::ImportFrom { .. }
+        | Node::ImportStar { .. } => {}
     }
 }
 
@@ -3719,7 +3783,7 @@ fn collect_referenced_names_from_node(
             }
         }
         // Imports create bindings but don't reference names
-        Node::Import { .. } | Node::ImportFrom { .. } => {}
+        Node::Import { .. } | Node::ImportFrom { .. } | Node::ImportStar { .. } => {}
         Node::Pass | Node::Global { .. } | Node::Nonlocal { .. } | Node::Break { .. } | Node::Continue { .. } => {}
     }
 }

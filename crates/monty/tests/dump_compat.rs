@@ -276,19 +276,21 @@ fn fixture_dump_loads_and_resumes() {
     );
 }
 
-/// Main's version-14 dump format remains readable after inline strings bump it to 15.
+/// Older fixtures remain readable after adding inline strings and the star-import opcode.
 #[test]
-fn version_14_fixture_loads_after_inline_string_bump() {
-    let bytes = fs::read(fixture_path_for(14)).expect("main's version-14 fixture exists");
-    let loaded = Dump::load(&bytes).expect("version-14 dumps remain supported");
-    assert_eq!(loaded.script_name, "fixture.py");
-    let Session::Suspended(progress) = loaded.state else {
-        panic!("fixture was dumped suspended on a host call");
-    };
-    let call = progress.into_function_call().expect("suspended on host_call");
-    let progress = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
-    let (_, value) = progress.into_complete().expect("host_call resumed to completion");
-    assert_eq!(value, MontyObject::int(42));
+fn older_version_fixtures_load_and_resume() {
+    for version in [14, 15] {
+        let bytes = fs::read(fixture_path_for(version)).expect("older fixture exists");
+        let loaded = Dump::load(&bytes).expect("older dumps remain supported");
+        assert_eq!(loaded.script_name, "fixture.py");
+        let Session::Suspended(progress) = loaded.state else {
+            panic!("fixture was dumped suspended on a host call");
+        };
+        let call = progress.into_function_call().expect("suspended on host_call");
+        let progress = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
+        let (_, value) = progress.into_complete().expect("host_call resumed to completion");
+        assert_eq!(value, MontyObject::int(42));
+    }
 }
 
 /// The class definitions in `dataclasses_v13.bin`, kept for reference: the

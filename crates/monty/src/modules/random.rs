@@ -31,7 +31,7 @@ use crate::{
     bytecode::{CallResult, VM, unpack_exact},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::{PostConversionEffect, urandom_reply_error},
@@ -114,8 +114,8 @@ impl RandomFunctions {
     }
 }
 
-/// Creates the `random` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `random` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Random, vm.interns);
     for (name, function) in RANDOM_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Random(*function)), vm);
@@ -125,7 +125,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::Builtin(Builtins::Type(BuiltinType::Random)),
         vm,
     );
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a module-level call, which acts on the VM's own generator.
