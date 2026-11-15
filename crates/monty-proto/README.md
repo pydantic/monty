@@ -123,7 +123,9 @@ See `DEFAULT_MAX_DECODE_BYTES` in `src/frame.rs` for the accounting contract.
 The browser component uses separate decoded-value estimates for WIT arenas, with the same 1 GiB ceiling.
 Those checks do not account for all allocations made by the component ABI or JavaScript conversion.
 
-Invalid dates, timedeltas, exception names and other semantic values are rejected after parsing each protobuf node.
+Invalid dates, timedeltas and other semantic values are rejected after parsing each protobuf node.
+An exception name the receiver does not know decodes as `Exception`, with the name leading its message
+(`statistics.StatisticsError: ...`), so a peer from a newer release can add exception types without ending the session.
 The browser component validates semantic values while converting WIT arenas.
 A client receiving an invalid frame discards the worker with a protocol error.
 A worker receiving such a malformed request reports `RuntimeError("protocol violation: malformed request: ...")`
