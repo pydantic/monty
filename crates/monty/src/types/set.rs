@@ -20,7 +20,7 @@ use crate::{
     py_value::PyValue,
     types::{
         LazyHeapSet, Type,
-        hash_table::{Live, PyHashTable, TableCursor, TableEntry, TableProbe, TableSource, TableWalk},
+        hash_table::{CloneTableEntry, Live, PyHashTable, TableCursor, TableEntry, TableProbe, TableSource, TableWalk},
         list::repr_items_fmt,
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -64,6 +64,16 @@ impl TableEntry for SetEntry {
     }
 }
 
+impl CloneTableEntry for SetEntry {
+    #[inline]
+    fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
+        Self {
+            value: self.value.clone_with_heap(heap),
+            hash: self.hash,
+        }
+    }
+}
+
 /// Internal storage shared between Set and FrozenSet.
 ///
 /// A [`PyHashTable`] of elements: the same insertion-ordered table `dict` uses,
@@ -87,34 +97,10 @@ impl SetStorage {
         }
     }
 
-    /// Indexes entries that already carry their hashes, in the order given.
-    ///
-    /// Used to copy another set's contents before an operation that needs
-    /// mutable heap access, sidestepping the borrow conflict. The caller owns
-    /// the entries until they land here.
-    fn from_entry_vec(entries: Vec<SetEntry>) -> Self {
-        Self {
-            table: PyHashTable::from_entries(entries),
-        }
-    }
-
     /// The live entries, in insertion order, tombstones skipped.
     #[inline]
     fn live(&self) -> Live<'_, SetEntry> {
         self.table.live()
-    }
-
-    /// Clones entries with proper reference counting.
-    ///
-    /// The returned entries are owned: they implement [`DropWithContext`], so
-    /// a caller that may abandon them partway must hold them in a guard.
-    fn clone_entries(&self, heap: &impl ContainsHeap) -> Vec<SetEntry> {
-        self.live()
-            .map(|e| SetEntry {
-                value: e.value.clone_with_heap(heap),
-                hash: e.hash,
-            })
-            .collect()
     }
 
     /// Returns the number of elements in the set.
@@ -229,24 +215,64 @@ impl<'h> HeapReadMut<'h, SetStorage> {
     }
 }
 
-impl SetStorage {
-    /// Creates a deep clone with proper reference counting.
-    ///
-    /// Indexed from scratch rather than cloning `indices`, which `HashTable`
-    /// would reproduce at the source's bucket count — see [`Self::from_entry_vec`].
-    fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
-        Self::from_entry_vec(
-            self.live()
-                .map(|entry| SetEntry {
-                    value: entry.value.clone_with_heap(heap),
-                    hash: entry.hash,
-                })
-                .collect(),
-        )
-    }
-}
-
 impl<'h> HeapRead<'h, SetStorage> {
+    /// Copies live members with cached hashes, preflighting storage and polling the deadline.
+    #[inline]
+    fn copy(&self, vm: &mut VM<'h>) -> RunResult<SetStorage> {
+        Ok(SetStorage {
+            table: self.copy_table(vm)?,
+        })
+    }
+
+    /// Applies algebra to prepared storage; result wrapping belongs to set/frozenset callers.
+    fn algebra(&self, other: &Self, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<SetStorage> {
+        match op {
+            SetAlgebra::Union => self.union(other, vm),
+            SetAlgebra::Intersection => self.intersection(other, vm),
+            SetAlgebra::Difference => self.difference(other, vm),
+            SetAlgebra::SymmetricDifference => self.symmetric_difference(other, vm),
+        }
+    }
+
+    /// Operators accept sets and dictionary key/item views; other operands use reflected fallback.
+    fn algebra_from_operand(&self, other: &Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<Option<SetStorage>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
+        };
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+        self.algebra(&other_storage, op, vm).map(Some)
+    }
+
+    /// Method forms accept any iterable, whose owned snapshot must survive comparison callbacks.
+    fn algebra_from_value(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<SetStorage> {
+        let Set(other_storage) = Set::from_iterable(other, vm)?;
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+        self.algebra(&other_storage, op, vm)
+    }
+
+    /// Compares owned snapshots so equality callbacks cannot invalidate either operand's storage.
+    fn comparison_op(&self, other: &Value, op: SetComparison, vm: &mut VM<'h>) -> RunResult<bool> {
+        let other_storage = if let Some(storage) = copy_storage_from_set(other, vm)? {
+            storage
+        } else {
+            Set::from_iterable(other.clone_with_heap(vm), vm)?.0
+        };
+        defer_drop!(other_storage, vm);
+
+        let self_storage = self.copy(vm)?;
+        defer_drop!(self_storage, vm);
+        let self_read = vm.heap.protect(self_storage);
+        let other_read = vm.heap.protect(other_storage);
+
+        match op {
+            SetComparison::Subset => self_read.is_subset(&other_read, vm),
+            SetComparison::Superset => other_read.is_subset(&self_read, vm),
+            SetComparison::Disjoint => self_storage.is_disjoint(other_storage, vm),
+        }
+    }
+
     /// Checks if the set contains a value.
     pub fn contains(&self, value: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let hash = set_element_hash(value, vm)?;
@@ -512,7 +538,7 @@ impl SetStorage {
 impl<'h> HeapRead<'h, SetStorage> {
     /// Returns a new set containing elements in either set (union).
     fn union(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<SetStorage> {
-        let mut result_guard = DropGuard::new(self.get(vm.heap).clone_with_heap(vm), vm);
+        let mut result_guard = DropGuard::new(self.copy(vm)?, vm);
         {
             let (result, vm) = result_guard.as_parts_mut();
             let iter = other.iter(vm)?;
@@ -744,9 +770,9 @@ impl<'h> HeapReadMut<'h, Set> {
 
 impl<'h> HeapRead<'h, Set> {
     /// Returns a shallow copy of the set.
-    #[must_use]
-    pub fn copy(&self, vm: &VM<'h>) -> Set {
-        Set(self.get(vm.heap).0.clone_with_heap(vm.heap))
+    #[inline]
+    pub fn copy(&self, vm: &mut VM<'h>) -> RunResult<Set> {
+        self.storage().copy(vm).map(Set)
     }
 
     /// Borrows the inline storage for mutation-safe lookups and iteration.
@@ -796,14 +822,7 @@ impl Set {
         // only the iterator path below takes it back.
         let mut guard = DropGuard::new(iterable, vm);
         let (iterable, vm) = guard.as_parts();
-        let storage = match iterable {
-            Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Set(set) => Some(clone_storage_checked(&set.0, vm)?),
-                HeapData::FrozenSet(set) => Some(clone_storage_checked(&set.storage, vm)?),
-                _ => None,
-            },
-            _ => None,
-        };
+        let storage = copy_storage_from_set(iterable, vm)?;
         if let Some(storage) = storage {
             return Ok(Self(storage));
         }
@@ -830,16 +849,34 @@ impl Set {
     }
 }
 
-/// Copies a set's storage, charging its entries against the memory limit first.
-///
-/// The copy runs whole between two execution checkpoints, so without this only
-/// the allocator's hard ceiling would catch it. The index table it rebuilds is
-/// bounded by those entries, which is why charging them is enough.
-fn clone_storage_checked(storage: &SetStorage, vm: &VM<'_>) -> RunResult<SetStorage> {
-    vm.heap
-        .tracker
-        .check_allocation(storage.len().saturating_mul(mem::size_of::<SetEntry>()))?;
-    Ok(storage.clone_with_heap(vm.heap))
+/// Borrows set/frozenset storage without reader handles; the heap borrow excludes mutation.
+fn borrow_set_storage<'a>(value: &Value, heap: &'a impl ContainsHeap) -> Option<&'a SetStorage> {
+    let Value::Ref(id) = value else {
+        return None;
+    };
+    match heap.heap().get(*id) {
+        HeapData::Set(set) => Some(&set.0),
+        HeapData::FrozenSet(set) => Some(&set.storage),
+        _ => None,
+    }
+}
+
+/// Copies set/frozenset storage without iterating or calling member hash/equality methods.
+#[inline]
+fn copy_storage_from_set(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<SetStorage>> {
+    let Some(storage) = borrow_set_storage(value, vm.heap) else {
+        return Ok(None);
+    };
+    // An empty copy retains nothing, so it needs no typed reader handles.
+    if storage.is_empty() {
+        return Ok(Some(SetStorage::new()));
+    }
+
+    match value.read_heap(vm) {
+        Some(HeapReadOutput::Set(set)) => set.storage().copy(vm).map(Some),
+        Some(HeapReadOutput::FrozenSet(set)) => set.storage().copy(vm).map(Some),
+        _ => Ok(None),
+    }
 }
 
 impl<'h> HeapObjectRead<'h, Set> {
@@ -848,11 +885,6 @@ impl<'h> HeapObjectRead<'h, Set> {
     fn inplace_algebra(&self, other: &Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<bool> {
         let Some(id) = other.ref_id() else {
             return Ok(false);
-        };
-        let other_storage = match vm.heap.get(id) {
-            HeapData::Set(set) => &set.0,
-            HeapData::FrozenSet(set) => &set.storage,
-            _ => return Ok(false),
         };
 
         // CPython's self-operations bypass element equality; probing a copy could invoke it.
@@ -863,7 +895,9 @@ impl<'h> HeapObjectRead<'h, Set> {
             return Ok(true);
         }
 
-        let storage = clone_storage_checked(other_storage, vm)?;
+        let Some(storage) = copy_storage_from_set(other, vm)? else {
+            return Ok(false);
+        };
         defer_drop!(storage, vm);
         // Equality callbacks may clear the source and collect cycles; keep snapshot members rooted.
         let storage = vm.heap.protect(storage);
@@ -931,24 +965,29 @@ impl<'h> HeapReadMut<'h, Set> {
 
     /// Updates from a snapshotted set or an arbitrary iterable.
     fn hr_update(&self, other: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        // Try direct extraction from Set/FrozenSet
-        let entries_opt = {
-            match &other {
-                Value::Ref(id) => match vm.heap.get(*id) {
-                    HeapData::Set(s) => Some(s.0.clone_entries(vm.heap)),
-                    HeapData::FrozenSet(fs) => Some(fs.storage.clone_entries(vm.heap)),
-                    _ => None,
-                },
-                _ => None,
+        // Empty set updates retain nothing and run no callbacks.
+        if borrow_set_storage(&other, vm.heap).is_some_and(SetStorage::is_empty) {
+            other.drop_with(vm);
+            return Ok(());
+        }
+        let mut guard = DropGuard::new(other, vm);
+        let (other, vm) = guard.as_parts();
+        let entries = match other.read_heap(vm) {
+            Some(HeapReadOutput::Set(set)) => {
+                Some(set.storage().snapshot_entries(vm, CloneTableEntry::clone_with_heap)?)
             }
+            Some(HeapReadOutput::FrozenSet(set)) => {
+                Some(set.storage().snapshot_entries(vm, CloneTableEntry::clone_with_heap)?)
+            }
+            _ => None,
         };
-
-        if let Some(entries) = entries_opt {
+        let (other, vm) = guard.into_parts();
+        if let Some(entries) = entries {
             other.drop_with(vm);
             return self.extend_from_entries(entries, vm);
         }
 
-        // Fall back to iterable
+        // Arbitrary iterables must finish collecting before the destination is mutated.
         let mut temp_set = Set::from_iterable(other, vm)?;
         self.extend_from_entries(temp_set.0.table.take_entries(), vm)
     }
@@ -977,57 +1016,13 @@ impl<'h> HeapRead<'h, Set> {
         self.storage().contains(value, vm)
     }
 
-    /// Set algebra operations (union, intersection, difference, symmetric_difference)
-    /// via HeapRead. Snapshots the other operand once so only `self` is read
-    /// live, then calls the matching `SetStorage` method.
+    /// Wraps shared storage algebra as a mutable set; method forms accept any iterable.
+    // Keep result allocation out of native method dispatch's stack frame.
+    #[inline(never)]
     fn set_algebra(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<Value> {
-        let other_storage = Set::get_storage_from_value(other, vm)?;
-        defer_drop!(other_storage, vm);
-        let other_storage = vm.heap.protect(other_storage);
-
-        let result = match op {
-            SetAlgebra::Union => self.storage().union(&other_storage, vm)?,
-            SetAlgebra::Intersection => self.storage().intersection(&other_storage, vm)?,
-            SetAlgebra::Difference => self.storage().difference(&other_storage, vm)?,
-            SetAlgebra::SymmetricDifference => self.storage().symmetric_difference(&other_storage, vm)?,
-        };
-
+        let result = self.storage().algebra_from_value(other, op, vm)?;
         let heap_id = vm.heap.allocate(HeapData::Set(Set(result)));
         Ok(Value::Ref(heap_id))
-    }
-
-    /// Set comparison operations (issubset, issuperset, isdisjoint) via HeapRead.
-    /// Clones self's storage once for the comparison.
-    fn comparison_op(&self, other: &Value, op: SetComparison, vm: &mut VM<'h>) -> RunResult<bool> {
-        // Get other's storage
-        let entries_opt = match other {
-            Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Set(s) => Some(s.0.clone_entries(vm.heap)),
-                HeapData::FrozenSet(fs) => Some(fs.storage.clone_entries(vm.heap)),
-                _ => None,
-            },
-            _ => None,
-        };
-
-        let other_storage = if let Some(entries) = entries_opt {
-            SetStorage::from_entry_vec(entries)
-        } else {
-            let temp = Set::from_iterable(other.clone_with_heap(vm), vm)?;
-            temp.0
-        };
-        defer_drop!(other_storage, vm);
-
-        let self_storage = self.get(vm.heap).0.clone_with_heap(vm.heap);
-        defer_drop!(self_storage, vm);
-
-        let self_read = vm.heap.protect(self_storage);
-        let other_read = vm.heap.protect(other_storage);
-
-        match op {
-            SetComparison::Subset => self_read.is_subset(&other_read, vm),
-            SetComparison::Superset => other_read.is_subset(&self_read, vm),
-            SetComparison::Disjoint => self_storage.is_disjoint(other_storage, vm),
-        }
     }
 }
 
@@ -1055,8 +1050,8 @@ impl<C: ContainsHeap> DropWithContext<C> for Set {
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for SetStorage {
-    fn drop_with(mut self, heap: &mut C) {
-        self.table.take_entries().drop_with(heap);
+    fn drop_with(self, heap: &mut C) {
+        self.table.drop_with(heap);
     }
 }
 
@@ -1073,99 +1068,103 @@ impl<'h> HeapRead<'h, FrozenSet> {
         self.storage().contains(value, vm)
     }
 
-    /// Binary set operation via HeapRead. Creates a new frozenset from the result.
-    ///
-    /// Clones self's storage entries to release the heap borrow before calling
-    /// the set operations (which need `&mut VM` for hashing and equality checks).
-    /// Applies set sub when the other value is a set operand.
+    /// Wraps shared set subtraction as a frozenset.
     fn sub_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<FrozenSet>> {
-        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
-            return Ok(None);
-        };
-        defer_drop!(other_storage, vm);
-        let other_storage = vm.heap.protect(other_storage);
-        Ok(Some(FrozenSet::wrap(self.storage().difference(&other_storage, vm)?)))
+        self.storage()
+            .algebra_from_operand(other, SetAlgebra::Difference, vm)
+            .map(|storage| storage.map(FrozenSet::wrap))
     }
 
     /// Applies set and when the other value is a set operand.
     fn and_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<FrozenSet>> {
-        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
-            return Ok(None);
-        };
-        defer_drop!(other_storage, vm);
-        let other_storage = vm.heap.protect(other_storage);
-        Ok(Some(FrozenSet::wrap(self.storage().intersection(&other_storage, vm)?)))
+        self.storage()
+            .algebra_from_operand(other, SetAlgebra::Intersection, vm)
+            .map(|storage| storage.map(FrozenSet::wrap))
     }
 
     /// Applies set or when the other value is a set operand.
     fn or_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<FrozenSet>> {
-        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
-            return Ok(None);
-        };
-        defer_drop!(other_storage, vm);
-        let other_storage = vm.heap.protect(other_storage);
-        Ok(Some(FrozenSet::wrap(self.storage().union(&other_storage, vm)?)))
+        self.storage()
+            .algebra_from_operand(other, SetAlgebra::Union, vm)
+            .map(|storage| storage.map(FrozenSet::wrap))
     }
 
     /// Applies set xor when the other value is a set operand.
     fn xor_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<FrozenSet>> {
-        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
-            return Ok(None);
-        };
-        defer_drop!(other_storage, vm);
-        let other_storage = vm.heap.protect(other_storage);
-        Ok(Some(FrozenSet::wrap(
-            self.storage().symmetric_difference(&other_storage, vm)?,
-        )))
+        self.storage()
+            .algebra_from_operand(other, SetAlgebra::SymmetricDifference, vm)
+            .map(|storage| storage.map(FrozenSet::wrap))
     }
 
     /// Set algebra operations for frozenset via HeapRead.
+    // Keep result allocation out of native method dispatch's stack frame.
+    #[inline(never)]
     fn set_algebra(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<Value> {
-        let other_storage = Set::get_storage_from_value(other, vm)?;
-        defer_drop!(other_storage, vm);
-        let other_storage = vm.heap.protect(other_storage);
-
-        let result = match op {
-            SetAlgebra::Union => self.storage().union(&other_storage, vm)?,
-            SetAlgebra::Intersection => self.storage().intersection(&other_storage, vm)?,
-            SetAlgebra::Difference => self.storage().difference(&other_storage, vm)?,
-            SetAlgebra::SymmetricDifference => self.storage().symmetric_difference(&other_storage, vm)?,
-        };
-
+        let result = self.storage().algebra_from_value(other, op, vm)?;
         let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(result)));
         Ok(Value::Ref(heap_id))
     }
 
-    /// Set comparison operations for frozenset via HeapRead.
-    fn comparison_op(&self, other: &Value, op: SetComparison, vm: &mut VM<'h>) -> RunResult<bool> {
-        let entries_opt = match other {
-            Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Set(s) => Some(s.0.clone_entries(vm.heap)),
-                HeapData::FrozenSet(fs) => Some(fs.storage.clone_entries(vm.heap)),
-                _ => None,
-            },
-            _ => None,
+    /// Keeps allocating storage methods out of the identity-copy dispatch frame.
+    /// The out-of-line helper also prevents folding `.copy()` back into the general method match.
+    #[inline(never)]
+    fn call_storage_attr(
+        &self,
+        vm: &mut VM<'h>,
+        attr: &EitherStr,
+        method: Option<StaticStrings>,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        let value = match method {
+            Some(StaticStrings::Union) => {
+                let other = args.get_one_arg("frozenset.union", vm.heap)?;
+                self.set_algebra(other, SetAlgebra::Union, vm)
+            }
+            Some(StaticStrings::Intersection) => {
+                let other = args.get_one_arg("frozenset.intersection", vm.heap)?;
+                self.set_algebra(other, SetAlgebra::Intersection, vm)
+            }
+            Some(StaticStrings::Difference) => {
+                let other = args.get_one_arg("frozenset.difference", vm.heap)?;
+                self.set_algebra(other, SetAlgebra::Difference, vm)
+            }
+            Some(StaticStrings::SymmetricDifference) => {
+                let other = args.get_one_arg("frozenset.symmetric_difference", vm.heap)?;
+                self.set_algebra(other, SetAlgebra::SymmetricDifference, vm)
+            }
+            Some(StaticStrings::Issubset) => {
+                let other = args.get_one_arg("frozenset.issubset", vm.heap)?;
+                defer_drop!(other, vm);
+                Ok(Value::Bool(self.storage().comparison_op(
+                    other,
+                    SetComparison::Subset,
+                    vm,
+                )?))
+            }
+            Some(StaticStrings::Issuperset) => {
+                let other = args.get_one_arg("frozenset.issuperset", vm.heap)?;
+                defer_drop!(other, vm);
+                Ok(Value::Bool(self.storage().comparison_op(
+                    other,
+                    SetComparison::Superset,
+                    vm,
+                )?))
+            }
+            Some(StaticStrings::Isdisjoint) => {
+                let other = args.get_one_arg("frozenset.isdisjoint", vm.heap)?;
+                defer_drop!(other, vm);
+                Ok(Value::Bool(self.storage().comparison_op(
+                    other,
+                    SetComparison::Disjoint,
+                    vm,
+                )?))
+            }
+            _ => {
+                args.drop_with(vm);
+                return Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(vm.interns)));
+            }
         };
-
-        let other_storage = if let Some(entries) = entries_opt {
-            SetStorage::from_entry_vec(entries)
-        } else {
-            let temp = Set::from_iterable(other.clone_with_heap(vm), vm)?;
-            temp.0
-        };
-        defer_drop!(other_storage, vm);
-
-        let self_storage = self.get(vm.heap).storage.clone_with_heap(vm.heap);
-        defer_drop!(self_storage, vm);
-
-        let self_read = vm.heap.protect(self_storage);
-        let other_read = vm.heap.protect(other_storage);
-
-        match op {
-            SetComparison::Subset => self_read.is_subset(&other_read, vm),
-            SetComparison::Superset => other_read.is_subset(&self_read, vm),
-            SetComparison::Disjoint => self_storage.is_disjoint(other_storage, vm),
-        }
+        value.map(CallResult::Value)
     }
 
     fn storage(&self) -> BorrowedHeapRead<'_, 'h, SetStorage> {
@@ -1305,7 +1304,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
             }
             Some(StaticStrings::Copy) => {
                 args.check_zero_args("set.copy", vm.heap)?;
-                let copy = self.copy(vm);
+                let copy = self.copy(vm)?;
                 let heap_id = vm.heap.allocate(HeapData::Set(copy));
                 Ok(Value::Ref(heap_id))
             }
@@ -1333,17 +1332,29 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
             Some(StaticStrings::Issubset) => {
                 let other = args.get_one_arg("set.issubset", vm.heap)?;
                 defer_drop!(other, vm);
-                Ok(Value::Bool(self.comparison_op(other, SetComparison::Subset, vm)?))
+                Ok(Value::Bool(self.storage().comparison_op(
+                    other,
+                    SetComparison::Subset,
+                    vm,
+                )?))
             }
             Some(StaticStrings::Issuperset) => {
                 let other = args.get_one_arg("set.issuperset", vm.heap)?;
                 defer_drop!(other, vm);
-                Ok(Value::Bool(self.comparison_op(other, SetComparison::Superset, vm)?))
+                Ok(Value::Bool(self.storage().comparison_op(
+                    other,
+                    SetComparison::Superset,
+                    vm,
+                )?))
             }
             Some(StaticStrings::Isdisjoint) => {
                 let other = args.get_one_arg("set.isdisjoint", vm.heap)?;
                 defer_drop!(other, vm);
-                Ok(Value::Bool(self.comparison_op(other, SetComparison::Disjoint, vm)?))
+                Ok(Value::Bool(self.storage().comparison_op(
+                    other,
+                    SetComparison::Disjoint,
+                    vm,
+                )?))
             }
             _ => {
                 args.drop_with(vm);
@@ -1356,75 +1367,32 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
 
 /// Helper methods for set operations with arbitrary iterables.
 impl<'h> HeapRead<'h, Set> {
-    /// Implements operator-form set algebra, which only accepts set/frozenset operands.
-    ///
-    /// Unlike method forms such as `set.union(iterable)`, the binary operators
-    /// `& | ^ -` are intentionally strict and return `None` for operands outside
-    /// the set-like values CPython accepts here (`set`, `frozenset`,
-    /// `dict_keys`, and `dict_items`) so the VM can raise the standard
-    /// unsupported-operands `TypeError`.
-    /// Applies set sub when the other value is a set operand.
+    /// Wraps shared set subtraction as a mutable set.
     fn sub_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Set>> {
-        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
-            return Ok(None);
-        };
-        defer_drop!(other_storage, vm);
-        let other_storage = vm.heap.protect(other_storage);
-        Ok(Some(Set(self.storage().difference(&other_storage, vm)?)))
+        self.storage()
+            .algebra_from_operand(other, SetAlgebra::Difference, vm)
+            .map(|storage| storage.map(Set))
     }
 
     /// Applies set and when the other value is a set operand.
     fn and_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Set>> {
-        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
-            return Ok(None);
-        };
-        defer_drop!(other_storage, vm);
-        let other_storage = vm.heap.protect(other_storage);
-        Ok(Some(Set(self.storage().intersection(&other_storage, vm)?)))
+        self.storage()
+            .algebra_from_operand(other, SetAlgebra::Intersection, vm)
+            .map(|storage| storage.map(Set))
     }
 
     /// Applies set or when the other value is a set operand.
     fn or_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Set>> {
-        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
-            return Ok(None);
-        };
-        defer_drop!(other_storage, vm);
-        let other_storage = vm.heap.protect(other_storage);
-        Ok(Some(Set(self.storage().union(&other_storage, vm)?)))
+        self.storage()
+            .algebra_from_operand(other, SetAlgebra::Union, vm)
+            .map(|storage| storage.map(Set))
     }
 
     /// Applies set xor when the other value is a set operand.
     fn xor_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Set>> {
-        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
-            return Ok(None);
-        };
-        defer_drop!(other_storage, vm);
-        let other_storage = vm.heap.protect(other_storage);
-        Ok(Some(Set(self.storage().symmetric_difference(&other_storage, vm)?)))
-    }
-}
-
-impl Set {
-    /// Helper to get SetStorage from a Value (either directly or by conversion).
-    fn get_storage_from_value(value: Value, vm: &mut VM<'_>) -> RunResult<SetStorage> {
-        // Try to get entries from a Set/FrozenSet directly
-        let entries_opt = match &value {
-            Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Set(set) => Some(set.0.clone_entries(vm.heap)),
-                HeapData::FrozenSet(set) => Some(set.storage.clone_entries(vm.heap)),
-                _ => None,
-            },
-            _ => None,
-        };
-
-        if let Some(entries) = entries_opt {
-            value.drop_with(vm);
-            return Ok(SetStorage::from_entry_vec(entries));
-        }
-
-        // Convert iterable to set
-        let temp_set = Self::from_iterable(value, vm)?;
-        Ok(temp_set.0)
+        self.storage()
+            .algebra_from_operand(other, SetAlgebra::SymmetricDifference, vm)
+            .map(|storage| storage.map(Set))
     }
 }
 
@@ -1620,50 +1588,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let value = match attr.static_string(vm.interns) {
-            Some(StaticStrings::Copy) => {
-                args.check_zero_args("frozenset.copy", vm.heap)?;
-                let cloned = self.get(vm.heap).storage.clone_with_heap(vm.heap);
-                let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(cloned)));
-                Ok(Value::Ref(heap_id))
-            }
-            Some(StaticStrings::Union) => {
-                let other = args.get_one_arg("frozenset.union", vm.heap)?;
-                self.set_algebra(other, SetAlgebra::Union, vm)
-            }
-            Some(StaticStrings::Intersection) => {
-                let other = args.get_one_arg("frozenset.intersection", vm.heap)?;
-                self.set_algebra(other, SetAlgebra::Intersection, vm)
-            }
-            Some(StaticStrings::Difference) => {
-                let other = args.get_one_arg("frozenset.difference", vm.heap)?;
-                self.set_algebra(other, SetAlgebra::Difference, vm)
-            }
-            Some(StaticStrings::SymmetricDifference) => {
-                let other = args.get_one_arg("frozenset.symmetric_difference", vm.heap)?;
-                self.set_algebra(other, SetAlgebra::SymmetricDifference, vm)
-            }
-            Some(StaticStrings::Issubset) => {
-                let other = args.get_one_arg("frozenset.issubset", vm.heap)?;
-                defer_drop!(other, vm);
-                Ok(Value::Bool(self.comparison_op(other, SetComparison::Subset, vm)?))
-            }
-            Some(StaticStrings::Issuperset) => {
-                let other = args.get_one_arg("frozenset.issuperset", vm.heap)?;
-                defer_drop!(other, vm);
-                Ok(Value::Bool(self.comparison_op(other, SetComparison::Superset, vm)?))
-            }
-            Some(StaticStrings::Isdisjoint) => {
-                let other = args.get_one_arg("frozenset.isdisjoint", vm.heap)?;
-                defer_drop!(other, vm);
-                Ok(Value::Bool(self.comparison_op(other, SetComparison::Disjoint, vm)?))
-            }
-            _ => {
-                args.drop_with(vm);
-                return Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(vm.interns)));
-            }
-        };
-        value.map(CallResult::Value)
+        let method = attr.static_string(vm.interns);
+        if matches!(method, Some(StaticStrings::Copy)) {
+            args.check_zero_args("frozenset.copy", vm.heap)?;
+            // Identity copies preserve the cached hash and need no storage-method dispatch.
+            return Ok(CallResult::Value(self.clone_value(vm.heap)));
+        }
+
+        self.call_storage_attr(vm, attr, method, args)
     }
 }
 
@@ -1675,7 +1607,7 @@ impl HeapItem for FrozenSet {
 
 /// Returns temporary set storage only for operator-valid set operands.
 ///
-/// This is stricter than `Set::get_storage_from_value(...)`: operator forms
+/// This is stricter than `Set::from_iterable(...)`: operator forms
 /// only accept CPython's set-like operands (`set`, `frozenset`, `dict_keys`,
 /// and `dict_items`), while method forms accept any iterable.
 fn get_storage_from_set_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<SetStorage>> {
@@ -1684,12 +1616,8 @@ fn get_storage_from_set_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Opt
     };
 
     match vm.heap.read(*id) {
-        HeapReadOutput::Set(set) => Ok(Some(SetStorage::from_entry_vec(
-            set.get(vm.heap).0.clone_entries(vm.heap),
-        ))),
-        HeapReadOutput::FrozenSet(set) => Ok(Some(SetStorage::from_entry_vec(
-            set.get(vm.heap).storage.clone_entries(vm.heap),
-        ))),
+        HeapReadOutput::Set(set) => set.storage().copy(vm).map(Some),
+        HeapReadOutput::FrozenSet(set) => set.storage().copy(vm).map(Some),
         HeapReadOutput::DictKeysView(view) => {
             let Set(storage) = view.to_set(vm)?;
             Ok(Some(storage))

@@ -61,7 +61,7 @@ macro_rules! define_py_value {
         impl<'h> From<HeapReadOutput<'h>> for PyValue<'h> {
             fn from(value: HeapReadOutput<'h>) -> Self {
                 match value {
-                    HeapReadOutput::Str(value) => Self::Str(PyStr::Heap(value)),
+                    HeapReadOutput::Str(heap_string) => Self::Str(PyStr::Heap(heap_string)),
                     HeapReadOutput::Bytes(value) => Self::Bytes(PyBytes::Heap(value)),
                     HeapReadOutput::LongInt(value) => Self::Int(PyInt::Heap(value)),
                     $(HeapReadOutput::$variant(value) => Self::$variant(value),)*
@@ -782,6 +782,22 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                     None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
                 }
             }
+            Self::Bool(value) => {
+                match attr.static_string(vm.interns) {
+                    Some(StaticStrings::BitLength) => {
+                        args.check_zero_args("int.bit_length", vm.heap)?;
+                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
+                    }
+                    Some(StaticStrings::BitCount) => {
+                        args.check_zero_args("int.bit_count", vm.heap)?;
+                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
+                    }
+                    _ => {
+                        args.drop_with(vm);
+                        Err(ExcType::attribute_error("bool", attr.as_str(vm.interns)))
+                    }
+                }
+            }
             _ => {
                 args.drop_with(vm);
                 Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
@@ -855,7 +871,11 @@ mod tests {
         intern::{BytesId, CompileInterns, LongIntId, StringId},
         modules::math::MathFunctions,
         run::Executor,
-        types::{Bytes, List, inline_str::InlineStr, property::ZeroArgOsProperty, str::allocate_string_on_heap},
+        types::{
+            Bytes, List,
+            property::ZeroArgOsProperty,
+            str::{InlineStr, allocate_string_on_heap},
+        },
     };
 
     struct TestIds {

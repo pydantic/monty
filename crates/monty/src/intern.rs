@@ -700,6 +700,10 @@ pub enum StaticStrings {
     Binascii,
     /// `random.binomialvariate()` function.
     Binomialvariate,
+    /// `int.bit_count()` method.
+    BitCount,
+    /// `int.bit_length()` method.
+    BitLength,
     /// `bisect` in the bisect module.
     Bisect,
     /// `bisect_left` in the bisect module.
@@ -1007,6 +1011,9 @@ pub enum StaticStrings {
     Dump,
     /// `json.dumps()` function.
     Dumps,
+    /// `__all__` — the names `from m import *` binds from a module.
+    #[strum(serialize = "__all__")]
+    DunderAll,
     /// `__annotate__` — a function's PEP 649 annotate function, and the key a
     /// namespace handed to `type()` may store a class's under.
     #[strum(serialize = "__annotate__")]
@@ -1460,6 +1467,8 @@ pub enum StaticStrings {
     Indent,
     /// `index()` method, shared by `str`, `bytes`, `list`, `tuple` and `deque`.
     Index,
+    /// `slice.indices()` method.
+    Indices,
     /// `decimal.Inexact` signal.
     #[strum(serialize = "Inexact")]
     Inexact,
@@ -3081,6 +3090,24 @@ impl Interns {
     pub(crate) fn intern_static(&self, value: StaticStrings) -> StringId {
         assert!(!self.compiling.get(), "runtime interning during compilation");
         intern_static(&self.static_string_ids, &self.strings, value)
+    }
+
+    /// Interns a name only known at runtime, reusing its ID if already interned.
+    ///
+    /// For `from m import *` binding a module global slot, which code compiled
+    /// later must find by this same ID. Existing string borrows stay valid.
+    pub(crate) fn intern_runtime(&self, text: &str) -> StringId {
+        assert!(!self.compiling.get(), "runtime interning during compilation");
+        if let Some(id) = self.get_string_id_by_name(text) {
+            id
+        } else if let Ok(value) = text.parse::<StaticStrings>() {
+            intern_static(&self.static_string_ids, &self.strings, value)
+        } else {
+            let id = next_string_id(self.strings.len());
+            self.strings.push(InternedString::owned(text.to_owned()));
+            self.string_id_by_name.borrow_mut().insert(text.to_owned(), id);
+            id
+        }
     }
 
     /// Looks up a Python string; filename identities use `get_filename` instead.
