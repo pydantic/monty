@@ -30,9 +30,17 @@ export async function instantiateWorker(
   return (await instantiateComponent(modules)).worker.dispatch
 }
 
-/** Instantiates an isolated component, exposing every export including `dispatchFrame`. */
-export async function instantiateComponent(modules: ComponentModules): Promise<ComponentExports> {
-  return instantiate((path) => getModule(modules, path), wasiImports())
+/**
+ * Instantiates an isolated component, exposing every export including `dispatchFrame`.
+ *
+ * `bindings` defaults to this package's Jco output; a host that builds its own
+ * component (with other cargo features) passes that build's `instantiate`.
+ */
+export async function instantiateComponent(
+  modules: ComponentModules,
+  bindings: typeof instantiate = instantiate,
+): Promise<ComponentExports> {
+  return bindings((path) => getModule(modules, path), wasiImports())
 }
 
 /** Creates isolated WASI imports with no host filesystem, environment, or network. */

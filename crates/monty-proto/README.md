@@ -160,6 +160,9 @@ The `worker` cargo feature (off by default) adds the `worker` module: the
 transport-agnostic worker state machine, shared by the native `monty subprocess`
 worker and the wasm worker. It links the `monty` interpreter, so only
 worker-side crates enable it.
+The `type-checking` feature adds type checking of fed snippets, linking ty.
+A worker built without it refuses a `Configure` with `type_check` set and a `Load` of a type-checked dump.
+`monty-runtime` always enables it; `monty-wasm-runtime` enables it by default.
 
 Error and typing-error replies carry optional `WorkerEvent.feed_suspended` state from the worker.
 It distinguishes a rejected request that preserves a suspension from an execution error that ends the feed.

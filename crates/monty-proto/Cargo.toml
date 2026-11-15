@@ -56,7 +56,10 @@ grpc = ["dep:tonic", "dep:bytes"]
 # the interpreter. Off by default so host-side consumers (monty-pool, the
 # bindings) never link the interpreter itself.
 # `tzdb-bundled` so every worker resolves zone names; native binaries add `tzdb` for the OS copy.
-worker = ["dep:monty", "dep:monty-type-checking", "monty-types/tzdb-bundled"]
+worker = ["dep:monty", "monty-types/tzdb-bundled"]
+# Lets the `worker` type check fed snippets. Without it the worker refuses
+# sessions configured with `type_check`, and links none of ty's ~13 MiB of code.
+type-checking = ["worker", "dep:monty-type-checking"]
 
 [[bin]]
 name = "generate-proto"
@@ -64,10 +67,11 @@ path = "src/bin/generate.rs"
 required-features = ["generate"]
 
 # The `Worker` state-machine tests drive `worker::dispatch_frame`, which only
-# exists with the `worker` feature; run with `cargo test --features worker`.
+# exists with the `worker` feature, and include type-checked sessions; run with
+# `cargo test --features type-checking`.
 [[test]]
 name = "dispatch"
-required-features = ["worker"]
+required-features = ["type-checking"]
 
 [dev-dependencies]
 allocation-counter = "0.8"

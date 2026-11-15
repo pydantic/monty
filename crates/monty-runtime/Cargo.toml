@@ -38,7 +38,7 @@ logfire = { workspace = true, features = ["export-http-protobuf"], optional = tr
 monty = { workspace = true }
 monty-fs = { workspace = true }
 monty-alloc = { workspace = true, features = ["exit-code"] }
-monty-proto = { workspace = true, features = ["worker"] }
+monty-proto = { workspace = true, features = ["worker", "type-checking"] }
 monty-type-checking = { workspace = true }
 monty-types = { workspace = true, features = ["tzdb"] }
 rustyline = { version = "19", optional = true }

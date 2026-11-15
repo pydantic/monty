@@ -177,7 +177,8 @@ subprocesses:
     (prost's enum accessors require infallible `push`).
     `monty-proto` depends only on `monty-types` by default; its `worker` feature
     (enabled by `monty-runtime`/`monty-wasm-runtime`) pulls in the full `monty`
-    interpreter for the `worker` state machine.
+    interpreter for the `worker` state machine, and `type-checking` adds ty (over half the wasm module's code).
+    Without it the worker refuses type-checked sessions; `monty-wasm-runtime --no-default-features` builds that way.
     The remote transport is gRPC for `http(s)://` URLs and WebSocket for `ws(s)://` ones (`monty-pool`'s
     `remote/{grpc,websocket}.rs`, sharing `RemoteWorker`); the WebSocket refusal and close-code contract is in the
     `monty-proto` README, with each `monty_proto::Cause` pinned to a close code.

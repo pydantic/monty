@@ -22,5 +22,11 @@ monty-proto = { workspace = true, features = ["worker"] }
 monty-types = { workspace = true, features = ["tzdb-bundled"] }
 wit-bindgen = "0.63"
 
+[features]
+default = ["type-checking"]
+# Type checking links ty, over half the module's code; a size-sensitive host
+# such as Cloudflare Workers builds with `--no-default-features`.
+type-checking = ["monty-proto/type-checking"]
+
 [lints]
 workspace = true
