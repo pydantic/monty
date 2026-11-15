@@ -90,7 +90,7 @@
     "@playwright/test": "^1.49.1",
     "@tybys/wasm-util": "^0.10.0",
     "@types/node": "^25.0.9",
-    "@vitest/browser": "^3.2.4",
+    "@vitest/browser": "^5.1.0",
     "npm-run-all2": "^8.0.4",
     "oxlint": "^1.14.0",
     "prettier": "^3.6.2",
