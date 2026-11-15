@@ -433,12 +433,12 @@ async fn an_unparsable_url_fails_the_pool() {
     assert_eq!(msg, "not a url: invalid URI");
 }
 
-/// Schemes are read without regard to case, `ws`/`wss` as `http`/`https`,
-/// and anything else is refused when the pool is made: tonic would dial an
-/// unknown scheme in plaintext, with the stream's metadata on it.
+/// Schemes are read without regard to case, and one naming no transport is
+/// refused when the pool is made: tonic would dial an unknown scheme in
+/// plaintext, with the stream's metadata on it.
 #[tokio::test]
 async fn url_schemes_are_normalised_and_unknown_ones_refused() {
-    for scheme in ["HTTP://", "WS://", "ws://"] {
+    for scheme in ["HTTP://", "Http://"] {
         let mock = MockServer::start().await;
         let url = mock.url().replace("http://", scheme);
         let server = thread::spawn(move || serve_mock_worker(&mock));
@@ -460,7 +460,7 @@ async fn url_schemes_are_normalised_and_unknown_ones_refused() {
         let scheme = url.split_once("://").unwrap().0;
         assert_eq!(
             msg,
-            format!("{url}: unsupported URL scheme {scheme:?}, expected http or https")
+            format!("{url}: unsupported URL scheme {scheme:?}, expected http, https, ws or wss")
         );
     }
 }
@@ -482,7 +482,7 @@ async fn url_paths_are_refused() {
         assert_eq!(
             msg,
             format!(
-                "{url}: a URL path, query or fragment is not supported; use only the scheme and host, with an optional port"
+                "{url}: a URL path, query or fragment is not supported for gRPC; use only the scheme and host, with an optional port"
             )
         );
     }

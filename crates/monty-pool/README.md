@@ -290,14 +290,14 @@ input so adapters that do not support metrics continue to work.
 - **Subprocess** (`PoolConfig::subprocess`) — spawn local `monty subprocess` workers over
   framed stdio. These are the poolable workers: prewarmed, reused across checkouts, and
   replaced on crash.
-- **Remote** (`PoolConfig::remote`) — reach a remote worker through a relay over gRPC at an
-  `http://`/`https://` URL (`ws://`/`wss://` are read as those two). The pool holds one
+- **Remote** (`PoolConfig::remote`) — reach a remote worker through a relay, over gRPC at an
+  `http://`/`https://` URL or WebSocket at a `ws://`/`wss://` one (see below). For gRPC the pool holds one
   HTTP/2 connection, dialed lazily and reconnected by tonic when it drops, and each
   checkout opens one `MontySession.Session` stream on it. An `https://` server's certificate
-  is verified against the operating system's trust store, not a root list bundled into the
+  (and a `wss://` one's) is verified against the operating system's trust store, not a root list bundled into the
   binary: the Security framework on macOS and CryptoAPI on Windows, which also apply the OS's
   revocation data, and the distro's CA bundle on Linux, where the chain is checked without
-  revocation; a Linux host with no CA bundle cannot make an `https://` pool. A stream the server never took
+  revocation; a Linux host with no CA bundle cannot make an `https://` or `wss://` pool. A stream the server never took
   — it sent `GOAWAY` as it drained, refused the stream, or closed the connection before
   the stream was sent — is opened again, up to twice, within the same `request_timeout`. These workers are single-use:
   a fresh stream per checkout, never prewarmed or returned to the pool. `finish` half-closes
@@ -320,10 +320,19 @@ input so adapters that do not support metrics continue to work.
   gRPC server's default policy permits; `None` for none) adds an HTTP/2 `PING` on the first
   hop while streams are open. `PoolConfig::request_timeout` (30 s when unset) also bounds
   opening a stream, from a cold dial through the server's admission.
+- **WebSocket** (`ws://`/`wss://` URLs to `PoolConfig::remote`) — the same single-use workers, one connection
+  per checkout. The URL is dialed as given, path and query included, so a relay may route on them; the
+  checkout's `metadata` and the user agent become upgrade headers. Each protocol message is one binary
+  message. `finish` sends a 1000 Close frame and its slot waits for the server's echo just as for a gRPC
+  stream. The server's in-band `Ping` and WebSocket ping frames are both answered while idle.
+  `keep_alive` does not apply. A refused upgrade and a Close frame map onto the same `RemoteDisconnect`
+  fields as gRPC statuses (see the `monty-proto` README for the codes), so the errors below read the same.
 
-A stream ended mid-session reports `PoolError::Disconnected`.
+A session ended mid-checkout reports `PoolError::Disconnected`.
 Its optional `remote` details retain the first recorded failure: the gRPC status the server ended the stream with
-(code, message, and the `RemoteCause` it named in its `monty-cause` trailer), or the transport error.
+(code, message, and the `RemoteCause` it named in its `monty-cause` trailer), the WebSocket Close frame mapped onto
+one (a `RemoteCause`'s own close code names it), or the transport error.
+Only the read side records it, so a send racing the server's close never shadows the reason the server gave.
 A server refusing a stream before admitting it — at capacity, or rejecting the caller for missing credentials
 (`unauthenticated`) or for a valid credential that does not allow the requested project or profile
 (`permission_denied`) — fails the checkout with
@@ -358,12 +367,12 @@ other consumers or it may issue a new session.
 A remote without persistence refuses `Checkout::dump` and `Checkout::restore` with `PoolError::Runtime`, and the
 session carries on.
 With `PoolConfig::auto_resume` (the default), a shutdown answering a named session's request is not returned: the
-checkout opens a new stream, loads what the `ShutdownDump` named into a new session, re-sends the request and adopts the new
+checkout opens a new session, loads what the `ShutdownDump` named into a new session, re-sends the request and adopts the new
 session's ID.
 The session's host-counted suspension and sleep totals carry over, so a shutdown grants no extra allowance.
 It returns the original `PoolError::Shutdown` if the shutdown named nothing to load, if the new connection fails, or
 if the new session is not in the state the old one was in at the shutdown.
-The new stream reuses the checkout's original request metadata, so a short-lived token in it can make the resume fail.
+The new session reuses the checkout's original request metadata, so a short-lived token in it can make the resume fail.
 A bare disconnect is never resumed, since the request may have run.
 
 Before type checking a feed, `import_stubs` requests host module stubs once per module per session.

@@ -178,7 +178,10 @@ subprocesses:
     `monty-proto` depends only on `monty-types` by default; its `worker` feature
     (enabled by `monty-runtime`/`monty-wasm-runtime`) pulls in the full `monty`
     interpreter for the `worker` state machine.
-    Its `grpc` feature (`monty_proto::grpc`, enabled by `monty-pool`) holds the remote transport's vocabulary:
+    The remote transport is gRPC for `http(s)://` URLs and WebSocket for `ws(s)://` ones (`monty-pool`'s
+    `remote/{grpc,websocket}.rs`, sharing `RemoteWorker`); the WebSocket refusal and close-code contract is in the
+    `monty-proto` README, with each `monty_proto::Cause` pinned to a close code.
+    Its `grpc` feature (`monty_proto::grpc`, enabled by `monty-pool`) holds the gRPC transport's vocabulary:
     the `MontySession.Session` path, the opaque-bytes codec, and `Cause`, the `monty-cause` trailer a server ends a
     stream with. The remote transport is one HTTP/2 connection per pool and one bidirectional stream per session,
     carrying the same messages with no length prefix; a server sends its response headers as soon as it admits a
