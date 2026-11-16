@@ -793,6 +793,8 @@ pub enum StaticStrings {
     /// The class parameter of the decorator `@dataclass(...)` returns, which
     /// CPython spells `def wrap(cls)` and so accepts by keyword.
     Cls,
+    /// `code` keyword of `PydanticUserError()`.
+    Code,
     /// `gc.collect()` function.
     Collect,
     /// Module name for `import collections`.
@@ -1832,6 +1834,8 @@ pub enum StaticStrings {
     MedianLow,
     /// `memo` parameter of `copy.deepcopy()`.
     Memo,
+    /// `message` parameter of `PydanticUserError()`.
+    Message,
     /// `field(metadata=...)`.
     Metadata,
     /// `method` parameter of `statistics.quantiles()`.

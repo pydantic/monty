@@ -10,6 +10,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    bytecode::VM,
+    exception_private::RunResult,
     heap::{ContainsHeap, DropWithContext, HeapId},
     intern::StringId,
     value::Value,
@@ -128,16 +130,25 @@ impl Arena {
     }
 
     /// Appends `validator`, returning its id.
-    pub(crate) fn push(&mut self, validator: Validator) -> ValidatorId {
-        let id = ValidatorId(u32::try_from(self.validators.len()).expect("arena ids fit u32"));
+    ///
+    /// The growth is preflighted against the memory limit, since a hint whose
+    /// generics name one alias twice (`tuple[h, h]`) builds exponentially many
+    /// validators; a refused push releases `validator`.
+    pub(crate) fn push(&mut self, validator: Validator, vm: &mut VM<'_>) -> RunResult<ValidatorId> {
+        let (len, capacity) = (self.validators.len(), self.validators.capacity());
+        if let Err(err) = vm.heap.tracker.check_growth(len, capacity, size_of::<Validator>()) {
+            validator.drop_with(vm);
+            return Err(err.into());
+        }
+        let id = ValidatorId(u32::try_from(len).expect("arena ids fit u32"));
         self.validators.push(validator);
-        id
+        Ok(id)
     }
 
     /// Reserves a slot a recursive type can refer back to while its fields are
     /// walked; [`fill`](Self::fill) replaces the placeholder.
-    pub(crate) fn reserve(&mut self) -> ValidatorId {
-        self.push(Validator::Any)
+    pub(crate) fn reserve(&mut self, vm: &mut VM<'_>) -> RunResult<ValidatorId> {
+        self.push(Validator::Any, vm)
     }
 
     pub(crate) fn fill(&mut self, id: ValidatorId, validator: Validator) {
@@ -202,9 +213,85 @@ impl Arena {
             validator.for_each_value_mut(&mut |value| value.py_dec_ref_ids(stack));
         }
     }
+
+    /// A copy owning its own references to the same values, for `copy.copy`
+    /// of a `TypeAdapter`: each adapter must own its arena outright.
+    pub(crate) fn clone_with_heap(&self, vm: &VM<'_>) -> RunResult<Self> {
+        vm.heap
+            .tracker
+            .check_allocation(self.validators.len().saturating_mul(size_of::<Validator>()))?;
+        Ok(Self {
+            validators: self
+                .validators
+                .iter()
+                .map(|validator| validator.clone_with_heap(vm))
+                .collect(),
+        })
+    }
 }
 
 impl Validator {
+    /// A copy holding new references to the values this validator owns.
+    fn clone_with_heap(&self, vm: &VM<'_>) -> Self {
+        let clone = |value: &Value| value.clone_with_heap(vm.heap);
+        match self {
+            Self::Any => Self::Any,
+            Self::None => Self::None,
+            Self::Bool => Self::Bool,
+            Self::Int => Self::Int,
+            Self::Float => Self::Float,
+            Self::Str => Self::Str,
+            Self::Bytes => Self::Bytes,
+            Self::DateTime => Self::DateTime,
+            Self::Date => Self::Date,
+            Self::Time => Self::Time,
+            Self::TimeDelta => Self::TimeDelta,
+            Self::Decimal => Self::Decimal,
+            Self::List(item) => Self::List(*item),
+            Self::Set(item) => Self::Set(*item),
+            Self::FrozenSet(item) => Self::FrozenSet(*item),
+            Self::Tuple { items, variadic } => Self::Tuple {
+                items: items.clone(),
+                variadic: *variadic,
+            },
+            Self::Dict { key, value } => Self::Dict {
+                key: *key,
+                value: *value,
+            },
+            Self::Union(choices) => Self::Union(choices.clone()),
+            Self::Nullable(inner) => Self::Nullable(*inner),
+            Self::Literal(literal) => Self::Literal(LiteralValidator {
+                choices: literal.choices.iter().map(clone).collect(),
+                expected: literal.expected.clone(),
+                name: literal.name.clone(),
+            }),
+            Self::Dataclass(dataclass) => Self::Dataclass(DataclassValidator {
+                class: clone(&dataclass.class),
+                name: dataclass.name.clone(),
+                fields: dataclass
+                    .fields
+                    .iter()
+                    .map(|field| FieldValidator {
+                        name: field.name,
+                        validator: field.validator,
+                        default: match &field.default {
+                            FieldDefault::Required => FieldDefault::Required,
+                            FieldDefault::Value(value) => FieldDefault::Value(clone(value)),
+                            FieldDefault::Factory(factory) => FieldDefault::Factory(clone(factory)),
+                        },
+                    })
+                    .collect(),
+                post_init: dataclass.post_init,
+            }),
+            Self::NamedTuple(named_tuple) => Self::NamedTuple(NamedTupleValidator {
+                class: clone(&named_tuple.class),
+                name: named_tuple.name.clone(),
+                field_names: named_tuple.field_names.clone(),
+                defaults: named_tuple.defaults,
+            }),
+        }
+    }
+
     /// Visits every `Value` the validator owns, mutably.
     fn for_each_value_mut(&mut self, visit: &mut impl FnMut(&mut Value)) {
         match self {

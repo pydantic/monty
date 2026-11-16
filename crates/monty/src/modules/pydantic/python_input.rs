@@ -19,13 +19,14 @@ use num_traits::ToPrimitive;
 use crate::{
     args::ArgValues,
     bytecode::VM,
+    exception_private::ExcType,
     heap::{ContainsHeap, DropWithContext, HeapData, HeapId},
     modules::pydantic::{
         catalogue::ErrorType,
         coerce::{
-            bigint_value, bytes_as_date, bytes_as_timedelta, datetime_value, float_as_datetime, float_as_duration,
-            float_as_int, float_as_time, int_as_bool, int_as_datetime, int_as_duration, int_as_time, parse_datetime,
-            parse_time, str_as_bool, str_as_float, str_as_int, time_value,
+            bigint_value, bytes_as_date, bytes_as_timedelta, date_at_midnight, datetime_value, float_as_datetime,
+            float_as_duration, float_as_int, float_as_time, int_as_bool, int_as_datetime, int_as_duration, int_as_time,
+            parse_datetime, parse_time, str_as_bool, str_as_float, str_as_int, time_value,
         },
         errors::{ValError, ValResult},
         input::{ArgumentsShape, Input, InputKind, Mapping, Match, SeqKind, Sequence},
@@ -33,8 +34,7 @@ use crate::{
     types::{
         allocate_string,
         bytes::allocate_bytes,
-        date as date_type, datetime as datetime_type,
-        decimal::{self as decimal_type, py as py_decimal},
+        decimal::{self as decimal_type, context::Rounding, py as py_decimal},
         hash_table::{TableCursor, TableScan},
     },
     value::Value,
@@ -107,19 +107,22 @@ impl PyInput {
         }
     }
 
-    /// A number as `f64` when the input is an int, bool or float.
+    /// The input as `float(input)` gives it, as pydantic-core's `extract::<f64>`
+    /// reads it: an int, bool, float or `Decimal`; `None` for any other type, an
+    /// int too large for a float, or a signaling NaN.
     fn as_f64(&self, vm: &VM<'_>) -> Option<f64> {
-        match &self.value {
-            Value::Int(i) => Some(*i as f64),
-            Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
-            Value::Float(f) => Some(*f),
+        let big_int = match &self.value {
+            Value::Int(i) => return Some(*i as f64),
+            Value::Bool(b) => return Some(if *b { 1.0 } else { 0.0 }),
+            Value::Float(f) => return Some(*f),
             Value::InternLongInt(id) => vm.interns.get_long_int(*id).to_f64(),
             Value::Ref(id) => match vm.heap.get(*id) {
                 HeapData::LongInt(li) => li.inner().to_f64(),
-                _ => None,
+                _ => return py_decimal::as_decimal(&self.value, vm)?.to_f64().ok(),
             },
             _ => None,
-        }
+        };
+        big_int.filter(|float| float.is_finite())
     }
 
     /// The bytes of a `str` or `bytes` input, which the temporal parsers read.
@@ -168,8 +171,8 @@ impl Input for PyInput {
                     Err(err) => self.error(err, vm),
                 };
             }
-            // A whole float is read as its integer; a fraction is not a boolean at all.
-            if let Value::Float(f) = self.value
+            // A whole number (float, `Decimal`) is read as its integer; a fraction is not a boolean at all.
+            if let Some(f) = self.as_f64(vm)
                 && let Ok(int) = float_as_int(f)
             {
                 return match int_as_bool(int) {
@@ -212,7 +215,8 @@ impl Input for PyInput {
                 return if !decimal.is_finite() {
                     self.error(ErrorType::FiniteNumber {}, vm)
                 } else if decimal.is_integer() {
-                    let int = decimal.int();
+                    // `int(decimal)`, which applies the sign and exponent (`Decimal('-1E+3')`).
+                    let int = decimal.to_integer(Rounding::Down, &vm.heap.tracker)?;
                     Ok(Match::lax(bigint_value(int, vm.heap)))
                 } else {
                     self.error(ErrorType::IntFromFloat {}, vm)
@@ -285,15 +289,10 @@ impl Input for PyInput {
             if let Some(int) = self.as_int(vm) {
                 return self.lax(int_as_datetime(int, 0, vm), vm);
             }
-            if let Value::Float(f) = self.value {
+            if let Some(f) = self.as_f64(vm) {
                 return self.lax(float_as_datetime(f, vm), vm);
             }
-            if let Some(HeapData::Date(date)) = self.heap_data(vm) {
-                let (year, month, day) = date_type::to_ymd(*date);
-                let (month, day) = (i32::try_from(month), i32::try_from(day));
-                let (month, day) = (month.expect("month is 1..=12"), day.expect("day is 1..=31"));
-                let value = datetime_type::allocate_parsed(year, month, day, 0, 0, 0, 0, None, vm.heap)
-                    .expect("a date's components are in range");
+            if let Some(value) = date_at_midnight(&self.value, vm) {
                 return Ok(Match::lax(value));
             }
         }
@@ -329,7 +328,7 @@ impl Input for PyInput {
             if let Some(int) = self.as_int(vm) {
                 return self.lax(int_as_time(int, 0, vm), vm);
             }
-            if let Value::Float(f) = self.value {
+            if let Some(f) = self.as_f64(vm) {
                 return self.lax(float_as_time(f, vm), vm);
             }
         }
@@ -342,14 +341,14 @@ impl Input for PyInput {
         }
         if !strict {
             if let Some(bytes) = self.temporal_bytes(vm) {
-                let parsed = bytes_as_timedelta(bytes, vm.heap);
+                let parsed = bytes_as_timedelta(bytes, vm.heap)?;
                 return self.lax(parsed, vm);
             }
             if let Some(int) = self.as_int(vm) {
-                return self.lax(int_as_duration(int, vm.heap), vm);
+                return self.lax(int_as_duration(int, vm.heap)?, vm);
             }
-            if let Value::Float(f) = self.value {
-                return self.lax(float_as_duration(f, vm.heap), vm);
+            if let Some(f) = self.as_f64(vm) {
+                return self.lax(float_as_duration(f, vm.heap)?, vm);
             }
         }
         self.error(ErrorType::TimeDeltaType {}, vm)
@@ -378,13 +377,19 @@ impl Input for PyInput {
                 Value::InternLongInt(id) => Some(decimal_type::parse::from_int(vm.interns.get_long_int(*id)).map(Some)),
                 Value::Ref(id) => match vm.heap.get(*id) {
                     HeapData::LongInt(li) => Some(decimal_type::parse::from_int(li.inner()).map(Some)),
-                    // `Decimal((sign, digits, exponent))`, through the constructor's own checks.
+                    // `Decimal((sign, digits, exponent))`, through the constructor's own checks:
+                    // as in pydantic, a `TypeError` or `ValueError` is `decimal_type`.
                     HeapData::Tuple(tuple) if tuple.as_slice().len() == 3 => {
                         let arg = self.clone_value(vm);
-                        Some(match py_decimal::init(vm, ArgValues::One(arg)) {
-                            Ok(value) => return Ok(Match::lax(value)),
-                            Err(_) => Ok(None),
-                        })
+                        return match py_decimal::init(vm, ArgValues::One(arg)) {
+                            Ok(value) => Ok(Match::lax(value)),
+                            Err(err)
+                                if err.is_catchable(ExcType::TypeError) || err.is_catchable(ExcType::ValueError) =>
+                            {
+                                self.error(ErrorType::DecimalType {}, vm)
+                            }
+                            Err(err) => Err(ValError::Run(err)),
+                        };
                     }
                     _ => None,
                 },
@@ -400,16 +405,25 @@ impl Input for PyInput {
     }
 
     fn validate_sequence(&mut self, kind: SeqKind, strict: bool, vm: &mut VM<'_>) -> ValResult<Match<PySequence>> {
+        // `actual` is the kind the input exactly is; a deque is no kind, accepted only lax.
         let (actual, seq) = match self.heap_data(vm) {
-            Some(HeapData::List(list)) => (SeqKind::List, PySequence::indexed(self, list.as_slice().len(), vm)),
-            Some(HeapData::Tuple(tuple)) => (SeqKind::Tuple, PySequence::indexed(self, tuple.as_slice().len(), vm)),
-            Some(HeapData::NamedTuple(tuple)) => (SeqKind::Tuple, PySequence::indexed(self, tuple.items().len(), vm)),
-            Some(HeapData::Set(set)) => (SeqKind::Set, PySequence::items(set.iter(), vm)),
-            Some(HeapData::FrozenSet(set)) => (SeqKind::FrozenSet, PySequence::items(set.storage().iter(), vm)),
-            Some(HeapData::Deque(deque)) => (SeqKind::List, PySequence::items(deque.iter(), vm)),
+            Some(HeapData::List(list)) => (
+                Some(SeqKind::List),
+                PySequence::indexed(self, list.as_slice().len(), vm),
+            ),
+            Some(HeapData::Tuple(tuple)) => (
+                Some(SeqKind::Tuple),
+                PySequence::indexed(self, tuple.as_slice().len(), vm),
+            ),
+            Some(HeapData::NamedTuple(tuple)) => {
+                (Some(SeqKind::Tuple), PySequence::indexed(self, tuple.items().len(), vm))
+            }
+            Some(HeapData::Set(set)) => (Some(SeqKind::Set), PySequence::items(set.iter(), vm)),
+            Some(HeapData::FrozenSet(set)) => (Some(SeqKind::FrozenSet), PySequence::items(set.storage().iter(), vm)),
+            Some(HeapData::Deque(deque)) => (None, PySequence::items(deque.iter(), vm)),
             _ => return self.error(sequence_error(kind), vm),
         };
-        let exact = actual == kind || (kind == SeqKind::List && matches!(self.heap_data(vm), Some(HeapData::List(_))));
+        let exact = actual == Some(kind);
         if !exact && strict {
             seq.drop_with(vm);
             return self.error(sequence_error(kind), vm);
@@ -630,5 +644,11 @@ impl Mapping<PyInput> for PyMapping {
     fn finish_entry(&mut self, key: PyInput, value: PyInput, vm: &mut VM<'_>) {
         key.drop_with(vm);
         value.drop_with(vm);
+    }
+
+    /// The value owns its reference, so it outlives the entry as it is.
+    fn hold_entry(&mut self, key: PyInput, value: PyInput, vm: &mut VM<'_>) -> PyInput {
+        key.drop_with(vm);
+        value
     }
 }

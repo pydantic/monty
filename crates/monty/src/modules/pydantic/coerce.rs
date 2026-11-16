@@ -14,6 +14,7 @@ use strum::EnumMessage;
 
 use crate::{
     bytecode::VM,
+    exception_private::RunResult,
     heap::{Heap, HeapData},
     modules::pydantic::catalogue::ErrorType,
     types::{LongInt, date as date_type, datetime as datetime_type, time as time_type, timedelta as timedelta_type},
@@ -102,19 +103,24 @@ enum Digits {
 
 enum DigitsError {
     NotDigits,
-    /// More digits than pydantic-core's `jiter` parser accepts (4300).
+    /// A longer number than pydantic-core's `jiter` parser accepts (4300 bytes).
     TooLong,
 }
 
 /// Parses an optionally negative run of ASCII digits, as `jiter`'s
-/// `NumberInt::try_from` does.
+/// `NumberInt::try_from` does: a leading zero is refused first, then a number
+/// over 4300 bytes (sign included), then anything after the digits.
 fn parse_digits(text: &str) -> Result<Digits, DigitsError> {
     let digits = text.strip_prefix('-').unwrap_or(text);
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+    let run = digits.bytes().take_while(u8::is_ascii_digit).count();
+    if run == 0 || (run > 1 && digits.starts_with('0')) {
         return Err(DigitsError::NotDigits);
     }
-    if digits.len() > 4300 {
+    if text.len() - digits.len() + run > 4300 {
         return Err(DigitsError::TooLong);
+    }
+    if run != digits.len() {
+        return Err(DigitsError::NotDigits);
     }
     match text.parse::<i64>() {
         Ok(value) => Ok(Digits::Small(value)),
@@ -252,12 +258,15 @@ pub(crate) fn parse_datetime(bytes: &[u8]) -> Result<SpeedDateTime, ErrorType> {
 }
 
 /// Text as a `timedelta`: ISO 8601 durations and `HH:MM:SS` forms.
-pub(crate) fn bytes_as_timedelta(bytes: &[u8], heap: &Heap) -> Result<Value, ErrorType> {
+///
+/// Like the other duration coercions, the outer error is the `OverflowError`
+/// pydantic raises (not reports) for a duration `timedelta` cannot hold.
+pub(crate) fn bytes_as_timedelta(bytes: &[u8], heap: &Heap) -> RunResult<Result<Value, ErrorType>> {
     match Duration::parse_bytes_with_config(bytes, &time_config()) {
-        Ok(duration) => Ok(duration_value(&duration, heap)),
-        Err(err) => Err(ErrorType::TimeDeltaParsing {
+        Ok(duration) => duration_value(&duration, heap).map(Ok),
+        Err(err) => Ok(Err(ErrorType::TimeDeltaParsing {
             error: parse_error_text(&err),
-        }),
+        })),
     }
 }
 
@@ -318,21 +327,17 @@ pub(crate) fn float_as_time(timestamp: f64, vm: &mut VM<'_>) -> Result<Value, Er
     int_as_time(timestamp.floor() as i64, microseconds.round() as u32, vm)
 }
 
-/// Seconds as a `timedelta`.
-pub(crate) fn int_as_duration(total_seconds: i64, heap: &Heap) -> Result<Value, ErrorType> {
+/// Seconds as a `timedelta`; see [`bytes_as_timedelta`] for the two errors.
+pub(crate) fn int_as_duration(total_seconds: i64, heap: &Heap) -> RunResult<Result<Value, ErrorType>> {
     let positive = total_seconds >= 0;
     let total_seconds = total_seconds.unsigned_abs();
     let Ok(days) = u32::try_from(total_seconds / 86400) else {
-        return Err(ErrorType::TimeDeltaParsing {
+        return Ok(Err(ErrorType::TimeDeltaParsing {
             error: parse_error_text(&ParseError::DurationDaysTooLarge),
-        });
+        }));
     };
     let seconds = (total_seconds % 86400) as u32;
-    Duration::new(positive, days, seconds, 0)
-        .map(|duration| duration_value(&duration, heap))
-        .map_err(|err| ErrorType::TimeDeltaParsing {
-            error: parse_error_text(&err),
-        })
+    checked_duration_value(Duration::new(positive, days, seconds, 0), heap)
 }
 
 #[expect(
@@ -340,22 +345,31 @@ pub(crate) fn int_as_duration(total_seconds: i64, heap: &Heap) -> Result<Value, 
     clippy::cast_sign_loss,
     reason = "the parts are split from the absolute value, as pydantic-core does"
 )]
-pub(crate) fn float_as_duration(total_seconds: f64, heap: &Heap) -> Result<Value, ErrorType> {
+pub(crate) fn float_as_duration(total_seconds: f64, heap: &Heap) -> RunResult<Result<Value, ErrorType>> {
     if total_seconds.is_nan() {
-        return Err(ErrorType::TimeDeltaParsing {
+        return Ok(Err(ErrorType::TimeDeltaParsing {
             error: "NaN values not permitted".to_owned(),
-        });
+        }));
     }
     let positive = total_seconds >= 0.0;
     let total_seconds = total_seconds.abs();
     let microsecond = total_seconds.fract() * 1_000_000.0;
     let days = (total_seconds / 86400.0) as u32;
     let seconds = total_seconds as u64 % 86400;
-    Duration::new(positive, days, seconds as u32, microsecond.round() as u32)
-        .map(|duration| duration_value(&duration, heap))
-        .map_err(|err| ErrorType::TimeDeltaParsing {
+    checked_duration_value(
+        Duration::new(positive, days, seconds as u32, microsecond.round() as u32),
+        heap,
+    )
+}
+
+/// A `speedate` duration, or its construction error, as a `timedelta`.
+fn checked_duration_value(duration: Result<Duration, ParseError>, heap: &Heap) -> RunResult<Result<Value, ErrorType>> {
+    match duration {
+        Ok(duration) => duration_value(&duration, heap).map(Ok),
+        Err(err) => Ok(Err(ErrorType::TimeDeltaParsing {
             error: parse_error_text(&err),
-        })
+        })),
+    }
 }
 
 /// A `speedate` date as a `datetime.date`; year 0 has no Python form.
@@ -400,12 +414,29 @@ pub(crate) fn datetime_value(dt: &SpeedDateTime, vm: &mut VM<'_>) -> Result<Valu
     })
 }
 
-/// A `speedate` duration as a `datetime.timedelta`.
-fn duration_value(duration: &Duration, heap: &Heap) -> Value {
+/// A `speedate` duration as a `datetime.timedelta`. `speedate` bounds the
+/// magnitude's days, but a negative one can still normalise past
+/// `timedelta.min` (`-P999999999DT1S`), which raises `OverflowError` as in pydantic.
+fn duration_value(duration: &Duration, heap: &Heap) -> RunResult<Value> {
     let micros = i128::from(duration.day) * 86_400_000_000
         + i128::from(duration.second) * 1_000_000
         + i128::from(duration.microsecond);
-    timedelta_type::allocate_micros(if duration.positive { micros } else { -micros }, heap)
+    let delta = timedelta_type::from_total_microseconds(if duration.positive { micros } else { -micros })?;
+    Ok(Value::Ref(heap.allocate(HeapData::TimeDelta(delta))))
+}
+
+/// A `date` value as the naive `datetime` at its midnight, as a lax `datetime`
+/// reads a date; `None` for any other value.
+pub(crate) fn date_at_midnight(value: &Value, vm: &mut VM<'_>) -> Option<Value> {
+    let Value::Ref(id) = value else { return None };
+    let HeapData::Date(date) = vm.heap.get(*id) else {
+        return None;
+    };
+    let (year, month, day) = date_type::to_ymd(*date);
+    let (month, day) = (i32::try_from(month), i32::try_from(day));
+    let (month, day) = (month.expect("month is 1..=12"), day.expect("day is 1..=31"));
+    let midnight = datetime_type::allocate_parsed(year, month, day, 0, 0, 0, 0, None, vm.heap);
+    Some(midnight.expect("a date's components are in range"))
 }
 
 /// Whether a `datetime` value is at midnight with no sub-second part, for

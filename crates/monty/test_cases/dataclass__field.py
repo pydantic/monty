@@ -295,6 +295,30 @@ Late.__post_init__ = never
 assert Late().a == 1
 
 
+# === An inherited __post_init__ runs ===
+post_init_log = []
+
+
+class PostInitMixin:
+    def __post_init__(self):
+        post_init_log.append(type(self).__name__)
+
+
+@dataclass
+class FromMixin(PostInitMixin):
+    a: int
+
+
+@dataclass
+class FromDataclassBase(FromMixin):
+    b: int = 2
+
+
+FromMixin(1)
+FromDataclassBase(1)
+assert post_init_log == ['FromMixin', 'FromDataclassBase']
+
+
 # === A field object adopted twice keeps each class's own parameter name ===
 # Adoption writes the name into the `field()` object itself, so the second
 # class overwrites what the first recorded. Each class was built from its own

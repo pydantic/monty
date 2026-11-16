@@ -7,6 +7,8 @@
 //! collected rather than raised at the first failure: a list reports every
 //! bad item, a dataclass every bad field.
 
+use std::mem;
+
 use monty_types::LocItem;
 use smallvec::SmallVec;
 
@@ -23,7 +25,7 @@ use crate::{
             ValidatorId,
         },
         catalogue::ErrorType,
-        coerce::datetime_is_midnight,
+        coerce::{date_at_midnight, datetime_is_midnight},
         errors::{LineError, ValError, ValResult},
         input::{ArgumentsShape, Exactness, Input, InputKind, Mapping, SeqKind, Sequence, SharedInput, State},
         snapshot::repr_string,
@@ -37,6 +39,10 @@ use crate::{
 };
 
 /// Validates `input` against the validator `id`.
+///
+/// Nested validators recurse through here on the native stack, so every arm
+/// is a direct call writing one shared result: temporaries in this frame
+/// would be repeated at each nesting level, which debug builds feel first.
 pub(crate) fn validate<I: Input>(
     arena: &Arena,
     id: ValidatorId,
@@ -53,19 +59,38 @@ pub(crate) fn validate<I: Input>(
     state.steps = state.steps.wrapping_add(1);
     vm.heap.tracker.check_time_every(state.steps)?;
     match arena.get(id) {
+        Validator::List(item) => validate_list(arena, id, *item, input, state, vm),
+        Validator::Set(item) => validate_set(arena, id, *item, false, input, state, vm),
+        Validator::FrozenSet(item) => validate_set(arena, id, *item, true, input, state, vm),
+        Validator::Tuple { items, variadic } => validate_tuple(arena, id, items, *variadic, input, state, vm),
+        Validator::Dict { key, value } => validate_dict(arena, id, *key, *value, input, state, vm),
+        Validator::Union(choices) => validate_union(arena, choices, input, state, vm),
+        Validator::Nullable(inner) if !input.is_none() => validate(arena, *inner, input, state, vm),
+        Validator::Literal(literal) => validate_literal(literal, input, vm),
+        Validator::Dataclass(dataclass) => validate_dataclass(arena, id, dataclass, input, state, vm),
+        Validator::NamedTuple(named_tuple) => validate_named_tuple(named_tuple, input, state, vm),
+        validator => validate_scalar(validator, input, state, vm),
+    }
+}
+
+/// The validators that do not nest (a `None` for `Nullable` included), out
+/// of line so their temporaries stay off the recursive path through [`validate`].
+#[inline(never)]
+fn validate_scalar<I: Input>(
+    validator: &Validator,
+    input: &mut I,
+    state: &mut State,
+    vm: &mut VM<'_>,
+) -> ValResult<Value> {
+    match validator {
         Validator::Any => {
             // In a union, `Any` is preferred to a lax coercion.
             state.floor_exactness(Exactness::Strict);
             input.to_value(vm)
         }
-        Validator::None => {
-            // `to_value` consumes a JSON `null`; a Python `None` is free to copy.
-            if input.is_none() {
-                input.to_value(vm)
-            } else {
-                input.error(ErrorType::NoneRequired {}, vm)
-            }
-        }
+        // `to_value` consumes a JSON `null`; a Python `None` is free to copy.
+        Validator::None | Validator::Nullable(_) if input.is_none() => input.to_value(vm),
+        Validator::None => input.error(ErrorType::NoneRequired {}, vm),
         Validator::Bool => Ok(Value::Bool(input.validate_bool(state.strict, vm)?.unpack(state))),
         Validator::Int => Ok(input.validate_int(state.strict, vm)?.unpack(state)),
         Validator::Float => Ok(Value::Float(input.validate_float(state.strict, vm)?.unpack(state))),
@@ -76,22 +101,7 @@ pub(crate) fn validate<I: Input>(
         Validator::Time => Ok(input.validate_time(state.strict, vm)?.unpack(state)),
         Validator::TimeDelta => Ok(input.validate_timedelta(state.strict, vm)?.unpack(state)),
         Validator::Decimal => validate_decimal(input, state, vm),
-        Validator::List(item) => validate_list(arena, id, *item, input, state, vm),
-        Validator::Set(item) => validate_set(arena, id, *item, false, input, state, vm),
-        Validator::FrozenSet(item) => validate_set(arena, id, *item, true, input, state, vm),
-        Validator::Tuple { items, variadic } => validate_tuple(arena, id, items, *variadic, input, state, vm),
-        Validator::Dict { key, value } => validate_dict(arena, id, *key, *value, input, state, vm),
-        Validator::Union(choices) => validate_union(arena, choices, input, state, vm),
-        Validator::Nullable(inner) => {
-            if input.is_none() {
-                input.to_value(vm)
-            } else {
-                validate(arena, *inner, input, state, vm)
-            }
-        }
-        Validator::Literal(literal) => validate_literal(literal, input, vm),
-        Validator::Dataclass(dataclass) => validate_dataclass(arena, id, dataclass, input, state, vm),
-        Validator::NamedTuple(named_tuple) => validate_named_tuple(named_tuple, input, state, vm),
+        _ => unreachable!("validate dispatches the nesting validators itself"),
     }
 }
 
@@ -119,30 +129,19 @@ fn validate_datetime<I: Input>(input: &mut I, state: &mut State, vm: &mut VM<'_>
                     datetime_errors.drop_with(vm);
                     let date = matched.value;
                     defer_drop!(date, vm);
-                    Ok(midnight(date, vm))
+                    Ok(date_at_midnight(date, vm).expect("validate_date yields a date"))
                 }
-                Err(ValError::Lines(lines))
-                    if lines
-                        .iter()
-                        .any(|line| matches!(line.error_type, ErrorType::DateParsing { .. })) =>
-                {
-                    datetime_errors.drop_with(vm);
-                    Err(ValError::Lines(
-                        lines
-                            .into_iter()
-                            .map(|line| match line.error_type.clone() {
-                                ErrorType::DateParsing { error } => {
-                                    line.with_type(ErrorType::DatetimeFromDateParsing { error })
-                                }
-                                _ => line,
-                            })
-                            .collect(),
-                    ))
-                }
-                Err(ValError::Lines(lines)) => {
-                    lines.drop_with(vm);
-                    Err(ValError::Lines(datetime_errors))
-                }
+                Err(ValError::Lines(lines)) => Err(fallback_errors(
+                    datetime_errors,
+                    lines,
+                    |error_type| match error_type {
+                        ErrorType::DateParsing { error } => {
+                            Some(ErrorType::DatetimeFromDateParsing { error: error.clone() })
+                        }
+                        _ => None,
+                    },
+                    vm,
+                )),
                 Err(other) => {
                     datetime_errors.drop_with(vm);
                     Err(other)
@@ -172,29 +171,18 @@ fn validate_date<I: Input>(input: &mut I, state: &mut State, vm: &mut VM<'_>) ->
                         input.error(ErrorType::DateFromDatetimeInexact {}, vm)
                     }
                 }
-                Err(ValError::Lines(lines)) => {
-                    // A datetime parse failure is reported as the date failure it also is.
-                    let parsing = lines
-                        .iter()
-                        .any(|line| matches!(line.error_type, ErrorType::DatetimeParsing { .. }));
-                    if parsing {
-                        date_errors.drop_with(vm);
-                        Err(ValError::Lines(
-                            lines
-                                .into_iter()
-                                .map(|line| match line.error_type.clone() {
-                                    ErrorType::DatetimeParsing { error } => {
-                                        line.with_type(ErrorType::DateFromDatetimeParsing { error })
-                                    }
-                                    _ => line,
-                                })
-                                .collect(),
-                        ))
-                    } else {
-                        lines.drop_with(vm);
-                        Err(ValError::Lines(date_errors))
-                    }
-                }
+                // A datetime parse failure is reported as the date failure it also is.
+                Err(ValError::Lines(lines)) => Err(fallback_errors(
+                    date_errors,
+                    lines,
+                    |error_type| match error_type {
+                        ErrorType::DatetimeParsing { error } => {
+                            Some(ErrorType::DateFromDatetimeParsing { error: error.clone() })
+                        }
+                        _ => None,
+                    },
+                    vm,
+                )),
                 Err(other) => {
                     date_errors.drop_with(vm);
                     Err(other)
@@ -205,8 +193,9 @@ fn validate_date<I: Input>(input: &mut I, state: &mut State, vm: &mut VM<'_>) ->
     }
 }
 
-/// Whether `lines` is a single text-parsing failure, which the lax temporal
-/// fallbacks retry as another type.
+/// Whether every line of a failed `datetime` is a text-parsing error (vacuously
+/// true for no lines, though a failure always has one): the case the lax
+/// fallback retries as a date.
 fn is_parsing_error(lines: &[LineError]) -> bool {
     lines.iter().all(|line| {
         matches!(
@@ -216,24 +205,30 @@ fn is_parsing_error(lines: &[LineError]) -> bool {
     })
 }
 
-/// `date` as the naive `datetime` at midnight.
-fn midnight(date: &Value, vm: &mut VM<'_>) -> Value {
-    let Value::Ref(id) = date else {
-        unreachable!("validate_date yields a date")
-    };
-    let HeapData::Date(date) = vm.heap.get(*id) else {
-        unreachable!("validate_date yields a date")
-    };
-    let (year, month, day) = date_type::to_ymd(*date);
-    let (month, day) = (i32::try_from(month), i32::try_from(day));
-    let (month, day) = (month.expect("month is 1..=12"), day.expect("day is 1..=31"));
-    datetime_type::allocate_parsed(year, month, day, 0, 0, 0, 0, None, vm.heap)
-        .expect("a date's components are in range")
-}
-
-/// A sequence index as a location step.
-fn index_loc(index: usize) -> LocItem {
-    LocItem::Index(i64::try_from(index).unwrap_or(i64::MAX))
+/// The errors of a failed lax temporal fallback: its own `lines`, with each
+/// error `retype` maps retyped, when it maps any; otherwise the first attempt's
+/// `original` errors. The set not reported is released.
+fn fallback_errors(
+    original: Vec<LineError>,
+    lines: Vec<LineError>,
+    retype: impl Fn(&ErrorType) -> Option<ErrorType>,
+    vm: &mut VM<'_>,
+) -> ValError {
+    if lines.iter().any(|line| retype(&line.error_type).is_some()) {
+        original.drop_with(vm);
+        ValError::Lines(
+            lines
+                .into_iter()
+                .map(|line| match retype(&line.error_type) {
+                    Some(error_type) => line.with_type(error_type),
+                    None => line,
+                })
+                .collect(),
+        )
+    } else {
+        lines.drop_with(vm);
+        ValError::Lines(original)
+    }
 }
 
 /// The `date` of a `datetime` value.
@@ -281,13 +276,13 @@ fn validate_list<I: Input>(
     guarded(id, input, state, vm, |input, state, vm| {
         let seq = input.validate_sequence(SeqKind::List, state.strict, vm)?.unpack(state);
         defer_drop_mut!(seq, vm);
-        let items = validate_items::<I>(arena, item, seq, state, vm)?;
+        let items = validate_items::<I, _>(arena, item, seq, Vec::new(), push_item, state, vm)?;
         Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))))
     })
 }
 
-/// `set[T]` / `frozenset[T]`: every item validated, then added; an unhashable
-/// result is `set_item_not_hashable`.
+/// `set[T]` / `frozenset[T]`: every item validated and added; an unhashable
+/// result is `set_item_not_hashable`, reported among the items' errors by index.
 fn validate_set<I: Input>(
     arena: &Arena,
     id: ValidatorId,
@@ -301,81 +296,46 @@ fn validate_set<I: Input>(
         let kind = if frozen { SeqKind::FrozenSet } else { SeqKind::Set };
         let seq = input.validate_sequence(kind, state.strict, vm)?.unpack(state);
         defer_drop_mut!(seq, vm);
-        let items = validate_items::<I>(arena, item, seq, state, vm)?;
-        defer_drop_mut!(items, vm);
-        let mut built = DropGuard::new((Set::new(), Vec::<LineError>::new()), vm);
-        {
-            let ((set, errors), vm) = built.as_parts_mut();
-            for (index, value) in items.drain(..).enumerate() {
-                let probe = value.clone_with_heap(vm.heap);
-                match set.add(value, vm) {
-                    // As in pydantic, only a `TypeError` means unhashable; anything else propagates.
-                    Err(err) if err.is_catchable(ExcType::TypeError) => errors.push(
-                        LineError::owned(ErrorType::SetItemNotHashable {}, probe).with_outer_loc(index_loc(index)),
-                    ),
-                    added => {
-                        probe.drop_with(vm);
-                        added?;
-                    }
-                }
-            }
-        }
-        let ((set, errors), vm) = built.into_parts();
-        if errors.is_empty() {
-            let data = if frozen {
-                HeapData::FrozenSet(FrozenSet::from_set(set))
-            } else {
-                HeapData::Set(set)
-            };
-            Ok(Value::Ref(vm.heap.allocate(data)))
+        let set = validate_items::<I, _>(arena, item, seq, Set::new(), add_item, state, vm)?;
+        let data = if frozen {
+            HeapData::FrozenSet(FrozenSet::from_set(set))
         } else {
-            set.drop_with(vm);
-            Err(ValError::Lines(errors))
-        }
+            HeapData::Set(set)
+        };
+        Ok(Value::Ref(vm.heap.allocate(data)))
     })
 }
 
-/// Validates each item of `seq` against `item`, collecting every error with
-/// its index. The output buffer grows under the resource tracker.
-fn validate_items<I: Input>(
+/// Validates each item of `seq` against `item`, handing each success to `add`
+/// (with its index, and the errors to report an item it refuses in) and
+/// collecting every error located by index; `output` is released on failure.
+fn validate_items<I: Input, O: for<'h> DropWithContext<VM<'h>>>(
     arena: &Arena,
     item: ValidatorId,
     seq: &mut I::Seq,
+    output: O,
+    add: impl Fn(&mut O, Value, usize, &mut Vec<LineError>, &mut VM<'_>) -> RunResult<()>,
     state: &mut State,
     vm: &mut VM<'_>,
-) -> ValResult<Vec<Value>> {
+) -> ValResult<O> {
     // One guard over the output and the errors, so a parse or resource error
     // leaving through `?` releases both.
-    let mut collected = DropGuard::new((Vec::new(), Vec::<LineError>::new()), vm);
+    let mut collected = DropGuard::new((output, Vec::<LineError>::new()), vm);
     let mut index = 0usize;
     loop {
         let ((output, errors), vm) = collected.as_parts_mut();
         vm.heap.tracker.check_memory_time_every(index).map_err(RunError::from)?;
         let Some(mut element) = seq.next(vm)? else { break };
-        match validate(arena, item, &mut element, state, vm) {
-            Ok(value) => {
-                let mut value = DropGuard::new(value, vm);
-                if let Err(err) = value
-                    .ctx()
-                    .heap
-                    .tracker
-                    .check_growth(output.len(), output.capacity(), VALUE_SIZE)
-                {
-                    let (_, vm) = value.into_parts();
-                    seq.finish_item(element, vm);
-                    return Err(ValError::Run(err.into()));
-                }
-                output.push(value.into_inner());
-            }
+        let added = match validate(arena, item, &mut element, state, vm) {
+            Ok(value) => add(output, value, index, errors, vm).map_err(ValError::Run),
             Err(ValError::Lines(lines)) => {
                 errors.extend(lines.into_iter().map(|line| line.with_outer_loc(index_loc(index))));
+                Ok(())
             }
-            Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
-                seq.finish_item(element, vm);
-                return Err(err);
-            }
-        }
+            Err(err) => Err(err),
+        };
         seq.finish_item(element, vm);
+        added?;
         index += 1;
     }
     let ((output, errors), vm) = collected.into_parts();
@@ -384,6 +344,51 @@ fn validate_items<I: Input>(
     } else {
         output.drop_with(vm);
         Err(ValError::Lines(errors))
+    }
+}
+
+/// A sequence index as a location step.
+fn index_loc(index: usize) -> LocItem {
+    LocItem::Index(i64::try_from(index).unwrap_or(i64::MAX))
+}
+
+/// Appends a list item, the buffer growing under the resource tracker.
+fn push_item(
+    output: &mut Vec<Value>,
+    value: Value,
+    _index: usize,
+    _errors: &mut Vec<LineError>,
+    vm: &mut VM<'_>,
+) -> RunResult<()> {
+    match vm
+        .heap
+        .tracker
+        .check_growth(output.len(), output.capacity(), VALUE_SIZE)
+    {
+        Ok(()) => {
+            output.push(value);
+            Ok(())
+        }
+        Err(err) => {
+            value.drop_with(vm);
+            Err(err.into())
+        }
+    }
+}
+
+/// Adds a set item; as in pydantic, only a `TypeError` means unhashable, and
+/// anything else propagates.
+fn add_item(set: &mut Set, value: Value, index: usize, errors: &mut Vec<LineError>, vm: &mut VM<'_>) -> RunResult<()> {
+    let probe = value.clone_with_heap(vm.heap);
+    match set.add(value, vm) {
+        Err(err) if err.is_catchable(ExcType::TypeError) => {
+            errors.push(LineError::owned(ErrorType::SetItemNotHashable {}, probe).with_outer_loc(index_loc(index)));
+            Ok(())
+        }
+        added => {
+            probe.drop_with(vm);
+            added.map(drop)
+        }
     }
 }
 
@@ -420,17 +425,16 @@ fn validate_tuple<I: Input>(
                 too_long = true;
                 break;
             };
-            match validate(arena, validator, &mut element, state, vm) {
-                Ok(value) => output.push(value),
+            let added = match validate(arena, validator, &mut element, state, vm) {
+                Ok(value) => push_item(output, value, index, errors, vm).map_err(ValError::Run),
                 Err(ValError::Lines(lines)) => {
                     errors.extend(lines.into_iter().map(|line| line.with_outer_loc(index_loc(index))));
+                    Ok(())
                 }
-                Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
-                    seq.finish_item(element, vm);
-                    return Err(err);
-                }
-            }
+                Err(err) => Err(err),
+            };
             seq.finish_item(element, vm);
+            added?;
             index += 1;
         }
         if too_long {
@@ -503,44 +507,15 @@ fn validate_dict<I: Input>(
                 break;
             };
             index += 1;
-            let loc = loc_item(&mut key_input, vm)?;
-            let output_key = match validate(arena, key, &mut key_input, state, vm) {
-                Ok(k) => Some(k),
-                Err(ValError::Lines(lines)) => {
-                    errors.extend(lines.into_iter().map(|line| {
-                        line.with_outer_loc(LocItem::Key("[key]".to_owned()))
-                            .with_outer_loc(loc.clone())
-                    }));
-                    None
-                }
-                Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
-                    map.finish_entry(key_input, value_input, vm);
-                    return Err(err);
-                }
-            };
-            let output_value = match validate(arena, value, &mut value_input, state, vm) {
-                Ok(v) => Some(v),
-                Err(ValError::Lines(lines)) => {
-                    errors.extend(lines.into_iter().map(|line| line.with_outer_loc(loc.clone())));
-                    None
-                }
-                Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
-                    output_key.drop_with(vm);
-                    map.finish_entry(key_input, value_input, vm);
-                    return Err(err);
-                }
-            };
+            let entry = validate_entry(arena, key, value, &mut key_input, &mut value_input, state, vm);
             map.finish_entry(key_input, value_input, vm);
-            match (output_key, output_value) {
-                (Some(k), Some(v)) => {
+            match entry? {
+                Ok((k, v)) => {
                     if let Some(old) = output.set(k, v, vm)? {
                         old.drop_with(vm);
                     }
                 }
-                (k, v) => {
-                    k.drop_with(vm);
-                    v.drop_with(vm);
-                }
+                Err(lines) => errors.extend(lines),
             }
         }
         let ((output, errors), vm) = collected.into_parts();
@@ -553,18 +528,68 @@ fn validate_dict<I: Input>(
     })
 }
 
-/// A dict key as a location step: text and ints as themselves, anything else
-/// by its repr, as pydantic's `LocItem::from` does.
-fn loc_item<I: Input>(key: &mut I, vm: &mut VM<'_>) -> ValResult<LocItem> {
-    let value = key.to_value(vm)?;
-    defer_drop!(value, vm);
-    Ok(match value {
-        Value::Int(index) => LocItem::Index(*index),
-        other => match other.as_str(vm) {
+/// Validates one dict entry into its key and value, or into the errors of
+/// both: a key's located at `(key, '[key]')`, a value's at `(key,)`. The key
+/// is rendered as a location only when there are errors.
+fn validate_entry<I: Input>(
+    arena: &Arena,
+    key_validator: ValidatorId,
+    value_validator: ValidatorId,
+    key: &mut I,
+    value: &mut I,
+    state: &mut State,
+    vm: &mut VM<'_>,
+) -> ValResult<Result<(Value, Value), Vec<LineError>>> {
+    let output_key = match validate(arena, key_validator, key, state, vm) {
+        Ok(k) => Ok(k),
+        Err(ValError::Lines(lines)) => Err(lines),
+        Err(err) => return Err(err),
+    };
+    let output_value = match validate(arena, value_validator, value, state, vm) {
+        Ok(v) => Ok(v),
+        Err(ValError::Lines(lines)) => Err(lines),
+        Err(err) => {
+            match output_key {
+                Ok(k) => k.drop_with(vm),
+                Err(lines) => lines.drop_with(vm),
+            }
+            return Err(err);
+        }
+    };
+    Ok(match (output_key, output_value) {
+        (Ok(k), Ok(v)) => Ok((k, v)),
+        (output_key, output_value) => {
+            let loc = loc_item(key, vm);
+            let mut errors = Vec::new();
+            match output_key {
+                Ok(k) => k.drop_with(vm),
+                Err(lines) => errors.extend(lines.into_iter().map(|line| {
+                    line.with_outer_loc(LocItem::Key("[key]".to_owned()))
+                        .with_outer_loc(loc.clone())
+                })),
+            }
+            match output_value {
+                Ok(v) => v.drop_with(vm),
+                Err(lines) => errors.extend(lines.into_iter().map(|line| line.with_outer_loc(loc.clone()))),
+            }
+            Err(errors)
+        }
+    })
+}
+
+/// A mapping key as a location step: text and ints (bools included) as
+/// themselves, anything else by its repr, as pydantic's `LocItem::from` does.
+fn loc_item(key: &impl Input, vm: &mut VM<'_>) -> LocItem {
+    match key.key_value() {
+        Some(Value::Int(index)) => LocItem::Index(*index),
+        Some(Value::Bool(b)) => LocItem::Index(i64::from(*b)),
+        Some(other) => match other.as_str(vm) {
             Some(text) => LocItem::Key(text.to_owned()),
             None => LocItem::Key(repr_string(other, vm)),
         },
-    })
+        // Every key a mapping yields has a value; this is not reached.
+        None => LocItem::Key(String::new()),
+    }
 }
 
 /// pydantic's smart union: every member is tried; an exact match returns at
@@ -707,26 +732,29 @@ fn validate_literal<I: Input>(literal: &LiteralValidator, input: &mut I, vm: &mu
     // An exact-type match first (`True` for `Literal[True]`, `1` for `Literal[1]`),
     // then plain equality, where the last equal choice wins as it does in the
     // dict pydantic looks `1.0` up in: `Literal[1, True]` maps it to `True`.
-    for choice in &literal.choices {
-        if choice.py_type(vm) == input_type && choice.py_eq(value, vm)? {
-            return Ok(choice.clone_with_heap(vm.heap));
-        }
-    }
     let mut found = None;
     for choice in &literal.choices {
-        if choice.py_eq(value, vm)? {
+        if choice.py_type(vm) == input_type && choice.py_eq(value, vm)? {
             found = Some(choice);
+            break;
         }
     }
-    if let Some(choice) = found {
-        return Ok(choice.clone_with_heap(vm.heap));
+    if found.is_none() {
+        for choice in &literal.choices {
+            if choice.py_eq(value, vm)? {
+                found = Some(choice);
+            }
+        }
     }
-    input.error(
-        ErrorType::LiteralError {
-            expected: literal.expected.clone(),
-        },
-        vm,
-    )
+    match found {
+        Some(choice) => Ok(choice.clone_with_heap(vm.heap)),
+        None => input.error(
+            ErrorType::LiteralError {
+                expected: literal.expected.clone(),
+            },
+            vm,
+        ),
+    }
 }
 
 /// A dataclass: an instance passes through; a dict is validated field by
@@ -762,10 +790,13 @@ fn validate_dataclass<I: Input>(
     })
 }
 
-/// Validates the entries of `map` into one slot per field, in field order:
-/// unknown keys are ignored, a key given twice (JSON allows it) keeps its
-/// last value, missing fields take their default or report `missing`, and a
-/// field's errors are located by its name.
+/// Validates the entries of `map` into one value per field, field by field in
+/// declaration order as pydantic does (so nested `__post_init__` hooks and
+/// factories run in that order): an entry for the next field is validated as
+/// it is read, any other is held until the fields before it are done. Unknown
+/// keys are ignored, a key given twice (JSON allows it) keeps its last value,
+/// missing fields take their default or report `missing`, and a field's errors
+/// are located by its name.
 fn validate_fields<I: Input>(
     arena: &Arena,
     fields: &[FieldValidator],
@@ -774,95 +805,154 @@ fn validate_fields<I: Input>(
     state: &mut State,
     vm: &mut VM<'_>,
 ) -> ValResult<Vec<Value>> {
-    let slots: Vec<Option<Value>> = (0..fields.len()).map(|_| None).collect();
-    let errors: Vec<Option<Vec<LineError>>> = (0..fields.len()).map(|_| None).collect();
-    // One guard over the partial results and the per-field errors, released
-    // together on every failure path.
-    let mut collected = DropGuard::new((slots, errors), vm);
+    let slots: Vec<FieldSlot<I>> = (0..fields.len()).map(|_| FieldSlot::Empty).collect();
+    let mut guard = DropGuard::new(slots, vm);
+    // The first field not yet validated.
+    let mut next = 0usize;
     let mut index = 0usize;
     loop {
-        let ((slots, errors), vm) = collected.as_parts_mut();
+        let (slots, vm) = guard.as_parts_mut();
         vm.heap.tracker.check_memory_time_every(index).map_err(RunError::from)?;
         let Some((key, mut value)) = map.next(vm)? else {
             break;
         };
         index += 1;
-        if let Some(field_index) = field_position(fields, &key, vm) {
-            if let Some(earlier) = slots[field_index].take() {
-                earlier.drop_with(vm);
-            }
-            if let Some(earlier) = errors[field_index].take() {
-                earlier.drop_with(vm);
-            }
-            match validate(arena, fields[field_index].validator, &mut value, state, vm) {
-                Ok(v) => slots[field_index] = Some(v),
-                Err(ValError::Lines(lines)) => errors[field_index] = Some(lines),
-                Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
-                    map.finish_entry(key, value, vm);
-                    return Err(err);
-                }
-            }
-        } else if let Err(err) = value.to_value(vm).map(|v| v.drop_with(vm)) {
-            // A JSON value must be consumed even when ignored.
+        let Some(field_index) = field_position(fields, &key, vm) else {
+            // An ignored JSON value is still read, so the document is checked as pydantic parses it.
+            let read = value.to_value(vm).map(|v| v.drop_with(vm));
             map.finish_entry(key, value, vm);
-            return Err(err);
+            read?;
+            continue;
+        };
+        mem::take(&mut slots[field_index]).drop_with(vm);
+        if field_index == next {
+            let result = validate(arena, fields[field_index].validator, &mut value, state, vm);
+            map.finish_entry(key, value, vm);
+            slots[field_index] = FieldSlot::validated(result)?;
+            next = validate_held(arena, fields, slots, next + 1, state, vm)?;
+        } else {
+            slots[field_index] = FieldSlot::Held(map.hold_entry(key, value, vm));
         }
-        map.finish_entry(key, value, vm);
     }
-    let ((slots, errors), vm) = collected.as_parts_mut();
-    let fields_set = slots.iter().flatten().count();
-    let line_errors = fill_missing_fields(fields, slots, errors, input, vm)?;
-    state.add_fields_set(fields_set);
+    let (slots, vm) = guard.as_parts_mut();
+    state.add_fields_set(slots.iter().filter(|slot| !matches!(slot, FieldSlot::Empty)).count());
+    let line_errors = fill_fields(arena, fields, slots, input, state, vm)?;
     if line_errors.is_empty() {
-        let ((slots, _), _) = collected.into_parts();
+        let (slots, _) = guard.into_parts();
         Ok(slots
             .into_iter()
-            .map(|slot| slot.expect("every field is set or errored"))
+            .map(|slot| match slot {
+                FieldSlot::Valid(value) => value,
+                _ => unreachable!("every field is valid"),
+            })
             .collect())
     } else {
         Err(ValError::Lines(line_errors))
     }
 }
 
-/// Collects each field's errors under its name and gives each unset field its
-/// default, or a `missing` error; a factory may run Python.
-fn fill_missing_fields<I: Input>(
+/// What a dataclass field has so far: nothing, an input held for later, or
+/// the outcome of validating one.
+#[derive(Default)]
+enum FieldSlot<I> {
+    #[default]
+    Empty,
+    Held(I),
+    Valid(Value),
+    Invalid(Vec<LineError>),
+}
+
+impl<I> FieldSlot<I> {
+    /// A field's validation result as its slot; a raised error propagates.
+    fn validated(result: ValResult<Value>) -> ValResult<Self> {
+        match result {
+            Ok(value) => Ok(Self::Valid(value)),
+            Err(ValError::Lines(lines)) => Ok(Self::Invalid(lines)),
+            Err(err) => Err(err),
+        }
+    }
+}
+
+impl<'h, I: Input> DropWithContext<VM<'h>> for FieldSlot<I> {
+    fn drop_with(self, vm: &mut VM<'h>) {
+        match self {
+            Self::Empty => {}
+            Self::Held(input) => input.drop_with(vm),
+            Self::Valid(value) => value.drop_with(vm),
+            Self::Invalid(lines) => lines.drop_with(vm),
+        }
+    }
+}
+
+/// Validates the held inputs from field `from` on, in order, stopping at the
+/// first field with nothing yet; returns that field's index.
+fn validate_held<I: Input>(
+    arena: &Arena,
     fields: &[FieldValidator],
-    slots: &mut [Option<Value>],
-    errors: &mut [Option<Vec<LineError>>],
+    slots: &mut [FieldSlot<I>],
+    from: usize,
+    state: &mut State,
+    vm: &mut VM<'_>,
+) -> ValResult<usize> {
+    let mut next = from;
+    while let Some(slot) = slots.get_mut(next) {
+        match mem::take(slot) {
+            FieldSlot::Empty => break,
+            FieldSlot::Held(mut held) => {
+                let result = held.replay(vm, |held, vm| validate(arena, fields[next].validator, held, state, vm));
+                held.drop_with(vm);
+                *slot = FieldSlot::validated(result)?;
+            }
+            done => *slot = done,
+        }
+        next += 1;
+    }
+    Ok(next)
+}
+
+/// Finishes every field in order once the input is read: a held input is
+/// validated, an absent field takes its default (a factory may run Python) or
+/// a `missing` error. Returns every field's errors under its name.
+fn fill_fields<I: Input>(
+    arena: &Arena,
+    fields: &[FieldValidator],
+    slots: &mut [FieldSlot<I>],
     input: &mut I,
+    state: &mut State,
     vm: &mut VM<'_>,
 ) -> ValResult<Vec<LineError>> {
     let whole = SharedInput::default();
     defer_drop_mut!(whole, vm);
-    let mut line_errors = DropGuard::new(Vec::<LineError>::new(), vm);
     for (field_index, field) in fields.iter().enumerate() {
-        let (line_errors, vm) = line_errors.as_parts_mut();
-        if let Some(lines) = errors[field_index].take() {
-            let name = vm.interns.get_str(field.name).to_owned();
-            line_errors.extend(
-                lines
-                    .into_iter()
-                    .map(|line| line.with_outer_loc(LocItem::Key(name.clone()))),
-            );
-            continue;
-        }
-        if slots[field_index].is_some() {
-            continue;
-        }
-        match &field.default {
-            FieldDefault::Value(value) => slots[field_index] = Some(value.clone_with_heap(vm.heap)),
-            FieldDefault::Factory(factory) => {
-                slots[field_index] = Some(vm.evaluate_function(factory, ArgValues::Empty).map_err(ValError::Run)?);
+        match &slots[field_index] {
+            FieldSlot::Held(_) => {
+                validate_held(arena, fields, slots, field_index, state, vm)?;
             }
-            FieldDefault::Required => {
-                let shared = whole.get(input, vm)?;
-                let name = vm.interns.get_str(field.name).to_owned();
-                line_errors.push(LineError::owned(ErrorType::Missing {}, shared).with_outer_loc(LocItem::Key(name)));
+            FieldSlot::Empty => {
+                slots[field_index] = match &field.default {
+                    FieldDefault::Value(value) => FieldSlot::Valid(value.clone_with_heap(vm.heap)),
+                    FieldDefault::Factory(factory) => {
+                        FieldSlot::Valid(vm.evaluate_function(factory, ArgValues::Empty).map_err(ValError::Run)?)
+                    }
+                    FieldDefault::Required => {
+                        FieldSlot::Invalid(vec![LineError::owned(ErrorType::Missing {}, whole.get(input, vm)?)])
+                    }
+                };
             }
+            FieldSlot::Valid(_) | FieldSlot::Invalid(_) => {}
         }
     }
-    let (line_errors, _) = line_errors.into_parts();
+    let mut line_errors = Vec::new();
+    for (slot, field) in slots.iter_mut().zip(fields) {
+        if let FieldSlot::Invalid(lines) = slot {
+            let name = vm.interns.get_str(field.name);
+            line_errors.extend(
+                mem::take(lines)
+                    .into_iter()
+                    .map(|line| line.with_outer_loc(LocItem::Key(name.to_owned()))),
+            );
+        }
+    }
     Ok(line_errors)
 }
 
@@ -889,37 +979,39 @@ fn build_instance(
     vm: &mut VM<'_>,
 ) -> RunResult<Value> {
     // Field names are distinct interned strings, so each is appended without a probe.
-    let mut attrs = DropGuard::new(Dict::with_capacity(dataclass.fields.len()), vm);
+    // The values not yet moved stay guarded, so a failed append releases them.
+    let mut parts = DropGuard::new((Dict::with_capacity(dataclass.fields.len()), values), vm);
     {
-        let (attrs, vm) = attrs.as_parts_mut();
-        for (field, value) in dataclass.fields.iter().zip(values) {
-            attrs.set_new_interned(field.name, value, vm)?;
+        let ((attrs, values), vm) = parts.as_parts_mut();
+        for (field, value) in dataclass.fields.iter().zip(values.iter_mut()) {
+            attrs.set_new_interned(field.name, mem::replace(value, Value::None), vm)?;
         }
     }
-    let (attrs, vm) = attrs.into_parts();
+    let ((attrs, _), vm) = parts.into_parts();
     vm.heap.inc_ref(class_id);
     let instance = Value::Ref(
         vm.heap
             .allocate(HeapData::Instance(Box::new(Instance::new(class_id, attrs)))),
     );
-    if !dataclass.post_init {
-        return Ok(instance);
+    if dataclass.post_init {
+        let mut guard = DropGuard::new(instance, vm);
+        {
+            let (instance, vm) = guard.as_parts();
+            let hook = instance.py_getattr(
+                &EitherStr::Interned(vm.interns.intern_static(StaticStrings::PostInit)),
+                vm,
+            )?;
+            let CallResult::Value(hook) = hook else {
+                unreachable!("an instance attribute lookup yields a value")
+            };
+            defer_drop!(hook, vm);
+            let result = vm.evaluate_function(hook, ArgValues::Empty)?;
+            result.drop_with(vm);
+        }
+        Ok(guard.into_inner())
+    } else {
+        Ok(instance)
     }
-    let mut guard = DropGuard::new(instance, vm);
-    {
-        let (instance, vm) = guard.as_parts();
-        let hook = instance.py_getattr(
-            &EitherStr::Interned(vm.interns.intern_static(StaticStrings::PostInit)),
-            vm,
-        )?;
-        let CallResult::Value(hook) = hook else {
-            unreachable!("an instance attribute lookup yields a value")
-        };
-        defer_drop!(hook, vm);
-        let result = vm.evaluate_function(hook, ArgValues::Empty)?;
-        result.drop_with(vm);
-    }
-    Ok(guard.into_inner())
 }
 
 /// A namedtuple built from positional (list or tuple) or keyword (dict)
@@ -966,8 +1058,8 @@ fn validate_named_tuple<I: Input>(
     }
 }
 
-/// Fills `slots` from a dict's entries, a key that names no field (or one
-/// already filled) becoming an `unexpected_keyword_argument` error.
+/// Fills `slots` from a dict's entries: a key that names no field (or one
+/// already filled) is `unexpected_keyword_argument`, one that is not a string `invalid_key`.
 fn read_keyword_arguments<I: Input>(
     named_tuple: &NamedTupleValidator,
     input: &mut I,
@@ -979,22 +1071,23 @@ fn read_keyword_arguments<I: Input>(
     let map = input.validate_dict(strict, vm)?.value;
     defer_drop_mut!(map, vm);
     while let Some((mut key, mut value)) = map.next(vm)? {
-        let entry = key.to_value(vm).and_then(|key_value| {
-            let key_text = key_value.as_str(vm).map(str::to_owned);
-            key_value.drop_with(vm);
-            value.to_value(vm).map(|item| (key_text, item))
-        });
+        let position = key
+            .key_value()
+            .and_then(|key| key.as_str(vm))
+            .map(|name| named_tuple.field_names.iter().position(|field| field == name));
+        let loc = loc_item(&key, vm);
+        // A key that is not a string is `invalid_key`, on the key itself.
+        let entry = if position.is_some() {
+            value.to_value(vm)
+        } else {
+            key.to_value(vm)
+        };
         map.finish_entry(key, value, vm);
-        let (key_text, item) = entry?;
-        let position = key_text
-            .as_deref()
-            .and_then(|name| named_tuple.field_names.iter().position(|field| field == name));
+        let item = entry?;
         match position {
-            Some(position) if slots[position].is_none() => slots[position] = Some(item),
-            _ => errors.push(
-                LineError::owned(ErrorType::UnexpectedKeywordArgument {}, item)
-                    .with_outer_loc(LocItem::Key(key_text.unwrap_or_default())),
-            ),
+            Some(Some(position)) if slots[position].is_none() => slots[position] = Some(item),
+            Some(_) => errors.push(LineError::owned(ErrorType::UnexpectedKeywordArgument {}, item).with_outer_loc(loc)),
+            None => errors.push(LineError::owned(ErrorType::InvalidKey {}, item).with_outer_loc(loc)),
         }
         // Each key scans every field name, so poll per entry rather than every few hundred.
         vm.heap.tracker.check_memory_time()?;

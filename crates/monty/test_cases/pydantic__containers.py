@@ -1,5 +1,6 @@
-from collections import deque
-from typing import Any, Literal, Optional
+from collections import deque, namedtuple
+from dataclasses import dataclass, field
+from typing import Any, Literal, Optional, Union
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -39,6 +40,15 @@ assert errors(Ints, [1, 'x', None]) == [
     {'type': 'int_type', 'loc': (2,), 'msg': 'Input should be a valid integer', 'input': None},
 ]
 assert errors(Ints, (1,), strict=True)[0]['type'] == 'list_type'
+# a deque is accepted only lax, by any sequence validator
+assert [(e['type'], e['loc']) for e in errors(Ints, deque([1]), strict=True)] == [('list_type', ())]
+assert [(e['type'], e['loc']) for e in errors(TypeAdapter(tuple[int, ...]), deque([1]), strict=True)] == [
+    ('tuple_type', ())
+]
+assert TypeAdapter(set[int]).validate_python(deque([1, 1])) == {1}
+# so `Any` (a strict match) beats the lax list, and the deque passes through
+queue = deque([1])
+assert TypeAdapter(Union[list[int], Any]).validate_python(queue) is queue
 assert Ints.validate_python([1], strict=True) == [1]
 assert errors(Ints, ['1'], strict=True)[0]['loc'] == (0,)
 assert TypeAdapter(list).validate_python((1, 'a')) == [1, 'a']
@@ -105,6 +115,18 @@ assert errors(IntSet, [[1]]) == [
 assert errors(TypeAdapter(set[Any]), [[1]]) == [
     {'type': 'set_item_not_hashable', 'loc': (0,), 'msg': 'Set items should be hashable', 'input': [1]}
 ]
+# unhashable items and invalid items are reported together, in item order
+not_hashable = {'type': 'set_item_not_hashable', 'msg': 'Set items should be hashable'}
+bad_int = {'type': 'int_parsing', 'msg': 'Input should be a valid integer, unable to parse string as an integer'}
+assert errors(TypeAdapter(set[list[int]]), [[1], ['x']]) == [
+    not_hashable | {'loc': (0,), 'input': [1]},
+    bad_int | {'loc': (1, 0), 'input': 'x'},
+]
+assert errors(TypeAdapter(frozenset[list[int]]), [['x'], [1], [2]]) == [
+    bad_int | {'loc': (0, 0), 'input': 'x'},
+    not_hashable | {'loc': (1,), 'input': [1]},
+    not_hashable | {'loc': (2,), 'input': [2]},
+]
 
 
 # only a `TypeError` from hashing means unhashable; any other error propagates
@@ -151,6 +173,11 @@ assert errors(StrInt, {1: 'x', 'a': 'b'}) == [
     },
 ]
 assert errors(StrInt, {(1, 2): 1})[0]['loc'] == ('(1, 2)', '[key]')
+# a bool key is located as the int it is; an int beyond `i64` and a float by their text
+assert errors(TypeAdapter(dict[int, int]), {True: 'x'}) == [bad_int | {'loc': (1,), 'input': 'x'}]
+assert errors(StrInt, {False: 1})[0]['loc'] == (0, '[key]')
+assert errors(TypeAdapter(dict[int, int]), {10**30: 'x'})[0]['loc'] == ('1000000000000000000000000000000',)
+assert [e['loc'] for e in errors(TypeAdapter(dict[int, int]), {1.5: 'x'})] == [('1.5', '[key]'), ('1.5',)]
 assert errors(StrInt, {'a.b': 'x'})[0]['loc'] == ('a.b',)
 assert TypeAdapter(dict).validate_python({1: [2]}) == {1: [2]}
 assert TypeAdapter(dict[int, list[str]]).validate_python({'1': ('a',)}) == {1: ['a']}
@@ -279,3 +306,80 @@ assert TypeAdapter(list[Any]).validate_python(loop) == [loop]
 assert errors(TypeAdapter(list[list[int]]), loop)[0]['type'] == 'int_type'
 assert errors(TypeAdapter(list[list[int]]), loop)[0]['loc'] == (0, 0)
 loop.clear()
+
+# === namedtuple keyword keys ===
+# a key that is not a string is `invalid_key`, on the key, in entry order
+Pt = TypeAdapter(namedtuple('Pt', ['a', 'b']))
+invalid_key = {'type': 'invalid_key', 'msg': 'Keys should be strings'}
+assert errors(Pt, {1: 2, 'a': 3, 'b': 4}) == [invalid_key | {'loc': (1,), 'input': 1}]
+assert errors(Pt, {None: 2, 'c': 3, 'a': 1, 'b': 2}) == [
+    invalid_key | {'loc': ('None',), 'input': None},
+    {'type': 'unexpected_keyword_argument', 'loc': ('c',), 'msg': 'Unexpected keyword argument', 'input': 3},
+]
+assert [e['type'] for e in errors(Pt, {1: 2, 'a': 3})] == ['missing_argument', 'invalid_key']
+
+# === Dataclass fields validate in declaration order ===
+# whatever order the input gives them in: nested `__post_init__` hooks and factories run field by field
+order = []
+
+
+def factory():
+    order.append('factory')
+    return 0
+
+
+@dataclass
+class First:
+    x: int
+
+    def __post_init__(self):
+        order.append('first')
+
+
+@dataclass
+class Second:
+    x: int
+
+    def __post_init__(self):
+        order.append('second')
+
+
+@dataclass
+class Ordered:
+    a: First
+    f: int = field(default_factory=factory)
+    b: Optional[Second] = None
+    c: int = 0
+
+
+OrderedAdapter = TypeAdapter(Ordered)
+expected = Ordered(First(1), 0, Second(1), 0)
+order.clear()
+assert OrderedAdapter.validate_python({'b': {'x': 1}, 'a': {'x': 1}}) == expected
+assert order == ['first', 'factory', 'second']
+order.clear()
+assert OrderedAdapter.validate_json('{"b": {"x": 1}, "zz": [1, {"y": 2}], "a": {"x": 1}}') == expected
+assert order == ['first', 'factory', 'second']
+order.clear()
+# errors come in field order too
+for value in [
+    {'c': 'x', 'b': {'x': 'y'}, 'a': {'x': 'z'}, 'zz': 1},
+    '{"c": "x", "b": {"x": "y"}, "a": {"x": "z"}, "zz": 1}',
+]:
+    try:
+        if isinstance(value, str):
+            OrderedAdapter.validate_json(value)
+        else:
+            OrderedAdapter.validate_python(value)
+        assert False, 'expected a ValidationError'
+    except ValidationError as exc:
+        assert [(e['loc'], e['input']) for e in exc.errors()] == [(('a', 'x'), 'z'), (('b', 'x'), 'y'), (('c',), 'x')]
+assert order == ['factory', 'factory']
+order.clear()
+# a field held for later is still read as JSON, malformed or not
+try:
+    OrderedAdapter.validate_json('{"b": {"x": 1,}, "a": {"x": 1}}')
+    assert False, 'expected a ValidationError'
+except ValidationError as exc:
+    assert exc.errors()[0]['type'] == 'json_invalid'
+assert order == []

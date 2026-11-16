@@ -483,8 +483,11 @@ pub enum ExcData {
     /// `json.JSONDecodeError` attribute fields. Boxed like
     /// [`ExcData::Unicode`] to keep the enum small.
     Json(Box<JsonErrorData>),
-    /// `pydantic_core.ValidationError`'s line errors. Boxed like the others.
-    Validation(Box<ValidationErrorData>),
+    /// `pydantic_core.ValidationError`'s line errors. Shared rather than boxed:
+    /// every raise and method call copies the exception, and the snapshots can be large.
+    Validation(Arc<ValidationErrorData>),
+    /// `pydantic.errors.PydanticUserError`'s `message` and `code` attributes.
+    PydanticUser(Box<PydanticUserErrorData>),
 }
 
 impl ExcData {
@@ -514,6 +517,26 @@ impl ExcData {
             _ => None,
         }
     }
+
+    /// The `PydanticUserError` fields, if this is [`ExcData::PydanticUser`].
+    #[must_use]
+    pub fn pydantic_user(&self) -> Option<&PydanticUserErrorData> {
+        match self {
+            Self::PydanticUser(data) => Some(data),
+            _ => None,
+        }
+    }
+}
+
+/// The fields of a `pydantic.errors.PydanticUserError` (or subclass): the
+/// message it was built with and its documentation code. The exception's own
+/// message is `str(exc)`, which appends the documentation URL when `code` is set.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct PydanticUserErrorData {
+    /// The `message` argument, which is also `exc.args[0]`.
+    pub message: String,
+    /// The `code` keyword, e.g. `schema-for-unknown-type`.
+    pub code: Option<String>,
 }
 
 /// The payload of a `pydantic_core.ValidationError`: the title named in

@@ -2,7 +2,7 @@ import datetime
 from decimal import Decimal
 
 import pydantic
-from pydantic import PydanticSchemaGenerationError, PydanticUserError, ValidationError
+from pydantic import PydanticSchemaGenerationError, PydanticUserError, TypeAdapter, ValidationError
 
 # === The exception classes ===
 try:
@@ -361,3 +361,189 @@ assert (
     nan_keys.json(include_url=False)
     == '[{"type":"missing","loc":[],"msg":"Field required","input":{"nan":1,"inf":2,"-inf":3}}]'
 )
+
+
+# === Inputs with no snapshot form print as their repr ===
+class Foo:
+    def __repr__(self):
+        return 'Foo!'
+
+
+class BadRepr:
+    def __repr__(self):
+        raise ValueError('nope')
+
+
+def input_line(value):
+    exc = ValidationError.from_exception_data('T', [{'type': 'missing', 'loc': (), 'input': value}])
+    return str(exc).splitlines()[1]
+
+
+assert input_line(Foo()) == '  Field required [type=missing, input_value=Foo!, input_type=Foo]'
+assert input_line([Foo(), print]) == (
+    '  Field required [type=missing, input_value=[Foo!, <built-in function print>], input_type=list]'
+)
+assert input_line(BadRepr()) == (
+    '  Field required [type=missing, input_value=<unprintable BadRepr object>, input_type=BadRepr]'
+)
+cyclic = {'a': 1}
+cyclic['self'] = cyclic
+assert input_line(cyclic) == "  Field required [type=missing, input_value={'a': 1, 'self': {...}}, input_type=dict]"
+assert input_line(ValueError('x')) == (
+    "  Field required [type=missing, input_value=ValueError('x'), input_type=ValueError]"
+)
+assert input_line("'" + 'é' * 1000 + '\n') == (
+    '  Field required [type=missing, input_value="\'ééééééééééé...éééééééééé\\n", input_type=str]'
+)
+assert input_line(b'"' + b'x' * 1000 + b"'\x00") == (
+    "  Field required [type=missing, input_value=b'\"xxxxxxxxxxxxxxxxxxxxxx...xxxxxxxxxxxxxxxxx\\'\\x00', input_type=bytes]"
+)
+assert input_line('a"' + '€' * 1000 + 'b') == (
+    "  Field required [type=missing, input_value='a\"€€€€€€€...€€€€€€€b', input_type=str]"
+)
+assert input_line('x' * 100_000) == (
+    "  Field required [type=missing, input_value='xxxxxxxxxxxxxxxxxxxxxxxx...xxxxxxxxxxxxxxxxxxxxxxx', input_type=str]"
+)
+
+# === A raised ValidationError has empty args ===
+try:
+    TypeAdapter(int).validate_python('x')
+    assert False, 'expected ValidationError'
+except ValidationError as exc:
+    raised = exc
+assert raised.args == ()
+
+# === Method argument errors ===
+for call, message in [
+    (lambda: raised.error_count(1), 'ValidationError.error_count() takes no arguments (1 given)'),
+    (lambda: raised.error_count(x=1), 'ValidationError.error_count() takes no keyword arguments'),
+    (lambda: raised.errors(True), 'ValidationError.errors() takes 0 positional arguments but 1 was given'),
+    (lambda: raised.errors(foo=1), "ValidationError.errors() got an unexpected keyword argument 'foo'"),
+    (lambda: raised.json(1), 'ValidationError.json() takes 0 positional arguments but 1 was given'),
+    (lambda: raised.json(foo=1), "ValidationError.json() got an unexpected keyword argument 'foo'"),
+    (lambda: raised.errors(include_url=None), "argument 'include_url': 'None' is not an instance of 'bool'"),
+    (
+        lambda: raised.errors(include_context=0),
+        "argument 'include_context': 'int' object is not an instance of 'bool'",
+    ),
+    (lambda: raised.json(include_input='a'), "argument 'include_input': 'str' object is not an instance of 'bool'"),
+]:
+    try:
+        call()
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == message
+try:
+    raised.json(indent=2**70)
+    assert False, 'expected OverflowError'
+except OverflowError as exc:
+    assert str(exc) == 'int too big to convert'
+try:
+    raised.nope()
+    assert False, 'expected AttributeError'
+except AttributeError as exc:
+    assert str(exc) == "'pydantic_core._pydantic_core.ValidationError' object has no attribute 'nope'"
+assert raised.json(indent=True, include_url=False) == (
+    '[\n {\n  "type": "int_parsing",\n  "loc": [],\n'
+    '  "msg": "Input should be a valid integer, unable to parse string as an integer",\n  "input": "x"\n }\n]'
+)
+assert raised.json(indent=False, include_url=False, include_input=False) == (
+    '[\n{\n"type": "int_parsing",\n"loc": [],\n'
+    '"msg": "Input should be a valid integer, unable to parse string as an integer"\n}\n]'
+)
+
+# === from_exception_data argument errors ===
+for kwargs, message in [
+    ({'input_type': 1}, "argument 'input_type': 'int' object is not an instance of 'str'"),
+    ({'input_type': None}, "argument 'input_type': 'None' is not an instance of 'str'"),
+    ({'hide_input': None}, "argument 'hide_input': 'None' is not an instance of 'bool'"),
+    ({'hide_input': 1}, "argument 'hide_input': 'int' object is not an instance of 'bool'"),
+    ({'line_errors': ({'type': 'missing'},)}, "argument 'line_errors': 'tuple' object is not an instance of 'list'"),
+    ({'line_errors': None}, "argument 'line_errors': 'None' is not an instance of 'list'"),
+    ({'line_errors': [{'type': 1}]}, '`type` should be a `str` or `PydanticCustomError`'),
+    ({'line_errors': [{'type': 'missing', 'loc': 'ab'}]}, 'Location must be a list or tuple of strings and ints'),
+    ({'line_errors': [{'type': 'missing', 'loc': None}]}, 'Location must be a list or tuple of strings and ints'),
+    ({'foo': 1}, "ValidationError.from_exception_data() got an unexpected keyword argument 'foo'"),
+]:
+    arguments = {'title': 'T', 'line_errors': []}
+    arguments.update(kwargs)
+    try:
+        ValidationError.from_exception_data(**arguments)
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == message
+try:
+    ValidationError.from_exception_data('T', [{'loc': ('a',), 'input': 'x'}])
+    assert False, 'expected KeyError'
+except KeyError as exc:
+    assert str(exc) == "'type'"
+# the entries are checked before the input type's value
+try:
+    ValidationError.from_exception_data('T', [1], input_type='xml')
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not an instance of 'dict'"
+entry = ValidationError.from_exception_data('T', [{'type': 'missing', 'loc': [True, False, -1], 'input': 1}]).errors()
+assert entry[0]['loc'] == (1, 0, -1)
+
+# === value_error and assertion_error take any object as their error ===
+exc = ValidationError.from_exception_data(
+    'T', [{'type': 'value_error', 'input': 1, 'ctx': {'error': ValueError('boom')}}]
+)
+assert exc.errors()[0]['msg'] == 'Value error, boom'
+error = exc.errors()[0].get('ctx', {})['error']
+assert isinstance(error, ValueError)
+assert str(error) == 'boom'
+for value, msg in [(5, 'Value error, 5'), (None, 'Value error, None'), (['x'], "Value error, ['x']")]:
+    exc = ValidationError.from_exception_data('T', [{'type': 'value_error', 'input': 1, 'ctx': {'error': value}}])
+    assert exc.errors()[0]['msg'] == msg
+    assert exc.errors()[0].get('ctx') == {'error': value}
+exc = ValidationError.from_exception_data('T', [{'type': 'assertion_error', 'input': 1, 'ctx': {'error': 5}}])
+assert exc.errors()[0]['msg'] == 'Assertion failed, 5'
+try:
+    ValidationError.from_exception_data('T', [{'type': 'value_error', 'input': 1}])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "ValueError: 'error' required in context"
+
+# === PydanticUserError's signature ===
+user_error = PydanticUserError('x', code='abc')
+assert str(user_error) == 'x\n\nFor further information visit https://errors.pydantic.dev/2.13/u/abc'
+assert repr(user_error) == "PydanticUserError('x')"
+assert user_error.args == ('x',)
+assert user_error.message == 'x'
+assert user_error.code == 'abc'
+user_error = PydanticUserError('x', code=None)
+assert str(user_error) == 'x'
+assert user_error.code is None
+schema_error = PydanticSchemaGenerationError('y')
+assert str(schema_error) == (
+    'y\n\nFor further information visit https://errors.pydantic.dev/2.13/u/schema-for-unknown-type'
+)
+assert repr(schema_error) == "PydanticSchemaGenerationError('y')"
+assert schema_error.args == ('y',)
+assert schema_error.code == 'schema-for-unknown-type'
+for call, message in [
+    (lambda: PydanticUserError('x'), "PydanticErrorMixin.__init__() missing 1 required keyword-only argument: 'code'"),
+    (
+        lambda: PydanticUserError(code='a'),
+        "PydanticErrorMixin.__init__() missing 1 required positional argument: 'message'",
+    ),
+    (
+        lambda: PydanticUserError('x', code=None, foo=1),
+        "PydanticErrorMixin.__init__() got an unexpected keyword argument 'foo'",
+    ),
+    (
+        lambda: PydanticSchemaGenerationError('x', code='a'),
+        "PydanticSchemaGenerationError.__init__() got an unexpected keyword argument 'code'",
+    ),
+    (
+        lambda: PydanticSchemaGenerationError(),
+        "PydanticSchemaGenerationError.__init__() missing 1 required positional argument: 'message'",
+    ),
+]:
+    try:
+        call()
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == message

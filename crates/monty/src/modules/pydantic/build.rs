@@ -9,6 +9,8 @@
 //! synchronously, which is where a forward reference to an undefined name
 //! fails.
 
+use std::fmt::Write;
+
 use ahash::AHashMap;
 
 use crate::{
@@ -17,7 +19,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, HeapData, HeapId},
+    heap::{DropGuard, HeapData, HeapId},
     intern::StaticStrings,
     modules::{
         ModuleFunctions,
@@ -27,12 +29,17 @@ use crate::{
                 Arena, DataclassValidator, FieldDefault, FieldValidator, LiteralValidator, NamedTupleValidator,
                 Validator, ValidatorId,
             },
-            errors::{ERROR_URL_PREFIX, dict_pairs},
-            snapshot::repr_string,
+            errors::{SCHEMA_GENERATION_CODE, dict_pairs, user_error},
+            snapshot::{repr_string, type_name},
         },
         typing::TypingFunctions,
     },
-    types::{Dict, Type, generic_alias::AliasOrigin, union::tuple_items},
+    types::{
+        Dict, LazyHeapSet, PyTrait, Type, TypeRef,
+        generic_alias::AliasOrigin,
+        instance::{class_dunder, namespace_member},
+        union::tuple_items,
+    },
     value::{Marker, Value},
 };
 
@@ -65,8 +72,10 @@ impl Builder<'_> {
         let mut guard = vm.recursion_guard()?;
         let vm = &mut *guard;
         match hint {
-            Value::None => Ok(self.arena.push(Validator::None)),
-            Value::Marker(Marker(StaticStrings::Any)) => Ok(self.arena.push(Validator::Any)),
+            Value::None => self.arena.push(Validator::None, vm),
+            Value::Marker(Marker(StaticStrings::Any)) => self.arena.push(Validator::Any, vm),
+            // The bare `typing.List` and friends: the builtin with `Any` items.
+            Value::Marker(form) if let Some(ty) = typing_container(*form) => self.builtin(ty, hint, vm),
             Value::Builtin(Builtins::Type(ty)) => self.builtin(*ty, hint, vm),
             Value::Ref(id) => self.heap_hint(*id, hint, vm),
             _ => Err(schema_error(hint, vm)),
@@ -88,20 +97,20 @@ impl Builder<'_> {
             Type::Time => Validator::Time,
             Type::TimeDelta => Validator::TimeDelta,
             Type::Decimal => Validator::Decimal,
-            Type::List => Validator::List(self.arena.push(Validator::Any)),
-            Type::Set => Validator::Set(self.arena.push(Validator::Any)),
-            Type::FrozenSet => Validator::FrozenSet(self.arena.push(Validator::Any)),
+            Type::List => Validator::List(self.arena.push(Validator::Any, vm)?),
+            Type::Set => Validator::Set(self.arena.push(Validator::Any, vm)?),
+            Type::FrozenSet => Validator::FrozenSet(self.arena.push(Validator::Any, vm)?),
             Type::Tuple => Validator::Tuple {
-                items: vec![self.arena.push(Validator::Any)],
+                items: vec![self.arena.push(Validator::Any, vm)?],
                 variadic: true,
             },
             Type::Dict => Validator::Dict {
-                key: self.arena.push(Validator::Any),
-                value: self.arena.push(Validator::Any),
+                key: self.arena.push(Validator::Any, vm)?,
+                value: self.arena.push(Validator::Any, vm)?,
             },
             _ => return Err(schema_error(hint, vm)),
         };
-        Ok(self.arena.push(validator))
+        self.arena.push(validator, vm)
     }
 
     /// A heap-allocated hint: a generic alias, a union, a `Literal` or
@@ -115,10 +124,13 @@ impl Builder<'_> {
                 defer_drop!(args, vm);
                 match origin {
                     AliasOrigin::Builtin(origin) => self.generic(origin, args, hint, vm),
-                    AliasOrigin::Special(Marker(StaticStrings::Literal)) => self.literal(args, vm),
+                    AliasOrigin::Special(Marker(StaticStrings::Literal)) => self.literal(args, hint, vm),
                     // The metadata is read once `Field()` exists; the type is validated as itself.
                     AliasOrigin::Special(Marker(StaticStrings::Annotated)) => self.walk(&args[0], vm),
-                    AliasOrigin::Special(_) => Err(schema_error(hint, vm)),
+                    AliasOrigin::Special(form) => match typing_container(form) {
+                        Some(origin) => self.generic(origin, args, hint, vm),
+                        None => Err(schema_error(hint, vm)),
+                    },
                 }
             }
             HeapData::Union(union) => {
@@ -144,15 +156,15 @@ impl Builder<'_> {
                         .collect::<RunResult<_>>()?,
                     defaults: class.defaults().len(),
                 };
-                Ok(self.arena.push(Validator::NamedTuple(validator)))
+                self.arena.push(Validator::NamedTuple(validator), vm)
             }
             _ => Err(schema_error(hint, vm)),
         }
     }
 
-    /// `list[T]`, `set[T]`, `frozenset[T]`, `tuple[...]`, `dict[K, V]`. As in
-    /// pydantic, surplus arguments are ignored, `dict` needs its two, and a
-    /// variadic tuple has one item before its `...`.
+    /// `list[T]`, `set[T]`, `frozenset[T]`, `tuple[...]`, `dict[K, V]` and
+    /// their `typing` aliases. As in pydantic, surplus arguments are ignored,
+    /// `dict` needs its two, and a variadic tuple has one item before its `...`.
     fn generic(&mut self, origin: Type, args: &[Value], hint: &Value, vm: &mut VM<'_>) -> RunResult<ValidatorId> {
         let validator = match (origin, args) {
             (Type::List, [item, ..]) => Validator::List(self.walk(item, vm)?),
@@ -187,7 +199,7 @@ impl Builder<'_> {
             }
             _ => return Err(schema_error(hint, vm)),
         };
-        Ok(self.arena.push(validator))
+        self.arena.push(validator, vm)
     }
 
     /// `X | Y`: a `nullable` around the other members when `None` is one of
@@ -200,19 +212,28 @@ impl Builder<'_> {
             choices.push(self.walk(member, vm)?);
         }
         let inner = match choices.len() {
-            0 => self.arena.push(Validator::None),
+            0 => self.arena.push(Validator::None, vm)?,
             1 => choices[0],
-            _ => self.arena.push(Validator::Union(choices)),
+            _ => self.arena.push(Validator::Union(choices), vm)?,
         };
-        Ok(if nullable && !matches!(self.arena.get(inner), Validator::None) {
-            self.arena.push(Validator::Nullable(inner))
+        if nullable && !matches!(self.arena.get(inner), Validator::None) {
+            self.arena.push(Validator::Nullable(inner), vm)
         } else {
-            inner
-        })
+            Ok(inner)
+        }
     }
 
-    /// `Literal[...]`: the choices as given, named by their reprs.
-    fn literal(&mut self, choices: &[Value], vm: &mut VM<'_>) -> RunResult<ValidatorId> {
+    /// `Literal[...]`: the choices as given, named by their reprs. pydantic's
+    /// schema asserts there is at least one.
+    fn literal(&mut self, choices: &[Value], hint: &Value, vm: &mut VM<'_>) -> RunResult<ValidatorId> {
+        if choices.is_empty() {
+            let repr = repr_string(hint, vm);
+            return Err(SimpleException::new_msg(
+                ExcType::AssertionError,
+                format!("literal \"expected\" cannot be empty, obj={repr}"),
+            )
+            .into());
+        }
         let mut reprs = Vec::with_capacity(choices.len());
         for (index, choice) in choices.iter().enumerate() {
             vm.heap.tracker.check_memory_time_every(index)?;
@@ -221,92 +242,70 @@ impl Builder<'_> {
         let expected = match reprs.split_last() {
             Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
             Some((last, _)) => last.clone(),
-            None => String::new(),
+            None => unreachable!("an empty `Literal` was refused above"),
         };
         let validator = LiteralValidator {
             choices: choices.iter().map(|choice| choice.clone_with_heap(vm.heap)).collect(),
             expected,
             name: format!("literal[{}]", reprs.join(",")),
         };
-        Ok(self.arena.push(Validator::Literal(validator)))
+        self.arena.push(Validator::Literal(validator), vm)
     }
 
     /// A dataclass, memoised by class: the slot is reserved before the fields
     /// are walked so a self-referential field finds it.
+    ///
+    /// `__dataclass_fields__` and `__post_init__` are looked up through the
+    /// bases, as pydantic reads them with `getattr`: a plain subclass of a
+    /// dataclass validates with its base's fields, and a mixin's hook runs.
+    /// The field hints are those of the class declaring the fields.
     fn dataclass(&mut self, class_id: HeapId, hint: &Value, vm: &mut VM<'_>) -> RunResult<ValidatorId> {
         if let Some(id) = self.classes.get(&class_id) {
             return Ok(*id);
         }
-        let id = self.arena.reserve();
+        let id = self.arena.reserve(vm)?;
         self.classes.insert(class_id, id);
-        let hints = type_hints(hint, vm)?;
+        let hints = type_hints(fields_owner(class_id, vm), vm)?;
         defer_drop!(hints, vm);
         let HeapData::Class(class) = vm.heap.get(class_id) else {
             unreachable!("is_dataclass_class checked a class")
         };
         let name = class.name().as_str(vm.interns).to_owned();
-        let post_init = class
-            .namespace()
-            .get_by_str("__post_init__", vm.heap, vm.interns)
-            .is_some();
-        let fields_dict = class
-            .namespace()
-            .get_by_str("__dataclass_fields__", vm.heap, vm.interns)
-            .map(|fields| fields.clone_with_heap(vm.heap));
-        let Some(fields_dict) = fields_dict else {
-            unreachable!("is_dataclass_class checked for __dataclass_fields__")
+        let post_init = class_dunder(class_id, StaticStrings::PostInit.into(), vm).is_some();
+        let Some(fields_dict) = class_dunder(class_id, StaticStrings::DataclassFields.into(), vm)
+            .map(|fields| fields.clone_with_heap(vm.heap))
+        else {
+            unreachable!("is_dataclass_class found __dataclass_fields__")
         };
         defer_drop!(fields_dict, vm);
         let Some(pairs) = dict_pairs(fields_dict, vm) else {
             return Err(schema_error(hint, vm));
         };
         defer_drop!(pairs, vm);
-        let mut fields = Vec::with_capacity(pairs.len());
+        let mut fields = DropGuard::new(Vec::with_capacity(pairs.len()), vm);
         for (key, field) in pairs {
+            let (fields, vm) = fields.as_parts_mut();
             // Field names come from the class's annotations, which are always interned.
             let Value::InternString(field_name) = key else {
-                fields.drop_with(vm);
                 return Err(schema_error(hint, vm));
             };
-            let field_name = *field_name;
-            let (default, factory) = match field {
-                Value::Ref(field_id) => match vm.heap.get(*field_id) {
-                    HeapData::DataclassField(field) => (
-                        field.default().map(|v| v.clone_with_heap(vm.heap)),
-                        field.default_factory().map(|v| v.clone_with_heap(vm.heap)),
-                    ),
-                    _ => (None, None),
-                },
-                _ => (None, None),
-            };
-            let default = match (default, factory) {
-                (Some(value), _) => FieldDefault::Value(value),
-                (None, Some(factory)) => FieldDefault::Factory(factory),
-                (None, None) => FieldDefault::Required,
-            };
-            let hint_value = dict_of(hints, vm)
-                .get_by_str(vm.interns.get_str(field_name), vm.heap, vm.interns)
+            let field_hint = dict_of(hints, vm)
+                .get_by_str(vm.interns.get_str(*field_name), vm.heap, vm.interns)
                 .map(|value| value.clone_with_heap(vm.heap));
-            let validator = match hint_value {
+            let validator = match field_hint {
                 Some(field_hint) => {
                     defer_drop!(field_hint, vm);
-                    match self.walk(field_hint, vm) {
-                        Ok(id) => id,
-                        Err(err) => {
-                            default.drop_with(vm);
-                            fields.drop_with(vm);
-                            return Err(err);
-                        }
-                    }
+                    self.walk(field_hint, vm)?
                 }
-                None => self.arena.push(Validator::Any),
+                None => self.arena.push(Validator::Any, vm)?,
             };
             fields.push(FieldValidator {
-                name: field_name,
+                name: *field_name,
                 validator,
-                default,
+                default: field_default(field, vm),
             });
         }
+        let (fields, vm) = fields.into_parts();
         self.arena.fill(
             id,
             Validator::Dataclass(DataclassValidator {
@@ -320,12 +319,64 @@ impl Builder<'_> {
     }
 }
 
-/// `typing.get_type_hints(cls, include_extras=True)`, run to completion: the
-/// evaluated field hints keyed by name.
-fn type_hints(class: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+/// The builtin container a `typing` alias stands for, as pydantic maps them:
+/// `List`, `Set`, `FrozenSet`, `Tuple`, `Dict`, and `Mapping`, whose schema is
+/// a plain `dict` one.
+fn typing_container(form: Marker) -> Option<Type> {
+    match form.0 {
+        StaticStrings::ListType => Some(Type::List),
+        StaticStrings::SetType => Some(Type::Set),
+        StaticStrings::FrozenSet => Some(Type::FrozenSet),
+        StaticStrings::TupleType => Some(Type::Tuple),
+        StaticStrings::DictType | StaticStrings::Mapping => Some(Type::Dict),
+        _ => None,
+    }
+}
+
+/// The class whose own namespace holds the `__dataclass_fields__` that
+/// `class_id` resolves: itself, or the first dataclass among its bases.
+fn fields_owner(class_id: HeapId, vm: &VM<'_>) -> HeapId {
+    let name: &str = StaticStrings::DataclassFields.into();
+    let declares = |id: HeapId| namespace_member(id, name, vm.heap, vm.interns).is_some();
+    let HeapData::Class(class) = vm.heap.get(class_id) else {
+        unreachable!("is_dataclass_class checked a class")
+    };
+    if declares(class_id) {
+        class_id
+    } else {
+        class
+            .ancestors()
+            .iter()
+            .find_map(|ancestor| match ancestor {
+                TypeRef::Class(id) if declares(*id) => Some(*id),
+                _ => None,
+            })
+            .expect("is_dataclass_class found __dataclass_fields__")
+    }
+}
+
+/// What a dataclass field gets when the input omits it, read from its `Field`.
+fn field_default(field: &Value, vm: &VM<'_>) -> FieldDefault {
+    match field {
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::DataclassField(field) => match (field.default(), field.default_factory()) {
+                (Some(value), _) => FieldDefault::Value(value.clone_with_heap(vm.heap)),
+                (None, Some(factory)) => FieldDefault::Factory(factory.clone_with_heap(vm.heap)),
+                (None, None) => FieldDefault::Required,
+            },
+            _ => FieldDefault::Required,
+        },
+        _ => FieldDefault::Required,
+    }
+}
+
+/// `typing.get_type_hints(cls, include_extras=True)` for the class `class_id`
+/// (borrowed), run to completion: the evaluated field hints keyed by name.
+fn type_hints(class_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value> {
     let get_type_hints = Value::ModuleFunction(ModuleFunctions::Typing(TypingFunctions::GetTypeHints));
+    vm.heap.inc_ref(class_id);
     let args = ArgValues::ArgsKargs {
-        args: vec![class.clone_with_heap(vm.heap)],
+        args: vec![Value::Ref(class_id)],
         kwargs: KwargsValues::Inline(vec![(
             vm.interns.intern_static(StaticStrings::IncludeExtras),
             Value::Bool(true),
@@ -347,66 +398,114 @@ fn dict_of<'a>(value: &Value, vm: &'a VM<'_>) -> &'a Dict {
 
 /// pydantic's `display_as_type(hint)`, the text `repr(TypeAdapter(hint))` shows:
 /// bare names for types and classes, `Union[int, NoneType]` for a union,
-/// `tuple[]` for `tuple[()]`.
-pub(crate) fn display_as_type(hint: &Value, vm: &mut VM<'_>) -> String {
+/// `tuple[]` for `tuple[()]`, a function's name, and the class of any other
+/// value (`Annotated[int, 'x']` shows `Annotated[int, str]`).
+///
+/// Written straight into `f`, polling the limits per hint and guarding the
+/// recursion, since metadata can nest arbitrarily deep or name an alias twice.
+pub(crate) fn display_as_type(
+    hint: &Value,
+    f: &mut impl Write,
+    vm: &mut VM<'_>,
+    heap_ids: &mut LazyHeapSet,
+) -> RunResult<()> {
+    let mut steps = 0;
+    display(hint, f, &mut steps, vm, heap_ids)
+}
+
+/// One level of [`display_as_type`]; `steps` counts the hints written so far.
+fn display(
+    hint: &Value,
+    f: &mut impl Write,
+    steps: &mut usize,
+    vm: &mut VM<'_>,
+    heap_ids: &mut LazyHeapSet,
+) -> RunResult<()> {
+    *steps = steps.wrapping_add(1);
+    vm.heap.tracker.check_memory_time_every(*steps)?;
+    let mut guard = vm.recursion_guard()?;
+    let vm = &mut *guard;
     match hint {
-        Value::None => "NoneType".to_owned(),
-        Value::Ellipsis => "...".to_owned(),
-        Value::Marker(Marker(name)) => <&'static str>::from(*name).to_owned(),
-        Value::Builtin(Builtins::Type(ty)) => ty.dunder_name().to_owned(),
+        Value::Ellipsis => f.write_str("...")?,
+        Value::Marker(Marker(name)) => f.write_str(name.into())?,
+        Value::Builtin(Builtins::Type(ty)) => f.write_str(ty.dunder_name())?,
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::GenericAlias(alias) => {
                 let (origin, args) = (alias.origin(), alias.args(vm.heap));
                 defer_drop!(args, vm);
-                let items = tuple_items(args, vm).ok().flatten().unwrap_or_default();
+                let items = tuple_items(args, vm)?.expect("GenericAlias::args is a tuple");
                 defer_drop!(items, vm);
                 match origin {
-                    AliasOrigin::Builtin(origin) => {
-                        let origin = origin.dunder_name().to_owned();
-                        format!("{origin}[{}]", display_all(items, vm))
+                    AliasOrigin::Builtin(origin) => write!(f, "{}[", origin.dunder_name())?,
+                    AliasOrigin::Special(Marker(form)) => write!(f, "{}[", <&'static str>::from(form))?,
+                }
+                let literal = origin == AliasOrigin::Special(Marker(StaticStrings::Literal));
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        f.write_str(", ")?;
                     }
-                    AliasOrigin::Special(Marker(StaticStrings::Literal)) => {
-                        let reprs: Vec<String> = items.iter().map(|item| repr_string(item, vm)).collect();
-                        format!("Literal[{}]", reprs.join(", "))
-                    }
-                    AliasOrigin::Special(Marker(form)) => {
-                        format!("{}[{}]", <&'static str>::from(form), display_all(items, vm))
+                    if literal {
+                        item.py_repr_fmt(f, vm, heap_ids)?;
+                    } else {
+                        display(item, f, steps, vm, heap_ids)?;
                     }
                 }
+                f.write_char(']')?;
             }
             HeapData::Union(union) => {
                 let args = union.args(vm.heap);
                 defer_drop!(args, vm);
-                let members = tuple_items(args, vm).ok().flatten().unwrap_or_default();
+                let members = tuple_items(args, vm)?.expect("Union::args is a tuple");
                 defer_drop!(members, vm);
-                format!("Union[{}]", display_all(members, vm))
+                f.write_str("Union[")?;
+                for (index, member) in members.iter().enumerate() {
+                    if index > 0 {
+                        f.write_str(", ")?;
+                    }
+                    display(member, f, steps, vm, heap_ids)?;
+                }
+                f.write_char(']')?;
             }
-            HeapData::Class(class) => class.name().as_str(vm.interns).to_owned(),
-            HeapData::NamedTupleClass(class) => class.name(vm.interns).to_owned(),
-            _ => repr_string(hint, vm),
+            HeapData::Class(class) => f.write_str(class.name().as_str(vm.interns))?,
+            HeapData::NamedTupleClass(class) => f.write_str(class.name(vm.interns))?,
+            _ => display_value(hint, f, vm)?,
         },
-        other => repr_string(other, vm),
+        _ => display_value(hint, f, vm)?,
     }
+    Ok(())
 }
 
-/// `display_as_type` of each hint, comma-separated.
-fn display_all(hints: &[Value], vm: &mut VM<'_>) -> String {
-    hints
-        .iter()
-        .map(|hint| display_as_type(hint, vm))
-        .collect::<Vec<_>>()
-        .join(", ")
+/// A hint that is a plain value: a function by its name, anything else by its
+/// class, as pydantic replaces a non-type with `obj.__class__`.
+fn display_value(value: &Value, f: &mut impl Write, vm: &VM<'_>) -> RunResult<()> {
+    let function = match value {
+        Value::DefFunction(id) => Some(*id),
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Closure(closure) => Some(closure.func_id),
+            HeapData::FunctionDefaults(defaults) => Some(defaults.func_id),
+            _ => None,
+        },
+        _ => None,
+    };
+    match (function, value) {
+        (Some(id), _) => f.write_str(vm.interns.get_str(vm.interns.get_function(id).name.name_id))?,
+        (None, Value::Builtin(Builtins::Function(function))) => write!(f, "{function}")?,
+        (None, Value::ModuleFunction(function)) => write!(f, "{function}")?,
+        (None, _) => f.write_str(&type_name(value, vm))?,
+    }
+    Ok(())
 }
 
 /// pydantic's `PydanticSchemaGenerationError` for a hint with no validator.
 fn schema_error(hint: &Value, vm: &mut VM<'_>) -> RunError {
     let repr = repr_string(hint, vm);
-    SimpleException::new_msg(
+    let message = format!(
+        "Unable to generate pydantic-core schema for {repr}. Set `arbitrary_types_allowed=True` in the model_config to ignore this error or implement `__get_pydantic_core_schema__` on your type to fully support it.\n\nIf you got this error by calling handler(<some type>) within `__get_pydantic_core_schema__` then you likely need to call `handler.generate_schema(<some type>)` since we do not call `__get_pydantic_core_schema__` on `<some type>` otherwise to avoid infinite recursion."
+    );
+    user_error(
         ExcType::PydanticSchemaGenerationError,
-        format!(
-            "Unable to generate pydantic-core schema for {repr}. Set `arbitrary_types_allowed=True` in the model_config to ignore this error or implement `__get_pydantic_core_schema__` on your type to fully support it.\n\nIf you got this error by calling handler(<some type>) within `__get_pydantic_core_schema__` then you likely need to call `handler.generate_schema(<some type>)` since we do not call `__get_pydantic_core_schema__` on `<some type>` otherwise to avoid infinite recursion.\n\nFor further information visit {}u/schema-for-unknown-type",
-            ERROR_URL_PREFIX.trim_end_matches("v/")
-        ),
+        message,
+        Some(SCHEMA_GENERATION_CODE.to_owned()),
     )
     .into()
 }

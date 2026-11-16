@@ -112,6 +112,17 @@ assert invalid(TypeAdapter(list[list[Any]] | int), '[ ' * 201 + '1' + ']' * 201)
 )
 assert invalid(TypeAdapter(Any), '{"a":' * 201 + '1' + '}' * 201) == 'recursion limit exceeded at line 1 column 1006'
 assert depth(TypeAdapter(Any).validate_json('[' * 200 + '1' + ']' * 200)) == 200
+# an item skipped unread, past a tuple's length, counts its depth from the document's root
+assert invalid(TypeAdapter(tuple[int]), '[1,' + '[' * 201 + '1' + ']' * 201 + ']') == (
+    'recursion limit exceeded at line 1 column 204'
+)
+assert invalid(TypeAdapter(tuple[int]), '[1,' + '{"a":' * 201 + '1' + '}' * 201 + ']') == (
+    'recursion limit exceeded at line 1 column 1004'
+)
+assert invalid(TypeAdapter(tuple[int]), '[1,[[1,2],' + '[' * 201 + ' 1' + ']' * 201 + ']]') == (
+    'recursion limit exceeded at line 1 column 210'
+)
+assert errors(TypeAdapter(tuple[int]), '[1,' + '[' * 199 + '1' + ']' * 199 + ']')[0]['type'] == 'too_long'
 
 # === Scalars: JSON mode coercions ===
 assert Int.validate_json('"3"') == 3
@@ -611,3 +622,75 @@ try:
     assert False, 'expected a TypeError'
 except TypeError as exc:
     assert str(exc) == "TypeAdapter.validate_json() got an unexpected keyword argument 'foo'"
+
+
+# === ValidationError.json(): inputs are written as `dump_json` infers them ===
+def input_json(value):
+    try:
+        Int.validate_python(value)
+    except ValidationError as exc:
+        text = exc.json(include_url=False)
+        return text[text.index('"input":') + 8 : text.rindex('}')]
+    assert False, 'expected a ValidationError'
+
+
+def json_error(value):
+    try:
+        Int.validate_python(value)
+    except ValidationError as exc:
+        try:
+            exc.json()
+        except ValueError as error:
+            return str(error)
+        assert False, 'expected a ValueError'
+    assert False, 'expected a ValidationError'
+
+
+# keys: a tuple's items joined by commas, the rest as their text
+assert input_json({(1, 2): 1, (1, (2, 3)): 2, (): 3, ('a', None): 4}) == '{"1,2":1,"1,2,3":2,"":3,"a,None":4}'
+assert (
+    input_json({timedelta(1): 1, Decimal('1.5'): 2, date(2020, 1, 2): 3, time(1, 2): 4, datetime(2020, 1, 1, 1): 5})
+    == '{"P1D":1,"1.5":2,"2020-01-02":3,"01:02:00":4,"2020-01-01T01:00:00":5}'
+)
+assert input_json({None: 1, True: 2, 1.5: 3, 1e16: 4, 1e-7: 5, float('inf'): 6, float('nan'): 7, 2**70: 8}) == (
+    '{"None":1,"true":2,"1.5":3,"1e+16":4,"1e-07":5,"inf":6,"nan":7,"1180591620717411303424":8}'
+)
+assert input_json({1j: 1, 1 + 2j: 2}) == '{"1j":1,"1+2j":2}'
+# values without a JSON type of their own write their text
+assert input_json(1 + 2j) == '"1+2j"'
+assert input_json([1j, -1 - 2j, complex(-0.0, -0.0), 1.5e20 + 1j]) == '["1j","-1-2j","-0j","150000000000000000000+1j"]'
+assert input_json(ValueError('x')) == '"x"'
+assert input_json(ValueError()) == '""'
+assert input_json(KeyError('k')) == '"\'k\'"'
+assert input_json(...) == '"Ellipsis"'
+assert input_json([float('inf'), float('nan'), b'ab']) == '[Infinity,NaN,"ab"]'
+# a container met again inside itself writes "..."
+loop = []
+loop.append(loop)
+assert input_json(loop) == '["..."]'
+looped = {}
+looped['x'] = looped
+assert input_json(looped) == '{"x":"..."}'
+# what cannot be written is a ValueError
+assert json_error({frozenset({1}): 1}) == (
+    'Error serializing ValidationError to JSON: TypeError: `frozenset` not valid as object key'
+)
+assert json_error({(1, frozenset()): 1}) == (
+    'Error serializing ValidationError to JSON: TypeError: `frozenset` not valid as object key'
+)
+assert (
+    json_error(b'\xff') == 'Error serializing ValidationError to JSON: invalid utf-8 sequence of 1 bytes from index 0'
+)
+assert json_error({b'\xff': 1}) == (
+    "Error serializing ValidationError to JSON: UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: "
+    'invalid utf-8'
+)
+# the input keeps its type for `errors()` and its repr for `str()`
+try:
+    Int.validate_python(1 + 2j)
+    assert False, 'expected a ValidationError'
+except ValidationError as exc:
+    assert exc.errors()[0]['input'] == 1 + 2j
+    assert str(exc).splitlines()[1] == (
+        '  Input should be a valid integer [type=int_type, input_value=(1+2j), input_type=complex]'
+    )

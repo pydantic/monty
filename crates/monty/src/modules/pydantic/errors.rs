@@ -1,14 +1,23 @@
 //! `pydantic_core.ValidationError`: collecting line errors during validation,
-//! raising the exception, and the methods sandboxed code reads it through.
+//! raising the exception, and the methods sandboxed code reads it through;
+//! plus the `PydanticUserError` constructors.
 //!
 //! Validators accumulate [`LineError`]s holding live input values; building the exception
 //! snapshots each input (see `snapshot.rs`) and renders the messages, so the
 //! exception itself is plain data. `str(exc)` is rendered once at that point
 //! and stored as the exception's message; `errors()`, `error_count()`, `json()`
-//! and `title` read the stored [`ValidationErrorData`].
+//! and `title` read the stored [`ValidationErrorData`], shared behind an `Arc`
+//! so raising and reading never copy the snapshots.
+
+use std::{fmt, sync::Arc};
 
 use jiter::JiterError;
-use monty_types::{ExcData, LocItem, ResourceError, ValidationErrorData, ValidationInputType, ValidationLineError};
+use monty_types::{
+    ExcData, LocItem, MontyObject, PydanticUserErrorData, ResourceError, ValidationErrorData, ValidationInputType,
+    ValidationLineError,
+    unstable::{self, MontyNode},
+};
+use num_bigint::{BigInt, Sign};
 use smallvec::SmallVec;
 
 use crate::{
@@ -16,20 +25,26 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData},
     intern::StaticStrings,
     modules::pydantic::{
         catalogue::ErrorType,
         json_writer::{InfNan, JsonWriter},
-        snapshot::{Snapshotter, repr_string, restore_value, type_name},
+        snapshot::{Snapshotter, restore_value, str_string, try_repr_string, type_name},
     },
-    types::{Dict, List, PyTrait, allocate_string, allocate_tuple},
+    types::{Dict, List, allocate_string, allocate_tuple},
     value::{EitherStr, Value},
 };
 
 /// The documentation link every line error ends with, for the pydantic
 /// version whose messages the catalogue copies.
 pub(crate) const ERROR_URL_PREFIX: &str = "https://errors.pydantic.dev/2.13/v/";
+
+/// The documentation link a `PydanticUserError` with a `code` ends with.
+const USER_ERROR_URL_PREFIX: &str = "https://errors.pydantic.dev/2.13/u/";
+
+/// The fixed `code` of `PydanticSchemaGenerationError`.
+pub(crate) const SCHEMA_GENERATION_CODE: &str = "schema-for-unknown-type";
 
 /// One failure found during validation, before it is snapshotted.
 ///
@@ -115,7 +130,7 @@ pub(crate) fn into_run_error(
     vm: &mut VM<'_>,
 ) -> RunError {
     match error {
-        ValError::Lines(lines) => build(title, input_type, lines, false, vm).into(),
+        ValError::Lines(lines) => build(title, input_type, lines, false, vm).map_or_else(|err| err, RunError::from),
         ValError::Run(err) => err,
         ValError::Json(_) => unreachable!("validate_json reports malformed JSON before raising"),
     }
@@ -125,7 +140,7 @@ pub(crate) fn into_run_error(
 /// the whole document, as pydantic raises before any validation.
 pub(crate) fn json_invalid_error(title: &str, description: String, document: Value, vm: &mut VM<'_>) -> RunError {
     let line = LineError::owned(ErrorType::JsonInvalid { error: description }, document);
-    build(title, ValidationInputType::Json, vec![line], false, vm).into()
+    build(title, ValidationInputType::Json, vec![line], false, vm).map_or_else(|err| err, RunError::from)
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for LineError {
@@ -134,46 +149,40 @@ impl<C: ContainsHeap> DropWithContext<C> for LineError {
     }
 }
 
-/// Builds the `ValidationError` for `lines`, snapshotting each input under one shared budget.
+/// Builds the `ValidationError` for `lines`, snapshotting each input under one
+/// shared budget. Fails only with a resource error raised while snapshotting.
 fn build(
     title: &str,
     input_type: ValidationInputType,
     lines: Vec<LineError>,
     hide_input: bool,
     vm: &mut VM<'_>,
-) -> SimpleException {
+) -> RunResult<SimpleException> {
+    defer_drop!(lines, vm);
     let mut snapshotter = Snapshotter::new();
-    let line_errors = lines
-        .into_iter()
-        .map(|line| {
-            let LineError {
-                error_type,
-                mut loc,
-                input,
-            } = line;
-            defer_drop!(input, vm);
-            loc.reverse();
-            ValidationLineError {
-                msg: error_type.render_message(input_type),
-                ctx: error_type
-                    .context()
-                    .into_iter()
-                    .map(|(key, value)| (key.to_owned(), value))
-                    .collect(),
-                error_type: error_type.type_str().to_owned(),
-                loc,
-                input_type_name: type_name(input, vm),
-                input: snapshotter.snapshot(input, vm),
-            }
-        })
-        .collect();
+    let mut line_errors = Vec::with_capacity(lines.len());
+    for line in lines {
+        let error_type = &line.error_type;
+        line_errors.push(ValidationLineError {
+            msg: error_type.render_message(input_type),
+            ctx: error_type
+                .context()
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value))
+                .collect(),
+            error_type: error_type.type_str().to_owned(),
+            loc: line.loc.iter().rev().cloned().collect(),
+            input_type_name: type_name(&line.input, vm),
+            input: snapshotter.snapshot(&line.input, vm)?,
+        });
+    }
     let data = ValidationErrorData {
         title: title.to_owned(),
         input_type,
         line_errors,
     };
     let message = display(&data, hide_input);
-    SimpleException::new_msg(ExcType::ValidationError, message).with_data(ExcData::Validation(Box::new(data)))
+    Ok(SimpleException::new_msg(ExcType::ValidationError, message).with_data(ExcData::Validation(Arc::new(data))))
 }
 
 /// `str(exc)`: the count line, then each line error as [`pretty_line`] renders it.
@@ -204,7 +213,15 @@ fn pretty_line(out: &mut String, line: &ValidationLineError, hide_input: bool) {
     out.push_str(&line.error_type);
     if !hide_input && line.error_type != "default_factory_not_called" {
         out.push_str(", input_value=");
-        write_truncated(out, &line.input.py_repr(), 50);
+        let mut repr = TruncatedRepr::default();
+        let shortened = shorten_leaf(&line.input);
+        // Writing into `TruncatedRepr` never fails.
+        let _ = shortened
+            .as_ref()
+            .unwrap_or(&line.input)
+            .as_ref()
+            .write_unmarked_repr(&mut repr);
+        repr.finish(out);
         out.push_str(", input_type=");
         out.push_str(&line.input_type_name);
     }
@@ -212,6 +229,32 @@ fn pretty_line(out: &mut String, line: &ValidationLineError, hide_input: bool) {
     out.push_str("\n    For further information visit ");
     out.push_str(ERROR_URL_PREFIX);
     out.push_str(&line.error_type);
+}
+
+/// A long `str` or `bytes` input cut to its two ends, so `str(exc)` need not
+/// render a huge repr only to keep 50 bytes of it; `None` for anything else.
+///
+/// The middle keeps one of each quote the whole value holds, so the repr picks
+/// the same quote character; `TruncatedRepr` then cuts that middle away.
+fn shorten_leaf(input: &MontyObject) -> Option<MontyObject> {
+    const KEEP: usize = 64;
+    match unstable::node(input.as_ref()) {
+        MontyNode::String(text) if text.len() > 4 * KEEP => {
+            let head = &text[..ceil_char_boundary(text, KEEP)];
+            let tail = &text[floor_char_boundary(text, text.len() - KEEP)..];
+            let quotes = ['\'', '"'].into_iter().filter(|&quote| text.contains(quote));
+            Some(MontyObject::string(
+                head.chars().chain(quotes).chain(tail.chars()).collect::<String>(),
+            ))
+        }
+        MontyNode::Bytes(bytes) if bytes.len() > 4 * KEEP => {
+            let middle: Vec<u8> = b"'\"".iter().copied().filter(|quote| bytes.contains(quote)).collect();
+            Some(MontyObject::bytes(
+                [&bytes[..KEEP], &middle, &bytes[bytes.len() - KEEP..]].concat(),
+            ))
+        }
+        _ => None,
+    }
 }
 
 /// A location step as the dotted path shows it: a key holding a dot is quoted.
@@ -223,15 +266,60 @@ fn loc_item_display(item: &LocItem) -> String {
     }
 }
 
-/// Writes `text` whole up to `max_len` bytes, else its two ends around `...`.
-fn write_truncated(out: &mut String, text: &str, max_len: usize) {
-    if text.len() > max_len {
-        let mid = max_len.div_ceil(2);
-        out.push_str(&text[..floor_char_boundary(text, mid)]);
-        out.push_str("...");
-        out.push_str(&text[ceil_char_boundary(text, text.len() - (mid - 1))..]);
-    } else {
-        out.push_str(text);
+/// Collects a `repr()` as `str(exc)` shows it, whole up to [`Self::MAX_LEN`]
+/// bytes, else its two ends around `...`, keeping only the ends of a huge input.
+#[derive(Default)]
+struct TruncatedRepr {
+    /// The first bytes written, enough to hold a repr that needs no cut.
+    head: String,
+    /// The last bytes written, starting on a char boundary.
+    tail: String,
+    /// Bytes written in all.
+    len: usize,
+}
+
+impl TruncatedRepr {
+    /// pydantic's limit on an `input_value` before it is cut.
+    const MAX_LEN: usize = 50;
+    /// Bytes `tail` keeps: the kept end plus room to reach a char boundary.
+    const TAIL_LEN: usize = 32;
+    /// Size `tail` grows to before it is trimmed back, so trimming is rare.
+    const TAIL_TRIM_AT: usize = 4096;
+
+    /// Appends the repr, cut in the middle if it is over [`Self::MAX_LEN`].
+    fn finish(self, out: &mut String) {
+        if self.len <= Self::MAX_LEN {
+            out.push_str(&self.head);
+        } else {
+            let mid = Self::MAX_LEN.div_ceil(2);
+            out.push_str(&self.head[..floor_char_boundary(&self.head, mid)]);
+            out.push_str("...");
+            let tail_start = self.len - self.tail.len();
+            let cut = (self.len - (mid - 1)) - tail_start;
+            out.push_str(&self.tail[ceil_char_boundary(&self.tail, cut)..]);
+        }
+    }
+}
+
+impl fmt::Write for TruncatedRepr {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.len += s.len();
+        if self.head.len() <= Self::MAX_LEN {
+            let room = Self::MAX_LEN + 1 - self.head.len();
+            self.head.push_str(&s[..ceil_char_boundary(s, room.min(s.len()))]);
+        }
+        if s.len() >= Self::TAIL_LEN {
+            self.tail.clear();
+            self.tail
+                .push_str(&s[floor_char_boundary(s, s.len() - Self::TAIL_LEN)..]);
+        } else {
+            self.tail.push_str(s);
+            if self.tail.len() > Self::TAIL_TRIM_AT {
+                let start = floor_char_boundary(&self.tail, self.tail.len() - Self::TAIL_LEN);
+                self.tail.drain(..start);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -257,7 +345,7 @@ pub(crate) fn getattr(data: &ValidationErrorData, attr: &EitherStr, vm: &VM<'_>)
 
 /// Arguments of `ValidationError.errors(*, include_url=True, include_context=True, include_input=True)`.
 #[derive(FromArgs)]
-#[from_args(name = "errors", style = def)]
+#[from_args(name = "ValidationError.errors", style = def)]
 #[expect(clippy::struct_field_names, reason = "the fields are pydantic's keyword names")]
 struct ErrorsArgs {
     #[from_args(kw_only, default = Value::Bool(true))]
@@ -270,7 +358,7 @@ struct ErrorsArgs {
 
 /// Arguments of `ValidationError.json(*, indent=None, include_url=True, include_context=True, include_input=True)`.
 #[derive(FromArgs)]
-#[from_args(name = "json", style = def)]
+#[from_args(name = "ValidationError.json", style = def)]
 struct JsonArgs {
     #[from_args(kw_only, default = Value::None)]
     indent: Value,
@@ -280,11 +368,6 @@ struct JsonArgs {
     include_context: Value,
     #[from_args(kw_only, default = Value::Bool(true))]
     include_input: Value,
-}
-
-/// `error_count()`: the number of line errors.
-pub(crate) fn error_count(data: &ValidationErrorData) -> Value {
-    Value::Int(i64::try_from(data.line_errors.len()).unwrap_or(i64::MAX))
 }
 
 /// Which optional entries `errors()` and `json()` include.
@@ -312,8 +395,9 @@ pub(crate) fn call_method(
             errors_list(data, &includes, vm).map(CallResult::Value)
         }
         Some(StaticStrings::ErrorCount) => {
-            args.check_zero_args("error_count", vm.heap)?;
-            Ok(CallResult::Value(error_count(data)))
+            args.check_zero_args("ValidationError.error_count", vm.heap)?;
+            let count = i64::try_from(data.line_errors.len()).unwrap_or(i64::MAX);
+            Ok(CallResult::Value(Value::Int(count)))
         }
         Some(StaticStrings::Json) => {
             let JsonArgs {
@@ -322,53 +406,74 @@ pub(crate) fn call_method(
                 include_context,
                 include_input,
             } = JsonArgs::from_args(args, vm)?;
-            defer_drop!(indent, vm);
-            let indent = match indent {
-                Value::None => None,
-                Value::Int(n) => Some(
-                    usize::try_from(*n)
-                        .map_err(|_| ExcType::overflow_error("can't convert negative int to unsigned"))?,
-                ),
-                other => {
-                    return Err(ExcType::type_error(format!(
-                        "argument 'indent': '{}' object cannot be interpreted as an integer",
-                        other.py_type_name(vm)
-                    )));
-                }
+            let indent = {
+                defer_drop!(indent, vm);
+                json_indent(indent, vm)
             };
-            let includes = includes(include_url, include_context, include_input, vm)?;
-            errors_json(data, indent, &includes, vm).map(CallResult::Value)
+            let includes = includes(include_url, include_context, include_input, vm);
+            errors_json(data, indent?, &includes?, vm).map(CallResult::Value)
         }
-        _ => Err(ExcType::attribute_error_method("ValidationError", attr, args, vm)),
+        _ => {
+            let type_name: &'static str = ExcType::ValidationError.into();
+            Err(ExcType::attribute_error_method(type_name, attr, args, vm))
+        }
     }
 }
 
-/// Coerces the three `include_*` flags to booleans, releasing them.
+/// An `indent=` argument as PyO3 extracts a `usize`: `None`, a bool or a non-negative int.
+pub(crate) fn json_indent(indent: &Value, vm: &VM<'_>) -> RunResult<Option<usize>> {
+    let too_big = |value: &BigInt| {
+        if value.sign() == Sign::Minus {
+            ExcType::overflow_error_negative_unsigned()
+        } else {
+            ExcType::overflow_error("int too big to convert")
+        }
+    };
+    match indent {
+        Value::None => Ok(None),
+        Value::Bool(b) => Ok(Some(usize::from(*b))),
+        Value::Int(n) => usize::try_from(*n)
+            .map(Some)
+            .map_err(|_| ExcType::overflow_error_negative_unsigned()),
+        Value::InternLongInt(id) => Err(too_big(vm.interns.get_long_int(*id))),
+        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => Err(too_big(li.inner())),
+        other => Err(ExcType::type_error_arg_not_integer("indent", &other.py_type_name(vm))),
+    }
+}
+
+/// Checks the three `include_*` flags are bools, as PyO3 does, releasing them.
 fn includes(url: Value, context: Value, input: Value, vm: &mut VM<'_>) -> RunResult<Includes> {
     defer_drop!(url, vm);
     defer_drop!(context, vm);
     defer_drop!(input, vm);
     Ok(Includes {
-        url: url.py_bool(vm)?,
-        context: context.py_bool(vm)?,
-        input: input.py_bool(vm)?,
+        url: bool_arg("include_url", url, vm)?,
+        context: bool_arg("include_context", context, vm)?,
+        input: bool_arg("include_input", input, vm)?,
     })
+}
+
+/// A `bool` argument as PyO3 extracts one: no truthiness, only `True` or `False`.
+pub(crate) fn bool_arg(name: &str, value: &Value, vm: &VM<'_>) -> RunResult<bool> {
+    match value {
+        Value::Bool(flag) => Ok(*flag),
+        other => Err(ExcType::type_error_arg_not_instance(
+            name,
+            &other.py_type_name(vm),
+            "bool",
+        )),
+    }
 }
 
 /// `errors()`: one dict per line error with `type`, `loc`, `msg` and the
 /// optional `input`, `ctx` and `url` entries.
 fn errors_list(data: &ValidationErrorData, includes: &Includes, vm: &mut VM<'_>) -> RunResult<Value> {
-    let mut items = Vec::with_capacity(data.line_errors.len());
+    let mut guard = DropGuard::new(Vec::with_capacity(data.line_errors.len()), vm);
+    let (items, vm) = guard.as_parts_mut();
     for line in &data.line_errors {
-        let dict = match line_dict(line, includes, vm) {
-            Ok(dict) => dict,
-            Err(err) => {
-                items.drop_with(vm);
-                return Err(err);
-            }
-        };
-        items.push(dict);
+        items.push(line_dict(line, includes, vm)?);
     }
+    let (items, vm) = guard.into_parts();
     Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))))
 }
 
@@ -383,7 +488,7 @@ fn line_dict(line: &ValidationLineError, includes: &Includes, vm: &mut VM<'_>) -
             LocItem::Index(index) => Value::Int(*index),
         })
         .collect();
-    let mut pairs = vec![
+    let pairs = vec![
         (
             key(StaticStrings::TypeKey, vm),
             allocate_string(line.error_type.clone(), vm.heap),
@@ -391,34 +496,14 @@ fn line_dict(line: &ValidationLineError, includes: &Includes, vm: &mut VM<'_>) -
         (key(StaticStrings::Loc, vm), allocate_tuple(loc, vm.heap)),
         (key(StaticStrings::Msg, vm), allocate_string(line.msg.clone(), vm.heap)),
     ];
+    let mut guard = DropGuard::new(pairs, vm);
+    let (pairs, vm) = guard.as_parts_mut();
     if includes.input {
-        match restore_value(&line.input, vm) {
-            Ok(input) => pairs.push((key(StaticStrings::Input, vm), input)),
-            Err(err) => {
-                pairs.drop_with(vm);
-                return Err(err);
-            }
-        }
+        let input = restore_value(&line.input, vm)?;
+        pairs.push((key(StaticStrings::Input, vm), input));
     }
     if includes.context && !line.ctx.is_empty() {
-        let mut ctx_pairs = Vec::with_capacity(line.ctx.len());
-        for (name, value) in &line.ctx {
-            match restore_value(value, vm) {
-                Ok(value) => ctx_pairs.push((allocate_string(name.clone(), vm.heap), value)),
-                Err(err) => {
-                    ctx_pairs.drop_with(vm);
-                    pairs.drop_with(vm);
-                    return Err(err);
-                }
-            }
-        }
-        let ctx = match Dict::from_pairs(ctx_pairs, vm) {
-            Ok(dict) => Value::Ref(vm.heap.allocate(HeapData::Dict(dict))),
-            Err(err) => {
-                pairs.drop_with(vm);
-                return Err(err);
-            }
-        };
+        let ctx = ctx_dict(&line.ctx, vm)?;
         pairs.push((key(StaticStrings::Ctx, vm), ctx));
     }
     if includes.url {
@@ -427,6 +512,20 @@ fn line_dict(line: &ValidationLineError, includes: &Includes, vm: &mut VM<'_>) -
             allocate_string(format!("{ERROR_URL_PREFIX}{}", line.error_type), vm.heap),
         ));
     }
+    let (pairs, vm) = guard.into_parts();
+    let dict = Dict::from_pairs(pairs, vm)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
+}
+
+/// The `ctx` dict of one line error, each value restored from its snapshot.
+fn ctx_dict(ctx: &[(String, MontyObject)], vm: &mut VM<'_>) -> RunResult<Value> {
+    let mut guard = DropGuard::new(Vec::with_capacity(ctx.len()), vm);
+    let (pairs, vm) = guard.as_parts_mut();
+    for (name, value) in ctx {
+        let value = restore_value(value, vm)?;
+        pairs.push((allocate_string(name.clone(), vm.heap), value));
+    }
+    let (pairs, vm) = guard.into_parts();
     let dict = Dict::from_pairs(pairs, vm)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
 }
@@ -483,14 +582,14 @@ fn errors_json(
 
 /// Arguments of `ValidationError.from_exception_data(title, line_errors, input_type='python', hide_input=False)`.
 #[derive(FromArgs)]
-#[from_args(name = "from_exception_data", style = def)]
+#[from_args(name = "ValidationError.from_exception_data", style = def)]
 struct FromExceptionDataArgs {
     title: Value,
     line_errors: Value,
-    #[from_args(default = Value::None)]
-    input_type: Value,
-    #[from_args(default = Value::Bool(false))]
-    hide_input: Value,
+    #[from_args(default)]
+    input_type: Option<Value>,
+    #[from_args(default)]
+    hide_input: Option<Value>,
 }
 
 /// The `ValidationError` type's class methods: only `from_exception_data`;
@@ -508,6 +607,10 @@ pub(crate) fn class_method(
 }
 
 /// `ValidationError.from_exception_data()`: builds an instance from `errors()`-style dicts.
+///
+/// Checks run in pydantic's order: the typed arguments, then the entries, then
+/// the `input_type` value. pydantic panics on a non-`str` title, where this
+/// raises a `TypeError` once the other arguments pass.
 fn from_exception_data(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let FromExceptionDataArgs {
         title,
@@ -519,47 +622,48 @@ fn from_exception_data(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult
     defer_drop!(line_errors, vm);
     defer_drop!(input_type, vm);
     defer_drop!(hide_input, vm);
-    let Some(title) = title.as_str(vm).map(str::to_owned) else {
-        return Err(ExcType::type_error(format!(
-            "argument 'title': '{}' object is not an instance of 'str'",
-            title.py_type_name(vm)
-        )));
+    let entries = list_items(line_errors, vm)
+        .ok_or_else(|| ExcType::type_error_arg_not_instance("line_errors", &line_errors.py_type_name(vm), "list"))?;
+    defer_drop!(entries, vm);
+    let mode = match input_type {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str(vm)
+                .map(str::to_owned)
+                .ok_or_else(|| ExcType::type_error_arg_not_instance("input_type", &value.py_type_name(vm), "str"))?,
+        ),
     };
-    let input_type = match input_type.as_str(vm) {
+    let hide_input = match hide_input {
+        None => false,
+        Some(value) => bool_arg("hide_input", value, vm)?,
+    };
+    let title = title
+        .as_str(vm)
+        .map(str::to_owned)
+        .ok_or_else(|| ExcType::type_error_arg_not_instance("title", &title.py_type_name(vm), "str"))?;
+    let mut lines = DropGuard::new(Vec::with_capacity(entries.len()), vm);
+    let (lines_mut, vm) = lines.as_parts_mut();
+    for entry in entries {
+        lines_mut.push(line_from_dict(entry, vm)?);
+    }
+    let input_type = match mode.as_deref() {
         None | Some("python") => ValidationInputType::Python,
         Some("json") => ValidationInputType::Json,
         Some(other) => return Err(ExcType::value_error(format!("Invalid error mode: {other}"))),
     };
-    let hide_input = hide_input.py_bool(vm)?;
-    let entries = sequence_items(line_errors, vm).ok_or_else(|| {
-        ExcType::type_error(format!(
-            "argument 'line_errors': '{}' object is not an instance of 'list'",
-            line_errors.py_type_name(vm)
-        ))
-    })?;
-    defer_drop!(entries, vm);
-    let mut lines = Vec::with_capacity(entries.len());
-    for entry in entries {
-        match line_from_dict(entry, vm) {
-            Ok(line) => lines.push(line),
-            Err(err) => {
-                lines.drop_with(vm);
-                return Err(err);
-            }
-        }
-    }
-    let exc = build(&title, input_type, lines, hide_input, vm);
+    let (lines, vm) = lines.into_parts();
+    let exc = build(&title, input_type, lines, hide_input, vm)?;
     Ok(CallResult::Value(Value::Ref(
         vm.heap.allocate(HeapData::Exception(exc)),
     )))
 }
 
-/// Owned copies of a list's or tuple's items; `None` for anything else.
-fn sequence_items(value: &Value, vm: &mut VM<'_>) -> Option<Vec<Value>> {
+/// Owned copies of a list's items; `None` for anything else, a tuple included.
+fn list_items(value: &Value, vm: &VM<'_>) -> Option<Vec<Value>> {
     let Value::Ref(id) = value else { return None };
     match vm.heap.get(*id) {
         HeapData::List(list) => Some(list.as_slice().iter().map(|v| v.clone_with_heap(vm.heap)).collect()),
-        HeapData::Tuple(tuple) => Some(tuple.as_slice().iter().map(|v| v.clone_with_heap(vm.heap)).collect()),
         _ => None,
     }
 }
@@ -567,74 +671,72 @@ fn sequence_items(value: &Value, vm: &mut VM<'_>) -> Option<Vec<Value>> {
 /// One `from_exception_data` entry: a dict with `type`, `loc`, `input` and an optional `ctx`.
 fn line_from_dict(entry: &Value, vm: &mut VM<'_>) -> RunResult<LineError> {
     if !matches!(entry, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_))) {
-        return Err(ExcType::type_error(format!(
-            "'{}' object is not an instance of 'dict'",
-            entry.py_type_name(vm)
-        )));
+        return Err(ExcType::type_error_not_instance(&entry.py_type_name(vm), "dict"));
     }
     let get = |name: &str, vm: &VM<'_>| {
         dict_of(entry, vm)
             .get_by_str(name, vm.heap, vm.interns)
             .map(|value| value.clone_with_heap(vm.heap))
     };
-    let type_value = get("type", vm).ok_or_else(|| ExcType::type_error("'type' required in line error"))?;
+    let type_value = get("type", vm).ok_or_else(|| SimpleException::new_msg(ExcType::KeyError, "type"))?;
     defer_drop!(type_value, vm);
-    let Some(type_name) = type_value.as_str(vm).map(str::to_owned) else {
-        return Err(ExcType::type_error("'type' must be a str"));
-    };
+    let type_name = type_value
+        .as_str(vm)
+        .map(str::to_owned)
+        .ok_or_else(|| ExcType::type_error("`type` should be a `str` or `PydanticCustomError`"))?;
     let ctx = get("ctx", vm);
     defer_drop!(ctx, vm);
-    let ctx_pairs: Vec<(String, Value)> = match ctx {
+    let ctx_pairs = match ctx {
         None => Vec::new(),
-        // Present, so it must be a dict; pydantic words `None` without "object".
-        Some(Value::None) => return Err(ExcType::type_error("'None' is not an instance of 'dict'")),
-        Some(ctx) => dict_pairs(ctx, vm).ok_or_else(|| {
-            ExcType::type_error(format!(
-                "'{}' object is not an instance of 'dict'",
-                ctx.py_type_name(vm)
-            ))
-        })?,
-    }
-    .into_iter()
-    .filter_map(|(key, value)| {
-        let name = key.as_str(vm).map(str::to_owned);
-        key.drop_with(vm);
-        if let Some(name) = name {
-            Some((name, value))
-        } else {
-            value.drop_with(vm);
-            None
+        Some(ctx) => {
+            dict_pairs(ctx, vm).ok_or_else(|| ExcType::type_error_not_instance(&ctx.py_type_name(vm), "dict"))?
         }
+    };
+    defer_drop!(ctx_pairs, vm);
+    let error_type = ErrorType::from_name(&type_name, ctx_pairs, vm)?;
+    let loc = match get("loc", vm) {
+        None => Vec::new(),
+        Some(loc) => {
+            defer_drop!(loc, vm);
+            loc_items(loc, vm)?
+        }
+    };
+    Ok(LineError {
+        error_type,
+        loc,
+        input: get("input", vm).unwrap_or(Value::None),
     })
-    .collect();
-    let error_type = ErrorType::from_name(&type_name, &ctx_pairs, vm);
-    for (_, value) in ctx_pairs {
-        value.drop_with(vm);
+}
+
+/// A `loc` list or tuple as innermost-first steps.
+fn loc_items(loc: &Value, vm: &mut VM<'_>) -> RunResult<Vec<LocItem>> {
+    let items = sequence_items(loc, vm)
+        .ok_or_else(|| ExcType::type_error("Location must be a list or tuple of strings and ints"))?;
+    defer_drop!(items, vm);
+    items.iter().rev().map(|item| loc_item(item, vm)).collect()
+}
+
+/// One location step as pydantic keeps it: a string, an int (a bool as `0` /
+/// `1`), or the repr of anything else.
+fn loc_item(item: &Value, vm: &mut VM<'_>) -> RunResult<LocItem> {
+    Ok(match item {
+        Value::Int(index) => LocItem::Index(*index),
+        Value::Bool(b) => LocItem::Index(i64::from(*b)),
+        other => match other.as_str(vm) {
+            Some(key) => LocItem::Key(key.to_owned()),
+            None => LocItem::Key(try_repr_string(other, vm)?),
+        },
+    })
+}
+
+/// Owned copies of a list's or tuple's items; `None` for anything else.
+fn sequence_items(value: &Value, vm: &VM<'_>) -> Option<Vec<Value>> {
+    let Value::Ref(id) = value else { return None };
+    match vm.heap.get(*id) {
+        HeapData::List(list) => Some(list.as_slice().iter().map(|v| v.clone_with_heap(vm.heap)).collect()),
+        HeapData::Tuple(tuple) => Some(tuple.as_slice().iter().map(|v| v.clone_with_heap(vm.heap)).collect()),
+        _ => None,
     }
-    let error_type = error_type?;
-    let input = get("input", vm).unwrap_or(Value::None);
-    let mut line = LineError::owned(error_type, input);
-    if let Some(loc) = get("loc", vm) {
-        defer_drop!(loc, vm);
-        let Some(items) = sequence_items(loc, vm) else {
-            line.drop_with(vm);
-            return Err(ExcType::type_error("'loc' must be a tuple or list"));
-        };
-        defer_drop!(items, vm);
-        // Stored innermost-first, so the outermost step is pushed last.
-        for item in items.iter().rev() {
-            // pydantic keeps an int, a string, or the repr of anything else.
-            let step = match item {
-                Value::Int(index) => LocItem::Index(*index),
-                other => match other.as_str(vm) {
-                    Some(key) => LocItem::Key(key.to_owned()),
-                    None => LocItem::Key(repr_string(other, vm)),
-                },
-            };
-            line = line.with_outer_loc(step);
-        }
-    }
-    Ok(line)
 }
 
 /// The dict a `Value::Ref` names; the caller checked it is one.
@@ -657,6 +759,73 @@ pub(crate) fn dict_pairs(value: &Value, vm: &VM<'_>) -> Option<Vec<(Value, Value
             dict.iter()
                 .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
                 .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// Arguments of `PydanticUserError(message, *, code)`; pydantic's errors name
+/// the mixin that defines `__init__`.
+#[derive(FromArgs)]
+#[from_args(name = "PydanticErrorMixin.__init__", style = def)]
+struct UserErrorArgs {
+    message: Value,
+    /// Required, but the derive needs a default for a keyword-only field.
+    #[from_args(kw_only, default)]
+    code: Option<Value>,
+}
+
+/// Arguments of `PydanticSchemaGenerationError(message)`, whose code is fixed.
+#[derive(FromArgs)]
+#[from_args(name = "PydanticSchemaGenerationError.__init__", style = def)]
+struct SchemaGenerationErrorArgs {
+    message: Value,
+}
+
+/// Calls the `PydanticUserError` or `PydanticSchemaGenerationError` class.
+pub(crate) fn new_user_error(exc_type: ExcType, args: ArgValues, vm: &mut VM<'_>) -> RunResult<SimpleException> {
+    let (message, code) = if exc_type == ExcType::PydanticSchemaGenerationError {
+        let SchemaGenerationErrorArgs { message } = SchemaGenerationErrorArgs::from_args(args, vm)?;
+        defer_drop!(message, vm);
+        (str_string(message, vm)?, Some(SCHEMA_GENERATION_CODE.to_owned()))
+    } else {
+        let UserErrorArgs { message, code } = UserErrorArgs::from_args(args, vm)?;
+        defer_drop!(message, vm);
+        defer_drop!(code, vm);
+        let code = match code {
+            None => {
+                return Err(ExcType::type_error_missing_kwonly_with_names(
+                    "PydanticErrorMixin.__init__",
+                    &["code"],
+                ));
+            }
+            Some(Value::None) => None,
+            Some(code) => Some(str_string(code, vm)?),
+        };
+        (str_string(message, vm)?, code)
+    };
+    Ok(user_error(exc_type, message, code))
+}
+
+/// A `PydanticUserError` (or subclass): `str()` is `message`, followed by the
+/// documentation URL when there is a `code`.
+pub(crate) fn user_error(exc_type: ExcType, message: String, code: Option<String>) -> SimpleException {
+    let text = match &code {
+        Some(code) => format!("{message}\n\nFor further information visit {USER_ERROR_URL_PREFIX}{code}"),
+        None => message.clone(),
+    };
+    let data = PydanticUserErrorData { message, code };
+    SimpleException::new_msg(exc_type, text).with_data(ExcData::PydanticUser(Box::new(data)))
+}
+
+/// The `message` and `code` attributes of a `PydanticUserError`; `None` for any other name.
+pub(crate) fn user_error_getattr(data: &PydanticUserErrorData, attr: &EitherStr, vm: &VM<'_>) -> Option<Value> {
+    match attr.static_string(vm.interns) {
+        Some(StaticStrings::Message) => Some(allocate_string(data.message.clone(), vm.heap)),
+        Some(StaticStrings::Code) => Some(
+            data.code
+                .as_ref()
+                .map_or(Value::None, |code| allocate_string(code.clone(), vm.heap)),
         ),
         _ => None,
     }

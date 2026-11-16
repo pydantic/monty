@@ -374,6 +374,51 @@ n
     }
 }
 
+/// A live `ValidationError` keeps its line errors, snapshotted inputs and context
+/// across a dump, so its methods answer the same after restore.
+#[test]
+fn run_progress_round_trip_validation_error() {
+    let code = "
+from pydantic import TypeAdapter, ValidationError
+
+class Foo:
+    def __repr__(self):
+        return 'Foo!'
+
+try:
+    TypeAdapter(list[int]).validate_python([1, 'a', Foo()])
+except ValidationError as exc:
+    err = exc
+value_err = ValidationError.from_exception_data(
+    'T', [{'type': 'value_error', 'loc': ('x',), 'input': {'k': (1, 2)}, 'ctx': {'error': ValueError('boom')}}]
+)
+before = (str(err), err.errors(), err.json(), value_err.errors(include_url=False), str(value_err), err.args)
+ext_fn()
+after = (str(err), err.errors(), err.json(), value_err.errors(include_url=False), str(value_err), err.args)
+assert repr(after) == repr(before)
+str(err) + '\\n' + repr(value_err.errors(include_url=False))
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded = round_trip_progress(&progress);
+    let call = loaded.into_function_call().expect("should be at function call");
+    let result = call.resume(MontyObject::none(), PrintWriter::Disabled).unwrap();
+    let result = result.into_complete().unwrap();
+    assert_snapshot!(result.as_ref().as_str().unwrap(), @"
+    2 validation errors for list[int]
+    1
+      Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='a', input_type=str]
+        For further information visit https://errors.pydantic.dev/2.13/v/int_parsing
+    2
+      Input should be a valid integer [type=int_type, input_value=Foo!, input_type=Foo]
+        For further information visit https://errors.pydantic.dev/2.13/v/int_type
+    [{'type': 'value_error', 'loc': ('x',), 'msg': 'Value error, boom', 'input': {'k': (1, 2)}, 'ctx': {'error': ValueError('boom')}}]
+    ");
+}
+
 /// A dump keeps a deleted entry's tombstone, so an iterator dumped past one
 /// resumes on the entry it would have read next. Compacting the table would
 /// renumber its slots and skip `2`.

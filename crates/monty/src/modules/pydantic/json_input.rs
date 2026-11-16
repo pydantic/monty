@@ -20,7 +20,7 @@ use monty_types::ValidationInputType;
 
 use crate::{
     bytecode::VM,
-    heap::{DropGuard, DropWithContext, HeapId},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapId},
     modules::{
         json::load::{JsonLoadError, materialize_json_value},
         pydantic::{
@@ -127,12 +127,12 @@ impl<'j, 'a> JsonInput<'j, 'a> {
 
     /// Skips the token if no validator consumed it.
     fn skip_unread(&mut self) -> Result<(), JiterError> {
-        if self.consumed() {
-            return Ok(());
-        }
+        let unread = !self.consumed();
         match self {
-            Self::Token { parser, peek, .. } => parser.borrow_mut().known_skip(*peek),
-            Self::Key(_) => Ok(()),
+            Self::Token {
+                parser, peek, depth, ..
+            } if unread => skip(&mut parser.borrow_mut(), *peek, *depth),
+            _ => Ok(()),
         }
     }
 
@@ -211,12 +211,57 @@ impl<'j, 'a> JsonInput<'j, 'a> {
     /// `jiter` gives up on the document.
     fn check_depth(&self) -> Result<(), JiterError> {
         match self {
-            Self::Token { start, depth, .. } if *depth > RECURSION_LIMIT => Err(JiterError {
-                error_type: JiterErrorType::JsonError(JsonErrorType::RecursionLimitExceeded),
-                index: start.current_index(),
-            }),
-            _ => Ok(()),
+            Self::Token { start, depth, .. } => check_depth(*depth, start.current_index()),
+            Self::Key(_) => Ok(()),
         }
+    }
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for JsonInput<'_, '_> {
+    fn drop_with(self, ctx: &mut C) {
+        if let Self::Key(key) = self {
+            key.drop_with(ctx);
+        }
+    }
+}
+
+/// `recursion limit exceeded` at `index` for a token `depth` containers down
+/// past [`RECURSION_LIMIT`].
+fn check_depth(depth: usize, index: usize) -> Result<(), JiterError> {
+    if depth > RECURSION_LIMIT {
+        Err(JiterError {
+            error_type: JiterErrorType::JsonError(JsonErrorType::RecursionLimitExceeded),
+            index,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+/// Skips the token `peek`, `depth` containers down, without building it.
+/// `Jiter::known_skip` counts nesting from the token it starts at, so it
+/// only skips scalars here and containers are walked to apply the document's limit.
+fn skip(jiter: &mut Jiter<'_>, peek: Peek, depth: usize) -> Result<(), JiterError> {
+    check_depth(depth, jiter.current_index())?;
+    match peek {
+        Peek::Array => {
+            let mut next = jiter.known_array()?;
+            while let Some(item) = next {
+                skip(jiter, item, depth + 1)?;
+                next = jiter.array_step()?;
+            }
+            Ok(())
+        }
+        Peek::Object => {
+            let mut entry = jiter.known_object()?.is_some();
+            while entry {
+                let value = jiter.peek()?;
+                skip(jiter, value, depth + 1)?;
+                entry = jiter.next_key()?.is_some();
+            }
+            Ok(())
+        }
+        _ => jiter.known_skip(peek),
     }
 }
 
@@ -343,11 +388,11 @@ impl<'j, 'a> Input for JsonInput<'j, 'a> {
     fn validate_timedelta(&mut self, strict: bool, vm: &mut VM<'_>) -> ValResult<Match<Value>> {
         let strict = self.strict(strict);
         let result = match self.scalar_with(vm, |text| bytes_as_timedelta(text.as_bytes(), vm.heap))? {
-            Some(Read::Text(parsed)) => parsed.map(Match::strict),
+            Some(Read::Text(parsed)) => parsed?.map(Match::strict),
             Some(Read::Scalar(Scalar::Int(NumberInt::Int(int)))) if !strict => {
-                int_as_duration(int, vm.heap).map(Match::lax)
+                int_as_duration(int, vm.heap)?.map(Match::lax)
             }
-            Some(Read::Scalar(Scalar::Float(float))) if !strict => float_as_duration(float, vm.heap).map(Match::lax),
+            Some(Read::Scalar(Scalar::Float(float))) if !strict => float_as_duration(float, vm.heap)?.map(Match::lax),
             _ => Err(ErrorType::TimeDeltaType {}),
         };
         self.outcome(result, vm)
@@ -357,16 +402,19 @@ impl<'j, 'a> Input for JsonInput<'j, 'a> {
     /// text, as pydantic-core's `f64::to_string` writes it.
     fn validate_decimal(&mut self, _strict: bool, vm: &mut VM<'_>) -> ValResult<Match<Value>> {
         let text = match self.scalar(vm)? {
-            Some(Scalar::Str(text)) => text,
-            Some(Scalar::Int(NumberInt::Int(int))) => int.to_string(),
-            Some(Scalar::Int(NumberInt::BigInt(big))) => big.to_string(),
-            Some(Scalar::Float(float)) => float.to_string(),
-            _ => return self.error(ErrorType::DecimalType {}, vm),
+            Some(Scalar::Str(text)) => Some(text),
+            Some(Scalar::Int(NumberInt::Int(int))) => Some(int.to_string()),
+            Some(Scalar::Int(NumberInt::BigInt(big))) => Some(big.to_string()),
+            Some(Scalar::Float(float)) => Some(float.to_string()),
+            _ => None,
         };
-        let parsed = decimal_type::parse::parse_str(&text).map_err(ValError::Run)?;
-        let result = parsed
-            .map(|decimal| Match::strict(py_decimal::decimal_value(decimal, vm)))
-            .map_err(|_| ErrorType::DecimalParsing {});
+        let result = match text {
+            Some(text) => decimal_type::parse::parse_str(&text)
+                .map_err(ValError::Run)?
+                .map(|decimal| Match::strict(py_decimal::decimal_value(decimal, vm)))
+                .map_err(|_| ErrorType::DecimalParsing {}),
+            None => Err(ErrorType::DecimalType {}),
+        };
         self.outcome(result, vm)
     }
 
@@ -418,6 +466,24 @@ impl<'j, 'a> Input for JsonInput<'j, 'a> {
         if result.is_err() {
             self.rewind();
         }
+        result
+    }
+
+    /// Runs `body` with the parser back at the token (a held token was skipped
+    /// past), then returns the parser to where the walk had reached.
+    fn replay<R>(
+        &mut self,
+        vm: &mut VM<'_>,
+        body: impl FnOnce(&mut Self, &mut VM<'_>) -> ValResult<R>,
+    ) -> ValResult<R> {
+        let Self::Token { parser, .. } = self else {
+            return body(self, vm);
+        };
+        let parser: &JsonParser<'j> = parser;
+        let resume = parser.borrow().clone();
+        self.rewind();
+        let result = body(self, vm);
+        *parser.borrow_mut() = resume;
         result
     }
 
@@ -577,5 +643,25 @@ impl<'j, 'a> Mapping<JsonInput<'j, 'a>> for JsonMapping<'j, 'a> {
         if let Err(err) = value.skip_unread() {
             self.pending = Some(err);
         }
+    }
+
+    /// Skips the value, keeping a copy of its token to read again.
+    fn hold_entry(&mut self, key: JsonInput<'j, 'a>, value: JsonInput<'j, 'a>, vm: &mut VM<'_>) -> JsonInput<'j, 'a> {
+        let held = match &value {
+            JsonInput::Token {
+                parser,
+                peek,
+                start,
+                depth,
+            } => JsonInput::Token {
+                parser,
+                peek: *peek,
+                start: start.clone(),
+                depth: *depth,
+            },
+            JsonInput::Key(key) => JsonInput::Key(key.clone_with_heap(vm.heap)),
+        };
+        self.finish_entry(key, value, vm);
+        held
     }
 }

@@ -65,6 +65,27 @@ assert errors(Int, True, strict=True)[0]['type'] == 'int_type'
 assert errors(Int, 1.0, strict=True)[0]['type'] == 'int_type'
 assert Int.validate_python(5, strict=True) == 5
 assert Int.validate_python(10**30, strict=True) == 10**30
+# a whole Decimal is its integer, sign and exponent applied
+assert Int.validate_python(Decimal('-1')) == -1
+assert Int.validate_python(Decimal('1.0')) == 1
+assert Int.validate_python(Decimal('-1E+3')) == -1000
+assert errors(Int, Decimal('1'), strict=True)[0]['type'] == 'int_type'
+# text over 4300 characters, its sign included, is too long; surrounding whitespace and
+# leading zeros are not counted
+size_error = {
+    'type': 'int_parsing_size',
+    'loc': (),
+    'msg': 'Unable to parse input string as an integer, exceeded maximum size',
+}
+assert Int.validate_python('1' * 4300) == int('1' * 4300)
+assert Int.validate_python('-' + '1' * 4299) == -int('1' * 4299)
+assert errors(Int, '1' * 4301) == [size_error | {'input': '1' * 4301}]
+assert errors(Int, '-' + '1' * 4300) == [size_error | {'input': '-' + '1' * 4300}]
+assert errors(Int, '1' * 4301 + ' ') == [size_error | {'input': '1' * 4301 + ' '}]
+assert Int.validate_python(' ' + '1' * 4300) == int('1' * 4300)
+assert Int.validate_python('0' * 4301) == 0
+assert Int.validate_python('00' + '1' * 4300) == int('1' * 4300)
+assert errors(Int, ' -' + '1' * 4300)[0]['type'] == 'int_parsing'
 
 # === float ===
 Float = TypeAdapter(float)
@@ -101,6 +122,15 @@ assert errors(Float, '1.5', strict=True)[0]['type'] == 'float_type'
 assert errors(Float, True, strict=True)[0]['type'] == 'float_type'
 assert Float.validate_python(1, strict=True) == 1.0
 assert Float.validate_python(1.5, strict=True) == 1.5
+# a Decimal is read as `float(value)`, in strict mode too
+assert Float.validate_python(Decimal('1.5')) == 1.5
+assert Float.validate_python(Decimal('1.5'), strict=True) == 1.5
+assert Float.validate_python(Decimal('-Infinity')) == float('-inf')
+assert errors(Float, Decimal('sNaN'))[0]['type'] == 'float_type'
+# an int too large for a float is not a number
+assert errors(Float, 10**400) == [
+    {'type': 'float_type', 'loc': (), 'msg': 'Input should be a valid number', 'input': 10**400}
+]
 
 # === str ===
 Str = TypeAdapter(str)
@@ -144,6 +174,14 @@ assert errors(Bool, [])[0]['type'] == 'bool_type'
 assert errors(Bool, 1, strict=True)[0]['type'] == 'bool_type'
 assert errors(Bool, 'yes', strict=True)[0]['type'] == 'bool_type'
 assert Bool.validate_python(True, strict=True) is True
+# a whole Decimal is read as its integer
+assert Bool.validate_python(Decimal('1')) is True
+assert Bool.validate_python(Decimal('-0')) is False
+assert errors(Bool, Decimal('-1'))[0]['type'] == 'bool_parsing'
+assert errors(Bool, Decimal('1.5'))[0]['type'] == 'bool_type'
+assert errors(Bool, Decimal('NaN'))[0]['type'] == 'bool_type'
+assert errors(Bool, Decimal('1'), strict=True)[0]['type'] == 'bool_type'
+assert errors(Bool, 10**30)[0]['type'] == 'bool_type'
 
 # === bytes ===
 Bytes = TypeAdapter(bytes)
@@ -197,6 +235,18 @@ assert errors(DecimalAdapter, True) == [
 assert errors(DecimalAdapter, [1])[0]['type'] == 'decimal_type'
 assert errors(DecimalAdapter, None)[0]['type'] == 'decimal_type'
 assert errors(DecimalAdapter, (1, 2))[0]['type'] == 'decimal_type'
+# a tuple the constructor refuses is not a decimal at all
+assert errors(DecimalAdapter, (0, (1, 5), 'x')) == [
+    {
+        'type': 'decimal_type',
+        'loc': (),
+        'msg': 'Decimal input should be an integer, float, string or Decimal object',
+        'input': (0, (1, 5), 'x'),
+    }
+]
+assert errors(DecimalAdapter, (2, (1,), 0))[0]['type'] == 'decimal_type'
+assert errors(DecimalAdapter, (0, (10,), 0))[0]['type'] == 'decimal_type'
+assert errors(DecimalAdapter, (0, (1, 5), 'F'))[0]['type'] == 'finite_number'
 assert errors(DecimalAdapter, '1', strict=True) == [
     {
         'type': 'is_instance_of',

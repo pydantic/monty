@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     fmt::{self, Display, Write},
     mem,
+    sync::Arc,
 };
 
 use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData};
@@ -2754,6 +2755,49 @@ pub(crate) trait ExcTypeExt: Sized {
         )
         .into()
     }
+
+    /// `TypeError: 'X' object is not an instance of 'Y'`, PyO3's wording for a
+    /// failed downcast in pydantic-core; `None` reads `'None' is not an instance of 'Y'`.
+    #[must_use]
+    fn type_error_not_instance(type_: &str, expected: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, not_instance_msg(type_, expected)).into()
+    }
+
+    /// `TypeError: argument 'a': 'X' object cannot be interpreted as an integer`,
+    /// PyO3's wording for a mistyped integer argument such as pydantic's `indent`.
+    #[must_use]
+    fn type_error_arg_not_integer(arg: &str, type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("argument '{arg}': '{type_}' object cannot be interpreted as an integer"),
+        )
+        .into()
+    }
+
+    /// `OverflowError: can't convert negative int to unsigned`, for a negative unsigned argument.
+    #[must_use]
+    fn overflow_error_negative_unsigned() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "can't convert negative int to unsigned").into()
+    }
+
+    /// [`Self::type_error_not_instance`] for a named argument: `argument 'a': 'X' object is not ...`.
+    #[must_use]
+    fn type_error_arg_not_instance(arg: &str, type_: &str, expected: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("argument '{arg}': {}", not_instance_msg(type_, expected)),
+        )
+        .into()
+    }
+}
+
+/// The body of PyO3's downcast error, which names `None` without "object".
+fn not_instance_msg(type_: &str, expected: &str) -> String {
+    if type_ == "NoneType" {
+        format!("'None' is not an instance of '{expected}'")
+    } else {
+        format!("'{type_}' object is not an instance of '{expected}'")
+    }
 }
 
 /// The constructor of every native exception class, for the native type table.
@@ -2765,8 +2809,13 @@ pub(crate) fn exc_new(ty: Type, vm: &mut VM<'_>, args: ArgValues) -> RunResult<V
 
 impl ExcTypeExt for ExcType {
     /// Allocates an exception for constructors like `ValueError('message')`.
-    /// Currently supports zero or one string argument.
+    /// Supports zero or one string argument, plus pydantic's `PydanticUserError`
+    /// signatures.
     fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+        if matches!(self, Self::PydanticUserError | Self::PydanticSchemaGenerationError) {
+            let exc = pydantic::errors::new_user_error(self, args, vm)?;
+            return Ok(Value::Ref(vm.heap.allocate(HeapData::Exception(exc))));
+        }
         defer_drop!(args, vm);
         let exc = match args {
             ArgValues::Empty => Ok(SimpleException::new_none(self)),
@@ -2956,6 +3005,14 @@ impl SimpleException {
         {
             return f.write_str(message);
         }
+        // A `PydanticUserError` shows its class name and `message`, without the URL `str()` adds.
+        if let ExcData::PydanticUser(data) = &self.data {
+            let type_str: &'static str = self.exc_type.into();
+            let class_name = type_str.rsplit('.').next().unwrap_or(type_str);
+            write!(f, "{class_name}(")?;
+            string_repr_fmt(&data.message, f)?;
+            return f.write_char(')');
+        }
         let type_str: &'static str = self.exc_type.into();
         write!(f, "{type_str}(")?;
 
@@ -2984,9 +3041,9 @@ impl<'h> HeapRead<'h, SimpleException> {
         Type::from(self.get(vm.heap).exc_type).into()
     }
 
-    /// Gets an attribute from this exception: `args` (a tuple of the message, if
-    /// any), `__cause__`, `__context__`, `__suppress_context__` and a
-    /// `ValidationError`'s own attributes. Returns `None` for all other attributes.
+    /// Gets an attribute from this exception: `args`, `__cause__`, `__context__`,
+    /// `__suppress_context__` and the pydantic payloads' own attributes.
+    /// Returns `None` for all other attributes.
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
         // Interned names match by ID; only `args` can also arrive as a dynamic string.
         let name = attr.static_string(vm.interns);
@@ -2995,12 +3052,16 @@ impl<'h> HeapRead<'h, SimpleException> {
             Some(StaticStrings::DunderCause) => chained_value(exc.cause(), vm),
             Some(StaticStrings::DunderContext) => chained_value(exc.context(), vm),
             Some(StaticStrings::DunderSuppressContext) => Value::Bool(exc.suppress_context()),
-            Some(StaticStrings::Args) => args_tuple(exc.arg.as_deref(), vm),
-            None if attr.as_str(vm.interns) == "args" => args_tuple(exc.arg.as_deref(), vm),
-            _ => match &exc.data {
-                ExcData::Validation(data) => return pydantic::errors::getattr(data, attr, vm).map(CallResult::Value),
-                _ => return None,
-            },
+            Some(StaticStrings::Args) => args_tuple(exc, vm),
+            None if attr.as_str(vm.interns) == "args" => args_tuple(exc, vm),
+            _ => {
+                return match &exc.data {
+                    ExcData::Validation(data) => pydantic::errors::getattr(data, attr, vm),
+                    ExcData::PydanticUser(data) => pydantic::errors::user_error_getattr(data, attr, vm),
+                    _ => None,
+                }
+                .map(CallResult::Value);
+            }
         };
         Some(CallResult::Value(value))
     }
@@ -3010,14 +3071,8 @@ impl<'h> HeapRead<'h, SimpleException> {
     /// `AttributeError`.
     pub fn py_call_attr(&self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         if let ExcData::Validation(data) = &self.get(vm.heap).data {
-            if attr.static_string(vm.interns) == Some(StaticStrings::ErrorCount) {
-                // A count needs no copy; the other methods allocate while
-                // reading the payload, so they take their own.
-                let count = pydantic::errors::error_count(data);
-                args.check_zero_args("error_count", vm.heap)?;
-                return Ok(CallResult::Value(count));
-            }
-            let data = data.clone();
+            // The methods allocate while reading the payload, so they share their own handle.
+            let data = Arc::clone(data);
             pydantic::errors::call_method(&data, attr, args, vm)
         } else {
             let type_name: &'static str = self.get(vm.heap).exc_type.into();
@@ -3026,8 +3081,14 @@ impl<'h> HeapRead<'h, SimpleException> {
     }
 }
 
-/// `exc.args`: a tuple holding the message, or empty.
-fn args_tuple(arg: Option<&str>, vm: &VM<'_>) -> Value {
+/// `exc.args`: a tuple holding the message, or empty. A `ValidationError`'s is
+/// empty, as pydantic's raised ones are; a `PydanticUserError` holds its `message`.
+fn args_tuple(exc: &SimpleException, vm: &VM<'_>) -> Value {
+    let arg = match &exc.data {
+        ExcData::Validation(_) => None,
+        ExcData::PydanticUser(data) => Some(data.message.as_str()),
+        _ => exc.arg.as_deref(),
+    };
     let elements = match arg {
         Some(arg) => smallvec![allocate_string(arg, vm.heap)],
         None => smallvec![],

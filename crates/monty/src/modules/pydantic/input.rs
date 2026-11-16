@@ -129,8 +129,9 @@ pub(crate) enum ArgumentsShape {
     Other,
 }
 
-/// One value under validation, in either input mode.
-pub(crate) trait Input: Sized {
+/// One value under validation, in either input mode. An input may hold a
+/// reference, so one kept past its step is released through `drop_with`.
+pub(crate) trait Input: Sized + for<'h> DropWithContext<VM<'h>> {
     /// Items of a sequence input, each an `Input` of the same mode.
     type Seq: Sequence<Self>;
     /// Entries of a mapping input: keys are string values for a JSON object
@@ -190,6 +191,16 @@ pub(crate) trait Input: Sized {
         vm: &mut VM<'_>,
         attempt: impl FnOnce(&mut Self, &mut VM<'_>) -> ValResult<R>,
     ) -> ValResult<R>;
+
+    /// Runs `body` on an input [`Mapping::hold_entry`] kept past its place: a
+    /// JSON input reads its token again, then puts the parser back where it was.
+    fn replay<R>(
+        &mut self,
+        vm: &mut VM<'_>,
+        body: impl FnOnce(&mut Self, &mut VM<'_>) -> ValResult<R>,
+    ) -> ValResult<R> {
+        body(self, vm)
+    }
 
     /// A coarse kind for pruning union members before they run.
     fn kind(&self) -> InputKind;
@@ -269,4 +280,8 @@ pub(crate) trait Mapping<I: Input>: Sized + for<'h> DropWithContext<VM<'h>> {
     fn next(&mut self, vm: &mut VM<'_>) -> ValResult<Option<(I, I)>>;
 
     fn finish_entry(&mut self, key: I, value: I, vm: &mut VM<'_>);
+
+    /// Finishes an entry but keeps its value, for a dataclass field met before
+    /// the fields declared ahead of it: validated later through [`Input::replay`].
+    fn hold_entry(&mut self, key: I, value: I, vm: &mut VM<'_>) -> I;
 }

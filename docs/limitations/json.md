@@ -24,6 +24,9 @@ keyword is rejected. Fallback encoding is available through `dumps(default=...)`
     200 others raises `json.JSONDecodeError` (`recursion limit exceeded`),
     reported at its first item, where CPython raises `RecursionError` much
     deeper.
+    Where that first item is malformed, the error is the item's own syntax error, as CPython reports it;
+    when it is valid or a container, Monty reports `recursion limit exceeded` where CPython carries on and
+    may report a different error further on.
 - JSON integers that would exceed Monty's BigInt digit limit are rejected
     with `ValueError` (matching CPython's `int_max_str_digits` behaviour)
     rather than `JSONDecodeError`.

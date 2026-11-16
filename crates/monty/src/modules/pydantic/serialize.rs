@@ -14,7 +14,7 @@
 //! through a tracker-backed [`JsonWriter`] while the heap is borrowed; Python
 //! output is gathered into an [`Out`] tree first and allocated at the end.
 
-use std::str;
+use std::{mem::ManuallyDrop, str};
 
 use ahash::AHashSet;
 use num_bigint::BigInt;
@@ -32,13 +32,12 @@ use crate::{
             arena::{Arena, DataclassValidator, Validator, ValidatorId},
             input::SeqKind,
             iso,
-            json_writer::{InfNan, JsonWriter, non_finite_text},
+            json_writer::{InfNan, JsonWriter, RECURSION_LIMIT, Surface, bool_text, complex_text, float_key},
         },
     },
     types::{
         Dict, List, Set, allocate_string, allocate_tuple, bytes::allocate_bytes, date as date_type,
-        datetime as datetime_type, long_int::check_bigint_str_digits_limit, set::FrozenSet, time as time_type,
-        timedelta as timedelta_type,
+        datetime as datetime_type, set::FrozenSet, time as time_type, timedelta as timedelta_type,
     },
     value::Value,
 };
@@ -60,9 +59,6 @@ pub(crate) struct Options {
     pub(crate) capitals: bool,
 }
 
-/// Nesting pydantic's serializers allow before `Circular reference detected (depth exceeded)`.
-const RECURSION_LIMIT: usize = 255;
-
 /// `dump_python(instance, mode=, exclude_none=)`.
 pub(crate) fn dump_python(
     arena: &Arena,
@@ -77,7 +73,7 @@ pub(crate) fn dump_python(
         pending_keys: Vec::new(),
         result: None,
     };
-    let walked = Serializer::new(arena, options, false).value(root, value, &mut sink, vm);
+    let walked = Serializer::new(arena, options, Surface::Python).value(root, value, &mut sink, vm);
     match walked {
         Ok(()) => sink.result.take().expect("a walk emits one value").build(vm),
         Err(err) => {
@@ -101,7 +97,7 @@ pub(crate) fn dump_json(
         let mut sink = JsonSink {
             writer: JsonWriter::new(indent, InfNan::Null, &vm.heap.tracker).with_ensure_ascii(ensure_ascii),
         };
-        Serializer::new(arena, options, true).value(root, value, &mut sink, vm)?;
+        Serializer::new(arena, options, Surface::DumpJson).value(root, value, &mut sink, vm)?;
         sink.writer.finish()?
     };
     Ok(allocate_bytes(text.into_bytes(), vm.heap))
@@ -141,24 +137,29 @@ enum Key<'v> {
 struct Serializer<'a> {
     arena: &'a Arena,
     options: Options,
-    /// Whether errors are `dump_json`'s `PydanticSerializationError`s.
-    json_text: bool,
+    /// How errors are raised: `dump_json` wraps them in a `PydanticSerializationError`.
+    surface: Surface,
+    /// Inferred values and typed dataclasses being written, for pydantic's depth guard.
     depth: usize,
-    /// The containers being written, so one that holds itself is reported.
-    in_progress: AHashSet<HeapId>,
+    /// The inferred containers being written, so one that holds itself is caught.
+    inferring: AHashSet<HeapId>,
+    /// The dataclasses being written by their validators, guarded apart from
+    /// inference as pydantic guards a recursive type's definition.
+    defining: AHashSet<HeapId>,
     /// Values written so far, keying the clock poll: a container shared
     /// many times is written once per reference, far beyond the heap's size.
     steps: usize,
 }
 
 impl<'a> Serializer<'a> {
-    fn new(arena: &'a Arena, options: Options, json_text: bool) -> Self {
+    fn new(arena: &'a Arena, options: Options, surface: Surface) -> Self {
         Self {
             arena,
             options,
-            json_text,
+            surface,
             depth: 0,
-            in_progress: AHashSet::new(),
+            inferring: AHashSet::new(),
+            defining: AHashSet::new(),
             steps: 0,
         }
     }
@@ -185,7 +186,7 @@ impl<'a> Serializer<'a> {
                 _ if self.options.mode == Mode::Json => match int_as_float(value, vm) {
                     Some(Ok(float)) => sink.float(float),
                     // `mode='json'` overflows on an int past `f64`; `dump_json` writes it as an int.
-                    Some(Err(err)) if !self.json_text => Err(err),
+                    Some(Err(err)) if self.surface == Surface::Python => Err(err),
                     _ => self.infer(value, sink, vm),
                 },
                 _ => self.infer(value, sink, vm),
@@ -200,16 +201,12 @@ impl<'a> Serializer<'a> {
                 _ => self.infer(value, sink, vm),
             },
             Validator::Set(item) => match heap_data(value, vm) {
-                Some((id, HeapData::Set(set))) => {
-                    let items: Vec<&Value> = set.iter().collect();
-                    self.seq_refs(id, SeqKind::Set, &items, Some(*item), sink, vm)
-                }
+                Some((id, HeapData::Set(set))) => self.seq(id, SeqKind::Set, set.iter(), Some(*item), sink, vm),
                 _ => self.infer(value, sink, vm),
             },
             Validator::FrozenSet(item) => match heap_data(value, vm) {
                 Some((id, HeapData::FrozenSet(set))) => {
-                    let items: Vec<&Value> = set.storage().iter().collect();
-                    self.seq_refs(id, SeqKind::FrozenSet, &items, Some(*item), sink, vm)
+                    self.seq(id, SeqKind::FrozenSet, set.storage().iter(), Some(*item), sink, vm)
                 }
                 _ => self.infer(value, sink, vm),
             },
@@ -234,19 +231,44 @@ impl<'a> Serializer<'a> {
         }
     }
 
-    /// The union member that writes `value`: an exact fit anywhere wins, then
-    /// an `int` or `float` member claims a bool, as pydantic's lax pass does.
+    /// The union member that writes `value`, as pydantic's union serializer
+    /// picks it: the first exact fit, else, when a member asks for the lax
+    /// retry, the first that takes `value` laxly.
     fn choose(&self, choices: &[ValidatorId], value: &Value, vm: &VM<'_>) -> Option<ValidatorId> {
         choices
             .iter()
             .copied()
             .find(|choice| self.fits(*choice, value, vm))
             .or_else(|| {
-                choices.iter().copied().find(|choice| {
-                    matches!(value, Value::Bool(_))
-                        && matches!(self.arena.get(*choice), Validator::Int | Validator::Float)
-                })
+                choices
+                    .iter()
+                    .any(|choice| self.retries_lax(*choice))
+                    .then(|| choices.iter().find_map(|choice| self.lax_fit(*choice, value, vm)))
+                    .flatten()
             })
+    }
+
+    /// Whether pydantic retries a union laxly for member `id`: `int`, tuples
+    /// and dataclasses ask for it, lists and `Optional`s through their item.
+    fn retries_lax(&self, id: ValidatorId) -> bool {
+        match self.arena.get(id) {
+            Validator::Int | Validator::Tuple { .. } | Validator::Dataclass(_) => true,
+            Validator::List(item) | Validator::Nullable(item) => self.retries_lax(*item),
+            Validator::Union(choices) => choices.iter().any(|choice| self.retries_lax(*choice)),
+            _ => false,
+        }
+    }
+
+    /// The member under `id` that takes `value` in the lax retry, which only
+    /// a number reaches: an `int` takes a bool, a `float` a bool or an int it can hold.
+    fn lax_fit(&self, id: ValidatorId, value: &Value, vm: &VM<'_>) -> Option<ValidatorId> {
+        match self.arena.get(id) {
+            Validator::Int => matches!(value, Value::Bool(_)).then_some(id),
+            Validator::Float => matches!(int_as_float(value, vm), Some(Ok(_))).then_some(id),
+            Validator::Nullable(inner) => self.lax_fit(*inner, value, vm),
+            Validator::Union(choices) => choices.iter().find_map(|choice| self.lax_fit(*choice, value, vm)),
+            _ => None,
+        }
     }
 
     /// Whether `value` is what the validator `id` describes, for choosing a
@@ -285,52 +307,69 @@ impl<'a> Serializer<'a> {
         }
     }
 
-    /// Writes `value` by its runtime type, as pydantic's `Any` serializer does.
+    /// Writes `value` by its runtime type, as pydantic's `Any` serializer does,
+    /// under its recursion guard: past [`RECURSION_LIMIT`] inferred values
+    /// down, the value is kept in Python mode and an error in JSON mode.
     fn infer<S: Sink>(&mut self, value: &Value, sink: &mut S, vm: &VM<'_>) -> RunResult<()> {
         self.step(vm)?;
-        if let Some(text) = value.as_str(vm) {
-            return sink.str(value, text, vm);
+        if self.depth >= RECURSION_LIMIT {
+            // The guard checks for a cycle before the depth.
+            let reason = match value {
+                Value::Ref(id) if self.inferring.contains(id) => "id repeated",
+                _ => "depth exceeded",
+            };
+            self.recursion(value, reason, sink, vm)
+        } else {
+            self.depth += 1;
+            let written = self.infer_type(value, sink, vm);
+            self.depth -= 1;
+            written
         }
-        match value {
-            Value::None => sink.none(),
-            Value::Bool(b) => sink.bool(*b),
-            Value::Int(i) => sink.int(*i),
-            Value::Float(f) if f.is_finite() || self.options.mode == Mode::Python => sink.float(*f),
-            Value::Float(_) => sink.none(),
-            Value::InternBytes(id) => sink.bytes(value, vm.interns.get_bytes(*id), vm),
-            Value::InternLongInt(id) => sink.bigint(value, vm.interns.get_long_int(*id), vm),
-            Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Bytes(bytes) => sink.bytes(value, bytes.as_slice(), vm),
-                HeapData::LongInt(big) => sink.bigint(value, big.inner(), vm),
-                HeapData::List(list) => self.seq(*id, SeqKind::List, list.as_slice(), None, sink, vm),
-                HeapData::Tuple(tuple) => self.seq(*id, SeqKind::Tuple, tuple.as_slice(), None, sink, vm),
-                HeapData::NamedTuple(nt) => self.seq(*id, SeqKind::Tuple, nt.items(), None, sink, vm),
-                HeapData::Set(set) => {
-                    let items: Vec<&Value> = set.iter().collect();
-                    self.seq_refs(*id, SeqKind::Set, &items, None, sink, vm)
-                }
-                HeapData::FrozenSet(set) => {
-                    let items: Vec<&Value> = set.storage().iter().collect();
-                    self.seq_refs(*id, SeqKind::FrozenSet, &items, None, sink, vm)
-                }
-                HeapData::Dict(dict) => self.map(*id, dict, None, sink, vm),
-                HeapData::Instance(instance) if is_dataclass_class(instance.class(), vm) => {
-                    self.inferred_dataclass(*id, instance.class(), sink, vm)
-                }
-                HeapData::Date(_) | HeapData::DateTime(_) | HeapData::Time(_) | HeapData::TimeDelta(_) => {
-                    match (self.options.mode, temporal_text(*id, vm)) {
-                        (Mode::Python, _) => sink.keep(value, vm),
-                        (Mode::Json, Some(text)) => sink.text_form(value, text, vm),
-                        (Mode::Json, None) => Err(Self::unknown_type(value, vm)),
+    }
+
+    /// [`Self::infer`]'s dispatch on the runtime type.
+    fn infer_type<S: Sink>(&mut self, value: &Value, sink: &mut S, vm: &VM<'_>) -> RunResult<()> {
+        match value.as_str(vm) {
+            Some(text) => sink.str(value, text, vm),
+            None => match value {
+                Value::None => sink.none(),
+                Value::Bool(b) => sink.bool(*b),
+                Value::Int(i) => sink.int(*i),
+                Value::Float(f) if f.is_finite() || self.options.mode == Mode::Python => sink.float(*f),
+                Value::Float(_) => sink.none(),
+                Value::InternBytes(id) => sink.bytes(value, vm.interns.get_bytes(*id), vm),
+                Value::InternLongInt(id) => sink.bigint(value, vm.interns.get_long_int(*id), vm),
+                Value::Ref(id) => match vm.heap.get(*id) {
+                    HeapData::Bytes(bytes) => sink.bytes(value, bytes.as_slice(), vm),
+                    HeapData::LongInt(big) => sink.bigint(value, big.inner(), vm),
+                    HeapData::List(list) => self.seq(*id, SeqKind::List, list.as_slice(), None, sink, vm),
+                    HeapData::Tuple(tuple) => self.seq(*id, SeqKind::Tuple, tuple.as_slice(), None, sink, vm),
+                    HeapData::NamedTuple(nt) => self.seq(*id, SeqKind::Tuple, nt.items(), None, sink, vm),
+                    HeapData::Set(set) => self.seq(*id, SeqKind::Set, set.iter(), None, sink, vm),
+                    HeapData::FrozenSet(set) => self.seq(*id, SeqKind::FrozenSet, set.storage().iter(), None, sink, vm),
+                    HeapData::Dict(dict) => self.map(*id, dict, None, sink, vm),
+                    HeapData::Instance(instance) if is_dataclass_class(instance.class(), vm) => {
+                        self.inferred_dataclass(*id, instance.class(), sink, vm)
                     }
-                }
-                HeapData::Decimal(decimal) => match self.options.mode {
-                    Mode::Python => sink.keep(value, vm),
-                    Mode::Json => sink.text_form(value, decimal.to_sci_string(false, self.options.capitals), vm),
+                    HeapData::Date(_) | HeapData::DateTime(_) | HeapData::Time(_) | HeapData::TimeDelta(_) => {
+                        match (self.options.mode, temporal_text(*id, vm)) {
+                            (Mode::Python, _) => sink.keep(value, vm),
+                            (Mode::Json, Some(text)) => sink.text_form(value, text, vm),
+                            (Mode::Json, None) => Err(Self::unknown_type(value, vm)),
+                        }
+                    }
+                    HeapData::Decimal(decimal) => match self.options.mode {
+                        Mode::Python => sink.keep(value, vm),
+                        Mode::Json => sink.text_form(value, decimal.to_sci_string(false, self.options.capitals), vm),
+                    },
+                    HeapData::Complex(complex) => match self.options.mode {
+                        Mode::Python => sink.keep(value, vm),
+                        Mode::Json => sink.text_form(value, complex_text(complex.real, complex.imag), vm),
+                    },
+                    _ => self.unknown(value, sink, vm),
                 },
                 _ => self.unknown(value, sink, vm),
             },
-            _ => self.unknown(value, sink, vm),
         }
     }
 
@@ -356,68 +395,61 @@ impl<'a> Serializer<'a> {
         Ok(vm.heap.tracker.check_memory_time_every(self.steps)?)
     }
 
-    /// Enters container `id`, failing on a reference back or past the depth limit.
-    fn enter(&mut self, id: HeapId) -> RunResult<()> {
-        if self.depth >= RECURSION_LIMIT {
-            return Err(self.circular("depth exceeded"));
-        }
-        if !self.in_progress.insert(id) {
-            return Err(self.circular("id repeated"));
-        }
-        self.depth += 1;
-        Ok(())
-    }
-
-    fn leave(&mut self, id: HeapId) {
-        self.depth -= 1;
-        self.in_progress.remove(&id);
-    }
-
-    /// pydantic's cycle error, a `ValueError` that `dump_json` wraps.
-    fn circular(&self, reason: &str) -> RunError {
-        let message = format!("Circular reference detected ({reason})");
-        if self.json_text {
-            serialization_error(format!("Error serializing to JSON: ValueError: {message}"))
-        } else {
-            ExcType::value_error(message)
-        }
-    }
-
-    /// A sequence of `kind` from a slice of items.
-    fn seq<S: Sink>(
+    /// Writes container `id` through `body`. pydantic guards an inferred
+    /// container, not a typed one, so only an inferred container met again
+    /// inside itself stops, as [`Self::recursion`] does.
+    fn container<S: Sink>(
         &mut self,
         id: HeapId,
-        kind: SeqKind,
-        items: &[Value],
-        item: Option<ValidatorId>,
+        inferred: bool,
         sink: &mut S,
         vm: &VM<'_>,
+        body: impl FnOnce(&mut Self, &mut S) -> RunResult<()>,
     ) -> RunResult<()> {
-        let refs: Vec<&Value> = items.iter().collect();
-        self.seq_refs(id, kind, &refs, item, sink, vm)
+        if !inferred {
+            body(self, sink)
+        } else if self.inferring.insert(id) {
+            let written = body(self, sink);
+            self.inferring.remove(&id);
+            written
+        } else {
+            self.recursion(&borrowed_ref(id), "id repeated", sink, vm)
+        }
+    }
+
+    /// pydantic's inference guard stopping at `value`: Python mode keeps the
+    /// value as it is, JSON mode fails.
+    fn recursion<S: Sink>(&self, value: &Value, reason: &str, sink: &mut S, vm: &VM<'_>) -> RunResult<()> {
+        match self.options.mode {
+            Mode::Python => sink.keep(value, vm),
+            Mode::Json => Err(self.circular(reason)),
+        }
+    }
+
+    /// pydantic's recursion guard error, a `ValueError` that `dump_json` wraps.
+    fn circular(&self, reason: &str) -> RunError {
+        self.surface
+            .wrap(ExcType::value_error(format!("Circular reference detected ({reason})")))
     }
 
     /// A sequence of `kind`, each item by `item` or by inference.
-    fn seq_refs<S: Sink>(
+    fn seq<'v, S: Sink>(
         &mut self,
         id: HeapId,
         kind: SeqKind,
-        items: &[&Value],
+        items: impl IntoIterator<Item = &'v Value>,
         item: Option<ValidatorId>,
         sink: &mut S,
         vm: &VM<'_>,
     ) -> RunResult<()> {
-        self.enter(id)?;
-        let written = (|| {
+        self.container(id, item.is_none(), sink, vm, |this, sink| {
             sink.begin_seq(kind)?;
             for value in items {
                 sink.element()?;
-                self.item(item, value, sink, vm)?;
+                this.item(item, value, sink, vm)?;
             }
             sink.end_seq()
-        })();
-        self.leave(id);
-        written
+        })
     }
 
     /// A tuple against `tuple[A, B]` or `tuple[T, ...]`: positions past the
@@ -436,8 +468,7 @@ impl<'a> Serializer<'a> {
         } else {
             validators.len()
         };
-        self.enter(id)?;
-        let written = (|| {
+        self.container(id, false, sink, vm, |this, sink| {
             sink.begin_seq(SeqKind::Tuple)?;
             for (index, value) in items.iter().enumerate() {
                 sink.element()?;
@@ -448,12 +479,10 @@ impl<'a> Serializer<'a> {
                 } else {
                     None
                 };
-                self.item(validator, value, sink, vm)?;
+                this.item(validator, value, sink, vm)?;
             }
             sink.end_seq()
-        })();
-        self.leave(id);
-        written
+        })
     }
 
     /// A mapping, keys and values by their validators or by inference.
@@ -465,17 +494,14 @@ impl<'a> Serializer<'a> {
         sink: &mut S,
         vm: &VM<'_>,
     ) -> RunResult<()> {
-        self.enter(id)?;
-        let written = (|| {
+        self.container(id, validators.is_none(), sink, vm, |this, sink| {
             sink.begin_map()?;
             for (key, value) in dict {
-                self.key(validators.map(|(key, _)| key), key, sink, vm)?;
-                self.item(validators.map(|(_, value)| value), value, sink, vm)?;
+                this.key(validators.map(|(key, _)| key), key, sink, vm)?;
+                this.item(validators.map(|(_, value)| value), value, sink, vm)?;
             }
             sink.end_map()
-        })();
-        self.leave(id);
-        written
+        })
     }
 
     /// A dataclass instance by its validator: fields in declaration order,
@@ -490,24 +516,44 @@ impl<'a> Serializer<'a> {
         let HeapData::Instance(instance) = vm.heap.get(id) else {
             unreachable!("a dataclass validator matched an instance")
         };
-        self.enter(id)?;
-        let written = (|| {
+        self.defined(id, sink, |this, sink| {
             sink.begin_map()?;
             for field in &dataclass.fields {
                 let name = vm.interns.get_str(field.name);
                 let Some(value) = instance.attrs().get_by_str(name, vm.heap, vm.interns) else {
                     continue;
                 };
-                if self.options.exclude_none && matches!(value, Value::None) {
+                if this.options.exclude_none && matches!(value, Value::None) {
                     continue;
                 }
                 sink.key(Key::Text(name), vm)?;
-                self.value(field.validator, value, sink, vm)?;
+                this.value(field.validator, value, sink, vm)?;
             }
             sink.end_map()
-        })();
-        self.leave(id);
-        written
+        })
+    }
+
+    /// Writes a dataclass by its validator through `body`, under the guard
+    /// pydantic puts on a recursive type: it fails in either mode, and counts
+    /// towards the depth inference shares.
+    fn defined<S: Sink>(
+        &mut self,
+        id: HeapId,
+        sink: &mut S,
+        body: impl FnOnce(&mut Self, &mut S) -> RunResult<()>,
+    ) -> RunResult<()> {
+        if self.defining.contains(&id) {
+            Err(self.circular("id repeated"))
+        } else if self.depth >= RECURSION_LIMIT {
+            Err(self.circular("depth exceeded"))
+        } else {
+            self.defining.insert(id);
+            self.depth += 1;
+            let written = body(self, sink);
+            self.depth -= 1;
+            self.defining.remove(&id);
+            written
+        }
     }
 
     /// A dataclass instance met by inference: its class's fields, values inferred.
@@ -527,10 +573,9 @@ impl<'a> Serializer<'a> {
             _ => None,
         };
         let Some((_, HeapData::Dict(fields))) = fields.and_then(|fields| heap_data(fields, vm)) else {
-            return self.unknown(&Value::Ref(id), sink, vm);
+            return self.unknown(&borrowed_ref(id), sink, vm);
         };
-        self.enter(id)?;
-        let written = (|| {
+        self.container(id, true, sink, vm, |this, sink| {
             sink.begin_map()?;
             for (name, _) in fields {
                 let Some(name) = name.as_str(vm) else { continue };
@@ -538,12 +583,10 @@ impl<'a> Serializer<'a> {
                     continue;
                 };
                 sink.key(Key::Text(name), vm)?;
-                self.infer(value, sink, vm)?;
+                this.infer(value, sink, vm)?;
             }
             sink.end_map()
-        })();
-        self.leave(id);
-        written
+        })
     }
 
     /// One container item, by `validator` when there is one.
@@ -589,7 +632,7 @@ impl<'a> Serializer<'a> {
             (Mode::Json, Value::Float(f))
                 if !f.is_finite() && validator.is_some_and(|id| self.is_float(id, key, vm)) =>
             {
-                sink.key(Key::Text(non_finite_text(*f)), vm)
+                sink.key(Key::Text(&float_key(*f, InfNan::Constants)), vm)
             }
             (Mode::Json, _) => {
                 let text = self.key_text(key, vm)?;
@@ -599,34 +642,35 @@ impl<'a> Serializer<'a> {
     }
 
     /// pydantic's JSON object key for a value: strings as they are, `None`
-    /// for `None` and non-finite floats, `true` / `false`, a number's digits,
+    /// for `None` and non-finite floats, `true` / `false`, a number's text,
     /// ISO text for temporal values, a tuple's keys joined by commas.
     fn key_text(&mut self, key: &Value, vm: &VM<'_>) -> RunResult<String> {
         // A tuple key shared within itself expands once per reference, so keys count as steps too.
         self.step(vm)?;
-        if let Some(text) = key.as_str(vm) {
-            return Ok(text.to_owned());
-        }
-        match key {
-            Value::None => Ok("None".to_owned()),
-            Value::Bool(b) => Ok(if *b { "true" } else { "false" }.to_owned()),
-            Value::Int(i) => Ok(i.to_string()),
-            Value::Float(f) if f.is_finite() => Ok(zmij::Buffer::new().format_finite(*f).to_owned()),
-            Value::Float(_) => Ok("None".to_owned()),
-            Value::InternBytes(id) => self.bytes_text(vm.interns.get_bytes(*id)),
-            Value::InternLongInt(id) => self.bigint_text(vm.interns.get_long_int(*id)),
-            Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Bytes(bytes) => self.bytes_text(bytes.as_slice()),
-                HeapData::LongInt(big) => self.bigint_text(big.inner()),
-                HeapData::Decimal(decimal) => Ok(decimal.to_sci_string(false, self.options.capitals)),
-                HeapData::Date(_) | HeapData::DateTime(_) | HeapData::Time(_) | HeapData::TimeDelta(_) => {
-                    temporal_text(*id, vm).ok_or_else(|| Self::unknown_type(key, vm))
-                }
-                HeapData::Tuple(tuple) => self.joined_keys(tuple.as_slice(), vm),
-                HeapData::NamedTuple(nt) => self.joined_keys(nt.items(), vm),
+        match key.as_str(vm) {
+            Some(text) => Ok(text.to_owned()),
+            None => match key {
+                Value::None => Ok("None".to_owned()),
+                Value::Bool(b) => Ok(bool_text(*b).to_owned()),
+                Value::Int(i) => Ok(i.to_string()),
+                Value::Float(f) => Ok(float_key(*f, InfNan::Null)),
+                Value::InternBytes(id) => self.surface.utf8_key(vm.interns.get_bytes(*id)).map(str::to_owned),
+                Value::InternLongInt(id) => self.surface.bigint_key(vm.interns.get_long_int(*id)),
+                Value::Ref(id) => match vm.heap.get(*id) {
+                    HeapData::Bytes(bytes) => self.surface.utf8_key(bytes.as_slice()).map(str::to_owned),
+                    HeapData::LongInt(big) => self.surface.bigint_key(big.inner()),
+                    HeapData::Decimal(decimal) => Ok(decimal.to_sci_string(false, self.options.capitals)),
+                    HeapData::Complex(complex) => Ok(complex_text(complex.real, complex.imag)),
+                    HeapData::Date(_) | HeapData::DateTime(_) | HeapData::Time(_) | HeapData::TimeDelta(_) => {
+                        temporal_text(*id, vm).ok_or_else(|| Self::unknown_type(key, vm))
+                    }
+                    HeapData::Tuple(tuple) => self.joined_keys(tuple.as_slice(), vm),
+                    HeapData::NamedTuple(nt) => self.joined_keys(nt.items(), vm),
+                    HeapData::FrozenSet(_) => Err(self.surface.invalid_key("frozenset")),
+                    _ => Err(Self::unknown_type(key, vm)),
+                },
                 _ => Err(Self::unknown_type(key, vm)),
             },
-            _ => Err(Self::unknown_type(key, vm)),
         }
     }
 
@@ -638,42 +682,17 @@ impl<'a> Serializer<'a> {
             .collect::<RunResult<_>>()?;
         Ok(parts.join(","))
     }
-
-    /// A big-int key's digits, under CPython's `int` string limit, which pydantic
-    /// meets through `str()` of the key; `dump_json` reports it as its own error.
-    fn bigint_text(&self, big: &BigInt) -> RunResult<String> {
-        match check_bigint_str_digits_limit(big) {
-            Ok(()) => Ok(big.to_string()),
-            Err(_) if self.json_text => Err(serialization_error(format!(
-                "Error serializing to JSON: ValueError: {}",
-                ExcType::int_too_large_for_str_message()
-            ))),
-            Err(err) => Err(err),
-        }
-    }
-
-    /// Bytes as UTF-8 text, with the error for the mode.
-    fn bytes_text(&self, bytes: &[u8]) -> RunResult<String> {
-        decode_utf8(bytes, self.json_text).map(str::to_owned)
-    }
-}
-
-/// Bytes as UTF-8 text: `dump_json` reports the Rust error, `mode='json'` a
-/// `UnicodeDecodeError`, as pydantic's two paths do.
-fn decode_utf8(bytes: &[u8], json_text: bool) -> RunResult<&str> {
-    str::from_utf8(bytes).map_err(|err| {
-        if json_text {
-            serialization_error(format!("Error serializing to JSON: {err}"))
-        } else {
-            let start = err.valid_up_to();
-            ExcType::unicode_decode_error("utf-8", bytes, start, start + 1, "invalid utf-8")
-        }
-    })
 }
 
 /// A `PydanticSerializationError` with `message`.
 fn serialization_error(message: String) -> RunError {
     SimpleException::new_msg(ExcType::PydanticSerializationError, message).into()
+}
+
+/// A `Value` naming heap entry `id` without owning a reference, for calls
+/// that only read it; never dropped, so it releases nothing.
+fn borrowed_ref(id: HeapId) -> ManuallyDrop<Value> {
+    ManuallyDrop::new(Value::Ref(id))
 }
 
 /// Whether `class_id` is the class a dataclass validator was built for.
@@ -739,8 +758,8 @@ fn bytes_of<'v>(value: &Value, vm: &'v VM<'_>) -> Option<&'v [u8]> {
     }
 }
 
-/// The ISO text of a temporal heap value; `None` for a datetime whose zone
-/// has no fixed offset to write.
+/// The ISO text of a temporal heap value; `None` for a datetime whose
+/// components are out of range for a snapshot.
 fn temporal_text(id: HeapId, vm: &VM<'_>) -> Option<String> {
     match vm.heap.read(id) {
         HeapReadOutput::Date(d) => Some(iso::date(&date_type::to_monty_date(*d.get(vm.heap)))),
@@ -779,14 +798,13 @@ impl Out {
                     let Some((key, value)) = partial.pending.pop() else {
                         break;
                     };
-                    let key = key.build(vm)?;
-                    let value = match value.build(vm) {
-                        Ok(value) => value,
-                        Err(err) => {
-                            key.drop_with(vm);
-                            return Err(err);
-                        }
-                    };
+                    // Each half is guarded while the other builds, so a failure releases both.
+                    let mut value = DropGuard::new(value, vm);
+                    let key = key.build(value.ctx())?;
+                    let (value, vm) = value.into_parts();
+                    let mut key = DropGuard::new(key, vm);
+                    let value = value.build(key.ctx())?;
+                    let (key, vm) = key.into_parts();
                     if let Some(replaced) = partial.built.set(key, value, vm)? {
                         replaced.drop_with(vm);
                     }
@@ -932,7 +950,7 @@ impl Sink for PySink {
     fn bytes(&mut self, value: &Value, bytes: &[u8], vm: &VM<'_>) -> RunResult<()> {
         let out = match self.mode {
             Mode::Python => value.clone_with_heap(vm.heap),
-            Mode::Json => allocate_string(decode_utf8(bytes, false)?, vm.heap),
+            Mode::Json => allocate_string(Surface::Python.utf8_value(bytes)?, vm.heap),
         };
         self.emit(Out::Value(out));
         Ok(())
@@ -1021,7 +1039,7 @@ impl Sink for JsonSink<'_> {
     }
 
     fn bytes(&mut self, _value: &Value, bytes: &[u8], _vm: &VM<'_>) -> RunResult<()> {
-        self.writer.string(decode_utf8(bytes, true)?)
+        self.writer.string(Surface::DumpJson.utf8_value(bytes)?)
     }
 
     fn text_form(&mut self, _value: &Value, text: String, _vm: &VM<'_>) -> RunResult<()> {

@@ -195,6 +195,23 @@ cyclic.append(cyclic)
 assert error(lambda: Any_.dump_json(cyclic)) == (
     'Error serializing to JSON: ValueError: Circular reference detected (id repeated)'
 )
+assert error(lambda: Any_.dump_json({b'\xff': 1})) == (
+    "Error serializing to JSON: UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid utf-8"
+)
+assert Any_.dump_json({1e16: 1, 1e-7: 2, -0.0: 3, float('nan'): 4}) == b'{"1e+16":1,"1e-07":2,"-0.0":3,"None":4}'
+assert Any_.dump_python({1e-7: 1}, mode='json') == {'1e-07': 1}
+# a frozenset key is refused, alone or inside a tuple key
+assert error(lambda: Any_.dump_json({frozenset(): 1})) == (
+    'Error serializing to JSON: TypeError: `frozenset` not valid as object key'
+)
+assert error(lambda: Any_.dump_json({(1, frozenset()): 1})) == (
+    'Error serializing to JSON: TypeError: `frozenset` not valid as object key'
+)
+try:
+    Any_.dump_python({frozenset(): 1}, mode='json')
+    assert False, 'expected a TypeError'
+except TypeError as exc:
+    assert str(exc) == '`frozenset` not valid as object key'
 try:
     Any_.dump_json([1], indent='x')
     assert False, 'expected a TypeError'
@@ -205,6 +222,82 @@ try:
     assert False, 'expected an OverflowError'
 except OverflowError as exc:
     assert str(exc) == "can't convert negative int to unsigned"
+
+# === complex in JSON mode ===
+assert Any_.dump_json(1 + 2j) == b'"1+2j"'
+assert Any_.dump_python(
+    [1 + 2j, -1 - 2j, 1j, -0j, 0j, complex(1, 0), complex(-0.0, -0.0), 1.5e20 + 1j, complex(1, float('nan'))],
+    mode='json',
+) == ['1+2j', '-1-2j', '1j', '-0j', '0j', '1+0j', '-0j', '150000000000000000000+1j', '1+NaNj']
+assert Any_.dump_json({1j: 1, 1 + 2j: 2}) == b'{"1j":1,"1+2j":2}'
+assert Any_.dump_python({1j: 1}, mode='json') == {'1j': 1}
+assert Any_.dump_python(1 + 2j) == 1 + 2j
+
+# === A union's lax retry: only when a member asks for it ===
+# `int`, tuples and dataclasses ask, lists and `Optional`s through their items; a `float` member then takes a bool or an int
+assert TypeAdapter(float | str).dump_json(True) == b'true'
+assert TypeAdapter(float | str).dump_python(True, mode='json') is True
+assert TypeAdapter(Literal[1] | float).dump_json(True) == b'true'
+assert TypeAdapter(float | Literal[2]).dump_python(True, mode='json') is True
+assert TypeAdapter(float | int).dump_json(True) == b'1.0'
+assert TypeAdapter(int | float).dump_json(True) == b'1'
+assert TypeAdapter(float | int | None).dump_json(True) == b'1.0'
+assert TypeAdapter(float | list[int]).dump_json(True) == b'1.0'
+assert TypeAdapter(float | list[int]).dump_json(1) == b'1.0'
+assert TypeAdapter(float | list[float]).dump_json(1) == b'1'
+assert TypeAdapter(float | tuple[str, ...]).dump_python(1, mode='json') == 1.0
+assert TypeAdapter(float | dict[str, int]).dump_json(True) == b'true'
+assert TypeAdapter(float | set[int]).dump_json(1) == b'1'
+assert TypeAdapter(float | int).dump_python(True) is True
+# an int too wide for a float is left to inference
+assert TypeAdapter(float | list[int]).dump_json(wide) == TypeAdapter(int).dump_json(wide)
+
+
+# === Recursion guards ===
+def nested(n, leaf=None):
+    x = [] if leaf is None else [leaf]
+    for _ in range(n):
+        x = [x]
+    return x
+
+
+def depth_of(x):
+    n = 0
+    while x:
+        x = x[0]
+        n += 1
+    return n
+
+
+# Python mode hands back what inference cannot descend into as it is: the same object
+deep = nested(300)
+dumped = Any_.dump_python(deep)
+assert depth_of(dumped) == 300
+inner, original = dumped, deep
+for _ in range(255):
+    assert inner is not original
+    inner, original = inner[0], original[0]
+assert inner is original
+assert depth_of(TypeAdapter(list[Any]).dump_python(nested(10_000))) == 10_000
+assert error(lambda: Any_.dump_python(nested(255), mode='json')) == 'Circular reference detected (depth exceeded)'
+assert depth_of(Any_.dump_python(nested(254), mode='json')) == 254
+assert error(lambda: Any_.dump_json(nested(300))) == (
+    'Error serializing to JSON: ValueError: Circular reference detected (depth exceeded)'
+)
+# a scalar counts as a level too
+assert error(lambda: Any_.dump_json(nested(254, 1))) == (
+    'Error serializing to JSON: ValueError: Circular reference detected (depth exceeded)'
+)
+assert Any_.dump_json(nested(253, 1)).count(b'[') == 254
+# a container holding itself: kept in Python mode, refused in JSON mode
+loop = []
+loop.append(loop)
+assert Any_.dump_python(loop)[0] is loop
+assert TypeAdapter(list[Any]).dump_python(loop)[0][0] is loop
+assert error(lambda: Any_.dump_python(loop, mode='json')) == 'Circular reference detected (id repeated)'
+looped = {}
+looped['x'] = looped
+assert Any_.dump_python(looped)['x'] is looped
 
 
 # === Dataclasses: a mapping of fields, in field order ===
@@ -228,6 +321,8 @@ assert TypeAdapter(list[Foo]).dump_python([Foo(1), Foo(2, 'b')]) == [
 ]
 assert TypeAdapter(Foo | int).dump_python(Foo(1)) == {'x': 1, 'y': None, 'z': []}
 assert TypeAdapter(Foo | int).dump_python(3) == 3
+# a dataclass member asks for the union's lax retry
+assert TypeAdapter(float | Foo).dump_json(True) == b'1.0'
 assert TypeAdapter(Foo | int).dump_json(Foo(1)) == b'{"x":1,"y":null,"z":[]}'
 # a value of another type than the field's falls back to its own type
 assert FooAdapter.dump_python({'x': 1}) == {'x': 1}
@@ -246,6 +341,30 @@ assert TypeAdapter(Literal['a', 1]).dump_python('b') == 'b'
 assert TypeAdapter(Literal['a', 1]).dump_json(1) == b'1'
 assert TypeAdapter(int).dump_python(1, round_trip=True) == 1
 assert TypeAdapter(int).dump_python(1, by_alias=True) == 1
+
+
+# a recursive dataclass is guarded in Python mode too
+@dataclass
+class Node:
+    next: Optional['Node']
+
+
+def chain(n):
+    node = Node(None)
+    for _ in range(n):
+        node = Node(node)
+    return node
+
+
+NodeAdapter = TypeAdapter(Node)
+ring = Node(None)
+ring.next = ring
+assert error(lambda: NodeAdapter.dump_python(ring)) == 'Circular reference detected (id repeated)'
+assert error(lambda: NodeAdapter.dump_python(chain(300))) == 'Circular reference detected (depth exceeded)'
+assert error(lambda: NodeAdapter.dump_json(chain(300))) == (
+    'Error serializing to JSON: ValueError: Circular reference detected (depth exceeded)'
+)
+assert NodeAdapter.dump_python(chain(2)) == {'next': {'next': {'next': None}}}
 
 # === exclude_none applies to a dataclass's typed fields only ===
 assert FooAdapter.dump_python(Foo(1), exclude_none=True) == {'x': 1, 'z': []}

@@ -114,7 +114,10 @@ impl Builtins {
     pub fn py_repr_fmt<W: Write>(self, f: &mut W) -> fmt::Result {
         match self {
             Self::Function(b) => write!(f, "<built-in function {b}>"),
-            Self::Type(t) => write!(f, "<class '{t}'>"),
+            Self::Type(t) => match t.module() {
+                Some(module) => write!(f, "<class '{module}.{t}'>"),
+                None => write!(f, "<class '{t}'>"),
+            },
         }
     }
 

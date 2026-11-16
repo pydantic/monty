@@ -21,17 +21,25 @@ The messages, `errors()` output and `str()` format are copied from pydantic-core
 - `dump_python(..., include=, exclude=, fallback=, polymorphic_serialization=, context=)`, the same on
     `dump_json`, and `exclude_unset=True`, `exclude_defaults=True`, `exclude_computed_fields=True` or
     `serialize_as_any=True` raise `NotImplementedError` naming the argument; `mode`, `indent`, `ensure_ascii`
-    and `exclude_none` are supported, `by_alias`, `round_trip` and `warnings` are accepted and have no effect.
+    and `exclude_none` are supported, `by_alias`, `round_trip` and `warnings` are type-checked as in pydantic and
+    otherwise have no effect.
 - `pydantic_core` is not importable, so `PydanticSerializationError` cannot be named; it is a `ValueError`.
 - `TypeAdapter(type, config=...)` and `TypeAdapter(type, module=...)` raise `NotImplementedError`;
     `_parent_depth` is accepted and ignored.
 - `validate_python(..., extra=, from_attributes=, context=, by_alias=, by_name=)`,
-    `validate_json(..., extra=, context=, by_alias=, by_name=)` and `experimental_allow_partial=True` raise
-    `NotImplementedError` naming the argument; `strict` is supported.
-- **Signature errors do not count `self`.** `TypeAdapter.validate_python(1, 2)` reports
+    `validate_json(..., extra=, context=, by_alias=, by_name=)` raise `NotImplementedError` naming the
+    argument; `strict` is supported. `experimental_allow_partial=True`, `'on'` or `'trailing-strings'` raise
+    `NotImplementedError` too; `False` and `'off'` are accepted.
+- **Method signature errors do not count `self`.** `ta.validate_python(1, 2)` reports
     `takes 1 positional argument but 2 were given` and `validate_python(object=1)` an unexpected keyword
     argument, where pydantic's methods count the instance (`takes 2 positional arguments but 3 were given`)
-    and name positional-only arguments passed as keywords.
+    and name positional-only arguments passed as keywords. `TypeAdapter.__init__` counts it, as in pydantic.
+- **`TypeAdapter[int]` raises `TypeError: type 'TypeAdapter' is not subscriptable`**; pydantic's
+    `TypeAdapter` is `Generic`.
+- **Methods cannot be read as bound methods.** `ta.validate_python` without a call, and
+    `TypeAdapter.validate_python(ta, x)`, raise `AttributeError`.
+- **`copy.copy` / `copy.deepcopy` of an adapter** build a new adapter that shares the hint's values
+    (literal choices, defaults) rather than deep-copying them.
 - `Annotated[T, ...]` validates as `T`: the metadata is ignored until `Field` exists.
 
 ## Type hints
@@ -39,7 +47,8 @@ The messages, `errors()` output and `str()` format are copied from pydantic-core
 `TypeAdapter` builds a validator for `int`, `float`, `str`, `bool`, `bytes`, `None`, `Any`, `object`,
 `list[T]`, `set[T]`, `frozenset[T]`, `tuple[A, B]`, `tuple[T, ...]`, `dict[K, V]`, `X | Y`, `Optional[X]`,
 `Literal[...]`, `datetime`, `date`, `time`, `timedelta`, `Decimal`, a stdlib `@dataclass` and a
-`collections.namedtuple` class, at any nesting, including a dataclass whose fields name the class again.
+`collections.namedtuple` class, and `typing.List`, `Set`, `FrozenSet`, `Tuple`, `Dict` and `Mapping` (bare
+or parameterised, validated as the builtin; `Mapping[K, V]` builds a `dict`), at any nesting, including a dataclass whose fields name the class again.
 The bare `list`, `set`, `frozenset`, `tuple` and `dict` take `Any` items.
 Any other hint raises `PydanticSchemaGenerationError` with pydantic's message, and a generic with the wrong
 number of arguments (`dict[int]`) the `TypeError` pydantic raises. Divergences:
@@ -47,7 +56,11 @@ number of arguments (`dict[int]`) the `TypeError` pydantic raises. Divergences:
 - **A string hint is not evaluated.** `TypeAdapter('int')` and `TypeAdapter(list['Foo'])` raise
     `PydanticSchemaGenerationError` where pydantic resolves the name in the caller's module.
     A forward reference inside a dataclass field is resolved, through `typing.get_type_hints`.
-- **`type[X]`** raises `PydanticSchemaGenerationError` where pydantic builds an `is-subclass` validator.
+- **`typing.Sequence`, `Iterable`, `Callable`, `Type[X]` / `type[X]`, and bare `type` and `complex`** raise
+    `PydanticSchemaGenerationError` where pydantic builds a validator.
+- **A plain subclass of a dataclass validates with the fields of the dataclass it inherits from**, as in
+    pydantic, but a `@dataclass` that derives from another dataclass only has its own fields (see
+    [dataclasses.md](dataclasses.md)).
 - **A `TypeAdapter` used as a hint** raises `PydanticSchemaGenerationError`, as in pydantic.
 - **The hint repr in the message uses Monty's names**: `<class 'Foo'>` where pydantic prints `<class '__main__.Foo'>`.
 - **A dataclass's field hints are evaluated when the adapter is built**, through `typing.get_type_hints`,
@@ -84,9 +97,13 @@ Divergences:
     `ValidationError` of type `value_error`.
 - **A dataclass field with `init=False` does not exist in Monty**, so every field is read from the input.
 - **A `dict[K, V]` input that changes size during validation raises `RuntimeError`**, as a `for` loop over
-    it would, where pydantic-core's iterator fails with a `PanicException`. Dataclass arguments read from
-    a dict that a `default_factory` mutates are validated in both: a key the factory adds or changes is read
-    when the walk reaches it, and a removed one is missing.
+    it would, where pydantic-core's iterator fails with a `PanicException`. Dataclass fields are validated in
+    declaration order, as in pydantic, but each entry is read when the walk over the dict reaches it: a key a
+    `default_factory` adds, changes or removes is seen as pydantic sees it, unless the dict lists that field
+    before the factory's field, in which case the value read before the factory ran is validated.
+- **A JSON object that repeats a dataclass field's key can validate more than one occurrence**: an
+    occurrence read when the field was next in declaration order is validated at once, so its nested
+    `__post_init__` can run even though a later occurrence replaces it; pydantic validates only the last.
 - **Set results iterate in insertion order**, as Monty's sets do, where CPython's order depends on hashes.
 - **The recursion guard is keyed on identity**: a list that contains itself reports `recursion_loop`,
     like pydantic, but a deeply nested input hits Monty's recursion limit (`RecursionError`) rather than
@@ -104,9 +121,11 @@ Divergences:
 
 - **No `PydanticSerializationUnexpectedValue` warning.** A value that does not match its hint is serialized
     silently; pydantic emits a `UserWarning`, and `warnings='error'` raises there but not in Monty.
-- **A cycle raises in Python mode too.** `dump_python` of a container that holds itself raises
-    `ValueError: Circular reference detected (id repeated)`; pydantic returns a nested copy. `dump_json`
-    raises pydantic's `PydanticSerializationError` for it.
+- **Dataclasses are guarded more widely in Python mode.** `dump_python(mode='python')` guards every dataclass
+    written through its declared type against cycles and nesting past 255 levels; pydantic guards only
+    recursive types, so a non-recursive dataclass inside deep `Any` nesting can hit the limit a little sooner.
+- **A frozen-dataclass dict key** raises `Unable to serialize unknown type` in `dump_json` and
+    `dump_python(mode='json')`, where pydantic writes `str(key)`.
 - **The unknown-type message uses Monty's class name**: `Unable to serialize unknown type: <class 'Foo'>`
     where pydantic prints `<class '__main__.Foo'>`.
 
@@ -119,14 +138,40 @@ Divergences:
 
 - **Inputs in `errors()` are snapshots.** The exception stores a copy of each failing input: scalars,
     containers, temporal values and decimals come back as equal new objects, not the same ones, and an
-    instance, function or other object with no snapshot form comes back as its `repr()` string.
+    instance, function or other object with no snapshot form comes back as its `repr()` string; an exception
+    input or `ctx` value comes back as an equal new exception.
+    A `str` or `bytes` input of 1 MiB or more is checked against `max_memory` before it is copied, so it can
+    raise `MemoryError` where pydantic keeps a reference.
     One exception's snapshots share a budget of about 32,000 nodes and 4 MiB of text; past it, the rest of each
     container and every later input is cut off as the string `'...'`.
-- **`exc.args` is `(str(exc),)`**, where pydantic's is `(title, line_errors, input_type, hide_input)`.
+- **`exc.args` is `()`**, as for a `ValidationError` pydantic raises; one built by `from_exception_data` also
+    has `()`, where pydantic's is `(title, line_errors, input_type, hide_input)`.
+- **An input's `__repr__` runs when the error is raised**, not when `str(exc)` is first read, because the
+    exception stores a snapshot. A `__repr__` that raises gives `<unprintable X object>` in `str()`, `errors()`
+    and `json()`; pydantic re-raises from `errors()` and writes `<Unserializable X object>` in `json()`.
+- **The methods are call-only.** `exc.errors`, `exc.json`, `exc.error_count` and
+    `ValidationError.from_exception_data` work only when called directly; reading one without calling it
+    raises `AttributeError`, and `hasattr` returns `False` (see [builtins.md](builtins.md)).
+- **An empty `ctx` is dropped**: `'ctx': {}` on a type that takes no context is left out of `errors()`, where
+    pydantic reports `'ctx': {}`.
+- **A non-`str` title raises `TypeError`** (`argument 'title': 'int' object is not an instance of 'str'`),
+    where pydantic panics.
 - **`ValidationError('msg')` builds a plain exception** with no line errors; its `errors()` raises
     `AttributeError`, where pydantic refuses the call with `TypeError`.
 - **Unknown keys in a `from_exception_data` `ctx` are dropped**, where pydantic keeps them in `errors()`.
+- **`exc.json()` writes a value with no JSON form** (an instance, a function, a custom exception subclass)
+    as the `repr()` stored when the error was raised, where pydantic calls `str()` on it; the two differ only
+    for a class that defines its own `__str__`.
 - **`exc.json()` writes a float's shortest form**, as pydantic does, so `1e16` is `1e+16` either way; a
     non-finite float is `NaN` or `Infinity`, as in pydantic.
-- **`PydanticUserError` messages are plain.** `str(PydanticSchemaGenerationError('x'))` is `'x'`, where
-    pydantic appends the documentation URL for the error code; the errors Monty raises itself include it.
+- **A `ValidationError` reaching the host keeps only its message.** The line errors stay in the worker:
+    a Python host sees a `ValueError` carrying the rendered `str(exc)` (a `RuntimeError` for
+    `PydanticUserError` and `PydanticSchemaGenerationError`), with no `errors()`, `title` or pydantic class,
+    and a JavaScript host sees the dotted class name and the message.
+    In the other direction, a pydantic `ValidationError` raised by a host function arrives as a plain
+    `ValueError`, so `except ValidationError` in the sandbox does not catch it.
+    An `ExternalExceptionData` naming `pydantic_core._pydantic_core.ValidationError` builds one with no line
+    errors, like `ValidationError('msg')` above.
+- **`PydanticUserError(message, *, code)`** stores `message` and `code` as `str()` of what was passed, so
+    `PydanticUserError(1, code=None).message` is `'1'`. The positional-overflow error does not count `self`:
+    `PydanticErrorMixin.__init__() takes 1 positional argument but 2 ...`, where pydantic says `takes 2 ... but 3`.

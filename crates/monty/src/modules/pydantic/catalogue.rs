@@ -12,7 +12,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::HeapData,
-    modules::pydantic::snapshot::snapshot_value,
+    modules::pydantic::snapshot::{snapshot_value, str_string},
     value::Value,
 };
 
@@ -38,7 +38,7 @@ macro_rules! error_types {
 
             /// Builds the type named `name` from the `(key, value)` entries of a
             /// context dict, as `ValidationError.from_exception_data` does.
-            pub(crate) fn from_name(name: &str, ctx: &[(String, Value)], vm: &mut VM<'_>) -> RunResult<Self> {
+            pub(crate) fn from_name(name: &str, ctx: &[(Value, Value)], vm: &mut VM<'_>) -> RunResult<Self> {
                 match name {
                     $( $name => Ok(Self::$variant {
                         $($field: <$ty as CtxField>::from_context(ctx, stringify!($field), stringify!($variant), vm)?),*
@@ -51,6 +51,13 @@ macro_rules! error_types {
             pub(crate) fn context(&self) -> Vec<(&'static str, MontyObject)> {
                 match self {
                     $( Self::$variant { $($field),* } => vec![$((stringify!($field), $field.to_context())),*] ),+
+                }
+            }
+
+            /// The template parameters as the message shows them.
+            fn message_fields(&self) -> Vec<(&'static str, String)> {
+                match self {
+                    $( Self::$variant { $($field),* } => vec![$((stringify!($field), $field.display())),*] ),+
                 }
             }
         }
@@ -115,8 +122,8 @@ error_types! {
     BytesTooShort "bytes_too_short" { min_length: usize },
     BytesTooLong "bytes_too_long" { max_length: usize },
     BytesInvalidEncoding "bytes_invalid_encoding" { encoding: String, encoding_error: String },
-    ValueError "value_error" { error: String },
-    AssertionError "assertion_error" { error: String },
+    ValueError "value_error" { error: ErrorValue },
+    AssertionError "assertion_error" { error: ErrorValue },
     LiteralError "literal_error" { expected: String },
     MissingSentinelError "missing_sentinel_error" {},
     EllipsisError "ellipsis_error" {},
@@ -347,10 +354,10 @@ impl ErrorType {
             ValidationInputType::Json => self.message_template_json(),
         };
         let mut message = template.to_owned();
-        for (field, value) in self.context() {
+        for (field, text) in self.message_fields() {
             let placeholder = format!("{{{field}}}");
             if message.contains(&placeholder) {
-                message = message.replace(&placeholder, &context_display(&value));
+                message = message.replace(&placeholder, &text);
             }
         }
         if let Some(count) = self.plural_count() {
@@ -398,31 +405,41 @@ pub(crate) type Number = MontyObject;
 pub(crate) trait CtxField: Sized {
     /// Reads and converts the entry named `field`, with pydantic's errors for a
     /// missing or mistyped one.
-    fn from_context(ctx: &[(String, Value)], field: &str, variant: &str, vm: &mut VM<'_>) -> RunResult<Self>;
+    fn from_context(ctx: &[(Value, Value)], field: &str, variant: &str, vm: &mut VM<'_>) -> RunResult<Self>;
 
     /// The value as `errors()` reports it.
     fn to_context(&self) -> MontyObject;
+
+    /// The value as the message shows it.
+    fn display(&self) -> String {
+        context_display(&self.to_context())
+    }
 }
 
 /// Reads a required context entry, converting it with `convert`; a missing
 /// entry and a failed conversion raise the `TypeError`s pydantic raises.
 fn required_context<T>(
-    ctx: &[(String, Value)],
+    ctx: &[(Value, Value)],
     field: &str,
     variant: &str,
     type_name: &str,
     vm: &mut VM<'_>,
     convert: impl FnOnce(&Value, &mut VM<'_>) -> Option<T>,
 ) -> RunResult<T> {
-    let Some((_, value)) = ctx.iter().find(|(key, _)| key == field) else {
-        return Err(ExcType::type_error(format!("{variant}: '{field}' required in context")));
-    };
-    convert(value, vm)
+    convert(find_context(ctx, field, variant, vm)?, vm)
         .ok_or_else(|| ExcType::type_error(format!("{variant}: '{field}' context value must be a {type_name}")))
 }
 
+/// The context entry keyed by the string `field`, or pydantic's `TypeError` when it is missing.
+fn find_context<'a>(ctx: &'a [(Value, Value)], field: &str, variant: &str, vm: &VM<'_>) -> RunResult<&'a Value> {
+    ctx.iter()
+        .find(|(key, _)| key.as_str(vm) == Some(field))
+        .map(|(_, value)| value)
+        .ok_or_else(|| ExcType::type_error(format!("{variant}: '{field}' required in context")))
+}
+
 impl CtxField for String {
-    fn from_context(ctx: &[(String, Value)], field: &str, variant: &str, vm: &mut VM<'_>) -> RunResult<Self> {
+    fn from_context(ctx: &[(Value, Value)], field: &str, variant: &str, vm: &mut VM<'_>) -> RunResult<Self> {
         required_context(ctx, field, variant, "String", vm, |value, vm| {
             value.as_str(vm).map(str::to_owned)
         })
@@ -434,7 +451,7 @@ impl CtxField for String {
 }
 
 impl CtxField for usize {
-    fn from_context(ctx: &[(String, Value)], field: &str, variant: &str, vm: &mut VM<'_>) -> RunResult<Self> {
+    fn from_context(ctx: &[(Value, Value)], field: &str, variant: &str, vm: &mut VM<'_>) -> RunResult<Self> {
         required_context(ctx, field, variant, "usize", vm, |value, _| match value {
             Value::Int(n) => Self::try_from(*n).ok(),
             _ => None,
@@ -447,7 +464,7 @@ impl CtxField for usize {
 }
 
 impl CtxField for u64 {
-    fn from_context(ctx: &[(String, Value)], field: &str, variant: &str, vm: &mut VM<'_>) -> RunResult<Self> {
+    fn from_context(ctx: &[(Value, Value)], field: &str, variant: &str, vm: &mut VM<'_>) -> RunResult<Self> {
         required_context(ctx, field, variant, "u64", vm, |value, _| match value {
             Value::Int(n) => Self::try_from(*n).ok(),
             _ => None,
@@ -460,7 +477,7 @@ impl CtxField for u64 {
 }
 
 impl CtxField for i64 {
-    fn from_context(ctx: &[(String, Value)], field: &str, variant: &str, vm: &mut VM<'_>) -> RunResult<Self> {
+    fn from_context(ctx: &[(Value, Value)], field: &str, variant: &str, vm: &mut VM<'_>) -> RunResult<Self> {
         required_context(ctx, field, variant, "i32", vm, |value, _| match value {
             Value::Int(n) => Some(*n),
             _ => None,
@@ -473,7 +490,7 @@ impl CtxField for i64 {
 }
 
 impl CtxField for Option<usize> {
-    fn from_context(ctx: &[(String, Value)], field: &str, variant: &str, vm: &mut VM<'_>) -> RunResult<Self> {
+    fn from_context(ctx: &[(Value, Value)], field: &str, variant: &str, vm: &mut VM<'_>) -> RunResult<Self> {
         required_context(ctx, field, variant, "Option<usize>", vm, |value, _| match value {
             Value::None => Some(None),
             Value::Int(n) => usize::try_from(*n).ok().map(Some),
@@ -491,12 +508,14 @@ impl CtxField for Option<usize> {
 impl CtxField for MontyObject {
     /// pydantic-core extracts an int (a bool as `0` / `1`), then a float
     /// (anything with `__float__`, so a `Decimal` becomes one), then a str.
-    fn from_context(ctx: &[(String, Value)], field: &str, variant: &str, vm: &mut VM<'_>) -> RunResult<Self> {
+    fn from_context(ctx: &[(Value, Value)], field: &str, variant: &str, vm: &mut VM<'_>) -> RunResult<Self> {
         required_context(ctx, field, variant, "Number", vm, |value, vm| match value {
-            Value::Int(_) | Value::Float(_) | Value::InternLongInt(_) => Some(snapshot_value(value, vm)),
+            Value::Int(n) => Some(Self::int(*n)),
+            Value::Float(f) => Some(Self::float(*f)),
+            Value::InternLongInt(id) => Some(Self::bigint(vm.interns.get_long_int(*id).clone())),
             Value::Bool(b) => Some(Self::int(i64::from(*b))),
             Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::LongInt(_) => Some(snapshot_value(value, vm)),
+                HeapData::LongInt(li) => Some(Self::bigint(li.inner().clone())),
                 HeapData::Decimal(decimal) => decimal.to_f64().ok().map(Self::float),
                 _ => value.as_str(vm).map(|text| Self::string(text.to_owned())),
             },
@@ -506,5 +525,31 @@ impl CtxField for MontyObject {
 
     fn to_context(&self) -> MontyObject {
         self.clone()
+    }
+}
+
+/// The `error` of `value_error` and `assertion_error`: any object, which the
+/// message shows through `str()` and `errors()` reports as a snapshot.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ErrorValue {
+    text: String,
+    object: MontyObject,
+}
+
+impl CtxField for ErrorValue {
+    fn from_context(ctx: &[(Value, Value)], field: &str, variant: &str, vm: &mut VM<'_>) -> RunResult<Self> {
+        let value = find_context(ctx, field, variant, vm)?;
+        Ok(Self {
+            text: str_string(value, vm)?,
+            object: snapshot_value(value, vm)?,
+        })
+    }
+
+    fn to_context(&self) -> MontyObject {
+        self.object.clone()
+    }
+
+    fn display(&self) -> String {
+        self.text.clone()
     }
 }

@@ -164,6 +164,8 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
                 let settings = *context.get(vm.heap);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::DecimalContext(settings))))
             }
+            // A new adapter over the same validators, as pydantic's copy is.
+            HeapReadOutput::TypeAdapter(adapter) => adapter.allocate_like(vm),
             _ => unreachable!("`classify` said this type is rebuilt, so `shallow_copy` must rebuild it"),
         },
     }
@@ -241,6 +243,9 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
                 let settings = *context.get(vm.heap);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::DecimalContext(settings))))
             }
+            // A new adapter over the same validators: pydantic copies the
+            // adapter's attributes, and Monty's validators hold nothing mutable.
+            HeapReadOutput::TypeAdapter(adapter) => adapter.allocate_like(vm),
             _ => unreachable!("`classify` said this type is rebuilt, so `deep_copy` must rebuild it"),
         },
     }?;
@@ -293,7 +298,8 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::BoundMethod(_)
         | HeapReadOutput::Partial(_)
         | HeapReadOutput::Random(_)
-        | HeapReadOutput::DecimalContext(_) => Copyability::Rebuilt,
+        | HeapReadOutput::DecimalContext(_)
+        | HeapReadOutput::TypeAdapter(_) => Copyability::Rebuilt,
         // A shallow copy of an immutable container holds the same items, so
         // CPython hands back the original; only `deepcopy` rebuilds these.
         HeapReadOutput::Tuple(_) | HeapReadOutput::FrozenSet(_) => {
@@ -363,7 +369,6 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::DirScan(_)
         | HeapReadOutput::Itertools(_)
         | HeapReadOutput::Csv(_)
-        | HeapReadOutput::TypeAdapter(_)
         | HeapReadOutput::Module(_)
         | HeapReadOutput::Coroutine(_)
         | HeapReadOutput::GatherFuture(_)

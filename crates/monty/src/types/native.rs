@@ -29,6 +29,7 @@ use crate::{
         str::PyStr,
         time, timedelta, timezone,
         r#type::{bool_init, float_init, int_init, union_init},
+        type_adapter,
     },
     value::{EitherStr, Value},
 };
@@ -43,6 +44,9 @@ pub(crate) struct TypeDef {
     /// is what reprs and error messages print; `__name__` strips the module.
     /// Types hash by this string, so it is part of the dump contract.
     pub name: &'static str,
+    /// The defining module of a Python-level class, whose `tp_name` is bare
+    /// (`TypeAdapter`) while its repr is qualified (`pydantic.type_adapter.TypeAdapter`).
+    pub module: Option<&'static str>,
     /// The name bound in the builtins namespace, if the type is one (`iter` for `Iterator`).
     pub builtin: Option<&'static str>,
     /// Direct bases in declaration order; empty only for `object`.
@@ -94,6 +98,7 @@ impl TypeDef {
     const fn new(name: &'static str, bases: &'static [Type]) -> Self {
         Self {
             name,
+            module: None,
             builtin: None,
             bases,
             mro: None,
@@ -111,6 +116,12 @@ impl TypeDef {
     /// The root of the hierarchy: no bases at all.
     const fn root(mut self) -> Self {
         self.bases = &[];
+        self
+    }
+
+    /// A Python-level class defined in `module`: errors print the bare name, reprs qualify it.
+    const fn module(mut self, module: &'static str) -> Self {
+        self.module = Some(module);
         self
     }
 
@@ -236,6 +247,12 @@ impl Type {
     #[inline]
     pub(crate) fn name(self) -> &'static str {
         self.def().name
+    }
+
+    /// The defining module of a Python-level class, which reprs prefix to [`name`](Self::name).
+    #[inline]
+    pub(crate) fn module(self) -> Option<&'static str> {
+        self.def().module
     }
 
     /// The boundary exception type, if this is an exception class.
@@ -769,9 +786,12 @@ native_types! {
     /// `annotationlib.ForwardRef`, an unevaluated annotation.
     ForwardRef("annotationlib.ForwardRef")
         .ctor(Constructor::Value(ForwardRef::init)),
-    /// `pydantic.TypeAdapter`, qualified like `functools.partial`.
-    TypeAdapter("pydantic.type_adapter.TypeAdapter")
-        .ctor(Constructor::Value(TypeAdapter::init)),
+    /// `pydantic.TypeAdapter`, a Python class in pydantic: errors name it
+    /// `TypeAdapter`, its repr `pydantic.type_adapter.TypeAdapter`.
+    TypeAdapter("TypeAdapter")
+        .module("pydantic.type_adapter")
+        .ctor(Constructor::Value(TypeAdapter::init))
+        .class_attr(type_adapter::class_attr),
     /// The base of every ordinary exception.
     Exception("Exception", BaseException)
         .builtin()

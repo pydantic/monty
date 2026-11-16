@@ -5,8 +5,9 @@
 #
 # `default` ends at 6: its binding, the class attribute, the `Field` default,
 # the generated `__init__`'s copy, the arena's copy, and `built.pair`, which
-# the validator took from the arena's copy. `Foo` ends at 3: its binding, the
-# arena's reference and the built instance's class reference. Validated
+# the validator took from the arena's copy. `Foo` ends at 4: its binding, the
+# arena's reference, the adapter's hint (kept for `repr()`) and the built
+# instance's class reference. Validated
 # outputs are fresh objects, so `built` ends at 1.
 from collections import namedtuple
 from dataclasses import dataclass
@@ -73,4 +74,4 @@ for hint in [Pair, Point]:
 hint = None
 
 len(choice)
-# ref-counts={'default': 6, 'Foo': 3, 'adapter': 1, 'built': 1, 'chooser': 1, 'Point': 1, 'document': 1, 'Pair': 1}
+# ref-counts={'default': 6, 'Foo': 4, 'adapter': 1, 'built': 1, 'chooser': 1, 'Point': 1, 'document': 1, 'Pair': 1}

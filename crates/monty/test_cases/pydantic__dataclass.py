@@ -109,6 +109,42 @@ except ValueError as exc:
     assert isinstance(exc, ValidationError) or str(exc) == 'negative'
 
 
+# === Inherited fields and __post_init__ ===
+# a plain subclass of a dataclass validates with its base's fields and builds the subclass
+class PlainSub(Foo):
+    pass
+
+
+sub = TypeAdapter(PlainSub).validate_python({'x': '1', 'y': 'b'})
+assert type(sub) is PlainSub
+assert (sub.x, sub.y, sub.z) == (1, 'b', [])
+assert repr(TypeAdapter(PlainSub)) == 'TypeAdapter(PlainSub)'
+assert errors(TypeAdapter(PlainSub), {}) == [{'type': 'missing', 'loc': ('x',), 'msg': 'Field required', 'input': {}}]
+
+
+class SubWithPost(WithPost):
+    pass
+
+
+assert TypeAdapter(SubWithPost).validate_python({'x': 1}).x == 2
+
+
+# a `__post_init__` inherited from a mixin runs
+class PostMixin:
+    def __post_init__(self):
+        self.seen = True
+
+
+@dataclass
+class Mixed(PostMixin):
+    x: int
+
+
+mixed = TypeAdapter(Mixed).validate_python({'x': '1'})
+assert mixed == Mixed(1)
+assert mixed.seen
+
+
 # === Recursive and nested dataclasses ===
 @dataclass
 class Node:

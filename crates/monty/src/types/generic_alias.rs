@@ -875,7 +875,10 @@ pub(crate) fn repr_type_arg(
 ) -> RunResult<()> {
     match item {
         Value::Ellipsis => Ok(f.write_str("...")?),
-        Value::Builtin(Builtins::Type(ty)) => Ok(f.write_str(ty.name())?),
+        Value::Builtin(Builtins::Type(ty)) => match ty.module() {
+            Some(module) => Ok(write!(f, "{module}.{ty}")?),
+            None => Ok(f.write_str(ty.name())?),
+        },
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Class(_) => Ok(f.write_str(&class_name(*id, vm.heap, vm.interns))?),
             HeapData::NamedTupleClass(class) => Ok(f.write_str(class.name(vm.interns))?),
