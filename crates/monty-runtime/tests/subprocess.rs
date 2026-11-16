@@ -29,6 +29,30 @@ use monty_types::{
 const DEATH_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[test]
+fn bytearray_percent_operands_respect_memory_limits() {
+    for constructor in ["bytearray", "bytes"] {
+        for template in ["b'%b'", "b'%s'", "bytearray(b'%b')", "bytearray(b'%s')"] {
+            let mut child = ChildProc::spawn();
+            child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+            let (_, event) = child.feed(&format!("a = {constructor}(b'x') * (16 * 1024 * 1024)\n{template} % a"));
+            assert_eq!(expect_error(event).exc_type, "MemoryError", "{constructor}: {template}");
+            assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+
+            // Precision limits the copied operand even when the full buffer cannot fit twice.
+            for precision in [0, 4] {
+                let template = template.replace('%', &format!("%.{precision}"));
+                assert_eq!(
+                    child.feed_complete(&format!("{template} % a")),
+                    MontyObject::bytes(vec![b'x'; precision]),
+                    "{constructor}: {template}"
+                );
+            }
+            child.shutdown();
+        }
+    }
+}
+
+#[test]
 fn bytearray_encoded_text_respects_memory_limits() {
     for (encoding, source_mib) in [
         ("utf-8", 16),
@@ -54,7 +78,7 @@ fn bytearray_encoded_text_respects_memory_limits() {
         }
     }
 
-    // UTF-16 compresses these UTF-8 characters: budget its exact output, not twice the input bytes.
+    // These characters use two bytes in UTF-16 and three in UTF-8; budget the exact output.
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
     assert_eq!(

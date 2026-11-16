@@ -27,8 +27,13 @@ for code in ['g', 'G', 'f', 'F', 'e', 'E', '%', 'n', '']:
     for value in [1, 1.0, float('inf'), float('nan')]:
         try:
             format(value, spec)
-        except ValueError:
-            pass
+        except ValueError as exc:
+            expected = (
+                'Precision not allowed in integer format specifier'
+                if type(value) is int and code in ['n', '']
+                else 'precision too big'
+            )
+            assert str(exc) == expected, (code, value, str(exc))
         else:
             assert False, (code, value)
 

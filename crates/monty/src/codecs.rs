@@ -81,12 +81,8 @@ impl Codec {
         }
     }
 
-    /// Encodes `s` to bytes. The `errors` handler name is validated lazily —
-    /// only consulted when a character actually can't be encoded, matching
-    /// CPython's `codecs.lookup_error` semantics. Only the ASCII codec can
-    /// fail: UTF-8 is the native representation, and every Monty string is
-    /// encodable as UTF-16/32 (no lone surrogates can exist).
-    ///
+    /// Encodes `s` to bytes, validating `errors` only when a character cannot be encoded.
+    /// Only ASCII can raise `UnicodeEncodeError`; every codec can raise `MemoryError`.
     /// Preflights the encoded size while the input is live, including any BOM.
     /// ASCII error handlers build incrementally through the tracker.
     pub(crate) fn encode(self, s: &str, errors: &str, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {

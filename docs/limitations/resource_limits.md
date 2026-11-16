@@ -56,7 +56,7 @@ Snippets rejected before execution retain none of their compilation products (se
     a 4× safety multiplier to cover repeated-squaring intermediate values.
 - Text encoding (`str.encode`, `bytes(text, encoding)`, and `bytearray(text, encoding)`) checks the encoded
     output against the remaining budget while the source string is still live.
-    UTF-16 and UTF-32 use their exact encoded size, including any BOM, so compressing text is not overcharged.
+    UTF-16 and UTF-32 use their exact encoded size, including any BOM.
 
 ## Exceeding `max_memory` in a worker (pools)
 

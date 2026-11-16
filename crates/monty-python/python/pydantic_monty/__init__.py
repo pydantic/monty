@@ -259,6 +259,7 @@ class ExternalException(TypedDict):
 ExcType = Literal[
     'Exception',
     'BaseException',
+    'BufferError',
     'SystemExit',
     'KeyboardInterrupt',
     'ArithmeticError',

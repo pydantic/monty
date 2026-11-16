@@ -258,6 +258,12 @@ impl Target for BytesTarget {
                 value.py_type_name(vm)
             ))
         })?;
+
+        // Precision truncates the operand before copying; the original buffer remains live.
+        let len = spec
+            .precision
+            .map_or(bytes.len(), |precision| precision.min(bytes.len()));
+        vm.heap.tracker.check_allocation(len)?;
         Ok(Self::from_bytes(bytes, spec.precision))
     }
 
