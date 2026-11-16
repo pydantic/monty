@@ -874,123 +874,63 @@ fn bytes_index<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
 
 /// Implements Python's `bytes.startswith(prefix[, start[, end]])` method.
 ///
-/// Returns True if bytes starts with the specified prefix.
-/// Accepts bytes or a tuple of bytes as prefix. If a tuple is given, returns True
-/// if any of the prefixes match.
+/// Accepts a bytes-like prefix or a tuple of them, stopping at the first match.
 fn bytes_startswith<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let (prefix_arg, range) = parse_bytes_prefix_suffix_args("bytes.startswith", bytes, args, vm)?;
-    let Some((start, end)) = range else {
-        // `start` past `end` matches nothing: `b'abc'.startswith(b'', 4) == False`
-        return Ok(Value::Bool(false));
-    };
-
-    let slice = &bytes.get(vm.heap)[start..end];
-    let result = match prefix_arg {
-        PrefixSuffixArg::Single(prefix_bytes) => slice.starts_with(&prefix_bytes),
-        PrefixSuffixArg::Multiple(prefixes) => prefixes.iter().any(|p| slice.starts_with(p)),
-    };
-    Ok(Value::Bool(result))
+    bytes_tailmatch("startswith", bytes, args, false, vm)
 }
 
 /// Implements Python's `bytes.endswith(suffix[, start[, end]])` method.
 ///
-/// Returns True if bytes ends with the specified suffix.
-/// Accepts bytes or a tuple of bytes as suffix. If a tuple is given, returns True
-/// if any of the suffixes match.
+/// Accepts a bytes-like suffix or a tuple of them, stopping at the first match.
 fn bytes_endswith<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let (suffix_arg, range) = parse_bytes_prefix_suffix_args("bytes.endswith", bytes, args, vm)?;
-    let Some((start, end)) = range else {
-        // `start` past `end` matches nothing: `b'abc'.endswith(b'', 4) == False`
-        return Ok(Value::Bool(false));
-    };
-
-    let slice = &bytes.get(vm.heap)[start..end];
-    let result = match suffix_arg {
-        PrefixSuffixArg::Single(suffix_bytes) => slice.ends_with(&suffix_bytes),
-        PrefixSuffixArg::Multiple(suffixes) => suffixes.iter().any(|s| slice.ends_with(s)),
-    };
-    Ok(Value::Bool(result))
+    bytes_tailmatch("endswith", bytes, args, true, vm)
 }
 
-/// Argument type for prefix/suffix matching methods.
-///
-/// Represents either a single bytes value or a tuple of bytes values
-/// for matching in startswith/endswith.
-enum PrefixSuffixArg {
-    /// A single bytes value to match
-    Single(Vec<u8>),
-    /// Multiple bytes values to match (from a tuple)
-    Multiple(Vec<Vec<u8>>),
-}
-
-/// Parses arguments for bytes.startswith/endswith methods.
-///
-/// Returns the prefix/suffix_arg and the `(start, end)` range to match in, or
-/// `None` for a `start` past `end`, where nothing matches (see [`super::slice::search_range`]).
-/// The prefix/suffix_arg can be a single bytes value or a tuple of bytes values.
-fn parse_bytes_prefix_suffix_args<'h>(
+/// Borrows buffers after bound callbacks and validates tuple items only until a match.
+fn bytes_tailmatch<'h>(
     method: &str,
     bytes: &impl HeapView<'h, [u8]>,
     args: ArgValues,
+    suffix: bool,
     vm: &mut VM<'h>,
-) -> RunResult<(PrefixSuffixArg, SearchRange)> {
-    let pos = args.into_pos_only(method, vm.heap)?;
+) -> RunResult<Value> {
+    let qualified_method = format!("bytes.{method}");
+    let pos = args.into_pos_only(&qualified_method, vm.heap)?;
     defer_drop!(pos, vm);
 
-    match pos.as_slice() {
-        [prefix_value, bounds @ ..] if bounds.len() <= 2 => {
+    let (value, range) = match pos.as_slice() {
+        [value, bounds @ ..] if bounds.len() <= 2 => {
             let range = search_range_with_len(bounds.first(), bounds.get(1), |vm| bytes.get(vm.heap).len(), vm)?;
-            let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
-            Ok((prefix, range))
+            (value, range)
         }
-        [] => Err(ExcType::type_error_at_least(method, 1, 0)),
-        _ => Err(ExcType::type_error_at_most(method, 3, pos.len())),
-    }
-}
-
-/// Extracts bytes (or tuple of bytes) for startswith/endswith methods.
-///
-/// Returns `PrefixSuffixArg::Single` for a single bytes value, or
-/// `PrefixSuffixArg::Multiple` for a tuple of bytes values.
-fn extract_bytes_for_prefix_suffix(value: &Value, method: &str, vm: &VM<'_>) -> RunResult<PrefixSuffixArg> {
-    // Extract the method name (e.g., "startswith" from "bytes.startswith")
-    let method_name = method.strip_prefix("bytes.").unwrap_or(method);
-
-    match value.py_value(vm) {
-        PyValue::Bytes(bytes) => Ok(PrefixSuffixArg::Single(bytes.as_slice(vm).to_vec())),
-        PyValue::Str(_) => Err(ExcType::type_error(format!(
-            "{method_name} first arg must be bytes or a tuple of bytes, not str"
-        ))),
-        PyValue::Tuple(tuple) => {
-            // Extract each element as bytes
-            let items = tuple.get(vm.heap).as_slice();
-            let mut prefixes = Vec::with_capacity(items.len());
-            for (i, item) in items.iter().enumerate() {
-                if let Ok(b) = extract_single_bytes_for_prefix_suffix(item, vm) {
-                    prefixes.push(b);
-                } else {
-                    let item_type = item.py_type_name(vm);
-                    return Err(ExcType::type_error(format!(
-                        "{method_name} first arg must be bytes or a tuple of bytes, \
-                         not tuple containing {item_type} at index {i}"
-                    )));
-                }
+        [] => return Err(ExcType::type_error_at_least(&qualified_method, 1, 0)),
+        _ => return Err(ExcType::type_error_at_most(&qualified_method, 3, pos.len())),
+    };
+    let matches = |candidate: &[u8]| {
+        range.is_some_and(|(start, end)| {
+            let slice = &bytes.get(vm.heap)[start..end];
+            if suffix {
+                slice.ends_with(candidate)
+            } else {
+                slice.starts_with(candidate)
             }
-            Ok(PrefixSuffixArg::Multiple(prefixes))
-        }
-        _ => Err(ExcType::type_error(format!(
-            "{method_name} first arg must be bytes or a tuple of bytes, not {}",
-            value.py_type_name(vm)
-        ))),
-    }
-}
+        })
+    };
 
-/// Extracts a single bytes value for tuple element in startswith/endswith.
-fn extract_single_bytes_for_prefix_suffix(value: &Value, vm: &VM<'_>) -> RunResult<Vec<u8>> {
-    match value.py_value(vm) {
-        PyValue::Bytes(bytes) => Ok(bytes.as_slice(vm).to_vec()),
-        PyValue::Str(_) => Err(ExcType::type_error("expected bytes, not str")),
-        _ => Err(ExcType::type_error("expected bytes")),
+    if let PyValue::Tuple(tuple) = value.py_value(vm) {
+        for item in tuple.get(vm.heap).as_slice() {
+            if matches(extract_bytes_only(item, vm)?) {
+                return Ok(Value::Bool(true));
+            }
+        }
+        Ok(Value::Bool(false))
+    } else if let Some(candidate) = value.as_buffer(vm) {
+        Ok(Value::Bool(matches(candidate)))
+    } else {
+        Err(ExcType::type_error(format!(
+            "{method} first arg must be bytes or a tuple of bytes, not {}",
+            value.py_type_name(vm)
+        )))
     }
 }
 
@@ -1050,7 +990,15 @@ fn parse_bytes_sub_args<'h>(
         [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
         _ => return Err(ExcType::type_error_at_most(method, 3, pos.len())),
     };
-    let sub = copy_bytes_argument(sub_value, vm)?;
+    // Search accepts a byte value through `__index__`, as well as a buffer.
+    let sub = if let Some(index) = sub_value.py_index_impl(vm)? {
+        defer_drop!(index, vm);
+        let byte = u8::try_from(index.saturating_index(vm)?)
+            .map_err(|_| SimpleException::new_msg(ExcType::ValueError, "byte must be in range(0, 256)"))?;
+        copy_buffer(&[byte], vm.heap)?
+    } else {
+        copy_bytes_argument(sub_value, vm)?
+    };
     Ok((sub, range))
 }
 
@@ -2303,10 +2251,7 @@ fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Option<c
     defer_drop!(sep, vm);
     defer_drop!(bytes_per_sep, vm);
 
-    let Some(sep_value) = (match &sep {
-        Value::None => None,
-        v => Some(v),
-    }) else {
+    let Some(sep_value) = sep else {
         // CPython treats absent `sep` as "no separator", regardless of `bytes_per_sep`.
         return Ok((None, 1));
     };
@@ -2332,8 +2277,8 @@ fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Option<c
     };
 
     let bytes_per_sep = match bytes_per_sep {
-        Value::None => 1,
-        bps_value => {
+        None => 1,
+        Some(bps_value) => {
             // CPython parses `bytes_per_sep` with the `i` format (C int), so values outside
             // c_int range raise OverflowError before any computation happens.
             let raw = bps_value.as_int(vm)?;
@@ -2359,10 +2304,10 @@ fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Option<c
 #[derive(FromArgs)]
 #[from_args(name = "bytes.hex", style = c_named, at_most_total, kwargs_not_supported_yet)]
 struct BytesHexArgs {
-    #[from_args(default = Value::None)]
-    sep: Value,
-    #[from_args(default = Value::None)]
-    bytes_per_sep: Value,
+    #[from_args(default)]
+    sep: Option<Value>,
+    #[from_args(default)]
+    bytes_per_sep: Option<Value>,
 }
 
 // =============================================================================

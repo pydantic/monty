@@ -3,7 +3,7 @@
 use std::{fmt::Write, iter::successors};
 
 use crate::{
-    args::{ArgValues, FromArgs, StrArg},
+    args::{ArgValues, FromArgs, KwargsValues, StrArg},
     bytecode::{CallResult, VM},
     codecs::Codec,
     defer_drop, defer_drop_mut,
@@ -565,8 +565,21 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
             }
             _ => {}
         }
-        // `join` exports its separator before invoking the input's iterator.
-        let export = (method == StaticStrings::Join).then(|| {
+        let search = matches!(
+            method,
+            StaticStrings::Find
+                | StaticStrings::Rfind
+                | StaticStrings::Index
+                | StaticStrings::Rindex
+                | StaticStrings::Count
+        );
+        // Search bounds may resize the receiver; the needle's `__index__` runs under an export.
+        let args = if search {
+            prepare_search_bounds(name, args, vm)?
+        } else {
+            args
+        };
+        let export = (search || method == StaticStrings::Join).then(|| {
             self.get_mut(vm.heap).exports += 1;
             BufferExport(&*self)
         });
@@ -576,6 +589,42 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         let field = heap_read_ref_as_field!(self, ByteArray, bytes);
         let result = super::bytes::call_bytes_method_impl(&field.as_slice(), method, args, vm)?;
         Ok(CallResult::Value(convert_result(result, vm)?))
+    }
+}
+
+/// Converts search bounds before exporting the buffer, preserving CPython's callback order.
+fn prepare_search_bounds(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<ArgValues> {
+    if matches!(args, ArgValues::One(_)) {
+        return Ok(args);
+    }
+
+    let method = format!("bytes.{method}");
+    let pos = args.into_pos_only(&method, vm.heap)?;
+    defer_drop!(pos, vm);
+
+    match pos.as_slice() {
+        [needle, bounds @ ..] if bounds.len() <= 2 => {
+            let start = bounds
+                .first()
+                .map(|value| super::slice::value_to_option_i64(value, vm))
+                .transpose()?
+                .flatten();
+            let end = bounds
+                .get(1)
+                .map(|value| super::slice::value_to_option_i64(value, vm))
+                .transpose()?
+                .flatten();
+            Ok(ArgValues::ArgsKargs {
+                args: vec![
+                    needle.clone_with_heap(vm),
+                    start.map_or(Value::None, Value::Int),
+                    end.map_or(Value::None, Value::Int),
+                ],
+                kwargs: KwargsValues::Empty,
+            })
+        }
+        [] => Err(ExcType::type_error_at_least(&method, 1, 0)),
+        _ => Err(ExcType::type_error_at_most(&method, 3, pos.len())),
     }
 }
 

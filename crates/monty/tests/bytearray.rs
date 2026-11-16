@@ -8,6 +8,10 @@ fn bytearray_review_regressions() {
         include_str!("../test_cases/bytearray__empty_slices.py"),
         include_str!("../test_cases/bytearray__result_copies.py"),
         include_str!("../test_cases/bytearray__replace_callbacks.py"),
+        include_str!("../test_cases/bytes__search_integer.py"),
+        include_str!("../test_cases/bytes__prefix_suffix_buffers.py"),
+        include_str!("../test_cases/bytes__ord_reversed.py"),
+        include_str!("../test_cases/bytes__hex_optional.py"),
     ] {
         let mut runner = MontyRun::new(source.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
         runner.run_no_limits(vec![]).unwrap();
@@ -60,6 +64,41 @@ fn bytearray_inplace() {
 #[test]
 fn bytearray_join_exports() {
     let source = include_str!("../test_cases/bytearray__join_exports.py");
+    let mut runner = MontyRun::new(source.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    runner.run_no_limits(vec![]).unwrap();
+}
+
+#[test]
+fn bytearray_search_exports() {
+    // CPython's gh-142560 fix postdates 3.14.2, which the differential runner still uses.
+    let source = r"
+for method in ['find', 'rfind', 'count', 'index', 'rindex']:
+    data = bytearray(b'abc')
+
+    class Needle:
+        def __index__(self):
+            data.clear()
+            return 97
+
+    try:
+        if method == 'find':
+            data.find(Needle())
+        elif method == 'rfind':
+            data.rfind(Needle(), -3)
+        elif method == 'count':
+            data.count(Needle(), None, None)
+        elif method == 'index':
+            data.index(Needle(), 100, 0)
+        else:
+            data.rindex(Needle())
+    except BufferError as exc:
+        assert str(exc) == 'Existing exports of data: object cannot be re-sized'
+    else:
+        assert False, method
+    assert data == b'abc'
+    data.append(33)
+    assert data == b'abc!'
+";
     let mut runner = MontyRun::new(source.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     runner.run_no_limits(vec![]).unwrap();
 }
