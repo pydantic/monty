@@ -7,7 +7,7 @@ use crate::{
     heap::{HeapId, HeapItem},
 };
 
-/// Heap string with eager character length and a lazily computed Python hash.
+/// Heap string with lazy character-count, ASCII and Python hash metadata.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(transparent)]
 pub(crate) struct HeapStr {
@@ -15,10 +15,11 @@ pub(crate) struct HeapStr {
     #[serde(skip)]
     pub(super) cached_hash: Cell<Option<HashValue>>,
     #[serde(skip)]
-    char_len: usize,
+    // 0: unknown; 1: non-ASCII with unknown count; >= 2: character count.
+    char_len: Cell<usize>,
 }
 
-// Loading rebuilds metadata through the normal constructor.
+// Loading leaves metadata lazy, just like constructing a string from owned text.
 impl<'de> serde::Deserialize<'de> for HeapStr {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         <Box<str> as serde::Deserialize>::deserialize(deserializer).map(Self::new)
@@ -50,27 +51,49 @@ impl HeapStr {
     /// Use [`super::allocate_string`] or [`super::allocate_string_no_interning`] for values.
     #[must_use]
     pub(super) fn new(text: Box<str>) -> Self {
-        Self::with_ascii(text.is_ascii(), text)
+        Self {
+            text,
+            cached_hash: Cell::new(None),
+            char_len: Cell::new(0),
+        }
     }
 
     /// Uses exact ASCII status supplied by the producing operation.
     pub(super) fn with_ascii(ascii: bool, text: Box<str>) -> Self {
         debug_assert_eq!(ascii, text.is_ascii());
-        let length = if ascii {
-            text.len()
+        let value = Self::new(text);
+        if ascii {
+            value.cache_char_len(value.text.len());
         } else {
-            bytecount::num_chars(text.as_bytes())
-        };
-        Self::with_char_len(text, length)
+            value.char_len.set(1);
+        }
+        value
     }
 
     /// Uses a character count accumulated by the producing operation.
     pub(super) fn with_char_len(text: Box<str>, char_len: usize) -> Self {
         debug_assert_eq!(char_len, text.chars().count());
-        Self {
-            text,
-            cached_hash: Cell::new(None),
-            char_len,
+        let value = Self::new(text);
+        value.cache_char_len(char_len);
+        value
+    }
+
+    fn cache_char_len(&self, char_len: usize) {
+        // Count 1 overlaps the non-ASCII sentinel. ASCII singletons remain unknown;
+        // empty and single-character strings cost at most four bytes to recount.
+        self.char_len.set(if char_len == 1 && self.text.len() == 1 {
+            0
+        } else {
+            char_len
+        });
+    }
+
+    /// Returns a count that can be reused without scanning the text.
+    pub(super) fn known_char_len(&self) -> Option<usize> {
+        match self.char_len.get() {
+            count @ 2.. => Some(count),
+            _ if self.text.len() <= 1 => Some(self.text.len()),
+            _ => None,
         }
     }
 
@@ -80,16 +103,34 @@ impl HeapStr {
         &self.text
     }
 
-    /// UTF-8 has one byte per code point exactly when the text is ASCII.
+    /// Checks ASCII independently when the character count is unknown.
     #[inline]
     pub fn is_ascii(&self) -> bool {
-        self.char_len == self.text.len()
+        match self.char_len.get() {
+            0 => {
+                let ascii = self.text.is_ascii();
+                if ascii {
+                    self.cache_char_len(self.text.len());
+                } else {
+                    self.char_len.set(1);
+                }
+                ascii
+            }
+            1 => false,
+            count => count == self.text.len(),
+        }
     }
 
-    /// Returns the stored Unicode code-point length.
+    /// Counts Unicode code points on first use, then reuses counts of at least two.
     #[inline]
     pub fn char_len(&self) -> usize {
-        self.char_len
+        let count = self.char_len.get();
+        if count >= 2 {
+            return count;
+        }
+        let count = bytecount::num_chars(self.text.as_bytes());
+        self.cache_char_len(count);
+        count
     }
 }
 
@@ -126,3 +167,7 @@ mod tests {
         assert!(!hashed.is_ascii());
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/heap_string_metadata.rs"]
+mod metadata_tests;

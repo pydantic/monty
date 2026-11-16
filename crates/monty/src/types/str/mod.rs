@@ -116,7 +116,15 @@ impl<'h> PyStr<'h> {
         }
     }
 
-    /// Returns the number of Unicode code points; ASCII strings use their byte length.
+    /// Reuses heap counts without forcing a scan during string construction.
+    fn known_char_len(&self, vm: &VM<'h>) -> Option<usize> {
+        match self {
+            PyStr::Heap(heap_string) => heap_string.get(vm.heap).known_char_len(),
+            _ => Some(self.char_len(vm)),
+        }
+    }
+
+    /// Returns the number of Unicode code points, counting unknown heap strings on demand.
     fn char_len(&self, vm: &VM<'h>) -> usize {
         match self {
             PyStr::Heap(heap_string) => heap_string.get(vm.heap).char_len(),
@@ -655,20 +663,19 @@ fn str_join<'h>(separator: &PyStr<'h>, iterable: Value, vm: &mut VM<'h>) -> RunR
     // Build result string, tracking index for error messages
     let mut result = String::new();
     let mut index = 0usize;
-    let mut char_len = 0;
-    let mut separator_char_len = None;
+    let mut char_len = Some(0);
 
     while let Some(item) = iter.py_next(vm)? {
         defer_drop!(item, vm);
         if index > 0 {
             result.push_str(separator.as_str(vm));
-            char_len += *separator_char_len.get_or_insert_with(|| separator.char_len(vm));
+            char_len = char_len.and_then(|len| separator.known_char_len(vm).map(|count| len + count));
         }
 
         if let Some(text) = PyStr::from_value(item, vm) {
             result.push_str(text.as_str(vm));
             // Counts cannot exceed the byte length of the successfully appended text.
-            char_len += text.char_len(vm);
+            char_len = char_len.and_then(|len| text.known_char_len(vm).map(|count| len + count));
         } else {
             let t = item.py_type_name(vm);
             return Err(ExcType::type_error_join_item(index, &t));
@@ -676,14 +683,12 @@ fn str_join<'h>(separator: &PyStr<'h>, iterable: Value, vm: &mut VM<'h>) -> RunR
         index += 1;
     }
 
-    if result.len() <= 15 {
-        let ascii = char_len == result.len();
-        Ok(allocate_string_with_ascii(result, Some(ascii), vm.heap))
-    } else {
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Str(HeapStr::with_char_len(
-            result.into_boxed_str(),
-            char_len,
-        )))))
+    match char_len {
+        Some(char_len) if result.len() > 15 => Ok(Value::Ref(
+            vm.heap
+                .allocate(HeapData::Str(HeapStr::with_char_len(result.into_boxed_str(), char_len))),
+        )),
+        _ => Ok(allocate_string(result, vm.heap)),
     }
 }
 
@@ -1998,6 +2003,7 @@ mod tests {
         defer_drop_mut,
         heap::HeapReader,
         run::{Program, SessionTables},
+        types::List,
     };
 
     #[test]
@@ -2101,7 +2107,42 @@ mod tests {
     }
 
     #[test]
-    fn heap_string_metadata_is_eager_and_rebuilt_from_text() {
+    fn joining_heap_strings_reuses_only_known_character_counts() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            for known in [false, true] {
+                let value = allocate_string_on_heap("é".repeat(16), vm.heap);
+                defer_drop!(value, vm);
+                let separator = allocate_string_on_heap("β".repeat(8), vm.heap);
+                defer_drop!(separator, vm);
+                let text = PyStr::from_value(value, vm).unwrap();
+                let separator = PyStr::from_value(separator, vm).unwrap();
+                if known {
+                    assert_eq!(text.char_len(vm), 16);
+                    assert_eq!(separator.char_len(vm), 8);
+                }
+                let items = List::new(vec![value.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)]);
+                let iterable = Value::Ref(vm.heap.allocate(HeapData::List(items)));
+                let result = str_join(&separator, iterable, vm).unwrap();
+                defer_drop!(result, vm);
+                let joined = PyStr::from_value(result, vm).unwrap();
+                assert_eq!(text.known_char_len(vm), known.then_some(16));
+                assert_eq!(separator.known_char_len(vm), known.then_some(8));
+                assert_eq!(joined.known_char_len(vm), known.then_some(40));
+                assert_eq!(joined.char_len(vm), 40);
+                assert_eq!(
+                    joined.as_str(vm),
+                    format!("{}{}{}", "é".repeat(16), "β".repeat(8), "é".repeat(16))
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn heap_string_metadata_survives_text_only_serialization() {
         assert_eq!(
             size_of::<HeapStr>(),
             size_of::<(Box<str>, Cell<Option<HashValue>>, Cell<Option<bool>>)>()
