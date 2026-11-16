@@ -251,6 +251,25 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
                 check_repeat_size(new_len, 1, &vm.heap.tracker)?;
                 self.get_mut(vm.heap).0.splice(start..stop, replacement);
             } else {
+                // An empty replacement deletes an extended slice, unlike list assignment.
+                if replacement.is_empty() {
+                    let mut index = 0i64;
+                    self.get_mut(vm.heap).0.retain(|_| {
+                        let selected = if step > 0 {
+                            index >= start
+                                && index < stop
+                                && (index - start).unsigned_abs().is_multiple_of(step.unsigned_abs())
+                        } else {
+                            index <= start
+                                && index > stop
+                                && (start - index).unsigned_abs().is_multiple_of(step.unsigned_abs())
+                        };
+                        index += 1;
+                        !selected
+                    });
+                    return Ok(());
+                }
+
                 // Extended slices cannot resize: validate the replacement length before writing any bytes.
                 let indices = successors(Some(start), |i| i.checked_add(step))
                     .take_while(|i| if step > 0 { *i < stop } else { *i > stop })

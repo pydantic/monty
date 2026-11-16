@@ -28,6 +28,68 @@ use monty_types::{
 /// long wait is how late that failure is reported on a slow CI machine.
 const DEATH_TIMEOUT: Duration = Duration::from_secs(20);
 
+#[test]
+fn bytearray_copies_fail_without_losing_the_session() {
+    for operation in [
+        "a.split()",
+        "a.split(b'!')",
+        "a.rsplit(b'!')",
+        "a.splitlines()",
+        "a.partition(b'!')",
+        "a.rpartition(b'!')",
+        "a[:]",
+        "a[::-1]",
+        "a.ljust(0)",
+        "a.rjust(0)",
+        "a.center(0)",
+        "a.zfill(0)",
+        "a.strip()",
+        "a.lstrip()",
+        "a.rstrip()",
+        "a.removeprefix(b'!')",
+        "a.removesuffix(b'!')",
+        "b''.join([a])",
+        "bytearray().join([a])",
+        "a",
+        "[a, a]",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        let (_, event) = child.feed(&format!("a = bytearray(16 * 1024 * 1024)\n{operation}"));
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{operation}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{operation}");
+        child.shutdown();
+    }
+
+    // Budget only the selected bytes, so a small slice of a large buffer still succeeds.
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete("a = bytearray(16 * 1024 * 1024)\nlen(a[::8])"),
+        MontyObject::int(2 * 1024 * 1024),
+    );
+    child.shutdown();
+}
+
+#[test]
+fn bytearray_split_tables_respect_memory_limits() {
+    for operation in [
+        "a.split()",
+        "a.split(b' ')",
+        "a.rsplit(b' ', 2_000_000)",
+        "a.splitlines()",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        let (_, event) = child.feed(&format!("a = bytearray(b'x \\n') * (2 * 1024 * 1024)\n{operation}"));
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{operation}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{operation}");
+        child.shutdown();
+    }
+}
+
 fn configure() -> pb::Configure {
     pb::Configure {
         script_name: "main.py".to_owned(),

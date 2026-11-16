@@ -90,8 +90,9 @@ use crate::{
     resource_checks::{check_repeat_size, check_replace_size, push_checked, repeated_len, try_vec_with_capacity},
     types::{
         List,
+        iter::collect_owned_iterable,
         py_trait::PyObjectIdentity,
-        slice::{SearchRange, search_range_with_len, slice_collect_iterator},
+        slice::{SearchRange, search_range_with_len},
     },
     value::{EitherStr, VALUE_SIZE, Value, eq_bytes},
 };
@@ -506,7 +507,22 @@ pub(crate) fn bytes_getitem<'h>(bytes: &impl HeapView<'h, [u8]>, key: &Value, vm
     if let Value::Ref(id) = key
         && let HeapData::Slice(slice) = vm.heap.get(*id)
     {
-        let result = slice_collect_iterator(vm, slice, bytes.get(vm.heap).iter(), |b| *b)?;
+        let bytes = bytes.get(vm.heap);
+        let (start, stop, step) = slice.indices(bytes.len())?;
+        let distance = if step > 0 { stop - start } else { start - stop };
+        let count = if distance > 0 {
+            usize::try_from((distance.unsigned_abs() - 1) / step.unsigned_abs() + 1).expect("slice length fits usize")
+        } else {
+            0
+        };
+        vm.heap.tracker.check_allocation(count)?;
+        let mut result = Vec::with_capacity(count);
+        let mut index = start;
+        for i in 0..count {
+            vm.heap.tracker.check_time_every(i)?;
+            result.push(bytes[usize::try_from(index).expect("normalized slice index")]);
+            index = index.saturating_add(step);
+        }
         Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(result)))))
     } else {
         let index = key.as_index(vm, Type::Bytes)?;
@@ -1001,7 +1017,12 @@ fn extract_bytes_only<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> 
 /// Snapshots a bytes-like argument while its owner remains live, budgeting the extra buffer first.
 fn copy_bytes_argument(value: &Value, vm: &VM<'_>) -> RunResult<Vec<u8>> {
     let bytes = extract_bytes_only(value, vm)?;
-    vm.heap.tracker.check_allocation(bytes.len())?;
+    copy_buffer(bytes, vm.heap)
+}
+
+/// Budgets a copy while its source is still live.
+fn copy_buffer(bytes: &[u8], heap: &Heap) -> RunResult<Vec<u8>> {
+    heap.tracker.check_allocation(bytes.len())?;
     Ok(bytes.to_vec())
 }
 
@@ -1285,7 +1306,7 @@ fn bytes_strip<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
         None | Some(Value::None) => bytes_strip_whitespace_both(bytes.get(vm.heap)),
         Some(v) => bytes_strip_both(bytes.get(vm.heap), extract_bytes_only(v, vm)?),
     };
-    Ok(allocate_bytes(result.to_vec(), vm.heap))
+    Ok(allocate_bytes(copy_buffer(result, vm.heap)?, vm.heap))
 }
 
 /// Implements Python's `bytes.lstrip([chars])` method.
@@ -1298,7 +1319,7 @@ fn bytes_lstrip<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut V
         None | Some(Value::None) => bytes_strip_whitespace_start(bytes.get(vm.heap)),
         Some(v) => bytes_strip_start(bytes.get(vm.heap), extract_bytes_only(v, vm)?),
     };
-    Ok(allocate_bytes(result.to_vec(), vm.heap))
+    Ok(allocate_bytes(copy_buffer(result, vm.heap)?, vm.heap))
 }
 
 /// Implements Python's `bytes.rstrip([chars])` method.
@@ -1311,7 +1332,7 @@ fn bytes_rstrip<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut V
         None | Some(Value::None) => bytes_strip_whitespace_end(bytes.get(vm.heap)),
         Some(v) => bytes_strip_end(bytes.get(vm.heap), extract_bytes_only(v, vm)?),
     };
-    Ok(allocate_bytes(result.to_vec(), vm.heap))
+    Ok(allocate_bytes(copy_buffer(result, vm.heap)?, vm.heap))
 }
 
 /// Strips bytes in `chars` from both ends of the byte slice.
@@ -1372,11 +1393,11 @@ fn bytes_removeprefix<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: 
 
     let bytes = bytes.get(vm.heap);
     let result = if bytes.starts_with(prefix) {
-        bytes[prefix.len()..].to_vec()
+        &bytes[prefix.len()..]
     } else {
-        bytes.to_vec()
+        bytes
     };
-    Ok(allocate_bytes(result, vm.heap))
+    Ok(allocate_bytes(copy_buffer(result, vm.heap)?, vm.heap))
 }
 
 /// Implements Python's `bytes.removesuffix(suffix)` method.
@@ -1390,11 +1411,11 @@ fn bytes_removesuffix<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: 
 
     let bytes = bytes.get(vm.heap);
     let result = if bytes.ends_with(suffix) && !suffix.is_empty() {
-        bytes[..bytes.len() - suffix.len()].to_vec()
+        &bytes[..bytes.len() - suffix.len()]
     } else {
-        bytes.to_vec()
+        bytes
     };
-    Ok(allocate_bytes(result, vm.heap))
+    Ok(allocate_bytes(copy_buffer(result, vm.heap)?, vm.heap))
 }
 
 // =============================================================================
@@ -1441,7 +1462,7 @@ fn bytes_split<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
     *list_items = Vec::with_capacity(parts.len());
     for (i, part) in parts.into_iter().enumerate() {
         vm.heap.tracker.check_memory_time_every(i)?;
-        list_items.push(allocate_bytes(part.to_vec(), vm.heap));
+        list_items.push(allocate_bytes(copy_buffer(part, vm.heap)?, vm.heap));
     }
 
     let (list_items, vm) = items_guard.into_parts();
@@ -1491,7 +1512,7 @@ fn bytes_rsplit<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut V
     *list_items = Vec::with_capacity(parts.len());
     for (i, part) in parts.into_iter().enumerate() {
         vm.heap.tracker.check_memory_time_every(i)?;
-        list_items.push(allocate_bytes(part.to_vec(), vm.heap));
+        list_items.push(allocate_bytes(copy_buffer(part, vm.heap)?, vm.heap));
     }
 
     let (list_items, vm) = items_guard.into_parts();
@@ -1757,7 +1778,11 @@ fn bytes_splitlines<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &m
         } else {
             &bytes[start..line_end]
         };
-        lines.push(allocate_bytes(line.to_vec(), vm.heap));
+        let line = copy_buffer(line, vm.heap)?;
+        vm.heap
+            .tracker
+            .check_growth(lines.len(), lines.capacity(), VALUE_SIZE)?;
+        lines.push(allocate_bytes(line, vm.heap));
         start = end;
     }
 
@@ -1804,6 +1829,7 @@ fn bytes_partition<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mu
     }
 
     let bytes = bytes.get(vm.heap);
+    vm.heap.tracker.check_allocation(bytes.len())?;
     let (before, sep_found, after) = match find_subsequence(bytes, sep, vm.heap)? {
         Some(pos) => (bytes[..pos].to_vec(), sep.to_vec(), bytes[pos + sep.len()..].to_vec()),
         None => (bytes.to_vec(), Vec::new(), Vec::new()),
@@ -1832,6 +1858,7 @@ fn bytes_rpartition<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &m
     }
 
     let bytes = bytes.get(vm.heap);
+    vm.heap.tracker.check_allocation(bytes.len())?;
     let (before, sep_found, after) = match rfind_subsequence(bytes, sep, vm.heap)? {
         Some(pos) => (bytes[..pos].to_vec(), sep.to_vec(), bytes[pos + sep.len()..].to_vec()),
         None => (Vec::new(), Vec::new(), bytes.to_vec()),
@@ -1878,9 +1905,12 @@ fn parse_bytes_replace_args(_method: &str, args: ArgValues, vm: &mut VM<'_>) -> 
     defer_drop!(new, vm);
     defer_drop!(count, vm);
 
+    // Validate buffers before the count, but read their contents after its callback.
+    extract_bytes_only(old, vm)?;
+    extract_bytes_only(new, vm)?;
+    let count_i = count.as_int(vm)?;
     let old_b = copy_bytes_argument(old, vm)?;
     let new_b = copy_bytes_argument(new, vm)?;
-    let count_i = count.as_int(vm)?;
     Ok((old_b, new_b, count_i))
 }
 
@@ -1995,7 +2025,7 @@ fn bytes_center<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut V
     let len = bytes.len();
 
     let result = if width <= len {
-        bytes.to_vec()
+        copy_buffer(bytes, vm.heap)?
     } else {
         check_repeat_size(width, 1, &vm.heap.tracker)?;
         let total_pad = width - len;
@@ -2026,7 +2056,7 @@ fn bytes_ljust<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
     let len = bytes.len();
 
     let result = if width <= len {
-        bytes.to_vec()
+        copy_buffer(bytes, vm.heap)?
     } else {
         check_repeat_size(width, 1, &vm.heap.tracker)?;
         let pad = width - len;
@@ -2051,7 +2081,7 @@ fn bytes_rjust<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
     let len = bytes.len();
 
     let result = if width <= len {
-        bytes.to_vec()
+        copy_buffer(bytes, vm.heap)?
     } else {
         check_repeat_size(width, 1, &vm.heap.tracker)?;
         let pad = width - len;
@@ -2127,7 +2157,7 @@ fn bytes_zfill<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
     let len = bytes.len();
 
     let result = if width <= len {
-        bytes.to_vec()
+        copy_buffer(bytes, vm.heap)?
     } else {
         check_repeat_size(width, 1, &vm.heap.tracker)?;
         let pad = width - len;
@@ -2162,43 +2192,30 @@ fn bytes_join<'h>(separator: &impl HeapView<'h, [u8]>, iterable: Value, vm: &mut
         iterable.drop_with(vm);
         return Err(ExcType::type_error_join_not_iterable());
     }
-    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
-    defer_drop!(iter, vm);
-    let mut iter = iter.read(vm);
+    // Iteration can mutate earlier bytearray items or the separator.
+    let items: Vec<Value> = collect_owned_iterable(iterable, vm)?;
+    defer_drop!(items, vm);
+    let separator = separator.get(vm.heap);
+    let mut size = separator.len().saturating_mul(items.len().saturating_sub(1));
+    for (index, item) in items.iter().enumerate() {
+        let bytes = item.as_buffer(vm).ok_or_else(|| {
+            ExcType::type_error(format!(
+                "sequence item {index}: expected a bytes-like object, {} found",
+                item.py_type_name(vm)
+            ))
+        })?;
+        size = size.saturating_add(bytes.len());
+        vm.heap.tracker.check_time_every(index)?;
+    }
 
-    let mut result = Vec::new();
-    let mut index = 0usize;
-
-    while let Some(item) = iter.py_next(vm)? {
-        defer_drop!(item, vm);
-
+    vm.heap.tracker.check_allocation(size)?;
+    let mut result = Vec::with_capacity(size);
+    for (index, item) in items.iter().enumerate() {
         if index > 0 {
-            result.extend_from_slice(separator.get(vm.heap));
+            result.extend_from_slice(separator);
         }
-
-        // Check item is bytes and extract its content
-        match item {
-            Value::InternBytes(id) => {
-                result.extend_from_slice(vm.interns.get_bytes(*id));
-            }
-            Value::Ref(heap_id) => {
-                if let HeapData::Bytes(b) = vm.heap.get(*heap_id) {
-                    result.extend_from_slice(b.as_slice());
-                } else {
-                    let t = item.py_type_name(vm);
-                    return Err(ExcType::type_error(format!(
-                        "sequence item {index}: expected a bytes-like object, {t} found"
-                    )));
-                }
-            }
-            _ => {
-                let t = item.py_type_name(vm);
-                return Err(ExcType::type_error(format!(
-                    "sequence item {index}: expected a bytes-like object, {t} found"
-                )));
-            }
-        }
-        index += 1;
+        result.extend_from_slice(item.as_buffer(vm).expect("validated buffer"));
+        vm.heap.tracker.check_time_every(index)?;
     }
 
     Ok(allocate_bytes(result, vm.heap))

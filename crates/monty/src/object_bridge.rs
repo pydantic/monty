@@ -156,7 +156,7 @@ impl GraphExporter {
 
     /// The finished arena, releasing the pins on the memoized objects.
     ///
-    /// Fails with the uncatchable error a user `__repr__` raised during export,
+    /// Propagates resource failures from copying buffers or running user `__repr__`,
     /// so a resource limit ends the run rather than becoming a repr string.
     pub(crate) fn finish(self, vm: &mut VM<'_>) -> RunResult<MontyGraph> {
         self.pinned.drop_with(vm);
@@ -272,7 +272,16 @@ impl GraphExporter {
         match output {
             HeapReadOutput::Str(heap_string) => MontyNode::String(heap_string.get(vm.heap).as_str().to_owned()),
             HeapReadOutput::Bytes(b) => MontyNode::Bytes(b.get(vm.heap).as_slice().to_owned()),
-            HeapReadOutput::ByteArray(b) => MontyNode::Bytes(b.get(vm.heap).as_slice().to_owned()),
+            HeapReadOutput::ByteArray(b) => {
+                let bytes = b.get(vm.heap).as_slice();
+                if let Err(err) = vm.heap.tracker.check_allocation(bytes.len()) {
+                    // Export errors are returned by `finish`, after releasing its pinned references.
+                    self.error = Some(err.into());
+                    MontyNode::Repr(String::new())
+                } else {
+                    MontyNode::Bytes(bytes.to_owned())
+                }
+            }
             HeapReadOutput::List(list) => {
                 // Snapshot before recursing: a nested `__repr__` may mutate this list.
                 let children: Vec<Value> = list

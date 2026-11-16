@@ -221,6 +221,7 @@ These raise `NameError`:
 ## `bytearray`
 
 `memoryview` and persistent exported buffers are not implemented.
-`del buffer[index]` and `del buffer[start:stop]` are not supported; use slice assignment with an empty buffer instead.
+`del buffer[index]` and `del buffer[start:stop]` are not supported; assign an empty buffer to a slice instead,
+including extended slices such as `buffer[::2] = b''`.
 Constructors and mutation methods collect iterables synchronously; suspendable user iteration is not supported.
 Error messages inherited from shared byte algorithms may refer to `bytes` rather than `bytearray`.

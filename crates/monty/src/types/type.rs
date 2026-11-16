@@ -901,6 +901,9 @@ impl Type {
                     match v.py_value(vm) {
                         PyValue::Str(value) => Ok(Value::Float(parse_f64_from_str(value.as_str(vm))?)),
                         PyValue::Bytes(value) => Ok(Value::Float(parse_f64_from_bytes(value.as_slice(vm))?)),
+                        PyValue::ByteArray(value) => {
+                            Ok(Value::Float(parse_f64_from_bytes(value.get(vm.heap).as_slice())?))
+                        }
                         _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),
                     }
                 }
@@ -1036,6 +1039,7 @@ fn int_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             match x.py_value(vm) {
                 PyValue::Str(value) => parse_int_from_str(value.as_str(vm), base, vm.heap),
                 PyValue::Bytes(value) => parse_int_from_bytes(value.as_slice(vm), base, vm.heap),
+                PyValue::ByteArray(value) => parse_int_from_bytes(value.get(vm.heap).as_slice(), base, vm.heap),
                 _ => Err(ExcType::type_error_int_non_string_with_base()),
             }
         }
@@ -1052,6 +1056,7 @@ fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
         match x.py_value(vm) {
             PyValue::Str(value) => parse_int_from_str(value.as_str(vm), 10, vm.heap),
             PyValue::Bytes(value) => parse_int_from_bytes(value.as_slice(vm), 10, vm.heap),
+            PyValue::ByteArray(value) => parse_int_from_bytes(value.get(vm.heap).as_slice(), 10, vm.heap),
             _ => Err(ExcType::type_error_int_conversion(&x.py_type_name(vm))),
         }
     }

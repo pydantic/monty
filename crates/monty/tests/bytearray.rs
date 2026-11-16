@@ -2,6 +2,19 @@ use monty::{Dump, MontyRepl, MontyRun, Session, SessionRef, dump};
 use monty_types::{CompileOptions, PrintWriter, ResourceTracker};
 
 #[test]
+fn bytearray_review_regressions() {
+    for source in [
+        include_str!("../test_cases/bytearray__buffers.py"),
+        include_str!("../test_cases/bytearray__empty_slices.py"),
+        include_str!("../test_cases/bytearray__result_copies.py"),
+        include_str!("../test_cases/bytearray__replace_callbacks.py"),
+    ] {
+        let mut runner = MontyRun::new(source.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        runner.run_no_limits(vec![]).unwrap();
+    }
+}
+
+#[test]
 fn bytearray_core() {
     let source = include_str!("../test_cases/bytearray__core.py");
     let mut runner = MontyRun::new(source.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
