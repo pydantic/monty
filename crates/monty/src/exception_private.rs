@@ -1424,6 +1424,14 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, "negative count").into()
     }
 
+    /// Creates a ValueError when an integer in a bytes iterable is outside 0..=255.
+    ///
+    /// Matches CPython's format: `ValueError: bytes must be in range(0, 256)`
+    #[must_use]
+    fn value_error_bytes_range() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "bytes must be in range(0, 256)").into()
+    }
+
     /// Creates the `ValueError` CPython's float-to-string conversion raises for a
     /// precision above `MAX_FLOAT_PRECISION` (`INT_MAX - 1024`).
     ///

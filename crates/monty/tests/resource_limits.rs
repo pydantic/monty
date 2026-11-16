@@ -2544,3 +2544,18 @@ fn call_function_starts_a_fresh_feed_budget() {
         .expect("the call gets its own budget");
     assert_eq!(value, MontyObject::int(49_995_000));
 }
+
+/// Draining a large iterable into `bytes` checks allocation sizes and halts with MemoryError.
+#[test]
+fn bytes_iterable_respects_max_memory() {
+    let mut ex = MontyRun::new(
+        "import itertools\nbytes(itertools.repeat(0, 200_000))".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_memory(10_000));
+    let err = ex.run(vec![], tracker, PrintWriter::Stdout).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
+}
