@@ -37,7 +37,7 @@ use crate::{
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     resource_checks::{check_repeat_size, repeated_len},
     types::{
-        LazyHeapSet, Type,
+        LazyHeapSet, Type, TypeRef,
         list::repr_sequence_fmt,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
     },
@@ -302,8 +302,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
         Ok(Some(false))
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Tuple
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Tuple.into()
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -678,8 +678,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TupleIterator> {
         true
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::TupleIterator
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::TupleIterator.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {

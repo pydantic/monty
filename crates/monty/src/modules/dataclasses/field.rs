@@ -13,7 +13,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::{StaticStrings, StringId},
-    types::{LazyHeapSet, PyTrait, Type, str::allocate_string},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef, str::allocate_string},
     value::{EitherStr, Marker, Value},
 };
 
@@ -261,8 +261,8 @@ fn missing() -> Value {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassField> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::DataclassField
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::DataclassField.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

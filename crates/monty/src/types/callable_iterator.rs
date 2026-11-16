@@ -15,7 +15,7 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     heap::{DropGuard, HeapId, HeapItem, HeapObjectRead},
-    types::{PyTrait, Type},
+    types::{PyTrait, Type, TypeRef},
     value::Value,
 };
 
@@ -71,8 +71,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CallableIterator> {
         true
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::CallableIterator
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::CallableIterator.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {

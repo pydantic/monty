@@ -9,10 +9,11 @@ any code runs.
 
 - **`class` definitions** — simple classes are supported (instance methods,
     `__init__`/`__repr__`/`__str__`, class variables of arbitrary expressions).
-    Rejected at parse time: base classes / metaclasses (`class Foo(Bar):`) and
-    class-body statements other than `def`, a simple `name [: T] = <expr>`
-    assignment, `pass`, or a docstring. There is no inheritance and no general
-    dunder protocol. See [classes.md](classes.md).
+    Rejected at parse time: metaclasses (`class Foo(metaclass=M):`), `**kwargs`
+    in a class statement, and class-body statements other than `def`, a simple
+    `name [: T] = <expr>` assignment, `pass`, or a docstring. Classes can inherit
+    from other classes and `object` but not from native types, and there is no
+    general dunder protocol. See [classes.md](classes.md).
 - **Decorators** (`@deco`) — supported on classes and on top-level or nested
     `def`/`async def`, taking any callable in scope, evaluated in the enclosing
     scope and applied bottom-up. Rejected at parse time on **methods**, so
