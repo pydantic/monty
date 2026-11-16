@@ -70,7 +70,7 @@ fn bytearray_join_exports() {
 
 #[test]
 fn bytearray_search_exports() {
-    // CPython's gh-142560 fix postdates 3.14.2, which the differential runner still uses.
+    // Adapted from CPython's gh-142560 search-callback regression.
     let source = r"
 for method in ['find', 'rfind', 'count', 'index', 'rindex']:
     data = bytearray(b'abc')

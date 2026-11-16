@@ -51,6 +51,23 @@ const TEST_CASES_RELATIVE_DIR: &str = "crates/monty/test_cases";
 static CANONICAL_WS_DIR: LazyLock<PathBuf> =
     LazyLock::new(|| canonicalize(WORKSPACE_ROOT).expect("Failed to canonicalize workspace root"));
 
+/// Older CPython patches lack the float-precision overflow checks our fixtures exercise.
+static CPYTHON_VERSION_CHECK: LazyLock<Result<(), String>> = LazyLock::new(|| {
+    Python::attach(|py| {
+        let version = py.version_info();
+        if version >= (3, 14, 8) {
+            Ok(())
+        } else {
+            Err(format!(
+                "CPython fixture tests require Python 3.14.8 or newer; linked interpreter is {}.{}.{}. \
+                 Rebuild with PYO3_PYTHON=/path/to/python3.14 cargo run -p monty-datatest. \
+                 Use a current 3.14 interpreter; older patches lack the float-precision overflow checks.",
+                version.major, version.minor, version.patch,
+            ))
+        }
+    })
+});
+
 /// Recursion limit for test execution.
 ///
 /// Used for both Monty and CPython tests. CPython needs ~5 extra frames
@@ -3025,6 +3042,11 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
 /// Handles xfail with strict semantics: if a test's header sets `xfail = ['cpython']`, it must fail.
 /// If an xfail test passes unexpectedly, that's an error.
 fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
+    // A fixture's expected failure must not hide an incompatible test interpreter.
+    if let Err(message) = &*CPYTHON_VERSION_CHECK {
+        return Err(message.clone().into());
+    }
+
     // Joined onto the workspace rather than read relative to the process cwd:
     // the harness never changes directory, so a CPython fixture that calls
     // `os.chdir` cannot race another thread's fixture read.
