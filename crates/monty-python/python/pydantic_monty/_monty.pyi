@@ -1477,7 +1477,8 @@ class AsyncMontySession:
 
         This requires a relay that supports recovery saves. Use a random 16-byte
         write capability for `slot`. Omit `expected_revision` to create the slot,
-        or pass its last confirmed 16-byte revision to replace it.
+        or pass the last 16 bytes of its confirmed restore handle to replace it.
+        Pass the whole handle to `load_session`.
         """
 
     async def install_dependencies(self, requirements: list[str]) -> None:

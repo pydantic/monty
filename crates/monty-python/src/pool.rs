@@ -1112,15 +1112,21 @@ impl PyAsyncMontySession {
         slot: Vec<u8>,
         expected_revision: Option<Vec<u8>>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let slot = slot
+            .try_into()
+            .map_err(|_| PyValueError::new_err("slot must be a 16-byte write capability"))?;
+        let expected_revision = expected_revision
+            .map(|revision| {
+                revision
+                    .try_into()
+                    .map_err(|_| PyValueError::new_err("expected_revision must be a 16-byte revision"))
+            })
+            .transpose()?;
         let checkout = Arc::clone(&self.checkout);
         future_into_py(py, async move {
             let mut guard = checkout.lock().await;
             let result = match guard.as_mut() {
-                Some(checkout) => {
-                    checkout
-                        .save_recovery(slot, expected_revision.unwrap_or_default())
-                        .await
-                }
+                Some(checkout) => checkout.save_recovery(slot, expected_revision).await,
                 None => Err(PoolError::Finished),
             };
             let state = result.map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;

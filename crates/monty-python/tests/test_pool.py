@@ -312,6 +312,10 @@ async def test_async_dump():
 async def test_recovery_save_requires_a_remote_store():
     async with AsyncMonty() as pool, pool.checkout() as session:
         await session.feed_run('x = 42')
+        with pytest.raises(ValueError, match='slot must be a 16-byte write capability'):
+            await session.save_recovery(b'short')
+        with pytest.raises(ValueError, match='expected_revision must be a 16-byte revision'):
+            await session.save_recovery(b'slot' * 4, expected_revision=b'')
         with pytest.raises(MontyRuntimeError, match='recovery saves require a remote session store'):
             await session.save_recovery(b'slot' * 4)
         assert await session.feed_run('x') == 42

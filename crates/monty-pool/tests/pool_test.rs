@@ -1136,6 +1136,31 @@ async fn oversize_frames_are_rejected_without_killing_the_worker() {
     session.finish().await.unwrap();
 }
 
+#[tokio::test]
+async fn refused_recovery_save_leaves_a_suspended_call_resumable() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let event = session
+        .feed("f() + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert!(matches!(event, TurnEvent::FunctionCall { .. }), "got {event:?}");
+
+    let error = session.save_recovery([1; 16], None).await.unwrap_err();
+    let PoolError::Runtime(exception) = error else {
+        panic!("expected a refused recovery save, got {error:?}");
+    };
+    assert_eq!(
+        exception.message(),
+        Some("recovery saves require a remote session store")
+    );
+    let event = session
+        .resume(ResumeValue::Return(MontyObject::int(41)), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::int(42));
+}
+
 /// A `dump()` too large for the frame limit while the session is *suspended*
 /// must fail as a clean, session-preserving error — the suspension already
 /// announced its resume point, so the worker stays suspended and resumable.

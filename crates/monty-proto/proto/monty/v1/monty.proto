@@ -790,7 +790,11 @@ message Dump {}
 
 // Updates a relay-managed recovery slot. The slot is an opaque write capability.
 // An empty expected_revision creates a slot. A nonempty value replaces only that
-// committed revision. On success the relay returns a versioned handle in DumpResult.
+// committed revision. On success, DumpResult contains a 32-byte restore handle.
+// Its first 16 bytes name the snapshot and its last 16 bytes give the revision.
+// A relay that supports this operation replies with Error for a stale revision
+// or a refused save. That reply keeps the live session and any pending feed.
+// A relay that does not recognize SaveRecovery can close the session.
 message SaveRecovery {
   bytes slot = 1;
   bytes expected_revision = 2;

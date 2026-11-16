@@ -1389,12 +1389,16 @@ impl Checkout {
     }
 
     /// Save a versioned recovery handle in a relay-managed slot.
-    /// `slot` is a 16-byte write capability. An empty `expected_revision`
-    /// creates the slot; a 16-byte value replaces the matching version.
-    pub async fn save_recovery(&mut self, slot: Vec<u8>, expected_revision: Vec<u8>) -> Result<Vec<u8>, PoolError> {
+    /// `slot` is a write capability. Pass `None` to create the slot, or pass the
+    /// last 16 bytes of its confirmed restore handle to replace that version.
+    pub async fn save_recovery(
+        &mut self,
+        slot: [u8; 16],
+        expected_revision: Option<[u8; 16]>,
+    ) -> Result<Vec<u8>, PoolError> {
         self.snapshot(pb::client_request::Kind::SaveRecovery(pb::SaveRecovery {
-            slot: slot.into(),
-            expected_revision: expected_revision.into(),
+            slot: slot.to_vec().into(),
+            expected_revision: expected_revision.map(Vec::from).unwrap_or_default().into(),
         }))
         .await
     }
@@ -1406,7 +1410,7 @@ impl Checkout {
         let deadline = self.pool.config.request_timeout;
         match self.request_turn(&request, deadline, &mut no_print).await? {
             ControlEvent::Dump(state) => Ok(state),
-            other => Err(self.protocol_violation(format!("unexpected reply to Dump: {other:?}"))),
+            other => Err(self.protocol_violation(format!("unexpected snapshot reply: {other:?}"))),
         }
     }
 
@@ -2382,11 +2386,12 @@ impl Checkout {
                     return self.convert_turn(|| Ok(TurnEvent::Complete(MontyObject::try_from(complete)?)));
                 }
                 Some(pb::worker_event::Kind::Error(error)) => {
-                    // an error reply to `Dump` (e.g. an oversize dump) does not
-                    // end the in-flight feed — the worker stays suspended and
-                    // resumable, so keep the pending call and mounts
+                    // Snapshot errors preserve the pending feed, call, and mounts.
                     if event.feed_suspended != Some(true)
-                        && !matches!(request.kind, Some(pb::client_request::Kind::Dump(_)))
+                        && !matches!(
+                            request.kind,
+                            Some(pb::client_request::Kind::Dump(_) | pb::client_request::Kind::SaveRecovery(_))
+                        )
                     {
                         self.pending = None;
                         self.feed_mounts = None;
