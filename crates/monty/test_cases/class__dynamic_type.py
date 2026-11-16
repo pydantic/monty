@@ -60,17 +60,17 @@ setattr(E, 'w', 6)
 assert E.w == 6
 
 # === dynamic name computed at runtime ===
-name = 'Dyn' + 'Cls'
+name = ''.join(['Dynamic', 'ClassName'])
 DC = type(name, (), {})
-assert DC.__name__ == 'DynCls'
+assert DC.__name__ == 'DynamicClassName'
 assert DC.__name__ is name
 name = None
-assert DC.__name__ == 'DynCls'
+assert DC.__name__ == 'DynamicClassName'
 try:
     DC.nope
     assert False, 'expected attribute error'
 except AttributeError as exc:
-    assert str(exc) == "type object 'DynCls' has no attribute 'nope'"
+    assert str(exc) == "type object 'DynamicClassName' has no attribute 'nope'"
 
 # === 1-arg form still works ===
 assert type(1) is int

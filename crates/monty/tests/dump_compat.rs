@@ -329,7 +329,7 @@ named = Named()";
 #[test]
 fn legacy_name_text_upgrades_to_owned_strings() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/names_v15.bin");
-    let mut bytes = fs::read(path).unwrap();
+    let bytes = fs::read(path).unwrap();
     for direct_serde in [true, false] {
         let loaded = if direct_serde {
             minicbor_serde::from_slice::<Dump>(&bytes[8..]).expect("direct serde restores legacy names too")
@@ -358,7 +358,8 @@ assert host_type.__name__ is saved[3]",
             PrintWriter::Disabled,
         )
         .unwrap();
-        bytes = dump("legacy_names.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+        let roundtripped = dump("legacy_names.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+        Dump::load(&roundtripped).expect("upgraded names re-encode and reload");
         repl.feed_run(
             "Dynamic.self_ref = None\nDynamic = Named = named = host_type = host_tuple = None\nassert saved == (name, name, name, 'LegacyHostTypeName')",
             vec![],
