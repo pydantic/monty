@@ -679,6 +679,71 @@ fn timeout_in_three_arg_pow() {
     );
 }
 
+/// `math.gcd` on large operands polls the time limit between Lehmer steps instead of
+/// running `num-integer`'s binary gcd to completion. The operands are built by shifts,
+/// which are linear, so the gcd itself is what has to hit the limit.
+#[test]
+fn timeout_in_math_gcd() {
+    assert_timeout_in_builtin(
+        "import math\nmath.gcd((1 << 3_000_000) + 1, (1 << 2_900_000) + 7)",
+        "math.gcd(two 3M-bit ints)",
+    );
+}
+
+/// Binary gcd walked a long operand one bit at a time even when the other was a
+/// machine word (16 s for a 3M-bit operand on a laptop, against 2 ms in CPython).
+/// Reducing the long operand first makes this a single division, well inside the limit.
+#[test]
+fn math_gcd_with_small_operand_finishes_within_limit() {
+    let code = "import math\nmath.gcd((1 << 3_000_000) + 1, (1 << 61) - 1)";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(500));
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    let value = result
+        .unwrap_or_else(|exc| panic!("gcd with a machine-word operand should finish within the limit, got: {exc}"));
+    assert_eq!(value, MontyObject::int(1));
+}
+
+/// Each 4,096-bit argument stays under the Lehmer threshold, where `polled_gcd` does not
+/// poll, so only the argument loop's poll can stop this call.
+#[test]
+fn timeout_in_math_gcd_many_arguments() {
+    assert_timeout_in_builtin(
+        "import math\nmath.gcd(3, *([3 * ((1 << 4094) - 1)] * 100_000))",
+        "math.gcd(3, 100,000 4,096-bit ints)",
+    );
+}
+
+/// `math.lcm` shares the polled gcd.
+#[test]
+fn timeout_in_math_lcm() {
+    assert_timeout_in_builtin(
+        "import math\nmath.lcm((1 << 3_000_000) + 1, (1 << 2_900_000) + 7)",
+        "math.lcm(two 3M-bit ints)",
+    );
+}
+
+/// Each `lcm(x, 3)` step runs the gcd below the Lehmer threshold, which does not poll, and
+/// the result stays `x`, so only the argument loop's poll can stop this call.
+#[test]
+fn timeout_in_math_lcm_many_arguments() {
+    assert_timeout_in_builtin(
+        "import math\nmath.lcm(3 * ((1 << 4094) - 1), *([3] * 100_000))",
+        "math.lcm(4,096-bit int, 100,000 threes)",
+    );
+}
+
+/// `math.isqrt` on a large operand polls between precision-doubling steps instead of
+/// running `num-bigint`'s Newton iteration to completion. The operand is not near a power
+/// of two, which would make every division trivial; dividing by 7 is linear to build.
+#[test]
+fn timeout_in_math_isqrt() {
+    assert_timeout_in_builtin(
+        "import math\nmath.isqrt(((1 << 13_000_000) - 1) // 7)",
+        "math.isqrt(13M-bit int)",
+    );
+}
+
 /// Test that `list(range(huge))` respects the time limit.
 ///
 /// The `list()` constructor drains its concrete Python iterator.
