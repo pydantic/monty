@@ -469,6 +469,7 @@ fn drain_count<I: Input>(seq: &mut impl Sequence<I>, seen: usize, vm: &mut VM<'_
     while let Some(item) = seq.next(vm)? {
         seq.finish_item(item, vm);
         count += 1;
+        vm.heap.tracker.check_time_every(count).map_err(RunError::from)?;
     }
     Ok(count)
 }

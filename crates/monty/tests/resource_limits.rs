@@ -526,6 +526,28 @@ TypeAdapter(P).validate_python(dict.fromkeys(['z%d' % i for i in range(300_000)]
     );
 }
 
+/// A streamed JSON array longer than a fixed tuple is walked to the end for
+/// the error's `actual_length`, so that walk polls the clock.
+#[test]
+fn time_limit_covers_pydantic_tuple_length_count() {
+    let code = r"
+from pydantic import TypeAdapter
+TypeAdapter(tuple[()]).validate_json('[' + '0,' * 20_000_000 + '0]')
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(500));
+    let start = Instant::now();
+    let exc = ex
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .expect_err("should exceed time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "the length count should notice the limit promptly, took {:?}",
+        start.elapsed()
+    );
+}
+
 /// A tuple dict key shared within itself is rendered once per reference in
 /// JSON mode, so key rendering polls the clock like values do.
 #[test]
