@@ -1,5 +1,7 @@
 //! Checks identity-bearing enums without tying their codes to declaration order.
 
+use std::collections::HashMap;
+
 use proc_macro2::TokenStream;
 use syn::{Data, DataEnum, DeriveInput, Expr, ExprLit, Lit, LitInt, meta::parser, parse::Parser};
 
@@ -33,12 +35,14 @@ pub(crate) fn expand(args: TokenStream, item: TokenStream) -> syn::Result<TokenS
     }
 }
 
-/// FNV-1a over sorted, NUL-terminated `name:code` pairs, with codes normalized to decimal.
+/// Checks code uniqueness across all declared variants, then hashes sorted `name:code` pairs.
+/// FNV-1a consumes NUL-terminated pairs with codes normalized to decimal.
 fn codes_checksum(data: &DataEnum) -> syn::Result<u64> {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0100_0000_01b3;
 
     let mut codes = Vec::with_capacity(data.variants.len());
+    let mut assigned = HashMap::with_capacity(data.variants.len());
     for variant in &data.variants {
         let code = match &variant.discriminant {
             Some((
@@ -54,6 +58,12 @@ fn codes_checksum(data: &DataEnum) -> syn::Result<u64> {
                 ));
             }
         };
+        if let Some(first) = assigned.insert(code, &variant.ident) {
+            return Err(syn::Error::new_spanned(
+                &variant.ident,
+                format!("duplicate identity code {code}: `{first}` and `{}`", variant.ident),
+            ));
+        }
         codes.push(format!("{}:{code}", variant.ident));
     }
     codes.sort_unstable();

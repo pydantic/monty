@@ -15,7 +15,7 @@ mod explicit_discriminants;
 mod from_args;
 mod to_args;
 
-/// Requires explicit integer identity codes and a matching `checksum` argument.
+/// Requires distinct explicit integer identity codes and a matching `checksum` argument.
 /// Place before derives to check every declared variant, regardless of `cfg` conditions.
 /// Missing or mismatched checksums report a copyable attribute; review changes before updating it.
 /// Existing codes must never change or be reused. The enum is returned unchanged.

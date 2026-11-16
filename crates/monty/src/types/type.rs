@@ -42,7 +42,7 @@ use crate::{
 /// (e.g., `TextIOWrapper`, `PosixPath`).
 ///
 /// Variant names are persisted in dumps; renames require a serde alias.
-/// Builtin numeric identities preserve these original variant indices.
+/// Builtin numeric identities are pinned by `BuiltinType::identity_index`, not by this variant order.
 #[derive(
     Debug,
     Clone,

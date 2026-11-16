@@ -139,7 +139,7 @@ A mismatch reports both values and the replacement attribute; review the mapping
 Place the attribute before any derives so it checks every declared variant, including inactive `cfg` and `cfg_attr` variants.
 One checksum covers every configuration.
 The macro returns the enum unchanged, preserving its attributes and representation.
-Rust rejects duplicate codes.
+The macro rejects duplicate numeric codes even between mutually exclusive variants.
 
 ## Not a standalone crate
 

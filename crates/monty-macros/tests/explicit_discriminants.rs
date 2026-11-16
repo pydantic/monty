@@ -87,6 +87,38 @@ fn implicit_codes_are_rejected() {
     }
 }
 
+/// Numeric codes must be unique even when configuration prevents variants from coexisting.
+#[test]
+fn duplicate_codes_are_rejected() {
+    let inputs = [
+        quote! { enum Duplicate { First = 7, Last = 0x07 } },
+        quote! {
+            enum Duplicate {
+                #[cfg(test)]
+                First = 7,
+                #[cfg(not(test))]
+                Last = 0x07,
+            }
+        },
+        quote! {
+            enum Duplicate {
+                #[cfg_attr(test, cfg(any()))]
+                First = 7,
+                #[cfg_attr(not(test), cfg(any()))]
+                Last = 0x07,
+            }
+        },
+    ];
+    allow_duplicates! {
+        for input in inputs {
+            assert_snapshot!(
+                expansion::expand(TokenStream::new(), input).unwrap_err().to_string(),
+                @"duplicate identity code 7: `First` and `Last`"
+            );
+        }
+    }
+}
+
 /// Codes cannot depend on another variant or on a computed expression.
 #[test]
 fn computed_codes_are_rejected() {
