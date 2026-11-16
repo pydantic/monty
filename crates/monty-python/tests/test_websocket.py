@@ -17,6 +17,7 @@ from http import HTTPStatus
 import pytest
 from inline_snapshot import snapshot
 from websockets.asyncio.server import ServerConnection, serve
+from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
 from pydantic_monty import AsyncMontyRemote, MontyConnectError, MontyDisconnectError, MontyRefusedError
@@ -224,12 +225,41 @@ async def test_pre_warm_skips_a_session_the_server_closed():
                 assert await session.feed_run('1 + 1') == snapshot(2)
 
 
-def test_pre_warm_cannot_take_metadata():
-    with pytest.raises(ValueError) as exc_info:
-        AsyncMontyRemote('ws://127.0.0.1:1', pre_warm=1, metadata=lambda: {})
-    assert exc_info.value.args[0] == snapshot(
-        'pre_warm cannot be combined with metadata: pre-warmed sessions open before any checkout, without it'
-    )
+async def test_pre_warm_sessions_carry_metadata():
+    """Pre-warmed sessions are dialed with `metadata`; a checkout takes one only with the same value,
+    and a changed value closes the ready sessions and dials with the new one."""
+    tokens: list[str | None] = []
+    used: list[str | None] = []
+    token = 'Bearer one'
+
+    async def handler(connection: ServerConnection) -> None:
+        assert connection.request is not None
+        header = connection.request.headers.get('authorization')
+        tokens.append(header)
+        try:
+            first = await connection.recv()
+        except ConnectionClosed:
+            return  # a stale ready session, closed unused
+        used.append(header)
+        await _bridge(connection, first)
+
+    async with _serve(handler) as url:
+        async with AsyncMontyRemote(
+            url, request_timeout=30.0, pre_warm=1, metadata=lambda: {'authorization': token}
+        ) as pool:
+            assert tokens == ['Bearer one']
+            async with pool.checkout() as session:
+                assert await session.feed_run('1 + 1') == snapshot(2)
+            await _wait_for(lambda: len(tokens) == 2)
+            token = 'Bearer two'
+            async with pool.checkout() as session:
+                assert await session.feed_run('2 + 2') == snapshot(4)
+            await _wait_for(lambda: len(tokens) == 4)
+    # the first checkout took the pre-warmed session; the second could not take the refill
+    # dialed with the old token, so it dialed its own and the refill used the new one,
+    # which only closing the pool used, to send `Shutdown`
+    assert used == snapshot(['Bearer one', 'Bearer two', 'Bearer two'])
+    assert tokens == snapshot(['Bearer one', 'Bearer one', 'Bearer two', 'Bearer two'])
 
 
 async def test_pre_warm_wait_raises_from_aenter_when_a_session_cannot_open():

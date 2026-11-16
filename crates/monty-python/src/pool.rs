@@ -751,11 +751,6 @@ impl PyAsyncMontyRemote {
             (metadata, None) => metadata,
         };
         check_callable(py, metadata.as_ref())?;
-        if pre_warm > 0 && metadata.is_some() {
-            return Err(PyValueError::new_err(
-                "pre_warm cannot be combined with metadata: pre-warmed sessions open before any checkout, without it",
-            ));
-        }
         let mut config = parse_remote_config(
             url,
             max_processes,
@@ -785,9 +780,16 @@ impl PyAsyncMontyRemote {
         })
     }
 
-    /// Initializes the pool (off the event loop) and returns `self`.
+    /// Initializes the pool (off the event loop) and returns `self`. With
+    /// `pre_warm`, `metadata` is called here, on the caller's task, for the
+    /// sessions opened before any checkout.
     fn __aenter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
-        let config = slf.get().config.clone();
+        let mut config = slf.get().config.clone();
+        if config.min_processes > 0
+            && let Some(callback) = &slf.get().metadata
+        {
+            config.pre_warm_metadata = extract_metadata(py, callback)?;
+        }
         let slot = Arc::clone(&slf.get().pool);
         future_into_py(py, async move {
             let pool = Pool::new(config)

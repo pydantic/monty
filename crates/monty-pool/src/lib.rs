@@ -81,8 +81,9 @@ pub struct PoolConfig {
     /// For the [`MontyTransport::Remote`] transport, sessions kept open and ready
     /// (0 by default), counted against `max_processes`: opened by [`Pool::new`]
     /// (in the background without [`Self::pre_warm_wait`]) and refilled as
-    /// checkouts take them; a checkout waits for one already dialing. They are
-    /// dialed without metadata, so only checkouts without metadata take them.
+    /// checkouts take them; a checkout waits for one already dialing. A checkout
+    /// takes one only if it was dialed with that checkout's own metadata: the first
+    /// with [`Self::pre_warm_metadata`], refills with the latest checkout's.
     pub min_processes: usize,
     /// Hard cap on live workers; checkouts beyond this wait. For the remote
     /// transport, a cap on concurrent sessions.
@@ -147,6 +148,10 @@ pub struct PoolConfig {
     /// itself, failing if one cannot open, rather than in the background. On by
     /// default; subprocess pools always spawn theirs in [`Pool::new`].
     pub pre_warm_wait: bool,
+    /// Remote transport only: the metadata the first `min_processes` sessions
+    /// are dialed with. Should match what checkouts send, or those sessions are
+    /// closed and redialed at the first checkout.
+    pub pre_warm_metadata: Vec<(String, String)>,
     /// Where pool and turn metrics are recorded, from
     /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).
     /// `None` records nothing at all. Independent of tracing: metrics cover
@@ -191,6 +196,7 @@ impl PoolConfig {
             auto_resume: true,
             stream_async_calls: false,
             pre_warm_wait: true,
+            pre_warm_metadata: Vec::new(),
             max_decode_bytes: DEFAULT_MAX_DECODE_BYTES,
             #[cfg(feature = "telemetry")]
             metrics: None,

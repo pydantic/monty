@@ -58,6 +58,9 @@ pub(crate) struct Worker {
     pub(crate) id: u64,
     /// Checkouts this worker has served, for `max_checkouts_per_worker`.
     pub(crate) checkouts_served: u32,
+    /// A pre-opened remote session's dial metadata, which a checkout must match
+    /// to take it; empty for every other worker.
+    dial_metadata: Vec<(String, String)>,
     /// Records an adapter checkout's protocol turns, created only while needed.
     #[cfg(feature = "telemetry")]
     recorder: Option<Box<Recorder>>,
@@ -181,6 +184,7 @@ impl Worker {
             last_frame_len: 0,
             id: 0,
             checkouts_served: 0,
+            dial_metadata: Vec::new(),
             #[cfg(feature = "telemetry")]
             recorder: None,
             #[cfg(feature = "telemetry")]
@@ -358,6 +362,17 @@ impl Worker {
     /// Whether the worker has already died (used to discard workers that died
     /// while idle in the pool). Remote workers are never pooled idle, so
     /// they always report alive here.
+    /// Marks a pre-opened remote session with the metadata it was dialed with.
+    pub(crate) fn with_dial_metadata(mut self, metadata: Vec<(String, String)>) -> Self {
+        self.dial_metadata = metadata;
+        self
+    }
+
+    /// See [`Self::with_dial_metadata`].
+    pub(crate) fn dial_metadata(&self) -> &[(String, String)] {
+        &self.dial_metadata
+    }
+
     pub(crate) fn is_dead(&mut self) -> bool {
         match &mut self.kind {
             WorkerKind::Subprocess(w) => w.child.try_wait().is_ok_and(|status| status.is_some()),

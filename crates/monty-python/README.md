@@ -44,7 +44,9 @@ if __name__ == '__main__':
 `AsyncMontyRemote(url, pre_warm=2)` keeps two sessions open and ready, so a checkout takes one instead of dialing.
 `__aenter__` waits for them to open, raising if one cannot (`pre_warm_wait=False` opens them in the background
 instead); they are replaced in the background as checkouts take them, and count against `max_processes`.
-Because they open before any checkout, `pre_warm` cannot be combined with `metadata`.
+With `metadata`, `__aenter__` calls it for the first sessions and each replacement is dialed with the latest
+checkout's; a checkout takes only a session dialed with what its own `metadata` call returned, and a changed value
+closes and replaces the ready sessions.
 
 `MontyDisconnectError` exposes `status_code`, `status_message`, `cause` and `transport_error` when available.
 These fields preserve the status the server ended the stream with, or the transport or protocol failure, not proof that

@@ -1256,8 +1256,12 @@ class AsyncMontyRemote:
                 checkout waits for one already dialing. They count against
                 `max_processes`, so it must be at least `pre_warm`. A server
                 may close one that waits too long, which is then replaced.
-                Cannot be combined with `metadata`, which a session needs before
-                any checkout produces it.
+                A checkout takes one only if it was dialed with the metadata that
+                checkout's `metadata` call returned: `__aenter__` calls it for the
+                first sessions, and each replacement uses the latest checkout's.
+                When it returns something else (a rotated token), ready sessions
+                dialed with the old value are closed and replaced, so `pre_warm`
+                helps only while `metadata` is stable.
             pre_warm_wait: `__aenter__` waits until the `pre_warm` sessions are
                 open, raising if one cannot open (the default); `False` opens them
                 in the background instead.

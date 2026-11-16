@@ -74,6 +74,9 @@ struct PoolState {
     retry_at: Option<Instant>,
     /// Refills in flight, counted in `total` but not yet in `idle`.
     refilling: usize,
+    /// Remote: the metadata pre-opened sessions are dialed with, the latest
+    /// eligible checkout's; a ready session dialed with other metadata is closed.
+    prewarm_metadata: Vec<(String, String)>,
 }
 
 impl Pool {
@@ -120,9 +123,11 @@ impl Pool {
         let mut idle = if remote_in_background {
             Vec::new()
         } else if config.transport.is_remote() {
-            join_all((0..config.min_processes).map(|_| Worker::new(&config, remote.as_deref(), &[])))
+            let metadata = &config.pre_warm_metadata;
+            join_all((0..config.min_processes).map(|_| Worker::new(&config, remote.as_deref(), metadata)))
                 .await
                 .into_iter()
+                .map(|worker| worker.map(|worker| worker.with_dial_metadata(metadata.clone())))
                 .collect::<Result<Vec<_>, _>>()?
         } else {
             let mut idle = Vec::with_capacity(config.min_processes);
@@ -135,6 +140,7 @@ impl Pool {
             worker.id = id;
         }
         let total = idle.len();
+        let prewarm_metadata = config.pre_warm_metadata.clone();
         let pool = Self {
             inner: Arc::new_cyclic(|this| PoolInner {
                 config,
@@ -147,6 +153,7 @@ impl Pool {
                     refill_failures: 0,
                     retry_at: None,
                     refilling: 0,
+                    prewarm_metadata,
                 }),
                 available: Notify::new(),
                 this: this.clone(),
@@ -178,15 +185,18 @@ impl Pool {
     pub async fn checkout_with(&self, repl: &ReplConfig, options: CheckoutOptions) -> Result<Checkout, PoolError> {
         #[cfg(feature = "telemetry")]
         let mut options = options;
-        // pre-opened remote sessions were dialed without metadata, so only a
-        // checkout bringing none of its own may take one (trace headers aside)
-        let prewarmed_ok = options.metadata.is_empty();
+        // a pre-opened remote session is taken only by a checkout whose own
+        // metadata it was dialed with; trace headers, added below, aside
+        let prewarm_metadata = options.metadata.clone();
         // trace headers go ahead of the caller's, which stay last-wins
         #[cfg(feature = "telemetry")]
         if let Some(telemetry) = &options.telemetry {
             options.metadata.splice(0..0, telemetry.propagation_headers());
         }
-        let worker = self.inner.acquire_worker(&options.metadata, prewarmed_ok).await?;
+        let worker = self
+            .inner
+            .acquire_worker(&options.metadata, Some(&prewarm_metadata))
+            .await?;
         let config = &self.inner.config;
         let redial = (config.auto_resume && config.transport.is_remote()).then(|| Redial {
             repl: repl.clone(),
@@ -280,18 +290,19 @@ impl PoolInner {
     /// Takes a worker, reusing/spawning a local one or connecting a fresh
     /// remote one (with `metadata` on its stream), waiting as
     /// capacity allows — and times that for `monty.pool.checkout.wait`.
-    /// `prewarmed_ok` lets a remote checkout take a pre-opened session.
+    /// With `prewarm` (the caller's metadata, without trace headers), a remote
+    /// checkout may take a pre-opened session dialed with exactly that metadata.
     pub(crate) async fn acquire_worker(
         &self,
         metadata: &[(String, String)],
-        prewarmed_ok: bool,
+        prewarm: Option<&[(String, String)]>,
     ) -> Result<Worker, PoolError> {
         #[cfg(feature = "telemetry")]
         let started = Instant::now();
         // set by the acquisition itself: only it can tell an idle reuse from a
         // spawn, or either from a wait for capacity
         let mut outcome = "idle";
-        let worker = self.acquire_worker_inner(metadata, prewarmed_ok, &mut outcome).await;
+        let worker = self.acquire_worker_inner(metadata, prewarm, &mut outcome).await;
         #[cfg(feature = "telemetry")]
         if let Some(metrics) = &self.config.metrics {
             let outcome = match &worker {
@@ -310,13 +321,13 @@ impl PoolInner {
     async fn acquire_worker_inner(
         &self,
         metadata: &[(String, String)],
-        prewarmed_ok: bool,
+        prewarm: Option<&[(String, String)]>,
         outcome: &mut &'static str,
     ) -> Result<Worker, PoolError> {
-        // remote streams are single-use: the only idle ones are sessions
-        // pre-opened without metadata, which a checkout with its own skips
+        // remote streams are single-use: the only idle ones are pre-opened
+        // sessions, taken only with the metadata they were dialed with
         let remote = self.config.transport.is_remote();
-        let reuse_idle = !remote || prewarmed_ok;
+        let reuse_idle = !remote || prewarm.is_some();
         let mut waited = false;
         let deadline = self.config.checkout_timeout.map(|t| Instant::now() + t);
         loop {
@@ -332,6 +343,22 @@ impl PoolInner {
                 let mut reused = None;
                 let mut died_idle = 0;
                 let mut removed_idle = 0;
+                let mut stale = Vec::new();
+                // new metadata (a rotated token, say): refills use it from now
+                // on, and ready sessions dialed with the old one are closed
+                if remote
+                    && let Some(prewarm) = prewarm
+                    && state.prewarm_metadata != prewarm
+                {
+                    state.prewarm_metadata = prewarm.to_vec();
+                    let (keep, old) = mem::take(&mut state.idle)
+                        .into_iter()
+                        .partition(|worker: &Worker| worker.dial_metadata() == prewarm);
+                    state.idle = keep;
+                    stale = old;
+                    state.total -= stale.len();
+                    removed_idle += stale.len();
+                }
                 if reuse_idle {
                     // discard workers that died while idle — their replacement
                     // is the spawn below or a background refill
@@ -364,9 +391,15 @@ impl PoolInner {
                 for _ in 0..died_idle {
                     self.count_termination("died_idle");
                 }
+                for _ in &stale {
+                    self.count_termination("stale_metadata");
+                }
+                let gone = died_idle + stale.len();
+                // dropping a remote worker closes its stream
+                drop(stale);
                 let spawned = i64::from(below_cap);
-                self.record_worker_delta(spawned - worker_count(died_idle), -worker_count(removed_idle));
-                if died_idle > 0 {
+                self.record_worker_delta(spawned - worker_count(gone), -worker_count(removed_idle));
+                if gone > 0 {
                     self.replenish();
                 }
                 if let Some(worker) = reused {
@@ -476,10 +509,10 @@ impl PoolInner {
     /// checkout can never overshoot `max_processes`. Does nothing once closed
     /// or while refills back off.
     fn replenish(&self) {
-        let (wanted, first_id) = {
+        let (wanted, first_id, metadata) = {
             let mut state = lock_ignore_poison(&self.state);
             if state.closed || state.retry_at.is_some() {
-                (0, 0)
+                (0, 0, Vec::new())
             } else {
                 let floor = self.config.min_processes.min(self.config.max_processes);
                 // a remote pool's floor is on ready sessions, since checked-out
@@ -495,7 +528,7 @@ impl PoolInner {
                 state.refilling += wanted;
                 let first_id = state.next_id;
                 state.next_id = first_id.checked_add(wanted as u64).expect("worker identity exhausted");
-                (wanted, first_id)
+                (wanted, first_id, state.prewarm_metadata.clone())
             }
         };
         if wanted > 0 {
@@ -507,6 +540,7 @@ impl PoolInner {
                     self.this.clone(),
                     self.config.clone(),
                     self.remote.clone(),
+                    metadata.clone(),
                     id,
                 ));
             }
@@ -544,21 +578,29 @@ impl PoolInner {
     }
 }
 
-/// Spawns worker `id` (or pre-opens a remote session, without metadata) into
-/// a slot [`PoolInner::replenish`] reserved.
+/// Spawns worker `id` (or pre-opens a remote session, dialed with `metadata`)
+/// into a slot [`PoolInner::replenish`] reserved.
 ///
 /// Holds only a `Weak` across the spawn, so an in-flight refill never keeps a
 /// dropped pool alive; its worker is then killed on drop.
-async fn refill_one(pool: Weak<PoolInner>, config: PoolConfig, remote: Option<Arc<Remote>>, id: u64) {
-    let worker = Worker::new(&config, remote.as_deref(), &[]).await;
+async fn refill_one(
+    pool: Weak<PoolInner>,
+    config: PoolConfig,
+    remote: Option<Arc<Remote>>,
+    metadata: Vec<(String, String)>,
+    id: u64,
+) {
+    let worker = Worker::new(&config, remote.as_deref(), &metadata).await;
     let Some(pool) = pool.upgrade() else { return };
     let mut state = lock_ignore_poison(&pool.state);
     state.refilling -= 1;
+    // the metadata changed while this dialed: close it, and refill with the new one
+    let stale = remote.is_some() && state.prewarm_metadata != metadata;
     match worker {
-        Ok(mut worker) if !state.closed => {
+        Ok(mut worker) if !state.closed && !stale => {
             worker.id = id;
             state.refill_failures = 0;
-            state.idle.push(worker);
+            state.idle.push(worker.with_dial_metadata(metadata));
             drop(state);
             pool.available.notify_one();
             pool.record_worker_delta(0, 1);
@@ -566,9 +608,10 @@ async fn refill_one(pool: Weak<PoolInner>, config: PoolConfig, remote: Option<Ar
         // a closed pool kills a late worker and will not refill again, so a
         // failure must not arm a retry either
         Ok(worker) => {
+            let reason = if state.closed { "closed" } else { "stale_metadata" };
             drop(state);
             drop(worker);
-            pool.count_termination("closed");
+            pool.count_termination(reason);
             pool.release_capacity();
         }
         Err(_) if state.closed => {

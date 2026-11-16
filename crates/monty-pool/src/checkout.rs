@@ -1859,7 +1859,7 @@ impl Checkout {
     async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
         let configure = configure_request(&redial.repl, &self.pool.config);
         // a resume carries the session's own metadata, never a pre-opened stream's
-        let worker = self.pool.acquire_worker(&redial.metadata, false).await?;
+        let worker = self.pool.acquire_worker(&redial.metadata, None).await?;
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(redial.telemetry.clone());
         self.worker = Some(worker);
