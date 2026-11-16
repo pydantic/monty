@@ -7,12 +7,12 @@ This is a rough check requested after stopping the longer full-suite measurement
 
 Median request time in milliseconds, three samples per runtime and mode:
 
-| Workload | Mode | PR #1090 baseline | Previous threaded | Handler macros | CPython |
-| --- | --- | ---: | ---: | ---: | ---: |
-| N-body | Repeated | 202.634 | 172.617 | 173.565 | 73.393 |
-| Spectral norm | Repeated | 154.244 | 119.110 | 119.601 | 69.342 |
-| N-body | One-shot | 203.317 | 178.492 | 174.031 | 76.561 |
-| Spectral norm | One-shot | 153.837 | 121.166 | 120.297 | 69.861 |
+| Workload      | Mode     | PR #1090 baseline | Previous threaded | Handler macros | CPython |
+| ------------- | -------- | ----------------: | ----------------: | -------------: | ------: |
+| N-body        | Repeated |           202.634 |           172.617 |        173.565 |  73.393 |
+| Spectral norm | Repeated |           154.244 |           119.110 |        119.601 |  69.342 |
+| N-body        | One-shot |           203.317 |           178.492 |        174.031 |  76.561 |
+| Spectral norm | One-shot |           153.837 |           121.166 |        120.297 |  69.861 |
 
 In repeated mode, the macro version takes about **14% less time on N-body** and **22% less on spectral norm** than the baseline.
 Its differences from the previous threaded version are +0.55% and +0.41%, respectively.
@@ -32,9 +32,9 @@ The baseline is PR #1090 head `ca6e09002fbbbad6f85a1b5bdacbd783f62d13c0`.
 ## Authoring handlers
 
 - Each opcode declares its semantic body and optional fast handler together. The declaration generates both dispatch tables;
-  the separate 58-entry fast-handler registration table is gone.
+    the separate 58-entry fast-handler registration table is gone.
 - `direct_handler!` supplies the scalar parameter types and return type.
-  `next!`, `next_local!`, `fallback!` and `resume!` supply continuation arguments.
+    `next!`, `next_local!`, `fallback!` and `resume!` supply continuation arguments.
 - `with inline` makes the measured subscription-handler inlining policy explicit.
 
 See [Writing threaded opcode handlers](HANDLERS.md) for examples and instruction-pointer/ownership rules.
@@ -46,19 +46,20 @@ That version was rejected. The macros expand directly to the previous scalar ope
 
 ## Other completed checks
 
-Separate compile-once checks from this follow-up, medians of three rounds with 30 samples per round:
+Separate compile-once checks from this follow-up, with 30 samples per round:
+each Monty column uses three rounds and the CPython column uses six.
 
-| Workload | Previous threaded | Handler macros | CPython |
-| --- | ---: | ---: | ---: |
-| NOP, ns/op | 0.505 | 0.505 | 0.437 |
-| Empty loop, ms | 1.490 | 1.462 | 1.740 |
-| Decrement, ms | 2.133 | 2.100 | 2.952 |
-| String-key dictionary, ms | 16.266 | 16.113 | 4.804 |
-| Integer-key dictionary, ms | 15.721 | 15.656 | 4.853 |
-| Class-member fallback, ms | 8.333 | 8.361 | 2.016 |
+| Workload                   | Previous threaded | Handler macros | CPython |
+| -------------------------- | ----------------: | -------------: | ------: |
+| NOP, ns/op                 |             0.505 |          0.505 |   0.437 |
+| Empty loop, ms             |             1.490 |          1.462 |   1.740 |
+| Decrement, ms              |             2.133 |          2.100 |   2.952 |
+| String-key dictionary, ms  |            16.266 |         16.113 |   4.804 |
+| Integer-key dictionary, ms |            15.721 |         15.656 |   4.853 |
+| Class-member fallback, ms  |             8.333 |          8.361 |   2.016 |
 
 NOP uses fitted slopes over streams of 0, 10,000, 100,000 and 1,000,000 instructions.
-CPython controls run in each microbenchmark executable, giving six rounds.
+CPython controls run in each of the two microbenchmark executables.
 The other workload sizes are documented in the [earlier comparison](README.md).
 These small differences between threaded versions are observations, not claims of improvements from the macros.
 
@@ -69,7 +70,8 @@ Exact benchmark and final source hashes are recorded in `production-macros/sourc
 
 ## Artifacts
 
-Under `/private/tmp/dispatch-ergonomics/`:
+The original measurements recorded the following local paths under `/private/tmp/dispatch-ergonomics/`.
+These artifacts are not included in the repository, so the reported measurements cannot be verified from this checkout.
 
 - `nbody-spectral-quick/`: HTML report, raw JSON, source snapshots and runtime provenance for the two-workload check.
 - `production-macros/`: release binaries, build logs, subprocess tests and the exact compiled dispatcher source.
@@ -92,5 +94,3 @@ previous: 32469e0dc120697d83ccde5f5f9ac208a2834f3c6af78439f6d94964974233d5
 macros:   d5be2770babaae4e59c234b0c16508c33e720e03e3982a5666266157a82f9a53
 cpython:  7af94281dcb14ba81b98e587d6e9b237ebf51986f0424bb4988d8568e914e9da
 ```
-
-The worktree changes remain uncommitted.

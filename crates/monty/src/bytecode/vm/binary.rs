@@ -28,7 +28,7 @@ impl VM<'_> {
 
     /// Binary addition.
     pub(super) fn binary_add(&mut self) -> Result<(), RunError> {
-        if self.binary_numeric(i64::checked_add, |lhs, rhs| lhs + rhs, |lhs, rhs| lhs + rhs) {
+        if self.promote_numeric_overflow(|lhs, rhs| lhs + rhs) {
             return Ok(());
         }
 
@@ -37,7 +37,7 @@ impl VM<'_> {
 
     /// Binary subtraction.
     pub(super) fn binary_sub(&mut self) -> Result<(), RunError> {
-        if self.binary_numeric(i64::checked_sub, |lhs, rhs| lhs - rhs, |lhs, rhs| lhs - rhs) {
+        if self.promote_numeric_overflow(|lhs, rhs| lhs - rhs) {
             return Ok(());
         }
 
@@ -46,7 +46,7 @@ impl VM<'_> {
 
     /// Binary multiplication.
     pub(super) fn binary_mult(&mut self) -> Result<(), RunError> {
-        if self.binary_numeric(i64::checked_mul, |lhs, rhs| lhs * rhs, |lhs, rhs| lhs * rhs) {
+        if self.promote_numeric_overflow(|lhs, rhs| lhs * rhs) {
             return Ok(());
         }
 
@@ -60,28 +60,16 @@ impl VM<'_> {
 
     /// Binary division.
     pub(super) fn binary_div(&mut self) -> Result<(), RunError> {
-        if self.binary_div_immediate() {
-            return Ok(());
-        }
-
         self.binary_op(|lhs, rhs, vm| lhs.py_truediv(rhs, vm))
     }
 
     /// Binary floor division.
     pub(super) fn binary_floordiv(&mut self) -> Result<(), RunError> {
-        if self.binary_floordiv_immediate() {
-            return Ok(());
-        }
-
         self.binary_op(|lhs, rhs, vm| lhs.py_floordiv(rhs, vm))
     }
 
     /// Binary modulo.
     pub(super) fn binary_mod(&mut self) -> Result<(), RunError> {
-        if self.binary_mod_immediate() {
-            return Ok(());
-        }
-
         self.binary_op(|lhs, rhs, vm| lhs.py_mod(rhs, vm))
     }
 
@@ -160,7 +148,7 @@ impl VM<'_> {
     /// the update; immutable ones fall back to ordinary addition. Uses lazy type
     /// capture: only calls `py_type()` in error paths.
     pub(super) fn inplace_add(&mut self) -> Result<(), RunError> {
-        if self.binary_numeric(i64::checked_add, |lhs, rhs| lhs + rhs, |lhs, rhs| lhs + rhs) {
+        if self.promote_numeric_overflow(|lhs, rhs| lhs + rhs) {
             return Ok(());
         }
 
@@ -181,7 +169,7 @@ impl VM<'_> {
 
     /// `-=` — an in-place mutation (a `Counter` subtracts counts), or binary `-`.
     pub(super) fn inplace_sub(&mut self) -> Result<(), RunError> {
-        if self.binary_numeric(i64::checked_sub, |lhs, rhs| lhs - rhs, |lhs, rhs| lhs - rhs) {
+        if self.promote_numeric_overflow(|lhs, rhs| lhs - rhs) {
             return Ok(());
         }
 
@@ -223,18 +211,9 @@ impl VM<'_> {
         }
     }
 
-    /// Handles immediate pairs, promoting integer overflow through the heap path.
+    /// Promotes integer pairs after threaded dispatch has rejected immediate arithmetic.
     #[inline]
-    fn binary_numeric(
-        &mut self,
-        int_op: impl FnOnce(i64, i64) -> Option<i64>,
-        wide_op: impl FnOnce(i128, i128) -> i128,
-        float_op: impl FnOnce(f64, f64) -> f64,
-    ) -> bool {
-        if self.binary_numeric_immediate(int_op, float_op) {
-            return true;
-        }
-
+    fn promote_numeric_overflow(&mut self, wide_op: impl FnOnce(i128, i128) -> i128) -> bool {
         let len = self.stack.len();
         let (Value::Int(lhs), Value::Int(rhs)) = (&self.stack[len - 2], &self.stack[len - 1]) else {
             return false;

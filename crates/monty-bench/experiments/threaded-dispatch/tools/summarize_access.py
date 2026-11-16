@@ -13,7 +13,7 @@ args = parser.parse_args()
 rounds = defaultdict(lambda: defaultdict(list))
 for accepted in json.loads((args.run / 'accepted.json').read_text()):
     groups = defaultdict(list)
-    with Path(accepted['path']).open() as source:
+    with (args.run / Path(accepted['path']).name).open() as source:
         for row in csv.DictReader(source):
             groups[row['case'], row['interpreter']].append(float(row['ns']) / 1e6)
     for (case, interpreter), values in groups.items():

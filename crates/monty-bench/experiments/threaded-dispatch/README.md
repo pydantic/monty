@@ -2,7 +2,7 @@
 
 The branch combines bounded threaded dispatch, numeric handlers, borrowed native lookups and fused subscriptions.
 It is rebased onto main; [subscription measurements](SUBSCRIPTION_RESULTS.md) describe the local comparison before that rebase.
-The dispatcher is always enabled in this worktree; it has no feature switch.
+The dispatcher is always enabled on this branch; it has no feature switch.
 
 ## Historical dispatch-only results
 
@@ -17,8 +17,9 @@ Measured on macOS ARM64 with Rust 1.99.0 (LLVM 23.1.1) and CPython 3.14.2.
 CPython's tail-call interpreter is enabled; its JIT is disabled.
 Both Monty runtime binaries use the normal release profile: fat LTO, one codegen unit and stripped symbols.
 
-Across 27 worker workloads: **24 improved, 3 unchanged, 0 regressions**.
-The full results and confidence intervals are preserved in the raw summary.
+The original run reported 24 improvements, three unchanged workloads and no regressions across 27 worker workloads.
+Its raw samples and confidence intervals are not included in this repository or linked from a durable location.
+The table below records those historical results; its statistical classifications cannot be verified from this checkout.
 
 Compile-once core workloads, excluding compilation and IPC (median of three rounds, 30 samples after five warmups per round):
 
@@ -81,7 +82,7 @@ The runner checks for competing compilers and benchmark processes before and aft
 and retains rejected attempts. The tables use medians. Classifications use Flying Circus's bootstrap comparison with a 2% relative
 and 0.01 ms absolute threshold, and 95% family confidence across baseline and CPython comparisons.
 Small positive median differences marked unchanged are not evidence that every execution is faster.
-These measurements establish the result for this workload set and machine, not every Python program or architecture.
+These reported measurements apply to this workload set and machine.
 
 See [Writing threaded opcode handlers](HANDLERS.md) for the declaration syntax and continuation methods.
 
@@ -149,6 +150,11 @@ python tools/summarize_workers.py /path/to/new-results \
 The five core workloads and ten opcode-mix workloads are included here. The runner also selects twelve named applications
 from the supplied Flying Circus checkout. It copies workload sources and records their hashes, the worker adapter hash,
 the harness hash, executable hashes, command line, raw samples and detected process activity.
+Process observations are appended to `activity.jsonl`.
+Both measurement scripts stop after ten contended attempts and bound each idle wait with `--idle-timeout` (300 seconds by default).
+Worker summaries reject runs with different platform, harness, adapter, workload or warmup provenance.
+Run the tool regression tests from this directory with
+`PYTHONPATH=tools python -m unittest discover -s tools/tests`.
 
 Build [`opcode_cost`](../../examples/opcode_cost.rs) in both trees with
 `cargo build --release -p monty-bench --example opcode_cost --features worker-alloc`, then run:
@@ -164,7 +170,8 @@ The baseline source archive includes only the NOP construction hook and benchmar
 Build it with the same profile, run `tools/measure_micro.py` with `--kind access --rounds 3`,
 and summarize with `tools/summarize_access.py`.
 
-Artifacts are under `/private/tmp/dispatch-six-hour/`:
+The original run recorded these local artifact paths under `/private/tmp/dispatch-six-hour/`.
+They are not distributed with this checkout:
 
 - `production-final-summary/`: the 27-workload table and confidence intervals.
 - `production-final-comparison/`: request samples, rejected attempts, workload copies, harness and hashes.

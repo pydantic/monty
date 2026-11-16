@@ -13,7 +13,7 @@ args = parser.parse_args()
 slopes = defaultdict(list)
 for accepted in json.loads((args.run / 'accepted.json').read_text()):
     rows = defaultdict(lambda: defaultdict(list))
-    with Path(accepted['path']).open() as source:
+    with (args.run / Path(accepted['path']).name).open() as source:
         for row in csv.DictReader(source):
             rows[row['interpreter']][int(row['nops'])].append(float(row['ns']))
     for interpreter, groups in rows.items():

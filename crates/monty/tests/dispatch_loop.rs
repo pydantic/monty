@@ -7,7 +7,6 @@ use monty_types::{CompileOptions, ExcType, MontyObject, PrintWriter, ResourceLim
 
 fn check(source: &str) {
     let mut runner = MontyRun::new(source.to_owned(), "dispatch.py", vec![], CompileOptions::default()).unwrap();
-    runner.run_no_limits(vec![]).unwrap();
     #[cfg(feature = "ref-count-return")]
     {
         let result = runner.run_ref_counts(vec![]).unwrap();

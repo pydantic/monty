@@ -20,10 +20,25 @@ groups = defaultdict(lambda: defaultdict(list))
 hashes = defaultdict(set)
 rejected = 0
 incomplete = {}
+provenance = None
+source_hashes = {}
 for run in a.runs:
     metadata = json.loads((run / 'metadata.json').read_text())
     if metadata.get('exploratory_allow_contention'):
         raise ValueError(f'Exploratory samples cannot enter the final summary: {run}')
+    run_provenance = {
+        key: metadata[key]
+        for key in ('platform', 'harness_sha256', 'worker_adapter_sha256', 'scope', 'warmups', 'contention')
+    }
+    for key in ('workload_source_sha256', 'benchmark_support_sha256'):
+        run_provenance[key] = metadata.get(key)
+    if provenance is not None and run_provenance != provenance:
+        raise ValueError(f'Mixed measurement provenance: {run}')
+    provenance = run_provenance
+    for workload, source in metadata['sources'].items():
+        previous = source_hashes.setdefault(workload, source['sha256'])
+        if previous != source['sha256']:
+            raise ValueError(f'Mixed source hashes for {workload}: {run}')
     for label, binary in metadata['binaries'].items():
         hashes[label].add(binary['sha256'])
     local = defaultdict(lambda: defaultdict(list))
@@ -69,6 +84,8 @@ a.output.mkdir(parents=True, exist_ok=True)
 summary = {
     'runs': list(map(str, a.runs)),
     'binary_sha256': {k: next(iter(v)) for k, v in hashes.items()},
+    'provenance': provenance,
+    'source_sha256': source_hashes,
     'rejected_samples': rejected,
     'threshold_percent': 2,
     'absolute_threshold_ms': 0.01,

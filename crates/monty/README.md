@@ -28,8 +28,8 @@ for stack operations, branches, immediate arithmetic and common iterators.
 Batches unwind after at most 256 instructions, or 16 inside VM re-entry, so correctness does not require tail-call optimization.
 Both paths retain the original resource-check cadence and checked instruction fetches.
 
-See the [experiment and benchmarks](../monty-bench/experiments/threaded-dispatch/README.md)
-and the [handler guide](../monty-bench/experiments/threaded-dispatch/HANDLERS.md).
+See the [experiment and benchmarks](https://github.com/jaheba/monty/blob/3a482b25361e1fc07d123a89859e8678f034c4af/crates/monty-bench/experiments/threaded-dispatch/README.md)
+and the [handler guide](https://github.com/jaheba/monty/blob/3a482b25361e1fc07d123a89859e8678f034c4af/crates/monty-bench/experiments/threaded-dispatch/HANDLERS.md).
 
 ## Basic usage
 

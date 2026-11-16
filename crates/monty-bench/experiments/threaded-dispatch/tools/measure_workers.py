@@ -6,13 +6,14 @@ import json
 import os
 import platform
 import random
-import re
 import statistics
 import subprocess
 import sys
 import time
 from contextlib import ExitStack
 from pathlib import Path
+
+from benchmark_support import competing_processes, parse_variants, positive_seconds, wait_for_idle
 
 p = argparse.ArgumentParser()
 p.add_argument('out', type=Path)
@@ -21,11 +22,16 @@ p.add_argument('--cpython', type=Path, required=True)
 p.add_argument('--flying-circus-source', type=Path, required=True)
 p.add_argument('--samples', type=int, default=30)
 p.add_argument('--warmups', type=int, default=5)
+p.add_argument('--idle-timeout', type=positive_seconds, default=300)
 p.add_argument(
     '--allow-contention', action='store_true', help='Exploratory only; retain contention markers instead of retrying'
 )
 p.add_argument('--only', nargs='*')
 a = p.parse_args()
+variants = parse_variants(p, a.variants)
+variants['cpython'] = str(a.cpython.resolve())
+if a.samples <= 0 or a.warmups < 0:
+    p.error('--samples must be positive and --warmups must be nonnegative')
 # Use the explicitly selected Flying Circus checkout for both adapters and statistics.
 sys.path.insert(0, str(a.flying_circus_source.resolve()))
 from flying_circus.workers import CPythonWorker, MontyWorker  # noqa: E402
@@ -33,8 +39,6 @@ from flying_circus.workload_source import prepare, split_source  # noqa: E402
 
 experiment = Path(__file__).resolve().parents[1]
 a.out.mkdir(parents=True, exist_ok=False)
-variants = dict(v.split('=', 1) for v in a.variants)
-variants.setdefault('cpython', str(a.cpython.resolve()))
 workloads = sorted((experiment / 'mixes').glob('*.py'))
 workloads += sorted(experiment.glob('*.py'))
 apps = a.flying_circus_source / 'flying_circus/workloads'
@@ -60,6 +64,7 @@ if a.only:
 
 
 def digest(path):
+    """Identify the bytes used by this run independently of their filesystem location."""
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
@@ -73,52 +78,37 @@ metadata = {
     'sources': {w.stem: {'path': str(w), 'sha256': digest(w)} for w in workloads},
     'harness_sha256': digest(__file__),
     'worker_adapter_sha256': digest(a.flying_circus_source / 'flying_circus/workers.py'),
+    'workload_source_sha256': digest(a.flying_circus_source / 'flying_circus/workload_source.py'),
+    'benchmark_support_sha256': digest(experiment / 'tools/benchmark_support.py'),
     'scope': 'FC repeated worker: configure and fixture setup untimed; source compile/run and IPC timed; validation and reset untimed',
     'contention': 'process activity checked before and after every sample; rejected attempts retained',
     'exploratory_allow_contention': a.allow_contention,
 }
 (a.out / 'metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
 (a.out / 'harness.py').write_text(Path(__file__).read_text())
+(a.out / 'benchmark_support.py').write_text((experiment / 'tools/benchmark_support.py').read_text())
 source_dir = a.out / 'sources'
 source_dir.mkdir()
 for workload in workloads:
     (source_dir / workload.name).write_text(workload.read_text())
-activity, rows = [], []
+rows = []
 own_pids = {os.getpid()}
 
 
 def busy():
-    active = []
-    for line in subprocess.check_output(['ps', '-axo', 'pid,%cpu,comm'], text=True).splitlines()[1:]:
-        fields = line.strip().split(None, 2)
-        if len(fields) != 3:
-            continue
-        pid, cpu, command = int(fields[0]), float(fields[1]), fields[2]
-        if pid not in own_pids and (
-            re.search(r'/(rustc|cargo|llvm-objdump)$', command)
-            or (
-                cpu > 5
-                and re.search(
-                    r'(monty|access_cost|opcode_cost|candidate-access|baseline-access|flying-circus)', command
-                )
-            )
-        ):
-            active.append(line.strip())
-    activity.append({'time': time.time(), 'active': active})
-    (a.out / 'activity.json').write_text(json.dumps(activity, indent=2) + '\n')
+    """Append process observations without repeatedly rewriting earlier samples."""
+    active = competing_processes(own_pids)
+    with (a.out / 'activity.jsonl').open('a') as log:
+        log.write(json.dumps({'time': time.time(), 'active': active}) + '\n')
     return active
 
 
 def idle(name):
+    """Exploratory runs record contention; ordinary runs wait for an idle machine."""
     if a.allow_contention:
         busy()
         return
-    waits = 0
-    while busy():
-        if waits % 30 == 0:
-            print(f'Waiting before {name}', flush=True)
-        time.sleep(2)
-        waits += 2
+    wait_for_idle(busy, a.idle_timeout, name)
 
 
 rng = random.Random(0)
@@ -143,6 +133,7 @@ with ExitStack() as stack:
             labels = list(workers)
             rng.shuffle(labels)
             for label in labels:
+                attempts = 0
                 while True:
                     idle(workload.stem)
                     worker = workers[label]
@@ -169,6 +160,9 @@ with ExitStack() as stack:
                         f.write(json.dumps(row) + '\n')
                     if not contended or a.allow_contention:
                         break
+                    attempts += 1
+                    if attempts >= 10:
+                        raise RuntimeError(f'Ten contended attempts for {label}/{workload.stem}, sample {sample}')
         medians = {
             label: statistics.median(
                 r['ns']
