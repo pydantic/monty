@@ -4,8 +4,8 @@ use std::{cmp::Ordering, mem};
 
 use super::{
     AwaitResult, CallResult, CellValue, Closure, DropWithContext, ExcType, ExcTypeExt, FrameExit, FrameNamespace,
-    FunctionDefaults, FunctionId, HeapData, HeapId, HeapReadOutput, IMPORT_STAR_BIND, MATCH_KEYS_REST, Opcode, PostConversionEffect,
-    PyTrait, PyValue, RunError, StringId, VM, Value, decode_assert_flags, recursion,
+    FunctionDefaults, FunctionId, HeapData, HeapId, HeapReadOutput, IMPORT_STAR_BIND, MATCH_KEYS_REST, Opcode,
+    PostConversionEffect, PyTrait, PyValue, RunError, StringId, VM, Value, decode_assert_flags, recursion,
 };
 
 macro_rules! yield_if_parked {
