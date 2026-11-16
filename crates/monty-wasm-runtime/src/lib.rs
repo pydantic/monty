@@ -1,7 +1,7 @@
 //! The WebAssembly Component Model Monty worker.
 //!
-//! This is the browser analog of `monty subprocess`: a persistent [`Child`]
-//! consumes semantic WIT requests and returns semantic events. The child still
+//! This is the browser analog of `monty subprocess`: a persistent [`Worker`]
+//! consumes semantic WIT requests and returns semantic events. The worker still
 //! shares `monty-proto`'s state machine, but protobuf bytes never cross the
 //! component boundary or enter the TypeScript host.
 #![expect(unsafe_code, reason = "generated canonical-ABI exports require unsafe code")]
@@ -11,7 +11,7 @@ use std::{cell::RefCell, collections::hash_map::RandomState, io, time::Instant};
 use monty_proto::{
     BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, WireArena, exceeds_max_frame_len,
     os_call_from_proto, pb,
-    worker::{Child, EventSink, HandleOutcome, protocol_violation},
+    worker::{EventSink, HandleOutcome, Worker, protocol_violation},
 };
 use monty_types::{
     CallArgs, ExcType, MONTY_VERSION, MontyException, MontyUuid, OsFunctionCall, memory_limit_with_headroom,
@@ -37,7 +37,7 @@ use bindings::exports::pydantic::monty::worker::{
 
 thread_local! {
     /// The session worker, retained for the lifetime of this component instance.
-    static CHILD: RefCell<Child> = RefCell::new(new_child());
+    static WORKER: RefCell<Worker> = RefCell::new(new_worker());
 }
 
 /// Builds the worker after warming the WASI adapter, so the adapter's buffers
@@ -46,10 +46,10 @@ thread_local! {
 /// The preview1 adapter allocates through the component's allocator on the
 /// first clock read and the first `random_get`, both of which the interpreter
 /// would otherwise make during its first feed, after the allocator is armed.
-fn new_child() -> Child {
+fn new_worker() -> Worker {
     let _ = Instant::now();
     let _ = RandomState::new();
-    Child::default()
+    Worker::default()
 }
 
 /// Counts component allocations against the session's `max_memory` limit.
@@ -59,14 +59,14 @@ fn new_child() -> Child {
 #[global_allocator]
 static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 
-/// Implements the typed component export over Monty's protocol child.
+/// Implements the typed component export over Monty's protocol worker.
 struct Component;
 
 impl Guest for Component {
     fn dispatch(request: Request) -> DispatchResult {
-        let (result, allocator_ready) = CHILD.with_borrow_mut(|child| {
-            let mut result = dispatch(child, request);
-            let budget = child.session_budget();
+        let (result, allocator_ready) = WORKER.with_borrow_mut(|worker| {
+            let mut result = dispatch(worker, request);
+            let budget = worker.session_budget();
             result.max_suspensions = budget.max_suspensions.map(|limit| limit as u64);
             result.max_total_sleep_micros = budget
                 .max_total_sleep
@@ -87,8 +87,8 @@ impl Guest for Component {
     }
 }
 
-/// Handles one semantic request while preserving the protocol child's limits.
-fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
+/// Handles one semantic request while preserving the protocol worker's limits.
+fn dispatch(worker: &mut Worker, request: Request) -> DispatchResult {
     let request = match request_from_component(request) {
         Ok(request) => request,
         Err(error) => {
@@ -108,7 +108,7 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
     if let Some(len) = exceeds_max_frame_len(&request) {
         return DispatchResult {
             status: Status::Shutdown,
-            events: vec![event_from_proto(child.fatal_event(&format!(
+            events: vec![event_from_proto(worker.fatal_event(&format!(
                 "request frame of {len} bytes exceeds maximum of {MAX_FRAME_LEN} bytes"
             )))],
             max_suspensions: None,
@@ -120,15 +120,15 @@ fn dispatch(child: &mut Child, request: Request) -> DispatchResult {
     }
 
     let mut sink = ComponentEventSink::default();
-    let outcome = match child.handle(request, &mut sink) {
+    let outcome = match worker.handle(request, &mut sink) {
         Ok(outcome) => outcome,
         Err(FrameError::FrameTooLarge { len, max }) => {
-            let _ =
-                sink.send(&child.fatal_event(&format!("response frame of {len} bytes exceeds maximum of {max} bytes")));
+            let _ = sink
+                .send(&worker.fatal_event(&format!("response frame of {len} bytes exceeds maximum of {max} bytes")));
             HandleOutcome::Shutdown
         }
         Err(error) => {
-            let _ = sink.send(&child.fatal_event(&format!("component event sink failed: {error}")));
+            let _ = sink.send(&worker.fatal_event(&format!("component event sink failed: {error}")));
             HandleOutcome::Shutdown
         }
     };
@@ -157,13 +157,13 @@ struct ComponentEventSink {
 }
 
 impl EventSink for ComponentEventSink {
-    fn send(&mut self, event: &pb::ChildEvent) -> Result<(), FrameError> {
+    fn send(&mut self, event: &pb::WorkerEvent) -> Result<(), FrameError> {
         if let Some(len) = exceeds_max_frame_len(event) {
             Err(FrameError::FrameTooLarge {
                 len,
                 max: MAX_FRAME_LEN,
             })
-        } else if let Some(pb::child_event::Kind::Print(print)) = &event.kind {
+        } else if let Some(pb::worker_event::Kind::Print(print)) = &event.kind {
             // A `Print` event carries a run per stream switch, while the
             // component's `PrintEvent` names one stream, so it expands into one
             // event per run rather than converting whole. Checked before the
@@ -181,7 +181,7 @@ impl EventSink for ComponentEventSink {
             self.max_turn_duration_micros = event.max_turn_duration_micros;
             let mut event = event.clone();
             let component_event = match event.kind.take() {
-                Some(pb::child_event::Kind::OsCall(call)) => match PreparedOsEvent::from_proto(call) {
+                Some(pb::worker_event::Kind::OsCall(call)) => match PreparedOsEvent::from_proto(call) {
                     Ok(event) => {
                         check_event_value_budget(event.values_decoded_size())?;
                         event.into_component()
@@ -213,12 +213,12 @@ fn check_event_value_budget(size: usize) -> Result<(), FrameError> {
 
 /// Estimates the expanded host size of an event's arena before lifting it
 /// into JS.
-fn event_values_decoded_size(event: &pb::ChildEvent) -> usize {
+fn event_values_decoded_size(event: &pb::WorkerEvent) -> usize {
     match &event.kind {
-        Some(pb::child_event::Kind::Complete(complete)) => {
+        Some(pb::worker_event::Kind::Complete(complete)) => {
             complete.values.as_ref().map_or(0, |arena| nodes_decoded_size(&arena.0))
         }
-        Some(pb::child_event::Kind::FunctionCall(call)) => nodes_decoded_size(&call.values.0),
+        Some(pb::worker_event::Kind::FunctionCall(call)) => nodes_decoded_size(&call.values.0),
         _ => 0,
     }
 }
@@ -301,14 +301,14 @@ fn source_range_from_proto(position: Option<pb::SourceRange>) -> SourceRange {
     component_source_range(position.map_or_else(monty_types::SourceRange::unknown, monty_types::SourceRange::from))
 }
 
-/// Converts a semantic component request into the child state machine's
+/// Converts a semantic component request into the worker state machine's
 /// type. A request's arena is validated here; the roots the request names
-/// are checked by the child, like any wire frame's.
-fn request_from_component(request: Request) -> Result<pb::ParentRequest, String> {
+/// are checked by the worker, like any wire frame's.
+fn request_from_component(request: Request) -> Result<pb::ClientRequest, String> {
     let mut budget = value::DecodeBudget::default();
     let kind = match request {
-        Request::Configure(request) => pb::parent_request::Kind::Configure(configure_from_component(request)),
-        Request::Feed(request) => pb::parent_request::Kind::Feed(pb::Feed {
+        Request::Configure(request) => pb::client_request::Kind::Configure(configure_from_component(request)),
+        Request::Feed(request) => pb::client_request::Kind::Feed(pb::Feed {
             code: request.code,
             inputs: request
                 .inputs
@@ -321,8 +321,10 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
             values: Some(WireArena::new(value::from_component(request.values, &mut budget)?)),
             skip_type_check: request.skip_type_check,
             cwd: request.cwd,
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         }),
-        Request::ResumeCall(request) => pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+        Request::ResumeCall(request) => pb::client_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: request.call_id,
             result: Some(call_result_from_component(request.outcome)),
             values: Some(WireArena::new(value::from_component(request.values, &mut budget)?)),
@@ -335,12 +337,12 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
                     pb::resume_name_lookup::Kind::Error(raised_exception_from_component(error))
                 }
             };
-            pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+            pb::client_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
                 values: Some(WireArena::new(value::from_component(request.values, &mut budget)?)),
                 kind: Some(kind),
             })
         }
-        Request::ResumeFutures(request) => pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+        Request::ResumeFutures(request) => pb::client_request::Kind::ResumeFutures(pb::ResumeFutures {
             results: request
                 .results
                 .into_iter()
@@ -351,20 +353,20 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
                 .collect(),
             values: Some(WireArena::new(value::from_component(request.values, &mut budget)?)),
         }),
-        Request::AbortFeed(error) => pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
+        Request::AbortFeed(error) => pb::client_request::Kind::AbortFeed(pb::AbortFeed {
             exception: Some(raised_exception_from_component(error)),
         }),
-        Request::Dump => pb::parent_request::Kind::Dump(pb::Dump {}),
-        Request::Load(state) => pb::parent_request::Kind::Load(pb::Load { state: state.into() }),
-        Request::Reset => pb::parent_request::Kind::Reset(pb::Reset {}),
+        Request::Dump => pb::client_request::Kind::Dump(pb::Dump {}),
+        Request::Load(state) => pb::client_request::Kind::Load(pb::Load { state: state.into() }),
+        Request::Reset => pb::client_request::Kind::Reset(pb::Reset {}),
     };
-    Ok(pb::ParentRequest {
+    Ok(pb::ClientRequest {
         kind: Some(kind),
         trace_parent: None,
     })
 }
 
-/// Converts session options into the protocol child's configuration type.
+/// Converts session options into the protocol worker's configuration type.
 fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
     pb::Configure {
         script_name: request.script_name,
@@ -385,19 +387,23 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
         type_check_format: i32::from(type_check_format_from_component(request.type_check_format)),
         type_check_color: request.type_check_color,
         protocol_version: PROTOCOL_VERSION,
+        // the component interface has no started-calls event yet
+        accepts_streamed_calls: false,
         // Frames arrive as one batch at the end of a turn, but their
         // boundaries survive it: the host gets one print callback per frame,
         // and a print collector charges its cap per frame.
         print_flush_interval_ms: request.print_flush_interval_ms,
         os_policy: request.os_policy.map(os_policy_from_component),
-        // a relay's concern; the component is a child and never stores sessions
+        // a relay's concern; the component is a worker and never stores sessions
         persistence: pb::Persistence::Unspecified.into(),
-        // a relay's concern; the component is a child and has no profiles
+        // a relay's concern; the component is a worker and has no profiles
         profile: None,
+        // the component's host sends the first request in a turn of its own
+        first: None,
     }
 }
 
-/// Protocol conversion validates these component settings as untrusted parent input.
+/// Protocol conversion validates these component settings as untrusted client input.
 fn os_policy_from_component(calls: OsPolicy) -> pb::OsPolicy {
     let datetime = calls.datetime.map(|source| match source {
         DatetimeSource::System => pb::os_policy::Datetime::System(pb::Unit {}),
@@ -464,7 +470,7 @@ fn type_check_format_from_component(format: TypeCheckFormat) -> pb::TypeCheckFor
     }
 }
 
-/// Converts a host call outcome into the child state machine's result type;
+/// Converts a host call outcome into the worker state machine's result type;
 /// a returned value stays the index into the request's arena.
 fn call_result_from_component(result: CallResult) -> pb::ExtFunctionResult {
     let kind = match result {
@@ -492,13 +498,13 @@ fn raised_exception_from_component(error: RaisedError) -> pb::RaisedException {
     }
 }
 
-/// Converts one child event into its semantic component representation.
-fn event_from_proto(event: pb::ChildEvent) -> Event {
+/// Converts one worker event into its semantic component representation.
+fn event_from_proto(event: pb::WorkerEvent) -> Event {
     match event.kind {
-        Some(pb::child_event::Kind::Print(_)) => invalid_event("Print event bypassed segment expansion"),
-        // a serving relay's liveness probe; a child never sends one
-        Some(pb::child_event::Kind::Ping(_)) => invalid_event("Ping event is a relay's, never a child's"),
-        Some(pb::child_event::Kind::FunctionCall(call)) => {
+        Some(pb::worker_event::Kind::Print(_)) => invalid_event("Print event bypassed segment expansion"),
+        // a serving relay's liveness probe; a worker never sends one
+        Some(pb::worker_event::Kind::Ping(_)) => invalid_event("Ping event is a relay's, never a worker's"),
+        Some(pb::worker_event::Kind::FunctionCall(call)) => {
             let object_id = call.object_id.map(|uuid| uuid.to_string());
             let position = component_source_range(call.position.unwrap_or_else(monty_types::SourceRange::unknown));
             Event::FunctionCall(FunctionCallEvent {
@@ -512,8 +518,8 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
                 position,
             })
         }
-        Some(pb::child_event::Kind::OsCall(_)) => invalid_event("OsCall event bypassed component budget preparation"),
-        Some(pb::child_event::Kind::NameLookup(lookup)) => Event::NameLookup(NameLookupEvent {
+        Some(pb::worker_event::Kind::OsCall(_)) => invalid_event("OsCall event bypassed component budget preparation"),
+        Some(pb::worker_event::Kind::NameLookup(lookup)) => Event::NameLookup(NameLookupEvent {
             name: lookup.name,
             // Self-produced by this worker, so always a valid 16-byte uuid.
             object_id: lookup
@@ -522,11 +528,11 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
                 .map(|uuid| uuid.to_string()),
             position: source_range_from_proto(lookup.position),
         }),
-        Some(pb::child_event::Kind::ResolveFutures(futures)) => Event::ResolveFutures(ResolveFuturesEvent {
+        Some(pb::worker_event::Kind::ResolveFutures(futures)) => Event::ResolveFutures(ResolveFuturesEvent {
             pending_call_ids: futures.pending_call_ids.into_inner(),
             position: source_range_from_proto(futures.position),
         }),
-        Some(pb::child_event::Kind::Complete(complete)) => complete.values.map_or_else(
+        Some(pb::worker_event::Kind::Complete(complete)) => complete.values.map_or_else(
             || invalid_event("Complete event carried no values"),
             |arena| {
                 Event::Complete(CompleteEvent {
@@ -535,17 +541,21 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
                 })
             },
         ),
-        Some(pb::child_event::Kind::Error(error)) => error
+        Some(pb::worker_event::Kind::Error(error)) => error
             .exception
             .map(exception_from_proto)
             .map_or_else(|| invalid_event("Error event carried no exception"), Event::Error),
-        Some(pb::child_event::Kind::TypingError(error)) => Event::TypingError(error.diagnostics),
-        Some(pb::child_event::Kind::DumpResult(result)) => Event::DumpResult(result.state.into_inner()),
-        Some(pb::child_event::Kind::Ok(_)) => Event::Ok,
-        Some(pb::child_event::Kind::FatalError(error)) => Event::FatalError(error.message),
-        Some(pb::child_event::Kind::Shutdown(shutdown)) => Event::Shutdown(shutdown.dump.map(Into::into)),
+        Some(pb::worker_event::Kind::TypingError(error)) => Event::TypingError(error.diagnostics),
+        Some(pb::worker_event::Kind::DumpResult(result)) => Event::DumpResult(result.state.into_inner()),
+        Some(pb::worker_event::Kind::Ok(_)) => Event::Ok,
+        Some(pb::worker_event::Kind::FatalError(error)) => Event::FatalError(error.message),
+        Some(pb::worker_event::Kind::Shutdown(shutdown)) => Event::Shutdown(shutdown.dump.map(Into::into)),
+        Some(pb::worker_event::Kind::SessionRefused(refused)) => Event::SessionRefused(refused.message),
+        Some(pb::worker_event::Kind::StreamedCalls(_)) => {
+            invalid_event("StreamedCalls without Configure.accepts_streamed_calls")
+        }
 
-        None => invalid_event("ChildEvent carried no kind"),
+        None => invalid_event("WorkerEvent carried no kind"),
     }
 }
 
@@ -581,7 +591,7 @@ fn exception_from_proto(exception: pb::RaisedException) -> RaisedException {
     }
 }
 
-/// Creates a fatal semantic event for an impossible child output shape.
+/// Creates a fatal semantic event for an impossible worker output shape.
 fn invalid_event(message: &str) -> Event {
     Event::FatalError(format!("worker produced a malformed event: {message}"))
 }

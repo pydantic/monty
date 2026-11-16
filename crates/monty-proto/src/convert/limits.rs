@@ -5,7 +5,7 @@
 //! "unlimited", except recursion depth and `max_suspensions`, which fall back
 //! to monty's standard defaults — matching `ResourceLimits::default()` so an
 //! empty message is safe. `max_suspensions` is preserved across dumps for
-//! parent-side enforcement.
+//! client-side enforcement.
 
 use std::time::Duration;
 

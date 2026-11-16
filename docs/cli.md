@@ -96,10 +96,10 @@ See [`limitations/datetime.md`](https://github.com/pydantic/monty/blob/main/limi
 
 ## Worker mode
 
-`monty subprocess` runs the binary as a wire-protocol child: framed protobuf requests on stdin, framed events on stdout.
+`monty subprocess` runs the binary as a wire-protocol worker: framed protobuf requests on stdin, framed events on stdout.
 This is how [`monty-pool`](https://crates.io/crates/monty-pool) — and through it the Python and JavaScript packages —
 runs Monty with crash isolation.
 
-It is meant to be driven by a parent process, not by hand.
+It is meant to be driven by a client, not by hand.
 Normal execution flags are rejected alongside it, because a subprocess worker reads all its configuration from the
 protocol.

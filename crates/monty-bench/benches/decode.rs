@@ -1,4 +1,4 @@
-//! Benchmarks for host-side decoding of child frames: how long one frame can
+//! Benchmarks for host-side decoding of worker frames: how long one frame can
 //! occupy a thread in `Worker::recv`. Three payload shapes exercise bulk copy
 //! and UTF-8 validation (one big string), mixed values (row dicts), and shared
 //! references (a DAG of small lists).
@@ -33,7 +33,7 @@ fn decode_benchmark(c: &mut Criterion) {
     for (shape, size, frame) in payloads {
         group.throughput(Throughput::Bytes(frame.len() as u64));
         group.bench_with_input(BenchmarkId::new(shape, size_label(size)), &frame, |bench, frame| {
-            bench.iter_with_large_drop(|| decode_frame::<pb::ChildEvent>(black_box(frame)).unwrap());
+            bench.iter_with_large_drop(|| decode_frame::<pb::WorkerEvent>(black_box(frame)).unwrap());
         });
     }
     group.finish();
@@ -42,7 +42,7 @@ fn decode_benchmark(c: &mut Criterion) {
 /// Encodes a `Complete` turn event carrying `value` — byte-identical to the
 /// frame body `Worker::recv` hands to `decode_frame`.
 fn complete_frame(value: MontyObject) -> Vec<u8> {
-    let event = pb::ChildEvent {
+    let event = pb::WorkerEvent {
         total_execution_micros: 0,
         max_suspensions: None,
         restored_script_name: None,
@@ -53,7 +53,7 @@ fn complete_frame(value: MontyObject) -> Vec<u8> {
         max_feed_duration_micros: None,
         max_turn_duration_micros: None,
         max_total_sleep_micros: None,
-        kind: Some(pb::child_event::Kind::Complete(pb::Complete::from(value))),
+        kind: Some(pb::worker_event::Kind::Complete(pb::Complete::from(value))),
     };
     encode_to_capped_vec(&event).expect("frame within MAX_FRAME_LEN")
 }

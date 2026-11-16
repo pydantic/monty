@@ -32,11 +32,14 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`
 - `with` statements, for files and for classes implementing `__enter__` / `__exit__`
+- Binary write/update files (`open(path, 'w+b')`); other update modes remain unsupported.
+    See [open.md](open.md) for file buffering and method limitations.
 - `match` statements with every PEP 634 pattern kind and guards, see [match.md](match.md)
 - f-strings (including the `=` debug form), `str.format()` and `format()`, with `!r` / `!s` / `!a` conversions,
     format specs and nested replacement fields
 - `async` / `await`, and `asyncio.run` / `asyncio.gather` / `asyncio.sleep`
-- `import x`, `import x.y`, `from x import y, z as w`; a module the sandbox does not have is requested from the host,
+- `import x`, `import x.y`, `from x import y, z as w`, `from x import *` (see
+    [modules.md](modules.md#star-imports)); a module the sandbox does not have is requested from the host,
     see [modules.md](modules.md#host-modules), which may answer with the module's `.py` file from the working
     directory instead, see [modules from files](modules.md#modules-from-files)
 - Starred unpacking everywhere CPython allows it
@@ -52,7 +55,6 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `try*` / `except*` exception groups
 - PEP 695 `type` aliases
 - `async with`, `async for` and async comprehensions
-- Wildcard imports (`from m import *`)
 - t-strings
 
 **Missing in other ways:**
@@ -96,6 +98,7 @@ The following modules are present:
 | `posixpath`     | [os.md](os.md)                       |
 | `random`        | [random.md](random.md)               |
 | `re`            | [re.md](re.md)                       |
+| `statistics`    | [statistics.md](statistics.md)       |
 | `sys`           | [sys.md](sys.md)                     |
 | `time`          | [time.md](time.md)                   |
 | `tomllib`       | [tomllib.md](tomllib.md)             |

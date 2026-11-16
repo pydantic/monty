@@ -269,7 +269,7 @@ impl GraphExporter {
         vm: &mut VM<'h>,
     ) -> MontyNode {
         match output {
-            HeapReadOutput::Str(s) => MontyNode::String(s.get(vm.heap).as_str().to_owned()),
+            HeapReadOutput::Str(heap_string) => MontyNode::String(heap_string.get(vm.heap).as_str().to_owned()),
             HeapReadOutput::Bytes(b) => MontyNode::Bytes(b.get(vm.heap).as_slice().to_owned()),
             HeapReadOutput::List(list) => {
                 // Snapshot before recursing: a nested `__repr__` may mutate this list.
@@ -504,10 +504,14 @@ impl GraphExporter {
                     position: file.position(),
                 })
             }
-            HeapReadOutput::ExtFunction(function) => MontyNode::Function {
-                name: function.get(vm.heap).as_str().to_owned(),
-                docstring: None,
-            },
+            HeapReadOutput::ExtFunction(function) => {
+                let function = function.get(vm.heap);
+                MontyNode::Function {
+                    name: function.as_str().to_owned(),
+                    docstring: None,
+                    is_async: function.is_async(),
+                }
+            }
             _ => self.repr_node(value, vm),
         }
     }
@@ -524,7 +528,7 @@ impl GraphExporter {
                 Ok(s) => {
                     // `py_repr` yields a heap `str` `Value`; extract its text and drop it.
                     defer_drop!(s, vm);
-                    MontyNode::Repr(s.try_to_str(vm).map(str::to_owned).unwrap_or_default())
+                    MontyNode::Repr(s.try_to_str(vm).map_or_default(str::to_owned))
                 }
                 Err(err @ RunError::UncatchableExc(_)) => {
                     self.error = Some(err);
@@ -1098,7 +1102,7 @@ fn import_node(
         }
         MontyNode::Type(t) => Ok(Value::Builtin(Builtins::Type(t.to_internal()))),
         MontyNode::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
-        MontyNode::Function { name, .. } => Ok(vm.heap.get_ext_function(&name)),
+        MontyNode::Function { name, is_async, .. } => Ok(vm.heap.get_ext_function(&name, is_async)),
         MontyNode::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
         MontyNode::Cycle(_) => Err(InvalidInputError::invalid_type("'Cycle' is not a valid input value")),
     }

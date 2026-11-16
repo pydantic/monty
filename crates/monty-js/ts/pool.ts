@@ -1,4 +1,4 @@
-// The worker pool: `Monty` owns a set of `monty subprocess` children and
+// The worker pool: `Monty` owns a set of `monty subprocess` workers and
 // hands them out one-per-session via `checkout()`. The pool, watchdogs and
 // crash recovery live in the native `monty-pool` crate (shared with
 // pydantic_monty); this class normalises options, resolves the worker
@@ -62,6 +62,13 @@ export interface MontyOptions {
   /** Recycle a worker after this many sessions: an integer from 0 to 4294967295.
    *  Both 0 and 1 retire after each checkout; omitted means 1000, `null` never recycles. */
   maxCheckoutsPerWorker?: number | null
+  /**
+   * Let a call to an `async` host function that the sandbox does not await at
+   * once go to the host without suspending the worker, saving a round trip per
+   * call; errors from such calls are raised at the `await`. Off by default,
+   * unlike `MontyRemote`. See [starting calls without waiting](https://pydantic.dev/docs/monty/host-functions#starting-calls-without-waiting).
+   */
+  streamAsyncCalls?: boolean
 }
 
 /** Options for [`Monty.checkout`], mirroring `pydantic_monty`. */
@@ -189,6 +196,7 @@ export class Monty {
       ...graceMs('feedDurationLimitGraceMs', options.feedDurationLimitGrace),
       ...graceMs('turnDurationLimitGraceMs', options.turnDurationLimitGrace),
       ...(maxCheckoutsPerWorker !== undefined ? { maxCheckoutsPerWorker } : {}),
+      streamAsyncCalls: options.streamAsyncCalls ?? false,
     })
     await startPool(native)
     return new Monty(native)

@@ -12,7 +12,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{HeapData, HeapId},
+    heap::HeapData,
     intern::StaticStrings,
     modules::{
         ModuleFunctions,
@@ -22,8 +22,8 @@ use crate::{
     value::{EitherStr, Value},
 };
 
-/// Creates the `annotationlib` module and allocates it on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `annotationlib` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Annotationlib, vm.interns);
     let format = format_class(vm);
     module.set_attr(StaticStrings::FormatClass, format, vm);
@@ -37,7 +37,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::ModuleFunction(ModuleFunctions::Annotationlib(AnnotationlibFunctions::GetAnnotations)),
         vm,
     );
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// `annotationlib` module functions, each a Python-visible callable.

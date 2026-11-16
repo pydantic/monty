@@ -26,9 +26,9 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{HeapData, HeapId},
+    heap::HeapData,
     intern::{StaticStrings, StringId},
-    modules::{ModuleFunctions, os_path},
+    modules::{ModuleFunctions, StandardLib},
     object_bridge::MontyObjectExt,
     os_dispatch::{PreConversionEffect, value_to_owned_string},
     types::{
@@ -64,12 +64,12 @@ pub(crate) enum OsFunctions {
     Walk,
 }
 
-/// Creates the `os` module and allocates it on the heap.
+/// Creates the `os` module.
 ///
 /// Functions yield to the host via `OsFunction` callbacks (except the pure
 /// `fspath`); constants are fixed POSIX values since the sandbox path model
 /// is always POSIX.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     /// Shorthand for the function-attribute entries in the table below.
     fn function(f: OsFunctions) -> Value {
         Value::ModuleFunction(ModuleFunctions::Os(f))
@@ -100,7 +100,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
             Value::Property(Property::Os(ZeroArgOsProperty::GetEnviron)),
         ),
         // `os.path` is its own module object, like CPython's `posixpath`.
-        (StaticStrings::Path, Value::Ref(os_path::create_module(vm))),
+        (StaticStrings::Path, Value::Ref(StandardLib::OsPath.create(vm))),
         // POSIX path constants — the sandbox path model is POSIX on every host.
         (StaticStrings::Sep, Value::InternString(StringId::from_ascii(b'/'))),
         (StaticStrings::Pathsep, Value::InternString(StringId::from_ascii(b':'))),
@@ -130,7 +130,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     for (attr, value) in attrs {
         module.set_attr(attr, value, vm);
     }
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to an os module function.

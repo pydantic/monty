@@ -321,7 +321,7 @@ test('async factories are awaited together for a stubs ask', async () => {
 test('a module without stubs does not type-check', async () => {
   const unresolved = {
     instanceOf: MontyTypingError,
-    message: 'TypeError: main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`',
+    message: 'TypeError: main.py:1:8: error[import-not-found] Cannot resolve imported module `tools`',
   }
   let blob: Buffer
   {

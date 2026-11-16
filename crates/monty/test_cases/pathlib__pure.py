@@ -48,6 +48,8 @@ assert Path('/path/.bashrc').suffixes == []
 assert Path('/usr/local/bin').parts == ('/', 'usr', 'local', 'bin')
 assert Path('usr/local').parts == ('usr', 'local')
 assert Path('/').parts == ('/',)
+assert Path('.').parts == ()
+assert Path('.').name == ''
 
 # === is_absolute method ===
 assert Path('/usr/bin').is_absolute() == True
@@ -68,6 +70,67 @@ assert str(Path('file.txt').with_name('other.py')) == 'other.py'
 assert str(Path('/path/file.txt').with_suffix('.py')) == '/path/file.py'
 assert str(Path('/path/file.txt').with_suffix('')) == '/path/file'
 assert str(Path('/path/file').with_suffix('.txt')) == '/path/file.txt'
+assert str(Path('file.txt').with_suffix('.')) == 'file.'
+assert str(Path('..').with_suffix('.txt')) == '...txt'
+assert str(Path('a/..').with_suffix('')) == 'a/..'
+
+# === with_stem method ===
+assert str(Path('/path/file.txt').with_stem('other')) == '/path/other.txt'
+assert str(Path('..').with_stem('x')) == 'x'
+assert str(Path('a/..').with_stem('x')) == 'a/x'
+
+# === stem and suffix of dot names ===
+# the last dot starts a suffix only after a non-dot character, as in `posixpath.splitext`
+assert (Path('..').stem, Path('..').suffix) == ('..', '')
+assert (Path('a/..').stem, Path('a/..').suffix) == ('..', '')
+assert (Path('a.').stem, Path('a.').suffix) == ('a', '.')
+assert (Path('...').stem, Path('...').suffix) == ('...', '')
+assert (Path('a..b').stem, Path('a..b').suffix) == ('a.', '.b')
+# `suffixes` strips every leading dot before splitting
+assert Path('...').suffixes == []
+assert Path('..a.b').suffixes == ['.b']
+assert Path('a.').suffixes == ['.']
+assert Path('a..b').suffixes == ['.', '.b']
+
+# === with_name / with_stem / with_suffix errors ===
+# each case: (path, method, argument, expected ValueError message)
+with_errors = [
+    ('.', 'with_name', 'x', "PosixPath('.') has an empty name"),
+    ('.', 'with_stem', 'x', "PosixPath('.') has an empty name"),
+    ('/', 'with_suffix', '.txt', "PosixPath('/') has an empty name"),
+    ('.', 'with_suffix', '', "PosixPath('.') has an empty name"),
+    ('/', 'with_name', '', "Invalid name ''"),
+    ('a.py', 'with_name', '.', "Invalid name '.'"),
+    ('a.py', 'with_name', 'a/b', "Invalid name 'a/b'"),
+    ('.', 'with_stem', 'a/b', "Invalid name 'a/b'"),
+    ('a.py', 'with_stem', 'a/b', "Invalid name 'a/b.py'"),
+    ('a.py', 'with_stem', '', "PosixPath('a.py') has a non-empty suffix"),
+    ('file', 'with_stem', '', "Invalid name ''"),
+    ('a.py', 'with_suffix', 'txt', "Invalid suffix 'txt'"),
+    ('a.py', 'with_suffix', '.a/b', "Invalid name 'a.a/b'"),
+    ("it's", 'with_suffix', 'x', "Invalid suffix 'x'"),
+    ('/', 'with_stem', 'x', "PosixPath('/') has an empty name"),
+]
+for path, method, arg, expected in with_errors:
+    p = Path(path)
+    try:
+        if method == 'with_name':
+            p.with_name(arg)
+        elif method == 'with_stem':
+            p.with_stem(arg)
+        else:
+            p.with_suffix(arg)
+        assert False, f'expected ValueError for {path!r}.{method}({arg!r})'
+    except ValueError as exc:
+        assert str(exc) == expected
+
+# === with_* take only str ===
+# the message differs from CPython's (see limitations/pathlib.md)
+try:
+    Path('a.py').with_name(Path('.x'))
+    assert False, 'expected TypeError'
+except TypeError:
+    pass
 
 # === / operator ===
 assert str(Path('/usr') / 'local') == '/usr/local'
@@ -143,3 +206,4 @@ assert str(Path('/a///b')) == '/a/b'
 # === repr ===
 r = repr(Path('/usr/bin'))
 assert r == "PosixPath('/usr/bin')", f'repr should be PosixPath, got {r}'
+assert repr(Path("it's")) == 'PosixPath("it\'s")'

@@ -22,7 +22,7 @@ mod execution_clock;
 use execution_clock::ExecutionInstant;
 
 /// Exit code a worker uses when it exceeded its memory limit or the allocator
-/// refused an allocation, so the parent can report `MemoryError` instead of an
+/// refused an allocation, so the client can report `MemoryError` instead of an
 /// unclassifiable `SIGABRT`.
 ///
 /// `EX_DATAERR` from BSD `sysexits.h`. See <https://man.freebsd.org/cgi/man.cgi?query=sysexits>.

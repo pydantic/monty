@@ -1,7 +1,7 @@
 //! Python bindings for filesystem mount configuration.
 //!
 //! [`PyMountDir`] stores immutable configuration for one mount point. Each
-//! feed copies that configuration into a fresh parent-side mount table, so
+//! feed copies that configuration into a fresh client-side mount table, so
 //! overlay state lasts only for that feed and host paths never reach workers.
 
 use std::path::PathBuf;
@@ -18,7 +18,7 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyTuple};
 /// A single mount point mapping a virtual path to a host directory.
 ///
 /// Passing one instance to multiple feeds reuses only its configuration;
-/// `'overlay'` writes live in each feed's parent-side mount table.
+/// `'overlay'` writes live in each feed's client-side mount table.
 /// Retained overlay data and filesystem results share a configurable memory
 /// budget, which defaults to `monty_fs::DEFAULT_MEMORY_USAGE_LIMIT`.
 ///
@@ -179,7 +179,7 @@ impl PyMountDir {
 }
 
 impl PyMountDir {
-    /// Copies the validated configuration for a new parent-side mount table.
+    /// Copies the validated configuration for a new client-side mount table.
     ///
     /// # Errors
     ///

@@ -136,7 +136,7 @@ fn two_product(a: f64, b: f64) -> (f64, f64) {
 }
 
 /// Sums non-overlapping partials, preserving cancellation and half-even rounding.
-pub(super) fn fsum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn fsum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let args = args.reject_kwargs("math.fsum", vm.heap)?;
     let iterable = args.get_one_arg("math.fsum", vm.heap)?;
     let iterator = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
@@ -289,7 +289,7 @@ struct SumprodArgs {
 }
 
 /// Uses exact integer arithmetic and compensated float products before generic arithmetic.
-pub(super) fn sumprod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn sumprod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let SumprodArgs { p, q } = SumprodArgs::from_args(args, vm)?;
     defer_drop!(p, vm);
     defer_drop!(q, vm);

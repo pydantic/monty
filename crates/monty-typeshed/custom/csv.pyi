@@ -1,6 +1,6 @@
 # Based on python/typeshed's `stdlib/csv.pyi` and `_csv.pyi`, folded into one
 # module and cut down to what Monty implements at runtime: `register_dialect`,
-# `unregister_dialect`, `Sniffer` and `__version__` are absent and
+# `unregister_dialect` and `Sniffer` are absent and
 # `field_size_limit` takes no argument, so type checking rejects them up front
 # instead of letting them fail at runtime. The built-in dialects are `Dialect`
 # instances rather than subclasses, since `csv.excel()` is not callable in Monty.
@@ -34,6 +34,8 @@ __all__ = [
 ]
 
 _T = TypeVar('_T')
+
+__version__: Final[str]
 
 QUOTE_MINIMAL: Final = 0
 QUOTE_ALL: Final = 1

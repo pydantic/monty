@@ -31,7 +31,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
     types::{
         Dict, Module, NamedTupleClass, PyTrait, Type,
@@ -42,9 +42,9 @@ use crate::{
     value::{EitherStr, Value},
 };
 
-/// Creates the `collections` module and allocates it on the heap.
+/// Creates the `collections` module.
 ///
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Collections, vm.interns);
 
     module.set_attr(StaticStrings::Deque, Value::Builtin(Builtins::Type(Type::Deque)), vm);
@@ -66,7 +66,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// The callable functions exposed by the `collections` module.

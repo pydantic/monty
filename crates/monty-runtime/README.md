@@ -60,10 +60,10 @@ Rust embedders can change these defaults with `MontyRun::with_os_policy`; the CL
 
 ## Worker mode
 
-`monty subprocess` runs the binary as a wire-protocol child: framed protobuf
+`monty subprocess` runs the binary as a wire-protocol worker: framed protobuf
 requests on stdin, framed events on stdout. This is how `pydantic-monty` runs
-sandboxed code with crash isolation, and is meant to be driven by a parent
-process, not by hand.
+sandboxed code with crash isolation, and is meant to be driven by a client,
+not by hand.
 
 The wheels are built from the
 [`monty-runtime`](https://crates.io/crates/monty-runtime) crate; see its

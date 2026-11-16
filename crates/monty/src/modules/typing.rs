@@ -34,9 +34,9 @@ use crate::{
     value::{Marker, Value},
 };
 
-/// Creates the `typing` module and allocates it on the heap.
+/// Creates the `typing` module.
 ///
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Typing, vm.interns);
 
     // typing.TYPE_CHECKING - always False
@@ -67,7 +67,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Typing marker attributes exported by this module.
@@ -711,7 +711,7 @@ fn not_a_dict_error(class_id: HeapId, vm: &mut VM<'_>) -> RunError {
     match class.py_repr(vm) {
         Ok(repr) => {
             defer_drop!(repr, vm);
-            let repr = repr.as_str(vm).map(str::to_owned).unwrap_or_default();
+            let repr = repr.as_str(vm).map_or_default(str::to_owned);
             ExcType::value_error(format!("{repr}.__annotations__ is neither a dict nor None"))
         }
         Err(err) => err,

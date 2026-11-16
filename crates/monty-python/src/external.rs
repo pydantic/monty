@@ -4,7 +4,8 @@
 //! lazy attributes resolve through the session's [`InstanceStore`].
 
 use monty_proto::python::{
-    DecodedArena, InstanceStore, PyExternalModule, exc_py_to_monty, get_docstring, py_to_monty, py_to_monty_value,
+    CoroutineFunctionExt, DecodedArena, InstanceStore, PyExternalModule, exc_py_to_monty, get_docstring, py_to_monty,
+    py_to_monty_value,
 };
 use monty_types::{
     CallArgs, ExtFunctionResult, GET_TYPE_HINTS_CALL, IMPORT_CALL, IMPORT_STUBS_CALL, ImportArgs, MontyObject,
@@ -412,6 +413,8 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         for (name, value) in module.public_attrs(self.py) {
             let value = if let Ok(submodule) = value.cast::<PyExternalModule>() {
                 self.module_value(&format!("{path}.{name}"), submodule.get())?
+            } else if value.is_callable() && value.is_coroutine_function() {
+                MontyObject::async_function(format!("{path}.{name}"), get_docstring(&value))
             } else if value.is_callable() {
                 MontyObject::function(format!("{path}.{name}"), get_docstring(&value))
             } else {
@@ -433,14 +436,25 @@ pub(crate) struct HostNames {
     pub(crate) lookup: Option<Py<PyDict>>,
     /// The session's `external_modules=`.
     pub(crate) modules: Option<HostModules>,
+    /// `external_lookup=` keys holding coroutine functions, sent with a
+    /// `feed_run` so a bare call to one starts without waiting.
+    pub(crate) async_functions: Vec<String>,
 }
 
 impl HostNames {
     /// Pairs the lookup a feed was called with and the session's modules.
     pub(crate) fn capture(py: Python<'_>, lookup: Option<&Bound<'_, PyDict>>, modules: Option<&HostModules>) -> Self {
+        let async_functions = lookup.map_or_else(Vec::new, |lookup| {
+            lookup
+                .iter()
+                .filter(|(_, value)| value.is_coroutine_function())
+                .filter_map(|(key, _)| key.extract::<String>().ok())
+                .collect()
+        });
         Self {
             lookup: lookup.map(|d| d.clone().unbind()),
             modules: modules.map(|m| m.clone_ref(py)),
+            async_functions,
         }
     }
 
@@ -449,6 +463,7 @@ impl HostNames {
         Self {
             lookup: self.lookup.as_ref().map(|d| d.clone_ref(py)),
             modules: self.modules.as_ref().map(|m| m.clone_ref(py)),
+            async_functions: self.async_functions.clone(),
         }
     }
 }
@@ -613,7 +628,7 @@ fn call_object_method_raw<'py>(
 /// `__call__` is the one dunder the sandbox legitimately suspends on (calling
 /// a host object; the wrapper's own policy still gates it). Otherwise the
 /// sandbox never suspends on `_`-prefixed names, so seeing one here means the
-/// frame is forged; wire frames from a child are untrusted.
+/// frame is forged; wire frames from a worker are untrusted.
 fn validate_host_method_name(function_name: &str) -> PyResult<()> {
     if function_name.starts_with('_') && function_name != "__call__" {
         Err(PyAttributeError::new_err(format!(
@@ -668,7 +683,7 @@ pub fn resolve_object_attr(
 ) -> NameLookupResult {
     if name.starts_with('_') {
         // Defensive re-check of the sandbox's underscore rule; wire frames
-        // from a (possibly compromised) child are untrusted.
+        // from a (possibly compromised) worker are untrusted.
         NameLookupResult::Undefined
     } else {
         match callback_context::call(py, || instances.lookup_lazy_attr(py, object_id, name)) {

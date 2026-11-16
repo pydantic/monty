@@ -24,8 +24,10 @@ use crate::{
     exception_private::{ExcType, RunResult, exc_new},
     modules::{collections, csv, hashlib, itertools},
     types::{
-        Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, Str, TimeZone,
-        Tuple, bytes, complex, date, datetime, decimal, dict, path, time, timedelta, timezone,
+        Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
+        bytes, complex, date, datetime, decimal, dict, path,
+        str::PyStr,
+        time, timedelta, timezone,
         r#type::{bool_init, float_init, int_init, union_init},
     },
     value::{EitherStr, Value},
@@ -479,7 +481,7 @@ native_types! {
         .builtin()
         .basetype()
         .sequence_repeat()
-        .ctor(Constructor::Value(Str::init)),
+        .ctor(Constructor::Value(PyStr::init)),
     Bytes("bytes")
         .builtin()
         .basetype()
@@ -995,6 +997,9 @@ native_types! {
             Type::DecimalFloatOperation, Type::DecimalException, Type::ArithmeticError,
             Type::TypeError, Type::Exception, Type::BaseException, Type::Object,
         ]),
+    /// `statistics.StatisticsError`, raised for empty or too-small data sets.
+    StatisticsError("statistics.StatisticsError", ValueError)
+        .exc(ExcType::StatisticsError),
 }
 
 #[cfg(test)]

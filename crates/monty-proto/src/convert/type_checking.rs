@@ -1,8 +1,8 @@
 //! `TypeCheckingConfig` ↔ `pb::Configure`'s type-check rendering fields.
 //!
-//! Type checking runs in the child, which renders the diagnostics before they
+//! Type checking runs in the worker, which renders the diagnostics before they
 //! cross the wire (ty's structured diagnostics borrow the checker's database).
-//! The parent therefore chooses the rendering up front, on `Configure`.
+//! The client therefore chooses the rendering up front, on `Configure`.
 
 use monty_types::{ModuleStub, MontyObject, TypeCheckingConfig, TypeCheckingFormat};
 
@@ -25,8 +25,8 @@ impl From<TypeCheckingFormat> for pb::TypeCheckFormat {
 }
 
 impl From<pb::TypeCheckFormat> for TypeCheckingFormat {
-    /// `Unspecified` means an older parent that never set the field; it maps to
-    /// the default (`Full`), which is what such a parent used to get.
+    /// `Unspecified` means an older client that never set the field; it maps to
+    /// the default (`Full`), which is what such a client used to get.
     fn from(format: pb::TypeCheckFormat) -> Self {
         match format {
             pb::TypeCheckFormat::Unspecified | pb::TypeCheckFormat::Full => Self::Full,

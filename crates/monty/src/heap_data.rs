@@ -39,7 +39,7 @@ macro_rules! heap_payloads {
     ($consumer:ident) => {
         $consumer! {
             #[serde(rename = "S")]
-            Str(inline $crate::types::Str),
+            Str(inline $crate::types::HeapStr),
             #[serde(rename = "B")]
             Bytes(inline $crate::types::Bytes),
             #[serde(rename = "L")]

@@ -121,5 +121,5 @@ copy grows the dict being walked. CPython also fails, with
 CPython copies a dict's hash table, so `copy.copy(d)` never calls a key's
 `__hash__`. Monty re-inserts each pair, so a key with a custom `__hash__` sees
 it called again, and one that raises makes the copy fail where CPython's
-succeeds. This is `dict.copy()`'s behaviour, which `copy` inherits — see
-[builtins.md](builtins.md).
+succeeds. `d.copy()` reuses stored hashes and avoids these callbacks;
+`copy.copy(d)` uses a separate implementation.

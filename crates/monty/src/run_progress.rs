@@ -147,27 +147,6 @@ pub struct FunctionCall {
 }
 
 impl FunctionCall {
-    /// Creates a new `FunctionCall` from its parts.
-    fn new(
-        function_name: String,
-        args: CallArgs,
-        call_id: u32,
-        object_id: Option<MontyUuid>,
-        allow_eager_await: bool,
-        position: SourceRange,
-        snapshot: Snapshot,
-    ) -> Self {
-        Self {
-            function_name,
-            args,
-            call_id,
-            object_id,
-            allow_eager_await,
-            position,
-            snapshot,
-        }
-    }
-
     /// Returns a mutable reference to the resource tracker.
     ///
     /// This allows modifying resource limits between execution phases,
@@ -1018,8 +997,7 @@ pub use monty_types::{ExtFunctionResult, NameLookupResult};
 pub(crate) trait ExtFunctionResultExt {
     /// The `NameError` raised when the host reports the function isn't defined.
     fn not_found_exc(function_name: &str) -> RunError {
-        let msg = format!("name '{function_name}' is not defined");
-        MontyException::new(ExcType::NameError, Some(msg)).into()
+        ExtFunctionResult::not_found_exception(function_name).into()
     }
 }
 
@@ -1045,6 +1023,8 @@ pub(crate) enum ConvertedExit {
         call_id: u32,
         object_id: Option<MontyUuid>,
         allow_eager_await: bool,
+        /// See [`ReplFunctionCall::is_async`](crate::ReplFunctionCall::is_async).
+        is_async: bool,
         /// The call expression.
         position: SourceRange,
     },
@@ -1103,6 +1083,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             function_name,
             args,
             call_id,
+            is_async,
             ..
         }) => {
             let position = vm.suspension_position();
@@ -1114,6 +1095,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                     call_id: call_id.raw(),
                     object_id: None,
                     allow_eager_await: vm.allow_eager_await(),
+                    is_async,
                     position,
                 },
                 Err(err) => ConvertedExit::Error(err),
@@ -1152,6 +1134,8 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                     call_id: call_id.raw(),
                     object_id: Some(object_id),
                     allow_eager_await: vm.allow_eager_await(),
+                    // host methods have no async marker yet
+                    is_async: false,
                     position,
                 },
                 Err(err) => ConvertedExit::Error(err),
@@ -1242,16 +1226,18 @@ pub(crate) fn build_run_progress(
             call_id,
             object_id,
             allow_eager_await,
+            // only REPL hosts start calls without waiting (`ReplFunctionCall::is_async`)
+            is_async: _,
             position,
-        } => Ok(RunProgress::FunctionCall(FunctionCall::new(
+        } => Ok(RunProgress::FunctionCall(FunctionCall {
             function_name,
             args,
             call_id,
             object_id,
             allow_eager_await,
             position,
-            new_snapshot!(),
-        ))),
+            snapshot: new_snapshot!(),
+        })),
         ConvertedExit::OsCall {
             function_call,
             call_id,

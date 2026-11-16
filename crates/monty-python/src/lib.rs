@@ -164,7 +164,7 @@ mod _monty {
     #[pymodule_export]
     use super::PySourceRange as SourceRange;
     #[pymodule_export]
-    use super::telemetry::_install_telemetry;
+    use super::telemetry::install_telemetry;
     use super::{get_not_handled, get_version, pool::binary_finder};
 
     #[pymodule_init]

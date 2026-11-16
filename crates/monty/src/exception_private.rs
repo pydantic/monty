@@ -110,14 +110,16 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates an AttributeError for a missing module attribute.
     ///
-    /// Matches CPython's format: `AttributeError: module 'name' has no attribute 'attr'`
+    /// Matches CPython's format: `AttributeError: module 'name' has no attribute 'attr'`,
+    /// or `module has no attribute 'attr'` when `__name__` is not a `str`.
     /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
     #[must_use]
-    fn attribute_error_module(module_name: &str, attr_name: &str) -> RunError {
-        let exc = SimpleException::new_msg(
-            ExcType::AttributeError,
-            format!("module '{module_name}' has no attribute '{attr_name}'"),
-        );
+    fn attribute_error_module(module_name: Option<&str>, attr_name: &str) -> RunError {
+        let msg = match module_name {
+            Some(module_name) => format!("module '{module_name}' has no attribute '{attr_name}'"),
+            None => format!("module has no attribute '{attr_name}'"),
+        };
+        let exc = SimpleException::new_msg(ExcType::AttributeError, msg);
         RunError::Exc(ExceptionRaise {
             exc,
             frame: None,
@@ -1568,6 +1570,16 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::csv_error("unknown dialect")
     }
 
+    /// A `statistics.StatisticsError` with the given message.
+    fn statistics_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::StatisticsError, msg).into()
+    }
+
+    /// The `ValueError` `math.isqrt` raises for a negative argument; `statistics.stdev` reaches it too.
+    fn isqrt_negative_error() -> RunError {
+        Self::value_error("isqrt() argument must be nonnegative")
+    }
+
     /// A trapped `decimal` signal: the class plus C `_decimal`'s list of conditions,
     /// `[<class 'decimal.DivisionByZero'>]`.
     fn decimal_signal(exc_type: ExcType, message: String) -> RunError {
@@ -1839,6 +1851,71 @@ pub(crate) trait ExcTypeExt: Sized {
             "cannot import name '{name}' from partially initialized module '{module_name}' \
              (most likely due to a circular import) ({origin})"
         ))
+    }
+
+    /// The `TypeError` for a non-`str` name `from module import *` would bind:
+    /// an item of `__all__`, or a key of the module's namespace without one.
+    /// Like every star-import error, CPython shows it without carets.
+    #[must_use]
+    fn import_star_name_type(module_name: &str, from_all: bool, type_name: &str) -> RunError {
+        let source = if from_all { "Item in" } else { "Key in" };
+        let container = if from_all { "__all__" } else { "__dict__" };
+        without_caret(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{source} {module_name}.{container} must be str, not {type_name}"),
+        ))
+    }
+
+    /// The `TypeError` for a module `__all__` that is not a sequence (see
+    /// [`sequence_index_error`](Self::sequence_index_error)), shown without carets.
+    #[must_use]
+    fn import_star_all_not_sequence(error: SimpleException) -> RunError {
+        without_caret(error)
+    }
+
+    /// The `TypeError` for a non-`str` name `from module import *` would bind,
+    /// when the module has set `__name__` to a non-`str`.
+    #[must_use]
+    fn import_star_module_name_type(type_name: &str) -> RunError {
+        without_caret(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("module __name__ must be a string, not {type_name}"),
+        ))
+    }
+
+    /// CPython's `PySequence_GetItem` `TypeError` for a built-in value it
+    /// cannot index, or `None` when its type has `sq_item`. Mappings are "not
+    /// a sequence". `Counter` indexes since, being a Python subclass of
+    /// `dict` in CPython, it gains `sq_item`. Instances are the caller's to check.
+    #[must_use]
+    fn sequence_index_error(value: &Value, vm: &VM<'_>) -> Option<SimpleException> {
+        match value.py_type(vm).native() {
+            Some(
+                Type::List
+                | Type::Tuple
+                | Type::NamedTuple
+                | Type::Str
+                | Type::Bytes
+                | Type::Range
+                | Type::Deque
+                | Type::Counter,
+            ) => None,
+            Some(Type::Dict | Type::DefaultDict) => Some(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("{} is not a sequence", value.py_type_name(vm)),
+            )),
+            _ => Some(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("'{}' object does not support indexing", value.py_type_name(vm)),
+            )),
+        }
+    }
+
+    /// The `ImportError` for `from x import *` when the import produced a value
+    /// that is not a module, so has no namespace to list.
+    #[must_use]
+    fn import_star_without_namespace() -> RunError {
+        import_error_without_caret("from-import-* object has no __dict__ and no __all__".to_owned())
     }
 
     /// Creates a ValueError when an integer is too large to convert to a decimal string.
@@ -2871,16 +2948,6 @@ impl SimpleException {
         f.write_char(')')
     }
 
-    /// Records a position in committed code; propagation supplies the frame name.
-    pub(crate) fn with_position(self, position: CodeRange) -> ExceptionRaise {
-        ExceptionRaise {
-            exc: self,
-            frame: Some(RawStackFrame::from_position(position)),
-            snippet_frame: None,
-            hide_caret: false,
-        }
-    }
-
     /// Resolves a rejected snippet's location before its provisional intern IDs are discarded.
     /// Caller frames are still collected from the VM as the error propagates.
     pub(crate) fn with_snippet_position(self, position: CodeRange, source: &str) -> ExceptionRaise {
@@ -2983,21 +3050,10 @@ impl ExceptionRaise {
     /// The new frame becomes the ultimate parent (displayed first in traceback,
     /// since tracebacks show "most recent call last").
     ///
-    /// Special case: If the innermost frame has no name yet (created with `with_position`),
-    /// this sets its name instead of creating a new parent. This happens when the error
-    /// is raised from a namespace lookup - the initial frame has the position but not
-    /// the function name, which gets filled in as the error propagates.
-    ///
     /// `hide_caret` omits the added frame's carets, as CPython does under an
-    /// `import` whose module body raised; a nameless frame keeps its own.
+    /// `import` whose module body raised.
     pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: StringId, hide_caret: bool) {
         if let Some(ref mut frame) = self.frame {
-            // If innermost frame has no name, set it instead of adding a parent
-            // This handles errors from namespace lookups which create nameless frames
-            if frame.frame_name.is_none() {
-                frame.frame_name = Some(name);
-                return;
-            }
             // Find the outermost frame (the one with no parent) and add the new frame as its parent
             let mut current = frame;
             while current.parent.is_some() {
@@ -3041,39 +3097,36 @@ impl ExceptionRaise {
         // filenames so a tiny `Vec` beats a HashMap on both allocations and
         // lookup cost.
         let mut cache: Vec<(StringId, SourceMap<'s>)> = Vec::new();
-        let mut traceback = self
-            .frame
-            .map(|frame| {
-                let mut frames = Vec::new();
-                let mut current = Some(&frame);
-                while let Some(f) = current {
-                    let fname_id = f.position.filename;
-                    // An `eval()` / `exec()` snippet resolves against its own
-                    // recorded source, never the host's, and prints no source
-                    // line: CPython has nothing to read back for `<string>`.
-                    let eval_source = interns.eval_source(fname_id);
-                    let sm_idx = if let Some(i) = cache.iter().position(|(k, _)| *k == fname_id) {
-                        i
-                    } else {
-                        // An imported file also carries its own source, but shows its lines.
-                        let src = eval_source
-                            .or_else(|| interns.file_source(fname_id))
-                            .unwrap_or_else(|| source_for(interns.get_filename(fname_id)).unwrap_or(""));
-                        cache.push((fname_id, SourceMap::new(src)));
-                        cache.len() - 1
-                    };
-                    let mut stack_frame = StackFrame::from_raw(f, interns, &mut cache[sm_idx].1);
-                    if eval_source.is_some() {
-                        stack_frame.preview_line = None;
-                    }
-                    frames.push(stack_frame);
-                    current = f.parent.as_deref();
+        let mut traceback = self.frame.map_or_default(|frame| {
+            let mut frames = Vec::new();
+            let mut current = Some(&frame);
+            while let Some(f) = current {
+                let fname_id = f.position.filename;
+                // An `eval()` / `exec()` snippet resolves against its own
+                // recorded source, never the host's, and prints no source
+                // line: CPython has nothing to read back for `<string>`.
+                let eval_source = interns.eval_source(fname_id);
+                let sm_idx = if let Some(i) = cache.iter().position(|(k, _)| *k == fname_id) {
+                    i
+                } else {
+                    // An imported file also carries its own source, but shows its lines.
+                    let src = eval_source
+                        .or_else(|| interns.file_source(fname_id))
+                        .unwrap_or_else(|| source_for(interns.get_filename(fname_id)).unwrap_or(""));
+                    cache.push((fname_id, SourceMap::new(src)));
+                    cache.len() - 1
+                };
+                let mut stack_frame = StackFrame::from_raw(f, interns, &mut cache[sm_idx].1);
+                if eval_source.is_some() {
+                    stack_frame.preview_line = None;
                 }
-                // Reverse so outermost frame is first (Python's "most recent call last" ordering)
-                frames.reverse();
-                frames
-            })
-            .unwrap_or_default();
+                frames.push(stack_frame);
+                current = f.parent.as_deref();
+            }
+            // Reverse so outermost frame is first (Python's "most recent call last" ordering)
+            frames.reverse();
+            frames
+        });
         if let Some(frame) = self.snippet_frame {
             traceback.push(*frame);
         }
@@ -3089,7 +3142,7 @@ impl ExceptionRaise {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RawStackFrame {
     pub position: CodeRange,
-    /// The name of the frame (function name StringId, or None for module-level code).
+    /// The frame's function name, or `<module>` for module-level code; always set.
     pub frame_name: Option<StringId>,
     pub parent: Option<Box<Self>>,
     /// Whether to hide the caret marker in the traceback for this frame.
@@ -3106,15 +3159,6 @@ impl RawStackFrame {
             position,
             frame_name: Some(frame_name),
             parent: parent.map(|p| Box::new(p.clone())),
-            hide_caret: false,
-        }
-    }
-
-    fn from_position(position: CodeRange) -> Self {
-        Self {
-            position,
-            frame_name: None,
-            parent: None,
             hide_caret: false,
         }
     }
@@ -3244,8 +3288,13 @@ fn no_module_named(module_name: &str) -> String {
 
 /// An `ImportError` shown without carets, as CPython shows import errors.
 fn import_error_without_caret(msg: String) -> RunError {
+    without_caret(SimpleException::new_msg(ExcType::ImportError, msg))
+}
+
+/// Raises `exc` with its traceback line shown without carets.
+fn without_caret(exc: SimpleException) -> RunError {
     RunError::Exc(ExceptionRaise {
-        exc: SimpleException::new_msg(ExcType::ImportError, msg),
+        exc,
         frame: None,
         snippet_frame: None,
         hide_caret: true,

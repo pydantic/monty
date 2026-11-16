@@ -18,7 +18,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
@@ -50,8 +50,8 @@ pub(crate) enum CsvFunctions {
     FieldSizeLimit,
 }
 
-/// Allocates the `csv` module and returns its `HeapId`.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `csv` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Csv, vm.interns);
 
     for (name, function) in [
@@ -85,6 +85,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::Builtin(Builtins::Type(Type::CsvError)),
         vm,
     );
+    module.set_attr(StaticStrings::DunderVersion, allocate_string("1.0", vm.heap), vm);
     // CPython's are classes; Monty exposes the resolved dialects, which `dialect=` accepts alike.
     for (name, dialect) in [
         (StaticStrings::Excel, Dialect::excel()),
@@ -94,7 +95,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         module.set_attr(name, CsvObject::Dialect(dialect).allocate(vm), vm);
     }
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `csv` module function.

@@ -61,7 +61,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 ///
 /// Before bumping, check there's already been a bump since the last release - multiple bumps
 /// between releases is unnecessary and can lead to confusion.
-pub const DUMP_VERSION: u16 = 15;
+pub const DUMP_VERSION: u16 = 16;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.
@@ -122,7 +122,7 @@ pub fn dump(
 ///
 /// The metadata travels with the state because a restored session is otherwise
 /// silently downgraded — losing `script_name` corrupts tracebacks, and losing
-/// `type_check` disables enforcement the parent asked for.
+/// `type_check` disables enforcement the client asked for.
 #[derive(Debug, Deserialize)]
 pub struct Dump {
     /// Script name used for tracebacks and type-check diagnostics.
@@ -370,7 +370,7 @@ mod tests {
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0x47f4_8e5e_55da_518f,
+            0x4f1f_0e65_ba57_1672,
             "opcodes changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(opcode_fingerprint())
         );
@@ -388,7 +388,7 @@ mod tests {
             .collect();
         assert_eq!(
             variant_name_fingerprint(&type_names),
-            0x6c_683f_6955_670c,
+            0x8644_05e4_90d7_b768,
             "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&type_names))
         );

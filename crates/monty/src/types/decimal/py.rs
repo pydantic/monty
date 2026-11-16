@@ -241,13 +241,14 @@ fn from_tuple(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decim
     defer_drop!(digit_values, vm);
     let mut coeff = String::with_capacity(digit_values.len());
     for digit in digit_values {
-        match digit {
-            Value::Int(d @ 0..=9) => {
-                if !coeff.is_empty() || *d != 0 {
-                    coeff.push(char::from(b'0' + u8::try_from(*d).expect("single digit")));
-                }
-            }
+        let digit = match digit {
+            Value::Int(d @ 0..=9) => u8::try_from(*d).expect("single digit"),
+            // Python's tuple constructor accepts bool as an int digit.
+            Value::Bool(b) => u8::from(*b),
             _ => return Err(ExcType::value_error("coefficient must be a tuple of digits")),
+        };
+        if !coeff.is_empty() || digit != 0 {
+            coeff.push(char::from(b'0' + digit));
         }
     }
     parse::check_digit_count(coeff.len())?;
