@@ -741,7 +741,7 @@ pub struct ClientRequest {
     /// not depend on it, and it is absent whenever the client is not tracing.
     #[prost(string, optional, tag = "20")]
     pub trace_parent: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(oneof = "client_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
+    #[prost(oneof = "client_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13")]
     pub kind: ::core::option::Option<client_request::Kind>,
 }
 /// Nested message and enum types in `ClientRequest`.
@@ -772,6 +772,8 @@ pub mod client_request {
         AbortFeed(super::AbortFeed),
         #[prost(message, tag = "12")]
         Pong(super::Pong),
+        #[prost(message, tag = "13")]
+        SaveRecovery(super::SaveRecovery),
     }
 }
 /// Configures the REPL session this worker will serve until `Reset`, sent once
@@ -979,6 +981,16 @@ pub struct ResumeFutures {
 /// carries on.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Dump {}
+/// Updates a relay-managed recovery slot. The slot is an opaque write capability.
+/// An empty expected_revision creates a slot. A nonempty value replaces only that
+/// committed revision. On success the relay returns a versioned handle in DumpResult.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SaveRecovery {
+    #[prost(bytes = "vec", tag = "1")]
+    pub slot: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub expected_revision: ::prost::alloc::vec::Vec<u8>,
+}
 /// Restores state produced by `Dump`. Valid only from no session. If
 /// the restored state was suspended, the worker re-emits the suspension event so
 /// the client learns the resume point; otherwise it replies `Ok`. A relay

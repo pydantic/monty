@@ -535,7 +535,9 @@ impl TurnMetrics {
                 self.reported_micros = 0;
                 self.turn = Some(("load", now));
             }
-            Some(pb::client_request::Kind::Dump(_)) => self.turn = Some(("dump", now)),
+            Some(pb::client_request::Kind::Dump(_) | pb::client_request::Kind::SaveRecovery(_)) => {
+                self.turn = Some(("dump", now));
+            }
             Some(pb::client_request::Kind::InstallDependencies(_)) => {
                 self.turn = Some(("install_dependencies", now));
             }

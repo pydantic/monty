@@ -309,6 +309,14 @@ async def test_async_dump():
             assert len(state) > 0
 
 
+async def test_recovery_save_requires_a_remote_store():
+    async with AsyncMonty() as pool, pool.checkout() as session:
+        await session.feed_run('x = 42')
+        with pytest.raises(MontyRuntimeError, match='recovery saves require a remote session store'):
+            await session.save_recovery(b'slot' * 4)
+        assert await session.feed_run('x') == 42
+
+
 async def test_async_pool_not_entered():
     pool = AsyncMonty()
     session = pool.checkout()

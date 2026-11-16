@@ -321,6 +321,9 @@ impl Worker {
             pb::client_request::Kind::ResumeFutures(resume) => self.handle_resume_futures(resume, sink),
             pb::client_request::Kind::AbortFeed(abort) => self.handle_abort_feed(abort, sink),
             pb::client_request::Kind::Dump(_) => self.handle_dump(),
+            pb::client_request::Kind::SaveRecovery(_) => {
+                error_event(ExcType::RuntimeError, "recovery saves require a remote session store")
+            }
             pb::client_request::Kind::Load(load) => self.handle_load(&load),
             pb::client_request::Kind::Reset(_) => {
                 self.reset();

@@ -295,7 +295,7 @@ impl Recorder {
                     }
                 }
             }
-            Some(pb::client_request::Kind::Dump(_)) => {
+            Some(pb::client_request::Kind::Dump(_) | pb::client_request::Kind::SaveRecovery(_)) => {
                 self.dump_turn = true;
                 self.turn = Some(start_span(logfire::span!(
                     parent: self.context_span(),

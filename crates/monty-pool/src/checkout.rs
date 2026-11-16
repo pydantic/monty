@@ -1385,8 +1385,23 @@ impl Checkout {
     /// [`Checkout::restore`] can restore — including into a
     /// different worker after this one crashes. The session stays live.
     pub async fn dump(&mut self) -> Result<Vec<u8>, PoolError> {
+        self.snapshot(pb::client_request::Kind::Dump(pb::Dump {})).await
+    }
+
+    /// Save a versioned recovery handle in a relay-managed slot.
+    /// `slot` is a 16-byte write capability. An empty `expected_revision`
+    /// creates the slot; a 16-byte value replaces the matching version.
+    pub async fn save_recovery(&mut self, slot: Vec<u8>, expected_revision: Vec<u8>) -> Result<Vec<u8>, PoolError> {
+        self.snapshot(pb::client_request::Kind::SaveRecovery(pb::SaveRecovery {
+            slot: slot.into(),
+            expected_revision: expected_revision.into(),
+        }))
+        .await
+    }
+
+    async fn snapshot(&mut self, kind: pb::client_request::Kind) -> Result<Vec<u8>, PoolError> {
         self.open().await?;
-        let request = request(pb::client_request::Kind::Dump(pb::Dump {}));
+        let request = request(kind);
         let mut no_print = on_print_sync(|_, _| {});
         let deadline = self.pool.config.request_timeout;
         match self.request_turn(&request, deadline, &mut no_print).await? {

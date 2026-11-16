@@ -596,6 +596,7 @@ message ClientRequest {
     Shutdown shutdown = 10;
     AbortFeed abort_feed = 11;
     Pong pong = 12;
+    SaveRecovery save_recovery = 13;
   }
 
   // W3C `traceparent` identifying the caller's span, so a worker that exports
@@ -786,6 +787,14 @@ message ResumeFutures {
 // of state). A relay without session storage answers `Error` and the session
 // carries on.
 message Dump {}
+
+// Updates a relay-managed recovery slot. The slot is an opaque write capability.
+// An empty expected_revision creates a slot. A nonempty value replaces only that
+// committed revision. On success the relay returns a versioned handle in DumpResult.
+message SaveRecovery {
+  bytes slot = 1;
+  bytes expected_revision = 2;
+}
 
 // Restores state produced by `Dump`. Valid only from no session. If
 // the restored state was suspended, the worker re-emits the suspension event so

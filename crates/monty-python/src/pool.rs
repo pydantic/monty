@@ -1104,6 +1104,30 @@ impl PyAsyncMontySession {
         })
     }
 
+    /// Save a versioned recovery handle in a remote session store.
+    #[pyo3(signature = (slot, *, expected_revision=None))]
+    fn save_recovery<'py>(
+        &self,
+        py: Python<'py>,
+        slot: Vec<u8>,
+        expected_revision: Option<Vec<u8>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let checkout = Arc::clone(&self.checkout);
+        future_into_py(py, async move {
+            let mut guard = checkout.lock().await;
+            let result = match guard.as_mut() {
+                Some(checkout) => {
+                    checkout
+                        .save_recovery(slot, expected_revision.unwrap_or_default())
+                        .await
+                }
+                None => Err(PoolError::Finished),
+            };
+            let state = result.map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+            Ok(Python::attach(|py| PyBytes::new(py, &state).unbind()))
+        })
+    }
+
     /// Async counterpart of [`PyMontySession::install_dependencies`]: the
     /// coroutine installs the packages off the event loop, resolving to `None`.
     /// Raises `MontyRuntimeError` against the `monty` sandbox worker or on a uv

@@ -1472,6 +1472,14 @@ class AsyncMontySession:
         `MontyRuntimeError`; the session stays usable.
         """
 
+    async def save_recovery(self, slot: bytes, *, expected_revision: bytes | None = None) -> bytes:
+        """Save or replace a recovery version and return its opaque restore handle.
+
+        This requires a relay that supports recovery saves. Use a random 16-byte
+        write capability for `slot`. Omit `expected_revision` to create the slot,
+        or pass its last confirmed 16-byte revision to replace it.
+        """
+
     async def install_dependencies(self, requirements: list[str]) -> None:
         """
         Async counterpart of `MontySession.install_dependencies`: install

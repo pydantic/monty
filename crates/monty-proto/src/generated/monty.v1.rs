@@ -750,7 +750,7 @@ pub struct ClientRequest {
     >,
     #[prost(
         oneof = "client_request::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
     )]
     pub kind: ::core::option::Option<client_request::Kind>,
 }
@@ -783,6 +783,8 @@ pub mod client_request {
         AbortFeed(super::AbortFeed),
         #[prost(message, tag = "12")]
         Pong(super::Pong),
+        #[prost(message, tag = "13")]
+        SaveRecovery(super::SaveRecovery),
     }
 }
 /// Configures the REPL session this worker will serve until `Reset`, sent once
@@ -1003,6 +1005,17 @@ pub struct ResumeFutures {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct Dump {}
+/// Updates a relay-managed recovery slot. The slot is an opaque write capability.
+/// An empty expected_revision creates a slot. A nonempty value replaces only that
+/// committed revision. On success the relay returns a versioned handle in DumpResult.
+#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct SaveRecovery {
+    #[prost(bytes = "vec", tag = "1")]
+    pub slot: crate::budgeted_prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub expected_revision: crate::budgeted_prost::alloc::vec::Vec<u8>,
+}
 /// Restores state produced by `Dump`. Valid only from no session. If
 /// the restored state was suspended, the worker re-emits the suspension event so
 /// the client learns the resume point; otherwise it replies `Ok`. A relay
