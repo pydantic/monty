@@ -70,6 +70,11 @@ impl ArgValues {
         }
     }
 
+    /// Counts positional arguments only when no keyword binding is needed.
+    pub(crate) fn positional_count(&self) -> Option<usize> {
+        (!self.has_kwargs()).then(|| self.count())
+    }
+
     /// Rejects keywords before a positional-only function's arity or conversion checks.
     pub(crate) fn reject_kwargs(self, name: &str, heap: &mut Heap) -> RunResult<Self> {
         if self.has_kwargs() {
