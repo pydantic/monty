@@ -1057,12 +1057,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "diff"
-version = "0.1.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
-
-[[package]]
 name = "digest"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2470,7 +2464,6 @@ dependencies = [
  "smallvec",
  "speedate",
  "strum",
- "tempfile",
  "unicode-general-category",
  "unicode-normalization",
  "unicode_names2",
@@ -2521,13 +2514,11 @@ dependencies = [
  "monty",
  "monty-fixture",
  "monty-fs",
- "monty-pool",
  "monty-types",
  "pyo3",
  "pyo3-build-config",
  "similar 3.2.1",
  "tempfile",
- "tokio",
 ]
 
 [[package]]
@@ -2597,6 +2588,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "monty-pgo"
+version = "1.6.0"
+dependencies = [
+ "monty-pool",
+ "monty-types",
+ "tokio",
 ]
 
 [[package]]
@@ -2687,7 +2687,6 @@ dependencies = [
  "monty-types",
  "monty-typeshed",
  "pprof",
- "pretty_assertions",
  "ruff_db",
  "ruff_python_ast",
  "ruff_python_parser",
@@ -3355,16 +3354,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
-]
-
-[[package]]
-name = "pretty_assertions"
-version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ae130e2f271fbc2ac3a40fb1d07180839cdbbe443c7a27e1e3c13c5cac0116d"
-dependencies = [
- "diff",
- "yansi",
 ]
 
 [[package]]
@@ -5979,12 +5968,6 @@ dependencies = [
  "thiserror",
  "time",
 ]
-
-[[package]]
-name = "yansi"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
 
 [[package]]
 name = "yasna"

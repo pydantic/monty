@@ -72,7 +72,6 @@ test-hooks = ["monty-types/test-hooks"]
 
 [dev-dependencies]
 monty-types = { workspace = true, features = ["tzdb"] }
-tempfile = "3"
 insta = { workspace = true }
 serde_json = { workspace = true }
 

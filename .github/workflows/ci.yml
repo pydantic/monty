@@ -233,7 +233,7 @@ jobs:
       # target dir) and point the tests at it explicitly.
       - run: cargo build -p monty-runtime
       - run: cargo build -p monty-pool --example cpu-test-worker --target-dir target/llvm-cov-target
-      - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
+      - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool -p monty-pgo --features monty-pool/telemetry
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/target/debug/monty
       - name: Compile Rust documentation examples

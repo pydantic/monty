@@ -30,4 +30,4 @@ Source = "https://github.com/pydantic/monty"
 [tool.maturin]
 bindings = "bin"
 strip = true
-pgo-command = "cargo run --release -p monty-datatest --bin pgo-exercise"
+pgo-command = "cargo run --profile pgo-training -p monty-pgo"
