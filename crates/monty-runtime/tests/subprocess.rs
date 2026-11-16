@@ -1400,7 +1400,8 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("'%.*d' % (2_000_000, 1)", 2_044_281),
         ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_644_606),
         ("b'%*d' % (2_000_000, 1)", 2_052_499),
-        ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_652_829),
+        // The second operand is refused before copying, with the source and first fragment still live.
+        ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_252_829),
         ("b'x' * 10_000_000", 10_052_479),
         ("[None] * 1_000_000", 16_044_279),
         ("2 ** 10_000_000", 10_044_244),
