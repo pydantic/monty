@@ -40,8 +40,9 @@ async def _serve(handler: Handler, process_request: ProcessRequest | None = None
         yield f'ws://127.0.0.1:{port}'
 
 
-async def _bridge(connection: ServerConnection) -> None:
-    """Bridges one connection to a fresh `monty subprocess` worker until either side ends."""
+async def _bridge(connection: ServerConnection, first: str | bytes | None = None) -> None:
+    """Bridges one connection to a fresh `monty subprocess` worker until either side ends,
+    starting with `first` when the caller already read the connection's first message."""
     child = await asyncio.create_subprocess_exec(
         find_monty_binary(), 'subprocess', stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE
     )
@@ -49,6 +50,10 @@ async def _bridge(connection: ServerConnection) -> None:
     stdin, stdout = child.stdin, child.stdout
 
     async def to_child() -> None:
+        if first is not None:
+            assert isinstance(first, bytes)
+            stdin.write(_LENGTH_PREFIX.pack(len(first)) + first)
+            await stdin.drain()
         async for message in connection:
             assert isinstance(message, bytes)
             stdin.write(_LENGTH_PREFIX.pack(len(message)) + message)
@@ -148,4 +153,93 @@ async def test_a_policy_close_names_its_cause():
     )
     assert str(err) == snapshot(
         'monty worker connection closed while waiting for a reply: DEADLINE_EXCEEDED (turn_timeout): turn exceeded 30s'
+    )
+
+
+async def _wait_for(condition: Callable[[], bool]) -> None:
+    """Polls `condition` for up to five seconds."""
+    for _ in range(500):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError('condition not met within 5s')
+
+
+async def test_pre_warm_opens_sessions_before_checkout():
+    """`__aenter__` opens the pre-warmed sessions; a checkout takes one, and it is replaced."""
+    connections: list[ServerConnection] = []
+    used: list[ServerConnection] = []
+
+    async def handler(connection: ServerConnection) -> None:
+        connections.append(connection)
+        first = await connection.recv()
+        used.append(connection)
+        await _bridge(connection, first)
+
+    async with _serve(handler) as url:
+        async with AsyncMontyRemote(url, request_timeout=30.0, pre_warm=2) as pool:
+            await _wait_for(lambda: len(connections) == 2)
+            async with pool.checkout() as session:
+                assert await session.feed_run('1 + 1') == snapshot(2)
+            await _wait_for(lambda: len(connections) == 3)
+            assert len(used) == 1
+            assert used[0] in connections[:2]
+
+
+async def test_a_checkout_waits_for_a_pre_warmed_session_still_opening():
+    """Without `pre_warm_wait`, checking out straight after `__aenter__` takes the session already dialing,
+    rather than dialing another."""
+    connections: list[ServerConnection] = []
+    used: list[ServerConnection] = []
+
+    async def handler(connection: ServerConnection) -> None:
+        connections.append(connection)
+        first = await connection.recv()
+        used.append(connection)
+        await _bridge(connection, first)
+
+    async with _serve(handler) as url:
+        async with AsyncMontyRemote(url, request_timeout=30.0, pre_warm=1, pre_warm_wait=False) as pool:
+            async with pool.checkout() as session:
+                assert await session.feed_run('1 + 1') == snapshot(2)
+            await _wait_for(lambda: len(connections) == 2)
+            assert used == [connections[0]]
+
+
+async def test_pre_warm_skips_a_session_the_server_closed():
+    connections: list[ServerConnection] = []
+
+    async def handler(connection: ServerConnection) -> None:
+        connections.append(connection)
+        if len(connections) == 1:
+            await connection.close()
+        else:
+            await _bridge(connection)
+
+    async with _serve(handler) as url:
+        async with AsyncMontyRemote(url, request_timeout=30.0, pre_warm=1) as pool:
+            await _wait_for(lambda: len(connections) == 1 and connections[0].state.name == 'CLOSED')
+            await asyncio.sleep(0.05)
+            async with pool.checkout() as session:
+                assert await session.feed_run('1 + 1') == snapshot(2)
+
+
+def test_pre_warm_cannot_take_metadata():
+    with pytest.raises(ValueError) as exc_info:
+        AsyncMontyRemote('ws://127.0.0.1:1', pre_warm=1, metadata=lambda: {})
+    assert exc_info.value.args[0] == snapshot(
+        'pre_warm cannot be combined with metadata: pre-warmed sessions open before any checkout, without it'
+    )
+
+
+async def test_pre_warm_wait_raises_from_aenter_when_a_session_cannot_open():
+    def not_found(connection: ServerConnection, request: Request) -> Response:
+        return connection.respond(HTTPStatus.NOT_FOUND, 'no such route')
+
+    async with _serve(_bridge, not_found) as url:
+        with pytest.raises(MontyConnectError) as exc_info:
+            async with AsyncMontyRemote(url, pre_warm=1):
+                pass
+    assert str(exc_info.value).removeprefix(url) == snapshot(
+        ': the server refused the WebSocket upgrade: HTTP 404 Not Found: no such route'
     )

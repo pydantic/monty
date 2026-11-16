@@ -1182,10 +1182,12 @@ class AsyncMontyRemote:
         max_decode_bytes: int | None = None,
         connect_headers: Callable[[], Mapping[str, str]] | None = None,
         stream_async_calls: bool = True,
+        pre_warm: int = 0,
+        pre_warm_wait: bool = True,
     ) -> Self:
         """
         Configure a remote worker pool; the connection is made by the first
-        checkout (no workers are pre-warmed).
+        checkout, unless `pre_warm` opens sessions ahead of it.
 
         Arguments:
             url: URL of the server — a relay, or any server that bridges a
@@ -1248,6 +1250,17 @@ class AsyncMontyRemote:
                 CPU mode uses the server's supervisor and grace instead.
                 `None` disables this client backstop. `request_timeout` stays independent.
             turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
+            pre_warm: Sessions to keep open and ready, so a checkout takes one
+                instead of dialing. `__aenter__` opens them (see `pre_warm_wait`)
+                and they are replaced in the background as checkouts take them; a
+                checkout waits for one already dialing. They count against
+                `max_processes`, so it must be at least `pre_warm`. A server
+                may close one that waits too long, which is then replaced.
+                Cannot be combined with `metadata`, which a session needs before
+                any checkout produces it.
+            pre_warm_wait: `__aenter__` waits until the `pre_warm` sessions are
+                open, raising if one cannot open (the default); `False` opens them
+                in the background instead.
             auto_resume: When a server that stores sessions drains one, open a
                 new session, load the state it named into it and re-send the
                 request it did not run, instead of raising `MontyShutdown`; the

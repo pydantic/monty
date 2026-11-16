@@ -1858,7 +1858,8 @@ impl Checkout {
     /// same reason the feed's streamed-call handler and held arguments survive the `Load`.
     async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
         let configure = configure_request(&redial.repl, &self.pool.config);
-        let worker = self.pool.acquire_worker(&redial.metadata).await?;
+        // a resume carries the session's own metadata, never a pre-opened stream's
+        let worker = self.pool.acquire_worker(&redial.metadata, false).await?;
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(redial.telemetry.clone());
         self.worker = Some(worker);

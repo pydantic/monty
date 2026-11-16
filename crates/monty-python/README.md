@@ -41,6 +41,11 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
+`AsyncMontyRemote(url, pre_warm=2)` keeps two sessions open and ready, so a checkout takes one instead of dialing.
+`__aenter__` waits for them to open, raising if one cannot (`pre_warm_wait=False` opens them in the background
+instead); they are replaced in the background as checkouts take them, and count against `max_processes`.
+Because they open before any checkout, `pre_warm` cannot be combined with `metadata`.
+
 `MontyDisconnectError` exposes `status_code`, `status_message`, `cause` and `transport_error` when available.
 These fields preserve the status the server ended the stream with, or the transport or protocol failure, not proof that
 the request did or did not run.
@@ -54,7 +59,7 @@ Remote connection failures raise `MontyConnectError`, a `MontyError` subclass wi
 `status_message`, `cause` and `transport_error` attributes.
 A CPU-mode remote server requires a finite client `request_timeout`; without one, checkout raises `MontyConfigurationError`.
 Malformed request metadata also raises `MontyConfigurationError` before any connection attempt.
-Creating a pool with invalid settings raises it too: `min_processes` above `max_processes`, or a local CPU clock
+Creating a pool with invalid settings raises it too: `min_processes` (or `pre_warm`) above `max_processes`, or a local CPU clock
 off Linux or without a finite `request_timeout`.
 
 ## Host decode budget

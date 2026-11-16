@@ -714,6 +714,8 @@ impl PyAsyncMontyRemote {
         max_decode_bytes = None,
         connect_headers = None,
         stream_async_calls = true,
+        pre_warm = 0,
+        pre_warm_wait = true,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -729,6 +731,8 @@ impl PyAsyncMontyRemote {
         max_decode_bytes: Option<usize>,
         connect_headers: Option<Py<PyAny>>,
         stream_async_calls: bool,
+        pre_warm: usize,
+        pre_warm_wait: bool,
     ) -> PyResult<Self> {
         // the keyword's former name, kept for one release
         let metadata = match (metadata, connect_headers) {
@@ -747,6 +751,11 @@ impl PyAsyncMontyRemote {
             (metadata, None) => metadata,
         };
         check_callable(py, metadata.as_ref())?;
+        if pre_warm > 0 && metadata.is_some() {
+            return Err(PyValueError::new_err(
+                "pre_warm cannot be combined with metadata: pre-warmed sessions open before any checkout, without it",
+            ));
+        }
         let mut config = parse_remote_config(
             url,
             max_processes,
@@ -759,6 +768,8 @@ impl PyAsyncMontyRemote {
             auto_resume,
         )?;
         config.stream_async_calls = stream_async_calls;
+        config.min_processes = pre_warm;
+        config.pre_warm_wait = pre_warm_wait;
         if let Some(bytes) = max_decode_bytes {
             if bytes > DEFAULT_MAX_DECODE_BYTES {
                 return Err(PyValueError::new_err(format!(
@@ -1349,9 +1360,9 @@ async fn finish_checkout(checkout: &SharedCheckout) {
 }
 
 /// Builds the remote-transport `monty-pool` config from the `AsyncMontyRemote`
-/// constructor arguments. Each checkout opens a stream to `url`; there is no
-/// pre-warming, so `min_processes` stays 0 and `max_processes` caps concurrent
-/// streams.
+/// constructor arguments. Each checkout opens a stream to `url`, or takes one
+/// of the `pre_warm` sessions the caller sets as `min_processes`; `max_processes`
+/// caps concurrent streams, pre-warmed ones included.
 fn parse_remote_config(
     url: String,
     max_processes: Option<usize>,

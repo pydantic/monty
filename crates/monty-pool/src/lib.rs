@@ -77,9 +77,12 @@ pub const DEFAULT_MAX_CHECKOUTS_PER_WORKER: u32 = 1000;
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
     /// Floor on live workers: spawned at pool creation, and replaced in the
-    /// background whenever one is recycled, crashes or is discarded. Forced to
-    /// 0 for the [`MontyTransport::Remote`] transport (sessions are opened
-    /// per-checkout, not pre-warmed).
+    /// background whenever one is recycled, crashes or is discarded.
+    /// For the [`MontyTransport::Remote`] transport, sessions kept open and ready
+    /// (0 by default), counted against `max_processes`: opened by [`Pool::new`]
+    /// (in the background without [`Self::pre_warm_wait`]) and refilled as
+    /// checkouts take them; a checkout waits for one already dialing. They are
+    /// dialed without metadata, so only checkouts without metadata take them.
     pub min_processes: usize,
     /// Hard cap on live workers; checkouts beyond this wait. For the remote
     /// transport, a cap on concurrent sessions.
@@ -140,6 +143,10 @@ pub struct PoolConfig {
     /// Saves a round trip per call, which matters most over the network, but moves
     /// call-time errors to the `await`. On by default for [`Self::remote`], off for [`Self::subprocess`].
     pub stream_async_calls: bool,
+    /// Remote transport only: [`Pool::new`] opens the `min_processes` sessions
+    /// itself, failing if one cannot open, rather than in the background. On by
+    /// default; subprocess pools always spawn theirs in [`Pool::new`].
+    pub pre_warm_wait: bool,
     /// Where pool and turn metrics are recorded, from
     /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).
     /// `None` records nothing at all. Independent of tracing: metrics cover
@@ -159,8 +166,8 @@ impl PoolConfig {
     }
 
     /// Creates a remote-transport config for the server at `url` (gRPC or
-    /// WebSocket by scheme), with a session opened per checkout. `min_processes` is 0 (no pre-warming) and
-    /// `stream_async_calls` is on.
+    /// WebSocket by scheme), with a session opened per checkout. `min_processes` is 0 (no pre-opened
+    /// sessions) and `stream_async_calls` is on.
     pub fn remote(url: impl Into<String>) -> Self {
         let mut config = Self::with_transport(MontyTransport::Remote(url.into()));
         config.min_processes = 0;
@@ -183,6 +190,7 @@ impl PoolConfig {
             max_checkouts_per_worker: Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER),
             auto_resume: true,
             stream_async_calls: false,
+            pre_warm_wait: true,
             max_decode_bytes: DEFAULT_MAX_DECODE_BYTES,
             #[cfg(feature = "telemetry")]
             metrics: None,

@@ -361,7 +361,8 @@ impl Worker {
     pub(crate) fn is_dead(&mut self) -> bool {
         match &mut self.kind {
             WorkerKind::Subprocess(w) => w.child.try_wait().is_ok_and(|status| status.is_some()),
-            WorkerKind::Remote(_) => false,
+            // a pre-opened session the server ended while it sat idle
+            WorkerKind::Remote(w) => w.disconnect().is_some(),
         }
     }
 

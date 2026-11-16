@@ -198,8 +198,10 @@ These are the poolable workers: prewarmed, reused across checkouts, replaced on 
 An `http://`/`https://` URL speaks gRPC: one HTTP/2 connection per pool, one `MontySession.Session` stream per checkout.
 A `ws://`/`wss://` URL speaks WebSocket: one connection per checkout, dialed as given, path and query included.
 `PoolConfig::keep_alive` applies to gRPC only.
-Those workers are single-use, never prewarmed or returned to the pool, and isolation becomes the remote host's
-responsibility.
+Those workers are single-use, never returned to the pool, and isolation becomes the remote host's responsibility.
+`min_processes` (0 by default) keeps that many sessions open and ready, dialed without metadata by `Pool::new` (in the
+background when `pre_warm_wait` is off) and replaced as checkouts take them; only a checkout without metadata of its
+own takes one.
 See [the security model](../security.md#remote-workers) before using it.
 
 ### Host decode budget
