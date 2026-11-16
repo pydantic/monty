@@ -1398,7 +1398,7 @@ impl Checkout {
     ) -> Result<Vec<u8>, PoolError> {
         self.snapshot(pb::client_request::Kind::SaveRecovery(pb::SaveRecovery {
             slot: slot.to_vec().into(),
-            expected_revision: expected_revision.map(Vec::from).unwrap_or_default().into(),
+            expected_revision: expected_revision.map_or_else(Vec::new, Vec::from).into(),
         }))
         .await
     }
