@@ -142,6 +142,8 @@ These raise `NameError`:
     and multi-iterable `map` stop at the shortest input, so pairing an infinite
     iterable with a finite or empty one stays bounded. A plain `for x in container` is lazy and does detect mutation.
     See [itertools.md](itertools.md).
+- **`enumerate(iterable, start)` initializes the iterable before converting `start` with `__index__`.**
+    CPython converts `start` first, so user-defined `__iter__` and `__index__` methods run in the opposite order.
 - **Arity-error wording for some str/bytes methods** — a handful of
     keyword-accepting methods (e.g. `str.split`, `str.rsplit` and the `bytes`
     equivalents) report too-many-arguments as `split expected at most 2 arguments, got 3`, where CPython 3.14's Argument
