@@ -64,6 +64,7 @@ fn is_reversible(value: &Value, vm: &VM<'_>) -> bool {
                 | HeapData::Deque(_)
                 | HeapData::Str(_)
                 | HeapData::Bytes(_)
+                | HeapData::ByteArray(_)
                 | HeapData::Range(_)
                 | HeapData::Dict(_)
                 | HeapData::DictKeysView(_)

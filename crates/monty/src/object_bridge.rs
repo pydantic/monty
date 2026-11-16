@@ -126,8 +126,8 @@ pub(crate) struct GraphExporter {
     /// a user `__repr__` run by [`repr_node`](Self::repr_node) can free an exported object
     /// mid-message, and a new object in the reused slot would inherit its node.
     pinned: Vec<Value>,
-    /// The first uncatchable error (a resource limit) raised by a user
-    /// `__repr__`; once set no more user code runs and `finish` returns it.
+    /// The first resource error from a buffer copy or user `__repr__`.
+    /// Once set, no more user code runs and `finish` returns it after releasing pinned references.
     error: Option<RunError>,
 }
 
@@ -156,7 +156,7 @@ impl GraphExporter {
 
     /// The finished arena, releasing the pins on the memoized objects.
     ///
-    /// Fails with the uncatchable error a user `__repr__` raised during export,
+    /// Propagates resource failures from copying buffers or running user `__repr__`,
     /// so a resource limit ends the run rather than becoming a repr string.
     pub(crate) fn finish(self, vm: &mut VM<'_>) -> RunResult<MontyGraph> {
         self.pinned.drop_with(vm);
@@ -272,6 +272,16 @@ impl GraphExporter {
         match output {
             HeapReadOutput::Str(heap_string) => MontyNode::String(heap_string.get(vm.heap).as_str().to_owned()),
             HeapReadOutput::Bytes(b) => MontyNode::Bytes(b.get(vm.heap).as_slice().to_owned()),
+            HeapReadOutput::ByteArray(b) => {
+                let bytes = b.get(vm.heap).as_slice();
+                if let Err(err) = vm.heap.tracker.check_allocation(bytes.len()) {
+                    // Export errors are returned by `finish`, after releasing its pinned references.
+                    self.error = Some(err.into());
+                    MontyNode::Repr(String::new())
+                } else {
+                    MontyNode::Bytes(bytes.to_owned())
+                }
+            }
             HeapReadOutput::List(list) => {
                 // Snapshot before recursing: a nested `__repr__` may mutate this list.
                 let children: Vec<Value> = list
@@ -447,7 +457,10 @@ impl GraphExporter {
             HeapReadOutput::StringIterator(iter) => {
                 MontyNode::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.interns)))
             }
-            HeapReadOutput::BytesIterator(_) => MontyNode::Repr("<bytes_iterator object>".to_owned()),
+            HeapReadOutput::BytesIterator(iterator) => MontyNode::Repr(format!(
+                "<{} object>",
+                iterator.get(vm.heap).py_type().name(vm.heap, vm.interns)
+            )),
             HeapReadOutput::RangeIterator(_) => MontyNode::Repr("<range_iterator object>".to_owned()),
             HeapReadOutput::DictKeyIterator(_) => MontyNode::Repr("<dict_keyiterator object>".to_owned()),
             HeapReadOutput::DictItemIterator(_) => MontyNode::Repr("<dict_itemiterator object>".to_owned()),
@@ -839,7 +852,9 @@ impl MontyTypeExt for MontyType {
             | Type::DecimalContext
             | Type::DecimalSignalDict
             | Type::DecimalContextManager
-            | Type::ForwardRef => return None,
+            | Type::ForwardRef
+            | Type::ByteArray
+            | Type::ByteArrayIterator => return None,
             Type::Decimal => Self::Decimal,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,

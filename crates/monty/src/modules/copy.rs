@@ -159,6 +159,7 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
             // A second generator at the same point in the same sequence, which is
             // what CPython's `__getstate__`/`__setstate__` pair produces.
             HeapReadOutput::Random(random) => Ok(random.allocate_like(vm)),
+            HeapReadOutput::ByteArray(bytes) => bytes.allocate_copy(vm),
             // `Context.__copy__`: the same settings and flags in a new object.
             HeapReadOutput::DecimalContext(context) => {
                 let settings = *context.get(vm.heap);
@@ -236,6 +237,7 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
             HeapReadOutput::BoundMethod(bound) => bound.py_deep_copy(source, memo, vm),
             HeapReadOutput::Partial(partial) => partial.py_deep_copy(source, memo, vm),
             HeapReadOutput::Random(random) => random.py_deep_copy(source, memo, vm),
+            HeapReadOutput::ByteArray(bytes) => bytes.allocate_copy(vm),
             // A context holds no references, so its deep copy is its shallow one.
             HeapReadOutput::DecimalContext(context) => {
                 let settings = *context.get(vm.heap);
@@ -292,6 +294,7 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::Instance(_)
         | HeapReadOutput::BoundMethod(_)
         | HeapReadOutput::Partial(_)
+        | HeapReadOutput::ByteArray(_)
         | HeapReadOutput::Random(_)
         | HeapReadOutput::DecimalContext(_) => Copyability::Rebuilt,
         // A shallow copy of an immutable container holds the same items, so

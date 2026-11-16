@@ -28,6 +28,141 @@ use monty_types::{
 /// long wait is how late that failure is reported on a slow CI machine.
 const DEATH_TIMEOUT: Duration = Duration::from_secs(20);
 
+#[test]
+fn bytearray_percent_operands_respect_memory_limits() {
+    for constructor in ["bytearray", "bytes"] {
+        for template in ["b'%b'", "b'%s'", "bytearray(b'%b')", "bytearray(b'%s')"] {
+            let mut child = ChildProc::spawn();
+            child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+            let (_, event) = child.feed(&format!("a = {constructor}(b'x') * (16 * 1024 * 1024)\n{template} % a"));
+            assert_eq!(expect_error(event).exc_type, "MemoryError", "{constructor}: {template}");
+            assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+
+            // Precision limits the copied operand even when the full buffer cannot fit twice.
+            for precision in [0, 4] {
+                let template = template.replace('%', &format!("%.{precision}"));
+                assert_eq!(
+                    child.feed_complete(&format!("{template} % a")),
+                    MontyObject::bytes(vec![b'x'; precision]),
+                    "{constructor}: {template}"
+                );
+            }
+            child.shutdown();
+        }
+    }
+}
+
+#[test]
+fn bytearray_encoded_text_respects_memory_limits() {
+    for (encoding, source_mib) in [
+        ("utf-8", 16),
+        ("ascii", 16),
+        ("utf-16", 10),
+        ("utf-16-le", 10),
+        ("utf-16-be", 10),
+        ("utf-32", 6),
+        ("utf-32-le", 6),
+        ("utf-32-be", 6),
+    ] {
+        for operation in [
+            format!("bytearray(s, '{encoding}')"),
+            format!("bytes(s, '{encoding}')"),
+            format!("s.encode('{encoding}')"),
+        ] {
+            let mut child = ChildProc::spawn();
+            child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+            let (_, event) = child.feed(&format!("s = 'x' * ({source_mib} * 1024 * 1024)\n{operation}"));
+            assert_eq!(expect_error(event).exc_type, "MemoryError", "{operation}");
+            assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{operation}");
+            child.shutdown();
+        }
+    }
+
+    // These characters use two bytes in UTF-16 and three in UTF-8; budget the exact output.
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete("s = '€' * (4 * 1024 * 1024)\nlen(bytearray(s, 'utf-16'))"),
+        MontyObject::int(8 * 1024 * 1024 + 2),
+    );
+    child.shutdown();
+}
+
+#[test]
+fn bytearray_join_releases_export_after_memory_error() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    let (_, event) = child.feed("sep = bytearray(b',')\na = bytearray(16 * 1024 * 1024)\nsep.join([a])");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(
+        child.feed_complete("sep.append(120)\nbytes(sep)"),
+        MontyObject::bytes(b",x".to_vec())
+    );
+    child.shutdown();
+}
+
+#[test]
+fn bytearray_copies_fail_without_losing_the_session() {
+    for operation in [
+        "a.split()",
+        "a.split(b'!')",
+        "a.rsplit(b'!')",
+        "a.splitlines()",
+        "a.partition(b'!')",
+        "a.rpartition(b'!')",
+        "a[:]",
+        "a[::-1]",
+        "a.ljust(0)",
+        "a.rjust(0)",
+        "a.center(0)",
+        "a.zfill(0)",
+        "a.strip()",
+        "a.lstrip()",
+        "a.rstrip()",
+        "a.removeprefix(b'!')",
+        "a.removesuffix(b'!')",
+        "b''.join([a])",
+        "bytearray().join([a])",
+        "a",
+        "[a, a]",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        let (_, event) = child.feed(&format!("a = bytearray(16 * 1024 * 1024)\n{operation}"));
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{operation}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{operation}");
+        child.shutdown();
+    }
+
+    // Budget only the selected bytes, so a small slice of a large buffer still succeeds.
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete("a = bytearray(16 * 1024 * 1024)\nlen(a[::8])"),
+        MontyObject::int(2 * 1024 * 1024),
+    );
+    child.shutdown();
+}
+
+#[test]
+fn bytearray_split_tables_respect_memory_limits() {
+    for operation in [
+        "a.split()",
+        "a.split(b' ')",
+        "a.rsplit(b' ', 2_000_000)",
+        "a.splitlines()",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        let (_, event) = child.feed(&format!("a = bytearray(b'x \\n') * (2 * 1024 * 1024)\n{operation}"));
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{operation}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{operation}");
+        child.shutdown();
+    }
+}
+
 fn configure() -> pb::Configure {
     pb::Configure {
         script_name: "main.py".to_owned(),
@@ -1503,6 +1638,37 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         child.shutdown();
     }
 
+    // Bytearray growth and copied method results must fail softly before the hard ceiling.
+    for code in [
+        "a = bytearray(16 * 1024 * 1024)\na.lower()",
+        "a = bytearray(16 * 1024 * 1024)\na.upper()",
+        "a = bytearray(16 * 1024 * 1024)\na.capitalize()",
+        "a = bytearray(16 * 1024 * 1024)\na.title()",
+        "a = bytearray(16 * 1024 * 1024)\na.swapcase()",
+        "a = bytearray(16 * 1024 * 1024)\nb = bytearray()\nb += a",
+        "a = bytearray(16 * 1024 * 1024)\nb''.find(a)",
+        "a = bytearray(16 * 1024 * 1024)\nb''.split(a)",
+        "a = bytearray(16 * 1024 * 1024)\nb''.rsplit(a)",
+        "a = bytearray(16 * 1024 * 1024)\nb''.replace(a, b'x')",
+        "a = bytearray(16 * 1024 * 1024)\nb''.replace(b'x', a)",
+        "a = bytearray(16 * 1024 * 1024)\nbytes(a)",
+        "import json\na = bytearray(b' ') * (16 * 1024 * 1024)\na[0] = 49\njson.loads(a)",
+        "a = bytearray(16 * 1024 * 1024)\na.translate(None)",
+        "bytearray(b'x').ljust(16 * 1024 * 1024)",
+        "padding = bytearray(8 * 1024 * 1024)\na = bytearray(7 * 1024 * 1024)\na[:2] = b'x!'\na.split(b'!')",
+        "padding = bytearray(8 * 1024 * 1024)\na = bytearray(7 * 1024 * 1024)\na[:2] = b'x!'\na.partition(b'!')",
+        "a = bytearray(16 * 1024 * 1024)\na.append(0)",
+        "a = bytearray(16 * 1024 * 1024)\na.insert(0, 0)",
+        "import itertools\nbytearray(itertools.chain(itertools.repeat(0, 16 * 1024 * 1024 + 1)))",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+        child.shutdown();
+    }
     for code in [
         "a = [None] * 1_000_000\na *= 2",
         "a = [None] * 1_000_000\na += range(1_000_000)",
@@ -1536,6 +1702,22 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         MontyObject::int(60_001),
     );
     child.shutdown();
+
+    // A one-byte suffix must reserve the logical result, not double the eight-MiB prefix.
+    for code in [
+        "padding = bytearray(7 * 1024 * 1024)\na = bytearray(8 * 1024 * 1024)\nlen(a + b'x')",
+        "padding = bytearray(7 * 1024 * 1024)\na = bytearray(8 * 1024 * 1024)\na += b'x'\nlen(a)",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        assert_eq!(
+            child.feed_complete(code),
+            MontyObject::int(8 * 1024 * 1024 + 1),
+            "{code}"
+        );
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+        child.shutdown();
+    }
 }
 
 /// `DictWriter.writerows()` on a file keeps one list per row until its single

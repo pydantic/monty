@@ -129,6 +129,7 @@ macro_rules! forward_py_value {
         match $self {
             Self::Str($value) => $body,
             Self::Bytes($value) => $body,
+            Self::ByteArray($value) => $body,
             Self::List($value) => $body,
             Self::Deque($value) => $body,
             Self::ListIterator($value) => $body,

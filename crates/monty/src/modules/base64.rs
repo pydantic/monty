@@ -1292,6 +1292,7 @@ fn value_as_bytes<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<Cow<'a, [u8]>>
         Value::InternBytes(bytes_id) => Some(Cow::Borrowed(vm.interns.get_bytes(*bytes_id))),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Bytes(bytes) => Some(Cow::Borrowed(bytes.as_slice())),
+            HeapData::ByteArray(bytes) => Some(Cow::Borrowed(bytes.as_slice())),
             _ => None,
         },
         _ => None,

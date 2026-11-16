@@ -1,14 +1,14 @@
 import math
 
 argument = ['retained argument']
-source = b'61!'[:-1]
-for value in [b'61', source]:
+source = b'6g!'[:-1]
+for value in [b'6g', source]:
     try:
         bytes.fromhex(value)
-    except TypeError:
+    except ValueError:
         pass
     else:
-        assert False, 'bytes.fromhex accepts only str in Monty'
+        assert False, 'expected invalid hexadecimal input'
 value = None
 
 alias = list[int]
