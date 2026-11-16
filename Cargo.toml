@@ -100,7 +100,7 @@ unicode-general-category = "1"
 # Already linked transitively via ruff/fancy-regex; this just names it directly.
 memchr = "2.7"
 # bigint and related crates
-num-bigint = { version = "0.5", features = ["serde"] }
+num-bigint = { version = "0.4", features = ["serde"] }
 num-traits = "0.2"
 num-integer = "0.1"
 # PyO3: one workspace pin so `pyo3` and `pyo3-build-config` (whose versions
@@ -186,7 +186,7 @@ rcgen = { version = "0.14", default-features = false, features = [
 # features and each consumer needs a very different slice of it.
 tokio = { version = "1" }
 # Feature-free: monty-pool builds telemetry only, while monty-runtime adds its network exporter.
-logfire = { version = "0.13", default-features = false }
+logfire = { version = "0.14", default-features = false }
 # Match Logfire's OpenTelemetry types across the pool and language bindings.
 opentelemetry = "0.33"
 opentelemetry_sdk = "0.33"
