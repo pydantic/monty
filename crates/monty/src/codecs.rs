@@ -87,19 +87,19 @@ impl Codec {
     /// fail: UTF-8 is the native representation, and every Monty string is
     /// encodable as UTF-16/32 (no lone surrogates can exist).
     ///
-    /// Like [`Codec::decode`], output is bounded by a small constant multiple
-    /// of the (already resource-tracked) input — ≤2x for UTF-16, ≤4x for
-    /// UTF-32, plus a BOM — so those paths need no tracked builder; only the
-    /// ASCII error handlers can amplify further, and they build through the
-    /// tracker.
+    /// Preflights the encoded size while the input is live, including any BOM.
+    /// ASCII error handlers build incrementally through the tracker.
     pub(crate) fn encode(self, s: &str, errors: &str, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
         match self {
-            Self::Utf8 => Ok(s.as_bytes().to_vec()),
+            Self::Utf8 => {
+                tracker.check_allocation(s.len())?;
+                Ok(s.as_bytes().to_vec())
+            }
             Self::Ascii => encode_ascii(s, errors, tracker),
             // Bare utf-16/utf-32 write a BOM and use little-endian (CPython
             // uses the platform's native order — identical on all LE hosts).
-            Self::Utf16(endian) => Ok(encode_utf16(s, endian.unwrap_or(Endian::Little), endian.is_none())),
-            Self::Utf32(endian) => Ok(encode_utf32(s, endian.unwrap_or(Endian::Little), endian.is_none())),
+            Self::Utf16(endian) => encode_utf16(s, endian.unwrap_or(Endian::Little), endian.is_none(), tracker),
+            Self::Utf32(endian) => encode_utf32(s, endian.unwrap_or(Endian::Little), endian.is_none(), tracker),
         }
     }
 
@@ -289,6 +289,7 @@ fn encode_ascii(s: &str, errors: &str, tracker: &ResourceTracker) -> RunResult<V
     // SIMD-vectorized in std, and the output is byte-for-byte the (already
     // tracked) input, so a bulk copy needs no StringBuilder.
     if s.is_ascii() {
+        tracker.check_allocation(s.len())?;
         return Ok(s.as_bytes().to_vec());
     }
     let mut handler = LazyHandler::new(errors);
@@ -441,16 +442,14 @@ fn is_cesu8_surrogate(rest: &[u8]) -> bool {
 // UTF-16 / UTF-32
 // ============================================================================
 
-/// Encodes `s` as UTF-16 in the given byte order, optionally prepending a
-/// BOM (the bare `utf-16` codec writes one even for an empty string,
-/// matching CPython). Infallible: every char has a UTF-16 encoding.
-///
-/// The exact output size is computed up front (2 bytes per UTF-16 code unit,
-/// at most 4 bytes per input char), so the untracked `Vec` is bounded by a
-/// small constant multiple of the already-tracked input.
-fn encode_utf16(s: &str, endian: Endian, with_bom: bool) -> Vec<u8> {
+/// Budgets two bytes per UTF-16 code unit, plus a BOM for the bare codec (even for empty input).
+fn encode_utf16(s: &str, endian: Endian, with_bom: bool, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
     let units: usize = s.chars().map(char::len_utf16).sum::<usize>() + usize::from(with_bom);
-    let mut out = Vec::with_capacity(units * 2);
+    let size = units.checked_mul(2).ok_or_else(ExcType::allocation_too_large)?;
+    tracker.check_allocation(size)?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(size)
+        .map_err(|_| ExcType::allocation_too_large())?;
     if with_bom {
         push_u16(&mut out, 0xFEFF, endian);
     }
@@ -460,20 +459,24 @@ fn encode_utf16(s: &str, endian: Endian, with_bom: bool) -> Vec<u8> {
             push_u16(&mut out, unit, endian);
         }
     }
-    out
+    Ok(out)
 }
 
-/// Encodes `s` as UTF-32 (4 bytes per char), optionally prepending a BOM.
-/// Infallible; same size-bounding rationale as [`encode_utf16`].
-fn encode_utf32(s: &str, endian: Endian, with_bom: bool) -> Vec<u8> {
-    let mut out = Vec::with_capacity((s.chars().count() + usize::from(with_bom)) * 4);
+/// Budgets four bytes per Unicode scalar, plus an optional BOM.
+fn encode_utf32(s: &str, endian: Endian, with_bom: bool, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
+    let units = s.chars().count() + usize::from(with_bom);
+    let size = units.checked_mul(4).ok_or_else(ExcType::allocation_too_large)?;
+    tracker.check_allocation(size)?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(size)
+        .map_err(|_| ExcType::allocation_too_large())?;
     if with_bom {
         push_u32(&mut out, 0xFEFF, endian);
     }
     for c in s.chars() {
         push_u32(&mut out, c as u32, endian);
     }
-    out
+    Ok(out)
 }
 
 /// Decodes UTF-16 payload starting at byte index `start` (2 when a BOM was

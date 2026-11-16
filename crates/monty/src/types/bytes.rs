@@ -1853,9 +1853,13 @@ fn parse_bytes_replace_args(_method: &str, args: ArgValues, vm: &mut VM<'_>) -> 
     defer_drop!(new, vm);
     defer_drop!(count, vm);
 
-    // Validate buffers before the count, but read their contents after its callback.
+    // Export arguments before the count callback: content writes are allowed, resizing is not.
     extract_bytes_only(old, vm)?;
+    let old_export = old.ref_id().and_then(|id| super::bytearray::export_buffer(id, vm));
+    defer_drop!(old_export, vm);
     extract_bytes_only(new, vm)?;
+    let new_export = new.ref_id().and_then(|id| super::bytearray::export_buffer(id, vm));
+    defer_drop!(new_export, vm);
     let count_i = count.as_int(vm)?;
     let old_b = copy_bytes_argument(old, vm)?;
     let new_b = copy_bytes_argument(new, vm)?;

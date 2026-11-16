@@ -29,6 +29,42 @@ use monty_types::{
 const DEATH_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[test]
+fn bytearray_encoded_text_respects_memory_limits() {
+    for (encoding, source_mib) in [
+        ("utf-8", 16),
+        ("ascii", 16),
+        ("utf-16", 10),
+        ("utf-16-le", 10),
+        ("utf-16-be", 10),
+        ("utf-32", 6),
+        ("utf-32-le", 6),
+        ("utf-32-be", 6),
+    ] {
+        for operation in [
+            format!("bytearray(s, '{encoding}')"),
+            format!("bytes(s, '{encoding}')"),
+            format!("s.encode('{encoding}')"),
+        ] {
+            let mut child = ChildProc::spawn();
+            child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+            let (_, event) = child.feed(&format!("s = 'x' * ({source_mib} * 1024 * 1024)\n{operation}"));
+            assert_eq!(expect_error(event).exc_type, "MemoryError", "{operation}");
+            assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{operation}");
+            child.shutdown();
+        }
+    }
+
+    // UTF-16 compresses these UTF-8 characters: budget its exact output, not twice the input bytes.
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete("s = '€' * (4 * 1024 * 1024)\nlen(bytearray(s, 'utf-16'))"),
+        MontyObject::int(8 * 1024 * 1024 + 2),
+    );
+    child.shutdown();
+}
+
+#[test]
 fn bytearray_join_releases_export_after_memory_error() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));

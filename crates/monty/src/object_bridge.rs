@@ -126,8 +126,8 @@ pub(crate) struct GraphExporter {
     /// a user `__repr__` run by [`repr_node`](Self::repr_node) can free an exported object
     /// mid-message, and a new object in the reused slot would inherit its node.
     pinned: Vec<Value>,
-    /// The first uncatchable error (a resource limit) raised by a user
-    /// `__repr__`; once set no more user code runs and `finish` returns it.
+    /// The first resource error from a buffer copy or user `__repr__`.
+    /// Once set, no more user code runs and `finish` returns it after releasing pinned references.
     error: Option<RunError>,
 }
 

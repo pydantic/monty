@@ -8,7 +8,9 @@ use crate::{
     codecs::Codec,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, heap_read_ref_as_field},
+    heap::{
+        DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, heap_read_ref_as_field,
+    },
     intern::StaticStrings,
     percent_format::{copy_bytes_template, percent_format_bytes},
     py_value::PyValue,
@@ -174,12 +176,21 @@ impl HeapItem for ByteArray {
 }
 
 /// Keeps nested native exports active until each call returns or raises.
-struct BufferExport<'a, 'h>(&'a HeapObjectRead<'h, ByteArray>);
+pub(super) struct BufferExport<'h>(HeapObjectRead<'h, ByteArray>);
 
-impl<'h> DropWithContext<VM<'h>> for BufferExport<'_, 'h> {
+impl<'h> DropWithContext<VM<'h>> for BufferExport<'h> {
     fn drop_with(self, vm: &mut VM<'h>) {
         self.0.get_mut(vm.heap).exports -= 1;
     }
+}
+
+/// Pins mutable buffer storage across callbacks; immutable bytes need no export count.
+pub(super) fn export_buffer<'h>(id: HeapId, vm: &mut VM<'h>) -> Option<BufferExport<'h>> {
+    let HeapReadOutput::ByteArray(buffer) = vm.heap.read(id) else {
+        return None;
+    };
+    buffer.get_mut(vm.heap).exports += 1;
+    Some(BufferExport(buffer))
 }
 
 impl<'h> HeapObjectRead<'h, ByteArray> {
@@ -579,10 +590,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         } else {
             args
         };
-        let export = (search || method == StaticStrings::Join).then(|| {
-            self.get_mut(vm.heap).exports += 1;
-            BufferExport(&*self)
-        });
+        let export = if search || method == StaticStrings::Join {
+            export_buffer(self.id(), vm)
+        } else {
+            None
+        };
         defer_drop!(export, vm);
 
         // Keep a scoped view, rather than a slice, because argument conversion can resize the buffer.

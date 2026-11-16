@@ -228,7 +228,3 @@ Error messages inherited from shared byte algorithms may refer to `bytes` rather
 Methods can be called directly, but reading one as a value (`append = buffer.append`) raises `AttributeError`.
 Bytearrays do not expose `__class__`; use `type(buffer)` instead.
 Their `repr` uses the bytes escaping rules, which omit CPython's extra escape for a single quote inside double quotes.
-
-The `bytearray__xfail_*.py` fixtures assert CPython behavior for these limitations, legacy codecs, and
-the `__getitem__`-only iteration fallback.
-Each uses strict `xfail = ['monty']`: it must pass on CPython and fail on Monty until the limitation is fixed.

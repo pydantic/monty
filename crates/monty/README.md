@@ -185,5 +185,7 @@ Byte algorithms are shared with `bytes`; mutation methods retain the bytearray's
 `join` holds a scoped export of its separator during user iteration: aliases may change its contents but cannot resize it.
 Nested calls release their own exports on success or error; export counts are omitted from snapshots.
 Search methods convert bounds before exporting the receiver for a needle's `__index__` callback.
+`replace` exports mutable `old` and `new` arguments during count conversion; its receiver can still resize unless aliased
+by one of those arguments.
 See [the builtin limitations](../../limitations/builtins.md#bytearray) and
 [host conversion rules](../../limitations/host-values.md#mutable-byte-buffers).
