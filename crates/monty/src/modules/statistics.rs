@@ -36,18 +36,8 @@ use crate::{
 };
 
 /// The functions of the `statistics` module.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0xfb2d_44e2_bb70_c85c)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum StatisticsFunctions {
     Mean = 0,

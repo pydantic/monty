@@ -25,18 +25,8 @@ use crate::{
 };
 
 /// The module's four functions.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0x8df6_9c0c_fee5_fc83)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum FnmatchFunctions {
     Fnmatch = 0,

@@ -73,18 +73,8 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
 }
 
 /// The callable functions exposed by the `collections` module.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0xdcd1_da27_4c85_d54e)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum CollectionsFunctions {
     Namedtuple = 0,

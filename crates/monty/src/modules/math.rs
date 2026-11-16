@@ -110,9 +110,9 @@ fn check_gamma_pole(f: f64) -> RunResult<()> {
 }
 
 /// Math module functions — each variant corresponds to a Python-visible function.
+#[monty_macros::explicit_discriminants(checksum = 0x0fdd_acb7_255d_bb02)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
-#[derive(monty_macros::ExplicitDiscriminants)]
 pub(crate) enum MathFunctions {
     // Rounding
     Floor = 0,

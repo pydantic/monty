@@ -39,18 +39,8 @@ use crate::{
 /// `time` module functions, each a Python-visible callable.
 ///
 /// Variant names persist in dumps; explicit discriminants preserve numeric identities.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0xd0fc_8b76_7b3d_a116)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum TimeFunctions {
     Time = 0,

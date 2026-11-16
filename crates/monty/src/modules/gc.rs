@@ -24,18 +24,8 @@ use crate::{
 /// from Python — no observation/tuning APIs (`gc.get_objects`, `gc.set_threshold`,
 /// ...) since those would let test code peer at heap internals in ways that
 /// aren't stable across Monty versions.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0xaa19_7e20_3618_31c7)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum GcFunctions {
     /// `gc.collect()` — forces a full garbage collection cycle.

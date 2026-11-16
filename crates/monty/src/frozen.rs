@@ -93,9 +93,8 @@ impl FrozenFunction {
 
 /// Native primitives passed directly to internal Python functions.
 /// These identities and their signatures are part of the captured bytecode's ABI.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display, monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0xcf79_a6c2_e087_9672)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum FrozenFunctions {
     /// Rebuild a generic alias around resolved arguments (see `generic_alias::call_alias_with`).

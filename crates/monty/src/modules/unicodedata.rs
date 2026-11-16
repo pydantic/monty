@@ -49,18 +49,8 @@ use crate::{
 const UNIDATA_VERSION: &str = "16.0.0";
 
 /// `unicodedata` module functions — each variant corresponds to a Python-visible function.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0xd863_1aaf_1194_df41)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum UnicodedataFunctions {
     Category = 0,

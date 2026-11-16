@@ -3,7 +3,7 @@
 //! - `#[derive(FromArgs)]` — `ArgValues` → typed struct (positional/kwarg
 //!   dispatch, defaults, type coercion via `FromValue`, refcount cleanup).
 //! - `#[derive(ToArgs)]` — typed struct → host call arguments.
-//! - `#[derive(ExplicitDiscriminants)]` — require permanent numeric codes on enum variants.
+//! - `#[explicit_discriminants(checksum = ...)]` — pin permanent numeric codes on enum variants.
 //!
 //! Argument-conversion code is internal to `monty` (`FromArgs`) and `monty-types` (`ToArgs`).
 //! See the crate `README.md` for usage and the docstrings on `StructAttrs` /
@@ -15,12 +15,13 @@ mod explicit_discriminants;
 mod from_args;
 mod to_args;
 
-/// Requires an explicit integer literal on every enum variant used for persistent identities.
-/// Existing codes must not change or be reused; this derive rejects implicit and computed codes.
-#[proc_macro_derive(ExplicitDiscriminants)]
-pub fn derive_explicit_discriminants(input: TokenStream) -> TokenStream {
-    let input = syn::parse_macro_input!(input as syn::DeriveInput);
-    explicit_discriminants::expand(&input)
+/// Requires explicit integer identity codes and a matching `checksum` argument.
+/// Place before derives to check every declared variant, regardless of `cfg` conditions.
+/// Missing or mismatched checksums report a copyable attribute; review changes before updating it.
+/// Existing codes must never change or be reused. The enum is returned unchanged.
+#[proc_macro_attribute]
+pub fn explicit_discriminants(args: TokenStream, input: TokenStream) -> TokenStream {
+    explicit_discriminants::expand(args.into(), input.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

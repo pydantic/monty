@@ -47,9 +47,8 @@ use crate::{
 };
 
 /// `random` module functions, each also a method of `random.Random`.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, Serialize, Deserialize, monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0xd4e4_a18d_730b_1274)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, Serialize, Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum RandomFunctions {
     Random = 0,

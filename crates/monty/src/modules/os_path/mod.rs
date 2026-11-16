@@ -44,18 +44,8 @@ use crate::{
 pub(crate) mod posix;
 
 /// `os.path` module functions.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0x5cce_0efe_d771_be47)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum OsPathFunctions {
     Abspath = 0,

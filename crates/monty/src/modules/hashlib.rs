@@ -39,18 +39,8 @@ use crate::{
 /// `blake2b` and `blake2s` are types rather than functions, as in CPython, so
 /// they are not here. Serialized into dumps by variant name, so renaming one
 /// needs `#[serde(alias)]`.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0x05ef_ded8_6896_9495)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum HashlibFunctions {
     Md5 = 0,

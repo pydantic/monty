@@ -34,18 +34,8 @@ use crate::{
 /// Monty — `itertools.count` IS `Type::ItertoolsCount`, constructed through
 /// [`construct`]. Only `tee` is a plain function there, and `from_iterable` is
 /// reached through the `chain` type rather than the module.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0xd321_9a55_cf78_bc1f)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum ItertoolsFunctions {
     Tee = 0,

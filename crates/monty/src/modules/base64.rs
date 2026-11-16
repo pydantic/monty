@@ -65,18 +65,8 @@ const MAX_LINE_SIZE: u8 = 76;
 /// `base64` module functions, one variant per Python-visible function.
 ///
 /// Serialized into dumps by variant name, so renaming one needs `#[serde(alias)]`.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0x15d1_f528_cc90_6ab5)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Base64Functions {
     #[strum(serialize = "b64encode")]
     B64Encode = 0,

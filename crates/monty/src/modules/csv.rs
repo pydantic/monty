@@ -35,18 +35,8 @@ use crate::{
 };
 
 /// Module-level `csv` functions; `DictReader` and `DictWriter` are types.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0x761e_5c0a_a9b7_9c94)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum CsvFunctions {
     /// `csv.reader(csvfile, dialect='excel', **fmtparams)`.

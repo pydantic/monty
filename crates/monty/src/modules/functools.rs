@@ -42,18 +42,8 @@ def __monty_functools_reduce(function, iterable, accumulator, has_initial, iter_
 ///
 /// `partial` is absent because it is exposed as a type object rather than a
 /// function, so `type(p) is functools.partial` holds.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0x3394_8a45_b69b_a9c5)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum FunctoolsFunctions {
     Reduce = 0,

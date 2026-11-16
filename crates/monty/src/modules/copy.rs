@@ -19,18 +19,8 @@ use crate::{
 };
 
 /// `copy` module functions, one variant per Python-visible function.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0x17db_11bd_e96f_cd0c)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 pub(crate) enum CopyFunctions {
     #[strum(serialize = "copy")]
     Copy = 0,

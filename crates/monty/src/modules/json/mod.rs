@@ -34,18 +34,8 @@ use crate::{
 /// Each variant corresponds to a module-level callable stored in the module's
 /// attribute dictionary. The display form matches the Python-visible function
 /// name so reprs look like normal builtins.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0xe42d_b90d_ee47_8363)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum JsonFunctions {
     /// `json.loads()` parses JSON text into Monty values.

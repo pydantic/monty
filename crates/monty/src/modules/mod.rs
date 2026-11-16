@@ -248,18 +248,8 @@ impl StandardLib {
 /// Every dump reaches these through `Value::ModuleFunction`, encoded by variant
 /// name, so renaming a variant needs `#[serde(alias)]` (see `DUMP_VERSION`).
 /// Explicit discriminants are permanent module identity codes; never change or reuse them.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-    strum::EnumDiscriminants,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0x372d_a81d_21f2_6e14)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::EnumDiscriminants)]
 #[repr(u8)]
 pub(crate) enum ModuleFunctions {
     Asyncio(asyncio::AsyncioFunctions) = 0,

@@ -42,18 +42,8 @@ use crate::{
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 /// `binascii` module functions, one variant per Python-visible function.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0x7ea4_5f35_3381_27f4)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 pub(crate) enum BinasciiFunctions {
     #[strum(serialize = "hexlify")]
     Hexlify = 0,

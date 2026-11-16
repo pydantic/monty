@@ -23,18 +23,8 @@ use crate::{
 };
 
 /// The functions of the `decimal` module.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0x99d1_733d_2b53_6f20)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 pub(crate) enum DecimalFunctions {
     #[strum(serialize = "getcontext")]
     Getcontext = 0,

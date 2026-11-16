@@ -23,7 +23,7 @@ The public data types (the `MontyGraph`/`MontyNode` value graph and the `MontyOb
 built on it, `MontyException`/`ExcType`, `OsFunctionCall` +
 its arg structs, `ResourceLimits`/`ResourceTracker`, `PrintStream`/`PrintWriter`,
 `CompileOptions`, `ExtFunctionResult`, `FileMode`, ...) live in `crates/monty-types`,
-which depends on no other monty crate except the `monty-macros` derives. `monty`
+which depends on no other monty crate except the `monty-macros` proc macros. `monty`
 depends on `monty-types` but does not blanket re-export it — only a few types
 are re-exported inline where they appear in `monty`'s public API (e.g.
 `run::CompileOptions`, `run_progress::{ExtFunctionResult, NameLookupResult}`).
@@ -289,7 +289,10 @@ to argument order or meaning.
 Compatible source-body changes do not require a bump; restored sessions retain their captured implementations.
 Numeric identities are also observable state: a dump may contain a saved `id()` alongside its object.
 Fieldless builtin-function, module-function and property-operation enums use explicit discriminants, enforced by
-`#[derive(monty_macros::ExplicitDiscriminants)]`; existing codes must never change or be reused.
+`#[monty_macros::explicit_discriminants(checksum = ...)]`.
+The checksum pins sorted name/code pairs; existing codes must never change or be reused.
+Missing or stale checksums report a copyable attribute; review the mappings before copying it.
+Place the attribute before derives: it checks all declared variants, including inactive ones, with one checksum for every configuration.
 The payload-carrying `ModuleFunctions` also assigns explicit codes; `strum::EnumDiscriminants` exposes them to the encoder.
 `BuiltinType` uses fixed codes in `identity_index` to preserve its compact payload-carrying layout.
 Keep existing numeric identity expectations unchanged when adding variants.

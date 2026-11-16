@@ -65,18 +65,8 @@ pub(crate) const ASCII: u16 = 256;
 /// Module-level `re` functions (`re.search(pattern, string)`, …), as opposed to the
 /// methods on a compiled `re.Pattern`. String patterns go through
 /// [`RePatternCache`], so repeated calls usually avoid recompiling.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    strum::Display,
-    serde::Serialize,
-    serde::Deserialize,
-    monty_macros::ExplicitDiscriminants,
-)]
+#[monty_macros::explicit_discriminants(checksum = 0xc297_04ae_1a6d_8963)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum ReFunctions {
     /// `re.compile(pattern, flags=0)` — compile a pattern into a `re.Pattern` object.
