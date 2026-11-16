@@ -682,6 +682,16 @@ impl Type {
             (Self::DateTime, Some(StaticStrings::Fromtimestamp)) => {
                 datetime::class_fromtimestamp(vm, args).map(CallResult::Value)
             }
+            (Self::DateTime, Some(StaticStrings::Utcfromtimestamp)) => {
+                datetime::class_utcfromtimestamp(vm, args).map(CallResult::Value)
+            }
+            (Self::DateTime, Some(StaticStrings::Utcnow)) => datetime::class_utcnow(vm, args),
+            (Self::Date, Some(StaticStrings::Fromisocalendar)) => {
+                date::class_fromisocalendar(vm, args).map(CallResult::Value)
+            }
+            (Self::DateTime, Some(StaticStrings::Fromisocalendar)) => {
+                datetime::class_fromisocalendar(vm, args).map(CallResult::Value)
+            }
             (Self::DateTime, Some(StaticStrings::Now)) => datetime::class_now(vm, args),
             (Self::DateTime, Some(StaticStrings::Strptime)) => {
                 datetime::class_strptime(vm.heap, args, vm.interns).map(CallResult::Value)

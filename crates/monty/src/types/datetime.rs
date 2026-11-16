@@ -23,8 +23,9 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
+    modules::time::{suspend_for_utcnow, timetuple_value},
     py_value::PyValue,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
@@ -360,6 +361,55 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult
         }
     };
     attach_or_allocate_tzinfo_ref(&mut dt, tz_ref, vm.heap);
+    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))))
+}
+
+/// `datetime.utcfromtimestamp(timestamp)`: the naive UTC datetime `timestamp`
+/// seconds after the Unix epoch, rounded half-even to microseconds.
+///
+/// CPython 3.12+ also emits a `DeprecationWarning`; Monty has no warnings
+/// machinery, so none is emitted.
+pub(crate) fn class_utcfromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let args = args.reject_kwargs("utcfromtimestamp", vm.heap)?;
+    // `utcfromtimestamp` is METH_O-like but words arity with a number, unlike `date`'s.
+    let ArgValues::One(timestamp) = args else {
+        let count = args.count();
+        args.drop_with(vm.heap);
+        return Err(ExcType::type_error(format!(
+            "utcfromtimestamp() takes exactly 1 argument ({count} given)"
+        )));
+    };
+    defer_drop!(timestamp, vm);
+    let utc = timestamp_to_utc(timestamp, TimestampRounding::HalfEven, vm)?
+        .ok_or_else(|| timestamp_not_a_number(timestamp, vm))?;
+    // A zero offset reuses the range check and its `year must be in 1..9999`.
+    let naive = wall_clock_at(utc, 0)?;
+    utc_naive_value(naive, vm)
+}
+
+/// `datetime.utcnow()`: the session clock as a naive UTC datetime, read the same
+/// way `now()` reads it, so a host-supplied clock is asked once and converted.
+pub(crate) fn class_utcnow(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    args.check_zero_args("datetime.utcnow", vm.heap)?;
+    match sandbox_instant(vm)? {
+        None => Ok(suspend_for_utcnow()),
+        Some(utc) => utc_naive_value(utc, vm).map(CallResult::Value),
+    }
+}
+
+/// A naive datetime holding the UTC wall clock `utc`, cut to whole microseconds.
+pub(crate) fn utc_naive_value(utc: NaiveDateTime, vm: &mut VM<'_>) -> RunResult<Value> {
+    let naive = utc
+        .with_nanosecond(utc.nanosecond() / 1_000 * 1_000)
+        .expect("a truncated nanosecond is still in range");
+    let dt = from_local_naive(naive).ok_or_else(date_out_of_range)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))))
+}
+
+/// `datetime.fromisocalendar(year, week, day)`: midnight of that ISO date.
+pub(crate) fn class_fromisocalendar(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let date = date::iso_calendar_date(args, vm)?;
+    let dt = from_local_naive(date.and_time(NaiveTime::MIN)).expect("a date in 1..9999 is in range");
     Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))))
 }
 
@@ -1553,8 +1603,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
                 Ok(CallResult::Value(Value::Float(ts)))
             }
             Some(StaticStrings::Astimezone) => astimezone(&dt, vm, args),
-            // A classmethod, so CPython also reaches it through an instance.
+            // Classmethods, so CPython also reaches them through an instance.
             Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
+            Some(StaticStrings::Utcfromtimestamp) => class_utcfromtimestamp(vm, args).map(CallResult::Value),
+            Some(StaticStrings::Utcnow) => class_utcnow(vm, args),
+            Some(StaticStrings::Fromisocalendar) => class_fromisocalendar(vm, args).map(CallResult::Value),
+            Some(StaticStrings::Isocalendar) => {
+                args.check_zero_args("date.isocalendar", vm.heap)?;
+                Ok(CallResult::Value(date::isocalendar_value(dt.naive.date(), vm)))
+            }
+            Some(StaticStrings::Timetuple) => {
+                args.check_zero_args("datetime.timetuple", vm.heap)?;
+                Ok(CallResult::Value(timetuple_value(dt.naive, vm)))
+            }
             Some(StaticStrings::Utcoffset) => {
                 args.check_zero_args("datetime.utcoffset", vm.heap)?;
                 Ok(CallResult::Value(timezone::utcoffset_value(dt.offset_seconds, vm.heap)))
