@@ -22,10 +22,12 @@ pub(crate) enum Property {
 /// Discriminant for zero-arg OS-backed [`Property`]s. Kept `Copy` so
 /// `Property` stays `Copy + Hash`; the matching [`OsFunctionCall`] (which
 /// is not `Copy`) is built on access in [`Property::get`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, monty_macros::ExplicitDiscriminants,
+)]
 pub(crate) enum ZeroArgOsProperty {
     /// `os.environ` — returns the host environment as a dict.
-    GetEnviron,
+    GetEnviron = 0,
 }
 
 impl Property {

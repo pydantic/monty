@@ -42,7 +42,7 @@ use crate::{
 /// (e.g., `TextIOWrapper`, `PosixPath`).
 ///
 /// Variant names are persisted in dumps; renames require a serde alias.
-/// Variant order is also used by builtin id() through postcard.
+/// Builtin numeric identities preserve these original variant indices.
 #[derive(
     Debug,
     Clone,

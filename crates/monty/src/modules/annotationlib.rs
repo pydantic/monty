@@ -41,10 +41,21 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
 }
 
 /// `annotationlib` module functions, each a Python-visible callable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    strum::Display,
+    serde::Serialize,
+    serde::Deserialize,
+    monty_macros::ExplicitDiscriminants,
+)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum AnnotationlibFunctions {
-    GetAnnotations,
+    GetAnnotations = 0,
 }
 
 /// Dispatches an `annotationlib` module function call.

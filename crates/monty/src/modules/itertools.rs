@@ -34,14 +34,25 @@ use crate::{
 /// Monty — `itertools.count` IS `Type::ItertoolsCount`, constructed through
 /// [`construct`]. Only `tee` is a plain function there, and `from_iterable` is
 /// reached through the `chain` type rather than the module.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    strum::Display,
+    serde::Serialize,
+    serde::Deserialize,
+    monty_macros::ExplicitDiscriminants,
+)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum ItertoolsFunctions {
-    Tee,
+    Tee = 0,
     /// `chain.from_iterable`, an attribute of the `chain` type rather than a
     /// name in the module — resolved by `Value::py_getattr`.
     #[strum(serialize = "from_iterable")]
-    ChainFromIterable,
+    ChainFromIterable = 1,
 }
 
 /// The module's type objects, by the name each is bound to.

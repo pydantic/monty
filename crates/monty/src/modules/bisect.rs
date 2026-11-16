@@ -14,13 +14,24 @@ use crate::{
 };
 
 /// The aliases share the same callable value as their canonical function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    strum::Display,
+    serde::Serialize,
+    serde::Deserialize,
+    monty_macros::ExplicitDiscriminants,
+)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum BisectFunctions {
-    BisectLeft,
-    BisectRight,
-    InsortLeft,
-    InsortRight,
+    BisectLeft = 0,
+    BisectRight = 1,
+    InsortLeft = 2,
+    InsortRight = 3,
 }
 
 /// Creates the module and its two aliases.

@@ -125,9 +125,17 @@ unit tests for every attribute-validation error.
 Projects a struct into the `CallArgs` a host callback takes, reusing the `#[from_args(...)]` field attributes.
 `varargs` fields contribute one positional argument per element.
 
+## `#[derive(ExplicitDiscriminants)]`
+
+Requires an explicit integer literal on every enum variant used as a numeric identity code.
+Existing codes must never change or be reused, including after a variant is removed.
+New variants take unused codes; their declaration position does not affect existing identities.
+The derive emits no code and does not change the enum's representation.
+Rust rejects duplicate codes.
+
 ## Not a standalone crate
 
-Generated code emits `crate::...` paths: `FromArgs` compiles inside `monty`, and `ToArgs` inside `monty-types`.
+Argument-conversion code emits `crate::...` paths: `FromArgs` compiles inside `monty`, and `ToArgs` inside `monty-types`.
 Cross-crate use would need `proc-macro-crate` and paths to the appropriate crate.
 
 ## Monty crates

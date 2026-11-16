@@ -25,13 +25,24 @@ use crate::{
 };
 
 /// The module's four functions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    strum::Display,
+    serde::Serialize,
+    serde::Deserialize,
+    monty_macros::ExplicitDiscriminants,
+)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum FnmatchFunctions {
-    Fnmatch,
-    Fnmatchcase,
-    Filter,
-    Translate,
+    Fnmatch = 0,
+    Fnmatchcase = 1,
+    Filter = 2,
+    Translate = 3,
 }
 
 /// Creates the `fnmatch` module.

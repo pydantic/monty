@@ -49,15 +49,26 @@ use crate::{
 const UNIDATA_VERSION: &str = "16.0.0";
 
 /// `unicodedata` module functions — each variant corresponds to a Python-visible function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    strum::Display,
+    serde::Serialize,
+    serde::Deserialize,
+    monty_macros::ExplicitDiscriminants,
+)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum UnicodedataFunctions {
-    Category,
-    Name,
-    Lookup,
-    Combining,
-    Normalize,
-    IsNormalized,
+    Category = 0,
+    Name = 1,
+    Lookup = 2,
+    Combining = 3,
+    Normalize = 4,
+    IsNormalized = 5,
 }
 
 /// Static mapping of attribute names to functions for module creation.

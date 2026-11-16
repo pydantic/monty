@@ -3,8 +3,8 @@ use std::fmt;
 use crate::{exception_private::ExcType, types::Type};
 
 /// Type objects stored inline in values; user classes use heap references.
-/// Serialize through `Type` to retain its dump names and postcard indices,
-/// including the gap left by `Type::Instance`. Keep both conversions exhaustive.
+/// Serialize through `Type` to retain its dump names. Numeric identities retain
+/// the gap left by `Type::Instance`. Keep both conversions exhaustive.
 #[derive(
     Debug,
     Clone,
@@ -210,6 +210,120 @@ pub(crate) enum BuiltinType {
     DecimalContextManager,
     #[strum(serialize = "annotationlib.ForwardRef")]
     ForwardRef,
+}
+
+impl BuiltinType {
+    /// Permanent `id()` codes; 28 remains reserved for the removed `Type::Instance` slot.
+    pub(crate) fn identity_index(self) -> u32 {
+        match self {
+            Self::Ellipsis => 0,
+            Self::NotImplementedType => 1,
+            Self::Type => 2,
+            Self::NoneType => 3,
+            Self::Bool => 4,
+            Self::Int => 5,
+            Self::Float => 6,
+            Self::Complex => 7,
+            Self::Range => 8,
+            Self::Slice => 9,
+            Self::Date => 10,
+            Self::DateTime => 11,
+            Self::TimeDelta => 12,
+            Self::TimeZone => 13,
+            Self::Str => 14,
+            Self::Bytes => 15,
+            Self::List => 16,
+            Self::Tuple => 17,
+            Self::NamedTuple => 18,
+            Self::Dict => 19,
+            Self::DefaultDict => 20,
+            Self::Counter => 21,
+            Self::DictKeys => 22,
+            Self::DictItems => 23,
+            Self::DictValues => 24,
+            Self::Set => 25,
+            Self::FrozenSet => 26,
+            Self::HostClass => 27,
+            Self::Exception(_) => 29,
+            Self::Function => 30,
+            Self::BuiltinFunction => 31,
+            Self::Cell => 32,
+            Self::Iterator => 33,
+            Self::ListIterator => 34,
+            Self::CallableIterator => 35,
+            Self::Coroutine => 36,
+            Self::Module => 37,
+            Self::TextIOWrapper => 38,
+            Self::BufferedReader => 39,
+            Self::BufferedWriter => 40,
+            Self::BufferedRandom => 41,
+            Self::SpecialForm => 42,
+            Self::Path => 43,
+            Self::Property => 44,
+            Self::RePattern => 45,
+            Self::ReMatch => 46,
+            Self::DirEntry => 47,
+            Self::ScandirIterator => 48,
+            Self::WalkGenerator => 49,
+            Self::TupleIterator => 50,
+            Self::StrAsciiIterator => 51,
+            Self::StrIterator => 52,
+            Self::BytesIterator => 53,
+            Self::RangeIterator => 54,
+            Self::DictKeyIterator => 55,
+            Self::DictItemIterator => 56,
+            Self::DictValueIterator => 57,
+            Self::SetIterator => 58,
+            Self::ItertoolsCount => 59,
+            Self::ItertoolsRepeat => 60,
+            Self::DataclassField => 61,
+            Self::Deque => 62,
+            Self::DequeIterator => 63,
+            Self::ItertoolsPairwise => 64,
+            Self::ItertoolsCompress => 65,
+            Self::ItertoolsIslice => 66,
+            Self::ItertoolsChain => 67,
+            Self::ItertoolsCycle => 68,
+            Self::DataclassParams => 69,
+            Self::MissingType => 70,
+            Self::ItertoolsTakeWhile => 71,
+            Self::ItertoolsDropWhile => 72,
+            Self::ItertoolsFilterFalse => 73,
+            Self::ItertoolsStarMap => 74,
+            Self::Object => 75,
+            Self::Time => 76,
+            Self::Partial => 77,
+            Self::ItertoolsAccumulate => 78,
+            Self::ItertoolsBatched => 79,
+            Self::ItertoolsZipLongest => 80,
+            Self::GenericAlias => 81,
+            Self::Union => 82,
+            Self::ItertoolsCombinations => 83,
+            Self::ItertoolsCombinationsWithReplacement => 84,
+            Self::ItertoolsPermutations => 85,
+            Self::ItertoolsProduct => 86,
+            Self::ItertoolsGroupBy => 87,
+            Self::ItertoolsGrouper => 88,
+            Self::ItertoolsTee => 89,
+            Self::ItertoolsTeeDataObject => 90,
+            Self::Random => 91,
+            Self::LruCacheWrapper => 92,
+            Self::HashlibHash => 93,
+            Self::HashlibHashXof => 94,
+            Self::Blake2b => 95,
+            Self::Blake2s => 96,
+            Self::CsvReader => 97,
+            Self::CsvWriter => 98,
+            Self::CsvDictReader => 99,
+            Self::CsvDictWriter => 100,
+            Self::CsvDialect => 101,
+            Self::Decimal => 102,
+            Self::DecimalContext => 103,
+            Self::DecimalSignalDict => 104,
+            Self::DecimalContextManager => 105,
+            Self::ForwardRef => 106,
+        }
+    }
 }
 
 impl From<BuiltinType> for Type {
@@ -454,7 +568,7 @@ mod builtin_type_tests {
     use strum::VariantNames;
 
     use super::{BuiltinType, ExcType, Type};
-    use crate::{builtins::Builtins, heap::HeapId, value::Value};
+    use crate::{builtins::Builtins, heap::HeapId, identity::Identity, value::Value};
 
     #[test]
     fn builtin_type_names_match_runtime_types() {
@@ -495,11 +609,6 @@ mod builtin_type_tests {
             let cbor = minicbor_serde::to_vec(ty).unwrap();
             assert_eq!(minicbor_serde::to_vec(builtin).unwrap(), cbor);
             assert_eq!(minicbor_serde::from_slice::<BuiltinType>(&cbor).unwrap(), builtin);
-
-            // id() encodes builtins through postcard, whose variant indices must also stay stable.
-            let postcard = postcard::to_allocvec(&ty).unwrap();
-            assert_eq!(postcard::to_allocvec(&builtin).unwrap(), postcard);
-            assert_eq!(postcard::from_bytes::<BuiltinType>(&postcard).unwrap(), builtin);
         }
     }
 
@@ -516,9 +625,13 @@ mod builtin_type_tests {
             let builtin: BuiltinType = minicbor_serde::from_slice(&cbor).unwrap();
 
             assert_eq!(minicbor_serde::to_vec(builtin).unwrap(), cbor, "{name}");
-            let postcard = vec![index.parse::<u8>().unwrap()];
-            assert_eq!(postcard::to_allocvec(&builtin).unwrap(), postcard, "{name}");
-            assert_eq!(postcard::from_bytes::<BuiltinType>(&postcard).unwrap(), builtin);
+            let index = index.parse::<u32>().unwrap();
+            assert_eq!(builtin.identity_index(), index, "{name}");
+            let value = Value::Builtin(Builtins::Type(builtin));
+            assert_eq!(
+                Identity::new(&value).encoded(),
+                ((0x1_0200 | u128::from(index)) << 5) | 0x0a
+            );
         }
 
         // Exception carries a payload and follows the removed Instance slot.
@@ -526,9 +639,8 @@ mod builtin_type_tests {
         let builtin = BuiltinType::Exception(ExcType::ValueError);
         assert_eq!(minicbor_serde::to_vec(builtin).unwrap(), cbor);
         assert_eq!(minicbor_serde::from_slice::<BuiltinType>(cbor).unwrap(), builtin);
-        let postcard = [29, 17];
-        assert_eq!(postcard::to_allocvec(&builtin).unwrap(), postcard);
-        assert_eq!(postcard::from_bytes::<BuiltinType>(&postcard).unwrap(), builtin);
+        let value = Value::Builtin(Builtins::Type(builtin));
+        assert_eq!(Identity::new(&value).encoded(), (0x0102_1d11 << 5) | 0x0a);
     }
 
     #[test]
@@ -538,9 +650,6 @@ mod builtin_type_tests {
 
         let cbor = minicbor_serde::to_vec(instance).unwrap();
         assert!(minicbor_serde::from_slice::<BuiltinType>(&cbor).is_err());
-
-        let postcard = postcard::to_allocvec(&instance).unwrap();
-        assert!(postcard::from_bytes::<BuiltinType>(&postcard).is_err());
     }
 
     #[test]

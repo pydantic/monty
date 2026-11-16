@@ -38,29 +38,39 @@ use crate::{
 
 /// `time` module functions, each a Python-visible callable.
 ///
-/// Serialised by declaration index through `ModuleFunctions`, so new variants
-/// must be appended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
+/// Variant names persist in dumps; explicit discriminants preserve numeric identities.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    strum::Display,
+    serde::Serialize,
+    serde::Deserialize,
+    monty_macros::ExplicitDiscriminants,
+)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum TimeFunctions {
-    Time,
-    Sleep,
-    TimeNs,
-    Monotonic,
-    MonotonicNs,
-    PerfCounter,
-    PerfCounterNs,
-    ProcessTime,
-    ProcessTimeNs,
-    ThreadTime,
-    ThreadTimeNs,
-    Gmtime,
-    Localtime,
-    Mktime,
-    Asctime,
-    Ctime,
-    Strftime,
-    Strptime,
+    Time = 0,
+    Sleep = 1,
+    TimeNs = 2,
+    Monotonic = 3,
+    MonotonicNs = 4,
+    PerfCounter = 5,
+    PerfCounterNs = 6,
+    ProcessTime = 7,
+    ProcessTimeNs = 8,
+    ThreadTime = 9,
+    ThreadTimeNs = 10,
+    Gmtime = 11,
+    Localtime = 12,
+    Mktime = 13,
+    Asctime = 14,
+    Ctime = 15,
+    Strftime = 16,
+    Strptime = 17,
 }
 
 /// Every function the module exposes, paired with the name it binds to.

@@ -36,21 +36,32 @@ use crate::{
 };
 
 /// The functions of the `statistics` module.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    strum::Display,
+    serde::Serialize,
+    serde::Deserialize,
+    monty_macros::ExplicitDiscriminants,
+)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum StatisticsFunctions {
-    Mean,
-    Fmean,
-    Median,
-    MedianLow,
-    MedianHigh,
-    Mode,
-    Multimode,
-    Pstdev,
-    Pvariance,
-    Stdev,
-    Variance,
-    Quantiles,
+    Mean = 0,
+    Fmean = 1,
+    Median = 2,
+    MedianLow = 3,
+    MedianHigh = 4,
+    Mode = 5,
+    Multimode = 6,
+    Pstdev = 7,
+    Pvariance = 8,
+    Stdev = 9,
+    Variance = 10,
+    Quantiles = 11,
 }
 
 /// Creates the module and its `StatisticsError` exception type.

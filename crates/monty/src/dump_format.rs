@@ -8,8 +8,8 @@
 //! [`Session`] discriminant, not a separate tag.
 //!
 //! Inline builtin types serialize through `Type`, preserving the names and payloads
-//! written before `BuiltinType` was split out. Its own enum order is not the wire
-//! order: postcard encoding for builtin `id()` retains `Type::Instance`'s slot.
+//! written before `BuiltinType` was split out. Numeric builtin identities also
+//! retain `Type::Instance`'s slot, independently of the dump encoding.
 //! See `builtin_type_tests` in `types/builtin_type.rs` and the legacy serialization fixture.
 //!
 //! # Naming contract
@@ -50,8 +50,8 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// removing one or reordering them does not need a bump (see the module docs).
 /// Bump for every release where
 /// the *meaning* of serialized data changes: opcodes or their operand shapes,
-/// `BuiltinsFunctions` order (its discriminants are bytecode operands),
-/// `CmpOperator` values, the compiler's constant layout, how a dict or set key
+/// `BuiltinsFunctions` discriminants (bytecode operands), `CmpOperator` values,
+/// the compiler's constant layout, numeric identities, how a dict or set key
 /// hashes (entries persist their hash), or a semantic change to a stored value.
 /// Frozen code is persisted too: incompatible changes to its Rust entry arguments or
 /// private native helper contracts need compatibility handling or a bump. Compatible
@@ -409,13 +409,12 @@ mod tests {
             "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&monty_type_names))
         );
-        // Builtin discriminants are `CallBuiltinFunction` operands, so the enum
-        // is append-only: a new builtin goes after the last variant.
+        // Explicit builtin codes are `CallBuiltinFunction` operands; declaration order is free.
         assert_eq!(
-            variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
-            0xcdd8_09b1_2adc_3852,
-            "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}, actual: {}",
-            grouped_hex(variant_order_fingerprint(BuiltinsFunctions::VARIANTS))
+            builtin_functions_fingerprint(),
+            0x81d3_9adf_bfc9_8e17,
+            "BuiltinsFunctions codes changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(builtin_functions_fingerprint())
         );
     }
 
@@ -428,14 +427,17 @@ mod tests {
         format!("0x{s}")
     }
 
-    /// FNV-1a over variant names in declaration order.
-    ///
-    /// `BuiltinsFunctions` discriminants are bytecode operands, so inserting a
-    /// variant rewrites what older dumps execute rather than failing the version
-    /// check. Appending leaves this unchanged for every existing variant;
-    /// inserting or reordering does not.
-    fn variant_order_fingerprint(variants: &[&str]) -> u64 {
-        fnv1a(variants)
+    /// Pins builtin names to their bytecode operands without constraining declaration order.
+    fn builtin_functions_fingerprint() -> u64 {
+        let mut codes = BuiltinsFunctions::VARIANTS
+            .iter()
+            .map(|name| {
+                let function: BuiltinsFunctions = name.parse().unwrap();
+                format!("{name}:{}", function as u8)
+            })
+            .collect::<Vec<_>>();
+        codes.sort_unstable();
+        fnv1a(&codes)
     }
 
     /// FNV-1a over variant names in sorted order.
