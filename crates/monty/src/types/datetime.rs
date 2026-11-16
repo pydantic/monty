@@ -315,12 +315,27 @@ pub(crate) fn class_method(
 ) -> Result<RunResult<CallResult>, ArgValues> {
     Ok(match attr.static_string(vm.interns) {
         Some(StaticStrings::Now) => class_now(vm, args),
+        Some(StaticStrings::Fromordinal) => class_fromordinal(vm, args).map(CallResult::Value),
         Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
         Some(StaticStrings::Strptime) => class_strptime(vm.heap, args, vm.interns).map(CallResult::Value),
         Some(StaticStrings::Fromisoformat) => class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value),
         Some(StaticStrings::Combine) => class_combine(vm, args).map(CallResult::Value),
         _ => return Err(args),
     })
+}
+
+/// Classmethod `datetime.fromordinal(ordinal)`: construct a `datetime` at midnight from an ordinal.
+pub(crate) fn class_fromordinal(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let date::FromOrdinalArgs { ordinal } = date::FromOrdinalArgs::from_args(args, vm)?;
+    let date = date::date_from_ordinal(ordinal)?;
+    let naive = date.0.and_hms_opt(0, 0, 0).expect("midnight is valid");
+    let dt = DateTime {
+        naive,
+        offset_seconds: None,
+        timezone_name: None,
+        tzinfo_ref: None,
+    };
+    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))))
 }
 
 /// Reads `datetime.now(tz=None)` from the session clock, preserving `tz` identity.
@@ -441,14 +456,7 @@ fn beyond_chrono_range(seconds: i64) -> RunError {
 /// The proleptic Gregorian year of the instant `seconds` after the Unix epoch, for any
 /// `i64` (Howard Hinnant's `civil_from_days`), where chrono stops at ±262143 years.
 fn civil_year(seconds: i64) -> i64 {
-    let shifted = seconds.div_euclid(86_400) + 719_468;
-    let era = shifted.div_euclid(146_097);
-    let day_of_era = shifted - era * 146_097;
-    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    // Years run March to February here, so January and February belong to the next one.
-    let march_based_month = (5 * day_of_year + 2) / 153;
-    year_of_era + era * 400 + i64::from(march_based_month >= 10)
+    date::civil_year_from_days(seconds.div_euclid(86_400))
 }
 
 /// Whole seconds and microseconds of a timestamp argument, as CPython's
@@ -1582,7 +1590,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
             }
             Some(StaticStrings::Astimezone) => astimezone(&dt, vm, args),
             // A classmethod, so CPython also reaches it through an instance.
+            Some(StaticStrings::Fromordinal) => class_fromordinal(vm, args).map(CallResult::Value),
             Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
+            Some(StaticStrings::Toordinal) => {
+                args.check_zero_args("date.toordinal", vm.heap)?;
+                let date = dt.naive.date();
+                Ok(CallResult::Value(Value::Int(i64::from(date.num_days_from_ce()))))
+            }
             Some(StaticStrings::Utcoffset) => {
                 args.check_zero_args("datetime.utcoffset", vm.heap)?;
                 Ok(CallResult::Value(timezone::utcoffset_value(dt.offset_seconds, vm.heap)))
