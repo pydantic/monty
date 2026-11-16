@@ -63,3 +63,16 @@ fn clones_preserve_metadata_and_snapshots_restart_lazily() {
         size_of::<(Box<str>, Cell<Option<HashValue>>, usize)>()
     );
 }
+
+#[test]
+fn known_counts_include_short_unknown_heap_strings() {
+    for text in ["", "a", "é", "中", "🐍", "ab", "éa", "abcd", "éé"] {
+        let value = HeapStr::new(text.into());
+        assert_eq!(value.known_char_len(), Some(text.chars().count()), "{text:?}");
+        assert_eq!(value.is_ascii(), text.is_ascii(), "{text:?}");
+        assert_eq!(value.char_len(), text.chars().count(), "{text:?}");
+    }
+    let value = HeapStr::new("éabc".into());
+    assert_eq!(value.known_char_len(), None);
+    assert_eq!(value.char_len.get(), 0);
+}

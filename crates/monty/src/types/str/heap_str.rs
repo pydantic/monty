@@ -88,11 +88,11 @@ impl HeapStr {
         });
     }
 
-    /// Returns a count that can be reused without scanning the text.
+    /// Reuses known counts, recounting at most four bytes for short heap strings.
     pub(super) fn known_char_len(&self) -> Option<usize> {
         match self.char_len.get() {
             count @ 2.. => Some(count),
-            _ if self.text.len() <= 1 => Some(self.text.len()),
+            _ if self.text.len() <= 4 => Some(self.char_len()),
             _ => None,
         }
     }

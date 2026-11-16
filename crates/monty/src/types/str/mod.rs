@@ -116,7 +116,7 @@ impl<'h> PyStr<'h> {
         }
     }
 
-    /// Reuses heap counts without forcing a scan during string construction.
+    /// Reuses heap counts, recounting only short strings during construction.
     fn known_char_len(&self, vm: &VM<'h>) -> Option<usize> {
         match self {
             PyStr::Heap(heap_string) => heap_string.get(vm.heap).known_char_len(),
