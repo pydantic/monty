@@ -14,7 +14,7 @@ use monty_types::{
 /// 2023-11-14 22:13:20 UTC, shared with the datatest fixtures.
 const FIXTURE_SECONDS: i64 = 1_700_000_000;
 
-/// 2023-11-14 22:13:59 UTC, where chrono accepts leap-second fractions.
+/// 2023-11-14 22:13:59 UTC, for rejecting leap-second fractions.
 const LAST_SECOND_OF_A_MINUTE: i64 = 1_700_000_039;
 
 const FIXED: DateTimeSource = DateTimeSource::Fixed {
@@ -474,6 +474,23 @@ fn a_named_zone_spans_the_full_datetime_range() {
         ),
         "'9999-12-31 12:00 GMT +0000'"
     );
+}
+
+/// UTC year 10000 is outside Jiff's civil range, but can still denote a valid
+/// local datetime west of UTC. The shifted result, not the UTC intermediate, is bounded.
+#[test]
+fn fromtimestamp_can_shift_into_the_last_civil_day() {
+    let calls = OsPolicy {
+        timezone: SandboxTimeZone::Fixed {
+            offset_seconds: -3_600,
+            name: None,
+        },
+        ..OsPolicy::default()
+    };
+    assert_snapshot!(run_repr_under(
+        "(date.fromtimestamp(253402300800), datetime.fromtimestamp(253402300800))",
+        calls,
+    ), @"(datetime.date(9999, 12, 31), datetime.datetime(9999, 12, 31, 23, 0))");
 }
 
 /// CPython renders the days either side of a naive value to find its local

@@ -69,7 +69,7 @@ except TypeError as exc:
 # checked against whatever CPython the host runs. That glibc-matching behaviour
 # lives in `tests/datetime_format.rs`. See limitations/datetime.md.
 
-# === %f renders microseconds, not chrono's nanoseconds ===
+# === %f always renders six microsecond digits ===
 assert datetime.datetime(2020, 1, 2, 3, 4, 5, 123456).strftime('%f') == '123456'
 assert datetime.datetime(2020, 1, 2, 3, 4, 5, 7).strftime('%f') == '000007'
 assert datetime.datetime(2020, 1, 2, 3, 4, 5, 123456).strftime('%H:%M:%S.%f') == '03:04:05.123456'
@@ -168,6 +168,72 @@ assert datetime.datetime.strptime('2024-06-15 12:30 UTC', '%Y-%m-%d %H:%M %Z').t
 # strftime and strptime round trip through the offset
 _rt = datetime.datetime(2024, 6, 15, 12, 30, tzinfo=datetime.timezone(datetime.timedelta(hours=-5)))
 assert datetime.datetime.strptime(_rt.strftime('%Y-%m-%d %H:%M %z'), '%Y-%m-%d %H:%M %z') == _rt
+
+# === strptime missing fields default to 1900-01-01 at midnight ===
+for _text, _format, _expected in [
+    ('12:30', '%H:%M', datetime.datetime(1900, 1, 1, 12, 30)),
+    ('2024', '%Y', datetime.datetime(2024, 1, 1)),
+    ('02', '%m', datetime.datetime(1900, 2, 1)),
+    ('15', '%d', datetime.datetime(1900, 1, 15)),
+    ('45', '%M', datetime.datetime(1900, 1, 1, 0, 45)),
+    ('12', '%S', datetime.datetime(1900, 1, 1, 0, 0, 12)),
+    ('000123', '%f', datetime.datetime(1900, 1, 1, 0, 0, 0, 123)),
+    ('', '', datetime.datetime(1900, 1, 1)),
+    ('literal', 'literal', datetime.datetime(1900, 1, 1)),
+    ('060', '%j', datetime.datetime(1900, 3, 1)),
+    ('01 1', '%W %w', datetime.datetime(1900, 1, 1)),
+    ('2020 01 1', '%G %V %u', datetime.datetime(2019, 12, 30)),
+    ('2024 060', '%Y %j', datetime.datetime(2024, 2, 29)),
+    (
+        '12:30 +0100',
+        '%H:%M %z',
+        datetime.datetime(1900, 1, 1, 12, 30, tzinfo=datetime.timezone(datetime.timedelta(hours=1))),
+    ),
+]:
+    assert datetime.datetime.strptime(_text, _format) == _expected
+
+try:
+    datetime.datetime.strptime('02/29', '%m/%d')
+    assert False, 'expected ValueError for February 29 in the default year'
+except ValueError as exc:
+    assert str(exc) == 'day 29 must be in range 1..28 for month 2 in year 1900'
+
+# === strptime trailing data is reported before component and offset validation ===
+for _text, _format, _remaining in [
+    ('12:30 extra', '%H:%M', ' extra'),
+    ('2024-02-30 extra', '%Y-%m-%d', ' extra'),
+    ('2024-06-15 12:30+01:00', '%Y-%m-%d %H:%M', '+01:00'),
+    ('+0100 2024-06-15 extra', '%z %Y-%m-%d', ' extra'),
+    ('2024-06-15 12:30 +0100 extra', '%Y-%m-%d %H:%M %z', ' extra'),
+    ('2024-06-15 +0100 12:30 extra', '%Y-%m-%d %z %H:%M', ' extra'),
+    ('2024-06-15 +01:0203 extra', '%Y-%m-%d %z', ' extra'),
+    ('2024-06-15 +2400 extra', '%Y-%m-%d %z', ' extra'),
+    ('2024-06-15 UTC extra', '%Y-%m-%d %Z', ' extra'),
+    ('2024-06-15 UTC 12:30 extra', '%Y-%m-%d %Z %H:%M', ' extra'),
+    ('2024-06-15 UTC +0100 extra', '%Y-%m-%d %Z %z', ' extra'),
+    ('2024-06-15 +0100 UTC extra', '%Y-%m-%d %z %Z', ' extra'),
+    ('2024-06-15 extra日', '%Y-%m-%d', ' extra日'),
+    ('2024-06-15 ', '%Y-%m-%d', ' '),
+    ('extra', '', 'extra'),
+]:
+    try:
+        datetime.datetime.strptime(_text, _format)
+        assert False, 'expected ValueError for trailing input'
+    except ValueError as exc:
+        assert str(exc) == 'unconverted data remains: ' + _remaining
+
+# === strptime fractions, locale expansions, and offsets between civil fields ===
+for _fraction in ['1', '12', '123', '1234', '12345', '123456']:
+    _parsed = datetime.datetime.strptime('2024-06-15 10:30:45.' + _fraction, '%Y-%m-%d %H:%M:%S.%f')
+    assert _parsed.microsecond == int(_fraction.ljust(6, '0'))
+assert datetime.datetime.strptime('2024-06-15 +01:02:03 12:30', '%Y-%m-%d %z %H:%M') == datetime.datetime(
+    2024, 6, 15, 12, 30, tzinfo=datetime.timezone(datetime.timedelta(seconds=3723))
+)
+assert datetime.datetime.strptime('12Z2024', '%f%z%Y') == datetime.datetime(
+    2024, 1, 1, microsecond=120000, tzinfo=datetime.timezone.utc
+)
+assert datetime.datetime.strptime('06/15/24 10:30:45', '%x %X') == datetime.datetime(2024, 6, 15, 10, 30, 45)
+assert datetime.datetime.strptime('Sat Jun 15 10:30:45 2024', '%c') == datetime.datetime(2024, 6, 15, 10, 30, 45)
 
 # === strptime %z rejections ===
 # lowercase z, a missing sign, a bare hour and a minute above 59 are all no match

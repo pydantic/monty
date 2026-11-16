@@ -9,7 +9,10 @@
 
 use std::{borrow::Cow, time::Duration};
 
-use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeDelta, Timelike, format::StrftimeItems};
+use jiff::{
+    SignedDuration,
+    civil::{self, DateTime},
+};
 use monty_types::{
     MontyTimeZone, OsFunctionCall, ProcessTime, ResourceTracker, SandboxTimeZone, SleepError, SleepMode, TimeCaller,
     local_wall_clock, sleep_duration, unix_seconds,
@@ -101,7 +104,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
 /// year. A named zone needs that year from the session clock, so the four are
 /// unset when the clock is `CallHost`: module creation cannot suspend.
 fn set_zone_constants(module: &mut Module, vm: &mut VM<'_>) {
-    let year = vm.env.os_policy.datetime.read().map(|utc| utc.year());
+    let year = vm.env.os_policy.datetime.read().map(|utc| i32::from(utc.year()));
     let Some(constants) = vm.env.os_policy.timezone.constants(year) else {
         return;
     };
@@ -233,7 +236,7 @@ pub(crate) enum ClockReading {
 
 impl ClockReading {
     /// Turns the instant into the value the `time` function returns.
-    fn apply(self, utc: NaiveDateTime, vm: &mut VM<'_>) -> RunResult<Value> {
+    fn apply(self, utc: DateTime, vm: &mut VM<'_>) -> RunResult<Value> {
         match self {
             Self::Nanoseconds => epoch_nanoseconds(utc).map(Value::Int),
             Self::Gmtime => Ok(gmtime_value(utc, vm)),
@@ -492,7 +495,7 @@ fn string_arg(value: &Value, name: &str, position: usize, vm: &VM<'_>) -> RunRes
 /// formats them as given: `strftime('%a', (…, tm_wday=0, …))` prints `Mon`
 /// even when the date is a Saturday.
 struct TimeFields {
-    wall: NaiveDateTime,
+    wall: DateTime,
     weekday: i64,
     yearday: i64,
     /// -1 when unknown (`strptime`), else 0 or 1.
@@ -504,11 +507,11 @@ struct TimeFields {
 
 impl TimeFields {
     /// Fields for a wall clock in `zone`, deriving the weekday and year day.
-    fn zoned(wall: NaiveDateTime, zone: MontyTimeZone, isdst: i64) -> Self {
+    fn zoned(wall: DateTime, zone: MontyTimeZone, isdst: i64) -> Self {
         Self {
             wall,
-            weekday: i64::from(wall.weekday().num_days_from_monday()),
-            yearday: i64::from(wall.ordinal()),
+            weekday: i64::from(wall.weekday().to_monday_zero_offset()),
+            yearday: i64::from(wall.day_of_year()),
             isdst,
             zone: Some(zone),
         }
@@ -521,11 +524,11 @@ impl TimeFields {
     }
 
     /// Fields with no zone, for `strptime` and a bare 9-element tuple.
-    fn naive(wall: NaiveDateTime) -> Self {
+    fn naive(wall: DateTime) -> Self {
         Self {
             wall,
-            weekday: i64::from(wall.weekday().num_days_from_monday()),
-            yearday: i64::from(wall.ordinal()),
+            weekday: i64::from(wall.weekday().to_monday_zero_offset()),
+            yearday: i64::from(wall.day_of_year()),
             isdst: -1,
             zone: None,
         }
@@ -539,7 +542,7 @@ impl TimeFields {
             "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
         ];
         let day = DAYS[self.weekday_index()];
-        let month = MONTHS[(self.wall.month0() as usize).min(11)];
+        let month = MONTHS[usize::try_from(self.wall.month() - 1).expect("month in 1..=12")];
         format!(
             "{day} {month} {:2} {:02}:{:02}:{:02} {}",
             self.wall.day(),
@@ -561,13 +564,11 @@ impl TimeFields {
         };
         let format = self.rewrite_day_directives(format, &vm.heap.tracker)?;
         let format = date::rewrite_zone_directives(&format, offset, name.as_deref(), &vm.heap.tracker)?;
-        let format = date::rewrite_microsecond_directive(&format);
-        let rendered = self.wall.format_with_items(StrftimeItems::new_lenient(&format));
-        date::render_strftime(rendered).ok_or_else(date::invalid_strftime_error)
+        date::render_strftime(self.wall, &format, &vm.heap.tracker)
     }
 
     /// Substitutes the directives CPython reads from `tm_wday`/`tm_yday`, which
-    /// chrono would recompute from the date. Shifting the date instead is not an
+    /// Jiff would recompute from the date. Shifting the date instead is not an
     /// option: `%d`, `%m` and `%Y` must still come from the date itself.
     fn rewrite_day_directives<'f>(&self, format: &'f str, tracker: &ResourceTracker) -> RunResult<Cow<'f, str>> {
         const DAYS: [(&str, &str); 7] = [
@@ -634,7 +635,7 @@ impl TimeFields {
 }
 
 /// `time.gmtime(secs)`: the instant broken down in UTC.
-fn gmtime_value(utc: NaiveDateTime, vm: &mut VM<'_>) -> Value {
+fn gmtime_value(utc: DateTime, vm: &mut VM<'_>) -> Value {
     let zone = MontyTimeZone {
         offset_seconds: 0,
         name: Some("UTC".to_owned()),
@@ -643,14 +644,14 @@ fn gmtime_value(utc: NaiveDateTime, vm: &mut VM<'_>) -> Value {
 }
 
 /// `time.localtime(secs)`: the instant broken down in the session zone.
-fn localtime_value(utc: NaiveDateTime, vm: &mut VM<'_>) -> RunResult<Value> {
+fn localtime_value(utc: DateTime, vm: &mut VM<'_>) -> RunResult<Value> {
     let fields = local_fields(utc, vm)?;
     Ok(struct_time_value(&fields, vm))
 }
 
 /// The session zone's reading of `utc`, with `tm_isdst` set from whether the
 /// zone is on its daylight half at that instant.
-fn local_fields(utc: NaiveDateTime, vm: &VM<'_>) -> RunResult<TimeFields> {
+fn local_fields(utc: DateTime, vm: &VM<'_>) -> RunResult<TimeFields> {
     let zone = vm.env.os_policy.timezone.at(utc);
     let isdst = i64::from(is_daylight(&vm.env.os_policy.timezone, utc, &zone));
     let wall = sandbox_local_wall_clock(vm, utc)?;
@@ -659,9 +660,9 @@ fn local_fields(utc: NaiveDateTime, vm: &VM<'_>) -> RunResult<TimeFields> {
 
 /// Whether `zone` is the daylight half of the session zone at `utc`, which is
 /// `tm_isdst`. A fixed zone has one half, so it is never daylight.
-fn is_daylight(sandbox_zone: &SandboxTimeZone, utc: NaiveDateTime, at: &MontyTimeZone) -> bool {
+fn is_daylight(sandbox_zone: &SandboxTimeZone, utc: DateTime, at: &MontyTimeZone) -> bool {
     sandbox_zone
-        .constants(Some(utc.year()))
+        .constants(Some(i32::from(utc.year())))
         .is_some_and(|constants| constants.daylight && at.offset_seconds == constants.daylight_zone.offset_seconds)
 }
 
@@ -735,7 +736,7 @@ fn time_fields(value: &Value, name: &str, vm: &mut VM<'_>) -> RunResult<TimeFiel
         return Err(ExcType::value_error("day of year out of range"));
     }
     let isdst = items[8].clamp(-1, 1);
-    let zone = own_zone.or_else(|| tuple_zone(wall.year(), isdst, vm));
+    let zone = own_zone.or_else(|| tuple_zone(i32::from(wall.year()), isdst, vm));
     Ok(TimeFields {
         wall,
         weekday: items[6],
@@ -786,7 +787,7 @@ fn time_tuple_parts(value: &Value, name: &str, vm: &VM<'_>) -> RunResult<([i64; 
 
 /// The wall clock a time tuple's first six fields denote, with CPython's
 /// per-field `ValueError` for one out of range.
-fn naive_from_time_tuple(items: &[i64; 9]) -> RunResult<NaiveDateTime> {
+fn naive_from_time_tuple(items: &[i64; 9]) -> RunResult<DateTime> {
     const RANGES: [(&str, i64, i64); 5] = [
         ("month", 1, 12),
         ("day of month", 1, 31),
@@ -809,10 +810,18 @@ fn naive_from_time_tuple(items: &[i64; 9]) -> RunResult<NaiveDateTime> {
     } else {
         (second, 0)
     };
-    NaiveDate::from_ymd_opt(year, month, day)
-        .and_then(|date| date.and_hms_opt(hour, minute, second))
-        .and_then(|wall| wall.checked_add_signed(TimeDelta::seconds(extra)))
-        .ok_or_else(|| ExcType::value_error("day of month out of range"))
+    let invalid = || ExcType::value_error("day of month out of range");
+    DateTime::new(
+        i16::try_from(year).map_err(|_| invalid())?,
+        i8::try_from(month).expect("validated month"),
+        i8::try_from(day).expect("validated day"),
+        i8::try_from(hour).expect("validated hour"),
+        i8::try_from(minute).expect("validated minute"),
+        i8::try_from(second).expect("validated second"),
+        0,
+    )
+    .and_then(|wall| wall.checked_add(SignedDuration::from_secs(extra)))
+    .map_err(|_| invalid())
 }
 
 /// The zone a bare 9-element tuple denotes: the session zone's standard half,
@@ -828,7 +837,7 @@ fn tuple_zone(year: i32, isdst: i64, vm: &VM<'_>) -> Option<MontyTimeZone> {
 
 /// The instant an optional `secs` argument denotes; `None` means the caller
 /// passed nothing and the clock must be read instead.
-fn optional_instant(seconds: &Value, vm: &mut VM<'_>) -> RunResult<Option<NaiveDateTime>> {
+fn optional_instant(seconds: &Value, vm: &mut VM<'_>) -> RunResult<Option<DateTime>> {
     match seconds {
         Value::None => sandbox_instant(vm),
         // CPython's `_PyTime_ObjectToTime_t` floors to whole seconds, as for
@@ -842,7 +851,7 @@ fn optional_instant(seconds: &Value, vm: &mut VM<'_>) -> RunResult<Option<NaiveD
 
 /// The host's `time.time` answer as an instant. The whole seconds floor and the
 /// fraction is kept to the nanosecond so the `_ns` clocks see it.
-fn instant_from_seconds(seconds: f64) -> RunResult<NaiveDateTime> {
+fn instant_from_seconds(seconds: f64) -> RunResult<DateTime> {
     let floored = seconds.floor();
     if floored.is_nan() {
         return Err(ExcType::invalid_nan());
@@ -867,17 +876,20 @@ fn instant_from_seconds(seconds: f64) -> RunResult<NaiveDateTime> {
 
 /// Epoch seconds as an instant, raising the `time_t` overflow outside years
 /// 1..=9999, which a `struct_time` here cannot leave.
-fn instant_in_range(whole: i64, nanos: u32) -> RunResult<NaiveDateTime> {
-    DateTime::from_timestamp(whole, nanos)
-        .map(|utc| utc.naive_utc())
+fn instant_in_range(whole: i64, nanos: u32) -> RunResult<DateTime> {
+    civil::date(1970, 1, 1)
+        .at(0, 0, 0, 0)
+        .checked_add(SignedDuration::new(
+            whole,
+            i32::try_from(nanos).expect("subsecond nanoseconds"),
+        ))
+        .ok()
         .filter(|utc| local_wall_clock(*utc, 0).is_some())
         .ok_or_else(ExcType::timestamp_out_of_range)
 }
 
-/// Nanoseconds since the epoch, for the `_ns` clocks. Chrono's range is about
-/// 1677..2262, narrower than `datetime`'s, so a fixed clock outside it raises.
-fn epoch_nanoseconds(utc: NaiveDateTime) -> RunResult<i64> {
-    utc.and_utc()
-        .timestamp_nanos_opt()
-        .ok_or_else(ExcType::timestamp_out_of_range)
+/// Nanoseconds since the epoch, for the `_ns` clocks. An `i64` holds only
+/// about 1677..2262, so a fixed clock outside it raises.
+fn epoch_nanoseconds(utc: DateTime) -> RunResult<i64> {
+    i64::try_from(datetime_type::epoch_duration(utc).as_nanos()).map_err(|_| ExcType::timestamp_out_of_range())
 }

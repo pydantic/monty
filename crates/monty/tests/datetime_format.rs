@@ -44,6 +44,12 @@ fn unknown_directive_passes_through_verbatim() {
         run_str("from datetime import date\ndate(2024, 6, 15).strftime('%')"),
         "%"
     );
+    assert_snapshot!(run_str(
+        "from datetime import date, datetime, time, timezone\n\
+         values = [date(2024, 6, 15), datetime(2024, 6, 15), \
+         datetime(2024, 6, 15, tzinfo=timezone.utc), time(12), time(12, tzinfo=timezone.utc)]\n\
+         '|'.join(value.strftime('%+ %Y %%+') for value in values)"
+    ), @"%+ 2024 %+|%+ 2024 %+|%+ 2024 %+|%+ 1900 %+|%+ 1900 %+");
 }
 
 /// The f-string path (a dynamic spec carries the strftime string to runtime)
@@ -54,21 +60,26 @@ fn fstring_unknown_directive_passes_through_verbatim() {
         run_str("from datetime import datetime\nf'{datetime(2024, 6, 15):{\"%Q\"}}'"),
         "%Q"
     );
+    assert_eq!(
+        run_str("from datetime import datetime\nf'{datetime(2024, 6, 15):{\"%+ %Y\"}}'"),
+        "%+ 2024"
+    );
+    assert_eq!(
+        run_str("from datetime import datetime\n'{:%+ %Y}'.format(datetime(2024, 6, 15))"),
+        "%+ 2024"
+    );
 }
 
-/// A directive chrono *parses* but can't render for the value (`%+`, its RFC
-/// 3339 form, needs an offset the naive components lack) raises `ValueError`
-/// where CPython passes `%+` to the C library (glibc echoes it); see
-/// `limitations/datetime.md`. Critically, it must NOT panic the host: `chrono`'s
-/// `DelayedFormat::to_string()` panics here, which would be a sandbox escape
-/// on untrusted input.
+/// The unsupported `%#z` directive still raises without panicking the host.
 #[test]
 fn unrenderable_directive_raises_not_panics() {
-    let msg = run_err("from datetime import date\ndate(2024, 6, 15).strftime('%+')");
-    assert!(
-        msg.contains("ValueError") && msg.contains("Invalid format string"),
-        "expected ValueError: Invalid format string, got: {msg}"
-    );
+    assert_snapshot!(run_err("from datetime import date\ndate(2024, 6, 15).strftime('%#z')"), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 2, in <module>
+        date(2024, 6, 15).strftime('%#z')
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ValueError: Invalid format string
+    "#);
 }
 
 /// `time.strftime` shares `datetime`'s lenient formatter: unknown directives
@@ -83,11 +94,17 @@ fn time_strftime_shares_the_lenient_formatter() {
         run_str("import time\ntime.strftime('%Y-%m-%dT%H:%M:%S.%f%z', time.gmtime(0))"),
         "1970-01-01T00:00:00.000000+0000"
     );
-    let msg = run_err("import time\ntime.strftime('%+', time.gmtime(0))");
-    assert!(
-        msg.contains("ValueError") && msg.contains("Invalid format string"),
-        "expected ValueError: Invalid format string, got: {msg}"
+    assert_eq!(
+        run_str("import time\ntime.strftime('%+ %Y', time.gmtime(0))"),
+        "%+ 1970"
     );
+    assert_snapshot!(run_err("import time\ntime.strftime('%#z', time.gmtime(0))"), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 2, in <module>
+        time.strftime('%#z', time.gmtime(0))
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ValueError: Invalid format string
+    "#);
 }
 
 /// A time tuple's `tm_wday`/`tm_yday` are `i64` in Monty where CPython takes a
@@ -149,12 +166,9 @@ fn time_strptime_is_not_implemented() {
     );
 }
 
-/// `date.strptime` is CPython 3.14's other new `strptime`, also unimplemented —
-/// and `datetime.strptime` is not a substitute for a time-only format, since it
-/// requires the string to carry a date. Both are one-sided, so neither can live
-/// in `test_cases/`. See limitations/datetime.md.
+/// `date.strptime` remains unimplemented; its CPython counterpart succeeds.
 #[test]
-fn strptime_gaps_on_date_and_datetime() {
+fn date_strptime_is_not_implemented() {
     assert_snapshot!(
         run_err("from datetime import date\ndate.strptime('2020-01-01', '%Y-%m-%d')"),
         @r#"
@@ -162,16 +176,6 @@ fn strptime_gaps_on_date_and_datetime() {
       File "test.py", line 2, in <module>
         date.strptime('2020-01-01', '%Y-%m-%d')
     AttributeError: type object 'datetime.date' has no attribute 'strptime'
-    "#
-    );
-    assert_snapshot!(
-        run_err("from datetime import datetime\ndatetime.strptime('12:30', '%H:%M')"),
-        @r#"
-    Traceback (most recent call last):
-      File "test.py", line 2, in <module>
-        datetime.strptime('12:30', '%H:%M')
-        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    ValueError: time data '12:30' does not match format '%H:%M'
     "#
     );
 }

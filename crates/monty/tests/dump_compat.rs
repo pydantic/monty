@@ -580,6 +580,43 @@ fn persisted_key_hashes_are_stable() {
     assert_snapshot!(hashes.py_repr(), @"(-7376904247260835724, -8418895208483869890, -7578619387304540654, -6751866591645121981, -8097107109803033201, 2456456309100923238, -5014982954702616963, 2858064283329581446)");
 }
 
+/// Date and timedelta hashes must survive the storage-library migration because
+/// dicts and sets persist them. Expected values come from the former storage types.
+#[test]
+fn persisted_calendar_hashes_are_stable() {
+    let mut repl = MontyRepl::new("hashes.py", ResourceTracker::default(), CompileOptions::default());
+    let hashes = repl
+        .feed_run(
+            "from datetime import date, timedelta\n\
+         values = [date(1, 1, 1), date(1900, 3, 1), date(2000, 2, 29), date(2024, 6, 15), date.max, \
+         timedelta(), timedelta(microseconds=-1), timedelta(days=-2, seconds=86399, microseconds=1), \
+         timedelta(days=1, microseconds=1), timedelta.max]\n\
+         tuple(hash(value) for value in values)",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_snapshot!(hashes.py_repr(), @"(5726848817805768197, -5905029044664614831, 8287707130111363081, -7491674403021461934, -4854198610469465321, 2435999049025295583, -7668848667738911443, 8954133621882991626, 1789700847611459173, -7132049192933483870)");
+    repl.feed_run(
+        "values.append(timedelta.min)\nby_value = {value: index for index, value in enumerate(values)}",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("hashes.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("dump was idle");
+    };
+    let lookups = restored
+        .feed_run(
+            "tuple(by_value[value + timedelta(0)] for value in values)",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_snapshot!(lookups.py_repr(), @"(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)");
+}
+
 /// The fixture for the current `DUMP_VERSION`; the name carries the version so
 /// a bump creates a new fixture while older supported fixtures remain for compatibility tests.
 fn fixture_path() -> PathBuf {

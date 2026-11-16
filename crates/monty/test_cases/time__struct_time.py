@@ -66,6 +66,8 @@ assert parsed.tm_isdst == -1
 timed = time.strptime('12:30', '%H:%M')
 assert (timed.tm_year, timed.tm_mon, timed.tm_mday) == (1900, 1, 1)
 assert (timed.tm_hour, timed.tm_min) == (12, 30)
+assert time.strptime('45', '%M')[:6] == (1900, 1, 1, 0, 45, 0)
+assert time.strptime('2024-06', '%Y-%m')[:6] == (2024, 6, 1, 0, 0, 0)
 # the default format is asctime's own, so the two round-trip
 assert time.strptime(time.asctime(epoch))[:6] == epoch[:6]
 
@@ -117,3 +119,8 @@ check(lambda: time.strftime('%j', (2024, 1, 1, 0, 0, 0, 0, 367, -1)), 'ValueErro
 check(lambda: time.strftime('%Y', (2024, 1, 1, 0, 0, 0, 0, -5, -1)), 'ValueError: day of year out of range')
 assert time.mktime((2024, 1, 1, 0, 0, 0, -2, 367, -1)) == time.mktime((2024, 1, 1, 0, 0, 0, 0, 1, -1))
 check(lambda: time.strptime('nope', '%Y'), "ValueError: time data 'nope' does not match format '%Y'")
+check(lambda: time.strptime('12:30 extra', '%H:%M'), 'ValueError: unconverted data remains:  extra')
+check(
+    lambda: time.strptime('2024-06-15 +0100 extra', '%Y-%m-%d %z'),
+    'ValueError: unconverted data remains:  extra',
+)
