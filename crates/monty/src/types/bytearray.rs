@@ -20,20 +20,26 @@ use crate::{
 /// A bytearray owns its buffer; heap capabilities keep scoped borrows valid across aliases.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
-pub(crate) struct ByteArray(#[serde(with = "serde_bytes")] Vec<u8>);
+pub(crate) struct ByteArray {
+    #[serde(with = "serde_bytes")]
+    bytes: Vec<u8>,
+    // Exports last only for synchronous native calls and never survive a snapshot.
+    #[serde(skip)]
+    exports: usize,
+}
 
 impl ByteArray {
     pub(crate) fn new(bytes: Vec<u8>) -> Self {
-        Self(bytes)
+        Self { bytes, exports: 0 }
     }
 
     pub(crate) fn as_slice(&self) -> &[u8] {
-        &self.0
+        &self.bytes
     }
 
     /// A mutable slice permits writes but cannot resize the buffer during a borrow.
     pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
-        &mut self.0
+        &mut self.bytes
     }
 
     /// Transfers an already-budgeted buffer into the heap without copying its contents.
@@ -102,6 +108,24 @@ impl ByteArray {
 
         Ok(Self::allocate(data, vm))
     }
+
+    fn check_resize(&self, new_len: usize) -> RunResult<()> {
+        if new_len != self.bytes.len() {
+            self.check_no_exports()?;
+        }
+        Ok(())
+    }
+
+    fn check_no_exports(&self) -> RunResult<()> {
+        if self.exports != 0 {
+            return Err(SimpleException::new_msg(
+                ExcType::BufferError,
+                "Existing exports of data: object cannot be re-sized",
+            )
+            .into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(FromArgs)]
@@ -149,11 +173,20 @@ impl HeapItem for ByteArray {
     fn py_dec_ref_ids(&mut self, _: &mut Vec<HeapId>) {}
 }
 
+/// Keeps nested native exports active until each call returns or raises.
+struct BufferExport<'a, 'h>(&'a HeapObjectRead<'h, ByteArray>);
+
+impl<'h> DropWithContext<VM<'h>> for BufferExport<'_, 'h> {
+    fn drop_with(self, vm: &mut VM<'h>) {
+        self.0.get_mut(vm.heap).exports -= 1;
+    }
+}
+
 impl<'h> HeapObjectRead<'h, ByteArray> {
     /// Copies storage so mutations to the new bytearray cannot affect the source.
     pub(crate) fn allocate_copy(&self, vm: &VM<'h>) -> RunResult<Value> {
-        check_repeat_size(self.get(vm.heap).0.len(), 1, &vm.heap.tracker)?;
-        Ok(ByteArray::allocate(self.get(vm.heap).0.clone(), vm))
+        check_repeat_size(self.get(vm.heap).bytes.len(), 1, &vm.heap.tracker)?;
+        Ok(ByteArray::allocate(self.get(vm.heap).bytes.clone(), vm))
     }
 }
 
@@ -163,7 +196,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
-        Some(self.get(vm.heap).0.len())
+        Some(self.get(vm.heap).bytes.len())
     }
 
     fn py_is_iterable(&self, _: &VM<'h>) -> bool {
@@ -206,7 +239,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
     /// Integer indices return byte values; slices return independent bytearrays.
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         if matches!(key, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Slice(_))) {
-            let field = heap_read_ref_as_field!(self, ByteArray, 0);
+            let field = heap_read_ref_as_field!(self, ByteArray, bytes);
             let value = super::bytes::bytes_getitem(&field.as_slice(), key, vm)?;
             convert_result(value, vm)
         } else {
@@ -241,20 +274,23 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
             let replacement = collect_bytes(value, vm)?;
 
             // User iteration can mutate the destination, so normalize against its final length.
-            let (start, stop, step) = slice.indices(self.get(vm.heap).0.len())?;
+            let (start, stop, step) = slice.indices(self.get(vm.heap).bytes.len())?;
 
             if step == 1 {
                 // Contiguous slices may resize; a reversed start/stop denotes an insertion point.
                 let start = usize::try_from(start).expect("normalized slice start");
                 let stop = (usize::try_from(stop).expect("normalized slice stop")).max(start);
-                let new_len = self.get(vm.heap).0.len() - (stop - start) + replacement.len();
+                let new_len = self.get(vm.heap).bytes.len() - (stop - start) + replacement.len();
+                self.get(vm.heap).check_resize(new_len)?;
                 check_repeat_size(new_len, 1, &vm.heap.tracker)?;
-                self.get_mut(vm.heap).0.splice(start..stop, replacement);
+                self.get_mut(vm.heap).bytes.splice(start..stop, replacement);
             } else {
                 // An empty replacement deletes an extended slice, unlike list assignment.
                 if replacement.is_empty() {
+                    // CPython checks exports even when the selected slice is empty.
+                    self.get(vm.heap).check_no_exports()?;
                     let mut index = 0i64;
-                    self.get_mut(vm.heap).0.retain(|_| {
+                    self.get_mut(vm.heap).bytes.retain(|_| {
                         let selected = if step > 0 {
                             index >= start
                                 && index < stop
@@ -299,11 +335,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         let index = key.as_index(vm, Type::ByteArray)?;
         let byte = byte_value(value, vm)?;
 
-        let len = i64::try_from(self.get(vm.heap).0.len()).expect("buffer length fits i64");
+        let len = i64::try_from(self.get(vm.heap).bytes.len()).expect("buffer length fits i64");
         let index = if index < 0 { index + len } else { index };
         let Some(slot) = usize::try_from(index)
             .ok()
-            .and_then(|i| self.get_mut(vm.heap).0.get_mut(i))
+            .and_then(|i| self.get_mut(vm.heap).bytes.get_mut(i))
         else {
             return Err(SimpleException::new_msg(ExcType::IndexError, "bytearray index out of range").into());
         };
@@ -315,7 +351,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
     /// Extends from bytes/bytearray, preserving identity; other operands request binary fallback.
     fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         // CPython holds a buffer export during extension, so nonempty self-extension cannot resize.
-        if matches!(other, Value::Ref(id) if *id == self.id()) && !self.get(vm.heap).0.is_empty() {
+        if matches!(other, Value::Ref(id) if *id == self.id()) && !self.get(vm.heap).bytes.is_empty() {
             return Err(SimpleException::new_msg(
                 ExcType::BufferError,
                 "Existing exports of data: object cannot be re-sized",
@@ -326,20 +362,22 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         let Some(bytes) = other.as_buffer(vm) else {
             return Ok(false);
         };
+        self.get(vm.heap)
+            .check_resize(self.get(vm.heap).bytes.len().saturating_add(bytes.len()))?;
         // Budget the temporary copy while the source is live; copying ends the borrow before mutation.
         vm.heap.tracker.check_allocation(bytes.len())?;
         let bytes = bytes.to_vec();
         check_repeat_size(
-            self.get(vm.heap).0.len().saturating_add(bytes.len()),
+            self.get(vm.heap).bytes.len().saturating_add(bytes.len()),
             1,
             &vm.heap.tracker,
         )?;
         // Match the preflight instead of doubling capacity for a small extension.
         self.get_mut(vm.heap)
-            .0
+            .bytes
             .try_reserve_exact(bytes.len())
             .map_err(|_| ExcType::allocation_too_large())?;
-        self.get_mut(vm.heap).0.extend(bytes);
+        self.get_mut(vm.heap).bytes.extend(bytes);
         Ok(true)
     }
 
@@ -349,8 +387,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
             return Ok(false);
         };
         // `__index__` can resize the receiver; budget against its length after conversion.
-        check_repeat_size(self.get(vm.heap).0.len(), count, &vm.heap.tracker)?;
-        repeat_in_place(&mut self.get_mut(vm.heap).0, count)?;
+        self.get(vm.heap)
+            .check_resize(self.get(vm.heap).bytes.len().saturating_mul(count))?;
+        check_repeat_size(self.get(vm.heap).bytes.len(), count, &vm.heap.tracker)?;
+        repeat_in_place(&mut self.get_mut(vm.heap).bytes, count)?;
         Ok(true)
     }
 
@@ -359,12 +399,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(None);
         };
-        check_repeat_size(self.get(vm.heap).0.len(), count, &vm.heap.tracker)?;
+        check_repeat_size(self.get(vm.heap).bytes.len(), count, &vm.heap.tracker)?;
         // A new result must not alias the source, but zero repetitions need no initial copy.
         let mut data = if count == 0 {
             Vec::new()
         } else {
-            self.get(vm.heap).0.clone()
+            self.get(vm.heap).bytes.clone()
         };
         repeat_in_place(&mut data, count)?;
         Ok(Some(ByteArray::allocate(data, vm)))
@@ -401,8 +441,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
             StaticStrings::Clear | StaticStrings::Reverse | StaticStrings::Copy => {
                 args.check_zero_args(&format!("bytearray.{name}"), vm.heap)?;
                 match method {
-                    StaticStrings::Clear => self.get_mut(vm.heap).0.clear(),
-                    StaticStrings::Reverse => self.get_mut(vm.heap).0.reverse(),
+                    StaticStrings::Clear => {
+                        self.get(vm.heap).check_resize(0)?;
+                        self.get_mut(vm.heap).bytes.clear();
+                    }
+                    StaticStrings::Reverse => self.get_mut(vm.heap).bytes.reverse(),
                     _ => return self.allocate_copy(vm).map(CallResult::Value),
                 }
                 return Ok(CallResult::Value(Value::None));
@@ -425,13 +468,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
                     )));
                 }
                 let size = usize::try_from(size).map_err(|_| ExcType::overflow_index_sized_int())?;
+                self.get(vm.heap).check_resize(size)?;
                 check_repeat_size(size, 1, &vm.heap.tracker)?;
                 let data = self.get_mut(vm.heap);
                 // Saturating subtraction keeps shrinking on the allocation-free path.
-                data.0
-                    .try_reserve_exact(size.saturating_sub(data.0.len()))
+                data.bytes
+                    .try_reserve_exact(size.saturating_sub(data.bytes.len()))
                     .map_err(|_| ExcType::allocation_too_large())?;
-                data.0.resize(size, 0);
+                data.bytes.resize(size, 0);
                 return Ok(CallResult::Value(Value::None));
             }
             StaticStrings::Append | StaticStrings::Extend | StaticStrings::Remove => {
@@ -447,26 +491,32 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
                     }
                     // Collect first: an iterator failure must not leave a partially applied extension.
                     let bytes = collect_bytes(value, vm)?;
+                    self.get(vm.heap)
+                        .check_resize(self.get(vm.heap).bytes.len().saturating_add(bytes.len()))?;
                     check_repeat_size(
-                        self.get(vm.heap).0.len().saturating_add(bytes.len()),
+                        self.get(vm.heap).bytes.len().saturating_add(bytes.len()),
                         1,
                         &vm.heap.tracker,
                     )?;
-                    self.get_mut(vm.heap).0.extend(bytes);
+                    self.get_mut(vm.heap).bytes.extend(bytes);
                 } else {
                     // Byte conversion can call Python, so inspect or mutate the live buffer only afterward.
                     let byte = byte_value(value, vm)?;
                     if method == StaticStrings::Append {
                         let data = self.get(vm.heap);
-                        vm.heap.tracker.check_growth(data.0.len(), data.0.capacity(), 1)?;
-                        self.get_mut(vm.heap).0.push(byte);
+                        data.check_no_exports()?;
+                        vm.heap
+                            .tracker
+                            .check_growth(data.bytes.len(), data.bytes.capacity(), 1)?;
+                        self.get_mut(vm.heap).bytes.push(byte);
                     } else {
-                        let Some(index) = self.get(vm.heap).0.iter().position(|b| *b == byte) else {
+                        let Some(index) = self.get(vm.heap).bytes.iter().position(|b| *b == byte) else {
                             return Err(
                                 SimpleException::new_msg(ExcType::ValueError, "value not found in bytearray").into(),
                             );
                         };
-                        self.get_mut(vm.heap).0.remove(index);
+                        self.get(vm.heap).check_no_exports()?;
+                        self.get_mut(vm.heap).bytes.remove(index);
                     }
                 }
                 return Ok(CallResult::Value(Value::None));
@@ -485,13 +535,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
                     }
                 };
                 // Either conversion can resize the receiver; normalize indices against its current length.
-                let len = i64::try_from(self.get(vm.heap).0.len()).expect("buffer length fits i64");
+                let len = i64::try_from(self.get(vm.heap).bytes.len()).expect("buffer length fits i64");
                 let index = if index < 0 { index.saturating_add(len) } else { index };
                 if let Some(byte) = byte {
                     // Insert clamps out-of-range indices; pop instead rejects them below.
                     let data = self.get(vm.heap);
-                    vm.heap.tracker.check_growth(data.0.len(), data.0.capacity(), 1)?;
-                    self.get_mut(vm.heap).0.insert(
+                    data.check_no_exports()?;
+                    vm.heap
+                        .tracker
+                        .check_growth(data.bytes.len(), data.bytes.capacity(), 1)?;
+                    self.get_mut(vm.heap).bytes.insert(
                         usize::try_from(index.clamp(0, len)).expect("clamped buffer index"),
                         byte,
                     );
@@ -503,16 +556,24 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
                 if index < 0 || index >= len {
                     return Err(SimpleException::new_msg(ExcType::IndexError, "pop index out of range").into());
                 }
+                self.get(vm.heap).check_no_exports()?;
                 return Ok(CallResult::Value(Value::Int(i64::from(
                     self.get_mut(vm.heap)
-                        .0
+                        .bytes
                         .remove(usize::try_from(index).expect("checked buffer index")),
                 ))));
             }
             _ => {}
         }
+        // `join` exports its separator before invoking the input's iterator.
+        let export = (method == StaticStrings::Join).then(|| {
+            self.get_mut(vm.heap).exports += 1;
+            BufferExport(&*self)
+        });
+        defer_drop!(export, vm);
+
         // Keep a scoped view, rather than a slice, because argument conversion can resize the buffer.
-        let field = heap_read_ref_as_field!(self, ByteArray, 0);
+        let field = heap_read_ref_as_field!(self, ByteArray, bytes);
         let result = super::bytes::call_bytes_method_impl(&field.as_slice(), method, args, vm)?;
         Ok(CallResult::Value(convert_result(result, vm)?))
     }
@@ -757,4 +818,23 @@ fn repeat_in_place(data: &mut Vec<u8>, count: usize) -> RunResult<()> {
         data.extend_from_within(..available);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ByteArray;
+
+    #[test]
+    fn exports_do_not_change_the_dump_format() {
+        let value = ByteArray {
+            bytes: b"abc".to_vec(),
+            exports: 2,
+        };
+        let bytes = minicbor_serde::to_vec(&value).unwrap();
+        assert_eq!(bytes, b"\x43abc");
+
+        let restored: ByteArray = minicbor_serde::from_slice(&bytes).unwrap();
+        assert_eq!(restored.as_slice(), b"abc");
+        restored.check_resize(4).unwrap();
+    }
 }

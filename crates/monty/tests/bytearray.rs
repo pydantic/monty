@@ -56,3 +56,10 @@ fn bytearray_inplace() {
     let mut runner = MontyRun::new(source.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     runner.run_no_limits(vec![]).unwrap();
 }
+
+#[test]
+fn bytearray_join_exports() {
+    let source = include_str!("../test_cases/bytearray__join_exports.py");
+    let mut runner = MontyRun::new(source.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    runner.run_no_limits(vec![]).unwrap();
+}

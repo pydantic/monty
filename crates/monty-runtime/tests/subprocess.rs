@@ -29,6 +29,19 @@ use monty_types::{
 const DEATH_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[test]
+fn bytearray_join_releases_export_after_memory_error() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    let (_, event) = child.feed("sep = bytearray(b',')\na = bytearray(16 * 1024 * 1024)\nsep.join([a])");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(
+        child.feed_complete("sep.append(120)\nbytes(sep)"),
+        MontyObject::bytes(b",x".to_vec())
+    );
+    child.shutdown();
+}
+
+#[test]
 fn bytearray_copies_fail_without_losing_the_session() {
     for operation in [
         "a.split()",
