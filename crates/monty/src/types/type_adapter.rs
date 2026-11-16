@@ -8,7 +8,7 @@
 
 use std::{cell::RefCell, fmt::Write, rc::Rc};
 
-use jiter::Jiter;
+use jiter::{Jiter, JiterError, JiterErrorType, JsonErrorType};
 use monty_types::ValidationInputType;
 use serde::{Deserialize, Serialize};
 
@@ -280,12 +280,26 @@ impl<'h> HeapObjectRead<'h, TypeAdapter> {
         });
         result.map_err(|err| match err {
             ValError::Json(err) => {
-                let description = err.description(&parser.borrow());
+                let description = json_error_description(err, &parser.borrow());
                 json_invalid_error(&title, description, data.clone_with_heap(vm.heap), vm)
             }
             other => into_run_error(other, &title, ValidationInputType::Json, vm),
         })
     }
+}
+
+/// The message of a JSON syntax error, positioned as pydantic-core reports it.
+///
+/// jiter 0.19 points an invalid UTF-8 error at the first bad byte, while the
+/// jiter pydantic-core ships points one byte past it.
+fn json_error_description(mut err: JiterError, parser: &Jiter) -> String {
+    if matches!(
+        err.error_type,
+        JiterErrorType::JsonError(JsonErrorType::InvalidUnicodeCodePoint)
+    ) {
+        err.index += 1;
+    }
+    err.description(parser)
 }
 
 /// The bytes of a `str` or `bytes` document, or `None` for any other value.
