@@ -20,18 +20,20 @@ use crate::{
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
 pub fn builtin_enumerate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (iterable, start) = extract_enumerate_args(args, vm)?;
-    // Guard `start` before building the iterator: a non-iterable `iterable`
-    // errors out of `py_iter`, and a heap-backed start must not leak.
+    // Converting start can fail before the iterable is consumed.
+    defer_drop_mut!(iterable, vm);
     defer_drop!(start, vm);
-    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
-    defer_drop!(iter, vm);
-    let mut iter = iter.read(vm);
-
     let index = match start {
         Some(value) => value.py_index(vm)?,
         None => Value::Int(0),
     };
     defer_drop_mut!(index, vm);
+
+    let iter = mem::replace(iterable, Value::None)
+        .into_py_iter(vm)?
+        .require_synchronous(vm)?;
+    defer_drop!(iter, vm);
+    let mut iter = iter.read(vm);
 
     let result: Vec<Value> = Vec::new();
     let mut result_guard = DropGuard::new(result, vm);
