@@ -572,6 +572,8 @@ def test_frozen_dataclass_setattr_mutates_sandbox_copy(monty_run: RunMonty):
 def test_frozen_instance_error_from_external_function(monty_run: RunMonty):
     """FrozenInstanceError raised by an external function is properly converted."""
     code = """
+from dataclasses import FrozenInstanceError
+
 try:
     fail()
 except FrozenInstanceError:

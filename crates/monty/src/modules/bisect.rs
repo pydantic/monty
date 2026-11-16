@@ -199,8 +199,12 @@ fn search(vm: &mut VM<'_>, a: &Value, x: &Value, bounds: (i64, i64), key: &Value
 /// shortcuts (including NaNs) and reports errors on the offending elements.
 fn less_than(vm: &mut VM<'_>, a: &Value, b: &Value) -> RunResult<bool> {
     if !matches!(
-        (a.py_type(vm), b.py_type(vm)),
-        (Type::List, Type::List) | (Type::Tuple | Type::NamedTuple, Type::Tuple | Type::NamedTuple)
+        (a.py_type(vm).native(), b.py_type(vm).native()),
+        (Some(Type::List), Some(Type::List))
+            | (
+                Some(Type::Tuple | Type::NamedTuple),
+                Some(Type::Tuple | Type::NamedTuple)
+            )
     ) {
         return vm.cmp_values(CmpOperator::Lt, a, b);
     }

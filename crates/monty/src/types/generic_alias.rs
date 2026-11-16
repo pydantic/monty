@@ -22,7 +22,7 @@ use smallvec::{SmallVec, smallvec};
 
 use crate::{
     args::{ArgValues, FromArgs},
-    builtins::{Builtins, BuiltinsFunctions},
+    builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
@@ -32,7 +32,7 @@ use crate::{
     },
     intern::StaticStrings,
     types::{
-        BuiltinType, LazyHeapSet, PyTrait, Type, Union,
+        LazyHeapSet, PyTrait, Type, TypeRef, Union,
         instance::class_name,
         list::repr_should_truncate,
         set::unhashable_type_name,
@@ -55,7 +55,7 @@ const CALLABLE: AliasOrigin = AliasOrigin::Special(Marker(StaticStrings::Callabl
 #[serde(untagged)]
 pub(crate) enum AliasOrigin {
     /// A builtin type satisfying [`Type::has_class_getitem`]; never a class object.
-    Builtin(BuiltinType),
+    Builtin(Type),
     /// A `typing` marker satisfying [`Marker::is_generic_form`].
     Special(Marker),
 }
@@ -80,8 +80,8 @@ impl GenericAlias {
     ///
     /// `origin` must satisfy [`Type::has_class_getitem`]; callers raise the
     /// `type 'int' is not subscriptable` error for the rest.
-    pub(crate) fn subscript(origin: BuiltinType, key: Value, vm: &mut VM<'_>) -> Value {
-        debug_assert!(Type::from(origin).has_class_getitem(), "{origin} is not a generic type");
+    pub(crate) fn subscript(origin: Type, key: Value, vm: &mut VM<'_>) -> Value {
+        debug_assert!(origin.has_class_getitem(), "{origin} is not a generic type");
         Self::allocate(AliasOrigin::Builtin(origin), key, vm)
     }
 
@@ -149,22 +149,19 @@ impl GenericAlias {
 
     /// The value `__origin__` reports and a call dispatches to, as an owned value.
     ///
-    /// `type` is a builtin function rather than a `Type` value in Monty, so
-    /// `type[int]` hands back that function: `type[int].__origin__ is type`
-    /// holds and `type[int](x)` reaches `type()`. A `typing` alias of a builtin
-    /// (`typing.List[int]`) reports that builtin; `Annotated[T, ...]` reports
-    /// `T`; the other forms report themselves.
+    /// A builtin origin reports itself, so `type[int].__origin__ is type` holds.
+    /// A `typing` alias of a builtin (`typing.List[int]`) reports that builtin;
+    /// `Annotated[T, ...]` reports `T`; the other forms report themselves.
     pub(crate) fn origin_value(&self, heap: &Heap) -> Value {
         match self.origin {
-            AliasOrigin::Builtin(BuiltinType::Type) => Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
             AliasOrigin::Builtin(origin) => Value::Builtin(Builtins::Type(origin)),
             AliasOrigin::Special(form) => match form.0 {
-                StaticStrings::ListType => Value::Builtin(Builtins::Type(BuiltinType::List)),
-                StaticStrings::DictType => Value::Builtin(Builtins::Type(BuiltinType::Dict)),
-                StaticStrings::TupleType => Value::Builtin(Builtins::Type(BuiltinType::Tuple)),
-                StaticStrings::SetType => Value::Builtin(Builtins::Type(BuiltinType::Set)),
-                StaticStrings::FrozenSet => Value::Builtin(Builtins::Type(BuiltinType::FrozenSet)),
-                StaticStrings::Type => Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
+                StaticStrings::ListType => Value::Builtin(Builtins::Type(Type::List)),
+                StaticStrings::DictType => Value::Builtin(Builtins::Type(Type::Dict)),
+                StaticStrings::TupleType => Value::Builtin(Builtins::Type(Type::Tuple)),
+                StaticStrings::SetType => Value::Builtin(Builtins::Type(Type::Set)),
+                StaticStrings::FrozenSet => Value::Builtin(Builtins::Type(Type::FrozenSet)),
+                StaticStrings::Type => Value::Builtin(Builtins::Type(Type::Type)),
                 StaticStrings::Annotated => self.annotated_type(heap),
                 _ => Value::Marker(form),
             },
@@ -273,8 +270,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         vm.call_function(origin, args)
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::GenericAlias
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::GenericAlias.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
@@ -325,7 +322,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         // Dicts and sets persist hashes: a builtin origin hashes by Type's
         // original discriminant, a form by its name, which never move.
         match origin {
-            AliasOrigin::Builtin(origin) => Type::from(origin).hash(&mut hasher),
+            AliasOrigin::Builtin(origin) => origin.hash(&mut hasher),
             AliasOrigin::Special(form) => <&str>::from(form.0).hash(&mut hasher),
         }
         args_hash.hash(&mut hasher);
@@ -348,7 +345,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         };
 
         match origin {
-            AliasOrigin::Builtin(origin) => write!(f, "{}[", Type::from(origin).name(vm.heap, vm.interns))?,
+            AliasOrigin::Builtin(origin) => write!(f, "{}[", origin.name())?,
             AliasOrigin::Special(form) => {
                 form.py_repr_fmt(f)?;
                 f.write_char('[')?;
@@ -462,7 +459,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         let origin = self.get(vm.heap).origin_value(vm.heap);
         defer_drop!(origin, vm);
         match self.get(vm.heap).origin {
-            AliasOrigin::Builtin(origin) if !own_attribute => Type::from(origin).call_class_method(attr, args, vm),
+            AliasOrigin::Builtin(origin) if !own_attribute => origin.call_class_method(attr, args, vm),
             // A `typing` form's origin answers the call itself: a host class's
             // lookup may suspend for the host, which only a call-attr carries. A
             // form's own markers take the lookup path below, for its errors.
@@ -505,7 +502,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
 /// (`key` itself when it is not a tuple), taking and returning ownership. The
 /// copy is preflighted like any container copy.
 fn none_to_none_type(key: Value, limit: usize, vm: &mut VM<'_>) -> RunResult<Value> {
-    let none_type = || Value::Builtin(Builtins::Type(BuiltinType::NoneType));
+    let none_type = || Value::Builtin(Builtins::Type(Type::NoneType));
     // The reader on `key` must be released before `key`, possibly the last
     // reference to a fresh tuple, is dropped below.
     let converted = {
@@ -624,7 +621,7 @@ fn literal_params(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop_mut!(flattened, vm);
     let mut params_guard = DropGuard::new(TupleVec::new(), vm);
     let (params, vm) = params_guard.as_parts_mut();
-    let mut buckets: AHashMap<(Type, u64), SmallVec<[usize; 1]>> = AHashMap::new();
+    let mut buckets: AHashMap<(TypeRef, u64), SmallVec<[usize; 1]>> = AHashMap::new();
     let mut unhashable: Vec<usize> = Vec::new();
     for index in 0..flattened.len() {
         vm.heap.tracker.check_time_every(index)?;
@@ -691,7 +688,7 @@ fn literal_eq(args: &Value, other_args: &Value, vm: &mut VM<'_>) -> RunResult<bo
     let others = tuple_items(other_args, vm)?;
     defer_drop!(others, vm);
     // Bucket the other side by type and hash, so the comparison is linear.
-    let mut buckets: AHashMap<(Type, u64), SmallVec<[usize; 1]>> = AHashMap::new();
+    let mut buckets: AHashMap<(TypeRef, u64), SmallVec<[usize; 1]>> = AHashMap::new();
     for (index, item) in items.iter().chain(others.iter()).enumerate() {
         vm.heap.tracker.check_time_every(index)?;
         let Some(hash) = item.py_hash(vm)? else {
@@ -873,9 +870,7 @@ pub(crate) fn repr_type_arg(
 ) -> RunResult<()> {
     match item {
         Value::Ellipsis => Ok(f.write_str("...")?),
-        Value::Builtin(Builtins::Type(ty)) => Ok(f.write_str(&Type::from(*ty).name(vm.heap, vm.interns))?),
-        Value::Builtin(Builtins::ExcType(exc_type)) => Ok(f.write_str(exc_type.into())?),
-        Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Ok(f.write_str("type")?),
+        Value::Builtin(Builtins::Type(ty)) => Ok(f.write_str(ty.name())?),
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Class(_) => Ok(f.write_str(&class_name(*id, vm.heap, vm.interns))?),
             HeapData::NamedTupleClass(class) => Ok(f.write_str(class.name(vm.interns))?),
@@ -934,10 +929,7 @@ mod tests {
             let bytes = minicbor_serde::to_vec(&legacy).unwrap();
             let alias: GenericAlias = minicbor_serde::from_slice(&bytes).unwrap();
 
-            assert_eq!(
-                alias.origin,
-                AliasOrigin::Builtin(BuiltinType::try_from(origin).unwrap())
-            );
+            assert_eq!(alias.origin, AliasOrigin::Builtin(origin));
             assert_eq!(minicbor_serde::to_vec(&alias).unwrap(), bytes);
         }
     }

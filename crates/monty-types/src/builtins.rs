@@ -12,7 +12,7 @@ use strum::{Display, EnumString, FromRepr, IntoStaticStr, VariantNames};
 /// Uses strum derives for automatic `Display`, `FromStr`, and `IntoStaticStr` implementations.
 /// All variants serialize to lowercase (e.g., `Print` -> "print").
 /// Explicit discriminants are bytecode operands and identity codes; never change or reuse them.
-#[monty_macros::explicit_discriminants(checksum = 0x99f6_eb60_1da6_2cc0)]
+#[monty_macros::explicit_discriminants(checksum = 0x363c_1f03_edf2_19af)]
 #[derive(
     Debug,
     Clone,
@@ -68,7 +68,6 @@ pub enum BuiltinsFunctions {
     // Input,
     // int - handled by Type enum
     Isinstance = 13,
-    // Issubclass,
     // Iter - handled by Type enum
     Len = 14,
     // list - handled by Type enum
@@ -95,7 +94,7 @@ pub enum BuiltinsFunctions {
     // Staticmethod,
     // str - handled by Type enum
     Sum = 29,
-    // Super,
+    // super - handled by Type enum
     // tuple - handled by Type enum
     Type = 30,
     // Vars,
@@ -120,4 +119,22 @@ pub enum BuiltinsFunctions {
     Exec = 35,
     /// `locals()`, appended after [`Self::Exec`].
     Locals = 36,
+    /// `issubclass(class, classinfo)`, appended after [`Self::Locals`].
+    Issubclass = 37,
+    /// `object.__new__(cls, /, *args, **kwargs)`, reached through `object` or `super()`.
+    #[strum(serialize = "object.__new__")]
+    #[serde(rename = "object.__new__")]
+    ObjectNew = 38,
+    /// `object.__init__(self, /, *args, **kwargs)`, reached through `object` or `super()`.
+    #[strum(serialize = "object.__init__")]
+    #[serde(rename = "object.__init__")]
+    ObjectInit = 39,
+    /// `object.__init_subclass__(cls, /, **kwargs)`, run after a class statement.
+    #[strum(serialize = "object.__init_subclass__")]
+    #[serde(rename = "object.__init_subclass__")]
+    ObjectInitSubclass = 40,
+    /// `type.mro(cls, /)`, a class's method resolution order as a list.
+    #[strum(serialize = "type.mro")]
+    #[serde(rename = "type.mro")]
+    TypeMro = 41,
 }

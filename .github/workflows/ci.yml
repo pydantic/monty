@@ -69,7 +69,7 @@ jobs:
 
       - uses: ./.github/actions/install-js
         with:
-          node-version: 24
+          node-version: 26
 
       # prek-action has no restore-only option, so manage its cache separately.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -233,7 +233,7 @@ jobs:
       # target dir) and point the tests at it explicitly.
       - run: cargo build -p monty-runtime
       - run: cargo build -p monty-pool --example cpu-test-worker --target-dir target/llvm-cov-target
-      - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
+      - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool -p monty-pgo --features monty-pool/telemetry
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/target/debug/monty
       - name: Compile Rust documentation examples
@@ -1161,8 +1161,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         node:
-          - '20'
           - '22'
+          - '24'
+          - '26'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1257,7 +1258,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       - name: Install node dependencies
@@ -1296,7 +1297,7 @@ jobs:
 
       - uses: ./.github/actions/install-js
         with:
-          node-version: 24
+          node-version: 26
           cache: ${{ !startsWith(github.ref, 'refs/tags/') && !inputs.run_release }}
 
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
@@ -1336,7 +1337,7 @@ jobs:
 
       - uses: ./.github/actions/install-js
         with:
-          node-version: 24
+          node-version: 26
 
       - name: Build TypeScript
         run: npm run build:ts
@@ -1376,7 +1377,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       - name: Install dependencies
@@ -1425,7 +1426,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['20', '24']
+        node: ['22', '24', '26']
         platform:
           - os: macos-15-intel
             triple: darwin-x64
@@ -1476,7 +1477,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       - name: Download package tarballs
@@ -1510,7 +1511,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
           registry-url: 'https://registry.npmjs.org'
 

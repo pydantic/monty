@@ -73,7 +73,7 @@ opentelemetry-proto = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 # Span construction and eager OTel context creation; versions must match Logfire.
 tracing = { version = "0.1", optional = true }
-tracing-opentelemetry = { version = "0.33", optional = true }
+tracing-opentelemetry = { version = "0.34", optional = true }
 # Host-neutral processors used by Python, Node, and third-party adapters.
 opentelemetry_sdk = { workspace = true, optional = true }
 

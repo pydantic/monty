@@ -23,9 +23,10 @@ use crate::{
     intern::{Interns, StaticStrings},
     string_builder::StringBuilder,
     types::{
-        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, datetime,
+        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, TypeRef, datetime,
         str::{allocate_string, allocate_string_no_interning},
         timedelta,
+        timedelta::DAY_MICROSECONDS,
         timezone::{format_offset_compact, format_offset_hms, tzname_string},
     },
     value::{EitherStr, Value},
@@ -147,6 +148,30 @@ struct DateInitArgs {
     day: i32,
 }
 
+/// `date.min`, `date.max` and `date.resolution`.
+pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+    Some(match attr.static_string(vm.interns)? {
+        StaticStrings::Min => allocate_ymd(1, 1, 1, vm.heap),
+        StaticStrings::Max => allocate_ymd(9999, 12, 31, vm.heap),
+        StaticStrings::Resolution => timedelta::allocate_micros(DAY_MICROSECONDS, vm.heap),
+        _ => return None,
+    })
+}
+
+/// `date.today()`, `date.fromtimestamp()` and `date.fromisoformat()`.
+pub(crate) fn class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    Ok(match attr.static_string(vm.interns) {
+        Some(StaticStrings::Today) => class_today(vm, args),
+        Some(StaticStrings::Fromisoformat) => class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value),
+        Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
+        _ => return Err(args),
+    })
+}
+
 /// Reads `date.today()` from the session's clock in the session zone. A `CallHost`
 /// clock requests a `DateToday` answer constructed with `MontyObject::date`.
 pub(crate) fn class_today(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
@@ -181,7 +206,9 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult
 /// Parses ISO 8601 date strings in the formats `YYYY-MM-DD` and `YYYYMMDD`,
 /// matching CPython 3.11+ behavior.
 pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let value = args.get_one_arg("date.fromisoformat", heap)?;
+    let value = args
+        .reject_kwargs("date.fromisoformat", heap)?
+        .get_one_arg("date.fromisoformat", heap)?;
     let s = extract_str_arg(&value, "fromisoformat", heap, interns);
     value.drop_with(heap);
     let s = s?;
@@ -224,8 +251,8 @@ impl HeapItem for Date {
 /// `HeapRead`-based dispatch for `Date`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident dates.
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Date
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Date.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

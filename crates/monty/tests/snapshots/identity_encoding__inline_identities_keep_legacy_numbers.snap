@@ -39,6 +39,10 @@ format: 2098218
 eval: 2098250
 exec: 2098282
 locals: 2098314
+issubclass: 2098346
+object.__new__: 2098378
+object.__init__: 2098410
+type.mro: 2098474
 Exception: 2105354
 BaseException: 2105386
 SystemExit: 2105418

@@ -36,7 +36,7 @@ use crate::{
     modules::ModuleFunctions,
     os_dispatch::{PostConversionEffect, urandom_reply_error},
     types::{
-        BuiltinType, List, LongInt, Module, PyTrait, Type,
+        List, LongInt, Module, PyTrait, Type,
         bytes::allocate_bytes,
         iter::collect_owned_iterable,
         long_int::bigint_to_f64_checked,
@@ -123,7 +123,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
     }
     module.set_attr(
         StaticStrings::RandomClass,
-        Value::Builtin(Builtins::Type(BuiltinType::Random)),
+        Value::Builtin(Builtins::Type(Type::Random)),
         vm,
     );
     module
@@ -818,7 +818,7 @@ fn sample(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<V
     defer_drop!(k, vm);
     defer_drop!(counts, vm);
 
-    if !is_sequence(population.py_type_heap(vm.heap)) {
+    if !population.py_type_heap(vm.heap).native().is_some_and(is_sequence) {
         return Err(ExcType::type_error(
             "Population must be a sequence.  For dicts or sets, use sorted(d).",
         ));

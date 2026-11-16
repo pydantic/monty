@@ -25,13 +25,14 @@ These raise `NameError`:
 - **Code objects and imports**: `compile`, `__import__`.
 - **Namespace introspection**: `globals`, `vars`, `dir`.
 - **Interactive**: `input`, `breakpoint`, `help`.
-- **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`,
-    `super`. (`@property` on functions is not recognized; use a method.)
+- **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`.
+    (`@property` on functions is not recognized; use a method.)
 - **Construction / coercion**: `bytearray`, `memoryview`, `object`, `ascii`.
-- **Other**: `callable`, `delattr`, `issubclass`, `aiter`, `anext`.
+- **Inheritance**: `super`; call the base explicitly (`Base.__init__(self, ...)`).
+- **Other**: `callable`, `delattr`, `aiter`, `anext`.
 
-`super()` is the biggest practical omission: with no class inheritance either
-(see [classes.md](classes.md)), there is no inheritance mechanism at all.
+`object` exists as the root class but cannot be instantiated, and `issubclass()`
+works on classes; see [classes.md](classes.md#inheritance).
 
 ## Behavioural divergences
 
@@ -160,12 +161,6 @@ These raise `NameError`:
     which Monty rejects with `invalid literal for int() with base 10`.
 - **`float(x)`** — string parsing accepts ASCII digits only; CPython also accepts Unicode decimal digits
     (`float('١.٥')` == 1.5), which Monty rejects with `could not convert string to float`.
-- **`bytes(source)`** — an iterable of ints is not supported: CPython's
-    `bytes([65, 66])` == `b'AB'`, Monty raises `TypeError: cannot convert 'list' object to bytes`. The int /
-    str-with-encoding / bytes source forms
-    all work. A count above `i64` (`bytes(2**70)`) raises the same shape of `TypeError`
-    (`cannot convert 'int' object to bytes`), not CPython's
-    `OverflowError: cannot fit 'int' into an index-sized integer`.
 - **`slice`** — slice bounds and the `length` argument to `slice.indices(length)` are saturated to `i64::MIN`/`i64::MAX` when outside the `i64` range; sequence lengths are represented as `usize`.
 - **`isinstance(obj, T)`** — `T` must be a built-in type (`int`, `str`,
     `list`, ...), a built-in exception class, a sandbox-defined class (see

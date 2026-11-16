@@ -13,6 +13,8 @@ fn inline_identities_keep_legacy_numbers() {
     let names = BuiltinsFunctions::VARIANTS
         .iter()
         .copied()
+        // Attribute access binds this hook to a fresh heap method, not an inline builtin.
+        .filter(|name| *name != "object.__init_subclass__")
         .chain(
             ExcType::VARIANTS
                 .iter()
@@ -122,7 +124,12 @@ fn inline_identities_keep_legacy_numbers() {
         "import annotationlib, asyncio, base64, binascii, bisect, collections, copy, csv, dataclasses, datetime, decimal, fnmatch, functools, hashlib, itertools, json, math, os, pathlib, random, re, statistics, sys, time, tomllib, typing, unicodedata\nimport csv as _csv\nresults = []\n",
     );
     for name in names {
-        writeln!(code, "results.append({name:?} + ': ' + str(id({name})))").unwrap();
+        let expression = if name == "FrozenInstanceError" {
+            "dataclasses.FrozenInstanceError"
+        } else {
+            name
+        };
+        writeln!(code, "results.append({name:?} + ': ' + str(id({expression})))").unwrap();
     }
     code.push_str("'\\n'.join(results)");
     let result = MontyRun::new(code, "identity.py", vec![], CompileOptions::default())

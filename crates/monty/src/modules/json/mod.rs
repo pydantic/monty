@@ -23,9 +23,9 @@ use crate::{
     args::ArgValues,
     builtins::Builtins,
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, RunResult},
+    exception_private::RunResult,
     intern::StaticStrings,
-    types::Module,
+    types::{Module, Type},
     value::Value,
 };
 
@@ -66,7 +66,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
     }
     module.set_attr(
         StaticStrings::JsonDecodeError,
-        Value::Builtin(Builtins::ExcType(ExcType::JsonDecodeError)),
+        Value::Builtin(Builtins::Type(Type::JsonDecodeError)),
         vm,
     );
     module

@@ -3,23 +3,23 @@
 
 use super::bytes_payload;
 use crate::{
-    builtins::Builtins,
+    builtins::{Builtins, BuiltinsFunctions},
     modules::{ModuleFunctions, ModuleFunctionsDiscriminants, dataclasses::DataclassesFunctions},
-    types::{BuiltinType, Property},
+    types::{Property, Type},
     value::Marker,
 };
 
 /// Maximum payload length before the sentinel and category tag exhaust `u128`.
 const MAX_BYTES: usize = 14;
 
-/// Preserves the builtin category, type slot and optional exception payload.
+/// Preserves builtin categories from before exception classes and `type` joined the native type table.
 pub(super) fn builtin(value: Builtins) -> u128 {
     match value {
         Builtins::Function(function) => indices_payload(&[0, function as u32]),
-        Builtins::ExcType(exception) => indices_payload(&[1, exception as u32]),
-        Builtins::Type(ty) => match ty {
-            BuiltinType::Exception(exception) => indices_payload(&[2, ty.identity_index(), exception as u32]),
-            _ => indices_payload(&[2, ty.identity_index()]),
+        Builtins::Type(Type::Type) => indices_payload(&[0, BuiltinsFunctions::Type as u32]),
+        Builtins::Type(ty) => match ty.exc_type() {
+            Some(exception) => indices_payload(&[1, exception as u32]),
+            None => indices_payload(&[2, ty.legacy_index()]),
         },
     }
 }

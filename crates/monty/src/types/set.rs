@@ -19,7 +19,7 @@ use crate::{
     modules::copy::{Memo, PyDeepCopy, deep_copy},
     py_value::PyValue,
     types::{
-        LazyHeapSet, Type,
+        LazyHeapSet, Type, TypeRef,
         hash_table::{CloneTableEntry, Live, PyHashTable, TableCursor, TableEntry, TableProbe, TableSource, TableWalk},
         list::repr_items_fmt,
     },
@@ -1187,8 +1187,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
         self.contains(item, vm).map(Some)
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Set
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Set.into()
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -1495,8 +1495,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
         self.contains(item, vm).map(Some)
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::FrozenSet
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::FrozenSet.into()
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -1741,8 +1741,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SetIterator> {
         true
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::SetIterator
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::SetIterator.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
