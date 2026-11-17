@@ -1564,7 +1564,9 @@ impl Checkout {
         let clock_unknown = self.pending_configure.is_some()
             && self.pool.config.transport.is_remote()
             && self.pool.config.request_timeout.is_some();
-        if self.budget.execution_clock == ExecutionClock::Cpu || clock_unknown {
+        // Only wall budgets predict how long a turn takes: CPU and work time
+        // can both run behind it, so a wall backstop would end healthy turns.
+        if self.budget.execution_clock != ExecutionClock::Wall || clock_unknown {
             return None;
         }
         self.budget

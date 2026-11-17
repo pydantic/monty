@@ -162,7 +162,7 @@ impl Worker {
             ExecutionClock::Cpu => {
                 Some(Clock::new(&child).map_err(|err| PoolError::Spawn(format!("recording child CPU clock: {err}")))?)
             }
-            ExecutionClock::Wall => None,
+            ExecutionClock::Wall | ExecutionClock::Work => None,
         };
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");

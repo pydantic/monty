@@ -1736,6 +1736,9 @@ impl TypeOrigin {
 pub enum ExecutionClock {
     Wall = 0,
     Cpu = 1,
+    /// Counted work converted to time at a fixed rate, for hosts whose clocks do
+    /// not advance during compute. A worker that predates it refuses the session.
+    Work = 2,
 }
 impl ExecutionClock {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1746,6 +1749,7 @@ impl ExecutionClock {
         match self {
             Self::Wall => "WALL",
             Self::Cpu => "CPU",
+            Self::Work => "WORK",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1753,6 +1757,7 @@ impl ExecutionClock {
         match value {
             "WALL" => Some(Self::Wall),
             "CPU" => Some(Self::Cpu),
+            "WORK" => Some(Self::Work),
             _ => None,
         }
     }
