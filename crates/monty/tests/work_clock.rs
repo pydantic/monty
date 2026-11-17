@@ -184,18 +184,19 @@ fn calibration_scripts_cost_fixed_units() {
         writeln!(report, "{name}: {}", units(&repl)).unwrap();
     }
     insta::assert_snapshot!(report, @"
-    arith_loop: 3287131
-    attr_access: 5154995
-    big_ints: 146272
-    bytes_ops: 4771552
-    comprehensions: 6544078
-    dict_ops: 4960889
-    func_calls: 1229097
-    json_roundtrip: 6800951
-    list_ops: 4028875
-    regex: 1297003
-    sorting: 7247612
-    str_build: 3196801
-    str_scan: 403250
+    arith_loop: 3887148
+    attr_access: 5275012
+    big_ints: 148703
+    bytes_ops: 4972320
+    comprehensions: 8071941
+    dict_ops: 5970991
+    func_calls: 1229098
+    json_roundtrip: 7344981
+    list_ops: 5629280
+    regex: 1859291
+    script_style: 8401511
+    sorting: 8555580
+    str_build: 4831468
+    str_scan: 943265
     ");
 }

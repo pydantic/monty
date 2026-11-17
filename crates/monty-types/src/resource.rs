@@ -22,7 +22,7 @@ mod execution_clock;
 mod work_meter;
 use execution_clock::ExecutionInstant;
 use work_meter::WorkMeter;
-pub use work_meter::{ALLOCATED_BYTES, NANOS_PER_UNIT};
+pub use work_meter::{ALLOCATED_BYTES, ALLOCATION_OVERHEAD_BYTES, NANOS_PER_UNIT};
 
 /// Exit code a worker uses when it exceeded its memory limit or the allocator
 /// refused an allocation, so the client can report `MemoryError` instead of an
@@ -605,9 +605,9 @@ impl ResourceTracker {
     /// of native work whose size the tracker cannot see.
     pub const POLL_UNITS: u64 = 16;
 
-    /// Units [`check_time_every`](Self::check_time_every) charges when it fires: two for each
-    /// of the [`LOOP_CHECK_INTERVAL`](Self::LOOP_CHECK_INTERVAL) items polled for.
-    pub const LOOP_POLL_UNITS: u64 = Self::LOOP_CHECK_INTERVAL as u64 * 2;
+    /// Units each [`check_time_every`](Self::check_time_every) call charges on the work clock:
+    /// one item of a native loop. Charged per call, so a loop too short to poll still costs.
+    pub const ITEM_UNITS: u64 = 2;
 
     /// Compares both budgets with the execution clock.
     ///
@@ -644,14 +644,14 @@ impl ResourceTracker {
 
     /// Amortized per-item time check for Rust-side loops: a full check
     /// once per [`LOOP_CHECK_INTERVAL`](Self::LOOP_CHECK_INTERVAL) calls,
-    /// free otherwise. Key `i` on the loop's index or a monotonically
+    /// free otherwise but for the work clock's [`ITEM_UNITS`](Self::ITEM_UNITS). Key `i` on the loop's index or a monotonically
     /// increasing counter. Fires at the *end* of each block (`i % N == N-1`)
     /// so loops shorter than the interval pay no clock read at all — the VM
     /// dispatch checkpoint covers cadence between short calls.
     #[inline]
     pub fn check_time_every(&self, i: usize) -> Result<(), ResourceError> {
+        self.charge_work(Self::ITEM_UNITS);
         if i % Self::LOOP_CHECK_INTERVAL == Self::LOOP_CHECK_INTERVAL - 1 {
-            self.charge_work(Self::LOOP_POLL_UNITS);
             self.check_budgets()
         } else {
             Ok(())
@@ -664,8 +664,8 @@ impl ResourceTracker {
     /// runaway growth.
     #[inline]
     pub fn check_memory_time_every(&self, i: usize) -> Result<(), ResourceError> {
+        self.charge_work(Self::ITEM_UNITS);
         if i % Self::LOOP_CHECK_INTERVAL == Self::LOOP_CHECK_INTERVAL - 1 {
-            self.charge_work(Self::LOOP_POLL_UNITS);
             self.check_memory()?;
             self.check_budgets()
         } else {

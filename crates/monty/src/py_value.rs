@@ -120,6 +120,13 @@ macro_rules! define_py_value {
 }
 heap_payloads!(define_py_value);
 
+/// Work-clock units for creating an iterator, which allocates one on the heap.
+const ITER_UNITS: u64 = 12;
+
+/// Work-clock units for each item taken from an iterator. Native loops shorter than a poll
+/// interval are charged nothing else.
+const NEXT_UNITS: u64 = 2;
+
 /// Combines concrete dispatch and custom arms in one match, allowing exhaustive protocols.
 macro_rules! forward_py_value {
     ($self:expr, |$value:ident| $body:expr, else $fallback:expr) => {
@@ -440,11 +447,13 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        vm.heap.tracker.charge_work(ITER_UNITS);
         forward_py_value!(self, |value| value.py_iter(vm),
             else Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))))
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        vm.heap.tracker.charge_work(NEXT_UNITS);
         forward_py_value!(self, |value| value.py_next(vm),
             else Err(ExcType::type_error_not_iterator(&self.py_type_name(vm))))
     }
