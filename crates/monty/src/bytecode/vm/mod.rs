@@ -1321,6 +1321,11 @@ impl<'h> VM<'h> {
     ///
     /// The current frame is stored separately from its suspended callers, so
     /// dispatch updates its authoritative instruction pointer directly.
+    #[expect(
+        clippy::inline_always,
+        reason = "inlined into `run`, `countdown` is a local the optimizer keeps in a register"
+    )]
+    #[inline(always)]
     fn run_loop(&mut self, countdown: &mut u8) -> Result<FrameExit, RunError> {
         // Neither can change mid-run (`set_max_feed_duration` needs `&mut` at the
         // host boundary), so with no limit and no work clock the whole checkpoint
