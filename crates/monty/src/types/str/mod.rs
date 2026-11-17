@@ -118,17 +118,13 @@ impl<'h> PyStr<'h> {
 
     /// Returns the number of Unicode code points; ASCII strings use their byte length.
     fn char_len(&self, vm: &VM<'h>) -> usize {
-        match self {
-            PyStr::Heap(heap_string) => heap_string.get(vm.heap).char_len(),
-            PyStr::Interned(id) => {
-                let text = vm.interns.get_str(*id);
-                if vm.interns.str_is_ascii(*id) {
-                    text.len()
-                } else {
-                    text.chars().count()
-                }
-            }
-            PyStr::Inline(text) => text.as_str().chars().count(),
+        let text = self.as_str(vm);
+        if self.is_ascii(vm) {
+            text.len()
+        } else {
+            // Counted a character at a time.
+            charge_scan(text.len(), &vm.heap.tracker);
+            text.chars().count()
         }
     }
 

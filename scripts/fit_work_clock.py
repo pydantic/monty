@@ -184,7 +184,7 @@ class Tables:
         ]
         base = max(1, round(min(common)))
 
-        # An opcode the data never ran keeps the total it had.
+        # An opcode the data never ran keeps the total it had, or the base if that is now higher.
         extras = {op['name']: max(0, data.base + op['extra'] - base) for op in data.opcodes}
         for (kind, name), weight in fitted.items():
             if kind == 'opcode':
