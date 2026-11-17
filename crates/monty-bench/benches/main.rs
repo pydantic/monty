@@ -8,7 +8,8 @@
 //! - `data = '<path>'`: bind `DATA` to the contents of `<path>`, relative to the script
 //! - `mount = true`: bind `DATA` to the root of the mounted [`scan_tree`]
 //! - `overlay = true`: with `mount`, also register `<name>_overlay__monty` over an overlay mount
-//! - `limits = true`: also register `<name>_limits__monty` with resource limits armed
+//! - `limits = true`: also register `<name>_limits__monty` with resource limits armed, and
+//!   `<name>_work_limits__monty` with them armed on the work clock
 
 use std::{
     fs, mem,
@@ -24,7 +25,9 @@ use criterion::{BatchSize, Bencher, Criterion, black_box, criterion_group, crite
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, SessionRef};
 use monty_fixture::{Bench, Header};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
-use monty_types::{CompileOptions, ExtFunctionResult, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
+use monty_types::{
+    CompileOptions, ExecutionClock, ExtFunctionResult, MontyObject, PrintWriter, ResourceLimits, ResourceTracker,
+};
 #[cfg(all(not(feature = "codspeed"), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 // CPython benchmarks are only run locally, not on CodSpeed CI (requires Python + pyo3 setup)
@@ -296,7 +299,10 @@ impl Script {
             c.bench_function(&format!("{name}__monty"), |b| run_monty(b, code, filename, data));
             if self.limits {
                 c.bench_function(&format!("{name}_limits__monty"), |b| {
-                    run_monty_limits(b, code, filename, data);
+                    run_monty_limits(b, code, filename, data, ExecutionClock::Wall);
+                });
+                c.bench_function(&format!("{name}_work_limits__monty"), |b| {
+                    run_monty_limits(b, code, filename, data, ExecutionClock::Work);
                 });
             }
         }
@@ -334,13 +340,14 @@ fn run_monty(bench: &mut Bencher, code: &str, filename: &str, data: Option<&str>
 
 /// Runs with production-shaped resource limits armed (generous budgets that never trip),
 /// measuring the amortized limit-checking path sandboxes run rather than the no-limits path.
-fn run_monty_limits(bench: &mut Bencher, code: &str, filename: &str, data: Option<&str>) {
+/// `clock` picks between reading time at each check and counting work.
+fn run_monty_limits(bench: &mut Bencher, code: &str, filename: &str, data: Option<&str>, clock: ExecutionClock) {
     let mut ex = parse_with_data(code, filename, data);
     let limits = ResourceLimits::default()
         .max_feed_duration(Duration::from_mins(10))
         .max_memory(1 << 40);
     bench.iter(|| {
-        let tracker = ResourceTracker::new(limits.clone());
+        let tracker = ResourceTracker::new(limits.clone()).with_execution_clock(clock);
         black_box(ex.run(data_inputs(data), tracker, PrintWriter::Stdout).unwrap())
     });
 }
