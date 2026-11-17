@@ -90,6 +90,12 @@ assert date.strftime(dt, '%H:%M:%S %z') == '03:04:05 +0000'
 assert date.weekday(dt) == 1
 assert date.isoweekday(dt) == 2
 assert date.replace(dt, year=2025) == datetime(2025, 1, 2)
+day = date(2024, 1, 2)
+for receiver in (day, dt):
+    assert datetime.weekday(receiver) == 1
+    assert datetime.isoweekday(receiver) == 2
+assert datetime.strftime(day, '%Y-%m-%d %H:%M') == '2024-01-02 00:00'
+assert datetime.strftime(dt, '%H:%M:%S %z') == '03:04:05 +0000'
 mapping = {}
 dict.update(mapping, a=1)
 assert dict.get(mapping, 'a') == 1

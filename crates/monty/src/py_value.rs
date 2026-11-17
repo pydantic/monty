@@ -839,8 +839,10 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        // Namedtuple instances report their class in TypeRef but share native tuple storage.
         let ty = match self {
+            // These markers report TextIOWrapper for type(), but carry no file methods.
+            Self::Marker(Marker(StaticStrings::Stdout | StaticStrings::Stderr)) => None,
+            // Namedtuple instances report their class in TypeRef but share native tuple storage.
             Self::NamedTuple(_) => Some(Type::NamedTuple),
             _ => self.py_type(vm).native(),
         };

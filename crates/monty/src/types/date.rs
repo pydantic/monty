@@ -40,6 +40,18 @@ const MICROSECONDS_PER_DAY: i128 = 86_400_000_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Date(pub(crate) NaiveDate);
 
+impl Date {
+    fn weekday(self, args: ArgValues, heap: &mut Heap) -> RunResult<Value> {
+        args.check_zero_args("date.weekday", heap)?;
+        Ok(Value::Int(i64::from(self.0.weekday().num_days_from_monday())))
+    }
+
+    fn isoweekday(self, args: ArgValues, heap: &mut Heap) -> RunResult<Value> {
+        args.check_zero_args("date.isoweekday", heap)?;
+        Ok(Value::Int(i64::from(self.0.weekday().number_from_monday())))
+    }
+}
+
 /// Creates a date from validated civil components.
 ///
 /// Error messages match CPython 3.14 format exactly.
@@ -515,11 +527,15 @@ fn call_datetime_descriptor<'h>(
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
     let name = attr.static_string(vm.interns);
-    if name == Some(StaticStrings::Strftime) {
-        return datetime::PyDateTimeImpl::strftime(value, args, vm).map(CallResult::Value);
+    let date = value.get(vm.heap).date();
+    match name {
+        Some(StaticStrings::Strftime) => {
+            return datetime::PyDateTimeImpl::strftime(value, args, vm).map(CallResult::Value);
+        }
+        Some(StaticStrings::Weekday) => return date.weekday(args, vm.heap).map(CallResult::Value),
+        Some(StaticStrings::Isoweekday) => return date.isoweekday(args, vm.heap).map(CallResult::Value),
+        _ => {}
     }
-    let (year, month, day, ..) = datetime::to_components(value.get(vm.heap)).expect("valid datetime components");
-    let date = from_ymd(year, i32::from(month), i32::from(day)).expect("valid datetime date");
     let receiver = Value::Ref(vm.heap.allocate(HeapData::Date(date)));
     defer_drop!(receiver, vm);
     let result = call(&mut receiver.py_value(vm), args, vm)?;
@@ -590,18 +606,12 @@ impl<'heap> PyAttrs<'heap> for PyDateImpl {
 
     #[pymethod(Weekday)]
     fn weekday<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        args.check_zero_args("date.weekday", vm.heap)?;
-        Ok(Value::Int(i64::from(
-            value.get(vm.heap).0.weekday().num_days_from_monday(),
-        )))
+        value.get(vm.heap).weekday(args, vm.heap)
     }
 
     #[pymethod(Isoweekday)]
     fn isoweekday<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        args.check_zero_args("date.isoweekday", vm.heap)?;
-        Ok(Value::Int(i64::from(
-            value.get(vm.heap).0.weekday().number_from_monday(),
-        )))
+        value.get(vm.heap).isoweekday(args, vm.heap)
     }
 
     #[pyclassmethod(Today)]

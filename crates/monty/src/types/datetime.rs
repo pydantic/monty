@@ -57,6 +57,11 @@ pub(crate) struct DateTime {
 }
 
 impl DateTime {
+    /// The local calendar date, including for timezone-aware datetimes.
+    pub(crate) fn date(&self) -> date::Date {
+        date::Date(self.naive.date())
+    }
+
     /// Returns the retained `tzinfo` heap reference, if this datetime is timezone-aware.
     ///
     /// Used by GC traversal (`collect_child_ids`) and ref-count cascade
@@ -1633,7 +1638,6 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
         Ok(allocate_string_no_interning(s, vm.heap))
     }
 
-    #[pymethod(Strftime)]
     pub(crate) fn strftime<'h>(
         this: &mut HeapObjectRead<'h, DateTime>,
         args: ArgValues,
@@ -1651,30 +1655,11 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
         this.replace(vm, args)
     }
 
-    #[pymethod(Weekday)]
-    fn weekday<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        args.check_zero_args("datetime.weekday", vm.heap)?;
-        let dt = this.get(vm.heap);
-        Ok(Value::Int(i64::from(dt.naive.date().weekday().num_days_from_monday())))
-    }
-
-    #[pymethod(Isoweekday)]
-    fn isoweekday<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        args.check_zero_args("datetime.isoweekday", vm.heap)?;
-        let dt = this.get(vm.heap);
-        Ok(Value::Int(i64::from(dt.naive.date().weekday().number_from_monday())))
-    }
-
     #[pymethod(Date)]
     fn date<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("datetime.date", vm.heap)?;
-        let dt = this.get(vm.heap);
-        let d = date::from_ymd(
-            dt.naive.date().year(),
-            i32::try_from(dt.naive.date().month()).expect("month in 1..12"),
-            i32::try_from(dt.naive.date().day()).expect("day in 1..31"),
-        )?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Date(d))))
+        let date = this.get(vm.heap).date();
+        Ok(Value::Ref(vm.heap.allocate(HeapData::Date(date))))
     }
 
     #[pymethod(Time)]
