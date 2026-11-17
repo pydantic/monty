@@ -79,7 +79,13 @@ thread with a cache of up to 1 ms and reads exact execution boundaries.
 Unavailable or unusable counters use conservative elapsed time for that window; off Linux the counter is always
 unavailable, so check `ExecutionClock::is_available()` before selecting CPU mode directly.
 The OS controls counter accuracy and resolution. Snapshots preserve clock selection
-and recorded consumption. WebAssembly workers accept wall mode only.
+and recorded consumption.
+
+`ExecutionClock::Work` reads no clock. The interpreter charges units of work through
+`ResourceTracker::charge_work` (one per bytecode instruction, 64 per native poll, more for costly native
+operations) and the tracker reports `units × NANOS_PER_UNIT`. `monty-alloc` advances `ALLOCATED_BYTES`, which the
+tracker charges per byte as a floor. It is available on every target and suits hosts whose clocks stand still
+during compute. WebAssembly workers accept wall and work mode.
 
 ## License
 

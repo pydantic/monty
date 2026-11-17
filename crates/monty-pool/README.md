@@ -215,7 +215,12 @@ Clients adopt that clock for deadlines; CPU mode requires a finite client `reque
 CPU profiles need clients that understand the clock metadata to avoid premature wall backstops under contention.
 The server does not enforce this requirement; older clients remain accepted.
 A missing clock means legacy wall time. The server's local subprocess pool enforces CPU beside the child.
-WebAssembly workers support wall mode only.
+WebAssembly workers support wall and work mode.
+
+`ExecutionClock::Work` counts executed work in the worker and converts it to time at a fixed rate.
+It needs no supervisor clock and no finite `request_timeout`, and works on every platform.
+The pool arms no feed or turn grace backstop for it, locally or for a remote server that reports it, since counted
+time does not predict how long a turn takes; `request_timeout` is the only wall bound.
 
 The independent client `request_timeout` still bounds response latency under contention.
 Choose it for the expected CPU budgets and scheduling delays. CPU accounting does not extend this wall deadline.
