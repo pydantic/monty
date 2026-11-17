@@ -225,3 +225,57 @@ run()
     let output = runner.run_ref_counts(vec![]).unwrap();
     assert_eq!(output.unreachable, Vec::<String>::new());
 }
+
+#[test]
+fn local_subscripts_cross_encoding_boundaries() {
+    for (object, key) in [(127, 128), (128, 129), (254, 255), (255, 254), (256, 257), (0, 256)] {
+        let mut source = String::from("def read():\n");
+        for slot in 0..=object.max(key) {
+            if slot == object {
+                source.push_str("    values = {0: 42, 'key': 43}\n");
+            } else if slot == key {
+                source.push_str("    key = 0\n");
+            } else {
+                writeln!(source, "    unused_{slot} = None").unwrap();
+            }
+        }
+        source.push_str("    return values[0] + values['key'] + values[key]\nread()\n");
+        let mut runner = MontyRun::new(source, "local_bounds.py", vec![], CompileOptions::default()).unwrap();
+        assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::int(127));
+    }
+}
+
+#[test]
+fn global_subscripts_cross_packed_slot_boundary() {
+    for slot in [8191, 8192] {
+        let mut source = String::new();
+        for unused in 0..slot {
+            writeln!(source, "unused_{unused} = None").unwrap();
+        }
+        source.push_str("values = {0: 42, 'key': 43}\nkey = 0\nvalues[0] + values['key'] + values[key]\n");
+        let mut runner = MontyRun::new(source, "global_bounds.py", vec![], CompileOptions::default()).unwrap();
+        assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::int(127));
+    }
+}
+
+#[test]
+fn subscript_integer_literals_cross_operand_widths() {
+    let mut source = String::from(
+        "values = {-32769: 1, -32768: 2, -129: 3, -128: 4, 127: 5, 128: 6, 32767: 7, 32768: 8}\ndef read(local):\n",
+    );
+    for (index, key) in [-32769, -32768, -129, -128, 127, 128, 32767, 32768]
+        .into_iter()
+        .enumerate()
+    {
+        writeln!(
+            source,
+            "    assert local[{key}] == {}\n    assert values[{key}] == {}",
+            index + 1,
+            index + 1
+        )
+        .unwrap();
+    }
+    source.push_str("read(values)\n");
+    let mut runner = MontyRun::new(source, "literal_bounds.py", vec![], CompileOptions::default()).unwrap();
+    runner.run_no_limits(vec![]).unwrap();
+}

@@ -32,48 +32,54 @@ A const-generic family uses `using native_local::<OP>`; the macro supplies the d
 There is no separate registration table to update.
 `with inline` inlines the semantic body into its wrapper; only `BinarySubscr` currently uses this measured exception.
 
-Write direct handlers inside `direct_handler!`. Name the scalar arguments; the macro supplies their types and `Status` return type:
+Fast handlers in [`fast.rs`](../../../monty/src/bytecode/vm/dispatch_threaded/fast.rs) are ordinary Rust functions
+that take a `Dispatch` value:
 
 ```rust,ignore
-direct_handler! {
-fn native_nop(vm, bytes, ip, context, remaining, table) {
-    next!(1)
-}
+#[inline(always)]
+pub(super) fn native_nop(d: Dispatch<'_, '_>) -> Status {
+    d.next()
 }
 ```
 
-Use `mut ip` in the declaration when decoding operands. Const-generic families use
-`fn native_local<const OP: u8>(vm, bytes, mut ip, context, remaining, table)`.
+Use `mut d` when advancing the bytecode cursor or accounting for fused instructions.
+Const-generic families use `pub(super) fn native_local<const OP: u8>(mut d: Dispatch<'_, '_>) -> Status`.
+The registration macro generates a scalar entry point and inlines the function into it.
+`Dispatch` stays local to that entry point; it is never passed between handlers.
 
-The continuation macros expand directly to the scalar calls used by the dispatcher:
+| Operation                     | Meaning                                                            |
+| ----------------------------- | ------------------------------------------------------------------ |
+| `d.vm`                        | Stack, locals, heap and semantic operations                        |
+| `d.read_u8()`, `d.read_u16()` | Read an operand and advance the bytecode cursor                    |
+| `d.bytes`, `d.ip`             | Look ahead without consuming an operand; set a branch target       |
+| `d.next()`                    | Continue at the cursor, retaining this instruction's source offset |
+| `d.fallback(OP)`              | Run the semantic handler from the original operand position        |
+| `d.resume()`                  | Reload the active frame after Python execution or a frame change   |
+| `d.remaining`                 | Instruction budget; subtract each additional fused instruction     |
+| `d.context`                   | Record an exit or uncaught error payload                           |
 
-| Operation                      | Meaning                                                          |
-| ------------------------------ | ---------------------------------------------------------------- |
-| `vm`                           | Stack, locals, heap and semantic operations                      |
-| `bytes`, `ip`                  | Checked bytecode access; entry IP points just after the opcode   |
-| `next!(WIDTH)`                 | Continue at `ip`; `WIDTH` includes the opcode byte and operands  |
-| `next!(WIDTH, target)`         | Continue at a supplied instruction pointer                       |
-| `next!(WIDTH, target, budget)` | Continue after accounting for fused instructions                 |
-| `next_local!(OP, target)`      | Select the width of a fixed, narrow or wide local opcode         |
-| `fallback!(OP)`                | Run the semantic handler with the original operands and entry IP |
-| `resume!()`                    | Reload the active frame after Python execution or a frame change |
-| `context`                      | Record an exit or uncaught error payload                         |
+Operand readers advance `d.ip`; `next()` does not.
+Continuation methods consume `Dispatch`, so return their result as a tail expression or with `return`.
+Handlers do not need to supply instruction widths or select a checkpoint function.
 
-Advance `ip` past decoded operands, or supply the target explicitly. `WIDTH` reconstructs the source position at a checkpoint;
-it does not advance the instruction pointer. Return the continuation's status immediately, as a tail expression or with `return`.
+Subscription operands use the shared types in
+[`subscription.rs`](../../../monty/src/bytecode/subscription.rs).
+Their constructors return `None` when a slot cannot fit the fused encoding, so the compiler emits ordinary loads.
+The compiler, builder and handlers share these encoders and decoders.
 
 ## State and ownership
 
-Call `fallback!` before consuming stack operands or advancing `ip`; the semantic handler decodes them itself.
-If an operation can run Python, publish `vm.current_frame.ip` and `vm.instruction_ip` before the call, then use `resume!()`.
+Call `d.fallback(OP)` before consuming stack operands; it restores the original operand position even after decoding.
+If an operation can run Python, publish `d.vm.current_frame.ip` and `d.vm.instruction_ip` before the call,
+then use `d.resume()`.
 Direct handlers that cannot run Python can retain instruction state locally until a checkpoint.
 
-For a branch, set `vm.instruction_ip` to the source opcode when the countdown reaches zero, then use `next!(0)`.
-The branch target cannot reconstruct the source position.
+`d.next()` publishes the source offset when the countdown reaches zero, including after a branch.
 For fused operations, account for every consumed opcode and preserve a checkpoint that falls between them.
 `for_iter` demonstrates the `ForIter` / `StoreLocal` case.
 Fused subscriptions also account for skipped key loads and stores.
-Four-byte instructions need the width-four checkpoint entry; variable-width continuations publish their source offset at the boundary.
+When folding `StoreLocal` into `ForIter`, set `d.start` to the store's opcode position before advancing the cursor.
+This attributes a checkpoint between loop iterations to the store, matching execution without fusion.
 
 Keep the usual `Value` clone/drop ownership rules. A fast path must leave operands untouched when it declines an operation.
 Keep operation-local guards out of the continuation: release them before dispatching to another handler.

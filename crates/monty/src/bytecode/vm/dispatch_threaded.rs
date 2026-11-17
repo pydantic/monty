@@ -1,12 +1,13 @@
 //! Threaded opcode dispatch with bounded batches and cold exit payloads.
 
-use std::{cmp::Ordering, mem};
+use fast::advance_iterator;
 
 use super::{
     AwaitResult, CallResult, CellValue, Closure, DropWithContext, ExcType, ExcTypeExt, FrameExit, FrameNamespace,
-    FunctionDefaults, FunctionId, HeapData, HeapId, HeapReadOutput, IMPORT_STAR_BIND, MATCH_KEYS_REST, Opcode,
-    PostConversionEffect, PyTrait, PyValue, RunError, StringId, VM, Value, decode_assert_flags, recursion,
+    FunctionDefaults, FunctionId, HeapData, IMPORT_STAR_BIND, MATCH_KEYS_REST, Opcode, PyTrait, RunError, StringId, VM,
+    Value, decode_assert_flags, recursion,
 };
+use crate::bytecode::subscription::{GlobalSubscript, LocalSubscript, LocalSubscriptKey};
 
 macro_rules! yield_if_parked {
     ($self:expr, $context:expr) => {
@@ -90,6 +91,8 @@ macro_rules! handle_call_result {
     };
 }
 
+mod fast;
+
 type Handler = for<'h> fn(&mut VM<'h>, &[u8], usize, &mut DispatchContext, u32, &DispatchTable) -> Status;
 
 /// Only actual exits write a payload; continuation crosses helpers in one register.
@@ -98,7 +101,6 @@ type Handler = for<'h> fn(&mut VM<'h>, &[u8], usize, &mut DispatchContext, u32, 
 enum Status {
     Continue,
     Exit,
-    Error,
 }
 
 struct DispatchContext {
@@ -113,76 +115,90 @@ struct DispatchContext {
 impl DispatchContext {
     #[cold]
     fn exit(&mut self, exit: FrameExit) -> Status {
-        self.outcome = Some(Ok(exit));
-        Status::Exit
+        self.finish(Ok(exit))
     }
 
     #[cold]
     fn error(&mut self, error: RunError) -> Status {
-        self.outcome = Some(Err(error));
-        Status::Error
+        self.finish(Err(error))
     }
 
     #[cold]
     fn finish(&mut self, outcome: Result<FrameExit, RunError>) -> Status {
-        match outcome {
-            Ok(exit) => self.exit(exit),
-            Err(error) => self.error(error),
-        }
+        self.outcome = Some(outcome);
+        Status::Exit
     }
 }
 
 #[repr(C)]
 struct DispatchTable {
     handlers: [Handler; 256],
-    checkpoints: [Handler; 5],
+    checkpoint: Handler,
 }
 
-// Preserve the scalar ABI while omitting repeated parameter types and continuation arguments.
-macro_rules! direct_handler {
-    (fn $name:ident $(<const $opcode:ident: u8>)? (
-        $vm:ident, $bytes:ident, $($ip:ident)+, $context:ident, $($remaining:ident)+, $table:ident
-    ) $body:block) => {
-        #[inline(never)]
-        #[expect(unused_macros, reason = "Each handler uses only the continuations it needs.")]
-        fn $name $(<const $opcode: u8>)? (
-            $vm: &mut VM<'_>, $bytes: &[u8], $($ip)+: usize, $context: &mut DispatchContext,
-            $($remaining)+: u32, $table: &DispatchTable,
-        ) -> Status {
-            macro_rules! next {
-                ($width:expr) => { next!($width, handler_argument!($($ip)+)) };
-                ($width:expr, $target:expr) => { next!($width, $target, handler_argument!($($remaining)+)) };
-                ($width:expr, $target:expr, $budget:expr) => {
-                    next::<{ $width }>($vm, $bytes, $target, $context, $budget, $table)
-                };
-            }
-            macro_rules! next_local {
-                ($op:expr, $target:expr) => {
-                    next_local::<{ $op }>($vm, $bytes, $target, $context, handler_argument!($($remaining)+), $table)
-                };
-            }
-            macro_rules! fallback {
-                ($op:expr) => {
-                    (SEMANTICS[usize::from($op)])($vm, $bytes, handler_argument!($($ip)+), $context, handler_argument!($($remaining)+), $table)
-                };
-            }
-            macro_rules! resume {
-                () => {
-                    next::<0>($vm, $vm.current_frame.bytecode, $vm.current_frame.ip, $context, handler_argument!($($remaining)+), $table)
-                };
-            }
-            $body
+/// Local handler state. Entry points still pass scalars so continuations can tail-call.
+struct Dispatch<'a, 'h> {
+    vm: &'a mut VM<'h>,
+    bytes: &'a [u8],
+    ip: usize,
+    start: usize,
+    context: &'a mut DispatchContext,
+    remaining: u32,
+    table: &'a DispatchTable,
+}
+
+#[expect(clippy::inline_always, reason = "Keep scalar dispatch calls in each handler.")]
+impl Dispatch<'_, '_> {
+    /// Continues at the cursor, publishing the source position only at a checkpoint.
+    #[inline(always)]
+    fn next(self) -> Status {
+        if self.remaining == 0 {
+            self.vm.instruction_ip = self.start;
         }
-    };
-}
+        next(self.vm, self.bytes, self.ip, self.context, self.remaining, self.table)
+    }
 
-macro_rules! handler_argument {
-    (mut $name:ident) => {
-        $name
-    };
-    ($name:ident) => {
-        $name
-    };
+    /// Runs the semantic handler from the original operand position.
+    #[inline(always)]
+    fn fallback(self, opcode: u8) -> Status {
+        (SEMANTICS[usize::from(opcode)])(
+            self.vm,
+            self.bytes,
+            self.start + 1,
+            self.context,
+            self.remaining,
+            self.table,
+        )
+    }
+
+    /// Reloads the active frame after an operation that can execute Python.
+    #[inline(always)]
+    fn resume(self) -> Status {
+        next(
+            self.vm,
+            self.vm.current_frame.bytecode,
+            self.vm.current_frame.ip,
+            self.context,
+            self.remaining,
+            self.table,
+        )
+    }
+
+    /// Reads an operand and advances the cursor; fallback retains its original position.
+    #[inline(always)]
+    fn read_u8(&mut self) -> u8 {
+        let value = self.bytes[self.ip];
+        self.ip += 1;
+        value
+    }
+
+    /// Reads a little-endian operand and advances the cursor.
+    #[inline(always)]
+    fn read_u16(&mut self) -> u16 {
+        let value = u16::from_le_bytes([self.bytes[self.ip], self.bytes[self.ip + 1]]);
+        self.ip += 2;
+        value
+    }
 }
 
 macro_rules! operation_body {
@@ -202,10 +218,15 @@ macro_rules! select_handler {
         $semantic
     };
     ($opcode:ident, $semantic:ident, $fast:ident) => {
-        $fast
+        select_handler!(@entry fast::$fast)
     };
     ($opcode:ident, $semantic:ident, $fast:ident::<OP>) => {
-        $fast::<{ Opcode::$opcode as u8 }>
+        select_handler!(@entry fast::$fast::<{ Opcode::$opcode as u8 }>)
+    };
+    (@entry $fast:expr) => {
+        |vm, bytes, ip, context, remaining, table| {
+            $fast(Dispatch { vm, bytes, ip, start: ip - 1, context, remaining, table })
+        }
     };
 }
 
@@ -228,7 +249,7 @@ macro_rules! opcode_handlers {
             if status != Status::Continue {
                 return status;
             }
-            next::<0>(vm, vm.current_frame.bytecode, vm.current_frame.ip, context, remaining, table)
+            next(vm, vm.current_frame.bytecode, vm.current_frame.ip, context, remaining, table)
         })*
         const SEMANTICS: [Handler; 256] = {
             let mut handlers = [invalid as Handler; 256];
@@ -243,7 +264,7 @@ macro_rules! opcode_handlers {
                 } )*
                 handlers
             },
-            checkpoints: [checkpoint::<0>, checkpoint::<1>, checkpoint::<2>, checkpoint::<3>, checkpoint::<4>],
+            checkpoint,
         };
     };
 }
@@ -580,29 +601,26 @@ DictSetItem => op_dict_set_item {
 }
 LoadSubscrLocal => op_load_subscr_local using native_subscript::<OP> {
     let (object, key) = vm.current_frame.fetch_u8_u8();
-    try_catch!(vm, context, vm.subscript_locals(u16::from(object), u16::from(key), 0));
+    try_catch!(vm, context, vm.subscript_locals_fallback(u16::from(object), LocalSubscriptKey::Local(key)));
 }
 LoadSubscrConst => op_load_subscr_const using native_subscript::<OP> {
     let (key, object_kind) = vm.current_frame.fetch_u16_u8();
-    let object = u16::from(object_kind & 127);
-    let flags = if object_kind & 128 != 0 { 1 } else { 2 };
-    try_catch!(vm, context, vm.subscript_locals(object, key, flags));
+    let operand = LocalSubscript::decode_constant(key, object_kind);
+    try_catch!(vm, context, vm.subscript_locals_fallback(u16::from(operand.object()), operand.key()));
 }
 SubscrToLocal => op_subscr_to_local using native_subscript_store {
     let (slots, destination) = vm.current_frame.fetch_u16_u8();
     let [object, key] = slots.to_le_bytes();
-    if !vm.try_subscript_to_local(object, key, destination) {
-        match vm.subscript_locals_fallback(u16::from(object), u16::from(key), 0) {
-            Ok(()) => vm.store_local(u16::from(destination)),
-            Err(error) => catch!(vm, context, error),
-        }
+    match vm.subscript_locals_fallback(u16::from(object), LocalSubscriptKey::Local(key)) {
+        Ok(()) => vm.store_local(u16::from(destination)),
+        Err(error) => catch!(vm, context, error),
     }
 }
 LoadGlobalSubscr => op_load_global_subscr using native_global_subscript {
     let operand = vm.current_frame.fetch_u16();
     // Boundary fallback retains the original key-load/subscript continuation.
     vm.instruction_ip += 1;
-    handle_load_result!(vm, context, vm.load_global(operand & 8191));
+    handle_load_result!(vm, context, vm.load_global(GlobalSubscript::decode(operand).slot()));
 }
 BinarySubscr => op_binary_subscr with inline {
     if !vm.try_native_stack_subscript() {
@@ -1112,7 +1130,7 @@ impl VM<'_> {
 
 #[expect(clippy::inline_always, reason = "Each handler must end in its own dispatch.")]
 #[inline(always)]
-fn next<const WIDTH: usize>(
+fn next(
     vm: &mut VM<'_>,
     bytes: &[u8],
     ip: usize,
@@ -1121,7 +1139,7 @@ fn next<const WIDTH: usize>(
     table: &DispatchTable,
 ) -> Status {
     if remaining == 0 {
-        return (table.checkpoints[WIDTH])(vm, bytes, ip, context, remaining, table);
+        return (table.checkpoint)(vm, bytes, ip, context, remaining, table);
     }
     fetched(vm, bytes, ip, context, remaining - 1, table)
 }
@@ -1142,7 +1160,7 @@ fn fetched(
 
 #[cold]
 #[inline(never)]
-fn checkpoint<const WIDTH: usize>(
+fn checkpoint(
     vm: &mut VM<'_>,
     bytes: &[u8],
     ip: usize,
@@ -1151,9 +1169,6 @@ fn checkpoint<const WIDTH: usize>(
     table: &DispatchTable,
 ) -> Status {
     vm.current_frame.ip = ip;
-    if WIDTH != 0 {
-        vm.instruction_ip = ip.checked_sub(WIDTH).expect("opcode start precedes bytecode");
-    }
     // Nested chains unwind every 16 instructions, but keep the baseline polling cadence.
     if context.reentrant {
         context.batches_until_poll -= 1;
@@ -1178,502 +1193,6 @@ fn invalid(_: &mut VM<'_>, _: &[u8], _: usize, _: &mut DispatchContext, _: u32, 
     panic!("invalid opcode in bytecode")
 }
 
-#[expect(clippy::inline_always, reason = "Keep the local handler's dispatch in its caller.")]
-#[inline(always)]
-fn next_local<const OP: u8>(
-    vm: &mut VM<'_>,
-    bytes: &[u8],
-    ip: usize,
-    context: &mut DispatchContext,
-    remaining: u32,
-    table: &DispatchTable,
-) -> Status {
-    if OP == Opcode::LoadLocalW as u8 || OP == Opcode::StoreLocalW as u8 {
-        next::<3>(vm, bytes, ip, context, remaining, table)
-    } else if OP == Opcode::LoadLocal as u8 || OP == Opcode::StoreLocal as u8 {
-        next::<2>(vm, bytes, ip, context, remaining, table)
-    } else {
-        next::<1>(vm, bytes, ip, context, remaining, table)
-    }
-}
-
-direct_handler! {
-fn native_nop(vm, bytes, ip, context, remaining, table) {
-    next!(1)
-}
-}
-
-direct_handler! {
-fn native_literal<const OP: u8>(vm, bytes, mut ip, context, remaining, table) {
-    if vm.stack.len() == vm.stack.capacity() {
-        return fallback!(OP);
-    }
-
-    match OP {
-        byte if byte == Opcode::LoadNone as u8 => vm.push(Value::None),
-        byte if byte == Opcode::LoadTrue as u8 => vm.push(Value::Bool(true)),
-        byte if byte == Opcode::LoadFalse as u8 => vm.push(Value::Bool(false)),
-        byte if byte == Opcode::LoadSmallInt as u8 => {
-            let value = bytes[ip].cast_signed();
-            ip += 1;
-            vm.push(Value::Int(i64::from(value)));
-        }
-        _ => unreachable!(),
-    }
-    if OP == Opcode::LoadSmallInt as u8 {
-        next!(2)
-    } else {
-        next!(1)
-    }
-}
-}
-
-direct_handler! {
-fn native_constant(vm, bytes, mut ip, context, remaining, table) {
-    if vm.stack.len() == vm.stack.capacity() {
-        return fallback!(Opcode::LoadConst as u8);
-    }
-
-    let slot = u16::from_le_bytes([bytes[ip], bytes[ip + 1]]);
-    // Compiled constants hold only literals and interned IDs.
-    let constant = vm.current_frame.code.constant(slot);
-    if let Value::InternString(value) = constant {
-        vm.push(Value::InternString(*value));
-        return next!(3, ip + 2);
-    }
-    if let Value::Float(value) = constant {
-        vm.push(Value::Float(*value));
-        return next!(3, ip + 2);
-    }
-    if let Value::Int(value) = constant {
-        vm.push(Value::Int(*value));
-        return next!(3, ip + 2);
-    }
-    let value = constant.copy_immediate();
-    vm.push(value);
-    ip += 2;
-
-    next!(3)
-}
-}
-
-direct_handler! {
-fn native_local<const OP: u8>(vm, bytes, mut ip, context, remaining, table) {
-    if vm.stack.len() == vm.stack.capacity() {
-        return fallback!(OP);
-    }
-
-    let base = vm.current_frame.stack_base();
-    let (slot, operand) = if OP == Opcode::LoadLocal0 as u8 {
-        (0, 0)
-    } else if OP == Opcode::LoadLocal1 as u8 {
-        (1, 0)
-    } else if OP == Opcode::LoadLocal2 as u8 {
-        (2, 0)
-    } else if OP == Opcode::LoadLocal3 as u8 {
-        (3, 0)
-    } else if OP == Opcode::LoadLocal as u8 {
-        (usize::from(bytes[ip]), 1)
-    } else {
-        (usize::from(u16::from_le_bytes([bytes[ip], bytes[ip + 1]])), 2)
-    };
-    if matches!(vm.stack[base + slot], Value::Undefined) {
-        return fallback!(OP);
-    }
-    if let Value::Int(value) = vm.stack[base + slot] {
-        vm.push(Value::Int(value));
-        return next_local!(OP, ip + operand);
-    }
-    if let Value::Float(value) = vm.stack[base + slot] {
-        vm.push(Value::Float(value));
-        return next_local!(OP, ip + operand);
-    }
-    if let Value::Ref(id) = vm.stack[base + slot] {
-        // Reserve before the refcount write so LLVM can exclude stack allocation.
-        // Incrementing a reference cannot execute Python or allocate; the temporary None is unobservable.
-        vm.push(Value::None);
-        vm.heap.inc_ref(id);
-        *vm.stack.last_mut().expect("reserved operand") = Value::Ref(id);
-    } else {
-        let value = vm.stack[base + slot].copy_immediate();
-        vm.push(value);
-    }
-    ip += operand;
-
-    next_local!(OP, ip)
-}
-}
-
-direct_handler! {
-fn native_store<const OP: u8>(vm, bytes, mut ip, context, remaining, table) {
-    let base = vm.current_frame.stack_base();
-    let (slot, operand) = if OP == Opcode::StoreLocal as u8 {
-        (usize::from(bytes[ip]), 1)
-    } else {
-        (usize::from(u16::from_le_bytes([bytes[ip], bytes[ip + 1]])), 2)
-    };
-    // Updating numeric payloads avoids copying padding through the operand stack.
-    if let Value::Int(value) = *vm.peek()
-        && let Value::Int(local) = &mut vm.stack[base + slot]
-    {
-        *local = value;
-        vm.pop();
-        return next_local!(OP, ip + operand);
-    }
-    if let Value::Float(value) = *vm.peek()
-        && let Value::Float(local) = &mut vm.stack[base + slot]
-    {
-        *local = value;
-        vm.pop();
-        return next_local!(OP, ip + operand);
-    }
-    // Replacing an immediate local cannot release a heap object.
-    if matches!(vm.stack[base + slot], Value::Ref(_)) {
-        return fallback!(OP);
-    }
-    let value = vm.pop();
-    vm.stack[base + slot] = value;
-    ip += operand;
-
-    next_local!(OP, ip)
-}
-}
-
-direct_handler! {
-fn native_stack<const OP: u8>(vm, bytes, mut ip, context, remaining, table) {
-    let growth = if OP == Opcode::Dup2 as u8 {
-        2
-    } else {
-        usize::from(OP == Opcode::Dup as u8)
-    };
-    if vm.stack.capacity() - vm.stack.len() < growth {
-        return fallback!(OP);
-    }
-
-    match OP {
-        byte if byte == Opcode::Pop as u8 => {
-            if matches!(vm.peek(), Value::Ref(_)) {
-                return fallback!(OP);
-            }
-            vm.pop();
-        }
-        byte if byte == Opcode::Dup as u8 => {
-            if let Value::Ref(id) = *vm.peek() {
-                vm.push(Value::None);
-                vm.heap.inc_ref(id);
-                *vm.stack.last_mut().expect("reserved operand") = Value::Ref(id);
-            } else {
-                let value = vm.peek().copy_immediate();
-                vm.push(value);
-            }
-        }
-        byte if byte == Opcode::Rot2 as u8 => {
-            let len = vm.stack.len();
-            vm.stack.swap(len - 1, len - 2);
-        }
-        byte if byte == Opcode::Dup2 as u8 => {
-            let len = vm.stack.len();
-            if matches!(vm.stack[len - 2], Value::Ref(_)) || matches!(vm.stack[len - 1], Value::Ref(_)) {
-                vm.push(Value::None);
-                vm.push(Value::None);
-                let first = vm.stack[len - 2].clone_with_heap(vm.heap);
-                let second = vm.stack[len - 1].clone_with_heap(vm.heap);
-                vm.stack[len] = first;
-                vm.stack[len + 1] = second;
-            } else {
-                let first = vm.stack[len - 2].copy_immediate();
-                let second = vm.stack[len - 1].copy_immediate();
-                vm.push(first);
-                vm.push(second);
-            }
-        }
-        byte if byte == Opcode::Rot3 as u8 => {
-            let len = vm.stack.len();
-            vm.stack[len - 3..].rotate_right(1);
-        }
-        byte if byte == Opcode::LiftToTop as u8 => {
-            let count = usize::from(bytes[ip]);
-            ip += 1;
-            let start = vm.stack.len() - 1 - count;
-            vm.stack[start..].rotate_left(1);
-        }
-        _ => unreachable!(),
-    }
-    if OP == Opcode::LiftToTop as u8 {
-        next!(2)
-    } else {
-        next!(1)
-    }
-}
-}
-
-direct_handler! {
-fn native_branch<const OP: u8>(vm, bytes, mut ip, context, remaining, table) {
-    let start = ip - 1;
-    let taken = if OP == Opcode::Jump as u8 {
-        true
-    } else {
-        // Immediate truth values cannot execute Python; other operands use the semantic handler.
-        let truth = match vm.peek() {
-            Value::Bool(value) => *value,
-            Value::Int(value) => *value != 0,
-            Value::None => false,
-            _ => return fallback!(OP),
-        };
-        let taken = truth == (OP == Opcode::JumpIfTrue as u8 || OP == Opcode::JumpIfTrueOrPop as u8);
-        if !taken || (OP != Opcode::JumpIfTrueOrPop as u8 && OP != Opcode::JumpIfFalseOrPop as u8) {
-            // The truth test above admits only immediate values.
-            vm.pop();
-        }
-        taken
-    };
-    let offset = i16::from_le_bytes([bytes[ip], bytes[ip + 1]]);
-    ip += 2;
-    if taken {
-        jump_relative!(ip, offset);
-    }
-    // A branch target cannot reconstruct the source instruction's location.
-    if remaining == 0 {
-        vm.instruction_ip = start;
-    }
-    next!(0)
-}
-}
-
-direct_handler! {
-fn numeric<const OP: u8>(vm, bytes, ip, context, remaining, table) {
-    let handled = if OP == Opcode::BinaryAdd as u8 || OP == Opcode::InplaceAdd as u8 {
-        vm.binary_numeric_immediate(i64::checked_add, |lhs, rhs| lhs + rhs)
-    } else if OP == Opcode::BinarySub as u8 || OP == Opcode::InplaceSub as u8 {
-        vm.binary_numeric_immediate(i64::checked_sub, |lhs, rhs| lhs - rhs)
-    } else {
-        vm.binary_numeric_immediate(i64::checked_mul, |lhs, rhs| lhs * rhs)
-    };
-    if !handled {
-        return fallback!(OP);
-    }
-    next!(1)
-}
-}
-
-direct_handler! {
-fn for_iter(vm, bytes, mut ip, context, remaining, table) {
-    if vm.stack.len() == vm.stack.capacity() {
-        return fallback!(Opcode::ForIter as u8);
-    }
-    let Value::Ref(heap_id) = *vm.peek() else {
-        return fallback!(Opcode::ForIter as u8);
-    };
-    let result = match vm.heap.read(heap_id) {
-        // These concrete iterators cannot execute Python or suspend.
-        HeapReadOutput::RangeIterator(mut iter) => iter.next_item(vm.heap),
-        HeapReadOutput::ListIterator(mut iter) => iter.next_item(vm.heap),
-        HeapReadOutput::TupleIterator(mut iter) => iter.next_item(vm.heap),
-        iter => {
-            let offset = i16::from_le_bytes([bytes[ip], bytes[ip + 1]]);
-            vm.current_frame.ip = ip + 2;
-            vm.instruction_ip = ip - 1;
-            let status = advance_iterator(vm, context, iter, heap_id, offset);
-            if status != Status::Continue {
-                return status;
-            }
-            return resume!();
-        }
-    };
-    if let Some(value) = result {
-        ip += 2;
-        // A for-loop usually stores its next item immediately. Keep both instruction
-        // counts, and leave heap replacement and intervening checkpoints to the handlers.
-        if remaining != 0 {
-            let opcode = bytes[ip];
-            let operand = if opcode == Opcode::StoreLocal as u8 {
-                1
-            } else if opcode == Opcode::StoreLocalW as u8 {
-                2
-            } else {
-                0
-            };
-            if operand != 0 {
-                let slot = if operand == 1 {
-                    usize::from(bytes[ip + 1])
-                } else {
-                    usize::from(u16::from_le_bytes([bytes[ip + 1], bytes[ip + 2]]))
-                };
-                let local = &mut vm.stack[vm.current_frame.stack_base() + slot];
-                if !matches!(local, Value::Ref(_)) {
-                    *local = value;
-                    if operand == 1 {
-                        return next!(2, ip + 2, remaining - 1);
-                    }
-                    return next!(3, ip + 3, remaining - 1);
-                }
-            }
-        }
-        vm.push(value);
-        next!(3)
-    } else {
-        vm.pop().drop_with(vm);
-        let offset = i16::from_le_bytes([bytes[ip], bytes[ip + 1]]);
-        let start = ip - 1;
-        ip += 2;
-        jump_relative!(ip, offset);
-        if remaining == 0 {
-            vm.instruction_ip = start;
-        }
-        next!(0)
-    }
-}
-}
-
-direct_handler! {
-fn comparison<const OP: u8>(vm, bytes, ip, context, remaining, table) {
-    let handled = vm.compare_numeric(|ordering| match OP {
-        byte if byte == Opcode::CompareEq as u8 => ordering == Some(Ordering::Equal),
-        byte if byte == Opcode::CompareNe as u8 => ordering != Some(Ordering::Equal),
-        byte if byte == Opcode::CompareLt as u8 => ordering.is_some_and(Ordering::is_lt),
-        byte if byte == Opcode::CompareLe as u8 => ordering.is_some_and(Ordering::is_le),
-        byte if byte == Opcode::CompareGt as u8 => ordering.is_some_and(Ordering::is_gt),
-        byte if byte == Opcode::CompareGe as u8 => ordering.is_some_and(Ordering::is_ge),
-        _ => unreachable!(),
-    });
-    if !handled {
-        return fallback!(OP);
-    }
-    next!(1)
-}
-}
-
-#[inline(never)]
-fn advance_iterator<'h>(
-    vm: &mut VM<'h>,
-    context: &mut DispatchContext,
-    iter: HeapReadOutput<'h>,
-    heap_id: HeapId,
-    offset: i16,
-) -> Status {
-    // A file nobody has read yet has no buffer to slice: load it from
-    // the host, then re-dispatch this instruction against the buffer.
-    if let HeapReadOutput::OpenFile(file) = &iter
-        && file.needs_buffer_load(vm)
-    {
-        let effect = PostConversionEffect::BufferLoad { file_id: heap_id };
-        let call = file.buffer_load_call(vm, effect);
-        drop(iter);
-        vm.current_frame.ip = vm.instruction_ip;
-        handle_call_result!(vm, context, Ok(call));
-        return Status::Continue;
-    }
-
-    let mut iter = PyValue::from(iter);
-    match iter.py_next(vm) {
-        Ok(Some(value)) => vm.push(value),
-        Ok(None) => {
-            // Release the iterator view before decrementing its owned reference.
-            drop(iter);
-            // Iterator exhausted - pop it and jump to end
-            let iter = vm.pop();
-            iter.drop_with(vm);
-            jump_relative!(vm.current_frame.ip, offset);
-        }
-        Err(e) => {
-            // Drop the HeapRead before dec_ref to release the reader count
-            drop(iter);
-            // Error during iteration (e.g., dict size changed)
-            let iter = vm.pop();
-            iter.drop_with(vm);
-            catch!(vm, context, e);
-        }
-    }
-    Status::Continue
-}
-
-direct_handler! {
-fn division<const OP: u8>(vm, bytes, ip, context, remaining, table) {
-    let handled = if OP == Opcode::BinaryDiv as u8 || OP == Opcode::InplaceDiv as u8 {
-        vm.binary_div_immediate()
-    } else if OP == Opcode::BinaryFloorDiv as u8 || OP == Opcode::InplaceFloorDiv as u8 {
-        vm.binary_floordiv_immediate()
-    } else {
-        vm.binary_mod_immediate()
-    };
-    if !handled {
-        return fallback!(OP);
-    }
-    next!(1)
-}
-}
-
-direct_handler! {
-fn bitwise<const OP: u8>(vm, bytes, ip, context, remaining, table) {
-    let len = vm.stack.len();
-    if let (Value::Int(lhs), Value::Int(rhs)) = (&vm.stack[len - 2], &vm.stack[len - 1]) {
-        let result = if OP == Opcode::BinaryAnd as u8 || OP == Opcode::InplaceAnd as u8 {
-            Some(lhs & rhs)
-        } else if OP == Opcode::BinaryOr as u8 || OP == Opcode::InplaceOr as u8 {
-            Some(lhs | rhs)
-        } else if OP == Opcode::BinaryXor as u8 || OP == Opcode::InplaceXor as u8 {
-            Some(lhs ^ rhs)
-        } else if OP == Opcode::BinaryRShift as u8 || OP == Opcode::InplaceRShift as u8 {
-            if *rhs < 0 {
-                None
-            } else if *rhs >= 64 {
-                Some(if *lhs < 0 { -1 } else { 0 })
-            } else {
-                Some(lhs >> rhs)
-            }
-        } else if (0..64).contains(rhs) {
-            // checked_shl checks only the count, so check the widened result as well.
-            i64::try_from(i128::from(*lhs) << rhs).ok()
-        } else {
-            None
-        };
-        if let Some(result) = result {
-            vm.stack[len - 2] = Value::Int(result);
-            vm.stack.truncate(len - 1);
-            return next!(1);
-        }
-    }
-    fallback!(OP)
-}
-}
-
-direct_handler! {
-fn unary<const OP: u8>(vm, bytes, ip, context, remaining, table) {
-    let result = match vm.peek() {
-        Value::Int(value) => {
-            if OP == Opcode::UnaryNeg as u8 {
-                value.checked_neg().map(Value::Int)
-            } else if OP == Opcode::UnaryInvert as u8 {
-                Some(Value::Int(!value))
-            } else if OP == Opcode::UnaryNot as u8 {
-                Some(Value::Bool(*value == 0))
-            } else {
-                Some(Value::Int(*value))
-            }
-        }
-        Value::Float(value) if OP != Opcode::UnaryInvert as u8 => {
-            if OP == Opcode::UnaryNeg as u8 {
-                Some(Value::Float(-value))
-            } else if OP == Opcode::UnaryNot as u8 {
-                Some(Value::Bool(*value == 0.0))
-            } else {
-                Some(Value::Float(*value))
-            }
-        }
-        Value::Bool(value) if OP == Opcode::UnaryNot as u8 => Some(Value::Bool(!value)),
-        Value::None if OP == Opcode::UnaryNot as u8 => Some(Value::Bool(true)),
-        _ => None,
-    };
-    if let Some(result) = result {
-        let len = vm.stack.len();
-        vm.stack[len - 1] = result;
-        next!(1)
-    } else {
-        fallback!(OP)
-    }
-}
-}
-
 #[cfg(test)]
 mod tests {
     use std::ptr;
@@ -1691,133 +1210,4 @@ mod tests {
             );
         }
     }
-}
-
-direct_handler! {
-fn native_subscript_store(vm, bytes, ip, context, remaining, table) {
-    let object = bytes[ip];
-    let key = bytes[ip + 1];
-    let destination = bytes[ip + 2];
-    if vm.try_subscript_to_local(object, key, destination) {
-        return next!(4, ip + 3);
-    }
-    fallback!(Opcode::SubscrToLocal as u8)
-}
-}
-
-direct_handler! {
-fn native_subscript<const OP: u8>(vm, bytes, ip, context, remaining, table) {
-    let base = vm.current_frame.stack_base();
-    let (value, target) = if OP == Opcode::LoadSubscrLocal as u8 {
-        let object = &vm.stack[base + usize::from(bytes[ip])];
-        let key = &vm.stack[base + usize::from(bytes[ip + 1])];
-        (vm.native_subscript_view(object, key), ip + 2)
-    } else {
-        let key = u16::from_le_bytes([bytes[ip], bytes[ip + 1]]);
-        let object_kind = bytes[ip + 2];
-        let object = &vm.stack[base + usize::from(object_kind & 127)];
-        (vm.native_const_subscript_view(object, key, object_kind & 128 != 0), ip + 3)
-    };
-    let Some(value) = value else {
-        return fallback!(OP);
-    };
-    let (target, remaining) = if let Value::Int(number) = value {
-        let number = *number;
-        publish_subscript_int(vm, bytes, target, remaining, number)
-    } else {
-        let value = value.clone_with_heap(vm.heap);
-        vm.push(value);
-        (target, remaining)
-    };
-    if remaining == 0 {
-        // A folded store makes the instruction width variable. Publish the
-        // source position only when the checkpoint needs it.
-        vm.instruction_ip = ip - 1;
-    }
-    next!(0, target, remaining)
-}
-}
-
-direct_handler! {
-fn native_global_subscript(vm, bytes, ip, context, remaining, table) {
-    if remaining < 2 {
-        return fallback!(Opcode::LoadGlobalSubscr as u8);
-    }
-    let operand = u16::from_le_bytes([bytes[ip], bytes[ip + 1]]);
-    let key_ip = ip + 2;
-    let base = vm.current_frame.stack_base();
-    let word = || u16::from_le_bytes([bytes[key_ip + 1], bytes[key_ip + 2]]);
-    let object = &vm.globals[usize::from(operand & 8191)];
-    let (value, width) = match operand >> 13 {
-        0 => (vm.native_subscript_view(object, &vm.globals[usize::from(word())]), 3),
-        1 => (vm.native_subscript_view(object, vm.current_frame.code.constant(word())), 3),
-        2 => {
-            let key = i16::from(bytes[key_ip + 1].cast_signed()).cast_unsigned();
-            (vm.native_const_subscript_view(object, key, false), 2)
-        }
-        3 => (vm.native_subscript_view(object, &vm.stack[base + usize::from(bytes[key_ip] - Opcode::LoadLocal0 as u8)]), 1),
-        4 => (vm.native_subscript_view(object, &vm.stack[base + usize::from(bytes[key_ip + 1])]), 2),
-        5 => (vm.native_subscript_view(object, &vm.stack[base + usize::from(word())]), 3),
-        _ => return fallback!(Opcode::LoadGlobalSubscr as u8),
-    };
-    debug_assert_eq!(bytes[key_ip + width], Opcode::BinarySubscr as u8);
-    let Some(value) = value else {
-        return fallback!(Opcode::LoadGlobalSubscr as u8);
-    };
-
-    // The original key load and subscript remain in the bytecode for fallback.
-    let target = key_ip + width + 1;
-    let remaining = remaining - 2;
-    let (target, remaining) = if let Value::Int(number) = value {
-        let number = *number;
-        publish_subscript_int(vm, bytes, target, remaining, number)
-    } else {
-        let value = value.clone_with_heap(vm.heap);
-        vm.push(value);
-        (target, remaining)
-    };
-    if remaining == 0 {
-        vm.instruction_ip = ip - 1;
-    }
-    next!(0, target, remaining)
-}
-}
-
-/// Folds an integer store using dispatch-local offsets; a checkpoint keeps the store pending.
-#[inline(always)]
-#[expect(
-    clippy::inline_always,
-    reason = "keep result publication and continuation in each handler"
-)]
-fn publish_subscript_int(vm: &mut VM<'_>, bytes: &[u8], ip: usize, remaining: u32, number: i64) -> (usize, u32) {
-    if remaining == 0 {
-        vm.push(Value::Int(number));
-        return (ip, remaining);
-    }
-
-    let (destination, width) = match bytes.get(ip).copied() {
-        Some(op) if op == Opcode::StoreLocal as u8 => {
-            let slot = usize::from(bytes[ip + 1]);
-            (&mut vm.stack[vm.current_frame.stack_base() + slot], 2)
-        }
-        Some(op) if op == Opcode::StoreLocalW as u8 => {
-            let slot = usize::from(u16::from_le_bytes([bytes[ip + 1], bytes[ip + 2]]));
-            (&mut vm.stack[vm.current_frame.stack_base() + slot], 3)
-        }
-        Some(op) if op == Opcode::StoreGlobal as u8 => {
-            let slot = usize::from(u16::from_le_bytes([bytes[ip + 1], bytes[ip + 2]]));
-            (&mut vm.globals[slot], 3)
-        }
-        _ => {
-            vm.push(Value::Int(number));
-            return (ip, remaining);
-        }
-    };
-    if let Value::Int(previous) = destination {
-        *previous = number;
-    } else {
-        let old = mem::replace(destination, Value::Int(number));
-        old.drop_with(vm);
-    }
-    (ip + width, remaining - 1)
 }

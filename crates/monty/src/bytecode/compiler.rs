@@ -20,6 +20,7 @@ use super::{
         FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, IMPORT_STAR_BIND, IMPORT_STAR_LOAD, IMPORT_STAR_NAMES,
         NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode, assert_flags,
     },
+    subscription::{GlobalSubscript, GlobalSubscriptKey, LocalSubscript, LocalSubscriptKey},
 };
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
@@ -1530,67 +1531,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             }
 
             Expr::Subscript { object, index } => {
-                let global = if let Expr::Name(name) = &object.expr {
-                    self.subscript_global_slot(name).map(|slot| (slot, name.name_id))
-                } else {
-                    None
-                };
-                let key_kind = match &index.expr {
-                    Expr::Name(name) if self.subscript_global_slot(name).is_some() => Some(0_u8),
-                    Expr::Name(name) => self.subscript_stack_slot(name).map(|slot| {
-                        if slot < 4 {
-                            3
-                        } else if u8::try_from(slot).is_ok() {
-                            4
-                        } else {
-                            5
-                        }
-                    }),
-                    Expr::Literal(Literal::Int(value)) => Some(if i8::try_from(*value).is_ok() { 2 } else { 1 }),
-                    Expr::Literal(Literal::Str(_)) => Some(1),
-                    _ => None,
-                };
-                if let Some(((slot, name), kind)) = global.filter(|(slot, _)| *slot < 8192).zip(key_kind) {
-                    if self.is_module_scope {
-                        self.code.register_local_name(slot, name);
-                    }
-                    self.code.set_location(expr_loc.position, None);
-                    self.code
-                        .emit_subscript_global(slot | (u16::from(kind) << 13), object.position)?;
-                    self.compile_expr(index)?;
-                    self.code.set_location(expr_loc.position, None);
-                    self.code.emit(Opcode::BinarySubscr)?;
-                } else {
-                    let operands = if let Expr::Name(name) = &object.expr
-                        && let Some(object_slot) = self.subscript_stack_slot(name)
-                    {
-                        match &index.expr {
-                            Expr::Name(name) if u8::try_from(object_slot).is_ok() => self
-                                .subscript_stack_slot(name)
-                                .filter(|key| u8::try_from(*key).is_ok())
-                                .map(|key| (object_slot, key, 0)),
-                            Expr::Literal(Literal::Str(id)) if object_slot < 128 => {
-                                u16::try_from(id.index()).ok().map(|key| (object_slot, key, 1))
-                            }
-                            Expr::Literal(Literal::Int(value)) if object_slot < 128 => i16::try_from(*value)
-                                .ok()
-                                .map(|key| (object_slot, key.cast_unsigned(), 2)),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    };
-                    if let Some((object_slot, key, flags)) = operands {
-                        self.code.set_location(expr_loc.position, None);
-                        self.code
-                            .emit_subscript_locals(object_slot, key, flags, object.position, index.position)?;
-                    } else {
-                        self.compile_expr(object)?;
-                        self.compile_expr(index)?;
-                        self.code.set_location(expr_loc.position, None);
-                        self.code.emit(Opcode::BinarySubscr)?;
-                    }
-                }
+                self.compile_subscript(object, index, expr_loc.position)?;
             }
 
             Expr::IfElse { test, body, orelse } => {
@@ -1755,6 +1696,67 @@ impl<'a, 'i> Compiler<'a, 'i> {
     // Variable Operations
     // ========================================================================
 
+    /// Selects a fused subscription when its operands fit, retaining generic evaluation order otherwise.
+    fn compile_subscript(
+        &mut self,
+        object: &ExprLoc,
+        index: &ExprLoc,
+        position: CodeRange,
+    ) -> Result<(), CompileError> {
+        if let Some((operand, name)) = self.global_subscript_operand(object, index) {
+            if self.is_module_scope {
+                self.code.register_local_name(operand.slot(), name);
+            }
+            self.code.set_location(position, None);
+            self.code.emit_subscript_global(operand, object.position)?;
+            // The key load and subscription remain executable when native lookup declines.
+            self.compile_expr(index)?;
+            self.code.set_location(position, None);
+            self.code.emit(Opcode::BinarySubscr)
+        } else if let Some(operand) = self.local_subscript_operand(object, index) {
+            self.code.set_location(position, None);
+            self.code
+                .emit_subscript_locals(operand, object.position, index.position)
+        } else {
+            self.compile_expr(object)?;
+            self.compile_expr(index)?;
+            self.code.set_location(position, None);
+            self.code.emit(Opcode::BinarySubscr)
+        }
+    }
+
+    /// Pairs a packed global slot with the key-load instruction the compiler will emit.
+    fn global_subscript_operand(&mut self, object: &ExprLoc, index: &ExprLoc) -> Option<(GlobalSubscript, StringId)> {
+        let Expr::Name(name) = &object.expr else {
+            return None;
+        };
+        let slot = self.subscript_global_slot(name)?;
+        let key = match &index.expr {
+            Expr::Name(key) if self.subscript_global_slot(key).is_some() => GlobalSubscriptKey::Global,
+            Expr::Name(key) => GlobalSubscriptKey::local(self.subscript_stack_slot(key)?),
+            Expr::Literal(Literal::Int(value)) if i8::try_from(*value).is_ok() => GlobalSubscriptKey::SmallInteger,
+            Expr::Literal(Literal::Int(_) | Literal::Str(_)) => GlobalSubscriptKey::Constant,
+            _ => return None,
+        };
+        Some((GlobalSubscript::new(slot, key)?, name.name_id))
+    }
+
+    /// Resolves local slots and embedded literal keys before checking their encoding limits.
+    fn local_subscript_operand(&mut self, object: &ExprLoc, index: &ExprLoc) -> Option<LocalSubscript> {
+        let Expr::Name(name) = &object.expr else {
+            return None;
+        };
+        let object = self.subscript_stack_slot(name)?;
+        let key = match &index.expr {
+            Expr::Name(name) => LocalSubscriptKey::Local(u8::try_from(self.subscript_stack_slot(name)?).ok()?),
+            Expr::Literal(Literal::Str(id)) => LocalSubscriptKey::String(u16::try_from(id.index()).ok()?),
+            Expr::Literal(Literal::Int(value)) => LocalSubscriptKey::Integer(i16::try_from(*value).ok()?),
+            _ => return None,
+        };
+        LocalSubscript::new(object, key)
+    }
+
+    /// Dynamic global namespaces keep their name-based resolution.
     fn subscript_global_slot(&self, name: &Identifier) -> Option<u16> {
         match name.scope {
             NameScope::Local if self.is_module_scope => Some(name.namespace_id().as_u16()),

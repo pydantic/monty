@@ -7,6 +7,7 @@ use super::{
     code::{Code, ExceptionEntry, HandlerKind, LocationEntry},
     compiler::CompileError,
     op::{Opcode, Operand},
+    subscription::{GlobalSubscript, LocalSubscript},
 };
 use crate::{intern::StringId, parse::CodeRange, value::Value};
 
@@ -394,9 +395,7 @@ impl CodeBuilder {
     /// These encodings are no wider than the loads and subscript they replace.
     pub fn emit_subscript_locals(
         &mut self,
-        object: u16,
-        key: u16,
-        flags: u8,
+        operands: LocalSubscript,
         object_range: CodeRange,
         key_range: CodeRange,
     ) -> Result<(), CompileError> {
@@ -405,17 +404,8 @@ impl CodeBuilder {
         }
 
         let start = self.bytecode.len();
-        if flags == 0 {
-            self.emit_u8_u8(
-                Opcode::LoadSubscrLocal,
-                u8::try_from(object).unwrap(),
-                u8::try_from(key).unwrap(),
-            )?;
-        } else {
-            assert!(object < 128);
-            let object_kind = u8::try_from(object).unwrap() | if flags == 1 { 128 } else { 0 };
-            self.emit_u16_u8(Opcode::LoadSubscrConst, key, object_kind)?;
-        }
+        let (opcode, operand) = operands.encode();
+        self.emit_with_operand(opcode, operand)?;
 
         // Interior source offsets distinguish an unbound operand from a subscription error.
         for (offset, range) in [(1, object_range), (2, key_range)] {
@@ -450,13 +440,17 @@ impl CodeBuilder {
     }
 
     /// Preserves the object-load location when a native global lookup falls back.
-    pub fn emit_subscript_global(&mut self, operand: u16, object_range: CodeRange) -> Result<(), CompileError> {
+    pub fn emit_subscript_global(
+        &mut self,
+        operand: GlobalSubscript,
+        object_range: CodeRange,
+    ) -> Result<(), CompileError> {
         if self.is_dead() {
             return Ok(());
         }
 
         let start = self.bytecode.len();
-        self.emit_u16(Opcode::LoadGlobalSubscr, operand)?;
+        self.emit_u16(Opcode::LoadGlobalSubscr, operand.encode())?;
         let offset = u32::try_from(start + 1).map_err(|_| self.bytecode_too_large())?;
         self.location_table.push(LocationEntry::new(offset, object_range, None));
         Ok(())

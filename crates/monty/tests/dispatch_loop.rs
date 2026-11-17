@@ -79,6 +79,25 @@ fn wide_locals_and_checkpoint_long_runs_preserve_values() {
 }
 
 #[test]
+fn decoded_local_loads_preserve_fallback_operands_and_tracebacks() {
+    for locals in [8, 300] {
+        let mut source = "def read(define):\n".to_owned();
+        for slot in 0..locals {
+            writeln!(source, "    a{slot} = {slot}").unwrap();
+        }
+        source
+            .push_str("    if define:\n        missing = 1\n    return missing\nassert read(True) == 1\nread(False)\n");
+        let mut runner = MontyRun::new(source, "fallback.py", vec![], CompileOptions::default()).unwrap();
+        let error = runner.run_no_limits(vec![]).unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::UnboundLocalError);
+        assert!(error.to_string().contains("'missing'"));
+        let frame = error.traceback().last().unwrap();
+        assert_eq!(frame.frame_name.as_deref(), Some("read"));
+        assert_eq!(frame.start.line, locals + 4);
+    }
+}
+
+#[test]
 fn iteration_stores_preserve_wide_slots_and_reference_replacement() {
     let mut source = "def wide():\n".to_owned();
     for slot in 0..300 {

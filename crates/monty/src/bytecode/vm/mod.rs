@@ -42,6 +42,7 @@ use crate::{
     bytecode::{
         code::{Code, LocationEntry},
         op::{IMPORT_STAR_BIND, MATCH_KEYS_REST, Opcode, decode_assert_flags},
+        subscription::LocalSubscriptKey,
     },
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -1770,67 +1771,31 @@ impl<'h> VM<'h> {
     // Variable Operations
     // ========================================================================
 
-    /// Combines local loads with subscripting while preserving generic fallback ownership.
-    #[inline(always)]
-    #[expect(
-        clippy::inline_always,
-        reason = "native subscription benchmarks benefit from dispatch-local code"
-    )]
-    fn subscript_locals(&mut self, object_slot: u16, key_slot: u16, flags: u8) -> RunResult<()> {
-        let base = self.current_frame.stack_base();
-        let object = &self.stack[base + usize::from(object_slot)];
-        let constant = if flags == 2 {
-            Value::Int(i64::from(key_slot.cast_signed()))
-        } else {
-            Value::InternString(StringId::from_index(key_slot))
-        };
-        let key = if flags != 0 {
-            &constant
-        } else {
-            &self.stack[base + usize::from(key_slot)]
-        };
-
-        if let Some(value) = self.native_subscript_view(object, key) {
-            if let Value::Int(number) = value {
-                let number = *number;
-                self.push(Value::Int(number));
-            } else if let Value::Ref(id) = value {
-                let id = *id;
-                self.heap.inc_ref(id);
-                self.push(Value::Ref(id));
-            } else {
-                let value = value.clone_with_heap(self.heap);
-                self.push(value);
-            }
-            return Ok(());
-        }
-
-        self.subscript_locals_fallback(object_slot, key_slot, flags)
-    }
-
     /// Owns both operands before generic dispatch can execute Python.
     #[inline(never)]
-    fn subscript_locals_fallback(&mut self, object_slot: u16, key_slot: u16, flags: u8) -> RunResult<()> {
+    fn subscript_locals_fallback(&mut self, object_slot: u16, key_operand: LocalSubscriptKey) -> RunResult<()> {
         let base = self.current_frame.stack_base();
         let object = &self.stack[base + usize::from(object_slot)];
-        let constant = if flags == 2 {
-            Value::Int(i64::from(key_slot.cast_signed()))
-        } else {
-            Value::InternString(StringId::from_index(key_slot))
+        let constant = match key_operand {
+            LocalSubscriptKey::String(id) => Value::InternString(StringId::from_index(id)),
+            LocalSubscriptKey::Integer(value) => Value::Int(i64::from(value)),
+            LocalSubscriptKey::Local(_) => Value::Undefined,
         };
-        let key = if flags != 0 {
-            &constant
-        } else {
-            &self.stack[base + usize::from(key_slot)]
+        let key = match key_operand {
+            LocalSubscriptKey::Local(slot) => &self.stack[base + usize::from(slot)],
+            _ => &constant,
         };
 
         if matches!(object, Value::Undefined) {
             self.instruction_ip += 1;
             return Err(self.unbound_local_error(object_slot, self.current_frame.code.local_name(object_slot)));
         }
-        if matches!(key, Value::Undefined) {
+        if let LocalSubscriptKey::Local(slot) = key_operand
+            && matches!(key, Value::Undefined)
+        {
+            let slot = u16::from(slot);
             self.instruction_ip += 2;
-            return Err(self.unbound_local_error(key_slot, self.current_frame.code.local_name(key_slot)));
+            return Err(self.unbound_local_error(slot, self.current_frame.code.local_name(slot)));
         }
 
         let object = object.clone_with_heap(self.heap);
