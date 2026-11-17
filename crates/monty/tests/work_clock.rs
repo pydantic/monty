@@ -3,7 +3,7 @@
 //! These tests run without `monty-alloc`, so allocation charges nothing here; the subprocess
 //! tests cover that floor.
 
-use std::{thread, time::Duration};
+use std::{fmt::Write, fs, path::PathBuf, thread, time::Duration};
 
 use monty::MontyRepl;
 use monty_types::{
@@ -118,16 +118,59 @@ fn waiting_on_the_host_charges_nothing() {
 #[test]
 fn native_operations_charge_work() {
     let mut repl = work_repl(None);
-    feed(&mut repl, "values = list(range(200_000, 0, -1))").unwrap();
+    let setup =
+        "import json, re\nvalues = list(range(200_000, 0, -1))\ntext = '0123456789' * 100_000\nbig = 3**200_000";
+    feed(&mut repl, setup).unwrap();
     repl.tracker_mut().set_max_feed_duration(Duration::from_millis(1));
     for code in [
         "sorted(values)",
         "sum(values)",
         "values.index(-1)",
         "[1] * 100_000_000 == []",
+        "re.sub('[0-9]', '#', text)",
+        "re.findall('[0-9]', text)",
+        "json.dumps(values)",
+        "big * big",
     ] {
         let error = feed(&mut repl, code).unwrap_err();
         assert_eq!(error.exc_type(), ExcType::TimeoutError, "{code}");
         repl.tracker_mut().set_max_feed_duration(Duration::from_millis(1));
     }
+}
+
+/// The calibration scripts `make calibrate-work-clock` measures, one per category of work.
+const CALIBRATION_SCRIPTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../monty-bench/benches/python/work_clock");
+
+/// Pins what each calibration script is charged, so a change to the accounting shows in review.
+/// A new native operation that charges nothing shows instead as drift in `make calibrate-work-clock`.
+#[test]
+fn calibration_scripts_cost_fixed_units() {
+    let mut paths: Vec<PathBuf> = fs::read_dir(CALIBRATION_SCRIPTS)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "py"))
+        .collect();
+    paths.sort();
+    let mut report = String::new();
+    for path in paths {
+        let mut repl = work_repl(None);
+        feed(&mut repl, &fs::read_to_string(&path).unwrap()).unwrap();
+        let name = path.file_stem().unwrap().to_str().unwrap();
+        writeln!(report, "{name}: {}", units(&repl)).unwrap();
+    }
+    insta::assert_snapshot!(report, @"
+    arith_loop: 3287121
+    attr_access: 1314888
+    big_ints: 107481
+    bytes_ops: 3283648
+    comprehensions: 4931016
+    dict_ops: 2355818
+    func_calls: 799252
+    json_roundtrip: 3251980
+    list_ops: 2112267
+    regex: 1048071
+    sorting: 4016639
+    str_build: 3436745
+    str_scan: 212517
+    ");
 }
