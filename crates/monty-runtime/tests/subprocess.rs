@@ -178,6 +178,25 @@ impl ChildProc {
         self.recv_turn()
     }
 
+    /// Feeds a snippet and returns its turn-ending event whole, for the fields beside its kind.
+    fn feed_event(&mut self, code: &str) -> pb::WorkerEvent {
+        self.send(pb::client_request::Kind::Feed(pb::Feed {
+            code: code.to_owned(),
+            cwd: "/".to_owned(),
+            ..Default::default()
+        }));
+        loop {
+            let event = self
+                .reader
+                .read::<pb::WorkerEvent>()
+                .expect("failed to read event")
+                .expect("unexpected EOF from worker");
+            if !matches!(event.kind, Some(pb::worker_event::Kind::Print(_))) {
+                return event;
+            }
+        }
+    }
+
     /// Feeds a snippet and asserts it completes, returning the value.
     #[track_caller]
     fn feed_complete(&mut self, code: &str) -> MontyObject {
@@ -993,6 +1012,55 @@ fn worker_enforces_time_limit() {
         panic!("expected Ok for Reset");
     };
     child.create_repl();
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// A work-clock session whose feeds may each use `max_feed_duration_micros` of counted time.
+fn work_clock_configure(max_feed_duration_micros: u64) -> pb::Configure {
+    pb::Configure {
+        limits: Some(pb::ResourceLimits {
+            max_feed_duration_micros: Some(max_feed_duration_micros),
+            ..Default::default()
+        }),
+        execution_clock: Some(pb::ExecutionClock::Work as i32),
+        ..configure()
+    }
+}
+
+/// The work clock bounds a feed and reports its time with no clock read to do either.
+#[test]
+fn work_clock_enforces_and_reports_counted_time() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(work_clock_configure(1_000));
+    let event = child.feed_event("x = 0\nfor i in range(1000):\n    x += i");
+    assert!(
+        matches!(event.kind, Some(pb::worker_event::Kind::Complete(_))),
+        "{event:?}"
+    );
+    let first = event.feed_execution_micros;
+    assert!((1..1_000).contains(&first), "{first} µs");
+    assert_eq!(event.total_execution_micros, first);
+
+    let event = child.feed_event("while True:\n    pass");
+    let spent = event.feed_execution_micros;
+    assert!((1_000..1_100).contains(&spent), "{spent} µs");
+    // each field rounds its own nanoseconds down
+    let total = event.total_execution_micros;
+    assert!((first + spent..=first + spent + 1).contains(&total), "{total} µs");
+    assert_eq!(expect_error(event.kind.expect("event kind")).exc_type, "TimeoutError");
+    assert_eq!(child.feed_complete("x"), MontyObject::int(499_500));
+    child.shutdown();
+}
+
+/// Allocation is charged from the allocator, so a result built with no loop to poll still costs work.
+#[test]
+fn work_clock_charges_allocation() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(work_clock_configure(1_000));
+    assert_eq!(child.feed_complete("len(bytes(1000))"), MontyObject::int(1000));
+    let (_, event) = child.feed("len(bytes(50_000_000))");
+    assert_eq!(expect_error(event).exc_type, "TimeoutError");
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }

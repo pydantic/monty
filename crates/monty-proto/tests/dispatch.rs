@@ -1077,7 +1077,7 @@ fn a_committed_import_carries_into_the_next_feed() {
 
 #[test]
 fn load_requires_the_saved_clock_for_idle_and_suspended_sessions() {
-    for saved_clock in [ExecutionClock::Wall, ExecutionClock::Cpu] {
+    for saved_clock in [ExecutionClock::Wall, ExecutionClock::Cpu, ExecutionClock::Work] {
         for suspended in [false, true] {
             let repl = MontyRepl::new(
                 "saved.py",
@@ -1097,7 +1097,7 @@ fn load_requires_the_saved_clock_for_idle_and_suspended_sessions() {
                 dump("saved.py", None, &[], SessionRef::Idle(&repl)).unwrap()
             };
             // CPU mode is Linux-only; elsewhere a CPU dump can still be saved but not loaded.
-            for destination in [ExecutionClock::Wall, ExecutionClock::Cpu]
+            for destination in [ExecutionClock::Wall, ExecutionClock::Cpu, ExecutionClock::Work]
                 .into_iter()
                 .filter(|clock| clock.is_available())
             {
@@ -1153,7 +1153,11 @@ fn unknown_execution_clock_is_rejected_before_configuration() {
 
 #[test]
 fn configuration_acknowledges_the_selected_execution_clock() {
-    for clock in [pb::ExecutionClock::Wall, pb::ExecutionClock::Cpu] {
+    for clock in [
+        pb::ExecutionClock::Wall,
+        pb::ExecutionClock::Cpu,
+        pb::ExecutionClock::Work,
+    ] {
         let mut worker = Worker::default();
         let configure = frame_request(pb::client_request::Kind::Configure(pb::Configure {
             execution_clock: Some(clock as i32),
