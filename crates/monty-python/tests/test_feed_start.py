@@ -709,6 +709,70 @@ def test_sync_future_snapshot_resume_auto_raises(session: MontySession):
     assert done.output == snapshot(7)
 
 
+@pytest.mark.parametrize(
+    'code,expected',
+    [
+        pytest.param("import time\ntime.sleep(0.001)\n'slept'", 'slept', id='time_sleep'),
+        pytest.param(
+            "import asyncio\nasync def main():\n    return await asyncio.sleep(0.001, 'woken')\nasyncio.run(main())",
+            'woken',
+            id='asyncio_sleep',
+        ),
+    ],
+)
+def test_resume_auto_system_sleep(session: MontySession, code: str, expected: str):
+    """The default `'system'` sleep is waited by the pool, as `feed_run` does, never offered to `os=`."""
+    snap = session.feed_start(code)
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.is_os_function
+    done = snap.resume_auto()
+    assert isinstance(done, MontyComplete)
+    assert done.output == expected
+
+
+# the slower sleep is gathered first, so it finishes second only if the two overlap
+GATHERED_SLEEPS_CODE = """
+import asyncio
+finished = []
+async def nap(delay, name):
+    await asyncio.sleep(delay)
+    finished.append(name)
+    return name
+async def main():
+    return await asyncio.gather(nap(0.05, 'slow'), nap(0.001, 'fast')), finished
+asyncio.run(main())
+"""
+
+
+def test_resume_auto_gathered_system_sleeps(session: MontySession):
+    """Gathered system sleeps run concurrently, waited by the sync future snapshot's `resume_auto`."""
+    snap: Any = session.feed_start(GATHERED_SLEEPS_CODE)
+    kinds: list[str] = []
+    while not isinstance(snap, MontyComplete):
+        kinds.append(type(snap).__name__)
+        snap = snap.resume_auto()
+    assert snap.output == snapshot((['slow', 'fast'], ['fast', 'slow']))
+    # one or two future snapshots follow, depending on whether the sleeps finish together
+    assert kinds[:3] == snapshot(['FunctionSnapshot', 'FunctionSnapshot', 'FutureSnapshot'])
+
+
+def test_resume_auto_skips_manually_resolved_system_sleep(session: MontySession):
+    """A sleep answered by `resume({...})` keeps its spawned task, which `resume_auto` must not deliver."""
+    snap: Any = session.feed_start(GATHERED_SLEEPS_CODE)
+    call_ids: list[int] = []
+    while isinstance(snap, FunctionSnapshot):
+        call_ids.append(snap.call_id)
+        snap = snap.resume_auto()
+    assert isinstance(snap, FutureSnapshot)
+    slow_id, fast_id = call_ids
+    snap = snap.resume({fast_id: {'return_value': None}})
+    assert isinstance(snap, FutureSnapshot)
+    assert snap.pending_call_ids == [slow_id]
+    done = snap.resume_auto()
+    assert isinstance(done, MontyComplete)
+    assert done.output == snapshot((['slow', 'fast'], ['fast', 'slow']))
+
+
 def test_sync_resume_auto_coroutine_external_raises(pool: Monty):
     # a coroutine external in a sync session is a hard error; it poisons the
     # checkout, so use a dedicated one rather than the shared `session` fixture
@@ -858,6 +922,33 @@ async def test_async_resume_auto_gathered_asyncio_sleeps_are_futures():
             assert kinds[:3] == snapshot(['AsyncFunctionSnapshot', 'AsyncFunctionSnapshot', 'AsyncFutureSnapshot'])
 
 
+async def test_async_resume_auto_awaits_system_sleep_eagerly():
+    """A default `'system'` sleep awaited at once is waited in place, with no future snapshot."""
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap = await session.feed_start("import asyncio\nawait asyncio.sleep(0.001, 'woken')")
+            assert isinstance(snap, AsyncFunctionSnapshot)
+            assert snap.is_os_function
+            assert snap.allow_eager_await
+            done = await snap.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot('woken')
+
+
+async def test_async_resume_auto_gathered_system_sleeps_are_futures():
+    """Gathered system sleeps run concurrently, delivered by the async future snapshot."""
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap: Any = await session.feed_start(GATHERED_SLEEPS_CODE)
+            kinds: list[str] = []
+            while not isinstance(snap, MontyComplete):
+                kinds.append(type(snap).__name__)
+                snap = await snap.resume_auto()
+            assert snap.output == snapshot((['slow', 'fast'], ['fast', 'slow']))
+            # one or two future snapshots follow, depending on whether the sleeps finish together
+            assert kinds[:3] == snapshot(['AsyncFunctionSnapshot', 'AsyncFunctionSnapshot', 'AsyncFutureSnapshot'])
+
+
 async def test_async_allow_eager_await_survives_snapshot_restore():
     """A restored call retains eager eligibility and finishes without a future suspension."""
 
@@ -889,6 +980,34 @@ async def test_async_resume_auto_multiple_pending_coroutines():
             while not isinstance(snap, MontyComplete):
                 snap = await snap.resume_auto()
             assert snap.output == snapshot([10, 20])
+
+
+async def test_async_resume_auto_skips_manually_resolved_coroutine():
+    """A coroutine answered by `resume({...})` keeps its spawned task, which `resume_auto` must not deliver."""
+
+    async def fast() -> str:
+        return 'fast'
+
+    async def slow() -> str:
+        await asyncio.sleep(0.05)
+        return 'slow'
+
+    code = 'import asyncio\nawait asyncio.gather(fast(), slow())'
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap: Any = await session.feed_start(code, external_lookup={'fast': fast, 'slow': slow})
+            call_ids: list[int] = []
+            while isinstance(snap, AsyncFunctionSnapshot):
+                call_ids.append(snap.call_id)
+                snap = await snap.resume_auto()
+            assert isinstance(snap, AsyncFutureSnapshot)
+            fast_id, slow_id = call_ids
+            snap = await snap.resume({fast_id: {'return_value': 'manual'}})
+            assert isinstance(snap, AsyncFutureSnapshot)
+            assert snap.pending_call_ids == [slow_id]
+            done = await snap.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot(['manual', 'slow'])
 
 
 async def test_async_resume_auto_name_lookup():
