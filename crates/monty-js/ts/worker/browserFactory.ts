@@ -11,20 +11,21 @@
 import { WorkerChannel, type WorkerChannelOptions, type WorkerLike } from './channel.js'
 import type { ComponentModules } from './host.js'
 import type { WorkerFactory } from './pool.js'
+import type { BrowserWorker } from './poolOptions.js'
 
 /** Spawns browser Web Workers that instantiate and serve `modules`. */
 export function browserWorkerFactory(
   modules: ComponentModules,
   options: WorkerChannelOptions = {},
   workerUrl?: string | URL,
-  createWorker?: () => Worker,
+  createWorker?: () => BrowserWorker,
 ): WorkerFactory {
   return (signal) => {
     // The default branch must keep `new Worker(new URL('…', import.meta.url),
     // { type: 'module' })` inline and literal: that exact shape is what
     // Vite/webpack statically detect to emit the worker as its own bundled
     // chunk. Threading the URL through a variable defeats that detection.
-    const worker = createWorker
+    const worker: BrowserWorker = createWorker
       ? createWorker()
       : workerUrl
         ? new Worker(workerUrl, { type: 'module' })
