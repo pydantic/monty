@@ -486,14 +486,13 @@ pub(super) fn native_subscript<const OP: u8>(mut d: Dispatch<'_, '_>) -> Status 
     let Some(value) = value else {
         return d.fallback(OP);
     };
-    (d.ip, d.remaining) = if let Value::Int(number) = value {
+    if let Value::Int(number) = value {
         let number = *number;
-        publish_subscript_int(d.vm, d.bytes, d.ip, d.remaining, number)
+        publish_subscript_int(&mut d, number);
     } else {
         let value = value.clone_with_heap(d.vm.heap);
         d.vm.push(value);
-        (d.ip, d.remaining)
-    };
+    }
     d.next()
 }
 
@@ -543,16 +542,15 @@ pub(super) fn native_global_subscript(mut d: Dispatch<'_, '_>) -> Status {
     };
 
     // The original key load and subscript remain in the bytecode for fallback.
-    let target = key_ip + width + 1;
+    d.ip = key_ip + width + 1;
     d.remaining -= 2;
-    (d.ip, d.remaining) = if let Value::Int(number) = value {
+    if let Value::Int(number) = value {
         let number = *number;
-        publish_subscript_int(d.vm, d.bytes, target, d.remaining, number)
+        publish_subscript_int(&mut d, number);
     } else {
         let value = value.clone_with_heap(d.vm.heap);
         d.vm.push(value);
-        (target, d.remaining)
-    };
+    }
     d.next()
 }
 
@@ -562,35 +560,37 @@ pub(super) fn native_global_subscript(mut d: Dispatch<'_, '_>) -> Status {
     clippy::inline_always,
     reason = "keep result publication and continuation in each handler"
 )]
-fn publish_subscript_int(vm: &mut VM<'_>, bytes: &[u8], ip: usize, remaining: u32, number: i64) -> (usize, u32) {
-    if remaining == 0 {
-        vm.push(Value::Int(number));
-        return (ip, remaining);
+fn publish_subscript_int(d: &mut Dispatch<'_, '_>, number: i64) {
+    if d.remaining == 0 {
+        d.vm.push(Value::Int(number));
+        return;
     }
 
-    let (destination, width) = match bytes.get(ip).copied() {
+    let (destination, width) = match d.bytes.get(d.ip).copied() {
         Some(op) if op == Opcode::StoreLocal as u8 => {
-            let slot = usize::from(bytes[ip + 1]);
-            (&mut vm.stack[vm.current_frame.stack_base() + slot], 2)
+            let slot = usize::from(d.bytes[d.ip + 1]);
+            (&mut d.vm.stack[d.vm.current_frame.stack_base() + slot], 2)
         }
         Some(op) if op == Opcode::StoreLocalW as u8 => {
-            let slot = usize::from(u16::from_le_bytes([bytes[ip + 1], bytes[ip + 2]]));
-            (&mut vm.stack[vm.current_frame.stack_base() + slot], 3)
+            let slot = usize::from(u16::from_le_bytes([d.bytes[d.ip + 1], d.bytes[d.ip + 2]]));
+            (&mut d.vm.stack[d.vm.current_frame.stack_base() + slot], 3)
         }
         Some(op) if op == Opcode::StoreGlobal as u8 => {
-            let slot = usize::from(u16::from_le_bytes([bytes[ip + 1], bytes[ip + 2]]));
-            (&mut vm.globals[slot], 3)
+            let slot = usize::from(u16::from_le_bytes([d.bytes[d.ip + 1], d.bytes[d.ip + 2]]));
+            (&mut d.vm.globals[slot], 3)
         }
         _ => {
-            vm.push(Value::Int(number));
-            return (ip, remaining);
+            d.vm.push(Value::Int(number));
+            return;
         }
     };
     if let Value::Int(previous) = destination {
         *previous = number;
     } else {
         let old = mem::replace(destination, Value::Int(number));
-        old.drop_with(vm);
+        old.drop_with(d.vm);
     }
-    (ip + width, remaining - 1)
+    d.start = d.ip;
+    d.ip += width;
+    d.remaining -= 1;
 }

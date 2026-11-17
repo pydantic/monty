@@ -1197,9 +1197,107 @@ fn invalid(_: &mut VM<'_>, _: &[u8], _: usize, _: &mut DispatchContext, _: u32, 
 mod tests {
     use std::ptr;
 
+    use monty_types::{PrintWriter, ResourceTracker};
     use strum::IntoEnumIterator;
 
-    use super::{Handler, Opcode, SEMANTICS, invalid};
+    use super::{DispatchContext, DispatchTable, HANDLERS, Handler, Opcode, SEMANTICS, Status, VM, fetched, invalid};
+    use crate::{
+        bytecode::subscription::{GlobalSubscript, GlobalSubscriptKey},
+        heap::{Heap, HeapData, HeapReader},
+        run::{Program, SessionTables},
+        types::List,
+        value::Value,
+    };
+
+    #[test]
+    fn subscription_checkpoints_attribute_folded_stores() {
+        for lookup in [
+            Opcode::LoadSubscrLocal,
+            Opcode::LoadSubscrConst,
+            Opcode::LoadGlobalSubscr,
+        ] {
+            for store in [Opcode::StoreLocal, Opcode::StoreLocalW, Opcode::StoreGlobal] {
+                for fold_store in [false, true] {
+                    let mut bytes = match lookup {
+                        Opcode::LoadSubscrLocal => vec![lookup as u8, 0, 1],
+                        Opcode::LoadSubscrConst => vec![lookup as u8, 0, 0, 0],
+                        Opcode::LoadGlobalSubscr => {
+                            let operand = GlobalSubscript::new(0, GlobalSubscriptKey::SmallInteger).unwrap();
+                            let [lo, hi] = operand.encode().to_le_bytes();
+                            vec![
+                                lookup as u8,
+                                lo,
+                                hi,
+                                Opcode::LoadSmallInt as u8,
+                                0,
+                                Opcode::BinarySubscr as u8,
+                            ]
+                        }
+                        _ => unreachable!(),
+                    };
+                    let store_ip = bytes.len();
+                    let destination = if store == Opcode::StoreLocalW { 256_u16 } else { 2 };
+                    let [lo, hi] = destination.to_le_bytes();
+                    bytes.extend([store as u8, lo]);
+                    if store != Opcode::StoreLocal {
+                        bytes.push(hi);
+                    }
+                    let destination = usize::from(destination);
+                    let remaining = u32::from(fold_store) + if lookup == Opcode::LoadGlobalSubscr { 2 } else { 0 };
+                    let mut heap = Heap::new(16, ResourceTracker::default());
+                    let list = heap.allocate(HeapData::List(List::new(vec![Value::Int(42)])));
+                    let mut tables = SessionTables::default();
+                    let program = Program::for_tests();
+                    HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+                        let mut vm = VM::new(
+                            vec![Value::None, Value::None, Value::None],
+                            tables,
+                            program,
+                            reader,
+                            PrintWriter::Disabled,
+                        );
+                        vm.stack.resize_with(destination + 1, || Value::None);
+                        vm.stack[1] = Value::Int(0);
+                        if lookup == Opcode::LoadGlobalSubscr {
+                            vm.globals[0] = Value::Ref(list);
+                        } else {
+                            vm.stack[0] = Value::Ref(list);
+                        }
+                        let table = DispatchTable {
+                            handlers: HANDLERS.handlers,
+                            checkpoint: |vm, _, ip, _, _, _| {
+                                vm.current_frame.ip = ip;
+                                Status::Continue
+                            },
+                        };
+                        let mut context = DispatchContext {
+                            countdown: 0,
+                            batches_until_poll: 16,
+                            check_limits: false,
+                            poll_print: false,
+                            reentrant: false,
+                            outcome: None,
+                        };
+                        assert!(fetched(&mut vm, &bytes, 0, &mut context, remaining, &table) == Status::Continue);
+                        assert_eq!(
+                            vm.instruction_ip,
+                            if fold_store { store_ip } else { 0 },
+                            "{lookup:?} / {store:?} / fold={fold_store}"
+                        );
+                        assert_eq!(vm.current_frame.ip, if fold_store { bytes.len() } else { store_ip });
+                        let result = if !fold_store {
+                            vm.stack.last().unwrap()
+                        } else if store == Opcode::StoreGlobal {
+                            &vm.globals[2]
+                        } else {
+                            &vm.stack[destination]
+                        };
+                        assert!(matches!(result, Value::Int(42)));
+                    });
+                }
+            }
+        }
+    }
 
     #[test]
     fn every_opcode_has_a_handler() {

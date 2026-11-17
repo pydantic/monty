@@ -52,6 +52,7 @@ The registration macro generates a scalar entry point and inlines the function i
 | `d.vm`                        | Stack, locals, heap and semantic operations                        |
 | `d.read_u8()`, `d.read_u16()` | Read an operand and advance the bytecode cursor                    |
 | `d.bytes`, `d.ip`             | Look ahead without consuming an operand; set a branch target       |
+| `d.start`                     | Current opcode position; used by `d.next()` and `d.fallback()`     |
 | `d.next()`                    | Continue at the cursor, retaining this instruction's source offset |
 | `d.fallback(OP)`              | Run the semantic handler from the original operand position        |
 | `d.resume()`                  | Reload the active frame after Python execution or a frame change   |
