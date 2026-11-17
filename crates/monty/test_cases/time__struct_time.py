@@ -71,6 +71,30 @@ assert time.strptime('2024-06', '%Y-%m')[:6] == (2024, 6, 1, 0, 0, 0)
 # the default format is asctime's own, so the two round-trip
 assert time.strptime(time.asctime(epoch))[:6] == epoch[:6]
 
+# === strptime preserves leap seconds and uses Python's hour rules ===
+for second in [60, 61]:
+    leap = time.strptime(f'2024-01-01 23:59:{second}', '%Y-%m-%d %H:%M:%S')
+    assert leap[:6] == (2024, 1, 1, 23, 59, second)
+    assert (leap.tm_wday, leap.tm_yday) == (0, 1)
+    assert time.asctime(leap) == f'Mon Jan  1 23:59:{second} 2024'
+    assert time.strftime('%Y-%m-%d %H:%M:%S', leap) == f'2024-01-01 23:59:{second}'
+    assert time.strftime('%X', leap) == f'23:59:{second}'
+    assert time.strptime(f'23:59:{second}.1', '%H:%M:%S.%f')[:6] == (1900, 1, 1, 23, 59, second)
+    assert time.mktime(leap) == time.mktime((2024, 1, 2, 0, 0, second - 60, 1, 2, -1))
+assert time.strptime('13 AM', '%H %p').tm_hour == 13
+assert time.strptime('01 PM', '%H %p').tm_hour == 1
+assert time.strptime('12', '%I').tm_hour == 0
+assert time.strptime('PM 01', '%p %I').tm_hour == 13
+assert time.strptime('2024-01-01 UTC,', '%Y-%m-%d %Z,')[:6] == (2024, 1, 1, 0, 0, 0)
+check(
+    lambda: time.strptime('2024-01-01 ARBITRARY', '%Y-%m-%d %Z'),
+    "ValueError: time data '2024-01-01 ARBITRARY' does not match format '%Y-%m-%d %Z'",
+)
+check(
+    lambda: time.strptime('2024-01-01 UTCextra', '%Y-%m-%d %Z'),
+    'ValueError: unconverted data remains: extra',
+)
+
 # === round trips ===
 assert time.mktime(time.localtime(1718451000)) == 1718451000.0
 assert time.mktime(time.localtime(0)) == 0.0

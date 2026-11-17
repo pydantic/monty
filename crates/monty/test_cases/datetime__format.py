@@ -169,6 +169,59 @@ assert datetime.datetime.strptime('2024-06-15 12:30 UTC', '%Y-%m-%d %H:%M %Z').t
 _rt = datetime.datetime(2024, 6, 15, 12, 30, tzinfo=datetime.timezone(datetime.timedelta(hours=-5)))
 assert datetime.datetime.strptime(_rt.strftime('%Y-%m-%d %H:%M %z'), '%Y-%m-%d %H:%M %z') == _rt
 
+# === strptime meridiem affects only the 12-hour clock ===
+for _text, _format, _hour in [
+    ('13 AM', '%H %p', 13),
+    ('01 PM', '%H %p', 1),
+    ('AM 13', '%p %H', 13),
+    ('PM 01', '%p %H', 1),
+    ('12', '%I', 0),
+    ('01', '%I', 1),
+    ('12 AM', '%I %p', 0),
+    ('12 PM', '%I %p', 12),
+    ('01 pm', '%I %p', 13),
+    ('PM 01', '%p %I', 13),
+    ('PM', '%p', 0),
+    ('01 12 PM', '%H %I %p', 12),
+    ('12 PM 01', '%I %p %H', 1),
+    ('%H 12 %p', '%%H %I %%p', 0),
+]:
+    assert datetime.datetime.strptime('2024-01-01 ' + _text, '%Y-%m-%d ' + _format).hour == _hour
+
+# === strptime rejects leap seconds rather than clamping them ===
+for _text, _format, _second in [
+    ('23:59:60', '%H:%M:%S', 60),
+    ('23:59:61', '%H:%M:%S', 61),
+    ('23:59:60.1', '%H:%M:%S.%f', 60),
+    ('23:59:61.123456', '%H:%M:%S.%f', 61),
+    ('23:59:60', '%X', 60),
+    ('60', '%S', 60),
+]:
+    try:
+        datetime.datetime.strptime('2024-01-01 ' + _text, '%Y-%m-%d ' + _format)
+        assert False, 'expected ValueError for a leap second'
+    except ValueError as exc:
+        assert str(exc) == f'second must be in 0..59, not {_second}'
+
+# === strptime zone names are validated and leave following literals intact ===
+for _text, _format in [
+    ('2024-01-01 UTC', '%Y-%m-%d %Z'),
+    ('2024-01-01 gmt', '%Y-%m-%d %Z'),
+    ('2024-01-01 UTC,', '%Y-%m-%d %Z,'),
+    ('UTC2024-01-01', '%Z%Y-%m-%d'),
+    ('2024-01-01 %Z', '%Y-%m-%d %%Z'),
+]:
+    assert datetime.datetime.strptime(_text, _format) == datetime.datetime(2024, 1, 1)
+assert datetime.datetime.strptime('2024-01-01 UTC+0100', '%Y-%m-%d %Z%z') == datetime.datetime(
+    2024, 1, 1, tzinfo=datetime.timezone(datetime.timedelta(hours=1))
+)
+for _zone in ['ARBITRARY', 'UT', '']:
+    try:
+        datetime.datetime.strptime('2024-01-01 ' + _zone, '%Y-%m-%d %Z')
+        assert False, 'expected ValueError for an unsupported zone name'
+    except ValueError as exc:
+        assert str(exc) == f"time data '2024-01-01 {_zone}' does not match format '%Y-%m-%d %Z'"
+
 # === strptime missing fields default to 1900-01-01 at midnight ===
 for _text, _format, _expected in [
     ('12:30', '%H:%M', datetime.datetime(1900, 1, 1, 12, 30)),
@@ -215,6 +268,9 @@ for _text, _format, _remaining in [
     ('2024-06-15 extra日', '%Y-%m-%d', ' extra日'),
     ('2024-06-15 ', '%Y-%m-%d', ' '),
     ('extra', '', 'extra'),
+    ('2024-01-01 UTCextra', '%Y-%m-%d %Z', 'extra'),
+    ('2024-01-01 UTC,extra', '%Y-%m-%d %Z,', 'extra'),
+    ('2024-01-01 23:59:60 extra', '%Y-%m-%d %H:%M:%S', ' extra'),
 ]:
     try:
         datetime.datetime.strptime(_text, _format)

@@ -101,6 +101,10 @@ Class methods supported: `now(tz=None)`, `fromtimestamp(timestamp, tz=None)`, `s
 - `now()` reads the clock — see "Reading the clock" below.
 - Host-answered `now(tz)` reconstructs `tzinfo` from its offset and name, so it equals `tz` but is a different object.
     The default sandbox answer preserves identity, as CPython does.
+- `strptime()` validates `%Z` against UTC, GMT and the session zone's standard and daylight names, rather than the
+    host's `time.tzname`.
+    A named session zone with a `'call_host'` clock has no year to obtain its abbreviations from, so only UTC and GMT
+    are accepted in that configuration.
 - `strptime()`'s `%z` takes a sign, hours and minutes with an optional colon, optional seconds, or a bare `Z`,
     but rejects CPython's fractional form: `'+010203.123456'`, where CPython attaches an offset carrying
     those microseconds, which no Monty offset can hold (see [`timezone`](#timezone)).
@@ -241,7 +245,8 @@ after binding completes.
 
 ## Formatting
 
-Locale-specific `strftime` directives (`%c`, `%x`, `%X`, `%p`) use the POSIX locale regardless of the host's locale.
+Locale-specific formatting and parsing directives (`%c`, `%x`, `%X`, `%p`) use the POSIX locale regardless of the
+host's locale.
 CPython uses the active C locale.
 
 ### Unrecognised directives

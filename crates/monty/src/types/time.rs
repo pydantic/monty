@@ -286,9 +286,7 @@ fn from_components(hour: i32, minute: i32, second: i32, microsecond: i32, fold: 
         );
     }
     if !(0..=59).contains(&second) {
-        return Err(
-            SimpleException::new_msg(ExcType::ValueError, format!("second must be in 0..59, not {second}")).into(),
-        );
+        return Err(ExcType::second_out_of_range(second));
     }
     if !(0..=999_999).contains(&microsecond) {
         return Err(SimpleException::new_msg(

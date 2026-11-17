@@ -91,6 +91,17 @@ assert repr(time.altzone) == '-3600'
 assert repr(time.daylight) == '1'
 assert repr(time.tzname) == "('GMT', 'BST')"
 
+# === strptime recognizes both session abbreviations, without attaching a zone ===
+for abbreviation in ['GMT', 'BST', 'bst', 'UTC']:
+    assert datetime.strptime('2024-01-15 ' + abbreviation, '%Y-%m-%d %Z') == datetime(2024, 1, 15)
+    assert time.strptime('2024-01-15 ' + abbreviation, '%Y-%m-%d %Z')[:6] == (2024, 1, 15, 0, 0, 0)
+assert datetime.strptime('BST,2024-06-15', '%Z,%Y-%m-%d') == datetime(2024, 6, 15)
+try:
+    datetime.strptime('2024-01-15 EST', '%Y-%m-%d %Z')
+    assert False, 'expected ValueError for a name outside the session zone'
+except ValueError as exc:
+    assert str(exc) == "time data '2024-01-15 EST' does not match format '%Y-%m-%d %Z'"
+
 # === the first and last representable day, where CPython solves out of range ===
 try:
     datetime(9999, 12, 31, 12, 0).astimezone(timezone.utc)

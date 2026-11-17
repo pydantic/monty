@@ -1114,6 +1114,11 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, msg).into()
     }
 
+    /// A datetime or time component outside Python's non-leap-second range.
+    fn second_out_of_range(second: impl fmt::Display) -> RunError {
+        Self::value_error(format_args!("second must be in 0..59, not {second}"))
+    }
+
     /// Creates a generic `IndexError` with a custom message.
     fn index_error(msg: impl fmt::Display) -> RunError {
         SimpleException::new_msg(ExcType::IndexError, msg).into()

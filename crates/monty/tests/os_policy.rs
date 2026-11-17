@@ -586,6 +586,43 @@ fn naive_timestamp_reads_the_session_zone() {
     );
 }
 
+/// Fixed-zone names remain available to both parsers without reading a host clock.
+#[test]
+fn strptime_uses_fixed_zone_names_with_a_host_clock() {
+    for (name, abbreviation) in [(Some("LOCAL".to_owned()), "local"), (None, "UTC+02:00")] {
+        let calls = OsPolicy {
+            datetime: DateTimeSource::CallHost,
+            timezone: SandboxTimeZone::Fixed {
+                offset_seconds: 7200,
+                name,
+            },
+            ..OsPolicy::default()
+        };
+        let code = format!(
+            "import time\nfrom datetime import datetime\n\
+             text = '2024-01-01 {abbreviation}'\n\
+             datetime.strptime(text, '%Y-%m-%d %Z') == datetime(2024, 1, 1) \
+             and time.strptime(text, '%Y-%m-%d %Z')[:6] == (2024, 1, 1, 0, 0, 0)"
+        );
+        assert_eq!(run(&code, calls).unwrap(), MontyObject::bool(true));
+    }
+}
+
+/// A named zone cannot derive its seasonal abbreviations without a clock year.
+#[test]
+fn strptime_with_a_host_clock_still_recognizes_utc_and_gmt() {
+    let calls = OsPolicy {
+        datetime: DateTimeSource::CallHost,
+        timezone: SandboxTimeZone::named("Europe/London").unwrap(),
+        ..OsPolicy::default()
+    };
+    for name in ["UTC", "GMT"] {
+        let code = format!("from datetime import datetime\ndatetime.strptime('{name}', '%Z').year");
+        assert_eq!(run(&code, calls.clone()).unwrap(), MontyObject::int(1900));
+    }
+    assert_snapshot!(run("from datetime import datetime\ndatetime.strptime('BST', '%Z')", calls).unwrap_err(), @"ValueError: time data 'BST' does not match format '%Z'");
+}
+
 /// Zone names are validated before the database sees them, and the database
 /// answers for `UTC` and every IANA key.
 #[test]

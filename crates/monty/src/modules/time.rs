@@ -459,10 +459,12 @@ fn strptime_result(data_string: &Value, format: &Value, vm: &mut VM<'_>) -> RunR
         Value::None => DEFAULT_STRPTIME_FORMAT.to_owned(),
         other => string_arg(other, "strptime", 2, vm)?,
     };
-    let wall = datetime_type::parse_time_strptime(&text, &format)?;
+    let parsed = datetime_type::strptime::parse(&text, &format, vm.env.os_policy)?;
     // A `%z` offset is parsed but dropped, so the zone half stays unset; CPython
     // records it in `tm_gmtoff` (see `limitations/time.md`).
-    Ok(struct_time_value(&TimeFields::naive(wall), vm))
+    let mut fields = TimeFields::naive(parsed.wall);
+    fields.second = i64::from(parsed.second);
+    Ok(struct_time_value(&fields, vm))
 }
 
 /// `time.strptime`'s format when the caller gives none: `asctime`'s form.
@@ -496,6 +498,8 @@ fn string_arg(value: &Value, name: &str, position: usize, vm: &VM<'_>) -> RunRes
 /// even when the date is a Saturday.
 struct TimeFields {
     wall: DateTime,
+    /// Kept separately because `struct_time` permits leap seconds, unlike Jiff.
+    second: i64,
     weekday: i64,
     yearday: i64,
     /// -1 when unknown (`strptime`), else 0 or 1.
@@ -510,6 +514,7 @@ impl TimeFields {
     fn zoned(wall: DateTime, zone: MontyTimeZone, isdst: i64) -> Self {
         Self {
             wall,
+            second: i64::from(wall.second()),
             weekday: i64::from(wall.weekday().to_monday_zero_offset()),
             yearday: i64::from(wall.day_of_year()),
             isdst,
@@ -527,6 +532,7 @@ impl TimeFields {
     fn naive(wall: DateTime) -> Self {
         Self {
             wall,
+            second: i64::from(wall.second()),
             weekday: i64::from(wall.weekday().to_monday_zero_offset()),
             yearday: i64::from(wall.day_of_year()),
             isdst: -1,
@@ -548,7 +554,7 @@ impl TimeFields {
             self.wall.day(),
             self.wall.hour(),
             self.wall.minute(),
-            self.wall.second(),
+            self.second,
             self.wall.year()
         )
     }
@@ -562,15 +568,14 @@ impl TimeFields {
             Some(zone) => (Some(zone.offset_seconds), zone.name.clone()),
             None => (None, None),
         };
-        let format = self.rewrite_day_directives(format, &vm.heap.tracker)?;
+        let format = self.rewrite_tuple_directives(format, &vm.heap.tracker)?;
         let format = date::rewrite_zone_directives(&format, offset, name.as_deref(), &vm.heap.tracker)?;
         date::render_strftime(self.wall, &format, &vm.heap.tracker)
     }
 
-    /// Substitutes the directives CPython reads from `tm_wday`/`tm_yday`, which
-    /// Jiff would recompute from the date. Shifting the date instead is not an
-    /// option: `%d`, `%m` and `%Y` must still come from the date itself.
-    fn rewrite_day_directives<'f>(&self, format: &'f str, tracker: &ResourceTracker) -> RunResult<Cow<'f, str>> {
+    /// Substitutes stored weekday, year-day and second fields, including leap
+    /// seconds that Jiff cannot represent. Clock aliases use the same fields.
+    fn rewrite_tuple_directives<'f>(&self, format: &'f str, tracker: &ResourceTracker) -> RunResult<Cow<'f, str>> {
         const DAYS: [(&str, &str); 7] = [
             ("Mon", "Monday"),
             ("Tue", "Tuesday"),
@@ -580,11 +585,14 @@ impl TimeFields {
             ("Sat", "Saturday"),
             ("Sun", "Sunday"),
         ];
-        let may_have_day = format
-            .as_bytes()
-            .windows(2)
-            .any(|pair| pair[0] == b'%' && matches!(pair[1], b'a' | b'A' | b'j' | b'w' | b'u' | b'U' | b'W'));
-        if !may_have_day {
+        let may_have_fields = format.as_bytes().windows(2).any(|pair| {
+            pair[0] == b'%'
+                && matches!(
+                    pair[1],
+                    b'a' | b'A' | b'j' | b'w' | b'u' | b'U' | b'W' | b'S' | b'c' | b'r' | b'T' | b'X'
+                )
+        });
+        if !may_have_fields {
             return Ok(Cow::Borrowed(format));
         }
         // C counts weekdays from Sunday and year days from zero, which is what
@@ -609,6 +617,10 @@ impl TimeFields {
                 Some('u') => Some((monday_based + 1).to_string()),
                 Some('U') => Some(format!("{:02}", week(0))),
                 Some('W') => Some(format!("{:02}", week(1))),
+                Some('S') => Some(format!("{:02}", self.second)),
+                Some('T' | 'X') => Some(format!("%H:%M:{:02}", self.second)),
+                Some('r') => Some(format!("%I:%M:{:02} %p", self.second)),
+                Some('c') => Some(format!("{short} %b %e %H:%M:{:02} %Y", self.second)),
                 _ => None,
             };
             let consumed = match (substitute, directive) {
@@ -705,7 +717,7 @@ fn struct_time_value(fields: &TimeFields, vm: &mut VM<'_>) -> Value {
             Value::Int(i64::from(wall.day())),
             Value::Int(i64::from(wall.hour())),
             Value::Int(i64::from(wall.minute())),
-            Value::Int(i64::from(wall.second())),
+            Value::Int(fields.second),
             Value::Int(fields.weekday),
             Value::Int(fields.yearday),
             Value::Int(fields.isdst),
@@ -724,7 +736,12 @@ fn struct_time_value(fields: &TimeFields, vm: &mut VM<'_>) -> Value {
 /// selects the session zone's standard or daylight half, as CPython does.
 fn time_fields(value: &Value, name: &str, vm: &mut VM<'_>) -> RunResult<TimeFields> {
     let (items, own_zone) = time_tuple_parts(value, name, vm)?;
-    let wall = naive_from_time_tuple(&items)?;
+    // Formatting preserves leap seconds; only `mktime` normalizes them forward.
+    let mut civil_items = items;
+    if (60..=61).contains(&civil_items[5]) {
+        civil_items[5] = 59;
+    }
+    let wall = naive_from_time_tuple(&civil_items)?;
     // CPython's `checktm`, which `mktime` skips: a weekday below -1 goes
     // negative after its Sunday-first shift, and a year day is 0..=366 with 0
     // read as the first day. Bounding both here also keeps the `%U`/`%W`
@@ -739,6 +756,7 @@ fn time_fields(value: &Value, name: &str, vm: &mut VM<'_>) -> RunResult<TimeFiel
     let zone = own_zone.or_else(|| tuple_zone(i32::from(wall.year()), isdst, vm));
     Ok(TimeFields {
         wall,
+        second: items[5],
         weekday: items[6],
         yearday: items[7].max(1),
         isdst,

@@ -684,7 +684,7 @@ impl Type {
             }
             (Self::DateTime, Some(StaticStrings::Now)) => datetime::class_now(vm, args),
             (Self::DateTime, Some(StaticStrings::Strptime)) => {
-                datetime::class_strptime(vm.heap, args, vm.interns).map(CallResult::Value)
+                datetime::class_strptime(vm, args).map(CallResult::Value)
             }
             (Self::DateTime, Some(StaticStrings::Fromisoformat)) => {
                 datetime::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)

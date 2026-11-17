@@ -4,7 +4,6 @@
 //! constructor rules, aware/naive comparison semantics, and arithmetic on top.
 
 use std::{
-    borrow::Cow,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
@@ -13,7 +12,6 @@ use std::{
 use jiff::{
     SignedDuration,
     civil::{self, Date as CivilDate, DateTime as CivilDateTime, Time as CivilTime},
-    fmt::strtime::BrokenDownTime,
 };
 use monty_types::{
     DateTimeSource, MontyDateTime, MontyTimeZone, OsFunctionCall, ResourceTracker, SandboxTimeZone, local_wall_clock,
@@ -37,6 +35,8 @@ use crate::{
     },
     value::{EitherStr, Value},
 };
+
+pub(crate) mod strptime;
 
 /// Shared overflow wording for datetime conversions.
 const DATE_OUT_OF_RANGE: &str = "date value out of range";
@@ -105,9 +105,7 @@ pub(crate) fn from_components(
         );
     }
     if !(0..=59).contains(&second) {
-        return Err(
-            SimpleException::new_msg(ExcType::ValueError, format!("second must be in 0..59, not {second}")).into(),
-        );
+        return Err(ExcType::second_out_of_range(second));
     }
     if !(0..=999_999).contains(&microsecond) {
         return Err(SimpleException::new_msg(
@@ -596,7 +594,9 @@ struct NowArgs {
 /// Classmethod `datetime.strptime(date_string, format)`.
 ///
 /// Parses civil components with Python-compatible microseconds and UTC offsets.
-pub(crate) fn class_strptime(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+pub(crate) fn class_strptime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let heap = &mut *vm.heap;
+    let interns = vm.interns;
     let (date_string_val, format_val) = args.get_two_args("datetime.strptime", heap)?;
 
     let date_string = date::extract_str_arg(&date_string_val, "strptime", heap, interns);
@@ -606,22 +606,20 @@ pub(crate) fn class_strptime(heap: &mut Heap, args: ArgValues, interns: &Interns
     let date_string = date_string?;
     let fmt = fmt?;
 
-    reject_bad_strptime_directive(&fmt)?;
-
-    let Some(parsed) = parse_strptime(&date_string, &fmt) else {
-        return Err(SimpleException::new_msg(
-            ExcType::ValueError,
-            format!("time data '{date_string}' does not match format '{fmt}'"),
-        )
-        .into());
-    };
-    let (naive, offset_seconds) = parsed?;
+    let strptime::ParsedTime {
+        wall: naive,
+        second,
+        offset_seconds,
+    } = strptime::parse(&date_string, &fmt, vm.env.os_policy)?;
 
     if !year_in_python_range(naive.date().year()) {
         return Err(SimpleException::new_msg(ExcType::ValueError, "year is out of range").into());
     }
     if let Some(offset_seconds) = offset_seconds {
         timezone::check_offset_seconds(offset_seconds)?;
+    }
+    if second > 59 {
+        return Err(ExcType::second_out_of_range(second));
     }
 
     let dt = DateTime {
@@ -631,26 +629,6 @@ pub(crate) fn class_strptime(heap: &mut Heap, args: ArgValues, interns: &Interns
         tzinfo_ref: None,
     };
     Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))))
-}
-
-/// CPython's `strptime` has no `%:z`, so the `:` reads as a directive of its own.
-/// Monty's `strftime` does accept `%:z`, which makes silently parsing it here the
-/// wrong kind of asymmetry.
-fn reject_bad_strptime_directive(fmt: &str) -> RunResult<()> {
-    let mut chars = fmt.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '%'
-            && let Some(next) = chars.next()
-            && next == ':'
-        {
-            return Err(SimpleException::new_msg(
-                ExcType::ValueError,
-                format!("'{next}' is a bad directive in format '{fmt}'"),
-            )
-            .into());
-        }
-    }
-    Ok(())
 }
 
 /// Classmethod `datetime.fromisoformat(date_string)`.
@@ -828,216 +806,6 @@ fn parse_iso_datetime(s: &str, heap: &mut Heap) -> Option<DateTime> {
             heap,
         )
         .ok()
-    }
-}
-
-/// Parses `time.strptime()` components with the same defaults and trailing-input
-/// errors as `datetime.strptime()`, leaving the offset for the caller to ignore.
-pub(crate) fn parse_time_strptime(date_string: &str, fmt: &str) -> RunResult<CivilDateTime> {
-    reject_bad_strptime_directive(fmt)?;
-    match parse_strptime(date_string, fmt) {
-        Some(parsed) => parsed.map(|(naive, _)| naive),
-        None => Err(SimpleException::new_msg(
-            ExcType::ValueError,
-            format!(
-                "time data {} does not match format {}",
-                StringRepr(date_string),
-                StringRepr(fmt)
-            ),
-        )
-        .into()),
-    }
-}
-
-/// Parses civil components and an optional `%z` offset.
-/// `None` means the format did not match; matched input can still fail because
-/// of trailing data, invalid components or inconsistent `%z` separators.
-fn parse_strptime(date_string: &str, fmt: &str) -> Option<RunResult<(CivilDateTime, Option<i32>)>> {
-    let fmt = strptime_format(fmt)?;
-    // Keep neighboring fields and whitespace separate when replacing zone tokens.
-    let (date_string, fmt) = if let Some((before, after)) = split_zone_directive(&fmt, 'Z') {
-        let (_, at) = BrokenDownTime::parse_prefix(&before, date_string).ok()?;
-        let rest = &date_string[at..];
-        let len = rest.find(char::is_whitespace).unwrap_or(rest.len());
-        (
-            Cow::Owned(format!("{}@{}", &date_string[..at], &rest[len..])),
-            Cow::Owned(format!("{before}@{after}")),
-        )
-    } else {
-        (Cow::Borrowed(date_string), Cow::Borrowed(fmt.as_str()))
-    };
-    let date_string = date_string.as_ref();
-    let fmt = fmt.as_ref();
-    let Some((before, after)) = split_zone_directive(fmt, 'z') else {
-        return parse_strptime_naive(date_string, fmt).map(|parsed| parsed.map(|naive| (naive, None)));
-    };
-    // Locate the offset with one prefix parse, then parse the remaining components
-    // together so fields on either side of %z can still constrain each other.
-    let (_, at) = BrokenDownTime::parse_prefix(&before, date_string).ok()?;
-    let rest = &date_string[at..];
-    let token = strptime_offset_at(rest)?;
-    let input = format!("{}@{}", &date_string[..at], &rest[token.len..]);
-    let parsed = parse_strptime_naive(&input, &format!("{before}@{after}"))?;
-    Some(parsed.and_then(|naive| {
-        if token.colons_agree {
-            Ok((naive, Some(token.offset_seconds)))
-        } else {
-            let matched = &rest[..token.len];
-            Err(SimpleException::new_msg(ExcType::ValueError, format!("Inconsistent use of : in {matched}")).into())
-        }
-    }))
-}
-
-/// Expands locale directives and caps fractional seconds at Python's six digits.
-fn strptime_format(fmt: &str) -> Option<String> {
-    let mut out = String::with_capacity(fmt.len());
-    let mut chars = fmt.chars();
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            out.push_str(match chars.next() {
-                Some('c') => "%a %b %e %H:%M:%S %Y",
-                Some('x') => "%m/%d/%y",
-                Some('X') => "%H:%M:%S",
-                Some('r') => "%I:%M:%S %p",
-                Some('f') => "%6f",
-                Some('Q' | 'N') => return None,
-                Some(other) => {
-                    out.push('%');
-                    out.push(other);
-                    continue;
-                }
-                None => "%",
-            });
-        } else {
-            out.push(c);
-        }
-    }
-    Some(out)
-}
-
-/// The format on either side of a zone directive, ignoring escaped percents.
-fn split_zone_directive(fmt: &str, zone: char) -> Option<(String, String)> {
-    let mut rest = fmt;
-    let mut before = String::with_capacity(fmt.len());
-    while let Some(at) = rest.find('%') {
-        let (literal, directive) = rest.split_at(at);
-        before.push_str(literal);
-        let mut chars = directive.chars();
-        chars.next();
-        match chars.next() {
-            Some(c) if c == zone => return Some((before, chars.as_str().to_owned())),
-            Some(other) => {
-                before.push('%');
-                before.push(other);
-                rest = chars.as_str();
-            }
-            None => return None,
-        }
-    }
-    None
-}
-
-/// A `%z` token matched at some position in a `strptime` input.
-struct ZoneToken {
-    offset_seconds: i32,
-    /// The token's length in bytes, so the caller can lift it out of the input.
-    len: usize,
-    /// Whether the minute and second separators agree. `+01:02:03` and
-    /// `+010203` do, `+01:0203` and `+0102:03` do not — CPython matches the
-    /// mixed pair and then rejects it, rather than reading a shorter token.
-    colons_agree: bool,
-}
-
-/// CPython's `%z` token at the start of `s`: a bare `Z`, or a sign, two hour
-/// digits and a colon-optional minute pair, optionally followed by a second
-/// pair. A fractional part is not accepted; see `limitations/datetime.md`.
-fn strptime_offset_at(s: &str) -> Option<ZoneToken> {
-    let bytes = s.as_bytes();
-    if bytes.first() == Some(&b'Z') {
-        return Some(ZoneToken {
-            offset_seconds: 0,
-            len: 1,
-            colons_agree: true,
-        });
-    }
-    let sign = match bytes.first()? {
-        b'+' => 1,
-        b'-' => -1,
-        _ => return None,
-    };
-    let (hours, at) = two_digits(bytes, 1)?;
-    let minute_colon = bytes.get(at) == Some(&b':');
-    let (minutes, at) = colon_pair(bytes, at)?;
-    // CPython's pattern caps minutes and seconds at 59 and leaves the hour to the
-    // `timezone` range check, so an out-of-range minute is simply not a match.
-    if minutes > 59 {
-        return None;
-    }
-    let second_colon = bytes.get(at) == Some(&b':');
-    let (seconds, at, colons_agree) = match colon_pair(bytes, at) {
-        Some((seconds, next)) if seconds <= 59 => (seconds, next, second_colon == minute_colon),
-        _ => (0, at, true),
-    };
-    let total = i32::try_from(hours * 3600 + minutes * 60 + seconds).ok()?;
-    Some(ZoneToken {
-        offset_seconds: sign * total,
-        len: at,
-        colons_agree,
-    })
-}
-
-/// Two decimal digits at `at`, with the index just past them.
-fn two_digits(bytes: &[u8], at: usize) -> Option<(u32, usize)> {
-    let pair = bytes.get(at..at.checked_add(2)?)?;
-    pair.iter()
-        .all(u8::is_ascii_digit)
-        .then(|| (u32::from(pair[0] - b'0') * 10 + u32::from(pair[1] - b'0'), at + 2))
-}
-
-/// An optional `:` then two digits, the separator `%z` allows between its parts.
-fn colon_pair(bytes: &[u8], at: usize) -> Option<(u32, usize)> {
-    let at = if bytes.get(at) == Some(&b':') { at + 1 } else { at };
-    two_digits(bytes, at)
-}
-
-/// Parses civil components, distinguishing a matched prefix from trailing input.
-/// Replaced zone tokens precede the match's end, so its suffix is still original input.
-fn parse_strptime_naive(date_string: &str, fmt: &str) -> Option<RunResult<CivilDateTime>> {
-    let (parsed, consumed) = BrokenDownTime::parse_prefix(fmt, date_string).ok()?;
-    if consumed != date_string.len() {
-        return Some(Err(ExcType::value_error(format_args!(
-            "unconverted data remains: {}",
-            &date_string[consumed..]
-        ))));
-    }
-    let time = CivilTime::new(
-        parsed.hour().unwrap_or(0),
-        parsed.minute().unwrap_or(0),
-        parsed.second().unwrap_or(0),
-        parsed.subsec_nanosecond().unwrap_or(0),
-    )
-    .expect("parser validates clock components");
-    Some(strptime_date(parsed)?.map(|date| date.to_datetime(time)))
-}
-
-/// Supplies Python's missing date fields without masking ordinal or week dates.
-fn strptime_date(mut parsed: BrokenDownTime) -> Option<RunResult<CivilDate>> {
-    let year = parsed.year().unwrap_or(1900);
-    let has_week_date = parsed.iso_week_year().is_some()
-        || (parsed.weekday().is_some()
-            && (parsed.sunday_based_week().is_some() || parsed.monday_based_week().is_some()));
-    if parsed.day_of_year().is_some() || has_week_date {
-        parsed.set_year(Some(year)).ok()?;
-        Some(Ok(parsed.to_date().ok()?))
-    } else {
-        Some(
-            date::from_ymd(
-                i32::from(year),
-                i32::from(parsed.month().unwrap_or(1)),
-                i32::from(parsed.day().unwrap_or(1)),
-            )
-            .map(|date| date.0),
-        )
     }
 }
 

@@ -274,7 +274,9 @@ assert!(year.as_ref().as_int().is_some_and(|y| y >= 2026));
 ```
 
 `with_os_policy` configures each operation.
-`DateTimeSource::read()` returns UTC components as `jiff::civil::DateTime`; the zone conversion helpers use that type too.
+`DateTimeSource::read()` returns `Option<jiff::civil::DateTime>` containing UTC components.
+It returns `None` for `CallHost` or a fixed instant that Python's `datetime` cannot represent.
+The zone conversion helpers also use `jiff::civil::DateTime`.
 `DateTimeSource::Fixed` freezes the clock, `SandboxTimeZone::Fixed` sets the local UTC offset, `SandboxTimeZone::named` takes an IANA zone name, and
 `RandomStart::Seed` seeds `random` for reproducible runs.
 `named` needs a tz database, which is a `monty-types` feature: `tzdb` reads the OS copy (`TZDIR`, `/usr/share/zoneinfo`)

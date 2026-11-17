@@ -102,8 +102,9 @@ Without a time argument it reads the clock, suspending under `'call_host'` with 
 ## `strptime()`
 
 `time.strptime()` parses the directives `datetime.strptime()` does (see [datetime.md](datetime.md#datetime)).
-A `%z` in the format is parsed and validated but its offset is not recorded on the result, which has
-`tm_gmtoff`/`tm_zone` of `None`; CPython sets `tm_gmtoff` from it.
+Neither `%z` nor `%Z` is recorded in `tm_gmtoff` or `tm_zone`, which remain `None`;
+CPython retains the numeric offset and zone name when supplied.
+A `%Z` also leaves `tm_isdst` at `-1`, whereas CPython derives it from the matched abbreviation.
 
 ## Zone constants
 
