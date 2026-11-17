@@ -10,6 +10,8 @@
 //! - `--corpus`: every self-contained case in `crates/monty/test_cases`, code the weights were not
 //!   fitted to. An outlier there names work no construct covers.
 //!
+//! `--file <path>` measures one more script the same way, to track down an outlier.
+//!
 //! The median is what the native `NANOS_PER_UNIT` should be. The wasm build has its own, which
 //! `crates/monty-js/scripts/calibrate-work-clock.mjs` measures. Run both with
 //! `make calibrate-work-clock`.
@@ -56,6 +58,9 @@ fn main() -> ExitCode {
     }
     if flag("--corpus") {
         report_corpus(median);
+    }
+    if let Some(path) = env::args().skip_while(|arg| arg != "--file").nth(1) {
+        report_file(&path, median);
     }
     if flag("--check") && drifted {
         eprintln!("a category is more than {MAX_DRIFT}x from the median");
@@ -210,6 +215,20 @@ fn report_corpus(median: f64) {
                 row.nanos_per_unit() / median
             );
         }
+    }
+}
+
+/// Prints one script's units and rate, for tracking down what a corpus outlier is charged for.
+fn report_file(path: &str, median: f64) {
+    let code = fs::read_to_string(path).unwrap_or_else(|error| panic!("{path}: {error}"));
+    match Row::measure(path, &code, ResourceLimits::default()) {
+        Some(row) => println!(
+            "\n{path}: {} units in {:.3}ms, {:.2} of the category median",
+            row.units,
+            row.time.as_secs_f64() * 1000.0,
+            row.nanos_per_unit() / median
+        ),
+        None => println!("\n{path}: charged nothing"),
     }
 }
 

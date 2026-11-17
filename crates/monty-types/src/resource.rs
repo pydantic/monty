@@ -590,16 +590,24 @@ impl ResourceTracker {
         Ok(())
     }
 
-    /// Called periodically by native code to check both execution-time budgets.
+    /// Called by native code, once per operation or per chunk of work, to check both
+    /// execution-time budgets.
     ///
-    /// On the work clock each call also charges two units for each of the
-    /// [`LOOP_CHECK_INTERVAL`](Self::LOOP_CHECK_INTERVAL) items polled for, so every polling loop
-    /// costs work without its own cost function.
+    /// On the work clock each call also charges [`POLL_UNITS`](Self::POLL_UNITS), so work that
+    /// polls costs something without its own cost function.
     #[inline]
     pub fn check_time(&self) -> Result<(), ResourceError> {
-        self.charge_work(Self::LOOP_CHECK_INTERVAL as u64 * 2);
+        self.charge_work(Self::POLL_UNITS);
         self.check_budgets()
     }
+
+    /// Units one [`check_time`](Self::check_time) call charges on the work clock: a poll's worth
+    /// of native work whose size the tracker cannot see.
+    pub const POLL_UNITS: u64 = 16;
+
+    /// Units [`check_time_every`](Self::check_time_every) charges when it fires: two for each
+    /// of the [`LOOP_CHECK_INTERVAL`](Self::LOOP_CHECK_INTERVAL) items polled for.
+    pub const LOOP_POLL_UNITS: u64 = Self::LOOP_CHECK_INTERVAL as u64 * 2;
 
     /// Compares both budgets with the execution clock.
     ///
@@ -643,7 +651,8 @@ impl ResourceTracker {
     #[inline]
     pub fn check_time_every(&self, i: usize) -> Result<(), ResourceError> {
         if i % Self::LOOP_CHECK_INTERVAL == Self::LOOP_CHECK_INTERVAL - 1 {
-            self.check_time()
+            self.charge_work(Self::LOOP_POLL_UNITS);
+            self.check_budgets()
         } else {
             Ok(())
         }
@@ -656,7 +665,9 @@ impl ResourceTracker {
     #[inline]
     pub fn check_memory_time_every(&self, i: usize) -> Result<(), ResourceError> {
         if i % Self::LOOP_CHECK_INTERVAL == Self::LOOP_CHECK_INTERVAL - 1 {
-            self.check_memory_time()
+            self.charge_work(Self::LOOP_POLL_UNITS);
+            self.check_memory()?;
+            self.check_budgets()
         } else {
             Ok(())
         }

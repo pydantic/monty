@@ -468,3 +468,101 @@ for i in range(N):
 # === and_or ===
 for i in range(N):
     y = i and fl or 3
+
+# The big-integer sections run the baseline loop, then their own shorter one: their operations
+# are too slow for `N` iterations, so read their ratio, not their units per iteration.
+
+# === big_mul_30_limbs ===
+a = (1 << 1920) - 1
+c = (1 << 1900) - 3
+for i in range(N):
+    y = i
+for j in range(20_000):
+    z = a * c
+
+# === big_mul_300_limbs ===
+a = (1 << 19200) - 1
+c = (1 << 19000) - 3
+for i in range(N):
+    y = i
+for j in range(1000):
+    z = a * c
+
+# === big_mul_3000_limbs ===
+a = (1 << 192000) - 1
+c = (1 << 190000) - 3
+for i in range(N):
+    y = i
+for j in range(30):
+    z = a * c
+
+# === big_mul_3000_by_1 ===
+a = (1 << 192000) - 1
+for i in range(N):
+    y = i
+for j in range(5000):
+    z = a * 12345
+
+# === big_div_300_limbs ===
+a = 3**24000
+c = 7**6800
+for i in range(N):
+    y = i
+for j in range(500):
+    z = a // c
+
+# === big_pow_500_limbs ===
+for i in range(N):
+    y = i
+for j in range(200):
+    z = 3**20000
+
+# === big_pow_mod_30_limbs ===
+a = (1 << 1920) - 1
+c = (1 << 1900) - 3
+for i in range(N):
+    y = i
+for j in range(200):
+    z = pow(c, 65537, a)
+
+# === big_str_200_limbs ===
+a = (1 << 13000) - 1
+for i in range(N):
+    y = i
+for j in range(1000):
+    z = str(a)
+
+# === big_str_30_limbs ===
+a = (1 << 1920) - 1
+for i in range(N):
+    y = i
+for j in range(20_000):
+    z = str(a)
+
+# === big_from_str_200_limbs ===
+t = str((1 << 13000) - 1)
+for i in range(N):
+    y = i
+for j in range(1000):
+    z = int(t)
+
+# === big_add_300_limbs ===
+a = (1 << 19200) - 1
+c = (1 << 19000) - 3
+for i in range(N):
+    y = i
+for j in range(20_000):
+    z = a + c
+
+# === big_pow_mod_2000_limbs ===
+a = (1 << 131072) + 1
+for i in range(N):
+    y = i
+for j in range(2):
+    z = pow(3, (1 << 33) - 1, a)
+
+# === big_pow_1500_limbs ===
+for i in range(N):
+    y = i
+for j in range(200):
+    z = 2**100000

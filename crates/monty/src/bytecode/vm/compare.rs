@@ -2,7 +2,7 @@
 
 use std::cmp::Ordering;
 
-use super::VM;
+use super::{SLOW_COMPARE_UNITS, VM};
 use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -42,6 +42,7 @@ impl VM<'_> {
         }
 
         let this = self;
+        this.heap.tracker.charge_work(SLOW_COMPARE_UNITS);
         let rhs = this.pop();
         defer_drop!(rhs, this);
         let lhs = this.pop();
@@ -59,6 +60,7 @@ impl VM<'_> {
         }
 
         let this = self;
+        this.heap.tracker.charge_work(SLOW_COMPARE_UNITS);
         let rhs = this.pop();
         defer_drop!(rhs, this);
         let lhs = this.pop();
@@ -162,6 +164,13 @@ impl VM<'_> {
         }
 
         let this = self;
+        // Identity is one instruction's work and membership has its own weight.
+        if matches!(
+            op,
+            CmpOperator::Lt | CmpOperator::LtE | CmpOperator::Gt | CmpOperator::GtE
+        ) {
+            this.heap.tracker.charge_work(SLOW_COMPARE_UNITS);
+        }
 
         let rhs = this.pop();
         defer_drop!(rhs, this);
