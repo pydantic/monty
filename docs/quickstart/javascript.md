@@ -475,6 +475,30 @@ Pass that URL through your application's Trusted Types policy before constructin
 Monty does not create a policy or change the application's CSP.
 Without `createWorker`, Monty keeps its default worker construction and optional `workerUrl` override.
 
+```ts test="skip"
+/// <reference types="vite/client" />
+import { Monty } from '@pydantic/monty/wasm'
+import workerUrl from '@pydantic/monty/wasm/worker?worker&url'
+
+// TypeScript's DOM types omit Trusted Types; `@types/trusted-types` has the full declarations
+declare const trustedTypes: {
+  createPolicy(name: string, rules: { createScriptURL(url: string): string }): { createScriptURL(url: string): unknown }
+}
+
+// the CSP's `trusted-types` directive must allow this policy name
+const policy = trustedTypes.createPolicy('monty-worker', {
+  createScriptURL: (url) => {
+    if (url !== workerUrl) throw new TypeError(`unexpected worker URL: ${url}`)
+    return url
+  },
+})
+
+await using pool = await Monty.create({
+  // TypeScript's DOM types reject a TrustedScriptURL here, but browsers accept it
+  createWorker: () => new Worker(policy.createScriptURL(workerUrl) as unknown as string, { type: 'module' }),
+})
+```
+
 Differences from the native path:
 
 - **Filesystem mounts are unsupported** — a non-empty `mount` list is rejected, because there is no host filesystem.
