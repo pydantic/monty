@@ -21,7 +21,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
@@ -85,15 +85,15 @@ const FUNCTIONS: [(StaticStrings, TimeFunctions); 18] = [
     (StaticStrings::Strptime, TimeFunctions::Strptime),
 ];
 
-/// Creates the `time` module and allocates it on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `time` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Time, vm.interns);
     for (name, function) in FUNCTIONS {
         module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Time(function)), vm);
     }
     set_zone_constants(&mut module, vm);
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Sets `timezone`, `altzone`, `daylight` and `tzname` from the sandbox zone,

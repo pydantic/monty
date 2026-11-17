@@ -6,8 +6,9 @@
 //!   representation, and borrowing avoids cloning large containers twice.
 //! - **proto → Rust is fallible** (`TryFrom<T>` with [`ProtoConvertError`]):
 //!   wire data comes from the other side of a process boundary and must be
-//!   treated as untrusted — unknown names, out-of-range numbers, and missing
-//!   oneof arms are errors, never panics.
+//!   treated as untrusted — unknown type and builtin names, out-of-range
+//!   numbers, and missing oneof arms are errors, never panics. An unknown
+//!   exception name instead falls back to `Exception` (see `exc_type_from_wire`).
 //!
 //! Values cross as one flat arena per message ([`crate::WireArena`]) with the
 //! message naming its roots by index, so nesting depth is unbounded on the
@@ -23,6 +24,7 @@ mod type_checking;
 
 use std::{error, fmt};
 
+pub(crate) use exception::exc_type_from_wire;
 use monty_types::{
     MontyObject, NamedValues,
     unstable::{self, MontyGraph, NodeId},
@@ -48,8 +50,6 @@ use crate::{
 pub enum ProtoConvertError {
     /// A required message field or oneof was absent.
     MissingField(&'static str),
-    /// An exception type name that monty does not know.
-    UnknownExcType(String),
     /// A type name that monty's `MontyType::from_type_name` does not know.
     UnknownType(String),
     /// A builtin function name that monty does not know.
@@ -71,7 +71,6 @@ impl fmt::Display for ProtoConvertError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingField(field) => write!(f, "missing required field {field}"),
-            Self::UnknownExcType(name) => write!(f, "unknown exception type {name:?}"),
             Self::UnknownType(name) => write!(f, "unknown type name {name:?}"),
             Self::UnknownBuiltinFunction(name) => write!(f, "unknown builtin function {name:?}"),
             Self::InvalidFileMode(mode) => write!(f, "invalid file mode {mode:?}"),

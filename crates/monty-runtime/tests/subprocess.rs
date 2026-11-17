@@ -172,6 +172,8 @@ impl ChildProc {
             values: Some(values),
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         }));
         self.recv_turn()
     }
@@ -217,6 +219,8 @@ impl ChildProc {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         }));
         self.expect_death();
     }
@@ -425,6 +429,8 @@ fn first_feed(code: &str) -> pb::configure::First {
         values: None,
         skip_type_check: false,
         cwd: "/".to_owned(),
+        async_functions: Vec::new().into(),
+        stream_async_calls: false,
     })
 }
 
@@ -1204,23 +1210,29 @@ fn committing_a_deep_gather_nest_reaches_the_soft_limit() {
     }
 }
 
-/// A container built just under the limit and then deep-copied is the shape
-/// that jumps the allocator's headroom in one uninterrupted span: nothing
-/// between entering `deepcopy` and returning re-reads the budget except the
-/// fill loop itself. Sized so the source fits and the copy does not, which
-/// before the destination preflight killed the worker outright
-/// (`allocation of 2621440 bytes exceeds the memory limit`) instead of raising.
+/// A dict that fits under the soft limit must refuse an oversized copy
+/// before allocation can cross the worker's hard ceiling.
 #[test]
-fn deep_copy_of_a_near_limit_dict_raises_rather_than_dying() {
+fn copy_of_a_near_limit_dict_raises_rather_than_dying() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
-    let (_, event) = child.feed("import copy\nd = {i: i for i in range(100_000)}");
+    let (_, event) =
+        child.feed("import copy\nfrom collections import Counter, defaultdict\nd = {i: i for i in range(100_000)}");
     assert!(
         !matches!(event, pb::worker_event::Kind::Error(_)),
         "the source must fit for this to test the copy, got {event:?}"
     );
-    let (_, event) = child.feed("copy.deepcopy(d)");
-    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    for code in [
+        "copy.deepcopy(d)",
+        "d.copy()",
+        "dict(d)",
+        "Counter(d)",
+        "defaultdict(None, d)",
+    ] {
+        let (_, event) = child.feed(code);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("len(d)"), MontyObject::int(100_000));
+    }
     // The session survives, which is the whole point: a hard-limit exit would
     // have taken the worker with it.
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
@@ -1290,9 +1302,11 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "s = 'x' * 200\nd = dict.fromkeys(range(5_000), s)\nlen(repr(d))",
             1_495_358,
         ),
+        // The mapping copy reserves 4,000 entries instead of retaining the
+        // 4,096-entry buffer from incremental insertion, lowering repr's baseline.
         (
             "from collections import Counter\ns = 'x' * 200\nc = Counter({(i, s): 1 for i in range(4_000)})\nlen(repr(c))",
-            1_104_574,
+            1_100_974,
         ),
         (
             "import functools\ns = 'x' * 200\np = functools.partial(print, *([s] * 5_000))\nlen(repr(p))",
@@ -1387,6 +1401,12 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "import random\nrandom.seed(0)\nrandom.sample(range(2**63 - 1), 2**63 - 1)",
             u64::MAX,
         ),
+        // `multimode` of distinct data returns every value, so its result is preflighted; `junk` puts
+        // that result past the limit while the counter and its pairs still fit.
+        (
+            "import statistics\njunk = [None] * 12_000\nstatistics.multimode(range(8_000))",
+            1_096_974,
+        ),
         // `itertools.batched` preflights one batch, capped at `n`.
         (
             "import itertools\nnext(itertools.batched(range(1_000_000), 1_000_000))",
@@ -1434,7 +1454,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // message must still respect the budget.
         (
             "import csv\nclass S:\n    def write(self, t):\n        pass\ntext = 'x' * 400_000\nclass Key:\n    def __repr__(self):\n        return text\nrow = {Key(): None, Key(): None}\ncsv.DictWriter(S(), []).writerow(row)",
-            1_253_825,
+            1_254_895,
         ),
         // `decimal` preflights results whose size scales with an exponent or the
         // precision: an integer conversion, `f` formatting, and division, `sqrt`,
@@ -1561,7 +1581,7 @@ fn expandvars_growth_is_rejected_before_the_hard_limit() {
     let error = expect_error(event);
     assert_eq!(error.exc_type, "MemoryError", "{code}");
     let message = error.message.expect("MemoryError should have a message");
-    assert_reported_usage(&message, 1_372_668, code);
+    assert_reported_usage(&message, 1_374_212, code);
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
     child.shutdown();
 }
@@ -1685,18 +1705,21 @@ for _ in range(2000):
     child.shutdown();
 }
 
-/// `set(s)` and `frozenset(s)` copy a set's storage wholesale, so the whole
-/// copy runs between two execution checkpoints and has to be charged first.
-/// The source is sized as a fraction of the limit: uncharged, one that fits
-/// under the soft limit jumps the hard ceiling and the worker is killed where
-/// a catchable `MemoryError` belongs.
+/// Full set copies preflight entry and index storage while the source remains live.
 #[test]
 fn copying_a_large_set_fails_softly() {
-    for expr in ["set(s)", "frozenset(s)"] {
+    for expr in [
+        "set(s)",
+        "frozenset(s)",
+        "s.copy()",
+        "copy.copy(s)",
+        "s | set()",
+        "s.issubset(s)",
+    ] {
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
         // the source fits; its copy is what crosses the limit
-        child.feed_complete("s = set(range(400_000))");
+        child.feed_complete("import copy\ns = set(range(400_000))");
 
         let (_, event) = child.feed(expr);
         let error = expect_error(event);
@@ -1704,6 +1727,21 @@ fn copying_a_large_set_fails_softly() {
 
         // the session survives, i.e. the copy never reached the hard ceiling
         assert_eq!(child.feed_complete("len(s)"), MontyObject::int(400_000), "{expr}");
+        child.shutdown();
+    }
+}
+
+/// Large set/frozenset updates preflight their snapshot and leave the worker usable after MemoryError.
+#[test]
+fn set_update_snapshot_fails_softly() {
+    for kind in ["set", "frozenset"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
+        child.feed_complete(&format!("s = {kind}(range(400_000))"));
+        let (_, event) = child.feed("set().update(s)");
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{kind}");
+        assert_eq!(child.feed_complete("len(s)"), MontyObject::int(400_000), "{kind}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
         child.shutdown();
     }
 }
@@ -1716,13 +1754,16 @@ fn copying_an_emptied_set_costs_nothing() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
     // grown, then emptied: the entries are gone, the table that indexed them is not
-    child.feed_complete("s = set(range(200_000))\ns.clear()");
+    child.feed_complete("import copy\ns = set(range(200_000))\nfor i in range(200_000):\n    s.remove(i)");
 
-    assert_eq!(
-        child.feed_complete("copies = [set(s) for _ in range(20)]\nlen(copies)"),
-        MontyObject::int(20)
-    );
-    assert_eq!(child.feed_complete("len(copies[0])"), MontyObject::int(0));
+    for expr in ["set(s)", "frozenset(s)", "s.copy()", "copy.copy(s)"] {
+        assert_eq!(
+            child.feed_complete(&format!("copies = [{expr} for _ in range(20)]\nlen(copies)")),
+            MontyObject::int(20),
+            "{expr}"
+        );
+        assert_eq!(child.feed_complete("len(copies[0])"), MontyObject::int(0));
+    }
     child.shutdown();
 }
 
@@ -2776,6 +2817,44 @@ fn type_checked_session_rejects_deep_asts_from_flat_source() {
     child.shutdown();
 }
 
+/// ruff parses a flat chain, or source it recovers from a syntax error in, to
+/// an AST one level deeper per link. Dropping that AST recursed once per level
+/// and overflowed the worker's stack; each feed now ends in a SyntaxError and
+/// the session survives, whether or not the import scan and ty also parse it.
+#[test]
+fn session_survives_asts_too_deep_to_drop() {
+    for type_check in [false, true] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(pb::Configure {
+            type_check,
+            ..configure()
+        });
+
+        for (source, message) in [
+            (
+                format!("import os\nx = 1{}", " + 1".repeat(400_000)),
+                "Source is too deeply nested",
+            ),
+            (
+                format!("{}a", "not a < ".repeat(400_000)),
+                "Source is too deeply nested",
+            ),
+            (
+                "eval('1' + '+1' * 400_000)".to_owned(),
+                "Source is too deeply nested (<string>, line 1)",
+            ),
+        ] {
+            let (_, event) = child.feed(&source);
+            let error = expect_error(event);
+            assert_eq!(error.exc_type, "SyntaxError");
+            assert_eq!(error.message.as_deref(), Some(message));
+        }
+
+        assert_eq!(child.feed_complete("1"), MontyObject::int(1));
+        child.shutdown();
+    }
+}
+
 #[test]
 fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
     let mut child = ChildProc::spawn();
@@ -2933,11 +3012,11 @@ fn reset_isolates_type_check_state_from_the_next_session() {
         };
         assert_eq!(
             probe(format!("from {module} import LEAKY")),
-            format!("b.py:1:6: error[unresolved-import] Cannot resolve imported module `{module}`\n"),
+            format!("b.py:1:6: error[import-not-found] Cannot resolve imported module `{module}`\n"),
         );
         assert_eq!(
             probe("from repl_type_stubs import STUB_SECRET".to_owned()),
-            "b.py:1:6: error[unresolved-import] Cannot resolve imported module `repl_type_stubs`\n",
+            "b.py:1:6: error[import-not-found] Cannot resolve imported module `repl_type_stubs`\n",
         );
         // The new session can still check and execute valid code.
         assert_eq!(child.feed_complete("x: int = 1\nx"), MontyObject::int(1));
@@ -3263,6 +3342,194 @@ fn undeclared_protocol_version_is_a_fatal_error() {
     );
 }
 
+/// Clients below protocol 9 receive only the original sequential byte-write operations.
+#[test]
+fn legacy_binary_writes_remain_sequential() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_protocol_version(8, env!("CARGO_PKG_VERSION")));
+    let (_, event) = child.feed("f = open('/file', 'wb')\nf.write(b'abc')\nf.write(b'def')\nf.tell()");
+    let event = resume_binary_open(&mut child, event);
+    let event = resume_legacy_append(&mut child, event, b"abc");
+    let event = resume_legacy_append(&mut child, event, b"def");
+    assert_eq!(expect_complete(event), MontyObject::int(6));
+    child.shutdown();
+}
+
+/// Unsupported binary update mode fails before the host receives an opening call.
+#[test]
+fn legacy_binary_update_is_rejected_before_open() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_protocol_version(8, env!("CARGO_PKG_VERSION")));
+    for mode in ["w+b", "wb+"] {
+        let (_, event) = child.feed(&format!("open('/file', '{mode}')"));
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "NotImplementedError");
+        assert_eq!(
+            error.message.as_deref(),
+            Some("binary update mode requires positional filesystem writes")
+        );
+    }
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// Rejected overwrites and gaps leave the tracked EOF available for a later append.
+#[test]
+fn legacy_binary_writes_away_from_eof_are_rejected() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_protocol_version(8, env!("CARGO_PKG_VERSION")));
+    let (_, event) = child.feed("f = open('/file', 'wb')\nf.write(b'abc')");
+    let event = resume_binary_open(&mut child, event);
+    let event = resume_legacy_append(&mut child, event, b"abc");
+    assert_eq!(expect_complete(event), MontyObject::int(3));
+    for offset in [0, 100] {
+        let (_, event) = child.feed(&format!("f.seek({offset})\nf.write(b'x')"));
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "NotImplementedError");
+        assert_eq!(
+            error.message.as_deref(),
+            Some("writing away from EOF requires positional filesystem writes")
+        );
+        assert_eq!(child.feed_complete("f.tell()"), MontyObject::int(offset));
+        assert_eq!(child.feed_complete("f.write(b'')"), MontyObject::int(0));
+        assert_eq!(child.feed_complete("f.tell()"), MontyObject::int(offset));
+    }
+    let (_, event) = child.feed("f.seek(3)\nf.write(b'd')");
+    let event = resume_legacy_append(&mut child, event, b"d");
+    assert_eq!(expect_complete(event), MontyObject::int(1));
+    child.shutdown();
+}
+
+#[test]
+fn legacy_binary_write_capability_overrides_loaded_snapshots() {
+    assert_restored_binary_write(9, 8, false);
+    assert_restored_binary_write(9, 8, true);
+}
+
+#[test]
+fn modern_binary_write_capability_overrides_loaded_snapshots() {
+    assert_restored_binary_write(8, 9, false);
+    assert_restored_binary_write(8, 9, true);
+}
+
+/// A legacy client must never receive a new operation re-emitted by Load.
+#[test]
+fn legacy_hosts_refuse_snapshots_pending_positional_file_io() {
+    for code in ["open('/file', 'w+b')", "open('/file', 'wb').write(b'x')"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl();
+        let (_, mut event) = child.feed(code);
+        if code.contains("'wb'") {
+            event = resume_binary_open(&mut child, event);
+        }
+        assert!(matches!(event, pb::worker_event::Kind::OsCall(_)));
+        child.send(pb::client_request::Kind::Dump(pb::Dump {}));
+        let pb::worker_event::Kind::DumpResult(dump) = child.recv() else {
+            panic!("expected DumpResult");
+        };
+        child.shutdown();
+        let mut fresh = ChildProc::spawn();
+        fresh.create_repl_with(configure_with_protocol_version(8, env!("CARGO_PKG_VERSION")));
+        fresh.send(pb::client_request::Kind::Load(pb::Load { state: dump.state }));
+        let error = expect_error(fresh.recv());
+        assert!(
+            error
+                .message
+                .unwrap()
+                .contains("snapshot requires positional filesystem writes")
+        );
+        assert_eq!(fresh.feed_complete("1 + 1"), MontyObject::int(2));
+        fresh.shutdown();
+    }
+}
+
+/// Services only the legacy Open request; the host returns no native descriptor.
+fn resume_binary_open(child: &mut ChildProc, event: pb::worker_event::Kind) -> pb::worker_event::Kind {
+    let pb::worker_event::Kind::OsCall(call) = event else {
+        panic!("expected Open, got {event:?}");
+    };
+    assert!(matches!(&call.call, Some(pb::os_call::Call::Open(args)) if args.mode == "wb"));
+    let (_, event) = child.resume_return(
+        call.call_id,
+        MontyObject::file_handle(MontyFileHandle {
+            path: "/file".to_owned(),
+            mode: FileMode::Write(true),
+            position: 0,
+        }),
+    );
+    event
+}
+
+/// A legacy-only host rejects every operation other than AppendBytes here.
+fn resume_legacy_append(
+    child: &mut ChildProc,
+    event: pb::worker_event::Kind,
+    expected: &[u8],
+) -> pb::worker_event::Kind {
+    let pb::worker_event::Kind::OsCall(call) = event else {
+        panic!("expected AppendBytes, got {event:?}");
+    };
+    let Some(pb::os_call::Call::AppendBytes(args)) = &call.call else {
+        panic!("expected AppendBytes, got {call:?}");
+    };
+    assert_eq!(args.path, "/file");
+    assert_eq!(args.data.as_slice(), expected);
+    child
+        .resume_return(call.call_id, MontyObject::int(i64::try_from(expected.len()).unwrap()))
+        .1
+}
+
+/// Both idle sessions and suspended executors adopt the restoring host's capability.
+fn assert_restored_binary_write(producer: u32, consumer: u32, suspended: bool) {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_protocol_version(producer, env!("CARGO_PKG_VERSION")));
+    let code = if suspended {
+        "f = open('/file', 'wb')\ncheckpoint()\nf.write(b'abc')"
+    } else {
+        "f = open('/file', 'wb')"
+    };
+    let (_, event) = child.feed(code);
+    let event = resume_binary_open(&mut child, event);
+    assert!(if suspended {
+        matches!(event, pb::worker_event::Kind::FunctionCall(_))
+    } else {
+        matches!(event, pb::worker_event::Kind::Complete(_))
+    });
+    child.send(pb::client_request::Kind::Dump(pb::Dump {}));
+    let pb::worker_event::Kind::DumpResult(dump) = child.recv() else {
+        panic!("expected DumpResult");
+    };
+    child.shutdown();
+    let mut fresh = ChildProc::spawn();
+    fresh.create_repl_with(configure_with_protocol_version(consumer, env!("CARGO_PKG_VERSION")));
+    fresh.send(pb::client_request::Kind::Load(pb::Load { state: dump.state }));
+    let event = fresh.recv();
+    let event = if suspended {
+        let pb::worker_event::Kind::FunctionCall(call) = event else {
+            panic!("expected checkpoint")
+        };
+        fresh.resume_return(call.call_id, MontyObject::none()).1
+    } else {
+        assert!(matches!(event, pb::worker_event::Kind::Ok(_)));
+        fresh.feed("f.write(b'abc')").1
+    };
+    let event = if consumer < 9 {
+        resume_legacy_append(&mut fresh, event, b"abc")
+    } else {
+        let pb::worker_event::Kind::OsCall(call) = event else {
+            panic!("expected WriteBytesAt")
+        };
+        let Some(pb::os_call::Call::WriteBytesAt(args)) = &call.call else {
+            panic!("expected WriteBytesAt")
+        };
+        assert_eq!(args.offset, 0);
+        assert_eq!(args.data.as_slice(), b"abc");
+        fresh.resume_return(call.call_id, MontyObject::int(3)).1
+    };
+    assert_eq!(expect_complete(event), MontyObject::int(3));
+    fresh.shutdown();
+}
+
 /// The oldest served version still works: the point of a bump is to refuse a
 /// peer that would silently drop a field, not to close the migration window on
 /// clients that never send one.
@@ -3327,6 +3594,8 @@ fn killed_worker_is_detected_as_eof() {
         values: None,
         skip_type_check: false,
         cwd: "/".to_owned(),
+        async_functions: Vec::new().into(),
+        stream_async_calls: false,
     }));
     thread::sleep(Duration::from_millis(200));
     child.child.kill().expect("kill");

@@ -28,7 +28,7 @@ use crate::{
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource_checks::check_estimated_size,
     types::{
-        LazyHeapSet, List, PyTrait, ReMatch, Type, allocate_tuple, re_syntax,
+        LazyHeapSet, List, PyTrait, ReMatch, Type, TypeRef, allocate_tuple, re_syntax,
         str::{allocate_string, string_repr_fmt},
         tuple::TupleVec,
     },
@@ -514,8 +514,8 @@ fn allocate_tuple_list(flat: &[&str], groups: usize, heap: &Heap) -> RunResult<V
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::RePattern
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::RePattern.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

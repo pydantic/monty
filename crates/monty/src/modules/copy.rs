@@ -33,15 +33,15 @@ const COPY_FUNCTIONS: &[(StaticStrings, CopyFunctions)] = &[
     (StaticStrings::Deepcopy, CopyFunctions::Deepcopy),
 ];
 
-/// Creates the `copy` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `copy` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Copy, vm.interns);
 
     for (name, func) in COPY_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Copy(*func)), vm);
     }
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `copy` module function.
@@ -117,7 +117,7 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
                 release_on_error(Value::Ref(copy_id), filled, vm)
             }
             HeapReadOutput::Set(set) => {
-                let copy = set.copy(vm);
+                let copy = set.copy(vm)?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Set(copy))))
             }
             HeapReadOutput::Deque(deque) => {
@@ -296,7 +296,9 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::DecimalContext(_) => Copyability::Rebuilt,
         // A shallow copy of an immutable container holds the same items, so
         // CPython hands back the original; only `deepcopy` rebuilds these.
-        HeapReadOutput::Tuple(_) | HeapReadOutput::FrozenSet(_) => Copyability::ImmutableContainer,
+        HeapReadOutput::Tuple(_) | HeapReadOutput::FrozenSet(_) => {
+            Copyability::ImmutableContainer
+        }
         // CPython's cache wrappers share their state through both copy operations.
         HeapReadOutput::LruCache(_) => Copyability::Shared,
         // Leaves and immutable containers Monty can never mutate, so a copy

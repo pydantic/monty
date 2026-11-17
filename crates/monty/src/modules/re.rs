@@ -40,11 +40,11 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData},
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
-        BoundedCompileError, BuiltinType, Module, RePattern, Type,
+        BoundedCompileError, Module, RePattern, Type,
         re_pattern::{extract_count, extract_maxsplit, translate_replacement},
         str::allocate_string,
     },
@@ -88,9 +88,9 @@ pub(crate) enum ReFunctions {
     Escape,
 }
 
-/// Allocates the `re` module — every [`ReFunctions`] variant plus the flag
-/// constants — and returns its `HeapId`.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `re` module: every [`ReFunctions`] variant plus the flag
+/// constants.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Re, vm.interns);
 
     // Functions
@@ -154,29 +154,29 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     // Exception types
     module.set_attr(
         StaticStrings::PatternError,
-        Value::Builtin(Builtins::ExcType(ExcType::RePatternError)),
+        Value::Builtin(Builtins::Type(Type::RePatternError)),
         vm,
     );
     // `re.error` is the historical alias for `re.PatternError` (still widely used)
     module.set_attr(
         StaticStrings::Error,
-        Value::Builtin(Builtins::ExcType(ExcType::RePatternError)),
+        Value::Builtin(Builtins::Type(Type::RePatternError)),
         vm,
     );
 
     // Constructed types
     module.set_attr(
         StaticStrings::PatternClass,
-        Value::Builtin(Builtins::Type(BuiltinType::RePattern)),
+        Value::Builtin(Builtins::Type(Type::RePattern)),
         vm,
     );
     module.set_attr(
         StaticStrings::MatchClass,
-        Value::Builtin(Builtins::Type(BuiltinType::ReMatch)),
+        Value::Builtin(Builtins::Type(Type::ReMatch)),
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `re` module function. Always `CallResult::Value` — regex

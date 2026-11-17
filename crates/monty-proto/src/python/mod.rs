@@ -26,7 +26,7 @@ pub use class_instance::{
     InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy, is_class_instance_wrapper, is_class_type_wrapper,
     uuid_to_py,
 };
-pub use convert::{PyMontyFileHandle, get_docstring, py_type_object_to_monty};
+pub use convert::{CoroutineFunctionExt, PyMontyFileHandle, get_docstring, py_type_object_to_monty};
 pub use decode::{DecodedArena, monty_to_py};
 pub use encode::{GraphEncoder, py_to_monty, py_to_monty_value};
 pub use exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_node};

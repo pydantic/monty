@@ -4,8 +4,8 @@
 //! state machine). Reads framed [`pb::ClientRequest`]s from stdin and writes
 //! the [`pb::WorkerEvent`]s the worker emits to stdout (see `monty-proto` for the
 //! schema and protocol rules). The worker is strictly turn-based: one request
-//! in, zero or more streamed `Print` events out, then exactly one turn-ending
-//! event.
+//! in, zero or more streamed `Print` and `StreamedCalls` events out, then
+//! exactly one turn-ending event.
 //!
 //! Crash isolation is the entire point of this mode: the client must treat a
 //! worker that exits (or EOFs) *without* a `FatalError` event as crashed —

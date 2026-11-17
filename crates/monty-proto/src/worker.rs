@@ -7,8 +7,8 @@
 //! difference between transports is the sink and how requests are read.
 //!
 //! The worker is strictly turn-based: one request in, zero or more streamed
-//! `Print` events out, then exactly one turn-ending event (see `monty-proto`
-//! for the schema and protocol rules).
+//! `Print` and `StreamedCalls` events out, then exactly one turn-ending event
+//! (see `monty-proto` for the schema and protocol rules).
 //!
 //! Crash isolation is the entire point: a host must treat a worker that exits
 //! (or EOFs) *without* a `FatalError` event as crashed — stack overflows and
@@ -18,6 +18,7 @@
 
 use std::{
     borrow::Cow,
+    collections::HashSet,
     mem,
     time::{Duration, Instant},
 };
@@ -40,6 +41,11 @@ use super::{
     import_stubs_from_answer, named_values_from_proto, os_call_from_proto, os_call_to_proto, pb, write_frame,
 };
 use crate::{convert::limits::micros_field, wire::uuid_to_pb};
+
+/// First client protocol version that can service `OsCall.write_bytes_at`.
+///
+/// Older clients still get sequential `wb` writes through the original write/append calls.
+const POSITIONAL_WRITES_PROTOCOL_VERSION: u32 = 9;
 
 /// A sink for framed [`pb::WorkerEvent`]s, decoupling the worker from its
 /// transport.
@@ -219,7 +225,7 @@ struct PendingFeed {
 ///
 /// Drive it by reading framed [`pb::ClientRequest`]s from the host transport
 /// and passing each to [`Self::handle`] along with an [`EventSink`]; the worker
-/// streams `Print` events and one turn-ending event per request.
+/// streams `Print` and `StreamedCalls` events and one turn-ending event per request.
 pub struct Worker {
     state: SessionState,
     /// Script name of the current session (used for error and type-check
@@ -235,8 +241,21 @@ pub struct Worker {
     print_flush_interval: Duration,
     /// The session's `OsPolicy` from `Configure`, applied when creating the REPL or restoring one by `Load`.
     os_policy: OsPolicy,
+    /// Set for clients below [`POSITIONAL_WRITES_PROTOCOL_VERSION`], which cannot handle positional binary writes.
+    legacy_binary_writes: bool,
     /// Host module stubs received through `import_stubs` or restored by `Load`.
     module_stubs: Vec<ModuleStub>,
+    /// The client set `Configure.accepts_streamed_calls`, so calls to async host
+    /// functions stream as `StreamedCalls` instead of suspending.
+    accepts_streamed_calls: bool,
+    /// The current feed's `Feed.stream_async_calls`; started calls also need `accepts_streamed_calls`.
+    feed_streams_async_calls: bool,
+    /// The current feed's `Feed.async_functions`: calls to these names start
+    /// like calls to an async host function value. Replaced by every `Feed`.
+    feed_async_functions: HashSet<String>,
+    /// Calls this session has started without suspending, held under
+    /// `max_suspensions` as the client holds its suspension count.
+    calls_streamed: usize,
 }
 
 impl Default for Worker {
@@ -248,13 +267,18 @@ impl Default for Worker {
             type_check: None,
             print_flush_interval: DEFAULT_PRINT_FLUSH_INTERVAL,
             os_policy: OsPolicy::default(),
+            legacy_binary_writes: false,
             module_stubs: Vec::new(),
+            accepts_streamed_calls: false,
+            feed_streams_async_calls: false,
+            feed_async_functions: HashSet::new(),
+            calls_streamed: 0,
         }
     }
 }
 
 impl Worker {
-    /// Handles one request: streams any `Print` events and emits exactly one
+    /// Handles one request: streams any mid-turn events and emits exactly one
     /// turn-ending event through `sink`, then reports what the host loop should
     /// do next. `Err` means the sink is broken (for stdout, the client is
     /// gone).
@@ -484,6 +508,8 @@ impl Worker {
             self.print_flush_interval = configure
                 .print_flush_interval_ms
                 .map_or(DEFAULT_PRINT_FLUSH_INTERVAL, |ms| Duration::from_millis(u64::from(ms)));
+            // Also a delivery setting: a `Load` after this `Configure` gets it too.
+            self.accepts_streamed_calls = configure.accepts_streamed_calls;
             if let Some(clock) = configure.execution_clock {
                 let Ok(clock) = pb::ExecutionClock::try_from(clock) else {
                     return session_refused("invalid execution_clock");
@@ -505,6 +531,7 @@ impl Worker {
                 return session_refused("invalid type_check_stubs: Source is too deeply nested");
             }
             let clock = configure.execution_clock.unwrap_or(pb::ExecutionClock::Wall as i32);
+            self.legacy_binary_writes = configure.protocol_version < POSITIONAL_WRITES_PROTOCOL_VERSION;
             self.state = SessionState::Configured(Some(Box::new(configure)));
             let mut event = ok_event();
             event.execution_clock = Some(clock);
@@ -576,6 +603,8 @@ impl Worker {
             persistence: _,
             // a relay's concern; the worker has no profiles
             profile: _,
+            // applied when the `Configure` arrived, so a `Load` honors it too
+            accepts_streamed_calls: _,
             // taken and run when the `Configure` arrived
             first: _,
         } = *config;
@@ -598,7 +627,7 @@ impl Worker {
             // Not on the wire: every host gets the default.
             source_scan_threshold: SOURCE_SCAN_THRESHOLD,
         };
-        let repl = MontyRepl::new(
+        let mut repl = MontyRepl::new(
             &self.script_name,
             ResourceTracker::new(limits).with_execution_clock(
                 pb::ExecutionClock::try_from(execution_clock.unwrap_or_default())
@@ -608,6 +637,7 @@ impl Worker {
             options,
         )
         .with_os_policy(self.os_policy.clone());
+        repl.set_legacy_binary_writes(self.legacy_binary_writes);
         self.state = SessionState::Ready(Box::new(repl));
         Ok(())
     }
@@ -627,6 +657,8 @@ impl Worker {
         let SessionState::Ready(mut repl) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked Ready above");
         };
+        self.feed_streams_async_calls = feed.stream_async_calls;
+        self.feed_async_functions = feed.async_functions.into_inner().into_iter().collect();
         // Check nesting before the import scan, ty or the compiler parses the snippet.
         let code = feed.code;
         let checked = match repl.check_source(&code) {
@@ -645,6 +677,12 @@ impl Worker {
         // the caller explicitly excluded them from checking, so later snippets
         // must not be checked against their (unchecked) bindings either
         let type_checked = !feed.skip_type_check && self.type_check.is_some();
+        // The import scan and ty both parse the snippet and recurse through its AST unguarded.
+        // `check_source` already ran the lexer scan, so only the AST walk is left.
+        if type_checked && let Err(error) = type_check_nesting_exception(&code, &self.script_name, usize::MAX) {
+            self.state = SessionState::Ready(repl);
+            return error_event_from(&error);
+        }
         if type_checked && let Some(state) = &mut self.type_check {
             let imports = scan_imports(&code);
             state.pending_snippet = Some(code.clone());
@@ -703,7 +741,7 @@ impl Worker {
         }
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let result = repl.feed_start_checked(checked, inputs, PrintWriter::Callback(&mut print));
-        let event = self.drive(result);
+        let event = self.drive(result, &mut print);
         print.drain();
         event
     }
@@ -849,7 +887,7 @@ impl Worker {
             ReplProgress::OsCall(call) => call.resume(result, PrintWriter::Callback(&mut print)),
             _ => unreachable!("checked above"),
         };
-        let event = self.drive(outcome);
+        let event = self.drive(outcome, &mut print);
         print.drain();
         event
     }
@@ -875,7 +913,7 @@ impl Worker {
         };
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let outcome = lookup.resume(result, PrintWriter::Callback(&mut print));
-        let event = self.drive(outcome);
+        let event = self.drive(outcome, &mut print);
         print.drain();
         event
     }
@@ -910,7 +948,7 @@ impl Worker {
             ReplProgress::ResolveFutures(state) => state.abort(exc, PrintWriter::Callback(&mut print)),
             ReplProgress::Complete { .. } => unreachable!("checked above"),
         };
-        let event = self.drive(outcome);
+        let event = self.drive(outcome, &mut print);
         print.drain();
         event
     }
@@ -954,7 +992,7 @@ impl Worker {
             }
             _ => unreachable!("reply shaped by the suspension above"),
         };
-        let event = self.drive(outcome);
+        let event = self.drive(outcome, &mut print);
         print.drain();
         event
     }
@@ -1026,6 +1064,13 @@ impl Worker {
         if tracker.is_some_and(|tracker| tracker.execution_clock() != clock) {
             return protocol_violation("snapshot execution clock differs from Configure");
         }
+        if self.legacy_binary_writes
+            && let Session::Suspended(progress) = &state
+            && let ReplProgress::OsCall(call) = progress.as_ref()
+            && requires_positional_writes(&call.function_call)
+        {
+            return protocol_violation("snapshot requires positional filesystem writes");
+        }
         // Retain snapshot clocks and stricter limits across both idle and suspended restores.
         // The checkout's `OsPolicy` replaces the dump's: the policy is the restoring host's
         // authority over the clock, zone, sleeps and entropy, not session state.
@@ -1033,10 +1078,12 @@ impl Worker {
             Session::Idle(repl) => {
                 repl.tracker_mut().tighten_limits(&limits);
                 repl.set_os_policy(self.os_policy.clone());
+                repl.set_legacy_binary_writes(self.legacy_binary_writes);
             }
             Session::Suspended(progress) => {
                 progress.tracker_mut().tighten_limits(&limits);
                 progress.set_os_policy(self.os_policy.clone());
+                progress.set_legacy_binary_writes(self.legacy_binary_writes);
             }
             Session::Running(_) => {}
         }
@@ -1085,8 +1132,29 @@ impl Worker {
     }
 
     /// Runs until a turn-ending event. OS calls not answered by `OsPolicy`
-    /// go to the client, including all filesystem I/O.
-    fn drive(&mut self, result: Result<ReplProgress, Box<ReplStartError>>) -> pb::WorkerEvent {
+    /// go to the client, including all filesystem I/O. Calls to async host
+    /// functions stream through `print` and continue (see [`start_call`]).
+    fn drive(
+        &mut self,
+        mut result: Result<ReplProgress, Box<ReplStartError>>,
+        print: &mut ProtoPrint<'_>,
+    ) -> pb::WorkerEvent {
+        let result = loop {
+            let starts = match &result {
+                Ok(progress @ ReplProgress::FunctionCall(call)) => {
+                    self.starts_without_waiting(call, progress.tracker())
+                }
+                _ => false,
+            };
+            if !starts {
+                break result;
+            }
+            let Ok(ReplProgress::FunctionCall(call)) = result else {
+                unreachable!("checked above")
+            };
+            self.calls_streamed += 1;
+            result = start_call(call, print);
+        };
         match result {
             Ok(ReplProgress::Complete { repl, value }) => {
                 self.state = SessionState::Ready(Box::new(repl));
@@ -1149,6 +1217,23 @@ impl Worker {
         }
     }
 
+    /// Whether `call` streams as a started call: the client accepts them in
+    /// this feed, the callee is an async host function value or a name the feed declared,
+    /// the call is not awaited at once and the session has started fewer calls than `max_suspensions`.
+    ///
+    /// An immediate `await` with nothing else to run gains nothing from starting,
+    /// so it suspends for the host to answer eagerly, costing one suspension, not two.
+    ///
+    /// Past the limit the call suspends instead, so the client's suspension
+    /// budget aborts the feed: a loop of started calls never suspends otherwise.
+    fn starts_without_waiting(&self, call: &monty::ReplFunctionCall, tracker: &ResourceTracker) -> bool {
+        self.accepts_streamed_calls
+            && self.feed_streams_async_calls
+            && !call.allow_eager_await
+            && self.calls_streamed < tracker.max_suspensions()
+            && (call.is_async || (call.object_id.is_none() && self.feed_async_functions.contains(&call.function_name)))
+    }
+
     /// Ends the current feed with a runtime error while keeping the REPL usable.
     fn abort_feed_with_runtime_error(&mut self, repl: MontyRepl, message: &str) -> pb::WorkerEvent {
         self.state = SessionState::Ready(Box::new(repl));
@@ -1159,12 +1244,6 @@ impl Worker {
     /// Checks against accumulated stubs and imports, returning an event on failure.
     fn type_check_feed(&mut self, code: &str) -> Option<pb::WorkerEvent> {
         let state = self.type_check.as_ref()?;
-        // `check_source` already ran the lexer scan, so only the AST walk is left.
-        if let Err(error) = type_check_nesting_exception(code, &self.script_name, usize::MAX) {
-            return Some(event(pb::worker_event::Kind::Error(pb::Error {
-                exception: Some((&error).into()),
-            })));
-        }
         let stubs =
             (!state.committed_stubs.is_empty()).then(|| SourceFile::new(&state.committed_stubs, "repl_type_stubs.pyi"));
         let context = TypeCheckContext {
@@ -1193,6 +1272,10 @@ impl Worker {
         self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;
         self.os_policy = OsPolicy::default();
         self.module_stubs = Vec::new();
+        self.accepts_streamed_calls = false;
+        self.feed_streams_async_calls = false;
+        self.feed_async_functions.clear();
+        self.calls_streamed = 0;
     }
 }
 
@@ -1203,6 +1286,16 @@ fn event(kind: pb::worker_event::Kind) -> pb::WorkerEvent {
     pb::WorkerEvent {
         kind: Some(kind),
         ..Default::default()
+    }
+}
+
+/// Whether re-emitting a suspended call requires a positional-write-capable host.
+fn requires_positional_writes(call: &OsFunctionCall) -> bool {
+    match call {
+        OsFunctionCall::WriteBytesAt(_) => true,
+        OsFunctionCall::Open(args) => args.mode.is_binary() && args.mode.readable() && args.mode.writable(),
+        OsFunctionCall::CreateExclusive(args) => args.mode.is_binary() && args.mode.readable() && args.mode.writable(),
+        _ => false,
     }
 }
 
@@ -1311,6 +1404,38 @@ fn suspension_event_function_call(call: &mut monty::ReplFunctionCall) -> pb::Wor
     )))
 }
 
+/// Streams a call to an async host function as `StreamedCalls` and resumes it
+/// with a pending future, without waiting for the client.
+///
+/// A call that cannot be sent (its frame is oversize, or the sink failed)
+/// raises `RuntimeError` at the call site instead: the client never saw it,
+/// so no future could ever settle.
+fn start_call(
+    mut call: monty::ReplFunctionCall,
+    print: &mut ProtoPrint<'_>,
+) -> Result<ReplProgress, Box<ReplStartError>> {
+    let wire = WireFunctionCall::new(
+        call.function_name.clone(),
+        mem::take(&mut call.args),
+        call.call_id,
+        call.object_id,
+        false,
+        call.position.clone(),
+    );
+    let event = event(pb::worker_event::Kind::StreamedCalls(pb::StreamedCalls {
+        calls: vec![wire].into(),
+    }));
+    let sent = match oversize_suspension_error_message(&event) {
+        Some(message) => Err(MontyException::new(ExcType::RuntimeError, Some(message))),
+        None => print.send_event(&event),
+    };
+    match sent {
+        // the sandbox never suspended, so the same turn's execution clock keeps running
+        Ok(()) => call.resume_pending_in_turn(PrintWriter::Callback(print)),
+        Err(exc) => call.resume_in_turn(ExtFunctionResult::Error(exc), PrintWriter::Callback(print)),
+    }
+}
+
 /// Builds the suspension event for an `OsCall`, **moving** the call payload
 /// into it — see
 /// [`suspension_event_function_call`] for why, and
@@ -1374,7 +1499,8 @@ fn eager_result(
 }
 
 /// Streams sandbox `print()` output as `Print` events through an
-/// [`EventSink`].
+/// [`EventSink`], along with the other mid-turn events (`StreamedCalls`),
+/// which flush the buffer first so output and calls keep their order.
 ///
 /// Debounced: a frame is written once the buffer reaches
 /// [`Self::FLUSH_BYTES`] or its oldest byte has waited out `interval`, so the
@@ -1459,6 +1585,18 @@ impl<'a> ProtoPrint<'a> {
             .iter()
             .enumerate()
             .find_map(|(index, segment)| segment.text.find('\n').map(|at| (index, at + 1)))
+    }
+
+    /// Sends a mid-turn event after any buffered output, so output and the
+    /// event keep the order the sandbox produced them in.
+    fn send_event(&mut self, event: &pb::WorkerEvent) -> Result<(), MontyException> {
+        self.flush()?;
+        self.sink.send(event).map_err(|err| {
+            MontyException::new(
+                ExcType::RuntimeError,
+                Some(format!("failed to send call to host: {err}")),
+            )
+        })
     }
 
     /// Sends `segments` as one `Print` event.

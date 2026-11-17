@@ -10,7 +10,9 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use super::LazyHeapSet;
+use smallvec::smallvec;
+
+use super::{LazyHeapSet, allocate_tuple};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -19,7 +21,7 @@ use crate::{
     hash::HashValue,
     heap::{HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{PyTrait, Type},
+    types::{PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
 };
 
@@ -234,8 +236,8 @@ fn normalize_index(index: i64, length: i64, lower: i64, upper: i64) -> i64 {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Slice> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Slice
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Slice.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -280,6 +282,29 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Slice> {
             Some(StaticStrings::Stop) => Ok(Some(CallResult::Value(option_i64_to_value(this.stop)))),
             Some(StaticStrings::Step) => Ok(Some(CallResult::Value(option_i64_to_value(this.step)))),
             _ => Ok(None),
+        }
+    }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::Indices) => {
+                let args = args.reject_kwargs("slice.indices", vm.heap)?;
+                let len_val = args.get_one_arg("slice.indices", vm.heap)?;
+                defer_drop!(len_val, vm);
+                let index = len_val.saturating_index(vm)?;
+                if index < 0 {
+                    return Err(ExcType::value_error("length should not be negative"));
+                }
+                let len_usize = usize::try_from(index).unwrap_or(usize::MAX);
+                let this = self.get(vm.heap);
+                let (start, stop, step) = this.indices(len_usize)?;
+                let tuple = allocate_tuple(
+                    smallvec![Value::Int(start), Value::Int(stop), Value::Int(step)],
+                    vm.heap,
+                );
+                Ok(CallResult::Value(tuple))
+            }
+            _ => Err(ExcType::attribute_error_method(Type::Slice, attr, args, vm)),
         }
     }
 }

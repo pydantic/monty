@@ -25,6 +25,8 @@ fn feed() -> pb::ClientRequest {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         })),
         trace_parent: None,
     }

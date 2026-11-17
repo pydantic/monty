@@ -32,11 +32,14 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`
 - `with` statements, for files and for classes implementing `__enter__` / `__exit__`
+- Binary write/update files (`open(path, 'w+b')`); other update modes remain unsupported.
+    See [open.md](open.md) for file buffering and method limitations.
 - `match` statements with every PEP 634 pattern kind and guards, see [match.md](match.md)
 - f-strings (including the `=` debug form), `str.format()` and `format()`, with `!r` / `!s` / `!a` conversions,
     format specs and nested replacement fields
 - `async` / `await`, and `asyncio.run` / `asyncio.gather` / `asyncio.sleep`
-- `import x`, `import x.y`, `from x import y, z as w`; a module the sandbox does not have is requested from the host,
+- `import x`, `import x.y`, `from x import y, z as w`, `from x import *` (see
+    [modules.md](modules.md#star-imports)); a module the sandbox does not have is requested from the host,
     see [modules.md](modules.md#host-modules), which may answer with the module's `.py` file from the working
     directory instead, see [modules from files](modules.md#modules-from-files)
 - Starred unpacking everywhere CPython allows it
@@ -44,7 +47,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 **Rejected at parse time**, with `NotImplementedError` before any code runs:
 
-- Class inheritance and metaclasses (`class Foo(Bar):`)
+- Metaclasses (`class Foo(metaclass=M):`)
 - Decorators on methods — so no `@classmethod`, `@staticmethod`, `@property`
 - `yield` / `yield from` — there are no generator functions.
     Generator *expressions* parse, but currently materialise to a `list`
@@ -52,17 +55,16 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `try*` / `except*` exception groups
 - PEP 695 `type` aliases
 - `async with`, `async for` and async comprehensions
-- Wildcard imports (`from m import *`)
 - t-strings
 
 **Missing in other ways:**
 
-- User-defined exception classes.
-    The built-in exception types are a fixed set, and without inheritance you cannot add to it.
+- User-defined exception classes, and subclasses of other native types.
+    Classes inherit only from classes defined in Python and `object`, so the built-in exception types are a fixed set.
 - Function attributes.
     `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so
     `functools.wraps`-style metadata copying and registries keyed on `fn.__name__` have no equivalent.
-- `compile`, `globals`, `__import__` and `super` — all raise `NameError`.
+- `compile`, `globals` and `__import__` — all raise `NameError`.
     `eval` and `exec` exist (source text only), and so does `locals()`; see [eval_exec.md](eval_exec.md).
 - Third-party packages.
     There is no `sys.path` and no site-packages.
@@ -96,6 +98,7 @@ The following modules are present:
 | `posixpath`     | [os.md](os.md)                       |
 | `random`        | [random.md](random.md)               |
 | `re`            | [re.md](re.md)                       |
+| `statistics`    | [statistics.md](statistics.md)       |
 | `sys`           | [sys.md](sys.md)                     |
 | `time`          | [time.md](time.md)                   |
 | `tomllib`       | [tomllib.md](tomllib.md)             |

@@ -16,8 +16,8 @@ endif
 
 .PHONY: install-py
 install-py: .uv ## Install python dependencies
-	# --only-dev avoids building the python packages; --inexact preserves builds installed by make dev-py
-	uv sync --all-packages --only-dev --inexact
+	# --only-group avoids building the python packages; --inexact preserves builds installed by make dev-py
+	uv sync --all-packages --only-group dev --only-group grpc --inexact
 
 .PHONY: install-js
 install-js: ## Install JS package dependencies
@@ -67,11 +67,16 @@ test-js: build-js ## Test the JS package (builds the monty binary the workers ru
 build-wasm: install-js ## Build the WASI 0.2 worker component (requires the wasm32-wasip1 target)
 	cd crates/monty-js && npm run build:wasm && npm run build:ts
 
+WASM_GENERATED_SOURCES := \
+	crates/monty-js/ts/worker/component \
+	crates/monty-js/ts/worker/componentModules.ts \
+	crates/monty-js/ts/worker/loadModule.browser.ts
+
 .PHONY: check-wasm-types
-check-wasm-types: build-wasm ## Verify checked-in component declarations match the WIT interface
-	git diff --exit-code -- crates/monty-js/ts/worker/component
-	@untracked=$$(git ls-files --others --exclude-standard -- crates/monty-js/ts/worker/component); \
-		test -z "$$untracked" || { echo "Untracked generated component declarations:"; echo "$$untracked"; exit 1; }
+check-wasm-types: build-wasm ## Verify checked-in component declarations and asset loaders match Jco output
+	git diff --exit-code -- $(WASM_GENERATED_SOURCES)
+	@untracked=$$(git ls-files --others --exclude-standard -- $(WASM_GENERATED_SOURCES)); \
+		test -z "$$untracked" || { echo "Untracked generated component files:"; echo "$$untracked"; exit 1; }
 	@# the published `dist` has to type-check for a strict consumer, and the
 	@# build cannot see that because it compiles from `ts`
 	cd crates/monty-js && npm run check:dist-types

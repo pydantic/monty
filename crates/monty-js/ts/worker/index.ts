@@ -20,7 +20,7 @@ export async function createWorkerPool(modules: ComponentModules, options: WasmP
   if (typeof Worker === 'undefined') {
     throw new Error('Monty requires Web Workers; in Node, import @pydantic/monty/wasm using the node export condition')
   }
-  const factory = browserWorkerFactory(modules, workerChannelOptions(options), options.workerUrl)
+  const factory = browserWorkerFactory(modules, workerChannelOptions(options), options.workerUrl, options.createWorker)
   return createWorkerPoolFromFactory(factory, options, globalThis.navigator?.hardwareConcurrency || 4)
 }
 

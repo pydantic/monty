@@ -36,7 +36,6 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::{check_mult_size, check_product_size},
@@ -45,6 +44,7 @@ use crate::{
 };
 
 mod aggregate;
+pub(crate) use aggregate::{fsum, sumprod};
 
 // ==========================
 // Shared constants and error helpers
@@ -183,12 +183,12 @@ pub(crate) enum MathFunctions {
     Fma,
 }
 
-/// Creates the `math` module and allocates it on the heap.
+/// Creates the `math` module.
 ///
 /// Registers all math functions and constants (`pi`, `e`, `tau`, `inf`, `nan`)
 /// matching CPython's `math` module. Functions are registered as
 /// `ModuleFunctions::Math` variants.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Math, vm.interns);
 
     // Register all math functions
@@ -203,7 +203,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     module.set_attr(StaticStrings::MathInf, Value::Float(f64::INFINITY), vm);
     module.set_attr(StaticStrings::MathNan, Value::Float(f64::NAN), vm);
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Static mapping of attribute names to math functions for module creation.
@@ -438,7 +438,7 @@ fn math_isqrt(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let n = value_to_bigint(value, vm)?;
     if n.is_negative() {
-        Err(SimpleException::new_msg(ExcType::ValueError, "isqrt() argument must be nonnegative").into())
+        Err(ExcType::isqrt_negative_error())
     } else if let Some(n) = n.to_i64() {
         Ok(Value::Int(isqrt_i64(n)))
     } else {
