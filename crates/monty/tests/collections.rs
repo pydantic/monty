@@ -17,7 +17,9 @@ use std::time::Duration;
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyObject, MontyType, PrintWriter, ResourceLimits, ResourceTracker};
+use monty_types::{
+    CompileOptions, ExcType, ExecutionClock, MontyObject, MontyType, PrintWriter, ResourceLimits, ResourceTracker,
+};
 
 /// Runs `from collections import <name>` and returns the raised exception.
 fn import_err(name: &str) -> monty_types::MontyException {
@@ -199,7 +201,9 @@ fn ordereddict_front_operations_are_amortized_constant() {
         let mut ex =
             MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
         let limits = ResourceLimits::default().max_feed_duration(Duration::from_secs(5));
-        let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+        // CPU time where the platform has it, so load from other tests cannot trip the limit.
+        let tracker = ResourceTracker::new(limits).with_execution_clock(ExecutionClock::Cpu);
+        let result = ex.run(vec![], tracker, PrintWriter::Stdout);
         assert!(result.is_ok(), "{code}: {result:?}");
     }
 }
