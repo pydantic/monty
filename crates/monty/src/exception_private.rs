@@ -18,7 +18,7 @@ use crate::{
     py_value::PyValue,
     source_map::{SourceMap, StackFrameExt},
     types::{
-        PyTrait, Type, allocate_tuple,
+        PyTrait, Type, TypeRef, allocate_tuple,
         long_int::INT_MAX_STR_DIGITS,
         str::{StringRepr, allocate_string, string_repr_fmt},
     },
@@ -110,14 +110,16 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates an AttributeError for a missing module attribute.
     ///
-    /// Matches CPython's format: `AttributeError: module 'name' has no attribute 'attr'`
+    /// Matches CPython's format: `AttributeError: module 'name' has no attribute 'attr'`,
+    /// or `module has no attribute 'attr'` when `__name__` is not a `str`.
     /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
     #[must_use]
-    fn attribute_error_module(module_name: &str, attr_name: &str) -> RunError {
-        let exc = SimpleException::new_msg(
-            ExcType::AttributeError,
-            format!("module '{module_name}' has no attribute '{attr_name}'"),
-        );
+    fn attribute_error_module(module_name: Option<&str>, attr_name: &str) -> RunError {
+        let msg = match module_name {
+            Some(module_name) => format!("module '{module_name}' has no attribute '{attr_name}'"),
+            None => format!("module has no attribute '{attr_name}'"),
+        };
+        let exc = SimpleException::new_msg(ExcType::AttributeError, msg);
         RunError::Exc(ExceptionRaise {
             exc,
             frame: None,
@@ -174,6 +176,25 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn isinstance_parameterized_generic() -> RunError {
         Self::type_error("isinstance() argument 2 cannot be a parameterized generic")
+    }
+
+    /// Creates the TypeError `issubclass()` raises for a `types.GenericAlias`
+    /// second argument.
+    #[must_use]
+    fn issubclass_parameterized_generic() -> RunError {
+        Self::type_error("issubclass() argument 2 cannot be a parameterized generic")
+    }
+
+    /// Creates the TypeError `issubclass()` raises when its first argument is not a class.
+    #[must_use]
+    fn issubclass_arg1_error() -> RunError {
+        Self::type_error("issubclass() arg 1 must be a class")
+    }
+
+    /// Creates the TypeError `issubclass()` raises for an invalid second argument.
+    #[must_use]
+    fn issubclass_arg2_error() -> RunError {
+        Self::type_error("issubclass() arg 2 must be a class, a tuple of classes, or a union")
     }
 
     /// Creates the TypeError `typing.get_type_hints()` raises for an object that
@@ -1425,6 +1446,14 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, "negative count").into()
     }
 
+    /// Creates a ValueError when an integer in a bytes iterable is outside 0..=255.
+    ///
+    /// Matches CPython's format: `ValueError: bytes must be in range(0, 256)`
+    #[must_use]
+    fn value_error_bytes_range() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "bytes must be in range(0, 256)").into()
+    }
+
     /// Creates the `ValueError` CPython's float-to-string conversion raises for a
     /// precision above `MAX_FLOAT_PRECISION` (`INT_MAX - 1024`).
     ///
@@ -1835,6 +1864,71 @@ pub(crate) trait ExcTypeExt: Sized {
         ))
     }
 
+    /// The `TypeError` for a non-`str` name `from module import *` would bind:
+    /// an item of `__all__`, or a key of the module's namespace without one.
+    /// Like every star-import error, CPython shows it without carets.
+    #[must_use]
+    fn import_star_name_type(module_name: &str, from_all: bool, type_name: &str) -> RunError {
+        let source = if from_all { "Item in" } else { "Key in" };
+        let container = if from_all { "__all__" } else { "__dict__" };
+        without_caret(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{source} {module_name}.{container} must be str, not {type_name}"),
+        ))
+    }
+
+    /// The `TypeError` for a module `__all__` that is not a sequence (see
+    /// [`sequence_index_error`](Self::sequence_index_error)), shown without carets.
+    #[must_use]
+    fn import_star_all_not_sequence(error: SimpleException) -> RunError {
+        without_caret(error)
+    }
+
+    /// The `TypeError` for a non-`str` name `from module import *` would bind,
+    /// when the module has set `__name__` to a non-`str`.
+    #[must_use]
+    fn import_star_module_name_type(type_name: &str) -> RunError {
+        without_caret(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("module __name__ must be a string, not {type_name}"),
+        ))
+    }
+
+    /// CPython's `PySequence_GetItem` `TypeError` for a built-in value it
+    /// cannot index, or `None` when its type has `sq_item`. Mappings are "not
+    /// a sequence". `Counter` indexes since, being a Python subclass of
+    /// `dict` in CPython, it gains `sq_item`. Instances are the caller's to check.
+    #[must_use]
+    fn sequence_index_error(value: &Value, vm: &VM<'_>) -> Option<SimpleException> {
+        match value.py_type(vm).native() {
+            Some(
+                Type::List
+                | Type::Tuple
+                | Type::NamedTuple
+                | Type::Str
+                | Type::Bytes
+                | Type::Range
+                | Type::Deque
+                | Type::Counter,
+            ) => None,
+            Some(Type::Dict | Type::DefaultDict) => Some(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("{} is not a sequence", value.py_type_name(vm)),
+            )),
+            _ => Some(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("'{}' object does not support indexing", value.py_type_name(vm)),
+            )),
+        }
+    }
+
+    /// The `ImportError` for `from x import *` when the import produced a value
+    /// that is not a module, so has no namespace to list.
+    #[must_use]
+    fn import_star_without_namespace() -> RunError {
+        import_error_without_caret("from-import-* object has no __dict__ and no __all__".to_owned())
+    }
+
     /// Creates a ValueError when an integer is too large to convert to a decimal string.
     ///
     /// Matches CPython 3.11+'s `sys.int_max_str_digits` error message.
@@ -1976,12 +2070,12 @@ pub(crate) trait ExcTypeExt: Sized {
     /// For other cases, uses the generic format:
     /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
     #[must_use]
-    fn binary_type_error(op: &str, lhs_type: Type, lhs_name: impl Display, rhs_name: impl Display) -> RunError {
-        let message = if (op == "+" || op == "+=") && matches!(lhs_type, Type::Deque) {
+    fn binary_type_error(op: &str, lhs_type: TypeRef, lhs_name: impl Display, rhs_name: impl Display) -> RunError {
+        let message = if (op == "+" || op == "+=") && lhs_type == Type::Deque {
             // CPython hardcodes the bare "deque" here even though tp_name is the
             // qualified "collections.deque", so this can't share the branch below.
             format!("can only concatenate deque (not \"{rhs_name}\") to deque")
-        } else if (op == "+" || op == "+=") && matches!(lhs_type, Type::Str | Type::List) {
+        } else if (op == "+" || op == "+=") && matches!(lhs_type.native(), Some(Type::Str | Type::List)) {
             format!("can only concatenate {lhs_name} (not \"{rhs_name}\") to {lhs_name}")
         } else {
             format!("unsupported operand type(s) for {op}: '{lhs_name}' and '{rhs_name}'")
@@ -2661,6 +2755,13 @@ pub(crate) trait ExcTypeExt: Sized {
     }
 }
 
+/// The constructor of every native exception class, for the native type table.
+pub(crate) fn exc_new(ty: Type, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    ty.exc_type()
+        .expect("exception types carry their ExcType")
+        .call(vm, args)
+}
+
 impl ExcTypeExt for ExcType {
     /// Allocates an exception for constructors like `ValueError('message')`.
     /// Currently supports zero or one string argument.
@@ -2872,8 +2973,8 @@ impl SimpleException {
 }
 
 impl<'h> HeapRead<'h, SimpleException> {
-    pub(crate) fn py_type(&self, vm: &VM<'h>) -> Type {
-        Type::Exception(self.get(vm.heap).exc_type)
+    pub(crate) fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        Type::from(self.get(vm.heap).exc_type).into()
     }
 
     /// Gets an attribute from this exception: `args` (a tuple of the message, if
@@ -3204,8 +3305,13 @@ fn no_module_named(module_name: &str) -> String {
 
 /// An `ImportError` shown without carets, as CPython shows import errors.
 fn import_error_without_caret(msg: String) -> RunError {
+    without_caret(SimpleException::new_msg(ExcType::ImportError, msg))
+}
+
+/// Raises `exc` with its traceback line shown without carets.
+fn without_caret(exc: SimpleException) -> RunError {
     RunError::Exc(ExceptionRaise {
-        exc: SimpleException::new_msg(ExcType::ImportError, msg),
+        exc,
         frame: None,
         snippet_frame: None,
         hide_caret: true,

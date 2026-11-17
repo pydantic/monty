@@ -66,7 +66,6 @@ pub enum BuiltinsFunctions {
     // Input,
     // int - handled by Type enum
     Isinstance,
-    // Issubclass,
     // Iter - handled by Type enum
     Len,
     // list - handled by Type enum
@@ -93,7 +92,7 @@ pub enum BuiltinsFunctions {
     // Staticmethod,
     // str - handled by Type enum
     Sum,
-    // Super,
+    // super - handled by Type enum
     // tuple - handled by Type enum
     Type,
     // Vars,
@@ -119,4 +118,22 @@ pub enum BuiltinsFunctions {
     Exec,
     /// `locals()`, appended after [`Self::Exec`].
     Locals,
+    /// `issubclass(class, classinfo)`, appended after [`Self::Locals`].
+    Issubclass,
+    /// `object.__new__(cls, /, *args, **kwargs)`, reached through `object` or `super()`.
+    #[strum(serialize = "object.__new__")]
+    #[serde(rename = "object.__new__")]
+    ObjectNew,
+    /// `object.__init__(self, /, *args, **kwargs)`, reached through `object` or `super()`.
+    #[strum(serialize = "object.__init__")]
+    #[serde(rename = "object.__init__")]
+    ObjectInit,
+    /// `object.__init_subclass__(cls, /, **kwargs)`, run after a class statement.
+    #[strum(serialize = "object.__init_subclass__")]
+    #[serde(rename = "object.__init_subclass__")]
+    ObjectInitSubclass,
+    /// `type.mro(cls, /)`, a class's method resolution order as a list.
+    #[strum(serialize = "type.mro")]
+    #[serde(rename = "type.mro")]
+    TypeMro,
 }

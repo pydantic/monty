@@ -18,7 +18,7 @@ use monty_types::{
     unstable::{self, MontyGraph, NodeId},
 };
 use ruff_python_ast::token::TokenKind;
-use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
+use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, Mode, ParseErrorType};
 
 use crate::{
     args::{ArgValues, KwargsValues},
@@ -35,7 +35,7 @@ use crate::{
         ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
         resume_lookup, resume_with_result,
     },
-    source_nesting::source_within_nesting_bound,
+    source_nesting::{parse_shallow, source_within_nesting_bound},
     types::{SessionRandom, tuple::allocate_tuple},
     value::Value,
     virtual_path::canonical_cwd,
@@ -82,6 +82,9 @@ pub struct MontyRepl {
     /// OS-call policies shared with each snippet's executor.
     /// See [`with_os_policy`](Self::with_os_policy).
     os_policy: Arc<OsPolicy>,
+    /// Host capability for binary file writes; replaced by the restoring host on load.
+    #[serde(default)]
+    legacy_binary_writes: bool,
     /// Sandbox working directory the next snippet starts in: what
     /// [`set_cwd`](Self::set_cwd) chose, then whatever `os.chdir` left the
     /// last snippet in — the directory is session state, like the globals.
@@ -130,6 +133,7 @@ impl MontyRepl {
             sources: AHashMap::new(),
             options,
             os_policy: Arc::new(OsPolicy::default()),
+            legacy_binary_writes: false,
             cwd: Arc::from(DEFAULT_CWD),
             random: SessionRandom::default(),
             modules: ModuleCache::default(),
@@ -167,6 +171,11 @@ impl MontyRepl {
     pub fn with_os_policy(mut self, os_policy: OsPolicy) -> Self {
         self.set_os_policy(os_policy);
         self
+    }
+
+    /// Selects write/append-only file I/O for a host without positional writes.
+    pub fn set_legacy_binary_writes(&mut self, legacy: bool) {
+        self.legacy_binary_writes = legacy;
     }
 
     /// Replaces the session's OS-call policies in place, for a host restoring
@@ -274,6 +283,7 @@ impl MontyRepl {
             script_name: &this.script_name,
             cwd: &this.cwd,
             os_policy: &this.os_policy,
+            legacy_binary_writes: this.legacy_binary_writes,
             future_annotations: this.future_annotations,
         };
         let mut executor = match Executor::new_repl_snippet(
@@ -384,6 +394,7 @@ impl MontyRepl {
             script_name: &self.script_name,
             cwd: &self.cwd,
             os_policy: &self.os_policy,
+            legacy_binary_writes: self.legacy_binary_writes,
             future_annotations: self.future_annotations,
         };
         let mut executor = Executor::new_repl_snippet(
@@ -502,6 +513,7 @@ impl MontyRepl {
                 script_name: &self.script_name,
                 cwd: &self.cwd,
                 os_policy: &self.os_policy,
+                legacy_binary_writes: self.legacy_binary_writes,
                 future_annotations: self.future_annotations,
             },
         )?;
@@ -826,6 +838,17 @@ impl ReplProgress {
         }
     }
 
+    /// Applies the restoring host's binary-write capability to every resumed execution path.
+    pub fn set_legacy_binary_writes(&mut self, legacy: bool) {
+        match self {
+            Self::FunctionCall(call) => call.snapshot.set_legacy_binary_writes(legacy),
+            Self::OsCall(call) => call.snapshot.set_legacy_binary_writes(legacy),
+            Self::ResolveFutures(state) => state.set_legacy_binary_writes(legacy),
+            Self::NameLookup(lookup) => lookup.snapshot.set_legacy_binary_writes(legacy),
+            Self::Complete { repl, .. } => repl.set_legacy_binary_writes(legacy),
+        }
+    }
+
     /// Replaces the OS-call policies of the session and of a suspended snippet.
     ///
     /// A dump carries the policy it was taken under; hosts restoring it call this
@@ -1139,6 +1162,12 @@ pub struct ReplResolveFutures {
 }
 
 impl ReplResolveFutures {
+    /// Updates both the session and its suspended snippet.
+    fn set_legacy_binary_writes(&mut self, legacy: bool) {
+        self.repl.legacy_binary_writes = legacy;
+        self.executor.program.legacy_binary_writes = legacy;
+    }
+
     /// Points the session and the blocked snippet's program at `os_policy`,
     /// as [`ReplSnapshot`] does for the other suspensions.
     fn set_os_policy(&mut self, os_policy: Arc<OsPolicy>) {
@@ -1309,7 +1338,11 @@ pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
     if !source_within_nesting_bound(source, SOURCE_SCAN_THRESHOLD) {
         return ReplContinuationMode::Complete;
     }
-    let Err(error) = parse_module(source) else {
+    // Complete for the same reason when its AST is too deep to drop.
+    let Ok(parsed) = parse_shallow(source, Mode::Module) else {
+        return ReplContinuationMode::Complete;
+    };
+    let Some(error) = parsed.errors().first() else {
         return ReplContinuationMode::Complete;
     };
     let error_is_at_end = error.location.is_empty() && error.location.start().to_usize() == source.len();
@@ -1317,7 +1350,7 @@ pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
         .get(error.location.start().to_usize()..error.location.end().to_usize())
         .unwrap_or_default();
 
-    match error.error {
+    match &error.error {
         ParseErrorType::OtherError(msg) => {
             if msg.starts_with("Expected an indented block after ") {
                 ReplContinuationMode::IncompleteBlock
@@ -1426,6 +1459,12 @@ pub(crate) struct ReplSnapshot {
 }
 
 impl ReplSnapshot {
+    /// Updates both the session and its suspended snippet.
+    fn set_legacy_binary_writes(&mut self, legacy: bool) {
+        self.repl.legacy_binary_writes = legacy;
+        self.executor.program.legacy_binary_writes = legacy;
+    }
+
     /// Points both the session and the suspended snippet's program at `os_policy`,
     /// which a resumed VM reads from the program.
     fn set_os_policy(&mut self, os_policy: Arc<OsPolicy>) {

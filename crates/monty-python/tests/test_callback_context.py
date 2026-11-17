@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -89,7 +90,17 @@ assert request.get() == 'outside'
     )
 
 
-@pytest.mark.parametrize('transport', ['subprocess', 'remote'])
+@pytest.mark.parametrize(
+    'transport',
+    [
+        'subprocess',
+        # the relay needs grpcio, from the `grpc` dependency group that free-threaded CI skips
+        pytest.param(
+            'remote',
+            marks=pytest.mark.skipif(importlib.util.find_spec('grpc') is None, reason='grpcio is not installed'),
+        ),
+    ],
+)
 def test_callback_contexts(transport: str):
     subprocess.run(
         [

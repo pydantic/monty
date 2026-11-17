@@ -191,7 +191,9 @@ impl Decimal {
                 ctx.division_by_zero(sign)
             });
         }
-        Ok(self.divide(other, ctx)?.0)
+
+        // An exact integer quotient still needs exponent checks and clamping.
+        self.divide(other, ctx)?.0.fix(ctx)
     }
 
     /// `self % other` (`__mod__`, `Context.remainder`): the remainder takes the
@@ -237,7 +239,7 @@ impl Decimal {
             });
         }
         let (quotient, remainder) = self.divide(other, ctx)?;
-        Ok((quotient, remainder.fix(ctx)?))
+        Ok((quotient.fix(ctx)?, remainder.fix(ctx)?))
     }
 
     /// `remainder_near(other)`: the remainder of rounding the quotient to the

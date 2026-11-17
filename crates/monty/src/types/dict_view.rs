@@ -10,7 +10,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     types::{
-        Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, allocate_tuple,
+        Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, TypeRef, allocate_tuple,
         dict::{DictItemIterator, DictKeyIterator, DictValueIterator},
         iter::checked_preallocation_hint,
     },
@@ -152,8 +152,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictKeysView> {
         dict.contains_key(item, vm).map(Some)
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::DictKeys
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::DictKeys.into()
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -353,8 +353,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictItemsView> {
         self.set_like(vm).contains(item, vm).map(Some)
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::DictItems
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::DictItems.into()
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -499,8 +499,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictValuesView> {
         Ok(Some(false))
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::DictValues
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::DictValues.into()
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {

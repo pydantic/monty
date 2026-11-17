@@ -2,6 +2,8 @@
 
 ## Installation
 
+Requires Node.js 22.18 or later when running under Node.
+
 ```bash
 npm install @pydantic/monty
 ```
