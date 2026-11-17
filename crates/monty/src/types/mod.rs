@@ -27,6 +27,7 @@ pub mod host_class;
 pub mod instance;
 pub mod iter;
 pub mod itertools;
+pub(crate) mod key_hash;
 pub mod list;
 pub mod long_int;
 pub mod lru_cache;
