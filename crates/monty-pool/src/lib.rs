@@ -279,8 +279,8 @@ pub enum PoolError {
     /// transport only — the local analogue is [`Self::Crashed`]). The sandbox
     /// may have died, the connection may have dropped, or the server may have
     /// ended the session by policy — in which case `remote` carries the
-    /// status (or WebSocket close code) it ended with and, when the server
-    /// named one, the cause.
+    /// status it ended with (a WebSocket close code mapped onto a gRPC code)
+    /// and, when the server named one, the cause.
     /// Neither says whether the request ran: a disconnect is not a verdict on
     /// it, so it is not replayed.
     Disconnected {

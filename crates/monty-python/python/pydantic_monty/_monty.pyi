@@ -628,7 +628,7 @@ class MontyRefusedError(MontyError):
     `status_message` and `cause`. No session existed,
     so nothing ran. `retryable` identifies temporary refusals. A WebSocket
     server refuses with an HTTP status, read as gRPC's HTTP mapping does
-    (401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 429/503 `UNAVAILABLE`),
+    (401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 429/502/503/504 `UNAVAILABLE`),
     and an optional `monty-cause` header. A server that could not be reached,
     that answered with any other status (such as `UNIMPLEMENTED` from a URL
     that is no Monty server), or that is no Monty server at all (such as a web

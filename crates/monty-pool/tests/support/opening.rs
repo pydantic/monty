@@ -38,9 +38,10 @@ impl Opening {
             Some(pb::configure::First::Load(load)) => pb::client_request::Kind::Load(load),
             None => return message,
         };
+        // as the worker reads it, the trace context belongs to the first request
         let first = pb::ClientRequest {
             kind: Some(first),
-            ..pb::ClientRequest::default()
+            trace_parent: request.trace_parent.take(),
         };
         self.request = Some(encode_to_capped_vec(&first).expect("encode request").into());
         self.awaiting_reply = true;

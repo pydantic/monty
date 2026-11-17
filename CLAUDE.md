@@ -181,10 +181,11 @@ subprocesses:
     Without it the worker refuses type-checked sessions; `monty-wasm-runtime --no-default-features` builds that way.
     The remote transport is gRPC for `http(s)://` URLs and WebSocket for `ws(s)://` ones (`monty-pool`'s
     `remote/{grpc,websocket}.rs`, sharing `RemoteWorker`); the WebSocket refusal and close-code contract is in the
-    `monty-proto` README, with each `monty_proto::Cause` pinned to a close code.
+    `monty-proto` README, with each `monty_proto::Cause` pinned to a close code. `Cause` is ungated, shared by
+    both transports; a server names it in a `monty-cause` trailer (gRPC) or header (a refused upgrade).
     Its `grpc` feature (`monty_proto::grpc`, enabled by `monty-pool`) holds the gRPC transport's vocabulary:
-    the `MontySession.Session` path, the opaque-bytes codec, and `Cause`, the `monty-cause` trailer a server ends a
-    stream with. The remote transport is one HTTP/2 connection per pool and one bidirectional stream per session,
+    the `MontySession.Session` path and the opaque-bytes codec, plus `Cause`'s gRPC status mapping.
+    The gRPC transport is one HTTP/2 connection per pool and one bidirectional stream per session,
     carrying the same messages with no length prefix; a server sends its response headers as soon as it admits a
     stream (the client sends nothing until it sees them), refuses one with a trailers-only status, and probes
     liveness with in-band `Ping` events the client's transport answers with `Pong` (HTTP/2 PING frames are

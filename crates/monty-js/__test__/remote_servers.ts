@@ -137,6 +137,8 @@ export async function serveWebSocket(
 export function websocketRelay(socket: WebSocket): void {
   const child = new ChildFrames()
   socket.on('message', (data: Buffer) => child.send(data))
+  // without a listener, `ws` rethrows a socket error and crashes the test process
+  socket.on('error', () => child.kill())
   socket.on('close', () => {
     child.endInput()
     child.kill()

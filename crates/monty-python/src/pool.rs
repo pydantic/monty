@@ -688,8 +688,9 @@ pub struct PyAsyncMontyRemote {
 
 #[pymethods]
 impl PyAsyncMontyRemote {
-    /// Creates the pool configuration; the connection is made by the first
-    /// checkout (no workers are pre-warmed).
+    /// Creates the pool configuration; nothing connects here. `__aenter__`
+    /// opens `pre_warm` sessions (in the background without `pre_warm_wait`),
+    /// otherwise the first checkout dials.
     ///
     /// `request_timeout` is the per-turn deadline in seconds (default 10.0): a
     /// server that admits the stream but never answers would otherwise leave

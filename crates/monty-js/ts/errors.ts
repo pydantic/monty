@@ -292,9 +292,10 @@ export interface RefusalDetails {
  * nothing ran. `retryable` identifies temporary refusals; `retryAfter` is
  * the server's suggested delay, not an automatic retry. A WebSocket server
  * refuses with an HTTP status (401 `UNAUTHENTICATED`, 403 `PERMISSION_DENIED`,
- * 429/503 `UNAVAILABLE`) and an optional `monty-cause` header. A server that
+ * 429/502/503/504 `UNAVAILABLE`) and an optional `monty-cause` header. A server that
  * cannot be reached, that answers with any other status (such as
- * `UNIMPLEMENTED` from a URL that is no Monty server, or a 404 upgrade), or
+ * `UNIMPLEMENTED` from a URL that is no Monty server, or a 404 upgrade with
+ * no known `monty-cause` header), or
  * that is no Monty server at all (a web server's error page), rejects with
  * `MontyConnectError` instead.
  */

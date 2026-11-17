@@ -27,6 +27,9 @@ ignores it.
 [`MontyRefusedError`][pydantic_monty.MontyRefusedError] means the server refused to open the session: at
 capacity, with no worker to serve it, or rejecting the caller; its `status_code`, `status_message` and `cause` say
 why, and no session existed.
+Over WebSocket, a refused upgrade's HTTP status maps onto `status_code` as gRPC's HTTP mapping does (401
+`UNAUTHENTICATED`, 403 `PERMISSION_DENIED`, 429, 502, 503 and 504 `UNAVAILABLE`), and a `monty-cause` header names the
+`cause`.
 `retryable` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not for credential errors.
 `retry_after` is the suggested delay in seconds from `Retry-After`, capped at one hour, or `None` if absent or invalid.
 The client accepts delay-seconds and HTTP dates but does not retry automatically.
@@ -103,8 +106,6 @@ If the server ended the session with a gRPC status, `status_code` holds its cano
 message.
 Over WebSocket, the server's Close frame is mapped onto the same fields: each `cause` below has its own close code
 (4000 to 4010), and the frame's reason becomes `status_message`.
-A refused upgrade's HTTP status maps onto `status_code` as gRPC's HTTP mapping does (401 `UNAUTHENTICATED`, 403
-`PERMISSION_DENIED`, 429 and 503 `UNAVAILABLE`), with `cause` from a `monty-cause` header.
 A `monty-server` names why in `cause`: `idle_timeout`, `session_timeout`, `turn_timeout`, `out_of_memory`,
 `server_shutdown`, `capacity`, `caller_cap`, `unauthenticated`, `permission_denied`, `worker_unavailable` or
 `protocol_violation`.
