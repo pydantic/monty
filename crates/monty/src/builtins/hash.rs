@@ -1,8 +1,7 @@
 //! Implementation of the hash() builtin function.
 
 use crate::{
-    args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, types::unhashable::plain_hash,
-    value::Value,
+    args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, types::key_hash::plain_hash, value::Value,
 };
 
 /// Implementation of the hash() builtin function.

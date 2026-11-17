@@ -23,7 +23,7 @@ use crate::{
     resource_checks::check_repeat_size,
     sorting::{py_eq_item, py_lt, sort_indices, sort_indices_by},
     types::{
-        Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder, unhashable::plain_hash,
+        Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, key_hash::plain_hash, py_trait::CmpOrder,
     },
     value::{VALUE_SIZE, Value},
 };

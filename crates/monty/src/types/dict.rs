@@ -38,7 +38,7 @@ use crate::{
             CloneTableEntry, Live, PyHashTable, Slot, TableCursor, TableEntry, TableProbe, TableScan, TableSource,
             TableWalk,
         },
-        unhashable::dict_key_hash,
+        key_hash::dict_key_hash,
     },
     value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };

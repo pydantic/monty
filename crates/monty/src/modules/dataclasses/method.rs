@@ -28,9 +28,9 @@ use crate::{
         LazyHeapSet, PyTrait, Type, TypeRef,
         host_class::write_dataclass_repr,
         instance::{class_dunder, class_name, instance_attr},
+        key_hash::plain_hash,
         py_trait::PyObjectIdentity,
         str::allocate_string,
-        unhashable::plain_hash,
     },
     value::Value,
 };

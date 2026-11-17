@@ -24,8 +24,8 @@ use crate::{
     types::{
         Dict, LazyHeapSet, NamedTuple, PyTrait, Type, TypeRef,
         hash_table::{PyHashTable, Slot, TableEntry, TableProbe, TableSource},
+        key_hash::plain_hash,
         tuple::{TupleVec, allocate_tuple},
-        unhashable::plain_hash,
     },
     value::{EitherStr, Value},
 };

@@ -34,9 +34,9 @@ use crate::{
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef, Union,
         instance::class_name,
+        key_hash::hash_or_culprit,
         list::repr_should_truncate,
         tuple::{TupleVec, allocate_tuple},
-        unhashable::hash_or_culprit,
     },
     value::{EitherStr, Marker, VALUE_SIZE, Value},
 };

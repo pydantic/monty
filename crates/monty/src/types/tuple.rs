@@ -38,9 +38,9 @@ use crate::{
     resource_checks::{check_repeat_size, repeated_len},
     types::{
         LazyHeapSet, Type, TypeRef,
+        key_hash::hash_or_culprit,
         list::repr_sequence_fmt,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
-        unhashable::hash_or_culprit,
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
