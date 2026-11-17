@@ -1094,3 +1094,16 @@ try:
     assert False, 'replace with oversized count should raise OverflowError'
 except OverflowError as exc:
     assert str(exc) == 'Python int too large to convert to C ssize_t'
+
+# 5. Invalid count type check (must keep plain __index__ integer wording):
+try:
+    'a'.replace('a', 'b', 'x')
+    assert False, 'replace with non-int count should raise TypeError'
+except TypeError as exc:
+    assert str(exc) == "'str' object cannot be interpreted as an integer"
+
+try:
+    'a'.replace('a', 'b', count='x')
+    assert False, 'replace with non-int count kwarg should raise TypeError'
+except TypeError as exc:
+    assert str(exc) == "'str' object cannot be interpreted as an integer"

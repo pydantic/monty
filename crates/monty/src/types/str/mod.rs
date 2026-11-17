@@ -19,11 +19,11 @@ use super::{
     unicode_type_data::TypeRecord,
 };
 use crate::{
-    args::{ArgValues, FromArgs, StrArg},
+    args::{ArgValues, FromArgs, FromValue, FromValueFail, StrArg},
     bytecode::{CallResult, VM},
     codecs::Codec,
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, hash_python_str},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapObjectRead},
     identity::Identity,
@@ -1598,6 +1598,7 @@ fn str_replace<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult
     let old = old.as_str(vm);
     let new = new.as_str(vm);
     let s = s.as_str(vm);
+    let count = count.0;
 
     check_replace_size(s.len(), old.len(), new.len(), count as i64, &vm.heap.tracker)?;
 
@@ -1610,6 +1611,25 @@ fn str_replace<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult
     };
 
     Ok(allocate_string(result, vm.heap))
+}
+
+/// Wrapper for `count` in `str.replace`: converts an index integer without
+/// `_PyArg_BadArgument` wording (`EXPECTED_TYPE_NAME = None`), preserving
+/// CPython's `'str' object cannot be interpreted as an integer`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReplaceCount(isize);
+
+impl FromValue for ReplaceCount {
+    const EXPECTED_TYPE_NAME: Option<&'static str> = None;
+
+    #[inline]
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        isize::from_value(value, vm).map(Self)
+    }
+
+    fn type_error(got: &str) -> RunError {
+        isize::type_error(got)
+    }
 }
 
 /// Argument shape for `str.replace(old, new, count=-1)`.
@@ -1626,8 +1646,8 @@ struct ReplaceArgs {
     old: StrArg,
     #[from_args(pos_only)]
     new: StrArg,
-    #[from_args(default = -1)]
-    count: isize,
+    #[from_args(default = ReplaceCount(-1))]
+    count: ReplaceCount,
 }
 
 /// Implements Python's `str.center(width, fillchar?)` method.
