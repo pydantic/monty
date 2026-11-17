@@ -1,6 +1,6 @@
 //! Unary, binary and in-place operation helpers for the VM.
 
-use super::VM;
+use super::{SLOW_BINARY_UNITS, VM};
 use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -273,6 +273,7 @@ impl VM<'_> {
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
+        this.charge_slow_operands(lhs, rhs);
 
         let result = operation(lhs, rhs, this)?;
         this.push(result);
@@ -298,6 +299,7 @@ impl VM<'_> {
         // reclaims the left operand to push it back onto the stack.
         let mut lhs_guard = DropGuard::new(this.pop(), this);
         let (lhs, this) = lhs_guard.as_parts_mut();
+        this.charge_slow_operands(lhs, rhs);
 
         if inplace(lhs, rhs, this)? {
             let (lhs, this) = lhs_guard.into_parts();
@@ -307,6 +309,15 @@ impl VM<'_> {
             let result = binary(lhs, rhs, this)?;
             this.push(result);
             Ok(())
+        }
+    }
+
+    /// Charges the work clock for an operator applied to anything but two small numbers, whose
+    /// operators (`**`, `&`, shifts) reach the generic path at an ordinary instruction's cost.
+    fn charge_slow_operands(&self, lhs: &Value, rhs: &Value) {
+        let small = |value: &Value| matches!(value, Value::Int(_) | Value::Float(_) | Value::Bool(_));
+        if !(small(lhs) && small(rhs)) {
+            self.heap.tracker.charge_work(SLOW_BINARY_UNITS);
         }
     }
 }

@@ -28,6 +28,9 @@ use crate::{
 /// Work-clock units for resolving and binding a method on an instance, beyond the call itself.
 const METHOD_CALL_UNITS: u64 = 14;
 
+/// Work-clock units for allocating a bound method, beyond the attribute load that asked for it.
+const BOUND_METHOD_UNITS: u64 = 14;
+
 /// An instance of a user-defined class.
 ///
 /// Holds a reference to its [`Class`](super::Class) (whose `HeapId` is the type
@@ -101,6 +104,7 @@ pub(crate) struct BoundMethod {
 impl BoundMethod {
     /// Allocates `func` bound to `instance`, taking both references.
     pub(crate) fn allocate(instance: Value, func: Value, heap: &Heap) -> Value {
+        heap.tracker.charge_work(BOUND_METHOD_UNITS);
         Value::Ref(heap.allocate(HeapData::BoundMethod(Self { instance, func })))
     }
 }

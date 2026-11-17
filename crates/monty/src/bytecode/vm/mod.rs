@@ -88,6 +88,17 @@ const CHECK_INTERVAL: u8 = u8::MAX;
 /// Work-clock units for resolving a builtin by name, which a load of an unassigned global does.
 const BUILTIN_LOOKUP_UNITS: u64 = 8;
 
+/// Work-clock units for calling a heap callable (a closure, a function with defaults, a class,
+/// a bound method), beyond the call instruction: it dispatches on the type and binds more state.
+const HEAP_CALLABLE_UNITS: u64 = 12;
+
+/// Work-clock units for a binary operator neither operand of which is a small number: it
+/// dispatches on the operand types and usually allocates its result.
+const SLOW_BINARY_UNITS: u64 = 12;
+
+/// Work-clock units for a comparison of operands that are not both small numbers.
+const SLOW_COMPARE_UNITS: u64 = 8;
+
 /// Work-clock units for each item a `BuildDict` or `BuildSet` hashes and inserts.
 const HASHED_ITEM_UNITS: u32 = 8;
 

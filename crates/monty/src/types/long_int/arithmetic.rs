@@ -178,6 +178,7 @@ pub(super) trait IntArithmetic {
                 } else {
                     check_pow_size(
                         u64::from(64 - base.unsigned_abs().leading_zeros()),
+                        u64::from(base.trailing_zeros()),
                         u64::from(exp),
                         &vm.heap.tracker,
                     )?;

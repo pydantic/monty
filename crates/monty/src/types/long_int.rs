@@ -34,7 +34,8 @@ use crate::{
     identity::Identity,
     intern::{LongIntId, StaticStrings},
     resource_checks::{
-        bigint_limbs, charge_bigint_products, check_div_size, check_lshift_size, check_mult_size, check_pow_size,
+        bigint_limbs, charge_bigint_products, charge_decimal_write, check_div_size, check_lshift_size, check_mult_size,
+        check_pow_size, multiplication_products,
     },
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
@@ -494,17 +495,10 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
     }
 }
 
-/// Charges the work clock for writing `value` in decimal, which is quadratic: about three
-/// multiplications of the value by itself.
-fn charge_decimal_conversion(value: &BigInt, tracker: &ResourceTracker) {
-    let limbs = bigint_limbs(value.bits());
-    charge_bigint_products(limbs.saturating_mul(limbs).saturating_mul(3), tracker);
-}
-
 /// Formats large integers consistently across interned and heap storage.
 fn bigint_repr_fmt(value: &BigInt, f: &mut impl Write, tracker: &ResourceTracker) -> RunResult<()> {
     check_bigint_str_digits_limit(value)?;
-    charge_decimal_conversion(value, tracker);
+    charge_decimal_write(value.bits(), tracker);
     Ok(write!(f, "{value}")?)
 }
 
@@ -886,7 +880,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let value = self.get(vm.heap);
         value.check_str_digits_limit()?;
-        charge_decimal_conversion(value.inner(), &vm.heap.tracker);
+        charge_decimal_write(value.inner().bits(), &vm.heap.tracker);
         Ok(allocate_string(value.to_string(), vm.heap))
     }
 
@@ -1120,7 +1114,7 @@ pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, vm: 
     charge_bigint_products(
         exponent
             .bits()
-            .saturating_mul(limbs.saturating_mul(limbs))
+            .saturating_mul(multiplication_products(limbs, limbs))
             .saturating_mul(3),
         &heap.tracker,
     );
@@ -1176,7 +1170,7 @@ fn long_int_pow_value(base: &BigInt, exponent: &BigInt, heap: &Heap) -> RunResul
     } else if *base == BigInt::from(-1) {
         Ok(Some(Value::Int(if (exponent % 2i32).is_zero() { 1 } else { -1 })))
     } else if let Some(exponent) = exponent.to_u64() {
-        check_pow_size(base.bits(), exponent, &heap.tracker)?;
+        check_pow_size(base.bits(), base.trailing_zeros().unwrap_or(0), exponent, &heap.tracker)?;
         Ok(Some(LongInt::new(bigint_pow(base.clone(), exponent)).into_value(heap)))
     } else {
         Err(ExcType::overflow_exponent_too_large())

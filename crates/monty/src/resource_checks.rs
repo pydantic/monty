@@ -45,21 +45,29 @@ pub(crate) fn try_vec_with_capacity<T>(capacity: usize) -> RunResult<Vec<T>> {
 /// The result of `base ** exp` has approximately `base_bits * exp` bits.
 /// For bases with 0 or 1 significant bits (0, 1, -1), the result is always
 /// small regardless of exponent, so the check is skipped.
+/// `base_trailing_zeros` is the base's count of trailing zero bits, which cost no work.
 ///
 /// The estimate includes a 4× safety multiplier because `BigInt::pow` uses repeated squaring.
 /// At peak, old/new base and old/new accumulator coexist during each multiplication step,
 /// requiring roughly 4× the final result size in memory.
-pub fn check_pow_size(base_bits: u64, exponent: u64, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+pub fn check_pow_size(
+    base_bits: u64,
+    base_trailing_zeros: u64,
+    exponent: u64,
+    tracker: &ResourceTracker,
+) -> Result<(), ResourceError> {
     // 0**n = 0, 1**n = 1, (-1)**n = ±1 — always small
     if base_bits <= 1 {
         return Ok(());
     }
     let result_bits = base_bits.saturating_mul(exponent);
+    // Only the base's odd part is multiplied: its trailing zeros become a shift of the result.
     // Repeated squaring is a geometric series ending in one multiplication of half-size operands.
-    charge_bigint_products(
-        bigint_limbs(result_bits).saturating_mul(bigint_limbs(result_bits)) / 3,
-        tracker,
-    );
+    let odd_bits = base_bits.saturating_sub(base_trailing_zeros);
+    if odd_bits > 1 {
+        let half = bigint_limbs(odd_bits.saturating_mul(exponent) / 2);
+        charge_bigint_products(multiplication_products(half, half).saturating_mul(4) / 3, tracker);
+    }
     let result_bytes = estimate_bits_to_bytes(result_bits);
     // Repeated squaring needs ~4× result size in peak memory because old/new base and
     // old/new accumulator coexist during each multiplication step.
@@ -79,8 +87,29 @@ pub fn check_product_size(result_bits: u64, tracker: &ResourceTracker) -> Result
 ///
 /// The result of multiplying two numbers has at most `a_bits + b_bits` bits.
 pub fn check_mult_size(a_bits: u64, b_bits: u64, tracker: &ResourceTracker) -> Result<(), ResourceError> {
-    charge_bigint_products(bigint_limbs(a_bits).saturating_mul(bigint_limbs(b_bits)), tracker);
+    charge_bigint_products(
+        multiplication_products(bigint_limbs(a_bits), bigint_limbs(b_bits)),
+        tracker,
+    );
     check_estimated_size(estimate_bits_to_bytes(a_bits.saturating_add(b_bits)), tracker)
+}
+
+/// Limbs in the smaller operand above which `num-bigint` multiplies by Karatsuba or Toom-3.
+const SUBQUADRATIC_LIMBS: u64 = 32;
+
+/// Limb products multiplying integers of `a` and `b` limbs is worth.
+///
+/// Schoolbook up to [`SUBQUADRATIC_LIMBS`]; beyond it the measured cost grows with the square
+/// root of the smaller operand, not with the operand itself.
+pub(crate) fn multiplication_products(a: u64, b: u64) -> u64 {
+    let (small, schoolbook) = (a.min(b), a.saturating_mul(b));
+    if small <= SUBQUADRATIC_LIMBS {
+        schoolbook
+    } else {
+        // sqrt(small / SUBQUADRATIC_LIMBS) in 1024ths.
+        let saving = small.saturating_mul(1024 * 1024 / SUBQUADRATIC_LIMBS).isqrt();
+        u64::try_from(u128::from(schoolbook) * 1024 / u128::from(saving)).unwrap_or(u64::MAX)
+    }
 }
 
 /// Limb products one unit of work pays for in big-integer arithmetic.
@@ -96,6 +125,24 @@ pub(crate) fn bigint_limbs(bits: u64) -> u64 {
 /// division and base conversion are quadratic, which no flat per-call charge covers.
 pub(crate) fn charge_bigint_products(products: u64, tracker: &ResourceTracker) {
     tracker.charge_work(products / LIMB_PRODUCTS_PER_UNIT);
+}
+
+/// Units per limb for writing an integer's decimal digits, beyond the quadratic conversion.
+const DECIMAL_WRITE_UNITS_PER_LIMB: u64 = 40;
+
+/// Charges the work clock for writing an integer of `bits` bits in decimal: a quadratic
+/// conversion, then formatting each digit.
+pub(crate) fn charge_decimal_write(bits: u64, tracker: &ResourceTracker) {
+    let limbs = bigint_limbs(bits);
+    charge_bigint_products(limbs.saturating_mul(limbs), tracker);
+    tracker.charge_work(limbs.saturating_mul(DECIMAL_WRITE_UNITS_PER_LIMB));
+}
+
+/// Charges the work clock for parsing `digits` decimal digits into an integer, which is quadratic.
+pub(crate) fn charge_decimal_parse(digits: usize, tracker: &ResourceTracker) {
+    // A 64-bit limb holds a little over 19 decimal digits.
+    let limbs = digits as u64 / 19 + 1;
+    charge_bigint_products(limbs.saturating_mul(limbs), tracker);
 }
 
 /// Pre-checks that a left shift won't exceed resource limits.
