@@ -121,6 +121,8 @@ Divergences:
 
 - **No `PydanticSerializationUnexpectedValue` warning.** A value that does not match its hint is serialized
     silently; pydantic emits a `UserWarning`, and `warnings='error'` raises there but not in Monty.
+- **The serializer's depth limit is 255 levels on every platform**, as pydantic-core has on Linux and macOS;
+    pydantic-core on Windows stops at a shallower depth.
 - **Dataclasses are guarded more widely in Python mode.** `dump_python(mode='python')` guards every dataclass
     written through its declared type against cycles and nesting past 255 levels; pydantic guards only
     recursive types, so a non-recursive dataclass inside deep `Any` nesting can hit the limit a little sooner.
