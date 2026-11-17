@@ -850,6 +850,7 @@ fn str_find<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Va
     let start_byte = s.byte_offset_of(start, vm);
     let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
+    charge_scan(slice.len(), &vm.heap.tracker);
     let result = match slice.find(&sub) {
         Some(pos) => {
             let char_pos = s.char_index_of(start_byte + pos, vm);
@@ -858,6 +859,14 @@ fn str_find<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Va
         None => -1,
     };
     Ok(Value::Int(result))
+}
+
+/// Bytes a substring search or replacement scans per unit of work.
+const SCAN_BYTES_PER_UNIT: usize = 6;
+
+/// Charges the work clock for searching `bytes` of a string, which no per-call charge covers.
+fn charge_scan(bytes: usize, tracker: &ResourceTracker) {
+    tracker.charge_work((bytes / SCAN_BYTES_PER_UNIT) as u64);
 }
 
 /// Implements Python's `str.rfind(sub, start?, end?)` method.
@@ -874,6 +883,7 @@ fn str_rfind<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
     let start_byte = s.byte_offset_of(start, vm);
     let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
+    charge_scan(slice.len(), &vm.heap.tracker);
     let result = match slice.rfind(&sub) {
         Some(pos) => {
             let char_pos = s.char_index_of(start_byte + pos, vm);
@@ -897,6 +907,7 @@ fn str_index<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
     let start_byte = s.byte_offset_of(start, vm);
     let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
+    charge_scan(slice.len(), &vm.heap.tracker);
     match slice.find(&sub) {
         Some(pos) => {
             let char_pos = s.char_index_of(start_byte + pos, vm);
@@ -920,6 +931,7 @@ fn str_rindex<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<
     let start_byte = s.byte_offset_of(start, vm);
     let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
+    charge_scan(slice.len(), &vm.heap.tracker);
     match slice.rfind(&sub) {
         Some(pos) => {
             let char_pos = s.char_index_of(start_byte + pos, vm);
@@ -944,6 +956,7 @@ fn str_count<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
     let start_byte = s.byte_offset_of(start, vm);
     let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
+    charge_scan(slice.len(), &vm.heap.tracker);
     let count = if sub.is_empty() {
         // Empty needles match at every character boundary, including the end.
         if end == usize::MAX {
@@ -1596,6 +1609,7 @@ fn str_replace<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult
     let s = s.as_str(vm);
 
     check_replace_size(s.len(), old.len(), new.len(), count, &vm.heap.tracker)?;
+    charge_scan(s.len(), &vm.heap.tracker);
 
     let result = if count < 0 {
         s.replace(&old, &new)

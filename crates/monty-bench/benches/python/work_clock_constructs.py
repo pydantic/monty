@@ -62,6 +62,7 @@ b = b'hello world'
 big = 1 << 200
 fl = 1.5
 args3 = (1, 2, 3)
+words = ['abcde'] * 20
 kw = {'a': 1}
 
 # === baseline ===
@@ -468,6 +469,163 @@ for i in range(N):
 # === and_or ===
 for i in range(N):
     y = i and fl or 3
+
+# === const_str ===
+for i in range(N):
+    y = 'hello'
+
+# === const_float ===
+for i in range(N):
+    y = 2.5
+
+# === const_tuple ===
+for i in range(N):
+    y = (1, 2, 3)
+
+# === const_big_int ===
+for i in range(N):
+    y = 123456789012345678901234567890
+
+# === fstring_1 ===
+for i in range(N):
+    y = f'{i}'
+
+# === fstring_str_2 ===
+for i in range(N):
+    y = f'{s}-{s}'
+
+# === fstring_repr ===
+for i in range(N):
+    y = f'{s!r}'
+
+# === str_of_str ===
+for i in range(N):
+    y = str(s)
+
+# === repr_str ===
+for i in range(N):
+    y = repr(s)
+
+# === list_slice_3 ===
+for i in range(N):
+    y = small[1:]
+
+# === list_slice_step ===
+for i in range(N):
+    y = lst[::2]
+
+# === str_slice_3 ===
+for i in range(N):
+    y = s[1:4]
+
+# === tuple_slice ===
+for i in range(N):
+    y = tup[1:]
+
+# === str_strip ===
+for i in range(N):
+    y = s.strip()
+
+# === str_lower ===
+for i in range(N):
+    y = long_s.lower()
+
+# === str_count_100 ===
+for i in range(N):
+    y = long_s.count('a')
+
+# === str_split_100 ===
+for i in range(N):
+    y = long_s.split('a')
+
+# === str_join_100 ===
+for i in range(N):
+    y = ''.join(words)
+
+# === str_encode ===
+for i in range(N):
+    y = s.encode()
+
+# === str_isdigit ===
+for i in range(N):
+    y = s.isdigit()
+
+# === str_format_method ===
+for i in range(N):
+    y = '{} and {}'.format(i, s)
+
+# === dict_items_3 ===
+for i in range(N):
+    for y in d.items():
+        pass
+
+# === dict_keys_list ===
+for i in range(N):
+    y = list(d)
+
+# === list_index ===
+for i in range(N):
+    y = lst.index(50)
+
+# === list_reverse_3 ===
+for i in range(N):
+    small.reverse()
+
+# === list_of_range_10 ===
+for i in range(N):
+    y = list(range(10))
+
+# === tuple_of_list ===
+for i in range(N):
+    y = tuple(small)
+
+# === set_of_list ===
+for i in range(N):
+    y = set(small)
+
+# === len_str ===
+for i in range(N):
+    y = len(s)
+
+# === exception_new ===
+for i in range(N):
+    y = ValueError('bad value')
+
+# === range_new ===
+for i in range(N):
+    y = range(10)
+
+# === any_3 ===
+for i in range(N):
+    y = any(small)
+
+# === max_list_100 ===
+for i in range(N):
+    y = max(lst)
+
+# === int_of_str ===
+for i in range(N):
+    y = int('12345')
+
+# === float_of_str ===
+for i in range(N):
+    y = float('1.5')
+
+# === round_float ===
+for i in range(N):
+    y = round(fl, 1)
+
+# === isinstance_tuple ===
+for i in range(N):
+    y = isinstance(s, (int, str))
+
+# === assert_eq_str ===
+for i in range(N):
+    assert s == 'hello world'
+
+# === assert_eq_list ===
+for i in range(N):
+    assert small == [1, 2, 3]
 
 # The big-integer sections run the baseline loop, then their own shorter one: their operations
 # are too slow for `N` iterations, so read their ratio, not their units per iteration.

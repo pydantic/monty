@@ -250,14 +250,15 @@ duration limits, the `TimeoutError` message and the execution time sent to telem
 - A cheap bytecode instruction, such as loading a local, is one unit.
     Costlier ones are weighted by their measured time: reading an attribute is 9 units, storing one 18, calling a
     function 6.
-- A native loop that polls the limits every 64 items is charged 128 units per poll, about two units per item.
-    A native operation that polls once is charged 16 units for it.
+- A native loop that polls the limits is charged two units per item, and a native operation that polls once is
+    charged 16 units for it.
+- Creating an iterator is 12 units and each item taken from one is two.
 - An operator or comparison on anything but two small numbers, a call to a closure, class or function with defaults,
     and creating a bound method are each charged about a dozen units more.
 - Big-integer arithmetic, regex scans and matches, JSON encoding and decoding, and comparisons of heap values in a
     sort are charged by the work they do.
-- Every 16 bytes requested from the worker's allocator is one unit, so an operation with no charge of its own still
-    costs what it allocates.
+- Every allocation from the worker's allocator is six units plus one for every 32 bytes, so an operation with no
+    charge of its own still costs what it allocates.
     This needs the worker allocator: a direct `monty` embedding without `monty-alloc` charges nothing for allocation.
 
 The same code is charged the same units on every run of one build, whatever else the machine is doing.

@@ -84,13 +84,15 @@ fn checkpoint_raises_once_the_budget_is_spent() {
 }
 
 #[test]
-fn native_polls_charge_a_loop_interval() {
+fn native_loops_charge_each_item() {
     let tracker = work_tracker(None);
     tracker.on_execution_start();
-    for i in 0..ResourceTracker::LOOP_CHECK_INTERVAL * 3 {
+    // shorter than a poll interval, so no budget check runs
+    for i in 0..10 {
         tracker.check_time_every(i).unwrap();
+        tracker.check_memory_time_every(i).unwrap();
     }
-    assert_eq!(tracker.elapsed(), units_time(ResourceTracker::LOOP_POLL_UNITS * 3));
+    assert_eq!(tracker.elapsed(), units_time(ResourceTracker::ITEM_UNITS * 20));
 }
 
 #[test]

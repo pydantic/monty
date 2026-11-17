@@ -99,6 +99,13 @@ const SLOW_BINARY_UNITS: u64 = 12;
 /// Work-clock units for a comparison of operands that are not both small numbers.
 const SLOW_COMPARE_UNITS: u64 = 8;
 
+/// Work-clock units for an `assert` comparing operands that are not both small numbers, on
+/// top of the instruction: the comparison the fused opcode stands in for.
+const ASSERT_COMPARE_UNITS: u64 = 5;
+
+/// Work-clock units for each part a `BuildFString` joins.
+const FSTRING_PART_UNITS: u32 = 8;
+
 /// Work-clock units for each item a `BuildDict` or `BuildSet` hashes and inserts.
 const HASHED_ITEM_UNITS: u32 = 8;
 
@@ -1616,9 +1623,9 @@ impl<'h> VM<'h> {
                     try_catch!(self, self.format_value(flags));
                 }
                 Opcode::BuildFString => {
-                    *extra_work += Opcode::BuildFString.extra_work();
-                    let count = self.current_frame.fetch_u16() as usize;
-                    try_catch!(self, self.build_fstring(count));
+                    let count = self.current_frame.fetch_u16();
+                    *extra_work += Opcode::BuildFString.extra_work() + u32::from(count) * FSTRING_PART_UNITS;
+                    try_catch!(self, self.build_fstring(usize::from(count)));
                 }
                 Opcode::BuildSlice => {
                     *extra_work += Opcode::BuildSlice.extra_work();
@@ -1999,6 +2006,7 @@ impl<'h> VM<'h> {
                     yield_if_parked!(self);
                 }
                 Opcode::Assert => {
+                    *extra_work += Opcode::Assert.extra_work();
                     match decode_assert_flags(self.current_frame.fetch_u8()).expect("invalid assert flags in bytecode")
                     {
                         Some(op) => try_catch!(self, self.assert_cmp(op)),

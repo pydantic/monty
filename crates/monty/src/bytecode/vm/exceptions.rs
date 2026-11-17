@@ -4,7 +4,7 @@ use std::fmt::{self, Write};
 
 use monty_types::ResourceError;
 
-use super::VM;
+use super::{ASSERT_COMPARE_UNITS, VM};
 use crate::{
     builtins::Builtins,
     defer_drop,
@@ -322,6 +322,11 @@ impl VM<'_> {
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
+        let small = |value: &Value| matches!(value, Value::Int(_) | Value::Float(_) | Value::Bool(_));
+        let cheap = matches!(op, CmpOperator::Is | CmpOperator::IsNot) || (small(lhs) && small(rhs));
+        if !cheap {
+            this.heap.tracker.charge_work(ASSERT_COMPARE_UNITS);
+        }
         if this.cmp_values(op, lhs, rhs)? {
             Ok(())
         } else {

@@ -6,9 +6,17 @@ use std::{
     time::Duration,
 };
 
-/// Bytes ever requested through the global allocator, wrapping at `usize::MAX`.
+/// Bytes ever requested through the global allocator, plus [`ALLOCATION_OVERHEAD_BYTES`] for each
+/// request, wrapping at `usize::MAX`.
 /// `monty-alloc` advances it; it stays zero where that allocator is not installed.
 pub static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// Bytes each allocation counts for beyond its size: allocating and freeing a small block costs
+/// about [`ALLOCATION_UNITS`] units whatever its size.
+pub const ALLOCATION_OVERHEAD_BYTES: usize = ALLOCATION_UNITS * BYTES_PER_UNIT;
+
+/// Units of work one allocation is charged beyond its bytes.
+const ALLOCATION_UNITS: usize = 6;
 
 /// Execution time one unit of work stands for on the work clock, in a WebAssembly build.
 ///
@@ -25,7 +33,7 @@ pub const NANOS_PER_UNIT: u64 = 5;
 pub const NANOS_PER_UNIT: u64 = 3;
 
 /// Bytes allocated per unit charged, so work that builds a result without its own charge still costs.
-const BYTES_PER_UNIT: usize = 16;
+const BYTES_PER_UNIT: usize = 32;
 
 /// Counts the work of one execution window and converts it to execution time.
 ///

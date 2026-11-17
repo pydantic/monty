@@ -862,13 +862,13 @@ impl Opcode {
     #[must_use]
     pub(crate) const fn extra_work(self) -> u32 {
         match self {
+            Self::Assert => 1,
             Self::ListAppend => 2,
             Self::UnpackSequence | Self::CheckExcMatch | Self::ListToTuple => 3,
             Self::BinaryPow
             | Self::InplacePow
             | Self::CallFunction
             | Self::CallBuiltinFunction
-            | Self::CallBuiltinType
             | Self::BuildList
             | Self::BuildDict
             | Self::BuildSet
@@ -877,7 +877,8 @@ impl Opcode {
             | Self::BuildFString
             | Self::GetIter
             | Self::MakeClosure => 5,
-            Self::BinarySubscr
+            Self::CallBuiltinType
+            | Self::BinarySubscr
             | Self::StoreSubscr
             | Self::BuildTuple
             | Self::UnpackEx
