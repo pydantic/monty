@@ -244,21 +244,23 @@ limit never fires and every reported duration is zero.
 It also avoids the clock read at each check, which in WebAssembly crosses into JavaScript: in one measurement a loop
 that took 155 ms under Node took 957 ms with a wall-clock limit armed and 157 ms with a work-clock limit.
 
-The interpreter counts units of work and reports `units × 10 ns` wherever it would report execution time: both
+The interpreter counts units of work and reports `units × 5 ns` wherever it would report execution time: both
 duration limits, the `TimeoutError` message and the execution time sent to telemetry.
 
-- Each bytecode instruction is one unit.
-- A native loop that polls the limits is charged 64 units per poll, about one unit per item.
+- A cheap bytecode instruction, such as loading a local, is one unit.
+    Costlier ones are weighted by their measured time: reading an attribute is 9 units, storing one 18, calling a
+    function 6.
+- A native loop that polls the limits is charged 128 units per poll, about two units per item.
 - Big-integer arithmetic, regex scans and matches, JSON encoding and decoding, and comparisons of heap values in a
     sort are charged by the work they do.
-- Every 32 bytes requested from the worker's allocator is one unit, so an operation with no charge of its own still
+- Every 16 bytes requested from the worker's allocator is one unit, so an operation with no charge of its own still
     costs what it allocates.
     This needs the worker allocator: a direct `monty` embedding without `monty-alloc` charges nothing for allocation.
 
 The same code is charged the same units on every run of one build, whatever else the machine is doing.
 The time is an estimate.
 The rate is the median measured for the WebAssembly build under Node.
-Across the calibration categories the time taken there ranged from about half to a little over twice the time
+Across the calibration categories the time taken there ranged from about half to one and a half times the time
 reported, and native workers run about twice as fast as reported.
 `make calibrate-work-clock` measures the rate per category.
 

@@ -476,10 +476,10 @@ impl RePattern {
 
 /// Work charged per match found: locating it and extracting its groups costs far more
 /// than the loop item the polls charge for.
-const MATCH_UNITS: u64 = 6;
+const MATCH_UNITS: u64 = 12;
 
 /// Subject bytes the engine scans per unit of work.
-const SCAN_BYTES_PER_UNIT: usize = 32;
+const SCAN_BYTES_PER_UNIT: usize = 16;
 
 /// Charges the work clock for scanning `bytes` of a subject and finding a match there.
 fn charge_scan(bytes: usize, heap: &Heap) {

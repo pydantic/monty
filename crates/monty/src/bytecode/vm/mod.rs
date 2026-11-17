@@ -85,6 +85,12 @@ use crate::{
 /// re-checks, so only this dispatch cadence rides on it.
 const CHECK_INTERVAL: u8 = u8::MAX;
 
+/// Work-clock units for resolving a builtin by name, which a load of an unassigned global does.
+const BUILTIN_LOOKUP_UNITS: u64 = 8;
+
+/// Work-clock units for each item a `BuildDict` or `BuildSet` hashes and inserts.
+const HASHED_ITEM_UNITS: u32 = 8;
+
 /// Result of executing Await opcode.
 ///
 /// Indicates what the VM should do after awaiting a value:
@@ -1277,9 +1283,9 @@ impl<'h> VM<'h> {
     /// monotonic), backstopped by the `run_external` exit check — the
     /// GC-scheduling probe, and the print writer's flush poll.
     #[inline(never)]
-    fn dispatch_checkpoint(&mut self, check_limits: bool, poll_print: bool) -> Result<(), RunError> {
+    fn dispatch_checkpoint(&mut self, check_limits: bool, poll_print: bool, work: u32) -> Result<(), RunError> {
         if check_limits {
-            self.heap.tracker.checkpoint(CHECK_INTERVAL.into())?;
+            self.heap.tracker.checkpoint(work.into())?;
         }
         if self.heap.should_gc() {
             self.run_gc();
@@ -1306,27 +1312,30 @@ impl<'h> VM<'h> {
     ///
     /// The countdown is per-`run()`, so `evaluate_function` re-entry restarts
     /// it — a native loop calling a shorter callback reaches no checkpoint at
-    /// all and must poll the tracker itself. The instructions run since the
-    /// last checkpoint are charged to the work clock on the way out, so runs
-    /// too short to reach one still cost work.
+    /// all and must poll the tracker itself. Work not yet charged at a
+    /// checkpoint is charged on the way out, so runs too short to reach one
+    /// still cost work.
     fn run(&mut self) -> Result<FrameExit, RunError> {
         let mut countdown = CHECK_INTERVAL;
-        let result = self.run_loop(&mut countdown);
-        self.heap.tracker.charge_work((CHECK_INTERVAL - countdown).into());
+        let mut extra_work = 0;
+        let result = self.run_loop(&mut countdown, &mut extra_work);
+        let work = u32::from(CHECK_INTERVAL - countdown) + extra_work;
+        self.heap.tracker.charge_work(work.into());
         result
     }
 
-    /// The dispatch loop behind [`Self::run`], which owns `countdown`: the
-    /// instructions left before the next [`Self::dispatch_checkpoint`].
+    /// The dispatch loop behind [`Self::run`], which owns `countdown`, the
+    /// instructions left before the next [`Self::dispatch_checkpoint`], and
+    /// `extra_work`, the [`Opcode::extra_work`] of those run since the last.
     ///
     /// The current frame is stored separately from its suspended callers, so
     /// dispatch updates its authoritative instruction pointer directly.
     #[expect(
         clippy::inline_always,
-        reason = "inlined into `run`, `countdown` is a local the optimizer keeps in a register"
+        reason = "inlined into `run`, both counters are locals the optimizer keeps in registers"
     )]
     #[inline(always)]
-    fn run_loop(&mut self, countdown: &mut u8) -> Result<FrameExit, RunError> {
+    fn run_loop(&mut self, countdown: &mut u8, extra_work: &mut u32) -> Result<FrameExit, RunError> {
         // Neither can change mid-run (`set_max_feed_duration` needs `&mut` at the
         // host boundary), so with no limit and no work clock the whole checkpoint
         // reduces to this one hoisted, well-predicted branch per instruction.
@@ -1345,7 +1354,8 @@ impl<'h> VM<'h> {
                 *countdown = c;
             } else {
                 *countdown = CHECK_INTERVAL;
-                try_catch!(self, self.dispatch_checkpoint(check_limits, poll_print));
+                let work = u32::from(CHECK_INTERVAL) + mem::take(extra_work);
+                try_catch!(self, self.dispatch_checkpoint(check_limits, poll_print, work));
             }
 
             // Track instruction IP for exception table lookup
@@ -1505,7 +1515,10 @@ impl<'h> VM<'h> {
                 Opcode::BinaryDiv => try_catch!(self, self.binary_div()),
                 Opcode::BinaryFloorDiv => try_catch!(self, self.binary_floordiv()),
                 Opcode::BinaryMod => try_catch!(self, self.binary_mod()),
-                Opcode::BinaryPow => try_catch!(self, self.binary_pow()),
+                Opcode::BinaryPow => {
+                    *extra_work += Opcode::BinaryPow.extra_work();
+                    try_catch!(self, self.binary_pow());
+                }
                 // Bitwise operations - only work on integers
                 Opcode::BinaryAnd => try_catch!(self, self.binary_and()),
                 Opcode::BinaryOr => try_catch!(self, self.binary_or()),
@@ -1526,8 +1539,14 @@ impl<'h> VM<'h> {
                 Opcode::CompareGe => try_catch!(self, self.compare_ge()),
                 Opcode::CompareIs => try_catch!(self, self.compare_is()),
                 Opcode::CompareIsNot => try_catch!(self, self.compare_is_not()),
-                Opcode::CompareIn => try_catch!(self, self.compare_in()),
-                Opcode::CompareNotIn => try_catch!(self, self.compare_not_in()),
+                Opcode::CompareIn => {
+                    *extra_work += Opcode::CompareIn.extra_work();
+                    try_catch!(self, self.compare_in());
+                }
+                Opcode::CompareNotIn => {
+                    *extra_work += Opcode::CompareNotIn.extra_work();
+                    try_catch!(self, self.compare_not_in());
+                }
                 // Unary Operations
                 Opcode::UnaryNot => {
                     let value = self.pop();
@@ -1548,7 +1567,10 @@ impl<'h> VM<'h> {
                 Opcode::InplaceDiv => try_catch!(self, self.binary_div()),
                 Opcode::InplaceFloorDiv => try_catch!(self, self.binary_floordiv()),
                 Opcode::InplaceMod => try_catch!(self, self.binary_mod()),
-                Opcode::InplacePow => try_catch!(self, self.binary_pow()),
+                Opcode::InplacePow => {
+                    *extra_work += Opcode::InplacePow.extra_work();
+                    try_catch!(self, self.binary_pow());
+                }
                 Opcode::InplaceAnd => try_catch!(self, self.inplace_and()),
                 Opcode::InplaceOr => try_catch!(self, self.inplace_or()),
                 Opcode::InplaceXor => try_catch!(self, self.inplace_xor()),
@@ -1556,70 +1578,89 @@ impl<'h> VM<'h> {
                 Opcode::InplaceRShift => try_catch!(self, self.binary_rshift()),
                 // Collection Building - route through exception handling
                 Opcode::BuildList => {
+                    *extra_work += Opcode::BuildList.extra_work();
                     let count = self.current_frame.fetch_u16() as usize;
                     self.build_list(count);
                 }
                 Opcode::BuildTuple => {
+                    *extra_work += Opcode::BuildTuple.extra_work();
                     let count = self.current_frame.fetch_u16() as usize;
                     self.build_tuple(count);
                 }
                 Opcode::BuildDict => {
-                    let count = self.current_frame.fetch_u16() as usize;
-                    try_catch!(self, self.build_dict(count));
+                    *extra_work += Opcode::BuildDict.extra_work();
+                    let count = self.current_frame.fetch_u16();
+                    *extra_work += u32::from(count) * HASHED_ITEM_UNITS;
+                    try_catch!(self, self.build_dict(usize::from(count)));
                 }
                 Opcode::BuildSet => {
-                    let count = self.current_frame.fetch_u16() as usize;
-                    try_catch!(self, self.build_set(count));
+                    *extra_work += Opcode::BuildSet.extra_work();
+                    let count = self.current_frame.fetch_u16();
+                    *extra_work += u32::from(count) * HASHED_ITEM_UNITS;
+                    try_catch!(self, self.build_set(usize::from(count)));
                 }
                 Opcode::FormatValue => {
+                    *extra_work += Opcode::FormatValue.extra_work();
                     let flags = self.current_frame.fetch_u8();
                     try_catch!(self, self.format_value(flags));
                 }
                 Opcode::BuildFString => {
+                    *extra_work += Opcode::BuildFString.extra_work();
                     let count = self.current_frame.fetch_u16() as usize;
                     try_catch!(self, self.build_fstring(count));
                 }
                 Opcode::BuildSlice => {
+                    *extra_work += Opcode::BuildSlice.extra_work();
                     try_catch!(self, self.build_slice());
                 }
                 Opcode::ListExtend => {
+                    *extra_work += Opcode::ListExtend.extra_work();
                     try_catch!(self, self.list_extend());
                 }
                 Opcode::ListToTuple => {
+                    *extra_work += Opcode::ListToTuple.extra_work();
                     try_catch!(self, self.list_to_tuple());
                 }
                 Opcode::DictMerge => {
+                    *extra_work += Opcode::DictMerge.extra_work();
                     let func_name_id = self.current_frame.fetch_u16();
                     try_catch!(self, self.dict_merge(func_name_id));
                 }
                 Opcode::MethodDictMerge => {
+                    *extra_work += Opcode::MethodDictMerge.extra_work();
                     let func_name_id = self.current_frame.fetch_u16();
                     try_catch!(self, self.method_dict_merge(func_name_id));
                 }
                 // PEP 448 literal building
                 Opcode::DictUpdate => {
+                    *extra_work += Opcode::DictUpdate.extra_work();
                     let depth = self.current_frame.fetch_u8() as usize;
                     try_catch!(self, self.dict_update(depth));
                 }
                 Opcode::SetExtend => {
+                    *extra_work += Opcode::SetExtend.extra_work();
                     let depth = self.current_frame.fetch_u8() as usize;
                     try_catch!(self, self.set_extend(depth));
                 }
                 // Comprehension Building - append/add/set items during iteration
                 Opcode::ListAppend => {
+                    *extra_work += Opcode::ListAppend.extra_work();
                     let depth = self.current_frame.fetch_u8() as usize;
                     try_catch!(self, self.list_append(depth));
                 }
                 Opcode::SetAdd => {
+                    *extra_work += Opcode::SetAdd.extra_work();
                     let depth = self.current_frame.fetch_u8() as usize;
                     try_catch!(self, self.set_add(depth));
                 }
                 Opcode::DictSetItem => {
+                    *extra_work += Opcode::DictSetItem.extra_work();
                     let depth = self.current_frame.fetch_u8() as usize;
                     try_catch!(self, self.dict_set_item(depth));
                 }
                 // Subscript & Attribute - route through exception handling
                 Opcode::BinarySubscr => {
+                    *extra_work += Opcode::BinarySubscr.extra_work();
                     let index = self.pop();
                     let obj = self.pop();
                     let result = obj.py_getitem(&index, self);
@@ -1631,6 +1672,7 @@ impl<'h> VM<'h> {
                     }
                 }
                 Opcode::StoreSubscr => {
+                    *extra_work += Opcode::StoreSubscr.extra_work();
                     // Stack order: value, obj, index (TOS)
                     let index = self.pop();
                     let mut obj = self.pop();
@@ -1642,6 +1684,7 @@ impl<'h> VM<'h> {
                     }
                 }
                 Opcode::LoadAttr => {
+                    *extra_work += Opcode::LoadAttr.extra_work();
                     let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
                     handle_call_result!(self, self.load_attr(name_id));
@@ -1654,6 +1697,7 @@ impl<'h> VM<'h> {
                     handle_call_result!(self, self.load_submodule(StringId::from_index(name_idx), path_id));
                 }
                 Opcode::LoadAttrImport => {
+                    *extra_work += Opcode::LoadAttrImport.extra_work();
                     let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
                     // the compiler emits this only after the statement's `LoadModule`
@@ -1664,6 +1708,7 @@ impl<'h> VM<'h> {
                     handle_call_result!(self, self.load_attr_import(name_id, module_id));
                 }
                 Opcode::StoreAttr => {
+                    *extra_work += Opcode::StoreAttr.extra_work();
                     let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
                     try_catch!(self, self.store_attr(name_id));
@@ -1727,6 +1772,7 @@ impl<'h> VM<'h> {
                 }
                 // Iteration - route through exception handling
                 Opcode::GetIter => {
+                    *extra_work += Opcode::GetIter.extra_work();
                     let value = self.pop();
                     let iterator = value.py_iter(self).and_then(|call| call.require_synchronous(self));
                     value.drop_with(self);
@@ -1778,21 +1824,25 @@ impl<'h> VM<'h> {
                 }
                 // Function Calls
                 Opcode::CallFunction => {
+                    *extra_work += Opcode::CallFunction.extra_work();
                     let arg_count = self.current_frame.fetch_u8() as usize;
                     handle_call_result!(self, self.exec_call_function(arg_count));
                 }
                 Opcode::CallBuiltinFunction => {
+                    *extra_work += Opcode::CallBuiltinFunction.extra_work();
                     let (builtin_id, arg_count) = self.current_frame.fetch_u8_u8();
                     let result = self.exec_call_builtin_function(builtin_id, arg_count as usize);
                     handle_call_result!(self, result);
                 }
                 Opcode::CallBuiltinType => {
+                    *extra_work += Opcode::CallBuiltinType.extra_work();
                     let (type_id, arg_count) = self.current_frame.fetch_u8_u8();
                     let arg_count = arg_count as usize;
 
                     handle_call_result!(self, self.exec_call_builtin_type(type_id, arg_count));
                 }
                 Opcode::CallFunctionKw => {
+                    *extra_work += Opcode::CallFunctionKw.extra_work();
                     // Fetch operands: pos_count, kw_count, then kw_count name indices
                     let (pos_count, kw_count) = self.current_frame.fetch_u8_u8();
                     let (pos_count, kw_count) = (pos_count as usize, kw_count as usize);
@@ -1800,6 +1850,7 @@ impl<'h> VM<'h> {
                     handle_call_result!(self, self.exec_call_function_kw(pos_count, kw_count));
                 }
                 Opcode::CallAttr => {
+                    *extra_work += Opcode::CallAttr.extra_work();
                     // CallAttr: u16 name_id, u8 arg_count
                     // Stack: [obj, arg1, arg2, ..., argN] -> [result]
                     let (name_idx, arg_count) = self.current_frame.fetch_u16_u8();
@@ -1809,6 +1860,7 @@ impl<'h> VM<'h> {
                     handle_call_result!(self, self.exec_call_attr(name_id, arg_count));
                 }
                 Opcode::CallAttrKw => {
+                    *extra_work += Opcode::CallAttrKw.extra_work();
                     // CallAttrKw: u16 name_id, u8 pos_count, u8 kw_count, then kw_count u16 name indices
                     // Stack: [obj, pos_args..., kw_values...] -> [result]
                     let (name_idx, pos_count, kw_count) = self.current_frame.fetch_u16_u8_u8();
@@ -1818,12 +1870,14 @@ impl<'h> VM<'h> {
                     handle_call_result!(self, self.exec_call_attr_kw(name_id, pos_count, kw_count));
                 }
                 Opcode::CallFunctionExtended => {
+                    *extra_work += Opcode::CallFunctionExtended.extra_work();
                     let flags = self.current_frame.fetch_u8();
                     let has_kwargs = (flags & 0x01) != 0;
 
                     handle_call_result!(self, self.exec_call_function_extended(has_kwargs));
                 }
                 Opcode::CallAttrExtended => {
+                    *extra_work += Opcode::CallAttrExtended.extra_work();
                     let (name_idx, flags) = self.current_frame.fetch_u16_u8();
                     let name_id = StringId::from_index(name_idx);
                     let has_kwargs = (flags & 0x01) != 0;
@@ -1862,6 +1916,7 @@ impl<'h> VM<'h> {
                     }
                 }
                 Opcode::MakeClosure => {
+                    *extra_work += Opcode::MakeClosure.extra_work();
                     let (func_idx, defaults_count, cell_count) = self.current_frame.fetch_u16_u8_u8();
                     let func_id = FunctionId::from_index(func_idx);
                     let (defaults_count, cell_count) = (defaults_count as usize, cell_count as usize);
@@ -1914,6 +1969,7 @@ impl<'h> VM<'h> {
                 }
                 // Exception Handling
                 Opcode::Raise => {
+                    *extra_work += Opcode::Raise.extra_work();
                     let exc = self.pop();
                     let error = self.make_exception(&exc, true); // is_raise=true, hide caret
                     // Re-raise an instance as-is so `raise e` preserves `e`'s
@@ -1945,6 +2001,7 @@ impl<'h> VM<'h> {
                     catch!(self, error);
                 }
                 Opcode::RaiseFrom => {
+                    *extra_work += Opcode::RaiseFrom.extra_work();
                     let cause = self.pop();
                     let exc = self.pop();
                     if let Some(result) = self.raise_with_cause(exc, cause) {
@@ -1953,6 +2010,7 @@ impl<'h> VM<'h> {
                     yield_if_parked!(self);
                 }
                 Opcode::Reraise => {
+                    *extra_work += Opcode::Reraise.extra_work();
                     // Clone rather than pop: a locally caught bare raise must
                     // preserve its enclosing handler's active exception.
                     let (error, raised) = self.reraise_exception();
@@ -1969,6 +2027,7 @@ impl<'h> VM<'h> {
                     }
                 }
                 Opcode::CheckExcMatch => {
+                    *extra_work += Opcode::CheckExcMatch.extra_work();
                     // Stack: [exception, exc_type] -> [exception, bool]
                     let exc_type = self.pop();
                     let exception = self.peek();
@@ -2076,10 +2135,12 @@ impl<'h> VM<'h> {
                 }
                 // Unpacking - route through exception handling
                 Opcode::UnpackSequence => {
+                    *extra_work += Opcode::UnpackSequence.extra_work();
                     let count = self.current_frame.fetch_u8() as usize;
                     try_catch!(self, self.unpack_sequence(count));
                 }
                 Opcode::UnpackEx => {
+                    *extra_work += Opcode::UnpackEx.extra_work();
                     let (before, after) = self.current_frame.fetch_u8_u8();
                     try_catch!(self, self.unpack_ex(before as usize, after as usize));
                 }
@@ -2754,6 +2815,7 @@ impl<'h> VM<'h> {
     /// the builtin; once `def sum` runs, the slot holds the user function and the
     /// fallback isn't taken anymore.
     fn builtin_for_name(&self, name_id: StringId) -> Option<Value> {
+        self.heap.tracker.charge_work(BUILTIN_LOOKUP_UNITS);
         Builtins::value_from_name(self.interns.get_str(name_id))
     }
 

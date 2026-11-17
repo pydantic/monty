@@ -84,7 +84,7 @@ pub fn check_mult_size(a_bits: u64, b_bits: u64, tracker: &ResourceTracker) -> R
 }
 
 /// Limb products one unit of work pays for in big-integer arithmetic.
-const LIMB_PRODUCTS_PER_UNIT: u64 = 8;
+const LIMB_PRODUCTS_PER_UNIT: u64 = 4;
 
 /// The 64-bit limbs a `bits`-bit integer spans. Fixed-width so every build charges alike,
 /// though `num-bigint` digits are pointer-sized.

@@ -200,8 +200,8 @@ const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 /// Syntax errors are wrapped in `json.JSONDecodeError` using the same
 /// line/column/character suffix as CPython.
 fn parse_json_bytes(bytes: &[u8], hooks: &NumberHooks<'_>, vm: &mut VM<'_>) -> RunResult<Value> {
-    // Parsing costs about a unit per byte, beyond what the values it allocates charge.
-    vm.heap.tracker.charge_work(bytes.len() as u64);
+    // Parsing costs about two units per byte, beyond what the values it allocates charge.
+    vm.heap.tracker.charge_work(bytes.len() as u64 * 2);
     let mut jiter = Jiter::new(bytes).with_allow_inf_nan();
     // Take the cache out of the VM so we can pass it alongside &mut VM
     // without conflicting borrows. `mem::take` leaves `Default` in its place.

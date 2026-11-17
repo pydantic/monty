@@ -59,6 +59,31 @@ fn a_run_shorter_than_the_checkpoint_interval_is_charged() {
 }
 
 #[test]
+fn costlier_instructions_are_charged_more() {
+    // units for 1000 iterations of `body`
+    let cost = |body: &str| {
+        let mut repl = work_repl(None);
+        feed(
+            &mut repl,
+            "class P:\n    def m(self):\n        return 1\np = P()\np.x = 1",
+        )
+        .unwrap();
+        let before = units(&repl);
+        feed(&mut repl, &format!("for i in range(1000):\n    {body}")).unwrap();
+        units(&repl) - before
+    };
+    // a global load and store, the cheap instructions the rest are weighed against
+    let plain = cost("y = i");
+    let extra = |body: &str| (cost(body) - plain) / 1000;
+    assert_eq!(extra("y = p.x"), 8);
+    assert_eq!(extra("p.x = i"), 17);
+    // the call, the method lookup and the method's two instructions
+    assert_eq!(extra("y = p.m()"), 25);
+    // the build and eight units per item hashed
+    assert_eq!(extra("y = {'a': i, 'b': i}"), 24);
+}
+
+#[test]
 fn feed_limit_raises_the_usual_timeout_and_the_session_continues() {
     let mut repl = work_repl(Some(Duration::from_millis(1)));
     let error = feed(&mut repl, "x = 0\nfor i in range(10**12):\n    x = x + 1").unwrap_err();
@@ -159,18 +184,18 @@ fn calibration_scripts_cost_fixed_units() {
         writeln!(report, "{name}: {}", units(&repl)).unwrap();
     }
     insta::assert_snapshot!(report, @"
-    arith_loop: 3287121
-    attr_access: 1314888
-    big_ints: 107481
-    bytes_ops: 3283648
-    comprehensions: 4931016
-    dict_ops: 2355818
-    func_calls: 799252
-    json_roundtrip: 3251980
-    list_ops: 2112267
-    regex: 1048071
-    sorting: 4016639
-    str_build: 3436745
-    str_scan: 212517
+    arith_loop: 3287131
+    attr_access: 5154983
+    big_ints: 207182
+    bytes_ops: 6567348
+    comprehensions: 6544078
+    dict_ops: 4960889
+    func_calls: 1229097
+    json_roundtrip: 6800951
+    list_ops: 4028863
+    regex: 2193003
+    sorting: 7247612
+    str_build: 7196801
+    str_scan: 425066
     ");
 }

@@ -569,7 +569,7 @@ impl ResourceTracker {
 
     /// Charges `units` of work to the running window; does nothing on the other clocks.
     ///
-    /// A unit is one bytecode instruction's worth of work. Native operations whose cost the
+    /// A unit is one cheap bytecode instruction's worth of work. Native operations whose cost the
     /// polls' flat charge under-counts call this with a cost proportional to what they did.
     #[inline]
     pub fn charge_work(&self, units: u64) {
@@ -592,11 +592,12 @@ impl ResourceTracker {
 
     /// Called periodically by native code to check both execution-time budgets.
     ///
-    /// On the work clock each call also charges [`LOOP_CHECK_INTERVAL`](Self::LOOP_CHECK_INTERVAL)
-    /// units, so every polling loop costs work without its own cost function.
+    /// On the work clock each call also charges two units for each of the
+    /// [`LOOP_CHECK_INTERVAL`](Self::LOOP_CHECK_INTERVAL) items polled for, so every polling loop
+    /// costs work without its own cost function.
     #[inline]
     pub fn check_time(&self) -> Result<(), ResourceError> {
-        self.charge_work(Self::LOOP_CHECK_INTERVAL as u64);
+        self.charge_work(Self::LOOP_CHECK_INTERVAL as u64 * 2);
         self.check_budgets()
     }
 
