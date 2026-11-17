@@ -83,7 +83,7 @@ and recorded consumption.
 
 `ExecutionClock::Work` reads no clock. The interpreter charges units of work through
 `ResourceTracker::charge_work` (one per cheap bytecode instruction, several for costlier ones, 128 per native poll, more for
-costly native operations) and the tracker reports `units × NANOS_PER_UNIT`. `monty-alloc` advances `ALLOCATED_BYTES`, which the
+costly native operations) and the tracker reports `units × NANOS_PER_UNIT`, a rate set separately for WebAssembly and native builds. `monty-alloc` advances `ALLOCATED_BYTES`, which the
 tracker charges per byte as a floor. It is available on every target and suits hosts whose clocks stand still
 during compute. WebAssembly workers accept wall and work mode.
 

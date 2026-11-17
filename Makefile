@@ -295,10 +295,19 @@ bench-pool: ## Run subprocess pool benchmarks (spawn, checkout, wire round-trips
 bench-decode: ## Run worker-frame protobuf decode benchmarks
 	cargo bench -p monty-bench --bench decode
 
+# CI passes only the report flags: it checks the reports still run, not their timings.
+CALIBRATE_ARGS ?= --check --constructs --corpus
+
 .PHONY: calibrate-work-clock
-calibrate-work-clock: install-js ## Measure the work clock's ns/unit per category, native and wasm; fails on drift
-	cargo bench -p monty-bench --bench work_clock --no-default-features --features worker-alloc -- --check
-	cd crates/monty-js && npm run build:wasm && npm run build:ts && node scripts/calibrate-work-clock.mjs --check
+calibrate-work-clock: calibrate-work-clock-native calibrate-work-clock-wasm ## Measure the work clock per category, construct and test case, native and wasm; fails on category drift
+
+.PHONY: calibrate-work-clock-native
+calibrate-work-clock-native:
+	cargo bench -p monty-bench --bench work_clock --no-default-features --features worker-alloc -- $(CALIBRATE_ARGS)
+
+.PHONY: calibrate-work-clock-wasm
+calibrate-work-clock-wasm: install-js
+	cd crates/monty-js && npm run build:wasm && npm run build:ts && node scripts/calibrate-work-clock.mjs $(CALIBRATE_ARGS)
 
 .PHONY: dev-bench
 dev-bench: ## Run benchmarks to test with dev profile

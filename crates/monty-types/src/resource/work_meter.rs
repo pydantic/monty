@@ -10,12 +10,19 @@ use std::{
 /// `monty-alloc` advances it; it stays zero where that allocator is not installed.
 pub static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
 
-/// Execution time one unit of work stands for on the work clock.
+/// Execution time one unit of work stands for on the work clock, in a WebAssembly build.
 ///
 /// A unit is one cheap bytecode instruction, such as a local load; costlier ones are charged several.
-/// The value is the median `make calibrate-work-clock` measures for the wasm build, so native builds
-/// report about twice the time they took. Fixed, so durations compare across builds and dumps.
+/// The value is the median `make calibrate-work-clock` measures for the build under Node.
+#[cfg(target_family = "wasm")]
 pub const NANOS_PER_UNIT: u64 = 5;
+
+/// Execution time one unit of work stands for on the work clock, in a native build.
+///
+/// The units are those of the WebAssembly build; only the rate differs, as native code runs them
+/// faster. The value is the median `make calibrate-work-clock` measures natively.
+#[cfg(not(target_family = "wasm"))]
+pub const NANOS_PER_UNIT: u64 = 3;
 
 /// Bytes allocated per unit charged, so work that builds a result without its own charge still costs.
 const BYTES_PER_UNIT: usize = 16;
