@@ -408,7 +408,7 @@ impl PoolInner {
                 if evicted.is_some() {
                     self.count_termination("evicted");
                 }
-                let gone = died_idle + stale.len();
+                let gone = died_idle + stale.len() + usize::from(evicted.is_some());
                 // dropping a remote worker closes its stream
                 drop(stale);
                 drop(evicted);

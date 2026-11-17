@@ -9,12 +9,19 @@
 
 mod binary;
 mod common;
+// only the resume scenario below drives a remote session
+#[expect(dead_code)]
+#[path = "support/grpc_mock.rs"]
+mod grpc_mock;
+#[path = "support/opening.rs"]
+mod opening;
 
 use std::{
     collections::HashMap,
     env, fs,
     future::ready,
     sync::{Arc, Mutex, PoisonError},
+    thread,
     time::Duration,
 };
 
@@ -24,7 +31,7 @@ use monty_pool::{
     telemetry::{Metrics, TelemetryAdapter, TelemetryContext, configure_telemetry_adapter},
     telemetry_adapter,
 };
-use monty_proto::pb;
+use monty_proto::{decode_frame, encode_to_capped_vec, pb};
 use monty_types::{ExcType, MontyException, MontyObject, PrintStream};
 use opentelemetry::{
     KeyValue,
@@ -40,11 +47,15 @@ use opentelemetry_sdk::{
     trace::{InMemorySpanExporter, SimpleSpanProcessor, SpanData},
 };
 use prost::Message;
-use tokio::time::{Instant, sleep};
+use tokio::{
+    task::spawn_blocking,
+    time::{Instant, sleep},
+};
 
 use crate::{
     binary::monty_binary,
     common::{kill_pid, wait_for_idle},
+    grpc_mock::{MockServer, MockStream},
 };
 
 /// A cumulative aggregate exported from a test Logfire provider.
@@ -572,6 +583,80 @@ async fn worker_counts_sum_across_pools_and_drop_cleanly() {
     drop(second);
     assert_eq!(capture.total("monty.pool.workers.live"), 0);
     assert_eq!(capture.total("monty.pool.workers.idle"), 0);
+}
+
+/// A resume at the cap retires a pre-opened session: it leaves both the live
+/// and idle counts, so they drain to zero once the pool closes.
+#[tokio::test]
+async fn a_resume_evicting_a_pre_opened_session_keeps_worker_counts() {
+    let mock = MockServer::start().await;
+    let mut config = PoolConfig::remote(mock.url());
+    config.min_processes = 1;
+    config.max_processes = 1;
+    config.request_timeout = Some(Duration::from_secs(10));
+    let server = thread::spawn(move || {
+        let mut stream = mock.accept();
+        expect_request(&mut stream, "Configure");
+        reply(&stream, pb::worker_event::Kind::Ok(pb::Ok {}));
+        expect_request(&mut stream, "Feed");
+        reply(
+            &stream,
+            pb::worker_event::Kind::Shutdown(pb::ShutdownDump {
+                dump: Some(b"parked".to_vec().into()),
+            }),
+        );
+        // the refill the resume retires ends without a request
+        let mut stream = loop {
+            let mut stream = mock.accept();
+            if stream.read().is_some() {
+                break stream;
+            }
+        };
+        reply(&stream, pb::worker_event::Kind::Ok(pb::Ok {}));
+        expect_request(&mut stream, "Load");
+        reply(&stream, pb::worker_event::Kind::Ok(pb::Ok {}));
+        expect_request(&mut stream, "Feed");
+        reply(
+            &stream,
+            pb::worker_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
+        );
+        while stream.read().is_some() {}
+    });
+
+    let (pool, capture) = pool_with_metrics(config).await;
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let event = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("resumed");
+    assert!(matches!(event, TurnEvent::Complete(_)), "got {event:?}");
+    checkout.finish().await.expect("finish");
+    pool.close().await;
+    wait_until("the worker counts to drain", || {
+        capture.total("monty.pool.workers.live") == 0 && capture.total("monty.pool.workers.idle") == 0
+    })
+    .await;
+    spawn_blocking(move || server.join().expect("server"))
+        .await
+        .expect("join");
+}
+
+/// Reads the next request and asserts its kind's name.
+fn expect_request(stream: &mut MockStream, kind: &str) {
+    let body = stream.read().expect("a request");
+    let request = decode_frame::<pb::ClientRequest>(body.as_ref()).expect("decode");
+    let name = format!("{:?}", request.kind.expect("kind"));
+    assert!(name.starts_with(kind), "expected {kind}, got {name}");
+}
+
+/// Sends one event of `kind`, naming a session so the checkout can resume it.
+fn reply(stream: &MockStream, kind: pb::worker_event::Kind) {
+    let event = pb::WorkerEvent {
+        kind: Some(kind),
+        session_id: Some(b"sess".to_vec().into()),
+        ..Default::default()
+    };
+    let _ = stream.send(encode_to_capped_vec(&event).expect("encode").into());
 }
 
 /// A relay driving wire-level turns gets the same instrumentation as a typed
