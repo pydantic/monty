@@ -2414,6 +2414,25 @@ fn full_ordereddict_move_to_end_stays_graceful() {
     child.shutdown();
 }
 
+/// `OrderedDict.move_to_end(key, last=False)` must preflight the rebuild it
+/// does when no dead slot precedes the first entry.
+///
+/// The rebuild leaves room ahead of the entries for later moves, so it grows a
+/// full entry vector by half its length in one allocation.
+#[test]
+fn full_ordereddict_move_to_front_stays_graceful() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(80 * 1024 * 1024));
+    let build =
+        "from collections import OrderedDict\nod = OrderedDict()\nfor i in range(1_048_576):\n    od[i] = i\nlen(od)";
+    assert_eq!(child.feed_complete(build), MontyObject::int(1_048_576));
+    let (_, event) = child.feed("od.move_to_end(5, last=False)");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    // The session outliving the error is the whole point.
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
 /// `re.split` must preflight the pieces it collects, not only the list it
 /// builds from them.
 ///

@@ -211,6 +211,18 @@ impl TableEntry for DictEntry {
         !matches!(self.key, Value::Undefined)
     }
 
+    /// A tombstone's hash is never read, so it carries the record.
+    fn dead_prefix_tombstone(end: usize) -> Self {
+        Self {
+            hash: end as u64,
+            ..Self::tombstone()
+        }
+    }
+
+    fn dead_prefix_end(&self) -> usize {
+        usize::try_from(self.hash).unwrap_or(usize::MAX)
+    }
+
     fn changed_size_error() -> RunError {
         ExcType::runtime_error_dict_changed_size()
     }
@@ -2118,10 +2130,13 @@ fn ordered_move_to_end<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &m
     let Some(slot) = found else {
         return Err(ExcType::key_error(key, vm));
     };
+    let table = &dict.get(vm.heap).table;
     if last {
         // The tombstone left by the move keeps the entry vector at its length, so
         // appending can still double it; preflight that before the hard limit.
-        dict.get(vm.heap).table.check_growth(&vm.heap.tracker)?;
+        table.check_growth(&vm.heap.tracker)?;
+    } else {
+        table.check_move_to_front(&slot, &vm.heap.tracker)?;
     }
     let table = &mut dict.get_mut(vm.heap).table;
     if last {

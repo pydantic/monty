@@ -58,6 +58,45 @@ try:
 except KeyError as e:
     assert str(e) == "'dictionary is empty'"
 
+# === front operations past a dead prefix ===
+od = OrderedDict.fromkeys(range(40))
+for i in range(30):
+    assert od.popitem(last=False) == (i, None)
+assert list(od) == list(range(30, 40))
+od.pop(35)
+for k in [39, 38, 37]:
+    od.move_to_end(k, last=False)
+assert list(od) == [37, 38, 39, 30, 31, 32, 33, 34, 36]
+od.move_to_end(37, last=False)
+assert list(od) == [37, 38, 39, 30, 31, 32, 33, 34, 36]
+od[40] = None
+assert list(od) == [37, 38, 39, 30, 31, 32, 33, 34, 36, 40]
+assert od.popitem(last=False) == (37, None)
+assert list(reversed(od)) == [40, 36, 34, 33, 32, 31, 30, 39, 38]
+
+# repeated moves to the front fill the gap a rebuild leaves, then rebuild again
+od = OrderedDict.fromkeys(range(20))
+for k in range(20):
+    od.move_to_end(k, last=False)
+assert list(od) == list(range(19, -1, -1))
+assert od == OrderedDict.fromkeys(range(19, -1, -1))
+for k in range(20, 60):
+    od[k] = None
+for k in range(0, 60, 2):
+    od.pop(k)
+od.move_to_end(59, last=False)
+assert list(od) == [59] + list(range(19, 0, -2)) + list(range(21, 59, 2))
+while od:
+    od.popitem(last=False)
+try:
+    od.popitem(last=False)
+    assert False, 'empty popitem'
+except KeyError as e:
+    assert str(e) == "'dictionary is empty'"
+od['x'] = 1
+od.move_to_end('x', last=False)
+assert list(od.items()) == [('x', 1)]
+
 # === reversed, views ===
 od = OrderedDict([('a', 1), ('b', 2), ('c', 3)])
 assert list(reversed(od)) == ['c', 'b', 'a']

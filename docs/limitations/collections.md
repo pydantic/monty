@@ -90,8 +90,6 @@ divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
     `move_to_end() takes at most 2 arguments (3 given)`.
 - **A self-referencing `OrderedDict` prints its inner reference as `{...}`**,
     where CPython prints `...`.
-- **`move_to_end(key, last=False)` is O(n)**, since it compacts the table to put
-    the entry first; `move_to_end(key)` and `popitem()` are O(1).
 - **Crosses the host boundary as a plain `dict`** (insertion order is kept).
 
 ## Qualified vs bare type names

@@ -37,7 +37,7 @@
 //! opaque [`Slot`] a probe returns. None of these can be computed by the
 //! caller and read back after guest code has run.
 
-use std::{marker::PhantomData, mem, slice};
+use std::{iter, marker::PhantomData, mem, slice};
 
 use ahash::AHashSet;
 use hashbrown::HashTable;
@@ -85,6 +85,27 @@ pub(crate) trait TableEntry {
 
     /// Whether this slot still holds an entry.
     fn is_live(&self) -> bool;
+
+    /// A tombstone for slot 0 that also records that every slot before `end`
+    /// is dead, so a scan from the front can jump the whole dead prefix.
+    ///
+    /// Only slot 0 ever holds one, and only the front operations write it.
+    /// A dead slot is never revived in place except by
+    /// [`PyHashTable::move_to_front`], which rewrites the record itself, and
+    /// compaction drops the tombstone, so the record cannot go stale. The
+    /// default records nothing, which costs a rescan rather than correctness.
+    fn dead_prefix_tombstone(_end: usize) -> Self
+    where
+        Self: Sized,
+    {
+        Self::tombstone()
+    }
+
+    /// The end [`dead_prefix_tombstone`](Self::dead_prefix_tombstone)
+    /// recorded, or 0 for a tombstone that records none.
+    fn dead_prefix_end(&self) -> usize {
+        0
+    }
 
     /// The `RuntimeError` raised when the container changes size mid-walk.
     ///
@@ -322,7 +343,28 @@ impl<E: TableEntry> PyHashTable<E> {
     /// The first live slot at or after `from`.
     #[inline]
     fn next_live_slot(&self, from: usize) -> Option<usize> {
+        let from = if from == 0 { self.dead_prefix_hint() } else { from };
         (from..self.entries.len()).find(|&i| self.entries[i].is_live())
+    }
+
+    /// A slot no later than the first live one: past the dead prefix slot 0
+    /// records, or 0 when it records none.
+    #[inline]
+    fn dead_prefix_hint(&self) -> usize {
+        match self.entries.first() {
+            Some(first) if !first.is_live() => first.dead_prefix_end().clamp(1, self.entries.len()),
+            _ => 0,
+        }
+    }
+
+    /// The first live slot (the slot count if none), recording the dead prefix
+    /// in slot 0 so the next front operation skips it in one step.
+    fn first_live_slot(&mut self) -> usize {
+        let slot = self.next_live_slot(0).unwrap_or(self.entries.len());
+        if slot > 0 {
+            self.entries[0] = E::dead_prefix_tombstone(slot);
+        }
+        slot
     }
 
     /// The number of live entries — what `len()` reports to Python.
@@ -406,26 +448,80 @@ impl<E: TableEntry> PyHashTable<E> {
 
     /// Tombstones and returns the first live entry, if any — what
     /// `OrderedDict.popitem(last=False)` takes.
+    ///
+    /// Amortized O(1): slot 0 records the dead prefix the pops leave, so
+    /// draining from the front does not rescan it on every call.
     pub(crate) fn pop_first(&mut self) -> Option<E> {
-        let slot = self.entries.iter().position(E::is_live)?;
-        Some(self.tombstone_at(slot))
+        let slot = self.first_live_slot();
+        if slot == self.entries.len() {
+            return None;
+        }
+        let entry = self.tombstone_at(slot);
+        self.entries[0] = E::dead_prefix_tombstone(slot + 1);
+        Some(entry)
     }
 
     /// Moves the live entry a probe found to the front of the iteration order.
     ///
-    /// Slots are renumbered, so this compacts: it is the one reordering a
-    /// table supports besides tombstone-and-[`push`](Self::push), which can
-    /// only move to the back.
+    /// Amortized O(1). The entry takes the last dead slot before the first live
+    /// one, reviving it in place. With no such slot the table is rebuilt with
+    /// [`front_gap`](Self::front_gap) dead slots ahead of the entries, which
+    /// the next moves fill without another rebuild; the rebuild can allocate,
+    /// so [`check_move_to_front`](Self::check_move_to_front) must pass first.
     ///
-    /// Allocates nothing, so it needs no preflight: the tombstone just left
-    /// frees a slot that the insertion at the front takes back, and the
-    /// bucket table is cleared and refilled to the size it already had.
+    /// Slots are renumbered or revived behind a walk's position, so a walk in
+    /// progress may miss the entry, as after any compaction.
     #[expect(clippy::needless_pass_by_value, reason = "taking the slot spends it")]
     pub(crate) fn move_to_front(&mut self, slot: Slot) {
+        let first = self.first_live_slot();
+        if slot.0 == first {
+            return;
+        }
         let entry = self.tombstone_at(slot.0);
-        self.entries.retain(E::is_live);
-        self.entries.insert(0, entry);
-        self.reindex();
+        let target = if first > 0 {
+            first - 1
+        } else {
+            self.entries.retain(E::is_live);
+            let gap = Self::front_gap(self.entries.len());
+            self.entries.reserve_exact(gap + 1);
+            self.entries.splice(0..0, iter::repeat_with(E::tombstone).take(gap + 1));
+            self.reindex();
+            gap
+        };
+        let hash = entry.hash();
+        self.entries[target] = entry;
+        self.indices.insert_unique(hash, target, |&i| self.entries[i].hash());
+        if target > 0 {
+            self.entries[0] = E::dead_prefix_tombstone(target);
+        }
+    }
+
+    /// Preflights the rebuild [`move_to_front`](Self::move_to_front) does when
+    /// no dead slot precedes the first live one.
+    ///
+    /// The bucket table is refilled to the size it had, so only the entry
+    /// vector can grow.
+    pub(crate) fn check_move_to_front(&self, slot: &Slot, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+        if slot.0 == 0 || !self.entries.first().is_some_and(E::is_live) {
+            return Ok(());
+        }
+        let live = self.len() - 1;
+        let needed = live + Self::front_gap(live) + 1;
+        if needed <= self.entries.capacity() {
+            Ok(())
+        } else {
+            tracker.check_pending_allocation(needed.saturating_mul(mem::size_of::<E>()))
+        }
+    }
+
+    /// The dead slots a [`move_to_front`](Self::move_to_front) rebuild leaves
+    /// ahead of `live` entries.
+    ///
+    /// Proportional to the table, so a rebuild's O(n) is spread over that many
+    /// O(1) moves, but under half of it, so the next [`push`](Self::push) does
+    /// not compact the gap away.
+    fn front_gap(live: usize) -> usize {
+        live / 2
     }
 
     /// Moves the live entry a probe found to the back of the iteration order.

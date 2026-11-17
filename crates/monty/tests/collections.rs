@@ -13,9 +13,11 @@
 //! they drive `gc.collect()`, which is a `test-hooks`-only module deliberately
 //! kept out of the sandbox surface.
 
+use std::time::Duration;
+
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyObject, MontyType};
+use monty_types::{CompileOptions, ExcType, MontyObject, MontyType, PrintWriter, ResourceLimits, ResourceTracker};
 
 /// Runs `from collections import <name>` and returns the raised exception.
 fn import_err(name: &str) -> monty_types::MontyException {
@@ -181,5 +183,23 @@ fn dict_subclass_types_cross_host_boundary_as_dict() {
             MontyObject::type_object(MontyType::Dict),
             "{name}"
         );
+    }
+}
+
+/// Draining an `OrderedDict` from the front and reversing one with
+/// `move_to_end(last=False)` cost amortized O(1) per call. Both were quadratic,
+/// rescanning the dead prefix or rebuilding the table on every call, and ran
+/// far past this limit.
+#[test]
+fn ordereddict_front_operations_are_amortized_constant() {
+    for code in [
+        "from collections import OrderedDict\nod = OrderedDict.fromkeys(range(200_000))\nfor _ in range(200_000):\n    od.popitem(last=False)",
+        "from collections import OrderedDict\nod = OrderedDict.fromkeys(range(50_000))\nfor k in range(50_000):\n    od.move_to_end(k, last=False)",
+    ] {
+        let mut ex =
+            MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+        let limits = ResourceLimits::default().max_feed_duration(Duration::from_secs(5));
+        let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+        assert!(result.is_ok(), "{code}: {result:?}");
     }
 }
