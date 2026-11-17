@@ -501,6 +501,44 @@ fn time_limit_covers_pydantic_schema_building() {
     );
 }
 
+/// `from_exception_data` takes any number of line errors: copying, snapshotting
+/// and rendering them poll the clock, so the call itself raises rather than the
+/// next instruction after it.
+#[test]
+fn time_limit_covers_pydantic_from_exception_data() {
+    let code = "from pydantic import ValidationError\nlines = [{'type': 'missing', 'loc': (), 'input': None}] * 150_000\nValidationError.from_exception_data('T', lines)\nprint('reached')\n";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let mut output = String::new();
+    let exc = ex
+        .run(
+            vec![],
+            ResourceTracker::new(limits),
+            PrintWriter::CollectString(&mut output, None),
+        )
+        .expect_err("should exceed time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert_eq!(output, "");
+}
+
+/// A wide `indent` is written in chunks with the clock polled between them.
+#[test]
+fn time_limit_covers_pydantic_dump_json_indent() {
+    let code = "from pydantic import TypeAdapter\nTypeAdapter(list[int]).dump_json([1], indent=200_000_000)\nprint('reached')\n";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let mut output = String::new();
+    let exc = ex
+        .run(
+            vec![],
+            ResourceTracker::new(limits),
+            PrintWriter::CollectString(&mut output, None),
+        )
+        .expect_err("should exceed time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert_eq!(output, "");
+}
+
 /// Each keyword argument to a namedtuple scans its field names, so many
 /// unknown keys against many fields is quadratic work inside one call: the
 /// argument walk polls the clock.

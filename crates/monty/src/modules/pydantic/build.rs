@@ -142,18 +142,20 @@ impl Builder<'_> {
             }
             HeapData::Class(_) if is_dataclass_class(id, vm) => self.dataclass(id, hint, vm),
             HeapData::NamedTupleClass(class) => {
+                // Collected before `class` takes a reference, so a failed check leaks nothing.
+                let field_names = class
+                    .field_names()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, name)| {
+                        vm.heap.tracker.check_memory_time_every(index)?;
+                        Ok(name.as_str(vm.interns).to_owned())
+                    })
+                    .collect::<RunResult<_>>()?;
                 let validator = NamedTupleValidator {
                     class: hint.clone_with_heap(vm.heap),
                     name: class.name(vm.interns).to_owned(),
-                    field_names: class
-                        .field_names()
-                        .iter()
-                        .enumerate()
-                        .map(|(index, name)| {
-                            vm.heap.tracker.check_memory_time_every(index)?;
-                            Ok(name.as_str(vm.interns).to_owned())
-                        })
-                        .collect::<RunResult<_>>()?,
+                    field_names,
                     defaults: class.defaults().len(),
                 };
                 self.arena.push(Validator::NamedTuple(validator), vm)

@@ -187,13 +187,12 @@ impl Snapshotter {
                 }
                 HeapReadOutput::Exception(exc) => {
                     let exc = exc.get(vm.heap);
-                    let arg = exc.arg().cloned();
-                    self.charge(arg.as_ref().map_or(0, String::len));
-                    MontyObject::exception(exc.exc_type(), arg)
+                    self.copy_text(exc.arg().map_or(0, String::len), &vm.heap.tracker)?;
+                    MontyObject::exception(exc.exc_type(), exc.arg().cloned())
                 }
                 HeapReadOutput::Path(path) => {
                     let path = path.get(vm.heap).as_str();
-                    self.charge(path.len());
+                    self.copy_text(path.len(), &vm.heap.tracker)?;
                     MontyObject::path(path)
                 }
                 _ => self.repr(value, vm)?,
@@ -336,9 +335,9 @@ pub(crate) fn type_name(value: &Value, vm: &VM<'_>) -> String {
 /// marker coming back as the string it holds.
 pub(crate) fn restore_value(snapshot: &MontyObject, vm: &mut VM<'_>) -> RunResult<Value> {
     let (graph, root) = unstable::graph_parts(snapshot);
-    // The copy below and the values built from it each hold the snapshot's text.
-    let text: usize = graph.nodes().iter().map(node_text_len).sum();
-    check_large_text(text.saturating_mul(2), &vm.heap.tracker)?;
+    // The copy below and the values built from it each hold the snapshot's payload.
+    let size: usize = graph.nodes().iter().map(MontyNode::decoded_size).sum();
+    check_large_text(size.saturating_mul(2), &vm.heap.tracker)?;
     let mut graph = graph.clone();
     for node in graph.nodes_mut() {
         if let MontyNode::Repr(text) | MontyNode::Cycle(text) = node {
@@ -349,15 +348,4 @@ pub(crate) fn restore_value(snapshot: &MontyObject, vm: &mut VM<'_>) -> RunResul
     object
         .to_value(vm)
         .map_err(|err| ExcType::value_error(format!("{err}")))
-}
-
-/// The bytes of text a snapshot node holds.
-fn node_text_len(node: &MontyNode) -> usize {
-    match node {
-        MontyNode::String(text) | MontyNode::Repr(text) | MontyNode::Cycle(text) | MontyNode::Decimal(text) => {
-            text.len()
-        }
-        MontyNode::Bytes(bytes) => bytes.len(),
-        _ => 0,
-    }
 }

@@ -9,12 +9,15 @@
 //! and `title` read the stored [`ValidationErrorData`], shared behind an `Arc`
 //! so raising and reading never copy the snapshots.
 
-use std::{fmt, sync::Arc};
+use std::{
+    fmt::{self, Write},
+    sync::Arc,
+};
 
 use jiter::JiterError;
 use monty_types::{
-    ExcData, LocItem, MontyObject, PydanticUserErrorData, ResourceError, ValidationErrorData, ValidationInputType,
-    ValidationLineError,
+    ExcData, LocItem, MontyObject, PydanticUserErrorData, ResourceError, ResourceTracker, ValidationErrorData,
+    ValidationInputType, ValidationLineError,
     unstable::{self, MontyNode},
 };
 use num_bigint::{BigInt, Sign};
@@ -32,6 +35,7 @@ use crate::{
         json_writer::{InfNan, JsonWriter},
         snapshot::{Snapshotter, restore_value, str_string, try_repr_string, type_name},
     },
+    string_builder::StringBuilder,
     types::{Dict, List, allocate_string, allocate_tuple},
     value::{EitherStr, Value},
 };
@@ -161,7 +165,8 @@ fn build(
     defer_drop!(lines, vm);
     let mut snapshotter = Snapshotter::new();
     let mut line_errors = Vec::with_capacity(lines.len());
-    for line in lines {
+    for (index, line) in lines.iter().enumerate() {
+        vm.heap.tracker.check_memory_time_every(index)?;
         let error_type = &line.error_type;
         line_errors.push(ValidationLineError {
             msg: error_type.render_message(input_type),
@@ -181,38 +186,44 @@ fn build(
         input_type,
         line_errors,
     };
-    let message = display(&data, hide_input);
+    let message = display(&data, hide_input, &vm.heap.tracker)?;
     Ok(SimpleException::new_msg(ExcType::ValidationError, message).with_data(ExcData::Validation(Arc::new(data))))
 }
 
 /// `str(exc)`: the count line, then each line error as [`pretty_line`] renders it.
-fn display(data: &ValidationErrorData, hide_input: bool) -> String {
+///
+/// Built under the tracker and polled per line, since a `from_exception_data`
+/// call can supply any number of lines.
+fn display(data: &ValidationErrorData, hide_input: bool, tracker: &ResourceTracker) -> RunResult<String> {
     let count = data.line_errors.len();
     let plural = if count == 1 { "" } else { "s" };
-    let mut out = format!("{count} validation error{plural} for {}\n", data.title);
+    // A failed write is stashed in the builder and raised by `finish_raw`.
+    let mut out = StringBuilder::new(tracker);
+    let _ = writeln!(out, "{count} validation error{plural} for {}", data.title);
     for (index, line) in data.line_errors.iter().enumerate() {
+        tracker.check_time_every(index)?;
         if index > 0 {
-            out.push('\n');
+            let _ = out.write_char('\n');
         }
         pretty_line(&mut out, line, hide_input);
     }
-    out
+    out.finish_raw()
 }
 
 /// One line error in `str(exc)`'s layout: the dotted location on its own
 /// line, the message with its type, input and input type, then the URL.
-fn pretty_line(out: &mut String, line: &ValidationLineError, hide_input: bool) {
+fn pretty_line(out: &mut impl Write, line: &ValidationLineError, hide_input: bool) {
     if !line.loc.is_empty() {
         let loc: Vec<String> = line.loc.iter().map(loc_item_display).collect();
-        out.push_str(&loc.join("."));
-        out.push('\n');
+        let _ = out.write_str(&loc.join("."));
+        let _ = out.write_char('\n');
     }
-    out.push_str("  ");
-    out.push_str(&line.msg);
-    out.push_str(" [type=");
-    out.push_str(&line.error_type);
+    let _ = out.write_str("  ");
+    let _ = out.write_str(&line.msg);
+    let _ = out.write_str(" [type=");
+    let _ = out.write_str(&line.error_type);
     if !hide_input && line.error_type != "default_factory_not_called" {
-        out.push_str(", input_value=");
+        let _ = out.write_str(", input_value=");
         let mut repr = TruncatedRepr::default();
         let shortened = shorten_leaf(&line.input);
         // Writing into `TruncatedRepr` never fails.
@@ -222,13 +233,13 @@ fn pretty_line(out: &mut String, line: &ValidationLineError, hide_input: bool) {
             .as_ref()
             .write_unmarked_repr(&mut repr);
         repr.finish(out);
-        out.push_str(", input_type=");
-        out.push_str(&line.input_type_name);
+        let _ = out.write_str(", input_type=");
+        let _ = out.write_str(&line.input_type_name);
     }
-    out.push(']');
-    out.push_str("\n    For further information visit ");
-    out.push_str(ERROR_URL_PREFIX);
-    out.push_str(&line.error_type);
+    let _ = out.write_char(']');
+    let _ = out.write_str("\n    For further information visit ");
+    let _ = out.write_str(ERROR_URL_PREFIX);
+    let _ = out.write_str(&line.error_type);
 }
 
 /// A long `str` or `bytes` input cut to its two ends, so `str(exc)` need not
@@ -287,16 +298,16 @@ impl TruncatedRepr {
     const TAIL_TRIM_AT: usize = 4096;
 
     /// Appends the repr, cut in the middle if it is over [`Self::MAX_LEN`].
-    fn finish(self, out: &mut String) {
+    fn finish(self, out: &mut impl Write) {
         if self.len <= Self::MAX_LEN {
-            out.push_str(&self.head);
+            let _ = out.write_str(&self.head);
         } else {
             let mid = Self::MAX_LEN.div_ceil(2);
-            out.push_str(&self.head[..floor_char_boundary(&self.head, mid)]);
-            out.push_str("...");
+            let _ = out.write_str(&self.head[..floor_char_boundary(&self.head, mid)]);
+            let _ = out.write_str("...");
             let tail_start = self.len - self.tail.len();
             let cut = (self.len - (mid - 1)) - tail_start;
-            out.push_str(&self.tail[ceil_char_boundary(&self.tail, cut)..]);
+            let _ = out.write_str(&self.tail[ceil_char_boundary(&self.tail, cut)..]);
         }
     }
 }
@@ -644,7 +655,8 @@ fn from_exception_data(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult
         .ok_or_else(|| ExcType::type_error_arg_not_instance("title", &title.py_type_name(vm), "str"))?;
     let mut lines = DropGuard::new(Vec::with_capacity(entries.len()), vm);
     let (lines_mut, vm) = lines.as_parts_mut();
-    for entry in entries {
+    for (index, entry) in entries.iter().enumerate() {
+        vm.heap.tracker.check_memory_time_every(index)?;
         lines_mut.push(line_from_dict(entry, vm)?);
     }
     let input_type = match mode.as_deref() {

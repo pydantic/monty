@@ -404,9 +404,16 @@ str(err) + '\\n' + repr(value_err.errors(include_url=False))
         .unwrap();
     let progress = resolve_name_lookups(progress).unwrap();
     let loaded = round_trip_progress(&progress);
+
+    // Both are resumed for the reason given in the itertools round-trip above.
+    let original = progress.into_function_call().expect("should be at function call");
+    let from_original = original.resume(MontyObject::none(), PrintWriter::Disabled).unwrap();
+    let from_original = from_original.into_complete().unwrap();
+
     let call = loaded.into_function_call().expect("should be at function call");
     let result = call.resume(MontyObject::none(), PrintWriter::Disabled).unwrap();
     let result = result.into_complete().unwrap();
+    assert_eq!(result, from_original);
     assert_snapshot!(result.as_ref().as_str().unwrap(), @"
     2 validation errors for list[int]
     1
