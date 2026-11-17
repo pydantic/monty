@@ -73,6 +73,7 @@ assert 3 * [1, 2] == [1, 2, 1, 2, 1, 2]
 assert [1] * 0 == []
 assert [1] * -1 == []
 assert [] * 5 == []
+assert [] * 2**40 == []
 assert [1, 2] * 1 == [1, 2]
 assert [[1]] * 2 == [[1], [1]]
 
@@ -95,6 +96,12 @@ except OverflowError as exc:
 try:
     [1] * -(2**70)
     assert False, 'expected [1] * -(2**70) to raise'
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
+# the count is checked before the empty operand short-circuits
+try:
+    [] * 2**63
+    assert False, 'expected [] * 2**63 to raise'
 except OverflowError as exc:
     assert str(exc) == "cannot fit 'int' into an index-sized integer"
 

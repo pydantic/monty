@@ -138,6 +138,7 @@ const SANDBOX_MODULES = new Set([
   'posixpath',
   'random',
   're',
+  'statistics',
   'sys',
   'time',
   'tomllib',

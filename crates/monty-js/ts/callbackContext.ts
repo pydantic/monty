@@ -3,9 +3,12 @@
 import { diag, trace, type Context, type Span } from '@opentelemetry/api'
 
 type NativePrintCallback = (stream: 'stdout' | 'stderr', text: string, parent?: string | null) => void
+/** Announces a call the worker streamed mid-turn: its call ID and its span key. */
+type NativeStreamedCallCallback = (callId: number, parent?: string | null) => void
 
 interface CallbackContextHandlers {
   bindPrint(callback: NativePrintCallback): NativePrintCallback
+  bindStreamedCall(callback: NativeStreamedCallCallback): NativeStreamedCallCallback
   run<T>(parent: string | undefined, callback: () => T): T
   span(parent: string | undefined): Span | undefined
 }
@@ -18,6 +21,11 @@ export function setCallbackContextHandlers(value: CallbackContextHandlers): void
 
 export function bindPrintCallback(callback: NativePrintCallback): NativePrintCallback {
   return handlers?.bindPrint(callback) ?? callback
+}
+
+/** Binds a streamed-call callback to the caller's async context, run under the call's span. */
+export function bindStreamedCallCallback(callback: NativeStreamedCallCallback): NativeStreamedCallCallback {
+  return handlers?.bindStreamedCall(callback) ?? callback
 }
 
 /** Returns the suspension's span in its captured context, preserving baggage and other entries. */

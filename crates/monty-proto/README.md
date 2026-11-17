@@ -68,6 +68,19 @@ Repeated fields and byte buffers in protocol messages use `BudgetVec<T>`.
 Construct them from standard vectors with `.into()` or collect an iterator directly; use `.into_inner()` to recover a standard vector without copying.
 Host construction and cloning are unbudgeted; fallible `try_push` charges any growth to the active decode budget.
 
+## Positional writes and protocol compatibility
+
+Protocol 9 adds `OsCall.write_bytes_at` for positional binary file-object writes, including ordinary `wb` files.
+`Path.write_bytes()` still uses the truncating `OsCall.write_bytes` operation.
+Protocol 7 and 8 clients remain supported: sequential `wb` writes use the original write/append calls.
+Binary update mode and writes away from EOF raise `NotImplementedError` before issuing filesystem calls to those clients.
+The configured client's capabilities also apply after loading a snapshot.
+A snapshot suspended on an unsupported operation is refused.
+Upgrade relays and filesystem handlers before enabling protocol 9 workers; the client/worker version check does not negotiate
+capabilities with an intermediary relay.
+Custom handlers serving protocol 9 must implement positional writes rather than substituting append or truncating writes.
+The built-in mounts and Python `OSAccess` implement it.
+
 ## Values are special-cased for performance
 
 Values cross as one flat `monty.v1.Arena` per message: a post-order node arena in which containers hold child indexes.
@@ -110,7 +123,9 @@ See `DEFAULT_MAX_DECODE_BYTES` in `src/frame.rs` for the accounting contract.
 The browser component uses separate decoded-value estimates for WIT arenas, with the same 1 GiB ceiling.
 Those checks do not account for all allocations made by the component ABI or JavaScript conversion.
 
-Invalid dates, timedeltas, exception names and other semantic values are rejected after parsing each protobuf node.
+Invalid dates, timedeltas and other semantic values are rejected after parsing each protobuf node.
+An exception name the receiver does not know decodes as `Exception`, with the name leading its message
+(`statistics.StatisticsError: ...`), so a peer from a newer release can add exception types without ending the session.
 The browser component validates semantic values while converting WIT arenas.
 A client receiving an invalid frame discards the worker with a protocol error.
 A worker receiving such a malformed request reports `RuntimeError("protocol violation: malformed request: ...")`
@@ -133,6 +148,20 @@ The client sends its value or exception in `ResumeFutures`, with exactly one res
 The worker creates a settled awaitable and continues, avoiding a separate `ResolveFutures` suspension.
 Synchronous returns still use `ResumeCall`; clients may also ignore the hint and register a pending future as before.
 Older workers omit the flag, which defaults to false, so newer clients retain the existing reply sequence.
+
+Calls to async host functions start without suspending when the client sets `Configure.accepts_streamed_calls` and the feed
+sets `Feed.stream_async_calls`; a client answering every call itself, as `feed_start` does, leaves the feed's flag unset.
+A call is eligible when its callee's `Function` value has `is_async` set, or when the call has no receiver and the
+feed lists its name in `Feed.async_functions` (the case of a bare name the client never supplied a value for).
+A call the sandbox awaits at once with no other task to run still suspends, so the client can answer it eagerly.
+The worker registers the call's future itself, sends the call in a `StreamedCalls` event and keeps running.
+`StreamedCalls`, like `Print`, does not end the turn, and every started call is sent before the turn-ending event that
+follows it, so a `ResolveFutures` only names calls the client has received.
+The client settles them through the usual `ResolveFutures` / `ResumeFutures` exchange.
+Without the flag the worker suspends with `FunctionCall` as before, which keeps an older client, or a relay forwarding
+for one, from seeing an event tag it does not know.
+Older workers ignore the flag, so it needs no protocol version change; a relay that cannot forward `StreamedCalls`
+must clear it.
 
 ## Monty crates
 

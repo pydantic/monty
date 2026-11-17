@@ -61,6 +61,13 @@ export interface MontyRemoteOptions {
    * sessions can be resumed; see `MontyShutdown`.
    */
   autoResume?: boolean
+  /**
+   * Let a call to an `async` host function that the sandbox does not await at
+   * once go to the host without suspending the worker, saving a network round
+   * trip per call; errors from such calls are raised at the `await`. On by
+   * default, unlike the subprocess `Monty`. See [starting calls without waiting](https://pydantic.dev/docs/monty/host-functions#starting-calls-without-waiting).
+   */
+  streamAsyncCalls?: boolean
 }
 
 /** Options for [`MontyRemote.checkout`]: the local options plus the server's session settings. */
@@ -124,6 +131,7 @@ export class MontyRemote {
       ...graceMs('feedDurationLimitGraceMs', options.feedDurationLimitGrace),
       ...graceMs('turnDurationLimitGraceMs', options.turnDurationLimitGrace),
       autoResume: options.autoResume ?? true,
+      streamAsyncCalls: options.streamAsyncCalls ?? true,
     })
     await startPool(native)
     return new MontyRemote(native, metadata)

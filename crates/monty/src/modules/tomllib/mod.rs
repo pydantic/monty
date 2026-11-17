@@ -27,10 +27,10 @@ use crate::{
     codecs::Codec,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{HeapData, HeapId, HeapReadOutput},
+    heap::{HeapData, HeapReadOutput},
     intern::StaticStrings,
     os_dispatch::PostConversionEffect,
-    types::Module,
+    types::{Module, Type},
     value::Value,
 };
 
@@ -47,11 +47,11 @@ pub(crate) enum TomllibFunctions {
     Load,
 }
 
-/// Creates the `tomllib` module and allocates it on the heap.
+/// Creates the `tomllib` module.
 ///
 /// The module exposes everything CPython's does: `loads`, `load` and
 /// `TOMLDecodeError`.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Tomllib, vm.interns);
     module.set_attr(
         StaticStrings::Loads,
@@ -65,10 +65,10 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     );
     module.set_attr(
         StaticStrings::TomlDecodeError,
-        Value::Builtin(Builtins::ExcType(ExcType::TomlDecodeError)),
+        Value::Builtin(Builtins::Type(Type::TomlDecodeError)),
         vm,
     );
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a `tomllib` module function call.

@@ -667,7 +667,9 @@ impl fmt::Display for FormatError {
 ///
 /// Returns a `ValueError` if the format type character is incompatible with the value type.
 pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>) -> Result<String, RunError> {
-    let value_type = value.py_type(vm);
+    let value_type_ref = value.py_type(vm);
+    // A class instance formats like any other non-numeric object.
+    let value_type = value_type_ref.native().unwrap_or(Type::Object);
 
     // Bool is an `int` subclass: every integer/float presentation applies to it
     // using the numeric value (`1`/`0`), so treat it as an int for dispatch
@@ -746,7 +748,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
             format!(
                 "Unknown format code '{}' for object of type '{}'",
                 c.as_char(),
-                value_type.name(vm.heap, vm.interns)
+                value_type_ref.name(vm.heap, vm.interns)
             ),
         )
         .into());
@@ -881,7 +883,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
             format!(
                 "Unknown format code '{}' for object of type '{}'",
                 c.as_char(),
-                value_type.name(vm.heap, vm.interns)
+                value_type_ref.name(vm.heap, vm.interns)
             ),
         )
         .into()),

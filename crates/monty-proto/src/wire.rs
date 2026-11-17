@@ -49,7 +49,7 @@ pub use references::{WireIndexes, WireNamedTuple, WireNodePairs};
 use crate::{
     BudgetVec,
     budgeted_prost::encoding,
-    convert::ProtoConvertError,
+    convert::{ProtoConvertError, exc_type_from_wire},
     decode_budget,
     pb::{self, monty_node::Kind},
 };
@@ -474,14 +474,17 @@ fn encode_node(node: &MontyNode, buf: &mut impl BufMut) {
             encode_str(2, fh.mode.as_str(), buf);
             encode_uint64(3, fh.position, buf);
         }
-        MontyNode::Function { name, docstring } => {
-            encode_message_key(
-                tag::FUNCTION,
-                str_len(1, name) + opt_str_len(2, docstring.as_deref()),
-                buf,
-            );
+        MontyNode::Function {
+            name,
+            docstring,
+            is_async,
+        } => {
+            encode_message_key(tag::FUNCTION, function_len(name, docstring.as_deref(), *is_async), buf);
             encode_str(1, name, buf);
             encode_opt_str(2, docstring.as_deref(), buf);
+            if *is_async {
+                encoding::bool::encode(3, &true, buf);
+            }
         }
         MontyNode::Repr(r) => encoding::string::encode(tag::REPR, r, buf),
         MontyNode::Cycle(placeholder) => encoding::string::encode(tag::CYCLE, placeholder, buf),
@@ -536,9 +539,11 @@ fn node_len(node: &MontyNode) -> usize {
         MontyNode::Path(p) => encoding::string::encoded_len(tag::PATH, p),
         MontyNode::Decimal(d) => encoding::string::encoded_len(tag::DECIMAL, d),
         MontyNode::FileHandle(fh) => submessage_len(tag::FILE_HANDLE, file_handle_len(fh)),
-        MontyNode::Function { name, docstring } => {
-            submessage_len(tag::FUNCTION, str_len(1, name) + opt_str_len(2, docstring.as_deref()))
-        }
+        MontyNode::Function {
+            name,
+            docstring,
+            is_async,
+        } => submessage_len(tag::FUNCTION, function_len(name, docstring.as_deref(), *is_async)),
         MontyNode::Repr(r) => encoding::string::encoded_len(tag::REPR, r),
         MontyNode::Cycle(placeholder) => encoding::string::encoded_len(tag::CYCLE, placeholder),
     }
@@ -740,6 +745,17 @@ fn file_handle_len(fh: &MontyFileHandle) -> usize {
     str_len(1, &fh.path) + str_len(2, fh.mode.as_str()) + uint64_len(3, fh.position)
 }
 
+/// Body length of a `Function` message; `is_async` is skipped when false.
+fn function_len(name: &str, docstring: Option<&str>, is_async: bool) -> usize {
+    str_len(1, name)
+        + opt_str_len(2, docstring)
+        + if is_async {
+            encoding::bool::encoded_len(3, &true)
+        } else {
+            0
+        }
+}
+
 // --- proto3 field helpers, mirroring prost's generated default-skipping ---
 
 /// Implicit-presence string field: skipped when empty.
@@ -864,6 +880,7 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
         Kind::Function(value) => MontyNode::Function {
             name: value.name,
             docstring: value.docstring,
+            is_async: value.is_async,
         },
         Kind::Repr(value) => MontyNode::Repr(value),
         Kind::Cycle(value) => MontyNode::Cycle(value),
@@ -903,13 +920,10 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
             offset_seconds: timezone_offset(value.offset_seconds, "TimeZone.offset_seconds").map_err(to_decode_err)?,
             name: value.name,
         }),
-        Kind::Exception(value) => MontyNode::Exception {
-            exc_type: value
-                .exc_type
-                .parse()
-                .map_err(|_| to_decode_err(ProtoConvertError::UnknownExcType(value.exc_type)))?,
-            arg: value.arg,
-        },
+        Kind::Exception(value) => {
+            let (exc_type, arg) = exc_type_from_wire(value.exc_type, value.arg, decode_budget::charge)?;
+            MontyNode::Exception { exc_type, arg }
+        }
         Kind::BuiltinFunction(name) => MontyNode::BuiltinFunction(
             name.parse::<BuiltinsFunctions>()
                 .map_err(|_| to_decode_err(ProtoConvertError::UnknownBuiltinFunction(name)))?,
@@ -1098,7 +1112,7 @@ fn type_to_node(ty: pb::Type) -> Result<MontyNode, DecodeError> {
                 id: pb_uuid_to_monty(&id, "Type.id")?,
                 host_defined: origin == pb::TypeOrigin::Host,
                 is_dataclass: ty.is_dataclass,
-                attrs: ty.attrs.map(|attrs| attrs.0.into_inner()).unwrap_or_default(),
+                attrs: ty.attrs.map_or_default(|attrs| attrs.0.into_inner()),
             })?))
         }
     }

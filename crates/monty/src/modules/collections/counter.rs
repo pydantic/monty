@@ -22,7 +22,9 @@ use crate::{
     py_value::PyValue,
     resource_checks::check_repeat_size,
     sorting::{py_eq_item, py_lt, sort_indices, sort_indices_by},
-    types::{Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder},
+    types::{
+        Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, key_hash::plain_hash, py_trait::CmpOrder,
+    },
     value::{VALUE_SIZE, Value},
 };
 
@@ -173,6 +175,10 @@ pub(crate) fn counter_update<'h>(
     subtract: bool,
     vm: &mut VM<'h>,
 ) -> RunResult<()> {
+    // Copying or folding the source can fail before keyword counts are applied.
+    let mut kwargs_guard = DropGuard::new(kwargs, vm);
+    let vm = kwargs_guard.ctx();
+
     // An explicit `None` source is a no-op (CPython skips it before dispatch), so
     // `Counter(None)` and `c.update(None)` only apply the keyword counts below.
     if let Some(source) = source
@@ -180,21 +186,28 @@ pub(crate) fn counter_update<'h>(
     {
         let is_mapping = matches!(&source, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_)));
         if is_mapping {
+            defer_drop!(source, vm);
             let Value::Ref(src_id) = source else {
                 unreachable!("mapping is a ref");
             };
-            // Snapshot (key, delta) pairs first so `c.update(c)` is well-defined.
-            let pairs: Vec<(Value, Value)> = {
-                let Some(src) = vm.heap.read_as::<Dict>(src_id) else {
+            // Only an empty additive update can copy counts verbatim; other updates
+            // must add to existing counts, and subtract must negate incoming counts.
+            if !subtract && counter.get(vm.heap).is_empty() {
+                let Some(src) = vm.heap.read_as::<Dict>(*src_id) else {
                     unreachable!("mapping is a dict");
                 };
-                let src = src.get(vm.heap);
-                src.iter()
-                    .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
-                    .collect()
-            };
-            source.drop_with(vm);
-            counter_merge_mapping(counter, pairs, subtract, vm)?;
+                let copy = src.copy_as(counter.get(vm.heap).cloned_kind(vm.heap), vm)?;
+                mem::replace(counter.get_mut(vm.heap), copy).drop_with(vm);
+            } else {
+                // Snapshot first so `c.update(c)` is well-defined, then release the read guard before callbacks.
+                let pairs = {
+                    let Some(src) = vm.heap.read_as::<Dict>(*src_id) else {
+                        unreachable!("mapping is a dict");
+                    };
+                    src.clone_all_pairs(vm)?
+                };
+                counter_merge_mapping(counter, pairs, subtract, vm)?;
+            }
         } else {
             // `_count_elements`: `self[elem] = self_get(elem, 0) + 1`, so the
             // existing count is the left operand here.
@@ -203,7 +216,12 @@ pub(crate) fn counter_update<'h>(
             // items it never reached.
             defer_drop_mut!(items, vm);
             for item in items.by_ref() {
-                counter_bump(counter, item, &Value::Int(1), subtract, false, vm)?;
+                // `subtract` is pure Python (`self.get(elem, 0) - 1`), keeping the dict key error.
+                if subtract {
+                    counter_bump(counter, item, &Value::Int(1), true, false, vm)?;
+                } else {
+                    counter_count_element(counter, item, vm)?;
+                }
             }
         }
     }
@@ -211,8 +229,27 @@ pub(crate) fn counter_update<'h>(
     // Keyword counts, e.g. `Counter(a=2)` / `c.update(a=5)`. CPython recurses
     // via `self.update(kwds)`, so these follow the mapping path — including the
     // empty-Counter fast path, re-evaluated after the iterable was folded in.
+    let (kwargs, vm) = kwargs_guard.into_parts();
     let kwarg_pairs = counter_kwarg_deltas(kwargs);
     counter_merge_mapping(counter, kwarg_pairs, subtract, vm)?;
+    Ok(())
+}
+
+/// Counts one occurrence of `item` as `_count_elements` does: one bare
+/// `PyObject_Hash`, reused for the lookup and the store, so an unhashable item
+/// raises `hash()`'s error rather than the dict key one.
+fn counter_count_element<'h>(counter: &mut HeapObjectRead<'h, Dict>, item: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    let mut item_guard = DropGuard::new(item, vm);
+    let (item, vm) = item_guard.as_parts_mut();
+    let hash = plain_hash(item, vm)?.raw();
+    let base = counter.get_known_hash(item, hash, vm)?.unwrap_or(Value::Int(0));
+    let total = count_arith(&base, &Value::Int(1), false, vm);
+    base.drop_with(vm);
+    let total = total?;
+    let (item, vm) = item_guard.into_parts();
+    if let Some(old) = counter.set_known_hash(item, total, hash, vm)? {
+        old.drop_with(vm);
+    }
     Ok(())
 }
 

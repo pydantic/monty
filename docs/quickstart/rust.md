@@ -122,6 +122,20 @@ It returns a [`TurnEvent`](../api/rust/monty-pool.md#turnevent):
 Every suspension variant also carries `position`, a `SourceRange` locating the suspending expression: the call, the
 name, or the `await` the main task is blocked on.
 
+With [`PoolConfig::stream_async_calls`](../api/rust/monty-pool.md#poolconfig) (on by default for remote pools, off by
+default for subprocess pools) and a handler passed to
+[`Checkout::set_streamed_call_handler`](../api/rust/monty-pool.md#checkout), calls to async host functions that the
+sandbox does not await at once do not suspend: a `MontyObject::async_function` value, or a name passed to
+[`Checkout::set_async_functions`](../api/rust/monty-pool.md#checkout) for the feeds that follow.
+The worker sends them mid-turn and keeps running, and the turn hands each to the handler in order with prints.
+Start the call there, and settle it with `resume_futures` once `ResolveFutures` names it.
+Each counts against `max_suspensions`: once that budget is spent, the next call suspends instead and the feed is
+aborted there.
+Without a handler, or after `set_async_functions(None)`, calls suspend like any other call.
+Calls whose results the host has not sent may hold at most a quarter of
+[`PoolConfig::max_decode_bytes`](../api/rust/monty-pool.md#poolconfig) of arguments; past that the session ends with a
+`MemoryError`.
+
 A [`Checkout`](../api/rust/monty-pool.md#checkout) dropped without `finish()` kills its worker rather than returning it — mid-execution state cannot be
 trusted back into the pool.
 

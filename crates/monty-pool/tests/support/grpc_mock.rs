@@ -286,7 +286,11 @@ impl MockStream {
         let mut event = decode_frame::<pb::WorkerEvent>(body.as_ref()).expect("decode event");
         if matches!(
             event.kind,
-            Some(pb::worker_event::Kind::Print(_) | pb::worker_event::Kind::Ping(_))
+            Some(
+                pb::worker_event::Kind::Print(_)
+                    | pb::worker_event::Kind::Ping(_)
+                    | pb::worker_event::Kind::StreamedCalls(_)
+            )
         ) {
             // not a reply: sent as written, since re-encoding drops unknown fields
             drop(opening);

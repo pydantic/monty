@@ -10,12 +10,11 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::RunResult,
     frozen::FrozenFunction,
-    heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{BuiltinType, Module, PyTrait, lru_cache},
+    types::{Module, PyTrait, Type, lru_cache},
     value::Value,
 };
 
@@ -51,8 +50,8 @@ pub(crate) enum FunctoolsFunctions {
     LruCache,
 }
 
-/// Creates the `functools` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `functools` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Functools, vm.interns);
 
     module.set_attr(
@@ -62,7 +61,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     );
     module.set_attr(
         StaticStrings::Partial,
-        Value::Builtin(Builtins::Type(BuiltinType::Partial)),
+        Value::Builtin(Builtins::Type(Type::Partial)),
         vm,
     );
 
@@ -76,7 +75,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::ModuleFunction(ModuleFunctions::Functools(FunctoolsFunctions::LruCache)),
         vm,
     );
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `functools` module function.
@@ -125,10 +124,10 @@ fn call_reduce(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
             iterable,
             initial.unwrap_or(Value::None),
             Value::Bool(has_initial),
-            Value::Builtin(Builtins::Type(BuiltinType::Iterator)),
+            Value::Builtin(Builtins::Type(Type::Iterator)),
             Value::Builtin(Builtins::Function(BuiltinsFunctions::Next)),
-            Value::Builtin(Builtins::ExcType(ExcType::StopIteration)),
-            Value::Builtin(Builtins::ExcType(ExcType::TypeError)),
+            Value::Builtin(Builtins::Type(Type::StopIteration)),
+            Value::Builtin(Builtins::Type(Type::TypeError)),
         ],
     )
 }

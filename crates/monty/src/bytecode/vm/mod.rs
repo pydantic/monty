@@ -12,6 +12,7 @@ mod compare;
 mod context_manager;
 mod exceptions;
 mod format;
+mod import_star;
 mod module_cache;
 mod module_finder;
 mod namespace;
@@ -39,7 +40,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{
         code::{Code, LocationEntry},
-        op::{MATCH_KEYS_REST, Opcode, decode_assert_flags},
+        op::{IMPORT_STAR_BIND, MATCH_KEYS_REST, Opcode, decode_assert_flags},
     },
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -64,7 +65,10 @@ use crate::{
     run::{Program, SessionTables, VmEnv},
     types::{
         Dict, PyTrait, SessionRandom,
-        file::{apply_buffer_load, apply_buffer_store, apply_file_next, apply_open_name, apply_write_position},
+        file::{
+            apply_buffer_load, apply_buffer_store, apply_file_next, apply_file_seek_end, apply_open_name,
+            apply_write_position,
+        },
         random::SEED_BYTES,
         str::allocate_string,
     },
@@ -195,6 +199,8 @@ pub enum FrameExit {
         /// (without external function support), this IP is used to restore the frame pointer
         /// before raising `NameError`, so the traceback points to the name rather than the call.
         name_load_ip: Option<usize>,
+        /// The callee is an async host function (see [`CallResult::External`]).
+        is_async: bool,
     },
 
     /// Execution paused for an os function call.
@@ -1211,11 +1217,12 @@ impl<'h> VM<'h> {
                 return Ok(None);
             }
             CallResult::FramePushed => return Ok(None),
-            CallResult::External(name, args) => FrameExit::ExternalCall {
+            CallResult::External { name, args, is_async } => FrameExit::ExternalCall {
                 function_name: name,
                 args,
                 call_id: self.allocate_call_id(),
                 name_load_ip: self.ext_function_load_ip.take(),
+                is_async,
             },
             CallResult::OsCall(call) => return self.prepare_os_call(call, None),
             CallResult::OsCallWithEffect { call, effect } => return self.prepare_os_call(call, Some(effect)),
@@ -2081,6 +2088,14 @@ impl<'h> VM<'h> {
                     let index = usize::from(self.current_frame.fetch_u8());
                     handle_call_result!(self, self.match_attr(index));
                 }
+                Opcode::ImportStar => {
+                    let mode = self.current_frame.fetch_u8();
+                    if mode == IMPORT_STAR_BIND {
+                        try_catch!(self, self.import_star_bind());
+                    } else {
+                        handle_call_result!(self, self.import_star_value(mode));
+                    }
+                }
                 // Special
                 Opcode::Nop => {
                     // No operation
@@ -2149,8 +2164,7 @@ impl<'h> VM<'h> {
                 obj
             }
         };
-        // The sleeps ignore the host's answer, so an unconvertible one (a
-        // host object with no wire form, say) must not fail them.
+        // These effects do not import the reply: sleeps ignore it, and seek only reads the stat size.
         let obj = match self.pending_effect.take() {
             Some(PendingEffect::Post(PostConversionEffect::DiscardResult)) => {
                 self.push(Value::None);
@@ -2160,6 +2174,15 @@ impl<'h> VM<'h> {
                 let settled = self.settled_awaitable(result);
                 self.push(settled);
                 return self.run_external();
+            }
+            Some(PendingEffect::Post(PostConversionEffect::FileSeekEnd { file_id, offset })) => {
+                return match apply_file_seek_end(file_id, offset, &obj, self) {
+                    Ok(value) => {
+                        self.push(value);
+                        self.run_external()
+                    }
+                    Err(err) => self.resume_with_exception(err),
+                };
             }
             effect => {
                 self.pending_effect = effect;
@@ -2211,10 +2234,14 @@ impl<'h> VM<'h> {
             }
             Some(PendingEffect::Post(PostConversionEffect::WritePosition {
                 file_id,
+                payload_length,
                 text_length,
                 result_none,
                 ..
-            })) => apply_write_position(file_id, text_length, result_none, value, self).map(Some),
+            })) => apply_write_position(file_id, payload_length, text_length, result_none, value, self).map(Some),
+            Some(PendingEffect::Post(PostConversionEffect::FileSeekEnd { .. })) => {
+                unreachable!("file seek stat replies are handled before conversion")
+            }
             Some(PendingEffect::Post(PostConversionEffect::LoadThenCall {
                 file_id,
                 callable,
@@ -2353,6 +2380,7 @@ impl<'h> VM<'h> {
                     effect @ (PostConversionEffect::BufferLoad { .. }
                     | PostConversionEffect::FileNext { .. }
                     | PostConversionEffect::LoadThenCall { .. }
+                    | PostConversionEffect::FileSeekEnd { .. }
                     | PostConversionEffect::SeedRandom { .. }),
                 ) => effect.release(self.heap),
                 PendingEffect::Post(PostConversionEffect::SleepResult { result }) => result.drop_with(self),
@@ -2562,8 +2590,7 @@ impl<'h> VM<'h> {
         self.current_frame
             .code
             .location_for_offset(self.instruction_ip)
-            .map(LocationEntry::range)
-            .unwrap_or_default()
+            .map_or_default(LocationEntry::range)
     }
 
     /// Returns the position a suspension at the current instruction reports.
@@ -2627,8 +2654,7 @@ impl<'h> VM<'h> {
         self.current_frame
             .code
             .location_for_offset(offset as usize)
-            .map(LocationEntry::range)
-            .unwrap_or_default()
+            .map_or_default(LocationEntry::range)
     }
 
     // ========================================================================
@@ -2677,7 +2703,7 @@ impl<'h> VM<'h> {
             }
             // Save the load instruction's IP so NameError tracebacks point to the name
             self.ext_function_load_ip = Some(self.instruction_ip);
-            let function = self.heap.get_ext_function(self.interns.get_str(name_id));
+            let function = self.heap.get_ext_function(self.interns.get_str(name_id), false);
             self.push(function);
         } else {
             self.push(value);

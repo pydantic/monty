@@ -12,6 +12,7 @@ import runpy
 import sys
 import tempfile
 import traceback
+from pathlib import Path
 from threading import Lock
 
 from cpython_watchdog import CPythonTestTimeout
@@ -25,6 +26,7 @@ def run_file_and_get_traceback(
     recursion_limit: int | None = None,
     iter_mode: bool = False,
     async_mode: bool = False,
+    mount_root: str | None = None,
 ) -> str | None:
     """
     Execute a Python file and return the formatted traceback if an exception occurs.
@@ -41,6 +43,9 @@ def run_file_and_get_traceback(
             for iter mode tests (tests that use external functions like add_ints).
         async_mode: If True, wrap code in an async context for tests with
             top-level await that Monty supports but CPython doesn't.
+        mount_root: For `mount-fs` tests, the temp directory bound to `root`
+            and put first on `sys.path`, as Monty imports from its mount.
+            The caller removes it and the modules imported from it afterwards.
 
     Returns:
         Formatted traceback string with '^' replaced by '~', or None if no exception.
@@ -84,8 +89,12 @@ def run_file_and_get_traceback(
             tmp_file.close()
             file_path = tmp_file.name
 
+            init_globals = dict(exported_globals)
+            if mount_root is not None:
+                init_globals['root'] = Path(mount_root)
+                sys.path.insert(0, mount_root)
             try:
-                runpy.run_path(file_path, init_globals=exported_globals, run_name='__main__')
+                runpy.run_path(file_path, init_globals=init_globals, run_name='__main__')
             except SystemExit:
                 pass  # don't error on ctrl+c
             except CPythonTestTimeout:

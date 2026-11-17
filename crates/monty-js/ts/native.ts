@@ -256,6 +256,19 @@ export type NativeTurn =
   | DisconnectedTurn
   | ShutdownTurn
 
+/**
+ * A call to an async host function the sandbox started without suspending.
+ * The sandbox already holds a pending future for `callId`, settled through
+ * `resolveFutures` once a `resolveFutures` turn names it.
+ */
+export interface NativeStreamedCall {
+  functionName: string
+  args: unknown[]
+  kwargs: [unknown, unknown][]
+  callId: number
+  position: NativeSourceRange
+}
+
 /** One settled promise outcome delivered to `resolveFutures`. */
 export interface NativeFutureResult {
   callId: number
