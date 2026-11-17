@@ -146,6 +146,10 @@ works on classes; see [classes.md](classes.md#inheritance).
     (`encode`, `decode`,
     `expandtabs`, `splitlines`, `replace`, …) already match; the remainder
     need a per-function `at_most_total` audit.
+- **`str.translate` rejects surrogate code points.** A table mapping a character to an int in
+    U+D800–U+DFFF raises `ValueError: character mapping must be in range(0x110000)`, the same error as an
+    out-of-range code point, because Monty strings cannot hold lone surrogates (CPython returns a string
+    containing one).
 - **`getattr(obj, name)`** — if the resolved attribute would be an async
     coroutine, external function, or OS call, raises `TypeError: "getattr(): attribute is not a simple value"` rather
     than returning a

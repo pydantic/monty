@@ -4,6 +4,7 @@ mod fast_offsets;
 mod heap_str;
 mod inline_str;
 mod iterator;
+mod translate;
 
 use std::{fmt::Write, str};
 
@@ -13,6 +14,7 @@ pub(crate) use iterator::StringIterator;
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use smallvec::smallvec;
+pub(crate) use translate::str_class_method;
 
 use self::fast_offsets::Anchor;
 use super::{
@@ -656,6 +658,9 @@ fn call_str_method_impl<'h>(
         StaticStrings::Rjust => str_rjust(s, args, vm),
         StaticStrings::Zfill => str_zfill(s, args, vm),
         StaticStrings::Expandtabs => str_expandtabs(s, args, vm),
+        StaticStrings::Translate => translate::str_translate(s, args, vm),
+        // maketrans is a staticmethod but also accessible on instances
+        StaticStrings::Maketrans => translate::str_maketrans(args, vm),
         StaticStrings::Format => {
             let template = match copy_format_template(s.as_str(vm), &vm.heap.tracker) {
                 Ok(template) => template,

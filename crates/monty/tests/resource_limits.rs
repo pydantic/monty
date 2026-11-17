@@ -2576,3 +2576,36 @@ fn bytes_iterable_respects_max_memory() {
     let err = ex.run(vec![], tracker, PrintWriter::Stdout).unwrap_err();
     assert_eq!(err.exc_type(), ExcType::MemoryError);
 }
+
+/// `str.translate` grows its output through tracked pushes, so long replacements halt with MemoryError.
+#[test]
+fn str_translate_respects_max_memory() {
+    let mut ex = MontyRun::new(
+        "('a' * 2_000).translate({97: 'x' * 1_000})".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_memory(10_000));
+    let err = ex.run(vec![], tracker, PrintWriter::Stdout).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
+}
+
+/// `str.translate` with a dict table runs no Python frames, so it polls the clock itself.
+/// The turn's closing check raises either way; the elapsed time proves the poll, since the
+/// whole translation takes several seconds in a debug build.
+#[test]
+fn time_limit_covers_str_translate() {
+    let code = "('é' * 20_000_000).translate({})";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let start = ThreadTime::now();
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    let elapsed = start.elapsed();
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "translation should stop at the first poll past the limit, took {elapsed:?}"
+    );
+}

@@ -1308,6 +1308,9 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `math.lcm` of two large coprime ints is a product, preflighted like `*`.
         ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_299_839),
         ("('a' * 1000).replace('a', 'b' * 2000)", 2_047_539),
+        // `str.translate` preflights its ASCII output reservation and tracks amplifying pushes.
+        ("s = 'a' * 600_000\ns.translate({})", 1_244_578),
+        ("('a' * 1000).translate({97: 'b' * 2000})", 1_071_513),
         // Every `%Z` copies the zone name into a `StringBuilder`, refused at a
         // capacity doubling like the formatter cases above: fixed-size pushes
         // make that step deterministic.

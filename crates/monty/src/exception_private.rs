@@ -1480,6 +1480,58 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, "bytes must be in range(0, 256)").into()
     }
 
+    /// Creates the TypeError `str.maketrans(x)` raises when `x` is not exactly a `dict`.
+    #[must_use]
+    fn type_error_maketrans_needs_dict() -> RunError {
+        Self::type_error("if you give only one argument to maketrans it must be a dict")
+    }
+
+    /// Creates the ValueError for a `str.maketrans` dict key that is a str of length other than 1.
+    ///
+    /// CPython's message has no space in `translatetable`.
+    #[must_use]
+    fn value_error_maketrans_key_length() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "string keys in translatetable must be of length 1").into()
+    }
+
+    /// Creates the TypeError for a `str.maketrans` dict key that is neither str nor int.
+    ///
+    /// CPython's message has no space in `mustbe`.
+    #[must_use]
+    fn type_error_maketrans_key_type() -> RunError {
+        Self::type_error("keys in translate table mustbe strings or integers")
+    }
+
+    /// Creates the TypeError `str.maketrans(x, y)` raises when `x` is not a str.
+    #[must_use]
+    fn type_error_maketrans_first_arg() -> RunError {
+        Self::type_error("first maketrans argument must be a string if there is a second argument")
+    }
+
+    /// Creates the ValueError `str.maketrans(x, y)` raises when `x` and `y` differ in length.
+    #[must_use]
+    fn value_error_maketrans_unequal_length() -> RunError {
+        SimpleException::new_msg(
+            ExcType::ValueError,
+            "the first two maketrans arguments must have equal length",
+        )
+        .into()
+    }
+
+    /// Creates the ValueError `str.translate` raises for an int mapping outside the code point range.
+    ///
+    /// Monty also raises it for surrogate code points, which its strings cannot hold.
+    #[must_use]
+    fn value_error_character_mapping_range() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "character mapping must be in range(0x110000)").into()
+    }
+
+    /// Creates the TypeError `str.translate` raises when a table lookup returns an unsupported type.
+    #[must_use]
+    fn type_error_character_mapping_type() -> RunError {
+        Self::type_error("character mapping must return integer, None or str")
+    }
+
     /// Creates the `ValueError` CPython's float-to-string conversion raises for a
     /// precision above `MAX_FLOAT_PRECISION` (`INT_MAX - 1024`).
     ///

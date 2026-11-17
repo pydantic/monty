@@ -26,7 +26,7 @@ use crate::{
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
         bytes, complex, date, datetime, decimal, dict, path,
-        str::PyStr,
+        str::{PyStr, str_class_method},
         time, timedelta, timezone,
         r#type::{bool_init, float_init, int_init, union_init},
     },
@@ -637,7 +637,8 @@ native_types! {
         .builtin()
         .basetype()
         .sequence_repeat()
-        .ctor(Constructor::Value(PyStr::init)),
+        .ctor(Constructor::Value(PyStr::init))
+        .class_method(str_class_method),
     Bytes("bytes")
         .builtin()
         .basetype()

@@ -394,6 +394,11 @@ impl FromValue for StrArg {
 }
 
 impl StrArg {
+    /// Borrows the underlying `Value`, guaranteed to be a `str`.
+    pub fn as_value(&self) -> &Value {
+        &self.0
+    }
+
     /// Borrows the text. Infallible: the constructor validated str-ness and a
     /// live value's type cannot change.
     pub fn as_str<'a>(&'a self, vm: &'a VM<'_>) -> &'a str {
