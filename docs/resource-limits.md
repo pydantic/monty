@@ -244,7 +244,7 @@ limit never fires and every reported duration is zero.
 It also avoids the clock read at each check, which in WebAssembly crosses into JavaScript: in one measurement a loop
 that took 155 ms under Node took 957 ms with a wall-clock limit armed and 157 ms with a work-clock limit.
 
-The interpreter counts units of work and reports `units × 5 ns` wherever it would report execution time: both
+The interpreter counts units of work and reports `units × 5 ns` (`units × 3 ns` in a native worker) wherever it would report execution time: both
 duration limits, the `TimeoutError` message and the execution time sent to telemetry.
 
 - A cheap bytecode instruction, such as loading a local, is one unit.
@@ -259,9 +259,8 @@ duration limits, the `TimeoutError` message and the execution time sent to telem
 
 The same code is charged the same units on every run of one build, whatever else the machine is doing.
 The time is an estimate.
-The rate is the median measured for the WebAssembly build under Node.
-Across the calibration categories the time taken there ranged from about half to one and a half times the time
-reported, and native workers run about twice as fast as reported.
+Each rate is the median measured for that build on one machine: the WebAssembly build under Node, and a native build.
+Across the calibration categories the time taken ranged from about half to one and a half times the time reported.
 `make calibrate-work-clock` measures the rate per category.
 
 Native work that neither polls nor allocates is charged nothing, so keep an outer bound: `request_timeout`, or the
