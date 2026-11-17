@@ -13,7 +13,7 @@ use crate::{
         heap_read_ref_as_field,
     },
     intern::StaticStrings,
-    percent_format::{copy_bytes_template, percent_format_bytes},
+    percent_format::percent_format_bytes,
     py_value::PyValue,
     resource_checks::check_repeat_size,
     types::{
@@ -269,9 +269,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
 
     /// Uses bytes formatting rules but returns a mutable bytearray result.
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        // Formatting arguments can call Python and mutate this buffer; snapshot the template first.
-        let template = copy_bytes_template(self.get(vm.heap).as_slice(), &vm.heap.tracker)?;
-        percent_format_bytes(&template, other, BytesOutput::ByteArray, vm).map(Some)
+        let export = export_buffer(self.id(), vm);
+        defer_drop!(export, vm);
+        let field = heap_read_ref_as_field!(self, ByteArray, bytes);
+        percent_format_bytes(&field.as_slice(), other, BytesOutput::ByteArray, vm).map(Some)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _: &mut LazyHeapSet) -> RunResult<()> {
@@ -281,7 +282,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
     }
 
     fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        super::bytes::bytes_contains(self.get(vm.heap).as_slice(), item, vm).map(Some)
+        let export = export_buffer(self.id(), vm);
+        defer_drop!(export, vm);
+        let field = heap_read_ref_as_field!(self, ByteArray, bytes);
+        super::bytes::bytes_contains(&field.as_slice(), item, vm).map(Some)
     }
 
     /// Integer indices return byte values; slices return independent bytearrays.
@@ -311,6 +315,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         };
 
         if let Some(slice) = slice {
+            if slice.step == Some(0) {
+                return Err(ExcType::value_error_slice_step_zero());
+            }
             if matches!(value.py_value(vm), PyValue::Int(_) | PyValue::Bool(_) | PyValue::Str(_)) {
                 return Err(ExcType::type_error(
                     "can assign only bytes, buffers, or iterables of ints in range(0, 256)",

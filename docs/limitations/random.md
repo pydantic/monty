@@ -63,13 +63,13 @@ The session's `random_start` is not restored: a restored session takes the resto
     `getrandbits(k)` raises `OverflowError: Python int too large for C uint64_t` from `k >= 2**63`, where CPython
     accepts up to `2**64` and then fails to allocate; `randbytes(n)` raises it from `n >= 2**61` in both.
     The sum of `sample(counts=...)` must also fit in a signed 64-bit integer.
-- **Seeds.** `seed(x)` accepts `None`, `int`, `float`, `str` and `bytes`; there is no `bytearray`.
+- **Seeds.** `seed(x)` accepts `None`, `int`, `float`, `str` and `bytes`. Version 2 (the default) also accepts `bytearray`.
     `seed(float('nan'))` seeds from `0`, where CPython hashes the object's address.
     A `str`/`bytes` seed with a `version` other than `1` or `2` is hashed with Monty's own string hash, where CPython's
     hash is randomized per process.
 - **The distributions convert their arguments to float**, so a non-number raises `TypeError: must be real number, not str` where CPython reports the arithmetic that failed (`unsupported operand type(s) for -`).
     `binomialvariate(n, p)` requires an int `n`.
-- **`sample`** accepts `list`, `tuple`, `str`, `bytes`, `range` and `deque` populations only (CPython accepts any
+- **`sample`** accepts `list`, `tuple`, `str`, `bytes`, `bytearray`, `range` and `deque` populations only (CPython accepts any
     `collections.abc.Sequence`).
     `k` and each `counts` entry must be ints, so `sample(x, 1.5)` raises
     `'float' object cannot be interpreted as an integer` instead of CPython's sequence-multiplication error.

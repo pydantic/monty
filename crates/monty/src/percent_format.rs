@@ -22,7 +22,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     fstring::{MAX_FLOAT_PRECISION, ParsedFormatSpec, Sign, TypeChar, format_float_e, format_float_f, format_float_g},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapView},
     py_value::PyValue,
     resource_checks::check_repeat_size,
     str_format::value_error,
@@ -38,27 +38,19 @@ use crate::{
 
 /// Renders `template % args` for a `str` template.
 pub(crate) fn percent_format(template: &str, args: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    let output = format_template::<StrTarget>(template, args, vm)?;
+    let output = format_template::<StrTarget>(&*vm.heap.protect(template), args, vm)?;
     Ok(allocate_string(output, vm.heap))
 }
 
 /// Renders `template % args` for a `bytes` template.
-pub(crate) fn percent_format_bytes(
-    template: &[u8],
+pub(crate) fn percent_format_bytes<'h>(
+    template: &impl HeapView<'h, [u8]>,
     args: &Value,
     output: BytesOutput,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> RunResult<Value> {
     let bytes = format_template::<BytesTarget>(template, args, vm)?;
     Ok(output.allocate(bytes, vm.heap))
-}
-
-/// Copies a `bytes` template through the tracker, so a template near the
-/// memory limit reports `MemoryError` rather than tripping the hard ceiling.
-pub(crate) fn copy_bytes_template(template: &[u8], tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
-    let mut copy = BytesBuilder::with_capacity(template.len(), tracker)?;
-    copy.push_slice(template)?;
-    Ok(copy.finish())
 }
 
 /// Bytes scanned between tracker clock polls while looking for the next `%`.
@@ -364,8 +356,11 @@ impl<'t> OutputBuilder<'t> for BytesBuilder<'t> {
 }
 
 /// Walks the template, copying literal runs and rendering each `%` directive.
-fn format_template<T: Target>(template: &T::Template, args: &Value, vm: &mut VM<'_>) -> RunResult<T::Output> {
-    let bytes = T::as_bytes(template);
+fn format_template<'h, T: Target>(
+    template: &impl HeapView<'h, T::Template>,
+    args: &Value,
+    vm: &mut VM<'h>,
+) -> RunResult<T::Output> {
     let arguments = Arguments::new(args, T::IS_BYTES, vm)?;
     defer_drop!(arguments, vm);
     let cursor = Cursor::default();
@@ -374,13 +369,16 @@ fn format_template<T: Target>(template: &T::Template, args: &Value, vm: &mut VM<
     let mut output = T::Output::default();
     let mut index = 0;
     let mut steps = 0;
-    while index < bytes.len() {
+    let len = T::as_bytes(template.get(vm.heap)).len();
+    while index < len {
+        let current = template.get(vm.heap);
+        let bytes = T::as_bytes(current);
         vm.heap.tracker.check_time_every(steps)?;
         steps += 1;
         let literal_end = find_percent(bytes, index, &vm.heap.tracker)?;
         if literal_end > index {
             output = extend::<T>(output, &vm.heap.tracker, |builder| {
-                T::push_literal(builder, template, index..literal_end)
+                T::push_literal(builder, current, index..literal_end)
             })?;
         }
         if literal_end == bytes.len() {
@@ -529,24 +527,24 @@ struct ParsedDirective {
 }
 
 /// Parses and renders the directive starting just after its `%`.
-fn render_directive<T: Target>(
-    template: &T::Template,
+fn render_directive<'h, T: Target>(
+    template: &impl HeapView<'h, T::Template>,
     start: usize,
     arguments: &Arguments,
     cursor: &mut Cursor,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> RunResult<(T::Output, usize)> {
-    let bytes = T::as_bytes(template);
+    let bytes = T::as_bytes(template.get(vm.heap));
     let mut index = start;
     // `%(key)` is looked up as soon as it is read, so a missing key reports
     // before a malformed spec does.
     if bytes.get(index) == Some(&b'(') {
         let key_end = find_key_end(bytes, index + 1)?;
-        let key = T::key_value(template, index + 1..key_end, vm.heap);
+        let key = T::key_value(template.get(vm.heap), index + 1..key_end, vm.heap);
         lookup_key(key, arguments, cursor, vm)?;
         index = key_end + 1;
     }
-    let parsed = parse_directive::<T>(bytes, index, arguments, cursor, vm)?;
+    let parsed = parse_directive::<T>(template, index, arguments, cursor, vm)?;
 
     // The argument is taken before the conversion is checked, so `'%5%' % ()`
     // reports the missing argument rather than the bad conversion.
@@ -569,23 +567,24 @@ fn render_directive<T: Target>(
         b'F' => format_float::<T>(value, TypeChar::FUpper, spec, vm),
         b'g' => format_float::<T>(value, TypeChar::G, spec, vm),
         b'G' => format_float::<T>(value, TypeChar::GUpper, spec, vm),
-        _ => Err(T::unsupported(template, parsed.end - 1)),
+        _ => Err(T::unsupported(template.get(vm.heap), parsed.end - 1)),
     }?;
     Ok((rendered, parsed.end))
 }
 
 /// Reads the flags, width, precision, optional C length modifier and
 /// conversion byte, consuming the arguments a `*` width or precision names.
-fn parse_directive<T: Target>(
-    template: &[u8],
+fn parse_directive<'h, T: Target>(
+    template: &impl HeapView<'h, T::Template>,
     start: usize,
     arguments: &Arguments,
     cursor: &mut Cursor,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> RunResult<ParsedDirective> {
     let mut spec = Directive::default();
     let mut index = start;
-    while let Some(flag) = template.get(index) {
+    let bytes = T::as_bytes(template.get(vm.heap));
+    while let Some(flag) = bytes.get(index) {
         match flag {
             b'-' => spec.left = true,
             b'+' => spec.sign = Some(Sign::Plus),
@@ -597,37 +596,39 @@ fn parse_directive<T: Target>(
         index += 1;
     }
 
-    if template.get(index) == Some(&b'*') {
+    if bytes.get(index) == Some(&b'*') {
         let width = star_operand(arguments, cursor, vm, ExcType::overflow_c_ssize_t)?;
         // A negative `*` width left-justifies, like the `-` flag.
         spec.left |= width < 0;
         spec.width = usize::try_from(width.unsigned_abs()).map_err(|_| ExcType::overflow_c_ssize_t())?;
         index += 1;
     } else {
-        (spec.width, index) = parse_number(template, index, isize::MAX, "width too big")?;
+        (spec.width, index) = parse_number(bytes, index, isize::MAX, "width too big")?;
     }
 
-    if template.get(index) == Some(&b'.') {
+    let bytes = T::as_bytes(template.get(vm.heap));
+    if bytes.get(index) == Some(&b'.') {
         index += 1;
-        if template.get(index) == Some(&b'*') {
+        if bytes.get(index) == Some(&b'*') {
             let precision = star_operand(arguments, cursor, vm, ExcType::overflow_c_int)?;
             // The precision must fit a C `int`; a negative one clamps to zero.
             let precision = i32::try_from(precision).map_err(|_| ExcType::overflow_c_int())?;
             spec.precision = Some(usize::try_from(precision).unwrap_or(0));
             index += 1;
         } else {
-            let (precision, next) = parse_number(template, index, i32::MAX as isize, T::PRECISION_TOO_BIG)?;
+            let (precision, next) = parse_number(bytes, index, i32::MAX as isize, T::PRECISION_TOO_BIG)?;
             spec.precision = Some(precision);
             index = next;
         }
     }
 
     // C length modifiers are accepted and ignored.
-    if matches!(template.get(index), Some(b'h' | b'l' | b'L')) {
+    let bytes = T::as_bytes(template.get(vm.heap));
+    if matches!(bytes.get(index), Some(b'h' | b'l' | b'L')) {
         index += 1;
     }
 
-    match template.get(index) {
+    match bytes.get(index) {
         Some(conversion) => Ok(ParsedDirective {
             spec,
             conversion: *conversion,
@@ -977,6 +978,7 @@ fn byte_char(value: &Value, vm: &mut VM<'_>) -> RunResult<u8> {
         }
         PyValue::Bool(value) => Ok(u8::from(value)),
         PyValue::Bytes(value) => single_byte(value.as_slice(vm)),
+        PyValue::ByteArray(value) => single_byte(value.get(vm.heap).as_slice()),
         _ => match value.py_index_impl(vm)? {
             Some(index) => {
                 defer_drop!(index, vm);

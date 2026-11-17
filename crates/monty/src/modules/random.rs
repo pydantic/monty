@@ -1096,7 +1096,7 @@ fn bisect_right_f64(a: &[f64], x: f64, hi: usize) -> usize {
 fn is_sequence(ty: Type) -> bool {
     matches!(
         ty,
-        Type::List | Type::Tuple | Type::Str | Type::Bytes | Type::Range | Type::Deque
+        Type::List | Type::Tuple | Type::Str | Type::Bytes | Type::ByteArray | Type::Range | Type::Deque
     )
 }
 

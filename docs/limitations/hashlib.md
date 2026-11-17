@@ -54,7 +54,7 @@ C `long`, which is 32 bits on Windows:
 
 ## Input types
 
-`bytes` is the only bytes-like input: Monty has no `bytearray`, `memoryview` or `array`.
+Hash constructors and `update()` accept `bytes` and `bytearray`.
 The `int` parameters take `int` and `bool`; a class defining `__index__` raises
 `TypeError: 'X' object cannot be interpreted as an integer` (see [classes.md](classes.md)).
 

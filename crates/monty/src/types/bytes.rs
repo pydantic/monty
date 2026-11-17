@@ -78,17 +78,17 @@ use crate::{
     bytecode::{CallResult, VM},
     codecs::Codec,
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes},
     heap::{
         DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapView, heap_read_ref_as_field,
     },
     identity::Identity,
     intern::{BytesId, StaticStrings},
-    percent_format::{copy_bytes_template, percent_format_bytes},
+    percent_format::percent_format_bytes,
     py_value::PyValue,
     resource_checks::{check_repeat_size, check_replace_size, push_checked, repeated_len, try_vec_with_capacity},
-    string_builder::StringBuilder,
+    string_builder::{BytesBuilder, StringBuilder},
     types::{
         List,
         iter::collect_owned_iterable,
@@ -345,7 +345,10 @@ impl<'h> PyTrait<'h> for PyBytes<'h> {
     }
 
     fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        bytes_contains(self.as_slice(vm), item, vm).map(Some)
+        match self {
+            Self::Interned(id) => bytes_contains(&*vm.heap.protect(vm.interns.get_bytes(*id)), item, vm).map(Some),
+            Self::Heap(value) => value.py_contains_impl(item, vm),
+        }
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -376,8 +379,16 @@ impl<'h> PyTrait<'h> for PyBytes<'h> {
     }
 
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let template = copy_bytes_template(self.as_slice(vm), &vm.heap.tracker)?;
-        percent_format_bytes(&template, other, BytesOutput::Bytes, vm).map(Some)
+        match self {
+            Self::Interned(id) => percent_format_bytes(
+                &*vm.heap.protect(vm.interns.get_bytes(*id)),
+                other,
+                BytesOutput::Bytes,
+                vm,
+            )
+            .map(Some),
+            Self::Heap(value) => value.py_mod_impl(other, vm),
+        }
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
@@ -424,7 +435,8 @@ impl ops::Deref for Bytes {
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
     /// One-sided implementation of Python membership (`__contains__`).
     fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        bytes_contains(self.get(vm.heap).as_slice(), item, vm).map(Some)
+        let field = heap_read_ref_as_field!(self, Bytes, 0);
+        bytes_contains(&field.as_slice(), item, vm).map(Some)
     }
 
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
@@ -484,8 +496,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
 
     /// `bytes % args` is printf-style formatting, see `percent_format`.
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let template = copy_bytes_template(self.get(vm.heap).as_slice(), &vm.heap.tracker)?;
-        percent_format_bytes(&template, other, BytesOutput::Bytes, vm).map(Some)
+        let field = heap_read_ref_as_field!(self, Bytes, 0);
+        percent_format_bytes(&field.as_slice(), other, BytesOutput::Bytes, vm).map(Some)
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
@@ -2405,84 +2417,49 @@ pub fn bytes_fromhex(args: ArgValues, output: BytesOutput, vm: &mut VM<'_>) -> R
     let hex_value = args.get_one_arg("bytes.fromhex", vm.heap)?;
     defer_drop!(hex_value, vm);
 
-    let hex_value_py = hex_value.py_value(vm);
-    let hex_chars: Box<dyn Iterator<Item = char> + '_> = match &hex_value_py {
-        PyValue::Str(value) => Box::new(value.as_str(vm).chars()),
-        PyValue::Bytes(value) => Box::new(value.as_slice(vm).iter().copied().map(char::from)),
-        PyValue::ByteArray(value) => Box::new(value.get(vm.heap).as_slice().iter().copied().map(char::from)),
-        _ => {
-            let t = hex_value.py_type_name(vm);
-            return Err(ExcType::type_error(format!(
-                "fromhex() argument must be str or bytes-like, not {t}"
-            )));
+    let input = hex_value
+        .as_str(vm)
+        .map(str::as_bytes)
+        .or_else(|| hex_value.as_buffer(vm))
+        .ok_or_else(|| {
+            ExcType::type_error(format!(
+                "fromhex() argument must be str or bytes-like, not {}",
+                hex_value.py_type_name(vm)
+            ))
+        })?;
+    let mut result = BytesBuilder::with_capacity(0, &vm.heap.tracker)?;
+    let mut high = None;
+    for (index, &byte) in input.iter().enumerate() {
+        vm.heap.tracker.check_time_every(index)?;
+        if high.is_none() && is_py_whitespace(byte) {
+            continue;
         }
-    };
-
-    // CPython allows whitespace BETWEEN byte pairs, but NOT within a pair.
-    // - "de ad" is valid (whitespace between pairs)
-    // - "d e" or "0 1" are NOT valid (whitespace within a pair)
-    // - " 01 " is valid (whitespace before/after)
-    //
-    // Error messages:
-    // - Invalid char (including whitespace in wrong place): "non-hexadecimal number found ... at position X"
-    // - Odd number of valid hex digits: "must contain an even number of hexadecimal digits"
-
-    let mut result = Vec::new();
-    let mut chars = hex_chars.enumerate().peekable();
-
-    loop {
-        // Skip whitespace BETWEEN byte pairs (before the high nibble)
-        while chars
-            .peek()
-            .is_some_and(|(_, c)| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'))
-        {
-            chars.next();
+        let digit = hex_digit_value(byte).ok_or_else(|| {
+            SimpleException::new_msg(
+                ExcType::ValueError,
+                format!("non-hexadecimal number found in fromhex() arg at position {index}"),
+            )
+        })?;
+        if let Some(hi) = high.take() {
+            result.push_slice(&[(hi << 4) | digit])?;
+        } else {
+            high = Some(digit);
         }
-
-        // Get high nibble
-        let Some((hi_pos, hi_char)) = chars.next() else {
-            break; // End of string - we're done
-        };
-
-        let Some(hi_val) = hex_char_to_value(hi_char) else {
-            return Err(SimpleException::new_msg(
-                ExcType::ValueError,
-                format!("non-hexadecimal number found in fromhex() arg at position {hi_pos}"),
-            )
-            .into());
-        };
-
-        // Get low nibble - must be IMMEDIATELY after high nibble (no whitespace)
-        let Some((lo_pos, lo_char)) = chars.next() else {
-            // End of string after high nibble = odd number of hex digits
-            return Err(SimpleException::new_msg(
-                ExcType::ValueError,
-                "fromhex() arg must contain an even number of hexadecimal digits",
-            )
-            .into());
-        };
-
-        let Some(lo_val) = hex_char_to_value(lo_char) else {
-            // Invalid character (including whitespace) in low nibble position
-            return Err(SimpleException::new_msg(
-                ExcType::ValueError,
-                format!("non-hexadecimal number found in fromhex() arg at position {lo_pos}"),
-            )
-            .into());
-        };
-
-        result.push((hi_val << 4) | lo_val);
     }
-
-    Ok(output.allocate(result, vm.heap))
+    if high.is_some() {
+        return Err(ExcType::value_error(
+            "fromhex() arg must contain an even number of hexadecimal digits",
+        ));
+    }
+    Ok(output.allocate(result.finish(), vm.heap))
 }
 
 /// Converts a hex character to its numeric value.
-fn hex_char_to_value(c: char) -> Option<u8> {
-    match c {
-        '0'..='9' => Some(c as u8 - b'0'),
-        'a'..='f' => Some(c as u8 - b'a' + 10),
-        'A'..='F' => Some(c as u8 - b'A' + 10),
+fn hex_digit_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
 }
@@ -2624,30 +2601,28 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIterator> {
 ///
 /// CPython accepts a bytes-like probe (substring) or an integer (byte value);
 /// an integer outside `range(0, 256)` is a `ValueError`, anything else a `TypeError`.
-pub(crate) fn bytes_contains(container: &[u8], item: &Value, vm: &VM<'_>) -> RunResult<bool> {
-    // `None` marks an integer probe that cannot be a byte, keeping the range
-    // error in one place. A `LongInt` never fits in a `u8` by construction — it
-    // exists precisely because the value overflowed `i64`.
-    let byte = match item {
-        Value::Int(i) => Some(*i),
-        Value::Bool(b) => Some(i64::from(*b)),
-        Value::InternLongInt(_) => None,
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)) => None,
-        // A bytes-like probe is a substring test.
-        Value::InternBytes(_) | Value::Ref(_) => {
-            let needle = extract_bytes_only(item, vm)?;
-            // An empty needle is in everything, and `find_subsequence` rejects it.
-            return Ok(needle.is_empty() || find_subsequence(container, needle, vm.heap)?.is_some());
+pub(crate) fn bytes_contains<'h>(
+    container: &impl HeapView<'h, [u8]>,
+    item: &Value,
+    vm: &mut VM<'h>,
+) -> RunResult<bool> {
+    match item.py_index_impl(vm) {
+        Ok(Some(index)) => {
+            defer_drop!(index, vm);
+            let byte = u8::try_from(index.saturating_index(vm)?)
+                .map_err(|_| ExcType::value_error("byte must be in range(0, 256)"))?;
+            Ok(container.get(vm.heap).contains(&byte))
         }
-        other => {
-            return Err(ExcType::type_error(format!(
-                "a bytes-like object is required, not '{}'",
-                other.py_type_name(vm)
-            )));
+        // CPython falls back to a buffer probe when integer conversion raises.
+        Ok(None) | Err(RunError::Exc(_)) => {
+            let needle = item.as_buffer(vm).ok_or_else(|| {
+                ExcType::type_error(format!(
+                    "a bytes-like object is required, not '{}'",
+                    item.py_type_name(vm)
+                ))
+            })?;
+            Ok(needle.is_empty() || find_subsequence(container.get(vm.heap), needle, vm.heap)?.is_some())
         }
-    };
-    match byte.and_then(|b| u8::try_from(b).ok()) {
-        Some(b) => Ok(container.contains(&b)),
-        None => Err(ExcType::value_error("byte must be in range(0, 256)")),
+        Err(err) => Err(err),
     }
 }

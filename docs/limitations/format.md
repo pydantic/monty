@@ -24,8 +24,7 @@ space, `#` and `0` flags, a width and precision given literally or as `*`
 arguments, `%(key)s` mapping lookups, and the ignored `h` / `l` / `L` length
 modifiers. The divergences:
 
-- **`bytes` `%s` / `%b` accept only `bytes`.** Monty has no `bytearray`,
-    `memoryview` or `__bytes__` protocol, so `b'%s' % obj` raises
+- **`bytes` `%s` / `%b` accept `bytes` and `bytearray`.** Monty does not call `__bytes__`, so `b'%s' % obj` raises
     `TypeError: %b requires a bytes-like object, or an object that implements __bytes__, not 'C'`
     even when `C` defines `__bytes__`.
 

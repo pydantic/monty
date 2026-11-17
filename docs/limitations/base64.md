@@ -34,9 +34,7 @@ types and error messages match CPython 3.14 subject to the divergences below.
 
 ## Input types
 
-Encoders take `bytes`; decoders take `bytes` or an ASCII-only `str`. Monty has
-no `bytearray`, `memoryview` or `array`, so the "bytes-like object" the CPython
-docs describe is always `bytes` here.
+Encoders and decoders accept `bytes` and `bytearray`. Decoders also accept ASCII-only strings where CPython does.
 
 ## Module attributes
 

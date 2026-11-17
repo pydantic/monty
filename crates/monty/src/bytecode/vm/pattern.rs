@@ -23,8 +23,9 @@ use crate::{
 /// Builtin types whose class pattern with one positional sub-pattern matches
 /// the subject itself (`case int(x)`), CPython's `_Py_TPFLAGS_MATCH_SELF`.
 /// Subclasses inherit the flag, hence `defaultdict` and `Counter`.
-const SELF_MATCHING_TYPES: [Type; 12] = [
+const SELF_MATCHING_TYPES: [Type; 13] = [
     Type::Bool,
+    Type::ByteArray,
     Type::Bytes,
     Type::Counter,
     Type::DefaultDict,

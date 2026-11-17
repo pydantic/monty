@@ -103,6 +103,10 @@ fn bytearray_results_allocate_one_buffer() {
         child.feed_complete("text = '00' * (6 * 1024 * 1024)\nlen(bytearray.fromhex(text))"),
         MontyObject::int(6 * 1024 * 1024),
     );
+    child.feed_complete("padding = bytearray(7 * 1024 * 1024)");
+    let (_, event) = child.feed("bytearray.fromhex(text)");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 

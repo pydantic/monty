@@ -2548,6 +2548,7 @@ fn call_function_starts_a_fresh_feed_budget() {
 #[test]
 fn timeout_in_bytearray_native_scans() {
     for (setup, operation) in [
+        ("a = b' ' * (4 * 1024 * 1024)", "bytearray.fromhex(a)"),
         ("a = bytearray(b'x' * (16 * 1024 * 1024))", "a.expandtabs()"),
         ("a = bytearray(b'\\t')", "a.expandtabs(64 * 1024 * 1024)"),
         ("a = bytearray(b'x' * (16 * 1024 * 1024))", "a.translate(None)"),
