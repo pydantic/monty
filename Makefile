@@ -296,6 +296,11 @@ bench-pool: ## Run subprocess pool benchmarks (spawn, checkout, wire round-trips
 bench-decode: ## Run worker-frame protobuf decode benchmarks
 	cargo bench -p monty-bench --bench decode
 
+.PHONY: calibrate-work-clock
+calibrate-work-clock: install-js ## Measure the work clock's ns/unit per category, native and wasm; fails on drift
+	cargo bench -p monty-bench --bench work_clock --no-default-features --features worker-alloc -- --check
+	cd crates/monty-js && npm run build:wasm && npm run build:ts && node scripts/calibrate-work-clock.mjs --check
+
 .PHONY: dev-bench
 dev-bench: ## Run benchmarks to test with dev profile
 	cargo bench --profile dev -p monty-bench --bench main -- --test

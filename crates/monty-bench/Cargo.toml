@@ -53,6 +53,12 @@ harness = false
 name = "pool"
 harness = false
 
+# Work-clock calibration: a plain report, not a Criterion benchmark.
+[[bench]]
+name = "work_clock"
+harness = false
+required-features = ["worker-alloc"]
+
 [[bench]]
 name = "decode"
 harness = false
