@@ -113,7 +113,9 @@ class Data:
 
     @classmethod
     def load(cls, directory: Path) -> Data:
-        return cls(json.loads((directory / 'counts.json').read_text()), json.loads((directory / 'wasm.json').read_text()))
+        return cls(
+            json.loads((directory / 'counts.json').read_text()), json.loads((directory / 'wasm.json').read_text())
+        )
 
     def ratios(self, weights: np.ndarray) -> np.ndarray:
         """Each script's measured time over the time `weights` would report."""

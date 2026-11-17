@@ -59,7 +59,7 @@ Off Linux a CPU-mode `ResourceTracker` charges elapsed time instead, so check it
 CPU-mode [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) pools independently measure child process CPU.
 They require a finite `PoolConfig::request_timeout` as a wall deadline.
 Remote deployments enable CPU enforcement in the server's local subprocess pool; remote clients adopt its clock.
-`ExecutionClock::Work` reads no clock: it converts counted work to time at a fixed rate, on every platform.
+`ExecutionClock::Work` reads no clock: it converts counted work to an estimated time at a fixed rate for the build, on every platform.
 See [resource limits](../resource-limits.md#time) for platform support, sampling, fallback, and snapshot compatibility.
 
 A Monty process can never be made fully crash-proof against memory errors — a stack-overflow abort or an allocator abort

@@ -278,7 +278,7 @@ indistinguishable from a stack overflow.
 - Budgets use wall time by default. CPU mode, Linux only, uses thread CPU time, with elapsed-time fallback for unusable counters.
     See [resource limits](../resource-limits.md#time) for sampling details.
 - Work mode budgets count executed work converted at a fixed rate, not time: a limit fires after the same work on
-    every run, earlier or later than its nominal duration.
+    every run of one build, earlier or later than its nominal duration.
     See [the work execution clock](../resource-limits.md#work-execution-clock).
 - Both budgets cover **execution time**: the clock runs
     only while the interpreter executes bytecode or its native builtins. The clock pauses while execution

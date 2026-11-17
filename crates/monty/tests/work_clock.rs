@@ -163,6 +163,38 @@ fn native_operations_charge_work() {
     }
 }
 
+/// Work that produces nothing, or little, is still charged: a scan that fails, a base reduced
+/// before a modular power, an encoding that raises, a search bounded by character offsets.
+#[test]
+fn work_without_a_result_is_charged() {
+    let mut repl = work_repl(None);
+    let setup = "import json, re\nvalues = list(range(200_000))\ntext = '0123456789' * 100_000\n\
+                 big = 3**200_000\nuni = 'é' * 500_000";
+    feed(&mut repl, setup).unwrap();
+    let mut cost = |code: &str| {
+        let before = units(&repl);
+        feed(&mut repl, code).unwrap();
+        units(&repl) - before
+    };
+    for (code, at_least) in [
+        ("re.fullmatch('[0-9]+x', text)", 50_000),
+        ("re.match('[0-9]+x', text)", 50_000),
+        ("re.split('x', text)", 50_000),
+        ("pow(big, 2, 7)", 1_000),
+        (
+            "try:\n    json.dumps(values + [{1}])\nexcept TypeError:\n    pass",
+            100_000,
+        ),
+        ("uni.find('x', 499_999)", 50_000),
+    ] {
+        let units = cost(code);
+        assert!(units >= at_least, "{code}: {units} units");
+    }
+    // nothing is divided when the dividend is the shorter operand
+    let units = cost("1 // big");
+    assert!(units < 100, "{units} units");
+}
+
 /// The calibration scripts `make calibrate-work-clock` measures, one per category of work.
 const CALIBRATION_SCRIPTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../monty-bench/benches/python/work_clock");
 
@@ -193,7 +225,7 @@ fn calibration_scripts_cost_fixed_units() {
     func_calls: 1768680
     json_roundtrip: 4664361
     list_ops: 4487639
-    regex: 1589724
+    regex: 1606159
     script_style: 11768467
     sorting: 13035777
     str_build: 2621725

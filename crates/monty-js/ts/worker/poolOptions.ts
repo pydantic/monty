@@ -38,7 +38,7 @@ export function createWorkerPoolFromFactory(
   options: WasmPoolOptions,
   concurrency: number,
 ): Promise<Monty> {
-  const executionClock = options.executionClock ?? 'wall'
+  const executionClock = options.executionClock === undefined ? 'wall' : options.executionClock
   if (executionClock === 'cpu') {
     throw new TypeError("WebAssembly workers require executionClock: 'wall' or 'work'")
   }

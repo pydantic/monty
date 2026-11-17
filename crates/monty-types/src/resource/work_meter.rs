@@ -13,6 +13,7 @@ use super::{work_event::WorkEvent, work_weights::EVENT_MILLI_UNITS};
 /// Bytes ever requested through the global allocator, plus [`ALLOCATION_OVERHEAD_BYTES`] for each
 /// request, wrapping at `usize::MAX`.
 /// `monty-alloc` advances it; it stays zero where that allocator is not installed.
+/// It is process-wide, so sessions executing at once in one process pay for each other's allocations.
 pub static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 /// Bytes each allocation counts for beyond its size, so one counter carries both the

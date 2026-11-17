@@ -154,7 +154,10 @@ impl<'h> PyStr<'h> {
         if self.is_ascii(vm) {
             return char_index.min(text.len());
         }
-        text.char_indices().nth(char_index).map_or(text.len(), |(byte, _)| byte)
+        let offset = text.char_indices().nth(char_index).map_or(text.len(), |(byte, _)| byte);
+        // Walked a character at a time, unlike the ASCII case.
+        charge_scan(offset, &vm.heap.tracker);
+        offset
     }
 
     /// Converts a UTF-8 byte offset into the Python character index returned by find/rfind/index/rindex.
@@ -168,6 +171,7 @@ impl<'h> PyStr<'h> {
         if self.is_ascii(vm) {
             return byte_offset;
         }
+        charge_scan(byte_offset, &vm.heap.tracker);
         let text = self.as_str(vm);
         text[..byte_offset].chars().count()
     }

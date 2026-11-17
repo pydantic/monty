@@ -218,7 +218,8 @@ The server does not enforce this requirement; older clients remain accepted.
 A missing clock means legacy wall time. The server's local subprocess pool enforces CPU beside the child.
 WebAssembly workers support wall and work mode.
 
-`ExecutionClock::Work` counts executed work in the worker and converts it to time at a fixed rate.
+`ExecutionClock::Work` counts the bytecode and native work the worker executes, not time suspended on the host, and
+converts it to time at a fixed rate.
 It needs no supervisor clock and no finite `request_timeout`, and works on every platform.
 The pool arms no feed or turn grace backstop for it, locally or for a remote server that reports it, since counted
 time does not predict how long a turn takes; `request_timeout` is the only wall bound.

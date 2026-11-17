@@ -42,7 +42,9 @@ const CORPUS_OUTLIERS = 15
 
 // The wasm build's constant: the one under `cfg(target_family = "wasm")`.
 const nanosPerUnit = Number(
-  /#\[cfg\(target_family = "wasm"\)\]\npub const NANOS_PER_UNIT: u64 = (\d+);/.exec(readFileSync(meterSource, 'utf8'))[1],
+  /#\[cfg\(target_family = "wasm"\)\]\npub const NANOS_PER_UNIT: u64 = (\d+);/.exec(
+    readFileSync(meterSource, 'utf8'),
+  )[1],
 )
 const modules = await loadModule()
 
