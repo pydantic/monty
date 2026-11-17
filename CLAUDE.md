@@ -221,7 +221,11 @@ subprocesses:
     the worker refuses it. Remote clients on any platform can adopt a Linux server's CPU clock.
     Local subprocess pools supervise CPU with the child's OS process clock.
     CPU mode requires a finite `PoolConfig::request_timeout`; remote clients do not supervise CPU locally.
-    WebAssembly workers accept wall mode only.
+    `ExecutionClock::Work` reads no clock: the VM and native operations charge units through
+    `ResourceTracker::charge_work`, `monty-alloc` counts allocated bytes as a floor, and the tracker converts units at
+    `NANOS_PER_UNIT`. A native operation whose cost is not its poll count needs its own charge;
+    `make calibrate-work-clock` shows which do, and `calibration_scripts_cost_fixed_units` pins the totals.
+    Pools arm no wall backstop for it. WebAssembly workers accept wall and work mode.
     Snapshots retain their clock; the worker rejects a load configured with another clock.
 - `crates/monty-pool` — the client: an async (tokio) elastic pool of workers
     with crash detection/replacement and a hard per-turn timeout. Frame reads
@@ -582,6 +586,7 @@ make check-unicode-type   Verify the checked-in str character-property tables ma
 make update-typeshed      Update vendored typeshed from upstream
 make bench                Run benchmarks
 make bench-pool           Run subprocess pool benchmarks (spawn, checkout, wire round-trips)
+make calibrate-work-clock Measure the work clock's ns/unit per category, native and wasm; fails on drift
 make dev-bench            Run benchmarks to test with dev profile
 make profile              Profile the code with pprof and generate flamegraphs
 make type-sizes           Write type sizes for the crate to ./type-sizes.txt (requires nightly and top-type-sizes)
