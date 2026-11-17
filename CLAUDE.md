@@ -237,6 +237,20 @@ The contract for crash detection: a worker that exits or EOFs *without* a
 Pool and protocol design belong in their crate READMEs; host-API contracts belong in the relevant
 `docs/` topic and binding reference. Value-conversion divergences belong in `limitations/host-values.md`.
 
+## Native class definitions
+
+Native Python classes implement `ClassDef` (`crates/monty/src/types/class_def.rs`) beside their constructors and members.
+Implement it on the runtime payload, or use a marker when several classes share storage or have no payload type.
+The trait owns names, bases, flags, construction, class attributes and class methods.
+`construct` consumes its arguments on every path and returns `CallResult`; `class_method` returns untouched arguments
+in `Err` when lookup should fall back to an ordinary attribute.
+
+`native_types!` in `types/native.rs` only maps `Type` variants to `ClassDef` implementations.
+It adapts their constants and methods into the runtime's static `TypeDef` table at compile time.
+Keep the variant order and names stable: they determine type IDs and serialized identities.
+Exception definitions share the default constructor through `EXC_TYPE`; their metadata is in
+`exception_private/class_defs.rs`.
+
 ## Bytecode VM Architecture
 
 Monty is implemented as a bytecode VM, same as CPython.

@@ -22,11 +22,30 @@ use crate::{
     py_value::PyValue,
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
+        class_def::ClassDef,
         str::{StringRepr, allocate_string},
         r#type::strip_underscores,
     },
     value::{EitherStr, Value, eq_f64},
 };
+
+impl ClassDef for Complex {
+    const NAME: &'static str = "complex";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        init(vm, args).map(CallResult::Value)
+    }
+
+    fn class_method(attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> Result<RunResult<CallResult>, ArgValues> {
+        if attr.static_string(vm.interns) == Some(StaticStrings::FromNumber) {
+            Ok(class_from_number(vm, args).map(CallResult::Value))
+        } else {
+            Err(args)
+        }
+    }
+}
 
 /// A Python `complex`: real and imaginary IEEE doubles.
 ///
@@ -438,19 +457,6 @@ impl FromValue for Part {
         };
         value.drop_with(vm);
         result
-    }
-}
-
-/// `complex.from_number(...)`.
-pub(crate) fn class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::FromNumber) {
-        Ok(class_from_number(vm, args).map(CallResult::Value))
-    } else {
-        Err(args)
     }
 }
 

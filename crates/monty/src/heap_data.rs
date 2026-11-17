@@ -18,7 +18,7 @@ use crate::{
     hash::HashValue,
     heap::{HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::FunctionId,
-    types::{LazyHeapSet, LongInt, PyTrait, Type, TypeRef},
+    types::{LazyHeapSet, LongInt, PyTrait, Type, TypeRef, class_def::ClassDef},
     value::{EitherStr, Value},
 };
 
@@ -190,6 +190,10 @@ macro_rules! heap_payloads {
 }
 
 pub(crate) use heap_payloads;
+
+impl ClassDef for CellValue {
+    const NAME: &'static str = "cell";
+}
 
 macro_rules! define_heap_data {
     ($(

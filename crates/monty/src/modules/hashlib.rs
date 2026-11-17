@@ -20,7 +20,7 @@ use num_traits::ToPrimitive;
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues, LaxBool, StrArg, long_int},
     builtins::Builtins,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapData},
@@ -29,10 +29,63 @@ use crate::{
     types::{
         Module, Set, Type, allocate_string,
         bytes::allocate_bytes,
+        class_def::ClassDef,
         hashlib::{Blake2Params, Blake2b, Blake2s, DigestBytes, HashAlgorithm, HashObject, hash_input},
     },
     value::{EitherStr, Value},
 };
+
+/// Defines fixed-length hashes over [`HashObject`] storage.
+pub(crate) struct HashlibHashClass;
+
+impl ClassDef for HashlibHashClass {
+    const NAME: &'static str = "_hashlib.HASH";
+}
+
+/// Defines variable-length hashes over [`HashObject`] storage.
+pub(crate) struct HashlibHashXofClass;
+
+impl ClassDef for HashlibHashXofClass {
+    const NAME: &'static str = "_hashlib.HASHXOF";
+}
+
+/// Defines `hashlib.blake2b` over [`HashObject`] storage.
+pub(crate) struct Blake2bClass;
+
+impl ClassDef for Blake2bClass {
+    const NAME: &'static str = "_blake2.blake2b";
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        blake2b_init(vm, args).map(CallResult::Value)
+    }
+
+    fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+        match attr.static_string(vm.interns)? {
+            StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize => Some(Value::Int(64)),
+            StaticStrings::SaltSize | StaticStrings::PersonSize => Some(Value::Int(16)),
+            _ => None,
+        }
+    }
+}
+
+/// Defines `hashlib.blake2s` over [`HashObject`] storage.
+pub(crate) struct Blake2sClass;
+
+impl ClassDef for Blake2sClass {
+    const NAME: &'static str = "_blake2.blake2s";
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        blake2s_init(vm, args).map(CallResult::Value)
+    }
+
+    fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+        match attr.static_string(vm.interns)? {
+            StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize => Some(Value::Int(32)),
+            StaticStrings::SaltSize | StaticStrings::PersonSize => Some(Value::Int(8)),
+            _ => None,
+        }
+    }
+}
 
 /// `hashlib` module functions, one variant per Python-visible function.
 ///
@@ -477,24 +530,6 @@ pub(crate) fn blake2b_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 /// The `blake2s` constructor, for the native type table.
 pub(crate) fn blake2s_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     blake2_init(Blake2Kind::Blake2s, vm, args)
-}
-
-/// `blake2b`'s size limits, on the class and so on its instances.
-pub(crate) fn blake2b_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    match attr.static_string(vm.interns)? {
-        StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize => Some(Value::Int(64)),
-        StaticStrings::SaltSize | StaticStrings::PersonSize => Some(Value::Int(16)),
-        _ => None,
-    }
-}
-
-/// `blake2s`'s size limits, on the class and so on its instances.
-pub(crate) fn blake2s_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    match attr.static_string(vm.interns)? {
-        StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize => Some(Value::Int(32)),
-        StaticStrings::SaltSize | StaticStrings::PersonSize => Some(Value::Int(8)),
-        _ => None,
-    }
 }
 
 /// `blake2b(...)` / `blake2s(...)`, also reached through `hashlib.new()`.

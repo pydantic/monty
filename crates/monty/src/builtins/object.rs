@@ -11,22 +11,31 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropWithContext, HeapData, HeapId},
-    types::{Dict, Instance, PyTrait, Type, TypeRef, instance::class_defines},
+    types::{Dict, Instance, PyTrait, Type, TypeRef, class_def::ClassDef, instance::class_defines},
     value::{EitherStr, Value},
 };
 
-/// `object`'s class attributes, for the native type table.
-pub(crate) fn object_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    let function = match attr.as_str(vm.interns) {
-        // Exists so a class that hooks attribute writes has a way to perform
-        // one (see `limitations/classes.md`).
-        "__setattr__" => BuiltinsFunctions::ObjectSetattr,
-        "__new__" => BuiltinsFunctions::ObjectNew,
-        "__init__" => BuiltinsFunctions::ObjectInit,
-        "__init_subclass__" => BuiltinsFunctions::ObjectInitSubclass,
-        _ => return None,
-    };
-    Some(Value::Builtin(Builtins::Function(function)))
+/// Root of the native and Python-defined class hierarchies.
+pub(crate) struct ObjectClass;
+
+impl ClassDef for ObjectClass {
+    const NAME: &'static str = "object";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASES: &'static [Type] = &[];
+    const BASETYPE: bool = true;
+
+    fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+        let function = match attr.as_str(vm.interns) {
+            // Exists so a class that hooks attribute writes has a way to perform
+            // one (see `limitations/classes.md`).
+            "__setattr__" => BuiltinsFunctions::ObjectSetattr,
+            "__new__" => BuiltinsFunctions::ObjectNew,
+            "__init__" => BuiltinsFunctions::ObjectInit,
+            "__init_subclass__" => BuiltinsFunctions::ObjectInitSubclass,
+            _ => return None,
+        };
+        Some(Value::Builtin(Builtins::Function(function)))
+    }
 }
 
 /// Arguments of `object.__new__(cls, /, *args, **kwargs)`.

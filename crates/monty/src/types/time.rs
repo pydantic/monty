@@ -31,6 +31,7 @@ use crate::{
     intern::StaticStrings,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type, TypeRef,
+        class_def::ClassDef,
         date::{self, StrftimeArgs},
         datetime::{allocate_tzinfo_ref, tzinfo_from_value},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
@@ -38,6 +39,32 @@ use crate::{
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for Time {
+    const NAME: &'static str = "datetime.time";
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        init(vm, args).map(CallResult::Value)
+    }
+
+    fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+        Some(match attr.static_string(vm.interns)? {
+            StaticStrings::Min => allocate_naive(0, 0, 0, 0, vm.heap),
+            StaticStrings::Max => allocate_naive(23, 59, 59, 999_999, vm.heap),
+            StaticStrings::Resolution => timedelta::allocate_micros(1, vm.heap),
+            _ => return None,
+        })
+    }
+
+    fn class_method(attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> Result<RunResult<CallResult>, ArgValues> {
+        if attr.static_string(vm.interns) == Some(StaticStrings::Fromisoformat) {
+            Ok(class_fromisoformat(vm, args).map(CallResult::Value))
+        } else {
+            Err(args)
+        }
+    }
+}
 
 /// `datetime.time` storage.
 ///
@@ -203,29 +230,6 @@ fn allocate_with_tz(vm: &mut VM<'_>, mut time: Time, tz_ref: Option<HeapId>) -> 
         time.tzinfo = Some(tz_ref);
     }
     Value::Ref(vm.heap.allocate(HeapData::Time(time)))
-}
-
-/// `time.min`, `time.max` and `time.resolution`.
-pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    Some(match attr.static_string(vm.interns)? {
-        StaticStrings::Min => allocate_naive(0, 0, 0, 0, vm.heap),
-        StaticStrings::Max => allocate_naive(23, 59, 59, 999_999, vm.heap),
-        StaticStrings::Resolution => timedelta::allocate_micros(1, vm.heap),
-        _ => return None,
-    })
-}
-
-/// `time.fromisoformat()`.
-pub(crate) fn class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::Fromisoformat) {
-        Ok(class_fromisoformat(vm, args).map(CallResult::Value))
-    } else {
-        Err(args)
-    }
 }
 
 /// `time.fromisoformat(s)` — the inverse of `isoformat()`.

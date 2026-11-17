@@ -92,12 +92,37 @@ use crate::{
     },
     types::{
         List,
+        class_def::ClassDef,
         iter::checked_preallocation_hint,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
     value::{EitherStr, VALUE_SIZE, Value, eq_bytes},
 };
+
+impl ClassDef for Bytes {
+    const NAME: &'static str = "bytes";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+    const SEQUENCE_REPEAT: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+
+    fn class_method(attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> Result<RunResult<CallResult>, ArgValues> {
+        if attr.static_string(vm.interns) == Some(StaticStrings::Fromhex) {
+            Ok(bytes_fromhex(args, vm).map(CallResult::Value))
+        } else {
+            Err(args)
+        }
+    }
+}
+
+impl ClassDef for BytesIterator {
+    const NAME: &'static str = "bytes_iterator";
+    const ITERATOR: bool = true;
+}
 
 // =============================================================================
 // ASCII byte helper functions
@@ -2416,19 +2441,6 @@ struct BytesHexArgs {
 // =============================================================================
 // fromhex classmethod
 // =============================================================================
-
-/// `bytes.fromhex(...)` called on the type.
-pub(crate) fn bytes_class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::Fromhex) {
-        Ok(bytes_fromhex(args, vm).map(CallResult::Value))
-    } else {
-        Err(args)
-    }
-}
 
 /// Implements Python's `bytes.fromhex(string)` classmethod.
 ///

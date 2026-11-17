@@ -34,10 +34,29 @@ use crate::{
     py_value::PyValue,
     types::{
         CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, TypeRef, allocate_string,
-        str::allocate_string_no_interning, tuple::allocate_tuple,
+        class_def::ClassDef, str::allocate_string_no_interning, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for Decimal {
+    const NAME: &'static str = "decimal.Decimal";
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        init(vm, args).map(CallResult::Value)
+    }
+
+    fn class_method(attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> Result<RunResult<CallResult>, ArgValues> {
+        if attr.static_string(vm.interns) == Some(StaticStrings::FromNumber) {
+            Ok(class_from_number(vm, args).map(CallResult::Value))
+        } else if attr.as_str(vm.interns) == "from_float" {
+            Ok(class_from_float(vm, args).map(CallResult::Value))
+        } else {
+            Err(args)
+        }
+    }
+}
 
 /// Allocates `decimal` on the heap.
 pub(crate) fn decimal_value(decimal: Decimal, vm: &VM<'_>) -> Value {
@@ -296,21 +315,6 @@ fn sequence_items(value: &Value, vm: &VM<'_>) -> Option<Vec<Value>> {
         _ => return None,
     };
     Some(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
-}
-
-/// `Decimal.from_number(...)` and `Decimal.from_float(...)`.
-pub(crate) fn class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::FromNumber) {
-        Ok(class_from_number(vm, args).map(CallResult::Value))
-    } else if attr.as_str(vm.interns) == "from_float" {
-        Ok(class_from_float(vm, args).map(CallResult::Value))
-    } else {
-        Err(args)
-    }
 }
 
 /// `Decimal.from_float(f)`: exact; an `int` is accepted too.

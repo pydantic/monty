@@ -8,6 +8,7 @@
 pub mod bytes;
 pub mod callable_iterator;
 pub mod class;
+pub(crate) mod class_def;
 pub mod complex;
 pub mod csv;
 pub mod date;

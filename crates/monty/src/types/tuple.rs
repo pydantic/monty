@@ -38,11 +38,29 @@ use crate::{
     resource_checks::{check_repeat_size, repeated_len},
     types::{
         LazyHeapSet, Type, TypeRef,
+        class_def::ClassDef,
         list::repr_sequence_fmt,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
+
+impl ClassDef for Tuple {
+    const NAME: &'static str = "tuple";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+    const CLASS_GETITEM: bool = true;
+    const SEQUENCE_REPEAT: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for TupleIterator {
+    const NAME: &'static str = "tuple_iterator";
+    const ITERATOR: bool = true;
+}
 
 /// Inline capacity for small tuples. Tuples with 2 or fewer elements avoid
 /// heap allocation for the items storage.

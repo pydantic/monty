@@ -23,11 +23,16 @@ use crate::{
     modules::ModuleFunctions,
     types::{
         Dict, LazyHeapSet, NamedTuple, PyTrait, Type, TypeRef,
+        class_def::ClassDef,
         hash_table::{PyHashTable, Slot, TableEntry, TableProbe, TableSource},
         tuple::{TupleVec, allocate_tuple},
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for LruCache {
+    const NAME: &'static str = "functools._lru_cache_wrapper";
+}
 
 /// Suspendable cache miss that stores a result only after the wrapped call succeeds.
 pub(crate) const CACHE_MISS_SOURCE: &str = r"

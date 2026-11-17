@@ -97,7 +97,7 @@ use crate::{
     intern::StaticStrings,
     os_dispatch::{PostConversionEffect, stat_result_field},
     py_value::PyValue,
-    types::str::StringRepr,
+    types::{class_def::ClassDef, str::StringRepr},
     value::{EitherStr, Value},
     virtual_path::posix_join,
 };
@@ -156,6 +156,34 @@ pub(crate) enum ReadSpec {
 }
 
 pub use monty_types::FileMode;
+
+/// Defines text files over [`OpenFile`] storage.
+pub(crate) struct TextIOWrapperClass;
+
+impl ClassDef for TextIOWrapperClass {
+    const NAME: &'static str = "_io.TextIOWrapper";
+}
+
+/// Defines read-only binary files over [`OpenFile`] storage.
+pub(crate) struct BufferedReaderClass;
+
+impl ClassDef for BufferedReaderClass {
+    const NAME: &'static str = "_io.BufferedReader";
+}
+
+/// Defines write-only binary files over [`OpenFile`] storage.
+pub(crate) struct BufferedWriterClass;
+
+impl ClassDef for BufferedWriterClass {
+    const NAME: &'static str = "_io.BufferedWriter";
+}
+
+/// Defines read/write binary files over [`OpenFile`] storage.
+pub(crate) struct BufferedRandomClass;
+
+impl ClassDef for BufferedRandomClass {
+    const NAME: &'static str = "_io.BufferedRandom";
+}
 
 /// The `newline` argument to `open()` for text files: where lines end on read,
 /// whether `\r\n` / `\r` are translated to `\n`, and what `\n` becomes on write.

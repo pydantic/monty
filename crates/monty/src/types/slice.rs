@@ -21,9 +21,18 @@ use crate::{
     hash::HashValue,
     heap::{HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{PyTrait, Type, TypeRef},
+    types::{PyTrait, Type, TypeRef, class_def::ClassDef},
     value::{EitherStr, Value},
 };
+
+impl ClassDef for Slice {
+    const NAME: &'static str = "slice";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+}
 
 /// Python slice object representing start:stop:step indices.
 ///

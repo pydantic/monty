@@ -1079,6 +1079,43 @@ assert issubclass(Counter, dict)
 ");
 }
 
+/// Default class handlers must release rejected arguments and preserve them for fallback calls.
+#[test]
+fn native_class_handler_argument_ownership() {
+    run(r#"
+from collections import Counter
+
+payload = [1, 2, 3]
+for cls in (type(None), type(Ellipsis), type(NotImplemented), object, type(iter([]))):
+    try:
+        cls(payload, named=payload)
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == f"cannot create '{cls.__name__}' instances"
+
+for cls in (list, dict, Counter):
+    alias = cls.__class_getitem__(payload)
+    assert alias.__args__[0] is payload
+    try:
+        cls.missing(payload, named=payload)
+        assert False, 'expected AttributeError'
+    except AttributeError as exc:
+        assert str(exc) == f"type object '{cls.__name__}' has no attribute 'missing'"
+    try:
+        cls.__name__(payload, named=payload)
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == "'str' object is not callable"
+
+class Iterable:
+    def __iter__(self):
+        return iter(payload)
+
+assert list(iter(Iterable())) == payload
+assert str(ValueError('message')) == 'message'
+"#);
+}
+
 #[test]
 fn builtins_type_and_exception_introspection_coverage() {
     run(r"

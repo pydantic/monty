@@ -22,11 +22,34 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     types::{
-        CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef, date, datetime, long_int, str::allocate_string,
-        tuple::allocate_tuple,
+        CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef, class_def::ClassDef, date, datetime, long_int,
+        str::allocate_string, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for TimeDelta {
+    const NAME: &'static str = "datetime.timedelta";
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        init(vm, args).map(CallResult::Value)
+    }
+
+    fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+        // One microsecond short of `MAX_TIMEDELTA_DAYS + 1` days, which normalizes to
+        // CPython's `timedelta(days=999999999, seconds=86399, microseconds=999999)`.
+        const MAX_MICROS: i128 = ((MAX_TIMEDELTA_DAYS as i128) + 1) * DAY_MICROSECONDS - 1;
+        const MIN_MICROS: i128 = (MIN_TIMEDELTA_DAYS as i128) * DAY_MICROSECONDS;
+        let micros = match attr.static_string(vm.interns)? {
+            StaticStrings::Min => MIN_MICROS,
+            StaticStrings::Max => MAX_MICROS,
+            StaticStrings::Resolution => 1,
+            _ => return None,
+        };
+        Some(allocate_micros(micros, vm.heap))
+    }
+}
 
 /// Minimum allowed day magnitude for `timedelta`.
 pub(crate) const MIN_TIMEDELTA_DAYS: i32 = -999_999_999;
@@ -219,21 +242,6 @@ pub(crate) fn floor_div_rem(total: i128, divisor: i128) -> (i128, i128) {
     } else {
         (quotient, remainder)
     }
-}
-
-/// `timedelta.min`, `timedelta.max` and `timedelta.resolution`.
-pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    // One microsecond short of `MAX_TIMEDELTA_DAYS + 1` days, which normalizes to
-    // CPython's `timedelta(days=999999999, seconds=86399, microseconds=999999)`.
-    const MAX_MICROS: i128 = ((MAX_TIMEDELTA_DAYS as i128) + 1) * DAY_MICROSECONDS - 1;
-    const MIN_MICROS: i128 = (MIN_TIMEDELTA_DAYS as i128) * DAY_MICROSECONDS;
-    let micros = match attr.static_string(vm.interns)? {
-        StaticStrings::Min => MIN_MICROS,
-        StaticStrings::Max => MAX_MICROS,
-        StaticStrings::Resolution => 1,
-        _ => return None,
-    };
-    Some(allocate_micros(micros, vm.heap))
 }
 
 /// Allocates a `timedelta` from a microsecond count known to be in range.

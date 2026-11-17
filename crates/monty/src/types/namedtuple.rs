@@ -42,6 +42,7 @@ use crate::{
     resource_checks::{check_repeat_size, repeated_len},
     types::{
         Dict, Type, TypeRef, Union, allocate_tuple,
+        class_def::ClassDef,
         instance::BoundMethod,
         iter::collect_owned_iterable,
         py_trait::LazyHeapSet,
@@ -51,6 +52,12 @@ use crate::{
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
+
+impl ClassDef for NamedTuple {
+    const NAME: &'static str = "namedtuple";
+    const BASES: &'static [Type] = &[Type::Tuple];
+    const SEQUENCE_REPEAT: bool = true;
+}
 
 /// Python named tuple value stored on the heap.
 ///

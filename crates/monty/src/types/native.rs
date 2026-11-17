@@ -1,9 +1,6 @@
-//! The native type table: one [`TypeDef`] entry per Rust-defined Python type.
-//!
-//! [`native_types!`] generates the fieldless [`Type`] enum and a static
-//! [`TypeDef`] per variant from a single table, so adding a native type is one
-//! entry plus its constructor. Facts that used to live in scattered `match`es —
-//! names, bases, constructors, class attributes, behaviour flags — live here.
+//! Native class registry and the runtime table adapted from [`ClassDef`] implementations.
+//! Each owning module defines its class metadata, constructor and members.
+//! [`native_types!`] only associates stable [`Type`] variants with those definitions.
 //!
 //! Variant names are the dump contract (dumps store them as strings) and the
 //! order is the `id()` contract: [`Type::legacy_index`] maps it onto the indices
@@ -19,24 +16,17 @@ use strum::VariantNames;
 
 use crate::{
     args::ArgValues,
-    builtins::{iter::builtin_iter, object::object_class_attr, type_::builtin_type},
+    asyncio, builtins,
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, RunResult, exc_new},
-    modules::{collections, csv, hashlib, itertools},
-    types::{
-        Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
-        bytes, complex, date, datetime, decimal, dict, path,
-        str::PyStr,
-        time, timedelta, timezone,
-        r#type::{bool_init, float_init, int_init, union_init},
-    },
-    value::{EitherStr, Value},
+    exception_private::{self, ExcType, RunResult},
+    function, heap_data, modules,
+    types::{self, class_def::ClassDef},
+    value::{self, EitherStr, Value},
 };
 
 /// Facts about one native type, read through [`Type::def`].
 ///
-/// Built only by the `const fn` builder methods inside [`native_types!`]; every
-/// field defaults to "absent" so an entry names just what differs.
+/// Adapted from [`ClassDef`] at compile time; runtime dispatch needs no trait objects.
 #[expect(clippy::struct_excessive_bools, reason = "independent facts, each read on its own")]
 pub(crate) struct TypeDef {
     /// CPython's `tp_name`: qualified for module types (`datetime.date`), so it
@@ -59,11 +49,11 @@ pub(crate) struct TypeDef {
     /// Whether this is one of CPython's concrete iterator types.
     pub iterator: bool,
     /// How calling the type constructs an instance.
-    pub ctor: Constructor,
+    pub construct: for<'h> fn(&mut VM<'h>, ArgValues) -> RunResult<CallResult>,
     /// Class-level attributes beyond `__name__` (`date.max`, `timezone.utc`).
-    pub class_attr: Option<ClassAttrFn>,
+    pub class_attr: ClassAttrFn,
     /// Class-level methods called in place (`dict.fromkeys(...)`).
-    pub class_method: Option<ClassMethodFn>,
+    pub class_method: ClassMethodFn,
     /// The boundary exception type, for exception classes.
     pub exc: Option<ExcType>,
 }
@@ -76,123 +66,33 @@ pub(crate) type ClassAttrFn = for<'h> fn(&EitherStr, &mut VM<'h>) -> Option<Valu
 pub(crate) type ClassMethodFn =
     for<'h> fn(&EitherStr, ArgValues, &mut VM<'h>) -> Result<RunResult<CallResult>, ArgValues>;
 
-/// How calling a native type builds its instance.
-#[derive(Clone, Copy)]
-pub(crate) enum Constructor {
-    /// The type cannot be instantiated from Python: calling it raises `TypeError`.
-    None,
-    /// Builds the value without running Python code.
-    Value(for<'h> fn(&mut VM<'h>, ArgValues) -> RunResult<Value>),
-    /// May push a frame or suspend (`iter()` calling a user `__iter__`).
-    Call(for<'h> fn(&mut VM<'h>, ArgValues) -> RunResult<CallResult>),
-    /// Shared by a family of types, so it is told which one was called.
-    Typed(for<'h> fn(Type, &mut VM<'h>, ArgValues) -> RunResult<Value>),
-}
-
 impl TypeDef {
-    /// An entry with `name` and `bases` and everything else absent.
-    const fn new(name: &'static str, bases: &'static [Type]) -> Self {
+    /// Adapts one class definition to the runtime's indexed metadata and function pointers.
+    const fn of<T: ClassDef>() -> Self {
         Self {
-            name,
-            builtin: None,
-            bases,
-            mro: None,
-            basetype: false,
-            class_getitem: false,
-            sequence_repeat: false,
-            iterator: false,
-            ctor: Constructor::None,
-            class_attr: None,
-            class_method: None,
-            exc: None,
+            name: T::NAME,
+            builtin: T::BUILTIN_NAME,
+            bases: T::BASES,
+            mro: T::MRO,
+            basetype: T::BASETYPE,
+            class_getitem: T::CLASS_GETITEM,
+            sequence_repeat: T::SEQUENCE_REPEAT,
+            iterator: T::ITERATOR,
+            construct: T::construct,
+            class_attr: T::class_attr,
+            class_method: T::class_method,
+            exc: T::EXC_TYPE,
         }
-    }
-
-    /// The root of the hierarchy: no bases at all.
-    const fn root(mut self) -> Self {
-        self.bases = &[];
-        self
-    }
-
-    /// Bound in the builtins namespace under its own name.
-    const fn builtin(mut self) -> Self {
-        self.builtin = Some(self.name);
-        self
-    }
-
-    /// Bound in the builtins namespace under a name other than its own.
-    const fn builtin_as(mut self, name: &'static str) -> Self {
-        self.builtin = Some(name);
-        self
-    }
-
-    /// Subclassable, as CPython's `Py_TPFLAGS_BASETYPE` marks it.
-    const fn basetype(mut self) -> Self {
-        self.basetype = true;
-        self
-    }
-
-    /// Subscripting the type builds a `types.GenericAlias`.
-    const fn class_getitem(mut self) -> Self {
-        self.class_getitem = true;
-        self
-    }
-
-    /// Multiplication may fall back to sequence repetition.
-    const fn sequence_repeat(mut self) -> Self {
-        self.sequence_repeat = true;
-        self
-    }
-
-    /// One of CPython's concrete iterator types.
-    const fn iterator(mut self) -> Self {
-        self.iterator = true;
-        self
-    }
-
-    /// Calling the type builds an instance with `ctor`.
-    const fn ctor(mut self, ctor: Constructor) -> Self {
-        self.ctor = ctor;
-        self
-    }
-
-    /// Class-level attributes resolve through `f`.
-    const fn class_attr(mut self, f: ClassAttrFn) -> Self {
-        self.class_attr = Some(f);
-        self
-    }
-
-    /// Class methods called in place dispatch through `f`.
-    const fn class_method(mut self, f: ClassMethodFn) -> Self {
-        self.class_method = Some(f);
-        self
-    }
-
-    /// The written C3 linearisation, for a type with several bases.
-    const fn mro(mut self, mro: &'static [Type]) -> Self {
-        self.mro = Some(mro);
-        self
-    }
-
-    /// An exception class: subclassable, constructed by [`exc_new`], reported to hosts as `exc`.
-    const fn exc(mut self, exc: ExcType) -> Self {
-        self.exc = Some(exc);
-        self.basetype = true;
-        self.ctor = Constructor::Typed(exc_new);
-        self
     }
 }
 
 /// Generates [`Type`], its [`TypeDef`] table and the name lookups from one list.
 ///
-/// Each entry is `Variant("tp_name", Base | Base)` followed by builder calls;
-/// omitted bases mean `object`. Doc comments on an entry document the variant.
+/// Each entry maps a stable enum variant to its owning [`ClassDef`] implementation.
 macro_rules! native_types {
-    (@bases) => { &[Type::Object] };
-    (@bases $($base:ident)|+) => { &[$(Type::$base),+] };
     ($(
         $(#[doc = $doc:literal])*
-        $variant:ident($name:literal $(, $($base:ident)|+)?) $(.$method:ident($($arg:expr),*))*
+        $variant:ident => $definition:ty
     ),* $(,)?) => {
         /// A Rust-defined Python type: builtins, stdlib types and exception classes.
         ///
@@ -217,7 +117,7 @@ macro_rules! native_types {
         /// One entry per [`Type`], indexed by discriminant; a `const` so other
         /// tables can be computed from it at compile time.
         const TYPE_DEFS_CONST: [TypeDef; Type::ALL.len()] = [
-            $(TypeDef::new($name, native_types!(@bases $($($base)|+)?))$(.$method($($arg),*))*,)*
+            $(TypeDef::of::<$definition>(),)*
         ];
 
         /// The runtime copy of [`TYPE_DEFS_CONST`], read by [`Type::def`].
@@ -427,579 +327,166 @@ impl<'de> Visitor<'de> for TypeVisitor {
 }
 
 native_types! {
-    Ellipsis("ellipsis"),
-    NotImplementedType("NotImplementedType"),
-    Type("type")
-        .builtin()
-        .class_getitem()
-        .ctor(Constructor::Value(builtin_type)),
-    NoneType("NoneType"),
-    Bool("bool", Int)
-        .builtin()
-        .ctor(Constructor::Value(bool_init)),
-    Int("int")
-        .builtin()
-        .basetype()
-        .ctor(Constructor::Value(int_init)),
-    Float("float")
-        .builtin()
-        .basetype()
-        .ctor(Constructor::Value(float_init)),
-    Complex("complex")
-        .builtin()
-        .basetype()
-        .ctor(Constructor::Value(complex::init))
-        .class_method(complex::class_method),
-    Range("range")
-        .builtin()
-        .ctor(Constructor::Value(Range::init)),
-    Slice("slice")
-        .builtin()
-        .ctor(Constructor::Value(Slice::init)),
-    /// The four `datetime` classes are qualified like `collections.deque`:
-    /// this is the `tp_name` CPython gives these C types, so it is the
-    /// spelling its reprs and type-naming error messages use. `__name__`
-    /// reports the bare name, see `dunder_name`.
-    Date("datetime.date")
-        .basetype()
-        .ctor(Constructor::Value(date::init))
-        .class_attr(date::class_attr)
-        .class_method(date::class_method),
-    DateTime("datetime.datetime", Date)
-        .basetype()
-        .ctor(Constructor::Value(datetime::init))
-        .class_attr(datetime::class_attr)
-        .class_method(datetime::class_method),
-    TimeDelta("datetime.timedelta")
-        .basetype()
-        .ctor(Constructor::Value(timedelta::init))
-        .class_attr(timedelta::class_attr),
-    TimeZone("datetime.timezone")
-        .ctor(Constructor::Value(TimeZone::init))
-        .class_attr(timezone::class_attr),
-    Str("str")
-        .builtin()
-        .basetype()
-        .sequence_repeat()
-        .ctor(Constructor::Value(PyStr::init)),
-    Bytes("bytes")
-        .builtin()
-        .basetype()
-        .sequence_repeat()
-        .ctor(Constructor::Value(Bytes::init))
-        .class_method(bytes::bytes_class_method),
-    List("list")
-        .builtin()
-        .basetype()
-        .class_getitem()
-        .sequence_repeat()
-        .ctor(Constructor::Value(List::init)),
-    Tuple("tuple")
-        .builtin()
-        .basetype()
-        .class_getitem()
-        .sequence_repeat()
-        .ctor(Constructor::Value(Tuple::init)),
-    NamedTuple("namedtuple", Tuple)
-        .sequence_repeat(),
-    Dict("dict")
-        .builtin()
-        .basetype()
-        .class_getitem()
-        .ctor(Constructor::Value(Dict::init))
-        .class_method(dict::dict_class_method),
-    /// `collections.defaultdict` — a `dict` with a `default_factory` (stored as
-    /// a `DictKind` on the `Dict`, not a separate heap type).
-    DefaultDict("collections.defaultdict", Dict)
-        .basetype()
-        .class_getitem()
-        .ctor(Constructor::Value(collections::defaultdict_init))
-        .class_method(collections::defaultdict_class_method),
-    /// `collections.Counter` — a `dict` subclass (also a `DictKind`).
-    Counter("Counter", Dict)
-        .basetype()
-        .class_getitem()
-        .ctor(Constructor::Value(collections::counter_init))
-        .class_method(collections::counter_class_method),
-    DictKeys("dict_keys"),
-    DictItems("dict_items"),
-    DictValues("dict_values"),
-    Set("set")
-        .builtin()
-        .basetype()
-        .class_getitem()
-        .ctor(Constructor::Value(Set::init)),
-    FrozenSet("frozenset")
-        .builtin()
-        .basetype()
-        .class_getitem()
-        .ctor(Constructor::Value(FrozenSet::init)),
-    Function("function"),
-    BuiltinFunction("builtin_function_or_method"),
-    Cell("cell"),
-    Iterator("iterator")
-        .builtin_as("iter")
-        .ctor(Constructor::Call(builtin_iter)),
-    ListIterator("list_iterator")
-        .iterator(),
-    CallableIterator("callable_iterator")
-        .iterator(),
-    /// Coroutine type for async functions and external futures.
-    Coroutine("coroutine"),
-    Module("module"),
-    /// Marker types like stdout/stderr - displays as "_io.TextIOWrapper"
-    TextIOWrapper("_io.TextIOWrapper"),
-    /// Binary file object returned by `open(..., "rb")`.
-    BufferedReader("_io.BufferedReader"),
-    /// Binary file object returned by write-only binary modes.
-    BufferedWriter("_io.BufferedWriter"),
-    /// Binary file object returned by read/write binary modes.
-    BufferedRandom("_io.BufferedRandom"),
-    /// typing module special forms (Any, Optional, Union, etc.) - displays as "typing._SpecialForm"
-    SpecialForm("typing._SpecialForm"),
-    /// A filesystem path from `pathlib.Path` - displays as "PosixPath"
-    Path("PosixPath")
-        .basetype()
-        .ctor(Constructor::Value(Path::init))
-        .class_method(path::class_method),
-    /// A property descriptor - displays as "property"
-    Property("property")
-        .builtin()
-        .basetype(),
-    /// A compiled regex pattern from `re.compile()` - displays as "re.Pattern"
-    RePattern("re.Pattern")
-        .class_getitem(),
-    /// A regex match result from `re.match()` / `re.search()` etc. - displays as "re.Match"
-    ReMatch("re.Match")
-        .class_getitem(),
-    /// An `os.DirEntry` from `os.scandir()`.
-    DirEntry("posix.DirEntry"),
-    /// The iterator `os.scandir()` returns.
-    ScandirIterator("posix.ScandirIterator")
-        .iterator(),
-    /// The iterator `os.walk()` and `Path.walk()` return; CPython's is a generator.
-    WalkGenerator("generator")
-        .iterator(),
-    TupleIterator("tuple_iterator")
-        .iterator(),
-    StrAsciiIterator("str_ascii_iterator")
-        .iterator(),
-    StrIterator("str_iterator")
-        .iterator(),
-    BytesIterator("bytes_iterator")
-        .iterator(),
-    RangeIterator("range_iterator")
-        .iterator(),
-    DictKeyIterator("dict_keyiterator")
-        .iterator(),
-    DictItemIterator("dict_itemiterator")
-        .iterator(),
-    DictValueIterator("dict_valueiterator")
-        .iterator(),
-    SetIterator("set_iterator")
-        .iterator(),
-    ItertoolsCount("itertools.count")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    ItertoolsRepeat("itertools.repeat")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    /// A `dataclasses.Field` from a class's `__dataclass_fields__` — displays
-    /// as "Field", the name CPython's `Field.__name__` reports.
-    DataclassField("Field"),
-    /// `collections.deque` — qualified like `datetime.datetime`/`re.Pattern` so
-    /// the name matches CPython's `repr` and error messages; `__name__` reports
-    /// the bare `'deque'`, see `dunder_name`.
-    Deque("collections.deque")
-        .basetype()
-        .class_getitem()
-        .sequence_repeat()
-        .ctor(Constructor::Value(Deque::init)),
-    /// `iter(deque(...))` — CPython's `_collections._deque_iterator`.
-    DequeIterator("_collections._deque_iterator")
-        .iterator(),
-    ItertoolsPairwise("itertools.pairwise")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    ItertoolsCompress("itertools.compress")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    ItertoolsIslice("itertools.islice")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    ItertoolsChain("itertools.chain")
-        .class_getitem()
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct))
-        .class_attr(itertools::chain_class_attr),
-    ItertoolsCycle("itertools.cycle")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    /// The `__dataclass_params__` of a `@dataclass`, named as CPython's
-    /// private `dataclasses._DataclassParams` reports itself.
-    DataclassParams("_DataclassParams"),
-    /// The type of `dataclasses.MISSING`, CPython's private `_MISSING_TYPE`.
-    MissingType("dataclasses._MISSING_TYPE"),
-    ItertoolsTakeWhile("itertools.takewhile")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    ItertoolsDropWhile("itertools.dropwhile")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    ItertoolsFilterFalse("itertools.filterfalse")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    ItertoolsStarMap("itertools.starmap")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    /// `object`, the root of every class. Its members (`__init__`, `__new__`,
-    /// `__init_subclass__`, `__setattr__`) are inherited by every class, but
-    /// `object()` itself cannot be built (see `limitations/classes.md`).
-    Object("object")
-        .root()
-        .builtin()
-        .basetype()
-        .class_attr(object_class_attr),
-    Time("datetime.time")
-        .basetype()
-        .ctor(Constructor::Value(time::init))
-        .class_attr(time::class_attr)
-        .class_method(time::class_method),
-    /// `functools.partial` — qualified like `collections.deque`, so
-    /// `type(p)` reads `<class 'functools.partial'>`.
-    Partial("functools.partial")
-        .basetype()
-        .class_getitem()
-        .ctor(Constructor::Value(Partial::init)),
-    ItertoolsAccumulate("itertools.accumulate")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    ItertoolsBatched("itertools.batched")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    ItertoolsZipLongest("itertools.zip_longest")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    /// `types.GenericAlias`, the type of `list[int]`; qualified like
-    /// `functools.partial`, so `type(list[int])` reads `<class 'types.GenericAlias'>`.
-    GenericAlias("types.GenericAlias"),
-    /// `typing.Union`, the type of `int | None` — one object with
-    /// `types.UnionType` since CPython 3.14, and the value bound to
-    /// `typing.Union` itself.
-    Union("typing.Union")
-        .ctor(Constructor::Value(union_init)),
-    ItertoolsCombinations("itertools.combinations")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    ItertoolsCombinationsWithReplacement("itertools.combinations_with_replacement")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    ItertoolsPermutations("itertools.permutations")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    ItertoolsProduct("itertools.product")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    ItertoolsGroupBy("itertools.groupby")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    /// The sub-iterator `groupby` yields for each group — CPython's private
-    /// `itertools._grouper`, named as such so `type()` matches.
-    ItertoolsGrouper("itertools._grouper")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    /// The iterator `tee()` hands out — CPython's private `itertools._tee`,
-    /// which it nonetheless exposes on the module.
-    ItertoolsTee("itertools._tee")
-        .iterator()
-        .ctor(Constructor::Typed(itertools::construct)),
-    /// The read-ahead buffer those iterators share, CPython's
-    /// `itertools._tee_dataobject`. Never reachable from Python except as
-    /// that name.
-    ItertoolsTeeDataObject("itertools._tee_dataobject")
-        .ctor(Constructor::Typed(itertools::construct)),
-    /// `random.Random`, qualified like `collections.deque` so `type(rng)`
-    /// reads `<class 'random.Random'>`.
-    Random("random.Random")
-        .basetype()
-        .ctor(Constructor::Value(Random::init)),
-    /// The wrapper returned by caching decorators. Monty exposes this type
-    /// through `type(f)`, but not as a `functools` module attribute.
-    LruCacheWrapper("functools._lru_cache_wrapper"),
-    /// The OpenSSL-backed `hashlib` hash object, `_hashlib.HASH`.
-    HashlibHash("_hashlib.HASH"),
-    /// The `shake_128` / `shake_256` hash object, `_hashlib.HASHXOF`.
-    HashlibHashXof("_hashlib.HASHXOF"),
-    /// `hashlib.blake2b`, a type in CPython and so callable here.
-    Blake2b("_blake2.blake2b")
-        .ctor(Constructor::Value(hashlib::blake2b_init))
-        .class_attr(hashlib::blake2b_class_attr),
-    /// `hashlib.blake2s`, a type in CPython and so callable here.
-    Blake2s("_blake2.blake2s")
-        .ctor(Constructor::Value(hashlib::blake2s_init))
-        .class_attr(hashlib::blake2s_class_attr),
-    /// The iterator `csv.reader()` returns, CPython's `_csv.reader`.
-    CsvReader("_csv.reader")
-        .iterator(),
-    /// The object `csv.writer()` returns, CPython's `_csv.writer`.
-    CsvWriter("_csv.writer"),
-    /// `csv.DictReader`, a class in CPython and so callable here.
-    CsvDictReader("csv.DictReader")
-        .iterator()
-        .ctor(Constructor::Call(csv::dict_reader_call)),
-    /// `csv.DictWriter`, a class in CPython and so callable here.
-    CsvDictWriter("csv.DictWriter")
-        .ctor(Constructor::Value(csv::dict_writer_init)),
-    /// A resolved `csv` dialect, CPython's `_csv.Dialect`.
-    CsvDialect("_csv.Dialect")
-        .ctor(Constructor::Value(csv::dialect_init)),
-    /// `decimal.Decimal`.
-    Decimal("decimal.Decimal")
-        .basetype()
-        .ctor(Constructor::Value(decimal::py::init))
-        .class_method(decimal::py::class_method),
-    /// `decimal.Context`.
-    DecimalContext("decimal.Context")
-        .ctor(Constructor::Value(decimal::py_context::init)),
-    /// The type of a context's `flags` / `traps`; CPython defines it in Python, so
-    /// its name carries no module.
-    DecimalSignalDict("SignalDict"),
-    /// The manager `decimal.localcontext()` returns.
-    DecimalContextManager("decimal.ContextManager"),
-    /// `annotationlib.ForwardRef`, an unevaluated annotation.
-    ForwardRef("annotationlib.ForwardRef")
-        .ctor(Constructor::Value(ForwardRef::init)),
-    /// The base of every ordinary exception.
-    Exception("Exception", BaseException)
-        .builtin()
-        .exc(ExcType::Exception),
-    /// The root of every exception class.
-    BaseException("BaseException", Object)
-        .builtin()
-        .exc(ExcType::BaseException),
-    SystemExit("SystemExit", BaseException)
-        .builtin()
-        .exc(ExcType::SystemExit),
-    KeyboardInterrupt("KeyboardInterrupt", BaseException)
-        .builtin()
-        .exc(ExcType::KeyboardInterrupt),
-    ArithmeticError("ArithmeticError", Exception)
-        .builtin()
-        .exc(ExcType::ArithmeticError),
-    OverflowError("OverflowError", ArithmeticError)
-        .builtin()
-        .exc(ExcType::OverflowError),
-    ZeroDivisionError("ZeroDivisionError", ArithmeticError)
-        .builtin()
-        .exc(ExcType::ZeroDivisionError),
-    LookupError("LookupError", Exception)
-        .builtin()
-        .exc(ExcType::LookupError),
-    IndexError("IndexError", LookupError)
-        .builtin()
-        .exc(ExcType::IndexError),
-    KeyError("KeyError", LookupError)
-        .builtin()
-        .exc(ExcType::KeyError),
-    RuntimeError("RuntimeError", Exception)
-        .builtin()
-        .exc(ExcType::RuntimeError),
-    NotImplementedError("NotImplementedError", RuntimeError)
-        .builtin()
-        .exc(ExcType::NotImplementedError),
-    RecursionError("RecursionError", RuntimeError)
-        .builtin()
-        .exc(ExcType::RecursionError),
-    AttributeError("AttributeError", Exception)
-        .builtin()
-        .exc(ExcType::AttributeError),
-    /// Subclass of AttributeError (from dataclasses module).
-    FrozenInstanceError("FrozenInstanceError", AttributeError)
-        .exc(ExcType::FrozenInstanceError),
-    NameError("NameError", Exception)
-        .builtin()
-        .exc(ExcType::NameError),
-    /// Subclass of NameError - for accessing local variable before assignment.
-    UnboundLocalError("UnboundLocalError", NameError)
-        .builtin()
-        .exc(ExcType::UnboundLocalError),
-    ValueError("ValueError", Exception)
-        .builtin()
-        .exc(ExcType::ValueError),
-    /// Subclass of ValueError - for encoding/decoding errors.
-    UnicodeDecodeError("UnicodeDecodeError", ValueError)
-        .builtin()
-        .exc(ExcType::UnicodeDecodeError),
-    /// Subclass of ValueError - for encoding errors (e.g. `str.encode('ascii')`
-    /// on a string containing non-ASCII characters).
-    UnicodeEncodeError("UnicodeEncodeError", ValueError)
-        .builtin()
-        .exc(ExcType::UnicodeEncodeError),
-    /// Subclass of ValueError for invalid JSON syntax in `json.loads()`.
-    JsonDecodeError("json.JSONDecodeError", ValueError)
-        .exc(ExcType::JsonDecodeError),
-    /// Subclass of ValueError for invalid TOML in `tomllib.loads()` / `tomllib.load()`.
-    TomlDecodeError("tomllib.TOMLDecodeError", ValueError)
-        .exc(ExcType::TomlDecodeError),
-    /// Import-related errors (module not found, name not in module).
-    ImportError("ImportError", Exception)
-        .builtin()
-        .exc(ExcType::ImportError),
-    /// Subclass of ImportError - for when a module cannot be found.
-    ModuleNotFoundError("ModuleNotFoundError", ImportError)
-        .builtin()
-        .exc(ExcType::ModuleNotFoundError),
-    /// OS-related errors (file not found, permission denied, etc.)
-    OSError("OSError", Exception)
-        .builtin()
-        .exc(ExcType::OSError),
-    /// Subclass of OSError - for when a file or directory cannot be found.
-    FileNotFoundError("FileNotFoundError", OSError)
-        .builtin()
-        .exc(ExcType::FileNotFoundError),
-    /// Subclass of OSError - for when a file already exists.
-    FileExistsError("FileExistsError", OSError)
-        .builtin()
-        .exc(ExcType::FileExistsError),
-    /// Subclass of OSError - for when a path is a directory but a file was expected.
-    IsADirectoryError("IsADirectoryError", OSError)
-        .builtin()
-        .exc(ExcType::IsADirectoryError),
-    /// Subclass of OSError - for when a path is not a directory but one was expected.
-    NotADirectoryError("NotADirectoryError", OSError)
-        .builtin()
-        .exc(ExcType::NotADirectoryError),
-    /// Subclass of OSError - for when an operation is not permitted (e.g., writing
-    /// to a read-only mount, or attempting to access a path outside a mounted directory).
-    PermissionError("PermissionError", OSError)
-        .builtin()
-        .exc(ExcType::PermissionError),
-    /// `io.UnsupportedOperation` - raised by file objects when a requested
-    /// operation isn't allowed by the open mode (e.g. `read()` on `'w'`).
-    ///
-    /// It derives from both `OSError` and `ValueError`, as in CPython, so
-    /// `except ValueError:` and `except OSError:` both catch it.
-    UnsupportedOperation("io.UnsupportedOperation", OSError | ValueError)
-        .exc(ExcType::UnsupportedOperation)
-        .mro(&[
-            Type::UnsupportedOperation, Type::OSError, Type::ValueError, Type::Exception,
-            Type::BaseException, Type::Object,
-        ]),
-    /// Subclass of OSError since Python 3.3 (PEP 3151).
-    TimeoutError("TimeoutError", OSError)
-        .builtin()
-        .exc(ExcType::TimeoutError),
-    AssertionError("AssertionError", Exception)
-        .builtin()
-        .exc(ExcType::AssertionError),
-    MemoryError("MemoryError", Exception)
-        .builtin()
-        .exc(ExcType::MemoryError),
-    StopIteration("StopIteration", Exception)
-        .builtin()
-        .exc(ExcType::StopIteration),
-    SyntaxError("SyntaxError", Exception)
-        .builtin()
-        .exc(ExcType::SyntaxError),
-    TypeError("TypeError", Exception)
-        .builtin()
-        .exc(ExcType::TypeError),
-    /// `re.PatternError` - raised for invalid regex patterns or unsupported regex features.
-    ///
-    /// # Behavior Note
-    ///
-    /// Limited to monty's exception type, `PatternError` does not provide `pattern`, `pos`,
-    /// `lineno` and `colno` attributes.
-    ///
-    /// As per CPython's implementation, it would be hard to convert `fancy-regex`'s error
-    /// representations into the required attributes.
-    RePatternError("re.PatternError", Exception)
-        .exc(ExcType::RePatternError),
-    /// `binascii.Error` - raised by the `base64` codecs for malformed input.
-    ///
-    /// A `ValueError` subclass in CPython, so `except ValueError:` catches it.
-    BinasciiError("binascii.Error", ValueError)
-        .exc(ExcType::BinasciiError),
-    /// `binascii.Incomplete` - a direct `Exception` subclass, not a `ValueError`.
-    ///
-    /// Nothing raises it: the `a2b_hqx` family it belonged to left CPython in
-    /// 3.11, so the class survives only for `except binascii.Incomplete:` in
-    /// older code. Monty exposes it for the same reason.
-    BinasciiIncomplete("binascii.Incomplete", Exception)
-        .exc(ExcType::BinasciiIncomplete),
-    /// `csv.Error` - raised by the `csv` readers and writers for malformed data
-    /// and unknown dialect names.
-    ///
-    /// A direct `Exception` subclass, named `_csv.Error` as in CPython.
-    CsvError("_csv.Error", Exception)
-        .exc(ExcType::CsvError),
-    /// `decimal.DecimalException`, the base of every decimal signal.
-    DecimalException("decimal.DecimalException", ArithmeticError)
-        .exc(ExcType::DecimalException),
-    /// `decimal.Clamped`: an exponent was changed to fit the representation.
-    DecimalClamped("decimal.Clamped", DecimalException)
-        .exc(ExcType::DecimalClamped),
-    /// `decimal.InvalidOperation`: an operation with no meaningful result.
-    DecimalInvalidOperation("decimal.InvalidOperation", DecimalException)
-        .exc(ExcType::DecimalInvalidOperation),
-    /// `decimal.ConversionSyntax`: a malformed numeric string.
-    DecimalConversionSyntax("decimal.ConversionSyntax", DecimalInvalidOperation)
-        .exc(ExcType::DecimalConversionSyntax),
-    /// `decimal.DivisionByZero`: a finite non-zero dividend divided by zero.
-    DecimalDivisionByZero("decimal.DivisionByZero", DecimalException | ZeroDivisionError)
-        .exc(ExcType::DecimalDivisionByZero)
-        .mro(&[
-            Type::DecimalDivisionByZero, Type::DecimalException, Type::ZeroDivisionError,
-            Type::ArithmeticError, Type::Exception, Type::BaseException, Type::Object,
-        ]),
-    /// `decimal.DivisionImpossible`: an integer quotient too long for the precision.
-    DecimalDivisionImpossible("decimal.DivisionImpossible", DecimalInvalidOperation)
-        .exc(ExcType::DecimalDivisionImpossible),
-    /// `decimal.DivisionUndefined`: zero divided by zero.
-    DecimalDivisionUndefined("decimal.DivisionUndefined", DecimalInvalidOperation | ZeroDivisionError)
-        .exc(ExcType::DecimalDivisionUndefined)
-        .mro(&[
-            Type::DecimalDivisionUndefined, Type::DecimalInvalidOperation, Type::DecimalException,
-            Type::ZeroDivisionError, Type::ArithmeticError, Type::Exception, Type::BaseException,
-            Type::Object,
-        ]),
-    /// `decimal.Inexact`: a result was rounded and lost non-zero digits.
-    DecimalInexact("decimal.Inexact", DecimalException)
-        .exc(ExcType::DecimalInexact),
-    /// `decimal.InvalidContext`: an invalid context setting was detected.
-    DecimalInvalidContext("decimal.InvalidContext", DecimalInvalidOperation)
-        .exc(ExcType::DecimalInvalidContext),
-    /// `decimal.Rounded`: a result was rounded, perhaps without losing digits.
-    DecimalRounded("decimal.Rounded", DecimalException)
-        .exc(ExcType::DecimalRounded),
-    /// `decimal.Subnormal`: a result's exponent fell below `Emin`.
-    DecimalSubnormal("decimal.Subnormal", DecimalException)
-        .exc(ExcType::DecimalSubnormal),
-    /// `decimal.Overflow`: a result's exponent exceeded `Emax`.
-    DecimalOverflow("decimal.Overflow", DecimalInexact | DecimalRounded)
-        .exc(ExcType::DecimalOverflow)
-        .mro(&[
-            Type::DecimalOverflow, Type::DecimalInexact, Type::DecimalRounded, Type::DecimalException,
-            Type::ArithmeticError, Type::Exception, Type::BaseException, Type::Object,
-        ]),
-    /// `decimal.Underflow`: a subnormal result was rounded.
-    DecimalUnderflow("decimal.Underflow", DecimalInexact | DecimalRounded | DecimalSubnormal)
-        .exc(ExcType::DecimalUnderflow)
-        .mro(&[
-            Type::DecimalUnderflow, Type::DecimalInexact, Type::DecimalRounded, Type::DecimalSubnormal,
-            Type::DecimalException, Type::ArithmeticError, Type::Exception, Type::BaseException,
-            Type::Object,
-        ]),
-    /// `decimal.FloatOperation`: floats and Decimals were mixed.
-    DecimalFloatOperation("decimal.FloatOperation", DecimalException | TypeError)
-        .exc(ExcType::DecimalFloatOperation)
-        .mro(&[
-            Type::DecimalFloatOperation, Type::DecimalException, Type::ArithmeticError,
-            Type::TypeError, Type::Exception, Type::BaseException, Type::Object,
-        ]),
-    /// `statistics.StatisticsError`, raised for empty or too-small data sets.
-    StatisticsError("statistics.StatisticsError", ValueError)
-        .exc(ExcType::StatisticsError),
+    Ellipsis => value::EllipsisClass,
+    NotImplementedType => value::NotImplementedTypeClass,
+    Type => builtins::type_::TypeClass,
+    NoneType => value::NoneTypeClass,
+    Bool => types::r#type::BoolClass,
+    Int => types::r#type::IntClass,
+    Float => types::r#type::FloatClass,
+    Complex => types::complex::Complex,
+    Range => types::range::Range,
+    Slice => types::slice::Slice,
+    Date => types::date::Date,
+    DateTime => types::datetime::DateTime,
+    TimeDelta => types::timedelta::TimeDelta,
+    TimeZone => types::timezone::TimeZone,
+    Str => types::str::HeapStr,
+    Bytes => types::bytes::Bytes,
+    List => types::list::List,
+    Tuple => types::tuple::Tuple,
+    NamedTuple => types::namedtuple::NamedTuple,
+    Dict => types::dict::Dict,
+    DefaultDict => modules::collections::DefaultDictClass,
+    Counter => modules::collections::CounterClass,
+    DictKeys => types::dict_view::DictKeysView,
+    DictItems => types::dict_view::DictItemsView,
+    DictValues => types::dict_view::DictValuesView,
+    Set => types::set::Set,
+    FrozenSet => types::set::FrozenSet,
+    Function => function::Function,
+    BuiltinFunction => builtins::BuiltinFunctionClass,
+    Cell => heap_data::CellValue,
+    Iterator => builtins::iter::IteratorClass,
+    ListIterator => types::list::ListIterator,
+    CallableIterator => types::callable_iterator::CallableIterator,
+    Coroutine => asyncio::Coroutine,
+    Module => types::module::Module,
+    TextIOWrapper => types::file::TextIOWrapperClass,
+    BufferedReader => types::file::BufferedReaderClass,
+    BufferedWriter => types::file::BufferedWriterClass,
+    BufferedRandom => types::file::BufferedRandomClass,
+    SpecialForm => modules::typing::SpecialFormClass,
+    Path => types::path::Path,
+    Property => types::property::Property,
+    RePattern => types::re_pattern::RePattern,
+    ReMatch => types::re_match::ReMatch,
+    DirEntry => types::dir_scan::DirEntry,
+    ScandirIterator => types::dir_scan::ScandirIterator,
+    WalkGenerator => types::dir_scan::WalkIterator,
+    TupleIterator => types::tuple::TupleIterator,
+    StrAsciiIterator => types::str::StrAsciiIteratorClass,
+    StrIterator => types::str::StrIteratorClass,
+    BytesIterator => types::bytes::BytesIterator,
+    RangeIterator => types::range::RangeIterator,
+    DictKeyIterator => types::dict::DictKeyIterator,
+    DictItemIterator => types::dict::DictItemIterator,
+    DictValueIterator => types::dict::DictValueIterator,
+    SetIterator => types::set::SetIterator,
+    ItertoolsCount => types::itertools::Count,
+    ItertoolsRepeat => types::itertools::Repeat,
+    DataclassField => modules::dataclasses::DataclassField,
+    Deque => types::deque::Deque,
+    DequeIterator => types::deque::DequeIterator,
+    ItertoolsPairwise => types::itertools::Pairwise,
+    ItertoolsCompress => types::itertools::Compress,
+    ItertoolsIslice => types::itertools::Islice,
+    ItertoolsChain => types::itertools::Chain,
+    ItertoolsCycle => types::itertools::Cycle,
+    DataclassParams => modules::dataclasses::DataclassParams,
+    MissingType => modules::dataclasses::MissingTypeClass,
+    ItertoolsTakeWhile => types::itertools::TakeWhile,
+    ItertoolsDropWhile => types::itertools::DropWhile,
+    ItertoolsFilterFalse => types::itertools::FilterFalse,
+    ItertoolsStarMap => types::itertools::StarMap,
+    Object => builtins::object::ObjectClass,
+    Time => types::time::Time,
+    Partial => types::partial::Partial,
+    ItertoolsAccumulate => types::itertools::Accumulate,
+    ItertoolsBatched => types::itertools::Batched,
+    ItertoolsZipLongest => types::itertools::ZipLongest,
+    GenericAlias => types::generic_alias::GenericAlias,
+    Union => types::union::Union,
+    ItertoolsCombinations => types::itertools::Combinations,
+    ItertoolsCombinationsWithReplacement => modules::itertools::CombinationsWithReplacementClass,
+    ItertoolsPermutations => types::itertools::Permutations,
+    ItertoolsProduct => types::itertools::Product,
+    ItertoolsGroupBy => types::itertools::GroupBy,
+    ItertoolsGrouper => types::itertools::Grouper,
+    ItertoolsTee => types::itertools::Tee,
+    ItertoolsTeeDataObject => types::itertools::TeeBlock,
+    Random => types::random::Random,
+    LruCacheWrapper => types::lru_cache::LruCache,
+    HashlibHash => modules::hashlib::HashlibHashClass,
+    HashlibHashXof => modules::hashlib::HashlibHashXofClass,
+    Blake2b => modules::hashlib::Blake2bClass,
+    Blake2s => modules::hashlib::Blake2sClass,
+    CsvReader => types::csv::Reader,
+    CsvWriter => types::csv::Writer,
+    CsvDictReader => types::csv::DictReader,
+    CsvDictWriter => types::csv::DictWriter,
+    CsvDialect => types::csv::Dialect,
+    Decimal => types::decimal::Decimal,
+    DecimalContext => types::decimal::DecContext,
+    DecimalSignalDict => types::decimal::py_context::SignalDict,
+    DecimalContextManager => types::decimal::py_context::ContextManager,
+    ForwardRef => types::forward_ref::ForwardRef,
+    Exception => exception_private::class_defs::Exception,
+    BaseException => exception_private::class_defs::BaseException,
+    SystemExit => exception_private::class_defs::SystemExit,
+    KeyboardInterrupt => exception_private::class_defs::KeyboardInterrupt,
+    ArithmeticError => exception_private::class_defs::ArithmeticError,
+    OverflowError => exception_private::class_defs::OverflowError,
+    ZeroDivisionError => exception_private::class_defs::ZeroDivisionError,
+    LookupError => exception_private::class_defs::LookupError,
+    IndexError => exception_private::class_defs::IndexError,
+    KeyError => exception_private::class_defs::KeyError,
+    RuntimeError => exception_private::class_defs::RuntimeError,
+    NotImplementedError => exception_private::class_defs::NotImplementedError,
+    RecursionError => exception_private::class_defs::RecursionError,
+    AttributeError => exception_private::class_defs::AttributeError,
+    FrozenInstanceError => exception_private::class_defs::FrozenInstanceError,
+    NameError => exception_private::class_defs::NameError,
+    UnboundLocalError => exception_private::class_defs::UnboundLocalError,
+    ValueError => exception_private::class_defs::ValueError,
+    UnicodeDecodeError => exception_private::class_defs::UnicodeDecodeError,
+    UnicodeEncodeError => exception_private::class_defs::UnicodeEncodeError,
+    JsonDecodeError => exception_private::class_defs::JsonDecodeError,
+    TomlDecodeError => exception_private::class_defs::TomlDecodeError,
+    ImportError => exception_private::class_defs::ImportError,
+    ModuleNotFoundError => exception_private::class_defs::ModuleNotFoundError,
+    OSError => exception_private::class_defs::OSError,
+    FileNotFoundError => exception_private::class_defs::FileNotFoundError,
+    FileExistsError => exception_private::class_defs::FileExistsError,
+    IsADirectoryError => exception_private::class_defs::IsADirectoryError,
+    NotADirectoryError => exception_private::class_defs::NotADirectoryError,
+    PermissionError => exception_private::class_defs::PermissionError,
+    UnsupportedOperation => exception_private::class_defs::UnsupportedOperation,
+    TimeoutError => exception_private::class_defs::TimeoutError,
+    AssertionError => exception_private::class_defs::AssertionError,
+    MemoryError => exception_private::class_defs::MemoryError,
+    StopIteration => exception_private::class_defs::StopIteration,
+    SyntaxError => exception_private::class_defs::SyntaxError,
+    TypeError => exception_private::class_defs::TypeError,
+    RePatternError => exception_private::class_defs::RePatternError,
+    BinasciiError => exception_private::class_defs::BinasciiError,
+    BinasciiIncomplete => exception_private::class_defs::BinasciiIncomplete,
+    CsvError => exception_private::class_defs::CsvError,
+    DecimalException => exception_private::class_defs::DecimalException,
+    DecimalClamped => exception_private::class_defs::DecimalClamped,
+    DecimalInvalidOperation => exception_private::class_defs::DecimalInvalidOperation,
+    DecimalConversionSyntax => exception_private::class_defs::DecimalConversionSyntax,
+    DecimalDivisionByZero => exception_private::class_defs::DecimalDivisionByZero,
+    DecimalDivisionImpossible => exception_private::class_defs::DecimalDivisionImpossible,
+    DecimalDivisionUndefined => exception_private::class_defs::DecimalDivisionUndefined,
+    DecimalInexact => exception_private::class_defs::DecimalInexact,
+    DecimalInvalidContext => exception_private::class_defs::DecimalInvalidContext,
+    DecimalRounded => exception_private::class_defs::DecimalRounded,
+    DecimalSubnormal => exception_private::class_defs::DecimalSubnormal,
+    DecimalOverflow => exception_private::class_defs::DecimalOverflow,
+    DecimalUnderflow => exception_private::class_defs::DecimalUnderflow,
+    DecimalFloatOperation => exception_private::class_defs::DecimalFloatOperation,
+    StatisticsError => exception_private::class_defs::StatisticsError,
 }
 
 #[cfg(test)]
