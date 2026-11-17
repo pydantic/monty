@@ -477,6 +477,18 @@ impl PingLimit {
 
     /// Counts one ping of `len` bytes, or says why the server broke the limit.
     fn admit(&mut self, len: usize) -> Result<(), String> {
+        if len > MAX_PING_BYTES {
+            Err(format!(
+                "server sent a {len}-byte ping, above the {MAX_PING_BYTES}-byte limit"
+            ))
+        } else {
+            self.count()
+        }
+    }
+
+    /// Counts one ping against the rate limit alone, for WebSocket ping frames,
+    /// which RFC 6455 already caps at 125 bytes.
+    fn count(&mut self) -> Result<(), String> {
         let now = Instant::now();
         // a sliding window: a burst straddling a boundary still counts as one
         while self
@@ -486,11 +498,7 @@ impl PingLimit {
         {
             self.recent.pop_front();
         }
-        if len > MAX_PING_BYTES {
-            Err(format!(
-                "server sent a {len}-byte ping, above the {MAX_PING_BYTES}-byte limit"
-            ))
-        } else if self.recent.len() >= MAX_PINGS_PER_WINDOW {
+        if self.recent.len() >= MAX_PINGS_PER_WINDOW {
             Err(format!(
                 "server sent more than {MAX_PINGS_PER_WINDOW} pings in {PING_WINDOW:?}"
             ))

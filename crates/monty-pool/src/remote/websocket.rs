@@ -21,7 +21,7 @@ use http::{
     HeaderName, HeaderValue, Response, StatusCode,
     header::{RETRY_AFTER, USER_AGENT},
 };
-use monty_proto::{CAUSE_METADATA_KEY, Cause, FrameError};
+use monty_proto::{CAUSE_METADATA_KEY, Cause, FrameError, MAX_FRAME_LEN};
 use rustls::ClientConfig;
 use rustls_platform_verifier::BuilderVerifierExt;
 use tokio::{
@@ -42,8 +42,8 @@ use tokio_tungstenite::{
 use tonic::Code;
 
 use super::{
-    Ended, MessageSource, REQUEST_CHANNEL_DEPTH, USER_AGENT_VALUE, connection_failure, install_crypto_provider,
-    message_limit, refuses_admission, retry_after,
+    Ended, MessageSource, PingLimit, REQUEST_CHANNEL_DEPTH, USER_AGENT_VALUE, connection_failure,
+    install_crypto_provider, message_limit, refuses_admission, retry_after,
 };
 use crate::{PoolError, RemoteDisconnect};
 
@@ -114,7 +114,8 @@ impl WebSocketDialer {
         let limit = message_limit(max_decode_bytes);
         let config = WebSocketConfig::default()
             .max_frame_size(Some(limit))
-            .max_message_size(Some(limit));
+            .max_message_size(Some(limit))
+            .max_write_buffer_size(MAX_FRAME_LEN as usize + WRITE_BUFFER_HEADROOM);
         let connector = self.tls.clone().map(Connector::Rustls);
         let dial = connect_async_tls_with_config(request, Some(config), true, connector);
         // an unrepresentable timeout (`Duration::MAX`) leaves the dial unbounded
@@ -138,6 +139,7 @@ impl WebSocketDialer {
         let writer = tokio::spawn(write_requests(sink, request_body));
         let source = WebSocketSource {
             read_half,
+            pings: PingLimit::new(),
             _writer: AbortOnDrop(writer),
         };
         Ok((requests, source))
@@ -149,6 +151,8 @@ impl WebSocketDialer {
 /// that stopped reading, and the connection closes with both halves gone.
 pub(super) struct WebSocketSource {
     read_half: SplitStream<WsStream>,
+    /// Rate-limits ping frames as in-band `Ping` events are: each queues a pong.
+    pings: PingLimit,
     /// Held only to abort the writer when this drops.
     _writer: AbortOnDrop,
 }
@@ -160,7 +164,15 @@ impl MessageSource for WebSocketSource {
                 Some(Ok(Message::Binary(data))) => return Ok(data),
                 // polling is itself what answers: tungstenite queues the pong
                 // on read and flushes it during read polling
-                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                Some(Ok(Message::Ping(_))) => {
+                    if let Err(abuse) = self.pings.count() {
+                        return Err(Ended {
+                            disconnect: RemoteDisconnect::failure(abuse),
+                            error: FrameError::Truncated,
+                        });
+                    }
+                }
+                Some(Ok(Message::Pong(_))) => {}
                 Some(Ok(Message::Close(frame))) => return Err(Ended::status(close_disconnect(frame))),
                 Some(Ok(Message::Text(_) | Message::Frame(_))) => {
                     return Err(Ended {
@@ -184,6 +196,10 @@ impl MessageSource for WebSocketSource {
         }
     }
 }
+
+/// Write-buffer room past one full request, for the pongs a rate-limited server
+/// can queue while not reading; beyond it the session ends instead of buffering.
+const WRITE_BUFFER_HEADROOM: usize = 1 << 20;
 
 /// Aborts a task when dropped.
 struct AbortOnDrop(JoinHandle<()>);

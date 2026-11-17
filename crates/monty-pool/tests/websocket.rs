@@ -368,6 +368,28 @@ async fn pings_are_answered_while_idle() {
     drop(checkout);
 }
 
+/// Ping frames are rate-limited like in-band pings: each queues a pong, which a
+/// server that stops reading would otherwise pile up in the write buffer.
+#[tokio::test]
+async fn a_ping_frame_flood_ends_the_session() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        for _ in 0..11 {
+            socket.ping();
+        }
+        while socket.read_unsplit().is_some() {}
+    });
+    let (_pool, mut checkout) = remote_checkout(&url).await;
+    let details = expect_disconnect(&mut checkout).await;
+    assert_eq!(
+        details.transport_error.as_deref(),
+        Some("server sent more than 10 pings in 1s")
+    );
+    join_server(server).await;
+}
+
 /// The connection's message limit follows the decode budget, so an oversize
 /// reply is refused by size before it is buffered or decoded.
 #[tokio::test]

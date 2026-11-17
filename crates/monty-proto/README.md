@@ -79,15 +79,16 @@ prefix, over either of two transports; `monty-pool` picks one by the URL's schem
 - **gRPC** (`http://`, `https://`): one `MontySession.Session` stream per session. A server refuses a stream with a
   trailers-only status and ends one with a status; either may carry a `monty-cause` trailer naming a `Cause`.
 - **WebSocket** (`ws://`, `wss://`): one connection per session, one binary message per protocol message.
-  - A 101 upgrade admits the session. A server refuses with any other HTTP status, optionally with a `monty-cause`
+  - A 101 upgrade admits the connection; its first `Configure` can still be answered `SessionRefused`, as on gRPC.
+    A server refuses the upgrade with any other HTTP status, optionally with a `monty-cause`
     header and `Retry-After`. A client reads the status as gRPC's HTTP mapping does (401 `UNAUTHENTICATED`, 403
     `PERMISSION_DENIED`, 429/502/503/504 `UNAVAILABLE`), and a known `monty-cause` as that cause and its code.
   - A server ends a session with a Close frame. Each `Cause` has its own close code in RFC 6455's private range,
     `Cause::close_code` (4000 `idle_timeout` to 4010 `protocol_violation`); these numbers are wire contract.
     The reason text is for people and is never parsed. Of the standard codes, 1000 is a plain finish (`OK`), 1001
     `UNAVAILABLE`, 1008 `PERMISSION_DENIED`, 1009 `RESOURCE_EXHAUSTED` and 1011 `INTERNAL`.
-  - Text messages are a protocol violation. A client answers WebSocket ping frames, and ends its side with a 1000
-    Close frame.
+  - Text messages are a protocol violation. A client answers WebSocket ping frames, at most 10 a second as with
+    in-band `Ping` events, and ends its side with a 1000 Close frame.
 
 On both, a server may send in-band `Ping` events between turns, which a client answers with `Pong`.
 
