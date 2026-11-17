@@ -245,6 +245,31 @@ impl FromValue for i64 {
     }
 }
 
+impl FromValue for isize {
+    const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
+
+    #[inline]
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        let value = resolve_index_dunder(value, vm)?;
+        match value {
+            Value::Bool(b) => Ok(Self::from(b)),
+            Value::Int(i) => Self::try_from(i).map_err(|_| {
+                value.drop_with(vm);
+                FromValueFail::Raise(ExcType::overflow_c_ssize_t())
+            }),
+            _ if is_long_int(&value, vm) => {
+                value.drop_with(vm);
+                Err(FromValueFail::Raise(ExcType::overflow_c_ssize_t()))
+            }
+            other => Err(FromValueFail::WrongType(other)),
+        }
+    }
+
+    fn type_error(got: &str) -> RunError {
+        ExcType::type_error_not_integer(got)
+    }
+}
+
 /// Replaces a value with the `int` the `__index__` protocol produces, leaving
 /// anything not `__index__`-able untouched.
 ///

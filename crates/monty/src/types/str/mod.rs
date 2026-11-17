@@ -1599,7 +1599,7 @@ fn str_replace<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult
     let new = new.as_str(vm);
     let s = s.as_str(vm);
 
-    check_replace_size(s.len(), old.len(), new.len(), count, &vm.heap.tracker)?;
+    check_replace_size(s.len(), old.len(), new.len(), count as i64, &vm.heap.tracker)?;
 
     let result = if count < 0 {
         s.replace(old, new)
@@ -1620,14 +1620,14 @@ fn str_replace<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult
 /// Python 3.13 promoted `count` from positional-only to
 /// positional-or-keyword, hence the un-annotated default.
 #[derive(FromArgs)]
-#[from_args(name = "replace")]
+#[from_args(name = "replace", bad_arg)]
 struct ReplaceArgs {
     #[from_args(pos_only)]
     old: StrArg,
     #[from_args(pos_only)]
     new: StrArg,
     #[from_args(default = -1)]
-    count: i64,
+    count: isize,
 }
 
 /// Implements Python's `str.center(width, fillchar?)` method.

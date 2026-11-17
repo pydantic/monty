@@ -1065,26 +1065,32 @@ for f, name in [
 try:
     'hello'.replace(123, 'a' * 100)
     assert False, 'replace(non-str, str) should raise TypeError'
-except TypeError:
-    pass
+except TypeError as exc:
+    assert str(exc) == 'replace() argument 1 must be str, not int'
 
 # 2. Error on arg 2 while arg 1 was extracted into an owning field:
 try:
     'hello'.replace('a' * 100, 123)
     assert False, 'replace(str, non-str) should raise TypeError'
-except TypeError:
-    pass
+except TypeError as exc:
+    assert str(exc) == 'replace() argument 2 must be str, not int'
 
 # 3. Positional argument count arity checks via fast-path / fallback:
 try:
     'hello'.replace()
     assert False, 'replace() with 0 args should raise TypeError'
-except TypeError:
-    pass
+except TypeError as exc:
+    assert str(exc) == 'replace() takes at least 2 positional arguments (0 given)'
 
 try:
     'hello'.replace('a')
     assert False, 'replace() with 1 arg should raise TypeError'
-except TypeError:
-    pass
+except TypeError as exc:
+    assert str(exc) == 'replace() takes at least 2 positional arguments (1 given)'
 
+# 4. Overflow check for ssize_t count:
+try:
+    'a'.replace('a', 'b', 10**30)
+    assert False, 'replace with oversized count should raise OverflowError'
+except OverflowError as exc:
+    assert str(exc) == 'Python int too large to convert to C ssize_t'
