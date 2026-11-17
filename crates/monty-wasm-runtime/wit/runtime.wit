@@ -293,9 +293,19 @@ interface worker {
         github,
     }
 
+    /// Clock for execution budgets and reported execution time.
+    enum execution-clock {
+        /// Elapsed time read from the host's monotonic clock.
+        wall,
+        /// Counted work at a fixed rate, for hosts whose clocks stand still during compute.
+        work,
+    }
+
     /// Options for creating one REPL session.
     record configure-request {
         script-name: string,
+        /// Absent uses wall time.
+        execution-clock: option<execution-clock>,
         limits: option<resource-limits>,
         type-check: bool,
         type-check-stubs: option<string>,

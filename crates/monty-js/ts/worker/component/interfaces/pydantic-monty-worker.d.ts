@@ -374,8 +374,17 @@ export interface OsPolicy {
  */
 export type TypeCheckFormat =
   'full' | 'concise' | 'azure' | 'json' | 'json-lines' | 'rdjson' | 'pylint' | 'gitlab' | 'github'
+/**
+ * # Variants
+ *
+ * ## `"wall"`
+ *
+ * ## `"work"`
+ */
+export type ExecutionClock = 'wall' | 'work'
 export interface ConfigureRequest {
   scriptName: string
+  executionClock?: ExecutionClock
   limits?: ResourceLimits
   typeCheck: boolean
   typeCheckStubs?: string
