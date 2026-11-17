@@ -27,7 +27,6 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     py_attrs::PyAttrs,
-    py_class::PyClass,
     py_value::PyValue,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type, TypeRef,
@@ -298,32 +297,6 @@ struct DatetimeInitArgs {
     tzinfo: Value,
     #[from_args(kw_only, default = 0)]
     fold: i32,
-}
-
-/// `datetime.min`, `datetime.max` and `datetime.resolution`.
-pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    Some(match attr.static_string(vm.interns)? {
-        StaticStrings::Min => allocate_naive(1, 1, 1, 0, 0, 0, 0, vm.heap),
-        StaticStrings::Max => allocate_naive(9999, 12, 31, 23, 59, 59, 999_999, vm.heap),
-        StaticStrings::Resolution => timedelta::allocate_micros(1, vm.heap),
-        _ => return None,
-    })
-}
-
-/// `datetime.now()`, `fromtimestamp()`, `strptime()`, `fromisoformat()` and `combine()`.
-pub(crate) fn class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    Ok(match attr.static_string(vm.interns) {
-        Some(StaticStrings::Now) => class_now(vm, args),
-        Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
-        Some(StaticStrings::Strptime) => class_strptime(vm.heap, args, vm.interns).map(CallResult::Value),
-        Some(StaticStrings::Fromisoformat) => class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value),
-        Some(StaticStrings::Combine) => class_combine(vm, args).map(CallResult::Value),
-        _ => return Err(args),
-    })
 }
 
 /// Reads `datetime.now(tz=None)` from the session clock, preserving `tz` identity.
@@ -1802,37 +1775,27 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
     }
 
     #[pyclassmethod(Fromtimestamp)]
-    fn fromtimestamp(
-        _name: StaticStrings,
-        _class: PyClass<'_>,
-        args: ArgValues,
-        vm: &mut VM<'_>,
-    ) -> RunResult<CallResult> {
+    fn fromtimestamp(_name: StaticStrings, _class: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_fromtimestamp(vm, args).map(CallResult::Value)
     }
 
     #[pyclassmethod(Now)]
-    fn now(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn now(_name: StaticStrings, _class: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_now(vm, args)
     }
 
     #[pyclassmethod(Strptime)]
-    fn strptime(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn strptime(_name: StaticStrings, _class: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_strptime(vm.heap, args, vm.interns).map(CallResult::Value)
     }
 
     #[pyclassmethod(Fromisoformat)]
-    fn fromisoformat(
-        _name: StaticStrings,
-        _class: PyClass<'_>,
-        args: ArgValues,
-        vm: &mut VM<'_>,
-    ) -> RunResult<CallResult> {
+    fn fromisoformat(_name: StaticStrings, _class: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
     }
 
     #[pyclassmethod(Combine)]
-    fn combine(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn combine(_name: StaticStrings, _class: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_combine(vm, args).map(CallResult::Value)
     }
 }

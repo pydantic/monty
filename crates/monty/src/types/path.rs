@@ -26,7 +26,6 @@ use crate::{
     intern::{Interns, StaticStrings},
     os_dispatch::{build_path_os_call, value_as_path_str},
     py_attrs::PyAttrs,
-    py_class::PyClass,
     types::{
         LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_tuple,
         dir_scan::{glob_call, walk_call},
@@ -280,19 +279,6 @@ impl Path {
             }
         };
         Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
-    }
-}
-
-/// `Path.cwd()`.
-pub(crate) fn class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::Cwd) {
-        Ok(class_cwd(vm, args).map(CallResult::Value))
-    } else {
-        Err(args)
     }
 }
 
@@ -878,7 +864,7 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
     }
 
     #[pyclassmethod(Cwd)]
-    fn cwd(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn cwd(_name: StaticStrings, _class: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_cwd(vm, args).map(CallResult::Value)
     }
 }

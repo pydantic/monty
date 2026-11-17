@@ -86,7 +86,6 @@ use crate::{
     intern::{BytesId, StaticStrings},
     percent_format::{copy_bytes_template, percent_format_bytes},
     py_attrs::PyAttrs,
-    py_class::PyClass,
     py_value::PyValue,
     resource_checks::{
         check_estimated_size, check_repeat_size, check_replace_size, push_checked, repeated_len, try_vec_with_capacity,
@@ -97,7 +96,7 @@ use crate::{
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
-    value::{EitherStr, VALUE_SIZE, Value, eq_bytes},
+    value::{VALUE_SIZE, Value, eq_bytes},
 };
 
 // =============================================================================
@@ -2273,19 +2272,6 @@ struct BytesHexArgs {
 // fromhex classmethod
 // =============================================================================
 
-/// `bytes.fromhex(...)` called on the type.
-pub(crate) fn bytes_class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::Fromhex) {
-        Ok(bytes_fromhex(args, vm).map(CallResult::Value))
-    } else {
-        Err(args)
-    }
-}
-
 /// Implements Python's `bytes.fromhex(string)` classmethod.
 ///
 /// Creates bytes from a hexadecimal string. Whitespace is allowed between byte pairs,
@@ -2853,7 +2839,7 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     }
 
     #[pyclassmethod(Fromhex)]
-    fn fromhex(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn fromhex(_name: StaticStrings, _class: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         bytes_fromhex(args, vm).map(CallResult::Value)
     }
 }

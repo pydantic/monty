@@ -130,15 +130,17 @@ Projects a struct into the `CallArgs` a host callback takes, reusing the `#[from
 Collects Python-visible functions on a namespace implementing `PyAttrs` inside `monty`.
 The macro keeps their native bodies in an inherent implementation and generates `PyAttrs::TABLE`.
 The table contains enumerable entries and a lookup function generated from the same declarations.
-`Type::attr_table` registers each native namespace once.
+`TypeDef::attrs` registers each native namespace once.
+Lookup follows the native MRO and retains the defining namespace for descriptor receiver checks.
+Class methods receive the accessing class as a borrowed `TypeRef`; the caller keeps that class alive during the call.
+Bases with different native payloads register a `TypeDef::subtype_call` adapter for their instance methods.
 
 Each annotation names its `StaticStrings` key explicitly:
 
 - `#[pymethod(Sort)]` registers an instance method with a native receiver, `ArgValues`, and `&mut VM`.
   Methods return `RunResult<Value>` or `RunResult<CallResult>`; the adapter converts values and preserves suspension.
-  An inherited native descriptor can specify its defining base, e.g. `#[pymethod(Get, Dict)]`,
-  so unbound calls validate against `dict` even when reached through a subclass.
-- `#[pyclassmethod(Fromkeys)]` registers `(StaticStrings, PyClass, ArgValues, &mut VM) -> RunResult<CallResult>`.
+  Inherited methods are registered only on their defining base; MRO lookup supplies the owner for receiver validation.
+- `#[pyclassmethod(Fromkeys)]` registers `(StaticStrings, TypeRef, ArgValues, &mut VM) -> RunResult<CallResult>`.
   The adapter supplies the registered key and bound class, including calls through instances.
 - `#[pyvalue(Min)]` registers `(&mut VM) -> Value`.
 

@@ -58,8 +58,6 @@ either.
 see "Reading the clock" below.
 `fromtimestamp()` reads the [session zone](#reading-the-clock) where CPython reads the host's.
 Its errors differ as `datetime.fromtimestamp()`'s do (below).
-`today()` and `fromisoformat()` can only be called on the class: `date(2020, 1, 1).today()` raises `AttributeError`.
-`fromtimestamp()` also works on an instance.
 No class method can be read without calling it (see [builtins.md](builtins.md)).
 
 Constructor overflow wording on Windows: CPython's `i` converter goes
@@ -95,10 +93,10 @@ and with the offset from before a DST gap: CPython's `fold=0` reading, since `fo
 `fold` is not readable: `datetime(2020, 1, 1, fold=1).fold` raises
 `AttributeError`, where CPython returns `1`.
 
-Class methods supported: `now(tz=None)`, `fromtimestamp(timestamp, tz=None)`, `strptime(date_string, format)`,
+Class methods supported: `today()`, `now(tz=None)`, `fromtimestamp(timestamp, tz=None)`, `strptime(date_string, format)`,
 `fromisoformat(date_string)`, `combine(date, time, tzinfo=self.tzinfo)`.
 
-- `now()` reads the clock — see "Reading the clock" below.
+- `today()` and `now()` read the clock — see "Reading the clock" below.
 - Host-answered `now(tz)` reconstructs `tzinfo` from its offset and name, so it equals `tz` but is a different object.
     The default sandbox answer preserves identity, as CPython does.
 - `strptime()` requires the string to carry a date: a time-only format
@@ -113,11 +111,8 @@ Class methods supported: `now(tz=None)`, `fromtimestamp(timestamp, tz=None)`, `s
     `ValueError: invalid literal for int() with base 10: ':0'`. The mirrored `'+01:0203'` matches CPython exactly.
 - Input the format does not consume raises `ValueError: time data '...' does not match format '...'`,
     where CPython distinguishes trailing input with `ValueError: unconverted data remains: ...`.
-- `utcnow()` (the deprecated class method) and `today()` are not
-    implemented.
-- `now()`, `strptime()`, `fromisoformat()` and `combine()` can only be called on the class:
-    `datetime(2020, 1, 1).now()` raises `AttributeError`. `fromtimestamp()` also works on an instance.
-    No class method can be read without calling it (see [builtins.md](builtins.md)).
+- `utcnow()` (the deprecated class method) is not implemented.
+- Class methods cannot be read without calling them (see [builtins.md](builtins.md)).
 - A naive `fromtimestamp()` reads the [session zone](#reading-the-clock) where CPython reads the host's.
     Microseconds round half to even and the `time_t`, `NaN` and year errors match CPython on Linux and macOS,
     except where the platform's `gmtime()` / `localtime()` fails and CPython raises `OSError`:

@@ -21,7 +21,6 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
     py_attrs::PyAttrs,
-    py_class::PyClass,
     py_value::PyValue,
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
@@ -444,19 +443,6 @@ impl FromValue for Part {
     }
 }
 
-/// `complex.from_number(...)`.
-pub(crate) fn class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::FromNumber) {
-        Ok(class_from_number(vm, args).map(CallResult::Value))
-    } else {
-        Err(args)
-    }
-}
-
 /// `complex.from_number(x)`: a number or complex, never a string.
 pub(crate) fn class_from_number(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("complex.from_number", vm.heap)?;
@@ -787,7 +773,7 @@ impl<'heap> PyAttrs<'heap> for PyComplexImpl {
     }
 
     #[pyclassmethod(FromNumber)]
-    fn from_number(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn from_number(_: StaticStrings, _: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_from_number(vm, args).map(CallResult::Value)
     }
 }

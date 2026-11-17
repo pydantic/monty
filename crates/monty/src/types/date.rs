@@ -23,13 +23,12 @@ use crate::{
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     py_attrs::{MethodCall, PyAttrs},
-    py_class::PyClass,
+    py_value::PyValue,
     string_builder::StringBuilder,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, TypeRef, datetime,
         str::{allocate_string, allocate_string_no_interning},
         timedelta,
-        timedelta::DAY_MICROSECONDS,
         timezone::{format_offset_compact, format_offset_hms, tzname_string},
     },
     value::{EitherStr, Value},
@@ -149,30 +148,6 @@ struct DateInitArgs {
     year: i32,
     month: i32,
     day: i32,
-}
-
-/// `date.min`, `date.max` and `date.resolution`.
-pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    Some(match attr.static_string(vm.interns)? {
-        StaticStrings::Min => allocate_ymd(1, 1, 1, vm.heap),
-        StaticStrings::Max => allocate_ymd(9999, 12, 31, vm.heap),
-        StaticStrings::Resolution => timedelta::allocate_micros(DAY_MICROSECONDS, vm.heap),
-        _ => return None,
-    })
-}
-
-/// `date.today()`, `date.fromtimestamp()` and `date.fromisoformat()`.
-pub(crate) fn class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    Ok(match attr.static_string(vm.interns) {
-        Some(StaticStrings::Today) => class_today(vm, args),
-        Some(StaticStrings::Fromisoformat) => class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value),
-        Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
-        _ => return Err(args),
-    })
 }
 
 /// Reads `date.today()` from the session's clock in the session zone. A `CallHost`
@@ -517,8 +492,22 @@ struct DateReplaceArgs {
     day: Option<i32>,
 }
 
+/// Adapts date descriptors to the datetime payload while preserving method-specific results.
+pub(crate) fn call_subtype_descriptor<'h>(
+    receiver: &mut PyValue<'h>,
+    attr: &EitherStr,
+    call: MethodCall,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    match receiver {
+        PyValue::DateTime(datetime) => call_datetime_descriptor(datetime, attr, call, args, vm),
+        _ => call(receiver, args, vm),
+    }
+}
+
 /// `date` descriptors read the date portion of a datetime unless the method uses its time fields.
-pub(crate) fn call_datetime_descriptor<'h>(
+fn call_datetime_descriptor<'h>(
     value: &mut HeapObjectRead<'h, datetime::DateTime>,
     attr: &EitherStr,
     call: MethodCall,
@@ -616,17 +605,22 @@ impl<'heap> PyAttrs<'heap> for PyDateImpl {
     }
 
     #[pyclassmethod(Today)]
-    fn today(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        class_today(vm, args)
+    fn today(_: StaticStrings, class: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        if class == Type::DateTime {
+            args.check_zero_args("datetime.today", vm.heap)?;
+            datetime::class_now(vm, ArgValues::Empty)
+        } else {
+            class_today(vm, args)
+        }
     }
 
     #[pyclassmethod(Fromisoformat)]
-    fn fromisoformat(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn fromisoformat(_: StaticStrings, _: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
     }
 
     #[pyclassmethod(Fromtimestamp)]
-    fn fromtimestamp(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn fromtimestamp(_: StaticStrings, _: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_fromtimestamp(vm, args).map(CallResult::Value)
     }
 

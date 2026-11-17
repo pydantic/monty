@@ -9,16 +9,14 @@ use crate::{
     exception_private::RunResult,
     intern::StaticStrings,
     py_attrs::{PyAttrs, PyAttrs as NativeAttrs},
-    py_class::PyClass,
     py_value::PyValue,
+    types::TypeRef,
     value::Value,
 };
 
 mod types {
     #[derive(Clone, Copy)]
-    pub enum Type {
-        Dict,
-    }
+    pub struct TypeRef(pub &'static str);
 }
 mod args {
     pub struct ArgValues;
@@ -49,10 +47,6 @@ mod bytecode {
         }
     }
 }
-mod py_class {
-    #[derive(Clone, Copy)]
-    pub struct PyClass<'h>(pub &'h str);
-}
 mod py_value {
     use super::*;
     pub enum PyValue<'h> {
@@ -72,11 +66,8 @@ mod py_attrs {
     }
     #[derive(Clone, Copy)]
     pub enum AttrDef {
-        Method {
-            call: for<'h> fn(&mut PyValue<'h>, ArgValues, &mut VM<'h>) -> RunResult<bytecode::CallResult>,
-            owner: Option<types::Type>,
-        },
-        ClassMethod(for<'h> fn(PyClass<'h>, ArgValues, &mut VM<'h>) -> RunResult<bytecode::CallResult>),
+        Method(for<'h> fn(&mut PyValue<'h>, ArgValues, &mut VM<'h>) -> RunResult<bytecode::CallResult>),
+        ClassMethod(for<'h> fn(TypeRef, ArgValues, &mut VM<'h>) -> RunResult<bytecode::CallResult>),
         Value(fn(&mut VM<'_>) -> Value),
     }
     pub fn invalid_receiver(_: StaticStrings, _: ArgValues, _: &mut VM<'_>) -> RunResult<bytecode::CallResult> {
@@ -113,7 +104,7 @@ struct FloatMethods;
 impl PyAttrs<'_> for FloatMethods {
     type Receiver = f64;
 
-    #[pymethod(Count, Dict)]
+    #[pymethod(Count)]
     #[expect(
         clippy::unnecessary_wraps,
         reason = "callable adapters require a fallible handler signature"
@@ -126,7 +117,7 @@ impl PyAttrs<'_> for FloatMethods {
         clippy::unnecessary_wraps,
         reason = "callable adapters require a fallible handler signature"
     )]
-    fn make(_: StaticStrings, class: PyClass<'_>, _: ArgValues, _: &mut VM<'_>) -> RunResult<bytecode::CallResult> {
+    fn make(_: StaticStrings, class: TypeRef, _: ArgValues, _: &mut VM<'_>) -> RunResult<bytecode::CallResult> {
         Ok(bytecode::CallResult(Value(i64::try_from(class.0.len()).unwrap())))
     }
     #[pyvalue(Min)]
@@ -138,10 +129,9 @@ impl PyAttrs<'_> for FloatMethods {
 #[test]
 fn explicit_names_and_both_integer_representations() {
     let mut vm = VM(PhantomData);
-    let Some(py_attrs::AttrDef::Method { call, owner }) = (IntegerMethods::TABLE.lookup)(StaticStrings::Count) else {
+    let Some(py_attrs::AttrDef::Method(call)) = (IntegerMethods::TABLE.lookup)(StaticStrings::Count) else {
         panic!("method missing")
     };
-    assert!(owner.is_none());
     assert_eq!(
         call(&mut PyValue::Int(PyInt::Small(42)), ArgValues, &mut vm).unwrap().0,
         Value(42)
@@ -165,15 +155,14 @@ fn explicit_names_and_both_integer_representations() {
 #[test]
 fn call_results_class_receivers_and_values() {
     let mut vm = VM(PhantomData);
-    let Some(py_attrs::AttrDef::Method { call, owner }) = (FloatMethods::TABLE.lookup)(StaticStrings::Count) else {
+    let Some(py_attrs::AttrDef::Method(call)) = (FloatMethods::TABLE.lookup)(StaticStrings::Count) else {
         panic!("method missing")
     };
-    assert!(matches!(owner, Some(types::Type::Dict)));
     assert_eq!(call(&mut PyValue::Float(1.0), ArgValues, &mut vm).unwrap().0, Value(7));
     let Some(py_attrs::AttrDef::ClassMethod(call)) = (FloatMethods::TABLE.lookup)(StaticStrings::FromNumber) else {
         panic!("classmethod missing")
     };
-    assert_eq!(call(PyClass("float"), ArgValues, &mut vm).unwrap().0, Value(5));
+    assert_eq!(call(TypeRef("float"), ArgValues, &mut vm).unwrap().0, Value(5));
     let Some(py_attrs::AttrDef::Value(get)) = (FloatMethods::TABLE.lookup)(StaticStrings::Min) else {
         panic!("value missing")
     };

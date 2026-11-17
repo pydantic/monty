@@ -4,7 +4,8 @@ from collections import Counter, defaultdict, deque, namedtuple
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Context, Decimal, Inexact, getcontext, setcontext
 from functools import lru_cache
-from hashlib import sha256, shake_128
+from hashlib import blake2b, blake2s, sha256, shake_128
+from itertools import chain
 from pathlib import Path
 from random import Random
 
@@ -104,6 +105,49 @@ assert defaultdict.__missing__(factory_mapping, 'x') == []
 assert type(factory_mapping.fromkeys(['y'])) is defaultdict
 assert dict.fromkeys(['a']) == {'a': None}
 assert type(defaultdict.fromkeys(['a'])) is defaultdict
+
+# === Inherited methods retain their defining owner and bound class ===
+for cls in [dict, defaultdict, Counter]:
+    assert cls.get({'a': 3}, 'a') == 3
+    assert cls.pop({'a': 3}, 'a') == 3
+    assert cls.setdefault({}, 'a', 3) == 3
+    assert cls.popitem({'a': 3}) == ('a', 3)
+shared_default = []
+for receiver in [defaultdict, defaultdict(list)]:
+    inherited = receiver.fromkeys(['a', 'b'], shared_default)
+    assert type(inherited) is defaultdict
+    assert inherited.default_factory is None
+    assert inherited['a'] is inherited['b'] is shared_default
+assert Point(1, 1).count(1) == 2
+assert datetime.min == datetime(1, 1, 1)
+assert datetime.resolution == timedelta(microseconds=1)
+assert date.resolution == timedelta(days=1)
+for invalid, expected in [
+    (lambda: datetime.today(1), 'datetime.today() takes no arguments (1 given)'),
+    (lambda: datetime.today(tz=None), 'datetime.today() takes no keyword arguments'),
+]:
+    try:
+        invalid()
+    except TypeError as exc:
+        assert str(exc) == expected
+    else:
+        assert False, 'invalid inherited classmethod call succeeded'
+
+# === Native constants and callable values share attribute tables ===
+for cls, size, salt_size in [(blake2b, 64, 16), (blake2s, 32, 8)]:
+    digest = cls(b'abc')
+    for receiver in [cls, digest]:
+        assert receiver.MAX_DIGEST_SIZE == size
+        assert receiver.MAX_KEY_SIZE == size
+        assert receiver.SALT_SIZE == salt_size
+        assert receiver.PERSON_SIZE == salt_size
+    cls.update(digest, b'def')
+    assert cls.digest(digest) == cls(b'abcdef').digest()
+    assert cls.copy(digest).hexdigest() == digest.hexdigest()
+flatten = chain.from_iterable
+assert list(flatten([[1], [2, 3]])) == [1, 2, 3]
+assert int.__init__ is object.__init__
+
 for owner in [dict, defaultdict, Counter]:
     try:
         owner.get([], 'key')

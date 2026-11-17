@@ -1135,6 +1135,12 @@ pub enum StaticStrings {
     /// `__init__` — written into a class namespace by `@dataclass`.
     #[strum(serialize = "__init__")]
     DunderInit,
+    /// `object.__init_subclass__` class creation hook.
+    #[strum(serialize = "__init_subclass__")]
+    DunderInitSubclass,
+    /// `object.__new__` instance construction hook.
+    #[strum(serialize = "__new__")]
+    DunderNew,
     /// `Decimal.__int__()`.
     #[strum(serialize = "__int__")]
     DunderInt,

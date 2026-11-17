@@ -33,7 +33,6 @@ use crate::{
     heap::{DropWithContext, HeapData, HeapId, HeapObjectRead},
     intern::StaticStrings,
     py_attrs::PyAttrs,
-    py_class::PyClass,
     py_value::PyValue,
     types::{
         CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, TypeRef, allocate_string,
@@ -299,21 +298,6 @@ fn sequence_items(value: &Value, vm: &VM<'_>) -> Option<Vec<Value>> {
         _ => return None,
     };
     Some(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
-}
-
-/// `Decimal.from_number(...)` and `Decimal.from_float(...)`.
-pub(crate) fn class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::FromNumber) {
-        Ok(class_from_number(vm, args).map(CallResult::Value))
-    } else if attr.as_str(vm.interns) == "from_float" {
-        Ok(class_from_float(vm, args).map(CallResult::Value))
-    } else {
-        Err(args)
-    }
 }
 
 /// `Decimal.from_float(f)`: exact; an `int` is accepted too.
@@ -1891,12 +1875,12 @@ impl<'heap> PyAttrs<'heap> for PyDecimalImpl {
     }
 
     #[pyclassmethod(FromFloat)]
-    fn from_float(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn from_float(_: StaticStrings, _: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_from_float(vm, args).map(CallResult::Value)
     }
 
     #[pyclassmethod(FromNumber)]
-    fn from_number(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn from_number(_: StaticStrings, _: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_from_number(vm, args).map(CallResult::Value)
     }
 }

@@ -659,3 +659,63 @@ impl<'heap> PyAttrs<'heap> for PyHashXofImpl {
         PyHashImpl::copy(this, args, vm)
     }
 }
+
+/// The two BLAKE2 classes share methods and differ in their size limits.
+pub(crate) struct PyBlake2Impl<const MAX_SIZE: i64, const SALT_SIZE: i64>;
+
+#[pyattrs]
+impl<'h, const MAX_SIZE: i64, const SALT_SIZE: i64> PyAttrs<'h> for PyBlake2Impl<MAX_SIZE, SALT_SIZE> {
+    type Receiver = HeapObjectRead<'h, HashObject>;
+
+    #[pymethod(Update)]
+    fn update<'a>(
+        this: &mut HeapObjectRead<'a, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'a>,
+    ) -> RunResult<CallResult> {
+        PyHashImpl::update(this, args, vm)
+    }
+
+    #[pymethod(Digest)]
+    fn digest<'a>(
+        this: &mut HeapObjectRead<'a, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'a>,
+    ) -> RunResult<CallResult> {
+        PyHashImpl::digest(this, args, vm)
+    }
+
+    #[pymethod(Hexdigest)]
+    fn hexdigest<'a>(
+        this: &mut HeapObjectRead<'a, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'a>,
+    ) -> RunResult<CallResult> {
+        PyHashImpl::hexdigest(this, args, vm)
+    }
+
+    #[pymethod(Copy)]
+    fn copy<'a>(this: &mut HeapObjectRead<'a, HashObject>, args: ArgValues, vm: &mut VM<'a>) -> RunResult<CallResult> {
+        PyHashImpl::copy(this, args, vm)
+    }
+
+    #[pyvalue(MaxDigestSize)]
+    fn max_digest_size(_vm: &mut VM<'_>) -> Value {
+        Value::Int(MAX_SIZE)
+    }
+
+    #[pyvalue(MaxKeySize)]
+    fn max_key_size(_vm: &mut VM<'_>) -> Value {
+        Value::Int(MAX_SIZE)
+    }
+
+    #[pyvalue(SaltSize)]
+    fn salt_size(_vm: &mut VM<'_>) -> Value {
+        Value::Int(SALT_SIZE)
+    }
+
+    #[pyvalue(PersonSize)]
+    fn person_size(_vm: &mut VM<'_>) -> Value {
+        Value::Int(SALT_SIZE)
+    }
+}

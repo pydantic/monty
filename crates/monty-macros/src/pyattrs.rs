@@ -51,20 +51,16 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
                         let name = args
                             .next()
                             .ok_or_else(|| syn::Error::new_spanned(&attr, "expected a StaticStrings key"))?;
-                        let owner = args.next();
-                        if args.next().is_some() || (owner.is_some() && !matches!(kind, Kind::Method)) {
-                            return Err(syn::Error::new_spanned(
-                                attr,
-                                "only methods accept an optional defining native type",
-                            ));
+                        if args.next().is_some() {
+                            return Err(syn::Error::new_spanned(attr, "expected one StaticStrings key"));
                         }
-                        annotation = Some((kind, name, owner));
+                        annotation = Some((kind, name));
                     } else {
                         remaining.push(attr);
                     }
                 }
                 method.attrs = remaining;
-                let Some((kind, name, defining_owner)) = annotation else {
+                let Some((kind, name)) = annotation else {
                     continue;
                 };
                 if method
@@ -84,15 +80,13 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
                 let key = quote!(crate::intern::StaticStrings::#name);
                 let definition = match kind {
                     Kind::Method => {
-                        let defining_owner = defining_owner
-                            .map_or_else(|| quote!(None), |owner| quote!(Some(crate::types::Type::#owner)));
                         quote! {
-                            crate::py_attrs::AttrDef::Method { owner: #defining_owner, call: |this, args, vm| {
+                            crate::py_attrs::AttrDef::Method(|this, args, vm| {
                                 let Some(receiver) = (#projection) else {
                                     return crate::py_attrs::invalid_receiver(#key, args, vm);
                                 };
                                 <#owner>::#handler(receiver, args, vm).map(Into::into)
-                            }}
+                            })
                         }
                     }
                     Kind::ClassMethod => quote! {

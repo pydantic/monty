@@ -7,14 +7,13 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext},
     intern::StaticStrings,
-    py_class::PyClass,
     py_value::PyValue,
-    types::{PyTrait, Type, date, namedtuple},
+    types::{PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
 };
 
 /// The receiver is the bound class object, including when called through an instance.
-pub(crate) type ClassMethodCall = for<'h> fn(PyClass<'h>, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
+pub(crate) type ClassMethodCall = for<'h> fn(TypeRef, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 pub(crate) type MethodCall = for<'h> fn(&mut PyValue<'h>, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 
 /// Python attribute definitions and the native view passed to their methods.
@@ -32,11 +31,7 @@ pub(crate) struct AttrTable {
 
 #[derive(Clone, Copy)]
 pub(crate) enum AttrDef {
-    Method {
-        call: MethodCall,
-        /// Inherited native descriptors validate against their defining base.
-        owner: Option<Type>,
-    },
+    Method(MethodCall),
     ClassMethod(ClassMethodCall),
     Value(fn(&mut VM<'_>) -> Value),
 }
@@ -75,39 +70,30 @@ pub(crate) fn call_unbound(
     }
     let ((receiver, args), vm) = pending.into_parts();
     defer_drop!(receiver, vm);
-    if receiver_type == owner {
-        call(&mut receiver.py_value(vm), args, vm)
+    call_method(owner, &mut receiver.py_value(vm), attr, call, args, vm)
+}
+
+/// Calls a native descriptor, using its base's adapter when the receiver has another layout.
+pub(crate) fn call_method<'h>(
+    owner: Type,
+    receiver: &mut PyValue<'h>,
+    attr: &EitherStr,
+    call: MethodCall,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    if let Some(adapt) = owner.def().subtype_call
+        && receiver.py_type(vm) != owner
+    {
+        adapt(receiver, attr, call, args, vm)
     } else {
-        call_unbound_subtype(owner, attr, call, receiver, args, vm)
+        call(receiver, args, vm)
     }
 }
 
-/// Native subtypes with different layouts provide their own descriptor adapters.
-fn call_unbound_subtype(
-    owner: Type,
-    attr: &EitherStr,
-    call: MethodCall,
-    this: &Value,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> RunResult<CallResult> {
-    match (owner, this.py_value(vm)) {
-        (Type::Dict, PyValue::Dict(dict)) => call(&mut PyValue::Dict(dict), args, vm),
-        (Type::Tuple, PyValue::NamedTuple(tuple)) => namedtuple::call_tuple_descriptor(&tuple, attr, args, vm),
-        (Type::Date, PyValue::DateTime(mut datetime)) => {
-            date::call_datetime_descriptor(&mut datetime, attr, call, args, vm)
-        }
-        _ => {
-            args.drop_with(vm);
-            Err(ExcType::type_error(format!(
-                "descriptor '{}' for '{}' objects doesn't apply to a '{}' object",
-                attr.as_str(vm.interns),
-                owner.name(),
-                this.py_type_name(vm),
-            )))
-        }
-    }
-}
+/// Adapts a base descriptor to a native subtype with a different payload.
+pub(crate) type SubtypeCall =
+    for<'h> fn(&mut PyValue<'h>, &EitherStr, MethodCall, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 
 /// A table adapter could not project the receiver to its declared native view.
 pub(crate) fn invalid_receiver(name: StaticStrings, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {

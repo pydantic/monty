@@ -40,7 +40,8 @@ use crate::{
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
-    py_attrs::PyAttrs,
+    py_attrs::{MethodCall, PyAttrs},
+    py_value::PyValue,
     resource_checks::{check_repeat_size, repeated_len},
     types::{
         Dict, Type, TypeRef, Union, allocate_tuple,
@@ -1392,17 +1393,22 @@ impl<'heap> PyAttrs<'heap> for PyNamedTupleImpl {
 
 /// Tuple descriptors use the namedtuple's existing item storage.
 pub(crate) fn call_tuple_descriptor<'h>(
-    tuple: &HeapObjectRead<'h, NamedTuple>,
+    receiver: &mut PyValue<'h>,
     attr: &EitherStr,
+    call: MethodCall,
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
-    match attr.static_string(vm.interns) {
-        Some(StaticStrings::Count) => tuple.method_count(vm, args).map(CallResult::Value),
-        Some(StaticStrings::Index) => tuple.method_index(vm, args).map(CallResult::Value),
-        _ => {
-            args.drop_with(vm);
-            Err(ExcType::attribute_error("tuple", attr.as_str(vm.interns)))
+    if let PyValue::NamedTuple(tuple) = receiver {
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::Count) => tuple.method_count(vm, args).map(CallResult::Value),
+            Some(StaticStrings::Index) => tuple.method_index(vm, args).map(CallResult::Value),
+            _ => {
+                args.drop_with(vm);
+                Err(ExcType::attribute_error("tuple", attr.as_str(vm.interns)))
+            }
         }
+    } else {
+        call(receiver, args, vm)
     }
 }

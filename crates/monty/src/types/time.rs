@@ -31,7 +31,6 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
     py_attrs::PyAttrs,
-    py_class::PyClass,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type, TypeRef,
         date::{self, StrftimeArgs},
@@ -206,29 +205,6 @@ fn allocate_with_tz(vm: &mut VM<'_>, mut time: Time, tz_ref: Option<HeapId>) -> 
         time.tzinfo = Some(tz_ref);
     }
     Value::Ref(vm.heap.allocate(HeapData::Time(time)))
-}
-
-/// `time.min`, `time.max` and `time.resolution`.
-pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    Some(match attr.static_string(vm.interns)? {
-        StaticStrings::Min => allocate_naive(0, 0, 0, 0, vm.heap),
-        StaticStrings::Max => allocate_naive(23, 59, 59, 999_999, vm.heap),
-        StaticStrings::Resolution => timedelta::allocate_micros(1, vm.heap),
-        _ => return None,
-    })
-}
-
-/// `time.fromisoformat()`.
-pub(crate) fn class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::Fromisoformat) {
-        Ok(class_fromisoformat(vm, args).map(CallResult::Value))
-    } else {
-        Err(args)
-    }
 }
 
 /// `time.fromisoformat(s)` — the inverse of `isoformat()`.
@@ -736,7 +712,7 @@ impl<'heap> PyAttrs<'heap> for PyTimeImpl {
     }
 
     #[pyclassmethod(Fromisoformat)]
-    fn fromisoformat(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn fromisoformat(_: StaticStrings, _: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_fromisoformat(vm, args).map(CallResult::Value)
     }
 
