@@ -360,8 +360,36 @@ def filter_builtins(source: str) -> str:
     """
     tree = ast.parse(source)
     tree.body = filter_statements(tree.body)
+    narrow_bytearray(tree)
     ast.fix_missing_locations(tree)
     return ast.unparse(tree)
+
+
+def narrow_bytearray(tree: ast.Module) -> None:
+    """Keep bytearray concrete without advertising unsupported deletion or buffer hooks."""
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef) or node.name != 'bytearray':
+            continue
+        node.bases = [ast.Subscript(ast.Name('Sequence', ast.Load()), ast.Name('int', ast.Load()), ast.Load())]
+        node.body = [
+            member
+            for member in node.body
+            if not isinstance(member, ast.FunctionDef)
+            or member.name not in {'__delitem__', '__alloc__', '__buffer__', '__release_buffer__'}
+        ]
+        for member in node.body:
+            if isinstance(member, ast.FunctionDef) and member.name == 'maketrans':
+                member.returns = ast.Name('bytes', ast.Load())
+
+
+def narrow_buffer_aliases(source: str) -> str:
+    """Describe the native buffers without requiring Python buffer hooks."""
+    for alias in ['ReadOnlyBuffer', 'WriteableBuffer', 'ReadableBuffer']:
+        original = f'{alias}: TypeAlias = Buffer'
+        if original not in source:
+            raise ValueError(f'Expected upstream buffer alias: {original}')
+        source = source.replace(original, f'{alias}: TypeAlias = bytes | bytearray')
+    return source
 
 
 def main() -> int:
@@ -401,7 +429,10 @@ def main() -> int:
         if src_file.exists():
             dest_file = STDLIB_DIR / file_path
             dest_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_file, dest_file)
+            if file_path == '_typeshed/__init__.pyi':
+                dest_file.write_text(narrow_buffer_aliases(src_file.read_text()))
+            else:
+                shutil.copy2(src_file, dest_file)
         else:
             raise ValueError(f'{file_path} not found in typeshed')
     print(f'Copied {len(COPY_FILES)} stdlib typeshed files')

@@ -785,7 +785,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         // `validate_write_data` already gated the variant — `binary` selects
         // bytes vs str.
         let payload = if binary {
-            let bytes = extract_bytes_payload(data, vm).expect("validate_write_data accepted a bytes-shaped value");
+            let bytes = extract_bytes_payload(data, vm)?;
             WritePayload::Bytes(bytes)
         } else {
             let text = extract_str_payload(data, vm).expect("validate_write_data accepted a str-shaped value");
@@ -1783,10 +1783,10 @@ fn empty_result(binary: bool, vm: &VM<'_>) -> Value {
     }
 }
 
-/// Validates that `write()` receives text for text files and bytes for binary files.
+/// Validates that `write()` receives text for text files and buffers for binary files.
 fn validate_write_data(data: &Value, binary: bool, vm: &VM<'_>) -> RunResult<()> {
     if binary {
-        if is_bytes(data, vm.heap) {
+        if data.as_buffer(vm).is_some() {
             Ok(())
         } else {
             Err(ExcType::type_error(format!(
@@ -1814,22 +1814,11 @@ pub(crate) fn extract_str_payload(data: &Value, vm: &VM<'_>) -> Option<String> {
     }
 }
 
-/// Owned `Vec<u8>` from a value pre-validated as Python `bytes` — binary
-/// companion to [`extract_str_payload`].
-fn extract_bytes_payload(data: &Value, vm: &VM<'_>) -> Option<Vec<u8>> {
-    match data.py_value(vm) {
-        PyValue::Bytes(bytes) => Some(bytes.as_slice(vm).to_owned()),
-        _ => None,
-    }
-}
-
-/// Returns whether a value is a Python `bytes` object.
-fn is_bytes(data: &Value, heap: &Heap) -> bool {
-    match data {
-        Value::InternBytes(_) => true,
-        Value::Ref(id) => matches!(heap.get(*id), HeapData::Bytes(_)),
-        _ => false,
-    }
+/// Copies a validated buffer for an OS call that outlives the borrow.
+fn extract_bytes_payload(data: &Value, vm: &VM<'_>) -> RunResult<Vec<u8>> {
+    let bytes = data.as_buffer(vm).expect("validated binary write data");
+    vm.heap.tracker.check_allocation(bytes.len())?;
+    Ok(bytes.to_vec())
 }
 
 /// Builds the `io.UnsupportedOperation` used for file operations that the

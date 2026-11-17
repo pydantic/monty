@@ -188,10 +188,7 @@ Everything else raises `AttributeError`, including: `truncate()`,
 - `readline(size)` and `readlines(hint)` are zero-argument only; passing
     a size/hint argument raises `TypeError`. CPython accepts both and uses
     them to cap the returned bytes/chars.
-- `write()` to a text file requires `str`; to a binary file requires
-    `bytes`. The error messages match CPython
-    (`a bytes-like object is required, not '<type>'` /
-    `write() argument must be str, not <type>`).
+- Binary writes accept `bytes` and `bytearray`; other buffer providers are not implemented.
 - Text reads decode the whole file as UTF-8 with no error handlers; newline handling
     follows the `newline` argument (see above).
 - `io.UnsupportedOperation` (raised by `read()` on `'w'` files, `write()`

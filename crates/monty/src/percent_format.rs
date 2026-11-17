@@ -28,19 +28,29 @@ use crate::{
     str_format::value_error,
     string_builder::{BytesBuilder, StringBuilder},
     types::{
-        LongInt, PyTrait, Type, bytes::allocate_bytes, long_int::check_bits_str_digits_limit, str::allocate_string,
+        LongInt, PyTrait, Type,
+        bytes::{BytesOutput, allocate_bytes},
+        long_int::check_bits_str_digits_limit,
+        str::allocate_string,
     },
     value::{VALUE_SIZE, Value},
 };
 
 /// Renders `template % args` for a `str` template.
 pub(crate) fn percent_format(template: &str, args: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    format_template::<StrTarget>(template, args, vm)
+    let output = format_template::<StrTarget>(template, args, vm)?;
+    Ok(allocate_string(output, vm.heap))
 }
 
 /// Renders `template % args` for a `bytes` template.
-pub(crate) fn percent_format_bytes(template: &[u8], args: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    format_template::<BytesTarget>(template, args, vm)
+pub(crate) fn percent_format_bytes(
+    template: &[u8],
+    args: &Value,
+    output: BytesOutput,
+    vm: &mut VM<'_>,
+) -> RunResult<Value> {
+    let bytes = format_template::<BytesTarget>(template, args, vm)?;
+    Ok(output.allocate(bytes, vm.heap))
 }
 
 /// Copies a `bytes` template through the tracker, so a template near the
@@ -96,8 +106,6 @@ trait Target: Sized {
     fn float_overflow_error() -> RunError;
     /// The error for an unknown conversion at byte `index`.
     fn unsupported(template: &Self::Template, index: usize) -> RunError;
-    /// The finished output as a heap value.
-    fn allocate(output: Self::Output, heap: &Heap) -> Value;
 }
 
 /// The tracked builder a [`Target`] assembles its output with.
@@ -207,10 +215,6 @@ impl Target for StrTarget {
         };
         unsupported_character(shown, conversion, template[..index].chars().count())
     }
-
-    fn allocate(output: String, heap: &Heap) -> Value {
-        allocate_string(output, heap)
-    }
 }
 
 /// `bytes % args`.
@@ -290,10 +294,6 @@ impl Target for BytesTarget {
             SimpleException::new_msg(ExcType::OverflowError, "character argument not in range(0x110000)").into()
         }
     }
-
-    fn allocate(output: Vec<u8>, heap: &Heap) -> Value {
-        allocate_bytes(output, heap)
-    }
 }
 
 impl BytesTarget {
@@ -364,7 +364,7 @@ impl<'t> OutputBuilder<'t> for BytesBuilder<'t> {
 }
 
 /// Walks the template, copying literal runs and rendering each `%` directive.
-fn format_template<T: Target>(template: &T::Template, args: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+fn format_template<T: Target>(template: &T::Template, args: &Value, vm: &mut VM<'_>) -> RunResult<T::Output> {
     let bytes = T::as_bytes(template);
     let arguments = Arguments::new(args, T::IS_BYTES, vm)?;
     defer_drop!(arguments, vm);
@@ -410,7 +410,7 @@ fn format_template<T: Target>(template: &T::Template, args: &Value, vm: &mut VM<
             "not all arguments converted during {noun} formatting"
         )))
     } else {
-        Ok(T::allocate(output, vm.heap))
+        Ok(output)
     }
 }
 

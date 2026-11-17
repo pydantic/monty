@@ -182,8 +182,10 @@ MIT
 `bytearray` owns a native contiguous byte buffer and uses heap capabilities for scoped reads and writes.
 A mutable slice permits content changes while Rust's borrow prevents resizing or releasing its storage.
 Byte algorithms are shared with `bytes`; mutation methods retain the bytearray's identity.
+Shared algorithms allocate their result directly as bytes or bytearray, including split and partition pieces.
 `join` holds a scoped export of its separator during user iteration: aliases may change its contents but cannot resize it.
 Nested calls release their own exports on success or error; export counts are omitted from snapshots.
+Bytearray snapshots use named fields and still accept the original byte-string representation.
 Search methods convert bounds before exporting the receiver for a needle's `__index__` callback.
 `replace` exports mutable `old` and `new` arguments during count conversion; its receiver can still resize unless aliased
 by one of those arguments.

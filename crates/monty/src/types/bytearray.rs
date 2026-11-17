@@ -6,28 +6,49 @@ use crate::{
     args::{ArgValues, FromArgs, KwargsValues, StrArg},
     bytecode::{CallResult, VM},
     codecs::Codec,
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{
-        DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, heap_read_ref_as_field,
+        DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReadOutput,
+        heap_read_ref_as_field,
     },
     intern::StaticStrings,
     percent_format::{copy_bytes_template, percent_format_bytes},
     py_value::PyValue,
     resource_checks::check_repeat_size,
-    types::{BytesIterator, CmpOrder, LazyHeapSet, PyTrait, Type, iter::checked_preallocation_hint},
-    value::{EitherStr, VALUE_SIZE, Value, eq_bytes},
+    types::{
+        BytesIterator, CmpOrder, LazyHeapSet, PyTrait, Type, bytes::BytesOutput, iter::checked_preallocation_hint,
+    },
+    value::{EitherStr, Value, eq_bytes},
 };
 
 /// A bytearray owns its buffer; heap capabilities keep scoped borrows valid across aliases.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
+#[serde(from = "DumpedByteArray")]
 pub(crate) struct ByteArray {
-    #[serde(with = "serde_bytes")]
+    #[serde(rename = "B", with = "serde_bytes")]
     bytes: Vec<u8>,
     // Exports last only for synchronous native calls and never survive a snapshot.
     #[serde(skip)]
     exports: usize,
+}
+
+/// Reads the original byte-string dumps as well as extensible named fields.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum DumpedByteArray {
+    Fields {
+        #[serde(rename = "B", with = "serde_bytes")]
+        bytes: Vec<u8>,
+    },
+    Legacy(#[serde(with = "serde_bytes")] Vec<u8>),
+}
+
+impl From<DumpedByteArray> for ByteArray {
+    fn from(value: DumpedByteArray) -> Self {
+        let (DumpedByteArray::Fields { bytes } | DumpedByteArray::Legacy(bytes)) = value;
+        Self::new(bytes)
+    }
 }
 
 impl ByteArray {
@@ -201,6 +222,23 @@ impl<'h> HeapObjectRead<'h, ByteArray> {
     }
 }
 
+impl<'h> HeapReadMut<'h, ByteArray> {
+    /// Reserve only when growth exceeds capacity; in-place writes and shrinking allocate nothing.
+    fn prepare_resize(&self, new_len: usize, vm: &mut VM<'h>) -> RunResult<()> {
+        let data = self.get(vm.heap);
+        data.check_resize(new_len)?;
+        if new_len > data.bytes.capacity() {
+            vm.heap.tracker.check_allocation(new_len - data.bytes.capacity())?;
+            let additional = new_len - data.bytes.len();
+            self.get_mut(vm.heap)
+                .bytes
+                .try_reserve_exact(additional)
+                .map_err(|_| ExcType::allocation_too_large())?;
+        }
+        Ok(())
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
     fn py_type(&self, _: &VM<'h>) -> Type {
         Type::ByteArray
@@ -233,8 +271,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         // Formatting arguments can call Python and mutate this buffer; snapshot the template first.
         let template = copy_bytes_template(self.get(vm.heap).as_slice(), &vm.heap.tracker)?;
-        let value = percent_format_bytes(&template, other, vm)?;
-        convert_result(value, vm).map(Some)
+        percent_format_bytes(&template, other, BytesOutput::ByteArray, vm).map(Some)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _: &mut LazyHeapSet) -> RunResult<()> {
@@ -251,8 +288,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         if matches!(key, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Slice(_))) {
             let field = heap_read_ref_as_field!(self, ByteArray, bytes);
-            let value = super::bytes::bytes_getitem(&field.as_slice(), key, vm)?;
-            convert_result(value, vm)
+            super::bytes::bytes_getitem(&field.as_slice(), key, BytesOutput::ByteArray, vm)
         } else {
             let index = key.as_index(vm, Type::ByteArray)?;
             let byte = super::bytes::get_byte_at_index(self.get(vm.heap).as_slice(), index)
@@ -292,8 +328,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
                 let start = usize::try_from(start).expect("normalized slice start");
                 let stop = (usize::try_from(stop).expect("normalized slice stop")).max(start);
                 let new_len = self.get(vm.heap).bytes.len() - (stop - start) + replacement.len();
-                self.get(vm.heap).check_resize(new_len)?;
-                check_repeat_size(new_len, 1, &vm.heap.tracker)?;
+                self.prepare_resize(new_len, vm)?;
                 self.get_mut(vm.heap).bytes.splice(start..stop, replacement);
             } else {
                 // An empty replacement deletes an extended slice, unlike list assignment.
@@ -378,16 +413,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         // Budget the temporary copy while the source is live; copying ends the borrow before mutation.
         vm.heap.tracker.check_allocation(bytes.len())?;
         let bytes = bytes.to_vec();
-        check_repeat_size(
-            self.get(vm.heap).bytes.len().saturating_add(bytes.len()),
-            1,
-            &vm.heap.tracker,
-        )?;
-        // Match the preflight instead of doubling capacity for a small extension.
-        self.get_mut(vm.heap)
-            .bytes
-            .try_reserve_exact(bytes.len())
-            .map_err(|_| ExcType::allocation_too_large())?;
+        self.prepare_resize(self.get(vm.heap).bytes.len().saturating_add(bytes.len()), vm)?;
         self.get_mut(vm.heap).bytes.extend(bytes);
         Ok(true)
     }
@@ -398,9 +424,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
             return Ok(false);
         };
         // `__index__` can resize the receiver; budget against its length after conversion.
-        self.get(vm.heap)
-            .check_resize(self.get(vm.heap).bytes.len().saturating_mul(count))?;
-        check_repeat_size(self.get(vm.heap).bytes.len(), count, &vm.heap.tracker)?;
+        self.prepare_resize(self.get(vm.heap).bytes.len().saturating_mul(count), vm)?;
         repeat_in_place(&mut self.get_mut(vm.heap).bytes, count)?;
         Ok(true)
     }
@@ -465,8 +489,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
             StaticStrings::Translate => return translate(self, args, vm).map(CallResult::Value),
             StaticStrings::Maketrans => return maketrans(args, vm).map(CallResult::Value),
             StaticStrings::Fromhex => {
-                let result = super::bytes::bytes_fromhex(args, vm)?;
-                return Ok(CallResult::Value(convert_result(result, vm)?));
+                return super::bytes::bytes_fromhex(args, BytesOutput::ByteArray, vm).map(CallResult::Value);
             }
             StaticStrings::Resize => {
                 let value = args.get_one_arg("bytearray.resize", vm.heap)?;
@@ -479,14 +502,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
                     )));
                 }
                 let size = usize::try_from(size).map_err(|_| ExcType::overflow_index_sized_int())?;
-                self.get(vm.heap).check_resize(size)?;
-                check_repeat_size(size, 1, &vm.heap.tracker)?;
-                let data = self.get_mut(vm.heap);
-                // Saturating subtraction keeps shrinking on the allocation-free path.
-                data.bytes
-                    .try_reserve_exact(size.saturating_sub(data.bytes.len()))
-                    .map_err(|_| ExcType::allocation_too_large())?;
-                data.bytes.resize(size, 0);
+                self.prepare_resize(size, vm)?;
+                self.get_mut(vm.heap).bytes.resize(size, 0);
                 return Ok(CallResult::Value(Value::None));
             }
             StaticStrings::Append | StaticStrings::Extend | StaticStrings::Remove => {
@@ -502,13 +519,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
                     }
                     // Collect first: an iterator failure must not leave a partially applied extension.
                     let bytes = collect_bytes(value, vm)?;
-                    self.get(vm.heap)
-                        .check_resize(self.get(vm.heap).bytes.len().saturating_add(bytes.len()))?;
-                    check_repeat_size(
-                        self.get(vm.heap).bytes.len().saturating_add(bytes.len()),
-                        1,
-                        &vm.heap.tracker,
-                    )?;
+                    self.prepare_resize(self.get(vm.heap).bytes.len().saturating_add(bytes.len()), vm)?;
                     self.get_mut(vm.heap).bytes.extend(bytes);
                 } else {
                     // Byte conversion can call Python, so inspect or mutate the live buffer only afterward.
@@ -599,8 +610,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
 
         // Keep a scoped view, rather than a slice, because argument conversion can resize the buffer.
         let field = heap_read_ref_as_field!(self, ByteArray, bytes);
-        let result = super::bytes::call_bytes_method_impl(&field.as_slice(), method, args, vm)?;
-        Ok(CallResult::Value(convert_result(result, vm)?))
+        super::bytes::call_bytes_method_impl(&field.as_slice(), method, args, BytesOutput::ByteArray, vm)
+            .map(CallResult::Value)
     }
 }
 
@@ -638,75 +649,6 @@ fn prepare_search_bounds(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunR
         [] => Err(ExcType::type_error_at_least(&method, 1, 0)),
         _ => Err(ExcType::type_error_at_most(&method, 3, pos.len())),
     }
-}
-
-/// Rebuilds bytes and list/tuple method results with mutable bytearray leaves; other values pass through.
-/// Takes ownership of the result and releases all temporary references if conversion fails.
-pub(crate) fn convert_result(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    let mut guard = DropGuard::new(value, vm);
-    let (value, vm) = guard.as_parts_mut();
-    let data = match value {
-        Value::InternBytes(id) => {
-            let bytes = vm.interns.get_bytes(*id);
-            vm.heap.tracker.check_allocation(bytes.len())?;
-            Some(bytes.to_vec())
-        }
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(bytes) => {
-                // The temporary bytes stay alive during this copy, so budget for both buffers.
-                vm.heap.tracker.check_allocation(bytes.as_slice().len())?;
-                Some(bytes.as_slice().to_vec())
-            }
-            _ => None,
-        },
-        _ => None,
-    };
-    if let Some(data) = data {
-        let (value, vm) = guard.into_parts();
-        value.drop_with(vm);
-        return Ok(ByteArray::allocate(data, vm));
-    }
-
-    let sequence = match value {
-        Value::Ref(id) => {
-            let (tuple, items) = match vm.heap.get(*id) {
-                HeapData::List(list) => (false, list.as_slice()),
-                HeapData::Tuple(tuple) => (true, tuple.as_slice()),
-                _ => {
-                    let (value, _) = guard.into_parts();
-                    return Ok(value);
-                }
-            };
-            // Both the input snapshot and converted output hold one slot per item.
-            vm.heap
-                .tracker
-                .check_allocation(items.len().saturating_mul(2 * VALUE_SIZE))?;
-            Some((
-                tuple,
-                items.iter().map(|v| v.clone_with_heap(vm.heap)).collect::<Vec<_>>(),
-            ))
-        }
-        _ => None,
-    };
-    let (value, vm) = guard.into_parts();
-    let Some((tuple, items)) = sequence else {
-        return Ok(value);
-    };
-    // Release the original container before allocating replacements; guard both partial and pending items.
-    value.drop_with(vm);
-    let iter = items.into_iter();
-    defer_drop_mut!(iter, vm);
-    let mut output = DropGuard::new(Vec::with_capacity(iter.len()), vm);
-    for item in iter {
-        let (output, vm) = output.as_parts_mut();
-        output.push(convert_result(item, vm)?);
-    }
-    let (items, vm) = output.into_parts();
-    Ok(if tuple {
-        super::tuple::allocate_tuple(items.into_iter().collect(), vm.heap)
-    } else {
-        Value::Ref(vm.heap.allocate(HeapData::List(super::List::new(items))))
-    })
 }
 
 // Limit each uninterrupted scan or fill to 64 KiB, including a single expanded tab.
@@ -886,16 +828,25 @@ mod tests {
     use super::ByteArray;
 
     #[test]
-    fn exports_do_not_change_the_dump_format() {
+    fn dumps_use_named_fields_and_omit_transient_exports() {
         let value = ByteArray {
             bytes: b"abc".to_vec(),
             exports: 2,
         };
         let bytes = minicbor_serde::to_vec(&value).unwrap();
-        assert_eq!(bytes, b"\x43abc");
+        assert_eq!(bytes, b"\xa1\x61B\x43abc");
 
         let restored: ByteArray = minicbor_serde::from_slice(&bytes).unwrap();
         assert_eq!(restored.as_slice(), b"abc");
         restored.check_resize(4).unwrap();
+    }
+
+    #[test]
+    fn loads_legacy_byte_strings_and_ignores_future_fields() {
+        for bytes in [b"\x43abc".as_slice(), b"\xa2\x61B\x43abc\x61E\x00".as_slice()] {
+            let restored: ByteArray = minicbor_serde::from_slice(bytes).unwrap();
+            assert_eq!(restored.as_slice(), b"abc");
+            restored.check_resize(4).unwrap();
+        }
     }
 }

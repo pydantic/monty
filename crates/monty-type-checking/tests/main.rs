@@ -46,6 +46,30 @@ result = add(1, 2)
 }
 
 #[test]
+fn bytearray_construction_and_buffers() {
+    let code = r"
+from typing import assert_type
+from pathlib import Path
+
+data = bytearray()
+data = bytearray(b'abc')
+data = bytearray([97, 98])
+data = bytearray('abc', 'utf-8')
+data[0] = 120
+data[1:] = b'yz'
+data += b'!'
+assert_type(data.copy(), bytearray)
+assert_type(data.split(b','), list[bytearray])
+data.translate(bytearray.maketrans(b'a', b'z'))
+assert_type(b','.join([data]), bytes)
+assert_type(Path('/data').write_bytes(data), int)
+with open('/data', 'wb') as f:
+    assert_type(f.write(data), int)
+";
+    assert_eq!(check(code, "bytearray.py"), None);
+}
+
+#[test]
 fn type_checking_error() {
     let code = "\
 def add(x: int, y: int) -> int:

@@ -29,6 +29,95 @@ use monty_types::{
 const DEATH_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[test]
+fn bytearray_hex_respects_memory_limits() {
+    for constructor in ["bytes", "bytearray"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        assert_eq!(
+            child.feed_complete(&format!("a = {constructor}(4 * 1024 * 1024)\nlen(a.hex())")),
+            MontyObject::int(8 * 1024 * 1024),
+        );
+        assert_eq!(
+            child.feed_complete("len(a.hex('-'))"),
+            MontyObject::int(12 * 1024 * 1024 - 1),
+        );
+        let (_, event) = child.feed(&format!("a = None\na = {constructor}(9 * 1024 * 1024)\na.hex()"));
+        assert_eq!(expect_error(event).exc_type, "MemoryError");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+        child.shutdown();
+    }
+}
+
+#[test]
+fn bytearray_mutation_with_spare_capacity_needs_no_memory() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete(
+            "a = bytearray(16 * 1024 * 1024)\nb = a\na *= 1\na += b''\na.extend(b'')\n\
+             a.resize(len(a))\na[0:1] = b'x'\na[-1:] = b''\na.resize(15 * 1024 * 1024)\n\
+             a.resize(16 * 1024 * 1024)\nassert a is b\nassert a[0] == 120\nlen(a)"
+        ),
+        MontyObject::int(16 * 1024 * 1024),
+    );
+    child.shutdown();
+}
+
+#[test]
+fn bytearray_results_allocate_one_buffer() {
+    for operation in [
+        "a.lower()",
+        "a.upper()",
+        "a[:]",
+        "a[::-1]",
+        "a.strip(b'!')",
+        "a.split(b'!')[0]",
+        "a.rsplit(b'!')[0]",
+        "a.splitlines()[0]",
+        "a.partition(b'!')[0]",
+        "a.rpartition(b'!')[2]",
+        "a.replace(b'!', b'?')",
+        "a.ljust(0)",
+        "a.rjust(0)",
+        "a.center(0)",
+        "a.zfill(0)",
+        "bytearray().join([a])",
+        "bytearray(b'%b') % a",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        assert_eq!(
+            child.feed_complete(&format!(
+                "a = bytearray(8 * 1024 * 1024)\nb = {operation}\n\
+                 assert isinstance(b, bytearray)\nb[0] = 1\nassert a[0] == 0\nlen(b)"
+            )),
+            MontyObject::int(8 * 1024 * 1024),
+            "{operation}",
+        );
+        child.shutdown();
+    }
+
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete("text = '00' * (6 * 1024 * 1024)\nlen(bytearray.fromhex(text))"),
+        MontyObject::int(6 * 1024 * 1024),
+    );
+    child.shutdown();
+}
+
+#[test]
+fn bytearray_path_write_preflights_the_copy() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    let (_, event) =
+        child.feed("from pathlib import Path\na = bytearray(16 * 1024 * 1024)\nPath('/out').write_bytes(a)");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+#[test]
 fn bytearray_percent_operands_respect_memory_limits() {
     for constructor in ["bytearray", "bytes"] {
         for template in ["b'%b'", "b'%s'", "bytearray(b'%b')", "bytearray(b'%s')"] {
@@ -1656,8 +1745,8 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         "import json\na = bytearray(b' ') * (16 * 1024 * 1024)\na[0] = 49\njson.loads(a)",
         "a = bytearray(16 * 1024 * 1024)\na.translate(None)",
         "bytearray(b'x').ljust(16 * 1024 * 1024)",
-        "padding = bytearray(8 * 1024 * 1024)\na = bytearray(7 * 1024 * 1024)\na[:2] = b'x!'\na.split(b'!')",
-        "padding = bytearray(8 * 1024 * 1024)\na = bytearray(7 * 1024 * 1024)\na[:2] = b'x!'\na.partition(b'!')",
+        "padding = bytearray(8 * 1024 * 1024)\na = bytearray(9 * 1024 * 1024)\na[:2] = b'x!'\na.split(b'!')",
+        "padding = bytearray(8 * 1024 * 1024)\na = bytearray(9 * 1024 * 1024)\na[:2] = b'x!'\na.partition(b'!')",
         "a = bytearray(16 * 1024 * 1024)\na.append(0)",
         "a = bytearray(16 * 1024 * 1024)\na.insert(0, 0)",
         "import itertools\nbytearray(itertools.chain(itertools.repeat(0, 16 * 1024 * 1024 + 1)))",

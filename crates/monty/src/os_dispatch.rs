@@ -684,12 +684,8 @@ pub(crate) fn build_path_os_call(
         StaticStrings::AppendText => {
             OsFunctionCall::AppendText(extract_str_data("append_text", path, args, vm.heap, vm.interns)?)
         }
-        StaticStrings::WriteBytes => {
-            OsFunctionCall::WriteBytes(extract_bytes_data("write_bytes", path, args, vm.heap, vm.interns)?)
-        }
-        StaticStrings::AppendBytes => {
-            OsFunctionCall::AppendBytes(extract_bytes_data("append_bytes", path, args, vm.heap, vm.interns)?)
-        }
+        StaticStrings::WriteBytes => OsFunctionCall::WriteBytes(extract_bytes_data("write_bytes", path, args, vm)?),
+        StaticStrings::AppendBytes => OsFunctionCall::AppendBytes(extract_bytes_data("append_bytes", path, args, vm)?),
         StaticStrings::Mkdir => OsFunctionCall::Mkdir(extract_mkdir_args(path, args, vm)?),
         StaticStrings::Rename | StaticStrings::Replace => {
             let args = extract_rename_args(path, args, method == StaticStrings::Replace, vm)?;
@@ -747,19 +743,21 @@ fn extract_bytes_data(
     method: &'static str,
     path: MontyPath,
     args: ArgValues,
-    heap: &mut Heap,
-    interns: &Interns,
+    vm: &mut VM<'_>,
 ) -> RunResult<PathBytesDataArgs> {
-    let data = arg_or_missing_data(method, args, heap)?;
-    let bytes = value_to_owned_bytes(&data, heap, interns);
-
-    let py_type = data.py_type_name_heap(heap, interns);
-    data.drop_with(heap);
-
-    match bytes {
-        Some(data) => Ok(PathBytesDataArgs { path, data }),
+    let data = arg_or_missing_data(method, args, vm.heap)?;
+    defer_drop!(data, vm);
+    match data.as_buffer(vm) {
+        Some(bytes) => {
+            vm.heap.tracker.check_allocation(bytes.len())?;
+            Ok(PathBytesDataArgs {
+                path,
+                data: bytes.to_vec(),
+            })
+        }
         None => Err(ExcType::type_error(format!(
-            "memoryview: a bytes-like object is required, not '{py_type}'"
+            "memoryview: a bytes-like object is required, not '{}'",
+            data.py_type_name(vm)
         ))),
     }
 }
@@ -921,7 +919,6 @@ pub(crate) fn value_as_bytes<'a>(value: &Value, heap: &'a Heap, interns: &'a Int
         Value::InternBytes(id) => Some(interns.get_bytes(*id)),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::Bytes(b) => Some(b.as_slice()),
-            HeapData::ByteArray(b) => Some(b.as_slice()),
             _ => None,
         },
         _ => None,

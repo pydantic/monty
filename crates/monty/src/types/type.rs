@@ -20,7 +20,7 @@ use crate::{
     types::{
         ByteArray, Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait,
         Random, Range, Set, Slice, TimeZone, Tuple, bytearray,
-        bytes::{bytes_fromhex, bytes_repr},
+        bytes::{BytesOutput, bytes_fromhex, bytes_repr},
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
         instance::class_name,
@@ -670,11 +670,12 @@ impl Type {
                 args.drop_with(vm);
                 Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
             }
-            (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(CallResult::Value),
+            (Self::Bytes, Some(StaticStrings::Fromhex)) => {
+                bytes_fromhex(args, BytesOutput::Bytes, vm).map(CallResult::Value)
+            }
             (Self::ByteArray, Some(StaticStrings::Maketrans)) => bytearray::maketrans(args, vm).map(CallResult::Value),
             (Self::ByteArray, Some(StaticStrings::Fromhex)) => {
-                let value = bytes_fromhex(args, vm)?;
-                Ok(CallResult::Value(bytearray::convert_result(value, vm)?))
+                bytes_fromhex(args, BytesOutput::ByteArray, vm).map(CallResult::Value)
             }
             (Self::Complex, Some(StaticStrings::FromNumber)) => {
                 complex::class_from_number(vm, args).map(CallResult::Value)

@@ -8,6 +8,7 @@ fn bytearray_review_regressions() {
         include_str!("../test_cases/bytearray__empty_slices.py"),
         include_str!("../test_cases/bytearray__result_copies.py"),
         include_str!("../test_cases/bytearray__replace_callbacks.py"),
+        include_str!("../test_cases/bytearray__paths.py"),
         include_str!("../test_cases/bytes__search_integer.py"),
         include_str!("../test_cases/bytes__prefix_suffix_buffers.py"),
         include_str!("../test_cases/bytes__ord_reversed.py"),
@@ -48,6 +49,23 @@ fn bytearray_snapshot_retains_aliases_and_iterator_position() {
     restored
         .feed_run(
             "a[1] = 90\nassert b is a\nassert next(it) == 90\nassert list(it) == [99]\na.append(1)\nassert list(it) == []",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+}
+
+#[test]
+fn bytearray_loads_legacy_snapshot() {
+    // Written by PR #1208 at 97384095, before bytearrays gained named dump fields.
+    let bytes = include_bytes!("fixtures/bytearray_legacy.bin");
+    let Session::Idle(mut restored) = Dump::load(bytes).unwrap().state else {
+        panic!("expected idle snapshot");
+    };
+    restored
+        .feed_run(
+            "assert a is b\nassert a == b'abc'\na[1] = 90\nassert next(it) == 90\n\
+             a.append(33)\nassert list(it) == [99, 33]",
             vec![],
             PrintWriter::Stdout,
         )
