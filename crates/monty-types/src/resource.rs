@@ -186,7 +186,7 @@ impl ExecutionClock {
 pub struct ResourceLimits {
     /// Maximum execution time per feed (`feed_start`, `feed_run` or `call_function`),
     /// summed across turns, excluding host suspension. Uses the tracker's clock
-    /// (wall time by default, or [`ExecutionClock::Cpu`]). Bounds a snippet, not the session.
+    /// (wall time by default, or [`ExecutionClock::Cpu`] or [`ExecutionClock::Work`]). Bounds a snippet, not the session.
     pub max_feed_duration: Option<Duration>,
     /// Maximum execution time for a single host turn, reset at each feed and
     /// each resume. Bounds the stretch of sandbox code between two host round

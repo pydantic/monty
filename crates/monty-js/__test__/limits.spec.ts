@@ -391,19 +391,21 @@ test('WASM pool refuses CPU configuration before spawning workers', () => {
 
 test('WASM pool validates unknown execution clocks before spawning workers', () => {
   let spawned = false
-  t.throws(
-    () =>
-      createWorkerPoolFromFactory(
-        () => {
-          spawned = true
-          throw new Error('must not spawn')
-        },
-        // @ts-expect-error Verify the runtime boundary for untyped callers.
-        { executionClock: 'processor' },
-        1,
-      ),
-    { message: "executionClock must be 'wall', 'cpu' or 'work'" },
-  )
+  for (const executionClock of ['processor', null]) {
+    t.throws(
+      () =>
+        createWorkerPoolFromFactory(
+          () => {
+            spawned = true
+            throw new Error('must not spawn')
+          },
+          // @ts-expect-error Verify the runtime boundary for untyped callers.
+          { executionClock },
+          1,
+        ),
+      { message: "executionClock must be 'wall', 'cpu' or 'work'" },
+    )
+  }
   t.false(spawned)
 })
 

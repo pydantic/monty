@@ -1322,7 +1322,9 @@ jobs:
 
       # Timings are not checked: shared runners are too noisy to gate on.
       - name: Run the wasm work-clock calibration reports
-        run: make calibrate-work-clock-wasm CALIBRATE_ARGS='--constructs --corpus'
+        # `check-wasm-types` has just built what `make calibrate-work-clock-wasm` would rebuild.
+        run: node scripts/calibrate-work-clock.mjs --constructs --corpus
+        working-directory: crates/monty-js
 
       - name: Upload artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

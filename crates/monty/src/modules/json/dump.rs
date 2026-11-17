@@ -265,10 +265,10 @@ fn encode(obj: &Value, config: &JsonDumpsConfig, default: &Value, vm: &mut VM<'_
         active_containers: &mut active_containers,
         vm,
     };
-    encoder.serialize_value(obj, 0)?;
-    // Encoding costs about a unit per byte written.
+    let result = encoder.serialize_value(obj, 0);
+    // Charged per byte written, including what a failed encoding wrote before it raised.
     vm.heap.tracker.charge(WorkEvent::JsonDumpByte, output.len() as u64);
-    Ok(output)
+    result.map(|()| output)
 }
 
 /// Whether CPython's encoder would yield a chunk of `value` (its opening

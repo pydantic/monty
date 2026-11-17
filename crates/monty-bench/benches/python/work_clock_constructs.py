@@ -186,9 +186,14 @@ for i in range(N):
     def y():
         return 1
 
+
 # === make_lambda_closure ===
-for i in range(N):
-    y = lambda: i  # noqa: E731
+def make_closures():
+    for i in range(N):
+        y = lambda: i  # noqa: E731, F841
+
+
+make_closures()
 
 # === builtin_len ===
 for i in range(N):
@@ -314,7 +319,7 @@ for i in range(N):
 
 # === in_set ===
 for i in range(N):
-    y = i in st
+    y = 50 in st
 
 # === in_str ===
 for i in range(N):

@@ -250,7 +250,10 @@ impl RePattern {
                 charge_scan(caps.get(0).map_or(0, |m| m.end()), heap);
                 Ok(self.build_single_match(text, &caps, subject, heap))
             }
-            Ok(None) => Ok(Value::None),
+            Ok(None) => {
+                charge_scan(text.len(), heap);
+                Ok(Value::None)
+            }
             Err(err) => Err(ExcType::re_pattern_error(err)),
         }
     }
@@ -263,11 +266,9 @@ impl RePattern {
     ///
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn fullmatch(&self, subject: &Value, text: &str, heap: &Heap) -> RunResult<Value> {
+        charge_scan(text.len(), heap);
         match self.fullmatch_regex()?.captures(text) {
-            Ok(Some(caps)) => {
-                charge_scan(text.len(), heap);
-                Ok(self.build_single_match(text, &caps, subject, heap))
-            }
+            Ok(Some(caps)) => Ok(self.build_single_match(text, &caps, subject, heap)),
             Ok(None) => Ok(Value::None),
             Err(err) => Err(ExcType::re_pattern_error(err)),
         }
@@ -377,6 +378,7 @@ impl RePattern {
     /// element; if it is negative, no splits occur at all (CPython's split loop
     /// runs zero times), returning the whole subject as a single element.
     pub fn split(&self, text: &str, maxsplit: i64, heap: &Heap) -> RunResult<Value> {
+        charge_scan(text.len(), heap);
         if self.compiled.captures_len() > 1 {
             return self.split_with_groups(text, maxsplit, heap);
         }
@@ -402,7 +404,6 @@ impl RePattern {
             Ordering::Equal => usize::MAX,
             Ordering::Greater => usize::try_from(maxsplit).unwrap_or(usize::MAX),
         };
-        charge_scan(text.len(), heap);
         let mut pieces: Vec<Option<&str>> = Vec::new();
         let mut last_end = 0;
         for caps in self.compiled.captures_iter(text).take(limit) {

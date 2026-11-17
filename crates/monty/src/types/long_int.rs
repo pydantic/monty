@@ -1104,6 +1104,7 @@ pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, vm: 
 
     let modulus_abs = modulus.abs();
     // Reducing first keeps the base non-negative and no larger than the modulus.
+    charge_bigint_division(base, &modulus_abs, &heap.tracker);
     let base = base.mod_floor(&modulus_abs);
     let (base, exponent, modulus_mag) = (base.magnitude(), exponent.magnitude(), modulus_abs.magnitude());
     // A `num-bigint` digit is pointer-sized, so wasm32 counts twice as many words.
@@ -1289,8 +1290,13 @@ fn i64_bits(value: i64) -> u64 {
 /// Charges the work clock for dividing `lhs` by `rhs`: schoolbook division multiplies
 /// each quotient limb by the divisor.
 pub(crate) fn charge_bigint_division(lhs: &BigInt, rhs: &BigInt, tracker: &ResourceTracker) {
-    let quotient_limbs = bigint_limbs(lhs.bits().saturating_sub(rhs.bits()));
-    charge_bigint_products(quotient_limbs.saturating_mul(bigint_limbs(rhs.bits())), tracker);
+    // A dividend shorter than the divisor is returned as the remainder without dividing.
+    if let Some(quotient_bits) = lhs.bits().checked_sub(rhs.bits()) {
+        charge_bigint_products(
+            bigint_limbs(quotient_bits).saturating_mul(bigint_limbs(rhs.bits())),
+            tracker,
+        );
+    }
 }
 
 /// Builds `divmod()`'s `(quotient, remainder)` tuple for arbitrary-precision operands.
