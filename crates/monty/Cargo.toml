@@ -69,6 +69,8 @@ memory-model-checks = []
 # test-hooks exposes small internal helpers needed by integration tests that
 # exercise production behavior without duplicating implementation details.
 test-hooks = ["monty-types/test-hooks"]
+# work-profile counts executed opcodes and charged work events, for `make fit-work-clock`.
+work-profile = ["monty-types/work-profile"]
 
 [dev-dependencies]
 monty-types = { workspace = true, features = ["tzdb"] }

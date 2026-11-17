@@ -1,6 +1,8 @@
 //! Unary, binary and in-place operation helpers for the VM.
 
-use super::{SLOW_BINARY_UNITS, VM};
+use monty_types::WorkEvent;
+
+use super::VM;
 use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -317,7 +319,7 @@ impl VM<'_> {
     fn charge_slow_operands(&self, lhs: &Value, rhs: &Value) {
         let small = |value: &Value| matches!(value, Value::Int(_) | Value::Float(_) | Value::Bool(_));
         if !(small(lhs) && small(rhs)) {
-            self.heap.tracker.charge_work(SLOW_BINARY_UNITS);
+            self.heap.tracker.charge(WorkEvent::SlowBinary, 1);
         }
     }
 }

@@ -18,6 +18,16 @@ local = ["dep:criterion", "dep:pprof", "dep:pyo3", "dep:pyo3-build-config"]
 # instead of `System`, to price the hard memory ceiling on real workloads.
 worker-alloc = ["dep:monty-alloc"]
 
+# Records opcode and work-event counts per script, for `make fit-work-clock`.
+work-profile = [
+    "worker-alloc",
+    "dep:serde_json",
+    "dep:strum",
+    "monty/work-profile",
+    "monty-alloc/work-profile",
+    "monty-types/work-profile",
+]
+
 # Set by the CodSpeed workflow: report through `codspeed-criterion-compat` and
 # leave out the CPython comparisons. A feature rather than `cfg(codspeed)`,
 # which `cargo codspeed` sets only for simulation builds, not walltime ones.
@@ -30,6 +40,8 @@ monty-fs = { workspace = true }
 monty-fixture = { path = "../monty-fixture" }
 monty-alloc = { workspace = true, optional = true }
 monty-pool = { workspace = true }
+serde_json = { workspace = true, optional = true }
+strum = { workspace = true, optional = true }
 monty-proto = { workspace = true }
 # The pool benchmarks use Criterion's Tokio async executor.
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }

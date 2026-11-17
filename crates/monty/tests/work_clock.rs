@@ -72,15 +72,15 @@ fn costlier_instructions_are_charged_more() {
         feed(&mut repl, &format!("for i in range(1000):\n    {body}")).unwrap();
         units(&repl) - before
     };
-    // a global load and store, the cheap instructions the rest are weighed against
+    // The weights are fitted, so only their order is fixed: a global load and store is the
+    // cheapest, and each of these does strictly more.
     let plain = cost("y = i");
-    let extra = |body: &str| (cost(body) - plain) / 1000;
-    assert_eq!(extra("y = p.x"), 8);
-    assert_eq!(extra("p.x = i"), 17);
-    // the call, the method lookup and the method's two instructions
-    assert_eq!(extra("y = p.m()"), 25);
-    // the build and eight units per item hashed
-    assert_eq!(extra("y = {'a': i, 'b': i}"), 24);
+    let attribute = cost("y = p.x");
+    assert!(attribute > plain, "{attribute} > {plain}");
+    let method = cost("y = p.m()");
+    assert!(method > attribute, "{method} > {attribute}");
+    let (one, two) = (cost("y = {'a': i}"), cost("y = {'a': i, 'b': i}"));
+    assert!(two > one, "{two} > {one}");
 }
 
 #[test]
@@ -184,19 +184,19 @@ fn calibration_scripts_cost_fixed_units() {
         writeln!(report, "{name}: {}", units(&repl)).unwrap();
     }
     insta::assert_snapshot!(report, @"
-    arith_loop: 3887148
-    attr_access: 5275012
-    big_ints: 148703
-    bytes_ops: 4972320
-    comprehensions: 8071941
-    dict_ops: 5970991
-    func_calls: 1229098
-    json_roundtrip: 7344981
-    list_ops: 5629280
-    regex: 1859291
-    script_style: 8401511
-    sorting: 8555580
-    str_build: 4831468
-    str_scan: 943265
+    arith_loop: 3861648
+    attr_access: 6923927
+    big_ints: 233463
+    bytes_ops: 4185792
+    comprehensions: 10998909
+    dict_ops: 4687520
+    func_calls: 1768680
+    json_roundtrip: 4664361
+    list_ops: 4487639
+    regex: 1589724
+    script_style: 11768467
+    sorting: 13035777
+    str_build: 2621725
+    str_scan: 827938
     ");
 }

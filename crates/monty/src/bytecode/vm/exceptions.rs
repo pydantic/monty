@@ -2,9 +2,9 @@
 
 use std::fmt::{self, Write};
 
-use monty_types::ResourceError;
+use monty_types::{ResourceError, WorkEvent};
 
-use super::{ASSERT_COMPARE_UNITS, VM};
+use super::VM;
 use crate::{
     builtins::Builtins,
     defer_drop,
@@ -325,7 +325,7 @@ impl VM<'_> {
         let small = |value: &Value| matches!(value, Value::Int(_) | Value::Float(_) | Value::Bool(_));
         let cheap = matches!(op, CmpOperator::Is | CmpOperator::IsNot) || (small(lhs) && small(rhs));
         if !cheap {
-            this.heap.tracker.charge_work(ASSERT_COMPARE_UNITS);
+            this.heap.tracker.charge(WorkEvent::AssertCompare, 1);
         }
         if this.cmp_values(op, lhs, rhs)? {
             Ok(())

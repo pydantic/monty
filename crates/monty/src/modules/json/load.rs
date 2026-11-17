@@ -7,6 +7,7 @@
 use std::{borrow::Cow, mem};
 
 use jiter::{Jiter, JiterError, JiterErrorType, JsonErrorType, NumberAny, NumberInt, Peek};
+use monty_types::WorkEvent;
 
 use super::{JsonStringCache, fp::FileTarget};
 use crate::{
@@ -201,7 +202,7 @@ const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 /// line/column/character suffix as CPython.
 fn parse_json_bytes(bytes: &[u8], hooks: &NumberHooks<'_>, vm: &mut VM<'_>) -> RunResult<Value> {
     // Parsing costs about two units per byte, beyond what the values it allocates charge.
-    vm.heap.tracker.charge_work(bytes.len() as u64 * 2);
+    vm.heap.tracker.charge(WorkEvent::JsonLoadByte, bytes.len() as u64);
     let mut jiter = Jiter::new(bytes).with_allow_inf_nan();
     // Take the cache out of the VM so we can pass it alongside &mut VM
     // without conflicting borrows. `mem::take` leaves `Default` in its place.

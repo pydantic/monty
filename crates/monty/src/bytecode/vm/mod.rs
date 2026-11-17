@@ -28,7 +28,9 @@ pub(crate) use collections::unpack_exact;
 use exceptions::CaughtException;
 pub(crate) use module_cache::ModuleCache;
 pub(crate) use module_finder::PendingImport;
-use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
+#[cfg(feature = "work-profile")]
+use monty_types::work_profile;
+use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange, WorkEvent};
 pub(crate) use namespace::{FrameGlobals, FrameNamespace, MissingNames, function_namespace};
 use recursion::frame_recursion_depth;
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
@@ -84,30 +86,6 @@ use crate::{
 /// latency stays sub-µs. Native ops poll internally and the host-turn epilogue
 /// re-checks, so only this dispatch cadence rides on it.
 const CHECK_INTERVAL: u8 = u8::MAX;
-
-/// Work-clock units for resolving a builtin by name, which a load of an unassigned global does.
-const BUILTIN_LOOKUP_UNITS: u64 = 8;
-
-/// Work-clock units for calling a heap callable (a closure, a function with defaults, a class,
-/// a bound method), beyond the call instruction: it dispatches on the type and binds more state.
-const HEAP_CALLABLE_UNITS: u64 = 12;
-
-/// Work-clock units for a binary operator neither operand of which is a small number: it
-/// dispatches on the operand types and usually allocates its result.
-const SLOW_BINARY_UNITS: u64 = 12;
-
-/// Work-clock units for a comparison of operands that are not both small numbers.
-const SLOW_COMPARE_UNITS: u64 = 8;
-
-/// Work-clock units for an `assert` comparing operands that are not both small numbers, on
-/// top of the instruction: the comparison the fused opcode stands in for.
-const ASSERT_COMPARE_UNITS: u64 = 5;
-
-/// Work-clock units for each part a `BuildFString` joins.
-const FSTRING_PART_UNITS: u32 = 8;
-
-/// Work-clock units for each item a `BuildDict` or `BuildSet` hashes and inserts.
-const HASHED_ITEM_UNITS: u32 = 8;
 
 /// Result of executing Await opcode.
 ///
@@ -1301,9 +1279,9 @@ impl<'h> VM<'h> {
     /// monotonic), backstopped by the `run_external` exit check — the
     /// GC-scheduling probe, and the print writer's flush poll.
     #[inline(never)]
-    fn dispatch_checkpoint(&mut self, check_limits: bool, poll_print: bool, work: u32) -> Result<(), RunError> {
+    fn dispatch_checkpoint(&mut self, check_limits: bool, poll_print: bool, work: u64) -> Result<(), RunError> {
         if check_limits {
-            self.heap.tracker.checkpoint(work.into())?;
+            self.heap.tracker.checkpoint(work)?;
         }
         if self.heap.should_gc() {
             self.run_gc();
@@ -1337,8 +1315,8 @@ impl<'h> VM<'h> {
         let mut countdown = CHECK_INTERVAL;
         let mut extra_work = 0;
         let result = self.run_loop(&mut countdown, &mut extra_work);
-        let work = u32::from(CHECK_INTERVAL - countdown) + extra_work;
-        self.heap.tracker.charge_work(work.into());
+        let work = u64::from(CHECK_INTERVAL - countdown) * WorkEvent::Instruction.milli_units() + extra_work;
+        self.heap.tracker.charge_milli_units(work);
         result
     }
 
@@ -1353,7 +1331,7 @@ impl<'h> VM<'h> {
         reason = "inlined into `run`, both counters are locals the optimizer keeps in registers"
     )]
     #[inline(always)]
-    fn run_loop(&mut self, countdown: &mut u8, extra_work: &mut u32) -> Result<FrameExit, RunError> {
+    fn run_loop(&mut self, countdown: &mut u8, extra_work: &mut u64) -> Result<FrameExit, RunError> {
         // Neither can change mid-run (`set_max_feed_duration` needs `&mut` at the
         // host boundary), so with no limit and no work clock the whole checkpoint
         // reduces to this one hoisted, well-predicted branch per instruction.
@@ -1372,7 +1350,9 @@ impl<'h> VM<'h> {
                 *countdown = c;
             } else {
                 *countdown = CHECK_INTERVAL;
-                let work = u32::from(CHECK_INTERVAL) + mem::take(extra_work);
+                // The instruction that found the countdown spent ran without decrementing it.
+                let work =
+                    (u64::from(CHECK_INTERVAL) + 1) * WorkEvent::Instruction.milli_units() + mem::take(extra_work);
                 try_catch!(self, self.dispatch_checkpoint(check_limits, poll_print, work));
             }
 
@@ -1383,6 +1363,8 @@ impl<'h> VM<'h> {
             let opcode = {
                 let byte = self.current_frame.bytecode[self.current_frame.ip];
                 self.current_frame.ip += 1;
+                #[cfg(feature = "work-profile")]
+                work_profile::record_opcode(byte);
                 Opcode::from_repr(byte).expect("invalid opcode in bytecode")
             };
 
@@ -1391,14 +1373,17 @@ impl<'h> VM<'h> {
                 // Stack Operations
                 // ============================================================
                 Opcode::Pop => {
+                    *extra_work += Opcode::Pop.extra_work();
                     let value = self.pop();
                     value.drop_with(self);
                 }
                 Opcode::Dup => {
+                    *extra_work += Opcode::Dup.extra_work();
                     let value = self.peek().clone_with_heap(self);
                     self.push(value);
                 }
                 Opcode::Dup2 => {
+                    *extra_work += Opcode::Dup2.extra_work();
                     let len = self.stack.len();
                     let first = self.stack[len - 2].clone_with_heap(self);
                     let second = self.stack[len - 1].clone_with_heap(self);
@@ -1406,11 +1391,13 @@ impl<'h> VM<'h> {
                     self.push(second);
                 }
                 Opcode::Rot2 => {
+                    *extra_work += Opcode::Rot2.extra_work();
                     // Swap top two: [a, b] → [b, a]
                     let len = self.stack.len();
                     self.stack.swap(len - 1, len - 2);
                 }
                 Opcode::Rot3 => {
+                    *extra_work += Opcode::Rot3.extra_work();
                     // Rotate top three: [a, b, c] → [c, a, b]
                     // Uses in-place rotation without cloning
                     let len = self.stack.len();
@@ -1420,44 +1407,73 @@ impl<'h> VM<'h> {
                 }
                 // Constants & Literals
                 Opcode::LoadConst => {
+                    *extra_work += Opcode::LoadConst.extra_work();
                     let idx = self.current_frame.fetch_u16();
                     let value = self.current_frame.code.constant(idx);
                     self.push(value.clone_with_heap(self));
                 }
-                Opcode::LoadNone => self.push(Value::None),
-                Opcode::LoadTrue => self.push(Value::Bool(true)),
-                Opcode::LoadFalse => self.push(Value::Bool(false)),
+                Opcode::LoadNone => {
+                    *extra_work += Opcode::LoadNone.extra_work();
+                    self.push(Value::None);
+                }
+                Opcode::LoadTrue => {
+                    *extra_work += Opcode::LoadTrue.extra_work();
+                    self.push(Value::Bool(true));
+                }
+                Opcode::LoadFalse => {
+                    *extra_work += Opcode::LoadFalse.extra_work();
+                    self.push(Value::Bool(false));
+                }
                 Opcode::BuildCell => {
+                    *extra_work += Opcode::BuildCell.extra_work();
                     let cell_id = self.heap.allocate(HeapData::Cell(CellValue(Value::Undefined)));
                     self.push(Value::Ref(cell_id));
                 }
                 Opcode::LoadSmallInt => {
+                    *extra_work += Opcode::LoadSmallInt.extra_work();
                     let n = self.current_frame.fetch_i8();
                     self.push(Value::Int(i64::from(n)));
                 }
                 // Variables - Specialized Local Loads (no operand)
-                Opcode::LoadLocal0 => try_catch!(self, self.load_local(0)),
-                Opcode::LoadLocal1 => try_catch!(self, self.load_local(1)),
-                Opcode::LoadLocal2 => try_catch!(self, self.load_local(2)),
-                Opcode::LoadLocal3 => try_catch!(self, self.load_local(3)),
+                Opcode::LoadLocal0 => {
+                    *extra_work += Opcode::LoadLocal0.extra_work();
+                    try_catch!(self, self.load_local(0));
+                }
+                Opcode::LoadLocal1 => {
+                    *extra_work += Opcode::LoadLocal1.extra_work();
+                    try_catch!(self, self.load_local(1));
+                }
+                Opcode::LoadLocal2 => {
+                    *extra_work += Opcode::LoadLocal2.extra_work();
+                    try_catch!(self, self.load_local(2));
+                }
+                Opcode::LoadLocal3 => {
+                    *extra_work += Opcode::LoadLocal3.extra_work();
+                    try_catch!(self, self.load_local(3));
+                }
                 // Variables - General Local Operations
                 Opcode::LoadLocal => {
+                    *extra_work += Opcode::LoadLocal.extra_work();
                     let slot = u16::from(self.current_frame.fetch_u8());
                     try_catch!(self, self.load_local(slot));
                 }
                 Opcode::LoadLocalW => {
+                    *extra_work += Opcode::LoadLocalW.extra_work();
                     let slot = self.current_frame.fetch_u16();
                     try_catch!(self, self.load_local(slot));
                 }
                 Opcode::StoreLocal => {
+                    *extra_work += Opcode::StoreLocal.extra_work();
                     let slot = u16::from(self.current_frame.fetch_u8());
                     self.store_local(slot);
                 }
                 Opcode::StoreLocalW => {
+                    *extra_work += Opcode::StoreLocalW.extra_work();
                     let slot = self.current_frame.fetch_u16();
                     self.store_local(slot);
                 }
                 Opcode::LiftToTop => {
+                    *extra_work += Opcode::LiftToTop.extra_work();
                     let n = self.current_frame.fetch_u8();
                     // Move the item at TOS - n to TOS, shifting items in
                     // between down by one. Single `rotate_left(1)` on the
@@ -1467,6 +1483,7 @@ impl<'h> VM<'h> {
                     self.stack[src_idx..].rotate_left(1);
                 }
                 Opcode::SinkTop => {
+                    *extra_work += Opcode::SinkTop.extra_work();
                     let n = usize::from(self.current_frame.fetch_u8());
                     // Move TOS beneath the n items below it: one rotation of the
                     // affected slice, the mirror image of `LiftToTop`.
@@ -1474,89 +1491,157 @@ impl<'h> VM<'h> {
                     self.stack[len - 1 - n..].rotate_right(1);
                 }
                 Opcode::RaiseUnboundLocal => {
+                    *extra_work += Opcode::RaiseUnboundLocal.extra_work();
                     let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
                     catch!(self, self.unbound_local_error(0, Some(name_id)));
                 }
                 Opcode::DeleteLocal => {
+                    *extra_work += Opcode::DeleteLocal.extra_work();
                     let slot = u16::from(self.current_frame.fetch_u8());
                     self.delete_local(slot);
                 }
                 Opcode::DeleteGlobal => {
+                    *extra_work += Opcode::DeleteGlobal.extra_work();
                     let slot = self.current_frame.fetch_u16();
                     try_catch!(self, self.delete_global(slot));
                 }
                 // Variables - runtime name resolution (eval/exec snippets)
                 Opcode::LoadName => {
+                    *extra_work += Opcode::LoadName.extra_work();
                     let (slot, name_idx, flags) = self.current_frame.fetch_u16_u16_u8();
                     handle_load_result!(self, self.load_name(slot, StringId::from_index(name_idx), flags));
                 }
                 Opcode::StoreName => {
+                    *extra_work += Opcode::StoreName.extra_work();
                     let (slot, name_idx, flags) = self.current_frame.fetch_u16_u16_u8();
                     try_catch!(self, self.store_name(slot, StringId::from_index(name_idx), flags));
                 }
                 Opcode::DeleteName => {
+                    *extra_work += Opcode::DeleteName.extra_work();
                     let (slot, name_idx, flags) = self.current_frame.fetch_u16_u16_u8();
                     try_catch!(self, self.delete_name(slot, StringId::from_index(name_idx), flags));
                 }
                 // Variables - Global Operations
                 Opcode::LoadGlobal => {
+                    *extra_work += Opcode::LoadGlobal.extra_work();
                     let slot = self.current_frame.fetch_u16();
                     handle_load_result!(self, self.load_global(slot));
                 }
                 Opcode::LoadGlobalCallable => {
+                    *extra_work += Opcode::LoadGlobalCallable.extra_work();
                     let (slot, name_idx) = self.current_frame.fetch_u16_u16();
                     let name_id = StringId::from_index(name_idx);
                     self.load_global_callable(slot, name_id);
                 }
                 Opcode::StoreGlobal => {
+                    *extra_work += Opcode::StoreGlobal.extra_work();
                     let slot = self.current_frame.fetch_u16();
                     self.store_global(slot);
                 }
                 // Variables - Cell Operations (closures)
                 Opcode::LoadCell => {
+                    *extra_work += Opcode::LoadCell.extra_work();
                     let slot = self.current_frame.fetch_u16();
                     try_catch!(self, self.load_cell(slot));
                 }
                 Opcode::StoreCell => {
+                    *extra_work += Opcode::StoreCell.extra_work();
                     let slot = self.current_frame.fetch_u16();
                     self.store_cell(slot);
                 }
                 Opcode::DeleteCell => {
+                    *extra_work += Opcode::DeleteCell.extra_work();
                     let slot = self.current_frame.fetch_u16();
                     self.delete_cell(slot);
                 }
                 // Binary Operations - route through exception handling for tracebacks
-                Opcode::BinaryAdd => try_catch!(self, self.binary_add()),
-                Opcode::BinarySub => try_catch!(self, self.binary_sub()),
-                Opcode::BinaryMul => try_catch!(self, self.binary_mult()),
-                Opcode::BinaryDiv => try_catch!(self, self.binary_div()),
-                Opcode::BinaryFloorDiv => try_catch!(self, self.binary_floordiv()),
-                Opcode::BinaryMod => try_catch!(self, self.binary_mod()),
+                Opcode::BinaryAdd => {
+                    *extra_work += Opcode::BinaryAdd.extra_work();
+                    try_catch!(self, self.binary_add());
+                }
+                Opcode::BinarySub => {
+                    *extra_work += Opcode::BinarySub.extra_work();
+                    try_catch!(self, self.binary_sub());
+                }
+                Opcode::BinaryMul => {
+                    *extra_work += Opcode::BinaryMul.extra_work();
+                    try_catch!(self, self.binary_mult());
+                }
+                Opcode::BinaryDiv => {
+                    *extra_work += Opcode::BinaryDiv.extra_work();
+                    try_catch!(self, self.binary_div());
+                }
+                Opcode::BinaryFloorDiv => {
+                    *extra_work += Opcode::BinaryFloorDiv.extra_work();
+                    try_catch!(self, self.binary_floordiv());
+                }
+                Opcode::BinaryMod => {
+                    *extra_work += Opcode::BinaryMod.extra_work();
+                    try_catch!(self, self.binary_mod());
+                }
                 Opcode::BinaryPow => {
                     *extra_work += Opcode::BinaryPow.extra_work();
                     try_catch!(self, self.binary_pow());
                 }
                 // Bitwise operations - only work on integers
-                Opcode::BinaryAnd => try_catch!(self, self.binary_and()),
-                Opcode::BinaryOr => try_catch!(self, self.binary_or()),
-                Opcode::BinaryXor => try_catch!(self, self.binary_xor()),
+                Opcode::BinaryAnd => {
+                    *extra_work += Opcode::BinaryAnd.extra_work();
+                    try_catch!(self, self.binary_and());
+                }
+                Opcode::BinaryOr => {
+                    *extra_work += Opcode::BinaryOr.extra_work();
+                    try_catch!(self, self.binary_or());
+                }
+                Opcode::BinaryXor => {
+                    *extra_work += Opcode::BinaryXor.extra_work();
+                    try_catch!(self, self.binary_xor());
+                }
                 Opcode::BinaryLShift => {
+                    *extra_work += Opcode::BinaryLShift.extra_work();
                     try_catch!(self, self.binary_lshift());
                 }
                 Opcode::BinaryRShift => {
+                    *extra_work += Opcode::BinaryRShift.extra_work();
                     try_catch!(self, self.binary_rshift());
                 }
-                Opcode::BinaryMatMul => try_catch!(self, self.binary_matmul()),
+                Opcode::BinaryMatMul => {
+                    *extra_work += Opcode::BinaryMatMul.extra_work();
+                    try_catch!(self, self.binary_matmul());
+                }
                 // Comparison Operations
-                Opcode::CompareEq => try_catch!(self, self.compare_eq()),
-                Opcode::CompareNe => try_catch!(self, self.compare_ne()),
-                Opcode::CompareLt => try_catch!(self, self.compare_lt()),
-                Opcode::CompareLe => try_catch!(self, self.compare_le()),
-                Opcode::CompareGt => try_catch!(self, self.compare_gt()),
-                Opcode::CompareGe => try_catch!(self, self.compare_ge()),
-                Opcode::CompareIs => try_catch!(self, self.compare_is()),
-                Opcode::CompareIsNot => try_catch!(self, self.compare_is_not()),
+                Opcode::CompareEq => {
+                    *extra_work += Opcode::CompareEq.extra_work();
+                    try_catch!(self, self.compare_eq());
+                }
+                Opcode::CompareNe => {
+                    *extra_work += Opcode::CompareNe.extra_work();
+                    try_catch!(self, self.compare_ne());
+                }
+                Opcode::CompareLt => {
+                    *extra_work += Opcode::CompareLt.extra_work();
+                    try_catch!(self, self.compare_lt());
+                }
+                Opcode::CompareLe => {
+                    *extra_work += Opcode::CompareLe.extra_work();
+                    try_catch!(self, self.compare_le());
+                }
+                Opcode::CompareGt => {
+                    *extra_work += Opcode::CompareGt.extra_work();
+                    try_catch!(self, self.compare_gt());
+                }
+                Opcode::CompareGe => {
+                    *extra_work += Opcode::CompareGe.extra_work();
+                    try_catch!(self, self.compare_ge());
+                }
+                Opcode::CompareIs => {
+                    *extra_work += Opcode::CompareIs.extra_work();
+                    try_catch!(self, self.compare_is());
+                }
+                Opcode::CompareIsNot => {
+                    *extra_work += Opcode::CompareIsNot.extra_work();
+                    try_catch!(self, self.compare_is_not());
+                }
                 Opcode::CompareIn => {
                     *extra_work += Opcode::CompareIn.extra_work();
                     try_catch!(self, self.compare_in());
@@ -1567,6 +1652,7 @@ impl<'h> VM<'h> {
                 }
                 // Unary Operations
                 Opcode::UnaryNot => {
+                    *extra_work += Opcode::UnaryNot.extra_work();
                     let value = self.pop();
                     let result = value.py_bool(self);
                     value.drop_with(self);
@@ -1575,25 +1661,67 @@ impl<'h> VM<'h> {
                         Err(error) => catch!(self, error),
                     }
                 }
-                Opcode::UnaryNeg => try_catch!(self, self.unary_neg()),
-                Opcode::UnaryPos => try_catch!(self, self.unary_pos()),
-                Opcode::UnaryInvert => try_catch!(self, self.unary_invert()),
+                Opcode::UnaryNeg => {
+                    *extra_work += Opcode::UnaryNeg.extra_work();
+                    try_catch!(self, self.unary_neg());
+                }
+                Opcode::UnaryPos => {
+                    *extra_work += Opcode::UnaryPos.extra_work();
+                    try_catch!(self, self.unary_pos());
+                }
+                Opcode::UnaryInvert => {
+                    *extra_work += Opcode::UnaryInvert.extra_work();
+                    try_catch!(self, self.unary_invert());
+                }
                 // `+=`, `-=`, `*=`, `&=`, `|=`, and `^=` try mutation before binary fallback.
-                Opcode::InplaceAdd => try_catch!(self, self.inplace_add()),
-                Opcode::InplaceSub => try_catch!(self, self.inplace_sub()),
-                Opcode::InplaceMul => try_catch!(self, self.inplace_mult()),
-                Opcode::InplaceDiv => try_catch!(self, self.binary_div()),
-                Opcode::InplaceFloorDiv => try_catch!(self, self.binary_floordiv()),
-                Opcode::InplaceMod => try_catch!(self, self.binary_mod()),
+                Opcode::InplaceAdd => {
+                    *extra_work += Opcode::InplaceAdd.extra_work();
+                    try_catch!(self, self.inplace_add());
+                }
+                Opcode::InplaceSub => {
+                    *extra_work += Opcode::InplaceSub.extra_work();
+                    try_catch!(self, self.inplace_sub());
+                }
+                Opcode::InplaceMul => {
+                    *extra_work += Opcode::InplaceMul.extra_work();
+                    try_catch!(self, self.inplace_mult());
+                }
+                Opcode::InplaceDiv => {
+                    *extra_work += Opcode::InplaceDiv.extra_work();
+                    try_catch!(self, self.binary_div());
+                }
+                Opcode::InplaceFloorDiv => {
+                    *extra_work += Opcode::InplaceFloorDiv.extra_work();
+                    try_catch!(self, self.binary_floordiv());
+                }
+                Opcode::InplaceMod => {
+                    *extra_work += Opcode::InplaceMod.extra_work();
+                    try_catch!(self, self.binary_mod());
+                }
                 Opcode::InplacePow => {
                     *extra_work += Opcode::InplacePow.extra_work();
                     try_catch!(self, self.binary_pow());
                 }
-                Opcode::InplaceAnd => try_catch!(self, self.inplace_and()),
-                Opcode::InplaceOr => try_catch!(self, self.inplace_or()),
-                Opcode::InplaceXor => try_catch!(self, self.inplace_xor()),
-                Opcode::InplaceLShift => try_catch!(self, self.binary_lshift()),
-                Opcode::InplaceRShift => try_catch!(self, self.binary_rshift()),
+                Opcode::InplaceAnd => {
+                    *extra_work += Opcode::InplaceAnd.extra_work();
+                    try_catch!(self, self.inplace_and());
+                }
+                Opcode::InplaceOr => {
+                    *extra_work += Opcode::InplaceOr.extra_work();
+                    try_catch!(self, self.inplace_or());
+                }
+                Opcode::InplaceXor => {
+                    *extra_work += Opcode::InplaceXor.extra_work();
+                    try_catch!(self, self.inplace_xor());
+                }
+                Opcode::InplaceLShift => {
+                    *extra_work += Opcode::InplaceLShift.extra_work();
+                    try_catch!(self, self.binary_lshift());
+                }
+                Opcode::InplaceRShift => {
+                    *extra_work += Opcode::InplaceRShift.extra_work();
+                    try_catch!(self, self.binary_rshift());
+                }
                 // Collection Building - route through exception handling
                 Opcode::BuildList => {
                     *extra_work += Opcode::BuildList.extra_work();
@@ -1608,13 +1736,13 @@ impl<'h> VM<'h> {
                 Opcode::BuildDict => {
                     *extra_work += Opcode::BuildDict.extra_work();
                     let count = self.current_frame.fetch_u16();
-                    *extra_work += u32::from(count) * HASHED_ITEM_UNITS;
+                    *extra_work += event_work(WorkEvent::HashedItem, count);
                     try_catch!(self, self.build_dict(usize::from(count)));
                 }
                 Opcode::BuildSet => {
                     *extra_work += Opcode::BuildSet.extra_work();
                     let count = self.current_frame.fetch_u16();
-                    *extra_work += u32::from(count) * HASHED_ITEM_UNITS;
+                    *extra_work += event_work(WorkEvent::HashedItem, count);
                     try_catch!(self, self.build_set(usize::from(count)));
                 }
                 Opcode::FormatValue => {
@@ -1624,7 +1752,7 @@ impl<'h> VM<'h> {
                 }
                 Opcode::BuildFString => {
                     let count = self.current_frame.fetch_u16();
-                    *extra_work += Opcode::BuildFString.extra_work() + u32::from(count) * FSTRING_PART_UNITS;
+                    *extra_work += Opcode::BuildFString.extra_work() + event_work(WorkEvent::FStringPart, count);
                     try_catch!(self, self.build_fstring(usize::from(count)));
                 }
                 Opcode::BuildSlice => {
@@ -1708,6 +1836,7 @@ impl<'h> VM<'h> {
                     handle_call_result!(self, self.load_attr(name_id));
                 }
                 Opcode::LoadSubmodule => {
+                    *extra_work += Opcode::LoadSubmodule.extra_work();
                     let (name_idx, path_idx) = self.current_frame.fetch_u16_u16();
                     let path_id = StringId::from_index(path_idx);
                     // the module a following `LoadAttrImport` names in its `ImportError`
@@ -1733,10 +1862,12 @@ impl<'h> VM<'h> {
                 }
                 // Control Flow - use self.current_frame.ip directly for jumps
                 Opcode::Jump => {
+                    *extra_work += Opcode::Jump.extra_work();
                     let offset = self.current_frame.fetch_i16();
                     jump_relative!(self.current_frame.ip, offset);
                 }
                 Opcode::JumpIfTrue => {
+                    *extra_work += Opcode::JumpIfTrue.extra_work();
                     let offset = self.current_frame.fetch_i16();
                     let cond = self.pop();
                     let result = cond.py_bool(self);
@@ -1748,6 +1879,7 @@ impl<'h> VM<'h> {
                     }
                 }
                 Opcode::JumpIfFalse => {
+                    *extra_work += Opcode::JumpIfFalse.extra_work();
                     let offset = self.current_frame.fetch_i16();
                     let cond = self.pop();
                     let result = cond.py_bool(self);
@@ -1759,6 +1891,7 @@ impl<'h> VM<'h> {
                     }
                 }
                 Opcode::JumpIfTrueOrPop => {
+                    *extra_work += Opcode::JumpIfTrueOrPop.extra_work();
                     let offset = self.current_frame.fetch_i16();
                     let value = self.pop();
                     match value.py_bool(self) {
@@ -1774,6 +1907,7 @@ impl<'h> VM<'h> {
                     }
                 }
                 Opcode::JumpIfFalseOrPop => {
+                    *extra_work += Opcode::JumpIfFalseOrPop.extra_work();
                     let offset = self.current_frame.fetch_i16();
                     let value = self.pop();
                     match value.py_bool(self) {
@@ -1800,6 +1934,7 @@ impl<'h> VM<'h> {
                     }
                 }
                 Opcode::ForIter => {
+                    *extra_work += Opcode::ForIter.extra_work();
                     let offset = self.current_frame.fetch_i16();
                     // Iterator implementations return heap objects from `py_iter`.
                     let Value::Ref(heap_id) = *self.peek() else {
@@ -1904,6 +2039,7 @@ impl<'h> VM<'h> {
                 }
                 // Function Definition
                 Opcode::MakeFunction => {
+                    *extra_work += Opcode::MakeFunction.extra_work();
                     let (func_idx, defaults_count) = self.current_frame.fetch_u16_u8();
                     let func_id = FunctionId::from_index(func_idx);
                     let defaults_count = defaults_count as usize;
@@ -2014,6 +2150,7 @@ impl<'h> VM<'h> {
                     }
                 }
                 Opcode::AssertFailed => {
+                    *extra_work += Opcode::AssertFailed.extra_work();
                     let cmp_op =
                         decode_assert_flags(self.current_frame.fetch_u8()).expect("invalid assert flags in bytecode");
                     let error = self.assert_failed_msg(cmp_op);
@@ -2039,6 +2176,7 @@ impl<'h> VM<'h> {
                     yield_if_parked!(self);
                 }
                 Opcode::ClearException => {
+                    *extra_work += Opcode::ClearException.extra_work();
                     // Pop the current exception from the stack
                     // This restores the previous exception context (if any)
                     if let Some(exc) = self.exception_stack.pop() {
@@ -2065,6 +2203,7 @@ impl<'h> VM<'h> {
                 }
                 // Return
                 Opcode::ReturnValue => {
+                    *extra_work += Opcode::ReturnValue.extra_work();
                     let value = self.pop();
                     if self.suspended_frames.is_empty() {
                         // Last frame - check if this is main task or spawned task
@@ -2137,6 +2276,7 @@ impl<'h> VM<'h> {
                 }
                 // Async/Await
                 Opcode::Await => {
+                    *extra_work += Opcode::Await.extra_work();
                     let result = self.exec_get_awaitable();
                     match result {
                         Ok(AwaitResult::ValueReady(value)) => {
@@ -2165,10 +2305,12 @@ impl<'h> VM<'h> {
                 }
                 // Pattern matching
                 Opcode::MatchShape => {
+                    *extra_work += Opcode::MatchShape.extra_work();
                     let (length, flags) = self.current_frame.fetch_u16_u8();
                     self.match_shape(length, flags);
                 }
                 Opcode::MatchKeys => {
+                    *extra_work += Opcode::MatchKeys.extra_work();
                     let mode = self.current_frame.fetch_u8();
                     if mode == MATCH_KEYS_REST {
                         try_catch!(self, self.match_keys_rest());
@@ -2177,14 +2319,17 @@ impl<'h> VM<'h> {
                     }
                 }
                 Opcode::MatchClass => {
+                    *extra_work += Opcode::MatchClass.extra_work();
                     let nargs = usize::from(self.current_frame.fetch_u8());
                     try_catch!(self, self.match_class(nargs));
                 }
                 Opcode::MatchAttr => {
+                    *extra_work += Opcode::MatchAttr.extra_work();
                     let index = usize::from(self.current_frame.fetch_u8());
                     handle_call_result!(self, self.match_attr(index));
                 }
                 Opcode::ImportStar => {
+                    *extra_work += Opcode::ImportStar.extra_work();
                     let mode = self.current_frame.fetch_u8();
                     if mode == IMPORT_STAR_BIND {
                         try_catch!(self, self.import_star_bind());
@@ -2194,10 +2339,12 @@ impl<'h> VM<'h> {
                 }
                 // Special
                 Opcode::Nop => {
+                    *extra_work += Opcode::Nop.extra_work();
                     // No operation
                 }
                 // Module Operations
                 Opcode::LoadModule => {
+                    *extra_work += Opcode::LoadModule.extra_work();
                     let module_id = self.current_frame.fetch_u16();
                     // for the `LoadAttrImport`s of a `from ... import`; harmless for a bare `import`
                     self.current_frame.import_from_module = Some(StringId::from_index(module_id));
@@ -2205,12 +2352,15 @@ impl<'h> VM<'h> {
                 }
                 // Context Managers
                 Opcode::BeforeWith => {
+                    *extra_work += Opcode::BeforeWith.extra_work();
                     handle_call_result!(self, self.exec_before_with());
                 }
                 Opcode::WithExit => {
+                    *extra_work += Opcode::WithExit.extra_work();
                     handle_call_result!(self, self.exec_with_exit());
                 }
                 Opcode::WithExceptStart => {
+                    *extra_work += Opcode::WithExceptStart.extra_work();
                     handle_call_result!(self, self.exec_with_except_start());
                 }
             }
@@ -2834,7 +2984,7 @@ impl<'h> VM<'h> {
     /// the builtin; once `def sum` runs, the slot holds the user function and the
     /// fallback isn't taken anymore.
     fn builtin_for_name(&self, name_id: StringId) -> Option<Value> {
-        self.heap.tracker.charge_work(BUILTIN_LOOKUP_UNITS);
+        self.heap.tracker.charge(WorkEvent::BuiltinLookup, 1);
         Builtins::value_from_name(self.interns.get_str(name_id))
     }
 
@@ -3087,4 +3237,13 @@ impl Drop for VM<'_> {
         mem::take(&mut self.modules).drop_with(self.heap);
         self.json_string_cache.drop_all(self.heap);
     }
+}
+
+/// The work of `quantity` occurrences of `event` in thousandths of a unit, for the dispatch
+/// loop to add to the work it charges at its next checkpoint.
+#[inline]
+fn event_work(event: WorkEvent, quantity: u16) -> u64 {
+    #[cfg(feature = "work-profile")]
+    work_profile::record_event(event, u64::from(quantity));
+    u64::from(quantity) * event.milli_units()
 }

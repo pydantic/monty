@@ -11,16 +11,24 @@
 //!   fitted to. An outlier there names work no construct covers.
 //!
 //! `--file <path>` measures one more script the same way, to track down an outlier.
+//! `--fit-data <dir>`, with the `work-profile` feature, writes the counts `make fit-work-clock` fits
+//! the weights to.
 //!
 //! The median is what the native `NANOS_PER_UNIT` should be. The wasm build has its own, which
 //! `crates/monty-js/scripts/calibrate-work-clock.mjs` measures. Run both with
 //! `make calibrate-work-clock`.
 
+#[cfg(feature = "work-profile")]
+use std::path::Path;
 use std::{env, fs, path::PathBuf, process::ExitCode, time::Duration};
 
 use monty::MontyRepl;
 use monty_fixture::Header;
 use monty_types::{CompileOptions, ExecutionClock, NANOS_PER_UNIT, PrintWriter, ResourceLimits, ResourceTracker};
+
+#[cfg(feature = "work-profile")]
+#[path = "support/work_clock_fit.rs"]
+mod fit;
 
 // The worker's allocator, so allocation is charged here as it is in a worker.
 #[global_allocator]
@@ -61,6 +69,10 @@ fn main() -> ExitCode {
     }
     if let Some(path) = env::args().skip_while(|arg| arg != "--file").nth(1) {
         report_file(&path, median);
+    }
+    #[cfg(feature = "work-profile")]
+    if let Some(dir) = env::args().skip_while(|arg| arg != "--fit-data").nth(1) {
+        fit::write(Path::new(&dir));
     }
     if flag("--check") && drifted {
         eprintln!("a category is more than {MAX_DRIFT}x from the median");

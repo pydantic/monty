@@ -53,6 +53,9 @@ cpu-clock = ["dep:nix"]
 # exercise production behavior (e.g. `ResourceTracker::lower_recursion_limit`
 # backing `sys.setrecursionlimit`). Forwarded by monty's own `test-hooks`.
 test-hooks = []
+# work-profile counts executed opcodes and charged work events process-wide, for
+# `make fit-work-clock`. Never enabled in a worker: it costs an atomic add per instruction.
+work-profile = []
 # Where `SandboxTimeZone::named` finds IANA zone rules. `tzdb-bundled` is the
 # copy compiled into the binary, which needs no filesystem (the wasm worker);
 # `tzdb` prefers the OS database (`TZDIR`, `/usr/share/zoneinfo`) and falls

@@ -7,6 +7,8 @@
 
 use std::fmt::Write;
 
+use monty_types::WorkEvent;
+
 use super::fp::FileTarget;
 use crate::{
     args::{ArgValues, FromArgs},
@@ -265,7 +267,7 @@ fn encode(obj: &Value, config: &JsonDumpsConfig, default: &Value, vm: &mut VM<'_
     };
     encoder.serialize_value(obj, 0)?;
     // Encoding costs about a unit per byte written.
-    vm.heap.tracker.charge_work(output.len() as u64);
+    vm.heap.tracker.charge(WorkEvent::JsonDumpByte, output.len() as u64);
     Ok(output)
 }
 

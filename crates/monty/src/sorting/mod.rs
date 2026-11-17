@@ -14,6 +14,7 @@ mod timsort;
 
 use std::cmp::Ordering;
 
+use monty_types::WorkEvent;
 use smallvec::SmallVec;
 use timsort::{SortAborted, sort_short, timsort};
 
@@ -245,10 +246,6 @@ impl<'v, 'h> Comparer<'v, 'h> {
     }
 }
 
-/// Work charged for a comparison of heap values, which recurses into them and costs
-/// several times the inline pairs the caller's poll already charges for.
-const RICH_COMPARISON_UNITS: u64 = 8;
-
 /// Python's `a < b`, the only comparison the sort makes.
 ///
 /// Only heap values other than `str` can answer `<` themselves (sets, `Counter`, `Decimal`), so the rest skip
@@ -266,7 +263,7 @@ pub(crate) fn py_lt(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
         _ if let (Some(a), Some(b)) = (Number::of(a), Number::of(b)) => Ok(a.partial_cmp(b) == Some(Ordering::Less)),
         _ if let (Some(a), Some(b)) = (str_of(a, vm), str_of(b, vm)) => Ok(a < b),
         (Value::Ref(_), _) | (_, Value::Ref(_)) => {
-            vm.heap.tracker.charge_work(RICH_COMPARISON_UNITS);
+            vm.heap.tracker.charge(WorkEvent::SortComparison, 1);
             vm.cmp_values(CmpOperator::Lt, a, b)
         }
         _ => match a.py_cmp(b, vm)? {

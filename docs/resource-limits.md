@@ -247,25 +247,25 @@ that took 155 ms under Node took 957 ms with a wall-clock limit armed and 157 ms
 The interpreter counts units of work and reports `units × 5 ns` (`units × 3 ns` in a native worker) wherever it would report execution time: both
 duration limits, the `TimeoutError` message and the execution time sent to telemetry.
 
-- A cheap bytecode instruction, such as loading a local, is one unit.
-    Costlier ones are weighted by their measured time: reading an attribute is 9 units, storing one 18, calling a
-    function 6.
-- A native loop that polls the limits is charged two units per item, and a native operation that polls once is
-    charged 16 units for it.
-- Creating an iterator is 12 units and each item taken from one is two.
-- An operator or comparison on anything but two small numbers, a call to a closure, class or function with defaults,
-    and creating a bound method are each charged about a dozen units more.
-- Big-integer arithmetic, regex scans and matches, JSON encoding and decoding, and comparisons of heap values in a
-    sort are charged by the work they do.
-- Every allocation from the worker's allocator is six units plus one for every 32 bytes, so an operation with no
-    charge of its own still costs what it allocates.
+- Every bytecode instruction is charged a weight for its opcode: half a unit for the cheapest, more for those that
+    do more.
+- Native work is charged per occurrence of a named event: an item of a native loop, an item taken from an iterator,
+    a call to a closure or class, a big-integer limb product, a byte of JSON parsed, a byte a regex scans, and so on.
+- Every allocation from the worker's allocator is charged once, and again per byte, so an operation with no charge
+    of its own still costs what it allocates.
     This needs the worker allocator: a direct `monty` embedding without `monty-alloc` charges nothing for allocation.
+
+No weight is written by hand.
+`make fit-work-clock` counts how often each opcode runs and each event is charged across the calibration scripts and
+the interpreter's test cases, times the same scripts in the WebAssembly build, and solves for all the weights at once.
 
 The same code is charged the same units on every run of one build, whatever else the machine is doing.
 The time is an estimate.
-Each rate is the median measured for that build on one machine: the WebAssembly build under Node, and a native build.
-Across the calibration categories the time taken ranged from about half to one and a half times the time reported.
-`make calibrate-work-clock` measures the rate per category.
+The weights are fitted to the WebAssembly build under Node on one machine, and the native rate is the median measured
+for a native build on the same machine.
+In that fit 95% of 358 scripts took between two thirds and one and a half times the time reported; the rest took up to
+three and a half times as long, mostly code spending its time in native modules that have no event of their own.
+`make calibrate-work-clock` measures the rate per category, per construct and per test case.
 
 Native work that neither polls nor allocates is charged nothing, so keep an outer bound: `request_timeout`, or the
 platform's own CPU limit set above the largest feed limit.

@@ -1,5 +1,5 @@
 use hashbrown::HashTable;
-use monty_types::{ExcType, LARGE_RESULT_THRESHOLD, ResourceError, ResourceTracker};
+use monty_types::{ExcType, LARGE_RESULT_THRESHOLD, ResourceError, ResourceTracker, WorkEvent};
 
 use crate::{
     bytecode::VM,
@@ -112,9 +112,6 @@ pub(crate) fn multiplication_products(a: u64, b: u64) -> u64 {
     }
 }
 
-/// Limb products one unit of work pays for in big-integer arithmetic.
-const LIMB_PRODUCTS_PER_UNIT: u64 = 4;
-
 /// The 64-bit limbs a `bits`-bit integer spans. Fixed-width so every build charges alike,
 /// though `num-bigint` digits are pointer-sized.
 pub(crate) fn bigint_limbs(bits: u64) -> u64 {
@@ -124,18 +121,15 @@ pub(crate) fn bigint_limbs(bits: u64) -> u64 {
 /// Charges the work clock for `products` limb multiplications: big-integer multiplication,
 /// division and base conversion are quadratic, which no flat per-call charge covers.
 pub(crate) fn charge_bigint_products(products: u64, tracker: &ResourceTracker) {
-    tracker.charge_work(products / LIMB_PRODUCTS_PER_UNIT);
+    tracker.charge(WorkEvent::BigintProduct, products);
 }
-
-/// Units per limb for writing an integer's decimal digits, beyond the quadratic conversion.
-const DECIMAL_WRITE_UNITS_PER_LIMB: u64 = 40;
 
 /// Charges the work clock for writing an integer of `bits` bits in decimal: a quadratic
 /// conversion, then formatting each digit.
 pub(crate) fn charge_decimal_write(bits: u64, tracker: &ResourceTracker) {
     let limbs = bigint_limbs(bits);
     charge_bigint_products(limbs.saturating_mul(limbs), tracker);
-    tracker.charge_work(limbs.saturating_mul(DECIMAL_WRITE_UNITS_PER_LIMB));
+    tracker.charge(WorkEvent::DecimalLimb, limbs);
 }
 
 /// Charges the work clock for parsing `digits` decimal digits into an integer, which is quadratic.

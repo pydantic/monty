@@ -9,7 +9,7 @@ use std::{fmt::Write, str};
 pub(crate) use heap_str::HeapStr;
 pub(crate) use inline_str::InlineStr;
 pub(crate) use iterator::StringIterator;
-use monty_types::{ResourceError, ResourceTracker};
+use monty_types::{ResourceError, ResourceTracker, WorkEvent};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use smallvec::smallvec;
 
@@ -861,12 +861,9 @@ fn str_find<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Va
     Ok(Value::Int(result))
 }
 
-/// Bytes a substring search or replacement scans per unit of work.
-const SCAN_BYTES_PER_UNIT: usize = 6;
-
 /// Charges the work clock for searching `bytes` of a string, which no per-call charge covers.
 fn charge_scan(bytes: usize, tracker: &ResourceTracker) {
-    tracker.charge_work((bytes / SCAN_BYTES_PER_UNIT) as u64);
+    tracker.charge(WorkEvent::StrScanByte, bytes as u64);
 }
 
 /// Implements Python's `str.rfind(sub, start?, end?)` method.
