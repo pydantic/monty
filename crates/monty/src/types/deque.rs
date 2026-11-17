@@ -14,18 +14,36 @@ use crate::{
     },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     py_value::PyValue,
     resource_checks::{
         check_estimated_size, check_repeat_size, check_value_buffer_growth, repeated_len, try_vec_with_capacity,
     },
     types::{
         LazyHeapSet, Type, TypeRef,
+        class_def::ClassDef,
         list::repr_items_fmt,
         slice::{normalize_sequence_index, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
+
+impl ClassDef for Deque {
+    const NAME: &'static str = "collections.deque";
+    const ATTRS: Option<AttrTable> = Some(<PyDequeImpl as PyAttrs<'static>>::TABLE);
+    const BASETYPE: bool = true;
+    const CLASS_GETITEM: bool = true;
+    const SEQUENCE_REPEAT: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for DequeIterator {
+    const NAME: &'static str = "_collections._deque_iterator";
+    const ITERATOR: bool = true;
+}
 
 /// `deque([iterable[, maxlen]])` — both positional-or-keyword, both defaulted.
 /// See [`Deque::init`] for why the over-arity case is pre-checked instead.

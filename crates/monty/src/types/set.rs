@@ -17,16 +17,46 @@ use crate::{
         heap_read_ref_as_field_mut,
     },
     modules::copy::{Memo, PyDeepCopy, deep_copy},
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     py_value::PyValue,
     types::{
         LazyHeapSet, Type, TypeRef,
+        class_def::ClassDef,
         hash_table::{CloneTableEntry, Live, PyHashTable, TableCursor, TableEntry, TableProbe, TableSource, TableWalk},
         key_hash::{HashRole, hash_as, set_element_hash},
         list::repr_items_fmt,
     },
     value::{VALUE_SIZE, Value},
 };
+
+impl ClassDef for Set {
+    const NAME: &'static str = "set";
+    const ATTRS: Option<AttrTable> = Some(<PySetImpl as PyAttrs<'static>>::TABLE);
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+    const CLASS_GETITEM: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for FrozenSet {
+    const NAME: &'static str = "frozenset";
+    const ATTRS: Option<AttrTable> = Some(<PyFrozenSetImpl as PyAttrs<'static>>::TABLE);
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+    const CLASS_GETITEM: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for SetIterator {
+    const NAME: &'static str = "set_iterator";
+    const ITERATOR: bool = true;
+}
 
 /// Entry in the set storage, containing a value and its cached hash.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

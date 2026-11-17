@@ -30,9 +30,10 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type, TypeRef,
+        class_def::ClassDef,
         date::{self, StrftimeArgs},
         datetime::{allocate_tzinfo_ref, tzinfo_from_value},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
@@ -40,6 +41,16 @@ use crate::{
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for Time {
+    const NAME: &'static str = "datetime.time";
+    const ATTRS: Option<AttrTable> = Some(<PyTimeImpl as PyAttrs<'static>>::TABLE);
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        init(vm, args).map(CallResult::Value)
+    }
+}
 
 /// `datetime.time` storage.
 ///

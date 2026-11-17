@@ -1,7 +1,7 @@
 //! Behaviour shared by every native [`Type`]: naming, construction and
 //! class-level attribute access, driven by the [`TypeDef`](super::native::TypeDef) table.
 //!
-//! The enum itself and the per-type facts live in [`super::native`]; this
+//! The enum and registry live in [`super::native`]; each class owns its definition. This
 //! module holds the generic code that reads them, plus the constructors of the
 //! primitive types that have no module of their own.
 
@@ -9,7 +9,6 @@ use std::fmt;
 
 use num_bigint::BigInt;
 
-use super::native::Constructor;
 pub use super::native::Type;
 use crate::{
     args::{ArgValues, FromArgs},
@@ -20,17 +19,59 @@ use crate::{
     heap::{DropWithContext, Heap},
     intern::{Interns, StaticStrings},
     modules::collections,
-    py_attrs::{self, AttrDef},
+    py_attrs::{self, AttrDef, AttrTable, PyAttrs},
     py_value::PyValue,
     types::{
         GenericAlias, LongInt, PyTrait, TypeRef, allocate_tuple,
         bytes::bytes_repr,
+        class_def::ClassDef,
         instance::BoundMethod,
         long_int::INT_MAX_STR_DIGITS,
+        numeric::PyFloatImpl,
         str::{StringRepr, allocate_string},
     },
     value::{EitherStr, Value},
 };
+
+/// Defines `bool` for immediate boolean values.
+pub(crate) struct BoolClass;
+
+impl ClassDef for BoolClass {
+    const NAME: &'static str = "bool";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASES: &'static [Type] = &[Type::Int];
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        bool_init(vm, args).map(CallResult::Value)
+    }
+}
+
+/// Defines `int` for both immediate integers and heap-allocated big integers.
+pub(crate) struct IntClass;
+
+impl ClassDef for IntClass {
+    const NAME: &'static str = "int";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        int_init(vm, args).map(CallResult::Value)
+    }
+}
+
+/// Defines `float` for immediate floating-point values.
+pub(crate) struct FloatClass;
+
+impl ClassDef for FloatClass {
+    const NAME: &'static str = "float";
+    const ATTRS: Option<AttrTable> = Some(<PyFloatImpl as PyAttrs<'static>>::TABLE);
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        float_init(vm, args).map(CallResult::Value)
+    }
+}
 
 impl Type {
     /// The name CPython's `__name__` reports: [`name`](Self::name) with any
@@ -195,17 +236,9 @@ impl Type {
 
     /// Calls this type as a constructor (e.g., `list(x)`, `int(x)`).
     ///
-    /// Iterator acquisition may suspend in user code; other constructors complete natively.
+    /// Constructors can suspend while acquiring an iterator or running class creation hooks.
     pub(crate) fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-        match self.def().ctor {
-            Constructor::Value(new) => new(vm, args).map(CallResult::Value),
-            Constructor::Call(new) => new(vm, args),
-            Constructor::Typed(new) => new(self, vm, args).map(CallResult::Value),
-            Constructor::None => {
-                args.drop_with(vm.heap);
-                Err(ExcType::type_error_not_callable(self.name()))
-            }
-        }
+        (self.def().construct)(vm, args)
     }
 }
 

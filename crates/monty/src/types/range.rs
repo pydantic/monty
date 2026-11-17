@@ -18,9 +18,23 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{Heap, HeapId, HeapItem, HeapObjectRead},
-    types::{LazyHeapSet, PyTrait, Slice, Type, TypeRef},
+    types::{LazyHeapSet, PyTrait, Slice, Type, TypeRef, class_def::ClassDef},
     value::Value,
 };
+
+impl ClassDef for Range {
+    const NAME: &'static str = "range";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for RangeIterator {
+    const NAME: &'static str = "range_iterator";
+    const ITERATOR: bool = true;
+}
 
 /// Python range object representing an immutable sequence of integers.
 ///

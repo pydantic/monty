@@ -18,9 +18,9 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropGuard, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     py_value::PyValue,
-    types::{LazyHeapSet, List, PyTrait, Type, TypeRef, bytes::allocate_bytes},
+    types::{LazyHeapSet, List, PyTrait, Type, TypeRef, bytes::allocate_bytes, class_def::ClassDef},
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -45,6 +45,17 @@ pub(crate) struct BytesIo {
 struct BytesIoArgs {
     #[from_args(default = Value::None)]
     initial_bytes: Value,
+}
+
+impl ClassDef for BytesIo {
+    const NAME: &'static str = "_io.BytesIO";
+    const BASETYPE: bool = true;
+    const ITERATOR: bool = true;
+    const ATTRS: Option<AttrTable> = Some(<PyBytesIoImpl as PyAttrs<'static>>::TABLE);
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
 }
 
 impl BytesIo {

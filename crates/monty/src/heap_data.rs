@@ -21,7 +21,7 @@ use crate::{
     hash::HashValue,
     heap::{HeapId, HeapItem, HeapObjectRead},
     intern::FunctionId,
-    types::{LazyHeapSet, LongInt, PyTrait, Type, TypeRef},
+    types::{LazyHeapSet, LongInt, PyTrait, Type, TypeRef, class_def::ClassDef},
     value::{EitherStr, Value},
 };
 
@@ -445,6 +445,10 @@ impl HeapData {
 #[serde(transparent)]
 #[repr(transparent)]
 pub(crate) struct CellValue(pub(crate) Value);
+
+impl ClassDef for CellValue {
+    const NAME: &'static str = "cell";
+}
 
 impl Deref for CellValue {
     type Target = Value;

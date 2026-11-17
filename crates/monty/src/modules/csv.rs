@@ -22,17 +22,55 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
+    py_attrs::{AttrTable, PyAttrs},
     types::{
         CsvObject, List, Module, OpenFile, PyTrait, Type,
+        class_def::ClassDef,
         csv::{
-            DIALECT_NAMES, Dialect, DictReader, DictWriter, FIELD_SIZE_LIMIT, FmtParams, Quoting, Reader, Writer,
-            write_method,
+            DIALECT_NAMES, Dialect, DictReader, DictWriter, FIELD_SIZE_LIMIT, FmtParams, PyCsvDictWriterImpl,
+            PyCsvWriterImpl, Quoting, Reader, Writer, write_method,
         },
         iter::collect_iterable,
         str::allocate_string,
     },
     value::Value,
 };
+
+impl ClassDef for Reader {
+    const NAME: &'static str = "_csv.reader";
+    const ITERATOR: bool = true;
+}
+
+impl ClassDef for Writer {
+    const NAME: &'static str = "_csv.writer";
+    const ATTRS: Option<AttrTable> = Some(<PyCsvWriterImpl as PyAttrs<'static>>::TABLE);
+}
+
+impl ClassDef for DictReader {
+    const NAME: &'static str = "csv.DictReader";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        dict_reader_call(vm, args)
+    }
+}
+
+impl ClassDef for DictWriter {
+    const NAME: &'static str = "csv.DictWriter";
+    const ATTRS: Option<AttrTable> = Some(<PyCsvDictWriterImpl as PyAttrs<'static>>::TABLE);
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        dict_writer_init(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for Dialect {
+    const NAME: &'static str = "_csv.Dialect";
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        dialect_init(vm, args).map(CallResult::Value)
+    }
+}
 
 /// Module-level `csv` functions; `DictReader` and `DictWriter` are types.
 #[monty_macros::explicit_discriminants(checksum = 0x761e_5c0a_a9b7_9c94)]

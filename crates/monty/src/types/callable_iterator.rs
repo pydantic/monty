@@ -15,9 +15,14 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     heap::{DropGuard, HeapId, HeapItem, HeapObjectRead},
-    types::{PyTrait, Type, TypeRef},
+    types::{PyTrait, Type, TypeRef, class_def::ClassDef},
     value::Value,
 };
+
+impl ClassDef for CallableIterator {
+    const NAME: &'static str = "callable_iterator";
+    const ITERATOR: bool = true;
+}
 
 /// Calls `callable()` for each item until a result compares `==` to `sentinel`.
 ///

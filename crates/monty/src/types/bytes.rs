@@ -87,19 +87,37 @@ use crate::{
     identity::Identity,
     intern::{BytesId, StaticStrings},
     percent_format::{copy_bytes_template, percent_format_bytes},
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     py_value::PyValue,
     resource_checks::{
         check_estimated_size, check_repeat_size, check_replace_size, push_checked, repeated_len, try_vec_with_capacity,
     },
     types::{
         List,
+        class_def::ClassDef,
         iter::checked_preallocation_hint,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
     value::{VALUE_SIZE, Value, eq_bytes},
 };
+
+impl ClassDef for Bytes {
+    const NAME: &'static str = "bytes";
+    const ATTRS: Option<AttrTable> = Some(<PyBytes<'static> as PyAttrs<'static>>::TABLE);
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+    const SEQUENCE_REPEAT: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for BytesIterator {
+    const NAME: &'static str = "bytes_iterator";
+    const ITERATOR: bool = true;
+}
 
 // =============================================================================
 // ASCII byte helper functions

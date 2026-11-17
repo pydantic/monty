@@ -25,14 +25,25 @@ use crate::{
     heap::{DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead},
     intern::{Interns, StaticStrings},
     os_dispatch::{build_path_os_call, value_as_path_str},
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     types::{
         LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_tuple,
+        class_def::ClassDef,
         dir_scan::{glob_call, walk_call},
         str::{StringRepr, allocate_string},
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for Path {
+    const NAME: &'static str = "PosixPath";
+    const ATTRS: Option<AttrTable> = Some(<PyPathImpl as PyAttrs<'static>>::TABLE);
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+}
 
 /// Python `pathlib.Path` object representing a filesystem path.
 ///

@@ -10,9 +10,9 @@ pub(crate) mod bytes_io;
 pub(crate) mod newline;
 pub(crate) mod string_io;
 
-pub(crate) use bytes_io::{BytesIo, PyBytesIoImpl};
+pub(crate) use bytes_io::BytesIo;
 pub(crate) use newline::{Newline, translate_newlines};
-pub(crate) use string_io::{PyStringIoImpl, StringIo};
+pub(crate) use string_io::StringIo;
 
 use crate::{
     args::ArgValues,

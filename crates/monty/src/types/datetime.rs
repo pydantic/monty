@@ -27,10 +27,11 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     modules::time as time_module,
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     py_value::PyValue,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type, TypeRef,
+        class_def::ClassDef,
         date::{self, StrftimeArgs},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
         time::{self, Time, TimeSpec},
@@ -1539,3 +1540,14 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
 #[cfg(test)]
 #[path = "../../tests/unit/datetime.rs"]
 mod tests;
+
+impl ClassDef for DateTime {
+    const NAME: &'static str = "datetime.datetime";
+    const ATTRS: Option<AttrTable> = Some(<PyDateTimeImpl as PyAttrs<'static>>::TABLE);
+    const BASES: &'static [Type] = &[Type::Date];
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        init(vm, args).map(CallResult::Value)
+    }
+}

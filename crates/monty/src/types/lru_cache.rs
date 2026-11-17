@@ -22,15 +22,21 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     types::{
         Dict, LazyHeapSet, NamedTuple, PyTrait, Type, TypeRef,
+        class_def::ClassDef,
         hash_table::{PyHashTable, Slot, TableEntry, TableProbe, TableSource},
         key_hash::plain_hash,
         tuple::{TupleVec, allocate_tuple},
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for LruCache {
+    const NAME: &'static str = "functools._lru_cache_wrapper";
+    const ATTRS: Option<AttrTable> = Some(<PyLruCacheImpl as PyAttrs<'static>>::TABLE);
+}
 
 /// Suspendable cache miss that stores a result only after the wrapped call succeeds.
 pub(crate) const CACHE_MISS_SOURCE: &str = r"

@@ -2,7 +2,7 @@
 
 use std::fmt::{self, Write};
 
-use super::{LazyHeapSet, PyTrait, Type, instance::bind_method};
+use super::{LazyHeapSet, PyTrait, Type, class_def::ClassDef, instance::bind_method};
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::type_of_ref,
@@ -107,38 +107,52 @@ struct AccessorArgs {
     function: Value,
 }
 
-/// Construct a property and initialize its name from the getter, when available.
-pub(crate) fn property_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let PropertyArgs { fget, fset, fdel, doc } = PropertyArgs::from_args(args, vm)?;
-    let name = fget.as_ref().and_then(|f| function_name(f, vm));
-    let name = name.map(|name| super::str::allocate_string(name, vm.heap));
-    Ok(allocate(
-        BuiltinDescriptor::Property {
+pub(crate) struct PropertyClass;
+
+impl ClassDef for PropertyClass {
+    const NAME: &'static str = "property";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        let PropertyArgs { fget, fset, fdel, doc } = PropertyArgs::from_args(args, vm)?;
+        let name = fget.as_ref().and_then(|f| function_name(f, vm));
+        let name = name.map(|name| super::str::allocate_string(name, vm.heap));
+        let property = BuiltinDescriptor::Property {
             fget: fget.unwrap_or(Value::None),
             fset: fset.unwrap_or(Value::None),
             fdel: fdel.unwrap_or(Value::None),
             doc: doc.unwrap_or(Value::None),
             name,
-        },
-        vm,
-    ))
+        };
+        Ok(Value::allocate(property, vm.heap).into())
+    }
 }
 
-/// Construct a descriptor that binds its callable to the owner class.
-pub(crate) fn classmethod_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ClassMethodArgs { function } = ClassMethodArgs::from_args(args, vm)?;
-    Ok(allocate(BuiltinDescriptor::ClassMethod(function), vm))
+pub(crate) struct ClassMethodClass;
+
+impl ClassDef for ClassMethodClass {
+    const NAME: &'static str = "classmethod";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        let ClassMethodArgs { function } = ClassMethodArgs::from_args(args, vm)?;
+        Ok(Value::allocate(BuiltinDescriptor::ClassMethod(function), vm.heap).into())
+    }
 }
 
-/// Construct a descriptor that returns its callable without binding.
-pub(crate) fn staticmethod_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let StaticMethodArgs { function } = StaticMethodArgs::from_args(args, vm)?;
-    Ok(allocate(BuiltinDescriptor::StaticMethod(function), vm))
-}
+pub(crate) struct StaticMethodClass;
 
-/// Transfer the wrapper's owned values into the heap.
-fn allocate(descriptor: BuiltinDescriptor, vm: &mut VM<'_>) -> Value {
-    Value::Ref(vm.heap.allocate(HeapData::BuiltinDescriptor(Box::new(descriptor))))
+impl ClassDef for StaticMethodClass {
+    const NAME: &'static str = "staticmethod";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        let StaticMethodArgs { function } = StaticMethodArgs::from_args(args, vm)?;
+        Ok(Value::allocate(BuiltinDescriptor::StaticMethod(function), vm.heap).into())
+    }
 }
 
 /// Bind an implicit attribute read using its instance and owning sandbox class.
@@ -305,7 +319,7 @@ impl DescriptorMethod {
                     doc: doc.clone_with_heap(vm.heap),
                     name: name.as_ref().map(|name| name.clone_with_heap(vm.heap)),
                 };
-                Ok(CallResult::Value(allocate(property, vm)))
+                Ok(Value::allocate(property, vm.heap).into())
             } else {
                 Err(ExcType::type_error("invalid property receiver"))
             }

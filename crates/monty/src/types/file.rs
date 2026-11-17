@@ -95,9 +95,9 @@ use crate::{
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReadOutput},
     intern::StaticStrings,
     os_dispatch::{PostConversionEffect, stat_result_field},
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     py_value::PyValue,
-    types::str::StringRepr,
+    types::{class_def::ClassDef, str::StringRepr},
     value::{EitherStr, Value},
     virtual_path::posix_join,
 };
@@ -156,6 +156,38 @@ pub(crate) enum ReadSpec {
 }
 
 pub use monty_types::FileMode;
+
+/// Text files returned by `open()` and the `sys.stdout` and `sys.stderr` markers.
+pub(crate) struct TextIOWrapperClass;
+
+impl ClassDef for TextIOWrapperClass {
+    const NAME: &'static str = "_io.TextIOWrapper";
+    const ATTRS: Option<AttrTable> = Some(<PyFileImpl as PyAttrs<'static>>::TABLE);
+}
+
+/// Defines read-only binary files over [`OpenFile`] storage.
+pub(crate) struct BufferedReaderClass;
+
+impl ClassDef for BufferedReaderClass {
+    const NAME: &'static str = "_io.BufferedReader";
+    const ATTRS: Option<AttrTable> = Some(<PyFileImpl as PyAttrs<'static>>::TABLE);
+}
+
+/// Defines write-only binary files over [`OpenFile`] storage.
+pub(crate) struct BufferedWriterClass;
+
+impl ClassDef for BufferedWriterClass {
+    const NAME: &'static str = "_io.BufferedWriter";
+    const ATTRS: Option<AttrTable> = Some(<PyFileImpl as PyAttrs<'static>>::TABLE);
+}
+
+/// Defines read/write binary files over [`OpenFile`] storage.
+pub(crate) struct BufferedRandomClass;
+
+impl ClassDef for BufferedRandomClass {
+    const NAME: &'static str = "_io.BufferedRandom";
+    const ATTRS: Option<AttrTable> = Some(<PyFileImpl as PyAttrs<'static>>::TABLE);
+}
 
 /// Crate-internal extension mapping a [`FileMode`] to the runtime `_io`
 /// wrapper [`Type`] (`FileMode` lives in `monty-types`, `Type` does not).

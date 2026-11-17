@@ -32,14 +32,24 @@ use crate::{
     hash::{HashValue, hash_f64, hash_python_long_int, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapObjectRead},
     intern::StaticStrings,
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     py_value::PyValue,
     types::{
         CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, TypeRef, allocate_string,
-        sequence::SequenceItems, str::allocate_string_no_interning, tuple::allocate_tuple,
+        class_def::ClassDef, sequence::SequenceItems, str::allocate_string_no_interning, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for Decimal {
+    const NAME: &'static str = "decimal.Decimal";
+    const ATTRS: Option<AttrTable> = Some(<PyDecimalImpl as PyAttrs<'static>>::TABLE);
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        init(vm, args).map(CallResult::Value)
+    }
+}
 
 /// Allocates `decimal` on the heap.
 pub(crate) fn decimal_value(decimal: Decimal, vm: &VM<'_>) -> Value {

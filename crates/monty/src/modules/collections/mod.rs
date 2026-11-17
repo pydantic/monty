@@ -28,18 +28,51 @@ use self::counter::counter_update;
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::Builtins,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext},
     intern::StaticStrings,
+    py_attrs::{AttrTable, PyAttrs},
     types::{
         Dict, Module, NamedTupleClass, PyTrait, Type,
+        class_def::ClassDef,
+        dict::{PyCounterImpl, PyDefaultDictImpl},
         iter::collect_owned_iterable,
         str::{StringRepr, str_isidentifier},
     },
     value::{EitherStr, Value},
 };
+
+/// Defines `collections.defaultdict` over [`Dict`] storage.
+pub(crate) struct DefaultDictClass;
+
+impl ClassDef for DefaultDictClass {
+    const NAME: &'static str = "collections.defaultdict";
+    const ATTRS: Option<AttrTable> = Some(<PyDefaultDictImpl as PyAttrs<'static>>::TABLE);
+    const BASES: &'static [Type] = &[Type::Dict];
+    const BASETYPE: bool = true;
+    const CLASS_GETITEM: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        defaultdict_init(vm, args).map(CallResult::Value)
+    }
+}
+
+/// Defines `collections.Counter` over [`Dict`] storage.
+pub(crate) struct CounterClass;
+
+impl ClassDef for CounterClass {
+    const NAME: &'static str = "Counter";
+    const ATTRS: Option<AttrTable> = Some(<PyCounterImpl as PyAttrs<'static>>::TABLE);
+    const BASES: &'static [Type] = &[Type::Dict];
+    const BASETYPE: bool = true;
+    const CLASS_GETITEM: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        counter_init(vm, args).map(CallResult::Value)
+    }
+}
 
 /// Creates the `collections` module.
 ///

@@ -30,11 +30,18 @@ use crate::{
     intern::{FunctionId, StaticStrings},
     modules::ModuleFunctions,
     types::{
-        LazyHeapSet, Module, PyTrait, Type, allocate_string, allocate_tuple, forward_ref::format_code,
-        generic_alias::repr_type_arg,
+        LazyHeapSet, Module, PyTrait, Type, allocate_string, allocate_tuple, class_def::ClassDef,
+        forward_ref::format_code, generic_alias::repr_type_arg,
     },
     value::{Marker, Value},
 };
+
+/// Defines the shared class of typing special forms such as `Any` and `Optional`.
+pub(crate) struct SpecialFormClass;
+
+impl ClassDef for SpecialFormClass {
+    const NAME: &'static str = "typing._SpecialForm";
+}
 
 /// Creates the `typing` module.
 ///

@@ -11,45 +11,45 @@ use crate::{
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     types::{
-        Class, Dict, List, OwnedTypeRef, PyTrait, Tuple, Type, TypeRef, descriptor, instance::bind_method,
-        type_ref::c3_merge,
+        Class, Dict, List, OwnedTypeRef, PyTrait, Tuple, Type, TypeRef, class_def::ClassDef, descriptor,
+        instance::bind_method, type_ref::c3_merge,
     },
     value::Value,
 };
 
-/// Implementation of the type() builtin function.
-///
-/// The 1-arg form returns the type of an object; the 3-arg form
-/// `type(name, bases, dict)` dynamically creates a new class, mirroring
-/// CPython. Any other positional count is a `TypeError`.
-///
-/// This hand-rolls `args.into_parts()` rather than using `#[derive(FromArgs)]`
-/// because the "exactly 1 *or* 3 positionals, same name" overload isn't
-/// expressible by any of the binder families — CPython special-cases `type`'s
-/// argument parsing in `type_new`/`type_init` for the same reason.
-pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let (mut pos, kwargs) = args.into_parts();
-    match pos.len() {
-        1 => {
-            let value = pos.next().expect("length checked");
-            if kwargs.is_empty() {
-                Ok(CallResult::Value(type_of(vm, value)))
-            } else {
-                value.drop_with(vm);
-                kwargs.drop_with(vm);
-                Err(ExcType::type_error_no_kwargs("type"))
+/// Defines the metaclass of native and Python-defined classes.
+pub(crate) struct TypeClass;
+
+impl ClassDef for TypeClass {
+    const NAME: &'static str = "type";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const CLASS_GETITEM: bool = true;
+
+    /// `type(obj)` returns the object's class. The three-argument form creates a class and can suspend in its hooks.
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        let (mut pos, kwargs) = args.into_parts();
+        match pos.len() {
+            1 => {
+                let value = pos.next().expect("length checked");
+                if kwargs.is_empty() {
+                    Ok(CallResult::Value(type_of(vm, value)))
+                } else {
+                    value.drop_with(vm);
+                    kwargs.drop_with(vm);
+                    Err(ExcType::type_error_no_kwargs("type"))
+                }
             }
-        }
-        3 => {
-            let name = pos.next().expect("length checked");
-            let bases = pos.next().expect("length checked");
-            let namespace = pos.next().expect("length checked");
-            create_class(vm, name, bases, namespace, kwargs)
-        }
-        _ => {
-            pos.drop_with(vm);
-            kwargs.drop_with(vm);
-            Err(ExcType::type_error("type() takes 1 or 3 arguments"))
+            3 => {
+                let name = pos.next().expect("length checked");
+                let bases = pos.next().expect("length checked");
+                let namespace = pos.next().expect("length checked");
+                create_class(vm, name, bases, namespace, kwargs)
+            }
+            _ => {
+                pos.drop_with(vm);
+                kwargs.drop_with(vm);
+                Err(ExcType::type_error("type() takes 1 or 3 arguments"))
+            }
         }
     }
 }

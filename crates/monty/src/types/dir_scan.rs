@@ -32,14 +32,31 @@ use crate::{
     identity::Identity,
     intern::StaticStrings,
     os_dispatch::value_as_path_str,
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     types::{
         LazyHeapSet, List, Path, PyTrait, Type, TypeRef, allocate_tuple,
+        class_def::ClassDef,
         list::ListIterator,
         str::{allocate_string, string_repr_fmt},
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for DirEntry {
+    const NAME: &'static str = "posix.DirEntry";
+    const ATTRS: Option<AttrTable> = Some(<PyDirEntryImpl as PyAttrs<'static>>::TABLE);
+}
+
+impl ClassDef for ScandirIterator {
+    const NAME: &'static str = "posix.ScandirIterator";
+    const ATTRS: Option<AttrTable> = Some(<PyScandirImpl as PyAttrs<'static>>::TABLE);
+    const ITERATOR: bool = true;
+}
+
+impl ClassDef for WalkIterator {
+    const NAME: &'static str = "generator";
+    const ITERATOR: bool = true;
+}
 
 /// The heap payload for every object a directory scan produces.
 #[derive(Debug, Serialize, Deserialize)]

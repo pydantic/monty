@@ -20,15 +20,27 @@ use crate::{
     hash::{HashValue, hash_f64},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     py_value::PyValue,
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
+        class_def::ClassDef,
         str::{StringRepr, allocate_string},
         r#type::strip_underscores,
     },
     value::{EitherStr, Value, eq_f64},
 };
+
+impl ClassDef for Complex {
+    const NAME: &'static str = "complex";
+    const ATTRS: Option<AttrTable> = Some(<PyComplexImpl as PyAttrs<'static>>::TABLE);
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        init(vm, args).map(CallResult::Value)
+    }
+}
 
 /// A Python `complex`: real and imaginary IEEE doubles.
 ///

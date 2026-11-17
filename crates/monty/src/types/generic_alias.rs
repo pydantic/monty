@@ -33,6 +33,7 @@ use crate::{
     intern::StaticStrings,
     types::{
         LazyHeapSet, List, PyTrait, Tuple, Type, TypeRef, Union,
+        class_def::ClassDef,
         instance::class_name,
         key_hash::hash_or_culprit,
         list::repr_should_truncate,
@@ -40,6 +41,10 @@ use crate::{
     },
     value::{EitherStr, Marker, VALUE_SIZE, Value},
 };
+
+impl ClassDef for GenericAlias {
+    const NAME: &'static str = "types.GenericAlias";
+}
 
 /// The origin of `typing.Literal[...]`, whose values compare as a set.
 const LITERAL: AliasOrigin = AliasOrigin::Special(Marker(StaticStrings::Literal));

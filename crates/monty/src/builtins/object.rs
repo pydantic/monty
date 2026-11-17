@@ -13,8 +13,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropWithContext, HeapData, HeapId, HeapRead},
-    py_attrs::PyAttrs,
-    types::{Dict, Instance, PyTrait, Type, TypeRef, instance::class_defines},
+    py_attrs::{AttrTable, PyAttrs},
+    types::{Dict, Instance, PyTrait, Type, TypeRef, class_def::ClassDef, instance::class_defines},
     value::Value,
 };
 
@@ -249,4 +249,14 @@ fn init_takes_one_argument(type_name: &str) -> RunError {
 pub(crate) fn takes_no_arguments(class_id: HeapId, vm: &VM<'_>) -> RunError {
     let name = TypeRef::Class(class_id).name(vm.heap, vm.interns);
     ExcType::type_error(format!("{name}() takes no arguments"))
+}
+
+pub(crate) struct ObjectClass;
+
+impl ClassDef for ObjectClass {
+    const NAME: &'static str = "object";
+    const ATTRS: Option<AttrTable> = Some(<PyObjectImpl as PyAttrs<'static>>::TABLE);
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASES: &'static [Type] = &[];
+    const BASETYPE: bool = true;
 }

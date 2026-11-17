@@ -6,9 +6,21 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext},
-    types::{PyTrait, map_filter::MapFilter},
+    types::{PyTrait, class_def::ClassDef, map_filter::MapFilter},
     value::Value,
 };
+
+pub(crate) struct MapClass;
+
+impl ClassDef for MapClass {
+    const NAME: &'static str = "map";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        builtin_map(vm, args)
+    }
+}
 
 /// Binds `map(function, iterable, *iterables, strict=False)` without consuming any source.
 pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {

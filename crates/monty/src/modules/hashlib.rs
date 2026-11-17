@@ -20,19 +20,64 @@ use num_traits::ToPrimitive;
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues, LaxBool, StrArg},
     builtins::Builtins,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext},
     intern::StaticStrings,
     modules::ModuleFunctions,
+    py_attrs::{AttrTable, PyAttrs},
     types::{
         Module, Set, Type, allocate_string,
         bytes::allocate_bytes,
-        hashlib::{Blake2Params, Blake2b, Blake2s, DigestBytes, HashAlgorithm, HashObject, hash_input},
+        class_def::ClassDef,
+        hashlib::{
+            Blake2Params, Blake2b, Blake2s, DigestBytes, HashAlgorithm, HashObject, PyBlake2Impl, PyHashImpl,
+            PyHashXofImpl, hash_input,
+        },
     },
     value::Value,
 };
+
+/// Defines fixed-length hashes over [`HashObject`] storage.
+pub(crate) struct HashlibHashClass;
+
+impl ClassDef for HashlibHashClass {
+    const NAME: &'static str = "_hashlib.HASH";
+    const ATTRS: Option<AttrTable> = Some(<PyHashImpl as PyAttrs<'static>>::TABLE);
+}
+
+/// Defines variable-length hashes over [`HashObject`] storage.
+pub(crate) struct HashlibHashXofClass;
+
+impl ClassDef for HashlibHashXofClass {
+    const NAME: &'static str = "_hashlib.HASHXOF";
+    const ATTRS: Option<AttrTable> = Some(<PyHashXofImpl as PyAttrs<'static>>::TABLE);
+}
+
+/// Defines `hashlib.blake2b` over [`HashObject`] storage.
+pub(crate) struct Blake2bClass;
+
+impl ClassDef for Blake2bClass {
+    const NAME: &'static str = "_blake2.blake2b";
+    const ATTRS: Option<AttrTable> = Some(<PyBlake2Impl<64, 16> as PyAttrs<'static>>::TABLE);
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        blake2b_init(vm, args).map(CallResult::Value)
+    }
+}
+
+/// Defines `hashlib.blake2s` over [`HashObject`] storage.
+pub(crate) struct Blake2sClass;
+
+impl ClassDef for Blake2sClass {
+    const NAME: &'static str = "_blake2.blake2s";
+    const ATTRS: Option<AttrTable> = Some(<PyBlake2Impl<32, 8> as PyAttrs<'static>>::TABLE);
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        blake2s_init(vm, args).map(CallResult::Value)
+    }
+}
 
 /// `hashlib` module functions, one variant per Python-visible function.
 ///
