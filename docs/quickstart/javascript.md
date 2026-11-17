@@ -464,6 +464,41 @@ A bundler resolving the `browser` condition on the main entry point gets this bu
 [`examples/antigravity`](https://github.com/pydantic/monty/tree/main/examples/antigravity) is a worked browser example,
 built with Vite.
 
+For a browser with Trusted Types enforcement, pass `createWorker` to `Monty.create()` or `createWorkerPool()`.
+The callback must return a fresh module worker on each call.
+Monty initializes and terminates each returned worker, including replacements after a crash or recycle.
+The callback takes precedence over `workerUrl`. Node ignores both options.
+
+The public `@pydantic/monty/wasm/worker` entry lets a bundler emit the worker separately.
+For example, Vite accepts a `@pydantic/monty/wasm/worker?worker&url` import.
+Pass that URL through your application's Trusted Types policy before constructing the module worker.
+Monty does not create a policy or change the application's CSP.
+Without `createWorker`, Monty keeps its default worker construction and optional `workerUrl` override.
+
+```ts test="skip"
+/// <reference types="vite/client" />
+import { Monty } from '@pydantic/monty/wasm'
+import workerUrl from '@pydantic/monty/wasm/worker?worker&url'
+
+// TypeScript's DOM types omit Trusted Types; `@types/trusted-types` has the full declarations
+declare const trustedTypes: {
+  createPolicy(name: string, rules: { createScriptURL(url: string): string }): { createScriptURL(url: string): unknown }
+}
+
+// the CSP's `trusted-types` directive must allow this policy name
+const policy = trustedTypes.createPolicy('monty-worker', {
+  createScriptURL: (url) => {
+    if (url !== workerUrl) throw new TypeError(`unexpected worker URL: ${url}`)
+    return url
+  },
+})
+
+await using pool = await Monty.create({
+  // TypeScript's DOM types reject a TrustedScriptURL here, but browsers accept it
+  createWorker: () => new Worker(policy.createScriptURL(workerUrl) as unknown as string, { type: 'module' }),
+})
+```
+
 Differences from the native path:
 
 - **Filesystem mounts are unsupported** — a non-empty `mount` list is rejected, because there is no host filesystem.

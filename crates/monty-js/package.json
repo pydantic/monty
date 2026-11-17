@@ -16,6 +16,7 @@
       "types": "./dist/node.d.ts",
       "default": "./dist/node.js"
     },
+    "./wasm/worker": "./dist/worker/browserWorkerEntry.js",
     "./wasm": {
       "types": "./dist/worker/index.d.ts",
       "node": "./dist/worker/index.node.js",
@@ -58,7 +59,7 @@
     "build:napi:debug": "napi build --platform --esm --js native-addon.js --dts native-addon.generated.d.ts",
     "build:wasm": "cargo build -p monty-wasm-runtime --target wasm32-wasip1 --release && node scripts/build-component.mjs",
     "build:ts": "tsc",
-    "check:dist-types": "tsc -p tsconfig.dist.json",
+    "check:dist-types": "tsc -p tsconfig.dist.json && tsc -p tsconfig.dist-node.json",
     "format": "prettier . -w",
     "lint": "run-s lint:oxlint lint:tests",
     "lint:oxlint": "oxlint .",
