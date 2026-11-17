@@ -8,8 +8,8 @@ use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 
 use super::{
-    LongInt, bigint_divmod_tuple, bigint_to_f64_checked, bigint_true_divide, integer_value, long_int_pow_value,
-    wide_i128_into_value,
+    LongInt, bigint_divmod_tuple, bigint_to_f64_checked, bigint_true_divide, charge_bigint_division, integer_value,
+    long_int_pow_value, wide_i128_into_value,
 };
 use crate::{
     bytecode::VM,
@@ -104,6 +104,7 @@ pub(super) trait IntArithmetic {
                 return Err(ExcType::zero_division().into());
             }
             check_div_size(lhs.bits(), &vm.heap.tracker)?;
+            charge_bigint_division(lhs, rhs, &vm.heap.tracker);
             Ok(Some(LongInt::new(lhs.div_floor(rhs)).into_value(vm.heap)))
         } else {
             Ok(None)
@@ -133,6 +134,7 @@ pub(super) trait IntArithmetic {
             if rhs.is_zero() {
                 return Err(ExcType::zero_division().into());
             }
+            charge_bigint_division(lhs, rhs, &vm.heap.tracker);
             Ok(Some(LongInt::new(lhs.mod_floor(rhs)).into_value(vm.heap)))
         } else {
             Ok(None)

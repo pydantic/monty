@@ -223,8 +223,15 @@ impl RePattern {
     /// borrowed contents. Returns a `ReMatch` heap object, or `Value::None`.
     pub fn search(&self, subject: &Value, text: &str, heap: &Heap) -> RunResult<Value> {
         match self.compiled.captures(text) {
-            Ok(Some(caps)) => Ok(self.build_single_match(text, &caps, subject, heap)),
-            Ok(None) => Ok(Value::None),
+            Ok(Some(caps)) => {
+                // The scan stopped at the match, so a search early in a long subject stays cheap.
+                charge_scan(caps.get(0).map_or(0, |m| m.end()), heap);
+                Ok(self.build_single_match(text, &caps, subject, heap))
+            }
+            Ok(None) => {
+                charge_scan(text.len(), heap);
+                Ok(Value::None)
+            }
             Err(err) => Err(ExcType::re_pattern_error(err)),
         }
     }
@@ -238,7 +245,10 @@ impl RePattern {
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn match_start(&self, subject: &Value, text: &str, heap: &Heap) -> RunResult<Value> {
         match self.match_regex()?.captures(text) {
-            Ok(Some(caps)) => Ok(self.build_single_match(text, &caps, subject, heap)),
+            Ok(Some(caps)) => {
+                charge_scan(caps.get(0).map_or(0, |m| m.end()), heap);
+                Ok(self.build_single_match(text, &caps, subject, heap))
+            }
             Ok(None) => Ok(Value::None),
             Err(err) => Err(ExcType::re_pattern_error(err)),
         }
@@ -253,7 +263,10 @@ impl RePattern {
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn fullmatch(&self, subject: &Value, text: &str, heap: &Heap) -> RunResult<Value> {
         match self.fullmatch_regex()?.captures(text) {
-            Ok(Some(caps)) => Ok(self.build_single_match(text, &caps, subject, heap)),
+            Ok(Some(caps)) => {
+                charge_scan(text.len(), heap);
+                Ok(self.build_single_match(text, &caps, subject, heap))
+            }
             Ok(None) => Ok(Value::None),
             Err(err) => Err(ExcType::re_pattern_error(err)),
         }
@@ -271,6 +284,7 @@ impl RePattern {
     /// values could not release them, since `dec_ref` needs `&mut Heap` while the
     /// match iterator borrows the compiled pattern out of it.
     pub fn findall(&self, text: &str, heap: &Heap) -> RunResult<Value> {
+        charge_scan(text.len(), heap);
         let cap_count = self.compiled.captures_len();
 
         match cap_count {
@@ -278,6 +292,7 @@ impl RePattern {
             0 | 1 => {
                 let mut matches = Vec::new();
                 for m in self.compiled.find_iter(text) {
+                    heap.tracker.charge_work(MATCH_UNITS);
                     check_slice_growth(&matches, heap)?;
                     matches.push(m.map_err(ExcType::re_pattern_error)?.as_str());
                 }
@@ -287,6 +302,7 @@ impl RePattern {
             2 => {
                 let mut matches = Vec::new();
                 for caps in self.compiled.captures_iter(text) {
+                    heap.tracker.charge_work(MATCH_UNITS);
                     check_slice_growth(&matches, heap)?;
                     let caps = caps.map_err(ExcType::re_pattern_error)?;
                     matches.push(caps.get(1).map_or("", |m| m.as_str()));
@@ -299,6 +315,7 @@ impl RePattern {
                 let groups = cap_count - 1;
                 let mut flat = Vec::new();
                 for caps in self.compiled.captures_iter(text) {
+                    heap.tracker.charge_work(MATCH_UNITS);
                     let caps = caps.map_err(ExcType::re_pattern_error)?;
                     for cap in caps.iter().skip(1) {
                         check_slice_growth(&flat, heap)?;
@@ -326,14 +343,22 @@ impl RePattern {
         let rust_repl = translate_replacement(repl)?;
         let effective_count = if count == 0 { usize::MAX } else { count };
 
+        charge_scan(text.len(), heap);
         let mut result = String::new();
+        // `expand` revalidates its whole destination as UTF-8, so expanding straight
+        // into `result` would make each match cost the output so far.
+        let mut expansion = String::new();
         let mut last_end = 0;
 
-        for caps in self.compiled.captures_iter(text).take(effective_count) {
+        for (index, caps) in self.compiled.captures_iter(text).take(effective_count).enumerate() {
+            heap.tracker.charge_work(MATCH_UNITS);
+            heap.tracker.check_time_every(index)?;
             let caps = caps.map_err(ExcType::re_pattern_error)?;
             let m = caps.get(0).expect("capture group 0 always exists");
             result.push_str(&text[last_end..m.start()]);
-            caps.expand(rust_repl.as_ref(), &mut result);
+            expansion.clear();
+            caps.expand(rust_repl.as_ref(), &mut expansion);
+            result.push_str(&expansion);
             last_end = m.end();
             // Check running size: current result + remaining unprocessed text.
             check_estimated_size(result.len() + (text.len() - last_end), &heap.tracker)?;
@@ -376,9 +401,11 @@ impl RePattern {
             Ordering::Equal => usize::MAX,
             Ordering::Greater => usize::try_from(maxsplit).unwrap_or(usize::MAX),
         };
+        charge_scan(text.len(), heap);
         let mut pieces: Vec<Option<&str>> = Vec::new();
         let mut last_end = 0;
         for caps in self.compiled.captures_iter(text).take(limit) {
+            heap.tracker.charge_work(MATCH_UNITS);
             let caps = caps.map_err(ExcType::re_pattern_error)?;
             let m = caps.get(0).expect("capture group 0 always exists");
             check_slice_growth(&pieces, heap)?;
@@ -408,7 +435,9 @@ impl RePattern {
         let stride = self.compiled.captures_len();
         let mut spans: Vec<Option<(usize, usize)>> = Vec::new();
         let mut text_len = 0usize;
+        charge_scan(text.len(), heap);
         for (count, caps) in self.compiled.captures_iter(text).enumerate() {
+            heap.tracker.charge_work(MATCH_UNITS);
             let caps = caps.map_err(ExcType::re_pattern_error)?;
             // `check_slice_growth` for a push of `stride` spans at once.
             heap.tracker.check_time_every(count)?;
@@ -443,6 +472,19 @@ impl RePattern {
             .collect();
         Ok(Value::Ref(heap.allocate(HeapData::List(List::new(results)))))
     }
+}
+
+/// Work charged per match found: locating it and extracting its groups costs far more
+/// than the loop item the polls charge for.
+const MATCH_UNITS: u64 = 6;
+
+/// Subject bytes the engine scans per unit of work.
+const SCAN_BYTES_PER_UNIT: usize = 32;
+
+/// Charges the work clock for scanning `bytes` of a subject and finding a match there.
+fn charge_scan(bytes: usize, heap: &Heap) {
+    heap.tracker
+        .charge_work((bytes / SCAN_BYTES_PER_UNIT) as u64 + MATCH_UNITS);
 }
 
 /// Appends one match's byte spans to `spans`: the full match, then each group.

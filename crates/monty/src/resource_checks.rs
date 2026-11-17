@@ -54,7 +54,13 @@ pub fn check_pow_size(base_bits: u64, exponent: u64, tracker: &ResourceTracker) 
     if base_bits <= 1 {
         return Ok(());
     }
-    let result_bytes = estimate_bits_to_bytes(base_bits.saturating_mul(exponent));
+    let result_bits = base_bits.saturating_mul(exponent);
+    // Repeated squaring is a geometric series ending in one multiplication of half-size operands.
+    charge_bigint_products(
+        bigint_limbs(result_bits).saturating_mul(bigint_limbs(result_bits)) / 3,
+        tracker,
+    );
+    let result_bytes = estimate_bits_to_bytes(result_bits);
     // Repeated squaring needs ~4× result size in peak memory because old/new base and
     // old/new accumulator coexist during each multiplication step.
     check_estimated_size(result_bytes.saturating_mul(4), tracker)
@@ -73,7 +79,23 @@ pub fn check_product_size(result_bits: u64, tracker: &ResourceTracker) -> Result
 ///
 /// The result of multiplying two numbers has at most `a_bits + b_bits` bits.
 pub fn check_mult_size(a_bits: u64, b_bits: u64, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+    charge_bigint_products(bigint_limbs(a_bits).saturating_mul(bigint_limbs(b_bits)), tracker);
     check_estimated_size(estimate_bits_to_bytes(a_bits.saturating_add(b_bits)), tracker)
+}
+
+/// Limb products one unit of work pays for in big-integer arithmetic.
+const LIMB_PRODUCTS_PER_UNIT: u64 = 8;
+
+/// The 64-bit limbs a `bits`-bit integer spans. Fixed-width so every build charges alike,
+/// though `num-bigint` digits are pointer-sized.
+pub(crate) fn bigint_limbs(bits: u64) -> u64 {
+    bits / 64 + 1
+}
+
+/// Charges the work clock for `products` limb multiplications: big-integer multiplication,
+/// division and base conversion are quadratic, which no flat per-call charge covers.
+pub(crate) fn charge_bigint_products(products: u64, tracker: &ResourceTracker) {
+    tracker.charge_work(products / LIMB_PRODUCTS_PER_UNIT);
 }
 
 /// Pre-checks that a left shift won't exceed resource limits.
