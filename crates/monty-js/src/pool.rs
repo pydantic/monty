@@ -106,7 +106,7 @@ where
 pub struct NativePoolOptions {
     /// Resolved path to the `monty` binary.
     pub binary_path: String,
-    /// Clock for all sessions: "wall" (default) or "cpu" (Linux only).
+    /// Clock for all sessions: "wall" (default), "cpu" (Linux only) or "work".
     pub execution_clock: Option<String>,
     /// Workers spawned eagerly by `start()`, and replaced in the background
     /// whenever one is recycled, crashes or is discarded.
@@ -323,7 +323,8 @@ impl NativePool {
         config.execution_clock = match options.execution_clock.as_deref() {
             None | Some("wall") => monty_types::ExecutionClock::Wall,
             Some("cpu") => monty_types::ExecutionClock::Cpu,
-            Some(_) => return Err(invalid("executionClock must be 'wall' or 'cpu'")),
+            Some("work") => monty_types::ExecutionClock::Work,
+            Some(_) => return Err(invalid("executionClock must be 'wall', 'cpu' or 'work'")),
         };
         config.min_processes = options.min_processes as usize;
         config.max_processes = options.max_processes as usize;

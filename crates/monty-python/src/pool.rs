@@ -1232,7 +1232,10 @@ fn parse_pool_config(
     config.execution_clock = match execution_clock {
         "wall" => monty_types::ExecutionClock::Wall,
         "cpu" => monty_types::ExecutionClock::Cpu,
-        _ => return Err(PyValueError::new_err("execution_clock must be 'wall' or 'cpu'")),
+        "work" => monty_types::ExecutionClock::Work,
+        _ => {
+            return Err(PyValueError::new_err("execution_clock must be 'wall', 'cpu' or 'work'"));
+        }
     };
     config.min_processes = min_processes;
     if let Some(max) = max_processes {
