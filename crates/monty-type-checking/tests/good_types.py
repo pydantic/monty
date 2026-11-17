@@ -1,3 +1,4 @@
+import _heapq
 import asyncio
 import bisect
 import datetime
@@ -5,6 +6,7 @@ import decimal
 import fnmatch
 import functools
 import hashlib
+import heapq
 import itertools
 import json
 import os
@@ -784,6 +786,21 @@ assert_type(fnmatch.fnmatchcase(b'a.py', b'*.py'), bool)
 assert_type(fnmatch.filter(['a.py', 'b.txt'], '*.py'), list[str])
 assert_type(fnmatch.filter((b'a', b'b'), b'?'), list[bytes])
 assert_type(fnmatch.translate('*.py'), str)
+
+# === heapq ===
+
+_heap: list[int] = []
+assert_type(heapq.heappush(_heap, 1), None)
+assert_type(heapq.heappop(_heap), int)
+assert_type(heapq.heapify(_heap), None)
+assert_type(heapq.heapreplace(_heap, 2), int)
+assert_type(heapq.heappushpop(_heap, 3), int)
+assert_type(heapq.heappush_max(_heap, 1), None)
+assert_type(heapq.heappop_max(_heap), int)
+assert_type(heapq.nlargest(2, [1, 2, 3]), list[int])
+assert_type(heapq.nsmallest(2, ['a', 'b'], key=len), list[str])
+assert_type(_heapq.heappush(_heap, 1), None)
+assert_type(_heapq.heappop_max(_heap), int)
 
 # === open ===
 # Upstream typeshed's signatures accept any argument value the runtime might accept.

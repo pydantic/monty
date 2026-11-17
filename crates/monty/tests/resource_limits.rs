@@ -445,6 +445,24 @@ next(csv.DictReader(itertools.repeat(''), fieldnames=['a']))
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }
 
+/// `heapq`'s native loops drain an endless iterator (filling the bounded heap of
+/// `nlargest`/`nsmallest`) without ever
+/// reaching a Python-level checkpoint, so they must poll the clock themselves.
+#[test]
+fn time_limit_covers_heapq_native_drains() {
+    for code in [
+        "import heapq\nimport itertools\nheapq.nlargest(10**12, itertools.repeat(0))\n",
+        "import heapq\nimport itertools\nheapq.nsmallest(10**12, itertools.repeat(0), key=abs)\n",
+    ] {
+        let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+        let exc = ex
+            .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+            .unwrap_err();
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{code}");
+    }
+}
+
 /// The streaming `writerows()` loops feed a non-file target from a native loop, which
 /// polls through its retained iterator view; a `write` that is a builtin never runs a
 /// frame, so nothing else would check the clock.

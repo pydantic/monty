@@ -196,7 +196,7 @@ fn search(vm: &mut VM<'_>, a: &Value, x: &Value, bounds: (i64, i64), key: &Value
 /// Lists and tuples compare the first unequal pair with `<`, rather than
 /// deriving `<` from a three-way ordering. This preserves identity/equality
 /// shortcuts (including NaNs) and reports errors on the offending elements.
-fn less_than(vm: &mut VM<'_>, a: &Value, b: &Value) -> RunResult<bool> {
+pub(super) fn less_than(vm: &mut VM<'_>, a: &Value, b: &Value) -> RunResult<bool> {
     if !matches!(
         (a.py_type(vm).native(), b.py_type(vm).native()),
         (Some(Type::List), Some(Type::List))

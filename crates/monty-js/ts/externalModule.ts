@@ -115,6 +115,7 @@ const KEYWORDS = new Set([
 
 /** Keep in sync with `monty-types::SANDBOX_MODULE_NAMES`; these imports never reach the host. */
 const SANDBOX_MODULES = new Set([
+  '_heapq',
   'annotationlib',
   'asyncio',
   'base64',
@@ -130,6 +131,7 @@ const SANDBOX_MODULES = new Set([
   'functools',
   'gc',
   'hashlib',
+  'heapq',
   'itertools',
   'json',
   'math',
