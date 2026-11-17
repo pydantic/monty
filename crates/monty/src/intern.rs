@@ -1138,9 +1138,6 @@ pub enum StaticStrings {
     /// `object.__init_subclass__` class creation hook.
     #[strum(serialize = "__init_subclass__")]
     DunderInitSubclass,
-    /// `object.__new__` instance construction hook.
-    #[strum(serialize = "__new__")]
-    DunderNew,
     /// `Decimal.__int__()`.
     #[strum(serialize = "__int__")]
     DunderInt,
@@ -1162,6 +1159,9 @@ pub enum StaticStrings {
     /// `__name__` attribute of a type.
     #[strum(serialize = "__name__")]
     DunderName,
+    /// `object.__new__` instance construction hook.
+    #[strum(serialize = "__new__")]
+    DunderNew,
     /// `__origin__` of a `types.GenericAlias`.
     #[strum(serialize = "__origin__")]
     DunderOrigin,
