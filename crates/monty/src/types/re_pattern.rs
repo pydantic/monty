@@ -15,6 +15,7 @@
 use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str};
 
 use fancy_regex::{CompileError, Error as RegexError, Regex, RegexBuilder};
+use monty_types::WorkEvent;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use smallvec::SmallVec;
 
@@ -292,7 +293,7 @@ impl RePattern {
             0 | 1 => {
                 let mut matches = Vec::new();
                 for m in self.compiled.find_iter(text) {
-                    heap.tracker.charge_work(MATCH_UNITS);
+                    heap.tracker.charge(WorkEvent::RegexMatch, 1);
                     check_slice_growth(&matches, heap)?;
                     matches.push(m.map_err(ExcType::re_pattern_error)?.as_str());
                 }
@@ -302,7 +303,7 @@ impl RePattern {
             2 => {
                 let mut matches = Vec::new();
                 for caps in self.compiled.captures_iter(text) {
-                    heap.tracker.charge_work(MATCH_UNITS);
+                    heap.tracker.charge(WorkEvent::RegexMatch, 1);
                     check_slice_growth(&matches, heap)?;
                     let caps = caps.map_err(ExcType::re_pattern_error)?;
                     matches.push(caps.get(1).map_or("", |m| m.as_str()));
@@ -315,7 +316,7 @@ impl RePattern {
                 let groups = cap_count - 1;
                 let mut flat = Vec::new();
                 for caps in self.compiled.captures_iter(text) {
-                    heap.tracker.charge_work(MATCH_UNITS);
+                    heap.tracker.charge(WorkEvent::RegexMatch, 1);
                     let caps = caps.map_err(ExcType::re_pattern_error)?;
                     for cap in caps.iter().skip(1) {
                         check_slice_growth(&flat, heap)?;
@@ -351,7 +352,7 @@ impl RePattern {
         let mut last_end = 0;
 
         for (index, caps) in self.compiled.captures_iter(text).take(effective_count).enumerate() {
-            heap.tracker.charge_work(MATCH_UNITS);
+            heap.tracker.charge(WorkEvent::RegexMatch, 1);
             heap.tracker.check_time_every(index)?;
             let caps = caps.map_err(ExcType::re_pattern_error)?;
             let m = caps.get(0).expect("capture group 0 always exists");
@@ -405,7 +406,7 @@ impl RePattern {
         let mut pieces: Vec<Option<&str>> = Vec::new();
         let mut last_end = 0;
         for caps in self.compiled.captures_iter(text).take(limit) {
-            heap.tracker.charge_work(MATCH_UNITS);
+            heap.tracker.charge(WorkEvent::RegexMatch, 1);
             let caps = caps.map_err(ExcType::re_pattern_error)?;
             let m = caps.get(0).expect("capture group 0 always exists");
             check_slice_growth(&pieces, heap)?;
@@ -437,7 +438,7 @@ impl RePattern {
         let mut text_len = 0usize;
         charge_scan(text.len(), heap);
         for (count, caps) in self.compiled.captures_iter(text).enumerate() {
-            heap.tracker.charge_work(MATCH_UNITS);
+            heap.tracker.charge(WorkEvent::RegexMatch, 1);
             let caps = caps.map_err(ExcType::re_pattern_error)?;
             // `check_slice_growth` for a push of `stride` spans at once.
             heap.tracker.check_time_every(count)?;
@@ -474,17 +475,10 @@ impl RePattern {
     }
 }
 
-/// Work charged per match found: locating it and extracting its groups costs far more
-/// than the loop item the polls charge for.
-const MATCH_UNITS: u64 = 12;
-
-/// Subject bytes the engine scans per unit of work.
-const SCAN_BYTES_PER_UNIT: usize = 16;
-
 /// Charges the work clock for scanning `bytes` of a subject and finding a match there.
 fn charge_scan(bytes: usize, heap: &Heap) {
-    heap.tracker
-        .charge_work((bytes / SCAN_BYTES_PER_UNIT) as u64 + MATCH_UNITS);
+    heap.tracker.charge(WorkEvent::RegexScanByte, bytes as u64);
+    heap.tracker.charge(WorkEvent::RegexMatch, 1);
 }
 
 /// Appends one match's byte spans to `spans`: the full match, then each group.

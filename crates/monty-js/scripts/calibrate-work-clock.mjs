@@ -9,9 +9,12 @@
 // - `--constructs`: units charged per construct against the units its time is worth.
 // - `--corpus`: the spread over the interpreter's self-contained test cases.
 //
+// `--fit-data <dir>` instead times every script `monty-bench` wrote under `<dir>/scripts` and writes
+// `<dir>/wasm.json`, the times `make fit-work-clock` fits the weights to.
+//
 // Needs `npm run build:wasm && npm run build:ts` first; `make calibrate-work-clock` does both.
 
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -78,6 +81,24 @@ function pythonFiles(dir) {
     .filter((file) => file.endsWith('.py'))
     .sort()
     .map((file) => [file.slice(0, -3), readFileSync(join(dir, file), 'utf8')])
+}
+
+const fitData = process.argv.indexOf('--fit-data')
+if (fitData !== -1) {
+  const dir = process.argv[fitData + 1]
+  const times = {}
+  for (const [name, code] of pythonFiles(join(dir, 'scripts'))) {
+    try {
+      const row = await measure(name, code)
+      times[name] = { wallMicros: row.wallMicros, units: row.units }
+    } catch (error) {
+      // A case that exhausts the wasm stack traps the component; the fit leaves it out.
+      console.log(`skipping ${name}: ${error.message}`)
+    }
+  }
+  writeFileSync(join(dir, 'wasm.json'), JSON.stringify({ nanosPerUnit, times }))
+  console.log(`wrote ${Object.keys(times).length} times to ${join(dir, 'wasm.json')}`)
+  process.exit(0)
 }
 
 const rows = []

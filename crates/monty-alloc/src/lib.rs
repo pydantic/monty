@@ -11,6 +11,8 @@ use std::{
 
 #[cfg(feature = "exit-code")]
 use monty_types::OOM_EXIT_CODE;
+#[cfg(feature = "work-profile")]
+use monty_types::work_profile::ALLOCATIONS;
 use monty_types::{ALLOCATED_BYTES, ALLOCATION_OVERHEAD_BYTES, BASELINE_MEMORY, LIVE_MEMORY};
 
 /// The absolute ceiling for allocator-backed live bytes.
@@ -104,6 +106,8 @@ unsafe impl GlobalAlloc for LimitedAllocator {
 #[inline]
 fn charge(size: usize) {
     ALLOCATED_BYTES.fetch_add(size.wrapping_add(ALLOCATION_OVERHEAD_BYTES), Ordering::Relaxed);
+    #[cfg(feature = "work-profile")]
+    ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
     let live = LIVE_MEMORY.fetch_add(size, Ordering::Relaxed).saturating_add(size);
     if live > HARD_LIMIT.load(Ordering::Relaxed) {
         out_of_memory(format_args!(

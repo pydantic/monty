@@ -309,6 +309,13 @@ calibrate-work-clock-native:
 calibrate-work-clock-wasm: install-js
 	cd crates/monty-js && npm run build:wasm && npm run build:ts && node scripts/calibrate-work-clock.mjs $(CALIBRATE_ARGS)
 
+.PHONY: fit-work-clock
+fit-work-clock: install-js ## Fit the work clock's weights to measured wasm time and regenerate the weight tables
+	cargo bench -p monty-bench --bench work_clock --no-default-features --features work-profile -- --fit-data $(CURDIR)/target/work-clock-fit
+	cd crates/monty-js && npm run build:wasm && npm run build:ts && node scripts/calibrate-work-clock.mjs --fit-data $(CURDIR)/target/work-clock-fit
+	uv run scripts/fit_work_clock.py target/work-clock-fit --write
+	$(MAKE) format-rs
+
 .PHONY: dev-bench
 dev-bench: ## Run benchmarks to test with dev profile
 	cargo bench --profile dev -p monty-bench --bench main -- --test

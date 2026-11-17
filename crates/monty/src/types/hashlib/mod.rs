@@ -21,7 +21,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use monty_types::ResourceTracker;
+use monty_types::{ResourceTracker, WorkEvent};
 use serde::{Deserialize, Serialize};
 
 pub(crate) use self::blake2::{Blake2Params, Blake2b, Blake2s};
@@ -316,6 +316,7 @@ impl HashObject {
     /// large input cannot run far past the time limit; an input under one
     /// chunk never polls.
     pub(crate) fn update(&mut self, data: &[u8], tracker: &ResourceTracker) -> RunResult<()> {
+        tracker.charge(WorkEvent::HashByte, data.len() as u64);
         for (i, chunk) in data.chunks(POLL_CHUNK).enumerate() {
             if i > 0 {
                 tracker.check_time()?;

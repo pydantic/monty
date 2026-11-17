@@ -18,7 +18,7 @@ use std::{
     sync::OnceLock,
 };
 
-use monty_types::ResourceTracker;
+use monty_types::{ResourceTracker, WorkEvent};
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{FromPrimitive, One, Signed, ToPrimitive, Zero};
@@ -1111,12 +1111,12 @@ pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, vm: 
     let work = exponent.bits().saturating_mul(words.saturating_mul(words));
     // A square and a multiply per exponent bit, each with its reduction.
     let limbs = bigint_limbs(modulus_mag.bits());
-    charge_bigint_products(
+    heap.tracker.charge(
+        WorkEvent::ModPowProduct,
         exponent
             .bits()
             .saturating_mul(multiplication_products(limbs, limbs))
             .saturating_mul(3),
-        &heap.tracker,
     );
     let result = if work <= MODPOW_UNPOLLED_WORK {
         base.modpow(exponent, modulus_mag)

@@ -1,6 +1,6 @@
 use std::{borrow::Cow, fmt::Write, mem};
 
-use monty_types::MontyUuid;
+use monty_types::{MontyUuid, WorkEvent};
 
 use super::{Dict, LazyHeapSet, PyTrait, Type, TypeRef};
 use crate::{
@@ -24,12 +24,6 @@ use crate::{
     },
     value::{EitherStr, Value},
 };
-
-/// Work-clock units for resolving and binding a method on an instance, beyond the call itself.
-const METHOD_CALL_UNITS: u64 = 14;
-
-/// Work-clock units for allocating a bound method, beyond the attribute load that asked for it.
-const BOUND_METHOD_UNITS: u64 = 14;
 
 /// An instance of a user-defined class.
 ///
@@ -104,7 +98,7 @@ pub(crate) struct BoundMethod {
 impl BoundMethod {
     /// Allocates `func` bound to `instance`, taking both references.
     pub(crate) fn allocate(instance: Value, func: Value, heap: &Heap) -> Value {
-        heap.tracker.charge_work(BOUND_METHOD_UNITS);
+        heap.tracker.charge(WorkEvent::BoundMethod, 1);
         Value::Ref(heap.allocate(HeapData::BoundMethod(Self { instance, func })))
     }
 }
@@ -469,7 +463,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        vm.heap.tracker.charge_work(METHOD_CALL_UNITS);
+        vm.heap.tracker.charge(WorkEvent::MethodCall, 1);
         let attr_str = attr.as_str(vm.interns);
 
         // 1. An instance attribute shadows class methods; call it as-is (unbound).

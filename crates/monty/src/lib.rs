@@ -53,6 +53,14 @@ pub fn builtin_module_names() -> Vec<&'static str> {
     modules::StandardLib::names().collect()
 }
 
+/// Every opcode as `(byte, name, extra milli-units)`, for `make fit-work-clock` to label the
+/// counts `monty_types::work_profile` records and to regenerate the weights from.
+#[cfg(feature = "work-profile")]
+#[must_use]
+pub fn work_profile_opcodes() -> Vec<(u8, String, u64)> {
+    bytecode::work_profile_opcodes()
+}
+
 pub use crate::{
     dump_format::{
         DUMP_VERSION, Dump, DumpDecodeError, DumpEncodeError, DumpError, MIN_SUPPORTED_DUMP_VERSION, Session,

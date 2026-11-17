@@ -23,6 +23,8 @@ monty-types = { workspace = true }
 # it (the subprocess pool); without it a breach aborts, which is all a wasm
 # module can do — see the crate docs.
 exit-code = []
+# Counts allocations for `make fit-work-clock`; see `monty-types`' feature of the same name.
+work-profile = ["monty-types/work-profile"]
 
 [lints]
 workspace = true

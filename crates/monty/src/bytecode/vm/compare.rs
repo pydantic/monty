@@ -2,7 +2,9 @@
 
 use std::cmp::Ordering;
 
-use super::{SLOW_COMPARE_UNITS, VM};
+use monty_types::WorkEvent;
+
+use super::VM;
 use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -42,7 +44,7 @@ impl VM<'_> {
         }
 
         let this = self;
-        this.heap.tracker.charge_work(SLOW_COMPARE_UNITS);
+        this.heap.tracker.charge(WorkEvent::SlowCompare, 1);
         let rhs = this.pop();
         defer_drop!(rhs, this);
         let lhs = this.pop();
@@ -60,7 +62,7 @@ impl VM<'_> {
         }
 
         let this = self;
-        this.heap.tracker.charge_work(SLOW_COMPARE_UNITS);
+        this.heap.tracker.charge(WorkEvent::SlowCompare, 1);
         let rhs = this.pop();
         defer_drop!(rhs, this);
         let lhs = this.pop();
@@ -169,7 +171,7 @@ impl VM<'_> {
             op,
             CmpOperator::Lt | CmpOperator::LtE | CmpOperator::Gt | CmpOperator::GtE
         ) {
-            this.heap.tracker.charge_work(SLOW_COMPARE_UNITS);
+            this.heap.tracker.charge(WorkEvent::SlowCompare, 1);
         }
 
         let rhs = this.pop();

@@ -15,6 +15,7 @@
 use strum::IntoEnumIterator;
 use strum::{EnumIter, FromRepr};
 
+use super::op_weights::OPCODE_EXTRA_MILLI_UNITS;
 use crate::{bytecode::builder::RelativeOffset, expressions::CmpOperator};
 
 /// `FormatValue` flag: a format spec was pushed onto the stack ahead of the
@@ -854,47 +855,13 @@ impl Operand<'_> {
 }
 
 impl Opcode {
-    /// Work-clock units one execution of this instruction costs beyond the one every instruction is charged.
+    /// Thousandths of a unit this opcode is charged beyond an instruction's own.
     ///
-    /// A unit is a cheap instruction such as a local load; these are weighted by their measured
-    /// time in the wasm build, less that unit. The handlers of the weighted opcodes add it, with any
-    /// cost that grows with an operand or the receiver. `make calibrate-work-clock` shows drift.
-    #[must_use]
-    pub(crate) const fn extra_work(self) -> u32 {
-        match self {
-            Self::Assert => 1,
-            Self::ListAppend => 2,
-            Self::UnpackSequence | Self::CheckExcMatch | Self::ListToTuple => 3,
-            Self::BinaryPow
-            | Self::InplacePow
-            | Self::CallFunction
-            | Self::CallBuiltinFunction
-            | Self::BuildList
-            | Self::BuildDict
-            | Self::BuildSet
-            | Self::BuildSlice
-            | Self::FormatValue
-            | Self::BuildFString
-            | Self::GetIter
-            | Self::MakeClosure => 5,
-            Self::CallBuiltinType
-            | Self::BinarySubscr
-            | Self::StoreSubscr
-            | Self::BuildTuple
-            | Self::UnpackEx
-            | Self::ListExtend
-            | Self::SetExtend
-            | Self::DictMerge
-            | Self::DictUpdate
-            | Self::MethodDictMerge => 7,
-            Self::LoadAttr | Self::LoadAttrImport | Self::SetAdd | Self::DictSetItem => 8,
-            Self::CallAttr => 9,
-            Self::CompareIn | Self::CompareNotIn => 11,
-            Self::StoreAttr => 17,
-            Self::CallFunctionKw | Self::CallAttrKw | Self::Raise | Self::RaiseFrom | Self::Reraise => 29,
-            Self::CallFunctionExtended | Self::CallAttrExtended => 39,
-            _ => 0,
-        }
+    /// The weights are fitted by `make fit-work-clock`. Each handler adds its own as a constant;
+    /// a table lookup after every fetch would cost a fifth of the dispatch loop.
+    #[inline]
+    pub(crate) const fn extra_work(self) -> u64 {
+        OPCODE_EXTRA_MILLI_UNITS[self as usize] as u64
     }
 }
 

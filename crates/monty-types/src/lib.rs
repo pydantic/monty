@@ -22,6 +22,8 @@ mod type_checking;
 mod uuid;
 mod virtual_path;
 
+#[cfg(feature = "work-profile")]
+pub use crate::resource::work_profile;
 pub use crate::{
     builtins::BuiltinsFunctions,
     exceptions::{
@@ -53,7 +55,7 @@ pub use crate::{
     resource::{
         ALLOCATED_BYTES, ALLOCATION_OVERHEAD_BYTES, BASELINE_MEMORY, DEFAULT_GC_INTERVAL, DEFAULT_MAX_RECURSION_DEPTH,
         DEFAULT_MAX_SUSPENSIONS, ExecutionClock, LARGE_RESULT_THRESHOLD, LIVE_MEMORY, NANOS_PER_UNIT, OOM_EXIT_CODE,
-        ResourceError, ResourceLimits, ResourceTracker, TimeLimitScope, allocate_into_baseline,
+        ResourceError, ResourceLimits, ResourceTracker, TimeLimitScope, WorkEvent, allocate_into_baseline,
         memory_limit_with_headroom,
     },
     results::{ExtFunctionResult, NameLookupResult},

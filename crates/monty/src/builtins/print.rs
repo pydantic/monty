@@ -1,6 +1,6 @@
 //! Implementation of the print() builtin function.
 
-use monty_types::PrintStream;
+use monty_types::{PrintStream, WorkEvent};
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -41,6 +41,7 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let end_str = extract_string_kwarg(end, "end", vm)?;
     let stream = print_stream(file, vm)?;
 
+    vm.heap.tracker.charge(WorkEvent::Print, 1);
     let mut first = true;
     for value in objects.as_slice() {
         if first {
@@ -54,10 +55,9 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         defer_drop!(s, vm);
         // Resolve the `str` `Value` against the heap/interns tables directly so
         // the `&str` borrow stays disjoint from the `&mut vm.print_writer` write.
-        vm.print_writer.write(
-            stream,
-            s.as_str_heap(vm.heap, vm.interns).expect("py_str returns str").into(),
-        )?;
+        let text = s.as_str_heap(vm.heap, vm.interns).expect("py_str returns str");
+        vm.heap.tracker.charge(WorkEvent::PrintByte, text.len() as u64);
+        vm.print_writer.write(stream, text.into())?;
     }
 
     if let Some(end) = end_str {
