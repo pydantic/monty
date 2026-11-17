@@ -12,13 +12,13 @@ pub static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 /// Execution time one unit of work stands for on the work clock.
 ///
-/// A unit is one bytecode instruction. The value is the median `make calibrate-work-clock` measures
-/// for the wasm build, so native builds report about twice the time they took. Fixed, so durations
-/// compare across builds and dumps.
-pub const NANOS_PER_UNIT: u64 = 10;
+/// A unit is one cheap bytecode instruction, such as a local load; costlier ones are charged several.
+/// The value is the median `make calibrate-work-clock` measures for the wasm build, so native builds
+/// report about twice the time they took. Fixed, so durations compare across builds and dumps.
+pub const NANOS_PER_UNIT: u64 = 5;
 
 /// Bytes allocated per unit charged, so work that builds a result without its own charge still costs.
-const BYTES_PER_UNIT: usize = 32;
+const BYTES_PER_UNIT: usize = 16;
 
 /// Counts the work of one execution window and converts it to execution time.
 ///

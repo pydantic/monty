@@ -85,7 +85,8 @@ fn checkpoint_raises_once_the_budget_is_spent() {
 
 #[test]
 fn native_polls_charge_a_loop_interval() {
-    let interval = ResourceTracker::LOOP_CHECK_INTERVAL as u64;
+    // two units per item polled for
+    let interval = ResourceTracker::LOOP_CHECK_INTERVAL as u64 * 2;
     let tracker = work_tracker(None);
     tracker.on_execution_start();
     for i in 0..ResourceTracker::LOOP_CHECK_INTERVAL * 3 {

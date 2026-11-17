@@ -264,8 +264,8 @@ fn encode(obj: &Value, config: &JsonDumpsConfig, default: &Value, vm: &mut VM<'_
         vm,
     };
     encoder.serialize_value(obj, 0)?;
-    // Encoding costs about half a unit per byte written.
-    vm.heap.tracker.charge_work(output.len() as u64 / 2);
+    // Encoding costs about a unit per byte written.
+    vm.heap.tracker.charge_work(output.len() as u64);
     Ok(output)
 }
 

@@ -247,7 +247,7 @@ impl<'v, 'h> Comparer<'v, 'h> {
 
 /// Work charged for a comparison of heap values, which recurses into them and costs
 /// several times the inline pairs the caller's poll already charges for.
-const RICH_COMPARISON_UNITS: u64 = 4;
+const RICH_COMPARISON_UNITS: u64 = 8;
 
 /// Python's `a < b`, the only comparison the sort makes.
 ///

@@ -25,6 +25,9 @@ use crate::{
     value::{EitherStr, Value},
 };
 
+/// Work-clock units for resolving and binding a method on an instance, beyond the call itself.
+const METHOD_CALL_UNITS: u64 = 14;
+
 /// An instance of a user-defined class.
 ///
 /// Holds a reference to its [`Class`](super::Class) (whose `HeapId` is the type
@@ -462,6 +465,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        vm.heap.tracker.charge_work(METHOD_CALL_UNITS);
         let attr_str = attr.as_str(vm.interns);
 
         // 1. An instance attribute shadows class methods; call it as-is (unbound).

@@ -214,7 +214,8 @@ subprocesses:
     CPU mode requires a finite `PoolConfig::request_timeout`; remote clients do not supervise CPU locally.
     `ExecutionClock::Work` reads no clock: the VM and native operations charge units through
     `ResourceTracker::charge_work`, `monty-alloc` counts allocated bytes as a floor, and the tracker converts units at
-    `NANOS_PER_UNIT`. A native operation whose cost is not its poll count needs its own charge;
+    `NANOS_PER_UNIT`. A unit is a cheap instruction; `Opcode::extra_work` weights the costlier ones, which their
+    handlers add. A native operation whose cost is not its poll count needs its own charge;
     `make calibrate-work-clock` shows which do, and `calibration_scripts_cost_fixed_units` pins the totals.
     Pools arm no wall backstop for it. WebAssembly workers accept wall and work mode.
     Snapshots retain their clock; the worker rejects a load configured with another clock.
