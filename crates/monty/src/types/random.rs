@@ -27,9 +27,18 @@ use crate::{
         random::{RandomFunctions, random_dispatch},
     },
     py_value::PyValue,
-    types::{LazyHeapSet, PyTrait, Type, TypeRef, py_trait::PyObjectIdentity},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef, class_def::ClassDef, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
 };
+
+impl ClassDef for Random {
+    const NAME: &'static str = "random.Random";
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+}
 
 /// Words in the MT19937 state vector.
 const N: usize = 624;

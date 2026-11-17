@@ -11,8 +11,13 @@ use crate::{
     exception_private::RunError,
     heap::{ContainsHeap, DropWithContext, HeapId},
     intern::FunctionId,
+    types::class_def::ClassDef,
     value::Value,
 };
+
+impl ClassDef for Coroutine {
+    const NAME: &'static str = "coroutine";
+}
 
 /// Unique identifier for external function calls.
 ///

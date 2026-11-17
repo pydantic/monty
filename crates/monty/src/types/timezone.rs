@@ -22,12 +22,30 @@ use crate::{
     intern::{Interns, StaticStrings},
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
+        class_def::ClassDef,
         str::{StringRepr, allocate_string},
         timedelta,
         timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE},
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for TimeZone {
+    const NAME: &'static str = "datetime.timezone";
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+
+    fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+        Some(match attr.static_string(vm.interns)? {
+            StaticStrings::Utc => vm.heap.get_timezone_utc(),
+            StaticStrings::Min => allocate_offset(-MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
+            StaticStrings::Max => allocate_offset(MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
+            _ => return None,
+        })
+    }
+}
 
 /// Magnitude of the `timezone.min` / `timezone.max` class constants: 23:59.
 ///
@@ -227,16 +245,6 @@ pub(crate) fn utcoffset_value(offset_seconds: Option<i32>, heap: &Heap) -> Value
         None => Value::None,
         Some(offset_seconds) => timedelta::allocate_micros(i128::from(offset_seconds) * MICROSECONDS_PER_SECOND, heap),
     }
-}
-
-/// `timezone.utc`, `timezone.min` and `timezone.max`.
-pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    Some(match attr.static_string(vm.interns)? {
-        StaticStrings::Utc => vm.heap.get_timezone_utc(),
-        StaticStrings::Min => allocate_offset(-MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
-        StaticStrings::Max => allocate_offset(MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
-        _ => return None,
-    })
 }
 
 /// Allocates an unnamed `timezone` for an offset known to be in range.

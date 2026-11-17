@@ -28,6 +28,7 @@ use crate::{
     py_value::PyValue,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type, TypeRef,
+        class_def::ClassDef,
         date::{self, StrftimeArgs},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
         time::{self, Time, TimeSpec},
@@ -35,6 +36,36 @@ use crate::{
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for DateTime {
+    const NAME: &'static str = "datetime.datetime";
+    const BASES: &'static [Type] = &[Type::Date];
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        init(vm, args).map(CallResult::Value)
+    }
+
+    fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+        Some(match attr.static_string(vm.interns)? {
+            StaticStrings::Min => allocate_naive(1, 1, 1, 0, 0, 0, 0, vm.heap),
+            StaticStrings::Max => allocate_naive(9999, 12, 31, 23, 59, 59, 999_999, vm.heap),
+            StaticStrings::Resolution => timedelta::allocate_micros(1, vm.heap),
+            _ => return None,
+        })
+    }
+
+    fn class_method(attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> Result<RunResult<CallResult>, ArgValues> {
+        Ok(match attr.static_string(vm.interns) {
+            Some(StaticStrings::Now) => class_now(vm, args),
+            Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
+            Some(StaticStrings::Strptime) => class_strptime(vm.heap, args, vm.interns).map(CallResult::Value),
+            Some(StaticStrings::Fromisoformat) => class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value),
+            Some(StaticStrings::Combine) => class_combine(vm, args).map(CallResult::Value),
+            _ => return Err(args),
+        })
+    }
+}
 
 /// Number of microseconds in a single second.
 const DATE_OUT_OF_RANGE: &str = "date value out of range";
@@ -295,32 +326,6 @@ struct DatetimeInitArgs {
     tzinfo: Value,
     #[from_args(kw_only, default = 0)]
     fold: i32,
-}
-
-/// `datetime.min`, `datetime.max` and `datetime.resolution`.
-pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    Some(match attr.static_string(vm.interns)? {
-        StaticStrings::Min => allocate_naive(1, 1, 1, 0, 0, 0, 0, vm.heap),
-        StaticStrings::Max => allocate_naive(9999, 12, 31, 23, 59, 59, 999_999, vm.heap),
-        StaticStrings::Resolution => timedelta::allocate_micros(1, vm.heap),
-        _ => return None,
-    })
-}
-
-/// `datetime.now()`, `fromtimestamp()`, `strptime()`, `fromisoformat()` and `combine()`.
-pub(crate) fn class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    Ok(match attr.static_string(vm.interns) {
-        Some(StaticStrings::Now) => class_now(vm, args),
-        Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
-        Some(StaticStrings::Strptime) => class_strptime(vm.heap, args, vm.interns).map(CallResult::Value),
-        Some(StaticStrings::Fromisoformat) => class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value),
-        Some(StaticStrings::Combine) => class_combine(vm, args).map(CallResult::Value),
-        _ => return Err(args),
-    })
 }
 
 /// Reads `datetime.now(tz=None)` from the session clock, preserving `tz` identity.

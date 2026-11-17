@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use crate::{
+    args::ArgValues,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -24,11 +25,19 @@ use crate::{
     },
     intern::StaticStrings,
     types::{
-        LazyHeapSet, PyTrait, Type, TypeRef, generic_alias::repr_type_arg, list::repr_should_truncate,
-        tuple::allocate_tuple,
+        LazyHeapSet, PyTrait, Type, TypeRef, class_def::ClassDef, generic_alias::repr_type_arg,
+        list::repr_should_truncate, tuple::allocate_tuple, r#type::union_init,
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
+
+impl ClassDef for Union {
+    const NAME: &'static str = "typing.Union";
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        union_init(vm, args).map(CallResult::Value)
+    }
+}
 
 /// A union of two or more members, such as `int | None`.
 ///

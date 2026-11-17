@@ -40,12 +40,28 @@ use crate::{
     },
     types::{
         Class, Dict, Module, PyTrait, TupleVec, Type, TypeRef, allocate_tuple,
+        class_def::ClassDef,
         generic_alias::AliasOrigin,
         host_class::host_class_type,
         instance::{class_defines, namespace_member},
     },
     value::{Marker, Value},
 };
+
+impl ClassDef for DataclassField {
+    const NAME: &'static str = "Field";
+}
+
+impl ClassDef for DataclassParams {
+    const NAME: &'static str = "_DataclassParams";
+}
+
+/// Defines the class of the `dataclasses.MISSING` marker.
+pub(crate) struct MissingTypeClass;
+
+impl ClassDef for MissingTypeClass {
+    const NAME: &'static str = "dataclasses._MISSING_TYPE";
+}
 
 /// `dataclasses` module functions — each variant is a Python-visible callable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]

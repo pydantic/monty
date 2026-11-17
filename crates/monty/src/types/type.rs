@@ -1,7 +1,7 @@
 //! Behaviour shared by every native [`Type`]: naming, construction and
 //! class-level attribute access, driven by the [`TypeDef`](super::native::TypeDef) table.
 //!
-//! The enum itself and the per-type facts live in [`super::native`]; this
+//! The enum and registry live in [`super::native`]; each class owns its definition. This
 //! module holds the generic code that reads them, plus the constructors of the
 //! primitive types that have no module of their own.
 
@@ -9,7 +9,6 @@ use std::fmt;
 
 use num_bigint::BigInt;
 
-use super::native::Constructor;
 pub use super::native::Type;
 use crate::{
     args::{ArgValues, FromArgs},
@@ -23,12 +22,52 @@ use crate::{
     types::{
         GenericAlias, LongInt, PyTrait, allocate_tuple,
         bytes::bytes_repr,
+        class_def::ClassDef,
         instance::BoundMethod,
         long_int::INT_MAX_STR_DIGITS,
         str::{StringRepr, allocate_string},
     },
     value::{EitherStr, Value},
 };
+
+/// Defines `bool` for immediate boolean values.
+pub(crate) struct BoolClass;
+
+impl ClassDef for BoolClass {
+    const NAME: &'static str = "bool";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASES: &'static [Type] = &[Type::Int];
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        bool_init(vm, args).map(CallResult::Value)
+    }
+}
+
+/// Defines `int` for both immediate integers and heap-allocated big integers.
+pub(crate) struct IntClass;
+
+impl ClassDef for IntClass {
+    const NAME: &'static str = "int";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        int_init(vm, args).map(CallResult::Value)
+    }
+}
+
+/// Defines `float` for immediate floating-point values.
+pub(crate) struct FloatClass;
+
+impl ClassDef for FloatClass {
+    const NAME: &'static str = "float";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        float_init(vm, args).map(CallResult::Value)
+    }
+}
 
 impl Type {
     /// The name CPython's `__name__` reports: [`name`](Self::name) with any
@@ -92,12 +131,9 @@ impl Type {
     /// other name is looked up as a plain attribute and the result called, so
     /// `list.__name__()` raises `'str' object is not callable`.
     pub(crate) fn call_class_method(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        let args = match self.def().class_method {
-            Some(class_method) => match class_method(attr, args, vm) {
-                Ok(result) => return result,
-                Err(args) => args,
-            },
-            None => args,
+        let args = match (self.def().class_method)(attr, args, vm) {
+            Ok(result) => return result,
+            Err(args) => args,
         };
         if self.has_class_getitem() && attr.static_string(vm.interns) == Some(StaticStrings::ClassGetitem) {
             // `list.__class_getitem__(int)` is `list[int]`; the error names the
@@ -150,8 +186,7 @@ impl Type {
     /// `False` where CPython caches (see limitations/datetime.md).
     pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
         // Native ancestors' members are inherited too: `int.__init__` is `object`'s.
-        self.mro()
-            .find_map(|ty| ty.def().class_attr.and_then(|class_attr| class_attr(attr, vm)))
+        self.mro().find_map(|ty| (ty.def().class_attr)(attr, vm))
     }
 
     /// The `AttributeError` for a name missing from this type object.
@@ -166,15 +201,7 @@ impl Type {
     ///
     /// Iterator acquisition may suspend in user code; other constructors complete natively.
     pub(crate) fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-        match self.def().ctor {
-            Constructor::Value(new) => new(vm, args).map(CallResult::Value),
-            Constructor::Call(new) => new(vm, args),
-            Constructor::Typed(new) => new(self, vm, args).map(CallResult::Value),
-            Constructor::None => {
-                args.drop_with(vm.heap);
-                Err(ExcType::type_error_not_callable(self.name()))
-            }
-        }
+        (self.def().construct)(vm, args)
     }
 }
 

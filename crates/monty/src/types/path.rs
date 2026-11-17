@@ -26,11 +26,29 @@ use crate::{
     os_dispatch::{build_path_os_call, is_path_os_method, value_as_path_str},
     types::{
         LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_tuple,
+        class_def::ClassDef,
         dir_scan::{glob_call, walk_call},
         str::{StringRepr, allocate_string},
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for Path {
+    const NAME: &'static str = "PosixPath";
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+
+    fn class_method(attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> Result<RunResult<CallResult>, ArgValues> {
+        if attr.static_string(vm.interns) == Some(StaticStrings::Cwd) {
+            Ok(class_cwd(vm, args).map(CallResult::Value))
+        } else {
+            Err(args)
+        }
+    }
+}
 
 /// Python `pathlib.Path` object representing a filesystem path.
 ///
@@ -277,19 +295,6 @@ impl Path {
             }
         };
         Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
-    }
-}
-
-/// `Path.cwd()`.
-pub(crate) fn class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::Cwd) {
-        Ok(class_cwd(vm, args).map(CallResult::Value))
-    } else {
-        Err(args)
     }
 }
 

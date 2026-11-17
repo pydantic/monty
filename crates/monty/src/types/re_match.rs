@@ -22,10 +22,16 @@ use crate::{
     intern::StaticStrings,
     types::{
         Dict, LazyHeapSet, PyTrait, Type, TypeRef, allocate_tuple,
+        class_def::ClassDef,
         str::{allocate_string, string_repr_fmt},
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for ReMatch {
+    const NAME: &'static str = "re.Match";
+    const CLASS_GETITEM: bool = true;
+}
 
 /// A regex match result, storing captured groups and positions.
 ///

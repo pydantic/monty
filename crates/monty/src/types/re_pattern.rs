@@ -28,12 +28,19 @@ use crate::{
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource_checks::check_estimated_size,
     types::{
-        LazyHeapSet, List, PyTrait, ReMatch, Type, TypeRef, allocate_tuple, re_syntax,
+        LazyHeapSet, List, PyTrait, ReMatch, Type, TypeRef, allocate_tuple,
+        class_def::ClassDef,
+        re_syntax,
         str::{allocate_string, string_repr_fmt},
         tuple::TupleVec,
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
+
+impl ClassDef for RePattern {
+    const NAME: &'static str = "re.Pattern";
+    const CLASS_GETITEM: bool = true;
+}
 
 /// A compiled regular expression pattern.
 ///

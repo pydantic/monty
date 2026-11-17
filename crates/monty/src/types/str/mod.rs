@@ -34,11 +34,39 @@ use crate::{
     string_builder::StringBuilder,
     types::{
         LazyHeapSet, Type, TypeRef,
+        class_def::ClassDef,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
     value::{EitherStr, VALUE_SIZE, Value, eq_str},
 };
+
+impl ClassDef for HeapStr {
+    const NAME: &'static str = "str";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+    const SEQUENCE_REPEAT: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        PyStr::init(vm, args).map(CallResult::Value)
+    }
+}
+
+/// Defines ASCII iteration over [`StringIterator`] storage.
+pub(crate) struct StrAsciiIteratorClass;
+
+impl ClassDef for StrAsciiIteratorClass {
+    const NAME: &'static str = "str_ascii_iterator";
+    const ITERATOR: bool = true;
+}
+
+/// Defines non-ASCII iteration over [`StringIterator`] storage.
+pub(crate) struct StrIteratorClass;
+
+impl ClassDef for StrIteratorClass {
+    const NAME: &'static str = "str_iterator";
+    const ITERATOR: bool = true;
+}
 
 /// A string view that preserves Python identity.
 ///

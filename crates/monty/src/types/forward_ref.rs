@@ -31,11 +31,20 @@ use crate::{
     modules::{ModuleFunctions, StandardLib, typing},
     types::{
         Dict, LazyHeapSet, PyTrait, Type, TypeRef, Union,
+        class_def::ClassDef,
         generic_alias::repr_type_arg,
         str::{StringRepr, allocate_string},
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
+
+impl ClassDef for ForwardRef {
+    const NAME: &'static str = "annotationlib.ForwardRef";
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+}
 
 /// `ForwardRef.evaluate()`: the plain `VALUE` evaluation raises as `eval()` would;
 /// `FORWARDREF` returns the reference itself when the text cannot be evaluated or

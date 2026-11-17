@@ -5,14 +5,27 @@ use std::mem;
 use super::object::builtin_object_init_subclass;
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
-    types::{Class, Dict, List, OwnedTypeRef, PyTrait, Type, TypeRef, type_ref::c3_merge},
+    types::{Class, Dict, List, OwnedTypeRef, PyTrait, Type, TypeRef, class_def::ClassDef, type_ref::c3_merge},
     value::Value,
 };
+
+/// Defines the metaclass of native and Python-defined classes.
+pub(crate) struct TypeClass;
+
+impl ClassDef for TypeClass {
+    const NAME: &'static str = "type";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const CLASS_GETITEM: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        builtin_type(vm, args).map(CallResult::Value)
+    }
+}
 
 /// Implementation of the type() builtin function.
 ///

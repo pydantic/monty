@@ -170,6 +170,15 @@ impl FromStr for Builtins {
 pub use monty_types::BuiltinsFunctions;
 pub(crate) use type_::type_of_ref;
 
+use crate::types::class_def::ClassDef;
+
+/// Defines the shared class of builtin functions and methods.
+pub(crate) struct BuiltinFunctionClass;
+
+impl ClassDef for BuiltinFunctionClass {
+    const NAME: &'static str = "builtin_function_or_method";
+}
+
 pub(crate) trait BuiltinsFunctionsExt: Sized {
     fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult>;
 }

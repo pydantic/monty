@@ -35,12 +35,61 @@ use crate::{
     intern::StaticStrings,
     types::{
         Dict, Module, NamedTupleClass, PyTrait, Type,
+        class_def::ClassDef,
         dict::{DictKind, dict_fromkeys},
         iter::collect_owned_iterable,
         str::{StringRepr, str_isidentifier},
     },
     value::{EitherStr, Value},
 };
+
+/// Defines `collections.defaultdict` over [`Dict`] storage.
+pub(crate) struct DefaultDictClass;
+
+impl ClassDef for DefaultDictClass {
+    const NAME: &'static str = "collections.defaultdict";
+    const BASES: &'static [Type] = &[Type::Dict];
+    const BASETYPE: bool = true;
+    const CLASS_GETITEM: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        defaultdict_init(vm, args).map(CallResult::Value)
+    }
+
+    fn class_method(attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> Result<RunResult<CallResult>, ArgValues> {
+        if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
+            Ok(dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value))
+        } else {
+            Err(args)
+        }
+    }
+}
+
+/// Defines `collections.Counter` over [`Dict`] storage.
+pub(crate) struct CounterClass;
+
+impl ClassDef for CounterClass {
+    const NAME: &'static str = "Counter";
+    const BASES: &'static [Type] = &[Type::Dict];
+    const BASETYPE: bool = true;
+    const CLASS_GETITEM: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        counter_init(vm, args).map(CallResult::Value)
+    }
+
+    fn class_method(attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> Result<RunResult<CallResult>, ArgValues> {
+        if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
+            args.drop_with(vm);
+            Ok(Err(ExcType::not_implemented(
+                "Counter.fromkeys() is undefined.  Use Counter(iterable) instead.",
+            )
+            .into()))
+        } else {
+            Err(args)
+        }
+    }
+}
 
 /// Creates the `collections` module.
 ///
@@ -80,37 +129,6 @@ pub(crate) enum CollectionsFunctions {
 pub(super) fn call(vm: &mut VM<'_>, function: CollectionsFunctions, args: ArgValues) -> RunResult<Value> {
     match function {
         CollectionsFunctions::Namedtuple => namedtuple(vm, args),
-    }
-}
-
-/// `Counter.fromkeys`, which CPython deliberately disables.
-pub(crate) fn counter_class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
-        args.drop_with(vm);
-        Ok(Err(ExcType::not_implemented(
-            "Counter.fromkeys() is undefined.  Use Counter(iterable) instead.",
-        )
-        .into()))
-    } else {
-        Err(args)
-    }
-}
-
-/// `defaultdict.fromkeys(...)` builds `cls()`, a defaultdict with no factory,
-/// matching CPython's inherited `dict.fromkeys` classmethod.
-pub(crate) fn defaultdict_class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
-        Ok(dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value))
-    } else {
-        Err(args)
     }
 }
 

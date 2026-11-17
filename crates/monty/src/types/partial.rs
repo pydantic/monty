@@ -26,9 +26,22 @@ use crate::{
     },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
-    types::{Dict, LazyHeapSet, PyTrait, Type, TypeRef, list::repr_should_truncate, tuple::allocate_tuple},
+    types::{
+        Dict, LazyHeapSet, PyTrait, Type, TypeRef, class_def::ClassDef, list::repr_should_truncate,
+        tuple::allocate_tuple,
+    },
     value::{EitherStr, VALUE_SIZE, Value},
 };
+
+impl ClassDef for Partial {
+    const NAME: &'static str = "functools.partial";
+    const BASETYPE: bool = true;
+    const CLASS_GETITEM: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+}
 
 /// A callable that prepends bound arguments to `func` on every call.
 ///

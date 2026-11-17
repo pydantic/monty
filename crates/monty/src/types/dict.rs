@@ -34,6 +34,7 @@ use crate::{
     },
     types::{
         Type, TypeRef,
+        class_def::ClassDef,
         hash_table::{
             CloneTableEntry, Live, PyHashTable, Slot, TableCursor, TableEntry, TableProbe, TableScan, TableSource,
             TableWalk,
@@ -41,6 +42,40 @@ use crate::{
     },
     value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };
+
+impl ClassDef for Dict {
+    const NAME: &'static str = "dict";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+    const CLASS_GETITEM: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+
+    fn class_method(attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> Result<RunResult<CallResult>, ArgValues> {
+        if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
+            Ok(dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value))
+        } else {
+            Err(args)
+        }
+    }
+}
+
+impl ClassDef for DictKeyIterator {
+    const NAME: &'static str = "dict_keyiterator";
+    const ITERATOR: bool = true;
+}
+
+impl ClassDef for DictItemIterator {
+    const NAME: &'static str = "dict_itemiterator";
+    const ITERATOR: bool = true;
+}
+
+impl ClassDef for DictValueIterator {
+    const NAME: &'static str = "dict_valueiterator";
+    const ITERATOR: bool = true;
+}
 
 /// Python dict type preserving insertion order.
 ///
@@ -2004,19 +2039,6 @@ impl<'de> serde::Deserialize<'de> for Dict {
             contains_refs: fields.contains_refs,
             kind: fields.kind,
         })
-    }
-}
-
-/// `dict.fromkeys(...)` called on the type, so the result is a plain dict.
-pub(crate) fn dict_class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
-        Ok(dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value))
-    } else {
-        Err(args)
     }
 }
 

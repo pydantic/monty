@@ -10,7 +10,7 @@ use std::mem;
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
     builtins::Builtins,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HEAP_ENTRY_SIZE, HeapData},
@@ -19,20 +19,216 @@ use crate::{
     resource_checks::check_estimated_size,
     types::{
         ItertoolsIter, Module, TupleVec, Type, allocate_tuple,
+        class_def::ClassDef,
         iter::collect_owned_iterable,
         itertools::{
-            Accumulate, Batched, Chain, Combinations, Compress, Count, Cycle, DropWhile, FilterFalse, GroupBy, Islice,
-            Pairwise, Permutations, Product, Repeat, StarMap, TakeWhile, ZipLongest, tee,
+            Accumulate, Batched, Chain, Combinations, Compress, Count, Cycle, DropWhile, FilterFalse, GroupBy, Grouper,
+            Islice, Pairwise, Permutations, Product, Repeat, StarMap, TakeWhile, Tee, TeeBlock, ZipLongest, tee,
         },
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
+impl ClassDef for Count {
+    const NAME: &'static str = "itertools.count";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_count(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for Repeat {
+    const NAME: &'static str = "itertools.repeat";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_repeat(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for Pairwise {
+    const NAME: &'static str = "itertools.pairwise";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_pairwise(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for Compress {
+    const NAME: &'static str = "itertools.compress";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_compress(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for Islice {
+    const NAME: &'static str = "itertools.islice";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_islice(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for Chain {
+    const NAME: &'static str = "itertools.chain";
+    const CLASS_GETITEM: bool = true;
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_chain(vm, args).map(CallResult::Value)
+    }
+
+    fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+        (attr.static_string(vm.interns) == Some(StaticStrings::FromIterable)).then_some(Value::ModuleFunction(
+            ModuleFunctions::Itertools(ItertoolsFunctions::ChainFromIterable),
+        ))
+    }
+}
+
+impl ClassDef for Cycle {
+    const NAME: &'static str = "itertools.cycle";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_cycle(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for TakeWhile {
+    const NAME: &'static str = "itertools.takewhile";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_takewhile(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for DropWhile {
+    const NAME: &'static str = "itertools.dropwhile";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_dropwhile(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for FilterFalse {
+    const NAME: &'static str = "itertools.filterfalse";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_filterfalse(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for StarMap {
+    const NAME: &'static str = "itertools.starmap";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_starmap(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for Accumulate {
+    const NAME: &'static str = "itertools.accumulate";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_accumulate(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for Batched {
+    const NAME: &'static str = "itertools.batched";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_batched(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for ZipLongest {
+    const NAME: &'static str = "itertools.zip_longest";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_zip_longest(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for Combinations {
+    const NAME: &'static str = "itertools.combinations";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_combinations(vm, args).map(CallResult::Value)
+    }
+}
+
+/// Defines the replacement variant over [`Combinations`] storage.
+pub(crate) struct CombinationsWithReplacementClass;
+
+impl ClassDef for CombinationsWithReplacementClass {
+    const NAME: &'static str = "itertools.combinations_with_replacement";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_combinations_with_replacement(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for Permutations {
+    const NAME: &'static str = "itertools.permutations";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_permutations(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for Product {
+    const NAME: &'static str = "itertools.product";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_product(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for GroupBy {
+    const NAME: &'static str = "itertools.groupby";
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        call_groupby(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for Grouper {
+    const NAME: &'static str = "itertools._grouper";
+    const ITERATOR: bool = true;
+}
+
+impl ClassDef for Tee {
+    const NAME: &'static str = "itertools._tee";
+    const ITERATOR: bool = true;
+}
+
+impl ClassDef for TeeBlock {
+    const NAME: &'static str = "itertools._tee_dataobject";
+}
+
 /// The `itertools` callables that are not type objects.
 ///
 /// CPython models all but one of this module's names as classes, and so does
 /// Monty — `itertools.count` IS `Type::ItertoolsCount`, constructed through
-/// [`construct`]. Only `tee` is a plain function there, and `from_iterable` is
+/// [`ClassDef::construct`]. Only `tee` is a plain function there, and `from_iterable` is
 /// reached through the `chain` type rather than the module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
@@ -94,50 +290,6 @@ pub(crate) fn call(vm: &mut VM<'_>, function: ItertoolsFunctions, args: ArgValue
     match function {
         ItertoolsFunctions::Tee => call_tee(vm, args),
         ItertoolsFunctions::ChainFromIterable => call_chain_from_iterable(vm, args),
-    }
-}
-
-/// `chain.from_iterable`, the one attribute an `itertools` type carries. Handed
-/// out as a value so it can be bound and called later, not only called in place.
-pub(crate) fn chain_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    (attr.static_string(vm.interns) == Some(StaticStrings::FromIterable)).then_some(Value::ModuleFunction(
-        ModuleFunctions::Itertools(ItertoolsFunctions::ChainFromIterable),
-    ))
-}
-
-/// Constructs one of the module's iterators, reached through [`Type::call`].
-///
-/// # Panics
-/// Panics on a type this module does not own, which `Type::call` never passes.
-pub(crate) fn construct(type_: Type, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    match type_ {
-        Type::ItertoolsCount => call_count(vm, args),
-        Type::ItertoolsRepeat => call_repeat(vm, args),
-        Type::ItertoolsPairwise => call_pairwise(vm, args),
-        Type::ItertoolsCompress => call_compress(vm, args),
-        Type::ItertoolsIslice => call_islice(vm, args),
-        Type::ItertoolsChain => call_chain(vm, args),
-        Type::ItertoolsCycle => call_cycle(vm, args),
-        Type::ItertoolsTakeWhile => call_takewhile(vm, args),
-        Type::ItertoolsDropWhile => call_dropwhile(vm, args),
-        Type::ItertoolsFilterFalse => call_filterfalse(vm, args),
-        Type::ItertoolsStarMap => call_starmap(vm, args),
-        Type::ItertoolsAccumulate => call_accumulate(vm, args),
-        Type::ItertoolsBatched => call_batched(vm, args),
-        Type::ItertoolsZipLongest => call_zip_longest(vm, args),
-        Type::ItertoolsCombinations => call_combinations(vm, args),
-        Type::ItertoolsCombinationsWithReplacement => call_combinations_with_replacement(vm, args),
-        Type::ItertoolsPermutations => call_permutations(vm, args),
-        Type::ItertoolsProduct => call_product(vm, args),
-        Type::ItertoolsGroupBy => call_groupby(vm, args),
-        // Exposed under their CPython names so `type()` and `isinstance()`
-        // work, but not constructible here — CPython builds them from the
-        // arguments its internals use. See `limitations/itertools.md`.
-        Type::ItertoolsGrouper | Type::ItertoolsTee | Type::ItertoolsTeeDataObject => {
-            args.drop_with(vm);
-            Err(ExcType::type_error_not_callable(type_.name()))
-        }
-        other => unreachable!("{other} is not an itertools type"),
     }
 }
 

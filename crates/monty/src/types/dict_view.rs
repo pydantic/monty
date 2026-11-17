@@ -11,11 +11,24 @@ use crate::{
     intern::StaticStrings,
     types::{
         Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, TypeRef, allocate_tuple,
+        class_def::ClassDef,
         dict::{DictItemIterator, DictKeyIterator, DictValueIterator},
         iter::checked_preallocation_hint,
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for DictKeysView {
+    const NAME: &'static str = "dict_keys";
+}
+
+impl ClassDef for DictItemsView {
+    const NAME: &'static str = "dict_items";
+}
+
+impl ClassDef for DictValuesView {
+    const NAME: &'static str = "dict_values";
+}
 
 /// Shared accessors for heap-backed dictionary view objects.
 ///

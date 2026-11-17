@@ -6,7 +6,13 @@
 
 use monty_types::OsFunctionCall;
 
-use crate::bytecode::CallResult;
+use crate::{bytecode::CallResult, types::class_def::ClassDef};
+
+impl ClassDef for Property {
+    const NAME: &'static str = "property";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+}
 
 /// Property descriptor for computed attributes (mirrors Python's descriptor
 /// protocol — accessing the property invokes its getter).

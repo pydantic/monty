@@ -24,10 +24,28 @@ use crate::{
     sorting::parse_and_sort,
     types::{
         LazyHeapSet, Type, TypeRef,
+        class_def::ClassDef,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
+
+impl ClassDef for List {
+    const NAME: &'static str = "list";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+    const CLASS_GETITEM: bool = true;
+    const SEQUENCE_REPEAT: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for ListIterator {
+    const NAME: &'static str = "list_iterator";
+    const ITERATOR: bool = true;
+}
 
 /// Python list type, wrapping a Vec of Values.
 ///
