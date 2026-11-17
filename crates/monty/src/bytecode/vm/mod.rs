@@ -75,6 +75,16 @@ use crate::{
     value::{EitherStr, Value},
 };
 
+/// How often (in instructions) the dispatch loop runs its periodic work: the
+/// limit check, the work clock's charge and the GC-scheduling probe.
+///
+/// On the wall and CPU clocks the checkpoint reads the clock when limits are
+/// armed, so this sets the entire cost of limit enforcement — ~40% on tight
+/// loops at 10, ~2% at u8::MAX (see the `_limits` benchmarks) — while detection
+/// latency stays sub-µs. Native ops poll internally and the host-turn epilogue
+/// re-checks, so only this dispatch cadence rides on it.
+const CHECK_INTERVAL: u8 = u8::MAX;
+
 /// Result of executing Await opcode.
 ///
 /// Indicates what the VM should do after awaiting a value:
@@ -1269,7 +1279,7 @@ impl<'h> VM<'h> {
     #[inline(never)]
     fn dispatch_checkpoint(&mut self, check_limits: bool, poll_print: bool) -> Result<(), RunError> {
         if check_limits {
-            self.heap.tracker.check_memory_time()?;
+            self.heap.tracker.checkpoint(CHECK_INTERVAL.into())?;
         }
         if self.heap.should_gc() {
             self.run_gc();
@@ -1294,30 +1304,31 @@ impl<'h> VM<'h> {
     /// `resume_with_resolved_futures`) so the execution clock is accounted;
     /// only VM-internal re-entry calls this raw loop.
     ///
+    /// The countdown is per-`run()`, so `evaluate_function` re-entry restarts
+    /// it — a native loop calling a shorter callback reaches no checkpoint at
+    /// all and must poll the tracker itself. The instructions run since the
+    /// last checkpoint are charged to the work clock on the way out, so runs
+    /// too short to reach one still cost work.
+    fn run(&mut self) -> Result<FrameExit, RunError> {
+        let mut countdown = CHECK_INTERVAL;
+        let result = self.run_loop(&mut countdown);
+        self.heap.tracker.charge_work((CHECK_INTERVAL - countdown).into());
+        result
+    }
+
+    /// The dispatch loop behind [`Self::run`], which owns `countdown`: the
+    /// instructions left before the next [`Self::dispatch_checkpoint`].
+    ///
     /// The current frame is stored separately from its suspended callers, so
     /// dispatch updates its authoritative instruction pointer directly.
-    fn run(&mut self) -> Result<FrameExit, RunError> {
-        /// How often (in instructions) the dispatch loop runs its periodic
-        /// work: the full `check_memory_time` and the GC-scheduling probe.
-        /// The checkpoint reads the clock when limits are armed, so this sets
-        /// the entire cost of limit enforcement — ~40% on tight loops at 10,
-        /// ~2% at u8::MAX (see the `_limits` benchmarks) — while detection
-        /// latency stays sub-µs. Native ops poll internally and the host-turn
-        /// epilogue re-checks, so only this dispatch cadence rides on it.
-        /// The countdown is per-`run()`, so `evaluate_function` re-entry
-        /// restarts it — a native loop calling a shorter callback reaches no
-        /// checkpoint at all and must poll the tracker itself.
-        const CHECK_INTERVAL: u8 = u8::MAX;
-
-        // Limits cannot change mid-run (`set_max_feed_duration` needs `&mut` at the
-        // host boundary), so with none configured the whole checkpoint reduces
-        // to this one hoisted, well-predicted branch per instruction.
-        let check_limits = self.heap.tracker.has_memory_time_limit();
+    fn run_loop(&mut self, countdown: &mut u8) -> Result<FrameExit, RunError> {
+        // Neither can change mid-run (`set_max_feed_duration` needs `&mut` at the
+        // host boundary), so with no limit and no work clock the whole checkpoint
+        // reduces to this one hoisted, well-predicted branch per instruction.
+        let check_limits = self.heap.tracker.needs_checkpoint();
         // Likewise hoisted: only a `Callback` writer can buffer, so every other
         // variant skips the poll — and the clock read behind it — entirely.
         let poll_print = self.print_writer.wants_poll();
-
-        let mut countdown = CHECK_INTERVAL;
 
         loop {
             // One decrement-and-branch per instruction; the periodic work
@@ -1326,9 +1337,9 @@ impl<'h> VM<'h> {
             // the hundreds), so probing it a few instructions late is
             // immaterial.
             if let Some(c) = countdown.checked_sub(1) {
-                countdown = c;
+                *countdown = c;
             } else {
-                countdown = CHECK_INTERVAL;
+                *countdown = CHECK_INTERVAL;
                 try_catch!(self, self.dispatch_checkpoint(check_limits, poll_print));
             }
 
