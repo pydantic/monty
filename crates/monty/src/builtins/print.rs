@@ -47,6 +47,7 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         if first {
             first = false;
         } else if let Some(sep) = &sep_str {
+            vm.heap.tracker.charge(WorkEvent::PrintByte, sep.len() as u64);
             vm.print_writer.write(stream, sep.as_str().into())?;
         } else {
             vm.print_writer.push(stream, ' ')?;
@@ -61,6 +62,7 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
 
     if let Some(end) = end_str {
+        vm.heap.tracker.charge(WorkEvent::PrintByte, end.len() as u64);
         vm.print_writer.write(stream, end.into())?;
     } else {
         vm.print_writer.push(stream, '\n')?;

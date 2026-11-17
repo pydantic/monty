@@ -164,7 +164,8 @@ fn native_operations_charge_work() {
 }
 
 /// Work that produces nothing, or little, is still charged: a scan that fails, a base reduced
-/// before a modular power, an encoding that raises, a search bounded by character offsets.
+/// before a modular power, an encoding that raises, a search bounded by character offsets,
+/// a non-ASCII length, a `print` separator.
 #[test]
 fn work_without_a_result_is_charged() {
     let mut repl = work_repl(None);
@@ -186,12 +187,19 @@ fn work_without_a_result_is_charged() {
             100_000,
         ),
         ("uni.find('x', 499_999)", 50_000),
+        ("uni.find('x', 0, 0)", 50_000),
+        ("len(uni)", 50_000),
+        ("print(end=text)", 100_000),
+        ("print(1, 2, sep=text)", 100_000),
     ] {
         let units = cost(code);
         assert!(units >= at_least, "{code}: {units} units");
     }
     // nothing is divided when the dividend is the shorter operand
     let units = cost("1 // big");
+    assert!(units < 100, "{units} units");
+    // nor is the pattern run for a negative `maxsplit`
+    let units = cost("re.split('x', text, maxsplit=-1)");
     assert!(units < 100, "{units} units");
 }
 

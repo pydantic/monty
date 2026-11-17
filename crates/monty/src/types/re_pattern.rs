@@ -378,7 +378,10 @@ impl RePattern {
     /// element; if it is negative, no splits occur at all (CPython's split loop
     /// runs zero times), returning the whole subject as a single element.
     pub fn split(&self, text: &str, maxsplit: i64, heap: &Heap) -> RunResult<Value> {
-        charge_scan(text.len(), heap);
+        // A negative `maxsplit` never runs the pattern.
+        if maxsplit >= 0 {
+            charge_scan(text.len(), heap);
+        }
         if self.compiled.captures_len() > 1 {
             return self.split_with_groups(text, maxsplit, heap);
         }
@@ -476,7 +479,7 @@ impl RePattern {
     }
 }
 
-/// Charges the work clock for scanning `bytes` of a subject and finding a match there.
+/// Charges the work clock for scanning `bytes` of a subject, plus one match for the call itself.
 fn charge_scan(bytes: usize, heap: &Heap) {
     heap.tracker.charge(WorkEvent::RegexScanByte, bytes as u64);
     heap.tracker.charge(WorkEvent::RegexMatch, 1);
