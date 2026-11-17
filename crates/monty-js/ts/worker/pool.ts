@@ -4,7 +4,13 @@ import { resolveMaxCheckouts } from '../options.js'
 import { HostModules, MontySession } from '../session.js'
 import { deadlineTimer, timeoutOption, type DeadlineTimer } from './deadline.js'
 import type { Dispatcher } from './host.js'
-import { WorkerTransport, prepareSession, type WorkerSessionConfig, type DurationGraces } from './transport.js'
+import {
+  WorkerTransport,
+  prepareSession,
+  type WorkerExecutionClock,
+  type WorkerSessionConfig,
+  type DurationGraces,
+} from './transport.js'
 
 /** The transport seam consumed by the shared session drive loop. */
 type SessionNative = ConstructorParameters<typeof MontySession>[0]
@@ -21,6 +27,8 @@ export type WorkerFactory = (signal: AbortSignal) => Promise<PooledWorker>
 
 /** Pool capacity, checkout deadline and duration-backstop configuration. */
 export interface WorkerPoolOptions extends DurationGraces {
+  /** Clock for every session; omitted means wall time. */
+  executionClock?: WorkerExecutionClock
   minWorkers?: number
   maxWorkers?: number
   checkoutTimeoutMs?: number
@@ -91,7 +99,7 @@ export class WorkerPool {
   /** Borrows a worker, configuring a new isolated session before returning it. */
   async checkout(config: WorkerSessionConfig = {}): Promise<MontySession> {
     if (this.closed) throw closedError()
-    const configuration = prepareSession(config)
+    const configuration = prepareSession(config, this.options.executionClock)
     const modules = new HostModules(config.externalModules)
     const slot = await this.acquire()
     if (this.closed) {
@@ -100,7 +108,7 @@ export class WorkerPool {
     }
     let transport: WorkerTransport
     try {
-      transport = await WorkerTransport.configure(slot.worker.dispatch, configuration, this.options, slot.id)
+      transport = await WorkerTransport.configure(slot.worker.dispatch, configuration, this.graces(), slot.id)
     } catch (error) {
       await this.discard(slot)
       throw this.closed ? closedError() : error
@@ -113,6 +121,13 @@ export class WorkerPool {
     }
     transport.onFinish = (reusable) => this.release(slot, reusable)
     return new MontySession(transport as unknown as SessionNative, modules)
+  }
+
+  /** Work time does not predict how long a turn takes, so its sessions get no wall backstop. */
+  private graces(): DurationGraces {
+    return this.options.executionClock === 'work'
+      ? { feedDurationLimitGraceMs: null, turnDurationLimitGraceMs: null }
+      : this.options
   }
 
   /** Rejects new/waiting checkouts and reaps idle workers; active sessions retain their workers. */
