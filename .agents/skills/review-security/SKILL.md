@@ -28,6 +28,13 @@ The interpreter and the worker process around it run the untrusted code. Ask:
     can become arbitrary execution. `unsafe`, refcount errors causing use-after-free or
     double-free, unchecked indexing, aliasing violations, integer overflow feeding a
     length or index.
+- **Ownership across teardown:** before a call that can drop, cancel or settle a value,
+    confirm every handle used afterwards was taken or `inc_ref`'d first. Require a
+    fire-and-forget test with no sandbox reference; tests that hold or await the handle
+    mask scheduler-only ownership.
+- **Host-call resumption:** any host-call reply (including sleep and timer) must run the
+    ready queue before the suspended task continues. A test that asserts only the pending
+    set can encode the starvation bug.
 - **Resource limits bypassed?** Allocations dodging the `ResourceTracker` (`String`
     without `StringBuilder`), loops with no fuel check, small input → huge allocation.
 - **Untrusted input still untrusted?** Wire frames from a worker are hostile: decoding

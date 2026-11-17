@@ -40,6 +40,13 @@ thread open and report it).
 
 ## 3. Fix
 
+### Fix the class, not the line
+
+A bot finding is one instance of a pattern. Before replying, search the repository (starting with the same diff and
+owning module) for the rest: renames leave stale links/docs, a missing preflight for an unbounded or input-amplifying
+allocation repeats at every copy or container in the function, and an async fix on the direct path usually leaves the
+future/eager path divergent. Resolve only when the class is fixed or the remaining instances are shown safe.
+
 Add a test for anything that was a real issue.
 
 ## 4. Reply, optionally resolve

@@ -15,6 +15,13 @@ Read the changed files in full — a hunk is rarely enough to judge correctness.
 - **Bugs** — logic errors, `DropWithContext` values not released on every exit path (the
     fix is `defer_drop!`/`DropGuard`, not more `drop_with` calls), borrow/aliasing
     mistakes, unhandled error paths.
+- **Lifetime ordering** — a handle used after a call that can drop, cancel or settle its
+    owner (for example `cancel_task` or `cleanup_current_task`) must have been taken or
+    `inc_ref`'d first; require the fire-and-forget test shape where the sandbox holds no
+    reference.
+- **Async path parity** — direct resume, pending future, eager/timer and failure paths
+    share their invariants; no stale ready-queue entry, no dispatch without a current
+    task, cleanup before returning an error.
 - **CPython divergence** — different results, exception types or messages, missing
     attributes. Check anything you're unsure of with `python-playground`.
 - **Sandbox escapes** — sandboxed code reaching the host filesystem, environment,
@@ -22,6 +29,9 @@ Read the changed files in full — a hunk is rarely enough to judge correctness.
 - **Resource-limit escapes** — allocations not charged to the tracker (an unbounded or
     amplifying `String` build without `StringBuilder`), unbounded loops, recursion without
     a depth guard.
+- **Peak allocations** — for unbounded or input-amplifying allocations, preflight the
+    peak live set: source, destination, temporaries, container growth and the new heap
+    entry, not one copy; terminal resource errors must not become catchable task failures.
 - **Performance** — regressions the branch introduces, and improvements you spot.
 - **Verbose comments** — docstrings and comments should be concise as per `AGENTS.md`.
 - **Cleanups** — misplaced logic, functions grown too complex.
@@ -36,6 +46,10 @@ Read the changed files in full — a hunk is rarely enough to judge correctness.
     `limitations/` and the crate READMEs is a finding. `AGENTS.md` "Documentation surfaces
     that must stay in sync" has the obligation table. For a full pass, delegate to the
     `docs-parity-reviewer` subagent.
+- **Renames and rustdoc links** — after a rename, run
+    `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc -p <crate> --no-deps`;
+    module docs, ownership notes, test headers and limitations pages must describe the
+    new API.
 
 ## Report
 
