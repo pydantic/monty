@@ -1059,3 +1059,32 @@ for f, name in [
             assert False, 'expected failure'
         except error as exc:
             assert str(exc) == message
+
+# === 2-arg fast path error cleanup (refcount safety for heap-allocated objects) ===
+# 1. Error on arg 1 while arg 2 is a freshly allocated heap object:
+try:
+    'hello'.replace(123, 'a' * 100)
+    assert False, 'replace(non-str, str) should raise TypeError'
+except TypeError:
+    pass
+
+# 2. Error on arg 2 while arg 1 was extracted into an owning field:
+try:
+    'hello'.replace('a' * 100, 123)
+    assert False, 'replace(str, non-str) should raise TypeError'
+except TypeError:
+    pass
+
+# 3. Positional argument count arity checks via fast-path / fallback:
+try:
+    'hello'.replace()
+    assert False, 'replace() with 0 args should raise TypeError'
+except TypeError:
+    pass
+
+try:
+    'hello'.replace('a')
+    assert False, 'replace() with 1 arg should raise TypeError'
+except TypeError:
+    pass
+

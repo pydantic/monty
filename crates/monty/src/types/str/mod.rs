@@ -1592,35 +1592,24 @@ fn str_rpartition<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunRes
 /// Returns a copy with all occurrences of substring old replaced by new.
 /// If count is given, only the first count occurrences are replaced.
 fn str_replace<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let (old, new, count) = parse_replace_args("str.replace", args, vm)?;
+    let ReplaceArgs { old, new, count } = ReplaceArgs::from_args(args, vm)?;
+    defer_drop!(old, vm);
+    defer_drop!(new, vm);
+    let old = old.as_str(vm);
+    let new = new.as_str(vm);
     let s = s.as_str(vm);
 
     check_replace_size(s.len(), old.len(), new.len(), count, &vm.heap.tracker)?;
 
     let result = if count < 0 {
-        s.replace(&old, &new)
+        s.replace(old, new)
     } else {
         // Safe cast: we've checked count >= 0
         let n = usize::try_from(count).unwrap_or(usize::MAX);
-        s.replacen(&old, &new, n)
+        s.replacen(old, new, n)
     };
 
     Ok(allocate_string(result, vm.heap))
-}
-
-/// Parses arguments for the replace method.
-///
-/// Supports both positional and keyword arguments for count (Python 3.13+).
-fn parse_replace_args(_method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<(String, String, i64)> {
-    let ReplaceArgs { old, new, count } = ReplaceArgs::from_args(args, vm)?;
-    defer_drop!(old, vm);
-    defer_drop!(new, vm);
-    defer_drop!(count, vm);
-
-    let old_s = extract_string_arg(old, vm)?;
-    let new_s = extract_string_arg(new, vm)?;
-    let count_i = extract_int_arg(count, vm)?;
-    Ok((old_s, new_s, count_i))
 }
 
 /// Argument shape for `str.replace(old, new, count=-1)`.
@@ -1634,11 +1623,11 @@ fn parse_replace_args(_method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunRes
 #[from_args(name = "replace")]
 struct ReplaceArgs {
     #[from_args(pos_only)]
-    old: Value,
+    old: StrArg,
     #[from_args(pos_only)]
-    new: Value,
-    #[from_args(default = Value::Int(-1))]
-    count: Value,
+    new: StrArg,
+    #[from_args(default = -1)]
+    count: i64,
 }
 
 /// Implements Python's `str.center(width, fillchar?)` method.
