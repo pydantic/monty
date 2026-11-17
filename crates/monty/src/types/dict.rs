@@ -279,11 +279,6 @@ impl Dict {
         matches!(self.kind.0.as_deref(), Some(DictSpecial::Counter))
     }
 
-    /// Marks this dict as a `collections.OrderedDict`.
-    pub fn make_ordered(&mut self) {
-        self.kind = DictKind::ordered();
-    }
-
     /// Returns whether this dict is an `OrderedDict`.
     #[must_use]
     pub fn is_ordered(&self) -> bool {
@@ -549,11 +544,9 @@ impl<'h> HeapRead<'h, Dict> {
         let other_iter = other.iter(vm)?;
         defer_drop_mut!(other_iter, vm);
         while let Some(key) = iter.next_key(vm)? {
-            let Some(other_key) = other_iter.next_key(vm)? else {
-                return Ok(false);
-            };
-            if !key.py_eq(other_key, vm)? {
-                return Ok(false);
+            match other_iter.next_key(vm)? {
+                Some(other_key) if key.py_eq(other_key, vm)? => {}
+                _ => return Ok(false),
             }
         }
         Ok(true)
@@ -859,6 +852,12 @@ impl Dict {
     /// For now, only real `dict` values use mapping-copy semantics; other values
     /// are interpreted as iterables of pairs.
     pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+        Self::init_as(vm, args, DictKind::plain())
+    }
+
+    /// [`init`](Self::init) for a `dict` subclass that shares its constructor
+    /// (`OrderedDict`), tagged with `kind` before it is allocated.
+    pub(crate) fn init_as(vm: &mut VM<'_>, args: ArgValues, kind: DictKind) -> RunResult<Value> {
         let DictInitArgs { source, extras } = DictInitArgs::from_args(args, vm)?;
         let dict = Self::new();
         let mut dict_guard = DropGuard::new(dict, vm);
@@ -884,7 +883,8 @@ impl Dict {
             dict_merge_from_kwargs(dict, kwargs, vm)?;
         }
 
-        let dict = dict_guard.into_inner();
+        let mut dict = dict_guard.into_inner();
+        dict.set_kind(kind);
         let heap_id = vm.heap.allocate(HeapData::Dict(dict));
         Ok(Value::Ref(heap_id))
     }

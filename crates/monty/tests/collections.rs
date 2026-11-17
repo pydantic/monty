@@ -15,7 +15,7 @@
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyObject};
+use monty_types::{CompileOptions, ExcType, MontyObject, MontyType};
 
 /// Runs `from collections import <name>` and returns the raised exception.
 fn import_err(name: &str) -> monty_types::MontyException {
@@ -169,4 +169,17 @@ fn deque_crosses_host_boundary_as_a_list() {
             MontyObject::int(2)
         ])
     );
+}
+
+/// The dict-backed `collections` types have no host-side type, so their type
+/// objects cross the boundary as `dict`, as their values do.
+#[test]
+fn dict_subclass_types_cross_host_boundary_as_dict() {
+    for name in ["defaultdict", "Counter", "OrderedDict"] {
+        assert_eq!(
+            host_value(&format!("from collections import {name}\n{name}")),
+            MontyObject::type_object(MontyType::Dict),
+            "{name}"
+        );
+    }
 }

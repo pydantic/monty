@@ -15,8 +15,8 @@
 //! are ordinary [`NamedTuple`](crate::types::NamedTuple)s. `defaultdict` and
 //! `Counter` reuse the `dict` runtime type: [`defaultdict`] and [`counter`]
 //! build a `dict` and tag it via `Dict::make_defaultdict` / `make_counter`
-//! rather than introducing a new heap type; `OrderedDict` does the same with
-//! `make_ordered`.
+//! rather than introducing a new heap type; `OrderedDict` does the same through
+//! `Dict::init_as`.
 
 pub(crate) mod counter;
 pub(crate) mod defaultdict;
@@ -242,15 +242,7 @@ pub(crate) fn ordereddict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
         args.drop_with(vm);
         return Err(ExcType::type_error(format!("expected at most 1 argument, got {total}")));
     }
-    let dict_value = Dict::init(vm, args)?;
-    let Value::Ref(dict_id) = dict_value else {
-        unreachable!("Dict::init returns a dict ref");
-    };
-    let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
-        unreachable!("Dict::init returns a dict");
-    };
-    dict.get_mut(vm.heap).make_ordered();
-    Ok(dict_value)
+    Dict::init_as(vm, args, DictKind::ordered())
 }
 
 /// Arguments for `collections.namedtuple`.
