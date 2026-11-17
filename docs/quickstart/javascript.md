@@ -464,6 +464,17 @@ A bundler resolving the `browser` condition on the main entry point gets this bu
 [`examples/antigravity`](https://github.com/pydantic/monty/tree/main/examples/antigravity) is a worked browser example,
 built with Vite.
 
+For a browser with Trusted Types enforcement, pass `createWorker` to `Monty.create()` or `createWorkerPool()`.
+The callback must return a fresh module worker on each call.
+Monty initializes and terminates each returned worker, including replacements after a crash or recycle.
+The callback takes precedence over `workerUrl`. Node ignores both options.
+
+The public `@pydantic/monty/wasm/worker` entry lets a bundler emit the worker separately.
+For example, Vite accepts a `@pydantic/monty/wasm/worker?worker&url` import.
+Pass that URL through your application's Trusted Types policy before constructing the module worker.
+Monty does not create a policy or change the application's CSP.
+Without `createWorker`, Monty keeps its default worker construction and optional `workerUrl` override.
+
 Differences from the native path:
 
 - **Filesystem mounts are unsupported** — a non-empty `mount` list is rejected, because there is no host filesystem.

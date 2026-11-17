@@ -14,6 +14,12 @@ export interface WasmPoolOptions extends MontyOptions {
   maxProcesses?: number
   /** Overrides the browser worker entry URL. */
   workerUrl?: string | URL
+  /**
+   * Creates a fresh module worker from `@pydantic/monty/wasm/worker` on each call.
+   * Use this to apply a caller-owned Trusted Types policy. Monty owns the returned
+   * worker's initialization and termination. Overrides `workerUrl`; ignored by Node.
+   */
+  createWorker?: () => Worker
   /** Ignored by WASM, whose workers suspend at every host call. */
   streamAsyncCalls?: boolean
 }

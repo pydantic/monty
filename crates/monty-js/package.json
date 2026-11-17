@@ -16,6 +16,7 @@
       "types": "./dist/node.d.ts",
       "default": "./dist/node.js"
     },
+    "./wasm/worker": "./dist/worker/browserWorkerEntry.js",
     "./wasm": {
       "types": "./dist/worker/index.d.ts",
       "node": "./dist/worker/index.node.js",
