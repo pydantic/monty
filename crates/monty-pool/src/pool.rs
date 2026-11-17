@@ -374,6 +374,17 @@ impl PoolInner {
                         }
                     }
                 }
+                // a dial that may not take a pre-opened session (a resume) retires
+                // one at the cap, since nothing else would ever free that slot
+                let evicted = if reuse_idle || state.total < self.config.max_processes {
+                    None
+                } else {
+                    state.idle.pop()
+                };
+                if evicted.is_some() {
+                    state.total -= 1;
+                    removed_idle += 1;
+                }
                 // a pre-opened session already dialing will be ready before a
                 // new dial would, so wait for it rather than dialing alongside
                 let await_refill = reused.is_none() && reuse_idle && remote && state.refilling > 0;
@@ -394,9 +405,13 @@ impl PoolInner {
                 for _ in &stale {
                     self.count_termination("stale_metadata");
                 }
+                if evicted.is_some() {
+                    self.count_termination("evicted");
+                }
                 let gone = died_idle + stale.len();
                 // dropping a remote worker closes its stream
                 drop(stale);
+                drop(evicted);
                 let spawned = i64::from(below_cap);
                 self.record_worker_delta(spawned - worker_count(gone), -worker_count(removed_idle));
                 if gone > 0 {

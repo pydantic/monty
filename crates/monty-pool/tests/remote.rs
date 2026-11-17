@@ -2510,6 +2510,55 @@ async fn shutdown_resumes_transparently() {
     join_server(server).await;
 }
 
+/// A resume never takes a pre-opened session, so when pre-warming fills the pool
+/// it retires one for the slot rather than waiting for capacity nothing frees.
+#[tokio::test]
+async fn a_resume_retires_a_pre_opened_session_at_the_cap() {
+    let mock = MockServer::start().await;
+    let mut config = PoolConfig::remote(mock.url());
+    config.min_processes = 1;
+    config.max_processes = 1;
+    config.checkout_timeout = Some(Duration::from_secs(5));
+    config.request_timeout = Some(Duration::from_secs(10));
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "1 + 1");
+        send_kind(&mut socket, shutdown(Some(b"parked-1")));
+        // a refill may land first: it is retired unused, so its stream ends silently
+        let mut socket = loop {
+            let mut socket = mock.accept();
+            if let Some(request) = try_read_request(&mut socket) {
+                assert!(
+                    matches!(request.kind, Some(pb::client_request::Kind::Configure(_))),
+                    "expected Configure, got {request:?}"
+                );
+                send_kind(&mut socket, ok_event());
+                break socket;
+            }
+        };
+        expect_load(&mut socket, b"parked-1");
+        send_with_session_id(&mut socket, ok_event(), b"sess-2");
+        expect_feed(&mut socket, "1 + 1");
+        send_complete(&mut socket);
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let event = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("the resume finds a slot");
+    assert!(
+        matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
+        "got {event:?}"
+    );
+    checkout.finish().await.expect("finish");
+    pool.close().await;
+    join_server(server).await;
+}
+
 /// The reload is the same session, so a re-sent streaming `Feed` keeps its
 /// streamed-call handler: the reloaded worker's started calls reach it.
 #[tokio::test]
