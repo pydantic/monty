@@ -144,6 +144,21 @@ pub(crate) enum DefaultExpr {
     Explicit(Box<Expr>),
 }
 
+impl DefaultExpr {
+    /// Renders an expression evaluating to the default value.
+    ///
+    /// Explicit expressions are wrapped in `(|| { #expr })()` so early-returns
+    /// inside blocks (e.g. `default = { return 7; }`) return from the closure
+    /// rather than the enclosing `from_args` function, matching the general
+    /// path's `unwrap_or_else(|| { #expr })`.
+    fn render_init(&self) -> TokenStream {
+        match self {
+            Self::DefaultTrait => quote!(::core::default::Default::default()),
+            Self::Explicit(expr) => quote!((|| { #expr })()),
+        }
+    }
+}
+
 impl Signature {
     fn parse(input: &DeriveInput) -> syn::Result<Self> {
         let DeriveInput {
@@ -403,9 +418,9 @@ impl Signature {
             let default_inits = self.default_field_inits(&positional, 1);
             quote! {
                 if let crate::args::ArgValues::One(__v0) = args {
-                    let #f0_ident = <#f0_ty as crate::args::FromValue>::extract(__v0, vm, #f0_ctx)?;
+                    let __arg0 = <#f0_ty as crate::args::FromValue>::extract(__v0, vm, #f0_ctx)?;
                     return ::std::result::Result::Ok(Self {
-                        #f0_ident,
+                        #f0_ident: __arg0,
                         #(#default_inits,)*
                     });
                 }
@@ -428,23 +443,23 @@ impl Signature {
             let default_inits = self.default_field_inits(&positional, 2);
             quote! {
                 if let crate::args::ArgValues::Two(__v0, __v1) = args {
-                    let #f0_ident = match <#f0_ty as crate::args::FromValue>::extract(__v0, vm, #f0_ctx) {
+                    let __arg0 = match <#f0_ty as crate::args::FromValue>::extract(__v0, vm, #f0_ctx) {
                         ::core::result::Result::Ok(__val) => __val,
                         ::core::result::Result::Err(__err) => {
                             crate::heap::DropWithContext::drop_with(__v1, vm);
                             return ::core::result::Result::Err(__err);
                         }
                     };
-                    let #f1_ident = match <#f1_ty as crate::args::FromValue>::extract(__v1, vm, #f1_ctx) {
+                    let __arg1 = match <#f1_ty as crate::args::FromValue>::extract(__v1, vm, #f1_ctx) {
                         ::core::result::Result::Ok(__val) => __val,
                         ::core::result::Result::Err(__err) => {
-                            <#f0_ty as crate::args::FromValue>::drop_extracted(#f0_ident, vm);
+                            <#f0_ty as crate::args::FromValue>::drop_extracted(__arg0, vm);
                             return ::core::result::Result::Err(__err);
                         }
                     };
                     return ::core::result::Result::Ok(Self {
-                        #f0_ident,
-                        #f1_ident,
+                        #f0_ident: __arg0,
+                        #f1_ident: __arg1,
                         #(#default_inits,)*
                     });
                 }
@@ -525,11 +540,11 @@ impl Signature {
         let mut inits: Vec<TokenStream> = Vec::new();
         for f in &positional[start_pos..] {
             let ident = &f.ident;
-            let default_expr = match &f.default {
-                Some(DefaultExpr::DefaultTrait) => quote!(::core::default::Default::default()),
-                Some(DefaultExpr::Explicit(expr)) => quote!(#expr),
-                None => unreachable!("fields at or after start_pos in fast path must have defaults"),
-            };
+            let default_expr = f
+                .default
+                .as_ref()
+                .expect("fields at or after start_pos in fast path must have defaults")
+                .render_init();
             inits.push(quote!(#ident: #default_expr));
         }
         if let Some(idx) = self.varargs_idx {
@@ -538,11 +553,11 @@ impl Signature {
         }
         for f in self.fields.iter().filter(|f| matches!(f.kind, FieldKind::KwOnly)) {
             let ident = &f.ident;
-            let default_expr = match &f.default {
-                Some(DefaultExpr::DefaultTrait) => quote!(::core::default::Default::default()),
-                Some(DefaultExpr::Explicit(expr)) => quote!(#expr),
-                None => unreachable!("kw_only fields must have defaults"),
-            };
+            let default_expr = f
+                .default
+                .as_ref()
+                .expect("kw_only fields must have defaults")
+                .render_init();
             inits.push(quote!(#ident: #default_expr));
         }
         if let Some(idx) = self.varkwargs_idx {

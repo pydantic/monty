@@ -3,6 +3,7 @@ use num_bigint::BigInt;
 
 use super::*;
 use crate::{
+    args::{ArgValues, FromArgs},
     bytecode::VM,
     heap::{Heap, HeapData, HeapReader},
     run::{Program, SessionTables},
@@ -341,5 +342,27 @@ fn long_int_and_index_dunder_edge_cases() {
         assert!(matches!(resolve_index_dunder(Value::None, vm), Ok(Value::None)));
         let s_dunder = resolve_index_dunder(s, vm).unwrap();
         s_dunder.drop_with(vm);
+    });
+}
+
+#[derive(FromArgs)]
+#[from_args(name = "test_vm_field")]
+struct VmFirstArgs {
+    #[from_args(pos_only)]
+    vm: i64,
+    #[from_args(pos_only)]
+    other: i64,
+    #[from_args(pos_only, default = { return 7; })]
+    extra: i64,
+}
+
+#[test]
+fn from_args_vm_field_and_block_default() {
+    with_test_vm(|vm| {
+        let args = ArgValues::Two(Value::Int(10), Value::Int(20));
+        let parsed = VmFirstArgs::from_args(args, vm).unwrap();
+        assert_eq!(parsed.vm, 10);
+        assert_eq!(parsed.other, 20);
+        assert_eq!(parsed.extra, 7);
     });
 }

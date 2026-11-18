@@ -1107,3 +1107,16 @@ try:
     assert False, 'replace with non-int count kwarg should raise TypeError'
 except TypeError as exc:
     assert str(exc) == "'str' object cannot be interpreted as an integer"
+
+# 6. Type name lookup on object without __index__ (preserves exact class name):
+from collections import namedtuple
+
+Point = namedtuple('Point', ['x', 'y'])
+try:
+    'a'.replace('a', 'b', Point(1, 2))
+    assert False, 'replace with namedtuple count should raise TypeError'
+except TypeError as exc:
+    assert str(exc) == "'Point' object cannot be interpreted as an integer"
+
+# 7. 32-bit boundary: count >= 2**31 must not overflow on 32-bit targets
+assert 'a'.replace('a', 'b', 2**31) == 'b'

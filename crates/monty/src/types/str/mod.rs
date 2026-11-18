@@ -23,7 +23,7 @@ use crate::{
     bytecode::{CallResult, VM},
     codecs::Codec,
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapObjectRead},
     identity::Identity,
@@ -1600,7 +1600,7 @@ fn str_replace<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult
     let s = s.as_str(vm);
     let count = count.0;
 
-    check_replace_size(s.len(), old.len(), new.len(), count as i64, &vm.heap.tracker)?;
+    check_replace_size(s.len(), old.len(), new.len(), count, &vm.heap.tracker)?;
 
     let result = if count < 0 {
         s.replace(old, new)
@@ -1617,18 +1617,16 @@ fn str_replace<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult
 /// `_PyArg_BadArgument` wording (`EXPECTED_TYPE_NAME = None`), preserving
 /// CPython's `'str' object cannot be interpreted as an integer`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ReplaceCount(isize);
+struct ReplaceCount(i64);
 
 impl FromValue for ReplaceCount {
     const EXPECTED_TYPE_NAME: Option<&'static str> = None;
 
     #[inline]
     fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
-        isize::from_value(value, vm).map(Self)
-    }
-
-    fn type_error(got: &str) -> RunError {
-        isize::type_error(got)
+        let result = value.as_int(vm);
+        value.drop_with(vm);
+        result.map(Self).map_err(FromValueFail::Raise)
     }
 }
 
