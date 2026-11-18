@@ -9,7 +9,6 @@ import json
 import pathlib
 import pickle
 import re
-import sys
 import tracemalloc
 import types
 import zoneinfo
@@ -853,18 +852,26 @@ def test_namedtuple_call_arguments_many_types(monty_run: RunMonty):
 
 # === Results the host cannot build ===
 
-# the `TypeError` comes from the host's own CPython, which reworded it in 3.14
-if sys.version_info >= (3, 14):
-    PROXY_DICT_KEY_ERROR = "MontyRuntimeError(TypeError: cannot convert the result to a Python value: cannot use 'pydantic_monty.MontyClassProxy' as a dict key (unhashable type: 'pydantic_monty.MontyClassProxy'))"
-else:
-    PROXY_DICT_KEY_ERROR = "MontyRuntimeError(TypeError: cannot convert the result to a Python value: unhashable type: 'pydantic_monty.MontyClassProxy')"
+# the sandbox reads the class-level default of a field `__init__` never set,
+# but class defaults do not cross, so the host proxy's hash cannot find it
+UNSET_FIELD_CODE = """
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class K:
+    x: int = 0
+
+    def __init__(self):
+        pass
+
+{K()}
+"""
+UNSET_FIELD_ERROR = (
+    "MontyRuntimeError(AttributeError: cannot convert the result to a Python value: 'K' object has no attribute 'x')"
+)
 
 UNDECODABLE_RESULTS = [
-    pytest.param(
-        'class K:\n    pass\n{K(): 1}',
-        PROXY_DICT_KEY_ERROR,
-        id='proxy_dict_key',
-    ),
+    pytest.param(UNSET_FIELD_CODE, UNSET_FIELD_ERROR, id='dataclass_key_unset_field'),
 ]
 
 
@@ -888,11 +895,11 @@ async def test_undecodable_result_async(code: str, expected: str):
 
 
 def test_undecodable_result_feed_start(session: MontySession):
-    complete = session.feed_start('class K:\n    pass\n{K(): 1}')
+    complete = session.feed_start(UNSET_FIELD_CODE)
     assert isinstance(complete, MontyComplete)
     with pytest.raises(MontyRuntimeError) as exc_info:
         complete.output
-    assert repr(exc_info.value) == PROXY_DICT_KEY_ERROR
+    assert repr(exc_info.value) == UNSET_FIELD_ERROR
 
 
 # === User-defined NamedTuple input ===

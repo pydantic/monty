@@ -99,8 +99,8 @@ An uncaught conversion exception ends the feed as a runtime error.
 Values supplied through `inputs` or `external_lookup` instead fail host-side;
 see [Python error handling](../quickstart/python.md#errors).
 
-Some sandbox results have no CPython equivalent: a dict keyed by, or a set containing, a class-instance proxy, which
-is unhashable.
+Some sandbox results have no CPython equivalent, such as a set containing a dataclass proxy whose hash reads a field
+the instance never set (see [classes.md](classes.md)).
 A Python host raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] for such a result, with the original
 exception type and the message prefixed `cannot convert the result to a Python value: `.
 

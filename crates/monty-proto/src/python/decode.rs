@@ -1,7 +1,11 @@
 //! Sandbox values flowing OUT to the host: [`DecodedArena`] turns one
 //! message's node arena into Python objects.
 
-use std::collections::{HashMap, hash_map::Entry};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    mem,
+    sync::{Arc, OnceLock},
+};
 
 use monty_types::{
     BuiltinsFunctions, MontyException, MontyObject,
@@ -9,6 +13,7 @@ use monty_types::{
 };
 use pyo3::{
     prelude::*,
+    sync::PyOnceLock,
     types::{PyBool, PyBytes, PyComplex, PyDate, PyDelta, PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple},
 };
 
@@ -51,10 +56,15 @@ impl DecodedArena {
             store,
             built: Vec::with_capacity(graph.len()),
             namedtuple_headers: HashMap::new(),
+            classes: HashMap::new(),
+            host_objects: Vec::with_capacity(graph.len()),
+            from_store: false,
         };
         for node in graph.nodes() {
             let obj = decoder.decode(node)?;
             decoder.built.push(obj);
+            let holds = decoder.holds_host_objects(node);
+            decoder.host_objects.push(holds);
         }
         Ok(Self { built: decoder.built })
     }
@@ -76,6 +86,14 @@ struct Decoder<'a, 'py> {
     /// The type name and field names as Python objects, built once per distinct
     /// pair so every instance of a type in this arena shares them.
     namedtuple_headers: HashMap<(&'a str, &'a [String]), NamedTupleHeader>,
+    /// Each class node's header and eager attrs, built once and shared by
+    /// its proxies so their cost does not scale with the instance count.
+    classes: HashMap<NodeId, (Arc<ClassHeader>, Py<PyDict>)>,
+    /// Whether each decoded node reaches a host object; see
+    /// [`holds_host_objects`](Self::holds_host_objects).
+    host_objects: Vec<bool>,
+    /// Set by `decode` when the node resolved to a registered host object.
+    from_store: bool,
 }
 
 /// A namedtuple's type name and field names, as passed to `MontyNamedTuple`.
@@ -152,12 +170,13 @@ impl<'a> Decoder<'a, '_> {
             // anything else to a read-only `MontyClassTypeProxy`
             MontyNode::ClassType(class) => {
                 if let Some(class) = self.store.get_class(py, &class.id)? {
+                    self.from_store = true;
                     Ok(class)
                 } else {
-                    let proxy = PyMontyClassTypeProxy {
-                        class_type: class_header(class),
-                        attributes: self.attrs_dict(&class.attrs)?,
-                    };
+                    // this node's id: nodes decode in order
+                    let id = NodeId(u32::try_from(self.built.len()).expect("arena node ids fit in u32"));
+                    let (class_type, attributes) = self.class_parts(id)?;
+                    let proxy = PyMontyClassTypeProxy { class_type, attributes };
                     Ok(Py::new(py, proxy)?.into_any())
                 }
             }
@@ -169,16 +188,17 @@ impl<'a> Decoder<'a, '_> {
                 attrs,
             } => {
                 if let Some(wrapper) = self.store.get(py, instance_id)? {
+                    self.from_store = true;
                     wrapper.bind(py).getattr("value").map(Bound::unbind)
                 } else {
-                    let MontyNode::ClassType(class) = self.graph.node(*class_type) else {
-                        unreachable!("the arena's validation makes class_type a ClassType node")
-                    };
+                    let (class_type, class_attributes) = self.class_parts(*class_type)?;
                     let proxy = PyMontyClassProxy {
-                        class_type: class_header(class),
+                        class_type,
                         instance_id: *instance_id,
                         attributes: self.attrs_dict(attrs)?,
-                        class_attributes: self.attrs_dict(&class.attrs)?,
+                        class_attributes,
+                        hash: OnceLock::new(),
+                        holds_host_objects: attrs.iter().any(|(_, value)| self.host_objects[value.index()]),
                     };
                     Ok(Py::new(py, proxy)?.into_any())
                 }
@@ -204,6 +224,18 @@ impl<'a> Decoder<'a, '_> {
         }
     }
 
+    /// Whether the node just decoded reaches a registered host object, whose
+    /// `__eq__` and `__hash__` are host code. Containers inherit it from their
+    /// children; class proxies stop it, since they compare by id when holding one.
+    fn holds_host_objects(&mut self, node: &MontyNode) -> bool {
+        let from_store = mem::take(&mut self.from_store);
+        let mut holds = from_store;
+        if !from_store && !matches!(node, MontyNode::ClassInstance { .. } | MontyNode::ClassType(_)) {
+            node.for_each_child(|id| holds |= self.host_objects[id.index()]);
+        }
+        holds
+    }
+
     /// The object built for a child node.
     fn child(&self, id: NodeId) -> Py<PyAny> {
         self.built[id.index()].clone_ref(self.py)
@@ -225,6 +257,21 @@ impl<'a> Decoder<'a, '_> {
             }
         }
         Ok(dict.unbind())
+    }
+
+    /// The shared header and eager attrs of class node `id`, built on first use.
+    fn class_parts(&mut self, id: NodeId) -> PyResult<(Arc<ClassHeader>, Py<PyDict>)> {
+        let py = self.py;
+        if let Some((header, attrs)) = self.classes.get(&id) {
+            return Ok((Arc::clone(header), attrs.clone_ref(py)));
+        }
+        let MontyNode::ClassType(class) = self.graph.node(id) else {
+            unreachable!("the arena's validation makes class_type a ClassType node")
+        };
+        let header = Arc::new(class_header(class));
+        let attrs = self.attrs_dict(&class.attrs)?;
+        self.classes.insert(id, (Arc::clone(&header), attrs.clone_ref(py)));
+        Ok((header, attrs))
     }
 
     /// The type name and field names of a namedtuple as Python objects, shared
@@ -255,5 +302,8 @@ fn class_header(class: &ClassTypeNode) -> ClassHeader {
         id: class.id,
         host_defined: class.host_defined,
         is_dataclass: class.is_dataclass,
+        eq: class.eq.clone(),
+        hash: class.hash.clone(),
+        unhashable_message: PyOnceLock::new(),
     }
 }
