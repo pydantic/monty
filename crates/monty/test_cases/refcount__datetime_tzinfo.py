@@ -5,6 +5,8 @@
 from datetime import date, datetime, time, timedelta, timezone
 
 tz = timezone(timedelta(hours=1), 'P1')
+# Name the UTC singleton so strict matching can count its cache reference.
+utc = timezone.utc
 
 
 def make_and_drop():
@@ -67,6 +69,8 @@ def via_strptime():
     for offset in ['+0100', '-0530', '+010203', '+0000']:
         d = datetime.strptime('2020-01-01 12:00 ' + offset, '%Y-%m-%d %H:%M %z')
         parsed_tz = d.tzinfo
+        if offset == '+0000':
+            assert parsed_tz is utc
         assert d.tzinfo is parsed_tz
         assert d.replace(minute=30).tzinfo is parsed_tz
         assert d.replace(tzinfo=None).tzinfo is None
@@ -98,4 +102,4 @@ for _ in range(3):
     assert via_fromisoformat() == 12
     assert via_strptime() == 12
     assert via_tzinfo_methods() == 12
-# ref-counts={'tz': 1}
+# ref-counts={'tz': 1, 'utc': 2}

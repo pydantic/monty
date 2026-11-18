@@ -1,5 +1,6 @@
 # The `time` module's conversion functions, with explicit times so nothing
 # depends on the clock. The zone-dependent halves live in datetime__zone_*.py.
+import sys
 import time
 
 
@@ -83,8 +84,10 @@ for second in [60, 61]:
     assert leap[:6] == (2024, 1, 1, 23, 59, second)
     assert (leap.tm_wday, leap.tm_yday) == (0, 1)
     assert time.asctime(leap) == f'Mon Jan  1 23:59:{second} 2024'
-    assert time.strftime('%Y-%m-%d %H:%M:%S', leap) == f'2024-01-01 23:59:{second}'
-    assert time.strftime('%X', leap) == f'23:59:{second}'
+    # Windows CPython rejects leap seconds in strftime; Monty reports 'monty'.
+    if sys.platform != 'win32':
+        assert time.strftime('%Y-%m-%d %H:%M:%S', leap) == f'2024-01-01 23:59:{second}'
+        assert time.strftime('%X', leap) == f'23:59:{second}'
     assert time.strptime(f'23:59:{second}.1', '%H:%M:%S.%f')[:6] == (1900, 1, 1, 23, 59, second)
     assert time.mktime(leap) == time.mktime((2024, 1, 2, 0, 0, second - 60, 1, 2, -1))
 assert time.strptime('13 AM', '%H %p').tm_hour == 13
