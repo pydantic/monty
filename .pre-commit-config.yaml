@@ -9,9 +9,9 @@ repos:
       - id: check-toml
       # vendored CPython files and their patches must stay byte-for-byte (`make check-stdlib`)
       - id: end-of-file-fixer
-        exclude: ^crates/monty/stdlib/(Lib|patches)/
+        exclude: ^crates/(monty/stdlib|monty-datatest/vendor/cpython)/(Lib|patches)/
       - id: trailing-whitespace
-        exclude: ^crates/monty/stdlib/(Lib|patches)/
+        exclude: ^crates/(monty/stdlib|monty-datatest/vendor/cpython)/(Lib|patches)/
       - id: check-added-large-files
 
   - repo: https://github.com/codespell-project/codespell
