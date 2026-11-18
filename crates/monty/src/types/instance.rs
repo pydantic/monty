@@ -1,6 +1,6 @@
 use std::{borrow::Cow, fmt::Write, mem};
 
-use monty_types::MontyUuid;
+use monty_types::{MontyUuid, WorkEvent};
 
 use super::{Dict, LazyHeapSet, PyTrait, Type, TypeRef};
 use crate::{
@@ -98,6 +98,7 @@ pub(crate) struct BoundMethod {
 impl BoundMethod {
     /// Allocates `func` bound to `instance`, taking both references.
     pub(crate) fn allocate(instance: Value, func: Value, heap: &Heap) -> Value {
+        heap.tracker.charge(WorkEvent::BoundMethod, 1);
         Value::Ref(heap.allocate(HeapData::BoundMethod(Self { instance, func })))
     }
 }
@@ -462,6 +463,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        vm.heap.tracker.charge(WorkEvent::MethodCall, 1);
         let attr_str = attr.as_str(vm.interns);
 
         // 1. An instance attribute shadows class methods; call it as-is (unbound).

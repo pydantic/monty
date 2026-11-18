@@ -341,7 +341,7 @@ test('execution clock is fixed by the pool', async () => {
   t.is(await session.feedRun('1 + 1'), 2)
   if (isWasm) {
     await t.throwsAsync(() => Monty.create({ executionClock: 'cpu' }), {
-      message: 'WebAssembly workers require executionClock: wall',
+      message: "WebAssembly workers require executionClock: 'wall' or 'work'",
     })
   } else if (!supportsCpuClock) {
     const error = await t.throwsAsync(() => Monty.create({ requestTimeout: 2, executionClock: 'cpu' }))
@@ -359,6 +359,17 @@ test('execution clock is fixed by the pool', async () => {
   }
 })
 
+test('work clock bounds a feed by counted work', async () => {
+  const { Monty } = await import('@pydantic/monty')
+  await using work = await Monty.create({ executionClock: 'work' })
+  await using session = await work.checkout({ limits: { maxFeedDurationSecs: 0.001 } })
+  t.is(await session.feedRun('sum(range(1000))'), 499_500)
+  const error = await t.throwsAsync(() => session.feedRun('while True:\n    pass'), isRuntimeError)
+  t.is(error.exception.typeName, 'TimeoutError')
+  t.regex(error.display('msg'), /^feed time limit exceeded: 1\.0\d+ms > 1ms$/)
+  t.is(await session.feedRun('1 + 1'), 2)
+})
+
 test('WASM pool refuses CPU configuration before spawning workers', () => {
   let spawned = false
   t.throws(
@@ -372,7 +383,7 @@ test('WASM pool refuses CPU configuration before spawning workers', () => {
         1,
       ),
     {
-      message: 'WebAssembly workers require executionClock: wall',
+      message: "WebAssembly workers require executionClock: 'wall' or 'work'",
     },
   )
   t.false(spawned)
@@ -380,19 +391,21 @@ test('WASM pool refuses CPU configuration before spawning workers', () => {
 
 test('WASM pool validates unknown execution clocks before spawning workers', () => {
   let spawned = false
-  t.throws(
-    () =>
-      createWorkerPoolFromFactory(
-        () => {
-          spawned = true
-          throw new Error('must not spawn')
-        },
-        // @ts-expect-error Verify the runtime boundary for untyped callers.
-        { executionClock: 'processor' },
-        1,
-      ),
-    { message: "executionClock must be 'wall' or 'cpu'" },
-  )
+  for (const executionClock of ['processor', null]) {
+    t.throws(
+      () =>
+        createWorkerPoolFromFactory(
+          () => {
+            spawned = true
+            throw new Error('must not spawn')
+          },
+          // @ts-expect-error Verify the runtime boundary for untyped callers.
+          { executionClock },
+          1,
+        ),
+      { message: "executionClock must be 'wall' or 'work'" },
+    )
+  }
   t.false(spawned)
 })
 
@@ -404,7 +417,7 @@ test.skipIf(isWasm)('native pool validates its clock and CPU wall deadline', asy
       executionClock: 'processor',
     }),
   )
-  t.true(String(invalid).includes("executionClock must be 'wall' or 'cpu'"))
+  t.true(String(invalid).includes("executionClock must be 'wall', 'cpu' or 'work'"))
   const unbounded = await t.throwsAsync(() => Monty.create({ executionClock: 'cpu' }), {
     instanceOf: MontyConfigurationError,
   })

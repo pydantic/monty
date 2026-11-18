@@ -6,6 +6,7 @@ use std::{
     str::{self, FromStr},
 };
 
+use monty_types::WorkEvent;
 use num_bigint::{BigInt, Sign};
 use num_traits::{Signed, ToPrimitive};
 use serde::de::Error as _;
@@ -812,6 +813,8 @@ impl<'h> PyTrait<'h> for Value {
         if let Self::Ref(id) = self {
             PyValue::from_heap(*id, vm.heap).py_iter(vm)
         } else {
+            // `PyValue::py_iter` charges heap iterables; these never reach it.
+            vm.heap.tracker.charge(WorkEvent::IterNew, 1);
             match self {
                 Self::InternString(id) => PyStr::Interned(*id).py_iter(vm),
                 Self::InlineString(text) => PyStr::Inline(*text).py_iter(vm),

@@ -15,6 +15,7 @@
 use strum::IntoEnumIterator;
 use strum::{EnumIter, FromRepr};
 
+use super::op_weights::OPCODE_EXTRA_MILLI_UNITS;
 use crate::{bytecode::builder::RelativeOffset, expressions::CmpOperator};
 
 /// `FormatValue` flag: a format spec was pushed onto the stack ahead of the
@@ -850,6 +851,17 @@ impl Operand<'_> {
             Self::CallKw { .. } => OperandShape::CallKw,
             Self::CallAttrKw { .. } => OperandShape::CallAttrKw,
         }
+    }
+}
+
+impl Opcode {
+    /// Thousandths of a unit this opcode is charged beyond an instruction's own.
+    ///
+    /// The weights are fitted by `make fit-work-clock`. Each handler adds its own as a constant;
+    /// a table lookup after every fetch would cost a fifth of the dispatch loop.
+    #[inline]
+    pub(crate) const fn extra_work(self) -> u64 {
+        OPCODE_EXTRA_MILLI_UNITS[self as usize] as u64
     }
 }
 

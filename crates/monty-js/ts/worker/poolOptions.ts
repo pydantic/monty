@@ -38,13 +38,15 @@ export function createWorkerPoolFromFactory(
   options: WasmPoolOptions,
   concurrency: number,
 ): Promise<Monty> {
-  if (options.executionClock === 'cpu') {
-    throw new TypeError('WebAssembly workers require executionClock: wall')
+  const executionClock = options.executionClock === undefined ? 'wall' : options.executionClock
+  if (executionClock === 'cpu') {
+    throw new TypeError("WebAssembly workers require executionClock: 'wall' or 'work'")
   }
-  if (options.executionClock !== undefined && options.executionClock !== 'wall') {
-    throw new TypeError("executionClock must be 'wall' or 'cpu'")
+  if (executionClock !== 'wall' && executionClock !== 'work') {
+    throw new TypeError("executionClock must be 'wall' or 'work'")
   }
   return WorkerPool.create(factory, {
+    executionClock,
     minWorkers: options.minProcesses,
     maxWorkers: options.maxProcesses ?? concurrency,
     maxCheckoutsPerWorker: options.maxCheckoutsPerWorker,

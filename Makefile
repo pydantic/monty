@@ -297,6 +297,27 @@ bench-pool: ## Run subprocess pool benchmarks (spawn, checkout, wire round-trips
 bench-decode: ## Run worker-frame protobuf decode benchmarks
 	cargo bench -p monty-bench --bench decode
 
+# CI passes only the report flags: it checks the reports still run, not their timings.
+CALIBRATE_ARGS ?= --check --constructs --corpus
+
+.PHONY: calibrate-work-clock
+calibrate-work-clock: calibrate-work-clock-native calibrate-work-clock-wasm ## Measure the work clock per category, construct and test case, native and wasm; fails on category drift
+
+.PHONY: calibrate-work-clock-native
+calibrate-work-clock-native:
+	cargo bench -p monty-bench --bench work_clock --no-default-features --features worker-alloc -- $(CALIBRATE_ARGS)
+
+.PHONY: calibrate-work-clock-wasm
+calibrate-work-clock-wasm: install-js
+	cd crates/monty-js && npm run build:wasm && npm run build:ts && node scripts/calibrate-work-clock.mjs $(CALIBRATE_ARGS)
+
+.PHONY: fit-work-clock
+fit-work-clock: install-js ## Fit the work clock's weights to measured wasm time and regenerate the weight tables
+	cargo bench -p monty-bench --bench work_clock --no-default-features --features work-profile -- --fit-data $(CURDIR)/target/work-clock-fit
+	cd crates/monty-js && npm run build:wasm && npm run build:ts && node scripts/calibrate-work-clock.mjs --fit-data $(CURDIR)/target/work-clock-fit
+	uv run scripts/fit_work_clock.py target/work-clock-fit --write
+	$(MAKE) format-rs
+
 .PHONY: dev-bench
 dev-bench: ## Run benchmarks to test with dev profile
 	cargo bench --profile dev -p monty-bench --bench main -- --test

@@ -2,7 +2,7 @@
 
 use std::fmt::{self, Write};
 
-use monty_types::ResourceError;
+use monty_types::{ResourceError, WorkEvent};
 
 use super::VM;
 use crate::{
@@ -322,6 +322,12 @@ impl VM<'_> {
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
+        // The operands `compare_numeric` takes without a `SlowCompare` charge.
+        let small = |value: &Value| matches!(value, Value::Int(_) | Value::Float(_));
+        let cheap = matches!(op, CmpOperator::Is | CmpOperator::IsNot) || (small(lhs) && small(rhs));
+        if !cheap {
+            this.heap.tracker.charge(WorkEvent::AssertCompare, 1);
+        }
         if this.cmp_values(op, lhs, rhs)? {
             Ok(())
         } else {

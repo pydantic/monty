@@ -15,6 +15,7 @@
 use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str};
 
 use fancy_regex::{CompileError, Error as RegexError, Regex, RegexBuilder};
+use monty_types::WorkEvent;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use smallvec::SmallVec;
 
@@ -187,8 +188,8 @@ impl RePattern {
 
     /// Builds a single `ReMatch` heap value from one match's spans (see
     /// [`ReMatch::from_spans`]), keeping the subject alive by refcount
-    /// (`subject.clone_with_heap`) rather than copying its text. `all_ascii` is
-    /// precomputed by the caller (once per `finditer`).
+    /// (`subject.clone_with_heap`) rather than copying its text. `all_ascii` must
+    /// cover the subject up to the furthest span end (see [`ReMatch`]).
     fn build_match(
         &self,
         text: &str,
@@ -214,7 +215,10 @@ impl RePattern {
     ) -> Value {
         let spans: SmallVec<[Option<(usize, usize)>; 8]> =
             caps.iter().map(|m| m.map(|m| (m.start(), m.end()))).collect();
-        self.build_match(text, &spans, subject, text.is_ascii(), heap)
+        // Offsets are only reported up to the furthest span (a lookahead group can end past
+        // the match), so an early match in a long subject never scans its tail.
+        let reported_end = spans.iter().flatten().map(|&(_, end)| end).max().unwrap_or(0);
+        self.build_match(text, &spans, subject, text[..reported_end].is_ascii(), heap)
     }
 
     /// `pattern.search(string)` — find first match anywhere in the string.
@@ -223,8 +227,15 @@ impl RePattern {
     /// borrowed contents. Returns a `ReMatch` heap object, or `Value::None`.
     pub fn search(&self, subject: &Value, text: &str, heap: &Heap) -> RunResult<Value> {
         match self.compiled.captures(text) {
-            Ok(Some(caps)) => Ok(self.build_single_match(text, &caps, subject, heap)),
-            Ok(None) => Ok(Value::None),
+            Ok(Some(caps)) => {
+                // The scan stopped at the match, so a search early in a long subject stays cheap.
+                charge_scan(caps.get(0).map_or(0, |m| m.end()), heap);
+                Ok(self.build_single_match(text, &caps, subject, heap))
+            }
+            Ok(None) => {
+                charge_scan(text.len(), heap);
+                Ok(Value::None)
+            }
             Err(err) => Err(ExcType::re_pattern_error(err)),
         }
     }
@@ -238,8 +249,14 @@ impl RePattern {
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn match_start(&self, subject: &Value, text: &str, heap: &Heap) -> RunResult<Value> {
         match self.match_regex()?.captures(text) {
-            Ok(Some(caps)) => Ok(self.build_single_match(text, &caps, subject, heap)),
-            Ok(None) => Ok(Value::None),
+            Ok(Some(caps)) => {
+                charge_scan(caps.get(0).map_or(0, |m| m.end()), heap);
+                Ok(self.build_single_match(text, &caps, subject, heap))
+            }
+            Ok(None) => {
+                charge_scan(text.len(), heap);
+                Ok(Value::None)
+            }
             Err(err) => Err(ExcType::re_pattern_error(err)),
         }
     }
@@ -252,6 +269,7 @@ impl RePattern {
     ///
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn fullmatch(&self, subject: &Value, text: &str, heap: &Heap) -> RunResult<Value> {
+        charge_scan(text.len(), heap);
         match self.fullmatch_regex()?.captures(text) {
             Ok(Some(caps)) => Ok(self.build_single_match(text, &caps, subject, heap)),
             Ok(None) => Ok(Value::None),
@@ -271,6 +289,7 @@ impl RePattern {
     /// values could not release them, since `dec_ref` needs `&mut Heap` while the
     /// match iterator borrows the compiled pattern out of it.
     pub fn findall(&self, text: &str, heap: &Heap) -> RunResult<Value> {
+        charge_scan(text.len(), heap);
         let cap_count = self.compiled.captures_len();
 
         match cap_count {
@@ -278,6 +297,7 @@ impl RePattern {
             0 | 1 => {
                 let mut matches = Vec::new();
                 for m in self.compiled.find_iter(text) {
+                    heap.tracker.charge(WorkEvent::RegexMatch, 1);
                     check_slice_growth(&matches, heap)?;
                     matches.push(m.map_err(ExcType::re_pattern_error)?.as_str());
                 }
@@ -287,6 +307,7 @@ impl RePattern {
             2 => {
                 let mut matches = Vec::new();
                 for caps in self.compiled.captures_iter(text) {
+                    heap.tracker.charge(WorkEvent::RegexMatch, 1);
                     check_slice_growth(&matches, heap)?;
                     let caps = caps.map_err(ExcType::re_pattern_error)?;
                     matches.push(caps.get(1).map_or("", |m| m.as_str()));
@@ -299,6 +320,7 @@ impl RePattern {
                 let groups = cap_count - 1;
                 let mut flat = Vec::new();
                 for caps in self.compiled.captures_iter(text) {
+                    heap.tracker.charge(WorkEvent::RegexMatch, 1);
                     let caps = caps.map_err(ExcType::re_pattern_error)?;
                     for cap in caps.iter().skip(1) {
                         check_slice_growth(&flat, heap)?;
@@ -326,14 +348,22 @@ impl RePattern {
         let rust_repl = translate_replacement(repl)?;
         let effective_count = if count == 0 { usize::MAX } else { count };
 
+        charge_scan(text.len(), heap);
         let mut result = String::new();
+        // `expand` revalidates its whole destination as UTF-8, so expanding straight
+        // into `result` would make each match cost the output so far.
+        let mut expansion = String::new();
         let mut last_end = 0;
 
-        for caps in self.compiled.captures_iter(text).take(effective_count) {
+        for (index, caps) in self.compiled.captures_iter(text).take(effective_count).enumerate() {
+            heap.tracker.charge(WorkEvent::RegexMatch, 1);
+            heap.tracker.check_time_every(index)?;
             let caps = caps.map_err(ExcType::re_pattern_error)?;
             let m = caps.get(0).expect("capture group 0 always exists");
             result.push_str(&text[last_end..m.start()]);
-            caps.expand(rust_repl.as_ref(), &mut result);
+            expansion.clear();
+            caps.expand(rust_repl.as_ref(), &mut expansion);
+            result.push_str(&expansion);
             last_end = m.end();
             // Check running size: current result + remaining unprocessed text.
             check_estimated_size(result.len() + (text.len() - last_end), &heap.tracker)?;
@@ -351,6 +381,10 @@ impl RePattern {
     /// element; if it is negative, no splits occur at all (CPython's split loop
     /// runs zero times), returning the whole subject as a single element.
     pub fn split(&self, text: &str, maxsplit: i64, heap: &Heap) -> RunResult<Value> {
+        // A negative `maxsplit` never runs the pattern.
+        if maxsplit >= 0 {
+            charge_scan(text.len(), heap);
+        }
         if self.compiled.captures_len() > 1 {
             return self.split_with_groups(text, maxsplit, heap);
         }
@@ -379,6 +413,7 @@ impl RePattern {
         let mut pieces: Vec<Option<&str>> = Vec::new();
         let mut last_end = 0;
         for caps in self.compiled.captures_iter(text).take(limit) {
+            heap.tracker.charge(WorkEvent::RegexMatch, 1);
             let caps = caps.map_err(ExcType::re_pattern_error)?;
             let m = caps.get(0).expect("capture group 0 always exists");
             check_slice_growth(&pieces, heap)?;
@@ -408,7 +443,9 @@ impl RePattern {
         let stride = self.compiled.captures_len();
         let mut spans: Vec<Option<(usize, usize)>> = Vec::new();
         let mut text_len = 0usize;
+        charge_scan(text.len(), heap);
         for (count, caps) in self.compiled.captures_iter(text).enumerate() {
+            heap.tracker.charge(WorkEvent::RegexMatch, 1);
             let caps = caps.map_err(ExcType::re_pattern_error)?;
             // `check_slice_growth` for a push of `stride` spans at once.
             heap.tracker.check_time_every(count)?;
@@ -445,6 +482,12 @@ impl RePattern {
     }
 }
 
+/// Charges the work clock for scanning `bytes` of a subject, plus one match for the call itself.
+fn charge_scan(bytes: usize, heap: &Heap) {
+    heap.tracker.charge(WorkEvent::RegexScanByte, bytes as u64);
+    heap.tracker.charge(WorkEvent::RegexMatch, 1);
+}
+
 /// Appends one match's byte spans to `spans`: the full match, then each group.
 fn push_spans(caps: &fancy_regex::Captures<'_, str>, spans: &mut Vec<Option<(usize, usize)>>) {
     spans.extend(caps.iter().map(|m| m.map(|m| (m.start(), m.end()))));
@@ -463,7 +506,8 @@ fn check_slice_growth<T>(slices: &Vec<T>, heap: &Heap) -> RunResult<()> {
         .check_growth(slices.len(), slices.capacity(), mem::size_of::<T>())?)
 }
 
-/// Collects the pieces an iterator yields, preflighting the buffer as it grows.
+/// Collects a split's pieces, preflighting the buffer as it grows and charging one
+/// match per piece, as the other scans charge per match.
 ///
 /// A split's piece buffer is bounded only by the subject and is filled before the
 /// result list exists, so the check on that list comes too late.
@@ -473,6 +517,7 @@ fn collect_slices<'t>(
 ) -> RunResult<Vec<&'t str>> {
     let mut collected = Vec::new();
     for piece in pieces {
+        heap.tracker.charge(WorkEvent::RegexMatch, 1);
         check_slice_growth(&collected, heap)?;
         collected.push(piece.map_err(ExcType::re_pattern_error)?);
     }

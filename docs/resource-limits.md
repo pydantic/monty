@@ -111,6 +111,8 @@ Local subprocess pools on macOS and Windows reject CPU mode, as do WebAssembly w
 A remote client on any platform can still use a Linux server's CPU clock.
 Workers reject CPU configuration if the initial thread CPU counter read fails.
 If the counter later fails or reverses during execution, Monty conservatively charges elapsed time for that window.
+Work mode reads no clock: it counts executed work and converts the count to time at a fixed rate.
+It runs on every platform, including WebAssembly; see [the work execution clock](#work-execution-clock).
 
 Cooperative checks reuse a CPU sample for at most 1 ms of elapsed time.
 A smaller remaining budget shortens that interval when the execution window starts.
@@ -230,6 +232,49 @@ It can expire before a CPU budget under severe contention. CPU accounting does n
 A missing clock means a legacy wall-time server. Unknown clock values fail configuration.
 Local CPU pools require the worker to acknowledge CPU mode before executing code.
 A remote client cannot independently measure a remote process.
+
+### Work execution clock
+
+Select `Monty(execution_clock='work')` in Python, `Monty.create({executionClock: 'work'})` in JavaScript,
+or `PoolConfig::execution_clock = ExecutionClock::Work` in Rust.
+A WebAssembly component host sets `execution-clock` to `work` in its `configure-request`.
+
+Work mode is for hosts whose clocks do not advance during compute, such as Cloudflare Workers, where a wall-clock
+limit never fires and every reported duration is zero.
+It also avoids the clock read at each check, which in WebAssembly crosses into JavaScript: in one measurement a loop
+that took 155 ms under Node took 957 ms with a wall-clock limit armed and 157 ms with a work-clock limit.
+
+The interpreter counts units of work and reports `units × 5 ns` (`units × 3 ns` in a native worker) wherever it would report execution time: both
+duration limits, the `TimeoutError` message and the execution time sent to telemetry.
+
+- Every bytecode instruction is charged a weight for its opcode: half a unit for the cheapest, more for those that
+    do more.
+- Native work is charged per occurrence of a named event: an item of a native loop, an item taken from an iterator,
+    a call to a closure or class, a big-integer limb product, a byte of JSON parsed, a byte a regex scans, and so on.
+- Every allocation from the worker's allocator is charged once, and again per byte, so an operation with no charge
+    of its own still costs what it allocates.
+    This needs the worker allocator: a direct `monty` embedding without `monty-alloc` charges nothing for allocation.
+    The allocator's counter is process-wide, so an embedding running several sessions at once charges each one for
+    the others' allocations; workers run one session each.
+
+No weight is written by hand.
+`make fit-work-clock` counts how often each opcode runs and each event is charged across the calibration scripts and
+the interpreter's test cases, times the same scripts in the WebAssembly build, and solves for all the weights at once.
+
+The same code is charged the same units on every run of one build, whatever else the machine is doing.
+The time is an estimate.
+The weights are fitted to the WebAssembly build under Node on one machine, and the native rate is the median measured
+for a native build on the same machine.
+In that fit 95% of 358 scripts took between two thirds and one and a half times the time reported; the rest took up to
+three and a half times as long, mostly code spending its time in native modules that have no event of their own.
+`make calibrate-work-clock` measures the rate per category, per construct and per test case.
+
+Native work with no event of its own that neither polls nor allocates is charged nothing, so keep an outer bound: `request_timeout`, or the
+platform's own CPU limit set above the largest feed limit.
+Pools arm no duration grace backstop in work mode, because counted time does not predict how long a turn takes.
+A remote client learns the clock from the first reply, so without a `request_timeout` that request alone keeps the
+wall backstop.
+Snapshots store the clock and load only under it.
 See [`PoolConfig`](api/rust/monty-pool.md#poolconfig) for the pool settings.
 
 ## Recursion

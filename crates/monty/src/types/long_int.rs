@@ -18,7 +18,7 @@ use std::{
     sync::OnceLock,
 };
 
-use monty_types::ResourceTracker;
+use monty_types::{ResourceTracker, WorkEvent};
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{FromPrimitive, One, Signed, ToPrimitive, Zero};
@@ -33,7 +33,10 @@ use crate::{
     heap::{DropWithContext, Heap, HeapData, HeapObjectRead},
     identity::Identity,
     intern::{LongIntId, StaticStrings},
-    resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size},
+    resource_checks::{
+        bigint_limbs, charge_bigint_products, charge_decimal_write, check_div_size, check_lshift_size, check_mult_size,
+        check_pow_size, multiplication_products,
+    },
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
         numeric::{round_bigint, round_digits, round_int},
@@ -111,8 +114,8 @@ impl<'h> PyInt<'h> {
     pub(crate) fn write_decimal(&self, out: &mut impl Write, vm: &VM<'h>) -> RunResult<()> {
         match self {
             Self::Small(value) => Ok(out.write_str(itoa::Buffer::new().format(*value))?),
-            Self::Interned(id) => bigint_repr_fmt(vm.interns.get_long_int(*id), out),
-            Self::Heap(value) => bigint_repr_fmt(value.get(vm.heap).inner(), out),
+            Self::Interned(id) => bigint_repr_fmt(vm.interns.get_long_int(*id), out, &vm.heap.tracker),
+            Self::Heap(value) => bigint_repr_fmt(value.get(vm.heap).inner(), out, &vm.heap.tracker),
         }
     }
 
@@ -493,8 +496,9 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
 }
 
 /// Formats large integers consistently across interned and heap storage.
-fn bigint_repr_fmt(value: &BigInt, f: &mut impl Write) -> RunResult<()> {
+fn bigint_repr_fmt(value: &BigInt, f: &mut impl Write, tracker: &ResourceTracker) -> RunResult<()> {
     check_bigint_str_digits_limit(value)?;
+    charge_decimal_write(value.bits(), tracker);
     Ok(write!(f, "{value}")?)
 }
 
@@ -870,12 +874,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        bigint_repr_fmt(self.get(vm.heap).inner(), f)
+        bigint_repr_fmt(self.get(vm.heap).inner(), f, &vm.heap.tracker)
     }
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let value = self.get(vm.heap);
         value.check_str_digits_limit()?;
+        charge_decimal_write(value.inner().bits(), &vm.heap.tracker);
         Ok(allocate_string(value.to_string(), vm.heap))
     }
 
@@ -1099,11 +1104,21 @@ pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, vm: 
 
     let modulus_abs = modulus.abs();
     // Reducing first keeps the base non-negative and no larger than the modulus.
+    charge_bigint_division(base, &modulus_abs, &heap.tracker);
     let base = base.mod_floor(&modulus_abs);
     let (base, exponent, modulus_mag) = (base.magnitude(), exponent.magnitude(), modulus_abs.magnitude());
     // A `num-bigint` digit is pointer-sized, so wasm32 counts twice as many words.
     let words = modulus_mag.bits().div_ceil(u64::from(usize::BITS));
     let work = exponent.bits().saturating_mul(words.saturating_mul(words));
+    // A square and a multiply per exponent bit, each with its reduction.
+    let limbs = bigint_limbs(modulus_mag.bits());
+    heap.tracker.charge(
+        WorkEvent::ModPowProduct,
+        exponent
+            .bits()
+            .saturating_mul(multiplication_products(limbs, limbs))
+            .saturating_mul(3),
+    );
     let result = if work <= MODPOW_UNPOLLED_WORK {
         base.modpow(exponent, modulus_mag)
     } else {
@@ -1156,7 +1171,7 @@ fn long_int_pow_value(base: &BigInt, exponent: &BigInt, heap: &Heap) -> RunResul
     } else if *base == BigInt::from(-1) {
         Ok(Some(Value::Int(if (exponent % 2i32).is_zero() { 1 } else { -1 })))
     } else if let Some(exponent) = exponent.to_u64() {
-        check_pow_size(base.bits(), exponent, &heap.tracker)?;
+        check_pow_size(base.bits(), base.trailing_zeros().unwrap_or(0), exponent, &heap.tracker)?;
         Ok(Some(LongInt::new(bigint_pow(base.clone(), exponent)).into_value(heap)))
     } else {
         Err(ExcType::overflow_exponent_too_large())
@@ -1272,11 +1287,24 @@ fn i64_bits(value: i64) -> u64 {
     u64::from(value.unsigned_abs().bit_width())
 }
 
+/// Charges the work clock for dividing `lhs` by `rhs`: schoolbook division multiplies
+/// each quotient limb by the divisor.
+pub(crate) fn charge_bigint_division(lhs: &BigInt, rhs: &BigInt, tracker: &ResourceTracker) {
+    // A dividend shorter than the divisor is returned as the remainder without dividing.
+    if let Some(quotient_bits) = lhs.bits().checked_sub(rhs.bits()) {
+        charge_bigint_products(
+            bigint_limbs(quotient_bits).saturating_mul(bigint_limbs(rhs.bits())),
+            tracker,
+        );
+    }
+}
+
 /// Builds `divmod()`'s `(quotient, remainder)` tuple for arbitrary-precision operands.
 ///
 /// `div_mod_floor` gives Python's floor semantics directly, so the remainder takes the
 /// divisor's sign. Callers must reject a zero divisor and preflight the quotient's size.
 pub(crate) fn bigint_divmod_tuple(lhs: &BigInt, rhs: &BigInt, heap: &Heap) -> Value {
+    charge_bigint_division(lhs, rhs, &heap.tracker);
     let (quotient, remainder) = lhs.div_mod_floor(rhs);
     let quotient = LongInt::new(quotient).into_value(heap);
     let remainder = LongInt::new(remainder).into_value(heap);

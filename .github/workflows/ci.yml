@@ -559,6 +559,10 @@ jobs:
 
       - run: make dev-bench
 
+      # Timings are not checked: shared runners are too noisy to gate on.
+      - name: Run the native work-clock calibration reports
+        run: make calibrate-work-clock-native CALIBRATE_ARGS='--constructs --corpus'
+
   miri:
     runs-on: ubuntu-latest
 
@@ -1316,6 +1320,12 @@ jobs:
 
       - name: Build wasm package assets and verify generated declarations
         run: make check-wasm-types
+
+      # Timings are not checked: shared runners are too noisy to gate on.
+      - name: Run the wasm work-clock calibration reports
+        # `check-wasm-types` has just built what `make calibrate-work-clock-wasm` would rebuild.
+        run: node scripts/calibrate-work-clock.mjs --constructs --corpus
+        working-directory: crates/monty-js
 
       - name: Upload artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

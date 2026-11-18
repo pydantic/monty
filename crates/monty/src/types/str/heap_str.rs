@@ -67,15 +67,6 @@ impl HeapStr {
             ascii
         }
     }
-
-    /// The length in Unicode code points, as Python's `len()` reports it.
-    pub fn char_len(&self) -> usize {
-        if self.is_ascii() {
-            self.text.len()
-        } else {
-            self.text.chars().count()
-        }
-    }
 }
 
 impl ops::Deref for HeapStr {
@@ -107,7 +98,6 @@ mod tests {
 
         let borrowed: &str = &hashed;
         assert_eq!(borrowed, text);
-        assert_eq!(hashed.char_len(), 4);
         assert!(!hashed.is_ascii());
     }
 }

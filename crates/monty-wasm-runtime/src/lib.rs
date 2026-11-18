@@ -31,10 +31,10 @@ mod frame;
 mod value;
 
 use bindings::exports::pydantic::monty::worker::{
-    CallResult, CompleteEvent, ConfigureRequest, DatetimeSource, DispatchResult, Event, FrameResult, FunctionCallEvent,
-    Guest, NameLookupEvent, NameLookupResult, OsCallEvent, OsPolicy, PrintEvent, ProcessTime, RaisedError,
-    RaisedException, RandomSeed, RandomStart, Request, ResolveFuturesEvent, SleepMode, SourceRange, StackFrame, Status,
-    TimeZone, TypeCheckFormat,
+    CallResult, CompleteEvent, ConfigureRequest, DatetimeSource, DispatchResult, Event, ExecutionClock, FrameResult,
+    FunctionCallEvent, Guest, NameLookupEvent, NameLookupResult, OsCallEvent, OsPolicy, PrintEvent, ProcessTime,
+    RaisedError, RaisedException, RandomSeed, RandomStart, Request, ResolveFuturesEvent, SleepMode, SourceRange,
+    StackFrame, Status, TimeZone, TypeCheckFormat,
 };
 
 thread_local! {
@@ -389,7 +389,10 @@ fn request_from_component(request: Request) -> Result<pb::ClientRequest, String>
 fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
     pb::Configure {
         script_name: request.script_name,
-        execution_clock: Some(pb::ExecutionClock::Wall as i32),
+        execution_clock: Some(match request.execution_clock {
+            None | Some(ExecutionClock::Wall) => pb::ExecutionClock::Wall,
+            Some(ExecutionClock::Work) => pb::ExecutionClock::Work,
+        } as i32),
         limits: request.limits.map(|limits| pb::ResourceLimits {
             max_feed_duration_micros: limits.max_feed_duration_micros,
             max_turn_duration_micros: limits.max_turn_duration_micros,

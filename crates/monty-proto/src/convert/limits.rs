@@ -58,6 +58,7 @@ impl From<ExecutionClock> for pb::ExecutionClock {
         match clock {
             ExecutionClock::Wall => Self::Wall,
             ExecutionClock::Cpu => Self::Cpu,
+            ExecutionClock::Work => Self::Work,
         }
     }
 }
@@ -67,6 +68,7 @@ impl From<pb::ExecutionClock> for ExecutionClock {
         match clock {
             pb::ExecutionClock::Wall => Self::Wall,
             pb::ExecutionClock::Cpu => Self::Cpu,
+            pb::ExecutionClock::Work => Self::Work,
         }
     }
 }
