@@ -1820,57 +1820,57 @@ impl<'heap> PyAttrs<'heap> for PyDecimalImpl {
     }
 
     #[pymethod(DunderCopy)]
-    fn dunder_copy<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn __copy__<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderCopy, args, vm)
     }
 
     #[pymethod(DunderDeepcopy)]
-    fn dunder_deepcopy<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn __deepcopy__<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderDeepcopy, args, vm)
     }
 
     #[pymethod(DunderReduce)]
-    fn dunder_reduce<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn __reduce__<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderReduce, args, vm)
     }
 
     #[pymethod(DunderFormat)]
-    fn dunder_format<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn __format__<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderFormat, args, vm)
     }
 
     #[pymethod(DunderRound)]
-    fn dunder_round<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn __round__<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderRound, args, vm)
     }
 
     #[pymethod(DunderComplex)]
-    fn dunder_complex<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn __complex__<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderComplex, args, vm)
     }
 
     #[pymethod(DunderFloat)]
-    fn dunder_float<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn __float__<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderFloat, args, vm)
     }
 
     #[pymethod(DunderInt)]
-    fn dunder_int<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn __int__<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderInt, args, vm)
     }
 
     #[pymethod(DunderTrunc)]
-    fn dunder_trunc<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn __trunc__<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderTrunc, args, vm)
     }
 
     #[pymethod(DunderFloor)]
-    fn dunder_floor<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn __floor__<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderFloor, args, vm)
     }
 
     #[pymethod(DunderCeil)]
-    fn dunder_ceil<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn __ceil__<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderCeil, args, vm)
     }
 

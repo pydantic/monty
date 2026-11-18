@@ -719,7 +719,7 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
     }
 
     #[pymethod(Fspath)]
-    fn fspath<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn __fspath__<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let method = StaticStrings::Fspath;
         ({
             args.check_zero_args(method.into(), vm.heap)?;

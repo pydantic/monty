@@ -2343,7 +2343,7 @@ impl<'heap> PyAttrs<'heap> for PyDefaultDictImpl {
     }
 
     #[pymethod(DunderMissing)]
-    fn dunder_missing<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn __missing__<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let key = args.get_one_arg("__missing__", vm.heap)?;
             defer_drop!(key, vm);

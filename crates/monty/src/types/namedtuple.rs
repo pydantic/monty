@@ -1347,7 +1347,7 @@ impl<'heap> PyAttrs<'heap> for PyNamedTupleImpl {
     }
 
     #[pymethod(DunderGetnewargs)]
-    fn dunder_getnewargs<'h>(
+    fn __getnewargs__<'h>(
         this: &mut HeapObjectRead<'h, NamedTuple>,
         args: ArgValues,
         vm: &mut VM<'h>,

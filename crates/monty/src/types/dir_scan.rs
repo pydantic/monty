@@ -1080,7 +1080,11 @@ impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
     }
 
     #[pymethod(Fspath)]
-    fn fspath<'h>(this: &mut HeapObjectRead<'h, DirScan>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn __fspath__<'h>(
+        this: &mut HeapObjectRead<'h, DirScan>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
         let DirScan::Entry(entry) = this.get(vm.heap) else {
             unreachable!("DirEntry table receiver")
         };

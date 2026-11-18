@@ -26,22 +26,22 @@ impl<'h> PyAttrs<'h> for PyObjectImpl {
     type Receiver = HeapRead<'h, Instance>;
 
     #[pyvalue(DunderSetattr)]
-    fn setattr(_vm: &mut VM<'_>) -> Value {
+    fn __setattr__(_vm: &mut VM<'_>) -> Value {
         Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectSetattr))
     }
 
     #[pyvalue(DunderNew)]
-    fn object_new(_vm: &mut VM<'_>) -> Value {
+    fn __new__(_vm: &mut VM<'_>) -> Value {
         Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectNew))
     }
 
     #[pyvalue(DunderInit)]
-    fn init(_vm: &mut VM<'_>) -> Value {
+    fn __init__(_vm: &mut VM<'_>) -> Value {
         Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInit))
     }
 
     #[pyvalue(DunderInitSubclass)]
-    fn init_subclass(_vm: &mut VM<'_>) -> Value {
+    fn __init_subclass__(_vm: &mut VM<'_>) -> Value {
         Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass))
     }
 }

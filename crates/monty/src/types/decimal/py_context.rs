@@ -874,7 +874,7 @@ impl<'heap> PyAttrs<'heap> for PyContextImpl {
     }
 
     #[pymethod(DunderCopy)]
-    fn dunder_copy<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn __copy__<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("Context.__copy__", vm.heap)?;
         let settings = *value.get(vm.heap);
         Ok(Value::Ref(vm.heap.allocate(HeapData::DecimalContext(settings))))
@@ -1304,7 +1304,7 @@ impl<'heap> PyAttrs<'heap> for PySignalDictImpl {
     }
 
     #[pymethod(DunderDelitem)]
-    fn dunder_delitem<'h>(_: &HeapObjectRead<'h, SignalDict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn __delitem__<'h>(_: &HeapObjectRead<'h, SignalDict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.drop_with(vm);
         Err(ExcType::value_error("signal keys cannot be deleted"))
     }
