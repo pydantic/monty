@@ -148,8 +148,11 @@ fn dispatch(worker: &mut Worker, request: Request) -> DispatchResult {
             HandleOutcome::Shutdown
         }
     };
+    // A fatal event retires the component even when the worker would carry on,
+    // e.g. one parked on a `HostTypeCheck` this typed export cannot answer.
+    let fatal = sink.events.iter().any(|event| matches!(event, Event::FatalError(_)));
     DispatchResult {
-        status: if matches!(outcome, HandleOutcome::Continue) {
+        status: if matches!(outcome, HandleOutcome::Continue) && !fatal {
             Status::Continue
         } else {
             Status::Shutdown

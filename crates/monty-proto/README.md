@@ -166,6 +166,8 @@ The `host-type-checking` feature serves type-checked sessions without linking ty
 type-check state but hands every check to its host as a `WorkerEvent.host_type_check`, and runs or rejects the snippet
 on the host's `ClientRequest.host_type_check_result`. Both messages are host-internal, never seen by a client, so only
 a host that answers them may build the worker this way; `type-checking` wins when both are on.
+The worker builds every field of a `host_type_check`, so the host must treat it as untrusted and bound the check
+itself (nesting depth, memory, time): the worker's nesting check and allocator ceiling do not cover it.
 A worker built with neither refuses a `Configure` with `type_check` set and a `Load` of a type-checked dump.
 `monty-runtime` always enables `type-checking`; `monty-wasm-runtime` enables it by default.
 

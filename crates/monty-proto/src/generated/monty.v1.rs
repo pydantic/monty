@@ -1614,7 +1614,9 @@ pub struct DumpResult {
 /// with `ClientRequest.host_type_check_result`. The worker keeps all of the
 /// session's type-check state; this carries everything one check needs, and
 /// the host must answer it before forwarding any other request. A host that
-/// cannot answer must not build the worker with that feature.
+/// cannot answer must not build the worker with that feature. Every field is
+/// untrusted worker output: the host must bound the check itself (nesting
+/// depth, memory, time).
 #[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct HostTypeCheck {

@@ -251,6 +251,7 @@ testcov: ## Run Rust tests with coverage, print table, and generate HTML report
 	cargo llvm-cov run --no-report -p monty-datatest --features ref-count-return
 	echo "coverage for `make test-type-checking`"
 	cargo llvm-cov --no-report -p monty-type-checking -p monty-typeshed
+	cargo llvm-cov --no-report -p monty-proto --features host-type-checking --test host_type_checking
 	echo "Generating reports:"
 	cargo llvm-cov report --ignore-filename-regex '(tests/|test_cases/|/tests\.rs$$)'
 	cargo llvm-cov report --html --ignore-filename-regex '(tests/|test_cases/|/tests\.rs$$)'
