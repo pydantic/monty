@@ -1,6 +1,5 @@
-//! `strftime` behaviour that can't live in the dual-run `test_cases/` harness
-//! because the reference (the *host* CPython the harness compares against)
-//! differs by platform.
+//! Date/time formatting and parsing checks that cannot use the dual-run harness:
+//! platform-specific results, documented divergences and hostile formats.
 //!
 //! For an **unrecognised** directive, Monty deliberately matches **glibc/Linux**
 //! CPython: the directive is passed through verbatim (`strftime('%Q') == '%Q'`).
@@ -178,6 +177,25 @@ fn date_strptime_is_not_implemented() {
     AttributeError: type object 'datetime.date' has no attribute 'strptime'
     "#
     );
+}
+
+/// Ambiguous repeated fields must fail without exponential retries or recursion.
+/// CPython rejects the duplicate groups at format compilation, so this is one-sided.
+#[test]
+fn hostile_strptime_fields_do_not_cause_exponential_backtracking() {
+    let code = r"
+from datetime import datetime
+text = '1' * 36 + 'Y'
+fmt = '%H' * 24 + 'X'
+try:
+    datetime.strptime(text, fmt)
+    assert False, 'expected the final literal to fail'
+except ValueError as exc:
+    assert str(exc) == f'time data {text!r} does not match format {fmt!r}'
+True
+";
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::bool(true));
 }
 
 /// A `%z` offset carrying a colon before its seconds only. Both interpreters

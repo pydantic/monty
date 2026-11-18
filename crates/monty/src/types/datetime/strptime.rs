@@ -1,5 +1,6 @@
 //! Python `strptime` parsing without Jiff's hour and leap-second normalization.
 
+use ahash::AHashSet;
 use jiff::{
     civil::{Date as CivilDate, DateTime as CivilDateTime, Time as CivilTime},
     fmt::strtime::BrokenDownTime,
@@ -83,58 +84,134 @@ enum ClockHour {
     Twelve(i8),
 }
 
-/// Matches raw clock and zone fields before Jiff can discard their original values.
-/// Placeholders keep neighboring fields and whitespace separate in the final parse.
-fn match_fields<'a>(mut input: &'a str, mut format: &str, zones: Option<&[String; 2]>) -> Option<MatchedFields<'a>> {
+/// A tentative field match and the shorter numeric choice it can retry.
+struct FieldMatch<'f> {
+    before: &'f str,
+    after: &'f str,
+    field: char,
+    input_start: usize,
+    field_start: usize,
+    len: usize,
+    shorter: Option<usize>,
+}
+
+/// Matches raw clock and zone fields before Jiff normalizes their values.
+/// Failed suffixes are memoized so ambiguous numeric fields cannot cause exponential retries.
+fn match_fields<'a>(input: &'a str, mut format: &str, zones: Option<&[String; 2]>) -> Option<MatchedFields<'a>> {
+    let mut fields = Vec::new();
+    let mut failed = AHashSet::default();
+    let mut at = 0;
+    loop {
+        if !failed.contains(&(format.len(), at)) {
+            if let Some((before, field, after)) = split_field(format) {
+                if let Ok((_, consumed)) = BrokenDownTime::parse_prefix(before, &input[at..])
+                    && let Some((len, shorter)) = field_lengths(&input[at + consumed..], field, zones)
+                {
+                    fields.push(FieldMatch {
+                        before,
+                        after,
+                        field,
+                        input_start: at,
+                        field_start: at + consumed,
+                        len,
+                        shorter,
+                    });
+                    at += consumed + len;
+                    format = after;
+                    continue;
+                }
+            } else if let Ok((_, consumed)) = BrokenDownTime::parse_prefix(format, &input[at..]) {
+                return collect_fields(input, &fields, format, at, consumed);
+            }
+        }
+        failed.insert((format.len(), at));
+        (at, format) = retry_field(&mut fields, &mut failed)?;
+    }
+}
+
+/// Retries the nearest shorter field without recursion or copying partial buffers.
+fn retry_field<'f>(
+    fields: &mut Vec<FieldMatch<'f>>,
+    failed: &mut AHashSet<(usize, usize)>,
+) -> Option<(usize, &'f str)> {
+    while let Some(mut field) = fields.pop() {
+        if let Some(shorter) = field.shorter.take() {
+            field.len = shorter;
+            let next = (field.field_start + shorter, field.after);
+            fields.push(field);
+            return Some(next);
+        }
+        failed.insert((field.before.len() + 2 + field.after.len(), field.input_start));
+    }
+    None
+}
+
+/// Returns the greedy token length and any shorter numeric alternative.
+fn field_lengths(input: &str, field: char, zones: Option<&[String; 2]>) -> Option<(usize, Option<usize>)> {
+    let len = match field {
+        'H' | 'I' | 'S' => {
+            let (_, len) = clock_number(input, field)?;
+            let shorter = input
+                .get(..1)
+                .and_then(|prefix| clock_number(prefix, field))
+                .map(|(_, shorter)| shorter)
+                .filter(|shorter| *shorter < len);
+            return Some((len, shorter));
+        }
+        'p' => {
+            let meridiem = input.get(..2)?;
+            if !meridiem.eq_ignore_ascii_case("am") && !meridiem.eq_ignore_ascii_case("pm") {
+                return None;
+            }
+            2
+        }
+        'Z' => zone_length(input, zones)?,
+        'z' => offset_at(input)?.len,
+        _ => unreachable!("split_field only returns supported clock and zone fields"),
+    };
+    Some((len, None))
+}
+
+/// Builds normalized buffers only after the complete format has matched.
+/// Literal placeholders keep neighboring fields and whitespace separate.
+fn collect_fields<'a>(
+    input: &'a str,
+    fields: &[FieldMatch<'_>],
+    tail: &str,
+    at: usize,
+    consumed: usize,
+) -> Option<MatchedFields<'a>> {
     let mut matched = MatchedFields::default();
-    while let Some((before, field, after)) = split_field(format) {
-        let (_, consumed) = BrokenDownTime::parse_prefix(before, input).ok()?;
-        matched.format.push_str(before);
-        matched.input.push_str(&input[..consumed]);
-        input = &input[consumed..];
-        let consumed = match field {
+    for field in fields {
+        matched.format.push_str(field.before);
+        matched.input.push_str(&input[field.input_start..field.field_start]);
+        let token = &input[field.field_start..field.field_start + field.len];
+        match field.field {
             'H' | 'I' | 'S' => {
-                let (low, high) = match field {
-                    'H' => (0, 23),
-                    'I' => (1, 12),
-                    _ => (0, 61),
-                };
-                let (value, len) = clock_number(input, low, high)?;
-                match field {
+                let (value, _) = clock_number(token, field.field)?;
+                match field.field {
                     'H' => matched.hour = Some(ClockHour::TwentyFour(value)),
                     'I' => matched.hour = Some(ClockHour::Twelve(value)),
                     _ => matched.second = Some(value),
                 }
-                len
             }
-            'p' => {
-                let meridiem = input.get(..2)?;
-                if !meridiem.eq_ignore_ascii_case("am") && !meridiem.eq_ignore_ascii_case("pm") {
-                    return None;
-                }
-                matched.pm = meridiem.eq_ignore_ascii_case("pm");
-                2
-            }
-            'Z' => zone_length(input, zones)?,
+            'p' => matched.pm = token.eq_ignore_ascii_case("pm"),
+            'Z' => {}
             'z' => {
-                let token = offset_at(input)?;
-                matched.offset_seconds = Some(token.offset_seconds);
-                if !token.colons_agree {
-                    matched.inconsistent_offset = Some(&input[..token.len]);
+                let offset = offset_at(token)?;
+                matched.offset_seconds = Some(offset.offset_seconds);
+                if !offset.colons_agree {
+                    matched.inconsistent_offset = Some(token);
                 }
-                token.len
             }
             _ => unreachable!("split_field only returns supported clock and zone fields"),
-        };
+        }
         matched.format.push('@');
         matched.input.push('@');
-        input = &input[consumed..];
-        format = after;
     }
-    let (_, consumed) = BrokenDownTime::parse_prefix(format, input).ok()?;
-    matched.format.push_str(format);
-    matched.input.push_str(&input[..consumed]);
-    matched.remaining = &input[consumed..];
+    matched.format.push_str(tail);
+    matched.input.push_str(&input[at..at + consumed]);
+    matched.remaining = &input[at + consumed..];
     Some(matched)
 }
 
@@ -152,19 +229,28 @@ fn split_field(format: &str) -> Option<(&str, char, &str)> {
     None
 }
 
-/// Matches Python's one- or two-digit clock fields, preferring a valid pair.
-fn clock_number(input: &str, low: i8, high: i8) -> Option<(i8, usize)> {
-    let first = i8::try_from(input.as_bytes().first()?.checked_sub(b'0')?).ok()?;
+/// Matches a clock field greedily; only hours allow a space-padded single digit.
+fn clock_number(input: &str, field: char) -> Option<(i8, usize)> {
+    let (low, high) = match field {
+        'H' => (0, 23),
+        'I' => (1, 12),
+        _ => (0, 61),
+    };
+    let padded = matches!(field, 'H' | 'I') && input.starts_with(' ');
+    let digits = &input[usize::from(padded)..];
+    let first = i8::try_from(digits.as_bytes().first()?.checked_sub(b'0')?).ok()?;
     if first > 9 {
         return None;
     }
-    if let Some(second) = input.as_bytes().get(1).filter(|c| c.is_ascii_digit()) {
+    if !padded && let Some(second) = digits.as_bytes().get(1).filter(|c| c.is_ascii_digit()) {
         let value = first * 10 + i8::try_from(second - b'0').ok()?;
         if (low..=high).contains(&value) {
             return Some((value, 2));
         }
     }
-    (low..=high).contains(&first).then_some((first, 1))
+    (low..=high)
+        .contains(&first)
+        .then_some((first, 1 + usize::from(padded)))
 }
 
 /// Matches UTC/GMT or a session zone abbreviation without consuming a following literal.

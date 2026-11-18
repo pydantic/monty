@@ -622,12 +622,13 @@ pub(crate) fn class_strptime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Valu
         return Err(ExcType::second_out_of_range(second));
     }
 
-    let dt = DateTime {
+    let mut dt = DateTime {
         naive,
         offset_seconds,
         timezone_name: None,
         tzinfo_ref: None,
     };
+    attach_or_allocate_tzinfo_ref(&mut dt, None, heap);
     Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))))
 }
 

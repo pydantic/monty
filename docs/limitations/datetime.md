@@ -105,6 +105,8 @@ Class methods supported: `now(tz=None)`, `fromtimestamp(timestamp, tz=None)`, `s
     host's `time.tzname`.
     A named session zone with a `'call_host'` clock has no year to obtain its abbreviations from, so only UTC and GMT
     are accepted in that configuration.
+- Repeated clock or zone directives in `strptime()` are not rejected when compiling the format.
+    For example, `'%H%H'` can parse successfully, whereas CPython raises `re.PatternError` for a duplicate group name.
 - `strptime()`'s `%z` takes a sign, hours and minutes with an optional colon, optional seconds, or a bare `Z`,
     but rejects CPython's fractional form: `'+010203.123456'`, where CPython attaches an offset carrying
     those microseconds, which no Monty offset can hold (see [`timezone`](#timezone)).

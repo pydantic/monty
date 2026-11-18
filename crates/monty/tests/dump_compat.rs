@@ -617,6 +617,40 @@ fn persisted_calendar_hashes_are_stable() {
     assert_snapshot!(lookups.py_repr(), @"(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)");
 }
 
+/// Parsed timezones retain their Python identity and ownership across a dump.
+#[test]
+fn parsed_datetime_retains_timezone_identity() {
+    let mut repl = MontyRepl::new("zones.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "from datetime import datetime, timedelta\n\
+         parsed = [datetime.strptime('2024-01-01 ' + offset, '%Y-%m-%d %z') \
+         for offset in ['+0100', '-0530', '+0000']]\n\
+         zones = [value.tzinfo for value in parsed]\n\
+         identities = [id(zone) for zone in zones]",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("zones.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("dump was idle");
+    };
+    let checked = restored
+        .feed_run(
+            r"for value, zone, identity in zip(parsed, zones, identities):
+    assert value.tzinfo is zone
+    assert id(value.tzinfo) == identity
+    assert value.replace().tzinfo is zone
+    assert value.timetz().tzinfo is zone
+    assert (value + timedelta(days=1)).tzinfo is zone
+True",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(checked, MontyObject::bool(true));
+}
+
 /// The fixture for the current `DUMP_VERSION`; the name carries the version so
 /// a bump creates a new fixture while older supported fixtures remain for compatibility tests.
 fn fixture_path() -> PathBuf {

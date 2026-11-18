@@ -68,6 +68,12 @@ assert (timed.tm_year, timed.tm_mon, timed.tm_mday) == (1900, 1, 1)
 assert (timed.tm_hour, timed.tm_min) == (12, 30)
 assert time.strptime('45', '%M')[:6] == (1900, 1, 1, 0, 45, 0)
 assert time.strptime('2024-06', '%Y-%m')[:6] == (2024, 6, 1, 0, 0, 0)
+assert time.strptime('120', '%H20')[:6] == (1900, 1, 1, 1, 0, 0)
+assert time.strptime('120', '%I20')[:6] == (1900, 1, 1, 1, 0, 0)
+assert time.strptime('120', '%S20')[:6] == (1900, 1, 1, 0, 0, 1)
+assert time.strptime('1120', '%H%I20')[:6] == (1900, 1, 1, 1, 0, 0)
+assert time.strptime(' 1', '%H').tm_hour == 1
+assert time.strptime(' 1', '%I').tm_hour == 1
 # the default format is asctime's own, so the two round-trip
 assert time.strptime(time.asctime(epoch))[:6] == epoch[:6]
 
@@ -144,6 +150,10 @@ check(lambda: time.strftime('%Y', (2024, 1, 1, 0, 0, 0, 0, -5, -1)), 'ValueError
 assert time.mktime((2024, 1, 1, 0, 0, 0, -2, 367, -1)) == time.mktime((2024, 1, 1, 0, 0, 0, 0, 1, -1))
 check(lambda: time.strptime('nope', '%Y'), "ValueError: time data 'nope' does not match format '%Y'")
 check(lambda: time.strptime('12:30 extra', '%H:%M'), 'ValueError: unconverted data remains:  extra')
+check(lambda: time.strptime('120x', '%H20'), 'ValueError: unconverted data remains: x')
+check(lambda: time.strptime('122020', '%H20'), 'ValueError: unconverted data remains: 20')
+check(lambda: time.strptime(' 12', '%H'), 'ValueError: unconverted data remains: 2')
+check(lambda: time.strptime(' 1', '%S'), "ValueError: time data ' 1' does not match format '%S'")
 check(
     lambda: time.strptime('2024-06-15 +0100 extra', '%Y-%m-%d %z'),
     'ValueError: unconverted data remains:  extra',

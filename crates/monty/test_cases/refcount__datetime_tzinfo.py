@@ -62,6 +62,24 @@ def via_fromisoformat():
     return d.hour
 
 
+def via_strptime():
+    # Parsed offsets must own one timezone, including when the datetime dies first.
+    for offset in ['+0100', '-0530', '+010203', '+0000']:
+        d = datetime.strptime('2020-01-01 12:00 ' + offset, '%Y-%m-%d %H:%M %z')
+        parsed_tz = d.tzinfo
+        assert d.tzinfo is parsed_tz
+        assert d.replace(minute=30).tzinfo is parsed_tz
+        assert d.replace(tzinfo=None).tzinfo is None
+        assert (d + timedelta(days=1)).tzinfo is parsed_tz
+        assert (d - timedelta(days=1)).tzinfo is parsed_tz
+        t = d.timetz()
+        assert t.tzinfo is parsed_tz
+        d = None
+        assert t.tzinfo is parsed_tz
+        assert datetime.combine(date(2020, 1, 1), t).tzinfo is parsed_tz
+    return 12
+
+
 def via_tzinfo_methods():
     # `utcoffset()` / `tzname()` / `timestamp()` each read the owned zone
     d = datetime(2020, 1, 1, 12, tzinfo=tz)
@@ -78,5 +96,6 @@ for _ in range(3):
     assert via_naive_temporary() == 12
     assert via_timetz_and_combine() == 12
     assert via_fromisoformat() == 12
+    assert via_strptime() == 12
     assert via_tzinfo_methods() == 12
 # ref-counts={'tz': 1}

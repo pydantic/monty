@@ -163,11 +163,37 @@ assert datetime.datetime.strptime('2024-06-15 12:30 Z', '%Y-%m-%d %H:%M %z').tzi
 # a format without %z stays naive, and %%z is a literal
 assert datetime.datetime.strptime('2024-06-15 12:30', '%Y-%m-%d %H:%M').tzinfo is None
 assert datetime.datetime.strptime('2024-06-15 %z', '%Y-%m-%d %%z').tzinfo is None
-# %Z matches a name and discards it, as CPython does for a name it cannot resolve
+# %Z validates a name without attaching tzinfo
 assert datetime.datetime.strptime('2024-06-15 12:30 UTC', '%Y-%m-%d %H:%M %Z').tzinfo is None
 # strftime and strptime round trip through the offset
 _rt = datetime.datetime(2024, 6, 15, 12, 30, tzinfo=datetime.timezone(datetime.timedelta(hours=-5)))
 assert datetime.datetime.strptime(_rt.strftime('%Y-%m-%d %H:%M %z'), '%Y-%m-%d %H:%M %z') == _rt
+
+# === strptime numeric fields retry shorter matches when the suffix requires it ===
+for _text, _format, _expected in [
+    ('120', '%H20', datetime.datetime(1900, 1, 1, 1)),
+    ('120', '%I20', datetime.datetime(1900, 1, 1, 1)),
+    ('120', '%S20', datetime.datetime(1900, 1, 1, 0, 0, 1)),
+    ('1120', '%H%I20', datetime.datetime(1900, 1, 1, 1)),
+    ('0120', '%H120', datetime.datetime(1900, 1, 1)),
+    ('12PM', '%I2%p', datetime.datetime(1900, 1, 1, 13)),
+    ('123', '%H%M', datetime.datetime(1900, 1, 1, 12, 3)),
+    (' 0', '%H', datetime.datetime(1900, 1, 1)),
+    (' 1', '%H', datetime.datetime(1900, 1, 1, 1)),
+    (' 1', '%I', datetime.datetime(1900, 1, 1, 1)),
+    (' 9', '%I', datetime.datetime(1900, 1, 1, 9)),
+    (' 120', '%H20', datetime.datetime(1900, 1, 1, 1)),
+    (' 120', '%I20', datetime.datetime(1900, 1, 1, 1)),
+    (' 1 PM', '%I %p', datetime.datetime(1900, 1, 1, 13)),
+    ('PM 1', '%p%I', datetime.datetime(1900, 1, 1, 13)),
+]:
+    assert datetime.datetime.strptime(_text, _format) == _expected
+for _text, _format in [('  1', '%H'), (' 0', '%I'), (' 1', '%S')]:
+    try:
+        datetime.datetime.strptime(_text, _format)
+        assert False, 'expected ValueError for invalid clock padding'
+    except ValueError as exc:
+        assert str(exc) == f'time data {_text!r} does not match format {_format!r}'
 
 # === strptime meridiem affects only the 12-hour clock ===
 for _text, _format, _hour in [
@@ -196,6 +222,7 @@ for _text, _format, _second in [
     ('23:59:61.123456', '%H:%M:%S.%f', 61),
     ('23:59:60', '%X', 60),
     ('60', '%S', 60),
+    ('6020', '%S20', 60),
 ]:
     try:
         datetime.datetime.strptime('2024-01-01 ' + _text, '%Y-%m-%d ' + _format)
@@ -268,6 +295,9 @@ for _text, _format, _remaining in [
     ('2024-06-15 extra日', '%Y-%m-%d', ' extra日'),
     ('2024-06-15 ', '%Y-%m-%d', ' '),
     ('extra', '', 'extra'),
+    ('120x', '%H20', 'x'),
+    ('122020', '%H20', '20'),
+    (' 12', '%H', '2'),
     ('2024-01-01 UTCextra', '%Y-%m-%d %Z', 'extra'),
     ('2024-01-01 UTC,extra', '%Y-%m-%d %Z,', 'extra'),
     ('2024-01-01 23:59:60 extra', '%Y-%m-%d %H:%M:%S', ' extra'),
