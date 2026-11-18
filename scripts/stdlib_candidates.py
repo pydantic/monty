@@ -203,8 +203,8 @@ def syntax_blockers(module: str, lib: Path) -> Counter[str] | None:
 class SyntaxScan(ast.NodeVisitor):
     """Counts the constructs Monty rejects before running any code, named by the error Monty raises for each.
 
-    The rules mirror the `not_implemented` rejections in `crates/monty/src/parse.rs` (plus star and relative imports,
-    rejected there with other errors): update them when Monty gains a feature, or the report overstates the work left.
+    The rules mirror the `not_implemented` rejections in `crates/monty/src/parse.rs` (plus relative imports,
+    rejected there with an `ImportError`): update them when Monty gains a feature.
     Rare rejections (unsupported `__future__` features, walrus in class bodies, class members shadowing a captured
     variable) are not checked.
     """
@@ -235,8 +235,6 @@ class SyntaxScan(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.level:
             self.blockers['relative imports'] += 1
-        if any(alias.name == '*' for alias in node.names):
-            self.blockers['wildcard imports (`from ... import *`)'] += 1
 
     def visit_Yield(self, node: ast.Yield) -> None:
         self.blockers['yield expressions'] += 1
@@ -256,8 +254,11 @@ class SyntaxScan(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        if node.bases or node.keywords:
-            self.blockers['class inheritance and metaclasses'] += 1
+        for keyword in node.keywords:
+            if keyword.arg == 'metaclass':
+                self.blockers['metaclasses'] += 1
+            elif keyword.arg is None:
+                self.blockers['**kwargs unpacking in class definition'] += 1
         for stmt in node.body:
             if blocker := class_body_blocker(stmt):
                 self.blockers[blocker] += 1

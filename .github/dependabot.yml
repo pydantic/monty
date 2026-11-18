@@ -7,3 +7,44 @@ updates:
       interval: monthly
     cooldown:
       default-days: 7
+    groups:
+      github-actions:
+        patterns:
+          - '*'
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      rust:
+        patterns:
+          - '*'
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        patterns:
+          - '*'
+
+  - package-ecosystem: npm
+    directories:
+      - /crates/monty-js
+      - /crates/monty-js/smoke-test
+      - /examples/antigravity
+      - /examples/classes
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      javascript:
+        patterns:
+          - '*'

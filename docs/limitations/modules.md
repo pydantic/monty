@@ -11,7 +11,7 @@ Every import of a native module builds a fresh module object; there is no `sys.m
 [vendored CPython modules](#vendored-cpython-modules) and [modules from files](#modules-from-files).
 Thus `import math as a; import math as b` leaves `a is not b`, and changes such as `sys.argv.append(...)` do not
 survive the next import.
-Assigning a bundled module's attributes raises `AttributeError`, as in `sys.x = 1`.
+Assigning a native module's attributes raises `AttributeError`, as in `sys.x = 1`.
 [Host modules](#host-modules) are module objects too, bound afresh by every import.
 The one exception is `random`'s module-level generator, which is session
 state: a `random.seed(...)` is still in effect after a later `import random`,
@@ -109,20 +109,38 @@ They differ from CPython's modules in how they are loaded:
 - The host is never asked for these names, so neither a host module nor a same-named `.py` file in the working
     directory can shadow them; in CPython a script's directory comes before the standard library on `sys.path`.
 
-`keyword` and `stat` are patched (`crates/monty/stdlib/patches/`), with these consequences:
+Monty patches `keyword.iskeyword` and `keyword.issoftkeyword` to be Python functions, where CPython binds
+`frozenset.__contains__`.
+A wrong argument count raises `TypeError: iskeyword() missing 1 required positional argument: 's'` (CPython:
+`frozenset.__contains__() takes exactly one argument (0 given)`), and their `repr()` differs.
 
-- `keyword.iskeyword` and `keyword.issoftkeyword` are Python functions, where CPython binds
-    `frozenset.__contains__`: a wrong argument count raises
-    `TypeError: iskeyword() missing 1 required positional argument: 's'` (CPython:
-    `frozenset.__contains__() takes exactly one argument (0 given)`), and their `repr()` differs.
-- `stat` is CPython's pure-Python definitions without the C `_stat` accelerator CPython loads over them, so:
-    - Its functions are Python functions with Python's argument errors.
-    - A non-`int` mode raises `TypeError: unsupported operand type(s) for &: 'str' and 'int'`
-        (CPython: `'str' object cannot be interpreted as an integer`).
-    - Negative and oversized modes are masked rather than rejected: `stat.S_ISDIR(-1)` returns `False` where CPython
-        raises `OverflowError: can't convert negative value to unsigned int`.
-    - Platform-specific constants take `stat.py`'s portable values on every host: `S_IFWHT` is `0` and
-        `SF_SETTABLE` is `0xffff0000`, where CPython on macOS reports `0o160000` and `0x3fff0000`.
+`stat` tries to import the optional `_stat` accelerator, which Monty does not bundle.
+Unless the host provides `_stat`, `stat` uses the pure-Python definitions:
+
+- Its functions are Python functions with Python's argument errors.
+- A non-`int` mode raises `TypeError: unsupported operand type(s) for &: 'str' and 'int'`
+    (CPython: `'str' object cannot be interpreted as an integer`).
+- Negative and oversized modes are masked rather than rejected: `stat.S_ISDIR(-1)` returns `False` where CPython
+    raises `OverflowError: can't convert negative value to unsigned int`.
+- Platform-specific constants take `stat.py`'s portable values: `S_IFWHT` is `0` and `SF_SETTABLE` is `0xffff0000`,
+    where CPython on macOS reports `0o160000` and `0x3fff0000`.
+
+## Star imports
+
+`from m import *` binds the names in `m.__all__`, or every name of `m` not starting with `_`, for native, vendored,
+host and file modules alike, with these differences from CPython:
+
+- A native module's `__all__` holds only the names of CPython's `__all__` that Monty implements, and is always a
+    `list` (CPython's is a tuple for `asyncio`, `datetime`, `hashlib` and `tomllib`), in the order Monty defines them.
+    Modules whose CPython counterpart has no `__all__` have none.
+    Host modules have no `__all__` (their dunders raise `AttributeError`), so every attribute not starting with `_` is
+    bound.
+- `__all__` is read in full before the first name is bound, where CPython reads entry `i` just before binding it.
+    The difference shows only through a class whose `__getitem__` has side effects, which all happen first, or when
+    binding an earlier name fails, which CPython stops at before asking for the later entries.
+    That `__getitem__` cannot call external or OS functions; see [classes.md](classes.md).
+- At module level, each new name takes a global slot; the 65537th distinct global name raises
+    `SyntaxError: too many distinct names in scope; maximum is 65536 per scope`.
 
 ## Host modules
 
@@ -193,6 +211,6 @@ Differences from CPython:
 - No bytecode is cached: each session compiles every module it imports.
     The source of an imported module stays allocated for the rest of the session, counted against `max_memory`.
 - The type checker does not read module files, so a type-checked feed that imports a file module fails with
-    `unresolved-import`.
+    `import-not-found`.
     [Module stubs](../type-checking.md) come only with host modules, which would shadow the file; feed such code with
     `skip_type_check=True`.

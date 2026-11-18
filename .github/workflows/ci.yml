@@ -39,13 +39,13 @@ jobs:
       # default so bare `cargo clippy` (make lint-rs) resolves to stable — dtolnay's
       # install order alone does not reliably control which toolchain is the default.
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: nightly
           components: rustfmt
 
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
           components: clippy
@@ -53,23 +53,23 @@ jobs:
       - name: Set stable as the default toolchain (clippy on stable; fmt pins +nightly)
         run: rustup default stable
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
           save-if: ${{ env.SAVE_CI_CACHE }}
           prefix-key: 'v1-rust'
 
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           save-cache: ${{ env.SAVE_CI_CACHE }}
 
-      - run: uv sync --all-packages --only-dev
+      - run: make install-py
 
       - uses: ./.github/actions/install-js
         with:
-          node-version: 24
+          node-version: 26
 
       # prek-action has no restore-only option, so manage its cache separately.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -79,13 +79,13 @@ jobs:
           key: prek-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
       - name: Run prek
-        uses: j178/prek-action@1382ad72dea72f9d53832f2bcb65b3e87a947204 # v3.0.1
+        uses: j178/prek-action@44924fe9ef4a6f88253c4b6b1bf11c689d3ce53d # v3.1.0
         with:
           cache: false
         env:
           SKIP: no-commit-to-branch
 
-      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: env.SAVE_CI_CACHE == 'true' && steps.prek-cache.outputs.cache-hit != 'true'
         with:
           path: ~/.cache/prek
@@ -137,24 +137,24 @@ jobs:
           persist-credentials: false
 
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
           components: llvm-tools
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ env.SAVE_CI_CACHE }}
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
 
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-llvm-cov
 
       # this means pyo3 will use Python 3.14 in tests
       - name: set up python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.14'
           # resolve the newest 3.14 patch, not whatever the runner image preinstalled
@@ -203,24 +203,24 @@ jobs:
           persist-credentials: false
 
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
           components: llvm-tools
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ env.SAVE_CI_CACHE }}
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
 
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-llvm-cov
 
       # this means pyo3 will use Python 3.14 in tests
       - name: set up python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.14'
           # resolve the newest 3.14 patch, not whatever the runner image preinstalled
@@ -241,7 +241,7 @@ jobs:
       - name: Check every vendored CPython stdlib patch is still needed
         run: python3 scripts/vendor_stdlib.py --check-patches
       - run: cargo build -p monty-pool --example cpu-test-worker --target-dir target/llvm-cov-target
-      - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
+      - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool -p monty-pgo --features monty-pool/telemetry
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/target/debug/monty
       - name: Compile Rust documentation examples
@@ -266,36 +266,36 @@ jobs:
           persist-credentials: false
 
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
           components: llvm-tools
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
           save-if: ${{ env.SAVE_CI_CACHE }}
 
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-llvm-cov
 
       - name: set up python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.14'
           # resolve the newest 3.14 patch, not whatever the runner image preinstalled
           check-latest: true
 
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           save-cache: ${{ env.SAVE_CI_CACHE }}
 
       - run: rustc --version --verbose
       - run: python3 -V
-      - run: uv sync --all-packages --only-dev
+      - run: make install-py
 
       # the tests need the `monty` worker binary on PATH; build it from the
       # workspace (plain build, outside the llvm-cov env, so the worker binary
@@ -386,11 +386,11 @@ jobs:
           persist-credentials: false
 
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.profile }}
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Artifacts are only used for tests in this workflow run
@@ -398,7 +398,7 @@ jobs:
           cache-workspace-crates: true
           save-if: ${{ env.SAVE_CI_CACHE }}
 
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Artifacts are only used for tests in this workflow run
           save-cache: ${{ env.SAVE_CI_CACHE }}
@@ -422,10 +422,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14', '3.14t', '3.15', '3.15t']
+        python-version: ['3.11', '3.12', '3.13', '3.14', '3.14t', '3.15', '3.15t']
 
     env:
       UV_PYTHON: ${{ matrix.python-version }}
+      # grpcio has no free-threaded wheels and its sdist does not build with GCC 15, so skip the
+      # relay there; the remote-transport tests skip without it
+      UV_NO_GROUP: ${{ endsWith(matrix.python-version, 't') && 'grpc' || '' }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -433,11 +436,11 @@ jobs:
           persist-credentials: false
 
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # `pyo3-ffi` bakes in the ABI of the interpreter it was built against, and
           # free-threaded builds lay `PyObject` out differently. Without the version in
@@ -450,7 +453,7 @@ jobs:
           cache-workspace-crates: true
           save-if: ${{ env.SAVE_CI_CACHE }}
 
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           save-cache: ${{ env.SAVE_CI_CACHE }}
@@ -460,7 +463,7 @@ jobs:
           pattern: python-worker-*
           path: runtime-wheels
 
-      - run: uv sync --all-packages --only-dev
+      - run: make install-py
       # workaround for https://github.com/PyO3/maturin/pull/3299
       # (dev-py doesn't invalidate all cache properly)
       - run: cargo clean -p pyo3-ffi
@@ -491,18 +494,18 @@ jobs:
           persist-credentials: false
 
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
           save-if: ${{ env.SAVE_CI_CACHE }}
 
       - name: set up python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.14'
           # resolve the newest 3.14 patch, not whatever the runner image preinstalled
@@ -544,18 +547,18 @@ jobs:
           persist-credentials: false
 
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
           save-if: ${{ env.SAVE_CI_CACHE }}
 
       - name: set up python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.14'
           # resolve the newest 3.14 patch, not whatever the runner image preinstalled
@@ -572,12 +575,12 @@ jobs:
           persist-credentials: false
 
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: nightly
           components: miri
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
@@ -603,12 +606,12 @@ jobs:
           persist-credentials: false
 
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: nightly
 
       - id: cache-rust
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
@@ -680,7 +683,7 @@ jobs:
           persist-credentials: false
 
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
 
@@ -688,14 +691,14 @@ jobs:
       - name: Install the nightly pinned for rustdoc JSON
         run: rustup toolchain install nightly-2026-08-31 --profile minimal
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts; it pushes generated markdown only
           cache-on-failure: true
           save-if: ${{ env.SAVE_CI_CACHE }}
           prefix-key: 'v1-rust'
 
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts; it pushes generated markdown only
           save-cache: ${{ env.SAVE_CI_CACHE }}
@@ -724,7 +727,7 @@ jobs:
           git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:docs-source
 
       - name: Generate app token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: app-token
         with:
           client-id: ${{ vars.DOCS_APP_CLIENT_ID }}
@@ -747,7 +750,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
 
@@ -774,7 +777,7 @@ jobs:
           tar -xzf crates/monty-python/dist/pydantic_monty_client-*.tar.gz -C sdist-check --strip-components=1
           cargo check --manifest-path sdist-check/crates/monty-python/Cargo.toml
 
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           save-cache: ${{ env.SAVE_CI_CACHE }}
@@ -815,10 +818,12 @@ jobs:
             pgo-runtime: true
           - os: linux
             target: aarch64
-            runs-on: ubuntu-24.04-arm
+            runs-on: ubuntu-26.04-arm
             pgo-runtime: true
           - os: linux
             target: i686
+            # pinned back: https://github.com/actions/runner-images/issues/14790
+            runs-on: ubuntu-24.04
             pgo-runtime: false
           - os: linux
             target: armv7
@@ -861,7 +866,7 @@ jobs:
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'manylinux_2_28' }}
-          args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14 3.14t 3.15 3.15t
+          args: --release --out dist -i 3.11 3.12 3.13 3.14 3.14t 3.15 3.15t
           rust-toolchain: stable
           docker-options: -e CI
           working-directory: crates/monty-python
@@ -871,7 +876,7 @@ jobs:
           name: pypi_files-python-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}
           path: crates/monty-python/dist
 
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         if: matrix.os != 'linux' && matrix.pgo-runtime
         with:
           enable-cache: false
@@ -960,7 +965,7 @@ jobs:
         name: install & test
         with:
           arch: ${{ matrix.target }}
-          distro: ubuntu22.04
+          distro: ubuntu24.04
           dockerRunArgs: --volume "${{ github.workspace }}/dist:/dist"
           install: |
             apt-get update
@@ -1002,7 +1007,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
 
@@ -1057,10 +1062,10 @@ jobs:
         run: |
           ls -lhR dist/
           count=$(find dist/ -maxdepth 1 -type f | wc -l)
-          echo "Found $count files; expected 112 (8 Python variants × 12 platforms + 12 runtime wheels + 2 sdists + 2 metapackage files)"
-          test "$count" -eq 112
+          echo "Found $count files; expected 100 (7 Python variants × 12 platforms + 12 runtime wheels + 2 sdists + 2 metapackage files)"
+          test "$count" -eq 100
 
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: false
 
@@ -1090,7 +1095,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: false
 
@@ -1135,7 +1140,7 @@ jobs:
           persist-credentials: false
 
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
 
@@ -1164,8 +1169,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         node:
-          - '20'
           - '22'
+          - '24'
+          - '26'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1173,11 +1179,11 @@ jobs:
           persist-credentials: false
 
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
@@ -1244,12 +1250,12 @@ jobs:
           persist-credentials: false
 
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
           targets: ${{ matrix.settings.target }}
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: ${{ !startsWith(github.ref, 'refs/tags/') && !inputs.run_release }}
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Cache is disabled on tag and release runs, which produce release artifacts
@@ -1260,7 +1266,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       - name: Install node dependencies
@@ -1299,15 +1305,15 @@ jobs:
 
       - uses: ./.github/actions/install-js
         with:
-          node-version: 24
+          node-version: 26
           cache: ${{ !startsWith(github.ref, 'refs/tags/') && !inputs.run_release }}
 
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
           targets: wasm32-wasip1
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: ${{ !startsWith(github.ref, 'refs/tags/') && !inputs.run_release }}
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Cache is disabled on tag and release runs, which produce release artifacts
@@ -1339,7 +1345,7 @@ jobs:
 
       - uses: ./.github/actions/install-js
         with:
-          node-version: 24
+          node-version: 26
 
       - name: Build TypeScript
         run: npm run build:ts
@@ -1372,14 +1378,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
           toolchain: stable
 
       - name: Setup node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       - name: Install dependencies
@@ -1428,7 +1434,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['20', '24']
+        node: ['22', '24', '26']
         platform:
           - os: macos-15-intel
             triple: darwin-x64
@@ -1436,7 +1442,7 @@ jobs:
             triple: darwin-arm64
           - os: ubuntu-latest
             triple: linux-x64-gnu
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-26.04-arm
             triple: linux-arm64-gnu
           - os: windows-latest
             triple: win32-x64-msvc
@@ -1479,7 +1485,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       - name: Download package tarballs
@@ -1513,7 +1519,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
           registry-url: 'https://registry.npmjs.org'
 

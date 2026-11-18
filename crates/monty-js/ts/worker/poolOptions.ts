@@ -1,10 +1,18 @@
 import type { Monty as NativeMonty, MontyOptions } from '../pool.js'
-import type { WorkerChannelOptions } from './channel.js'
+import type { WorkerChannelOptions, WorkerMessage } from './channel.js'
 import { timeoutOption } from './deadline.js'
 import { WorkerPool, type WorkerFactory } from './pool.js'
 
 /** The public pool methods, without either backend's implementation details. */
 export type Monty = Pick<NativeMonty, keyof NativeMonty>
+
+/** The browser worker operations Monty needs, without requiring DOM types in Node consumers. */
+export interface BrowserWorker {
+  postMessage(message: unknown): void
+  addEventListener(type: 'message', listener: (event: { data: WorkerMessage }) => void): void
+  addEventListener(type: 'error', listener: (event: unknown) => void): void
+  terminate(): void
+}
 
 /** Shared pool configuration plus browser worker asset resolution. */
 export interface WasmPoolOptions extends MontyOptions {
@@ -14,6 +22,12 @@ export interface WasmPoolOptions extends MontyOptions {
   maxProcesses?: number
   /** Overrides the browser worker entry URL. */
   workerUrl?: string | URL
+  /**
+   * Creates a fresh module worker from `@pydantic/monty/wasm/worker` on each call.
+   * Use this to apply a caller-owned Trusted Types policy. Monty owns the returned
+   * worker's initialization and termination. Overrides `workerUrl`; ignored by Node.
+   */
+  createWorker?: () => BrowserWorker
   /** Ignored by WASM, whose workers suspend at every host call. */
   streamAsyncCalls?: boolean
 }

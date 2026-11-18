@@ -12,7 +12,7 @@ use num_bigint::BigInt;
 use crate::{
     annotations,
     args::ArgValues,
-    builtins::{Builtins, BuiltinsFunctions},
+    builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
@@ -25,7 +25,7 @@ use crate::{
     intern::{FunctionId, StaticStrings},
     modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
     types::{
-        BuiltinType, GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, Union, allocate_string,
+        GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_string,
         bytes::PyBytes,
         long_int::{PyInt, arithmetic::float_binary},
         numeric::{round_digits, round_float},
@@ -61,7 +61,7 @@ macro_rules! define_py_value {
         impl<'h> From<HeapReadOutput<'h>> for PyValue<'h> {
             fn from(value: HeapReadOutput<'h>) -> Self {
                 match value {
-                    HeapReadOutput::Str(value) => Self::Str(PyStr::Heap(value)),
+                    HeapReadOutput::Str(heap_string) => Self::Str(PyStr::Heap(heap_string)),
                     HeapReadOutput::Bytes(value) => Self::Bytes(PyBytes::Heap(value)),
                     HeapReadOutput::LongInt(value) => Self::Int(PyInt::Heap(value)),
                     $(HeapReadOutput::$variant(value) => Self::$variant(value),)*
@@ -449,23 +449,23 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             else Err(ExcType::type_error_not_iterator(&self.py_type_name(vm))))
     }
 
-    fn py_type(&self, vm: &VM<'h>) -> Type {
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
         forward_py_value!(self, |value| value.py_type(vm), {
             Self::Undefined => panic!("Cannot get type of undefined value"),
-            Self::Ellipsis => Type::Ellipsis,
-            Self::NotImplemented => Type::NotImplementedType,
-            Self::None => Type::NoneType,
-            Self::Bool(_) => Type::Bool,
-            Self::Float(_) => Type::Float,
-            Self::Builtin(value) => value.py_type(),
-            Self::ModuleFunction(_) => Type::BuiltinFunction,
-            Self::DefFunction(_) => Type::Function,
-            Self::Marker(value) => value.py_type(),
-            Self::Property(_) => Type::Property,
-            Self::Cell(_) => Type::Cell,
+            Self::Ellipsis => Type::Ellipsis.into(),
+            Self::NotImplemented => Type::NotImplementedType.into(),
+            Self::None => Type::NoneType.into(),
+            Self::Bool(_) => Type::Bool.into(),
+            Self::Float(_) => Type::Float.into(),
+            Self::Builtin(value) => value.py_type().into(),
+            Self::ModuleFunction(_) => Type::BuiltinFunction.into(),
+            Self::DefFunction(_) => Type::Function.into(),
+            Self::Marker(value) => value.py_type().into(),
+            Self::Property(_) => Type::Property.into(),
+            Self::Cell(_) => Type::Cell.into(),
             Self::Exception(e) => e.py_type(vm),
-            Self::Module(_) => Type::Module,
-            Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
+            Self::Module(_) => Type::Module.into(),
+            Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine.into(),
         })
     }
 
@@ -775,11 +775,27 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
-            Self::Builtin(Builtins::Type(ty)) => Type::from(*ty).call_class_method(attr, args, vm),
+            Self::Builtin(Builtins::Type(ty)) => ty.call_class_method(attr, args, vm),
             Self::DefFunction(func_id) => {
                 match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
                     Some(result) => result,
                     None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
+                }
+            }
+            Self::Bool(value) => {
+                match attr.static_string(vm.interns) {
+                    Some(StaticStrings::BitLength) => {
+                        args.check_zero_args("int.bit_length", vm.heap)?;
+                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
+                    }
+                    Some(StaticStrings::BitCount) => {
+                        args.check_zero_args("int.bit_count", vm.heap)?;
+                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
+                    }
+                    _ => {
+                        args.drop_with(vm);
+                        Err(ExcType::attribute_error("bool", attr.as_str(vm.interns)))
+                    }
                 }
             }
             _ => {
@@ -791,9 +807,8 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         forward_py_value!(self, |value| value.py_getitem(key, vm), {
-            Self::Builtin(Builtins::Type(t)) if Type::from(*t).has_class_getitem() => Ok(GenericAlias::subscript(*t, key.clone_with_heap(vm), vm)),
-            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Ok(GenericAlias::subscript(BuiltinType::Type, key.clone_with_heap(vm), vm)),
-            Self::Builtin(Builtins::Type(BuiltinType::Union)) => Union::subscript(key.clone_with_heap(vm), vm),
+            Self::Builtin(Builtins::Type(t)) if t.has_class_getitem() => Ok(GenericAlias::subscript(*t, key.clone_with_heap(vm), vm)),
+            Self::Builtin(Builtins::Type(Type::Union)) => Union::subscript(key.clone_with_heap(vm), vm),
             Self::Marker(Marker(StaticStrings::Optional)) => Union::optional(key.clone_with_heap(vm), vm),
             Self::Marker(form) if form.is_generic_form() => GenericAlias::subscript_special(*form, key.clone_with_heap(vm), vm),
             // CPython's wording per kind of `typing` object: `Any` and `TypeVar`
@@ -807,8 +822,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Marker(form) if form.py_type() == Type::SpecialForm => {
                 Err(ExcType::type_error(format!("typing.{} is not subscriptable", <&str>::from(form.0))))
             }
-            Self::Builtin(Builtins::Type(t)) => Err(ExcType::type_error_type_not_subscriptable(&Type::from(*t).name(vm.heap, vm.interns))),
-            Self::Builtin(Builtins::ExcType(exc_type)) => Err(ExcType::type_error_type_not_subscriptable((*exc_type).into())),
+            Self::Builtin(Builtins::Type(t)) => Err(ExcType::type_error_type_not_subscriptable(t.name())),
             _ => Err(ExcType::type_error_not_sub(&self.py_type_name(vm))),
         })
     }
@@ -849,13 +863,18 @@ mod tests {
 
     use super::*;
     use crate::{
+        builtins::BuiltinsFunctions,
         defer_drop_mut,
         heap::{DropGuard, HeapReader},
         heap_data::CellValue,
         intern::{BytesId, CompileInterns, LongIntId, StringId},
         modules::math::MathFunctions,
         run::Executor,
-        types::{Bytes, List, inline_str::InlineStr, property::ZeroArgOsProperty, str::allocate_string_on_heap},
+        types::{
+            Bytes, List,
+            property::ZeroArgOsProperty,
+            str::{InlineStr, allocate_string_on_heap},
+        },
     };
 
     struct TestIds {
@@ -906,8 +925,9 @@ mod tests {
                 Value::Bool(true),
                 Value::Float(1.25),
                 Value::Builtin(Builtins::Function(BuiltinsFunctions::Len)),
-                Value::Builtin(Builtins::ExcType(ExcType::ValueError)),
-                Value::Builtin(Builtins::Type(BuiltinType::List)),
+                Value::Builtin(Builtins::Type(Type::ValueError)),
+                Value::Builtin(Builtins::Type(Type::List)),
+                Value::Builtin(Builtins::Type(Type::Type)),
                 Value::ModuleFunction(ModuleFunctions::Math(MathFunctions::Sqrt)),
                 Value::DefFunction(ids.function),
                 Value::Marker(Marker(StaticStrings::Optional)),

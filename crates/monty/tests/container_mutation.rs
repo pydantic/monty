@@ -99,27 +99,18 @@ fn set_isdisjoint_answers_before_an_eq_that_clears_the_probed_set() {
     assert_snapshot!(run_repr(EQ_CLEARS_S, "s.isdisjoint(t)"), @"False");
 }
 
-/// A dict view's set operators collect the view's own keys through a live walk
+/// A dict view's `-`, `|` and `^` collect the view's own keys through a live walk
 /// that hashes each one, so a `__hash__` clearing the dict is caught. CPython
 /// probes with each key's stored hash, never calls it, and completes.
 #[test]
 fn dict_keys_operators_reject_a_hash_that_clears_the_dict() {
     allow_duplicates! {
-        for expr in ["d.keys() - s", "d.keys() | s", "d.keys() ^ s", "d.keys().isdisjoint(s)"] {
+        for expr in ["d.keys() - s", "d.keys() | s", "d.keys() ^ s"] {
             let err = run_err(HASH_CLEARS_D, expr);
             assert_eq!(err.exc_type(), ExcType::RuntimeError, "{expr}");
             assert_snapshot!(err.message().unwrap(), @"dictionary changed size during iteration");
         }
     }
-}
-
-/// Intersection diverges the other way. Monty always walks the other operand and
-/// probes the live dict, so the view's keys are never hashed and the result comes
-/// back empty. CPython walks the view whenever the dict is no larger than the
-/// other operand, hashes each key into that operand, and raises on the clear.
-#[test]
-fn dict_keys_intersection_completes_where_cpython_raises() {
-    assert_snapshot!(run_repr(HASH_CLEARS_D, "len(d.keys() & s)"), @"0");
 }
 
 /// Runs `preamble` followed by `expr` with no limits, returning the exception.

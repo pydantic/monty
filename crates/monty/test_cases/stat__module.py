@@ -1,4 +1,4 @@
-# stat is vendored from CPython's own source, with a patch; see crates/monty/stdlib/
+# stat is vendored from CPython's own source; see crates/monty/stdlib/
 import stat
 
 # === File type tests ===

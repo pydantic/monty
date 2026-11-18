@@ -236,6 +236,8 @@ Mounts are serviced by the host, including for remote workers; the worker never 
 Closing a mount prevents new feeds from using it, but an in-flight feed keeps its own reference.
 Each directory `mkdir` creates, parents included, counts as [`DIRECTORY_WRITE_BYTES`](api/rust/monty-fs.md#directory_write_bytes)
 (4,096 bytes) against `write_bytes_limit`.
+Mounts reject a positional binary write that starts past the end of the file, so writes cannot create zero-filled gaps.
+The first positional mutation of a backing file in a memory overlay charges the resulting materialized content.
 
 The names are keyword-only on purpose: mount tools disagree on whether host or virtual comes first (`docker -v` versus
 nginx's `alias`), so requiring names removes the ambiguity.
@@ -442,6 +444,19 @@ A write past it raises `OSError` in the sandbox, and `None` removes the cap; see
 [`CallbackFile`][pydantic_monty.CallbackFile] read and write callbacks run in the host and can reach real resources.
 That is the point of it, but it means an `OSAccess` containing a `CallbackFile` is exactly as sandboxed as the callback
 you wrote.
+
+Binary writes in `wb` and `w+b` mode call
+[`AbstractOS.path_write_bytes_at(path, offset, data)`][pydantic_monty.AbstractOS.path_write_bytes_at].
+It overwrites an existing file at the byte offset, preserves surrounding content, and returns the number of bytes written.
+A non-empty write whose offset is past the end of the file raises `ValueError`.
+Overrides must reject these too, or one byte at a huge offset grows the host file by the whole offset.
+The default uses `path_stat`, `path_read_bytes` and `path_write_bytes` and caps the replacement at 50 MB.
+The handler must enforce allocation bounds in `path_read_bytes`; a stat check cannot bound a read if the file grows.
+Handlers that cannot bound reads under concurrent modification must override `path_write_bytes_at`.
+It requires read access and can overwrite concurrent changes between reading and writing.
+An incomplete replacement write raises `OSError` and may leave the file partially replaced.
+Override it for native positional writes, stronger concurrency guarantees, or larger files.
+`OSAccess` implements the method for its registered files.
 
 For anything more specific, subclass `OSAccess` and override the methods you want to change, or implement every
 abstract method of `AbstractOS` yourself; the optional hooks (`path_open`, the append methods, `date_today`,

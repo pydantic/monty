@@ -11,10 +11,10 @@ ImportError: attempted relative import with no known parent package
 
 Traceback (most recent call last):
   File "<python-input-2>", line 1, in <module>
-    exec("\n\nfrom math import *")
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    exec("\n\ntype Alias = int")
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   File "<string>", line 3, in <module>
-NotImplementedError: Wildcard imports (`from ... import *`) are not supported
+NotImplementedError: The monty syntax parser does not yet support type aliases
 
 Traceback (most recent call last):
   File "<python-input-3>", line 1, in <module>
