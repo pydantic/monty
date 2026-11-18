@@ -24,7 +24,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, HeapData, HeapId},
+    heap::{DropWithContext, HeapData},
     intern::StaticStrings,
     modules::{
         ModuleFunctions,
@@ -34,7 +34,7 @@ use crate::{
     },
     py_value::PyValue,
     resource_checks::check_estimated_size,
-    types::{Module, PyTrait},
+    types::{Module, PyTrait, Type},
     value::Value,
 };
 
@@ -86,25 +86,25 @@ const BINASCII_FUNCTIONS: &[(StaticStrings, BinasciiFunctions)] = &[
     (StaticStrings::A2bQp, BinasciiFunctions::A2bQp),
 ];
 
-/// Creates the `binascii` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `binascii` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Binascii, vm.interns);
 
     module.set_attr(
         StaticStrings::ErrorClass,
-        Value::Builtin(Builtins::ExcType(ExcType::BinasciiError)),
+        Value::Builtin(Builtins::Type(Type::BinasciiError)),
         vm,
     );
     module.set_attr(
         StaticStrings::IncompleteClass,
-        Value::Builtin(Builtins::ExcType(ExcType::BinasciiIncomplete)),
+        Value::Builtin(Builtins::Type(Type::BinasciiIncomplete)),
         vm,
     );
     for (name, func) in BINASCII_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Binascii(*func)), vm);
     }
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `binascii` module function.

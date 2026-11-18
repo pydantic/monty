@@ -78,6 +78,7 @@ with Monty() as pool:
     [snapshots](https://pydantic.dev/docs/monty/concepts/snapshots/), [the Python
     subset](https://pydantic.dev/docs/monty/limitations/)
 - [`docs/`](./docs): the source of the documentation site
+- [Contributing](CONTRIBUTING.md): how to contribute to Monty and which contributions we currently accept
 
 Monty runs [Code Mode](https://pydantic.dev/docs/ai/harness/code-mode/) in [Pydantic
 AI](https://github.com/pydantic/pydantic-ai).

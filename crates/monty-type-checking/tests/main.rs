@@ -342,33 +342,33 @@ fn collections_implemented_names_type_check() {
 #[test]
 fn collections_unimplemented_names_are_unresolved() {
     let code = "from collections import OrderedDict, ChainMap, UserDict, UserList, UserString\n";
-    let diagnostics = check(code, "main.py").expect("expected unresolved-import errors");
+    let diagnostics = check(code, "main.py").expect("expected import-not-found errors");
     assert_snapshot!(diagnostics, @"
-    error[unresolved-import]: Module `collections` has no member `OrderedDict`
+    error[import-not-found]: Module `collections` has no member `OrderedDict`
      --> main.py:1:25
       |
     1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
       |                         ^^^^^^^^^^^
 
-    error[unresolved-import]: Module `collections` has no member `ChainMap`
+    error[import-not-found]: Module `collections` has no member `ChainMap`
      --> main.py:1:38
       |
     1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
       |                                      ^^^^^^^^
 
-    error[unresolved-import]: Module `collections` has no member `UserDict`
+    error[import-not-found]: Module `collections` has no member `UserDict`
      --> main.py:1:48
       |
     1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
       |                                                ^^^^^^^^
 
-    error[unresolved-import]: Module `collections` has no member `UserList`
+    error[import-not-found]: Module `collections` has no member `UserList`
      --> main.py:1:58
       |
     1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
       |                                                          ^^^^^^^^
 
-    error[unresolved-import]: Module `collections` has no member `UserString`
+    error[import-not-found]: Module `collections` has no member `UserString`
      --> main.py:1:68
       |
     1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
@@ -483,7 +483,7 @@ fn an_unresolved_import_in_the_prelude_is_not_reported_again() {
     assert!(ok.is_none(), "the prelude's own diagnostics must not surface: {ok:#?}");
     // The snippet's own unresolved imports must still be reported.
     let wrong = render_with(&mut checker, "x = 1\nimport requests\n", &context);
-    assert_snapshot!(wrong.unwrap(), @"main.py:2:8: error[unresolved-import] Cannot resolve imported module `requests`");
+    assert_snapshot!(wrong.unwrap(), @"main.py:2:8: error[import-not-found] Cannot resolve imported module `requests`");
 }
 
 /// Module-level branches may bind globals; function and class imports only bind locally.
@@ -584,7 +584,7 @@ fn dotted_module_stubs_form_a_package() {
     let wrong = render_with(&mut checker, "from pkg.tools import add\nadd('x', 2)\n", &context);
     assert_snapshot!(wrong.unwrap(), @r#"main.py:2:5: error[invalid-argument-type] Argument to function `add` is incorrect: Expected `int`, found `Literal["x"]`"#);
     let unresolved = render_with(&mut checker, "from pkg import add\n", &context);
-    assert_snapshot!(unresolved.unwrap(), @"main.py:1:17: error[unresolved-import] Module `pkg` has no member `add`");
+    assert_snapshot!(unresolved.unwrap(), @"main.py:1:17: error[import-not-found] Module `pkg` has no member `add`");
 }
 
 /// Host stubs must not shadow the checker's vendored typeshed definitions.

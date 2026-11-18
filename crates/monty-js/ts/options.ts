@@ -5,15 +5,7 @@
 
 /** ty's diagnostic renderings, as accepted by the `typeCheckFormat` option. */
 export type TypeCheckFormat =
-  | 'full'
-  | 'concise'
-  | 'azure'
-  | 'json'
-  | 'jsonlines'
-  | 'rdjson'
-  | 'pylint'
-  | 'gitlab'
-  | 'github'
+  'full' | 'concise' | 'azure' | 'json' | 'jsonlines' | 'rdjson' | 'pylint' | 'gitlab' | 'github'
 
 /**
  * `Configure.type_check_format` wire numbers (see

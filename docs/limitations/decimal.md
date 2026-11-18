@@ -22,7 +22,7 @@ operation raises and its `[<class 'decimal.DivisionByZero'>]` message all follow
 
 ## `Decimal`
 
-- `Decimal` and `Context` cannot be subclassed (Monty has no class inheritance).
+- `Decimal` and `Context` cannot be subclassed (classes inherit only from classes and `object`, see [classes.md](classes.md#inheritance)).
 - A coefficient (or NaN payload) longer than 4300 digits is rejected when a `Decimal` is built from a
     `str`, `int` or tuple, with
     `ValueError: Exceeds the limit (4300 digits) for a Decimal coefficient: value has N digits`.

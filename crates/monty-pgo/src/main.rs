@@ -11,9 +11,8 @@ use std::{
 use monty_pool::{Checkout, OnPrint, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent, on_print_sync};
 use monty_types::MontyObject;
 
-/// Cases whose type check never terminates: ty (crates 0.0.14) spins on a name
-/// rebound through `functools.partial` of itself in a loop. They train without
-/// type checking; remove them once a ty release finishes them.
+/// Cases excluded from type checking after ty hung on names rebound through
+/// `functools.partial` of themselves in a loop. They still train execution.
 const TYPE_CHECK_HANGS: &[&str] = &["functools__partial.py", "refcount__partial_recursion_cleanup.py"];
 
 /// Kills a worker whose turn hangs. An instrumented worker only writes its
@@ -161,7 +160,7 @@ fn find_monty_binary() -> io::Result<PathBuf> {
 fn test_cases() -> io::Result<Vec<PathBuf>> {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("monty-pool should be inside the workspace crates directory")
+        .expect("monty-pgo should be inside the workspace crates directory")
         .join("monty/test_cases");
     fs::read_dir(directory)?
         .filter_map(|entry| match entry {

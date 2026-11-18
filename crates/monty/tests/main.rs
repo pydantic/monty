@@ -621,19 +621,37 @@ fn external_function_as_itertools_callable_raises_not_implemented() {
     "#);
 }
 
-/// The 3-arg `type()` form rejects non-empty bases because Monty classes
-/// cannot inherit (documented in `limitations/classes.md`). Kept as a
-/// Rust-side test because CPython accepts bases, so the comparative
-/// test-case suite cannot cover the divergence.
+/// Monty classes inherit only from classes and `object`, so a native base
+/// CPython accepts is a `TypeError` (see `limitations/classes.md`). Kept as a
+/// Rust-side test because the comparative test-case suite cannot cover it.
 #[test]
-fn dynamic_type_with_bases_raises_type_error() {
-    let code = "type('A', (int,), {})";
+fn class_with_native_base_raises_type_error() {
+    for (code, base) in [
+        ("type('A', (int,), {})", "int"),
+        ("class E(ValueError):\n    pass", "ValueError"),
+    ] {
+        let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let err = ex.run_no_limits(vec![]).unwrap_err();
+        assert_eq!(
+            err.message(),
+            Some(
+                format!(
+                    "Monty does not support subclassing '{base}': classes can only inherit from classes defined in \
+                     Python and object"
+                )
+                .as_str()
+            )
+        );
+    }
+}
+
+/// A user class and `object` are valid bases for the 3-arg `type()` form.
+#[test]
+fn dynamic_type_with_user_class_base_succeeds() {
+    let code =
+        "A = type('A', (), {'x': 1})\nB = type('B', (A, object), {'y': 2})\nb = B()\nassert b.x == 1\nassert b.y == 2";
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let err = ex.run_no_limits(vec![]).unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    type('A', (int,), {})\n    ~~~~~~~~~~~~~~~~~~~~~\nTypeError: type() bases are not supported"
-    );
+    ex.run_no_limits(vec![]).unwrap();
 }
 
 /// The 3-arg `type()` form rejects non-string namespace keys with a

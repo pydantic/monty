@@ -31,12 +31,12 @@ use crate::{
     bytecode::{CallResult, VM, unpack_exact},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::{PostConversionEffect, urandom_reply_error},
     types::{
-        BuiltinType, List, LongInt, Module, PyTrait, Type,
+        List, LongInt, Module, PyTrait, Type,
         bytes::allocate_bytes,
         iter::collect_owned_iterable,
         long_int::bigint_to_f64_checked,
@@ -114,18 +114,18 @@ impl RandomFunctions {
     }
 }
 
-/// Creates the `random` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `random` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Random, vm.interns);
     for (name, function) in RANDOM_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Random(*function)), vm);
     }
     module.set_attr(
         StaticStrings::RandomClass,
-        Value::Builtin(Builtins::Type(BuiltinType::Random)),
+        Value::Builtin(Builtins::Type(Type::Random)),
         vm,
     );
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a module-level call, which acts on the VM's own generator.
@@ -817,7 +817,7 @@ fn sample(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<V
     defer_drop!(k, vm);
     defer_drop!(counts, vm);
 
-    if !is_sequence(population.py_type_heap(vm.heap)) {
+    if !population.py_type_heap(vm.heap).native().is_some_and(is_sequence) {
         return Err(ExcType::type_error(
             "Population must be a sequence.  For dicts or sets, use sorted(d).",
         ));

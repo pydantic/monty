@@ -24,7 +24,7 @@ pub use code::Code;
 pub use compiler::Compiler;
 #[cfg(test)]
 pub(crate) use op::opcode_fingerprint;
-pub(crate) use op::{NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode};
+pub(crate) use op::{IMPORT_STAR_LOAD, IMPORT_STAR_NAMES, NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode};
 pub(crate) use vm::{
     CallResult, ContainsVM, FrameGlobals, FrameNamespace, MissingNames, ModuleCache, PendingImport,
     PendingLookupEffect, RecursionToken, RunReentryGuard, unpack_exact,
