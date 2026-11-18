@@ -20,8 +20,7 @@ use strum::VariantNames;
 use crate::{
     args::ArgValues,
     builtins::{
-        base_exception::base_exception_class_attr, iter::builtin_iter, object::object_class_attr,
-        type_::builtin_type,
+        base_exception::base_exception_class_attr, iter::builtin_iter, object::object_class_attr, type_::builtin_type,
     },
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, exc_new},

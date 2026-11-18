@@ -1,5 +1,7 @@
 //! `BaseException.__new__` and `BaseException.__init__`.
 
+use std::mem;
+
 use crate::{
     args::ArgValues,
     builtins::{Builtins, BuiltinsFunctions},
@@ -33,16 +35,15 @@ pub(crate) fn builtin_base_exception_new(vm: &mut VM<'_>, args: ArgValues) -> Ru
     let cls_val = pos_vec.remove(0);
     defer_drop!(cls_val, vm);
 
-    let type_ref = match TypeRef::from_value(cls_val, vm.heap) {
-        Some(ty) => ty,
-        None => {
-            let actual = cls_val.py_type_name(vm).into_owned();
-            pos_vec.drop_with(vm);
-            return Err(ExcType::type_error_base_exception_new_not_type(&actual));
-        }
+    let Some(type_ref) = TypeRef::from_value(cls_val, vm.heap) else {
+        let actual = cls_val.py_type_name(vm).into_owned();
+        pos_vec.drop_with(vm);
+        return Err(ExcType::type_error_base_exception_new_not_type(&actual));
     };
 
-    let is_subclass = type_ref.mro(vm.heap).any(|base| matches!(base, TypeRef::Native(Type::BaseException)));
+    let is_subclass = type_ref
+        .mro(vm.heap)
+        .any(|base| matches!(base, TypeRef::Native(Type::BaseException)));
 
     if !is_subclass {
         let name = type_ref.name(vm.heap, vm.interns).into_owned();
@@ -54,7 +55,7 @@ pub(crate) fn builtin_base_exception_new(vm: &mut VM<'_>, args: ArgValues) -> Ru
         .mro(vm.heap)
         .find_map(|t| match t {
             TypeRef::Native(ty) => ty.exc_type(),
-            _ => None,
+            TypeRef::Class(_) => None,
         })
         .unwrap_or(ExcType::BaseException);
 
@@ -81,7 +82,11 @@ pub(crate) fn builtin_base_exception_init(vm: &mut VM<'_>, args: ArgValues) -> R
             pos_vec.drop_with(vm);
             kwargs.drop_with(vm);
             let actual = instance.py_type_name(vm).into_owned();
-            return Err(ExcType::type_error_descriptor_requires("__init__", "BaseException", &actual));
+            return Err(ExcType::type_error_descriptor_requires(
+                "__init__",
+                "BaseException",
+                &actual,
+            ));
         }
     };
 
@@ -96,7 +101,7 @@ pub(crate) fn builtin_base_exception_init(vm: &mut VM<'_>, args: ArgValues) -> R
     let old_args = match vm.heap.read(heap_id) {
         HeapReadOutput::Exception(exc) => {
             let exc_mut = exc.get_mut(vm.heap);
-            std::mem::replace(&mut exc_mut.args, new_args)
+            mem::replace(&mut exc_mut.args, new_args)
         }
         _ => unreachable!(),
     };

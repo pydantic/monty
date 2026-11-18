@@ -19,6 +19,7 @@ use crate::{
     source_map::{SourceMap, StackFrameExt},
     types::{
         Dict, OwnedTypeRef, PyTrait, Type, TypeRef, allocate_tuple,
+        iter::collect_owned_iterable,
         long_int::INT_MAX_STR_DIGITS,
         str::{StringRepr, allocate_string, string_repr_fmt},
     },
@@ -1568,11 +1569,7 @@ pub(crate) trait ExcTypeExt: Sized {
     /// `TypeError: BaseException.__new__(): not enough arguments`
     #[must_use]
     fn type_error_base_exception_new_not_enough_args() -> RunError {
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            "BaseException.__new__(): not enough arguments",
-        )
-        .into()
+        SimpleException::new_msg(ExcType::TypeError, "BaseException.__new__(): not enough arguments").into()
     }
 
     /// `TypeError: BaseException.__new__(X): X is not a type object ({actual})`
@@ -3163,6 +3160,82 @@ impl ExceptionArgs {
             Self::Tuple(id) => vm.heap.dec_ref(id),
         }
     }
+
+    /// Formats the exception's argument for boundary export and unhandled tracebacks.
+    ///
+    /// For single string arguments, returns the raw unquoted string (even for `KeyError`).
+    /// For other single values, stringifies them via `str()`. For multiple arguments,
+    /// formats them as a tuple.
+    pub(crate) fn format_arg(&self, vm: &mut VM<'_>) -> Option<String> {
+        match self {
+            Self::Empty => None,
+            Self::OneStr(s) => Some(s.clone()),
+            Self::OneValue(v) => {
+                if let Some(s) = v.as_str(vm) {
+                    Some(s.to_owned())
+                } else {
+                    let v_clone = v.clone_with_heap(vm.heap);
+                    defer_drop!(v_clone, vm);
+                    match v_clone.py_str(vm) {
+                        Ok(s_val) => {
+                            defer_drop!(s_val, vm);
+                            s_val.as_str(vm).map(ToOwned::to_owned)
+                        }
+                        Err(e) => {
+                            e.drop_with(vm);
+                            Some("<exception str() failed>".to_owned())
+                        }
+                    }
+                }
+            }
+            Self::Tuple(tuple_id) => {
+                let tuple_id = *tuple_id;
+                let slice_len = match vm.heap.get(tuple_id) {
+                    HeapData::Tuple(t) => t.as_slice().len(),
+                    _ => 0,
+                };
+                match slice_len {
+                    0 => None,
+                    1 => {
+                        let item = match vm.heap.get(tuple_id) {
+                            HeapData::Tuple(t) => t.as_slice()[0].clone_with_heap(vm.heap),
+                            _ => unreachable!(),
+                        };
+                        defer_drop!(item, vm);
+                        if let Some(s) = item.as_str(vm) {
+                            Some(s.to_owned())
+                        } else {
+                            match item.py_str(vm) {
+                                Ok(s_val) => {
+                                    defer_drop!(s_val, vm);
+                                    s_val.as_str(vm).map(ToOwned::to_owned)
+                                }
+                                Err(e) => {
+                                    e.drop_with(vm);
+                                    Some("<exception str() failed>".to_owned())
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        vm.heap.inc_ref(tuple_id);
+                        let tuple_val = Value::Ref(tuple_id);
+                        defer_drop!(tuple_val, vm);
+                        match tuple_val.py_str(vm) {
+                            Ok(s_val) => {
+                                defer_drop!(s_val, vm);
+                                s_val.as_str(vm).map(ToOwned::to_owned)
+                            }
+                            Err(e) => {
+                                e.drop_with(vm);
+                                Some("<exception str() failed>".to_owned())
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Heap-resident exception object (`BaseException` instance or subclass).
@@ -3571,11 +3644,13 @@ impl<'h> HeapReadMut<'h, PyException> {
             Some(StaticStrings::Args) => {}
             _ if name_str == "args" => {}
             _ => {
-                if let Some(attrs) = &exc.attrs {
-                    if let Some(val) = attrs.get_by_str(name_str, vm.heap, vm.interns) {
-                        let val = val.clone_with_heap(vm.heap);
-                        return Some(CallResult::Value(val));
-                    }
+                if let Some(val) = exc
+                    .attrs
+                    .as_ref()
+                    .and_then(|attrs| attrs.get_by_str(name_str, vm.heap, vm.interns))
+                {
+                    let val = val.clone_with_heap(vm.heap);
+                    return Some(CallResult::Value(val));
                 }
                 if exc_type == ExcType::StopIteration && name_str == "value" {
                     return Some(CallResult::Value(Value::None));
@@ -3642,7 +3717,7 @@ impl<'h> HeapReadMut<'h, PyException> {
     pub fn set_attr(&self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let name_str = name.as_str(vm.interns);
         if name_str == "args" {
-            let items: smallvec::SmallVec<[Value; 2]> = crate::types::iter::collect_owned_iterable(value, vm)?;
+            let items: smallvec::SmallVec<[Value; 2]> = collect_owned_iterable(value, vm)?;
             let tuple_val = allocate_tuple(items, vm.heap);
             let tuple_id = tuple_val.into_ref_id().expect("tuple is a heap reference");
             let old_args = {
@@ -3696,7 +3771,7 @@ pub struct ExceptionRaise {
     #[serde(skip)]
     pub(crate) instance: Option<Value>,
     /// Innermost executed frame, with callers linked as parents.
-    pub frame: Option<RawStackFrame>,
+    pub frame: Option<Box<RawStackFrame>>,
     /// Resolved innermost location of a rejected snippet, independent of its discarded intern IDs.
     pub snippet_frame: Option<Box<StackFrame>>,
     /// Whether to hide the caret marker when creating the stack frame.
@@ -3746,7 +3821,7 @@ impl ExceptionRaise {
     pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: StringId, hide_caret: bool) {
         if let Some(ref mut frame) = self.frame {
             // Find the outermost frame (the one with no parent) and add the new frame as its parent
-            let mut current = frame;
+            let mut current = frame.as_mut();
             while current.parent.is_some() {
                 current = current.parent.as_mut().unwrap();
             }
@@ -3757,7 +3832,7 @@ impl ExceptionRaise {
             // No frame yet - create one
             let mut new_frame = RawStackFrame::new(position, name, None);
             new_frame.hide_caret = hide_caret;
-            self.frame = Some(new_frame);
+            self.frame = Some(Box::new(new_frame));
         }
     }
 
@@ -3790,7 +3865,7 @@ impl ExceptionRaise {
         let mut cache: Vec<(StringId, SourceMap<'s>)> = Vec::new();
         let mut traceback = self.frame.map_or_default(|frame| {
             let mut frames = Vec::new();
-            let mut current = Some(&frame);
+            let mut current = Some(frame.as_ref());
             while let Some(f) = current {
                 let fname_id = f.position.filename;
                 // An `eval()` / `exec()` snippet resolves against its own
@@ -3869,7 +3944,10 @@ impl RawStackFrame {
 /// second, uncounted owner.
 impl Clone for ExceptionRaise {
     fn clone(&self) -> Self {
-        debug_assert!(self.instance.is_none(), "cloned an ExceptionRaise that owns its instance");
+        debug_assert!(
+            self.instance.is_none(),
+            "cloned an ExceptionRaise that owns its instance"
+        );
         Self {
             exc: self.exc.clone(),
             instance: None,

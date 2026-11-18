@@ -871,6 +871,7 @@ mod tests {
     use crate::{
         builtins::BuiltinsFunctions,
         defer_drop_mut,
+        exception_private::PyException,
         heap::{DropGuard, HeapReader},
         heap_data::CellValue,
         intern::{BytesId, CompileInterns, LongIntId, StringId},
@@ -963,10 +964,10 @@ mod tests {
             defer_drop!(cell, vm);
             assert_eq!(cell.py_value(vm).py_hash(vm).unwrap(), Some(identity_hash(cell_id)));
 
-            let exception = Value::Ref(
-                vm.heap
-                    .allocate(HeapData::Exception(Box::new(crate::exception_private::PyException::new(ExcType::ValueError, None)))),
-            );
+            let exception = Value::Ref(vm.heap.allocate(HeapData::Exception(Box::new(PyException::new(
+                ExcType::ValueError,
+                None,
+            )))));
             defer_drop!(exception, vm);
             assert_eq!(exception.py_value(vm).py_hash(vm).unwrap(), None);
         });

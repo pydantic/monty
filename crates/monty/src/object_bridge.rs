@@ -23,7 +23,6 @@ use crate::{
     exception_private::{ExceptionArgs, PyException, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     modules::dataclasses,
-    py_value::PyValue,
     types::{
         Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type,
         allocate_tuple,
@@ -402,34 +401,20 @@ impl GraphExporter {
                 })
             }
             HeapReadOutput::Exception(exc) => {
-                let exc_type = exc.get(vm.heap).exc_type();
-                let is_empty = matches!(exc.get(vm.heap).args, ExceptionArgs::Empty);
-                let arg = if is_empty {
-                    None
-                } else {
-                    vm.heap.inc_ref(exc.id());
-                    let exc_val = Value::Ref(exc.id());
-                    defer_drop!(exc_val, vm);
-                    match exc_val.py_str(vm) {
-                        Ok(s_val) => {
-                            let s = if let PyValue::Str(s) = s_val.py_value(vm) {
-                                Some(s.as_str(vm).to_owned())
-                            } else {
-                                None
-                            };
-                            s_val.drop_with(vm);
-                            s
-                        }
-                        Err(e) => {
-                            e.drop_with(vm);
-                            Some("<exception str() failed>".to_owned())
-                        }
-                    }
+                let (exc_type, args_copy) = {
+                    let exc_ref = exc.get(vm.heap);
+                    let args = match &exc_ref.args {
+                        ExceptionArgs::Empty => ExceptionArgs::Empty,
+                        ExceptionArgs::OneStr(s) => ExceptionArgs::OneStr(s.clone()),
+                        ExceptionArgs::OneValue(v) => ExceptionArgs::OneValue(v.clone_with_heap(vm.heap)),
+                        ExceptionArgs::Tuple(id) => ExceptionArgs::Tuple(*id),
+                    };
+                    (exc_ref.exc_type(), args)
                 };
-                MontyNode::Exception {
-                    exc_type,
-                    arg,
-                }
+                let mut args = args_copy;
+                let arg = args.format_arg(vm);
+                args.drop_with(vm);
+                MontyNode::Exception { exc_type, arg }
             }
             HeapReadOutput::HostClass(hc) => {
                 let (class_id, instance_id) = {
