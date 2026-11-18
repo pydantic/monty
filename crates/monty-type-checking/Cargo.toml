@@ -9,7 +9,6 @@ license = { workspace = true }
 description = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
-homepage = { workspace = true }
 repository = { workspace = true }
 
 [lib]
@@ -30,10 +29,10 @@ ty_module_resolver = { workspace = true }
 salsa = { workspace = true }
 
 [dev-dependencies]
-pretty_assertions = { workspace = true }
 insta = { workspace = true }
 # Use codspeed-criterion-compat for CI benchmarks, real criterion for local flamegraphs
-codspeed-criterion-compat = "5.0.1"
+codspeed-criterion-compat = "6.0.0"
+# pprof 0.15's profiler integration requires Criterion 0.5.
 criterion = "0.5"
 
 [target.'cfg(unix)'.dev-dependencies]

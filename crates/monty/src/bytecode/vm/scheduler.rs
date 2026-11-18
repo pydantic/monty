@@ -97,7 +97,7 @@ pub(crate) struct SerializedTaskFrame {
     /// Caller's bytecode offset at the call site (for tracebacks). See
     /// `CallFrame.call_offset`.
     pub call_offset: Option<u32>,
-    /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
+    /// Whether this frame is a class `__init__` or an imported module body (see `CallFrame.is_initializer`).
     pub is_initializer: bool,
     /// Frame namespace, owning its dict references (see `CallFrame.namespace`).
     pub namespace: Option<Box<FrameNamespace>>,

@@ -1,7 +1,7 @@
 [project]
 name = "monty-workspace"
 version = "0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 
 [tool.uv.workspace]
 members = ["crates/monty-python", "crates/monty-runtime", "packages/pydantic-monty"]
@@ -13,23 +13,28 @@ dev = [
     "mypy>=2.1.0",
     "ruff>=0.14.7",
     # markdown formatting (`make format-md`); style is in .mdformat.toml
-    "mdformat>=0.7.22",
-    "mdformat-tables>=1.0.0",
-    "mdformat-mkdocs>=5.2.1",
-    "mdformat-frontmatter>=2.1.2",
+    "mdformat>=1.0.0",
+    "mdformat-gfm>=1.0.0",
+    "mdformat-mkdocs>=5.3.0",
+    "mdformat-frontmatter>=2.2.0",
     "httpx2>=2.12.0",
-    "websockets>=14",
+]
+# the dev relay (`scripts/grpc_relay.py`) and the remote-pool test fakes; `make install-py` installs it.
+# grpcio has no free-threaded wheels, so CI's free-threaded jobs skip it with `UV_NO_GROUP=grpc`
+grpc = [
+    "grpcio>=1.75",
+    "types-grpcio>=1.0.0.20250603",
 ]
 # used only by `examples/`; opt in with `uv run --group examples ...`, `make dev-py` skips it, `make lint-py` needs it
 examples = [
     "duckdb>=1.0.0",
     "openpyxl>=3.1.5",
-    "pillow>=11.0.0",
+    "pillow>=13.0.0",
     "types-openpyxl>=3.1.5",
-    "playwright>=1.58.0",
-    "beautifulsoup4>=4.14.3",
     "logfire>=4.25.0",
     "pydantic-ai-slim[anthropic,openai]>=1.63.0",
+    "pydantic-ai-harness[code-mode]>=0.60.0",
+    "websockets>=15.0",
 ]
 build = [
     "twine>=6.1.0",
@@ -81,9 +86,13 @@ extend-exclude = [
 [tool.uv]
 # this is a monorepo without a root package
 package = false
+# plain `uv sync` / `uv run` install the relay too
+default-groups = ["dev", "grpc"]
 # https://docs.astral.sh/uv/reference/settings/#exclude-newer
 # make sure to use relative durations:
 exclude-newer = "7 days"
+# Apply CA distrust updates immediately (CVE-2026-111943).
+exclude-newer-package = { certifi = "0 days" }
 
 [tool.ruff.lint]
 extend-select = [
@@ -98,14 +107,20 @@ mccabe = { max-complexity = 14 }
 [tool.ruff.lint.isort]
 combine-as-imports = true
 known-first-party = ["pydantic_monty"]
-# stdlib since 3.11, which the 3.10 floor hides from ruff's classification
-extra-standard-library = ["tomllib"]
 
 [tool.ruff.lint.per-file-ignores]
 "crates/monty/test_cases/{str,bytes}__percent_format.py" = [
     "F504", # unused mapping key - tests that a mapping operand never reports leftovers
     "F506", # mixed positional and named placeholders - tests CPython's argument consumption order
     "F507", # placeholder/argument count mismatch - the point of the argument-count tests
+]
+"crates/monty/test_cases/import__future_{late,nested}.py" = [
+    "F404", # late `__future__` import - the SyntaxError these cases expect
+]
+"crates/monty/test_cases/import__star*.py" = [
+    "F403", # `from m import *` - the behaviour under test
+    "F405", # names bound by `from m import *` - the behaviour under test
+    "F406", # `import *` in a function - the SyntaxError `import__star_function.py` expects
 ]
 "crates/monty/test_cases/*.py" = [
     "E722", # bare except - needed for testing try/except with bare except clauses
@@ -126,14 +141,13 @@ extra-standard-library = ["tomllib"]
     "F823", # chained-assign test intentionally reads a local before its first assignment
     "F841", # unused variable - needed for testing exception variable cleanup
     "F401", # Intentionally imports unknown typing constructs to test silent ignore behavior
-    "F403", # star import test intentionally uses `from sys import *`
     "F407", # unknown `__future__` feature - the point of the test is that it's a SyntaxError
     "E402", # Typing test file has multiple import sections to test different import patterns
     "E401", # Multiple imports on one line - needed for testing `import a, b` syntax
     "I001", # Import block unsorted - needed for testing `import a, b` syntax
 ]
 
-"crates/monty/test_cases/class__annotations.py" = [
+"crates/monty/test_cases/class__annotations_future.py" = [
     # Scoped to this file so the single-quote convention stays enforced across
     # the other test cases: these tests exist to prove that double-quoted
     # annotations normalize to single quotes exactly as CPython's does.
@@ -155,6 +169,9 @@ extra-standard-library = ["tomllib"]
 "crates/monty-type-checking/tests/good_types.py" = [
     "F704", # await outside function - needed for testing top-level async/await
 ]
+"crates/monty-type-checking/tests/bad_types.py" = [
+    "E402", # an import next to its cases keeps the earlier line numbers in the snapshot unchanged
+]
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -174,12 +191,27 @@ exclude = [
     "crates/monty/test_cases/function__err_repeated_keyword.py",
     # annotation quote-normalization test: `e: "it's"` is a string literal under
     # test, which pyright reads as a malformed forward reference
-    "crates/monty/test_cases/class__annotations.py",
+    "crates/monty/test_cases/class__annotations_future.py",
+    # `__annotate__` and the argument errors of typing forms (`Annotated[int]`,
+    # `ClassVar[int, str]`, `Any[int]`) are the behaviour under test
+    "crates/monty/test_cases/function__annotations.py",
+    "crates/monty/test_cases/typing__special_forms.py",
+    # annotations that are not type expressions (`x: 1`, a string naming a
+    # variable, bare generics) are evaluated by `get_type_hints` under test
+    "crates/monty/test_cases/typing__get_type_hints.py",
+    "crates/monty/test_cases/typing__get_type_hints_classes.py",
+    "crates/monty/test_cases/typing__get_type_hints_dataclasses.py",
+    "crates/monty/test_cases/typing__get_type_hints_functions.py",
+    "crates/monty/test_cases/typing__get_type_hints_formats.py",
+    "crates/monty/test_cases/typing__get_type_hints_future.py",
+    "crates/monty/test_cases/annotationlib__forward_ref.py",
     # `break`/`return`/`continue` exiting a `finally` block (PEP 765) is the
     # behavior under test; basedpyright rejects it unconditionally
     "crates/monty/test_cases/async__control_flow.py",
     "crates/monty/test_cases/refcount__finally_swallow.py",
     "crates/monty/test_cases/try_finally__control_flow.py",
+    # `import *` in a function is the SyntaxError under test
+    "crates/monty/test_cases/import__star_function.py",
     # break/continue outside loop tests intentionally test error handling
     "crates/monty/test_cases/loop__break_outside_error.py",
     "crates/monty/test_cases/loop__continue_outside_error.py",
@@ -214,7 +246,6 @@ exclude = [
     "crates/monty/test_cases/typing__union.py",
     "crates/monty/test_cases/refcount__typing_union.py",
     "scripts/startup_performance.py",
-    "examples/web_scraper/example_code.py",
     # two starred targets in one assignment is the SyntaxError under test
     "crates/monty/test_cases/unpack__err_multiple_starred.py",
 ]
@@ -286,6 +317,8 @@ reportUntypedNamedTuple = false
 # `break`/`return`/`continue` inside `with` tests bind through Optional outer
 # variables that pyright can't narrow.
 reportOptionalMemberAccess = false
+# inheritance tests deliberately derive from dynamic bases (`class Wrapped(cls)`, `*bases`)
+reportUntypedBaseClass = false
 
 [[tool.pyright.executionEnvironments]]
 root = "crates/monty-type-checking"
@@ -306,11 +339,13 @@ exclude = [
 
 [tool.codespell]
 # Ref: https://github.com/codespell-project/codespell#using-a-config-file
-ignore-words-list = 'crate,NotIn,ser,IST,Nd,afterAll,beforeAll,deques,wit'
+ignore-words-list = 'crate,NotIn,ser,IST,Nd,afterAll,beforeAll,deques,wit,acount'
 skip = [
     "Cargo.lock",
     "crates/monty-js/package-lock.json",
     "crates/monty-bench/benches/python/pyperformance_*.py",
+    # The multilingual corpus contains valid non-English words.
+    "crates/monty-bench/benches/data/string_corpus.json",
 
     "crates/monty-typeshed/vendor/typeshed/stdlib/*",
     "crates/monty/src/types/str.rs",

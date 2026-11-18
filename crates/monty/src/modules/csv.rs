@@ -18,7 +18,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
@@ -50,8 +50,8 @@ pub(crate) enum CsvFunctions {
     FieldSizeLimit,
 }
 
-/// Allocates the `csv` module and returns its `HeapId`.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `csv` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Csv, vm.interns);
 
     for (name, function) in [
@@ -82,9 +82,10 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     }
     module.set_attr(
         StaticStrings::ErrorClass,
-        Value::Builtin(Builtins::ExcType(ExcType::CsvError)),
+        Value::Builtin(Builtins::Type(Type::CsvError)),
         vm,
     );
+    module.set_attr(StaticStrings::DunderVersion, allocate_string("1.0", vm.heap), vm);
     // CPython's are classes; Monty exposes the resolved dialects, which `dialect=` accepts alike.
     for (name, dialect) in [
         (StaticStrings::Excel, Dialect::excel()),
@@ -94,7 +95,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         module.set_attr(name, CsvObject::Dialect(dialect).allocate(vm), vm);
     }
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `csv` module function.
@@ -246,11 +247,7 @@ fn call_writer(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_get_dialect(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let GetDialectArgs { name } = GetDialectArgs::from_args(args, vm)?;
     defer_drop!(name, vm);
-    let dialect = if name.is_str(vm.heap) {
-        Dialect::by_name(name.to_str(vm)?)
-    } else {
-        None
-    };
+    let dialect = name.as_str(vm).and_then(Dialect::by_name);
     dialect
         .map(|dialect| CsvObject::Dialect(dialect).allocate(vm))
         .ok_or_else(ExcType::csv_unknown_dialect)
@@ -480,10 +477,9 @@ fn materialize_fieldnames(fieldnames: &mut Value, vm: &mut VM<'_>) -> RunResult<
 
 /// `extrasaction.lower()`, which must be `'raise'` or `'ignore'` and is what gets stored.
 fn check_extrasaction(extrasaction: &Value, vm: &VM<'_>) -> RunResult<Value> {
-    if !extrasaction.is_str(vm.heap) {
-        return Err(ExcType::attribute_error(extrasaction.py_type_name(vm), "lower"));
-    }
-    let text = extrasaction.to_str(vm)?;
+    let text = extrasaction
+        .as_str(vm)
+        .ok_or_else(|| ExcType::attribute_error(extrasaction.py_type_name(vm), "lower"))?;
     let lowered = text.to_lowercase();
     if lowered == "raise" || lowered == "ignore" {
         Ok(allocate_string(lowered, vm.heap))

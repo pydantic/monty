@@ -90,10 +90,10 @@ pub(crate) fn extract_repl_inputs(
     Ok(unstable::named_values_from_parts(encoder.finish(), names).expect("encoded roots are valid"))
 }
 
-/// Calls the `connect_headers` callback and extracts its `str -> str` mapping.
+/// Calls the `metadata` callback and extracts its `str -> str` mapping.
 /// The GIL is held on the caller's task, so the callback sees the caller's
 /// contextvars.
-pub(crate) fn extract_connect_headers(py: Python<'_>, callback: &Py<PyAny>) -> PyResult<Vec<(String, String)>> {
+pub(crate) fn extract_metadata(py: Python<'_>, callback: &Py<PyAny>) -> PyResult<Vec<(String, String)>> {
     let result = callback.bind(py).call0()?;
     if let Ok(mapping) = result.cast::<PyMapping>() {
         mapping
@@ -107,7 +107,7 @@ pub(crate) fn extract_connect_headers(py: Python<'_>, callback: &Py<PyAny>) -> P
     } else {
         let t = result.get_type().name()?;
         Err(PyTypeError::new_err(format!(
-            "connect_headers must return a mapping of str to str, got {}",
+            "metadata must return a mapping of str to str, got {}",
             StringRepr(&t.to_string_lossy())
         )))
     }
@@ -120,7 +120,7 @@ fn header_str(part: &Bound<'_, PyAny>, side: &str) -> PyResult<String> {
     } else {
         let t = part.get_type().name()?;
         Err(PyTypeError::new_err(format!(
-            "connect_headers must return a mapping of str to str, got {} header {}",
+            "metadata must return a mapping of str to str, got {} header {}",
             StringRepr(&t.to_string_lossy()),
             side
         )))

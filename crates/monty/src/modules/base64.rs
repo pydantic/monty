@@ -22,7 +22,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData},
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
@@ -133,8 +133,8 @@ const BASE64_FUNCTIONS: &[(StaticStrings, Base64Functions)] = &[
     (StaticStrings::A85Decode, Base64Functions::A85Decode),
 ];
 
-/// Creates the `base64` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `base64` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Base64, vm.interns);
 
     for (name, func) in BASE64_FUNCTIONS {
@@ -144,7 +144,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     module.set_attr(StaticStrings::MaxBinSize, Value::Int(i64::from(MAX_BIN_SIZE)), vm);
     module.set_attr(StaticStrings::MaxLineSize, Value::Int(i64::from(MAX_LINE_SIZE)), vm);
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `base64` module function.
@@ -1255,8 +1255,7 @@ pub(super) fn decode_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Co
 /// The same coercion with `expected` naming the accepted types, which
 /// `binascii`'s own functions word differently from `base64`'s.
 pub(super) fn decode_input_described<'a>(value: &'a Value, vm: &'a VM<'_>, expected: &str) -> RunResult<Cow<'a, [u8]>> {
-    if value.is_str(vm.heap) {
-        let text = value.to_str(vm)?;
+    if let Some(text) = value.as_str(vm) {
         if text.is_ascii() {
             Ok(Cow::Borrowed(text.as_bytes()))
         } else {
@@ -1331,7 +1330,7 @@ fn assert_len_bytes(bytes: &[u8], expected: usize) -> RunResult<()> {
 fn assertion_error(value: &Value, vm: &mut VM<'_>) -> RunResult<RunError> {
     let repr = value.py_repr(vm)?;
     defer_drop!(repr, vm);
-    let message = repr.to_str(vm)?.to_owned();
+    let message = repr.as_str(vm).expect("py_repr returns str").to_owned();
     Ok(SimpleException::new_msg(ExcType::AssertionError, message).into())
 }
 

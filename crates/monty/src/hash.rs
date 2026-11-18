@@ -169,7 +169,7 @@ pub(crate) fn hash_named(kind: &'static str, name: &str) -> HashValue {
 
 /// Hashes a string using the canonical Python-string hash function.
 ///
-/// Both heap-allocated `Str` values and interned strings must use this so
+/// Both heap-allocated `HeapStr` values and interned strings must use this so
 /// that an interned `"foo"` and a heap `"foo"` hash identically — required
 /// for dict-key consistency.
 #[inline]

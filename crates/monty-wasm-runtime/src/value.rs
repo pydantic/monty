@@ -78,9 +78,11 @@ fn node_decoded_size(node: &ValueNode) -> usize {
         // Two decimal digits per byte is a conservative bound for the parsed
         // binary integer without allocating it merely to measure its bits.
         ValueNode::Bigint(value) => value.len().div_ceil(2),
-        ValueNode::Text(value) | ValueNode::Path(value) | ValueNode::Repr(value) | ValueNode::Cycle(value) => {
-            value.len()
-        }
+        ValueNode::Text(value)
+        | ValueNode::Path(value)
+        | ValueNode::Repr(value)
+        | ValueNode::Cycle(value)
+        | ValueNode::Decimal(value) => value.len(),
         ValueNode::Bytes(value) => value.len(),
         ValueNode::ListValue(items)
         | ValueNode::TupleValue(items)
@@ -228,6 +230,7 @@ fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
                 .map_err(|_| format!("unknown builtin function {value:?}"))?,
         ),
         ValueNode::Path(value) => MontyNode::Path(value),
+        ValueNode::Decimal(value) => MontyNode::Decimal(value),
         ValueNode::FileHandle(value) => MontyNode::FileHandle(MontyFileHandle {
             path: value.path,
             mode: value.mode.parse::<FileMode>().map_err(Cow::into_owned)?,
@@ -241,6 +244,8 @@ fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
         ValueNode::Function(value) => MontyNode::Function {
             name: value.name,
             docstring: value.docstring,
+            // the component interface cannot mark a function async yet
+            is_async: false,
         },
         ValueNode::Repr(value) => MontyNode::Repr(value),
         ValueNode::Cycle(value) => MontyNode::Cycle(value),
@@ -330,6 +335,7 @@ fn node_into_component(node: MontyNode) -> ValueNode {
         }),
         MontyNode::BuiltinFunction(value) => ValueNode::BuiltinFunction(value.to_string()),
         MontyNode::Path(value) => ValueNode::Path(value),
+        MontyNode::Decimal(value) => ValueNode::Decimal(value),
         MontyNode::FileHandle(value) => ValueNode::FileHandle(FileHandleNode {
             path: value.path,
             mode: value.mode.as_str().to_owned(),
@@ -344,7 +350,7 @@ fn node_into_component(node: MontyNode) -> ValueNode {
             instance_id: instance_id.to_string(),
             attrs: raw_pairs(attrs),
         }),
-        MontyNode::Function { name, docstring } => ValueNode::Function(FunctionNode { name, docstring }),
+        MontyNode::Function { name, docstring, .. } => ValueNode::Function(FunctionNode { name, docstring }),
         MontyNode::Repr(value) => ValueNode::Repr(value),
         MontyNode::Cycle(placeholder) => ValueNode::Cycle(placeholder),
         MontyNode::Module { name, id, attrs } => ValueNode::Module(ModuleNode {

@@ -271,6 +271,9 @@ fn module_imports_after_snapshot() {
         "functools",
         "base64",
         "binascii",
+        "statistics",
+        "fnmatch",
+        "annotationlib",
     ] {
         let runner = MontyRun::new(
             format!("import {module}\n42"),
@@ -339,6 +342,36 @@ fn run_progress_round_trip_at_external_call() {
     // Resume execution with a return value
     let result = call.resume(MontyObject::int(100), PrintWriter::Stdout).unwrap();
     assert_eq!(result.into_complete().unwrap(), MontyObject::int(101)); // 100 + 1
+}
+
+/// Interned integer roots retain their identities and interner references across suspension and restore.
+#[test]
+fn run_progress_round_trip_interned_integers() {
+    let code = "
+def literal():
+    return 18446744073709551616
+n = literal()
+identity = id(n)
+d = {n: 'value'}
+ext_fn(n)
+assert literal() is n
+assert id(n) == identity
+assert d[1 << 64] == 'value'
+assert 2 * n == 1 << 65
+n
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded = round_trip_progress(&progress);
+    for progress in [progress, loaded] {
+        let call = progress.into_function_call().expect("should be at function call");
+        let expected = call.args.args().next().unwrap().to_owned();
+        let result = call.resume(MontyObject::none(), PrintWriter::Disabled).unwrap();
+        assert_eq!(result.into_complete().unwrap(), expected);
+    }
 }
 
 /// A dump keeps a deleted entry's tombstone, so an iterator dumped past one

@@ -15,7 +15,8 @@ use crate::{
     heap::{DropGuard, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     modules::ModuleFunctions,
     predicate::call_predicate,
-    types::{LazyHeapSet, List, PyTrait, Type},
+    py_value::PyValue,
+    types::{LazyHeapSet, List, PyTrait, Type, TypeRef},
     value::Value,
 };
 
@@ -138,8 +139,8 @@ impl HeapItem for MapFilter {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, MapFilter> {
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).py_type()
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        self.get(vm.heap).py_type().into()
     }
 
     fn py_hash(&self, _: &mut VM<'h>) -> RunResult<Option<HashValue>> {
@@ -192,7 +193,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, MapFilter> {
                     iterators.clone_with_heap(vm),
                     Value::Bool(*strict),
                     Value::Builtin(Builtins::Function(BuiltinsFunctions::Next)),
-                    Value::Builtin(Builtins::ExcType(ExcType::StopIteration)),
+                    Value::Builtin(Builtins::Type(Type::StopIteration)),
                     Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::MapLengthError)),
                 ];
                 vm.call_frozen_exact(FrozenFunction::MapNext, args).map(Some)
@@ -247,7 +248,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, MapFilter> {
 
 /// Builtin containers and iterator identities acquire without calling user protocols.
 fn has_native_iter(value: &Value, vm: &VM<'_>) -> bool {
-    let ty = value.py_type(vm);
+    let Some(ty) = value.py_type(vm).native() else {
+        return false;
+    };
     ty.is_iterator()
         || matches!(
             ty,
@@ -266,7 +269,7 @@ fn has_native_iter(value: &Value, vm: &VM<'_>) -> bool {
 
 /// Advances a non-recursive native source until the predicate accepts an item.
 /// Poll limits even when an endlessly rejecting native source executes no bytecode.
-fn filter_next<'h>(function: &Value, iterator: &mut HeapReadOutput<'h>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+fn filter_next<'h>(function: &Value, iterator: &mut PyValue<'h>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let mut seen = 0;
     while let Some(item) = iterator.py_next(vm)? {
         let mut item = DropGuard::new(item, vm);
@@ -287,8 +290,22 @@ fn filter_next<'h>(function: &Value, iterator: &mut HeapReadOutput<'h>, vm: &mut
 
 /// Borrows an iterator whose advancement never calls Python or suspends.
 /// Select this path before consuming anything; other sources must use a continuation.
-fn native_iterator<'h>(value: &Value, vm: &VM<'h>) -> Option<HeapReadOutput<'h>> {
-    value.read_heap(vm).filter(HeapReadOutput::is_native_container_iterator)
+fn native_iterator<'h>(value: &Value, vm: &VM<'h>) -> Option<PyValue<'h>> {
+    value.read_heap(vm).map(PyValue::from).filter(|source| {
+        matches!(
+            source,
+            PyValue::ListIterator(_)
+                | PyValue::DequeIterator(_)
+                | PyValue::TupleIterator(_)
+                | PyValue::StringIterator(_)
+                | PyValue::BytesIterator(_)
+                | PyValue::RangeIterator(_)
+                | PyValue::DictKeyIterator(_)
+                | PyValue::DictItemIterator(_)
+                | PyValue::DictValueIterator(_)
+                | PyValue::SetIterator(_)
+        )
+    })
 }
 
 /// Acquires each source in order without consuming items or calling the mapped function.

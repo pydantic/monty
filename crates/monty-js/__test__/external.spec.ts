@@ -1,7 +1,7 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 
-import { MontyRuntimeError } from '@pydantic/monty'
+import { MontyRuntimeError, NOT_HANDLED } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -240,7 +240,10 @@ const exceptionTypes: Array<[string, string]> = [
   ['re.PatternError', 're.PatternError'],
   ['binascii.Error', 'binascii.Error'],
   ['binascii.Incomplete', 'binascii.Incomplete'],
+  ['statistics.StatisticsError', 'statistics.StatisticsError'],
   ['_csv.Error', '_csv.Error'],
+  ['decimal.InvalidOperation', 'decimal.InvalidOperation'],
+  ['decimal.DivisionByZero', 'decimal.DivisionByZero'],
   ['SomeCustomError', 'RuntimeError'],
 ]
 
@@ -306,6 +309,7 @@ caught
 const dottedTypes: Array<[string, string, string]> = [
   ['binascii.Error', 'binascii', 'ValueError'],
   ['binascii.Incomplete', 'binascii', 'Exception'],
+  ['statistics.StatisticsError', 'statistics', 'ValueError'],
   ['json.JSONDecodeError', 'json', 'ValueError'],
   ['tomllib.TOMLDecodeError', 'tomllib', 'ValueError'],
   ['re.PatternError', 're', 'Exception'],
@@ -566,4 +570,16 @@ test('a non-callable lookup value with a then is never awaited', async () => {
     message: /^TypeError: /,
   })
   t.false(thenRan)
+})
+
+test('get_type_hints of a host function is empty and never reaches os', async () => {
+  const osCalls: string[] = []
+  const os = (name: string) => {
+    osCalls.push(name)
+    return NOT_HANDLED
+  }
+  const code = 'from typing import get_type_hints\nget_type_hints(fetch)'
+  const hints = await run(code, { externalLookup: { fetch: () => null }, os })
+  t.deepEqual(hints, new Map())
+  t.deepEqual(osCalls, [])
 })

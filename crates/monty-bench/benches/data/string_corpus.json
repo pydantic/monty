@@ -1,0 +1,35 @@
+{
+  "names": [
+    "Zoë",
+    "André",
+    "Müller",
+    "Renée",
+    "Björn",
+    "Lucía",
+    "José",
+    "Chloë",
+    "Maël",
+    "Anaïs"
+  ],
+  "english": [
+    "The group checked the equipment and updated the delivery schedule.",
+    "Visitors can collect the revised timetable and a map at reception.",
+    "Record the materials, quantities and contact details before placing the order.",
+    "The next workshop will include time for questions and practical exercises.",
+    "Keep the meeting notes with the drawings so corrections can be checked later.",
+    "Allow extra time to cross the bridge and return through the public garden."
+  ],
+  "multilingual": [
+    "Die nächste Führung beginnt am Haupteingang. Bitte bringen Sie eine Jacke mit.",
+    "La bibliothèque prépare une soirée de lecture. Chacun peut proposer une question.",
+    "请记录材料的数量和交付日期。如果地址有变化，请在寄出包裹前通知工作人员。",
+    "駅の東口から川に沿って歩いてください。受付では予約番号をお知らせください。",
+    "The booking is confirmed ✓ and the finished work is ready for collection 🎉.",
+    "The reading room opens at nine; please return borrowed books to the front desk."
+  ],
+  "templates": [
+    "{first} recorded entry {entry}. {opening} {second} will follow up. {closing}",
+    "{opening} Entry {entry} was checked by {first} and {second}. {closing}",
+    "{opening} {closing} Follow-up for entry {entry}: {first} and {second}."
+  ]
+}

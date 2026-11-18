@@ -398,3 +398,42 @@ test('snapshot resumes capture the resuming caller storage and retain the Monty 
     }
   `)
 })
+
+test('streamed calls run under their call span and each feed caller async storage', () => {
+  runChild(`
+    instrumentTelemetry({ tracer })
+    const pool = await Monty.create({ streamAsyncCalls: true })
+    const session = await pool.checkout()
+    // two feeds on one session: the sink is installed once, but each feed binds its own context
+    for (const index of [1, 2]) {
+      await storage.run(index, () => tracer.startActiveSpan('host ' + index, async host => {
+        try {
+          const result = await session.feedRun('pending = fetch()\\nawait pending', {
+            externalLookup: {
+              async fetch() {
+                assert.equal(storage.getStore(), index)
+                tracer.startActiveSpan('streamed ' + index, span => span.end())
+                return index
+              },
+            },
+          })
+          assert.equal(result, index)
+        } finally { host.end() }
+      }))
+    }
+    await session.close()
+    await pool.close()
+    await flushTelemetry()
+    const spans = exporter.getFinishedSpans()
+    const byId = new Map(spans.map(span => [span.spanContext().spanId, span]))
+    const calls = [1, 2].map(index => {
+      const span = spans.find(span => span.name === 'streamed ' + index)
+      assert.ok(span)
+      const call = byId.get(span.parentSpanContext.spanId)
+      assert.equal(call.name, 'call {function_name}')
+      assert.equal(byId.get(call.parentSpanContext.spanId).name, 'run code')
+      return call.spanContext().spanId
+    })
+    assert.notEqual(calls[0], calls[1])
+  `)
+})

@@ -21,8 +21,9 @@ use crate::{
     os_dispatch::{PendingEffect, PostConversionEffect},
     string_builder::StringBuilder,
     types::{
-        CsvObject, PyTrait, Type,
+        CsvObject, PyTrait, Type, TypeRef,
         csv::dialect::{Dialect, Quoting},
+        instance,
         iter::collect_owned_iterable,
         str::allocate_string,
     },
@@ -258,7 +259,7 @@ pub(crate) fn format_row(
                 append_field_data(
                     dialect,
                     terminator_chars,
-                    text.to_str(vm)?,
+                    text.as_str(vm).expect("py_str returns str"),
                     &mut quoted,
                     &mut field_buffer,
                     &vm.heap.tracker,
@@ -380,9 +381,15 @@ fn append_field(
     Ok(written)
 }
 
-/// `PyNumber_Check`: the numeric types a `QUOTE_NONNUMERIC` writer leaves unquoted.
+/// `PyNumber_Check`: built-in numbers and instances with `__int__`, `__float__`, or `__index__`, without conversions.
 fn is_number(value: &Value, vm: &VM<'_>) -> bool {
-    matches!(value.py_type(vm), Type::Int | Type::Float | Type::Bool | Type::Complex)
+    match value.py_type(vm) {
+        TypeRef::Native(Type::Int | Type::Float | Type::Bool | Type::Complex) => true,
+        TypeRef::Class(class_id) => ["__int__", "__float__", "__index__"]
+            .iter()
+            .any(|dunder| instance::class_defines(class_id, dunder, vm)),
+        TypeRef::Native(_) => false,
+    }
 }
 
 /// Whether `value` is an `open()` file, whose `write()` yields a host call.

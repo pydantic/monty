@@ -154,14 +154,16 @@ fn dump_header_rejects_incompatible_data() {
 /// relies on establishing Gray/White itself, even when the snapshot is invalid.
 #[test]
 fn dump_rejects_transient_gc_colors() {
-    // The microsecond 444555 as a CBOR u32 is distinctive; the heap entry's
-    // `color` field follows its time payload.
-    const MICROSECOND: [u8; 5] = [0x1a, 0x00, 0x06, 0xc8, 0x8b];
+    // A string built at runtime is a heap entry whose text appears nowhere else in
+    // the dump; the entry's `color` field follows it. The heap must hold no
+    // `Value::Ref`: rejected entries are dropped without `Heap::drop`'s cleanup,
+    // which `memory-model-checks` reports as a refcount bug.
+    const MARKER: &[u8] = b"gc-color-marker-12345";
     // `color` is serialized as key `C`, `Black` as `B`, `Gray`/`White` as `G`/`W`.
     const BLACK: &[u8] = b"\x61C\x61B";
-    let bytes = dump_repl("import datetime\nt = datetime.time(11, 22, 33, 444555)");
-    let after_time = offset_of(&bytes, &MICROSECOND) + MICROSECOND.len();
-    let color = after_time + offset_of(&bytes[after_time..], BLACK) + b"\x61C".len();
+    let bytes = dump_repl("s = 'gc-color-marker-' + str(12345)");
+    let after_marker = offset_of(&bytes, MARKER) + MARKER.len();
+    let color = after_marker + offset_of(&bytes[after_marker..], BLACK) + b"\x61C".len();
     assert!(Dump::load(&bytes).is_ok());
 
     let rejections: Vec<String> = [&b"\x61G"[..], b"\x61W"]
@@ -203,6 +205,42 @@ fn repl_persists_state_and_definitions() {
     feed_run_print(&mut repl, "x = 20").unwrap();
     let output = feed_run_print(&mut repl, "add(22)").unwrap();
     assert_eq!(output, MontyObject::int(42));
+}
+
+/// Names a star import binds are global slots later feeds compile against,
+/// including a builtin it shadows (`math.pow`), and they survive a dump.
+#[test]
+fn repl_star_import_binds_names_for_later_feeds() {
+    let (mut repl, _) = init_repl("def early():\n    return comb(4, 2)");
+    feed_run_print(&mut repl, "from math import *").unwrap();
+    assert_eq!(feed_run_print(&mut repl, "early()").unwrap(), MontyObject::int(6));
+    assert_eq!(feed_run_print(&mut repl, "factorial(4)").unwrap(), MontyObject::int(24));
+    assert_eq!(feed_run_print(&mut repl, "pow(2, 3)").unwrap(), MontyObject::float(8.0));
+    let mut repl = round_trip_repl(&repl);
+    assert_eq!(feed_run_print(&mut repl, "gcd(4, 6)").unwrap(), MontyObject::int(2));
+}
+
+/// `from __future__ import annotations` in one feed governs every later feed, as
+/// in CPython's interactive mode, including after a dump round trip.
+#[test]
+fn repl_future_annotations_persist_across_feeds() {
+    let (mut repl, _) = init_repl("from annotationlib import get_annotations");
+    feed_run_print(&mut repl, "def before(x: 'Foo'): pass").unwrap();
+    feed_run_print(&mut repl, "from __future__ import annotations").unwrap();
+    let mut repl = round_trip_repl(&repl);
+    feed_run_print(&mut repl, "def after(x: 'Foo'): pass").unwrap();
+    let output = feed_run_print(&mut repl, "(get_annotations(before)['x'], get_annotations(after)['x'])").unwrap();
+    assert_eq!(
+        output,
+        MontyObject::tuple([MontyObject::string("Foo"), MontyObject::string("'Foo'")])
+    );
+
+    // A host `call_function` of `exec` runs in a synthetic frame that carries the flag too.
+    feed_run_print(&mut repl, "run = exec").unwrap();
+    let source = MontyObject::string("def called(x: 'Foo'): pass");
+    repl.call_function("run", vec![source], PrintWriter::Stdout).unwrap();
+    let output = feed_run_print(&mut repl, "get_annotations(called)['x']").unwrap();
+    assert_eq!(output, MontyObject::string("'Foo'"));
 }
 
 #[test]
@@ -424,6 +462,23 @@ fn repl_dump_load_survives_between_snippets() {
     feed_run_print(&mut loaded, "total = total * 21").unwrap();
     let output = feed_run_print(&mut loaded, "total").unwrap();
     assert_eq!(output, MontyObject::int(42));
+}
+
+/// The current `decimal` context is session state: a `prec` set in one feed governs
+/// the next, survives a failing feed, and survives a dump round-trip.
+#[test]
+fn repl_decimal_context_persists_across_feeds_and_dumps() {
+    let (mut repl, _) = init_repl("import decimal\ndecimal.getcontext().prec = 5");
+    let output = feed_run_print(&mut repl, "decimal.getcontext().prec").unwrap();
+    assert_eq!(output, MontyObject::int(5));
+
+    feed_run_print(&mut repl, "decimal.getcontext().prec = 7\n1 / 0").unwrap_err();
+    let output = feed_run_print(&mut repl, "import decimal\ndecimal.getcontext().prec").unwrap();
+    assert_eq!(output, MontyObject::int(7));
+
+    let mut loaded = round_trip_repl(&repl);
+    let output = feed_run_print(&mut loaded, "decimal.getcontext().prec").unwrap();
+    assert_eq!(output, MontyObject::int(7));
 }
 
 #[test]
@@ -2493,6 +2548,30 @@ fn repl_abandoned_lookup_releases_in_flight_state() {
     assert_eq!(repl.heap_entry_count(), control);
 }
 
+#[cfg(feature = "ref-count-return")]
+#[test]
+fn repl_unknown_frozenset_method_releases_arguments() {
+    for call in [
+        "frozen.missing([1])",
+        "frozen.missing([1], {'nested': [2]})",
+        "frozen.missing([1], {'nested': [2]}, ([],))",
+        "frozen.missing([1], nested=[2])",
+    ] {
+        let (mut repl, _) = init_repl("frozen = frozenset({('heap-backed member',)})");
+        let baseline = repl.heap_entry_count();
+
+        let error = feed_run_print(&mut repl, call).expect_err("unknown methods must raise AttributeError");
+        assert_eq!(error.exc_type(), ExcType::AttributeError, "{call}");
+        assert_eq!(
+            error.message(),
+            Some("'frozenset' object has no attribute 'missing'"),
+            "{call}"
+        );
+        assert_eq!(repl.heap_entry_count(), baseline, "{call}: arguments must be released");
+        assert_eq!(feed_run_print(&mut repl, "len(frozen)").unwrap(), MontyObject::int(1));
+    }
+}
+
 /// A sandbox class or instance the host hands back (by the uuid it crossed
 /// out with) resolves to the original object rather than a host-backed copy,
 /// including after a dump/restore rebuilds the uuid index; one the sandbox has
@@ -2971,9 +3050,9 @@ fn call_function_wrong_arg_count() {
         .unwrap_err();
     assert_snapshot!(err, @r#"
     Traceback (most recent call last):
-      File "<python-input-0>", line 1, in <module>
-        def add(a, b): return a + b
-            ~~~
+      File "<python-input-1>", line 1, in <module>
+        add(...)
+        ~~~~~~~~
     TypeError: add() missing 1 required positional argument: 'b'
     "#);
 }
@@ -3287,6 +3366,20 @@ fn repl_failed_exec_locals_snapshot_releases_globals() {
     }
 }
 
+/// A resource limit hit by a user `__repr__` while a host-driven call's return
+/// value is exported fails the call, rather than becoming a repr string.
+#[test]
+fn repl_call_function_return_export_propagates_memory_error() {
+    let (mut repl, _) = init_repl(
+        "import functools\nclass R:\n    def __repr__(self):\n        return 'x' * 10_000_000\ndef make():\n    return functools.partial(print, R())",
+    );
+    *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(1024 * 1024));
+    let error = repl.call_function("make", vec![], PrintWriter::Disabled).unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::MemoryError);
+    *repl.tracker_mut() = ResourceTracker::default();
+    assert_eq!(feed_run_print(&mut repl, "1 + 1").unwrap(), MontyObject::int(2));
+}
+
 /// Rejected snippets retain diagnostic locations without committing their source or intern IDs.
 #[test]
 fn repl_rejected_snippet_locations() {
@@ -3294,7 +3387,7 @@ fn repl_rejected_snippet_locations() {
     let mut errors = Vec::new();
     for source in [
         "\n\nfrom . import missing",
-        "\n\nfrom math import *",
+        "\n\ntype Alias = int",
         "\n\ndel missing",
         "\n\n__name__ = 'changed'",
     ] {
@@ -3321,4 +3414,38 @@ fn repl_snippet_sources_survive_round_trip() {
     let first = feed_run_print(&mut repl, "first()").unwrap_err();
     let second = feed_run_print(&mut repl, "second()").unwrap_err();
     assert_snapshot!("snippet_sources", format!("{first}\n\n{second}"));
+}
+
+/// A call started within the host's turn keeps the turn clock running, so
+/// `max_turn_duration` bounds the whole turn; a plain resume starts a new turn.
+#[test]
+fn resume_pending_in_turn_keeps_the_turn_clock() {
+    let code = "for _ in range(200_000):\n    pass\na = f()\nb = f()";
+    let second_call_turn_time = |in_turn: bool| {
+        let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
+        let progress = repl.feed_start(code, vec![], PrintWriter::Disabled).unwrap();
+        let first = progress.tracker().turn_elapsed();
+        let call = progress.into_function_call().expect("expected the first call");
+        let progress = if in_turn {
+            call.resume_pending_in_turn(PrintWriter::Disabled)
+        } else {
+            call.resume_pending(PrintWriter::Disabled)
+        }
+        .unwrap();
+        assert!(
+            matches!(progress, ReplProgress::FunctionCall(_)),
+            "expected the second call"
+        );
+        let second = progress.tracker().turn_elapsed();
+        // ends the suspended snippet so its heap references are released
+        let _repl = progress.into_repl();
+        (first, second)
+    };
+    let (first, second) = second_call_turn_time(true);
+    assert!(second >= first, "turn clock restarted: {second:?} < {first:?}");
+    let (first, second) = second_call_turn_time(false);
+    assert!(
+        second < first,
+        "a new turn should restart the clock: {second:?} >= {first:?}"
+    );
 }

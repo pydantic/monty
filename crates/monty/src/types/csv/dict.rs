@@ -402,7 +402,7 @@ impl RowSpec {
         defer_drop!(fieldnames, vm);
         defer_drop!(restval, vm);
         defer_drop!(extrasaction, vm);
-        let raise_on_extra = extrasaction.is_str(vm.heap) && extrasaction.to_str(vm)? == "raise";
+        let raise_on_extra = extrasaction.as_str(vm) == Some("raise");
         if raise_on_extra && row_dict(rowdict, vm).is_none() {
             return Err(dict_method_missing(rowdict, raise_on_extra, vm));
         }
@@ -547,7 +547,7 @@ fn check_extra_keys<'h>(dict: &HeapRead<'h, Dict>, known: &Value, vm: &mut VM<'h
             if any_wrong {
                 builder.push_str(", ")?;
             }
-            builder.push_str(repr.to_str(vm)?)?;
+            builder.push_str(repr.as_str(vm).expect("py_repr returns str"))?;
             wrong = builder.finish_raw()?;
             any_wrong = true;
         }

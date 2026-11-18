@@ -3,9 +3,43 @@ assert 1 + 2 == 3
 assert 5 + 0 == 5
 assert 0 + 5 == 5
 
+# === Addition across numeric representations ===
+for left, right, expected in [
+    (True, True, 2),
+    (True, 2, 3),
+    (True, 2.5, 3.5),
+    (2, 2.5, 4.5),
+    (9223372036854775807, 1, 9223372036854775808),
+    (-9223372036854775808, -1, -9223372036854775809),
+    (9223372036854775808, -1, 9223372036854775807),
+    (9223372036854775808, -9223372036854775808, 0),
+    (9223372036854775808, 9223372036854775808, 18446744073709551616),
+    (9223372036854775808, True, 9223372036854775809),
+    (9223372036854775808, 0.0, 9223372036854775808.0),
+]:
+    assert left + right == expected
+    assert right + left == expected
+    assert type(left + right) == type(expected)
+    assert type(right + left) == type(expected)
+
 # === Integer subtraction ===
 assert 5 - 3 == 2
 assert 5 - 0 == 5
+
+# === Subtraction across numeric representations ===
+for left, right, expected in [
+    (True, False, 1),
+    (True, 2.5, -1.5),
+    (-9223372036854775808, 1, -9223372036854775809),
+    (9223372036854775807, -1, 9223372036854775808),
+    (9223372036854775808, True, 9223372036854775807),
+    (9223372036854775808, 9223372036854775809, -1),
+    (9223372036854775808, 0.0, 9223372036854775808.0),
+]:
+    assert left - right == expected
+    assert right - left == -expected
+    assert type(left - right) == type(expected)
+    assert type(right - left) == type(expected)
 
 # === Mixed int/float addition ===
 assert 3 + 4.0 == 7.0
@@ -50,6 +84,27 @@ assert -3 * 4 == -12
 assert 3 * -4 == -12
 assert -3 * -4 == 12
 
+# === Multiplication across numeric representations ===
+for left, right, expected in [
+    (True, True, 1),
+    (True, 2, 2),
+    (False, 2, 0),
+    (True, 2.5, 2.5),
+    (2, 2.5, 5.0),
+    (9223372036854775807, 2, 18446744073709551614),
+    (-9223372036854775808, -1, 9223372036854775808),
+    (9223372036854775808, -1, -9223372036854775808),
+    (9223372036854775808, 2, 18446744073709551616),
+    (9223372036854775808, 9223372036854775808, 85070591730234615865843651857942052864),
+    (9223372036854775808, True, 9223372036854775808),
+    (9223372036854775808, False, 0),
+    (9223372036854775808, 0.5, 4611686018427387904.0),
+]:
+    assert left * right == expected
+    assert right * left == expected
+    assert type(left * right) == type(expected)
+    assert type(right * left) == type(expected)
+
 # === Float multiplication ===
 assert 3.0 * 4.0 == 12.0
 assert 2.5 * 2.0 == 5.0
@@ -90,6 +145,46 @@ assert 4.0**2.0 == 16.0
 assert 4**0.5 == 2.0
 assert 8 ** (1 / 3) == 2.0
 assert 2.0**3 == 8.0
+
+# === Division across numeric representations ===
+for left, right, quotient, remainder in [
+    (True, 2, 0, 1),
+    (True, 2.0, 0.0, 1.0),
+    (-9223372036854775808, -1, 9223372036854775808, 0),
+    (9223372036854775808, True, 9223372036854775808, 0),
+    (9223372036854775809, -2, -4611686018427387905, -1),
+    (-9223372036854775809, 9223372036854775808, -2, 9223372036854775807),
+    (1, 9223372036854775808, 0, 1),
+    (1.0, 9223372036854775808, 0.0, 1.0),
+    (9223372036854775808, 2.0, 4611686018427387904.0, 0.0),
+]:
+    assert left // right == quotient
+    assert left % right == remainder
+    assert divmod(left, right) == (quotient, remainder)
+    assert type(left // right) == type(quotient)
+    assert type(left % right) == type(remainder)
+    assert left / right == float(left) / float(right)
+
+# === Bit operations and unary identity across integer sizes ===
+for large in [9223372036854775808, 1 << 63]:
+    assert +large is large
+    assert -large == -9223372036854775808
+    assert large & True == 0
+    assert True & large == 0
+    assert large | True == 9223372036854775809
+    assert True | large == 9223372036854775809
+    assert large ^ True == 9223372036854775809
+    assert True ^ large == 9223372036854775809
+    assert large & (large + 1) == large
+    assert large >> True == 4611686018427387904
+    assert large << True == 18446744073709551616
+    assert 1 >> large == 0
+    assert -1 >> large == -1
+    assert large**0 == 1
+    assert 1**large == 1
+    assert (-1) ** (large + 1) == -1
+    assert 1.0**large == 1.0
+    assert large**1.0 == 9223372036854775808.0
 
 # === Augmented assignment operators ===
 # *=

@@ -19,6 +19,10 @@ The snippet can call host functions and raise into the caller; top-level `await`
 
 ## Namespace divergences
 
+- **A builtin rebound at module scope only by a snippet is not seen by the rest of that module scope.**
+    After `exec('len = 5')` or `exec('from math import *')`, `len` and `pow` read at module level in the same feed
+    are still the builtins; functions and later REPL feeds see the new bindings.
+    Module-level reads of a builtin name the module never assigns are resolved to the builtin at compile time.
 - **`__builtins__` is never inserted into a `globals` dict.** `exec('x = 1', ns)` leaves `ns == {'x': 1}`, where
     CPython adds a `'__builtins__'` entry; reading it in Monty raises `NameError` unless it was explicitly supplied or assigned.
 - **Module dunders under a `globals` dict raise `NameError`** unless the dict defines them.
@@ -37,6 +41,13 @@ The snippet can call host functions and raise into the caller; top-level `await`
 
 - A `SyntaxError` in the snippet carries CPython's `(<string>, line N)` suffix, but the message before it is the
     parser's own wording, and the traceback has no extra `File "<string>", line N` frame for the syntax error.
+- An unexpected indent, such as `eval('\n  1')`, `eval('1\n  ')` or `exec('  x = 1')`, raises `SyntaxError` rather
+    than `IndentationError`, which Monty does not implement (see [exceptions.md](exceptions.md)).
+- A source with no expression in it reports its `SyntaxError` one line later than CPython when it is empty, holds only
+    spaces and tabs, or ends with a newline: `eval('')` and `eval('  ')` report `line 1` (CPython: `line 0`), and
+    `eval('\n')` and `eval('#c\n')` report `line 2` (CPython: `line 1`).
+- A lone `\r` does not start a new line in snippet line numbers: `eval('(1,\r1/0)')` reports `line 1`, where CPython
+    reports `line 2`.
 - Frames of snippet code appear in tracebacks as `File "<string>", line N, in <module>` with no source line, as in
     CPython.
 

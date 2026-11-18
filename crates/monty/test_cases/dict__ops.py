@@ -143,6 +143,44 @@ dup = {'k': [1], 'k': [2]}
 assert dup == {'k': [2]}
 assert len(dup) == 1
 
+# === An equal key keeps the stored key and only replaces the value ===
+# `True == 1 == 1.0`, so each dict below ends with one entry, under the key that was inserted first
+assert repr({True: 'a', 1: 'b'}) == "{True: 'b'}"
+assert repr({1: 'a', True: 'b', 1.0: 'c'}) == "{1: 'c'}"
+assert repr({0: 'a', False: 'b', 0.0: 'c', -0.0: 'd'}) == "{0: 'd'}"
+equal_pairs = [(True, 'a'), (1, 'b')]
+assert repr(dict(equal_pairs)) == "{True: 'b'}"
+assert repr({k: v for k, v in equal_pairs}) == "{True: 'b'}"
+assert repr(dict.fromkeys([1, True, 1.0])) == '{1: None}'
+int_key = {1: 'a'}
+bool_key = {True: 'b'}
+assert repr({**int_key, **bool_key}) == "{1: 'b'}"
+assert repr(int_key | bool_key) == "{1: 'b'}"
+
+numeric_keys: dict[float, str] = {1: 'a'}
+numeric_keys[True] = 'b'
+assert repr(numeric_keys) == "{1: 'b'}"
+numeric_keys[1.0] += 'c'
+assert repr(numeric_keys) == "{1: 'bc'}"
+numeric_keys.update({True: 'd'})
+assert repr(numeric_keys) == "{1: 'd'}"
+
+
+class AlwaysEqual:
+    def __eq__(self, other):
+        return isinstance(other, AlwaysEqual)
+
+    def __hash__(self):
+        return 0
+
+
+first_key = AlwaysEqual()
+same_key = {first_key: 1}
+same_key[AlwaysEqual()] = 2
+assert len(same_key) == 1
+assert next(iter(same_key)) is first_key
+assert same_key[first_key] == 2
+
 # === `in` / `not in` ===
 # `in` on a dict tests its keys, never its values.
 membership = {'a': 1, 'b': 2}

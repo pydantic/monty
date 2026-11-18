@@ -195,3 +195,36 @@ for i in range(8):
     s.discard(i)
 s.add(100)
 assert sorted(s) == [8, 9, 10, 11, 100]
+
+# === dict view & and isdisjoint under a __hash__ that clears the dict ===
+# `&` against a set at least as large walks the view, so the clear is a resize;
+# `isdisjoint` walks the set and probes the dict, which the clear merely empties.
+armed = False
+
+
+class ClearsOnHash:
+    def __init__(self, n):
+        self.n = n
+
+    def __hash__(self):
+        if armed:
+            cleared.clear()
+        return self.n
+
+    def __eq__(self, other):
+        return isinstance(other, ClearsOnHash) and self.n == other.n
+
+
+cleared = {ClearsOnHash(1): 1, ClearsOnHash(2): 2}
+others = {ClearsOnHash(1), ClearsOnHash(2)}
+armed = True
+try:
+    cleared.keys() & others
+    assert False, 'expected RuntimeError'
+except RuntimeError as exc:
+    assert str(exc) == 'dictionary changed size during iteration'
+armed = False
+cleared = {ClearsOnHash(1): 1, ClearsOnHash(2): 2}
+armed = True
+assert cleared.keys().isdisjoint(others), 'isdisjoint should complete'
+armed = False

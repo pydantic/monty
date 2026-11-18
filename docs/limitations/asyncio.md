@@ -143,6 +143,17 @@ loop takes them in the order they were woken.
 Among the tasks that do resume, only the ordering differs.
 This applies to all async code, not only to siblings of a failed `gather`.
 
+### Calls to async host functions raise at the `await`
+
+With `stream_async_calls` (on by default for remote pools), a `feed_run` call to an `async` host function that is not
+awaited at once returns an awaitable without waiting for the host (see [starting calls without waiting](../host-functions.md#starting-calls-without-waiting)).
+Whatever the host reports about the call is raised where the awaitable is awaited, including a `TypeError` for
+arguments the host function does not accept and a `NameError` for a name the host cannot resolve.
+CPython raises both at the call.
+An awaitable that is never awaited still runs on the host, where an un-awaited CPython coroutine never runs its body.
+The arguments cross to the host at the call, so mutating a mutable argument between the call and the `await` is
+invisible to the host function; a CPython coroutine would see the mutation.
+
 ### `gather` does not start its children until it is awaited
 
 CPython's `gather` schedules each awaitable as a task straight away, so the children run whether or not the result is

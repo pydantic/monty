@@ -12,7 +12,7 @@
 //! - `re.findall(pattern, string, flags=0)` → `list`
 //! - `re.sub(pattern, repl, string, count=0, flags=0)` → `str`
 //! - `re.split(pattern, string, maxsplit=0, flags=0)` → `list`
-//! - `re.finditer(pattern, string, flags=0)` → iterator of `re.Match`
+//! - `re.finditer(pattern, string, flags=0)` → `list` of `re.Match` (CPython: an iterator)
 //! - `re.escape(pattern)` → `str`
 //!
 //! Like CPython's pure-Python `re` functions, all arguments are accepted
@@ -40,7 +40,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData},
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
@@ -82,15 +82,15 @@ pub(crate) enum ReFunctions {
     Sub,
     /// `re.split(pattern, string, maxsplit=0, flags=0)` — split string by pattern.
     Split,
-    /// `re.finditer(pattern, string, flags=0)` — return iterator over all matches.
+    /// `re.finditer(pattern, string, flags=0)` — return a list of all matches.
     Finditer,
     /// `re.escape(pattern)` — escape all non-alphanumeric characters in pattern.
     Escape,
 }
 
-/// Allocates the `re` module — every [`ReFunctions`] variant plus the flag
-/// constants — and returns its `HeapId`.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `re` module: every [`ReFunctions`] variant plus the flag
+/// constants.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Re, vm.interns);
 
     // Functions
@@ -154,13 +154,13 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     // Exception types
     module.set_attr(
         StaticStrings::PatternError,
-        Value::Builtin(Builtins::ExcType(ExcType::RePatternError)),
+        Value::Builtin(Builtins::Type(Type::RePatternError)),
         vm,
     );
     // `re.error` is the historical alias for `re.PatternError` (still widely used)
     module.set_attr(
         StaticStrings::Error,
-        Value::Builtin(Builtins::ExcType(ExcType::RePatternError)),
+        Value::Builtin(Builtins::Type(Type::RePatternError)),
         vm,
     );
 
@@ -176,7 +176,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `re` module function. Always `CallResult::Value` — regex
@@ -282,7 +282,7 @@ fn call_sub(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     // CPython parses the replacement template before its match loop, so a bad
     // replacement raises even when a negative count skips matching.
-    let Ok(repl) = repl.to_str(vm) else {
+    let Some(repl) = repl.as_str(vm) else {
         return Err(ExcType::type_error(
             "callable replacement is not yet supported in re.sub()",
         ));
@@ -456,8 +456,8 @@ struct ReFinditerArgs {
 /// pattern, and flags errors always win. Monty has no bytes matching: a bytes subject
 /// gets CPython's mixed-types message, anything else the `sre` wording.
 fn subject_str<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
-    if value.is_str(vm.heap) {
-        value.to_str(vm)
+    if let Some(text) = value.as_str(vm) {
+        Ok(text)
     } else if value.py_type_heap(vm.heap) == Type::Bytes {
         // Monty patterns are always str, so a bytes subject is always
         // CPython's string-pattern/bytes-subject mismatch.
@@ -727,8 +727,9 @@ fn resolve_pattern(pattern: Value, flags: Value, vm: &mut VM<'_>) -> RunResult<R
 
 /// `re.finditer(pattern, string, flags=0)` — return all matches as a list.
 ///
-/// Eagerly collected, so `for m in re.finditer(...)` iterates the returned list via
-/// the VM's `GetIter` opcode.
+/// Eagerly collected rather than CPython's lazy iterator: `for m in re.finditer(...)`
+/// works, but `next()` on the result raises and it can be iterated twice (see
+/// `limitations/re.md`).
 fn call_finditer(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ReFinditerArgs { pattern, string, flags } = ReFinditerArgs::from_args(args, vm)?;
     defer_drop!(string, vm);
@@ -744,7 +745,7 @@ fn call_finditer(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_escape(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ReEscapeArgs { pattern } = ReEscapeArgs::from_args(args, vm)?;
     defer_drop!(pattern, vm);
-    let Ok(text) = pattern.to_str(vm) else {
+    let Some(text) = pattern.as_str(vm) else {
         // CPython's escape() falls back to `str(pattern, 'latin1')` for
         // non-str input, so this is the (incidental) message it raises.
         let t = pattern.py_type_name(vm);

@@ -15,7 +15,7 @@ pub fn builtin_chr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
     let index = value.saturating_index(vm)?;
     if let Some(c) = u32::try_from(index).ok().and_then(char::from_u32) {
-        Ok(allocate_char(c, vm.heap))
+        Ok(allocate_char(c))
     } else {
         Err(ExcType::value_error("chr() arg not in range(0x110000)"))
     }

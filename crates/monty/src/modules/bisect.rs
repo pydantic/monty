@@ -6,7 +6,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     expressions::CmpOperator,
-    heap::{HeapData, HeapId, HeapReadOutput},
+    heap::HeapReadOutput,
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{Module, PyTrait, Type},
@@ -24,7 +24,7 @@ pub(crate) enum BisectFunctions {
 }
 
 /// Creates the module and its two aliases.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Bisect, vm.interns);
     for (name, function) in [
         (StaticStrings::BisectLeft, BisectFunctions::BisectLeft),
@@ -36,7 +36,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     ] {
         module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Bisect(function)), vm);
     }
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Clinic's nullable slice-index conversion for `hi`; -1 means the length,
@@ -126,11 +126,11 @@ pub(super) fn call(vm: &mut VM<'_>, function: BisectFunctions, args: ArgValues) 
     defer_drop!(search_x, vm);
     let index = search(vm, a, search_x, (lo, hi), key, left)?;
     if insert {
-        let Value::Ref(id) = a else {
+        let Value::Ref(_) = a else {
             return Err(ExcType::attribute_error(a.py_type_name(vm), "insert"));
         };
         let argument = x.clone_with_heap(vm);
-        let result = vm.heap.read(*id).py_call_attr(
+        let result = a.py_value(vm).py_call_attr(
             vm,
             &EitherStr::Interned(vm.interns.intern_static(StaticStrings::Insert)),
             ArgValues::Two(Value::Int(index), argument),
@@ -159,29 +159,13 @@ fn search(vm: &mut VM<'_>, a: &Value, x: &Value, bounds: (i64, i64), key: &Value
         } else {
             let len = a
                 .py_len(vm)
-                .ok_or_else(|| ExcType::type_error(format!("object of type '{}' has no len()", a.py_type_name(vm))))?;
+                .ok_or_else(|| ExcType::type_error_no_len(&a.py_type_name(vm)))?;
             i64::try_from(len).map_err(|_| ExcType::overflow_c_ssize_t())?
         };
     }
     // _bisect obtains sq_item even when the search interval is empty.
-    match a.py_type(vm) {
-        Type::List
-        | Type::Tuple
-        | Type::NamedTuple
-        | Type::Str
-        | Type::Bytes
-        | Type::Range
-        | Type::Deque
-        | Type::Counter => {}
-        Type::Dict | Type::DefaultDict => {
-            return Err(ExcType::type_error(format!("{} is not a sequence", a.py_type_name(vm))));
-        }
-        _ => {
-            return Err(ExcType::type_error(format!(
-                "'{}' object does not support indexing",
-                a.py_type_name(vm)
-            )));
-        }
+    if let Some(error) = ExcType::sequence_index_error(a, vm) {
+        return Err(error.into());
     }
     let mut steps = 0;
     while lo < hi {
@@ -214,8 +198,12 @@ fn search(vm: &mut VM<'_>, a: &Value, x: &Value, bounds: (i64, i64), key: &Value
 /// shortcuts (including NaNs) and reports errors on the offending elements.
 fn less_than(vm: &mut VM<'_>, a: &Value, b: &Value) -> RunResult<bool> {
     if !matches!(
-        (a.py_type(vm), b.py_type(vm)),
-        (Type::List, Type::List) | (Type::Tuple | Type::NamedTuple, Type::Tuple | Type::NamedTuple)
+        (a.py_type(vm).native(), b.py_type(vm).native()),
+        (Some(Type::List), Some(Type::List))
+            | (
+                Some(Type::Tuple | Type::NamedTuple),
+                Some(Type::Tuple | Type::NamedTuple)
+            )
     ) {
         return vm.cmp_values(CmpOperator::Lt, a, b);
     }

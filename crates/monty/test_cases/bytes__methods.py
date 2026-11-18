@@ -215,6 +215,9 @@ assert b'hello'.split(b'x') == [b'hello']
 assert b'a,b,c'.rsplit(b',') == [b'a', b'b', b'c']
 assert b'a,b,c'.rsplit(b',', 1) == [b'a,b', b'c']
 assert b'a b c'.rsplit() == [b'a', b'b', b'c']
+# Overlapping separators pair up from the right
+assert b'aaa'.rsplit(b'aa') == [b'a', b'']
+assert 'aaa'.rsplit('aa') == ['a', '']
 
 # === bytes.splitlines() ===
 assert b'a\nb\nc'.splitlines() == [b'a', b'b', b'c']
@@ -224,6 +227,10 @@ assert b'a\nb'.splitlines(True) == [b'a\n', b'b']
 assert b''.splitlines() == []
 assert b'a\nb'.splitlines(keepends=True) == [b'a\n', b'b']
 assert b'a\nb'.splitlines(keepends=False) == [b'a', b'b']
+# Unlike str.splitlines(), bytes split only at CR, LF and CRLF.
+other_boundaries = b'a\vb\fc\x1cd\x1de\x1ef\x85g\xc2\x85h\xe2\x80\xa8i\xe2\x80\xa9j'
+assert other_boundaries.splitlines() == [other_boundaries]
+assert other_boundaries.splitlines(True) == [other_boundaries]
 
 # === bytes.partition() ===
 assert b'hello world'.partition(b' ') == (b'hello', b' ', b'world')
@@ -376,13 +383,34 @@ assert b'hello'.count(b'', 5) == 1
 assert b'hello'.startswith(b'', 5)
 assert b'hello'.endswith(b'', 5)
 
-# TODO: These edge cases when start > len need to be fixed
-# CPython returns -1/0/False for these, currently Monty doesn't handle this correctly
-# assert b'hello'.find(b'', 10) == -1, 'find empty when start > len returns -1'
-# assert b'hello'.count(b'', 10) == 0, 'count empty when start > len returns 0'
-# assert not b'hello'.startswith(b'', 10), 'startswith empty when start > len is false'
-# assert not b'hello'.endswith(b'', 10), 'endswith empty when start > len is false'
-# assert b'hello'.rfind(b'', 10) == -1, 'rfind empty when start > len returns -1'
+# A start past the end, or past `end`, finds nothing, not even the empty subsequence
+assert b'hello'.find(b'', 10) == -1
+assert b'hello'.count(b'', 10) == 0
+assert not b'hello'.startswith(b'', 10), 'startswith empty when start > len is false'
+assert not b'hello'.endswith(b'', 10), 'endswith empty when start > len is false'
+assert b'hello'.rfind(b'', 10) == -1
+assert b'hello'.find(b'', 3, 2) == -1
+assert b'hello'.count(b'', 3, 2) == 0
+assert not b'hello'.endswith((b'x', b''), 3, 2), 'endswith tuple when start > end is false'
+for search in (lambda: b'hello'.index(b'', 10), lambda: b'hello'.rindex(b'', 3, 2)):
+    try:
+        search()
+        assert False, 'index empty with start past end should raise'
+    except ValueError as e:
+        assert str(e) == 'subsection not found'
+
+# A bad start or end raises before anything is searched
+for search in (
+    lambda: b'hello'.count(b'l', 'x'),
+    lambda: b'hello'.index(b'l', None, 'x'),
+    lambda: b'hello'.rfind(b'l', 'x'),
+    lambda: b'hello'.rindex(b'l', 0, 'x'),
+):
+    try:
+        search()
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == 'slice indices must be integers or None or have an __index__ method'
 
 # === bytes.hex() non-ASCII separator errors ===
 try:

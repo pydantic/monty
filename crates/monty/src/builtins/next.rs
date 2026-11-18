@@ -7,7 +7,7 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     frozen::FrozenFunction,
-    types::PyTrait,
+    types::{PyTrait, Type},
     value::Value,
 };
 
@@ -45,7 +45,7 @@ pub(crate) fn call_with_default(iterator: Value, default: Value, vm: &mut VM<'_>
             iterator,
             default,
             Value::Builtin(Builtins::Function(BuiltinsFunctions::Next)),
-            Value::Builtin(Builtins::ExcType(ExcType::StopIteration)),
+            Value::Builtin(Builtins::Type(Type::StopIteration)),
         ],
     )
 }

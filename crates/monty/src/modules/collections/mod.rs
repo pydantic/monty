@@ -28,22 +28,23 @@ use self::counter::counter_update;
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::Builtins,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
     types::{
         Dict, Module, NamedTupleClass, PyTrait, Type,
+        dict::{DictKind, dict_fromkeys},
         iter::collect_owned_iterable,
         str::{StringRepr, str_isidentifier},
     },
     value::{EitherStr, Value},
 };
 
-/// Creates the `collections` module and allocates it on the heap.
+/// Creates the `collections` module.
 ///
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Collections, vm.interns);
 
     module.set_attr(StaticStrings::Deque, Value::Builtin(Builtins::Type(Type::Deque)), vm);
@@ -65,7 +66,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// The callable functions exposed by the `collections` module.
@@ -79,6 +80,37 @@ pub(crate) enum CollectionsFunctions {
 pub(super) fn call(vm: &mut VM<'_>, function: CollectionsFunctions, args: ArgValues) -> RunResult<Value> {
     match function {
         CollectionsFunctions::Namedtuple => namedtuple(vm, args),
+    }
+}
+
+/// `Counter.fromkeys`, which CPython deliberately disables.
+pub(crate) fn counter_class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
+        args.drop_with(vm);
+        Ok(Err(ExcType::not_implemented(
+            "Counter.fromkeys() is undefined.  Use Counter(iterable) instead.",
+        )
+        .into()))
+    } else {
+        Err(args)
+    }
+}
+
+/// `defaultdict.fromkeys(...)` builds `cls()`, a defaultdict with no factory,
+/// matching CPython's inherited `dict.fromkeys` classmethod.
+pub(crate) fn defaultdict_class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
+        Ok(dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value))
+    } else {
+        Err(args)
     }
 }
 
@@ -222,7 +254,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         name
     } else {
         let as_str = typename.py_str(vm)?;
-        let owned = as_str.to_str(vm).map(str::to_owned);
+        let owned = as_str.try_to_str(vm).map(str::to_owned);
         as_str.drop_with(vm);
         EitherStr::from(owned?)
     };
@@ -278,7 +310,7 @@ fn parse_field_names(field_names: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Stri
             defer_drop!(item, vm);
             let as_str = item.py_str(vm)?;
             defer_drop!(as_str, vm);
-            names.push(as_str.to_str(vm)?.to_owned());
+            names.push(as_str.as_str(vm).expect("py_str returns str").to_owned());
         }
         Ok(names)
     }
