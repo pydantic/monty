@@ -1007,6 +1007,26 @@ fn small_memory_limit_leaves_normal_work_alone() {
     child.shutdown();
 }
 
+/// Building the indent must reject oversized allocations even for an empty document.
+#[test]
+fn json_large_indent_preserves_the_worker() {
+    for code in [
+        "import json\njson.dumps([], indent=10**8)",
+        "import json\nclass Writer:\n    def write(self, text):\n        pass\njson.dump([], Writer(), indent=10**8)",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(10 * 1024 * 1024));
+        let (_, event) = child.feed(code);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+        assert_eq!(
+            child.feed_complete("json.dumps([1], indent=2)"),
+            MontyObject::string("[\n  1\n]"),
+        );
+        child.shutdown();
+    }
+}
+
 /// Crossing the interpreter's soft limit raises an ordinary session error
 /// rather than killing the worker, and unwinding releases the incomplete result.
 #[test]
