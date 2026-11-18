@@ -1,17 +1,32 @@
 //! Drives Rust protocol futures through PyO3's asyncio coroutine implementation.
 //!
 //! Python owns execution, callback context and cancellation. Tokio supplies I/O
-//! readiness, timers and a cooperative budget while each Rust future is polled.
+//! readiness, timers and a cooperative budget when polling outside an existing Tokio runtime.
 
 use std::{
     future::Future,
-    pin::Pin,
+    pin::{Pin, pin},
     sync::Mutex,
     task::{Context, Poll},
 };
 
 use pyo3::{IntoPyObjectExt, exceptions::PyRuntimeError, prelude::*};
 use pyo3_async_runtimes::tokio::get_runtime;
+use tokio::{
+    runtime::{Handle, RuntimeFlavor},
+    task::unconstrained,
+    task_local,
+};
+
+task_local! {
+    /// Whether the embedding runtime supports `block_in_place`, even after we switch handles.
+    static EMBEDDING_ALLOWS_BLOCKING: bool;
+}
+
+/// Checks whether a sync callback may block inside an embedding Tokio runtime.
+pub(crate) fn embedding_allows_blocking() -> Option<bool> {
+    EMBEDDING_ALLOWS_BLOCKING.try_with(|allowed| *allowed).ok()
+}
 
 /// Returns a coroutine which drives `future` in its awaiting task, without a Tokio task hop.
 pub(crate) fn future_into_py<T>(
@@ -60,10 +75,22 @@ impl Future for RuntimeFuture {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let future = self.0.as_mut().expect("protocol future is present until dropped");
         let waker = cx.waker();
-        // The outer future completes after one poll, never parking this thread.
-        // Runtime::block_on supplies Tokio's cooperative I/O budget for that poll.
         Python::attach(|py| {
-            py.detach(|| get_runtime().block_on(async { future.as_mut().poll(&mut Context::from_waker(waker)) }))
+            py.detach(|| {
+                let runtime = get_runtime();
+                let cx = &mut Context::from_waker(waker);
+                if let Ok(host) = Handle::try_current() {
+                    let allows_blocking = embedding_allows_blocking()
+                        .unwrap_or_else(|| host.runtime_flavor() == RuntimeFlavor::MultiThread);
+                    let _runtime = runtime.enter();
+                    // The embedding Tokio task cannot replenish its budget while running asyncio.
+                    EMBEDDING_ALLOWS_BLOCKING
+                        .sync_scope(allows_blocking, || pin!(unconstrained(future.as_mut())).poll(cx))
+                } else {
+                    // One poll without parking, with a fresh Tokio cooperative budget.
+                    runtime.block_on(async { future.as_mut().poll(cx) })
+                }
+            })
         })
     }
 }

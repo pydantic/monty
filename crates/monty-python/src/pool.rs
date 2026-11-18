@@ -73,7 +73,7 @@ use crate::{
         AnswerFuture, CoroutineMode, Dispatched, PendingCalls, coroutine_answer, dispatch_coroutine,
         dispatch_system_sleep, pending_module, wait_for_futures,
     },
-    async_driver::future_into_py,
+    async_driver::{embedding_allows_blocking, future_into_py},
     build::{extract_metadata, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context,
     exceptions::{
@@ -88,7 +88,7 @@ use crate::{
     limits::extract_limits,
     mount::PyMountDir,
     os_policy::OsPolicyArg,
-    print_target::PrintTarget,
+    print_target::{PrintTarget, write_stdio_async},
     snapshot::{DriveContext, build_snapshot, feed_start_async, feed_start_sync},
     telemetry::{capture_otel_context, capture_telemetry_context, pool_metrics},
 };
@@ -107,7 +107,7 @@ pub(crate) type SharedCheckout = Arc<AsyncMutex<Option<Checkout>>>;
 /// borrowing the locked checkout and the per-turn print callback.
 pub(crate) type TurnFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, PoolError>> + Send + 'a>>;
 
-/// Identity helper pinning the HRTB closure shape [`run_turn`] accepts —
+/// Identity helper pinning the HRTB closure shape [`run_turn_inner`] accepts —
 /// without it, closure lifetime inference fails at every callsite.
 pub(crate) fn turn_fn<T, F>(f: F) -> F
 where
@@ -1925,7 +1925,6 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
 }
 
 /// The call payload shared by the automatic driver and function snapshots.
-#[derive(Clone)]
 pub(crate) struct FunctionCallData {
     pub(crate) function_name: String,
     pub(crate) args: CallArgs,
@@ -2292,26 +2291,13 @@ impl TurnOutcome for Option<TurnEvent> {
     }
 }
 
-/// Runs one protocol turn against the (locked) checkout, streaming prints to
-/// `print_target` and capturing the first print-callback failure.
-///
-/// Print delivery is synchronous inside the turn (the callback attaches the
-/// GIL when needed and returns a ready future), preserving print ordering and
-/// backpressure against the worker.
-pub(crate) async fn run_turn<T: TurnOutcome>(
-    checkout: &SharedCheckout,
-    print_target: &PrintTarget,
-    turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
-) -> (Result<T, PoolError>, Option<MontyException>) {
-    run_turn_inner(checkout, print_target, turn, None).await
-}
-
-/// Body of [`run_turn`], also flagging a failed print in `print_failed` so the
-/// turn's later streamed calls do not start.
+/// Runs a turn under the checkout lock. Prints stay ordered with streamed calls;
+/// a failed print callback prevents the turn from starting any later calls.
 async fn run_turn_inner<T: TurnOutcome>(
     checkout: &SharedCheckout,
     print_target: &PrintTarget,
     turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
+    offload_stdio: bool,
     print_failed: Option<&AtomicBool>,
 ) -> (Result<T, PoolError>, Option<MontyException>) {
     let mut guard = checkout.lock().await;
@@ -2321,6 +2307,9 @@ async fn run_turn_inner<T: TurnOutcome>(
     let mut print_err: Option<MontyException> = None;
     let result = {
         let mut on_print = |stream: PrintStream, text: &str| -> PrintFuture {
+            if offload_stdio && matches!(print_target, PrintTarget::Stdout) {
+                return Box::pin(write_stdio_async(stream, text.to_owned()));
+            }
             if print_err.is_none()
                 && let Err(err) = print_target.write_event(stream, text)
             {
@@ -2351,7 +2340,7 @@ async fn run_turn_starting_calls<T: TurnOutcome>(
     turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
     starts: &StreamedStarts,
 ) -> PyResult<T> {
-    let (result, print_err) = run_turn_inner(checkout, print_target, turn, Some(&starts.print_failed)).await;
+    let (result, print_err) = run_turn_inner(checkout, print_target, turn, true, Some(&starts.print_failed)).await;
     Python::attach(|py| finalize_turn(py, result, print_err))
 }
 
@@ -2368,7 +2357,9 @@ async fn run_turn_starting_calls<T: TurnOutcome>(
 pub(crate) fn block_on_sync<F: Future>(future: F) -> PyResult<F::Output> {
     match Handle::try_current() {
         Err(_) => Ok(get_runtime().block_on(future)),
-        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+        Ok(handle)
+            if embedding_allows_blocking().unwrap_or_else(|| handle.runtime_flavor() == RuntimeFlavor::MultiThread) =>
+        {
             Ok(block_in_place(|| get_runtime().block_on(future)))
         }
         Ok(_) => Err(PyRuntimeError::new_err(
@@ -2385,7 +2376,7 @@ pub(crate) fn run_turn_sync<T: TurnOutcome + Send>(
     print_target: &PrintTarget,
     turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
 ) -> PyResult<T> {
-    let (result, print_err) = py.detach(|| block_on_sync(run_turn(checkout, print_target, turn)))?;
+    let (result, print_err) = py.detach(|| block_on_sync(run_turn_inner(checkout, print_target, turn, false, None)))?;
     finalize_turn(py, result, print_err)
 }
 
@@ -2395,7 +2386,7 @@ pub(crate) async fn run_turn_async<T: TurnOutcome>(
     print_target: &PrintTarget,
     turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
 ) -> PyResult<T> {
-    let (result, print_err) = run_turn(checkout, print_target, turn).await;
+    let (result, print_err) = run_turn_inner(checkout, print_target, turn, true, None).await;
     Python::attach(|py| finalize_turn(py, result, print_err))
 }
 

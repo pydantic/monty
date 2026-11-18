@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from typing import Callable, Literal
 
 import pytest
@@ -32,6 +34,37 @@ def test_print_basic(monty_run: RunMonty) -> None:
     output, callback = make_print_collector()
     monty_run('print("hello")', print_callback=callback)
     assert ''.join(output) == snapshot('hello\n')
+
+
+@pytest.mark.parametrize('stream', ['stdout', 'stderr'])
+def test_async_default_print_does_not_block_turn_timeout(stream: str) -> None:
+    code = f"import sys\nfor _ in range(256):\n    print('x' * 8192, file=sys.{stream})"
+    script = f"""
+import asyncio
+
+from pydantic_monty import AsyncMonty, MontyCrashedError
+
+async def main():
+    async with AsyncMonty(request_timeout=1.5) as pool, pool.checkout() as session:
+        try:
+            await session.feed_run({code!r})
+        except MontyCrashedError as exc:
+            if exc.timed_out:
+                return
+            raise
+        raise AssertionError('expected a timeout while writing to the full pipe')
+
+asyncio.run(main())
+"""
+    # Leave the pipe undrained so the default sink blocks, but not the child's event loop.
+    with subprocess.Popen([sys.executable, '-c', script], stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as child:
+        try:
+            assert child.wait(timeout=15) == snapshot(0)
+            assert child.stdout is not None
+            assert child.stdout.read(1) == snapshot(b'x')
+        finally:
+            if child.poll() is None:
+                child.kill()
 
 
 def test_print_multiple(monty_run: RunMonty) -> None:

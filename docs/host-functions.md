@@ -243,9 +243,10 @@ Host tracebacks are not preserved.
 With [`AsyncMonty`][pydantic_monty.AsyncMonty], callables in `external_lookup` may be coroutine functions.
 All Python host callbacks run on your event-loop thread, including synchronous functions, print callbacks and OS handlers.
 Synchronous callbacks run inline in the task awaiting Monty, so their context-variable changes persist in that task.
-Coroutine callbacks run as tasks on the same loop and inherit the context where they are scheduled.
-Blocking work in either kind of callback blocks the loop; use `asyncio.to_thread()` for blocking I/O.
-Worker I/O is non-blocking.
+Host coroutine functions run as tasks on the same loop and inherit the context where they are scheduled.
+Print callbacks must be synchronous.
+Blocking work in a callback blocks the loop; use `asyncio.to_thread()` in coroutine functions for blocking I/O.
+Worker I/O and the default writes to stdout/stderr run without blocking the event loop.
 In JavaScript every host function may be async, and there is no separate pool class.
 `asyncio.gather` inside the sandbox lets several run concurrently:
 

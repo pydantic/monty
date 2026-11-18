@@ -767,29 +767,28 @@ impl PyAsyncFunctionSnapshot {
         self.0.kwargs(py)
     }
 
-    fn resume<'py>(&self, py: Python<'py>, result: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {
-        let value = self.0.resume_value(py, result)?;
-        let ctx = self.0.snapshot.claim(py)?;
+    fn resume<'py>(slf: Py<Self>, py: Python<'py>, result: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {
+        let value = slf.get().0.resume_value(py, result)?;
         future_into_py(py, async move {
+            let ctx = Python::attach(|py| slf.get().0.snapshot.claim(py))?;
             drive_async(ctx, turn_fn(move |c, p| Box::pin(c.resume(value, p)))).await
         })
     }
 
-    fn resume_not_handled<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let value = self.0.not_handled_value()?;
-        let ctx = self.0.snapshot.claim(py)?;
+    fn resume_not_handled(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+        let value = slf.get().0.not_handled_value()?;
         future_into_py(py, async move {
+            let ctx = Python::attach(|py| slf.get().0.snapshot.claim(py))?;
             drive_async(ctx, turn_fn(move |c, p| Box::pin(c.resume(value, p)))).await
         })
     }
 
     /// Awaits eligible coroutine calls directly; other answers are collected
     /// for later resolution by [`PyAsyncFutureSnapshot::resume_auto`].
-    fn resume_auto<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let ctx = self.0.snapshot.claim(py)?;
-        // owned copy: the snapshot is borrowed only for this synchronous prologue
-        let call = self.0.call.clone();
+    fn resume_auto(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
         future_into_py(py, async move {
+            let FunctionSnapshot { snapshot, call, .. } = &slf.get().0;
+            let ctx = Python::attach(|py| snapshot.claim(py))?;
             if call.uses_mounts()
                 && let Some(event) = run_turn_async(
                     &ctx.checkout,
@@ -803,7 +802,7 @@ impl PyAsyncFunctionSnapshot {
             let answer = {
                 let mut pending = ctx.pending_futures.lock().await;
                 answer_call(
-                    &call,
+                    call,
                     &ctx.names,
                     &ctx.instances,
                     ctx.os.as_ref(),
@@ -999,22 +998,21 @@ impl PyAsyncNameLookupSnapshot {
     }
 
     #[pyo3(signature = (*, value=MaybeValue::Unset))]
-    fn resume<'py>(&self, py: Python<'py>, value: MaybeValue<'_>) -> PyResult<Bound<'py, PyAny>> {
-        let value = self.0.resume_value(py, value)?;
-        let ctx = self.0.snapshot.claim(py)?;
+    fn resume<'py>(slf: Py<Self>, py: Python<'py>, value: MaybeValue<'_>) -> PyResult<Bound<'py, PyAny>> {
+        let value = slf.get().0.resume_value(py, value)?;
         future_into_py(py, async move {
+            let ctx = Python::attach(|py| slf.get().0.snapshot.claim(py))?;
             drive_async(ctx, turn_fn(move |c, p| Box::pin(c.resume_name_lookup(value, p)))).await
         })
     }
 
     /// Async sibling of [`PyNameLookupSnapshot::resume_auto`].
-    fn resume_auto<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let ctx = self.0.snapshot.claim(py)?;
-        let name = self.0.name.clone();
-        let object_id = self.0.object_id;
+    fn resume_auto(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
         future_into_py(py, async move {
+            let lookup = &slf.get().0;
+            let ctx = Python::attach(|py| lookup.snapshot.claim(py))?;
             let native = ctx.checkout.callback_context().await;
-            let answer = answer_name(&name, object_id, &ctx.names, &ctx.instances, &native);
+            let answer = answer_name(&lookup.name, lookup.object_id, &ctx.names, &ctx.instances, &native);
             let answer = discard_on_answer_error(&ctx.checkout, answer).await?;
             drive_async(ctx, turn_fn(move |c, p| Box::pin(answer.resume(c, p)))).await
         })
@@ -1145,10 +1143,10 @@ impl PyAsyncFutureSnapshot {
         self.0.pending_call_ids.clone()
     }
 
-    fn resume<'py>(&self, py: Python<'py>, results: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {
-        let resolved = self.0.resume_values(py, results)?;
-        let ctx = self.0.snapshot.claim(py)?;
+    fn resume<'py>(slf: Py<Self>, py: Python<'py>, results: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {
+        let resolved = slf.get().0.resume_values(py, results)?;
         future_into_py(py, async move {
+            let ctx = Python::attach(|py| slf.get().0.snapshot.claim(py))?;
             drive_async(ctx, turn_fn(move |c, p| Box::pin(c.resume_futures(resolved, p)))).await
         })
     }
@@ -1158,20 +1156,22 @@ impl PyAsyncFutureSnapshot {
     /// snapshot. Raises if there are no pending coroutines to await — e.g. on a
     /// snapshot restored via `load_snapshot`, whose scheduled coroutines lived in
     /// the previous process — without consuming it; resolve those manually.
-    fn resume_auto<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let (ctx, mut join_set) = self.0.snapshot.claim_with(py, |ctx| {
-            let join_set = Arc::clone(&ctx.pending_futures)
-                .try_lock_owned()
-                .map_err(|_| PyRuntimeError::new_err("snapshot session is busy"))?;
-            if join_set.is_empty() {
-                Err(PyRuntimeError::new_err(
-                    "No pending async tasks but ResolveFutures requested",
-                ))
-            } else {
-                Ok(join_set)
-            }
-        })?;
+    fn resume_auto(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
         future_into_py(py, async move {
+            let (ctx, mut join_set) = Python::attach(|py| {
+                slf.get().0.snapshot.claim_with(py, |ctx| {
+                    let join_set = Arc::clone(&ctx.pending_futures)
+                        .try_lock_owned()
+                        .map_err(|_| PyRuntimeError::new_err("snapshot session is busy"))?;
+                    if join_set.is_empty() {
+                        Err(PyRuntimeError::new_err(
+                            "No pending async tasks but ResolveFutures requested",
+                        ))
+                    } else {
+                        Ok(join_set)
+                    }
+                })
+            })?;
             let answer = TurnAnswer::wait_for_futures(&mut join_set).await;
             drop(join_set);
             let answer = discard_on_answer_error(&ctx.checkout, answer).await?;
