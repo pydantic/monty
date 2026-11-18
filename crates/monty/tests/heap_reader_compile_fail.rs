@@ -152,6 +152,11 @@ fn smuggle_vm() {
 }
 
 #[test]
+fn take_from_wrong_scope() {
+    check_compile_fail("take_from_wrong_scope");
+}
+
+#[test]
 fn smuggle_and_swap_reader() {
     check_compile_fail("smuggle_and_swap_reader");
 }

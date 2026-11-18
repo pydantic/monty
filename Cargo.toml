@@ -215,6 +215,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)',
     'cfg(heap_reader_compile_fail_test_mutation_in_map_closure)',
     'cfg(heap_reader_compile_fail_test_smuggle_vm)',
+    'cfg(heap_reader_compile_fail_test_take_from_wrong_scope)',
     'cfg(heap_reader_compile_fail_test_smuggle_and_swap_reader)',
     'cfg(heap_reader_compile_fail_test_protected_get_escape)',
     'cfg(heap_reader_compile_fail_test_protected_mut_get_escape)',

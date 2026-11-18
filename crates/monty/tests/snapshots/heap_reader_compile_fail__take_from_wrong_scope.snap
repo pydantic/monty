@@ -1,0 +1,33 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: actual
+---
+error[E0521]: borrowed data escapes outside of closure
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:207:13
+    |
+205 |         vm.scope(|outer| {
+    |                   -----
+    |                   |
+    |                   `outer` declared here, outside of the closure body
+    |                   `outer` is only valid in the closure body
+206 |             let value = outer.keep(Value::Ref(id));
+207 |             outer.vm().scope(|inner| {
+    |             ^^^^^^^^^^ `outer` escapes the closure body here
+    |
+    = note: requirement occurs because of a mutable reference to `ScopedVM<'_, '_>`
+    = note: mutable references are invariant over their type parameter
+    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+error[E0521]: borrowed data escapes outside of closure
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:208:25
+    |
+206 |             let value = outer.keep(Value::Ref(id));
+    |                 ----- `value` declared here, outside of the closure body
+207 |             outer.vm().scope(|inner| {
+    |                               ----- `inner` is only valid in the closure body
+208 |                 let _ = inner.take(value);
+    |                         ^^^^^^^^^^^^^^^^^ `inner` escapes the closure body here
+    |
+    = note: requirement occurs because of the type `scope::Local<'_>`, which makes the generic argument `'_` invariant
+    = note: the struct `scope::Local<'s>` is invariant over the parameter `'s`
+    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+For more information about this error, try `rustc --explain E0521`.

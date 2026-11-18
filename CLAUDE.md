@@ -389,7 +389,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
 All types that implement `DropWithContext<C>` hold heap (and possibly VM-side) references and **must** be cleaned up correctly on every code path — not just the happy path, but also early returns via `?`, `continue`, conditional branches, etc. A missed `drop_with` on any branch leaks reference counts.
 
-`DropWithContext<C>` is generic over the *cleanup context* `C` — whatever borrow the caller has on hand: a `Heap`, a `HeapReader`, the `VM`, or the json `Encoder`. The bound on each impl states the capability the value needs: heap-only values bound `C` by `ContainsHeap` (one impl then covers all four contexts), while values holding a `RecursionToken` (the container iterators) bound `C` by `ContainsVM` — satisfied only by `VM`/`Encoder`, since the recursion counter is unreachable through a bare heap. The same `drop_with` / `DropGuard` / `defer_drop!` machinery serves both. There are three mechanisms for ensuring cleanup, listed in order of preference:
+`DropWithContext<C>` is generic over the *cleanup context* `C` — whatever borrow the caller has on hand: a `Heap`, a `HeapReader`, the `VM`, or the json `Encoder`. The bound on each impl states the capability the value needs: heap-only values bound `C` by `ContainsHeap` (one impl then covers all four contexts), while values holding a `RecursionToken` (the container iterators) bound `C` by `ContainsVM` — satisfied only by `VM`/`Encoder`, since the recursion counter is unreachable through a bare heap. The same `drop_with` / `DropGuard` / `defer_drop!` machinery serves both.
+
+Use `vm.scope(|scope| ...)` for Python temporaries that share a cleanup boundary. `scope.keep(value)` transfers a raw
+`Value` to the scope and returns a handle that can be borrowed while using `scope.vm()`. The scope releases values on
+every exit. Use `scope.take(handle)` when the caller returns or stores the value. A loop that holds an iterator can
+use one scope for the iterator and release its items separately.
+
+For explicit cleanup outside a VM scope, use one of these mechanisms:
 
 #### 1. `defer_drop!` macro (preferred)
 

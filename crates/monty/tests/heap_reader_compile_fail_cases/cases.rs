@@ -195,3 +195,18 @@ fn smuggle_and_swap_reader(heap_a: &mut Heap, heap_b: &mut Heap) {
         });
     });
 }
+
+#[cfg(heap_reader_compile_fail_test_take_from_wrong_scope)]
+mod scoped {
+    use super::HeapId;
+    use crate::{bytecode::VM, value::Value};
+
+    fn take_from_wrong_scope(vm: &mut VM<'_>, id: HeapId) {
+        vm.scope(|outer| {
+            let value = outer.keep(Value::Ref(id));
+            outer.vm().scope(|inner| {
+                let _ = inner.take(value);
+            });
+        });
+    }
+}
