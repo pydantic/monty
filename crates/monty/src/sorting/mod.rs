@@ -14,6 +14,7 @@ mod timsort;
 
 use std::cmp::Ordering;
 
+use monty_types::WorkEvent;
 use smallvec::SmallVec;
 use timsort::{SortAborted, sort_short, timsort};
 
@@ -261,7 +262,10 @@ pub(crate) fn py_lt(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
         // A `NaN` operand is unordered, so `<` is `False`.
         _ if let (Some(a), Some(b)) = (Number::of(a), Number::of(b)) => Ok(a.partial_cmp(b) == Some(Ordering::Less)),
         _ if let (Some(a), Some(b)) = (str_of(a, vm), str_of(b, vm)) => Ok(a < b),
-        (Value::Ref(_), _) | (_, Value::Ref(_)) => vm.cmp_values(CmpOperator::Lt, a, b),
+        (Value::Ref(_), _) | (_, Value::Ref(_)) => {
+            vm.heap.tracker.charge(WorkEvent::SortComparison, 1);
+            vm.cmp_values(CmpOperator::Lt, a, b)
+        }
         _ => match a.py_cmp(b, vm)? {
             CmpOrder::Ordered(ordering) => Ok(ordering.is_lt()),
             CmpOrder::Unordered => Ok(false),

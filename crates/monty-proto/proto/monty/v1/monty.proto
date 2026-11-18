@@ -413,6 +413,9 @@ message StackFrame {
 enum ExecutionClock {
   WALL = 0;
   CPU = 1;
+  // Counted work converted to time at a fixed rate, for hosts whose clocks do
+  // not advance during compute. A worker that predates it refuses the session.
+  WORK = 2;
 }
 
 // Sandbox resource limits. Absent fields are unlimited except recursion depth

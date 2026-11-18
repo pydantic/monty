@@ -2,6 +2,8 @@
 
 use std::cmp::Ordering;
 
+use monty_types::WorkEvent;
+
 use super::VM;
 use crate::{
     defer_drop,
@@ -42,6 +44,7 @@ impl VM<'_> {
         }
 
         let this = self;
+        this.heap.tracker.charge(WorkEvent::SlowCompare, 1);
         let rhs = this.pop();
         defer_drop!(rhs, this);
         let lhs = this.pop();
@@ -59,6 +62,7 @@ impl VM<'_> {
         }
 
         let this = self;
+        this.heap.tracker.charge(WorkEvent::SlowCompare, 1);
         let rhs = this.pop();
         defer_drop!(rhs, this);
         let lhs = this.pop();
@@ -162,6 +166,13 @@ impl VM<'_> {
         }
 
         let this = self;
+        // Identity is one instruction's work and membership has its own weight.
+        if matches!(
+            op,
+            CmpOperator::Lt | CmpOperator::LtE | CmpOperator::Gt | CmpOperator::GtE
+        ) {
+            this.heap.tracker.charge(WorkEvent::SlowCompare, 1);
+        }
 
         let rhs = this.pop();
         defer_drop!(rhs, this);

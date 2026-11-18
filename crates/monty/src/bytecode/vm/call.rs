@@ -6,7 +6,7 @@
 
 use std::mem;
 
-use monty_types::{MontyUuid, OsFunctionCall};
+use monty_types::{MontyUuid, OsFunctionCall, WorkEvent};
 
 use super::{
     CallFrame, FrameGlobals, FrameNamespace, MissingNames, VM, attr::PendingLookupEffect, function_namespace,
@@ -577,6 +577,7 @@ impl<'h> VM<'h> {
     /// the same `TypeError` the rejected arm used to, so a value that is not
     /// callable is refused without a branch of its own.
     fn call_heap_callable(&mut self, heap_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
+        self.heap.tracker.charge(WorkEvent::HeapCall, 1);
         PyValue::from_heap(heap_id, self.heap).py_call(args, self)
     }
 

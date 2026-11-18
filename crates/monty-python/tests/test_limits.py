@@ -346,16 +346,27 @@ def test_negative_grace_is_rejected():
 cpu_clock = pytest.mark.skipif(sys.platform != 'linux', reason='the CPU execution clock is Linux-only')
 
 
-@pytest.mark.parametrize('clock', ['wall', pytest.param('cpu', marks=cpu_clock)])
-def test_execution_clock_selection(clock: Literal['wall', 'cpu']):
+@pytest.mark.parametrize('clock', ['wall', pytest.param('cpu', marks=cpu_clock), 'work'])
+def test_execution_clock_selection(clock: Literal['wall', 'cpu', 'work']):
     with Monty(request_timeout=2.0, execution_clock=clock) as pool:
         with pool.checkout(limits={'max_feed_duration_secs': 0.05}) as session:
             assert session.feed_run('sum(range(1000))') == 499_500
 
 
 def test_unknown_execution_clock_is_rejected():
-    with pytest.raises(ValueError, match="execution_clock must be 'wall' or 'cpu'"):
+    with pytest.raises(ValueError) as exc_info:
         Monty(execution_clock='processor')  # type: ignore[arg-type]
+    assert exc_info.value.args[0] == snapshot("execution_clock must be 'wall', 'cpu' or 'work'")
+
+
+def test_work_clock_bounds_a_feed_by_counted_work():
+    with Monty(execution_clock='work') as pool:
+        with pool.checkout(limits={'max_feed_duration_secs': 0.001}) as session:
+            assert session.feed_run('sum(range(1000))') == snapshot(499500)
+            with pytest.raises(MontyRuntimeError) as exc_info:
+                session.feed_run('while True:\n    pass')
+            assert isinstance(exc_info.value.exception(), TimeoutError)
+            assert session.feed_run('1 + 1') == snapshot(2)
 
 
 @cpu_clock

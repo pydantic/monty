@@ -12,10 +12,14 @@
 //! - `compiler` - AST to bytecode compiler
 //! - `vm` - Virtual machine for bytecode execution
 
+#[cfg(feature = "work-profile")]
+use strum::IntoEnumIterator;
+
 mod builder;
 mod code;
 mod compiler;
 mod op;
+mod op_weights;
 mod pattern;
 mod vm;
 
@@ -50,3 +54,11 @@ pub(crate) const RESERVED_MODULE_DUNDERS: [&str; 7] = [
     "__package__",
     "__file__",
 ];
+
+/// Every opcode as `(byte, name, extra milli-units)`; see [`crate::work_profile_opcodes`].
+#[cfg(feature = "work-profile")]
+pub(crate) fn work_profile_opcodes() -> Vec<(u8, String, u64)> {
+    Opcode::iter()
+        .map(|opcode| (opcode as u8, format!("{opcode:?}"), opcode.extra_work()))
+        .collect()
+}

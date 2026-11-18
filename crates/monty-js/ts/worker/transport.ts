@@ -59,6 +59,9 @@ export type { ResourceLimits } from '../pool.js'
 /** Shared checkout options; WASM delivers all print frames together at the end of a turn. */
 export type WorkerSessionConfig = CheckoutOptions
 
+/** The clocks a WASM worker can run a session on. */
+export type WorkerExecutionClock = 'wall' | 'work'
+
 /** Host-side grace periods; null explicitly disables the corresponding backstop. */
 export interface DurationGraces {
   feedDurationLimitGraceMs?: number | null
@@ -555,10 +558,11 @@ export class WorkerTransport {
 }
 
 /** Validates and snapshots checkout options before any asynchronous pool acquisition. */
-export function prepareSession(config: WorkerSessionConfig): ConfigureRequest {
+export function prepareSession(config: WorkerSessionConfig, executionClock?: WorkerExecutionClock): ConfigureRequest {
   const osPolicy = componentOsPolicy(encodeOsPolicy(config.osPolicy ?? {}))
   return {
     scriptName: config.scriptName ?? 'main.py',
+    executionClock,
     ...(config.limits === undefined ? {} : { limits: encodeLimits(config.limits) }),
     typeCheck: config.typeCheck ?? false,
     typeCheckStubs: config.typeCheckStubs,

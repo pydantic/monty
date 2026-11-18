@@ -19,7 +19,15 @@ use std::{
 use web_time::Instant;
 
 mod execution_clock;
+mod work_event;
+mod work_meter;
+#[cfg(feature = "work-profile")]
+pub mod work_profile;
+mod work_weights;
 use execution_clock::ExecutionInstant;
+pub use work_event::WorkEvent;
+use work_meter::WorkMeter;
+pub use work_meter::{ALLOCATED_BYTES, ALLOCATION_OVERHEAD_BYTES, NANOS_PER_UNIT};
 
 /// Exit code a worker uses when it exceeded its memory limit or the allocator
 /// refused an allocation, so the client can report `MemoryError` instead of an
@@ -152,13 +160,16 @@ pub enum ExecutionClock {
     /// Thread CPU time, Linux only. A failed native clock uses conservative elapsed time.
     /// CPU accounting is approximate and does not bound response latency.
     Cpu,
+    /// Counted work converted at [`NANOS_PER_UNIT`], for hosts whose clocks do not advance during
+    /// compute. Deterministic, but an estimate: it is not the time the code took.
+    Work,
 }
 
 impl ExecutionClock {
-    /// Whether this thread can read the selected clock. CPU reads require Linux and the `cpu-clock` feature.
+    /// Whether this thread can use the selected clock. CPU reads require Linux and the `cpu-clock` feature.
     #[must_use]
     pub fn is_available(self) -> bool {
-        self == Self::Wall || execution_clock::thread_cpu().is_some()
+        self != Self::Cpu || execution_clock::thread_cpu().is_some()
     }
 }
 
@@ -175,7 +186,7 @@ impl ExecutionClock {
 pub struct ResourceLimits {
     /// Maximum execution time per feed (`feed_start`, `feed_run` or `call_function`),
     /// summed across turns, excluding host suspension. Uses the tracker's clock
-    /// (wall time by default, or [`ExecutionClock::Cpu`]). Bounds a snippet, not the session.
+    /// (wall time by default, or [`ExecutionClock::Cpu`] or [`ExecutionClock::Work`]). Bounds a snippet, not the session.
     pub max_feed_duration: Option<Duration>,
     /// Maximum execution time for a single host turn, reset at each feed and
     /// each resume. Bounds the stretch of sandbox code between two host round
@@ -320,6 +331,9 @@ pub struct ResourceTracker {
     /// executing.
     #[serde(skip)]
     running_since: Cell<Option<ExecutionInstant>>,
+    /// The running window on the work clock, which `running_since` does not track.
+    #[serde(skip)]
+    work: WorkMeter,
     /// Optional override applied on top of `limits.max_recursion_depth`.
     ///
     /// `None` (the default — also the value any pre-`test-hooks` snapshot
@@ -373,6 +387,7 @@ impl ResourceTracker {
             feed_execution_time: Cell::new(Duration::ZERO),
             turn_execution_time: Cell::new(Duration::ZERO),
             running_since: Cell::new(None),
+            work: WorkMeter::default(),
             recursion_limit_override: Cell::new(None),
         }
     }
@@ -428,6 +443,9 @@ impl ResourceTracker {
     /// rather than two.
     #[inline]
     fn running_window(&self) -> Duration {
+        if self.execution_clock == ExecutionClock::Work {
+            return self.work.window();
+        }
         let Some(mut window) = self.running_since.get() else {
             return Duration::ZERO;
         };
@@ -478,6 +496,13 @@ impl ResourceTracker {
     #[must_use]
     pub fn has_memory_time_limit(&self) -> bool {
         self.limits.max_memory.is_some() || self.has_time_limit()
+    }
+
+    /// Returns whether the VM's dispatch loop must run its periodic check: a limit is
+    /// configured, or the work clock is counting instructions.
+    #[must_use]
+    pub fn needs_checkpoint(&self) -> bool {
+        self.has_memory_time_limit() || self.execution_clock == ExecutionClock::Work
     }
 
     /// Returns whether either execution-time budget is configured.
@@ -534,23 +559,73 @@ impl ResourceTracker {
     /// an immutable heap reference, such as `py_repr_fmt`.
     #[inline]
     pub fn check_memory_time(&self) -> Result<(), ResourceError> {
+        self.check_memory()?;
+        self.check_time()
+    }
+
+    /// The dispatch loop's periodic check: charges the work of the instructions run since the
+    /// last one to the work clock, then checks memory and both time budgets.
+    #[inline]
+    pub fn checkpoint(&self, milli_units: u64) -> Result<(), ResourceError> {
+        self.charge_milli_units(milli_units);
+        self.check_memory()?;
+        self.check_budgets()
+    }
+
+    /// Charges `quantity` occurrences of `event` to the running window; does nothing on the
+    /// other clocks.
+    ///
+    /// Native work whose cost is neither its instruction's weight nor its allocation calls
+    /// this with what it did; the event's weight is fitted by `make fit-work-clock`.
+    #[inline]
+    pub fn charge(&self, event: WorkEvent, quantity: u64) {
+        // Work charged outside a window, such as while compiling, is dropped, so not profiled.
+        #[cfg(feature = "work-profile")]
+        if self.work.is_running() {
+            work_profile::record_event(event, quantity);
+        }
+        self.charge_milli_units(quantity.saturating_mul(event.milli_units()));
+    }
+
+    /// Charges thousandths of a unit the caller has already weighted: the dispatch loop's
+    /// instructions. Everything else goes through [`charge`](Self::charge).
+    #[inline]
+    pub fn charge_milli_units(&self, milli_units: u64) {
+        if self.execution_clock == ExecutionClock::Work {
+            self.work.charge(milli_units);
+        }
+    }
+
+    /// Checks allocator-backed memory against the soft limit.
+    #[inline]
+    fn check_memory(&self) -> Result<(), ResourceError> {
         if let Some(limit) = self.limits.max_memory {
             let used = probe_memory();
             if used > limit {
                 return Err(ResourceError::Memory { limit, used });
             }
         }
-
-        self.check_time()
+        Ok(())
     }
 
-    /// Called periodically to check both execution-time budgets.
+    /// Called by native code, once per operation or per chunk of work, to check both
+    /// execution-time budgets.
+    ///
+    /// On the work clock each call also charges a [`WorkEvent::Poll`], so work that polls
+    /// costs something without its own charge.
+    #[inline]
+    pub fn check_time(&self) -> Result<(), ResourceError> {
+        self.charge(WorkEvent::Poll, 1);
+        self.check_budgets()
+    }
+
+    /// Compares both budgets with the execution clock.
     ///
     /// Each clock is monotonic within its scope, so once a budget is exceeded
     /// every later call in that scope fails too. The feed budget is tested
     /// first, since it is the one a new turn cannot recover from.
     #[inline]
-    pub fn check_time(&self) -> Result<(), ResourceError> {
+    fn check_budgets(&self) -> Result<(), ResourceError> {
         if !self.has_time_limit() {
             return Ok(());
         }
@@ -577,16 +652,17 @@ impl ResourceTracker {
     /// pathological cases.
     pub const LOOP_CHECK_INTERVAL: usize = 64;
 
-    /// Amortized per-item time check for Rust-side loops: a full clock read
+    /// Amortized per-item time check for Rust-side loops: a full check
     /// once per [`LOOP_CHECK_INTERVAL`](Self::LOOP_CHECK_INTERVAL) calls,
-    /// free otherwise. Key `i` on the loop's index or a monotonically
+    /// free otherwise but for the work clock's [`WorkEvent::LoopItem`]. Key `i` on the loop's index or a monotonically
     /// increasing counter. Fires at the *end* of each block (`i % N == N-1`)
     /// so loops shorter than the interval pay no clock read at all — the VM
     /// dispatch checkpoint covers cadence between short calls.
     #[inline]
     pub fn check_time_every(&self, i: usize) -> Result<(), ResourceError> {
+        self.charge(WorkEvent::LoopItem, 1);
         if i % Self::LOOP_CHECK_INTERVAL == Self::LOOP_CHECK_INTERVAL - 1 {
-            self.check_time()
+            self.check_budgets()
         } else {
             Ok(())
         }
@@ -598,8 +674,10 @@ impl ResourceTracker {
     /// runaway growth.
     #[inline]
     pub fn check_memory_time_every(&self, i: usize) -> Result<(), ResourceError> {
+        self.charge(WorkEvent::LoopItem, 1);
         if i % Self::LOOP_CHECK_INTERVAL == Self::LOOP_CHECK_INTERVAL - 1 {
-            self.check_memory_time()
+            self.check_memory()?;
+            self.check_budgets()
         } else {
             Ok(())
         }
@@ -716,33 +794,46 @@ impl ResourceTracker {
     /// (external function calls) or between feeds.
     pub fn on_execution_start(&self) {
         debug_assert!(
-            self.running_since.get().is_none(),
+            !self.is_running(),
             "nested on_execution_start: VM-internal re-entry must use the raw run loop, not run_external"
         );
-        let remaining = [
-            (self.limits.max_feed_duration, self.feed_execution_time.get()),
-            (self.limits.max_turn_duration, self.turn_execution_time.get()),
-        ]
-        .into_iter()
-        .filter_map(|(limit, used)| limit.map(|limit| limit.saturating_sub(used)))
-        .min();
-        self.running_since
-            .set(Some(ExecutionInstant::now(self.execution_clock, remaining)));
+        if self.execution_clock == ExecutionClock::Work {
+            self.work.start();
+        } else {
+            let remaining = [
+                (self.limits.max_feed_duration, self.feed_execution_time.get()),
+                (self.limits.max_turn_duration, self.turn_execution_time.get()),
+            ]
+            .into_iter()
+            .filter_map(|(limit, used)| limit.map(|limit| limit.saturating_sub(used)))
+            .min();
+            self.running_since
+                .set(Some(ExecutionInstant::now(self.execution_clock, remaining)));
+        }
     }
 
     /// Called when the VM leaves its execution loop — on completion, error,
     /// or suspension at an external call. See [`on_execution_start`](Self::on_execution_start).
     pub fn on_execution_stop(&self) {
-        if let Some(mut started) = self.running_since.take() {
-            let window = started.elapsed_at_stop();
-            for clock in [
-                &self.total_execution_time,
-                &self.feed_execution_time,
-                &self.turn_execution_time,
-            ] {
-                clock.set(clock.get() + window);
-            }
+        let window = if self.execution_clock == ExecutionClock::Work {
+            self.work.stop()
+        } else {
+            self.running_since
+                .take()
+                .map_or(Duration::ZERO, |mut started| started.elapsed_at_stop())
+        };
+        for clock in [
+            &self.total_execution_time,
+            &self.feed_execution_time,
+            &self.turn_execution_time,
+        ] {
+            clock.set(clock.get() + window);
         }
+    }
+
+    /// Whether an execution window is open.
+    fn is_running(&self) -> bool {
+        self.running_since.get().is_some() || self.work.is_running()
     }
 
     /// Called when the host begins a new feed, resetting the `max_feed_duration`
@@ -768,7 +859,7 @@ impl ResourceTracker {
     /// Restarts the execution clock only if it was running before the wait.
     /// All interpreter waits use `block_for` for platform-specific blocking.
     pub fn sandbox_sleep(&self, duration: Duration) {
-        let was_running = self.running_since.get().is_some();
+        let was_running = self.is_running();
         self.on_execution_stop();
         block_for(duration);
         if was_running {

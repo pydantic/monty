@@ -212,7 +212,15 @@ subprocesses:
     the worker refuses it. Remote clients on any platform can adopt a Linux server's CPU clock.
     Local subprocess pools supervise CPU with the child's OS process clock.
     CPU mode requires a finite `PoolConfig::request_timeout`; remote clients do not supervise CPU locally.
-    WebAssembly workers accept wall mode only.
+    `ExecutionClock::Work` reads no clock: each instruction is charged its opcode's weight, native work is charged as
+    a `WorkEvent` through `ResourceTracker::charge`, `monty-alloc` counts allocations and bytes as a floor, and the
+    tracker converts units at `NANOS_PER_UNIT`. Never write a weight by hand: `make fit-work-clock` counts opcodes and
+    events per script (the `work-profile` feature), times the scripts in wasm, fits every weight at once and
+    regenerates `work_weights.rs` and `op_weights.rs`. Native work with no event of its own is charged only its polls
+    and allocation: add a `WorkEvent` variant at the end, charge it where the work happens, and refit.
+    `make calibrate-work-clock` reports the result per category, construct and test case, and
+    `calibration_scripts_cost_fixed_units` pins the totals.
+    Pools arm no wall backstop for it. WebAssembly workers accept wall and work mode.
     Snapshots retain their clock; the worker rejects a load configured with another clock.
 - `crates/monty-pool` — the client: an async (tokio) elastic pool of workers
     with crash detection/replacement and a hard per-turn timeout. Frame reads
@@ -573,6 +581,8 @@ make check-unicode-type   Verify the checked-in str character-property tables ma
 make update-typeshed      Update vendored typeshed from upstream
 make bench                Run benchmarks
 make bench-pool           Run subprocess pool benchmarks (spawn, checkout, wire round-trips)
+make calibrate-work-clock Measure the work clock per category, construct and test case, native and wasm; fails on category drift
+make fit-work-clock       Fit the work clock's weights to measured wasm time and regenerate the weight tables
 make dev-bench            Run benchmarks to test with dev profile
 make profile              Profile the code with pprof and generate flamegraphs
 make type-sizes           Write type sizes for the crate to ./type-sizes.txt (requires nightly and top-type-sizes)

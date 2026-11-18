@@ -9,7 +9,7 @@ use std::{fmt::Write, str};
 pub(crate) use heap_str::HeapStr;
 pub(crate) use inline_str::InlineStr;
 pub(crate) use iterator::StringIterator;
-use monty_types::{ResourceError, ResourceTracker};
+use monty_types::{ResourceError, ResourceTracker, WorkEvent};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use smallvec::smallvec;
 
@@ -118,17 +118,13 @@ impl<'h> PyStr<'h> {
 
     /// Returns the number of Unicode code points; ASCII strings use their byte length.
     fn char_len(&self, vm: &VM<'h>) -> usize {
-        match self {
-            PyStr::Heap(heap_string) => heap_string.get(vm.heap).char_len(),
-            PyStr::Interned(id) => {
-                let text = vm.interns.get_str(*id);
-                if vm.interns.str_is_ascii(*id) {
-                    text.len()
-                } else {
-                    text.chars().count()
-                }
-            }
-            PyStr::Inline(text) => text.as_str().chars().count(),
+        let text = self.as_str(vm);
+        if self.is_ascii(vm) {
+            text.len()
+        } else {
+            // Counted a character at a time.
+            charge_scan(text.len(), &vm.heap.tracker);
+            text.chars().count()
         }
     }
 
@@ -154,7 +150,10 @@ impl<'h> PyStr<'h> {
         if self.is_ascii(vm) {
             return char_index.min(text.len());
         }
-        text.char_indices().nth(char_index).map_or(text.len(), |(byte, _)| byte)
+        let offset = text.char_indices().nth(char_index).map_or(text.len(), |(byte, _)| byte);
+        // Walked a character at a time, unlike the ASCII case.
+        charge_scan(offset, &vm.heap.tracker);
+        offset
     }
 
     /// Converts a UTF-8 byte offset into the Python character index returned by find/rfind/index/rindex.
@@ -168,6 +167,7 @@ impl<'h> PyStr<'h> {
         if self.is_ascii(vm) {
             return byte_offset;
         }
+        charge_scan(byte_offset, &vm.heap.tracker);
         let text = self.as_str(vm);
         text[..byte_offset].chars().count()
     }
@@ -850,6 +850,7 @@ fn str_find<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Va
     let start_byte = s.byte_offset_of(start, vm);
     let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
+    charge_scan(slice.len(), &vm.heap.tracker);
     let result = match slice.find(&sub) {
         Some(pos) => {
             let char_pos = s.char_index_of(start_byte + pos, vm);
@@ -858,6 +859,11 @@ fn str_find<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Va
         None => -1,
     };
     Ok(Value::Int(result))
+}
+
+/// Charges the work clock for searching `bytes` of a string, which no per-call charge covers.
+fn charge_scan(bytes: usize, tracker: &ResourceTracker) {
+    tracker.charge(WorkEvent::StrScanByte, bytes as u64);
 }
 
 /// Implements Python's `str.rfind(sub, start?, end?)` method.
@@ -874,6 +880,7 @@ fn str_rfind<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
     let start_byte = s.byte_offset_of(start, vm);
     let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
+    charge_scan(slice.len(), &vm.heap.tracker);
     let result = match slice.rfind(&sub) {
         Some(pos) => {
             let char_pos = s.char_index_of(start_byte + pos, vm);
@@ -897,6 +904,7 @@ fn str_index<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
     let start_byte = s.byte_offset_of(start, vm);
     let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
+    charge_scan(slice.len(), &vm.heap.tracker);
     match slice.find(&sub) {
         Some(pos) => {
             let char_pos = s.char_index_of(start_byte + pos, vm);
@@ -920,6 +928,7 @@ fn str_rindex<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<
     let start_byte = s.byte_offset_of(start, vm);
     let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
+    charge_scan(slice.len(), &vm.heap.tracker);
     match slice.rfind(&sub) {
         Some(pos) => {
             let char_pos = s.char_index_of(start_byte + pos, vm);
@@ -944,6 +953,7 @@ fn str_count<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
     let start_byte = s.byte_offset_of(start, vm);
     let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
+    charge_scan(slice.len(), &vm.heap.tracker);
     let count = if sub.is_empty() {
         // Empty needles match at every character boundary, including the end.
         if end == usize::MAX {
@@ -1596,6 +1606,7 @@ fn str_replace<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult
     let s = s.as_str(vm);
 
     check_replace_size(s.len(), old.len(), new.len(), count, &vm.heap.tracker)?;
+    charge_scan(s.len(), &vm.heap.tracker);
 
     let result = if count < 0 {
         s.replace(&old, &new)

@@ -231,7 +231,7 @@ more details.
 ## Execution time
 
 Execution duration limits use wall time by default.
-Both clocks charge bytecode and native builtin execution, excluding host suspension.
+Every clock charges bytecode and native builtin execution, excluding host suspension.
 Enable CPU mode with `Monty(execution_clock='cpu', request_timeout=2)` or the same options on `AsyncMonty`.
 CPU mode needs Linux workers: on macOS or Windows, entering a CPU-mode `Monty` (`with`) or `AsyncMonty`
 (`async with`) raises `MontyConfigurationError`.
@@ -239,7 +239,7 @@ Remote clients on any platform adopt the server's clock.
 The clock applies to the whole pool; checkouts cannot override it.
 CPU mode uses the executing thread's CPU time, sampled with a cache of up to 1 ms.
 Smaller remaining budgets shorten that interval.
-Execution boundaries take fresh samples. WebAssembly workers support wall time only.
+Execution boundaries take fresh samples. WebAssembly workers support wall and work time.
 Workers reject CPU configuration if the initial thread CPU counter read fails.
 If the counter later becomes unusable during execution, the VM uses elapsed time for that window.
 The OS controls CPU counter accuracy and resolution.
@@ -250,3 +250,7 @@ CPU restore approximates prior supervisor usage from saved VM consumption.
 The snapshot does not record protocol CPU or supervisor grace separately.
 Load them through a pool with the same execution clock.
 Snapshots without a clock use wall time.
+
+`Monty(execution_clock='work')` counts executed work instead of reading a clock and converts it to time at a fixed
+rate, so a limit fires after the same work on every run and the duration is an estimate.
+It works on every platform and needs no `request_timeout`, but the pool arms no duration grace backstop for it.
