@@ -116,9 +116,7 @@ pub(crate) trait FromValue: Sized {
         ExcType::type_error(format!("expected {expected}, not {got}"))
     }
 
-    /// Drop the *extracted* value (i.e. `Self`) so refcounts stay balanced
-    /// when generated `from_args` code aborts after extracting one field but
-    /// before completing the struct.
+    /// Release a converted field after a binding error or when the bound struct is dropped with its heap.
     ///
     /// For primitives this is a no-op; for `Value` / [`StrArg`] it decrements
     /// the held reference.

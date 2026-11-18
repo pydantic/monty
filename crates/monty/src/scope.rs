@@ -8,7 +8,13 @@ use std::{
 
 use smallvec::SmallVec;
 
-use crate::{bytecode::VM, defer_drop_mut, value::Value};
+use crate::{
+    args::{ArgValues, FromArgs},
+    bytecode::VM,
+    defer_drop, defer_drop_mut,
+    exception_private::RunResult,
+    value::Value,
+};
 
 pub(crate) struct ScopedVM<'s, 'h> {
     values: &'s mut SmallVec<[Value; 3]>,
@@ -42,6 +48,18 @@ impl Deref for Local<'_> {
 }
 
 impl<'h> VM<'h> {
+    /// Borrows the bound arguments for one call and drops their heap references on return.
+    pub(crate) fn with_args<A: FromArgs, R>(
+        &mut self,
+        args: ArgValues,
+        run: impl FnOnce(&A, &mut Self) -> RunResult<R>,
+    ) -> RunResult<R> {
+        let vm = self;
+        let args = A::from_args(args, vm)?;
+        defer_drop!(args, vm);
+        run(args, vm)
+    }
+
     /// Releases the retained values when the callback exits.
     pub(crate) fn scope<R>(&mut self, run: impl for<'s> FnOnce(&mut ScopedVM<'s, 'h>) -> R) -> R {
         let values = SmallVec::new();
@@ -89,19 +107,59 @@ mod tests {
 
     use super::*;
     use crate::{
-        defer_drop,
+        args::{KwargsValues, StrArg},
+        exception_private::{ExcType, ExcTypeExt},
         heap::{Heap, HeapReader},
         run::{Program, SessionTables},
         types::str::allocate_string_on_heap,
     };
 
-    #[test]
-    fn nested_scope_releases_on_error_and_take_transfers_ownership() {
+    fn with_vm(run: impl FnOnce(&mut VM<'_>)) {
         let mut heap = Heap::new(16, ResourceTracker::default());
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
         HeapReader::with(&mut heap, &mut (&program, &mut tables), |heap, (program, tables)| {
-            let vm = &mut VM::new(Vec::new(), tables, program, heap, PrintWriter::Disabled);
+            run(&mut VM::new(Vec::new(), tables, program, heap, PrintWriter::Disabled));
+        });
+    }
+
+    #[derive(FromArgs)]
+    #[from_args(name = "collect")]
+    struct CollectArgs {
+        #[from_args(pos_only)]
+        text: StrArg,
+        #[from_args(varargs)]
+        rest: Vec<Value>,
+        #[from_args(varkwargs)]
+        keywords: KwargsValues,
+    }
+
+    #[test]
+    fn with_args_releases_typed_fields_and_collectors_on_error() {
+        with_vm(|vm| {
+            let value = allocate_string_on_heap("key", vm.heap);
+            defer_drop!(value, vm);
+            let Value::Ref(id) = *value else { unreachable!() };
+            let clone = || value.clone_with_heap(vm.heap);
+            let args = ArgValues::ArgsKargs {
+                args: vec![clone(), clone()],
+                kwargs: KwargsValues::Pairs(vec![(clone(), clone())]),
+            };
+            let result = vm.with_args(args, |args: &CollectArgs, vm| {
+                assert_eq!(args.text.as_str(vm), "key");
+                assert_eq!(args.rest.len(), 1);
+                assert_eq!(args.keywords.len(), 1);
+                assert_eq!(vm.heap.get_refcount(id), 5);
+                Err::<(), _>(ExcType::type_error("callback failed"))
+            });
+            assert!(result.is_err());
+            assert_eq!(vm.heap.get_refcount(id), 1);
+        });
+    }
+
+    #[test]
+    fn nested_scope_releases_on_error_and_take_transfers_ownership() {
+        with_vm(|vm| {
             let value = allocate_string_on_heap("test", vm.heap);
             defer_drop!(value, vm);
             let Value::Ref(id) = *value else { unreachable!() };

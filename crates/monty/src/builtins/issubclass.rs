@@ -25,11 +25,8 @@ struct IssubclassArgs {
 /// Checks whether a class inherits from a class, or from any of a tuple or
 /// union of classes.
 pub fn builtin_issubclass(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    vm.scope(|scope| {
-        let IssubclassArgs { cls, classinfo } = IssubclassArgs::from_args(args, scope.vm())?;
-        let cls = scope.keep(cls);
-        let classinfo = scope.keep(classinfo);
-        issubclass_check(&cls, &classinfo, scope.vm()).map(Value::Bool)
+    vm.with_args(args, |IssubclassArgs { cls, classinfo }, vm| {
+        issubclass_check(cls, classinfo, vm).map(Value::Bool)
     })
 }
 

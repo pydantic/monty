@@ -35,6 +35,16 @@ let DatetimeArgs { year, month, day, hour, tzinfo } =
     DatetimeArgs::from_args(args, vm)?;
 ```
 
+Use `vm.with_args` when the function borrows its arguments.
+The callback receives the parsed struct by reference and can use the VM while those references are live.
+The VM releases the fields, including `*args` and `**kwargs`, when the callback returns.
+
+```rust
+vm.with_args(args, |IssubclassArgs { cls, classinfo }, vm| {
+    issubclass_check(cls, classinfo, vm).map(Value::Bool)
+})
+```
+
 Fields must appear in Python signature order:
 `[pos_only…] [pos_or_keyword…] [varargs] [kw_only…] [varkwargs]`, with
 required fields before optional ones in each region. Field types must

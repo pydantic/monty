@@ -19,6 +19,7 @@ assert result2 is None
 assert print('to stdout', file=sys.stdout) is None
 assert print('to stderr', file=sys.stderr) is None
 assert print('default', file=None) is None
+assert print(end='', flush=[]) is None
 
 
 # === sep and end are reported before file ===

@@ -25,6 +25,11 @@ use crate::{
     value::{EitherStr, Value},
 };
 
+/// A native Python signature whose extracted fields own their heap references.
+pub(crate) trait FromArgs: Sized + for<'h> DropWithContext<VM<'h>> {
+    fn from_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Self>;
+}
+
 /// Type for method call arguments.
 ///
 /// Uses specific variants for common cases (0-2 arguments).
