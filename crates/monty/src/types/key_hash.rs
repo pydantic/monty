@@ -11,6 +11,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, unhashable_type_message},
     hash::HashValue,
+    heap::DropWithContext,
     py_value::PyValue,
     types::PyTrait,
     value::Value,
@@ -59,7 +60,11 @@ fn wrapped_hash(value: &Value, wrap: fn(&str, &str) -> RunError, vm: &mut VM<'_>
     let reason = match hash_or_culprit(value, vm) {
         Ok(Ok(hash)) => return Ok(hash.raw()),
         Ok(Err(culprit)) => unhashable_type_message(&culprit),
-        Err(RunError::Exc(raise)) if raise.exc.exc_type() == ExcType::TypeError => raise.exc.py_str(),
+        Err(RunError::Exc(raise)) if raise.exc.exc_type() == ExcType::TypeError => {
+            let s = raise.exc.py_str();
+            raise.drop_with(vm);
+            s
+        }
         Err(err) => return Err(err),
     };
     Err(wrap(&value.py_type_name(vm), &reason))

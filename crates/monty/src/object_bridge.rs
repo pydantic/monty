@@ -540,7 +540,9 @@ impl GraphExporter {
                 }
                 Err(RunError::Exc(exc)) => {
                     let ty = value.py_type_name(vm);
-                    MontyNode::Repr(format!("<{ty} object, error on repr(): {}>", exc.exc))
+                    let repr = format!("<{ty} object, error on repr(): {}>", exc.exc);
+                    exc.drop_with(vm);
+                    MontyNode::Repr(repr)
                 }
             }
         }

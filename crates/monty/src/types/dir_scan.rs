@@ -27,7 +27,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::{HashValue, identity_hash},
-    heap::{ContainsHeap, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
     identity::Identity,
     intern::StaticStrings,
     os_dispatch::value_as_path_str,
@@ -446,6 +446,7 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
                         return Err(error);
                     };
                     let exc = Value::Ref(vm.heap.allocate(HeapData::Exception(raise.exc)));
+                    raise.instance.drop_with(vm);
                     let result = vm.evaluate_function(onerror, ArgValues::One(exc))?;
                     result.drop_with(vm);
                 }
@@ -792,7 +793,11 @@ impl ScanEffect {
                     return Err(SimpleException::new_msg(ExcType::RuntimeError, message).into());
                 }
             },
-            Err(RunError::Exc(raise)) => Err(raise.exc),
+            Err(RunError::Exc(raise)) => {
+                let exc = raise.exc.clone();
+                raise.drop_with(vm);
+                Err(exc)
+            }
             Err(other) => {
                 self.release(vm.heap);
                 return Err(other);

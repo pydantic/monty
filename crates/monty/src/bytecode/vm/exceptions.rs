@@ -143,6 +143,7 @@ impl VM<'_> {
 
         RunError::Exc(ExceptionRaise {
             exc: simple_exc,
+            instance: None,
             frame,
             snippet_frame: None,
             hide_caret: false,
@@ -335,10 +336,14 @@ impl VM<'_> {
 
     /// Converts best-effort detail into an `AssertionError` message.
     /// Catchable formatting errors fall back to no detail; terminal errors propagate.
-    fn assert_failure(&self, detail: RunResult<Option<String>>) -> RunError {
+    fn assert_failure(&mut self, detail: RunResult<Option<String>>) -> RunError {
         match detail {
             Ok(Some(detail)) => self.assertion_error(Some(format!("assert {detail}"))),
-            Ok(None) | Err(RunError::Exc(_)) => self.assertion_error(None),
+            Ok(None) => self.assertion_error(None),
+            Err(RunError::Exc(exc)) => {
+                exc.drop_with(self);
+                self.assertion_error(None)
+            }
             Err(e) => e,
         }
     }
@@ -355,7 +360,10 @@ impl VM<'_> {
         // the message itself fails to stringify.
         let detail = match this.assert_detail(cmp_op) {
             Ok(detail) => detail,
-            Err(RunError::Exc(_)) => None,
+            Err(RunError::Exc(exc)) => {
+                exc.drop_with(this);
+                None
+            }
             Err(e) => return e,
         };
         let msg = match assert_msg_str(msg_value, this) {
@@ -363,7 +371,10 @@ impl VM<'_> {
             // show only the detail — avoids a stray leading `\n` before `assert`.
             Ok(msg) if msg.is_empty() => None,
             Ok(msg) => Some(msg),
-            Err(RunError::Exc(_)) => None,
+            Err(RunError::Exc(exc)) => {
+                exc.drop_with(this);
+                None
+            }
             Err(e) => return e,
         };
         let full = match (msg, detail) {
@@ -406,6 +417,7 @@ impl VM<'_> {
             .then(|| RawStackFrame::from_raise(self.current_position(), self.current_frame_name()));
         RunError::Exc(ExceptionRaise {
             exc: SimpleException::new(ExcType::AssertionError, msg),
+            instance: None,
             frame,
             snippet_frame: None,
             hide_caret: false,
@@ -446,6 +458,20 @@ impl VM<'_> {
 
     /// Handles one task's exception, returning to the caller's loop if another task must raise.
     fn handle_exception_step(&mut self, mut error: RunError, raised: Option<Value>) -> ExceptionHandlingResult {
+        // Reclaim an instance that crossed a synchronous boundary before anything
+        // else, so every exit path below owns exactly one reference.
+        let carried = match &mut error {
+            RunError::Exc(exc) | RunError::UncatchableExc(exc) => exc.take_instance(),
+            RunError::Internal(_) => None,
+        };
+        let raised = match (raised, carried) {
+            (Some(raised), Some(carried)) => {
+                carried.drop_with(self);
+                Some(raised)
+            }
+            (raised, carried) => raised.or(carried),
+        };
+
         // Ensure exception has initial frame info
         error = self.attach_frame_to_error(error);
 
@@ -587,6 +613,12 @@ impl VM<'_> {
                 }
             }
             if should_return {
+                let (exc_value, _this) = exc_guard.into_parts();
+                if let RunError::Exc(exc) = &mut error {
+                    exc.instance = Some(exc_value);
+                } else {
+                    exc_value.drop_with(_this);
+                }
                 return ExceptionHandlingResult::Unhandled(error);
             }
         }

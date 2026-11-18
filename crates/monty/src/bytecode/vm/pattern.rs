@@ -210,6 +210,7 @@ impl VM<'_> {
                 )))
             }
             Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
+                exc.drop_with(this);
                 this.push(Value::None);
                 Ok(CallResult::Value(Value::Bool(false)))
             }

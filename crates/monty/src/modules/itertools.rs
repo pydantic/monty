@@ -397,7 +397,10 @@ fn islice_index(value: &Value, vm: &mut VM<'_>) -> RunResult<IsliceBound> {
         // which the caller words per parameter.
         other => match other.as_int(vm) {
             Ok(index) => index,
-            Err(RunError::Exc(_)) => return Ok(IsliceBound::Invalid),
+            Err(RunError::Exc(exc)) => {
+                exc.drop_with(vm);
+                return Ok(IsliceBound::Invalid);
+            }
             Err(e) => return Err(e),
         },
     };

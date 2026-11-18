@@ -12,7 +12,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     fstring::{FormatError, ascii_escape},
-    heap::{DropWithContext, HeapData, HeapId, HeapRead},
+    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapRead},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     py_value::PyValue,
@@ -52,6 +52,7 @@ pub(crate) trait ExcTypeExt: Sized {
         );
         RunError::Exc(ExceptionRaise {
             exc,
+            instance: None,
             frame: None,
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
@@ -84,6 +85,7 @@ pub(crate) trait ExcTypeExt: Sized {
         );
         RunError::Exc(ExceptionRaise {
             exc,
+            instance: None,
             frame: None,
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
@@ -122,6 +124,7 @@ pub(crate) trait ExcTypeExt: Sized {
         let exc = SimpleException::new_msg(ExcType::AttributeError, msg);
         RunError::Exc(ExceptionRaise {
             exc,
+            instance: None,
             frame: None,
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
@@ -1768,6 +1771,7 @@ pub(crate) trait ExcTypeExt: Sized {
         let exc = SimpleException::new_msg(ExcType::ModuleNotFoundError, msg);
         RunError::Exc(ExceptionRaise {
             exc,
+            instance: None,
             frame: None,
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for module not found errors
@@ -3017,9 +3021,18 @@ fn chained_value(id: Option<HeapId>, vm: &VM<'_>) -> Value {
 }
 
 /// A raised exception with optional stack frame for traceback.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+///
+/// `instance` is set only while an exception that already lives on the heap
+/// crosses a synchronous Rust boundary (a nested `evaluate_function` call
+/// returning `Err`). The VM takes it back in `handle_exception_step`, so an
+/// `ExceptionRaise` stored anywhere (`CaughtException::Frozen`, task and future
+/// state, snapshots) always has `instance: None`.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ExceptionRaise {
     pub exc: SimpleException,
+    /// Owned reference to the live exception object, released with `drop_with`.
+    #[serde(skip)]
+    pub(crate) instance: Option<Value>,
     /// Innermost executed frame, with callers linked as parents.
     pub frame: Option<RawStackFrame>,
     /// Resolved innermost location of a rejected snippet, independent of its discarded intern IDs.
@@ -3036,6 +3049,7 @@ impl From<SimpleException> for ExceptionRaise {
     fn from(exc: SimpleException) -> Self {
         Self {
             exc,
+            instance: None,
             frame: None,
             snippet_frame: None,
             hide_caret: false,
@@ -3047,6 +3061,7 @@ impl From<MontyException> for ExceptionRaise {
     fn from(exc: MontyException) -> Self {
         Self {
             exc: exc.into(),
+            instance: None,
             frame: None,
             snippet_frame: None,
             hide_caret: false,
@@ -3055,6 +3070,9 @@ impl From<MontyException> for ExceptionRaise {
 }
 
 impl ExceptionRaise {
+    pub(crate) fn take_instance(&mut self) -> Option<Value> {
+        self.instance.take()
+    }
     /// Adds a caller's frame as the outermost frame in the traceback chain.
     ///
     /// This is used when an exception propagates up through call frames.
@@ -3185,6 +3203,27 @@ impl RawStackFrame {
     }
 }
 
+/// Copies never own the instance: a stored or re-raised copy must not become a
+/// second, uncounted owner.
+impl Clone for ExceptionRaise {
+    fn clone(&self) -> Self {
+        debug_assert!(self.instance.is_none(), "cloned an ExceptionRaise that owns its instance");
+        Self {
+            exc: self.exc.clone(),
+            instance: None,
+            frame: self.frame.clone(),
+            snippet_frame: self.snippet_frame.clone(),
+            hide_caret: self.hide_caret,
+        }
+    }
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for ExceptionRaise {
+    fn drop_with(self, ctx: &mut C) {
+        self.instance.drop_with(ctx);
+    }
+}
+
 /// Runtime error types that can occur during execution.
 ///
 /// Three variants:
@@ -3206,6 +3245,15 @@ pub(crate) enum RunError {
     ///
     /// Displays a normal traceback but bypasses `try`/`except` blocks.
     UncatchableExc(ExceptionRaise),
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for RunError {
+    fn drop_with(self, ctx: &mut C) {
+        match self {
+            Self::Exc(exc) | Self::UncatchableExc(exc) => exc.drop_with(ctx),
+            Self::Internal(_) => {}
+        }
+    }
 }
 
 impl From<ExceptionRaise> for RunError {
@@ -3312,6 +3360,7 @@ fn import_error_without_caret(msg: String) -> RunError {
 fn without_caret(exc: SimpleException) -> RunError {
     RunError::Exc(ExceptionRaise {
         exc,
+        instance: None,
         frame: None,
         snippet_frame: None,
         hide_caret: true,
