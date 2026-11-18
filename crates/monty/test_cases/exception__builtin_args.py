@@ -6,8 +6,8 @@ assert repr(e) == "ValueError('a', 'b')"
 
 e0 = ValueError()
 assert e0.args == ()
-assert str(e0) == ""
-assert repr(e0) == "ValueError()"
+assert str(e0) == ''
+assert repr(e0) == 'ValueError()'
 
 e1 = ValueError('hello')
 assert e1.args == ('hello',)
@@ -26,16 +26,16 @@ assert str(e) == 'single'
 assert repr(e) == "ValueError('single')"
 
 e.args = ()
-assert str(e) == ""
-assert repr(e) == "ValueError()"
+assert str(e) == ''
+assert repr(e) == 'ValueError()'
 
 e.args = [1, 2]
 assert e.args == (1, 2)
-assert repr(e) == "ValueError(1, 2)"
+assert repr(e) == 'ValueError(1, 2)'
 
 try:
     e.args = 5
-    assert False, "should fail on int"
+    assert False, 'should fail on int'
 except TypeError:
     pass
 
@@ -53,7 +53,7 @@ assert SystemExit(3).code == 3
 assert SystemExit(1, 2).code == (1, 2)
 
 # KeyError str formatting
-assert str(KeyError()) == ""
+assert str(KeyError()) == ''
 assert str(KeyError('k')) == "'k'"
 assert str(KeyError('a', 'b')) == "('a', 'b')"
 
@@ -82,19 +82,19 @@ assert ImportError().path is None
 # Keyword argument validation
 try:
     ImportError('m', bogus=1)
-    assert False, "should fail on unexpected kwarg"
+    assert False, 'should fail on unexpected kwarg'
 except TypeError:
     pass
 
 try:
     ValueError(a=1)
-    assert False, "should fail on kwarg"
+    assert False, 'should fail on kwarg'
 except TypeError:
     pass
 
 try:
     BaseException.__init__(ValueError(), a=1)
-    assert False, "should fail on kwarg"
+    assert False, 'should fail on kwarg'
 except TypeError:
     pass
 
@@ -109,7 +109,7 @@ assert v.args == ('reinit1', 'reinit2')
 
 try:
     BaseException.__init__(123)
-    assert False, "should fail when self is not an exception"
+    assert False, 'should fail when self is not an exception'
 except TypeError:
     pass
 

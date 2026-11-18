@@ -3,7 +3,6 @@ err = ValueError('original')
 
 
 class K:
-
     def __eq__(self, other):
         raise err
 
@@ -26,7 +25,6 @@ assert chained_err.__cause__ is cause_err
 
 
 class ChainedK:
-
     def __eq__(self, other):
         raise chained_err
 
@@ -38,9 +36,9 @@ except ValueError as caught:
     assert caught is chained_err
     assert caught.__cause__ is cause_err
 
+
 # === hasattr and getattr with pre-built AttributeError in loop ===
 class HasAttrTrap:
-
     def __init__(self):
         self.exc = AttributeError('trap')
 
@@ -53,9 +51,9 @@ for _ in range(50):
     assert not hasattr(trap, 'x')
     assert getattr(trap, 'x', 42) == 42
 
+
 # === Hashing TypeError fallback ===
 class UnhashableTrap:
-
     def __init__(self):
         self.exc = TypeError('cannot hash')
 

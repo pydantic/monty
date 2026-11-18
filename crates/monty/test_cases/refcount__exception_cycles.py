@@ -6,6 +6,7 @@ def make_exceptions():
         e = ValueError('msg')
         e = None
 
+
 make_exceptions()
 
 # Exception with chained cause
