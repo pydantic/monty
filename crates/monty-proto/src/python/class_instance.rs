@@ -214,8 +214,6 @@ pub(super) struct ClassHeader {
     /// Proxies cache their hash error, so a message per proxy would copy the
     /// (sandbox-chosen, unbounded) class name once per instance.
     pub(super) unhashable_message: PyOnceLock<Py<PyString>>,
-    /// The `AttributeError` message per missing field name, shared likewise.
-    pub(super) missing_field_messages: PyOnceLock<Py<PyDict>>,
 }
 
 impl ClassHeader {
@@ -229,20 +227,10 @@ impl ClassHeader {
     }
 
     /// The `AttributeError` a generated method raises for a field the
-    /// instance never set, sharing one message string per class and field.
-    fn missing_field_error(&self, py: Python<'_>, field: &str) -> PyResult<PyErr> {
-        let messages = self
-            .missing_field_messages
-            .get_or_init(py, || PyDict::new(py).unbind())
-            .bind(py);
-        let message = if let Some(message) = messages.get_item(field)? {
-            message
-        } else {
-            let message = PyString::new(py, &format!("'{}' object has no attribute '{field}'", self.name)).into_any();
-            messages.set_item(field, &message)?;
-            message
-        };
-        Ok(PyAttributeError::new_err(message.unbind()))
+    /// instance never set. Built per raise and never cached (see
+    /// [`PyMontyClassProxy::__hash__`]), so nothing keeps one per field.
+    fn missing_field_error(&self, field: &str) -> PyErr {
+        PyAttributeError::new_err(format!("'{}' object has no attribute '{field}'", self.name))
     }
 }
 
@@ -260,6 +248,8 @@ impl ClassHeader {
 /// `__eq__` would need sandbox code, so the proxy compares instance ids. The
 /// hash follows `==`: fields where `==` compares fields (a user `__hash__`
 /// included), the id otherwise, and `TypeError` where the sandbox's is too.
+/// A proxy holding a host object compares by id, so replaying a rule never
+/// runs that object's `__eq__` or `__hash__`.
 #[pyclass(name = "MontyClassProxy", module = "pydantic_monty", frozen)]
 pub struct PyMontyClassProxy {
     /// The instance's class as it crossed the wire (name, id, dataclass-ness).
@@ -274,6 +264,11 @@ pub struct PyMontyClassProxy {
     /// `__hash__`'s result, computed once: a shared sub-object is one proxy,
     /// so caching keeps hashing a graph of nested dataclasses linear.
     pub(super) hash: OnceLock<Result<u64, PyErr>>,
+    /// Whether an attribute reaches a host object (a registered instance or
+    /// class), directly or through containers. Replaying the class's rule
+    /// would call that object's `__eq__` / `__hash__`, which are host code the
+    /// sandbox was never given, so such a proxy compares and hashes by id.
+    pub(super) holds_host_objects: bool,
 }
 
 #[pymethods]
@@ -315,18 +310,27 @@ impl PyMontyClassProxy {
     }
 
     /// A `@dataclass` `__eq__` is replayed (same class, fields `==` in order);
-    /// any other rule compares instance ids. A non-proxy operand is
-    /// `NotImplemented`.
+    /// any other rule, or a proxy holding host objects, compares instance ids.
+    /// A non-proxy operand is `NotImplemented`.
     fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let Ok(other) = other.cast::<Self>() else {
             return Ok(py.NotImplemented());
         };
         let other = other.get();
         let equal = match &self.class_type.eq {
-            ClassEq::Fields(fields) if self.class_type.id == other.class_type.id => {
+            ClassEq::Fields(fields)
+                if self.class_type.id == other.class_type.id
+                    && !self.holds_host_objects
+                    && !other.holds_host_objects =>
+            {
                 self.fields_equal(py, other, fields)?
             }
-            ClassEq::Identity | ClassEq::Fields(_) | ClassEq::Custom => self.instance_id == other.instance_id,
+            // a proxy holding host objects hashes by id, so it may only equal
+            // another such proxy: one replaying fields hashes them instead
+            ClassEq::Fields(_) => {
+                self.instance_id == other.instance_id && self.holds_host_objects == other.holds_host_objects
+            }
+            ClassEq::Identity | ClassEq::Custom => self.instance_id == other.instance_id,
         };
         Ok(equal.into_pyobject(py)?.to_owned().into_any().unbind())
     }
@@ -334,18 +338,20 @@ impl PyMontyClassProxy {
     /// Mirrors the sandbox's hash rule, consistently with `__eq__`: a
     /// `@dataclass` that compares fields hashes them, an unhashable class
     /// raises `TypeError`, and anything compared by id hashes the instance id.
-    /// The result is cached, errors included except the depth limit's.
+    /// The result is cached, errors included except the depth limit's and a
+    /// missing field's.
     fn __hash__(&self, py: Python<'_>) -> PyResult<u64> {
         let cached = if let Some(cached) = self.hash.get() {
             cached
         } else {
             let computed = HashDepth::enter().and_then(|_depth| self.compute_hash(py));
             // Hitting the depth limit depends on where hashing started, not
-            // on this proxy, so a later, shallower hash may still succeed.
-            if computed
-                .as_ref()
-                .is_err_and(|err| err.is_instance_of::<PyRecursionError>(py))
-            {
+            // on this proxy, so a later, shallower hash may still succeed. A
+            // missing field's message names the field, so caching it would
+            // keep one per proxy for the sandbox to multiply.
+            if computed.as_ref().is_err_and(|err| {
+                err.is_instance_of::<PyRecursionError>(py) || err.is_instance_of::<PyAttributeError>(py)
+            }) {
                 return computed;
             }
             self.hash.get_or_init(|| computed)
@@ -359,6 +365,8 @@ impl PyMontyClassProxy {
     fn compute_hash(&self, py: Python<'_>) -> PyResult<u64> {
         match (&self.class_type.hash, &self.class_type.eq) {
             (ClassHash::Unhashable, _) => Err(self.class_type.unhashable_error(py)),
+            // `==` compares ids for these (see `__eq__`)
+            _ if self.holds_host_objects => Ok(hash_uuid(&self.instance_id)),
             (ClassHash::Fields(fields), ClassEq::Fields(_)) => {
                 let mut hasher = DefaultHasher::new();
                 PyTuple::new(py, self.field_values(py, fields)?)?
@@ -418,7 +426,7 @@ impl PyMontyClassProxy {
     fn field_value<'py>(&self, py: Python<'py>, field: &str) -> PyResult<Bound<'py, PyAny>> {
         match self.attributes.bind(py).get_item(field)? {
             Some(value) => Ok(value),
-            None => Err(self.class_type.missing_field_error(py, field)?),
+            None => Err(self.class_type.missing_field_error(field)),
         }
     }
 }

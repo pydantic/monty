@@ -939,6 +939,38 @@ def test_dataclass_field_missing_from_attributes_raises(monty_run: RunMonty):
     assert exc_info.value.args[0] == snapshot("'P' object has no attribute 'y'")
 
 
+class Tracked:
+    """A host class whose `__eq__` and `__hash__` record every call."""
+
+    calls: list[str] = []
+
+    def __eq__(self, other: object) -> bool:
+        Tracked.calls.append('eq')
+        return self is other
+
+    def __hash__(self) -> int:
+        Tracked.calls.append('hash')
+        return 0
+
+
+def test_dataclass_holding_host_objects_compares_by_identity(monty_run: RunMonty):
+    """Replaying a generated `__eq__` or hashing the compared fields would call a
+    host object's `__eq__` / `__hash__`, which the sandbox was never given, so a
+    proxy reaching one, directly or through containers, compares by identity."""
+    Tracked.calls.clear()
+    code = (
+        '@dataclass\nclass K:\n    item: object\n    def __hash__(self):\n        return 0\n'
+        'k = K(a)\n[{k: 1, K((b,)): 2, K([a]): 3, K({1: b}): 4}, k, k]'
+    )
+    inputs = {'a': ClassInstance(Tracked()), 'b': ClassInstance(Tracked())}
+    keys, first, second = monty_run(DATACLASS_IMPORT + code, inputs=inputs)
+    assert list(keys.values()) == [1, 2, 3, 4]
+    assert first == second
+    assert hash(first) == hash(second)
+    assert len({*keys, first}) == 4
+    assert Tracked.calls == []
+
+
 def test_custom_eq_proxies_compare_by_identity(session: MontySession):
     """The host cannot run a user `__eq__`, so it falls back to identity; a
     class defining `__eq__` without `__hash__` stays unhashable."""
@@ -1672,9 +1704,10 @@ def test_deep_proxy_chain_hashes_from_the_leaf_up(monty_run: RunMonty):
     assert hash(nodes[-1]) == hash(nodes[-1])
 
 
-def test_hash_errors_share_one_message_per_class(monty_run: RunMonty):
-    """Proxies cache their hash error, so its message is built once per class:
-    a long sandbox class name is not copied once per instance."""
+def test_hash_errors_keep_no_message_per_instance(monty_run: RunMonty):
+    """Proxies cache an unhashable error, whose message is built once per class,
+    so a long sandbox class name is not copied once per instance. A missing
+    field's error names the field, so it is built per raise and not cached."""
     code = (
         "U = dataclass(type('U' * 1000, (), {}))\n"
         '@dataclass\nclass P:\n    x: int\n    y: int\n    def __init__(self, x):\n        self.x = x\n'
@@ -1690,4 +1723,7 @@ def test_hash_errors_share_one_message_per_class(monty_run: RunMonty):
     assert messages[0] == f'unhashable type: {"U" * 1000!r}'
     assert messages[0] is messages[1]
     assert messages[2] == snapshot("'P' object has no attribute 'y'")
-    assert messages[2] is messages[3]
+    with pytest.raises(AttributeError) as exc_info:
+        hash(first_p)
+    assert exc_info.value.args[0] == messages[2]
+    assert exc_info.value.args[0] is not messages[2]

@@ -241,6 +241,11 @@ identity instead, and its hash follows whatever `==` it ends up with:
     identity, except on a dataclass whose `__eq__` is generated: there they hash
     the fields `__eq__` compares (skipping unhashable values), so equal proxies
     hash equal.
+- A dataclass proxy whose attributes hold a host object (a `ClassInstance`
+    or `ClassType` the session still has), directly or inside a container,
+    compares and hashes by identity: replaying its fields would run that
+    object's own `__eq__` and `__hash__` on the host. The sandbox compares
+    those fields.
 - A class with `__eq__` and no `__hash__` stays unhashable. A frozen dataclass
     with a body `__eq__` hashes by identity, since its proxies compare by
     identity.

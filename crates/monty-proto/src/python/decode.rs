@@ -3,6 +3,7 @@
 
 use std::{
     collections::{HashMap, hash_map::Entry},
+    mem,
     sync::{Arc, OnceLock},
 };
 
@@ -56,10 +57,14 @@ impl DecodedArena {
             built: Vec::with_capacity(graph.len()),
             namedtuple_headers: HashMap::new(),
             classes: HashMap::new(),
+            host_objects: Vec::with_capacity(graph.len()),
+            from_store: false,
         };
         for node in graph.nodes() {
             let obj = decoder.decode(node)?;
             decoder.built.push(obj);
+            let holds = decoder.holds_host_objects(node);
+            decoder.host_objects.push(holds);
         }
         Ok(Self { built: decoder.built })
     }
@@ -84,6 +89,11 @@ struct Decoder<'a, 'py> {
     /// Each class node's header and eager attrs, built once and shared by
     /// its proxies so their cost does not scale with the instance count.
     classes: HashMap<NodeId, (Arc<ClassHeader>, Py<PyDict>)>,
+    /// Whether each decoded node reaches a host object; see
+    /// [`holds_host_objects`](Self::holds_host_objects).
+    host_objects: Vec<bool>,
+    /// Set by `decode` when the node resolved to a registered host object.
+    from_store: bool,
 }
 
 /// A namedtuple's type name and field names, as passed to `MontyNamedTuple`.
@@ -160,6 +170,7 @@ impl<'a> Decoder<'a, '_> {
             // anything else to a read-only `MontyClassTypeProxy`
             MontyNode::ClassType(class) => {
                 if let Some(class) = self.store.get_class(py, &class.id)? {
+                    self.from_store = true;
                     Ok(class)
                 } else {
                     // this node's id: nodes decode in order
@@ -177,6 +188,7 @@ impl<'a> Decoder<'a, '_> {
                 attrs,
             } => {
                 if let Some(wrapper) = self.store.get(py, instance_id)? {
+                    self.from_store = true;
                     wrapper.bind(py).getattr("value").map(Bound::unbind)
                 } else {
                     let (class_type, class_attributes) = self.class_parts(*class_type)?;
@@ -186,6 +198,7 @@ impl<'a> Decoder<'a, '_> {
                         attributes: self.attrs_dict(attrs)?,
                         class_attributes,
                         hash: OnceLock::new(),
+                        holds_host_objects: attrs.iter().any(|(_, value)| self.host_objects[value.index()]),
                     };
                     Ok(Py::new(py, proxy)?.into_any())
                 }
@@ -209,6 +222,18 @@ impl<'a> Decoder<'a, '_> {
             // an output value decodes to its name
             MontyNode::Function { name, .. } => Ok(PyString::new(py, name).into_any().unbind()),
         }
+    }
+
+    /// Whether the node just decoded reaches a registered host object, whose
+    /// `__eq__` and `__hash__` are host code. Containers inherit it from their
+    /// children; class proxies stop it, since they compare by id when holding one.
+    fn holds_host_objects(&mut self, node: &MontyNode) -> bool {
+        let from_store = mem::take(&mut self.from_store);
+        let mut holds = from_store;
+        if !from_store && !matches!(node, MontyNode::ClassInstance { .. } | MontyNode::ClassType(_)) {
+            node.for_each_child(|id| holds |= self.host_objects[id.index()]);
+        }
+        holds
     }
 
     /// The object built for a child node.
@@ -280,6 +305,5 @@ fn class_header(class: &ClassTypeNode) -> ClassHeader {
         eq: class.eq.clone(),
         hash: class.hash.clone(),
         unhashable_message: PyOnceLock::new(),
-        missing_field_messages: PyOnceLock::new(),
     }
 }

@@ -402,7 +402,7 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
                 values: ids,
             },
             Pending::Dict => MontyNode::Dict(id_pairs(&ids)),
-            Pending::ClassType(class_type) => ClassTypeSource::node_from(&class_type, id_pairs(&ids)),
+            Pending::ClassType(class_type) => ClassTypeSource::node_from(class_type, id_pairs(&ids)),
             Pending::ClassInstance { instance_id } => MontyNode::ClassInstance {
                 class_type: ids[0],
                 instance_id,
@@ -517,7 +517,6 @@ impl<'py> ClassTypeSource<'py> {
                 eq: ClassEq::Identity,
                 hash: ClassHash::Identity,
                 unhashable_message: PyOnceLock::new(),
-                missing_field_messages: PyOnceLock::new(),
             }),
             attrs,
             identity: Some(wrapper.clone()),
@@ -527,19 +526,25 @@ impl<'py> ClassTypeSource<'py> {
 
     /// The class node with the given attr pairs.
     fn node(&self, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
-        Self::node_from(&self.class_type, attrs)
+        Self::node_from(Arc::clone(&self.class_type), attrs)
     }
 
-    /// The class node for a header and its attr pairs.
-    fn node_from(class_type: &ClassHeader, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
+    /// The class node for a header and its attr pairs, moving the header's
+    /// name and rules out when nothing else shares it.
+    fn node_from(class_type: Arc<ClassHeader>, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
+        let (id, host_defined, is_dataclass) = (class_type.id, class_type.host_defined, class_type.is_dataclass);
+        let (name, eq, hash) = match Arc::try_unwrap(class_type) {
+            Ok(header) => (header.name, header.eq, header.hash),
+            Err(shared) => (shared.name.clone(), shared.eq.clone(), shared.hash.clone()),
+        };
         MontyNode::ClassType(Box::new(ClassTypeNode {
-            name: class_type.name.clone(),
-            id: class_type.id,
-            host_defined: class_type.host_defined,
-            is_dataclass: class_type.is_dataclass,
+            name,
+            id,
+            host_defined,
+            is_dataclass,
             attrs,
-            eq: class_type.eq.clone(),
-            hash: class_type.hash.clone(),
+            eq,
+            hash,
         }))
     }
 }
