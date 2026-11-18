@@ -1182,7 +1182,7 @@ async def test_cancelled_queued_feed_run_leaves_session_healthy(apool: AsyncMont
         assert await session.feed_run('1 + 1') == snapshot(2)
 
 
-# === Nested sync Monty inside AsyncMonty callbacks ===
+# === Nested Monty calls from callbacks ===
 
 
 def _nested_sync_run(code: str) -> object:
@@ -1214,6 +1214,22 @@ async def test_sync_monty_inside_print_callback(asession: AsyncMontySession):
 
     await asession.feed_run("print('hi')", print_callback=on_print)
     assert seen == snapshot([('hi\n', 4)])
+
+
+def test_async_monty_inside_sync_print_callback():
+    """The synchronous print callback runs inside Monty's Tokio runtime."""
+    seen: list[tuple[str, int]] = []
+
+    async def run() -> int:
+        async with AsyncMonty() as pool, pool.checkout() as session:
+            return len(await session.feed_run("'x' * 2_000_000"))
+
+    def on_print(stream: str, text: str) -> None:
+        seen.append((text, asyncio.run(run())))
+
+    with Monty() as pool, pool.checkout() as session:
+        session.feed_run("print('hi')", print_callback=on_print)
+    assert seen == snapshot([('hi\n', 2_000_000)])
 
 
 # =============================================================================

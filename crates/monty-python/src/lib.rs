@@ -26,10 +26,6 @@ mod telemetry;
 mod type_hints;
 mod version;
 
-#[cfg(test)]
-#[path = "../tests/rust/async_driver.rs"]
-mod async_driver_tests;
-
 // The Python API cannot construct a Rust disconnect without transport evidence.
 // Private access tests that conversion without inventing peer details.
 #[cfg(test)]

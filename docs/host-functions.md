@@ -247,6 +247,7 @@ Host coroutine functions run as tasks on the same loop and inherit the context w
 Print callbacks must be synchronous.
 Blocking work in a callback blocks the loop; use `asyncio.to_thread()` in coroutine functions for blocking I/O.
 Worker I/O and the default writes to stdout/stderr run without blocking the event loop.
+A full pipe can still delay turns that write to that stream, even after an earlier turn was cancelled.
 In JavaScript every host function may be async, and there is no separate pool class.
 `asyncio.gather` inside the sandbox lets several run concurrently:
 

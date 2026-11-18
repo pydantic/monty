@@ -73,7 +73,7 @@ use crate::{
         AnswerFuture, CoroutineMode, Dispatched, PendingCalls, coroutine_answer, dispatch_coroutine,
         dispatch_system_sleep, pending_module, wait_for_futures,
     },
-    async_driver::{embedding_allows_blocking, future_into_py},
+    async_driver::future_into_py,
     build::{extract_metadata, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context,
     exceptions::{
@@ -2347,8 +2347,8 @@ async fn run_turn_starting_calls<T: TurnOutcome>(
 /// Blocks on `future` using the pyo3-async-runtimes runtime, adapting to the
 /// caller's Tokio context — every sync entry point routes through here.
 ///
-/// Outside a runtime this is a plain `block_on`. On a multi-thread runtime
-/// worker (for example, in an embedding application) a bare
+/// Outside a runtime this is a plain `block_on`. In Monty's multi-thread runtime
+/// (for example, re-entering from a print callback), a bare
 /// `block_on` panics, so the wait is wrapped in `block_in_place`, which hands
 /// the worker's queued tasks to another thread. Inside a current-thread
 /// runtime blocking would starve the tasks this future needs, so that raises
@@ -2357,9 +2357,7 @@ async fn run_turn_starting_calls<T: TurnOutcome>(
 pub(crate) fn block_on_sync<F: Future>(future: F) -> PyResult<F::Output> {
     match Handle::try_current() {
         Err(_) => Ok(get_runtime().block_on(future)),
-        Ok(handle)
-            if embedding_allows_blocking().unwrap_or_else(|| handle.runtime_flavor() == RuntimeFlavor::MultiThread) =>
-        {
+        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
             Ok(block_in_place(|| get_runtime().block_on(future)))
         }
         Ok(_) => Err(PyRuntimeError::new_err(

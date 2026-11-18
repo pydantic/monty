@@ -1,32 +1,18 @@
 //! Drives Rust protocol futures through PyO3's asyncio coroutine implementation.
 //!
 //! Python owns execution, callback context and cancellation. Tokio supplies I/O
-//! readiness, timers and a cooperative budget when polling outside an existing Tokio runtime.
+//! readiness, timers and a cooperative budget for each protocol poll.
 
 use std::{
     future::Future,
-    pin::{Pin, pin},
+    pin::Pin,
     sync::Mutex,
     task::{Context, Poll},
 };
 
 use pyo3::{IntoPyObjectExt, exceptions::PyRuntimeError, prelude::*};
 use pyo3_async_runtimes::tokio::get_runtime;
-use tokio::{
-    runtime::{Handle, RuntimeFlavor},
-    task::unconstrained,
-    task_local,
-};
-
-task_local! {
-    /// Whether the embedding runtime supports `block_in_place`, even after we switch handles.
-    static EMBEDDING_ALLOWS_BLOCKING: bool;
-}
-
-/// Checks whether a sync callback may block inside an embedding Tokio runtime.
-pub(crate) fn embedding_allows_blocking() -> Option<bool> {
-    EMBEDDING_ALLOWS_BLOCKING.try_with(|allowed| *allowed).ok()
-}
+use tokio::{runtime::Handle, task::block_in_place};
 
 /// Returns a coroutine which drives `future` in its awaiting task, without a Tokio task hop.
 pub(crate) fn future_into_py<T>(
@@ -78,17 +64,16 @@ impl Future for RuntimeFuture {
         Python::attach(|py| {
             py.detach(|| {
                 let runtime = get_runtime();
-                let cx = &mut Context::from_waker(waker);
-                if let Ok(host) = Handle::try_current() {
-                    let allows_blocking = embedding_allows_blocking()
-                        .unwrap_or_else(|| host.runtime_flavor() == RuntimeFlavor::MultiThread);
-                    let _runtime = runtime.enter();
-                    // The embedding Tokio task cannot replenish its budget while running asyncio.
-                    EMBEDDING_ALLOWS_BLOCKING
-                        .sync_scope(allows_blocking, || pin!(unconstrained(future.as_mut())).poll(cx))
-                } else {
-                    // One poll without parking, with a fresh Tokio cooperative budget.
-                    runtime.block_on(async { future.as_mut().poll(cx) })
+                // One poll without parking, with a fresh Tokio cooperative budget.
+                let poll =
+                    move || runtime.block_on(async move { future.as_mut().poll(&mut Context::from_waker(waker)) });
+                match Handle::try_current() {
+                    Err(_) => poll(),
+                    // A synchronous Monty print callback can start its own asyncio loop.
+                    Ok(handle) if handle.id() == runtime.handle().id() => block_in_place(poll),
+                    Ok(_) => Poll::Ready(Err(PyRuntimeError::new_err(
+                        "cannot run async Monty inside another Tokio runtime",
+                    ))),
                 }
             })
         })
