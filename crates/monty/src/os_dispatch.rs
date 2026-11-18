@@ -97,11 +97,8 @@ impl PendingEffect {
             // The reading still has to become a `struct_time` or a string, which
             // a future defers past the point the sandbox needs it.
             Self::Post(PostConversionEffect::ClockReading { .. }) => Some("time.time"),
-            // The load answers a `ForIter` or `next()` that is waiting for the
-            // buffer; a future would land on the stack where the file is expected.
-            Self::Post(PostConversionEffect::BufferLoad { .. } | PostConversionEffect::FileNext { .. }) => {
-                Some("file iteration")
-            }
+            // Advancing the iterator needs a line, not a future for the raw buffer.
+            Self::Post(PostConversionEffect::FileNext { .. }) => Some("file iteration"),
             // The replayed call expects its argument loaded; a future would stand in for the call's result.
             Self::Post(PostConversionEffect::LoadThenCall { .. }) => Some("file loading"),
             // A future strands these instead: the awaited value is the raw host reply.
@@ -328,13 +325,8 @@ pub(crate) enum PostConversionEffect {
     /// [`BufferStore`](Self::BufferStore), then parse the rest of the file as
     /// JSON: `json.load(fp)` on a file whose buffer is not loaded yet.
     JsonLoad { file_id: HeapId },
-    /// Store a full-file read result into the file buffer and push nothing:
-    /// the `ForIter` that found the file unloaded re-dispatches against it.
-    BufferLoad { file_id: HeapId },
-    /// Store a full-file read result into the file buffer, then answer
-    /// `next(file, default)`: the first line, `default` at EOF, or
-    /// `StopIteration`. Owns `default`'s reference across the yield.
-    FileNext { file_id: HeapId, default: Option<Value> },
+    /// Store a full-file read result, then answer `next(file)` with the first line or exhaustion.
+    FileNext { file_id: HeapId },
     /// Advance the file's logical position by the successful write result.
     WritePosition {
         /// File whose position is updated.
@@ -398,13 +390,9 @@ impl PostConversionEffect {
         match self {
             Self::BufferStore { file_id }
             | Self::JsonLoad { file_id }
-            | Self::BufferLoad { file_id }
+            | Self::FileNext { file_id }
             | Self::WritePosition { file_id, .. } => {
                 heap.heap_mut().dec_ref(file_id);
-            }
-            Self::FileNext { file_id, default } => {
-                heap.heap_mut().dec_ref(file_id);
-                default.drop_with(heap);
             }
             Self::LoadThenCall {
                 file_id,

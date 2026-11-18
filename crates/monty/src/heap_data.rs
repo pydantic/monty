@@ -119,6 +119,8 @@ macro_rules! heap_payloads {
             SetIterator(inline $crate::types::SetIterator),
             /// A `callable_iterator` object from `iter(callable, sentinel)`.
             CallableIterator(inline $crate::types::callable_iterator::CallableIterator),
+            /// A lazy `map` or `filter`, retaining its callback and source iterators.
+            MapFilter(boxed $crate::types::map_filter::MapFilter),
             /// An arbitrary-precision integer used when a Python `int` does not fit in `i64`.
             #[serde(rename = "G")]
             LongInt(inline $crate::types::LongInt),
@@ -254,6 +256,7 @@ impl HeapData {
             | Self::DictValueIterator(_)
             | Self::SetIterator(_)
             | Self::CallableIterator(_)
+            | Self::MapFilter(_)
             | Self::Module(_)
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
@@ -376,6 +379,7 @@ impl HeapData {
             Self::DictValueIterator(_) => Type::DictValueIterator,
             Self::SetIterator(_) => Type::SetIterator,
             Self::CallableIterator(_) => Type::CallableIterator,
+            Self::MapFilter(iter) => iter.py_type(),
             Self::Itertools(i) => i.py_type(),
             Self::DirScan(scan) => scan.py_type(),
             Self::Csv(csv) => csv.py_type(),
@@ -669,6 +673,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::DictValueIterator($value) => $body,
             Self::SetIterator($value) => $body,
             Self::CallableIterator($value) => $body,
+            Self::MapFilter($value) => $body,
             Self::Itertools($value) => $body,
             Self::DirScan($value) => $body,
             Self::Csv($value) => $body,
@@ -733,6 +738,25 @@ pub(crate) fn heap_subscript<'h>(value: HeapReadOutput<'h>, key: &Value, vm: &mu
             None => defaultdict_missing(&mut dict, key, vm),
         },
         value => value.py_getitem(key, vm),
+    }
+}
+
+impl HeapReadOutput<'_> {
+    /// Container iterators whose advancement never runs user code or needs a continuation.
+    pub(crate) fn is_native_container_iterator(&self) -> bool {
+        matches!(
+            self,
+            Self::ListIterator(_)
+                | Self::DequeIterator(_)
+                | Self::TupleIterator(_)
+                | Self::StringIterator(_)
+                | Self::BytesIterator(_)
+                | Self::RangeIterator(_)
+                | Self::DictKeyIterator(_)
+                | Self::DictItemIterator(_)
+                | Self::DictValueIterator(_)
+                | Self::SetIterator(_)
+        )
     }
 }
 
@@ -1180,6 +1204,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DictValueIterator(value) => value.py_iter(vm),
             Self::SetIterator(value) => value.py_iter(vm),
             Self::CallableIterator(value) => value.py_iter(vm),
+            Self::MapFilter(value) => value.py_iter(vm),
             Self::Itertools(value) => value.py_iter(vm),
             Self::DirScan(value) => value.py_iter(vm),
             Self::Csv(value) => value.py_iter(vm),
@@ -1230,6 +1255,17 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
+    fn py_next_call(&mut self, default: Option<Value>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        heap_read_output_py_trait_forward!(
+            self,
+            |value| value.py_next_call(default, vm),
+            else {
+                default.drop_with(vm);
+                Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
+            }
+        )
+    }
+
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         match self {
             Self::Str(value) => value.py_next(vm),
@@ -1246,6 +1282,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DictValueIterator(value) => value.py_next(vm),
             Self::SetIterator(value) => value.py_next(vm),
             Self::CallableIterator(value) => value.py_next(vm),
+            Self::MapFilter(value) => value.py_next(vm),
             Self::Itertools(value) => value.py_next(vm),
             Self::DirScan(value) => value.py_next(vm),
             Self::Csv(value) => value.py_next(vm),

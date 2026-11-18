@@ -113,8 +113,7 @@ f.readline()
 }
 
 // ---------------------------------------------------------------------------
-// Iteration loads the buffer through its own effects (`BufferLoad` for the
-// `ForIter` opcode, `FileNext` for the `next()` builtin). A host failure must
+// Iteration loads the buffer through `FileNext` for both `for` and `next()`. A host failure must
 // surface at the loop / call and leave the file ready to retry, and the
 // empty-file reply (interned `""`) must exhaust the iterator cleanly.
 // ---------------------------------------------------------------------------

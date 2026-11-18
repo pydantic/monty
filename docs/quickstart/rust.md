@@ -39,6 +39,8 @@ It shares the mounts' lexical POSIX normalization; see [filesystem callbacks](..
 for validation order and access checks.
 
 Build inputs with [`MontyObject`](../api/rust/monty-types.md#montyobject) constructors and inspect them with `as_ref()`.
+Builtin type objects use `MontyObject::type_object`, including `MontyType::Map` and `MontyType::Filter` for the lazy
+iterator constructors; `MontyObject::builtin_function` represents functions, not constructors.
 The builders on [`CallArgs`](../api/rust/monty-types.md#callargs) and [`NamedValues`](../api/rust/monty-types.md#namedvalues)
 accept owned values; their iterators return [`ObjectRef`](../api/rust/monty-types.md#objectref) views.
 Representation APIs under [`monty_types::unstable`](../api/rust/monty-types.md#unstable)

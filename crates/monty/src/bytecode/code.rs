@@ -113,14 +113,13 @@ impl Code {
 
     /// Finds an exception handler for the given bytecode offset.
     ///
-    /// Searches the exception table for an entry whose protected range contains
-    /// the given offset. Returns the first (innermost) matching handler, since
-    /// entries are ordered innermost-first for nested try blocks.
-    ///
-    /// Returns `None` if no handler covers this offset.
+    /// Entries are ordered innermost-first. An iteration entry matches only `StopIteration`;
+    /// other errors at the same offset may still be caught by an enclosing handler.
     #[must_use]
-    pub fn find_exception_handler(&self, offset: u32) -> Option<&ExceptionEntry> {
-        self.exception_table.iter().find(|entry| entry.contains(offset))
+    pub fn find_exception_handler(&self, offset: u32, is_stop_iteration: bool) -> Option<&ExceptionEntry> {
+        self.exception_table
+            .iter()
+            .find(|entry| entry.contains(offset) && (entry.kind != HandlerKind::Iteration || is_stop_iteration))
     }
 }
 
@@ -187,15 +186,15 @@ impl LocationEntry {
     }
 }
 
-/// Whether a handler reads the exception value from the operand stack.
-/// Pushing it for a cleanup handler that only re-raises is wasted work on
-/// every level an exception propagates through.
+/// How an exception transfers control to the handler's target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HandlerKind {
     /// `except` dispatch and `with`, which read the value off the stack.
     Consuming,
     /// Only re-raises: the VM skips the push, the compiler the matching `Pop`.
     Cleanup,
+    /// Only handles `StopIteration`; branches to the loop exit without entering an `except` suite.
+    Iteration,
 }
 
 /// Entry in the exception table - maps a protected bytecode range to its handler.
@@ -247,7 +246,7 @@ pub struct ExceptionEntry {
     #[serde(rename = "C")]
     exception_stack_count: u16,
 
-    /// Whether the handler wants the exception on the operand stack.
+    /// Which exceptions this handler accepts and how it receives them.
     kind: HandlerKind,
 }
 
@@ -272,10 +271,10 @@ impl ExceptionEntry {
         }
     }
 
-    /// Whether the VM must push the exception value before entering the handler.
+    /// How the target receives the exception after stack cleanup.
     #[must_use]
-    pub fn pushes_exception(&self) -> bool {
-        matches!(self.kind, HandlerKind::Consuming)
+    pub fn kind(&self) -> HandlerKind {
+        self.kind
     }
 
     /// Returns the handler bytecode offset.

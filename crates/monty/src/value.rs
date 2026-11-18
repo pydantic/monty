@@ -1502,6 +1502,15 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    fn py_next_call(&mut self, default: Option<Value>, vm: &mut VM<'_>) -> RunResult<Option<CallResult>> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_next_call(default, vm)
+        } else {
+            default.drop_with(vm);
+            Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
+        }
+    }
+
     fn py_next(&mut self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         if let Self::Ref(id) = self {
             vm.heap.read(*id).py_next(vm)
@@ -1717,11 +1726,6 @@ impl Value {
     /// Rust consumers which cannot yield must explicitly require synchronous completion.
     pub fn py_iter(&self, vm: &mut VM<'_>) -> RunResult<CallResult> {
         <Self as PyTrait<'_>>::py_iter(self, vm)
-    }
-
-    /// Advances this value synchronously for native iterator consumers.
-    pub(crate) fn py_next(&mut self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        <Self as PyTrait<'_>>::py_next(self, vm)
     }
 
     /// Converts an owned value into its Python iterator and releases the original reference.

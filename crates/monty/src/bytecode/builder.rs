@@ -171,6 +171,23 @@ impl CodeBuilder {
         )
     }
 
+    /// Resolves both ways to exhaust `ForIter`: an immediate jump or `StopIteration`
+    /// from a deferred advancement. Only the opcode itself, not the target assignment, is protected.
+    pub fn patch_for_iter(&mut self, jump: JumpLabel, exception_depth: u16) -> Result<(), CompileError> {
+        self.patch_jump(jump)?;
+        if let Some(label) = jump.inner {
+            self.add_exception_entry(
+                label.offset,
+                Offset(label.offset.0 + 1),
+                self.current_offset(),
+                label.stack_depth,
+                exception_depth,
+                HandlerKind::Iteration,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Emits a forward jump instruction, returning a label to patch later.
     ///
     /// After `Jump` the tracker transitions to dead (it's unconditional).

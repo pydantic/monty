@@ -51,7 +51,7 @@ pub enum BuiltinsFunctions {
     // Dir,
     Divmod,
     Enumerate,
-    Filter,
+    // filter - handled by Type enum
     // float - handled by Type enum
     // Format - appended below
     // frozenset - handled by Type enum
@@ -69,7 +69,7 @@ pub enum BuiltinsFunctions {
     // Iter - handled by Type enum
     Len,
     // list - handled by Type enum
-    Map,
+    // map - handled by Type enum
     Max,
     // memoryview - handled by Type enum
     Min,

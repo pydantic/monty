@@ -6,7 +6,7 @@ use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
 use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
-    builtins::Builtins,
+    builtins::{Builtins, next::call_with_default},
     bytecode::{CallResult, RunReentryGuard, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -490,6 +490,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
                 Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::ValidateIterator)),
             ],
         )
+    }
+
+    fn py_next_call(&mut self, default: Option<Value>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        if let Some(default) = default {
+            call_with_default(self.clone_value(vm.heap), default, vm).map(Some)
+        } else {
+            self.call_next(vm).map(Some)
+        }
     }
 
     /// Dispatches the class's `__next__`, turning `StopIteration` into exhaustion.

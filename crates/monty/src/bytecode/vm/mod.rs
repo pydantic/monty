@@ -1676,51 +1676,21 @@ impl<'h> VM<'h> {
                 // Iteration - route through exception handling
                 Opcode::GetIter => {
                     let value = self.pop();
-                    let iterator = value.py_iter(self).and_then(|call| call.require_synchronous(self));
-                    value.drop_with(self);
-                    match iterator {
-                        Ok(iterator) => self.push(iterator),
-                        Err(e) => catch!(self, e),
-                    }
+                    handle_call_result!(self, value.into_py_iter(self));
                 }
                 Opcode::ForIter => {
                     let offset = self.current_frame.fetch_i16();
-                    // Iterator implementations return heap objects from `py_iter`.
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
-                    let mut iter = self.heap.read(heap_id);
-                    // A file nobody has read yet has no buffer to slice: load it from
-                    // the host, then re-dispatch this instruction against the buffer.
-                    if let HeapReadOutput::OpenFile(file) = &iter
-                        && file.needs_buffer_load(self)
-                    {
-                        let effect = PostConversionEffect::BufferLoad { file_id: heap_id };
-                        let call = file.buffer_load_call(self, effect);
-                        drop(iter);
-                        self.current_frame.ip = self.instruction_ip;
-                        handle_call_result!(self, Ok(call));
-                        continue;
-                    }
-
-                    match iter.py_next(self) {
-                        Ok(Some(value)) => self.push(value),
+                    let result = self.heap.read(heap_id).py_next_call(None, self);
+                    match result {
                         Ok(None) => {
-                            // Drop the HeapRead before dec_ref to release the reader count
-                            drop(iter);
-                            // Iterator exhausted - pop it and jump to end
-                            let iter = self.pop();
-                            iter.drop_with(self);
+                            self.pop().drop_with(self);
                             jump_relative!(self.current_frame.ip, offset);
                         }
-                        Err(e) => {
-                            // Drop the HeapRead before dec_ref to release the reader count
-                            drop(iter);
-                            // Error during iteration (e.g., dict size changed)
-                            let iter = self.pop();
-                            iter.drop_with(self);
-                            catch!(self, e);
-                        }
+                        Ok(Some(call)) => handle_call_result!(self, Ok(call)),
+                        Err(error) => catch!(self, error),
                     }
                 }
                 // Function Calls
@@ -2152,41 +2122,37 @@ impl<'h> VM<'h> {
         };
         let result = match self.pending_effect.take() {
             Some(PendingEffect::Post(PostConversionEffect::BufferStore { file_id })) => {
-                apply_buffer_store(file_id, value, self).map(Some)
+                apply_buffer_store(file_id, value, self)
             }
             // Parsing runs outside `run_external`, so it needs its own execution-clock window.
             Some(PendingEffect::Post(PostConversionEffect::JsonLoad { file_id })) => {
                 self.heap.tracker.on_execution_start();
                 let parsed = apply_json_load(file_id, value, self);
                 self.heap.tracker.on_execution_stop();
-                parsed.map(Some)
+                parsed
             }
-            // Answers nothing: the `ForIter` that asked for the load re-dispatches.
-            Some(PendingEffect::Post(PostConversionEffect::BufferLoad { file_id })) => {
-                apply_buffer_load(file_id, value, self).map(|()| None)
-            }
-            Some(PendingEffect::Post(PostConversionEffect::FileNext { file_id, default })) => {
-                apply_file_next(file_id, default, value, self).map(Some)
+            Some(PendingEffect::Post(PostConversionEffect::FileNext { file_id })) => {
+                apply_file_next(file_id, value, self)
             }
             Some(PendingEffect::Post(PostConversionEffect::WritePosition {
                 file_id,
                 text_length,
                 result_none,
                 ..
-            })) => apply_write_position(file_id, text_length, result_none, value, self).map(Some),
+            })) => apply_write_position(file_id, text_length, result_none, value, self),
             Some(PendingEffect::Post(PostConversionEffect::LoadThenCall {
                 file_id,
                 callable,
                 args,
             })) => return self.resume_load_then_call(file_id, callable, args, value),
             Some(PendingEffect::Post(PostConversionEffect::OpenName { name, newline })) => {
-                apply_open_name(name, newline, value, self).map(Some)
+                apply_open_name(name, newline, value, self)
             }
             Some(PendingEffect::Post(PostConversionEffect::SeedRandom { target, retry })) => {
-                apply_seed_random(target, retry, value, self).map(Some)
+                apply_seed_random(target, retry, value, self)
             }
             Some(PendingEffect::Post(PostConversionEffect::ClockReading { reading })) => {
-                apply_clock_reading(reading, value, self).map(Some)
+                apply_clock_reading(reading, value, self)
             }
             // The sleeps were answered above; any pre-conversion effect was consumed.
             Some(
@@ -2194,13 +2160,11 @@ impl<'h> VM<'h> {
                 | PendingEffect::Pre(_)
                 | PendingEffect::Scan(_),
             )
-            | None => Ok(Some(value)),
+            | None => Ok(value),
         };
         match result {
             Ok(value) => {
-                if let Some(value) = value {
-                    self.push(value);
-                }
+                self.push(value);
                 self.run_external()
             }
             Err(err) => self.resume_with_exception(err),
@@ -2308,8 +2272,7 @@ impl<'h> VM<'h> {
                 // Nothing was installed or seeded, so there is nothing to roll
                 // back: dropping the pin and any stashed value is the whole undo.
                 PendingEffect::Post(
-                    effect @ (PostConversionEffect::BufferLoad { .. }
-                    | PostConversionEffect::FileNext { .. }
+                    effect @ (PostConversionEffect::FileNext { .. }
                     | PostConversionEffect::LoadThenCall { .. }
                     | PostConversionEffect::SeedRandom { .. }),
                 ) => effect.release(self.heap),

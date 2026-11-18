@@ -4,7 +4,10 @@ use num_bigint::BigInt;
 
 use crate::{
     args::{ArgValues, FromArgs},
-    builtins::{Builtins, BuiltinsFunctions, iter::builtin_iter, object_setattr::builtin_object_setattr},
+    builtins::{
+        Builtins, BuiltinsFunctions, filter::builtin_filter, iter::builtin_iter, map::builtin_map,
+        object_setattr::builtin_object_setattr,
+    },
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -143,6 +146,10 @@ pub enum Type {
     ListIterator,
     #[strum(serialize = "callable_iterator")]
     CallableIterator,
+    /// Lazy builtin iterator applying a callable to one or more sources.
+    Map,
+    /// Lazy builtin iterator selecting items by a predicate.
+    Filter,
     /// Coroutine type for async functions and external futures.
     Coroutine,
     Module,
@@ -416,6 +423,8 @@ impl Type {
             Self::Range => Some("range"),
             Self::Slice => Some("slice"),
             Self::Iterator => Some("iter"),
+            Self::Map => Some("map"),
+            Self::Filter => Some("filter"),
             Self::Type => Some("type"),
             Self::Property => Some("property"),
             _ => None,
@@ -447,6 +456,8 @@ impl Type {
             "range" => Some(Self::Range),
             "slice" => Some(Self::Slice),
             "iter" => Some(Self::Iterator),
+            "map" => Some(Self::Map),
+            "filter" => Some(Self::Filter),
             "type" => Some(Self::Type),
             "property" => Some(Self::Property),
             "object" => Some(Self::Object),
@@ -498,6 +509,8 @@ impl Type {
                 | Self::DictValueIterator
                 | Self::SetIterator
                 | Self::CallableIterator
+                | Self::Map
+                | Self::Filter
                 | Self::ScandirIterator
                 | Self::WalkGenerator
                 | Self::ItertoolsCount
@@ -558,8 +571,7 @@ impl Type {
 
     /// Converts a callable type to a u8 for the `CallBuiltinType` opcode.
     ///
-    /// Returns `Some(u8)` for types that can be called as constructors,
-    /// `None` for non-callable types.
+    /// Common constructors have compact IDs; other types use ordinary call dispatch.
     #[must_use]
     pub fn callable_to_u8(self) -> Option<u8> {
         match self {
@@ -578,6 +590,8 @@ impl Type {
             Self::Iterator => Some(12),
             Self::Path => Some(13),
             Self::Complex => Some(14),
+            Self::Map => Some(15),
+            Self::Filter => Some(16),
             _ => None,
         }
     }
@@ -603,6 +617,8 @@ impl Type {
             12 => Some(Self::Iterator),
             13 => Some(Self::Path),
             14 => Some(Self::Complex),
+            15 => Some(Self::Map),
+            16 => Some(Self::Filter),
             _ => None,
         }
     }
@@ -767,10 +783,11 @@ impl Type {
     ///
     /// Iterator acquisition may suspend in user code; other constructors complete natively.
     pub(crate) fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-        if self == Self::Iterator {
-            builtin_iter(vm, args)
-        } else {
-            self.call_native(vm, args).map(CallResult::Value)
+        match self {
+            Self::Iterator => builtin_iter(vm, args),
+            Self::Map => builtin_map(vm, args),
+            Self::Filter => builtin_filter(vm, args),
+            _ => self.call_native(vm, args).map(CallResult::Value),
         }
     }
 

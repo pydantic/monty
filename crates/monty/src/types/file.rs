@@ -25,13 +25,11 @@
 //!
 //! # Iteration
 //!
-//! `__next__` slices the next line from the loaded buffer and cannot yield to
-//! the host, so only the `ForIter` opcode and `next()` load an unread file:
-//! [`needs_buffer_load`] then [`buffer_load_call`] with a `BufferLoad`
-//! (re-dispatch) or `FileNext` (answer the call) effect. Any other caller of
-//! `py_next` on an unread file raises `NotImplementedError`.
+//! Suspendable advancement loads an unread file through [`buffer_load_call`]
+//! with a `FileNext` effect, then returns the first line. This applies to
+//! `next()`, loops and lazy `map`/`filter` consumers. Synchronous `py_next`
+//! still rejects an unread file with `NotImplementedError`.
 //!
-//! [`needs_buffer_load`]: HeapObjectRead::needs_buffer_load
 //! [`buffer_load_call`]: HeapObjectRead::buffer_load_call
 //!
 //! A buffered read that *fails* in the host leaves the file in a retry-safe
@@ -69,8 +67,7 @@
 //!   cookie. Round-trips through `seek()` correctly.
 //! - `seek(N)` in text mode accepts any char-index offset, where CPython
 //!   restricts it to `seek(0)`, `seek(0, 2)`, or a cookie from `tell()`.
-//! - Iterating an unread file works from `for` loops and `next()` only; a
-//!   builtin consuming it synchronously (`list(f)`, `enumerate(f)`) raises
+//! - Iterating an unread file through a synchronous consumer (`list(f)`, `enumerate(f)`) raises
 //!   `NotImplementedError` until a read or `seek()` has loaded the buffer.
 //!
 //! Any code path that needs one of these should be added explicitly
@@ -90,6 +87,7 @@ use super::{
 };
 use crate::{
     args::ArgValues,
+    builtins::next::call_with_default,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -458,8 +456,26 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
         Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
-    /// The next line of the loaded buffer. An unread file cannot be loaded from
-    /// here (see the module docs): `for` and `next()` load it before calling this.
+    fn py_next_call(&mut self, default: Option<Value>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        if self.needs_buffer_load(vm) {
+            if let Some(default) = default {
+                call_with_default(self.clone_value(vm.heap), default, vm).map(Some)
+            } else {
+                Ok(Some(self.buffer_load_call(
+                    vm,
+                    PostConversionEffect::FileNext { file_id: self.id() },
+                )))
+            }
+        } else {
+            let mut default = DropGuard::new(default, vm);
+            match self.py_next(default.ctx())? {
+                Some(value) => Ok(Some(CallResult::Value(value))),
+                None => Ok(default.into_inner().map(CallResult::Value)),
+            }
+        }
+    }
+
+    /// The next line of a loaded buffer; native consumers cannot load an unread file.
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let file = self.get(vm.heap);
         file.ensure_open()?;
@@ -1050,9 +1066,8 @@ pub(crate) fn apply_buffer_store(file_id: HeapId, result: Value, vm: &mut VM<'_>
     compute_slice(&file, spec, vm)
 }
 
-/// `BufferLoad` resume: installs the host content so the `ForIter` that
-/// found the file unread can re-dispatch against the buffer. Produces no
-/// value; the pin on `file_id` is released here.
+/// Installs host content before replaying a consumer that required a loaded file.
+/// Consumes the pin on `file_id` and the host's result.
 pub(crate) fn apply_buffer_load(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<()> {
     let pin = Value::Ref(file_id);
     defer_drop!(pin, vm);
@@ -1065,20 +1080,11 @@ pub(crate) fn apply_buffer_load(file_id: HeapId, result: Value, vm: &mut VM<'_>)
     install_buffer(&file, result, vm)
 }
 
-/// `FileNext` resume: installs the host content, then answers the
-/// `next(file, default)` that triggered the load — the first line, `default`
-/// for an empty file, or `StopIteration`. Releases the pin on `file_id` and
-/// whichever of `default` / the line is not returned.
-pub(crate) fn apply_file_next(
-    file_id: HeapId,
-    default: Option<Value>,
-    result: Value,
-    vm: &mut VM<'_>,
-) -> RunResult<Value> {
+/// Installs the host content, then returns the first line or raises `StopIteration`.
+/// A frozen caller handles exhaustion when the original operation supplied a default.
+pub(crate) fn apply_file_next(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     let pin = Value::Ref(file_id);
     defer_drop!(pin, vm);
-    let mut default_guard = DropGuard::new(default, vm);
-    let (_, vm) = default_guard.as_parts_mut();
     let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
         result.drop_with(vm);
         return Err(RunError::internal(
@@ -1086,10 +1092,7 @@ pub(crate) fn apply_file_next(
         ));
     };
     install_buffer(&file, result, vm)?;
-    match next_line(&file, vm)? {
-        Some(line) => Ok(line),
-        None => default_guard.into_inner().ok_or_else(ExcType::stop_iteration),
-    }
+    next_line(&file, vm)?.ok_or_else(ExcType::stop_iteration)
 }
 
 /// Installs a host `ReadText` / `ReadBytes` result as `file`'s buffer and
@@ -1182,18 +1185,11 @@ fn next_line<'h>(file: &HeapReadMut<'h, OpenFile>, vm: &mut VM<'h>) -> RunResult
     }
 }
 
-/// `__next__` on an unread file from a caller that cannot suspend for the host
-/// read (`list(f)`, `enumerate(f)`, …); only `for` and `next()` issue it.
-///
-/// TODO: `enumerate`, `zip`, `map`, `filter` and `sorted` go away from this
-/// list once they are bytecode, since they then iterate through `ForIter`
-/// (<https://github.com/pydantic/monty/issues/1041>).
-/// The Rust-side consumers that remain (`list(f)`, `''.join(f)`, `sum(f)`, …)
-/// need the `LoadThenCall` effect `csv.reader(f)` uses: yield the load with
-/// the call stashed, replay the call on resume.
+/// Reports an unread file reached through a synchronous consumer such as `list` or `join`.
+/// Such callers must load the buffer first, or retain their call across the host read.
 fn unloaded_iteration_error(file_type: Type) -> RunError {
     ExcType::not_implemented(format!(
-        "iterating an unread {file_type} is only supported by 'for' loops and next(); call seek(0) first to load it"
+        "iterating an unread {file_type} cannot suspend in this synchronous context; call seek(0) first to load it"
     ))
     .into()
 }

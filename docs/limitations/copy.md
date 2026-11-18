@@ -51,6 +51,7 @@ from. CPython, where the same object is an ordinary instance, copies it.
 CPython raises the same error for most of these, but not all: it copies
 iterators whose type is picklable, so `copy.deepcopy(iter([1, 2]))` returns a
 fresh iterator in CPython and raises here.
+`map` and `filter` iterators are also rejected here rather than copied.
 
 The type named in the message is Monty's, so it can differ from CPython's name
 for the same object (see [classes.md](classes.md)).

@@ -1053,6 +1053,297 @@ fn repl_frozen_iteration_survives_dumps() {
     }
 }
 
+/// Loop and comprehension continuations retain acquisition, exhaustion targets and adaptor state.
+#[test]
+fn repl_suspendable_loops_and_adaptors_survive_dumps() {
+    for (expression, stages, expected) in [
+        ("source", vec![], vec![1, 2, 3]),
+        ("map(transform, source)", vec!["map"], vec![10, 20, 30]),
+        ("filter(accept, source)", vec!["filter"], vec![1, 3]),
+        (
+            "map(transform, filter(accept, source))",
+            vec!["filter", "map"],
+            vec![10, 30],
+        ),
+    ] {
+        for comprehension in [false, true] {
+            let (mut repl, _) = init_repl(SUSPENDABLE_ITERATOR);
+            feed_run_print(&mut repl, "def transform(x):\n    ext_fn('map', x)\n    return x * 10\ndef accept(x):\n    ext_fn('filter', x)\n    return x % 2").unwrap();
+            let code = if comprehension {
+                format!("[item for item in {expression}]")
+            } else {
+                format!(
+                    "values = []\nfor item in {expression}:\n    values.append(item)\nelse:\n    assert source.next_calls == 4\nvalues"
+                )
+            };
+            let mut events = vec![("iter", vec![])];
+            for item in 1..=4 {
+                events.push(("next", vec![item]));
+                if item <= 3 {
+                    for stage in &stages {
+                        if *stage != "map" || !stages.contains(&"filter") || item % 2 == 1 {
+                            events.push((*stage, vec![item]));
+                        }
+                    }
+                }
+            }
+            let progress = repl.feed_start(&code, vec![], PrintWriter::Disabled).unwrap();
+            let (mut repl, value) = resume_iteration_events(progress, events);
+            assert_eq!(value, MontyObject::list(expected.iter().copied().map(MontyObject::int)));
+            assert_eq!(
+                feed_run_print(&mut repl, "source.iter_calls").unwrap(),
+                MontyObject::int(1)
+            );
+        }
+    }
+}
+
+/// Host callables supplied directly to adaptors suspend without an intervening user frame.
+#[test]
+fn repl_suspendable_adaptor_host_callbacks() {
+    for constructor in ["map", "filter"] {
+        let (repl, _) = init_repl("");
+        let mut progress = repl
+            .feed_start(
+                &format!("[x for x in {constructor}(callback, [1, 2, 3])]"),
+                vec![("callback".to_owned(), MontyObject::function("callback", None))],
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+        for item in 1..=3 {
+            let restored = round_trip_progress(&progress);
+            drop(progress.into_repl());
+            let call = restored.into_function_call().unwrap();
+            assert_eq!(call.function_name, "callback");
+            assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(item)]);
+            let result = if constructor == "map" {
+                MontyObject::int(item * 10)
+            } else {
+                MontyObject::bool(item % 2 == 1)
+            };
+            progress = call.resume(result, PrintWriter::Disabled).unwrap();
+        }
+        let (_, value) = progress.into_complete().unwrap();
+        let expected = if constructor == "map" {
+            vec![10, 20, 30]
+        } else {
+            vec![1, 3]
+        };
+        assert_eq!(value, MontyObject::list(expected.into_iter().map(MontyObject::int)));
+    }
+}
+
+/// Tail-called host callbacks preserve defaults and loop exhaustion without permanently exhausting map.
+#[test]
+fn repl_suspendable_native_map_exhaustion() {
+    let (repl, _) = init_repl("");
+    let mut progress = repl.feed_start(
+        "mapped = map(callback, [1, 2, 3, 4])\nassert next(mapped, 'default') == 'default'\nassert [x for x in mapped] == [20]\nnext(mapped)",
+        vec![("callback".to_owned(), MontyObject::function("callback", None))],
+        PrintWriter::Disabled,
+    ).unwrap();
+    for item in 1..=4 {
+        let restored = round_trip_progress(&progress);
+        drop(progress.into_repl());
+        let call = restored.into_function_call().unwrap();
+        assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(item)]);
+        let result = if item % 2 == 1 {
+            ExtFunctionResult::Error(MontyException::new(
+                ExcType::StopIteration,
+                Some("callback stopped".to_owned()),
+            ))
+        } else {
+            ExtFunctionResult::Return(MontyObject::int(item * 10))
+        };
+        progress = call.resume(result, PrintWriter::Disabled).unwrap();
+    }
+    let (_, value) = progress.into_complete().unwrap();
+    assert_eq!(value, MontyObject::int(40));
+}
+
+/// A restored host error in the body belongs to its call site, not to the preceding `ForIter`.
+#[test]
+fn repl_suspendable_loop_body_stop_iteration() {
+    let (repl, _) = init_repl("def body(x):\n    return ext_fn(x)");
+    let progress = repl.feed_start(
+        "try:\n    for x in map(abs, [-1]):\n        body(x)\nexcept StopIteration as exc:\n    message = str(exc)\nelse:\n    assert False, 'body exhaustion was swallowed'\nmessage",
+        vec![], PrintWriter::Disabled,
+    ).unwrap();
+    let loaded = round_trip_progress(&progress);
+    drop(progress.into_repl());
+    let call = loaded.into_function_call().unwrap();
+    assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(1)]);
+    let progress = call
+        .resume(
+            ExtFunctionResult::Error(MontyException::new(
+                ExcType::StopIteration,
+                Some("from body".to_owned()),
+            )),
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    let (_, value) = progress.into_complete().unwrap();
+    assert_eq!(value, MontyObject::string("from body"));
+}
+
+/// A saved lazy adaptor resumes in a later feed, with defaults applied after callback exhaustion.
+#[test]
+fn repl_suspendable_adaptor_idle_state_and_defaults() {
+    for constructor in ["map(transform, source)", "filter(transform, source)"] {
+        let (mut repl, _) = init_repl(SUSPENDABLE_ITERATOR);
+        feed_run_print(&mut repl, "def transform(x):\n    ext_fn('callback', x)\n    if x == 1:\n        raise StopIteration('callback stopped')\n    return x").unwrap();
+        let progress = repl
+            .feed_start(&format!("adapted = {constructor}"), vec![], PrintWriter::Disabled)
+            .unwrap();
+        let (repl, _) = resume_iteration_events(progress, [("iter", vec![])]);
+        let repl = round_trip_repl(&repl);
+        let progress = repl
+            .feed_start(
+                "assert next(adapted, 'default') == 'default'\nnext(adapted)",
+                vec![],
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+        let (repl, value) = resume_iteration_events(
+            progress,
+            [
+                ("next", vec![1]),
+                ("callback", vec![1]),
+                ("next", vec![2]),
+                ("callback", vec![2]),
+            ],
+        );
+        assert_eq!(value, MontyObject::int(2));
+        let repl = round_trip_repl(&repl);
+        let progress = repl
+            .feed_start("[item for item in adapted]", vec![], PrintWriter::Disabled)
+            .unwrap();
+        let (_, value) =
+            resume_iteration_events(progress, [("next", vec![3]), ("callback", vec![3]), ("next", vec![4])]);
+        assert_eq!(value, MontyObject::list([MontyObject::int(3)]));
+    }
+}
+
+/// Errors at every acquisition/advancement/callback suspension unwind pending loop continuations.
+#[test]
+fn repl_suspendable_loop_failure_and_abandonment() {
+    let setup = format!("{SUSPENDABLE_ITERATOR}\ndef transform(x):\n    ext_fn('callback', x)\n    return x");
+    for (expression, stages) in [
+        ("source", 5),
+        ("map(transform, source)", 8),
+        ("filter(transform, source)", 8),
+        ("map(transform, [1, 2, 3])", 3),
+        ("filter(transform, [1, 2, 3])", 3),
+    ] {
+        for fail_at in 0..stages {
+            let (repl, _) = init_repl(&setup);
+            let code = format!(
+                "try:\n    values = [x for x in {expression}]\nexcept ValueError as exc:\n    assert str(exc) == 'host failed'\nelse:\n    assert False, 'expected host failure'\nassert [x for x in [1, 2]] == [1, 2]\n42"
+            );
+            let mut progress = repl.feed_start(&code, vec![], PrintWriter::Disabled).unwrap();
+            for _ in 0..fail_at {
+                let call = progress.into_function_call().unwrap();
+                progress = call.resume(MontyObject::none(), PrintWriter::Disabled).unwrap();
+            }
+            let loaded = round_trip_progress(&progress);
+            let mut abandoned = progress.into_repl();
+            assert_eq!(
+                feed_run_print(&mut abandoned, "[x for x in [42]]").unwrap(),
+                MontyObject::list([MontyObject::int(42)])
+            );
+            let complete = loaded
+                .into_function_call()
+                .unwrap()
+                .resume(
+                    ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("host failed".to_owned()))),
+                    PrintWriter::Disabled,
+                )
+                .unwrap();
+            let (_, value) = complete.into_complete().unwrap();
+            assert_eq!(value, MontyObject::int(42));
+        }
+    }
+}
+
+/// Task switches preserve a loop whose mapped callback starts nested async execution.
+#[test]
+fn repl_suspendable_adaptor_task_switches() {
+    let (repl, _) = init_repl(
+        r"
+import asyncio
+
+async def work(x):
+    await ext_fn('work', x)
+    return x * 10
+
+def transform(x):
+    return asyncio.run(work(x))
+",
+    );
+    let mut progress = repl
+        .feed_start("[x for x in map(transform, [1, 2])]", vec![], PrintWriter::Disabled)
+        .unwrap();
+    for item in [1, 2] {
+        let restored = round_trip_progress(&progress);
+        drop(progress.into_repl());
+        let call = restored.into_function_call().unwrap();
+        assert_eq!(
+            call.args.args().collect::<Vec<_>>(),
+            vec![MontyObject::string("work"), MontyObject::int(item)]
+        );
+        let call_id = call.call_id;
+        let waiting = call.resume_pending(PrintWriter::Disabled).unwrap();
+        let restored = round_trip_progress(&waiting);
+        drop(waiting.into_repl());
+        progress = restored
+            .into_resolve_futures()
+            .unwrap()
+            .resume(
+                vec![(call_id, ExtFunctionResult::Return(MontyObject::none()))],
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+    }
+    let (_, value) = progress.into_complete().unwrap();
+    assert_eq!(value, MontyObject::list([MontyObject::int(10), MontyObject::int(20)]));
+}
+
+/// Strict-map probes and a loop's exhaustion path can finish on a host-raised StopIteration.
+#[test]
+fn repl_suspendable_strict_map_host_exhaustion() {
+    for (sources, expected_error) in [
+        ("[1], Source()", Some("map() argument 2 is shorter than argument 1")),
+        ("[], Source()", None),
+    ] {
+        let (repl, _) = init_repl(
+            "class Source:\n    def __iter__(self):\n        return self\n    def __next__(self):\n        return ext_fn()",
+        );
+        let code = if let Some(message) = expected_error {
+            format!(
+                "try:\n    [x for x in map(pow, {sources}, strict=True)]\nexcept ValueError as exc:\n    assert str(exc) == '{message}'\nelse:\n    assert False, 'expected length mismatch'\n42"
+            )
+        } else {
+            format!("assert [x for x in map(pow, {sources}, strict=True)] == []\n42")
+        };
+        let progress = repl.feed_start(&code, vec![], PrintWriter::Disabled).unwrap();
+        let restored = round_trip_progress(&progress);
+        drop(progress.into_repl());
+        let complete = restored
+            .into_function_call()
+            .unwrap()
+            .resume(
+                ExtFunctionResult::Error(MontyException::new(
+                    ExcType::StopIteration,
+                    Some("host exhausted".to_owned()),
+                )),
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+        let (_, value) = complete.into_complete().unwrap();
+        assert_eq!(value, MontyObject::int(42));
+    }
+}
+
 /// Reduce can suspend during acquisition, initial seeding, later advancement, and callbacks.
 #[test]
 fn repl_frozen_reduce_iterator_survives_dumps() {
@@ -1457,7 +1748,7 @@ class Iterator:
 #[test]
 fn repl_native_iteration_needs_no_additional_frame() {
     let (mut repl, _) = init_repl(
-        "def consume():\n    it = iter([42])\n    assert next(it) == 42\n    assert next(it, None) is None\n    return 42",
+        "def consume():\n    it = iter([42])\n    assert next(it) == 42\n    assert next(it, None) is None\n    assert [x for x in map(abs, range(-2, 1))][0] == 2\n    assert list(map(abs, [-1]))[0] == 1\n    assert [x for x in filter(None, [0, 1])][0] == 1\n    assert len(list(filter(None, [[], [1]]))) == 1\n    return 42",
     );
     *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_recursion_depth(1));
     assert_eq!(feed_run_print(&mut repl, "consume()").unwrap(), MontyObject::int(42));

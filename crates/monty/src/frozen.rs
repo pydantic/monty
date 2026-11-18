@@ -17,7 +17,7 @@ use crate::{
     name_map::NameMap,
     parse::parse_with_interner,
     prepare::prepare_with_existing_names,
-    types::{iter, lru_cache},
+    types::{iter, lru_cache, map_filter},
 };
 
 /// Identifies an internal implementation with one authoritative source definition.
@@ -33,7 +33,19 @@ pub(crate) enum FrozenFunction {
     /// Store a cached call's result only after it returns successfully.
     #[serde(rename = "functools._lru_cache_miss")]
     LruCacheMiss,
-    /// Return a default when a suspendable user `__next__` method is exhausted.
+    /// Acquire a map's sources without consuming them.
+    #[serde(rename = "builtins.map")]
+    MapInit,
+    /// Advance a map's sources and call its callback once.
+    #[serde(rename = "builtins.map_next")]
+    MapNext,
+    /// Acquire a filter's source without testing its predicate.
+    #[serde(rename = "builtins.filter")]
+    FilterInit,
+    /// Search a filter's source for its next accepted item.
+    #[serde(rename = "builtins.filter_next")]
+    FilterNext,
+    /// Return a default when a suspendable iterator is exhausted.
     #[serde(rename = "builtins.next_default")]
     NextDefault,
 }
@@ -73,6 +85,10 @@ impl FrozenFunction {
             Self::Iter => iter::ITER_SOURCE,
             Self::LruCacheMiss => lru_cache::CACHE_MISS_SOURCE,
             Self::NextDefault => next::NEXT_DEFAULT_SOURCE,
+            Self::MapInit => map_filter::MAP_INIT_SOURCE,
+            Self::MapNext => map_filter::MAP_NEXT_SOURCE,
+            Self::FilterInit => map_filter::FILTER_INIT_SOURCE,
+            Self::FilterNext => map_filter::FILTER_NEXT_SOURCE,
         }
     }
 }
@@ -88,6 +104,12 @@ pub(crate) enum FrozenFunctions {
     Store,
     /// Check the result returned by a user `__iter__` method.
     ValidateIterator,
+    /// Build a map from already-acquired source iterators.
+    BuildMap,
+    /// Build a filter from an already-acquired source iterator.
+    BuildFilter,
+    /// Raise a strict map's length-mismatch error.
+    MapLengthError,
 }
 
 /// Dispatches private helpers using the same argument ownership rules as public natives.
@@ -96,5 +118,8 @@ pub(crate) fn call_helper(function: FrozenFunctions, args: ArgValues, vm: &mut V
         FrozenFunctions::GetIter => iter::call_get_iter(args, vm),
         FrozenFunctions::Store => lru_cache::call_store(args, vm).map(CallResult::Value),
         FrozenFunctions::ValidateIterator => iter::call_validate_iterator(args, vm).map(CallResult::Value),
+        FrozenFunctions::BuildMap => map_filter::build_map(args, vm).map(CallResult::Value),
+        FrozenFunctions::BuildFilter => map_filter::build_filter(args, vm).map(CallResult::Value),
+        FrozenFunctions::MapLengthError => map_filter::map_length_error(args, vm).map(CallResult::Value),
     }
 }

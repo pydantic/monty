@@ -2632,7 +2632,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
             break_jumps: Vec::new(),
         }));
 
-        // ForIter: advance iterator or jump to end
         let end_jump = self.code.emit_jump(Opcode::ForIter)?;
 
         // Store current value to target (handles both single identifiers and tuple unpacking)
@@ -2643,8 +2642,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
         // Jump back to loop start
         self.code.emit_jump_to(Opcode::Jump, loop_start)?;
-        // End of loop - ForIter jumps here when iterator is exhausted
-        self.code.patch_jump(end_jump)?;
+        self.code.patch_for_iter(end_jump, self.exc_stack_count())?;
 
         // Pop loop block before compiling else block
         let loop_info = self
@@ -3115,7 +3113,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // Loop start
         let loop_start = self.code.current_jump_target();
 
-        // FOR_ITER: pushes value, or pops iter and jumps to end on exhaustion.
         let end_jump = self.code.emit_jump(Opcode::ForIter)?;
 
         // Unpack target and record each leaf's active storage.
@@ -3152,7 +3149,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
         // Jump back to loop start
         self.code.emit_jump_to(Opcode::Jump, loop_start)?;
-        self.code.patch_jump(end_jump)?;
+        self.code.patch_for_iter(end_jump, self.exc_stack_count())?;
 
         // Comp vars are out of scope after the loop body. Sibling
         // comprehensions may reuse these slot IDs.

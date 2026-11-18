@@ -1875,6 +1875,19 @@ fn timeout_in_itertools_adaptor_loops() {
     }
 }
 
+/// Native filtering must poll even when neither its source nor short predicates reach a VM checkpoint.
+#[test]
+fn timeout_in_native_filter_loops() {
+    for source in [
+        "import itertools\nlist(filter(None, itertools.repeat(0)))",
+        "import itertools\nlist(filter(lambda x: False, itertools.count()))",
+        "items = [0]\ndef reject(x):\n    items.append(x)\n    return False\nlist(filter(reject, items))",
+        "next(filter(None, bytes(20_000_000)))",
+    ] {
+        assert_timeout_in_builtin(source, "native filter rejection loop");
+    }
+}
+
 /// Test that `a85decode` respects the time limit when `ignorechars` is large.
 ///
 /// Every byte that is no Ascii85 digit reaches `x in ignorechars`, a linear
