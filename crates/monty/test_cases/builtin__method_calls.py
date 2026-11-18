@@ -94,6 +94,19 @@ day = date(2024, 1, 2)
 for receiver in (day, dt):
     assert datetime.weekday(receiver) == 1
     assert datetime.isoweekday(receiver) == 2
+# Direct calls report the defining date descriptor in argument errors.
+for call, message in [
+    (lambda: dt.weekday(1), 'date.weekday() takes no arguments (1 given)'),
+    (lambda: dt.isoweekday(x=1), 'date.isoweekday() takes no keyword arguments'),
+    (lambda: date.weekday(dt, 1), 'date.weekday() takes no arguments (1 given)'),
+    (lambda: datetime.isoweekday(dt, x=1), 'date.isoweekday() takes no keyword arguments'),
+]:
+    try:
+        call()
+    except TypeError as exc:
+        assert str(exc) == message, str(exc)
+    else:
+        assert False, message
 assert datetime.strftime(day, '%Y-%m-%d %H:%M') == '2024-01-02 00:00'
 assert datetime.strftime(dt, '%H:%M:%S %z') == '03:04:05 +0000'
 mapping = {}

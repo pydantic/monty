@@ -14,6 +14,9 @@ use crate::{
     value::Value,
 };
 
+#[path = "../src/pyattrs.rs"]
+mod expansion;
+
 mod types {
     #[derive(Clone, Copy)]
     pub struct TypeRef(pub &'static str);
@@ -167,4 +170,48 @@ fn call_results_class_receivers_and_values() {
         panic!("value missing")
     };
     assert_eq!(get(&mut vm), Value(-1));
+}
+
+#[test]
+fn rejects_invalid_attribute_declarations() {
+    for (members, expected) in [
+        ("", "declare type Receiver"),
+        ("type Receiver = &bool;", "expected a named receiver type"),
+        ("type Receiver = i32;", "unsupported native receiver type"),
+        ("type Receiver = HeapRead;", "expected a heap payload type"),
+        ("type Receiver = HeapRead<'h>;", "expected a heap payload type"),
+        (
+            "type Receiver = bool; const KEY: u8 = 0;",
+            "#[pyattrs] supports Receiver and associated functions only",
+        ),
+        (
+            "type Receiver = bool; #[pymethod()] fn first() {}",
+            "expected a StaticStrings key",
+        ),
+        (
+            "type Receiver = bool; #[pymethod(A, B)] fn first() {}",
+            "expected one StaticStrings key",
+        ),
+        (
+            "type Receiver = bool; #[pymethod(A)] #[pyvalue(B)] fn first() {}",
+            "use one Python attribute annotation per function",
+        ),
+        (
+            "type Receiver = bool; #[pymethod(A)] #[cfg(test)] fn first() {}",
+            "conditional Python attributes are not supported",
+        ),
+        (
+            "type Receiver = bool; #[pymethod(A)] fn first() {} #[pyvalue(A)] fn second() {}",
+            "duplicate Python attribute name",
+        ),
+    ] {
+        let input = syn::parse_str(&format!("impl PyAttrs for Methods {{ {members} }}")).unwrap();
+        assert_eq!(expansion::expand(input).unwrap_err().to_string(), expected, "{members}");
+    }
+
+    let inherent = syn::parse_quote!(impl Methods {});
+    assert_eq!(
+        expansion::expand(inherent).unwrap_err().to_string(),
+        "#[pyattrs] requires a trait implementation"
+    );
 }
