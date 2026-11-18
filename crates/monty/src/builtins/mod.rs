@@ -6,6 +6,7 @@
 mod abs;
 mod all;
 mod any;
+pub(crate) mod base_exception;
 mod bin;
 mod chr;
 mod divmod;
@@ -214,6 +215,8 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::ObjectNew => object::builtin_object_new(vm, args),
             Self::ObjectInit => object::builtin_object_init(vm, args),
             Self::ObjectInitSubclass => object::builtin_object_init_subclass(vm, args),
+            Self::BaseExceptionNew => base_exception::builtin_base_exception_new(vm, args),
+            Self::BaseExceptionInit => base_exception::builtin_base_exception_init(vm, args),
             Self::TypeMro => type_::builtin_type_mro(vm, args),
             Self::Sorted => sorted::builtin_sorted(vm, args),
             Self::Sum => sum::builtin_sum(vm, args),

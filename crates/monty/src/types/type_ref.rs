@@ -57,6 +57,19 @@ impl TypeRef {
         }
     }
 
+    /// Converts this into an [`OwnedTypeRef`], incrementing the refcount if it is a class.
+    #[inline]
+    #[must_use]
+    pub(crate) fn to_owned(self, heap: &Heap) -> OwnedTypeRef {
+        match self {
+            Self::Native(ty) => OwnedTypeRef::Native(ty),
+            Self::Class(id) => {
+                heap.inc_ref(id);
+                OwnedTypeRef::Class(id)
+            }
+        }
+    }
+
     /// The type a value denotes, if it is a type object: a native type or a class.
     #[must_use]
     pub(crate) fn from_value(value: &Value, heap: &Heap) -> Option<Self> {

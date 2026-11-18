@@ -136,4 +136,12 @@ pub enum BuiltinsFunctions {
     #[strum(serialize = "type.mro")]
     #[serde(rename = "type.mro")]
     TypeMro,
+    /// `BaseException.__new__(cls, /, *args, **kwargs)`, reached through `BaseException` or `super()`.
+    #[strum(serialize = "BaseException.__new__")]
+    #[serde(rename = "BaseException.__new__")]
+    BaseExceptionNew,
+    /// `BaseException.__init__(self, /, *args, **kwargs)`, reached through `BaseException` or `super()`.
+    #[strum(serialize = "BaseException.__init__")]
+    #[serde(rename = "BaseException.__init__")]
+    BaseExceptionInit,
 }

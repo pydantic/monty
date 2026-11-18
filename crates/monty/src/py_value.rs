@@ -279,7 +279,7 @@ impl<'h> PyValue<'h> {
             Self::Marker(value) => Ok(value.py_repr_fmt(f)?),
             Self::Property(value) => Ok(write!(f, "<property {value:?}>")?),
             Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type_name(vm))?),
-            Self::Exception(e) => Ok(e.get(vm.heap).py_repr_fmt(f)?),
+            Self::Exception(e) => e.py_repr_fmt(f, vm),
             Self::Module(m) => Ok(f.write_str(&m.get(vm.heap).repr(vm.interns))?),
             Self::Coroutine(coro) => {
                 let func = vm.interns.get_function(coro.get(vm.heap).func_id);
@@ -391,6 +391,9 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         if let Self::Module(module) = self {
             return module.py_set_attr(name, value, vm);
+        }
+        if let Self::Exception(exception) = self {
+            return exception.set_attr(name, value, vm);
         }
         forward_py_value!(
             self,
@@ -514,7 +517,10 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         forward_py_value!(self, |value| value.py_str(vm), {
-            Self::Exception(value) => Ok(allocate_string(value.get(vm.heap).py_str(), vm.heap)),
+            Self::Exception(value) => {
+                let s = value.py_str(vm)?;
+                Ok(allocate_string(s.as_str(), vm.heap))
+            }
             _ => self.py_repr(vm),
         })
     }

@@ -20,9 +20,10 @@ use crate::{
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
-    exception_private::{PyException, RunError, RunResult, SimpleException},
+    exception_private::{ExceptionArgs, PyException, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     modules::dataclasses,
+    py_value::PyValue,
     types::{
         Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type,
         allocate_tuple,
@@ -401,10 +402,31 @@ impl GraphExporter {
                 })
             }
             HeapReadOutput::Exception(exc) => {
-                let exc_ref = exc.get(vm.heap);
+                let exc_type = exc.get(vm.heap).exc_type();
+                let is_empty = matches!(exc.get(vm.heap).args, ExceptionArgs::Empty);
+                let arg = if is_empty {
+                    None
+                } else {
+                    let exc_val = Value::Ref(exc.id());
+                    match exc_val.py_str(vm) {
+                        Ok(s_val) => {
+                            let s = if let PyValue::Str(s) = s_val.py_value(vm) {
+                                Some(s.as_str(vm).to_owned())
+                            } else {
+                                None
+                            };
+                            s_val.drop_with(vm);
+                            s
+                        }
+                        Err(e) => {
+                            e.drop_with(vm);
+                            Some("<exception str() failed>".to_owned())
+                        }
+                    }
+                };
                 MontyNode::Exception {
-                    exc_type: exc_ref.exc_type(),
-                    arg: exc_ref.arg().map(ToString::to_string),
+                    exc_type,
+                    arg,
                 }
             }
             HeapReadOutput::HostClass(hc) => {

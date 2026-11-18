@@ -9,11 +9,13 @@ use crate::{
     builtins::Builtins,
     defer_drop,
     exception_private::{
-        ExcType, ExcTypeExt, ExceptionRaise, PyException, RawStackFrame, RunError, RunResult, SimpleException,
+        ExcType, ExcTypeExt, ExceptionArgs, ExceptionRaise, PyException, RawStackFrame, RunError, RunResult,
+        SimpleException,
     },
     expressions::CmpOperator,
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::{StaticStrings, StringId},
+    py_value::PyValue,
     types::{LazyHeapSet, PyTrait, Type, TypeRef},
     value::Value,
 };
@@ -570,6 +572,39 @@ impl VM<'_> {
             if this.suspended_frames.is_empty() {
                 // No more frames - exception is unhandled
                 let is_spawned = this.is_spawned_task();
+
+                // Refresh error.exc from exc_value before dropping it at top level
+                if let RunError::Exc(exc_raise) = &mut error {
+                    let (exc_val, vm_ref) = exc_guard.as_parts_mut();
+                    let is_empty = match exc_val {
+                        Value::Ref(id) => match vm_ref.heap.get(*id) {
+                            HeapData::Exception(e) => matches!(e.args, ExceptionArgs::Empty),
+                            _ => false,
+                        },
+                        _ => false,
+                    };
+                    if !is_empty {
+                        match exc_val.py_str(vm_ref) {
+                            Ok(str_val) => {
+                                if let PyValue::Str(s) = str_val.py_value(vm_ref) {
+                                    exc_raise.exc.arg = Some(s.as_str(vm_ref).to_owned());
+                                }
+                                str_val.drop_with(vm_ref);
+                            }
+                            Err(RunError::Exc(inner_exc)) => {
+                                inner_exc.drop_with(vm_ref);
+                                exc_raise.exc.arg = Some("<exception str() failed>".to_owned());
+                            }
+                            Err(e @ RunError::UncatchableExc(_)) => {
+                                drop(exc_guard);
+                                return ExceptionHandlingResult::Unhandled(e);
+                            }
+                            Err(_) => {
+                                exc_raise.exc.arg = Some("<exception str() failed>".to_owned());
+                            }
+                        }
+                    }
+                }
 
                 // Drop exc_value before potentially switching tasks
                 drop(exc_guard);
