@@ -17,8 +17,9 @@ uv add pydantic-monty-client
 pip install pydantic-monty-client
 ```
 
-The client wheel does not embed the worker, its CPython modules, or its typeshed stubs.
-The source distribution includes their source crates and retains the upstream licences and notices in those crates.
+The client wheel does not contain the worker, vendored CPython modules, or typeshed stubs.
+The client source distribution contains the `monty` and `monty-typeshed` crates with their upstream licences and notices,
+but not `monty-runtime`.
 
 ## Usage with a remote monty server
 

@@ -9,9 +9,9 @@ repos:
       - id: check-toml
       # Keep vendored upstream files and patches byte-for-byte.
       - id: end-of-file-fixer
-        exclude: ^crates/((monty/stdlib|monty-datatest/vendor/cpython)/(Lib|patches)/|monty-typeshed/vendor/typeshed/)
+        exclude: ^crates/((monty/stdlib|monty-datatest/vendor/cpython)/((Lib|patches)/|LICENSE$)|monty-typeshed/vendor/typeshed/)
       - id: trailing-whitespace
-        exclude: ^crates/((monty/stdlib|monty-datatest/vendor/cpython)/(Lib|patches)/|monty-typeshed/vendor/typeshed/)
+        exclude: ^crates/((monty/stdlib|monty-datatest/vendor/cpython)/((Lib|patches)/|LICENSE$)|monty-typeshed/vendor/typeshed/)
       - id: check-added-large-files
 
   - repo: https://github.com/codespell-project/codespell
