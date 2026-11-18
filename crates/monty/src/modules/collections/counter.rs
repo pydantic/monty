@@ -25,7 +25,8 @@ use crate::{
     resource_checks::check_repeat_size,
     sorting::{py_eq_item, py_lt, sort_indices, sort_indices_by},
     types::{
-        Dict, List, PyTrait, Type, allocate_tuple, dict::dict_update, iter::collect_owned_iterable, key_hash::plain_hash, py_trait::CmpOrder,
+        Dict, List, PyTrait, Type, allocate_tuple, dict::dict_update, iter::collect_owned_iterable,
+        key_hash::plain_hash, py_trait::CmpOrder,
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };

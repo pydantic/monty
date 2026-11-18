@@ -2261,7 +2261,13 @@ impl<'heap> PyAttrs<'heap> for PyDictImpl {
             defer_drop!(key, vm);
             let mut default_guard = DropGuard::new(default, vm);
             let vm = default_guard.ctx();
-            if let Some((old_key, value)) = this.pop(key, vm)? {
+            // CPython skips hashing the key when popping from an empty dict.
+            let popped = if this.get(vm.heap).is_empty() {
+                None
+            } else {
+                this.pop(key, vm)?
+            };
+            if let Some((old_key, value)) = popped {
                 // Drop the old key - we don't need it
                 old_key.drop_with(vm);
                 Ok(value)

@@ -901,7 +901,8 @@ impl<'heap> PyAttrs<'heap> for PyDictItemsViewImpl {
         {
             let other = args.get_one_arg("dict_items.isdisjoint", vm.heap)?;
             defer_drop!(other, vm);
-            Ok(CallResult::Value(Value::Bool(this.isdisjoint_from_value(other, vm)?)))
+            let disjoint = view_isdisjoint(this.set_like(vm), this.id(), other, vm)?;
+            Ok(CallResult::Value(Value::Bool(disjoint)))
         }
     }
 }
@@ -921,7 +922,8 @@ impl<'heap> PyAttrs<'heap> for PyDictKeysViewImpl {
         {
             let other = args.get_one_arg("dict_keys.isdisjoint", vm.heap)?;
             defer_drop!(other, vm);
-            Ok(CallResult::Value(Value::Bool(this.isdisjoint_from_value(other, vm)?)))
+            let disjoint = view_isdisjoint(this.set_like(vm), this.id(), other, vm)?;
+            Ok(CallResult::Value(Value::Bool(disjoint)))
         }
     }
 }
