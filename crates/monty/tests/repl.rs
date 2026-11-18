@@ -1216,6 +1216,83 @@ fn repl_suspendable_native_map_exhaustion() {
     assert_eq!(value, MontyObject::int(40));
 }
 
+/// The loop observes the outcome of `__next__`, not the host reply it was waiting for.
+#[test]
+fn repl_suspendable_advance_handles_host_exception_first() {
+    let (repl, _) = init_repl(
+        r"
+class Source:
+    def __init__(self): self.step = 0
+    def __iter__(self): return self
+    def __next__(self):
+        self.step += 1
+        try:
+            ext_fn(self.step)
+        except StopIteration:
+            if self.step == 1: return 42
+            raise
+        finally:
+            if self.step == 3: raise ValueError('from finally')
+",
+    );
+    let mut progress = repl
+        .feed_start(
+            r"
+s = Source()
+items = [x for x in s]
+try:
+    for x in s: pass
+except ValueError as exc:
+    items.append(str(exc))
+items
+",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    for step in 1..=3 {
+        let restored = round_trip_progress(&progress);
+        drop(progress.into_repl());
+        let call = restored.into_function_call().unwrap();
+        assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(step)]);
+        progress = call
+            .resume(
+                ExtFunctionResult::Error(MontyException::new(ExcType::StopIteration, None)),
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        progress.into_complete().unwrap().1,
+        MontyObject::list([MontyObject::int(42), MontyObject::string("from finally")])
+    );
+}
+
+/// A tail-called constructor keeps its not-yet-initialized instance between the loop and the callee's locals.
+#[test]
+fn repl_suspendable_map_constructor() {
+    let (repl, _) = init_repl("class Item:\n    def __init__(self, x): self.x = ext_fn(x)");
+    let mut progress = repl
+        .feed_start("[obj.x for obj in map(Item, [1, 2, 3])]", vec![], PrintWriter::Disabled)
+        .unwrap();
+    for reply in [
+        ExtFunctionResult::Return(MontyObject::int(42)),
+        ExtFunctionResult::Error(MontyException::new(ExcType::StopIteration, None)),
+    ] {
+        let restored = round_trip_progress(&progress);
+        drop(progress.into_repl());
+        progress = restored
+            .into_function_call()
+            .unwrap()
+            .resume(reply, PrintWriter::Disabled)
+            .unwrap();
+    }
+    assert_eq!(
+        progress.into_complete().unwrap().1,
+        MontyObject::list([MontyObject::int(42)])
+    );
+}
+
 /// A restored host error in the body belongs to its call site, not to the preceding `ForIter`.
 #[test]
 fn repl_suspendable_loop_body_stop_iteration() {

@@ -13,6 +13,8 @@ mod context_manager;
 mod exceptions;
 mod format;
 mod import_star;
+mod iteration;
+pub(crate) use iteration::compile_iteration_catcher;
 mod module_cache;
 mod module_finder;
 mod namespace;
@@ -155,8 +157,8 @@ macro_rules! handle_load_result {
 
 /// Handles the result of a call operation that returns `CallResult`.
 ///
-/// Used by LoadAttr, the call opcodes, `MatchAttr` and the context-manager
-/// opcodes. `Value` and `FramePushed` are handled inline; every suspending or
+/// Used by opcodes that may transfer control to Python or the host. Immediate
+/// values and frame switches are handled inline; every suspending or
 /// awaiting variant goes through the outlined [`VM::suspend_call_result`], so
 /// each expansion adds little to the dispatch loop's stack frame — native
 /// recursion (`__repr__` calling `repr`) re-enters that loop once per level.
@@ -164,7 +166,7 @@ macro_rules! handle_call_result {
     ($self:expr, $result:expr) => {
         match $result {
             Ok(CallResult::Value(result)) => $self.push(result),
-            Ok(CallResult::FramePushed) => {}
+            Ok(CallResult::FramePushed | CallResult::CallerRestored) => {}
             Ok(other) => match $self.suspend_call_result(other) {
                 Ok(None) => {}
                 Ok(Some(exit)) => return Ok(exit),
@@ -1216,7 +1218,7 @@ impl<'h> VM<'h> {
                 self.push(value);
                 return Ok(None);
             }
-            CallResult::FramePushed => return Ok(None),
+            CallResult::FramePushed | CallResult::CallerRestored => return Ok(None),
             CallResult::External { name, args, is_async } => FrameExit::ExternalCall {
                 function_name: name,
                 args,
@@ -1719,14 +1721,16 @@ impl<'h> VM<'h> {
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
+                    let stack_base = self.stack.len();
                     let result = PyValue::from_heap(heap_id, self.heap).py_next(self);
                     match result {
-                        Ok(None) => {
+                        Ok(Some(CallResult::Value(item))) => self.push(item),
+                        Ok(Some(call)) => handle_call_result!(self, self.catch_deferred_iteration(call, stack_base)),
+                        Err(error) if !error.is_stop_iteration() => catch!(self, error),
+                        Ok(None) | Err(_) => {
                             self.pop().drop_with(self);
                             jump_relative!(self.current_frame.ip, offset);
                         }
-                        Ok(Some(call)) => handle_call_result!(self, Ok(call)),
-                        Err(error) => catch!(self, error),
                     }
                 }
                 // Function Calls
@@ -2271,7 +2275,7 @@ impl<'h> VM<'h> {
                 self.push(value);
                 self.run_external()
             }
-            Ok(CallResult::FramePushed) => self.run_external(),
+            Ok(CallResult::FramePushed | CallResult::CallerRestored) => self.run_external(),
             Ok(CallResult::OsCall(call)) => self.suspend_again(call, None),
             Ok(CallResult::OsCallWithEffect { call, effect }) => self.suspend_again(call, Some(effect)),
             Ok(other) => {
@@ -2567,7 +2571,11 @@ impl<'h> VM<'h> {
     /// `instruction_ip` still names the suspending opcode; its location entry
     /// gives the byte range, so this reads no source.
     pub(crate) fn suspension_position(&self) -> SourceRange {
-        self.code_position(self.current_frame.code, self.instruction_ip)
+        let frame = &self.current_frame;
+        // A synthetic continuation has no source of its own: a direct host call belongs to its caller.
+        self.code_position(frame.code, self.instruction_ip)
+            .or_else(|| self.code_position(self.suspended_frames.last()?.code, frame.call_offset? as usize))
+            .unwrap_or_else(SourceRange::unknown)
     }
 
     /// Returns the source position of the `await` the main task is blocked on.
@@ -2582,24 +2590,26 @@ impl<'h> VM<'h> {
             // `save_task_context` pushes the executing frame last.
             self.scheduler
                 .main_task()
-                .and_then(|task| Some((task.frames.last()?, task.instruction_ip)))
-                .map_or_else(SourceRange::unknown, |(frame, ip)| {
-                    self.code_position(frame_code(self.interns, self.module_code, frame.function_id), ip)
+                .and_then(|task| {
+                    let (frame, callers) = task.frames.split_last()?;
+                    let code = |id| frame_code(self.interns, self.module_code, id);
+                    self.code_position(code(frame.function_id), task.instruction_ip)
+                        .or_else(|| self.code_position(code(callers.last()?.function_id), frame.call_offset? as usize))
                 })
+                .unwrap_or_else(SourceRange::unknown)
         }
     }
 
     /// The byte range of the instruction at `offset` in `code`, named by its source.
-    fn code_position(&self, code: &Code, offset: usize) -> SourceRange {
-        code.location_for_offset(offset)
-            .map_or_else(SourceRange::unknown, |entry| {
-                let range = entry.range();
-                SourceRange::new(
-                    self.interns.get_filename(range.filename),
-                    range.start_byte,
-                    range.end_byte,
-                )
-            })
+    fn code_position(&self, code: &Code, offset: usize) -> Option<SourceRange> {
+        code.location_for_offset(offset).map(|entry| {
+            let range = entry.range();
+            SourceRange::new(
+                self.interns.get_filename(range.filename),
+                range.start_byte,
+                range.end_byte,
+            )
+        })
     }
 
     /// Captures the caller's current bytecode offset for a call site, or `None`

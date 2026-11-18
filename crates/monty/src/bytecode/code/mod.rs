@@ -236,7 +236,7 @@ pub enum HandlerKind {
     Consuming,
     /// Only re-raises: the VM skips the push, the compiler the matching `Pop`.
     Cleanup,
-    /// Legacy v17 entry; ignored because the opcode itself handles exhaustion.
+    /// Legacy v17 loop entry; new loops handle deferred advancement in a frozen frame.
     Iteration,
 }
 

@@ -191,7 +191,7 @@ fn collection_too_large(count: usize, position: CodeRange) -> CompileError {
 /// by `MakeFunction`/`MakeClosure`. The cap is the total number of
 /// `def`/`lambda`/comprehension function objects in the *whole module*, since
 /// `FunctionId`s are allocated linearly across nested scopes.
-fn check_function_count_u16(func_id: usize, position: CodeRange) -> Result<u16, CompileError> {
+pub(super) fn check_function_count_u16(func_id: usize, position: CodeRange) -> Result<u16, CompileError> {
     u16::try_from(func_id).map_err(|_| too_many_functions(func_id, position))
 }
 

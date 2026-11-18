@@ -7,7 +7,7 @@ use monty_types::ResourceError;
 use super::VM;
 use crate::{
     builtins::Builtins,
-    bytecode::{code::HandlerKind, op::Opcode},
+    bytecode::code::HandlerKind,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
@@ -484,20 +484,6 @@ impl VM<'_> {
             let frame = this.current_frame();
             let code = frame.code;
             let ip = u32::try_from(this.instruction_ip).unwrap_or(u32::MAX);
-
-            // Exhaustion belongs to the advancing instruction, not an enclosing try or the loop body.
-            if error.is_stop_iteration() && frame.bytecode.get(this.instruction_ip) == Some(&(Opcode::ForIter as u8)) {
-                let operand = this.instruction_ip + 1;
-                let frame = this.current_frame_mut();
-                frame.ip = operand;
-                let offset = frame.fetch_i16();
-                frame.ip = frame
-                    .ip
-                    .checked_add_signed(offset.into())
-                    .expect("invalid ForIter target");
-                this.pop().drop_with(this);
-                return ExceptionHandlingResult::Caught;
-            }
 
             // Search exception table for a handler covering this IP
             if let Some(entry) = code.find_exception_handler(ip) {

@@ -46,6 +46,16 @@ fn function_call_points_at_the_call_expression() {
     assert_eq!(covered(&call.position, "test.py", code), "fetch()");
 }
 
+/// A direct host advance points to the waiting loop rather than its internal continuation.
+#[test]
+fn a_deferred_map_item_points_into_the_loop() {
+    let code = "items = map(fetch, [42])\n[x for x in items]";
+    let call = start(code).into_function_call().unwrap();
+    assert_eq!(covered(&call.position, "test.py", code), "items");
+    let done = call.resume(MontyObject::int(42), PrintWriter::Disabled).unwrap();
+    assert_eq!(done.into_complete().unwrap(), MontyObject::list([MontyObject::int(42)]));
+}
+
 #[test]
 fn a_call_inside_a_function_points_into_its_body() {
     let code = "def helper(n):\n    return fetch(n)\n\nhelper(3)";
