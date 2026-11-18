@@ -61,6 +61,7 @@ allowing cooperative `__new__` calls.
     and `str(args)` (tuple format) for multiple arguments.
 
 - Specific exception attributes:
+
     - `StopIteration.value` — the first positional argument, or `None`.
     - `SystemExit.code` — `None` if empty, the argument if single, or `args` tuple if multiple.
     - `AttributeError.name`, `AttributeError.obj` — keyword values passed to constructor, or `None`.
