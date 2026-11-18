@@ -578,6 +578,8 @@ impl TurnMetrics {
             Some(pb::client_request::Kind::AbortFeed(_)) => self.close_suspension("aborted"),
             // liveness, not a turn (sent by the transport, never through here)
             Some(pb::client_request::Kind::Pong(_)) => {}
+            // host-internal, never sent by a client
+            Some(pb::client_request::Kind::HostTypeCheckResult(_)) => {}
             None => {}
         }
     }
@@ -653,6 +655,8 @@ impl TurnMetrics {
             Some(pb::worker_event::Kind::Shutdown(_)) => self.end_terminal("shutdown", event),
             // liveness, not a turn (answered by the transport, never seen here)
             Some(pb::worker_event::Kind::Ping(_)) => {}
+            // host-internal, never sent to a client
+            Some(pb::worker_event::Kind::HostTypeCheck(_)) => {}
             None => {}
         }
     }

@@ -162,8 +162,12 @@ transport-agnostic worker state machine, shared by the native `monty subprocess`
 worker and the wasm worker. It links the `monty` interpreter, so only
 worker-side crates enable it.
 The `type-checking` feature adds type checking of fed snippets, linking ty.
-A worker built without it refuses a `Configure` with `type_check` set and a `Load` of a type-checked dump.
-`monty-runtime` always enables it; `monty-wasm-runtime` enables it by default.
+The `host-type-checking` feature serves type-checked sessions without linking ty: the worker keeps each session's
+type-check state but hands every check to its host as a `WorkerEvent.host_type_check`, and runs or rejects the snippet
+on the host's `ClientRequest.host_type_check_result`. Both messages are host-internal, never seen by a client, so only
+a host that answers them may build the worker this way; `type-checking` wins when both are on.
+A worker built with neither refuses a `Configure` with `type_check` set and a `Load` of a type-checked dump.
+`monty-runtime` always enables `type-checking`; `monty-wasm-runtime` enables it by default.
 
 Error and typing-error replies carry optional `WorkerEvent.feed_suspended` state from the worker.
 It distinguishes a rejected request that preserves a suspension from an execution error that ends the feed.

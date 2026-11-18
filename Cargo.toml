@@ -75,7 +75,7 @@ monty-fs = { path = "crates/monty-fs", version = "=1.6.0" }
 monty-macros = { path = "crates/monty-macros", version = "=1.6.0" }
 monty-proto = { path = "crates/monty-proto", version = "=1.6.0" }
 monty-pool = { path = "crates/monty-pool", version = "=1.6.0" }
-monty-type-checking = { path = "crates/monty-type-checking", version = "=1.6.0" }
+monty-type-checking = { path = "crates/monty-type-checking", version = "=1.6.0", default-features = false }
 monty-typeshed = { path = "crates/monty-typeshed", version = "=1.6.0" }
 # ruff, ty and related crates
 # TODO: we might wish to remove stacker and have custom protections against

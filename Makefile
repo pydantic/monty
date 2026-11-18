@@ -193,6 +193,7 @@ miri-test-cases: ## Run library inline tests under miri (particularly relevant f
 .PHONY: test-type-checking
 test-type-checking: ## Run rust tests on monty-type-checking
 	cargo test -p monty-type-checking -p monty-typeshed
+	cargo test -p monty-proto --features host-type-checking --test host_type_checking
 
 .PHONY: test-subprocess
 test-subprocess: ## Run subprocess protocol, worker-mode, and worker-pool tests

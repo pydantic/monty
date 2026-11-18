@@ -16,17 +16,34 @@ name = "monty_type_checking"
 path = "src/lib.rs"
 
 [dependencies]
-monty-types = { workspace = true }
-monty-typeshed = { workspace = true }
 ruff_python_ast = { workspace = true }
 ruff_python_parser = { workspace = true }
-ruff_python_stdlib = { workspace = true }
-ruff_db = { workspace = true }
 ruff_text_size = { workspace = true }
-ty_python_semantic = { workspace = true }
-ty_python_core = { workspace = true }
-ty_module_resolver = { workspace = true }
-salsa = { workspace = true }
+# Optional: ty and what it needs, for the `checker` feature
+monty-types = { workspace = true, optional = true }
+monty-typeshed = { workspace = true, optional = true }
+ruff_python_stdlib = { workspace = true, optional = true }
+ruff_db = { workspace = true, optional = true }
+ty_python_semantic = { workspace = true, optional = true }
+ty_python_core = { workspace = true, optional = true }
+ty_module_resolver = { workspace = true, optional = true }
+salsa = { workspace = true, optional = true }
+
+[features]
+default = ["checker"]
+# The type checker itself (ty). Without it the crate offers only `scan_imports`,
+# which needs nothing but the parser the interpreter already links: a worker that
+# delegates checks to its host (monty-proto's `host-type-checking`) uses that.
+checker = [
+    "dep:monty-types",
+    "dep:monty-typeshed",
+    "dep:ruff_python_stdlib",
+    "dep:ruff_db",
+    "dep:ty_python_semantic",
+    "dep:ty_python_core",
+    "dep:ty_module_resolver",
+    "dep:salsa",
+]
 
 [dev-dependencies]
 insta = { workspace = true }
@@ -41,6 +58,11 @@ pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
 [[bench]]
 name = "type_check"
 harness = false
+required-features = ["checker"]
+
+[[test]]
+name = "main"
+required-features = ["checker"]
 
 [lints]
 workspace = true

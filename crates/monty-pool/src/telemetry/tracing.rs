@@ -318,6 +318,8 @@ impl Recorder {
             // liveness, not a turn (and sent by the transport, never through
             // the recorder)
             Some(pb::client_request::Kind::Pong(_)) => {}
+            // host-internal, never sent by a client
+            Some(pb::client_request::Kind::HostTypeCheckResult(_)) => {}
             // `checkout::request` always sets a kind
             None => {}
         }
@@ -511,6 +513,8 @@ impl Recorder {
             }
             // liveness, not a turn (and answered by the transport, never seen here)
             Some(pb::worker_event::Kind::Ping(_)) => {}
+            // host-internal, never sent to a client
+            Some(pb::worker_event::Kind::HostTypeCheck(_)) => {}
             None => logfire::error!(parent: self.context_span(), "event with no kind"),
         }
     }

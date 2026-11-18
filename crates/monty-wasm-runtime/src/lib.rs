@@ -570,6 +570,10 @@ fn event_from_proto(event: pb::WorkerEvent) -> Event {
         Some(pb::worker_event::Kind::StreamedCalls(_)) => {
             invalid_event("StreamedCalls without Configure.accepts_streamed_calls")
         }
+        // only `dispatch-frame`'s raw protobuf reaches a host able to answer it
+        Some(pb::worker_event::Kind::HostTypeCheck(_)) => {
+            invalid_event("HostTypeCheck needs the dispatch-frame export")
+        }
 
         None => invalid_event("WorkerEvent carried no kind"),
     }
