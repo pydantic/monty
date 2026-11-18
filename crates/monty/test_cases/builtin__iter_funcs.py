@@ -19,6 +19,7 @@ assert sum([0.1j] * 10) == 1j
 assert sum([0.1, 0.1j, 0.2, 0.3]) == 0.6 + 0.1j
 assert str(sum([-0.0], -0.0)) == '-0.0'
 assert sum([float('inf'), 0.1]) == float('inf')
+assert sum([0.5, True]) == 1.5
 
 # str/bytes start values are rejected, pointing at join() instead
 try:
