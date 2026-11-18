@@ -7,8 +7,8 @@
 //!   is the native rate; `--check` fails when one is more than [`MAX_DRIFT`] from it.
 //! - `--constructs`: each section of `python/work_clock_constructs.py` against its baseline, as
 //!   units charged and units the time is worth. This is the report to set a weight from.
-//! - `--corpus`: every self-contained case in `crates/monty/test_cases`, code the weights were not
-//!   fitted to. An outlier there names work no construct covers.
+//! - `--corpus`: every self-contained case in `crates/monty/test_cases`. The fit includes them, so
+//!   this checks the whole corpus rather than held-out code; an outlier names work no event covers.
 //!
 //! `--file <path>` measures one more script the same way, to track down an outlier.
 //! `--fit-data <dir>`, with the `work-profile` feature, writes the counts `make fit-work-clock` fits

@@ -68,7 +68,8 @@ pub(crate) struct ReMatch {
     /// reference so every match from one `finditer` shares one copy — tracked
     /// once, not per match. Always a `str` `Value` (heap `Str` or interned).
     subject: Value,
-    /// Whether the subject is pure ASCII, so byte offset == character offset.
+    /// Whether the subject is ASCII up to the furthest span end, so every reported
+    /// byte offset equals its character offset.
     all_ascii: bool,
     /// Char-offset `(start, end)` of the full match, computed lazily by
     /// [`ReMatch::char_span`]. A pure cache — skipped by serde, rebuilt on demand.

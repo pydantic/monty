@@ -43,7 +43,7 @@ export function createWorkerPoolFromFactory(
     throw new TypeError("WebAssembly workers require executionClock: 'wall' or 'work'")
   }
   if (executionClock !== 'wall' && executionClock !== 'work') {
-    throw new TypeError("executionClock must be 'wall', 'cpu' or 'work'")
+    throw new TypeError("executionClock must be 'wall' or 'work'")
   }
   return WorkerPool.create(factory, {
     executionClock,

@@ -403,7 +403,7 @@ test('WASM pool validates unknown execution clocks before spawning workers', () 
           { executionClock },
           1,
         ),
-      { message: "executionClock must be 'wall', 'cpu' or 'work'" },
+      { message: "executionClock must be 'wall' or 'work'" },
     )
   }
   t.false(spawned)

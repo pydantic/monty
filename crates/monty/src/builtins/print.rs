@@ -50,6 +50,7 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             vm.heap.tracker.charge(WorkEvent::PrintByte, sep.len() as u64);
             vm.print_writer.write(stream, sep.as_str().into())?;
         } else {
+            vm.heap.tracker.charge(WorkEvent::PrintByte, 1);
             vm.print_writer.push(stream, ' ')?;
         }
         let s = value.py_str(vm)?;
@@ -65,6 +66,7 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         vm.heap.tracker.charge(WorkEvent::PrintByte, end.len() as u64);
         vm.print_writer.write(stream, end.into())?;
     } else {
+        vm.heap.tracker.charge(WorkEvent::PrintByte, 1);
         vm.print_writer.push(stream, '\n')?;
     }
 

@@ -188,8 +188,8 @@ impl RePattern {
 
     /// Builds a single `ReMatch` heap value from one match's spans (see
     /// [`ReMatch::from_spans`]), keeping the subject alive by refcount
-    /// (`subject.clone_with_heap`) rather than copying its text. `all_ascii` is
-    /// precomputed by the caller (once per `finditer`).
+    /// (`subject.clone_with_heap`) rather than copying its text. `all_ascii` must
+    /// cover the subject up to the furthest span end (see [`ReMatch`]).
     fn build_match(
         &self,
         text: &str,
@@ -215,7 +215,10 @@ impl RePattern {
     ) -> Value {
         let spans: SmallVec<[Option<(usize, usize)>; 8]> =
             caps.iter().map(|m| m.map(|m| (m.start(), m.end()))).collect();
-        self.build_match(text, &spans, subject, text.is_ascii(), heap)
+        // Offsets are only reported up to the furthest span (a lookahead group can end past
+        // the match), so an early match in a long subject never scans its tail.
+        let reported_end = spans.iter().flatten().map(|&(_, end)| end).max().unwrap_or(0);
+        self.build_match(text, &spans, subject, text[..reported_end].is_ascii(), heap)
     }
 
     /// `pattern.search(string)` — find first match anywhere in the string.
@@ -503,7 +506,8 @@ fn check_slice_growth<T>(slices: &Vec<T>, heap: &Heap) -> RunResult<()> {
         .check_growth(slices.len(), slices.capacity(), mem::size_of::<T>())?)
 }
 
-/// Collects the pieces an iterator yields, preflighting the buffer as it grows.
+/// Collects a split's pieces, preflighting the buffer as it grows and charging one
+/// match per piece, as the other scans charge per match.
 ///
 /// A split's piece buffer is bounded only by the subject and is filled before the
 /// result list exists, so the check on that list comes too late.
@@ -513,6 +517,7 @@ fn collect_slices<'t>(
 ) -> RunResult<Vec<&'t str>> {
     let mut collected = Vec::new();
     for piece in pieces {
+        heap.tracker.charge(WorkEvent::RegexMatch, 1);
         check_slice_growth(&collected, heap)?;
         collected.push(piece.map_err(ExcType::re_pattern_error)?);
     }

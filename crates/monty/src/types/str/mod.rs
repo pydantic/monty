@@ -132,6 +132,12 @@ impl<'h> PyStr<'h> {
     fn character_at(&self, index: i64, vm: &VM<'h>) -> Option<char> {
         let text = self.as_str(vm);
         let ascii = self.is_ascii(vm);
+        if !ascii && index != -1 {
+            // Walked a character at a time: up to `index` from the front, or the whole
+            // text to count it for any other negative index.
+            let walked = usize::try_from(index).map_or(text.len(), |index| index.min(text.len()));
+            charge_scan(walked, &vm.heap.tracker);
+        }
         get_char_at_index(text, ascii, index)
     }
 
@@ -850,8 +856,9 @@ fn str_find<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Va
     let start_byte = s.byte_offset_of(start, vm);
     let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
-    charge_scan(slice.len(), &vm.heap.tracker);
-    let result = match slice.find(&sub) {
+    let found = slice.find(&sub);
+    charge_search(slice.len(), found.map(|pos| pos + sub.len()), &vm.heap.tracker);
+    let result = match found {
         Some(pos) => {
             let char_pos = s.char_index_of(start_byte + pos, vm);
             i64::try_from(char_pos).unwrap_or(i64::MAX)
@@ -861,9 +868,16 @@ fn str_find<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Va
     Ok(Value::Int(result))
 }
 
-/// Charges the work clock for searching `bytes` of a string, which no per-call charge covers.
+/// Charges the work clock for walking `bytes` of a string a byte or character at a time:
+/// searches, character counts and character-to-byte offset conversion.
 fn charge_scan(bytes: usize, tracker: &ResourceTracker) {
     tracker.charge(WorkEvent::StrScanByte, bytes as u64);
+}
+
+/// Charges a substring search of `len` bytes that stopped after `scanned` bytes, or ran
+/// to the end when nothing matched.
+fn charge_search(len: usize, scanned: Option<usize>, tracker: &ResourceTracker) {
+    charge_scan(scanned.unwrap_or(len), tracker);
 }
 
 /// Implements Python's `str.rfind(sub, start?, end?)` method.
@@ -880,8 +894,9 @@ fn str_rfind<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
     let start_byte = s.byte_offset_of(start, vm);
     let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
-    charge_scan(slice.len(), &vm.heap.tracker);
-    let result = match slice.rfind(&sub) {
+    let found = slice.rfind(&sub);
+    charge_search(slice.len(), found.map(|pos| slice.len() - pos), &vm.heap.tracker);
+    let result = match found {
         Some(pos) => {
             let char_pos = s.char_index_of(start_byte + pos, vm);
             i64::try_from(char_pos).unwrap_or(i64::MAX)
@@ -904,8 +919,9 @@ fn str_index<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
     let start_byte = s.byte_offset_of(start, vm);
     let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
-    charge_scan(slice.len(), &vm.heap.tracker);
-    match slice.find(&sub) {
+    let found = slice.find(&sub);
+    charge_search(slice.len(), found.map(|pos| pos + sub.len()), &vm.heap.tracker);
+    match found {
         Some(pos) => {
             let char_pos = s.char_index_of(start_byte + pos, vm);
             let result = i64::try_from(char_pos).unwrap_or(i64::MAX);
@@ -928,8 +944,9 @@ fn str_rindex<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<
     let start_byte = s.byte_offset_of(start, vm);
     let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
-    charge_scan(slice.len(), &vm.heap.tracker);
-    match slice.rfind(&sub) {
+    let found = slice.rfind(&sub);
+    charge_search(slice.len(), found.map(|pos| slice.len() - pos), &vm.heap.tracker);
+    match found {
         Some(pos) => {
             let char_pos = s.char_index_of(start_byte + pos, vm);
             let result = i64::try_from(char_pos).unwrap_or(i64::MAX);
@@ -1962,7 +1979,9 @@ fn str_istitle(s: &str) -> bool {
 /// A non-str probe reports its own type, as CPython does.
 pub(crate) fn str_contains(container_str: &str, item: &Value, heap: &Heap, interns: &Interns) -> RunResult<bool> {
     if let Some(text) = item.as_str_heap(heap, interns) {
-        Ok(container_str.contains(text))
+        let found = container_str.find(text);
+        charge_search(container_str.len(), found.map(|pos| pos + text.len()), &heap.tracker);
+        Ok(found.is_some())
     } else {
         Err(ExcType::type_error(format!(
             "'in <string>' requires string as left operand, not {}",

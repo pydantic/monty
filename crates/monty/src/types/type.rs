@@ -7,6 +7,7 @@
 
 use std::fmt;
 
+use monty_types::WorkEvent;
 use num_bigint::BigInt;
 
 use super::native::Constructor;
@@ -509,7 +510,10 @@ fn parse_int_digits(value: &str, base: u32, invalid: &impl Fn() -> RunError, hea
     if !effective_base.is_power_of_two() && digit_count > INT_MAX_STR_DIGITS {
         return Err(ExcType::value_error_int_str_too_large(digit_count));
     }
-    if !effective_base.is_power_of_two() {
+    if effective_base.is_power_of_two() {
+        // Linear: each digit is shifted in.
+        heap.tracker.charge(WorkEvent::StrScanByte, digit_count as u64);
+    } else {
         charge_decimal_parse(digit_count, &heap.tracker);
     }
     match BigInt::parse_bytes(cleaned.as_bytes(), effective_base) {

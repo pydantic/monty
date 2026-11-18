@@ -240,6 +240,8 @@ more details.
 
 Execution duration limits use wall time by default.
 Every clock charges bytecode and native builtin execution, excluding host suspension.
+Work mode charges each instruction and each instrumented native operation; other native work costs only what it
+allocates and polls.
 Enable CPU mode with `Monty(execution_clock='cpu', request_timeout=2)` or the same options on `AsyncMonty`.
 CPU mode needs Linux workers: on macOS or Windows, entering a CPU-mode `Monty` (`with`) or `AsyncMonty`
 (`async with`) raises `MontyConfigurationError`.

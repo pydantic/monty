@@ -17,7 +17,7 @@ use super::{
 /// Times a corpus case is repeated, so a short test case runs long enough to time in wasm.
 const CORPUS_REPEATS: u64 = 30;
 
-/// Units below which a repeated corpus case is still too short to time.
+/// Units below which any script, a repeated corpus case included, is too short to time.
 const MIN_UNITS: u64 = 20_000;
 
 /// How far the work charged may sit from what the counts predict before the data is refused:

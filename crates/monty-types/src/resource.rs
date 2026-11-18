@@ -161,7 +161,8 @@ pub enum ExecutionClock {
     /// CPU accounting is approximate and does not bound response latency.
     Cpu,
     /// Counted work converted at [`NANOS_PER_UNIT`], for hosts whose clocks do not advance during
-    /// compute. Deterministic, but an estimate: it is not the time the code took.
+    /// compute. An estimate, not the time the code took; deterministic for one session per
+    /// process, since the allocation charge reads the process-wide [`ALLOCATED_BYTES`].
     Work,
 }
 

@@ -226,7 +226,7 @@ subprocesses:
     tracker converts units at `NANOS_PER_UNIT`. Never write a weight by hand: `make fit-work-clock` counts opcodes and
     events per script (the `work-profile` feature), times the scripts in wasm, fits every weight at once and
     regenerates `work_weights.rs` and `op_weights.rs`. Native work with no event of its own is charged only its polls
-    and allocation: add a `WorkEvent` variant at the end, charge it where the work happens, and refit.
+    (with a `LoopItem` per `check_time_every` item) and allocation: add a `WorkEvent` variant at the end, charge it where the work happens, and refit.
     `make calibrate-work-clock` reports the result per category, construct and test case, and
     `calibration_scripts_cost_fixed_units` pins the totals.
     Pools arm no wall backstop for it. WebAssembly workers accept wall and work mode.

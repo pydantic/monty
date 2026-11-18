@@ -51,9 +51,10 @@ pub enum WorkEvent {
     JsonDumpByte,
     /// One byte of subject a regex scans.
     RegexScanByte,
-    /// One regex match found.
+    /// One regex scan started, plus one per match it finds (or per `split` piece).
     RegexMatch,
-    /// One byte a substring search or replacement scans.
+    /// One byte of a string walked: a substring search or replacement, a character count,
+    /// or a character-to-byte offset conversion.
     StrScanByte,
     /// One comparison of heap values in a sort.
     SortComparison,

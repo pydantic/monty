@@ -1,7 +1,8 @@
 # Work-clock constructs: one statement per section, each timed against `baseline`.
 #
 # The calibration harness runs `prelude` followed by one section at a time, so a section's cost
-# beyond `baseline` is its body's cost beyond `y = i`. Every section loops `N` times over `i`.
+# beyond `baseline` is its body's cost beyond `y = i`. Every section loops `N` times over `i`;
+# `list_pop` runs two statements per iteration and the big-int sections add setup and a second loop.
 
 # === prelude ===
 N = 100_000

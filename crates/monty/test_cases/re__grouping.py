@@ -297,3 +297,14 @@ assert m.group('n') is None
 assert m.groupdict() == {'n': None}
 assert re.findall('(?P<n>a){0}b', 'ab b') == ['', '']
 assert re.sub('(?P<n>a){0}b', 'X', 'abb') == 'aXX'
+
+# === Offsets around non-ASCII text ===
+# an early match reads only the prefix it reports; a lookahead group can end past the match
+assert re.search('b', 'abé').span() == (1, 2)
+assert re.search('b', 'éb').span() == (1, 2)
+assert re.compile('b').match('bé').span() == (0, 1)
+m = re.search('a(?=(é+))', 'xaéé!')
+assert m.span() == (1, 2)
+assert m.span(1) == (2, 4)
+m = re.search('é(b)', 'aébc')
+assert m.span(1) == (2, 3)

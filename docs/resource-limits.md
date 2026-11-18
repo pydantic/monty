@@ -254,6 +254,8 @@ duration limits, the `TimeoutError` message and the execution time sent to telem
 - Every allocation from the worker's allocator is charged once, and again per byte, so an operation with no charge
     of its own still costs what it allocates.
     This needs the worker allocator: a direct `monty` embedding without `monty-alloc` charges nothing for allocation.
+    The allocator's counter is process-wide, so an embedding running several sessions at once charges each one for
+    the others' allocations; workers run one session each.
 
 No weight is written by hand.
 `make fit-work-clock` counts how often each opcode runs and each event is charged across the calibration scripts and
@@ -267,7 +269,7 @@ In that fit 95% of 358 scripts took between two thirds and one and a half times 
 three and a half times as long, mostly code spending its time in native modules that have no event of their own.
 `make calibrate-work-clock` measures the rate per category, per construct and per test case.
 
-Native work that neither polls nor allocates is charged nothing, so keep an outer bound: `request_timeout`, or the
+Native work with no event of its own that neither polls nor allocates is charged nothing, so keep an outer bound: `request_timeout`, or the
 platform's own CPU limit set above the largest feed limit.
 Pools arm no duration grace backstop in work mode, because counted time does not predict how long a turn takes.
 A remote client learns the clock from the first reply, so without a `request_timeout` that request alone keeps the

@@ -151,7 +151,7 @@ fn native_operations_charge_work() {
         "sorted(values)",
         "sum(values)",
         "values.index(-1)",
-        "[1] * 100_000_000 == []",
+        "[1] * 1_000_000 == []",
         "re.sub('[0-9]', '#', text)",
         "re.findall('[0-9]', text)",
         "json.dumps(values)",
@@ -203,6 +203,39 @@ fn work_without_a_result_is_charged() {
     assert!(units < 100, "{units} units");
 }
 
+/// Scans are charged for what they walk: to the end when nothing stops them, only as far as
+/// the match when one does.
+#[test]
+fn scans_are_charged_for_what_they_walk() {
+    let mut repl = work_repl(None);
+    let setup = "import re\ntext = '0123456789' * 100_000\nuni = 'é' * 500_000\nhexdigits = 'f' * 1_000_000";
+    feed(&mut repl, setup).unwrap();
+    let mut cost = |code: &str| {
+        let before = units(&repl);
+        feed(&mut repl, code).unwrap();
+        units(&repl) - before
+    };
+    for (code, at_least) in [
+        ("uni[499_999]", 50_000),
+        ("uni[-2]", 50_000),
+        ("'x' in uni", 50_000),
+        ("'x' in text", 50_000),
+        ("int(hexdigits, 16)", 50_000),
+    ] {
+        let units = cost(code);
+        assert!(units >= at_least, "{code}: {units} units");
+    }
+    // a split is charged per piece, as other scans are per match
+    let few = cost("re.split('x', text)");
+    let many = cost("re.split('5', text)");
+    assert!(many > few * 2, "{few} then {many} units");
+    // an early match stops the scan, however long the subject
+    for code in ["text.find('1')", "text.index('1')", "text.rfind('9')", "'1' in text"] {
+        let units = cost(code);
+        assert!(units < 100, "{code}: {units} units");
+    }
+}
+
 /// The calibration scripts `make calibrate-work-clock` measures, one per category of work.
 const CALIBRATION_SCRIPTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../monty-bench/benches/python/work_clock");
 
@@ -233,8 +266,8 @@ fn calibration_scripts_cost_fixed_units() {
     func_calls: 1768680
     json_roundtrip: 4664361
     list_ops: 4487639
-    regex: 1606159
-    script_style: 11768467
+    regex: 1776724
+    script_style: 11857235
     sorting: 13035777
     str_build: 2621725
     str_scan: 827938

@@ -37,8 +37,8 @@ pub const NANOS_PER_UNIT: u64 = 3;
 
 /// Counts the work of one execution window and converts it to execution time.
 ///
-/// Reads no clock: the VM and native operations charge work, and allocation is read from
-/// [`ALLOCATED_BYTES`] as a floor under both. Only the converted durations outlive a window.
+/// Reads no clock: the VM and native operations charge work, and allocation read from
+/// [`ALLOCATED_BYTES`] is added to it. Only the converted durations outlive a window.
 #[derive(Debug, Default)]
 pub(super) struct WorkMeter {
     /// Whether a window is open; charges outside one are dropped at the next start.
