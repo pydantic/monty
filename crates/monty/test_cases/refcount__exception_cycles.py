@@ -27,3 +27,23 @@ for _ in range(10):
             raise TypeError('second')
     except TypeError:
         pass
+
+# Exception self-referential attribute cycle
+for _ in range(10):
+    e = ValueError('cycle')
+    e.cycle = e
+    e = None
+
+# Exception list cycle
+for _ in range(10):
+    e = ValueError('list_cycle')
+    lst = [e]
+    e.lst = lst
+    e = None
+    lst = None
+
+# Exception self-referential args cycle
+for _ in range(10):
+    e = ValueError('args_cycle')
+    e.args = (e,)
+    e = None

@@ -407,7 +407,9 @@ impl GraphExporter {
                 let arg = if is_empty {
                     None
                 } else {
+                    vm.heap.inc_ref(exc.id());
                     let exc_val = Value::Ref(exc.id());
+                    defer_drop!(exc_val, vm);
                     match exc_val.py_str(vm) {
                         Ok(s_val) => {
                             let s = if let PyValue::Str(s) = s_val.py_value(vm) {

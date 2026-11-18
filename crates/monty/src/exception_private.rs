@@ -3150,10 +3150,8 @@ impl ExceptionArgs {
             }
             _ => {
                 let tuple_val = allocate_tuple(values.into(), vm.heap);
-                match tuple_val {
-                    Value::Ref(id) => Self::Tuple(id),
-                    _ => unreachable!(),
-                }
+                let tuple_id = tuple_val.into_ref_id().expect("tuple is a heap reference");
+                Self::Tuple(tuple_id)
             }
         }
     }
@@ -3490,7 +3488,9 @@ impl<'h> HeapReadMut<'h, PyException> {
                         }
                     }
                     _ => {
+                        vm.heap.inc_ref(id);
                         let tuple_val = Value::Ref(id);
+                        defer_drop!(tuple_val, vm);
                         let str_val = tuple_val.py_str(vm)?;
                         defer_drop!(str_val, vm);
                         Ok(str_val.as_str(vm).unwrap_or("").to_owned())
@@ -3644,10 +3644,7 @@ impl<'h> HeapReadMut<'h, PyException> {
         if name_str == "args" {
             let items: smallvec::SmallVec<[Value; 2]> = crate::types::iter::collect_owned_iterable(value, vm)?;
             let tuple_val = allocate_tuple(items, vm.heap);
-            let tuple_id = match tuple_val {
-                Value::Ref(id) => id,
-                _ => unreachable!(),
-            };
+            let tuple_id = tuple_val.into_ref_id().expect("tuple is a heap reference");
             let old_args = {
                 let exc = self.get_mut(vm.heap);
                 mem::replace(&mut exc.args, ExceptionArgs::Tuple(tuple_id))

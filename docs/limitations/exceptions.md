@@ -39,17 +39,33 @@ both `OSError` and `ValueError`, matching CPython's dual parentage), and
 
 ## Constructor signature
 
-All exception constructors accept **zero or one string argument** only.
-Multi-argument forms used in CPython (e.g. `OSError(errno, strerror, filename)`,
-`UnicodeDecodeError(encoding, obj, start, end, reason)`) are
-not supported; passing more than one argument raises an internal error.
+Exception constructors accept arbitrary positional arguments (`*args`), stored
+as `exc.args`. Keyword arguments raise `TypeError: <Type>() takes no keyword arguments`,
+with three exceptions matching CPython:
+
+- `AttributeError(*args, name=None, obj=None)`
+- `NameError(*args, name=None)`
+- `ImportError(*args, name=None, path=None)`
+
+`BaseException.__new__(cls, *args, **kwargs)` accepts and ignores keyword arguments,
+allowing cooperative `__new__` calls.
 
 ## Attributes
 
-- `exc.args` — a tuple with 0 or 1 elements. Always a `tuple`, even when
-    empty.
+- `exc.args` — a tuple containing the constructor arguments. Always a `tuple`.
+    Assigning to `exc.args` accepts any iterable and converts it to a tuple; assigning
+    a non-iterable raises `TypeError`. Reading `exc.args` returns the identical tuple
+    instance (`exc.args is exc.args`).
 
-- `str(exc)` — returns the single message string, or `""` if none.
+- `str(exc)` — returns `""` if `args` is empty, `str(args[0])` for a single argument,
+    and `str(args)` (tuple format) for multiple arguments.
+
+- Specific exception attributes:
+    - `StopIteration.value` — the first positional argument, or `None`.
+    - `SystemExit.code` — `None` if empty, the argument if single, or `args` tuple if multiple.
+    - `AttributeError.name`, `AttributeError.obj` — keyword values passed to constructor, or `None`.
+    - `NameError.name` — keyword value passed to constructor, or `None`.
+    - `ImportError.name`, `ImportError.path` — keyword values passed to constructor, or `None`.
 
 - `KeyError` always carries the missing key's `str()` text rather than the key
     itself, so `str(exc)` and `repr(exc)` quote non-string keys:
@@ -59,11 +75,11 @@ not supported; passing more than one argument raises an internal error.
     An exception from it is replaced by the type name (`KeyError('<K>')`), but a resource limit hit inside it
     ends the run with `MemoryError` or `TimeoutError` where CPython raises a plain `KeyError`.
 
-- `repr(exc)` — `ClassName('message')` matching CPython, **except**
+- `repr(exc)` — `ClassName(...)` matching CPython, **except**
     `UnicodeDecodeError`/`UnicodeEncodeError`: CPython reprs these from their
     real 5-field constructor (`UnicodeDecodeError('ascii', b'\xff', 0, 1, 'ordinal not in range(128)')`), which Monty
     doesn't track, so Monty's
-    `repr()` uses the generic single-message form instead.
+    `repr()` uses the generic args form instead.
 
 - The dotted exception classes — `json.JSONDecodeError`, `tomllib.TOMLDecodeError`, `re.PatternError`,
     `binascii.Error`, `binascii.Incomplete`, `_csv.Error`, `statistics.StatisticsError` — repr under their qualified
@@ -74,13 +90,9 @@ not supported; passing more than one argument raises an internal error.
 - `exc.__cause__`, `exc.__context__` and `exc.__suppress_context__` are read-only: `exc.__cause__ = other` raises
     `AttributeError`, where CPython accepts an exception or `None`.
 
-- An exception rebuilt from a copy loses its chain: one that escapes a nested synchronous call (a `sorted()` key,
-    `json.dumps(default=...)`, a `__repr__`) reaches the outer handler with `__cause__` reset to `None`,
-    `__suppress_context__` to `False`, and `__context__` set to the exception the *caller* was handling, if any,
-    rather than the one the callee was handling.
-
-- A chain that forms a cycle (`raise e from e`) is only reclaimed when the session ends, since exceptions are not
-    cycle-collected.
+- Arbitrary user attributes can be assigned on exception instances (`exc.foo = 'bar'`).
+    Exceptions participate in cycle collection: cyclic references formed through attributes,
+    `args`, or chained exceptions are collected.
 
 **Not implemented:** `__traceback__`, `__notes__`, `add_note()`. A traceback printed for an exception with a
 `__cause__` or `__context__` shows that exception alone: CPython's chained output (`The above exception was the direct cause of the following exception:`) is not produced, inside the sandbox or at the host boundary.
