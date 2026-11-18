@@ -119,6 +119,7 @@ RULES: list[tuple[str, Category]] = [
     # vendored CPython stdlib modules and their patches, embedded in the interpreter
     ('crates/monty/stdlib/Lib/**', PRODUCTION),
     ('crates/monty/stdlib/patches/**', PRODUCTION),
+    ('crates/monty-datatest/vendor/cpython/**', TEST),
 ]
 
 

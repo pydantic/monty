@@ -1,0 +1,65 @@
+Run the eight upstream colorsys tests without unittest discovery or generators.
+Use a fresh TestCase per method and let subtest failures propagate; the upstream inputs, assertions and tolerances are unchanged.
+
+--- a/test/test_colorsys.py
++++ b/test/test_colorsys.py
+@@ -1,12 +1,13 @@
+-import unittest
+ import colorsys
+ 
+ def frange(start, stop, step):
++    values = []
+     while start <= stop:
+-        yield start
++        values.append(start)
+         start += step
++    return values
+ 
+-class ColorsysTest(unittest.TestCase):
++class ColorsysTest(TestCase):
+ 
+     def assertTripleEqual(self, tr1, tr2):
+         self.assertEqual(len(tr1), 3)
+@@ -122,5 +123,14 @@
+             self.assertTripleEqual(yiq, colorsys.rgb_to_yiq(*rgb))
+             self.assertTripleEqual(rgb, colorsys.yiq_to_rgb(*yiq))
+ 
+-if __name__ == "__main__":
+-    unittest.main()
++for name in (
++    'test_hsv_roundtrip',
++    'test_hsv_values',
++    'test_hls_roundtrip',
++    'test_hls_values',
++    'test_hls_nearwhite',
++    'test_yiq_roundtrip',
++    'test_yiq_to_rgb_clamping',
++    'test_yiq_values',
++):
++    getattr(ColorsysTest(), name)()
+--- a/unittest/case.py
++++ b/unittest/case.py
+@@ -1,7 +1,23 @@
++class _SubTest:
++    """Let a failed subtest abort the suite without a TestResult."""
++
++    def __enter__(self):
++        return None
++
++    def __exit__(self, exc_type, exc, traceback):
++        return False
++
++
+ class TestCase(object):
+     failureException = AssertionError
+ 
+     longMessage = True
++
++    def __init__(self):
++        self._type_equality_funcs = {}
++
++    def subTest(self, **params):
++        return _SubTest()
+ 
+     def _formatMessage(self, msg, standardMsg):
+         """Honour the longMessage attribute when generating failure messages.

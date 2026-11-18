@@ -58,6 +58,7 @@ extend-exclude = [
     "crates/monty-bench/benches/python",
     # CPython source, vendored by `make vendor-stdlib` with documented patches
     "crates/monty/stdlib",
+    "crates/monty-datatest/vendor/cpython",
     "crates/monty/test_cases/function__err_duplicate_param.py",
     "crates/monty/test_cases/function__err_repeated_keyword.py",
     "crates/monty/test_cases/nonlocal__error_module_level.py",

@@ -1,7 +1,7 @@
 //! Data-driven test harness: runs every Python file in
 //! `crates/monty/test_cases/` against both Monty and CPython (via pyo3) and
-//! diffs the results, so any behavioural divergence fails the suite. Run via
-//! `make test-cases`; see CLAUDE.md for the test-case file conventions.
+//! also runs selected CPython stdlib suites from `vendor/cpython/` on both.
+//! Run via `make test-cases`; see CLAUDE.md for the test-case file conventions.
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
@@ -47,6 +47,17 @@ const SCRIPTS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts");
 const TEST_CASES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../monty/test_cases");
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 const TEST_CASES_RELATIVE_DIR: &str = "crates/monty/test_cases";
+const STDLIB_TESTS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/cpython/Lib/test");
+
+/// The upstream assertions used by the test suites, without exposing `unittest` as a sandbox import.
+const STDLIB_TEST_PREAMBLE: &str = concat!(
+    include_str!("../vendor/cpython/Lib/unittest/__init__.py"),
+    "\n",
+    include_str!("../vendor/cpython/Lib/unittest/util.py"),
+    "\n",
+    include_str!("../vendor/cpython/Lib/unittest/case.py"),
+    "\n",
+);
 
 static CANONICAL_WS_DIR: LazyLock<PathBuf> =
     LazyLock::new(|| canonicalize(WORKSPACE_ROOT).expect("Failed to canonicalize workspace root"));
@@ -2954,6 +2965,16 @@ where
 /// Handles xfail with strict semantics: if a test's header sets `xfail = ['monty']`, it must fail.
 /// If an xfail test passes unexpectedly, that's an error.
 fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
+    run_monty_fixture(path, "")
+}
+
+/// Runs a vendored CPython suite in Monty with the test-only `TestCase` subset in scope.
+fn run_test_cases_monty_stdlib(path: &Path) -> Result<(), Box<dyn Error>> {
+    run_monty_fixture(path, STDLIB_TEST_PREAMBLE)
+}
+
+/// Runs a Monty fixture, optionally with assertion helpers before its body.
+fn run_monty_fixture(path: &Path, preamble: &str) -> Result<(), Box<dyn Error>> {
     // Joined onto the workspace rather than read relative to the process cwd:
     // the harness never changes directory, so a CPython fixture that calls
     // `os.chdir` cannot race another thread's fixture read.
@@ -2968,7 +2989,7 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
         .display()
         .to_string();
 
-    // Move data into the closure since it needs 'static lifetime
+    let code = prepend_fixture_code(code, preamble);
     let path_owned = path.to_owned();
     let iter_mode = config.iter_mode;
     let mount_fs = config.mount_fs;
@@ -3025,6 +3046,16 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
 /// Handles xfail with strict semantics: if a test's header sets `xfail = ['cpython']`, it must fail.
 /// If an xfail test passes unexpectedly, that's an error.
 fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
+    run_cpython_fixture(path, "")
+}
+
+/// Runs the same adapted suite and assertions in CPython without changing `sys.modules`.
+fn run_test_cases_cpython_stdlib(path: &Path) -> Result<(), Box<dyn Error>> {
+    run_cpython_fixture(path, STDLIB_TEST_PREAMBLE)
+}
+
+/// Runs a CPython fixture, optionally with assertion helpers before its body.
+fn run_cpython_fixture(path: &Path, preamble: &str) -> Result<(), Box<dyn Error>> {
     // Joined onto the workspace rather than read relative to the process cwd:
     // the harness never changes directory, so a CPython fixture that calls
     // `os.chdir` cannot race another thread's fixture read.
@@ -3045,6 +3076,7 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
+    let code = prepend_fixture_code(code, preamble);
     let result = try_run_cpython_test(path, &code, &expectation, &config);
 
     if config.xfail_cpython {
@@ -3059,10 +3091,20 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-// Generate tests for all fixture files using datatest-stable harness macro
+/// Puts the assertion helpers in the fixture's scope without registering a module.
+fn prepend_fixture_code(code: String, preamble: &str) -> String {
+    if preamble.is_empty() {
+        code
+    } else {
+        format!("{preamble}{code}")
+    }
+}
+
 datatest_stable::harness! {
     { test = run_test_cases_monty, root = TEST_CASES_DIR, pattern = r"^.*\.py$" },
     { test = run_test_cases_cpython, root = TEST_CASES_DIR, pattern = r"^.*\.py$" },
+    { test = run_test_cases_monty_stdlib, root = STDLIB_TESTS_DIR, pattern = r"^test_.*\.py$" },
+    { test = run_test_cases_cpython_stdlib, root = STDLIB_TESTS_DIR, pattern = r"^test_.*\.py$" },
 }
 
 #[cfg(test)]

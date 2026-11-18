@@ -4,17 +4,19 @@ Vendor the CPython stdlib modules listed in `crates/monty/stdlib/vendor.toml`.
 Downloads each listed file from `Lib/` at the pinned CPython commit, applies `crates/monty/stdlib/patches/*.patch` in
 file-name order, and writes the result to `crates/monty/stdlib/Lib/`, along with CPython's `LICENSE`.
 It also generates `crates/monty/src/modules/vendored/sources.rs`, the table the interpreter imports them from.
-Files under `Lib/` that are no longer listed are deleted.
+Test-only sources use the same pin, but are written under `crates/monty-datatest/vendor/cpython/Lib/`.
+The manifest can select individual definitions from test-only dependencies before their patches apply.
 
 - `make vendor-stdlib`: write everything.
 - `make check-stdlib` (`--check`): fail instead of writing if anything differs.
 - `--make-patch NAME --reason TEXT`: save the edits made to `Lib/` since the last vendoring as `patches/NAME.patch`,
-    replacing a patch of that name.
+    replacing a patch of that name. Add `--test` to work on the test-only tree instead.
 - `make check-stdlib-patches` (`--check-patches`): fail if a patched module passes its test case unpatched, so its
     patches can be dropped. A patch whose reason has a `Permanent: <why>` line is kept without checking.
 """
 
 import argparse
+import ast
 import difflib
 import os
 import re
@@ -31,6 +33,7 @@ STDLIB = REPO / 'crates' / 'monty' / 'stdlib'
 MANIFEST = STDLIB / 'vendor.toml'
 LIB = STDLIB / 'Lib'
 PATCHES = STDLIB / 'patches'
+TEST_VENDOR = REPO / 'crates' / 'monty-datatest' / 'vendor' / 'cpython'
 LICENSE = STDLIB / 'LICENSE'
 TABLE = REPO / 'crates' / 'monty' / 'src' / 'modules' / 'vendored' / 'sources.rs'
 TEST_CASES = REPO / 'crates' / 'monty' / 'test_cases'
@@ -44,26 +47,37 @@ def main() -> None:
     mode.add_argument('--make-patch', metavar='NAME', help='save edits to Lib/ as patches/NAME.patch')
     mode.add_argument('--check-patches', action='store_true', help='fail if a patched module works unpatched')
     parser.add_argument('--reason', help='why the patch is needed; required with --make-patch')
+    parser.add_argument('--test', action='store_true', help='save a patch to the test-only tree with --make-patch')
     args = parser.parse_args()
+    if args.test and not args.make_patch:
+        parser.error('--test requires --make-patch')
 
     manifest = tomllib.loads(MANIFEST.read_text(encoding='utf-8'))
     tag: str = manifest['tag']
     commit: str = manifest['commit']
     files: list[str] = sorted(manifest['files'])
-    upstream = {file: fetch(commit, f'Lib/{file}') for file in files}
-
     if args.make_patch:
         if not (args.reason or '').strip():
             sys.exit('--make-patch needs a --reason explaining why the CPython source must change')
-        make_patch(args.make_patch, args.reason, upstream)
+        sources = test_sources(commit, manifest['tests']) if args.test else fetch_sources(commit, files)
+        make_patch(args.make_patch, args.reason, sources, TEST_VENDOR if args.test else STDLIB)
         return
+
+    upstream = fetch_sources(commit, files)
     if args.check_patches:
         check_patches(upstream, sorted(PATCHES.glob('*.patch')))
         return
 
-    expected = {LICENSE: fetch(commit, 'LICENSE'), TABLE: render_table(tag, files)}
-    expected |= {LIB / file: text for file, text in apply_patches(upstream, sorted(PATCHES.glob('*.patch'))).items()}
-    stale = [path for path in LIB.rglob('*') if path.is_file() and path not in expected]
+    license_text = fetch(commit, 'LICENSE')
+    expected = {LICENSE: license_text, TEST_VENDOR / 'LICENSE': license_text, TABLE: render_table(tag, files)}
+    expected |= patched_tree(STDLIB, upstream)
+    expected |= patched_tree(TEST_VENDOR, test_sources(commit, manifest['tests']))
+    stale = [
+        path
+        for root in (LIB, TEST_VENDOR / 'Lib')
+        for path in root.rglob('*')
+        if path.is_file() and path not in expected
+    ]
 
     if args.check:
         changed = [path for path, text in expected.items() if read(path) != text] + stale
@@ -77,7 +91,78 @@ def main() -> None:
         for path, text in expected.items():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding='utf-8', newline='\n')
-        print(f'vendored {len(files)} files from CPython {tag}')
+        print(
+            f'vendored {len(files)} runtime modules and {len(manifest["tests"]["files"])} test files from CPython {tag}'
+        )
+
+
+def fetch_sources(commit: str, files: list[str]) -> dict[str, str]:
+    """Fetch each file by its path relative to `Lib/`."""
+    return {file: fetch(commit, f'Lib/{file}') for file in files}
+
+
+def test_sources(commit: str, config: dict[str, list[str] | dict[str, list[str]]]) -> dict[str, str]:
+    """Fetch the test suite and retain only the requested definitions in its dependencies."""
+    files = config['files']
+    extracts = config['extract']
+    assert isinstance(files, list) and isinstance(extracts, dict)
+    sources = fetch_sources(commit, files)
+    for file, names in extracts.items():
+        source = sources[file]
+        sources[file] = extract_definitions(source.splitlines(keepends=True), ast.parse(source).body, names)
+    return sources
+
+
+def extract_definitions(lines: list[str], body: list[ast.stmt], names: list[str]) -> str:
+    """Copy selected statements verbatim; dotted selectors keep only the requested class members."""
+    excerpts: list[str] = []
+    for name, members in group_selectors(names).items():
+        matches = [node for node in body if definition_name(node) == name]
+        if len(matches) != 1:
+            sys.exit(f'expected one upstream definition for {name}, found {len(matches)}')
+        node = matches[0]
+        if members:
+            if not isinstance(node, ast.ClassDef) or node.decorator_list:
+                sys.exit(f'cannot select members of {name}: expected an undecorated class')
+            excerpts.append(''.join(lines[node.lineno - 1 : node.body[0].lineno - 1]))
+            excerpts.append(extract_definitions(lines, node.body, members) + '\n')
+        else:
+            excerpts.append(''.join(lines[node.lineno - 1 : node.end_lineno]) + '\n')
+    return ''.join(excerpts).rstrip() + '\n'
+
+
+def group_selectors(names: list[str]) -> dict[str, list[str]]:
+    """Group class members by their class, in manifest order."""
+    groups: dict[str, list[str]] = {}
+    for selector in names:
+        name, _, member = selector.partition('.')
+        members = groups.setdefault(name, [])
+        if member:
+            members.append(member)
+    return groups
+
+
+def definition_name(node: ast.stmt) -> str | None:
+    """Identify the statements the test manifest can select from upstream."""
+    match node:
+        case ast.FunctionDef(name=name, decorator_list=[]) | ast.ClassDef(name=name):
+            return name
+        case ast.Assign(targets=[ast.Name(id=name)]):
+            return name
+        case ast.ImportFrom(names=[ast.alias(name=name, asname=None)]):
+            return name
+        case ast.Expr(value=ast.Constant(value=str())):
+            return '__doc__'
+        case _:
+            return None
+
+
+def patched_tree(root: Path, sources: dict[str, str]) -> dict[Path, str]:
+    """Map a source tree's patched contents to their destination paths."""
+    return {
+        root / 'Lib' / file: text
+        for file, text in apply_patches(sources, sorted((root / 'patches').glob('*.patch'))).items()
+    }
 
 
 def fetch(commit: str, path: str) -> str:
@@ -142,29 +227,32 @@ def git_apply(patch: Path, root: Path) -> None:
         raise PatchDoesNotApply(f'{patch.relative_to(REPO)} does not apply:\n{result.stderr}')
 
 
-def make_patch(name: str, reason: str, upstream: dict[str, str]) -> None:
+def make_patch(name: str, reason: str, upstream: dict[str, str], root: Path) -> None:
     """Saves the difference between the patched upstream files and `Lib/` as `patches/<name>.patch`.
 
     The earlier patches are applied first, so the new one holds only the edits they do not already make.
     Only the last patch can be replaced: later ones were made against its result.
     """
-    target = PATCHES / f'{name}.patch'
-    patches = sorted(PATCHES.glob('*.patch'))
+    patch_dir = root / 'patches'
+    target = patch_dir / f'{name}.patch'
+    patches = sorted(patch_dir.glob('*.patch'))
     if later := [patch.name for patch in patches if patch.name > target.name]:
         sys.exit(f'{target.name} would sort before {", ".join(later)}; pick a name that sorts last')
     base = apply_patches(upstream, [patch for patch in patches if patch != target])
     hunks: list[str] = []
     for file, old in base.items():
-        new = (LIB / file).read_text(encoding='utf-8')
+        new = (root / 'Lib' / file).read_text(encoding='utf-8')
         if not new.endswith('\n'):
             # difflib cannot express a missing final newline in a form `git apply` accepts
             sys.exit(f'Lib/{file} must end with a newline')
         hunks.extend(difflib.unified_diff(old.splitlines(True), new.splitlines(True), f'a/{file}', f'b/{file}'))
     if not hunks:
         sys.exit('Lib/ has no edits beyond the existing patches')
-    PATCHES.mkdir(exist_ok=True)
+    patch_dir.mkdir(exist_ok=True)
     target.write_text(f'{reason.strip()}\n\n{"".join(hunks)}', encoding='utf-8', newline='\n')
-    print(f'wrote {target.relative_to(REPO)}; document any behaviour it changes under limitations/')
+    print(f'wrote {target.relative_to(REPO)}')
+    if root == STDLIB:
+        print('document any behaviour it changes under limitations/')
 
 
 def check_patches(upstream: dict[str, str], patches: list[Path]) -> None:
