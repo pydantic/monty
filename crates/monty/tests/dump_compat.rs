@@ -683,7 +683,21 @@ fn persisted_key_hashes_are_stable() {
     assert_snapshot!(hashes.py_repr(), @"(-7376904247260835724, -8418895208483869890, -7578619387304540654, -6751866591645121981, -8097107109803033201, 2456456309100923238, -5014982954702616963, 2858064283329581446)");
 }
 
-<<<<<<< HEAD
+/// `id()` of an object without a heap identity is derived from its value, so a
+/// session that stored one before a dump must see the same id after restoring.
+#[test]
+fn builtin_ids_are_stable() {
+    let mut repl = MontyRepl::new("ids.py", ResourceTracker::default(), CompileOptions::default());
+    let ids = repl
+        .feed_run(
+            "(id(len), id(type), id(ValueError), id(KeyError), id(int), id(list))",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_snapshot!(ids.py_repr(), @"(2097610, 2098122, 2105898, 2105642, 2113706, 2114058)");
+}
+
 /// Date and timedelta hashes must survive the storage-library migration because
 /// dicts and sets persist them. Expected values come from the former storage types.
 #[test]
@@ -696,21 +710,10 @@ fn persisted_calendar_hashes_are_stable() {
          timedelta(), timedelta(microseconds=-1), timedelta(days=-2, seconds=86399, microseconds=1), \
          timedelta(days=1, microseconds=1), timedelta.max]\n\
          tuple(hash(value) for value in values)",
-=======
-/// `id()` of an object without a heap identity is derived from its value, so a
-/// session that stored one before a dump must see the same id after restoring.
-#[test]
-fn builtin_ids_are_stable() {
-    let mut repl = MontyRepl::new("ids.py", ResourceTracker::default(), CompileOptions::default());
-    let ids = repl
-        .feed_run(
-            "(id(len), id(type), id(ValueError), id(KeyError), id(int), id(list))",
->>>>>>> origin/main
             vec![],
             PrintWriter::Stdout,
         )
         .unwrap();
-<<<<<<< HEAD
     assert_snapshot!(hashes.py_repr(), @"(5726848817805768197, -5905029044664614831, 8287707130111363081, -7491674403021461934, -4854198610469465321, 2435999049025295583, -7668848667738911443, 8954133621882991626, 1789700847611459173, -7132049192933483870)");
     repl.feed_run(
         "values.append(timedelta.min)\nby_value = {value: index for index, value in enumerate(values)}",
@@ -764,9 +767,6 @@ True",
         )
         .unwrap();
     assert_eq!(checked, MontyObject::bool(true));
-=======
-    assert_snapshot!(ids.py_repr(), @"(2097610, 2098122, 2105898, 2105642, 2113706, 2114058)");
->>>>>>> origin/main
 }
 
 /// The fixture for the current `DUMP_VERSION`; the name carries the version so

@@ -92,65 +92,6 @@ impl Type {
     /// other name is looked up as a plain attribute and the result called, so
     /// `list.__name__()` raises `'str' object is not callable`.
     pub(crate) fn call_class_method(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-<<<<<<< HEAD
-        match (self, attr.static_string(vm.interns)) {
-            // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
-            (Self::Dict, Some(StaticStrings::Fromkeys)) => {
-                dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value)
-            }
-            // `defaultdict.fromkeys(...)` builds `cls()`, i.e. a defaultdict with no
-            // factory — matching CPython's inherited `dict.fromkeys` classmethod.
-            (Self::DefaultDict, Some(StaticStrings::Fromkeys)) => {
-                dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value)
-            }
-            // `chain.from_iterable(iterable)`, CPython's one classmethod here.
-            (Self::ItertoolsChain, Some(StaticStrings::FromIterable)) => {
-                itertools::call(vm, ItertoolsFunctions::ChainFromIterable, args).map(CallResult::Value)
-            }
-            // Counter deliberately disables the inherited classmethod.
-            (Self::Counter, Some(StaticStrings::Fromkeys)) => {
-                args.drop_with(vm);
-                Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
-            }
-            (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(CallResult::Value),
-            (Self::Complex, Some(StaticStrings::FromNumber)) => {
-                complex::class_from_number(vm, args).map(CallResult::Value)
-            }
-            (Self::Decimal, Some(StaticStrings::FromNumber)) => {
-                decimal::py::class_from_number(vm, args).map(CallResult::Value)
-            }
-            (Self::Decimal, _) if attr.as_str(vm.interns) == "from_float" => {
-                decimal::py::class_from_float(vm, args).map(CallResult::Value)
-            }
-            (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm, args),
-            (Self::Path, Some(StaticStrings::Cwd)) => path::class_cwd(vm, args).map(CallResult::Value),
-            (Self::Date, Some(StaticStrings::Fromisoformat)) => {
-                date::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
-            }
-            (Self::Date, Some(StaticStrings::Fromtimestamp)) => {
-                date::class_fromtimestamp(vm, args).map(CallResult::Value)
-            }
-            (Self::DateTime, Some(StaticStrings::Fromtimestamp)) => {
-                datetime::class_fromtimestamp(vm, args).map(CallResult::Value)
-            }
-            (Self::DateTime, Some(StaticStrings::Now)) => datetime::class_now(vm, args),
-            (Self::DateTime, Some(StaticStrings::Strptime)) => {
-                datetime::class_strptime(vm, args).map(CallResult::Value)
-            }
-            (Self::DateTime, Some(StaticStrings::Fromisoformat)) => {
-                datetime::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
-            }
-            // `object.__setattr__(obj, name, value)` called directly, which is
-            // how it is nearly always reached; `object.__setattr__` as a value
-            // is handled by `class_getattr`.
-            (Self::Object, _) if attr.as_str(vm.interns) == "__setattr__" => {
-                builtin_object_setattr(vm, args).map(CallResult::Value)
-            }
-            (Self::DateTime, Some(StaticStrings::Combine)) => datetime::class_combine(vm, args).map(CallResult::Value),
-            (Self::Time, Some(StaticStrings::Fromisoformat)) => {
-                time::class_fromisoformat(vm, args).map(CallResult::Value)
-            }
-=======
         let args = match self.def().class_method {
             Some(class_method) => match class_method(attr, args, vm) {
                 Ok(result) => return result,
@@ -159,7 +100,6 @@ impl Type {
             None => args,
         };
         if self.has_class_getitem() && attr.static_string(vm.interns) == Some(StaticStrings::ClassGetitem) {
->>>>>>> origin/main
             // `list.__class_getitem__(int)` is `list[int]`; the error names the
             // bare type as CPython does (`deque.__class_getitem__()`).
             let name = format!("{}.__class_getitem__", self.dunder_name());

@@ -307,7 +307,7 @@ pub(crate) fn class_method(
     Ok(match attr.static_string(vm.interns) {
         Some(StaticStrings::Now) => class_now(vm, args),
         Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
-        Some(StaticStrings::Strptime) => class_strptime(vm.heap, args, vm.interns).map(CallResult::Value),
+        Some(StaticStrings::Strptime) => class_strptime(vm, args).map(CallResult::Value),
         Some(StaticStrings::Fromisoformat) => class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value),
         Some(StaticStrings::Combine) => class_combine(vm, args).map(CallResult::Value),
         _ => return Err(args),
