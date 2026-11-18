@@ -1,7 +1,7 @@
 //! Sandbox values flowing OUT to the host: [`DecodedArena`] turns one
 //! message's node arena into Python objects.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 
 use monty_types::{
     BuiltinsFunctions, MontyException, MontyObject,
@@ -15,8 +15,8 @@ use pyo3::{
 use super::{
     class_instance::{ClassHeader, InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy},
     convert::{
-        PyMontyFileHandle, get_decimal_type, get_namedtuple, get_pure_posix_path, host_type_object, import_builtins,
-        monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py,
+        PyMontyFileHandle, get_decimal_type, get_monty_namedtuple, get_pure_posix_path, host_type_object,
+        import_builtins, monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py,
     },
     exceptions::exc_monty_to_py,
     external_module::PyExternalModule,
@@ -50,7 +50,7 @@ impl DecodedArena {
             graph,
             store,
             built: Vec::with_capacity(graph.len()),
-            namedtuple_types: HashMap::new(),
+            namedtuple_headers: HashMap::new(),
         };
         for node in graph.nodes() {
             let obj = decoder.decode(node)?;
@@ -73,13 +73,17 @@ struct Decoder<'a, 'py> {
     store: &'a InstanceStore,
     /// Objects built so far, one per node decoded.
     built: Vec<Py<PyAny>>,
-    /// Namedtuple types built for this arena, by `(type_name, field_names)`.
-    namedtuple_types: HashMap<(String, Vec<String>), Py<PyAny>>,
+    /// The type name and field names as Python objects, built once per distinct
+    /// pair so every instance of a type in this arena shares them.
+    namedtuple_headers: HashMap<(&'a str, &'a [String]), NamedTupleHeader>,
 }
 
-impl Decoder<'_, '_> {
+/// A namedtuple's type name and field names, as passed to `MontyNamedTuple`.
+type NamedTupleHeader = (Py<PyString>, Py<PyTuple>);
+
+impl<'a> Decoder<'a, '_> {
     /// Converts one node; every child id is lower, so already built.
-    fn decode(&mut self, node: &MontyNode) -> PyResult<Py<PyAny>> {
+    fn decode(&mut self, node: &'a MontyNode) -> PyResult<Py<PyAny>> {
         let py = self.py;
         match node {
             MontyNode::None => Ok(py.None()),
@@ -99,10 +103,12 @@ impl Decoder<'_, '_> {
                 field_names,
                 values,
             } => {
-                let nt_type = self.namedtuple_type(type_name, field_names)?;
-                // `_make` is a public documented method despite the leading underscore
-                let instance = nt_type.bind(py).call_method1("_make", (self.children(values),))?;
-                Ok(instance.into_any().unbind())
+                // one shared `MontyNamedTuple` class rather than a class per
+                // type, so the sandbox cannot make the host build classes
+                let (type_name, field_names) = self.namedtuple_header(type_name, field_names)?;
+                let values = PyTuple::new(py, self.children(values))?;
+                let instance = get_monty_namedtuple(py)?.call1((type_name, field_names, values))?;
+                Ok(instance.unbind())
             }
             MontyNode::Dict(pairs) => {
                 let dict = PyDict::new(py);
@@ -221,32 +227,18 @@ impl Decoder<'_, '_> {
         Ok(dict.unbind())
     }
 
-    /// A real Python namedtuple type via `collections.namedtuple`, one per
-    /// `(name, fields)` for the arena, with `module=` set so it round-trips
-    /// back through the encoder.
-    fn namedtuple_type(&mut self, type_name: &str, field_names: &[String]) -> PyResult<Py<PyAny>> {
+    /// The type name and field names of a namedtuple as Python objects, shared
+    /// by every instance with the same pair in this arena.
+    fn namedtuple_header(&mut self, type_name: &'a str, field_names: &'a [String]) -> PyResult<NamedTupleHeader> {
         let py = self.py;
-        let key = (type_name.to_owned(), field_names.to_vec());
-        if let Some(nt_type) = self.namedtuple_types.get(&key) {
-            return Ok(nt_type.clone_ref(py));
-        }
-        // split the full type_name (e.g. "os.stat_result") into module + name
-        let (module, simple_name) = match type_name.rfind('.') {
-            Some(idx) => (&type_name[..idx], &type_name[idx + 1..]),
-            None => ("", type_name),
+        let (name, fields) = match self.namedtuple_headers.entry((type_name, field_names)) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert((
+                PyString::new(py, type_name).unbind(),
+                PyTuple::new(py, field_names)?.unbind(),
+            )),
         };
-        let namedtuple_fn = get_namedtuple(py)?;
-        let py_field_names = PyList::new(py, field_names)?;
-        let nt_type = if module.is_empty() {
-            namedtuple_fn.call1((simple_name, py_field_names))?
-        } else {
-            let kwargs = PyDict::new(py);
-            kwargs.set_item("module", module)?;
-            namedtuple_fn.call((simple_name, py_field_names), Some(&kwargs))?
-        }
-        .unbind();
-        self.namedtuple_types.insert(key, nt_type.clone_ref(py));
-        Ok(nt_type)
+        Ok((name.clone_ref(py), fields.clone_ref(py)))
     }
 }
 
