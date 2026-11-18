@@ -279,7 +279,7 @@ fn fixture_dump_loads_and_resumes() {
 /// Older fixtures remain readable after adding inline strings and the star-import opcode.
 #[test]
 fn older_version_fixtures_load_and_resume() {
-    for version in [14, 15] {
+    for version in [14, 15, 16] {
         let bytes = fs::read(fixture_path_for(version)).expect("older fixture exists");
         let loaded = Dump::load(&bytes).expect("older dumps remain supported");
         assert_eq!(loaded.script_name, "fixture.py");

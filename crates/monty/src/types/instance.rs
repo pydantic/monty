@@ -544,7 +544,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         match self.call_next(vm).and_then(|call| call.require_synchronous(vm)) {
             Ok(value) => Ok(Some(value)),
-            Err(e) if e.is_stop_iteration() => Ok(None),
+            Err(e) if e.is_stop_iteration() => {
+                e.drop_with(vm);
+                Ok(None)
+            }
             Err(e) => Err(e),
         }
     }

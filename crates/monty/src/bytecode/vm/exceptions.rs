@@ -8,7 +8,9 @@ use super::VM;
 use crate::{
     builtins::Builtins,
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
+    exception_private::{
+        ExcType, ExcTypeExt, ExceptionRaise, PyException, RawStackFrame, RunError, RunResult, SimpleException,
+    },
     expressions::CmpOperator,
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::{StaticStrings, StringId},
@@ -118,7 +120,7 @@ impl VM<'_> {
             // Exception instance on heap
             Value::Ref(heap_id) => {
                 if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
-                    exc.clone()
+                    exc.to_simple_exception()
                 } else {
                     // Not an exception type
                     SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
@@ -203,7 +205,7 @@ impl VM<'_> {
     fn allocate_exception(&mut self, exc_type: ExcType) -> Value {
         Value::Ref(
             self.heap
-                .allocate(HeapData::Exception(SimpleException::new_none(exc_type))),
+                .allocate(HeapData::Exception(Box::new(PyException::new(exc_type, None)))),
         )
     }
 
@@ -661,8 +663,8 @@ impl VM<'_> {
     ///
     /// Allocates an Exception on the heap and returns a Value::Ref to it.
     fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Value {
-        let exception = exc.exc.clone();
-        let heap_id = self.heap.allocate(HeapData::Exception(exception));
+        let exception = PyException::from_simple_exception(&exc.exc);
+        let heap_id = self.heap.allocate(HeapData::Exception(Box::new(exception)));
         Value::Ref(heap_id)
     }
 

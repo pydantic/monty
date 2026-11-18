@@ -959,7 +959,7 @@ mod tests {
 
             let exception = Value::Ref(
                 vm.heap
-                    .allocate(HeapData::Exception(SimpleException::new(ExcType::ValueError, None))),
+                    .allocate(HeapData::Exception(Box::new(crate::exception_private::PyException::new(ExcType::ValueError, None)))),
             );
             defer_drop!(exception, vm);
             assert_eq!(exception.py_value(vm).py_hash(vm).unwrap(), None);

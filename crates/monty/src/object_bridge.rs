@@ -20,7 +20,7 @@ use crate::{
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
-    exception_private::{RunError, RunResult, SimpleException},
+    exception_private::{PyException, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     modules::dataclasses,
     types::{
@@ -1027,8 +1027,8 @@ fn import_node(
             }
         }
         MontyNode::Exception { exc_type, arg } => {
-            let exc = SimpleException::new(exc_type, arg);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Exception(exc))))
+            let exc = PyException::from_simple_exception(&SimpleException::new(exc_type, arg));
+            Ok(Value::Ref(vm.heap.allocate(HeapData::Exception(Box::new(exc)))))
         }
         // A sandbox class the host hands back resolves to the class object
         // itself; a host class resolves to its single `HostClassType` entry,
