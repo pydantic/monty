@@ -194,9 +194,14 @@ for the budget's scope.
 [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) spawns local `monty subprocess` workers over framed stdio.
 These are the poolable workers: prewarmed, reused across checkouts, replaced on crash.
 
-[`PoolConfig::remote`](../api/rust/monty-pool.md#poolconfig) reaches a remote worker over gRPC at an `http://`/`https://` URL: one HTTP/2 connection per pool, one `MontySession.Session` stream per checkout.
-Those workers are single-use, never prewarmed or returned to the pool, and isolation becomes the remote host's
-responsibility.
+[`PoolConfig::remote`](../api/rust/monty-pool.md#poolconfig) reaches a remote worker over the transport the URL's scheme names.
+An `http://`/`https://` URL speaks gRPC: one HTTP/2 connection per pool, one `MontySession.Session` stream per checkout.
+A `ws://`/`wss://` URL speaks WebSocket: one connection per checkout, dialed as given, path and query included.
+`PoolConfig::keep_alive` applies to gRPC only.
+Those workers are single-use, never returned to the pool, and isolation becomes the remote host's responsibility.
+`min_processes` (0 by default) keeps that many sessions open and ready, opened by `Pool::new` (in the background when
+`pre_warm_wait` is off) with `pre_warm_metadata`, and replaced as checkouts take them with the latest checkout's
+metadata; a checkout takes only a session dialed with its own metadata.
 See [the security model](../security.md#remote-workers) before using it.
 
 ### Host decode budget
@@ -430,7 +435,8 @@ assert_eq!(result, MontyObject::int(42));
 
 ## Remote disconnects
 
-`PoolError::Disconnected` retains optional `remote` details with the gRPC status that ended the stream (code and message, plus the server's `RemoteCause` when it sent one), or the transport error.
+`PoolError::Disconnected` retains optional `remote` details with the gRPC status that ended the session (code and message, plus the server's `RemoteCause` when it sent one), or the transport error.
+On WebSocket, the server's Close frame is mapped onto the same fields; each `RemoteCause` has its own close code.
 The peer reason is unverified text, and a disconnect does not establish whether the request ran.
 The display text includes that reason.
 `PoolError::Refused` identifies a server refusal before a session exists.

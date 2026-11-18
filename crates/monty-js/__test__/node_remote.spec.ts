@@ -1,6 +1,6 @@
-// `MontyRemote` end-to-end against in-process gRPC servers that bridge each
-// session stream to a real `monty subprocess` worker (see remote_servers.ts),
-// mirroring crates/monty-python/tests/test_remote.py.
+// `MontyRemote` end-to-end against in-process gRPC and WebSocket servers that
+// bridge each session to a real `monty subprocess` worker (see remote_servers.ts),
+// mirroring crates/monty-python/tests/test_remote.py and test_websocket.py.
 
 import { AsyncLocalStorage } from 'node:async_hooks'
 
@@ -18,9 +18,12 @@ import {
   protoFields,
   refusingServer,
   relay,
+  type Refusal,
   serve,
+  serveWebSocket,
   StoringServer,
   type TestServer,
+  websocketRelay,
 } from './remote_servers.js'
 
 import {
@@ -36,11 +39,18 @@ import {
   type MontyWebsocketOptions,
 } from '@pydantic/monty'
 
-const servers: TestServer[] = []
+const servers: { close(): Promise<void> }[] = []
 
 /** Serves `handle` until the end of the test. */
 async function server(handle: Parameters<typeof serve>[0]): Promise<TestServer> {
   const started = await serve(handle)
+  servers.push(started)
+  return started
+}
+
+/** Serves `handle` over WebSocket until the end of the test, or refuses every upgrade with `refusal`. */
+async function wsServer(handle: Parameters<typeof serveWebSocket>[0], refusal?: Refusal) {
+  const started = await serveWebSocket(handle, refusal)
   servers.push(started)
   return started
 }
@@ -219,7 +229,8 @@ test('a URL validation error carries its reason as the transport failure', async
   const error = await t.throwsAsync(() => MontyRemote.create('http://localhost/sandbox'), {
     instanceOf: MontyConnectError,
   })
-  const reason = 'a URL path, query or fragment is not supported; use only the scheme and host, with an optional port'
+  const reason =
+    'a URL path, query or fragment is not supported for gRPC; use only the scheme and host, with an optional port'
   t.is(error.statusCode, null)
   t.is(error.transportError, reason)
   t.is(error.message, `http://localhost/sandbox: ${reason}`)
@@ -391,14 +402,58 @@ test('every close() call waits for a finished session stream to end', async () =
   t.is(settled, 2)
 })
 
-test('MontyWebsocket is an alias of MontyRemote that still accepts ws:// URLs', async () => {
+test('MontyWebsocket is an alias of MontyRemote', () => {
   t.is(MontyWebsocket, MontyRemote)
   const options: MontyWebsocketOptions = { requestTimeout: 30 }
   const remoteOptions: MontyRemoteOptions = options
-  const { url } = await server(relay)
-  await using pool = await MontyWebsocket.create(url.replace('http://', 'ws://'), remoteOptions)
+  t.is(remoteOptions.requestTimeout, 30)
+})
+
+test('feedRun over WebSocket dials the URL as given, with metadata as upgrade headers', async () => {
+  const relayServer = await wsServer(websocketRelay)
+  await using pool = await MontyRemote.create(`${relayServer.url}/relay?tenant=a`, {
+    requestTimeout: 30,
+    metadata: () => ({ authorization: 'Bearer t0k3n' }),
+  })
   await using session = await pool.checkout()
   t.is(await session.feedRun('1 + 1'), 2)
+  await session.feedRun('x = 21')
+  t.is(await session.feedRun('x * 2'), 42)
+  t.deepEqual(relayServer.paths, ['/relay?tenant=a'])
+  t.is(relayServer.headers[0]?.authorization, 'Bearer t0k3n')
+})
+
+test('a refused WebSocket upgrade rejects the checkout with its status and cause', async () => {
+  const { url } = await wsServer(websocketRelay, {
+    status: 503,
+    headers: { 'monty-cause': 'capacity', 'retry-after': '3' },
+    body: 'at capacity',
+  })
+  await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
+  const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: MontyRefusedError })
+  t.is(error.statusCode, 'RESOURCE_EXHAUSTED')
+  t.is(error.remoteCause, 'capacity')
+  t.is(error.statusMessage, 'HTTP 503 Service Unavailable: at capacity')
+  t.is(error.retryAfter, 3)
+  t.is(error.retryable, true)
+})
+
+test("a WebSocket close with a cause's code is reported with that cause", async () => {
+  const { url } = await wsServer((socket) => {
+    // the session's first message carries its configuration and first feed
+    socket.once('message', () => socket.close(4002, 'turn exceeded 30s'))
+  })
+  await using pool = await MontyRemote.create(url, { requestTimeout: 30, autoResume: false })
+  await using session = await pool.checkout()
+  const error = await t.throwsAsync(() => session.feedRun('while True: pass'), { instanceOf: MontyDisconnectError })
+  t.is(
+    error.message,
+    'monty worker connection closed while waiting for a reply: DEADLINE_EXCEEDED (turn_timeout): turn exceeded 30s',
+  )
+  t.is(error.statusCode, 'DEADLINE_EXCEEDED')
+  t.is(error.remoteCause, 'turn_timeout')
+  t.is(error.statusMessage, 'turn exceeded 30s')
+  t.is(error.transportError, null)
 })
 
 test('a stream the server refuses before admitting it rejects the checkout with its status', async () => {

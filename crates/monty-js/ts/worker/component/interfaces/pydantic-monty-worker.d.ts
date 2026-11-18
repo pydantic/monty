@@ -2,6 +2,7 @@
 
 /** @module Interface pydantic:monty/worker **/
 export function dispatch(request: Request): DispatchResult
+export function dispatchFrame(request: Uint8Array): FrameResult
 /**
  * # Variants
  *
@@ -634,4 +635,8 @@ export interface DispatchResult {
   feedExecutionMicros: bigint
   maxFeedDurationMicros?: bigint
   maxTurnDurationMicros?: bigint
+}
+export interface FrameResult {
+  status: Status
+  events: Array<Uint8Array>
 }

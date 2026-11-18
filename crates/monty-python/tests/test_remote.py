@@ -360,11 +360,17 @@ def test_websocket_name_is_an_alias():
     assert AsyncMontyWebsocket is AsyncMontyRemote  # pyright: ignore[reportDeprecated]
 
 
-async def test_websocket_urls_are_accepted(relay_url: str):
-    """A `ws://` URL kept from the WebSocket days dials the same server over gRPC."""
-    async with AsyncMontyRemote('ws://' + relay_url.removeprefix('http://'), request_timeout=30.0) as pool:
-        async with pool.checkout() as session:
-            assert await session.feed_run('1 + 1') == snapshot(2)
+async def test_a_websocket_url_never_falls_back_to_grpc(relay_url: str):
+    """A `ws://` URL dials a WebSocket, which a gRPC-only server cannot answer."""
+    url = 'ws://' + relay_url.removeprefix('http://')
+    async with AsyncMontyRemote(url, request_timeout=30.0) as pool:
+        with pytest.raises(MontyConnectError) as exc_info:
+            async with pool.checkout():
+                pass
+    assert exc_info.value.status_code is None
+    assert str(exc_info.value).removeprefix(url) == snapshot(
+        ': WebSocket protocol error: httparse error: invalid HTTP version'
+    )
 
 
 async def test_inputs_and_async_external_function_over_grpc(relay_url: str):
@@ -577,12 +583,14 @@ async def test_checkout_rejects_unknown_limits():
 
 
 async def test_an_unknown_url_scheme_is_refused():
-    """Only `http`/`https` (and `ws`/`wss` as their aliases) are dialed; anything
+    """Only `http`/`https` (gRPC) and `ws`/`wss` (WebSocket) are dialed; anything
     else would go out in plaintext, metadata included, so it is refused."""
     with pytest.raises(MontyConnectError) as exc_info:
         async with AsyncMontyRemote('grpc://127.0.0.1:9'):
             pass
-    assert str(exc_info.value) == snapshot('grpc://127.0.0.1:9: unsupported URL scheme "grpc", expected http or https')
+    assert str(exc_info.value) == snapshot(
+        'grpc://127.0.0.1:9: unsupported URL scheme "grpc", expected http, https, ws or wss'
+    )
 
 
 async def test_unreachable_server_fails_the_checkout():

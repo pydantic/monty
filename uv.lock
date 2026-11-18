@@ -2293,6 +2293,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-examples" },
     { name = "pytest-pretty" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -2312,6 +2313,7 @@ dev = [
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-examples", specifier = ">=0.0.14" },
     { name = "pytest-pretty", specifier = ">=1.3.0" },
+    { name = "websockets", specifier = ">=15.0" },
 ]
 
 [[package]]

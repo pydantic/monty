@@ -276,7 +276,7 @@ A remote connection failure raises `MontyConnectError`, with `statusCode`, `stat
 `Monty.create()` raises it for a CPU `executionClock` without a `requestTimeout`, or off Linux;
 a `MontyRemote` checkout raises it when the server's CPU clock needs a `requestTimeout` the client did not set.
 A `requestTimeout` that is negative or not finite, such as `Infinity`, is rejected with a plain `Error` instead.
-Invalid gRPC header names or string values also raise `MontyConfigurationError`.
+Invalid metadata names or string values also raise `MontyConfigurationError`.
 If `metadata` returns a non-object, `null`, an array, or an object with non-string values, checkout raises `TypeError` instead.
 Host-side error messages do not have a `RuntimeError:` prefix.
 Remote policy reasons use `remoteCause`, leaving the standard `Error.cause` available for error chains.
@@ -409,8 +409,10 @@ See [snapshots](../snapshots.md) for manual handlers, restoration and OpenTeleme
 
 ## Remote workers
 
-`MontyRemote` is a pool of remote workers, usually the [Commercial Support](../server.md) server: the pool holds one HTTP/2 connection to the URL, each checkout opens a gRPC stream on it, and no
-connection is pre-warmed or reused.
+`MontyRemote` is a pool of remote workers, usually the [Commercial Support](../server.md) server.
+The URL's scheme picks the transport: an `http://`/`https://` URL speaks gRPC, with one HTTP/2 connection per pool and
+a stream per checkout; a `ws://`/`wss://` URL speaks WebSocket, with a connection per checkout, dialed as given.
+No session is pre-warmed or reused.
 Sessions are the same `MontySession` a local pool returns:
 
 ```ts test="skip"
@@ -421,11 +423,14 @@ await using session = await pool.checkout({ limits: { maxFeedDurationSecs: 30 } 
 console.log(await session.feedRun('1 + 1')) // 2
 ```
 
-`metadata` is called at each checkout, and may return a promise, for the metadata on that checkout's session stream.
+`metadata` is called at each checkout, and may return a promise, for the metadata on that checkout's session (upgrade
+headers on WebSocket).
 `requestTimeout` defaults to 10 seconds rather than no deadline; `null` disables it.
 `checkout()` also takes `ephemeral` and `profile`, which the server interprets.
-A server that refuses the stream rejects `checkout()` with `MontyRefusedError`; one that cannot be reached, with a
+A server that refuses the session rejects `checkout()` with `MontyRefusedError`; one that cannot be reached, with a
 `MontyConnectError`.
+A WebSocket server's refusal status and close codes are reported through the same `statusCode` and `remoteCause` as
+gRPC's.
 Use `MontyRefusedError.retryable` and `MontyRefusedError.retryAfter` to decide whether and when to try a new checkout.
 No automatic retry is performed for these errors.
 
@@ -444,7 +449,7 @@ unless `autoResume: false` is passed to `MontyRemote.create()`.
 These behave as in the Python client; see [stored sessions](../api/python/remote.md#stored-sessions).
 The transport adds no isolation of its own: see [remote workers](../security.md#remote-workers).
 `MontyRemote` is native-only; `@pydantic/monty/wasm` does not export it.
-`MontyWebsocket` is the same class under its deprecated former name, and still accepts `ws://`/`wss://` URLs.
+`MontyWebsocket` is the same class under its deprecated former name.
 
 ## Browsers and WebAssembly
 

@@ -535,6 +535,18 @@ interface worker {
 
     /// Handles one semantic request using the retained worker.
     dispatch: func(request: request) -> dispatch-result;
+
+    /// All output produced by one raw protobuf request.
+    record frame-result {
+        /// Whether the worker remains usable.
+        status: status,
+        /// Unframed `WorkerEvent` messages: prints, then exactly one turn-ending event.
+        events: list<list<u8>>,
+    }
+
+    /// Handles one unframed `ClientRequest` message, for a host relaying the
+    /// wire protocol as is (a WebSocket server) rather than driving `dispatch`.
+    dispatch-frame: func(request: list<u8>) -> frame-result;
 }
 
 /// A component instance containing one stateful Monty worker.

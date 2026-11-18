@@ -4,6 +4,7 @@ import { WASIShim } from '@bytecodealliance/preview2-shim/instantiation'
 
 import { instantiate } from './component/monty.component.js'
 import type {
+  ComponentExports,
   DispatchResult as ComponentDispatchResult,
   Request as ComponentRequest,
 } from './component/monty.component.js'
@@ -26,8 +27,20 @@ export type Dispatcher = (request: DispatchRequest, timeoutMs?: number) => Promi
 export async function instantiateWorker(
   modules: ComponentModules,
 ): Promise<(request: DispatchRequest) => DispatchResult> {
-  const component = await instantiate((path) => getModule(modules, path), wasiImports())
-  return component.worker.dispatch
+  return (await instantiateComponent(modules)).worker.dispatch
+}
+
+/**
+ * Instantiates an isolated component, exposing every export including `dispatchFrame`.
+ *
+ * `bindings` defaults to this package's Jco output; a host that builds its own
+ * component (with other cargo features) passes that build's `instantiate`.
+ */
+export async function instantiateComponent(
+  modules: ComponentModules,
+  bindings: typeof instantiate = instantiate,
+): Promise<ComponentExports> {
+  return bindings((path) => getModule(modules, path), wasiImports())
 }
 
 /** Creates isolated WASI imports with no host filesystem, environment, or network. */
