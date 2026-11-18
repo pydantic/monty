@@ -1796,7 +1796,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SetIterator> {
         Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // The cursor lives in this heap entry and the table in another, so a
         // copy is stepped under the storage borrow and stored back after. A
         // frozen set cannot change size, so its length check is a no-op
@@ -1816,7 +1816,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SetIterator> {
         };
         // Stored back on an error too: the error is sticky, as in CPython.
         self.get_mut(vm.heap).cursor = cursor;
-        value
+        value.map(|item| item.map(CallResult::Value))
     }
 }
 

@@ -87,7 +87,6 @@ use super::{
 };
 use crate::{
     args::ArgValues,
-    builtins::next::call_with_default,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -466,35 +465,21 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
         Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
-    fn py_next_call(&mut self, default: Option<Value>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        if self.needs_buffer_load(vm) {
-            if let Some(default) = default {
-                call_with_default(self.clone_value(vm.heap), default, vm).map(Some)
-            } else {
-                Ok(Some(self.buffer_load_call(
-                    vm,
-                    PostConversionEffect::FileNext { file_id: self.id() },
-                )))
-            }
-        } else {
-            let mut default = DropGuard::new(default, vm);
-            match self.py_next(default.ctx())? {
-                Some(value) => Ok(Some(CallResult::Value(value))),
-                None => Ok(default.into_inner().map(CallResult::Value)),
-            }
-        }
-    }
-
-    /// The next line of a loaded buffer; native consumers cannot load an unread file.
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let file = self.get(vm.heap);
         file.ensure_open()?;
         if !file.mode.readable() {
             Err(unsupported_operation("not readable"))
         } else if file.buffer.is_none() {
-            Err(unloaded_iteration_error(file.file_type()))
+            Ok(Some(self.buffer_load_call(
+                vm,
+                PostConversionEffect::FileNext {
+                    file_id: self.id(),
+                    default: None,
+                },
+            )))
         } else {
-            next_line(self, vm)
+            Ok(next_line(self, vm)?.map(CallResult::Value))
         }
     }
 
@@ -1144,9 +1129,16 @@ pub(crate) fn apply_buffer_load(file_id: HeapId, result: Value, vm: &mut VM<'_>)
 
 /// Installs the host content, then returns the first line or raises `StopIteration`.
 /// A frozen caller handles exhaustion when the original operation supplied a default.
-pub(crate) fn apply_file_next(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+pub(crate) fn apply_file_next(
+    file_id: HeapId,
+    default: Option<Value>,
+    result: Value,
+    vm: &mut VM<'_>,
+) -> RunResult<Value> {
     let pin = Value::Ref(file_id);
     defer_drop!(pin, vm);
+    let mut default_guard = DropGuard::new(default, vm);
+    let (_, vm) = default_guard.as_parts_mut();
     let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
         result.drop_with(vm);
         return Err(RunError::internal(
@@ -1154,7 +1146,10 @@ pub(crate) fn apply_file_next(file_id: HeapId, result: Value, vm: &mut VM<'_>) -
         ));
     };
     install_buffer(&file, result, vm)?;
-    next_line(&file, vm)?.ok_or_else(ExcType::stop_iteration)
+    match next_line(&file, vm)? {
+        Some(line) => Ok(line),
+        None => default_guard.into_inner().ok_or_else(ExcType::stop_iteration),
+    }
 }
 
 /// Installs a host read result as a heap-backed buffer and builds the position cache.
@@ -1247,7 +1242,7 @@ fn next_line<'h>(file: &HeapReadMut<'h, OpenFile>, vm: &mut VM<'h>) -> RunResult
 
 /// Reports an unread file reached through a synchronous consumer such as `list` or `join`.
 /// Such callers must load the buffer first, or retain their call across the host read.
-fn unloaded_iteration_error(file_type: Type) -> RunError {
+pub(crate) fn unloaded_iteration_error(file_type: Type) -> RunError {
     ExcType::not_implemented(format!(
         "iterating an unread {file_type} cannot suspend in this synchronous context; call seek(0) first to load it"
     ))

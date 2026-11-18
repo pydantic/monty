@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     expressions::CmpOperator,
     hash::HashValue,
-    heap::{DropGuard, DropWithContext, HeapId, HeapObjectRead, HeapReadOutput},
+    heap::{DropWithContext, HeapId, HeapObjectRead, HeapReadOutput},
     identity::Identity,
     value::{EitherStr, Value},
 };
@@ -728,22 +728,8 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
     }
 
-    /// Advances an iterator, optionally replacing exhaustion with an owned default.
-    /// Immediate exhaustion is `None`; a deferred call may instead raise `StopIteration`.
-    /// Overrides may push a frame or suspend; native-only iterators use `py_next`.
-    fn py_next_call(&mut self, default: Option<Value>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let mut default = DropGuard::new(default, vm);
-        match self.py_next(default.ctx()) {
-            Ok(Some(value)) => Ok(Some(CallResult::Value(value))),
-            Ok(None) => Ok(default.into_inner().map(CallResult::Value)),
-            Err(error) if error.is_stop_iteration() => Ok(default.into_inner().map(CallResult::Value)),
-            Err(error) => Err(error),
-        }
-    }
-
-    /// Advances an iterator synchronously for native consumers that cannot retain a continuation.
-    /// Suspendable implementations must also provide this adapter for existing Rust loops.
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    /// Advances once. Native exhaustion returns `None`; a call may instead raise `StopIteration`.
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
     }
 }

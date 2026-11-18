@@ -27,6 +27,7 @@ use crate::{
     types::{
         GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_string,
         bytes::PyBytes,
+        file::unloaded_iteration_error,
         long_int::{PyInt, arithmetic::float_binary},
         numeric::{round_digits, round_float},
         py_trait::PyObjectIdentity,
@@ -217,6 +218,45 @@ macro_rules! numeric_binary {
 }
 
 impl<'h> PyValue<'h> {
+    /// Borrows an iterator whose advancement never calls Python or suspends.
+    /// Select this path before consuming anything; other sources must use a continuation.
+    pub(crate) fn native_iterator(value: &Value, vm: &VM<'h>) -> Option<Self> {
+        value.read_heap(vm).map(PyValue::from).filter(|source| {
+            matches!(
+                source,
+                PyValue::ListIterator(_)
+                    | PyValue::DequeIterator(_)
+                    | PyValue::TupleIterator(_)
+                    | PyValue::StringIterator(_)
+                    | PyValue::BytesIterator(_)
+                    | PyValue::RangeIterator(_)
+                    | PyValue::DictKeyIterator(_)
+                    | PyValue::DictItemIterator(_)
+                    | PyValue::DictValueIterator(_)
+                    | PyValue::SetIterator(_)
+            )
+        })
+    }
+
+    /// Completes advancement for a native consumer that cannot retain a continuation.
+    pub(crate) fn next_sync(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        if let Self::OpenFile(file) = self
+            && file.needs_buffer_load(vm)
+        {
+            return Err(unloaded_iteration_error(file.get(vm.heap).file_type()));
+        }
+        let result = match self.py_next(vm) {
+            Ok(Some(CallResult::Value(value))) => return Ok(Some(value)),
+            Ok(None) => return Ok(None),
+            Ok(Some(call)) => call.require_synchronous(vm),
+            Err(error) => Err(error),
+        };
+        match result {
+            Err(error) if error.is_stop_iteration() => Ok(None),
+            result => result.map(Some),
+        }
+    }
+
     /// Reads a heap object once and opens its normalized Python-type view.
     #[inline]
     pub(crate) fn from_heap(id: HeapId, heap: &HeapReader<'h>) -> Self {
@@ -445,14 +485,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             else Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))))
     }
 
-    fn py_next_call(&mut self, default: Option<Value>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        forward_py_value!(self, |value| value.py_next_call(default, vm), else {
-            default.drop_with(vm);
-            Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
-        })
-    }
-
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         forward_py_value!(self, |value| value.py_next(vm),
             else Err(ExcType::type_error_not_iterator(&self.py_type_name(vm))))
     }
@@ -1012,7 +1045,7 @@ mod tests {
                 assert_eq!(iterator.py_type(vm), iterator_type);
                 assert!(iterator.py_is_iterator(vm));
                 let mut actual = Vec::new();
-                while let Some(item) = iterator.py_next(vm).unwrap() {
+                while let Some(item) = iterator.read(vm).py_next(vm).unwrap() {
                     defer_drop!(item, vm);
                     actual.push(if bytes {
                         let Value::Int(byte) = item else {

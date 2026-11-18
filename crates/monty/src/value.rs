@@ -139,7 +139,7 @@ impl<'h> ValueRead<'h, '_> {
             Self::Heap { value, steps } => {
                 vm.heap.tracker.check_memory_time_every(*steps)?;
                 *steps += 1;
-                value.py_next(vm)
+                value.next_sync(vm)
             }
         }
     }
@@ -821,16 +821,7 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_next_call(&mut self, default: Option<Value>, vm: &mut VM<'_>) -> RunResult<Option<CallResult>> {
-        if let Self::Ref(id) = self {
-            PyValue::from_heap(*id, vm.heap).py_next_call(default, vm)
-        } else {
-            default.drop_with(vm);
-            Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
-        }
-    }
-
-    fn py_next(&mut self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+    fn py_next(&mut self, vm: &mut VM<'_>) -> RunResult<Option<CallResult>> {
         if let Self::Ref(id) = self {
             PyValue::from_heap(*id, vm.heap).py_next(vm)
         } else {

@@ -167,6 +167,46 @@ except OSError as exc:
     );
 }
 
+/// v16 (2a0ba89d) suspended during a comprehension or `next(f, ['fallback'])` on an unread file.
+/// Both programs then exhaust a Python iterator in a comprehension compiled by that same producer.
+#[test]
+fn v16_pending_file_iteration() {
+    let lines = MontyObject::list([MontyObject::string("a\n"), MontyObject::string("b")]);
+    for (bytes, nonempty, empty) in [
+        (
+            include_bytes!("fixtures/iteration_v16_loop.bin").as_slice(),
+            lines,
+            MontyObject::list([]),
+        ),
+        (
+            include_bytes!("fixtures/iteration_v16_default.bin").as_slice(),
+            MontyObject::string("a\n"),
+            MontyObject::list([MontyObject::string("fallback")]),
+        ),
+    ] {
+        for (reply, expected) in [
+            (MontyObject::string("a\nb").into(), nonempty),
+            (MontyObject::string("").into(), empty),
+            (
+                ExtFunctionResult::Error(MontyException::new(ExcType::OSError, Some("transient".into()))),
+                MontyObject::string("transient"),
+            ),
+        ] {
+            let Session::Running(progress) = Dump::load(bytes).unwrap().state else {
+                panic!("expected running session")
+            };
+            let call = progress.into_os_call().unwrap();
+            assert_eq!(call.function_call.name(), "Path.read_text");
+            let result = call
+                .resume(reply, PrintWriter::Disabled)
+                .unwrap()
+                .into_complete()
+                .unwrap();
+            assert_eq!(result, expected);
+        }
+    }
+}
+
 #[test]
 fn next_host_error_then_default_on_empty_file() {
     let code = r"

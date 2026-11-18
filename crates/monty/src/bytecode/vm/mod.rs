@@ -1719,7 +1719,7 @@ impl<'h> VM<'h> {
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
-                    let result = PyValue::from_heap(heap_id, self.heap).py_next_call(None, self);
+                    let result = PyValue::from_heap(heap_id, self.heap).py_next(self);
                     match result {
                         Ok(None) => {
                             self.pop().drop_with(self);
@@ -2194,8 +2194,14 @@ impl<'h> VM<'h> {
                 self.heap.tracker.on_execution_stop();
                 parsed
             }
-            Some(PendingEffect::Post(PostConversionEffect::FileNext { file_id })) => {
-                apply_file_next(file_id, value, self)
+            Some(PendingEffect::Post(PostConversionEffect::BufferLoad { file_id })) => {
+                return match apply_buffer_load(file_id, value, self) {
+                    Ok(()) => self.run_external(),
+                    Err(error) => self.resume_with_exception(error),
+                };
+            }
+            Some(PendingEffect::Post(PostConversionEffect::FileNext { file_id, default })) => {
+                apply_file_next(file_id, default, value, self)
             }
             Some(PendingEffect::Post(PostConversionEffect::WritePosition {
                 file_id,
@@ -2340,7 +2346,8 @@ impl<'h> VM<'h> {
                 // Nothing was installed or seeded, so there is nothing to roll
                 // back: dropping the pin and any stashed value is the whole undo.
                 PendingEffect::Post(
-                    effect @ (PostConversionEffect::FileNext { .. }
+                    effect @ (PostConversionEffect::BufferLoad { .. }
+                    | PostConversionEffect::FileNext { .. }
                     | PostConversionEffect::LoadThenCall { .. }
                     | PostConversionEffect::FileSeekEnd { .. }
                     | PostConversionEffect::SeedRandom { .. }),

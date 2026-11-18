@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     args::{ArgValues, FromArgs},
-    builtins::{Builtins, BuiltinsFunctions, next::call_with_default},
+    builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -14,7 +14,6 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropGuard, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     modules::ModuleFunctions,
-    predicate::call_predicate,
     py_value::PyValue,
     types::{LazyHeapSet, List, PyTrait, Type, TypeRef},
     value::Value,
@@ -163,10 +162,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, MapFilter> {
         Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
-    fn py_next_call(&mut self, default: Option<Value>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        if let Some(default) = default {
-            return call_with_default(self.clone_value(vm.heap), default, vm).map(Some);
-        }
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // Copy owned inputs before calling Python: callbacks may re-enter this same iterator.
         match self.get(vm.heap) {
             MapFilter::Map {
@@ -178,13 +174,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, MapFilter> {
                     unreachable!("map owns a private list of source iterators")
                 };
                 if let [source] = sources.get(vm.heap).as_slice()
-                    && let Some(mut iterator) = native_iterator(source, vm)
+                    && let Some(mut iterator) = PyValue::native_iterator(source, vm)
                 {
                     let function = function.clone_with_heap(vm);
                     defer_drop!(function, vm);
                     // There is no work after the callback, so it can suspend without a map frame.
                     return iterator
-                        .py_next(vm)?
+                        .next_sync(vm)?
                         .map(|item| vm.call_function(function, ArgValues::One(item)))
                         .transpose();
                 }
@@ -200,9 +196,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, MapFilter> {
             }
             MapFilter::Filter { function, iterator } => {
                 if matches!(function, Value::None)
-                    && let Some(mut source) = native_iterator(iterator, vm)
+                    && let Some(mut source) = PyValue::native_iterator(iterator, vm)
                 {
-                    return filter_next(&Value::None, &mut source, vm).map(|item| item.map(CallResult::Value));
+                    return filter_truthy(&mut source, vm).map(|item| item.map(CallResult::Value));
                 }
                 let args = [
                     function.clone_with_heap(vm),
@@ -211,29 +207,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, MapFilter> {
                 ];
                 vm.call_frozen_exact(FrozenFunction::FilterNext, args).map(Some)
             }
-        }
-    }
-
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        // Restrict direct source advancement to non-recursive native iterators.
-        // Nested adaptors retain frozen frames instead of growing the Rust stack.
-        let native = match self.get(vm.heap) {
-            MapFilter::Filter { function, iterator } => {
-                native_iterator(iterator, vm).map(|source| (function.clone_with_heap(vm), source))
-            }
-            MapFilter::Map { .. } => None,
-        };
-        let result = if let Some((function, mut iterator)) = native {
-            defer_drop!(function, vm);
-            filter_next(function, &mut iterator, vm)
-        } else {
-            self.py_next_call(None, vm)
-                .and_then(|call| call.map(|call| call.require_synchronous(vm)).transpose())
-        };
-        match result {
-            Ok(value) => Ok(value),
-            Err(error) if error.is_stop_iteration() => Ok(None),
-            Err(error) => Err(error),
         }
     }
 
@@ -267,45 +240,20 @@ fn has_native_iter(value: &Value, vm: &VM<'_>) -> bool {
         )
 }
 
-/// Advances a non-recursive native source until the predicate accepts an item.
+/// Advances a non-recursive native source until it yields a truthy item.
 /// Poll limits even when an endlessly rejecting native source executes no bytecode.
-fn filter_next<'h>(function: &Value, iterator: &mut PyValue<'h>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+fn filter_truthy<'h>(iterator: &mut PyValue<'h>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let mut seen = 0;
-    while let Some(item) = iterator.py_next(vm)? {
+    while let Some(item) = iterator.next_sync(vm)? {
         let mut item = DropGuard::new(item, vm);
         let (value, vm) = item.as_parts_mut();
         seen += 1;
         vm.heap.tracker.check_memory_time_every(seen)?;
-        let accept = if matches!(function, Value::None) {
-            value.py_bool(vm)?
-        } else {
-            call_predicate(function, value, vm)?
-        };
-        if accept {
+        if value.py_bool(vm)? {
             return Ok(Some(item.into_inner()));
         }
     }
     Ok(None)
-}
-
-/// Borrows an iterator whose advancement never calls Python or suspends.
-/// Select this path before consuming anything; other sources must use a continuation.
-fn native_iterator<'h>(value: &Value, vm: &VM<'h>) -> Option<PyValue<'h>> {
-    value.read_heap(vm).map(PyValue::from).filter(|source| {
-        matches!(
-            source,
-            PyValue::ListIterator(_)
-                | PyValue::DequeIterator(_)
-                | PyValue::TupleIterator(_)
-                | PyValue::StringIterator(_)
-                | PyValue::BytesIterator(_)
-                | PyValue::RangeIterator(_)
-                | PyValue::DictKeyIterator(_)
-                | PyValue::DictItemIterator(_)
-                | PyValue::DictValueIterator(_)
-                | PyValue::SetIterator(_)
-        )
-    })
 }
 
 /// Acquires each source in order without consuming items or calling the mapped function.

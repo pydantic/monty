@@ -212,7 +212,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         }
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         match self.get_mut(vm.heap) {
             DirScan::Entry(_) => Err(ExcType::type_error_not_iterator(&self.py_type_name(vm))),
             DirScan::Scandir(iter) => {
@@ -226,6 +226,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
             }
             DirScan::Walk(_) => walk_next(self, vm),
         }
+        .map(|item| item.map(CallResult::Value))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {

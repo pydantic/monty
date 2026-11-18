@@ -147,13 +147,12 @@ impl Code {
 
     /// Finds an exception handler for the given bytecode offset.
     ///
-    /// Entries are ordered innermost-first. An iteration entry matches only `StopIteration`;
-    /// other errors at the same offset may still be caught by an enclosing handler.
+    /// Entries are ordered innermost-first.
     #[must_use]
-    pub fn find_exception_handler(&self, offset: u32, is_stop_iteration: bool) -> Option<&ExceptionEntry> {
+    pub fn find_exception_handler(&self, offset: u32) -> Option<&ExceptionEntry> {
         self.exception_table
             .iter()
-            .find(|entry| entry.contains(offset) && (entry.kind != HandlerKind::Iteration || is_stop_iteration))
+            .find(|entry| entry.contains(offset) && entry.kind != HandlerKind::Iteration)
     }
 }
 
@@ -237,7 +236,7 @@ pub enum HandlerKind {
     Consuming,
     /// Only re-raises: the VM skips the push, the compiler the matching `Pop`.
     Cleanup,
-    /// Only handles `StopIteration`; branches to the loop exit without entering an `except` suite.
+    /// Legacy v17 entry; ignored because the opcode itself handles exhaustion.
     Iteration,
 }
 

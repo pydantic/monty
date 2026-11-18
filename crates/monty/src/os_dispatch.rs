@@ -101,7 +101,9 @@ impl PendingEffect {
             // a future defers past the point the sandbox needs it.
             Self::Post(PostConversionEffect::ClockReading { .. }) => Some("time.time"),
             // Advancing the iterator needs a line, not a future for the raw buffer.
-            Self::Post(PostConversionEffect::FileNext { .. }) => Some("file iteration"),
+            Self::Post(PostConversionEffect::BufferLoad { .. } | PostConversionEffect::FileNext { .. }) => {
+                Some("file iteration")
+            }
             // The replayed call expects its argument loaded; a future would stand in for the call's result.
             Self::Post(PostConversionEffect::LoadThenCall { .. }) => Some("file loading"),
             Self::Post(PostConversionEffect::FileSeekEnd { .. }) => Some("file.seek"),
@@ -329,8 +331,14 @@ pub(crate) enum PostConversionEffect {
     /// [`BufferStore`](Self::BufferStore), then parse the rest of the file as
     /// JSON: `json.load(fp)` on a file whose buffer is not loaded yet.
     JsonLoad { file_id: HeapId },
-    /// Store a full-file read result, then answer `next(file)` with the first line or exhaustion.
-    FileNext { file_id: HeapId },
+    /// Pre-v17 file loops replay the saved `ForIter` after installing the buffer, without pushing an item.
+    BufferLoad { file_id: HeapId },
+    /// Answer a file advancement; only pre-v17 `next(file, default)` stores its default here.
+    FileNext {
+        file_id: HeapId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default: Option<Value>,
+    },
     /// Refresh a write-only file's unknown length before seeking from EOF.
     FileSeekEnd { file_id: HeapId, offset: i64 },
     /// Advance the file's logical position by the successful write result.
@@ -397,9 +405,13 @@ impl PostConversionEffect {
     /// and a sleep's result. The single place that knows which variants carry a refcount.
     pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
         match self {
+            Self::FileNext { file_id, default } => {
+                heap.heap_mut().dec_ref(file_id);
+                default.drop_with(heap);
+            }
             Self::BufferStore { file_id }
             | Self::JsonLoad { file_id }
-            | Self::FileNext { file_id }
+            | Self::BufferLoad { file_id }
             | Self::FileSeekEnd { file_id, .. }
             | Self::WritePosition { file_id, .. } => {
                 heap.heap_mut().dec_ref(file_id);

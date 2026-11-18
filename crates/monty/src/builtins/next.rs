@@ -7,6 +7,8 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     frozen::FrozenFunction,
+    heap::DropGuard,
+    py_value::PyValue,
     types::{PyTrait, Type},
     value::Value,
 };
@@ -33,12 +35,17 @@ struct NextArgs {
 /// Advances an iterator, optionally replacing exhaustion with a default after resumption.
 pub fn builtin_next(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let NextArgs { iterator, default } = NextArgs::from_args(args, vm)?;
-    defer_drop_mut!(iterator, vm);
-    iterator.py_next_call(default, vm)?.ok_or_else(ExcType::stop_iteration)
-}
-
-/// Wraps a potentially suspending advancement so exhaustion can select its owned default.
-pub(crate) fn call_with_default(iterator: Value, default: Value, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    let Some(default) = default else {
+        defer_drop_mut!(iterator, vm);
+        return iterator.py_next(vm)?.ok_or_else(ExcType::stop_iteration);
+    };
+    // Only bypass the handler for sources known not to call Python. All other iterators
+    // get the handler before dispatch, even if they currently always finish inline.
+    if let Some(result) = PyValue::native_iterator(&iterator, vm).map(|mut native| native.next_sync(vm)) {
+        iterator.drop_with(vm);
+        let default = DropGuard::new(default, vm);
+        return Ok(CallResult::Value(result?.unwrap_or_else(|| default.into_inner())));
+    }
     vm.call_frozen_exact(
         FrozenFunction::NextDefault,
         [

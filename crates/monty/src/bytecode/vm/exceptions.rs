@@ -7,7 +7,7 @@ use monty_types::ResourceError;
 use super::VM;
 use crate::{
     builtins::Builtins,
-    bytecode::code::HandlerKind,
+    bytecode::{code::HandlerKind, op::Opcode},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
@@ -485,8 +485,22 @@ impl VM<'_> {
             let code = frame.code;
             let ip = u32::try_from(this.instruction_ip).unwrap_or(u32::MAX);
 
+            // Exhaustion belongs to the advancing instruction, not an enclosing try or the loop body.
+            if error.is_stop_iteration() && frame.bytecode.get(this.instruction_ip) == Some(&(Opcode::ForIter as u8)) {
+                let operand = this.instruction_ip + 1;
+                let frame = this.current_frame_mut();
+                frame.ip = operand;
+                let offset = frame.fetch_i16();
+                frame.ip = frame
+                    .ip
+                    .checked_add_signed(offset.into())
+                    .expect("invalid ForIter target");
+                this.pop().drop_with(this);
+                return ExceptionHandlingResult::Caught;
+            }
+
             // Search exception table for a handler covering this IP
-            if let Some(entry) = code.find_exception_handler(ip, error.is_stop_iteration()) {
+            if let Some(entry) = code.find_exception_handler(ip) {
                 // Unwind operands to the compiler-recorded region depth,
                 // including any in-flight comprehension values.
                 let handler_offset = entry.handler() as usize;
@@ -508,10 +522,6 @@ impl VM<'_> {
                 }
 
                 this.current_frame_mut().ip = handler_offset;
-                if kind == HandlerKind::Iteration {
-                    // Loop exhaustion doesn't replace the active exception for a bare `raise`.
-                    return ExceptionHandlingResult::Caught;
-                }
                 if kind == HandlerKind::Consuming {
                     let exc_for_stack = exc_value.clone_with_heap(this);
                     this.push(exc_for_stack);

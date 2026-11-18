@@ -6,7 +6,7 @@ use super::{Dict, LazyHeapSet, PyTrait, Type, TypeRef};
 use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
-    builtins::{Builtins, next::call_with_default},
+    builtins::Builtins,
     bytecode::{CallResult, RunReentryGuard, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -537,24 +537,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         )
     }
 
-    fn py_next_call(&mut self, default: Option<Value>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        if let Some(default) = default {
-            call_with_default(self.clone_value(vm.heap), default, vm).map(Some)
-        } else {
-            self.call_next(vm).map(Some)
-        }
-    }
-
-    /// Dispatches the class's `__next__`, turning `StopIteration` into exhaustion.
-    ///
-    /// Every other exception propagates, including an `UncatchableExc` from a
-    /// resource limit — see [`RunError::is_stop_iteration`].
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        match self.call_next(vm).and_then(|call| call.require_synchronous(vm)) {
-            Ok(value) => Ok(Some(value)),
-            Err(e) if e.is_stop_iteration() => Ok(None),
-            Err(e) => Err(e),
-        }
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        self.call_next(vm).map(Some)
     }
 
     fn py_is_context_manager(&self, vm: &VM<'h>) -> bool {
