@@ -3136,13 +3136,15 @@ impl ExceptionArgs {
             0 => Self::Empty,
             1 => {
                 let v = values.into_iter().next().unwrap();
-                match v.py_value(vm) {
-                    PyValue::Str(s) => {
-                        let st = s.as_str(vm).to_owned();
-                        v.drop_with(vm);
-                        Self::OneStr(st)
-                    }
-                    _ => Self::OneValue(v),
+                let maybe_str = match v.py_value(vm) {
+                    PyValue::Str(s) => Some(s.as_str(vm).to_owned()),
+                    _ => None,
+                };
+                if let Some(st) = maybe_str {
+                    v.drop_with(vm);
+                    Self::OneStr(st)
+                } else {
+                    Self::OneValue(v)
                 }
             }
             _ => {
