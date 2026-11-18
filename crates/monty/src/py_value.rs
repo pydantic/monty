@@ -151,6 +151,7 @@ macro_rules! forward_py_value {
             Self::GenericAlias($value) => $body,
             Self::Union($value) => $body,
             Self::ForwardRef($value) => $body,
+            Self::TypeAdapter($value) => $body,
             Self::LruCache($value) => $body,
             Self::Tuple($value) => $body,
             Self::NamedTuple($value) => $body,
@@ -775,6 +776,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
+            Self::Exception(value) => value.py_call_attr(vm, attr, args),
             Self::Builtin(Builtins::Type(ty)) => ty.call_class_method(attr, args, vm),
             Self::DefFunction(func_id) => {
                 match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {

@@ -119,7 +119,7 @@ impl MethodKind {
 pub(crate) struct InitPlan {
     /// One entry per field, in signature order.
     fields: Vec<InitField>,
-    /// Whether the class defined `__post_init__` when decorated. CPython's
+    /// Whether the class or a base defined `__post_init__` when decorated. CPython's
     /// generated `__init__` calls `self.__post_init__()` only if so, looking the
     /// hook up at each call.
     post_init: bool,

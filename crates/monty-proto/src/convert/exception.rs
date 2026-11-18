@@ -87,6 +87,8 @@ fn pb_exc_data(data: &ExcData) -> Option<pb::ExcData> {
         ExcData::Json(json) => Some(pb::ExcData {
             kind: Some(pb::exc_data::Kind::Json(pb::JsonErrorData::from(json.as_ref()))),
         }),
+        // The pydantic payloads stay inside the worker: the message carries the rendering.
+        ExcData::Validation(_) | ExcData::PydanticUser(_) => None,
     }
 }
 

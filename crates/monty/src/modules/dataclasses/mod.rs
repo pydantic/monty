@@ -42,7 +42,7 @@ use crate::{
         Class, Dict, Module, PyTrait, TupleVec, Type, TypeRef, allocate_tuple,
         generic_alias::AliasOrigin,
         host_class::host_class_type,
-        instance::{class_defines, namespace_member},
+        instance::{class_defines, class_lookup, namespace_member},
     },
     value::{Marker, Value},
 };
@@ -470,7 +470,9 @@ fn install_generated_methods<'h>(
     let explicit_hash = installer
         .member(class_id, "__hash__")
         .is_some_and(|hash| !(matches!(hash, Value::None) && installer.defines(class_id, "__eq__")));
-    let post_init = installer.is_decorating() && installer.defines(class_id, "__post_init__");
+    // CPython's `hasattr(cls, '__post_init__')`: a hook on a base class counts.
+    let post_init = installer.is_decorating()
+        && class_lookup(class_id, "__post_init__", installer.heap(), installer.interns()).is_some();
 
     if !installer.defines(class_id, "__init__") {
         let init = DataclassMethod::init(

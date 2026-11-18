@@ -129,6 +129,8 @@ impl Type {
         Some(match attr.as_str(vm.interns) {
             "__bases__" => allocate_tuple(self.def().bases.iter().copied().map(type_value).collect(), vm.heap),
             "__mro__" => allocate_tuple(self.mro().map(type_value).collect(), vm.heap),
+            // A native type is never nested, so its qualified name is its name.
+            "__qualname__" => allocate_string(self.dunder_name(), vm.heap),
             // `type.mro` is the method itself; any other type's is bound to that type.
             "__class__" => type_value(Self::Type),
             "mro" if self == Self::Type => Value::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),

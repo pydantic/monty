@@ -71,7 +71,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 ## Standard library
 
-The following modules are present:
+The following modules are present.
+`pydantic` is not part of CPython's standard library: Monty implements a subset of it natively.
 
 | Module          | Divergences                          |
 | --------------- | ------------------------------------ |
@@ -96,6 +97,7 @@ The following modules are present:
 | `os.path`       | [os.md](os.md)                       |
 | `pathlib`       | [pathlib.md](pathlib.md)             |
 | `posixpath`     | [os.md](os.md)                       |
+| `pydantic`      | [pydantic.md](pydantic.md)           |
 | `random`        | [random.md](random.md)               |
 | `re`            | [re.md](re.md)                       |
 | `statistics`    | [statistics.md](statistics.md)       |

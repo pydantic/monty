@@ -113,6 +113,40 @@ invalid_cases = [
         '{"pe":',
         'Expecting value: line 1 column 7 (char 6)',
     ),
+    # input ending inside a container: what was expected next
+    ('[', 'Expecting value: line 1 column 2 (char 1)'),
+    ('[ ', 'Expecting value: line 1 column 3 (char 2)'),
+    ('{', 'Expecting property name enclosed in double quotes: line 1 column 2 (char 1)'),
+    ('{ ', 'Expecting property name enclosed in double quotes: line 1 column 3 (char 2)'),
+    ('{"a"', "Expecting ':' delimiter: line 1 column 5 (char 4)"),
+    ('{"a":1', "Expecting ',' delimiter: line 1 column 7 (char 6)"),
+    ('{"a":"b"', "Expecting ',' delimiter: line 1 column 9 (char 8)"),
+    ('{"a":1,', 'Expecting property name enclosed in double quotes: line 1 column 8 (char 7)'),
+    ('[{"a":1}', "Expecting ',' delimiter: line 1 column 9 (char 8)"),
+    ('{"a":[1', "Expecting ',' delimiter: line 1 column 8 (char 7)"),
+    ('["{",', 'Expecting value: line 1 column 6 (char 5)'),
+    # a malformed literal or number: the longest value the token starts with, then what follows
+    ('[tru', 'Expecting value: line 1 column 2 (char 1)'),
+    ('tru', 'Expecting value: line 1 column 1 (char 0)'),
+    ('{"a": t}', 'Expecting value: line 1 column 7 (char 6)'),
+    ('[-', 'Expecting value: line 1 column 2 (char 1)'),
+    ('[-Inf', 'Expecting value: line 1 column 2 (char 1)'),
+    ('[1.', "Expecting ',' delimiter: line 1 column 3 (char 2)"),
+    ('[1e+]', "Expecting ',' delimiter: line 1 column 3 (char 2)"),
+    ('[01]', "Expecting ',' delimiter: line 1 column 3 (char 2)"),
+    ('[truex]', "Expecting ',' delimiter: line 1 column 6 (char 5)"),
+    ('1.5.2', 'Extra data: line 1 column 4 (char 3)'),
+    ('["ab"c]', "Expecting ',' delimiter: line 1 column 6 (char 5)"),
+    ('[1x]', "Expecting ',' delimiter: line 1 column 3 (char 2)"),
+    ('{"k":1, tru', 'Expecting property name enclosed in double quotes: line 1 column 9 (char 8)'),
+    # at the depth limit, a malformed first item is reported as such
+    ('[' * 201 + ' x', 'Expecting value: line 1 column 203 (char 202)'),
+    ('[' * 201 + 'x', 'Expecting value: line 1 column 202 (char 201)'),
+    ('{"a":' * 201 + ' x', 'Expecting value: line 1 column 1007 (char 1006)'),
+    ('[' * 201 + 'tru', 'Expecting value: line 1 column 202 (char 201)'),
+    ('[' * 201, 'Expecting value: line 1 column 202 (char 201)'),
+    ('{"a":' * 200 + '{', 'Expecting property name enclosed in double quotes: line 1 column 1002 (char 1001)'),
+    ('[' * 200 + '{}', "Expecting ',' delimiter: line 1 column 203 (char 202)"),
 ]
 
 for source, expected in invalid_cases:
@@ -136,3 +170,12 @@ for source in ['\ufeff[1]', '\ufeff']:
         assert False, 'a str BOM should raise JSONDecodeError'
     except json.JSONDecodeError as exc:
         assert str(exc) == 'Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)'
+
+# === nesting at the depth limit ===
+# only a non-empty container beyond 200 levels is refused, so empty nesting parses
+nested = json.loads('[' * 201 + ']' * 201)
+depth = 0
+while nested:
+    nested = nested[0]
+    depth += 1
+assert depth == 200

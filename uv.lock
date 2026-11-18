@@ -1536,6 +1536,7 @@ dev = [
     { name = "mdformat-gfm" },
     { name = "mdformat-mkdocs" },
     { name = "mypy" },
+    { name = "pydantic" },
     { name = "ruff" },
 ]
 docs = [
@@ -1571,6 +1572,7 @@ dev = [
     { name = "mdformat-gfm", specifier = ">=1.0.0" },
     { name = "mdformat-mkdocs", specifier = ">=5.3.0" },
     { name = "mypy", specifier = ">=2.1.0" },
+    { name = "pydantic", specifier = ">=2.13.4" },
     { name = "ruff", specifier = ">=0.14.7" },
 ]
 docs = [

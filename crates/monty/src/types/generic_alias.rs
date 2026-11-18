@@ -184,6 +184,11 @@ impl GenericAlias {
         items.as_slice()[0].clone_with_heap(heap)
     }
 
+    /// An owned ref to the stored args tuple; for `Annotated` it holds `T` and the metadata.
+    pub(crate) fn args(&self, heap: &impl ContainsHeap) -> Value {
+        self.args.clone_with_heap(heap)
+    }
+
     /// Invokes `on_child` for the heap id this alias owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
         if let Value::Ref(id) = self.args {
@@ -875,7 +880,10 @@ pub(crate) fn repr_type_arg(
 ) -> RunResult<()> {
     match item {
         Value::Ellipsis => Ok(f.write_str("...")?),
-        Value::Builtin(Builtins::Type(ty)) => Ok(f.write_str(ty.name())?),
+        Value::Builtin(Builtins::Type(ty)) => match ty.module() {
+            Some(module) => Ok(write!(f, "{module}.{ty}")?),
+            None => Ok(f.write_str(ty.name())?),
+        },
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Class(_) => Ok(f.write_str(&class_name(*id, vm.heap, vm.interns))?),
             HeapData::NamedTupleClass(class) => Ok(f.write_str(class.name(vm.interns))?),

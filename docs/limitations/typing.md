@@ -83,6 +83,8 @@ Divergences:
     Anything else raises `TypeError: get_type_hints() globalns must be a dict, not int`, where CPython fails later with an unrelated message.
 - **A function's annotations are re-evaluated on every call**, including any side effects, where CPython evaluates them once (on `__annotations__`) and caches the result; a class's are evaluated once and cached.
     A builtin rebound after the first call (`exec('int = str')`) is therefore seen by the next call for a function.
+- **A class's hints are its own annotations only.** CPython merges the annotations of every class in the
+    MRO, so `get_type_hints(B)` for `class B(A)` includes `A`'s fields; Monty returns `B`'s alone.
 - **Modules record no annotations**, so `get_type_hints(module)` is `{}`.
 - **Evaluation errors show a `<string>` frame** in the traceback, where CPython shows its `typing` / `annotationlib` frames.
 - **Host functions and host classes** return the hints the host answers with, unevaluated in the sandbox; see [host-values.md](host-values.md#type-hints).

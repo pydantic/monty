@@ -55,6 +55,7 @@ sha1 = { version = "0.11", default-features = false }
 sha2 = { workspace = true }
 chrono = { workspace = true }
 speedate = "0.18.0"
+zmij = "1.0"
 jiter = { version = "0.19.0", features = ["num-bigint"] }
 
 [features]

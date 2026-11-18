@@ -20,8 +20,13 @@ keyword is rejected. Fallback encoding is available through `dumps(default=...)`
     CPython accepts all four and uses this message only for a keyword the decoder does not know.
 - `NaN`, `Infinity`, `-Infinity` are *always* accepted, with no toggle to
     reject them.
-- Nesting depth is capped at 200 levels; deeper inputs raise
-    `json.JSONDecodeError`.
+- Nesting depth is capped at 200 levels: a non-empty array or object inside
+    200 others raises `json.JSONDecodeError` (`recursion limit exceeded`),
+    reported at its first item, where CPython raises `RecursionError` much
+    deeper.
+    Where that first item is malformed, the error is the item's own syntax error, as CPython reports it;
+    when it is valid or a container, Monty reports `recursion limit exceeded` where CPython carries on and
+    may report a different error further on.
 - JSON integers that would exceed Monty's BigInt digit limit are rejected
     with `ValueError` (matching CPython's `int_max_str_digits` behaviour)
     rather than `JSONDecodeError`.

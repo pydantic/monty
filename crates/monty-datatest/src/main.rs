@@ -390,6 +390,7 @@ fn ensure_python_modules_imported() {
             py.import("stat").expect("Failed to import stat");
             py.import("asyncio").expect("Failed to import asyncio");
             py.import("traceback").expect("Failed to import traceback");
+            add_site_packages(py);
 
             // Also pre-import `test_fixtures` once so its module-level
             // code (dataclass definitions, `os.environ` monkey-patch) runs
@@ -399,6 +400,34 @@ fn ensure_python_modules_imported() {
             import_shared_test_globals(py);
         });
     });
+}
+
+/// Appends the dev virtualenv's `site-packages` to CPython's `sys.path`, so cases can
+/// `import pydantic` there. The embedded interpreter is the one pyo3 linked, not the
+/// virtualenv's, so the packages `uv sync` installs are otherwise invisible to it. The
+/// virtualenv is `VIRTUAL_ENV` when set, else `.venv` in the workspace root; a missing
+/// `site-packages` is a setup error (`make install-py`).
+fn add_site_packages(py: Python<'_>) {
+    let venv = env::var_os("VIRTUAL_ENV").map_or_else(|| CANONICAL_WS_DIR.join(".venv"), PathBuf::from);
+    let venv = venv.to_str().expect("virtualenv path is not UTF-8");
+    let vars = PyDict::new(py);
+    vars.set_item("base", venv).expect("failed to build sysconfig vars");
+    vars.set_item("platbase", venv).expect("failed to build sysconfig vars");
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("vars", vars).expect("failed to build sysconfig kwargs");
+    let path: String = py
+        .import("sysconfig")
+        .and_then(|sysconfig| sysconfig.call_method("get_path", ("purelib", "venv"), Some(&kwargs)))
+        .and_then(|path| path.extract())
+        .expect("sysconfig.get_path failed");
+    assert!(
+        Path::new(&path).is_dir(),
+        "the CPython side needs the dev virtualenv's {path}: run `make install-py`"
+    );
+    py.import("sys")
+        .and_then(|sys| sys.getattr("path"))
+        .and_then(|sys_path| sys_path.call_method1("append", (path,)))
+        .expect("Failed to add site-packages to sys.path");
 }
 
 /// Result from dispatching an external function call.

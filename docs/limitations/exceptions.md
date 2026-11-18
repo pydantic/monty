@@ -70,6 +70,7 @@ not supported; passing more than one argument raises an internal error.
     name:
     `binascii.Error('bad')` where CPython gives `Error('bad')`.
     `type(exc).__name__` and `str(type(exc))` match CPython.
+    The `pydantic` exceptions are covered in [pydantic.md](pydantic.md).
 
 - `exc.__cause__`, `exc.__context__` and `exc.__suppress_context__` are read-only: `exc.__cause__ = other` raises
     `AttributeError`, where CPython accepts an exception or `None`.

@@ -136,6 +136,7 @@ const SANDBOX_MODULES = new Set([
   'os',
   'pathlib',
   'posixpath',
+  'pydantic',
   'random',
   're',
   'statistics',

@@ -579,8 +579,19 @@ impl<'a> ObjectRef<'a> {
     #[must_use]
     pub fn py_repr(&self) -> String {
         let mut s = String::new();
-        self.repr_fmt(&mut s).expect("Unable to format repr display value");
+        self.repr_fmt(&mut s, false)
+            .expect("Unable to format repr display value");
         s
+    }
+
+    /// Writes the Python `repr()` with each `Repr` node as its bare text, as the
+    /// sandbox printed the original value, where [`py_repr`](Self::py_repr) marks
+    /// it as `Repr('...')` so a host can tell it is not a real string.
+    ///
+    /// # Errors
+    /// Fails only when `f` does.
+    pub fn write_unmarked_repr(&self, f: &mut impl Write) -> fmt::Result {
+        self.repr_fmt(f, true)
     }
 
     /// Whether the value is truthy under Python's rules: `None`, `False`,
@@ -611,8 +622,8 @@ impl<'a> ObjectRef<'a> {
     /// Writes the Python `repr()`. Containers are walked on an explicit stack
     /// of their [`ReprPiece`]s, so a deeply nested value costs heap rather than
     /// native stack; a sub-object shared `n` times renders `n` times, as
-    /// CPython's `repr()` does.
-    fn repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
+    /// CPython's `repr()` does. `unmarked` writes `Repr` nodes as bare text.
+    fn repr_fmt(&self, f: &mut impl Write, unmarked: bool) -> fmt::Result {
         let mut stack: Vec<vec::IntoIter<ReprPiece<'a>>> = Vec::new();
         let mut pending = Some(self.id);
         loop {
@@ -620,7 +631,7 @@ impl<'a> ObjectRef<'a> {
                 let value = self.child(id);
                 match value.repr_pieces() {
                     Some(pieces) => stack.push(pieces.into_iter()),
-                    None => value.leaf_repr_fmt(f)?,
+                    None => value.leaf_repr_fmt(f, unmarked)?,
                 }
             }
             let Some(pieces) = stack.last_mut() else {
@@ -648,6 +659,10 @@ impl<'a> ObjectRef<'a> {
             MontyNode::Tuple(ids) => {
                 pieces.push(Text("("));
                 push_repr_items(&mut pieces, ids);
+                // Python writes `(1,)` so a one-item tuple reads back as a tuple.
+                if ids.len() == 1 {
+                    pieces.push(Text(","));
+                }
                 pieces.push(Text(")"));
             }
             MontyNode::NamedTuple {
@@ -705,8 +720,8 @@ impl<'a> ObjectRef<'a> {
         Some(pieces)
     }
 
-    /// Writes the `repr()` of a leaf node.
-    fn leaf_repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
+    /// Writes the `repr()` of a leaf node; see [`Self::repr_fmt`] for `unmarked`.
+    fn leaf_repr_fmt(&self, f: &mut impl Write, unmarked: bool) -> fmt::Result {
         match self.node() {
             MontyNode::Ellipsis => f.write_str("Ellipsis"),
             MontyNode::NotImplemented => f.write_str("NotImplemented"),
@@ -815,6 +830,7 @@ impl<'a> ObjectRef<'a> {
             MontyNode::Function { name, .. } => write!(f, "<function '{name}' external>"),
             // a module's repr names it without listing its attrs, as CPython's does
             MontyNode::Module { name, .. } => write!(f, "<module {}>", StringRepr(name)),
+            MontyNode::Repr(s) if unmarked => f.write_str(s),
             MontyNode::Repr(s) => write!(f, "Repr({})", StringRepr(s)),
             MontyNode::Cycle(placeholder) => f.write_str(placeholder),
             MontyNode::List(_)
@@ -882,7 +898,7 @@ impl fmt::Display for ObjectRef<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.node() {
             MontyNode::String(s) | MontyNode::Cycle(s) => f.write_str(s),
-            _ => self.repr_fmt(f),
+            _ => self.repr_fmt(f, false),
         }
     }
 }
