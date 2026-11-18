@@ -56,6 +56,9 @@ Malformed request metadata also raises `MontyConfigurationError` before any conn
 Creating a pool with invalid settings raises it too: `min_processes` above `max_processes`, or a local CPU clock
 off Linux or without a finite `request_timeout`.
 
+Blocking callbacks under `AsyncMonty` or `AsyncMontyRemote` block the event loop;
+see [async host functions](https://pydantic.dev/docs/monty/concepts/host-functions/#async-host-functions).
+
 ## Host decode budget
 
 `AsyncMontyRemote(max_decode_bytes=...)` can lower the default 1 GiB allocation budget for each decoded protocol frame.
