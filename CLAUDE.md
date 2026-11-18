@@ -82,6 +82,9 @@ The manifest’s `[tests]` tree vendors upstream suites and a subset of `unittes
 Use `--test --make-patch NNNN-name --reason '...'` to save adaptations to the test-only tree.
 Preserve the upstream inputs and assertions when changing suite setup or execution.
 
+Keep the CPython change summary in `crates/monty/stdlib/NOTICE` current when patches change.
+`make update-licenses` regenerates the licence bundle shipped with native and WASM workers.
+
 ## Cross-Platform Requirements
 
 Monty must work identically on Linux, macOS, and Windows. Within the Monty sandbox,

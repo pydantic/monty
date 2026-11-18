@@ -1,12 +1,11 @@
+from _typeshed import SupportsRead, SupportsWrite
 from collections.abc import Callable
 from typing import Any
-
-from _typeshed import SupportsRead, SupportsWrite
 
 from .decoder import JSONDecodeError as JSONDecodeError, JSONDecoder as JSONDecoder
 from .encoder import JSONEncoder as JSONEncoder
 
-__all__ = ['dump', 'dumps', 'load', 'loads', 'JSONDecoder', 'JSONDecodeError', 'JSONEncoder']
+__all__ = ["dump", "dumps", "load", "loads", "JSONDecoder", "JSONDecodeError", "JSONEncoder"]
 
 def dumps(
     obj: Any,

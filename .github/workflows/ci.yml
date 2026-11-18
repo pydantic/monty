@@ -406,6 +406,9 @@ jobs:
       - name: Build runtime wheel
         run: uv run maturin build -m crates/monty-runtime/Cargo.toml --profile ${{ matrix.profile }} --out runtime-wheels
 
+      - name: Check runtime wheel licences
+        run: uv run --no-sync scripts/check_licenses.py --wheels runtime-wheels/*.whl
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-worker-${{ matrix.profile }}
@@ -1074,6 +1077,7 @@ jobs:
         run: |
           for whl in dist/*.whl; do unzip -qt "$whl"; done
           uv run --no-sync twine check --strict dist/*
+          uv run --no-sync scripts/check_licenses.py --sdist dist/pydantic_monty_runtime-*.tar.gz --wheels dist/pydantic_monty_runtime-*.whl
 
   # Release to PyPI
   release-python:

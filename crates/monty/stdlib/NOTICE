@@ -1,0 +1,5 @@
+Monty includes selected modules from CPython under the accompanying Python licence.
+The upstream revision is recorded in vendor.toml. Monty embeds the source and
+compiles it on import. The colorsys and stat sources are unmodified. In keyword,
+Monty replaces the bound frozenset membership methods with Python functions.
+See patches/0001-keyword-functions.patch for the source changes.

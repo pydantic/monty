@@ -42,6 +42,10 @@ and adds exact platform `optionalDependencies` there before packing.
 The development manifest and lockfile omit these dependencies so version bumps do not need unpublished packages.
 CI tests the assembled tarballs, then publishes the platform packages before the main package.
 
+Worker wheels and npm packages include the combined `crates/monty-runtime/LICENSE`.
+After a change to the upstream licences or `crates/monty/stdlib/NOTICE`, run `make update-licenses`.
+CI checks the licence files in the built runtime wheel and source archives, npm tarballs, and the affected crate archives.
+
 Monitor the workflow at https://github.com/pydantic/monty/actions
 
 ## Pre-release Tags

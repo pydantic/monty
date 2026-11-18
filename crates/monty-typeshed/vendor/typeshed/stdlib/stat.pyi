@@ -67,7 +67,7 @@ from _stat import (
 )
 from typing import Final
 
-if sys.platform == 'win32':
+if sys.platform == "win32":
     from _stat import (
         IO_REPARSE_TAG_APPEXECLINK as IO_REPARSE_TAG_APPEXECLINK,
         IO_REPARSE_TAG_MOUNT_POINT as IO_REPARSE_TAG_MOUNT_POINT,
@@ -84,7 +84,7 @@ if sys.version_info >= (3, 13):
         UF_TRACKED as UF_TRACKED,
     )
 
-    if sys.platform == 'darwin':
+    if sys.platform == "darwin":
         from _stat import SF_SUPPORTED as SF_SUPPORTED, SF_SYNTHETIC as SF_SYNTHETIC
 
 # _stat.c defines FILE_ATTRIBUTE_* constants conditionally,

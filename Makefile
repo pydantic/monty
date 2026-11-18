@@ -267,6 +267,7 @@ generate-unicode-type: ## Regenerate the str character-property tables from the 
 .PHONY: vendor-stdlib
 vendor-stdlib: ## Download the CPython stdlib modules listed in crates/monty/stdlib/vendor.toml
 	uv run scripts/vendor_stdlib.py
+	$(MAKE) update-licenses
 
 .PHONY: check-stdlib
 check-stdlib: ## Verify the vendored CPython stdlib modules match the pinned CPython release
@@ -288,16 +289,21 @@ check-unicode-type: generate-unicode-type ## Verify the checked-in str character
 .PHONY: update-typeshed
 update-typeshed: ## Update vendored typeshed from upstream
 	uv run crates/monty-typeshed/update.py
-	uv run ruff format
-	uv run ruff check --fix --fix-only --silent
+	$(MAKE) update-licenses
 
 .PHONY: check-typeshed
 check-typeshed: ## Check vendored typeshed stubs are in sync with upstream
 	uv run crates/monty-typeshed/check.py
 
+.PHONY: update-licenses
+update-licenses: ## Regenerate the crate and worker licence files from their sources
+	uv run scripts/check_licenses.py --write
+
 .PHONY: check-publish
 check-publish: ## Package and verify-build every publishable crate as `cargo publish` would, without uploading
+	uv run scripts/check_licenses.py
 	cargo publish --workspace --dry-run
+	uv run scripts/check_licenses.py --crates "$(or $(CARGO_TARGET_DIR),target)/package/tmp-crate"
 
 .PHONY: bench
 bench: ## Run benchmarks

@@ -1,3 +1,13 @@
 # vendored CPython files and patches are checked byte-for-byte (`make check-stdlib`)
 crates/monty/stdlib/** -text
 crates/monty-datatest/vendor/cpython/** -text
+
+# Licence copies and the worker bundle are checked byte-for-byte.
+/LICENSE text eol=lf
+/crates/monty/LICENSE text eol=lf
+/crates/monty-runtime/LICENSE text eol=lf
+/crates/monty-typeshed/LICENSE text eol=lf
+
+# Preserve pinned upstream bytes and keep the copied overrides in sync.
+/crates/monty-typeshed/vendor/typeshed/** -text
+/crates/monty-typeshed/custom/** text eol=lf
