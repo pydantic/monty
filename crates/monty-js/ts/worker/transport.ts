@@ -5,8 +5,8 @@
 // converts only between public JavaScript values and the component's flat value
 // arena; protobuf is now entirely internal to Rust.
 
-import { MontyCrashedError } from '../errors.js'
-import type { CrashedTurn, NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
+import { MontyConfigurationError, MontyCrashedError } from '../errors.js'
+import type { CrashedTurn, DumpedTurn, NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
 import {
   type EncodedOsPolicy,
   type EncodedRandomSeed,
@@ -73,6 +73,9 @@ export class WorkerTransport {
 
   /** No OS process backs a wasm worker. */
   readonly workerPid: number | null = null
+
+  /** Only a remote server that stores sessions names them. */
+  readonly sessionId: Uint8Array | null = null
 
   /** Whether a crash or channel error made this worker unreusable. */
   private dead = false
@@ -142,12 +145,17 @@ export class WorkerTransport {
     return transport
   }
 
-  /** Feeds one snippet and eagerly converts its named inputs. */
+  /** Feeds one snippet and eagerly converts its named inputs. `options.onStreamedCall`
+   *  is never called: wasm workers suspend at every host call. */
   feed(
     code: string,
     inputs: Record<string, unknown> | null,
     mounts: readonly unknown[],
-    options: { cwd?: string; skipTypeCheck: boolean },
+    options: {
+      cwd?: string
+      skipTypeCheck: boolean
+      onStreamedCall?: (callId: number, parent?: string | null) => void
+    },
     onPrint: OnPrint,
   ): Promise<NativeTurn> {
     if (mounts.length > 0) {
@@ -192,7 +200,7 @@ export class WorkerTransport {
     return this.resumeCall({ tag: 'not-found', val: this.pendingFunctionName }, onPrint)
   }
 
-  /** Lets the child apply the pending OS call's no-handler semantics. */
+  /** Lets the worker apply the pending OS call's no-handler semantics. */
   resumeNotHandled(onPrint: OnPrint): Promise<NativeTurn> {
     return this.resumeCall({ tag: 'not-handled' }, onPrint)
   }
@@ -200,6 +208,16 @@ export class WorkerTransport {
   /** A wasm worker has no host filesystem mounts to consult. */
   resumeFromMounts(_onPrint: OnPrint): Promise<NotMountedTurn> {
     return Promise.resolve({ kind: 'notMounted' })
+  }
+
+  /** A wasm worker has no host filesystem mounts to read an import's file from. */
+  readFromMounts(_path: string, _onPrint: OnPrint): Promise<NotMountedTurn> {
+    return Promise.resolve({ kind: 'notMounted' })
+  }
+
+  /** Answers an `import` call with the module's file, which the sandbox runs. */
+  resumeModuleFile(path: string, source: string, onPrint: OnPrint): Promise<NativeTurn> {
+    return this.resumeCall({ tag: 'module-file', val: { path, source } }, onPrint)
   }
 
   /** Registers the current call as an external future. */
@@ -240,6 +258,11 @@ export class WorkerTransport {
     return this.turn({ tag: 'resume-name-lookup', val: request }, onPrint)
   }
 
+  /** Opens the session: a no-op, since a WASM checkout already waited for its `Configure` reply. */
+  async open(_onPrint: OnPrint): Promise<{ kind: 'ok' }> {
+    return { kind: 'ok' }
+  }
+
   /** Reports the sandbox worker's lack of dependency installation. */
   async installDependencies(requirements: string[], _onPrint: OnPrint): Promise<NativeTurn | { kind: 'ok' }> {
     return requirements.length === 0
@@ -268,11 +291,20 @@ export class WorkerTransport {
     return this.turn({ tag: 'resume-futures', val: { results: settled, values: encoder.finish() } }, onPrint)
   }
 
-  /** Dumps the current session into opaque bytes. */
-  async dump(): Promise<Uint8Array> {
-    const event = await this.control({ tag: 'dump' }, 'dump-result', 'Dump')
-    if (event.tag === 'dump-result') return event.val
-    throw new Error('Dump returned an unexpected event')
+  /** Dumps the current session into opaque bytes, or resolves to the failure
+   *  turn; takes `onPrint` to match `NativeSession.dump`, never invoking it. */
+  async dump(_onPrint?: OnPrint): Promise<DumpedTurn | NativeTurn> {
+    const event = await this.run({ tag: 'dump' }, undefined)
+    if (!event) return this.crash()
+    switch (event.tag) {
+      case 'dump-result':
+        return { kind: 'dumped', state: event.val }
+      case 'error':
+      case 'fatal-error':
+        return this.toTurn(event)
+      default:
+        return { kind: 'protocol', message: `Dump expected event dump-result, got ${event.tag}` }
+    }
   }
 
   /** Restores a previously dumped session into this fresh worker. */
@@ -371,7 +403,9 @@ export class WorkerTransport {
       throw new MontyCrashedError(failure.message, failure)
     }
     if (event.tag === 'fatal-error') throw new MontyCrashedError(event.val, { exitStatus: this.exitStatus })
-    // the worker's own reason, e.g. a zone name its tz database lacks
+    // invalid settings, e.g. a zone name the worker's tz database lacks
+    if (event.tag === 'session-refused') throw new MontyConfigurationError(`session refused: ${event.val}`)
+    // the worker's own reason for refusing the request
     if (event.tag === 'error' && kind !== 'error') throw new Error(`${what} failed: ${event.val.message}`)
     if (event.tag !== kind) throw new Error(`${what} expected event ${kind}, got ${event.tag}`)
     return event

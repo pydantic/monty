@@ -54,7 +54,7 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(function, vm);
     defer_drop_mut!(extra_iterables, vm);
 
-    let first_iter = first_iterable.into_py_iter(vm)?;
+    let first_iter = first_iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(first_iter, vm);
     let mut first_iter = first_iter.read(vm);
 
@@ -62,7 +62,7 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop_mut!(extra_iterators, vm);
 
     for iterable in extra_iterables.drain(..) {
-        extra_iterators.push(iterable.into_py_iter(vm)?);
+        extra_iterators.push(iterable.into_py_iter(vm)?.require_synchronous(vm)?);
     }
 
     // Validate and clamp the iterator's hint before reserving native memory.
@@ -77,7 +77,7 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         [] => {
             while let Some(item) = first_iter.py_next(vm)? {
                 let args = ArgValues::One(item);
-                out.push(vm.evaluate_function("map()", function, args)?);
+                out.push(vm.evaluate_function(function, args)?);
             }
         }
         // map(f, iter1, iter2)
@@ -89,7 +89,7 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                 };
                 let (arg1, vm) = arg1_guard.into_parts();
                 let args = ArgValues::Two(arg1, arg2);
-                out.push(vm.evaluate_function("map()", function, args)?);
+                out.push(vm.evaluate_function(function, args)?);
             }
         }
         // map(f, iter1, iter2, *iterables)
@@ -110,7 +110,7 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                 kwargs: KwargsValues::Empty,
             };
 
-            out.push(vm.evaluate_function("map()", function, args)?);
+            out.push(vm.evaluate_function(function, args)?);
         },
     }
 

@@ -11,7 +11,7 @@ their `(at line N, column M)` / `(at end of document)` suffix, match CPython 3.1
     as in CPython.
 - `parse_float` is not accepted: passing it raises `TypeError: loads() got an unexpected keyword argument 'parse_float'`.
     Floats are always `float`, so a document whose values need `decimal.Decimal` precision cannot be
-    parsed losslessly (`decimal` is not available either).
+    parsed losslessly.
 - Passing `s` by keyword raises `loads() got an unexpected keyword argument 's'` where CPython reports
     `got some positional-only arguments passed as keyword arguments: 's'`.
 - Inline arrays and inline tables may nest 100 levels deep; deeper input raises
@@ -42,7 +42,6 @@ a real `tomllib.TOMLDecodeError` with all five attributes from a structured payl
 time, except that documents larger than 64 KiB are not carried, in which case `doc` is `''`.
 A `TOMLDecodeError` raised manually inside the sandbox has no payload and surfaces as a plain
 `ValueError` carrying the message.
-On a host Python without `tomllib` (3.10) the exception surfaces as its `ValueError` parent.
 In the other direction, a `TOMLDecodeError` a host callback raises into the sandbox carries the five
 attributes only on Python 3.14 or later; on 3.11 to 3.13 it enters without them, so if the sandbox
 re-raises it the host receives a `ValueError`.

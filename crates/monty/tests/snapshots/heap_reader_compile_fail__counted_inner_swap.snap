@@ -1,0 +1,19 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: actual
+---
+error[E0596]: cannot borrow data in dereference of `HeapObjectRead<'_, list::List>` as mutable
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:170:24
+    |
+170 |         std::mem::swap(&mut *object, &mut *borrowed);
+    |                        ^^^^^^^^^^^^ cannot borrow as mutable
+    |
+    = help: trait `DerefMut` is required to modify through a dereference, but it is not implemented for `HeapObjectRead<'_, list::List>`
+error[E0596]: cannot borrow data in dereference of `BorrowedHeapReadMut<'_, '_, list::List>` as mutable
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/borrowed.rs:170:38
+    |
+170 |         std::mem::swap(&mut *object, &mut *borrowed);
+    |                                      ^^^^^^^^^^^^^^ cannot borrow as mutable
+    |
+    = help: trait `DerefMut` is required to modify through a dereference, but it is not implemented for `BorrowedHeapReadMut<'_, '_, list::List>`
+For more information about this error, try `rustc --explain E0596`.

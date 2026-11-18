@@ -5,8 +5,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::DropGuard,
-    types::PyTrait,
-    value::Value,
+    types::{PyTrait, long_int::wide_i128_into_value},
+    value::{Value, floor_divmod, py_float_divmod, py_float_mod},
 };
 
 impl VM<'_> {
@@ -28,31 +28,74 @@ impl VM<'_> {
 
     /// Binary addition.
     pub(super) fn binary_add(&mut self) -> Result<(), RunError> {
+        if self.binary_numeric(i64::checked_add, |lhs, rhs| lhs + rhs, |lhs, rhs| lhs + rhs) {
+            return Ok(());
+        }
+
         self.binary_op(|lhs, rhs, vm| lhs.py_add(rhs, vm))
     }
 
     /// Binary subtraction.
     pub(super) fn binary_sub(&mut self) -> Result<(), RunError> {
+        if self.binary_numeric(i64::checked_sub, |lhs, rhs| lhs - rhs, |lhs, rhs| lhs - rhs) {
+            return Ok(());
+        }
+
         self.binary_op(|lhs, rhs, vm| lhs.py_sub(rhs, vm))
     }
 
     /// Binary multiplication.
     pub(super) fn binary_mult(&mut self) -> Result<(), RunError> {
+        if self.binary_numeric(i64::checked_mul, |lhs, rhs| lhs * rhs, |lhs, rhs| lhs * rhs) {
+            return Ok(());
+        }
+
         self.binary_op(|lhs, rhs, vm| lhs.py_mul(rhs, vm))
+    }
+
+    /// Tries in-place multiplication, then binary fallback; reflected results may replace the operand.
+    pub(super) fn inplace_mult(&mut self) -> Result<(), RunError> {
+        self.inplace_op(PyTrait::py_imul_impl, |lhs, rhs, vm| lhs.py_mul(rhs, vm))
     }
 
     /// Binary division.
     pub(super) fn binary_div(&mut self) -> Result<(), RunError> {
+        if self.binary_numeric_division(
+            |lhs, rhs| {
+                // Larger integers need exact division before rounding to a float.
+                (lhs.unsigned_abs() <= 1 << f64::MANTISSA_DIGITS && rhs.unsigned_abs() <= 1 << f64::MANTISSA_DIGITS)
+                    .then(|| Value::Float(lhs as f64 / rhs as f64))
+            },
+            |lhs, rhs| lhs / rhs,
+        ) {
+            return Ok(());
+        }
+
         self.binary_op(|lhs, rhs, vm| lhs.py_truediv(rhs, vm))
     }
 
     /// Binary floor division.
     pub(super) fn binary_floordiv(&mut self) -> Result<(), RunError> {
+        if self.binary_numeric_division(
+            |lhs, rhs| floor_divmod(lhs, rhs).map(|(quotient, _)| Value::Int(quotient)),
+            |lhs, rhs| py_float_divmod(lhs, rhs).0,
+        ) {
+            return Ok(());
+        }
+
         self.binary_op(|lhs, rhs, vm| lhs.py_floordiv(rhs, vm))
     }
 
     /// Binary modulo.
     pub(super) fn binary_mod(&mut self) -> Result<(), RunError> {
+        if self.binary_numeric_division(
+            // MIN % -1 is zero even though the quotient overflows i64.
+            |lhs, rhs| Some(Value::Int(floor_divmod(lhs, rhs).map_or(0, |(_, remainder)| remainder))),
+            py_float_mod,
+        ) {
+            return Ok(());
+        }
+
         self.binary_op(|lhs, rhs, vm| lhs.py_mod(rhs, vm))
     }
 
@@ -77,6 +120,11 @@ impl VM<'_> {
         self.binary_op(|lhs, rhs, vm| lhs.py_xor(rhs, vm))
     }
 
+    /// Set symmetric difference mutates the left operand before binary fallback.
+    pub(super) fn inplace_xor(&mut self) -> Result<(), RunError> {
+        self.inplace_op(PyTrait::py_ixor_impl, |lhs, rhs, vm| lhs.py_xor(rhs, vm))
+    }
+
     /// Binary left shift.
     pub(super) fn binary_lshift(&mut self) -> Result<(), RunError> {
         self.binary_op(|lhs, rhs, vm| lhs.py_lshift(rhs, vm))
@@ -94,6 +142,10 @@ impl VM<'_> {
     /// the update; immutable ones fall back to ordinary addition. Uses lazy type
     /// capture: only calls `py_type()` in error paths.
     pub(super) fn inplace_add(&mut self) -> Result<(), RunError> {
+        if self.binary_numeric(i64::checked_add, |lhs, rhs| lhs + rhs, |lhs, rhs| lhs + rhs) {
+            return Ok(());
+        }
+
         self.inplace_op(PyTrait::py_iadd_impl, |lhs, rhs, vm| {
             if let Some(value) = lhs.py_add_result(rhs, vm)? {
                 Ok(value)
@@ -111,6 +163,10 @@ impl VM<'_> {
 
     /// `-=` — an in-place mutation (a `Counter` subtracts counts), or binary `-`.
     pub(super) fn inplace_sub(&mut self) -> Result<(), RunError> {
+        if self.binary_numeric(i64::checked_sub, |lhs, rhs| lhs - rhs, |lhs, rhs| lhs - rhs) {
+            return Ok(());
+        }
+
         self.inplace_op(PyTrait::py_isub_impl, |lhs, rhs, vm| lhs.py_sub(rhs, vm))
     }
 
@@ -149,6 +205,63 @@ impl VM<'_> {
         }
     }
 
+    /// Handles immediate int/float pairs without reference-count guards or type dispatch.
+    #[inline]
+    fn binary_numeric(
+        &mut self,
+        int_op: impl FnOnce(i64, i64) -> Option<i64>,
+        wide_op: impl FnOnce(i128, i128) -> i128,
+        float_op: impl FnOnce(f64, f64) -> f64,
+    ) -> bool {
+        let len = self.stack.len();
+        let result = match (&self.stack[len - 2], &self.stack[len - 1]) {
+            (Value::Int(lhs), Value::Int(rhs)) => Some(match int_op(*lhs, *rhs) {
+                Some(result) => Value::Int(result),
+                // Sums, differences and products of two i64 operands fit in i128.
+                None => wide_i128_into_value(wide_op(i128::from(*lhs), i128::from(*rhs)), self.heap),
+            }),
+            (Value::Float(lhs), Value::Float(rhs)) => Some(Value::Float(float_op(*lhs, *rhs))),
+            (Value::Int(lhs), Value::Float(rhs)) => Some(Value::Float(float_op(*lhs as f64, *rhs))),
+            (Value::Float(lhs), Value::Int(rhs)) => Some(Value::Float(float_op(*lhs, *rhs as f64))),
+            _ => None,
+        };
+
+        if let Some(result) = result {
+            // Both operands are immediate values, so neither needs heap cleanup.
+            self.stack[len - 2] = result;
+            self.stack.truncate(len - 1);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Handles immediate numeric division; zero divisors retain the ordinary error path.
+    #[inline]
+    fn binary_numeric_division(
+        &mut self,
+        int_op: impl FnOnce(i64, i64) -> Option<Value>,
+        float_op: impl FnOnce(f64, f64) -> f64,
+    ) -> bool {
+        let len = self.stack.len();
+        let result = match (&self.stack[len - 2], &self.stack[len - 1]) {
+            (Value::Int(lhs), Value::Int(rhs)) if *rhs != 0 => int_op(*lhs, *rhs),
+            (Value::Float(lhs), Value::Float(rhs)) if *rhs != 0.0 => Some(Value::Float(float_op(*lhs, *rhs))),
+            (Value::Int(lhs), Value::Float(rhs)) if *rhs != 0.0 => Some(Value::Float(float_op(*lhs as f64, *rhs))),
+            (Value::Float(lhs), Value::Int(rhs)) if *rhs != 0 => Some(Value::Float(float_op(*lhs, *rhs as f64))),
+            _ => None,
+        };
+
+        if let Some(result) = result {
+            // Both operands are immediate values, so neither needs heap cleanup.
+            self.stack[len - 2] = result;
+            self.stack.truncate(len - 1);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Applies a binary operation while owning stack-value cleanup.
     fn binary_op(
         &mut self,
@@ -169,9 +282,9 @@ impl VM<'_> {
     /// Applies an in-place operation, offering the left operand `inplace` (its
     /// `py_i*_impl` hook) first and otherwise falling back to `binary`.
     ///
-    /// A hook reporting `true` has mutated the left operand, which is pushed
-    /// back so it keeps its identity; `false` means the type has no in-place
-    /// form and the ordinary binary operator produces a fresh value.
+    /// A handled operation pushes the updated left operand: native mutation keeps
+    /// its identity, while reflected arithmetic may replace it. Otherwise the
+    /// ordinary binary operator produces the result.
     fn inplace_op(
         &mut self,
         inplace: impl FnOnce(&mut Value, &Value, &mut Self) -> RunResult<bool>,

@@ -27,6 +27,16 @@ def sum3(a, b, c):
 assert sum3(1, 2, 3) == 6
 
 
+# === Empty unpacked keywords preserve native argument shapes ===
+assert abs(*(-3,), **{}) == 3
+assert divmod(*(7, 3), **{}) == (2, 1)
+items = []
+items.append(*(1,), **{})
+items.insert(*(0, 2), **{})
+assert items == [2, 1]
+assert items.clear(*(), **{}) is None
+
+
 # === Local variables ===
 def f_local():
     x = 42
@@ -242,6 +252,10 @@ assert len(by_function) == 2
 # its shape is pinned here.
 assert repr(add1).startswith('<function '), 'closure reprs as a function'
 assert repr(defaulted).startswith('<function '), 'defaults repr as a function'
+# The name before the address is unquoted, as in CPython, for a module-level
+# function or lambda (a nested one has a dotted `__qualname__` in CPython).
+assert repr(defaulted).split(' at 0x')[0] == '<function defaulted'
+assert repr(lambda: 0).split(' at 0x')[0] == '<function <lambda>'
 
 # A function has no methods of its own, whether the name is called or only read.
 for fn in (add1, defaulted):

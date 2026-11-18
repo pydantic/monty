@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, TypeAlias
 
 import pytest
+from inline_snapshot import snapshot
 
 from pydantic_monty import MemoryFile, Monty, OSAccess
 
@@ -276,6 +277,17 @@ def test_read_text_unicode(runner: CodeRunner) -> None:
     runner.write_file('unicode.txt', 'hello \u2603 world')
     result = runner.run_code("Path('/unicode.txt').read_text()")
     assert result == 'hello \u2603 world'
+
+
+def test_text_append_to_non_utf8_file(runner: CodeRunner) -> None:
+    """Appending text encodes only the new text, without decoding existing bytes."""
+    runner.write_file('append.bin', b'\xff')
+    result = runner.run_code("""
+with Path('/append.bin').open('a', encoding='utf-8') as f:
+    count = f.write('αβγ')
+(count, Path('/append.bin').read_bytes())
+""")
+    assert result == snapshot((3, b'\xff\xce\xb1\xce\xb2\xce\xb3'))
 
 
 # =============================================================================

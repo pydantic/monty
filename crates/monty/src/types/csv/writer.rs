@@ -21,8 +21,9 @@ use crate::{
     os_dispatch::{PendingEffect, PostConversionEffect},
     string_builder::StringBuilder,
     types::{
-        CsvObject, PyTrait, Type,
+        CsvObject, PyTrait, Type, TypeRef,
         csv::dialect::{Dialect, Quoting},
+        instance,
         iter::collect_owned_iterable,
         str::allocate_string,
     },
@@ -97,11 +98,7 @@ pub(crate) fn write_method(target: &Value, vm: &mut VM<'_>) -> RunResult<Option<
 }
 
 /// `writer.writerow(row)`: formats `row` and returns whatever the target's `write()` returns.
-pub(super) fn writerow<'h>(
-    obj: &mut HeapRead<'h, CsvObject>,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> RunResult<CallResult> {
+pub(super) fn writerow<'h>(obj: &HeapRead<'h, CsvObject>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
     let row = args.get_one_arg("writer.writerow", vm.heap)?;
     defer_drop!(row, vm);
     let items = row_items(row, vm)?;
@@ -112,7 +109,7 @@ pub(super) fn writerow<'h>(
 /// Formats `items` as one record and writes it, returning whatever `write()` returns: the
 /// tail of `writerow`, and of the `DictWriter` methods once they have flattened their dict.
 pub(super) fn write_fields<'h>(
-    obj: &mut HeapRead<'h, CsvObject>,
+    obj: &HeapRead<'h, CsvObject>,
     items: &[Value],
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
@@ -128,11 +125,7 @@ pub(super) fn write_fields<'h>(
 ///
 /// A file target receives all the lines in one host write, since a Rust loop cannot suspend
 /// once per row; any other target's `write()` is called synchronously as each row arrives.
-pub(super) fn writerows<'h>(
-    obj: &mut HeapRead<'h, CsvObject>,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> RunResult<CallResult> {
+pub(super) fn writerows<'h>(obj: &HeapRead<'h, CsvObject>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
     let rows = args.get_one_arg("writer.writerows", vm.heap)?;
     defer_drop!(rows, vm);
     let (target, write, dialect) = parts(obj, vm);
@@ -155,7 +148,7 @@ pub(super) fn writerows<'h>(
             write_line(target, write, lines, vm).map(discard_write_result)
         }
     } else {
-        let iterator = rows.py_iter(vm)?;
+        let iterator = rows.py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iterator, vm);
         // One line buffer serves every row, so each costs a single exact-size allocation.
         let mut line = String::new();
@@ -182,8 +175,7 @@ pub(super) fn writerow_now(
     vm: &mut VM<'_>,
 ) -> RunResult<()> {
     let line = format_items(dialect, terminator_chars, items, line, vm)?;
-    vm.evaluate_function("writer.writerows", write, ArgValues::One(line))?
-        .drop_with(vm);
+    vm.evaluate_function(write, ArgValues::One(line))?.drop_with(vm);
     Ok(())
 }
 
@@ -267,7 +259,7 @@ pub(crate) fn format_row(
                 append_field_data(
                     dialect,
                     terminator_chars,
-                    text.to_str(vm)?,
+                    text.as_str(vm).expect("py_str returns str"),
                     &mut quoted,
                     &mut field_buffer,
                     &vm.heap.tracker,
@@ -389,9 +381,15 @@ fn append_field(
     Ok(written)
 }
 
-/// `PyNumber_Check`: the numeric types a `QUOTE_NONNUMERIC` writer leaves unquoted.
+/// `PyNumber_Check`: built-in numbers and instances with `__int__`, `__float__`, or `__index__`, without conversions.
 fn is_number(value: &Value, vm: &VM<'_>) -> bool {
-    matches!(value.py_type(vm), Type::Int | Type::Float | Type::Bool | Type::Complex)
+    match value.py_type(vm) {
+        TypeRef::Native(Type::Int | Type::Float | Type::Bool | Type::Complex) => true,
+        TypeRef::Class(class_id) => ["__int__", "__float__", "__index__"]
+            .iter()
+            .any(|dunder| instance::class_defines(class_id, dunder, vm)),
+        TypeRef::Native(_) => false,
+    }
 }
 
 /// Whether `value` is an `open()` file, whose `write()` yields a host call.
@@ -415,7 +413,7 @@ fn row_items(row: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
         vm.heap.tracker.check_allocation(items.len() * VALUE_SIZE)?;
         Ok(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
     } else {
-        let iterator = match row.py_iter(vm) {
+        let iterator = match row.py_iter(vm).and_then(|call| call.require_synchronous(vm)) {
             Ok(iterator) => iterator,
             Err(err) if err.is_catchable(ExcType::TypeError) => {
                 return Err(ExcType::csv_error(format!(

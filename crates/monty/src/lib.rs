@@ -4,14 +4,17 @@ mod boundary_uuid;
 mod heap;
 mod heap_traits;
 
+mod annotations;
 mod args;
 mod asyncio;
 mod builtins;
 mod bytecode;
 mod codecs;
 mod dump_format;
+mod dump_upgrade;
 mod exception_private;
 mod expressions;
+mod frozen;
 mod fstring;
 mod function;
 mod hash;
@@ -27,6 +30,7 @@ mod parse;
 mod percent_format;
 mod predicate;
 mod prepare;
+mod py_value;
 mod repl;
 mod resource_checks;
 mod run;
@@ -54,6 +58,7 @@ pub use crate::{
         DUMP_VERSION, Dump, DumpDecodeError, DumpEncodeError, DumpError, MIN_SUPPORTED_DUMP_VERSION, Session,
         SessionRef, dump,
     },
+    parse::type_check_nesting_exception,
     repl::{
         CheckedSource, MontyRepl, ReplContinuationMode, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress,
         ReplResolveFutures, ReplStartError, detect_repl_continuation_mode,

@@ -6,7 +6,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropGuard, DropWithContext, HeapId, HeapRead},
+    heap::{DropGuard, DropWithContext, HeapId, HeapReadMut},
     types::{
         itertools::{ItertoolsIter, step::next_source},
         tuple::allocate_tuple,
@@ -61,7 +61,7 @@ impl Pairwise {
 
 /// Pulls one item and pairs it with the one before, priming `previous` on the
 /// first step so a source of fewer than two items yields nothing.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let ItertoolsIter::Pairwise(pairwise) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::Pairwise")
     };
@@ -131,7 +131,7 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
 }
 
 /// Advances the source, releasing it and `previous` once it stops.
-fn drive_source<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+fn drive_source<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let source = {
         let ItertoolsIter::Pairwise(pairwise) = iter.get(vm.heap) else {
             unreachable!("dispatched on Kind::Pairwise")

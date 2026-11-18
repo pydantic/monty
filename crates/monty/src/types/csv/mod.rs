@@ -25,7 +25,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{LazyHeapSet, PyTrait, Type},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
 };
 
@@ -103,8 +103,8 @@ impl HeapItem for CsvObject {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).py_type()
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        self.get(vm.heap).py_type().into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
@@ -133,9 +133,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
     }
 
     /// `iter(reader) is reader`; the other objects are not iterable.
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         if self.py_is_iterator(vm) {
-            Ok(self.clone_value(vm.heap))
+            Ok(CallResult::Value(self.clone_value(vm.heap)))
         } else {
             Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
         }
@@ -165,10 +165,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
             }
             (CsvObject::DictReader(_), StaticStrings::Fieldnames) => {
                 // Reading the header mutates the object, which needs its own handle.
-                let HeapReadOutput::Csv(mut this) = vm.heap.read(self.id()) else {
+                let HeapReadOutput::Csv(this) = vm.heap.read(self.id()) else {
                     unreachable!("self is a csv object")
                 };
-                return dict::reader_fieldnames(&mut this, vm).map(|value| Some(CallResult::Value(value)));
+                return dict::reader_fieldnames(&this, vm).map(|value| Some(CallResult::Value(value)));
             }
             (CsvObject::DictReader(reader), StaticStrings::LineNum) => line_num_value(reader.line_num)?,
             (CsvObject::DictReader(reader), StaticStrings::Reader) => reader.reader.clone_with_heap(vm.heap),

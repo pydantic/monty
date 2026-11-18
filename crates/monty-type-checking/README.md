@@ -52,11 +52,11 @@ anything crossing a process boundary) has to keep the rendered string.
 A `TypeChecker` owns one in-memory [salsa](https://github.com/salsa-rs/salsa)
 database, so reusing it across checks avoids rebuilding typeshed-derived
 semantic state every time — which is what makes per-feed checking in a REPL
-session affordable. Files written by a previous `run` stay in the database
-(rewritten in place when the path repeats), so call `reset` before checking an
-unrelated session's code: it scrubs every file written so far, including the
-directories they created. `TypeChecker` is not `Sync`; concurrent checks each
-need their own.
+session affordable.
+Files written by a previous `run` stay in the database and are rewritten in place when the path repeats.
+Drop the checker when the session ends to release its files, caches and interned data.
+Create a fresh checker for each unrelated session.
+`TypeChecker` is not `Sync`; concurrent checks each need their own.
 
 ## Monty crates
 
@@ -65,7 +65,7 @@ need their own.
 - [`monty-fs`](https://crates.io/crates/monty-fs) — host-side filesystem mounts: maps virtual sandbox paths to real host directories.
 - [`monty-runtime`](https://crates.io/crates/monty-runtime) — the `monty` binary: REPL, file runner, and subprocess worker mode.
 - [`monty-pool`](https://crates.io/crates/monty-pool) — an elastic pool of crash-isolated `monty` worker subprocesses.
-- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between pool parents and workers.
+- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between clients and workers.
 - [`monty-type-checking`](https://crates.io/crates/monty-type-checking) — type checking of sandboxed code, powered by [ty](https://docs.astral.sh/ty/). **this crate**
 - [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
 - [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing.

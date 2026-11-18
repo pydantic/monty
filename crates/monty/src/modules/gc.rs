@@ -14,14 +14,8 @@
 //!   Explicit `gc.collect()` calls still run while disabled.
 
 use crate::{
-    args::ArgValues,
-    bytecode::VM,
-    exception_private::RunResult,
-    heap::{HeapData, HeapId},
-    intern::StaticStrings,
-    modules::ModuleFunctions,
-    types::Module,
-    value::Value,
+    args::ArgValues, bytecode::VM, exception_private::RunResult, intern::StaticStrings, modules::ModuleFunctions,
+    types::Module, value::Value,
 };
 
 /// Functions exposed by the `gc` module.
@@ -41,8 +35,8 @@ pub(crate) enum GcFunctions {
     Enable,
 }
 
-/// Creates the `gc` module and allocates it on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `gc` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Gc, vm.interns);
     for (name, function) in [
         (StaticStrings::Collect, GcFunctions::Collect),
@@ -51,7 +45,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     ] {
         module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Gc(function)), vm);
     }
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a `gc` module function call.

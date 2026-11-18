@@ -63,7 +63,7 @@ impl FileTarget {
             Self::Method(write) => {
                 defer_drop!(write, vm);
                 let chunk = allocate_string(text, vm.heap);
-                let returned = vm.evaluate_function("json.dump()", write, ArgValues::One(chunk))?;
+                let returned = vm.evaluate_function(write, ArgValues::One(chunk))?;
                 returned.drop_with(vm);
                 Ok(CallResult::Value(Value::None))
             }

@@ -1,0 +1,17 @@
+---
+source: crates/monty/tests/heap_reader_compile_fail.rs
+expression: actual
+---
+error[E0500]: closure requires unique access to `*heap` but it is already borrowed
+   --> crates/monty/src/heap/../../tests/heap_reader_compile_fail_cases/cases.rs:140:18
+    |
+137 |             .get(heap)
+    |                  ---- borrow occurs here
+...
+140 |             .map(|_v| {
+    |              --- ^^^^ closure construction occurs here
+    |              |
+    |              first borrow later used by call
+141 |                 heap.heap_mut().dec_ref(other_id);
+    |                 ---- second borrow occurs due to use of `*heap` in closure
+For more information about this error, try `rustc --explain E0500`.

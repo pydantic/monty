@@ -12,10 +12,10 @@ use monty_types::{FileMode, MontyObject, dir_stat, file_stat, normalize_virtual_
 
 use super::{
     common::{
-        LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, PathInfo, as_u64, bytes_to_utf8, check_write_limit,
-        commit_write_bytes, current_timestamp, format_child_path, host_dir_mtime, host_is_dir, host_is_file,
-        host_list_visible_dir_entries, host_read_bytes, host_read_text, host_stat, join_mount_relative, map_io,
-        read_file_limited, visible_entries,
+        DIRECTORY_WRITE_BYTES, LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, PathInfo, as_u64, bytes_to_utf8,
+        check_write_limit, commit_write_bytes, current_timestamp, format_child_path, host_dir_mtime, host_is_dir,
+        host_is_file, host_list_visible_dir_entries, host_read_bytes, host_read_text, host_stat, join_mount_relative,
+        map_io, read_file_limited, reject_non_regular, reject_write_past_eof, visible_entries,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -156,6 +156,7 @@ pub(super) fn execute(
         FsRequest::WriteBytes { path, data } => write_bytes(state, &path, data, ctx),
         FsRequest::AppendText { path, data } => append_text(state, &path, &data, ctx),
         FsRequest::AppendBytes { path, data } => append_bytes(state, &path, &data, ctx),
+        FsRequest::WriteBytesAt { path, offset, data } => write_bytes_at(state, &path, offset, &data, ctx),
         FsRequest::Mkdir {
             path,
             parents,
@@ -169,8 +170,46 @@ pub(super) fn execute(
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
             Ok(MontyObject::path(normalize_virtual_path(&path).into_owned()))
         }
+        FsRequest::CreateExclusive { path, mode, .. } => create_exclusive(state, &path, mode, ctx),
         FsRequest::Open { path, mode } => open(state, &path, mode, ctx),
     }
+}
+
+/// Reserves an unoccupied visible name entirely in the overlay, including over a tombstone.
+fn create_exclusive(
+    state: &mut OverlayState,
+    path: &str,
+    mode: FileMode,
+    ctx: &mut MountContext<'_>,
+) -> Result<MontyObject, MountError> {
+    let relative = relative_path(path, ctx)?;
+    ensure_parent_exists(state, &relative, ctx, path)?;
+    // The mutable borrow prevents another overlay operation between checking and inserting.
+    // Concurrent changes to the host backing directory are unsupported.
+    let occupied = match state.get(&relative) {
+        Some(OverlayEntry::Deleted) => false,
+        Some(_) => true,
+        None => {
+            let target = resolve_virtual_path(path, ctx.mount_virtual)?;
+            !matches!(
+                classify_target(ctx.mount_dir, target.for_dir_op(), path)?,
+                RealTarget::Absent
+            )
+        }
+    };
+    if occupied {
+        return Err(MountError::io_err(ErrorKind::AlreadyExists, "File exists", path));
+    }
+    check_write_limit(0, ctx)?;
+    state.insert(
+        relative,
+        OverlayEntry::File(OverlayFile {
+            content: Vec::new(),
+            mtime: current_timestamp(),
+        }),
+        ctx.memory_usage_limit,
+    )?;
+    Ok(file_handle_result(path, mode))
 }
 
 /// Performs the open-time effect for `open()` against overlay state.
@@ -682,6 +721,54 @@ fn append_bytes(
     Ok(MontyObject::int(i64::try_from(data.len()).unwrap_or(i64::MAX)))
 }
 
+/// Overwrites the visible file; backing content is copied into the overlay once.
+fn write_bytes_at(
+    state: &mut OverlayState,
+    vpath: &str,
+    offset: u64,
+    data: &[u8],
+    ctx: &mut MountContext<'_>,
+) -> Result<MontyObject, MountError> {
+    open(state, vpath, FileMode::Read(true), ctx)?;
+    let relative = relative_path(vpath, ctx)?;
+    reject_directory_target(state, &relative, ctx, vpath)?;
+    let existing_len = existing_file_len(state, &relative, ctx, vpath)?;
+    let retained = matches!(state.get(&relative), Some(OverlayEntry::File(_)));
+    reject_write_past_eof(offset, as_u64(existing_len), data.len())?;
+    if data.is_empty() {
+        check_write_limit(0, ctx)?;
+        return Ok(MontyObject::int(0));
+    }
+    let end = usize::try_from(offset)
+        .ok()
+        .and_then(|offset| offset.checked_add(data.len()))
+        .ok_or_else(|| MountError::InvalidArgument("write range is too large".to_owned()))?;
+    let final_len = existing_len.max(end);
+    // The first mutation of a backing file materializes its whole content in memory.
+    let charge = if retained { data.len() } else { final_len };
+    check_write_limit(charge, ctx)?;
+    state.check_file_replacement(&relative, final_len, ctx.memory_usage_limit)?;
+    let offset =
+        usize::try_from(offset).map_err(|_| MountError::InvalidArgument("write offset is too large".to_owned()))?;
+    if !state.write_file_at(&relative, offset, data, current_timestamp(), ctx.memory_usage_limit)? {
+        let budget = available_memory(state, ctx)?;
+        budget.check(as_u64(final_len))?;
+        let mut content = existing_file_bytes(state, &relative, ctx, vpath, budget)?;
+        content.resize(content.len().max(end), 0);
+        content[offset..end].copy_from_slice(data);
+        state.insert(
+            relative,
+            OverlayEntry::File(OverlayFile {
+                content,
+                mtime: current_timestamp(),
+            }),
+            ctx.memory_usage_limit,
+        )?;
+    }
+    commit_write_bytes(charge, ctx);
+    Ok(MontyObject::int(i64::try_from(data.len()).unwrap_or(i64::MAX)))
+}
+
 /// Returns the visible file length for append accounting without loading bytes.
 ///
 /// Overlay append may need to copy a real backing file into memory before
@@ -715,6 +802,7 @@ fn existing_file_len(
 /// File sizes larger than addressable memory saturate so quota comparison fails
 /// closed instead of wrapping before the overlay tries to allocate.
 fn file_len(dir: &Dir, rel: &str, vpath: &str) -> Result<usize, MountError> {
+    reject_non_regular(dir, rel, vpath)?;
     let len = dir.metadata(rel).map_err(|error| map_io(error, vpath))?.len();
     Ok(usize::try_from(len).unwrap_or(usize::MAX))
 }
@@ -827,13 +915,14 @@ fn ensure_parent_exists(
     Ok(())
 }
 
-/// Creates a directory inside the overlay.
+/// Creates a directory inside the overlay. Each directory it records, parents
+/// included, costs [`DIRECTORY_WRITE_BYTES`]; both limits are checked before any is recorded.
 fn mkdir(
     state: &mut OverlayState,
     relative: &str,
     parents: bool,
     exist_ok: bool,
-    ctx: &MountContext<'_>,
+    ctx: &mut MountContext<'_>,
     vpath: &str,
 ) -> Result<MontyObject, MountError> {
     match state.get(relative) {
@@ -870,30 +959,42 @@ fn mkdir(
         }
     }
 
-    if parents {
-        create_overlay_parents(state, relative, ctx)?;
+    let to_create = if parents {
+        overlay_dirs_to_create(state, relative, ctx)?
     } else {
         ensure_parent_exists(state, relative, ctx, vpath)?;
-    }
-
-    state.insert(
-        relative.to_owned(),
-        OverlayEntry::Directory {
-            mtime: current_timestamp(),
-        },
+        vec![relative.to_owned()]
+    };
+    // both limits are checked for every directory before any is recorded
+    let charge = to_create.len().saturating_mul(DIRECTORY_WRITE_BYTES);
+    check_write_limit(charge, ctx)?;
+    let mtime = current_timestamp();
+    let entry = OverlayEntry::Directory { mtime };
+    state.check_replacements(
+        to_create.iter().map(|dir| (dir.as_str(), &entry)),
         ctx.memory_usage_limit,
     )?;
+    for dir in to_create {
+        state.insert_unchecked(dir, OverlayEntry::Directory { mtime });
+    }
+    commit_write_bytes(charge, ctx);
     Ok(MontyObject::none())
 }
 
-/// Creates parent directories for `mkdir(parents=True)` with overlay semantics.
+/// The overlay keys `mkdir(parents=True)` must record as directories, the
+/// target last: every component that is neither an overlay nor a real directory.
 ///
 /// Each component is classified through the descriptor: any symlink raises
 /// `PermissionError` instead of being shadowed by (or aliased under) an
 /// in-memory tree.
-fn create_overlay_parents(state: &mut OverlayState, relative: &str, ctx: &MountContext<'_>) -> Result<(), MountError> {
+fn overlay_dirs_to_create(
+    state: &OverlayState,
+    relative: &str,
+    ctx: &MountContext<'_>,
+) -> Result<Vec<String>, MountError> {
     let mut walk = ComponentWalk::new(ctx.mount_dir);
     let mut current = String::new();
+    let mut to_create = Vec::new();
 
     for component in relative.split('/') {
         if !current.is_empty() {
@@ -915,15 +1016,7 @@ fn create_overlay_parents(state: &mut OverlayState, relative: &str, ctx: &MountC
                     &current_vpath,
                 ));
             }
-            Some(OverlayEntry::Deleted) => {
-                state.insert(
-                    current.clone(),
-                    OverlayEntry::Directory {
-                        mtime: current_timestamp(),
-                    },
-                    ctx.memory_usage_limit,
-                )?;
-            }
+            Some(OverlayEntry::Deleted) => to_create.push(current.clone()),
             None => {
                 match real {
                     // Already a real directory, so nothing to record.
@@ -943,18 +1036,12 @@ fn create_overlay_parents(state: &mut OverlayState, relative: &str, ctx: &MountC
                     RealTarget::Absent => {}
                 }
 
-                state.insert(
-                    current.clone(),
-                    OverlayEntry::Directory {
-                        mtime: current_timestamp(),
-                    },
-                    ctx.memory_usage_limit,
-                )?;
+                to_create.push(current.clone());
             }
         }
     }
 
-    Ok(())
+    Ok(to_create)
 }
 
 /// Removes a file in the overlay by adding a tombstone.

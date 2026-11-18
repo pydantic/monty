@@ -217,9 +217,10 @@ fn bind_slow<const N: usize>(
                 // conversion, and conflict error); stash the first for `finish`.
                 value.drop_with(vm);
                 if bound.deferred.as_ref().is_none_or(|d| d.unknown.is_none()) {
+                    let name = key_str.into_string(vm.interns);
                     let err = match spec.family {
-                        ErrorFamily::C { .. } => ExcType::type_error_c_unexpected_keyword(key_str.as_str(vm.interns)),
-                        _ => ExcType::type_error_unexpected_keyword(spec.func_name, key_str.as_str(vm.interns)),
+                        ErrorFamily::C { .. } => ExcType::type_error_c_unexpected_keyword(&name),
+                        _ => ExcType::type_error_unexpected_keyword(spec.func_name, &name),
                     };
                     bound.deferred_mut().unknown = Some(err);
                 }
@@ -227,7 +228,7 @@ fn bind_slow<const N: usize>(
             }
             None => {
                 value.drop_with(vm);
-                let name = key_str.as_str(vm.interns).to_owned();
+                let name = key_str.into_string(vm.interns);
                 key.drop_with(vm);
                 let err_name = spec.kwarg_error_name.unwrap_or(spec.func_name);
                 return Err(ExcType::type_error_unexpected_keyword(err_name, &name));

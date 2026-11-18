@@ -136,10 +136,10 @@ fn two_product(a: f64, b: f64) -> (f64, f64) {
 }
 
 /// Sums non-overlapping partials, preserving cancellation and half-even rounding.
-pub(super) fn fsum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn fsum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let args = args.reject_kwargs("math.fsum", vm.heap)?;
     let iterable = args.get_one_arg("math.fsum", vm.heap)?;
-    let iterator = iterable.into_py_iter(vm)?;
+    let iterator = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);
     let mut partials = SmallVec::<[f64; 32]>::new();
@@ -234,7 +234,7 @@ pub(super) fn prod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let mut result = DropGuard::new(start, vm);
     {
         let (total, vm) = result.as_parts_mut();
-        let iterator = iterable.into_py_iter(vm)?;
+        let iterator = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iterator, vm);
         let mut iterator = iterator.read(vm);
         while let Some(item) = iterator.py_next(vm)? {
@@ -289,13 +289,13 @@ struct SumprodArgs {
 }
 
 /// Uses exact integer arithmetic and compensated float products before generic arithmetic.
-pub(super) fn sumprod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn sumprod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let SumprodArgs { p, q } = SumprodArgs::from_args(args, vm)?;
     defer_drop!(p, vm);
     defer_drop!(q, vm);
-    let p = p.py_iter(vm)?;
+    let p = p.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(p, vm);
-    let q = q.py_iter(vm)?;
+    let q = q.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(q, vm);
     let mut p = p.read(vm);
     let mut q = q.read(vm);
@@ -355,8 +355,9 @@ pub(super) fn sumprod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// The compensated path accepts float/float and float/int pairs, including booleans.
 fn float_pair(a: &Value, b: &Value, vm: &VM<'_>) -> RunResult<Option<(f64, f64)>> {
-    if (matches!(a, Value::Float(_)) && matches!(b.py_type(vm), Type::Float | Type::Int | Type::Bool))
-        || (matches!(b, Value::Float(_)) && matches!(a.py_type(vm), Type::Float | Type::Int | Type::Bool))
+    if (matches!(a, Value::Float(_)) && matches!(b.py_type(vm).native(), Some(Type::Float | Type::Int | Type::Bool)))
+        || (matches!(b, Value::Float(_))
+            && matches!(a.py_type(vm).native(), Some(Type::Float | Type::Int | Type::Bool)))
     {
         Ok(Some((value_to_float(a, vm)?, value_to_float(b, vm)?)))
     } else {

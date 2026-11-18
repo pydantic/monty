@@ -677,7 +677,7 @@ fn call_function_honours_call_host_too() {
       File "<python-input-0>", line 3, in when
         return date.today()
                ~~~~~~~~~~~~
-    NotImplementedError: MontyRepl::call_function: OS function 'date.today' is not yet supported in this context
+    NotImplementedError: OS function 'date.today' cannot suspend in this synchronous context
     "#);
 }
 
@@ -706,7 +706,11 @@ fn the_configuration_survives_a_dump() {
     assert_eq!(result, MontyObject::string("datetime.date(2023, 11, 15)".to_owned()));
     // the process clock is a policy of its own, so it must survive too
     let elapsed = restored
-        .feed_run("import time\ntime.process_time() > 0.0", vec![], PrintWriter::Disabled)
+        .feed_run(
+            "import time\nfor _ in range(1_000_000):\n    if time.process_time() > 0.0:\n        break\ntime.process_time() > 0.0",
+            vec![],
+            PrintWriter::Disabled,
+        )
         .unwrap();
     assert_eq!(elapsed, MontyObject::bool(true));
 }

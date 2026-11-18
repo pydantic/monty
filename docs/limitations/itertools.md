@@ -28,17 +28,13 @@ objects except `tee`, which is a plain function — so `isinstance(x, count)`,
     reaches back to the `repeat` holding it, Monty prints `repeat([...])` where
     CPython prints `repeat([repeat([...])])`. This is Monty's general cycle
     detection in `repr()`, not specific to `itertools`.
-- **A callable that suspends is rejected, not paused.** `takewhile`,
-    `dropwhile`, `filterfalse`, `starmap`, `accumulate` and `groupby` apply their callable
-    through the synchronous `evaluate_function` path, which runs a frame to
-    completion and cannot yield to the host. A callable that reaches an external
-    function, an `os` operation, or a host method call therefore raises
-    `NotImplementedError`, naming the adaptor that called it —
-    `takewhile(): external function 'f' is not yet supported in this context`
-    from `takewhile`, `groupby(): ...` from `groupby`, and so on.
-    CPython would simply call it. This is the same restriction that applies to `__init__`,
-    `__next__` and `__repr__` (see [classes.md](classes.md)); ordinary
-    sandbox-defined functions and lambdas are unaffected.
+- **A callable that suspends is rejected, not paused.** `takewhile`, `dropwhile`, `filterfalse`, `starmap`,
+    `accumulate` and `groupby` cannot suspend in their callbacks.
+    An external function, OS operation, or host method call raises `NotImplementedError`, for example
+    `external function 'f' cannot suspend in this synchronous context`.
+    The traceback identifies the consuming expression and any Python callback frames.
+    CPython would simply call it.
+    See [classes.md](classes.md) and [iter.md](iter.md) for related special-method restrictions.
 - **`zip_longest` names the rejected keyword.** A bad keyword raises
     `zip_longest() got an unexpected keyword argument 'bogus'`, where CPython
     raises `zip_longest() got an unexpected keyword argument` with no name —

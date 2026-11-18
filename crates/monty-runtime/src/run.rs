@@ -22,14 +22,14 @@ use anstream::{AutoStream, ColorChoice, eprintln};
 use anstyle::{AnsiColor, Color, Style};
 use monty::{
     MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress, detect_repl_continuation_mode,
-    source_within_nesting_bound,
+    type_check_nesting_exception,
 };
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     CallArgs, CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MontyException, MontyObject,
     NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker, SOURCE_SCAN_THRESHOLD,
-    SleepMode, TypeCheckingConfig, memory_limit_with_headroom, validate_cwd,
+    SleepMode, TypeCheckingConfig, find_module_file, memory_limit_with_headroom, validate_cwd,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 #[cfg(feature = "telemetry")]
@@ -213,10 +213,12 @@ fn run_script(
     mut host: HostOs,
     cwd: &str,
 ) -> ExitCode {
-    // A source the compiler will reject as too deeply nested skips the (unguarded) type checker.
-    if let Some(config) = type_check
-        && source_within_nesting_bound(&code, SOURCE_SCAN_THRESHOLD)
-    {
+    // ty recurses through the AST unguarded, so a source nested too deeply is rejected before it.
+    if let Some(config) = type_check {
+        if let Err(err) = type_check_nesting_exception(&code, file_path, SOURCE_SCAN_THRESHOLD) {
+            eprintln!("{BOLD_RED}error{BOLD_RED:#}:\n{err}");
+            return ExitCode::FAILURE;
+        }
         let start = Instant::now();
         let mut checker = TypeChecker::default();
         if let Some(failure) = checker.run(&SourceFile::new(&code, file_path), None, config).unwrap() {
@@ -685,19 +687,28 @@ impl HostOs {
     }
 
     /// Waits for system sleeps, enforcing `--max-sleep` again in case the sandbox did not.
-    /// Other calls go to the mounts, transferring write payloads without copying.
+    /// Imports search the mounts for the module's file; other calls go to the
+    /// mounts, transferring write payloads without copying.
     fn handle_os_call(&mut self, call: OsFunctionCall) -> ExtFunctionResult {
         if let OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay) = call {
             thread::sleep(delay.min(self.max_sleep));
             return MontyObject::none().into();
         }
+        // The CLI has no host modules: an import is a file on the mounts or nothing.
+        if let OsFunctionCall::Import(args) = &call {
+            return self
+                .mounts
+                .as_mut()
+                .and_then(|mounts| find_module_file(args, |path| mounts.read_module(path)))
+                .unwrap_or_else(|| call.no_handler_result());
+        }
         match self.mounts.as_mut() {
             Some(mounts) => match mounts.handle_os_call(call) {
                 MountCallOutcome::Handled(Ok(obj)) => obj.into(),
                 MountCallOutcome::Handled(Err(err)) => err.into_exception().into(),
-                MountCallOutcome::NotHandled(call) => call.on_no_handler().into(),
+                MountCallOutcome::NotHandled(call) => call.no_handler_result(),
             },
-            None => call.on_no_handler().into(),
+            None => call.no_handler_result(),
         }
     }
 }

@@ -28,7 +28,7 @@ fn try_from_ok_float_to_f64() {
     let mut ex = MontyRun::new("2.5".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let value: f64 = (&result).try_into().expect("conversion should succeed");
-    assert_eq!(value, 2.5);
+    assert!((value - 2.5).abs() < f64::EPSILON);
 }
 
 #[test]
@@ -36,7 +36,7 @@ fn try_from_ok_int_to_f64() {
     let mut ex = MontyRun::new("42".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
     let value: f64 = (&result).try_into().expect("conversion should succeed");
-    assert_eq!(value, 42.0);
+    assert!((value - 42.0).abs() < f64::EPSILON);
 }
 
 #[test]

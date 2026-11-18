@@ -36,6 +36,17 @@ impl<T> Entries<T> {
     pub(super) fn iter(&self) -> impl Iterator<Item = &T> {
         (0..self.len()).map(|index| &self[index])
     }
+
+    /// Mutates every entry in ID order; only a dump upgrade, which owns the tables, needs this.
+    pub(super) fn for_each_mut(&mut self, mut f: impl FnMut(&mut T)) {
+        for index in 0..self.len() {
+            let mut entry = self
+                .0
+                .entry(HeapId::from_index(index))
+                .expect("committed entries are live");
+            f(entry.get_mut());
+        }
+    }
 }
 
 impl<T> Default for Entries<T> {

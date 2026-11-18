@@ -34,14 +34,14 @@ pub fn builtin_sum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let SumArgs { iterable, start } = SumArgs::from_args(args, vm)?;
     defer_drop_mut!(start, vm);
 
-    let iter = iterable.into_py_iter(vm)?;
+    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 
     // Reject str/bytes start values - Python explicitly forbids these
-    match start.py_type(vm) {
-        Type::Str => return Err(ExcType::type_error_sum_start("strings", "''")),
-        Type::Bytes => return Err(ExcType::type_error_sum_start("bytes", "b''")),
+    match start.py_type(vm).native() {
+        Some(Type::Str) => return Err(ExcType::type_error_sum_start("strings", "''")),
+        Some(Type::Bytes) => return Err(ExcType::type_error_sum_start("bytes", "b''")),
         _ => {}
     }
     // Take the start value out of its guard (dropping `None` is a no-op).

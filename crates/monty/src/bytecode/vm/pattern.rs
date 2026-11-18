@@ -15,10 +15,8 @@ use crate::{
     bytecode::op::{MATCH_SHAPE_MAPPING, MATCH_SHAPE_MIN_LEN},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
-    types::{
-        Dict, PyTrait, Type, instance::class_name, set::set_element_hash, str::allocate_string, tuple::allocate_tuple,
-    },
+    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
+    types::{Dict, PyTrait, Type, TypeRef, key_hash::set_element_hash, tuple::allocate_tuple, type_ref::is_class_like},
     value::{EitherStr, Value},
 };
 
@@ -57,13 +55,13 @@ impl VM<'_> {
     /// `str` or `bytes`; mappings are `dict` and its `collections` subclasses.
     pub(super) fn match_shape(&mut self, length: u16, flags: u8) {
         let subject = self.peek();
-        let ty = subject.py_type(self);
+        let ty = subject.py_type(self).native();
         let shape_ok = if flags & MATCH_SHAPE_MAPPING != 0 {
-            matches!(ty, Type::Dict | Type::DefaultDict | Type::Counter)
+            matches!(ty, Some(Type::Dict | Type::DefaultDict | Type::Counter))
         } else {
             matches!(
                 ty,
-                Type::List | Type::Tuple | Type::NamedTuple | Type::Range | Type::Deque
+                Some(Type::List | Type::Tuple | Type::NamedTuple | Type::Range | Type::Deque)
             )
         };
         let matched = shape_ok && {
@@ -274,7 +272,7 @@ fn build_rest_dict(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunResult<
     let rest_id = vm.heap.allocate(HeapData::Dict(rest));
     let mut guard = DropGuard::new(Value::Ref(rest_id), vm);
     let (_, vm) = guard.as_parts();
-    let HeapReadOutput::Dict(mut rest) = vm.heap.read(rest_id) else {
+    let HeapReadOutput::Dict(rest) = vm.heap.read(rest_id) else {
         unreachable!("just allocated as a dict")
     };
     let len = keys.get(vm.heap).as_slice().len();
@@ -309,7 +307,7 @@ fn class_pattern_names(
         match class_match_args(cls, nargs, vm)? {
             MatchArgs::SelfMatch => names.push(Value::None),
             MatchArgs::Names(positional) => {
-                names.extend(positional.iter().map(|name| either_str_value(name, vm.heap)));
+                names.extend(positional.iter().map(|name| name.as_value(vm.heap)));
             }
         }
     }
@@ -329,11 +327,8 @@ fn class_pattern_names(
 /// Whether `value` is something `isinstance` accepts as a single class.
 fn is_class_object(value: &Value, vm: &VM<'_>) -> bool {
     match value {
-        Value::Builtin(Builtins::Type(_) | Builtins::ExcType(_)) => true,
-        Value::Ref(id) => matches!(
-            vm.heap.get(*id),
-            HeapData::Class(_) | HeapData::NamedTupleClass(_) | HeapData::HostClassType(_)
-        ),
+        Value::Builtin(Builtins::Type(_)) => true,
+        Value::Ref(id) => is_class_like(vm.heap.get(*id)),
         _ => false,
     }
 }
@@ -405,14 +400,6 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
     Ok(MatchArgs::Names(names))
 }
 
-/// An attribute name as a `str` value for the `MatchClass` names tuple.
-fn either_str_value(name: &EitherStr, heap: &Heap) -> Value {
-    match name {
-        EitherStr::Interned(id) => Value::InternString(*id),
-        EitherStr::Heap(text) => allocate_string(text.clone(), heap),
-    }
-}
-
 /// `TypeError: Foo.__match_args__ must be a tuple (got list)`.
 fn match_args_type_error(cls: &Value, match_args: &Value, vm: &VM<'_>) -> RunError {
     let class = class_pattern_name(cls, vm);
@@ -431,18 +418,8 @@ fn positional_count_error(cls: &Value, allowed: usize, given: usize, vm: &VM<'_>
 
 /// The class's `__name__`, as CPython's class pattern errors spell it.
 fn class_pattern_name(cls: &Value, vm: &VM<'_>) -> String {
-    match cls {
-        Value::Builtin(Builtins::Type(t)) => t.dunder_name(vm.heap, vm.interns).into_owned(),
-        Value::Builtin(Builtins::ExcType(exc_type)) => {
-            let qualified = exc_type.to_string();
-            qualified.rsplit('.').next().unwrap_or(&qualified).to_owned()
-        }
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Class(_) => class_name(*id, vm.heap, vm.interns).into_owned(),
-            HeapData::NamedTupleClass(class) => class.name(vm.interns).to_owned(),
-            HeapData::HostClassType(class) => class.name(vm.interns).to_owned(),
-            _ => cls.py_type_name(vm).to_string(),
-        },
-        _ => cls.py_type_name(vm).to_string(),
+    match TypeRef::from_value(cls, vm.heap) {
+        Some(ty) => ty.dunder_name(vm.heap, vm.interns).into_owned(),
+        None => cls.py_type_name(vm).to_string(),
     }
 }

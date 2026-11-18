@@ -42,6 +42,9 @@ pub enum MountError {
         dst: String,
     },
 
+    /// Malformed filesystem operation arguments, reported as `ValueError`.
+    InvalidArgument(String),
+
     /// An I/O error from the host filesystem.
     Io(io::Error, String),
 
@@ -114,6 +117,7 @@ impl MountError {
             // argument, not a denied path, and answering `PermissionError`
             // implied the sandbox had refused something it could have allowed.
             Self::EmbeddedNullByte(message) => MontyException::new(ExcType::ValueError, Some(message.to_owned())),
+            Self::InvalidArgument(message) => MontyException::new(ExcType::ValueError, Some(message)),
             Self::ReadOnly(path) => MontyException::new(
                 ExcType::PermissionError,
                 Some(format!("[Errno 30] Read-only file system: {}", StringRepr(&path))),
@@ -235,6 +239,7 @@ impl fmt::Display for MountError {
             Self::InvalidUtf8 { start, first_byte, .. } => {
                 write!(f, "invalid UTF-8 byte 0x{first_byte:02x} at position {start}")
             }
+            Self::InvalidArgument(message) => write!(f, "{message}"),
             Self::InvalidMount(msg) => write!(f, "invalid mount: {msg}"),
             Self::OverlappingMounts {
                 virtual_path,

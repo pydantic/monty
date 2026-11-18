@@ -9,7 +9,6 @@ authors = { workspace = true }
 description = "Global allocator enforcing a Monty worker's hard memory ceiling."
 keywords = { workspace = true }
 categories = { workspace = true }
-homepage = { workspace = true }
 repository = { workspace = true }
 
 [lib]

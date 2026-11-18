@@ -5,7 +5,7 @@
 //! byte decoding, stat conversion, and quota bookkeeping logic.
 
 use std::{
-    io::{Error as IoError, ErrorKind, Read, Write},
+    io::{Error as IoError, ErrorKind, Read, Seek, SeekFrom, Write},
     time::SystemTime,
 };
 
@@ -179,14 +179,23 @@ pub(super) fn host_write_bytes(dir: &Dir, rel: &str, content: &[u8], vpath: &str
 
 /// Truncates `rel` and writes `content` through the mount descriptor.
 fn write_bytes_to_file(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<(), MountError> {
+    let mut file = open_for_write(dir, rel, false, vpath)?;
+    file.write_all(content).map_err(|err| map_io(err, vpath))
+}
+
+/// Requests the required read/write access in the same open that truncates or creates the file.
+pub(super) fn open_for_write(dir: &Dir, rel: &str, readable: bool, vpath: &str) -> Result<File, MountError> {
     reject_non_regular(dir, rel, vpath)?;
-    let mut file = open_regular(
+    open_regular(
         dir,
         rel,
         vpath,
-        OpenOptions::new().write(true).create(true).truncate(true),
-    )?;
-    file.write_all(content).map_err(|err| map_io(err, vpath))
+        OpenOptions::new()
+            .read(readable)
+            .write(true)
+            .create(true)
+            .truncate(true),
+    )
 }
 
 /// Appends text to a file and returns the number of characters written.
@@ -212,6 +221,53 @@ pub(super) fn host_append_bytes(dir: &Dir, rel: &str, content: &[u8], vpath: &st
 fn append_bytes_to_file(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<(), MountError> {
     reject_non_regular(dir, rel, vpath)?;
     let mut file = open_regular(dir, rel, vpath, OpenOptions::new().create(true).append(true))?;
+    file.write_all(content).map_err(|err| map_io(err, vpath))
+}
+
+/// Rejects a non-empty positional write that starts past the current end of the file.
+///
+/// A gap would let one byte from the sandbox grow a host file, or an overlay buffer, by the whole
+/// offset; refusing it keeps file growth bounded by the bytes the sandbox actually sent.
+pub(super) fn reject_write_past_eof(offset: u64, length: u64, count: usize) -> Result<(), MountError> {
+    if count > 0 && offset > length {
+        Err(MountError::InvalidArgument(
+            "write offset is past the end of the file".to_owned(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Uses one confined handle for the length check, seek, and overwrite.
+pub(super) fn host_write_bytes_at(
+    ctx: &mut MountContext<'_>,
+    rel: &str,
+    offset: u64,
+    content: &[u8],
+    vpath: &str,
+) -> Result<MontyObject, MountError> {
+    reject_non_regular(ctx.mount_dir, rel, vpath)?;
+    let mut file = open_regular(ctx.mount_dir, rel, vpath, OpenOptions::new().write(true))?;
+    let length = file.metadata().map_err(|err| map_io(err, vpath))?.len();
+    reject_write_past_eof(offset, length, content.len())?;
+    let charge = content.len();
+    check_write_limit(charge, ctx)?;
+    if !content.is_empty() {
+        file.seek(SeekFrom::Start(offset)).map_err(|err| map_io(err, vpath))?;
+        write_with_charge(&mut file, content, charge, ctx, vpath)?;
+    }
+    Ok(MontyObject::int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
+}
+
+/// Retains the full reservation if a write fails after mutating a prefix.
+fn write_with_charge(
+    file: &mut impl Write,
+    content: &[u8],
+    charge: usize,
+    ctx: &mut MountContext<'_>,
+    vpath: &str,
+) -> Result<(), MountError> {
+    commit_write_bytes(charge, ctx);
     file.write_all(content).map_err(|err| map_io(err, vpath))
 }
 
@@ -248,6 +304,31 @@ fn non_blocking(options: &mut OpenOptions) -> &mut OpenOptions {
 #[cfg(not(unix))]
 fn non_blocking(options: &mut OpenOptions) -> &mut OpenOptions {
     options
+}
+
+/// Creates a new regular file without following or replacing an existing final entry.
+/// The descriptor is closed before returning; permissions apply at creation, never through chmod.
+pub(super) fn host_create_exclusive(dir: &Dir, rel: &str, permissions: u32, vpath: &str) -> Result<(), MountError> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(permissions);
+    #[cfg(not(unix))]
+    let _ = permissions;
+    let file = dir.open_with(rel, &options).map_err(|err| {
+        // Windows can report access denied when the name is an existing directory.
+        #[cfg(windows)]
+        if err.kind() == ErrorKind::PermissionDenied
+            && err.raw_os_error().is_some()
+            && dir.symlink_metadata(rel).is_ok_and(|meta| meta.is_dir())
+        {
+            return MountError::io_err(ErrorKind::AlreadyExists, "File exists", vpath);
+        }
+
+        map_io(err, vpath)
+    })?;
+    drop(file);
+    Ok(())
 }
 
 /// Creates a directory, matching CPython `pathlib.Path.mkdir()` semantics:
@@ -341,6 +422,11 @@ pub(super) fn host_iterdir(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudg
     Ok(MontyObject::list(result))
 }
 
+/// Bytes charged against a mount's `write_bytes_limit` for each directory
+/// `mkdir` creates (one filesystem block), so a write budget also bounds how
+/// many directories sandboxed code can leave on the host.
+pub const DIRECTORY_WRITE_BYTES: usize = 4096;
+
 /// Validates that writing `bytes` would not exceed the mount's quota.
 pub(super) fn check_write_limit(bytes: usize, ctx: &MountContext<'_>) -> Result<(), MountError> {
     if let Some(limit) = ctx.write_bytes_limit {
@@ -352,7 +438,7 @@ pub(super) fn check_write_limit(bytes: usize, ctx: &MountContext<'_>) -> Result<
     Ok(())
 }
 
-/// Records a successful write against the mount's cumulative quota counter.
+/// Charges bytes against the mount's cumulative quota counter.
 pub(super) fn commit_write_bytes(bytes: usize, ctx: &mut MountContext<'_>) {
     if ctx.write_bytes_limit.is_some() {
         *ctx.write_bytes_used = (*ctx.write_bytes_used).saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
@@ -579,5 +665,61 @@ pub(super) fn format_child_path(parent: &str, child: &str) -> String {
         format!("{parent}{child}")
     } else {
         format!("{parent}/{child}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{self, Cursor, Write};
+
+    use cap_std::{ambient_authority, fs::Dir};
+    use tempfile::TempDir;
+
+    use super::{MountContext, MountError, check_write_limit, write_with_charge};
+
+    struct PartialWriter {
+        data: Cursor<Vec<u8>>,
+        remaining: usize,
+    }
+
+    impl Write for PartialWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.remaining == 0 {
+                return Err(io::Error::other("injected write failure"));
+            }
+            let count = bytes.len().min(self.remaining);
+            self.remaining -= count;
+            self.data.write(&bytes[..count])
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn partial_positional_write_retains_its_quota_reservation() {
+        let temp = TempDir::new().unwrap();
+        let dir = Dir::open_ambient_dir(temp.path(), ambient_authority()).unwrap();
+        let mut used = 0;
+        let mut ctx = MountContext {
+            mount_virtual: "/mnt",
+            mount_dir: &dir,
+            write_bytes_used: &mut used,
+            write_bytes_limit: Some(3),
+            memory_usage_limit: 1024,
+        };
+        let mut file = PartialWriter {
+            data: Cursor::new(Vec::new()),
+            remaining: 1,
+        };
+        check_write_limit(3, &ctx).unwrap();
+        assert!(write_with_charge(&mut file, b"abc", 3, &mut ctx, "/mnt/file").is_err());
+        assert_eq!(file.data.into_inner(), b"a");
+        assert_eq!(*ctx.write_bytes_used, 3);
+        assert!(matches!(
+            check_write_limit(1, &ctx),
+            Err(MountError::WriteLimitExceeded(3))
+        ));
     }
 }

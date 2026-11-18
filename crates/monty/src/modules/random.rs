@@ -31,7 +31,7 @@ use crate::{
     bytecode::{CallResult, VM, unpack_exact},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::{PostConversionEffect, urandom_reply_error},
@@ -114,8 +114,8 @@ impl RandomFunctions {
     }
 }
 
-/// Creates the `random` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `random` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Random, vm.interns);
     for (name, function) in RANDOM_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Random(*function)), vm);
@@ -125,7 +125,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::Builtin(Builtins::Type(Type::Random)),
         vm,
     );
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a module-level call, which acts on the VM's own generator.
@@ -376,7 +376,7 @@ fn setstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
         other => {
             let text = other.py_str(vm)?;
             defer_drop!(text, vm);
-            let text = text.to_str_heap(vm.heap, vm.interns)?;
+            let text = text.as_str_heap(vm.heap, vm.interns).expect("py_str returns str");
             return Err(ExcType::value_error(format!(
                 "state with version {text} passed to Random.setstate() of version 3"
             )));
@@ -760,7 +760,7 @@ fn shuffle(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
     defer_drop_mut!(x, vm);
     let len = len_of(x, vm)?;
     if let Value::Ref(id) = x
-        && let HeapReadOutput::List(mut list) = vm.heap.read(*id)
+        && let HeapReadOutput::List(list) = vm.heap.read(*id)
     {
         return target.with_generator(vm, |random, vm| {
             for i in (1..len).rev() {
@@ -817,7 +817,7 @@ fn sample(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<V
     defer_drop!(k, vm);
     defer_drop!(counts, vm);
 
-    if !is_sequence(population.py_type_heap(vm.heap)) {
+    if !population.py_type_heap(vm.heap).native().is_some_and(is_sequence) {
         return Err(ExcType::type_error(
             "Population must be a sequence.  For dicts or sets, use sorted(d).",
         ));
@@ -971,7 +971,7 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
             defer_drop!(k, vm);
             return Err(ExcType::type_error(format!(
                 "The number of choices must be a keyword argument: k={}",
-                k.to_str_heap(vm.heap, vm.interns)?
+                k.as_str_heap(vm.heap, vm.interns).expect("py_str returns str")
             )));
         } else {
             Some(cumulative_weights(weights, vm)?)

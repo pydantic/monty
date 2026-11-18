@@ -9,7 +9,7 @@ use crate::{args::ArgValues, bytecode::VM, defer_drop, exception_private::RunRes
 pub fn builtin_all(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let iterable = args.get_one_arg("all", vm.heap)?;
     defer_drop!(iterable, vm);
-    let iter = iterable.py_iter(vm)?;
+    let iter = iterable.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 

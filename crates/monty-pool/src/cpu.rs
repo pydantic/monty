@@ -1,0 +1,125 @@
+//! Native child-process CPU supervision, independent of worker telemetry.
+
+use std::{future::Future, io, pin::pin, time::Duration};
+
+use tokio::time::{Instant, MissedTickBehavior, interval_at, timeout_at};
+
+use crate::cpu_clock::Clock;
+
+const POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// One turn's CPU allowance, measured from a baseline sample of the child's clock.
+///
+/// Polls take unconfirmed samples (see [`Clock::confirm`]) and confirm only before acting on one:
+/// an error, a crossed limit, or the final charge. An unconfirmed sample under the limit drives
+/// nothing, and a confirmation vouches for the baseline and every sample before it.
+pub(crate) struct Monitor {
+    clock: Clock,
+    started: Duration,
+    pub(crate) limit: Duration,
+}
+
+pub(crate) enum Failure {
+    Timeout,
+    Limit { limit: Duration, consumed: Duration },
+    Clock(io::Error),
+}
+
+impl Monitor {
+    pub(crate) fn new(clock: Clock, limit: Duration) -> io::Result<Self> {
+        let started = clock.sample().map_err(|error| confirmed_error(&clock, error))?;
+        Ok(Self { clock, started, limit })
+    }
+
+    /// Confirmed consumption since the baseline, for charging the turn to the feed budget.
+    pub(crate) fn elapsed(&self) -> io::Result<Duration> {
+        let consumed = self.consumed();
+        self.clock.confirm()?;
+        consumed
+    }
+
+    /// Confirms only before failing, since a failure kills the worker.
+    fn check(&self) -> Result<(), Failure> {
+        match self.consumed() {
+            Ok(consumed) if consumed < self.limit => Ok(()),
+            Ok(consumed) => {
+                self.clock.confirm().map_err(Failure::Clock)?;
+                Err(Failure::Limit {
+                    limit: self.limit,
+                    consumed,
+                })
+            }
+            Err(error) => Err(Failure::Clock(confirmed_error(&self.clock, error))),
+        }
+    }
+
+    /// Unconfirmed consumption since the baseline.
+    fn consumed(&self) -> io::Result<Duration> {
+        self.clock
+            .sample()?
+            .checked_sub(self.started)
+            .ok_or_else(|| io::Error::other("child CPU clock moved backwards"))
+    }
+}
+
+/// Reports a vanished child (whose PID may now name another process) in place of a sampling error.
+fn confirmed_error(clock: &Clock, error: io::Error) -> io::Error {
+    clock.confirm().err().unwrap_or(error)
+}
+
+/// Bounds either protocol path with independent CPU and wall limits. Cancellation drops the I/O future.
+pub(crate) async fn run<F: Future>(
+    monitor: Option<&Monitor>,
+    deadline: Option<Instant>,
+    future: F,
+) -> Result<F::Output, Failure> {
+    let supervised = async {
+        let Some(monitor) = monitor else {
+            return Ok(future.await);
+        };
+        monitor.check()?;
+        let mut future = pin!(future);
+        let expiry = until_exhausted(monitor);
+        let mut expiry = pin!(expiry);
+        tokio::select! {
+            biased;
+            result = &mut expiry => result.and_then(|()| Err(Failure::Clock(io::Error::other("CPU monitor ended without exhaustion")))),
+            result = &mut future => Ok(result),
+        }
+    };
+    match deadline {
+        Some(deadline) => timeout_at(deadline, supervised).await.map_err(|_| Failure::Timeout)?,
+        None => supervised.await,
+    }
+}
+
+async fn until_exhausted(monitor: &Monitor) -> Result<(), Failure> {
+    let mut ticks = interval_at(Instant::now() + POLL_INTERVAL, POLL_INTERVAL);
+    ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        ticks.tick().await;
+        monitor.check()?;
+    }
+}
+
+/// The grace is one capped allowance per feed, not a fresh grant on every resume.
+pub(crate) fn allowance(
+    feed: Option<Duration>,
+    turn: Option<Duration>,
+    consumed: Duration,
+    feed_grace: Option<Duration>,
+    turn_grace: Option<Duration>,
+) -> Option<Duration> {
+    let feed = feed
+        .zip(feed_grace)
+        .map(|(limit, grace)| limit.saturating_add(grace).saturating_sub(consumed));
+    let turn = turn.zip(turn_grace).map(|(limit, grace)| limit.saturating_add(grace));
+    match (feed, turn) {
+        (Some(feed), Some(turn)) => Some(feed.min(turn)),
+        (feed, turn) => feed.or(turn),
+    }
+}
+
+#[cfg(test)]
+#[path = "../tests/unit/cpu.rs"]
+mod tests;

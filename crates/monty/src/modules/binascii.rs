@@ -17,8 +17,6 @@
 //! first; `binascii` re-exposes them under the names CPython puts them at.
 
 use monty_types::ResourceTracker;
-use num_bigint::BigInt;
-use num_traits::ToPrimitive;
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -26,7 +24,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, HeapData, HeapId},
+    heap::{DropWithContext, HeapData},
     intern::StaticStrings,
     modules::{
         ModuleFunctions,
@@ -34,8 +32,9 @@ use crate::{
             allocate_bytes, b64_decode, b64_encode_reserving, binascii_error, decode_input_described, encode_input,
         },
     },
+    py_value::PyValue,
     resource_checks::check_estimated_size,
-    types::{Module, PyTrait},
+    types::{Module, PyTrait, Type},
     value::Value,
 };
 
@@ -87,25 +86,25 @@ const BINASCII_FUNCTIONS: &[(StaticStrings, BinasciiFunctions)] = &[
     (StaticStrings::A2bQp, BinasciiFunctions::A2bQp),
 ];
 
-/// Creates the `binascii` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `binascii` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Binascii, vm.interns);
 
     module.set_attr(
         StaticStrings::ErrorClass,
-        Value::Builtin(Builtins::ExcType(ExcType::BinasciiError)),
+        Value::Builtin(Builtins::Type(Type::BinasciiError)),
         vm,
     );
     module.set_attr(
         StaticStrings::IncompleteClass,
-        Value::Builtin(Builtins::ExcType(ExcType::BinasciiIncomplete)),
+        Value::Builtin(Builtins::Type(Type::BinasciiIncomplete)),
         vm,
     );
     for (name, func) in BINASCII_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Binascii(*func)), vm);
     }
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `binascii` module function.
@@ -409,19 +408,9 @@ struct A2bQpArgs {
 /// wraps modulo 2**32 rather than rejecting a value out of range — so a
 /// negative or huge `crc` seed is accepted, as CPython accepts it.
 fn wrapping_u32(value: &Value, vm: &VM<'_>) -> RunResult<u32> {
-    const MODULUS: i64 = 1 << 32;
-
-    match value {
-        Value::Int(int) => Ok(u32::try_from(int.rem_euclid(MODULUS)).expect("reduced below 2**32")),
-        Value::Bool(flag) => Ok(u32::from(*flag)),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::LongInt(long) => {
-                // `&` on a `BigInt` is two's-complement, so this is Python's
-                // own `value & 0xffffffff` for negatives as well.
-                Ok((&long.0 & BigInt::from(u32::MAX)).to_u32().expect("masked below 2**32"))
-            }
-            _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
-        },
+    match value.py_value(vm) {
+        PyValue::Int(integer) => Ok(integer.wrapping_u32(vm)),
+        PyValue::Bool(value) => Ok(u32::from(value)),
         _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
     }
 }
@@ -512,10 +501,10 @@ fn hex_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<Option<u8>> {
 
     if length != 1 {
         Err(value_error("sep must be length 1."))
-    } else if sep.is_str(vm.heap) {
+    } else if let Some(text) = sep.as_str(vm) {
         // Latin-1, not ASCII: `hexlify` returns bytes, so CPython only rejects
         // a character that does not fit a byte, under an "ASCII" message.
-        u8::try_from(u32::from(sep.to_str(vm)?.chars().next().expect("one character")))
+        u8::try_from(u32::from(text.chars().next().expect("one character")))
             .map(Some)
             .map_err(|_| value_error("sep must be ASCII."))
     } else if is_bytes(sep, vm) {

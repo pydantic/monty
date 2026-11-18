@@ -13,7 +13,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, Heap, HeapData, HeapId, HeapRead},
+    heap::{DropGuard, Heap, HeapData, HeapId, HeapReadMut},
     types::{
         CsvObject, List,
         csv::dialect::{Dialect, Quoting},
@@ -65,14 +65,14 @@ impl Reader {
 }
 
 /// One record as a `list` of fields, or `None` once the source is exhausted.
-pub(super) fn next<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let fields = next_fields(obj, vm)?;
     Ok(fields.map(|fields| Value::Ref(vm.heap.allocate(HeapData::List(List::new(fields))))))
 }
 
 /// The fields of the next record, or `None` once the source is exhausted. `DictReader`
 /// takes the fields this way, so its rows never pass through a list.
-pub(super) fn next_fields<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Option<Vec<Value>>> {
+pub(super) fn next_fields<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Option<Vec<Value>>> {
     let (source, dialect, field_hint) = {
         let CsvObject::Reader(reader) = obj.get(vm.heap) else {
             unreachable!("dispatched on CsvObject::Reader")
@@ -123,7 +123,9 @@ pub(super) fn next_fields<'h>(obj: &mut HeapRead<'h, CsvObject>, vm: &mut VM<'h>
         }
         // The parser only allocates, so the line is read in place rather than copied.
         let heap: &Heap = vm.heap;
-        let mut rest = line.to_str_heap(heap, vm.interns)?;
+        let mut rest = line
+            .as_str_heap(heap, vm.interns)
+            .expect("reader line type checked above");
         while !rest.is_empty() {
             heap.tracker.check_time_every(polls)?;
             polls += 1;

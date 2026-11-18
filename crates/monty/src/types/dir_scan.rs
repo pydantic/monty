@@ -32,7 +32,7 @@ use crate::{
     intern::StaticStrings,
     os_dispatch::value_as_path_str,
     types::{
-        LazyHeapSet, List, Path, PyTrait, Type, allocate_tuple,
+        LazyHeapSet, List, Path, PyTrait, Type, TypeRef, allocate_tuple,
         list::ListIterator,
         str::{allocate_string, string_repr_fmt},
     },
@@ -180,8 +180,8 @@ struct PendingDirnames {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).py_type()
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        self.get(vm.heap).py_type().into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -204,9 +204,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         self.py_is_iterable(vm)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         if self.py_is_iterable(vm) {
-            Ok(self.clone_value(vm.heap))
+            Ok(CallResult::Value(self.clone_value(vm.heap)))
         } else {
             Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
         }
@@ -446,7 +446,7 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
                         return Err(error);
                     };
                     let exc = Value::Ref(vm.heap.allocate(HeapData::Exception(raise.exc)));
-                    let result = vm.evaluate_function("os.walk() onerror", onerror, ArgValues::One(exc))?;
+                    let result = vm.evaluate_function(onerror, ArgValues::One(exc))?;
                     result.drop_with(vm);
                 }
             }
@@ -760,7 +760,7 @@ impl ScanEffect {
     /// CPython does for its `scandir` failures. `os.scandir` raises.
     pub(crate) fn absorbs(&self, error: &RunError) -> bool {
         !matches!(self, Self::Scandir { .. })
-            && matches!(error, RunError::Exc(raise) if raise.exc.exc_type().is_subclass_of(ExcType::OSError))
+            && matches!(error, RunError::Exc(raise) if Type::from(raise.exc.exc_type()).is_subclass_of(Type::OSError))
     }
 
     /// Builds the result from the host's reply, or from an error [`Self::absorbs`] accepted.

@@ -25,10 +25,11 @@ use crate::external::{
     AfterModule, CallResult, ExternalLookup, HostNames, Staged, py_err_to_ext_result, py_obj_to_ext_result,
 };
 
-/// Answers an `import` or `import_stubs` OS call (see
-/// [`is_module_call`](crate::external::is_module_call)) from `names`,
-/// returning `CallResult::ModuleCoroutine` when a factory must be awaited first.
-pub(crate) fn dispatch_module_call(
+/// Answers an intercepted OS call (see
+/// [`is_intercepted_os_call`](crate::external::is_intercepted_os_call)): imports and stubs
+/// from the host's names and modules, type hints from the named function or the `ClassType`
+/// in `instances`. Returns `CallResult::ModuleCoroutine` when a factory must be awaited first.
+pub(crate) fn dispatch_intercepted_os_call(
     function_name: &str,
     args: &CallArgs,
     names: &HostNames,
@@ -36,8 +37,8 @@ pub(crate) fn dispatch_module_call(
 ) -> CallResult {
     Python::attach(|py| {
         ExternalLookup::new(py, names, instances)
-            .module_call_or_coroutine(function_name, args)
-            .expect("only a module OS call is dispatched here")
+            .intercepted_os_call_or_coroutine(function_name, args)
+            .expect("only an intercepted OS call is dispatched here")
     })
 }
 
@@ -113,17 +114,28 @@ pub(crate) fn dispatch_coroutine(
     Ok(dispatch_future(Box::pin(future), call_id, mode, join_set))
 }
 
+/// Converts the coroutine a host callback answered with into its result
+/// future; it is already scheduled on the event loop, so it runs unpolled.
+pub(crate) fn coroutine_answer(coro: Py<PyAny>, instances: &InstanceStore) -> PyResult<AnswerFuture> {
+    Ok(Box::pin(coroutine_future(coro, instances)?))
+}
+
 /// Schedules module factories for the caller to await; see [`PendingModule`].
 pub(crate) fn dispatch_module_coroutine(
     names: Vec<String>,
     coros: Vec<Py<PyAny>>,
     then: AfterModule,
 ) -> PyResult<Dispatched<AnswerFuture>> {
+    pending_module(names, coros, then).map(Dispatched::Module)
+}
+
+/// Schedules module factories, returning them for the caller to settle.
+pub(crate) fn pending_module(names: Vec<String>, coros: Vec<Py<PyAny>>, then: AfterModule) -> PyResult<PendingModule> {
     let futures = coros
         .into_iter()
         .map(|coro| python_future(coro).map(|future| Box::pin(future) as ModuleFuture))
         .collect::<PyResult<Vec<_>>>()?;
-    Ok(Dispatched::Module(PendingModule { names, then, futures }))
+    Ok(PendingModule { names, then, futures })
 }
 
 /// Pending factories, one per module. Await [`settle`](Self::settle) outside the GIL,
@@ -171,6 +183,27 @@ impl SettledModule {
         match ExternalLookup::new(py, names, instances).finish_after_module(&self.names, modules, &self.then) {
             Staged::Done(result) => Ok(Dispatched::AsValue(Box::pin(ready(result)))),
             Staged::Coroutine(coro) => dispatch_coroutine(coro, call_id, mode, join_set, instances),
+        }
+    }
+
+    /// Installs modules and returns the waiting call's result future, for a
+    /// streamed call, which nothing awaits at the call.
+    pub(crate) fn into_answer(
+        self,
+        py: Python<'_>,
+        names: &HostNames,
+        instances: &InstanceStore,
+    ) -> PyResult<AnswerFuture> {
+        let modules = self
+            .result
+            .map(|modules| modules.into_iter().map(|module| module.into_bound(py)).collect());
+        match ExternalLookup::new(py, names, instances).finish_after_module(&self.names, modules, &self.then) {
+            // a future settles with a value or an error, so a missing function raises here
+            Staged::Done(ExtFunctionResult::NotFound(name)) => Ok(Box::pin(ready(ExtFunctionResult::Error(
+                ExtFunctionResult::not_found_exception(&name),
+            )))),
+            Staged::Done(result) => Ok(Box::pin(ready(result))),
+            Staged::Coroutine(coro) => coroutine_answer(coro, instances),
         }
     }
 }
@@ -226,7 +259,7 @@ fn coroutine_future(
 
 /// Schedules `coro` on the caller's event loop, under the task-locals the
 /// current `future_into_py` scope established.
-fn python_future(coro: Py<PyAny>) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>> + Send + use<>> {
+pub(crate) fn python_future(coro: Py<PyAny>) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>> + Send + use<>> {
     Python::attach(|py| {
         let locals = get_current_locals(py)?.copy_context(py)?;
         into_future_with_locals(&locals, coro.into_bound(py))

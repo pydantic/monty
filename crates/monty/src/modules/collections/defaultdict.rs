@@ -29,7 +29,7 @@ pub(crate) fn defaultdict_missing<'h>(
     let Some(factory) = factory else {
         return Err(ExcType::key_error(key, vm));
     };
-    let value = match vm.evaluate_function("default_factory", &factory, ArgValues::Empty) {
+    let value = match vm.evaluate_function(&factory, ArgValues::Empty) {
         Ok(value) => value,
         Err(e) => {
             factory.drop_with(vm);
