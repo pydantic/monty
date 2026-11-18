@@ -1929,19 +1929,16 @@ fn unpack_update_pair(item: Value, index: usize, vm: &mut VM<'_>) -> RunResult<(
         let iterator = item.into_py_iter(scope.vm())?.synchronous(scope)?;
         let mut pair_iter = iterator.read(scope.vm());
 
-        let vm = scope.vm();
-        let Some(key) = pair_iter.py_next(vm)? else {
+        let Some(key) = pair_iter.py_next(scope.vm())? else {
             return Err(ExcType::value_error_update_sequence_length(index, 0));
         };
-        let mut key_guard = DropGuard::new(key, vm);
-        let Some(value) = pair_iter.py_next(key_guard.ctx())? else {
+        let key = scope.keep(key);
+        let Some(value) = pair_iter.py_next(scope.vm())? else {
             return Err(ExcType::value_error_update_sequence_length(index, 1));
         };
+        let value = scope.keep(value);
 
-        // The row is still fallible until we know its full length.
-        let (key, vm) = key_guard.into_parts();
-        let mut pair = DropGuard::new((value, key), vm);
-        let vm = pair.ctx();
+        let vm = scope.vm();
         let mut length = 2;
         while let Some(extra) = pair_iter.py_next(vm)? {
             extra.drop_with(vm);
@@ -1951,8 +1948,7 @@ fn unpack_update_pair(item: Value, index: usize, vm: &mut VM<'_>) -> RunResult<(
         if length != 2 {
             return Err(ExcType::value_error_update_sequence_length(index, length));
         }
-        let (value, key) = pair.into_inner();
-        Ok((key, value))
+        Ok((scope.take(key), scope.take(value)))
     })
 }
 

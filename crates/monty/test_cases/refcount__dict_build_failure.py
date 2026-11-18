@@ -34,6 +34,15 @@ except TypeError as e:
     assert str(e) == "cannot use 'list' as a dict key (unhashable type: 'list')"
 
 
+for row in [(first_key,), (first_key, first_value, last_value)]:
+    try:
+        {}.update([row])
+        assert False, 'update should reject the row length'
+    except ValueError as e:
+        assert str(e) == f'dictionary update sequence element #0 has length {len(row)}; 2 is required'
+row = None
+
+
 class Tripwire:
     def __hash__(self):
         return 0
