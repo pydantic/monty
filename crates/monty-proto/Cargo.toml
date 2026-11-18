@@ -57,9 +57,15 @@ grpc = ["dep:tonic", "dep:bytes"]
 # bindings) never link the interpreter itself.
 # `tzdb-bundled` so every worker resolves zone names; native binaries add `tzdb` for the OS copy.
 worker = ["dep:monty", "monty-types/tzdb-bundled"]
-# Lets the `worker` type check fed snippets. Without it the worker refuses
-# sessions configured with `type_check`, and links none of ty's ~13 MiB of code.
-type-checking = ["worker", "dep:monty-type-checking"]
+# Lets the `worker` type check fed snippets. Without it (or `host-type-checking`)
+# the worker refuses sessions configured with `type_check`, and links none of
+# ty's ~13 MiB of code.
+type-checking = ["worker", "dep:monty-type-checking", "monty-type-checking/checker"]
+# Lets the `worker` serve type-checked sessions without linking ty: it keeps the
+# session's type-check state but hands each check to its host as a
+# `WorkerEvent.host_type_check`, answered by `ClientRequest.host_type_check_result`.
+# For a size-sensitive host that runs ty elsewhere. `type-checking` wins when both are on.
+host-type-checking = ["worker", "dep:monty-type-checking"]
 
 [[bin]]
 name = "generate-proto"
@@ -73,11 +79,19 @@ required-features = ["generate"]
 name = "dispatch"
 required-features = ["type-checking"]
 
+# The worker that delegates its checks, with the tests playing its host; run with
+# `cargo test --features host-type-checking` (and without `type-checking`).
+[[test]]
+name = "host_type_checking"
+required-features = ["host-type-checking"]
+
 [dev-dependencies]
 allocation-counter = "0.8"
 insta = { workspace = true }
 monty = { workspace = true }
 monty-types = { workspace = true, features = ["tzdb"] }
+# The host side of `host-type-checking`'s tests runs the checker itself.
+monty-type-checking = { workspace = true, features = ["checker"] }
 # Self dev-dependency enables budget instrumentation for tests, not normal builds.
 # Path-only (no version) so `cargo publish` strips it: a versioned self-reference
 # cannot resolve while this version is not yet on crates.io.

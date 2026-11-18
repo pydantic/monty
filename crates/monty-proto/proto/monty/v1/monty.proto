@@ -632,6 +632,7 @@ message ClientRequest {
     Shutdown shutdown = 10;
     AbortFeed abort_feed = 11;
     Pong pong = 12;
+    HostTypeCheckResult host_type_check_result = 13;
   }
 
   // W3C `traceparent` identifying the caller's span, so a worker that exports
@@ -886,6 +887,7 @@ message WorkerEvent {
     Ping ping = 13;
     SessionRefused session_refused = 14;
     StreamedCalls streamed_calls = 15;
+    HostTypeCheck host_type_check = 16;
   }
 
   // Cumulative execution time consumed by the session's sandbox code, in
@@ -1251,6 +1253,52 @@ message TypingError {
 message DumpResult {
   // Opaque versioned snapshot; see `Dump`.
   bytes state = 1;
+}
+
+// Host-internal suspension, never sent to a client: a worker built with
+// monty-proto's `host-type-checking` feature (and without `type-checking`)
+// delegates each type check to its host, which runs ty elsewhere and answers
+// with `ClientRequest.host_type_check_result`. The worker keeps all of the
+// session's type-check state; this carries everything one check needs, and
+// the host must answer it before forwarding any other request. A host that
+// cannot answer must not build the worker with that feature. Every field is
+// untrusted worker output: the host must bound the check itself (nesting
+// depth, memory, time).
+message HostTypeCheck {
+  // The snippet to check.
+  string code = 1;
+  // The session's script name, used for the snippet's path in diagnostics.
+  string script_name = 2;
+  // The session's `type_check_stubs` plus every committed snippet, star
+  // imported into the snippet as `repl_type_stubs.pyi`; absent when empty.
+  optional string stubs = 3;
+  // Committed import lines, placed before the stubs' star import.
+  string prelude = 4;
+  // Host module stubs, from `import_stubs` answers or a `Load`.
+  repeated ModuleStub module_stubs = 5;
+  TypeCheckFormat format = 6;
+  bool color = 7;
+
+  // A host module's `.pyi` source by dotted module path.
+  message ModuleStub {
+    string module = 1;
+    string source = 2;
+  }
+}
+
+// The answer to `WorkerEvent.host_type_check`.
+message HostTypeCheckResult {
+  oneof outcome {
+    // The snippet type checks; the worker runs it.
+    Clean clean = 1;
+    // The diagnostics rendered in the requested format; the worker ends the
+    // turn with `TypingError` and does not run the snippet.
+    string diagnostics = 2;
+    // The checker failed; the worker ends the turn with a protocol violation.
+    string error = 3;
+  }
+
+  message Clean {}
 }
 
 // Turn end: the `Configure` was refused, so no session exists and its `first`

@@ -2185,6 +2185,10 @@ impl Checkout {
                 // answered by the remote transport's reader task before it
                 // reaches here, and never sent by a subprocess; not a turn end
                 Some(pb::worker_event::Kind::Ping(_)) => {}
+                // host-internal: the worker's own host answers it, and no client is that host
+                Some(pb::worker_event::Kind::HostTypeCheck(_)) => {
+                    return Err(self.protocol_violation("worker asked its host to type check"));
+                }
                 Some(pb::worker_event::Kind::Print(print)) => {
                     #[cfg(feature = "telemetry")]
                     let context = self.callback_context();

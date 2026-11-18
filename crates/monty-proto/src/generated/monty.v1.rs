@@ -768,7 +768,7 @@ pub struct ClientRequest {
     >,
     #[prost(
         oneof = "client_request::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
     )]
     pub kind: ::core::option::Option<client_request::Kind>,
 }
@@ -801,6 +801,8 @@ pub mod client_request {
         AbortFeed(super::AbortFeed),
         #[prost(message, tag = "12")]
         Pong(super::Pong),
+        #[prost(message, tag = "13")]
+        HostTypeCheckResult(super::HostTypeCheckResult),
     }
 }
 /// Configures the REPL session this worker will serve until `Reset`, sent once
@@ -1130,7 +1132,7 @@ pub struct WorkerEvent {
     pub execution_clock: ::core::option::Option<i32>,
     #[prost(
         oneof = "worker_event::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16"
     )]
     pub kind: ::core::option::Option<worker_event::Kind>,
 }
@@ -1169,6 +1171,8 @@ pub mod worker_event {
         SessionRefused(super::SessionRefused),
         #[prost(message, tag = "15")]
         StreamedCalls(super::StreamedCalls),
+        #[prost(message, tag = "16")]
+        HostTypeCheck(super::HostTypeCheck),
     }
 }
 /// One run of print() output on a single stream, as one `Print` event may
@@ -1621,6 +1625,80 @@ pub struct DumpResult {
     /// Opaque versioned snapshot; see `Dump`.
     #[prost(bytes = "vec", tag = "1")]
     pub state: crate::budgeted_prost::alloc::vec::Vec<u8>,
+}
+/// Host-internal suspension, never sent to a client: a worker built with
+/// monty-proto's `host-type-checking` feature (and without `type-checking`)
+/// delegates each type check to its host, which runs ty elsewhere and answers
+/// with `ClientRequest.host_type_check_result`. The worker keeps all of the
+/// session's type-check state; this carries everything one check needs, and
+/// the host must answer it before forwarding any other request. A host that
+/// cannot answer must not build the worker with that feature. Every field is
+/// untrusted worker output: the host must bound the check itself (nesting
+/// depth, memory, time).
+#[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct HostTypeCheck {
+    /// The snippet to check.
+    #[prost(string, tag = "1")]
+    pub code: crate::budgeted_prost::alloc::string::String,
+    /// The session's script name, used for the snippet's path in diagnostics.
+    #[prost(string, tag = "2")]
+    pub script_name: crate::budgeted_prost::alloc::string::String,
+    /// The session's `type_check_stubs` plus every committed snippet, star
+    /// imported into the snippet as `repl_type_stubs.pyi`; absent when empty.
+    #[prost(string, optional, tag = "3")]
+    pub stubs: ::core::option::Option<crate::budgeted_prost::alloc::string::String>,
+    /// Committed import lines, placed before the stubs' star import.
+    #[prost(string, tag = "4")]
+    pub prelude: crate::budgeted_prost::alloc::string::String,
+    /// Host module stubs, from `import_stubs` answers or a `Load`.
+    #[prost(message, repeated, tag = "5")]
+    pub module_stubs: crate::budgeted_prost::alloc::vec::Vec<
+        host_type_check::ModuleStub,
+    >,
+    #[prost(enumeration = "TypeCheckFormat", tag = "6")]
+    pub format: i32,
+    #[prost(bool, tag = "7")]
+    pub color: bool,
+}
+/// Nested message and enum types in `HostTypeCheck`.
+pub mod host_type_check {
+    /// A host module's `.pyi` source by dotted module path.
+    #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub struct ModuleStub {
+        #[prost(string, tag = "1")]
+        pub module: crate::budgeted_prost::alloc::string::String,
+        #[prost(string, tag = "2")]
+        pub source: crate::budgeted_prost::alloc::string::String,
+    }
+}
+/// The answer to `WorkerEvent.host_type_check`.
+#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct HostTypeCheckResult {
+    #[prost(oneof = "host_type_check_result::Outcome", tags = "1, 2, 3")]
+    pub outcome: ::core::option::Option<host_type_check_result::Outcome>,
+}
+/// Nested message and enum types in `HostTypeCheckResult`.
+pub mod host_type_check_result {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub struct Clean {}
+    #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Oneof)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub enum Outcome {
+        /// The snippet type checks; the worker runs it.
+        #[prost(message, tag = "1")]
+        Clean(Clean),
+        /// The diagnostics rendered in the requested format; the worker ends the
+        /// turn with `TypingError` and does not run the snippet.
+        #[prost(string, tag = "2")]
+        Diagnostics(crate::budgeted_prost::alloc::string::String),
+        /// The checker failed; the worker ends the turn with a protocol violation.
+        #[prost(string, tag = "3")]
+        Error(crate::budgeted_prost::alloc::string::String),
+    }
 }
 /// Turn end: the `Configure` was refused, so no session exists and its `first`
 /// request did not run. Sent by a worker rejecting its settings or a relay
