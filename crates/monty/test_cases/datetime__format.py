@@ -156,6 +156,15 @@ assert datetime.datetime.strptime('2024-06-15 12:30 +010203', '%Y-%m-%d %H:%M %z
 assert datetime.datetime.strptime('2024-06-15 12:30 +01:02:03', '%Y-%m-%d %H:%M %z').utcoffset() == datetime.timedelta(
     seconds=3723
 )
+# Optional offset seconds are greedy unless needed by the remaining format.
+for _text, _format, _seconds in [
+    ('+010003', '%z03', 3600),
+    ('+01:00:03', '%z:03', 3600),
+    ('+01:0003', '%z03', 3600),
+    ('+01000303', '%z03', 3603),
+]:
+    assert datetime.datetime.strptime(_text, _format).utcoffset() == datetime.timedelta(seconds=_seconds)
+
 # +0000, -0000 and Z all give the UTC singleton
 assert datetime.datetime.strptime('2024-06-15 12:30 +0000', '%Y-%m-%d %H:%M %z').tzinfo is datetime.timezone.utc
 assert datetime.datetime.strptime('2024-06-15 12:30 -0000', '%Y-%m-%d %H:%M %z').tzinfo is datetime.timezone.utc

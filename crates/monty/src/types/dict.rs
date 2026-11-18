@@ -33,11 +33,12 @@ use crate::{
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
     },
     types::{
-        Type,
+        Type, TypeRef,
         hash_table::{
             CloneTableEntry, Live, PyHashTable, Slot, TableCursor, TableEntry, TableProbe, TableScan, TableSource,
             TableWalk,
         },
+        key_hash::dict_key_hash,
     },
     value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };
@@ -562,8 +563,15 @@ impl<'h> HeapRead<'h, Dict> {
     /// Returns Err if key is unhashable.
     #[inline]
     pub(crate) fn dict_get<'a>(&'a self, key: &Value, vm: &'a mut VM<'h>) -> RunResult<Option<Value>> {
-        let (found, _hash) = self.find_index_hash(key, vm)?;
-        if let Some(slot) = found {
+        let hash = dict_key_hash(key, vm)?;
+        self.get_known_hash(key, hash, vm)
+    }
+
+    /// [`dict_get`](Self::dict_get) with `key`'s hash already computed, as
+    /// CPython's `_PyDict_GetItem_KnownHash`, so a caller hashing once for a
+    /// lookup and a store does not run a user `__hash__` twice.
+    pub(crate) fn get_known_hash(&self, key: &Value, hash: u64, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        if let Some(slot) = self.find_index(key, hash, vm)? {
             let entry = self.get(vm.heap).table.entry(&slot);
             Ok(Some(entry.value.clone_with_heap(vm.heap)))
         } else {
@@ -664,17 +672,47 @@ impl<'h> HeapReadMut<'h, Dict> {
         }
     }
 
+    /// [`set`](Self::set) with `key`'s hash already computed, as CPython's
+    /// `_PyDict_SetItem_KnownHash`; `hash` must be the dict key hash of `key`.
+    pub(crate) fn set_known_hash(
+        &self,
+        key: Value,
+        value: Value,
+        hash: u64,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Option<Value>> {
+        self.set_hashed(key, value, hash, vm, GrowthCheck::Preflight)
+    }
+
     fn set_with(&self, key: Value, value: Value, vm: &mut VM<'h>, growth: GrowthCheck) -> RunResult<Option<Value>> {
+        match dict_key_hash(&key, vm) {
+            Ok(hash) => self.set_hashed(key, value, hash, vm, growth),
+            Err(e) => {
+                key.drop_with(vm);
+                value.drop_with(vm);
+                Err(e)
+            }
+        }
+    }
+
+    /// Stores `key` under its precomputed `hash`, releasing both values on error.
+    fn set_hashed(
+        &self,
+        key: Value,
+        value: Value,
+        hash: u64,
+        vm: &mut VM<'h>,
+        growth: GrowthCheck,
+    ) -> RunResult<Option<Value>> {
         // Track if we're adding a reference for GC optimization
         if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
         }
 
-        // Handle hash computation errors explicitly so we can drop key/value properly
-        let (found, hash) = match self.find_index_hash(&key, vm) {
-            Ok(result) => result,
+        // The probe can run a user `__eq__`, which may raise
+        let found = match self.find_index(&key, hash, vm) {
+            Ok(found) => found,
             Err(e) => {
-                // Drop the key and value before returning the error
                 key.drop_with(vm);
                 value.drop_with(vm);
                 return Err(e);
@@ -886,10 +924,7 @@ impl<'h> HeapRead<'h, Dict> {
     /// is a `TypeError` naming the dict — the only two things that distinguish
     /// this from [`TableProbe::find_index`], which does the probing.
     fn find_index_hash(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<(Option<Slot>, u64)> {
-        let hash = key
-            .py_hash(vm)?
-            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(&key.py_type_name(vm)))?
-            .raw();
+        let hash = dict_key_hash(key, vm)?;
         Ok((self.find_index(key, hash, vm)?, hash))
     }
 
@@ -1241,7 +1276,7 @@ impl<'h> HeapRead<'h, Dict> {
         // cannot be ordered: it catches the `TypeError` from `most_common()`.
         let order = match counter_order(counts, vm) {
             Ok(order) => order,
-            Err(RunError::Exc(raise)) if raise.exc.exc_type().is_subclass_of(ExcType::TypeError) => {
+            Err(RunError::Exc(raise)) if Type::from(raise.exc.exc_type()).is_subclass_of(Type::TypeError) => {
                 (0..pairs.len()).collect()
             }
             Err(err) => return Err(err),
@@ -1290,9 +1325,9 @@ impl<'h> HeapReadMut<'h, Dict> {
                 Ok(self.get_mut(vm.heap).replace_default_factory(Some(value)))
             }
         } else {
-            let type_name = self.get(vm.heap).kind_type().name(vm.heap, vm.interns);
+            let type_name = self.get(vm.heap).kind_type().name();
             value.drop_with(vm);
-            Err(ExcType::attribute_error_no_setattr(&type_name, attr.as_str(vm.interns)))
+            Err(ExcType::attribute_error_no_setattr(type_name, attr.as_str(vm.interns)))
         }
     }
 }
@@ -1312,8 +1347,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
         self.contains_key(item, vm).map(Some)
     }
 
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).kind_type()
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        self.get(vm.heap).kind_type().into()
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
@@ -1554,7 +1589,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
                 defer_drop!(key, vm);
                 let mut default_guard = DropGuard::new(default, vm);
                 let vm = default_guard.ctx();
-                if let Some((old_key, value)) = self.pop(key, vm)? {
+                // CPython's `PyDict_Pop` returns before hashing when the dict is empty.
+                let popped = if self.get(vm.heap).is_empty() {
+                    None
+                } else {
+                    self.pop(key, vm)?
+                };
+                if let Some((old_key, value)) = popped {
                     // Drop the old key - we don't need it
                     old_key.drop_with(vm);
                     Ok(value)
@@ -2007,6 +2048,19 @@ impl<'de> serde::Deserialize<'de> for Dict {
     }
 }
 
+/// `dict.fromkeys(...)` called on the type, so the result is a plain dict.
+pub(crate) fn dict_class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
+        Ok(dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value))
+    } else {
+        Err(args)
+    }
+}
+
 /// Implements Python's `dict.fromkeys(iterable[, value])` classmethod.
 ///
 /// Creates a new dictionary with keys from `iterable` and all values set to `value`
@@ -2120,8 +2174,8 @@ macro_rules! impl_dict_iterator {
                 true
             }
 
-            fn py_type(&self, _: &VM<'h>) -> Type {
-                $python_type
+            fn py_type(&self, _: &VM<'h>) -> TypeRef {
+                $python_type.into()
             }
 
             fn py_len(&self, _: &VM<'h>) -> Option<usize> {

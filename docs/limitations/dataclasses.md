@@ -155,6 +155,8 @@ field after a defaulted one
 
 ## Architectural gaps (cannot match)
 
-- **No inheritance**, so field inheritance across base dataclasses is
-    unsupported (Monty has no class inheritance at all).
+- **Fields are not inherited**: a dataclass deriving from another dataclass
+    gets only the fields its own body annotates, where CPython collects the
+    bases' fields first. Mixing frozen and non-frozen dataclasses raises
+    CPython's `TypeError`.
 - **`slots=True` / `weakref_slot=True`** — no `__slots__`, no weakrefs.

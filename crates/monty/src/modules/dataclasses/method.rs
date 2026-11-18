@@ -25,9 +25,10 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings, StringId},
     types::{
-        LazyHeapSet, PyTrait, Type,
+        LazyHeapSet, PyTrait, Type, TypeRef,
         host_class::write_dataclass_repr,
         instance::{class_dunder, class_name, instance_attr},
+        key_hash::plain_hash,
         py_trait::PyObjectIdentity,
         str::allocate_string,
     },
@@ -257,8 +258,8 @@ impl HeapItem for DataclassMethod {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassMethod> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Function
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Function.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -738,10 +739,7 @@ pub(crate) fn dataclass_hash(self_id: HeapId, field_names: &[StringId], vm: &mut
             let class_name = class_name(class_id, vm.heap, vm.interns).into_owned();
             return Err(ExcType::attribute_error(&class_name, &field_name));
         };
-        match value.py_hash(vm)? {
-            Some(h) => h.hash(&mut hasher),
-            None => return Err(ExcType::type_error_unhashable(&value.py_type_name(vm))),
-        }
+        plain_hash(value, vm)?.hash(&mut hasher);
     }
     Ok(HashValue::new(hasher.finish()))
 }

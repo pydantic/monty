@@ -13,6 +13,7 @@ members = [
     "crates/monty-js",
     "crates/monty-apidoc",
     "crates/monty-datatest",
+    "crates/monty-pgo",
     "crates/monty-doctest",
     "crates/monty-bench",
     "crates/monty-fixture",
@@ -38,6 +39,12 @@ repository = "https://github.com/pydantic/monty/"
 lto = "fat"
 codegen-units = 1
 strip = true
+
+# Only the subprocess worker collects profiles; its training driver needs a quick build.
+[profile.pgo-training]
+inherits = "dev"
+debug = false
+incremental = false
 
 [profile.profiling]
 inherits = "release"
@@ -137,7 +144,6 @@ serde_bytes = "0.11"
 # so `make check-proto` (regenerate + git diff) is reproducible
 prost = "=0.14.4"
 sha2 = { version = "0.11", default-features = false }
-pretty_assertions = "1.4"
 insta = "1.47"
 clap = { version = "4", features = ["derive"] }
 # gRPC over HTTP/2 for the pool's remote transport. Only the version is pinned

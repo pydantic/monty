@@ -18,7 +18,7 @@ use crate::{
     py_value::PyValue,
     source_map::{SourceMap, StackFrameExt},
     types::{
-        PyTrait, Type, allocate_tuple,
+        PyTrait, Type, TypeRef, allocate_tuple,
         long_int::INT_MAX_STR_DIGITS,
         str::{StringRepr, allocate_string, string_repr_fmt},
     },
@@ -178,6 +178,25 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("isinstance() argument 2 cannot be a parameterized generic")
     }
 
+    /// Creates the TypeError `issubclass()` raises for a `types.GenericAlias`
+    /// second argument.
+    #[must_use]
+    fn issubclass_parameterized_generic() -> RunError {
+        Self::type_error("issubclass() argument 2 cannot be a parameterized generic")
+    }
+
+    /// Creates the TypeError `issubclass()` raises when its first argument is not a class.
+    #[must_use]
+    fn issubclass_arg1_error() -> RunError {
+        Self::type_error("issubclass() arg 1 must be a class")
+    }
+
+    /// Creates the TypeError `issubclass()` raises for an invalid second argument.
+    #[must_use]
+    fn issubclass_arg2_error() -> RunError {
+        Self::type_error("issubclass() arg 2 must be a class, a tuple of classes, or a union")
+    }
+
     /// Creates the TypeError `typing.get_type_hints()` raises for an object that
     /// is neither annotated nor callable: `5 does not have annotations`.
     fn no_annotations(obj: &Value, vm: &mut VM<'_>) -> RunError {
@@ -257,28 +276,31 @@ pub(crate) trait ExcTypeExt: Sized {
     /// This matches Python 3.14's error message: `TypeError: unhashable type: 'list'`
     #[must_use]
     fn type_error_unhashable(type_: &str) -> RunError {
-        SimpleException::new_msg(ExcType::TypeError, format!("unhashable type: '{type_}'")).into()
+        SimpleException::new_msg(ExcType::TypeError, unhashable_type_message(type_)).into()
     }
 
-    /// Creates a TypeError for unhashable types used as dict keys.
+    /// Creates CPython's TypeError for a dict key that will not hash, e.g.
+    /// `cannot use 'tuple' as a dict key (unhashable type: 'list')`.
     ///
-    /// This matches Python 3.14's error message:
-    /// `TypeError: cannot use 'list' as a dict key (unhashable type: 'list')`
+    /// `reason` is the message of the hashing `TypeError`; see [`unhashable_type_message`].
     #[must_use]
-    fn type_error_unhashable_dict_key(type_: &str) -> RunError {
+    fn type_error_unhashable_dict_key(key_type: &str, reason: &str) -> RunError {
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("cannot use '{type_}' as a dict key (unhashable type: '{type_}')"),
+            format!("cannot use '{key_type}' as a dict key ({reason})"),
         )
         .into()
     }
 
-    /// Creates a TypeError for an unhashable value used as a set element.
+    /// Creates CPython's TypeError for a set element that will not hash, e.g.
+    /// `cannot use 'tuple' as a set element (unhashable type: 'list')`.
+    ///
+    /// `reason` is the message of the hashing `TypeError`; see [`unhashable_type_message`].
     #[must_use]
-    fn type_error_unhashable_set_element(element_type: &str, unhashable_type: &str) -> RunError {
+    fn type_error_unhashable_set_element(element_type: &str, reason: &str) -> RunError {
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("cannot use '{element_type}' as a set element (unhashable type: '{unhashable_type}')"),
+            format!("cannot use '{element_type}' as a set element ({reason})"),
         )
         .into()
     }
@@ -1429,6 +1451,14 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, "negative count").into()
     }
 
+    /// Creates a ValueError when an integer in a bytes iterable is outside 0..=255.
+    ///
+    /// Matches CPython's format: `ValueError: bytes must be in range(0, 256)`
+    #[must_use]
+    fn value_error_bytes_range() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "bytes must be in range(0, 256)").into()
+    }
+
     /// Creates the `ValueError` CPython's float-to-string conversion raises for a
     /// precision above `MAX_FLOAT_PRECISION` (`INT_MAX - 1024`).
     ///
@@ -1875,16 +1905,18 @@ pub(crate) trait ExcTypeExt: Sized {
     /// `dict` in CPython, it gains `sq_item`. Instances are the caller's to check.
     #[must_use]
     fn sequence_index_error(value: &Value, vm: &VM<'_>) -> Option<SimpleException> {
-        match value.py_type(vm) {
-            Type::List
-            | Type::Tuple
-            | Type::NamedTuple
-            | Type::Str
-            | Type::Bytes
-            | Type::Range
-            | Type::Deque
-            | Type::Counter => None,
-            Type::Dict | Type::DefaultDict => Some(SimpleException::new_msg(
+        match value.py_type(vm).native() {
+            Some(
+                Type::List
+                | Type::Tuple
+                | Type::NamedTuple
+                | Type::Str
+                | Type::Bytes
+                | Type::Range
+                | Type::Deque
+                | Type::Counter,
+            ) => None,
+            Some(Type::Dict | Type::DefaultDict) => Some(SimpleException::new_msg(
                 ExcType::TypeError,
                 format!("{} is not a sequence", value.py_type_name(vm)),
             )),
@@ -2043,12 +2075,12 @@ pub(crate) trait ExcTypeExt: Sized {
     /// For other cases, uses the generic format:
     /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
     #[must_use]
-    fn binary_type_error(op: &str, lhs_type: Type, lhs_name: impl Display, rhs_name: impl Display) -> RunError {
-        let message = if (op == "+" || op == "+=") && matches!(lhs_type, Type::Deque) {
+    fn binary_type_error(op: &str, lhs_type: TypeRef, lhs_name: impl Display, rhs_name: impl Display) -> RunError {
+        let message = if (op == "+" || op == "+=") && lhs_type == Type::Deque {
             // CPython hardcodes the bare "deque" here even though tp_name is the
             // qualified "collections.deque", so this can't share the branch below.
             format!("can only concatenate deque (not \"{rhs_name}\") to deque")
-        } else if (op == "+" || op == "+=") && matches!(lhs_type, Type::Str | Type::List) {
+        } else if (op == "+" || op == "+=") && matches!(lhs_type.native(), Some(Type::Str | Type::List)) {
             format!("can only concatenate {lhs_name} (not \"{rhs_name}\") to {lhs_name}")
         } else {
             format!("unsupported operand type(s) for {op}: '{lhs_name}' and '{rhs_name}'")
@@ -2728,6 +2760,13 @@ pub(crate) trait ExcTypeExt: Sized {
     }
 }
 
+/// The constructor of every native exception class, for the native type table.
+pub(crate) fn exc_new(ty: Type, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    ty.exc_type()
+        .expect("exception types carry their ExcType")
+        .call(vm, args)
+}
+
 impl ExcTypeExt for ExcType {
     /// Allocates an exception for constructors like `ValueError('message')`.
     /// Currently supports zero or one string argument.
@@ -2939,8 +2978,8 @@ impl SimpleException {
 }
 
 impl<'h> HeapRead<'h, SimpleException> {
-    pub(crate) fn py_type(&self, vm: &VM<'h>) -> Type {
-        Type::Exception(self.get(vm.heap).exc_type)
+    pub(crate) fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        Type::from(self.get(vm.heap).exc_type).into()
     }
 
     /// Gets an attribute from this exception: `args` (a tuple of the message, if
@@ -3256,6 +3295,12 @@ impl RunError {
     pub fn internal(msg: impl Into<Cow<'static, str>>) -> Self {
         Self::Internal(msg.into())
     }
+}
+
+/// CPython's `unhashable type: 'T'` message, raised by `hash()` and wrapped by
+/// the set element and dict key errors.
+pub(crate) fn unhashable_type_message(type_: &str) -> String {
+    format!("unhashable type: '{type_}'")
 }
 
 /// CPython's `ModuleNotFoundError` message for `module_name`.

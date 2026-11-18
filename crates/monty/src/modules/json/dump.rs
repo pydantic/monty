@@ -16,7 +16,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead},
     py_value::PyValue,
     sorting::{apply_permutation, sort_indices},
-    types::{Dict, PyTrait, Type, str::allocate_string},
+    types::{Dict, PyTrait, TypeRef, str::allocate_string},
     value::Value,
 };
 
@@ -731,7 +731,7 @@ impl<'h> Encoder<'_, 'h> {
 /// `__name__` already, dots and all.
 fn not_serializable(value: &Value, vm: &VM<'_>) -> RunError {
     let type_name = value.py_type_name(vm);
-    let bare = if matches!(value.py_type(vm), Type::Instance(_)) {
+    let bare = if matches!(value.py_type(vm), TypeRef::Class(_)) {
         &*type_name
     } else {
         type_name.rsplit_once('.').map_or(&*type_name, |(_, bare)| bare)

@@ -30,7 +30,7 @@ use crate::{
     heap::{HeapData, HeapReadOutput},
     intern::StaticStrings,
     os_dispatch::PostConversionEffect,
-    types::Module,
+    types::{Module, Type},
     value::Value,
 };
 
@@ -65,7 +65,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
     );
     module.set_attr(
         StaticStrings::TomlDecodeError,
-        Value::Builtin(Builtins::ExcType(ExcType::TomlDecodeError)),
+        Value::Builtin(Builtins::Type(Type::TomlDecodeError)),
         vm,
     );
     module

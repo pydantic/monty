@@ -106,7 +106,7 @@ impl Identity {
             | Self::DefFunction(index)
             | Self::Heap(index) => u128::try_from(*index).expect("usize fits in u128"),
             Self::InlineString(text) => bytes_payload(text.as_str().as_bytes()),
-            Self::Builtin(value) => fixed_serde_payload(value),
+            Self::Builtin(value) => fixed_serde_payload(&value.identity_key()),
             Self::ModuleFunction(value) => fixed_serde_payload(value),
             Self::Marker(value) => fixed_serde_payload(value),
             Self::Property(value) => fixed_serde_payload(value),

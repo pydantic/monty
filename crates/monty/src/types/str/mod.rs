@@ -33,7 +33,7 @@ use crate::{
     str_format::str_format,
     string_builder::StringBuilder,
     types::{
-        LazyHeapSet, Type,
+        LazyHeapSet, Type, TypeRef,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
@@ -217,8 +217,8 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
         }
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Str
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Str.into()
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {

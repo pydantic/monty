@@ -166,7 +166,10 @@ fn field_lengths(input: &str, field: char, zones: Option<&[String; 2]>) -> Optio
             2
         }
         'Z' => zone_length(input, zones)?,
-        'z' => offset_at(input)?.len,
+        'z' => {
+            let token = offset_at(input)?;
+            return Some((token.len, token.without_seconds));
+        }
         _ => unreachable!("split_field only returns supported clock and zone fields"),
     };
     Some((len, None))
@@ -342,6 +345,8 @@ struct ZoneToken {
     offset_seconds: i32,
     len: usize,
     colons_agree: bool,
+    /// Shorter match to retry when the suffix needs the optional seconds.
+    without_seconds: Option<usize>,
 }
 
 /// Matches whole-second offsets; fractional offsets remain unsupported.
@@ -352,6 +357,7 @@ fn offset_at(input: &str) -> Option<ZoneToken> {
             offset_seconds: 0,
             len: 1,
             colons_agree: true,
+            without_seconds: None,
         });
     }
     let sign = match bytes.first()? {
@@ -361,19 +367,20 @@ fn offset_at(input: &str) -> Option<ZoneToken> {
     };
     let (hours, at) = two_digits(bytes, 1)?;
     let minute_colon = bytes.get(at) == Some(&b':');
-    let (minutes, at) = colon_pair(bytes, at)?;
+    let (minutes, minute_end) = colon_pair(bytes, at)?;
     if minutes > 59 {
         return None;
     }
-    let second_colon = bytes.get(at) == Some(&b':');
-    let (seconds, at, colons_agree) = match colon_pair(bytes, at) {
+    let second_colon = bytes.get(minute_end) == Some(&b':');
+    let (seconds, len, colons_agree) = match colon_pair(bytes, minute_end) {
         Some((seconds, next)) if seconds <= 59 => (seconds, next, second_colon == minute_colon),
-        _ => (0, at, true),
+        _ => (0, minute_end, true),
     };
     Some(ZoneToken {
         offset_seconds: sign * i32::try_from(hours * 3600 + minutes * 60 + seconds).ok()?,
-        len: at,
+        len,
         colons_agree,
+        without_seconds: (len != minute_end).then_some(minute_end),
     })
 }
 
