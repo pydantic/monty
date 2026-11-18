@@ -953,21 +953,27 @@ class Tracked:
         return 0
 
 
-def test_dataclass_holding_host_objects_compares_by_identity(monty_run: RunMonty):
+def test_dataclass_holding_host_objects_compares_by_identity(session: MontySession):
     """Replaying a generated `__eq__` or hashing the compared fields would call a
     host object's `__eq__` / `__hash__`, which the sandbox was never given, so a
     proxy reaching one, directly or through containers, compares by identity."""
     Tracked.calls.clear()
     code = (
         '@dataclass\nclass K:\n    item: object\n    def __hash__(self):\n        return 0\n'
-        'k = K(a)\n[{k: 1, K((b,)): 2, K([a]): 3, K({1: b}): 4}, k, k]'
+        'k = K(a)\nkeys = {k: 1, K((b,)): 2, K([a]): 3, K({1: b}): 4}'
     )
-    inputs = {'a': ClassInstance(Tracked()), 'b': ClassInstance(Tracked())}
-    keys, first, second = monty_run(DATACLASS_IMPORT + code, inputs=inputs)
+    session.feed_run(DATACLASS_IMPORT + code, inputs={'a': ClassInstance(Tracked()), 'b': ClassInstance(Tracked())})
+    keys = session.feed_run('keys')
     assert list(keys.values()) == [1, 2, 3, 4]
+    # separate results, so distinct proxies of the one sandbox object
+    first, second = session.feed_run('k'), session.feed_run('k')
+    assert first is not second
     assert first == second
     assert hash(first) == hash(second)
-    assert len({*keys, first}) == 4
+    # equal fields but a distinct object: the sandbox says equal, the host does not
+    distinct = session.feed_run('K(a)')
+    assert first != distinct
+    assert len({*keys, first, distinct}) == 5
     assert Tracked.calls == []
 
 
