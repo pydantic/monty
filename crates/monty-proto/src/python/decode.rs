@@ -9,10 +9,10 @@ use std::{
 
 use monty_types::{
     BuiltinsFunctions, MontyException, MontyObject,
-    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+    unstable::{self, ClassEq, ClassHash, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use pyo3::{
-    exceptions::PyValueError,
+    exceptions::{PyRecursionError, PyValueError},
     prelude::*,
     sync::PyOnceLock,
     types::{PyBool, PyBytes, PyComplex, PyDate, PyDelta, PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple},
@@ -48,6 +48,13 @@ const MIN_KEY_HASH_BUDGET: u64 = 1 << 24;
 /// [`MIN_KEY_HASH_BUDGET`], so unshared keys, which expand to no more than the
 /// arena itself, always fit.
 const KEY_HASH_BUDGET_PER_UNIT: u64 = 4;
+
+/// How deeply a dict or set key may nest values that hashing recurses through.
+///
+/// CPython's tuple hash has no recursion guard, so a tuple nested ~100,000 deep
+/// overflows the host's native stack. The sandbox caches tuple hashes, and a
+/// leaf-first list exports each level before the next, so it can send one.
+const MAX_KEY_HASH_DEPTH: u32 = 1000;
 
 /// Converts one value to a native Python object. A class instance found in
 /// `store` resolves to the ORIGINAL wrapped object (identity preserved);
@@ -90,7 +97,7 @@ impl DecodedArena {
             decoder.built.push(obj);
             let holds = decoder.holds_host_objects(node);
             decoder.host_objects.push(holds);
-            let size = KeySize::of(node, &decoder.key_sizes);
+            let size = KeySize::of(node, graph, &decoder.key_sizes, &decoder.host_objects);
             decoder.key_sizes.push(size);
         }
         Ok(Self { built: decoder.built })
@@ -289,6 +296,7 @@ impl<'a> Decoder<'a, '_> {
     /// Charges the work CPython does hashing `keys` and inserting them into one
     /// dict or set, failing once the arena exceeds its budgets.
     ///
+    /// A key nested past [`MAX_KEY_HASH_DEPTH`] is rejected before it is hashed.
     /// Hashing a key is charged its [`KeySize::hash`], before it is hashed. Each
     /// key is compared with every earlier key of the same hash, which costs at
     /// most its [`KeySize::compare`], charged per earlier key. Each key is hashed
@@ -298,6 +306,11 @@ impl<'a> Decoder<'a, '_> {
         let mut seen: HashMap<isize, u64> = HashMap::new();
         for key in keys {
             let size = self.key_sizes[key.index()];
+            if size.hash_depth > MAX_KEY_HASH_DEPTH {
+                return Err(PyRecursionError::new_err(
+                    "maximum recursion depth exceeded while hashing a dict or set key",
+                ));
+            }
             self.key_hash_work = self.key_hash_work.saturating_add(size.hash);
             if self.key_hash_work > self.key_hash_budget {
                 return Err(PyValueError::new_err(
@@ -379,28 +392,60 @@ struct KeySize {
     /// What `==` walks, lists, dicts and sets included: a dataclass proxy's
     /// `==` compares every field, while its hash may skip the unhashable ones.
     compare: u64,
+    /// How deeply hashing recurses natively, checked against [`MAX_KEY_HASH_DEPTH`].
+    /// A frozenset hashes its items' stored hashes, so it does not recurse.
+    hash_depth: u32,
 }
 
 impl KeySize {
-    /// The size of `node`, given `sizes` of the nodes before it. Class and
-    /// module attrs are not counted: their proxies compare and hash by id.
-    fn of(node: &MontyNode, sizes: &[Self]) -> Self {
+    /// The size of `node`, given `sizes` of the nodes before it and
+    /// `host_objects` up to and including it. Class and module attrs are not
+    /// counted: their proxies compare and hash by id, as do instances whose
+    /// fields are not compared.
+    fn of(node: &MontyNode, graph: &MontyGraph, sizes: &[Self], host_objects: &[bool]) -> Self {
         let own = own_size(node);
         let leaf = Self {
             hash: own,
             compare: own,
+            hash_depth: 1,
         };
         let add = |size: Self, id: &NodeId| {
             let child = sizes[id.index()];
             Self {
                 hash: size.hash.saturating_add(child.hash),
                 compare: size.compare.saturating_add(child.compare),
+                hash_depth: size.hash_depth.max(child.hash_depth.saturating_add(1)),
             }
         };
         match node {
-            MontyNode::Tuple(items) | MontyNode::FrozenSet(items) => items.iter().fold(leaf, add),
+            MontyNode::Tuple(items) => items.iter().fold(leaf, add),
+            MontyNode::FrozenSet(items) => Self {
+                hash_depth: 1,
+                ..items.iter().fold(leaf, add)
+            },
             MontyNode::NamedTuple { values, .. } => values.iter().fold(leaf, add),
-            MontyNode::ClassInstance { attrs, .. } => attrs.iter().fold(leaf, |size, (_, value)| add(size, value)),
+            MontyNode::ClassInstance { class_type, attrs, .. } => {
+                let MontyNode::ClassType(class) = graph.node(*class_type) else {
+                    unreachable!("the arena's validation makes class_type a ClassType node")
+                };
+                // mirrors `PyMontyClassProxy`: only a field-compared instance
+                // without host objects walks its fields, and only a hashable one hashes them
+                let holds_host_objects =
+                    host_objects[sizes.len()] || attrs.iter().any(|(_, value)| host_objects[value.index()]);
+                if holds_host_objects || !matches!(class.eq, ClassEq::Fields(_)) {
+                    leaf
+                } else {
+                    let fields = attrs.iter().fold(leaf, |size, (_, value)| add(size, value));
+                    if class.hash == ClassHash::Unhashable {
+                        Self {
+                            compare: fields.compare,
+                            ..leaf
+                        }
+                    } else {
+                        fields
+                    }
+                }
+            }
             MontyNode::List(items) | MontyNode::Set(items) => Self {
                 compare: items.iter().fold(leaf, add).compare,
                 ..leaf

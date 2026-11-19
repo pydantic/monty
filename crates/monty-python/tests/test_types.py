@@ -979,13 +979,48 @@ def test_keys_sharing_a_tuple_decode(monty_run: RunMonty):
     assert result[(tuple(range(1000)), 7)] == snapshot(7)
 
 
-def test_instances_sharing_a_list_decode(monty_run: RunMonty):
-    """Identity-hashed instances sharing one large list stay within the hash budget."""
+@pytest.mark.parametrize('container', ['list', 'tuple'])
+def test_instances_sharing_a_value_decode(monty_run: RunMonty, container: str):
+    """Identity-hashed instances sharing one large value stay within the hash budget."""
     result = monty_run(
         'class Obj:\n    def __init__(self, cfg):\n        self.cfg = cfg\n'
-        'cfg = list(range(10000))\n{Obj(cfg) for _ in range(20000)}'
+        f'cfg = {container}(range(10000))\n{{Obj(cfg) for _ in range(20000)}}'
     )
     assert len(result) == snapshot(20000)
+
+
+# a leaf-first list exports each level before the next, so export's depth limit never trips
+DEEP_CHAIN = 'nodes = [()]\nfor _ in range(2000):\n    nodes.append((nodes[-1],))\n'
+
+
+@pytest.mark.parametrize(
+    'code',
+    [
+        # hashing each level as it is built keeps the sandbox's (cached) hash shallow
+        pytest.param('for t in nodes:\n    hash(t)\n(nodes, {nodes[-1]: None})', id='tuple'),
+        # the sandbox runs the body `__hash__`; the proxy hashes the field instead
+        pytest.param(
+            'from dataclasses import dataclass\n'
+            '@dataclass\nclass K:\n    value: object\n    def __hash__(self):\n        return 0\n'
+            '(nodes, {K(nodes[-1]): None})',
+            id='dataclass_field',
+        ),
+    ],
+)
+def test_deep_key_rejected(monty_run: RunMonty, code: str):
+    """A key nested too deeply for CPython's unguarded tuple hash, which
+    overflows the host's stack around 100,000 levels, is rejected before hashing."""
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(DEEP_CHAIN + code)
+    assert repr(exc_info.value) == snapshot(
+        'MontyRuntimeError(RecursionError: cannot convert the result to a Python value: maximum recursion depth exceeded while hashing a dict or set key)'
+    )
+
+
+def test_nested_tuple_key_under_depth_limit(monty_run: RunMonty):
+    """A key nested below the depth limit decodes."""
+    result = monty_run('t = ()\nfor _ in range(900):\n    t = (t,)\n{t: 1}')
+    assert list(result.values()) == snapshot([1])
 
 
 def test_undecodable_result_feed_start(session: MontySession):

@@ -106,11 +106,14 @@ The sandbox hashes `int`s differently, so on 64-bit hosts keys like `k * (2**61 
 but all hash to 0 in CPython, where inserting n of them costs O(n²).
 The limit is about a million key comparisons summed over every dict and set in the value (around 1,400 such `int` keys),
 each weighted by the key's size, so fewer colliding tuple or long `int` keys reach it.
-A key's size counts each value it holds at any depth, including list, dict and instance attribute values, plus one
-per 8 bytes of a long `int`, `str` or `bytes`.
+A key's size counts each value it holds at any depth, including list, dict and dataclass field values, plus one
+per 8 bytes of a long `int`, `str`, `bytes`, `Decimal` or path payload.
+Instances compared by `id` count as one value.
 It also rejects a value whose keys nest one tuple many times, like `a = (a, a)` repeated: counting repeats, the sizes
 of all its dict and set keys may total 16 million, or four times the size of the whole value, whichever is larger.
 This total leaves out values inside lists, dicts and sets, which hashing never reaches.
+A key whose tuples, namedtuples and hashed dataclass fields nest more than 1000 deep is rejected with `RecursionError`,
+since CPython's tuple hash has no recursion guard and overflows the host's stack at around 100,000 levels.
 A Python host raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] for such a result, with the original
 exception type and the message prefixed `cannot convert the result to a Python value: `.
 
