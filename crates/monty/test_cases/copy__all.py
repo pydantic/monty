@@ -590,6 +590,27 @@ deep_rng = copy.deepcopy(rng)
 assert deep_rng is not rng
 assert deep_rng.random() == rng.random()
 
+# === exceptions are rebuilt, not shared ===
+e_orig = ValueError('orig', 123)
+e_orig.custom = [1, 2]
+e_shallow = copy.copy(e_orig)
+assert e_shallow is not e_orig
+assert e_shallow.args == ('orig', 123)
+assert e_shallow.custom is e_orig.custom
+
+e_deep = copy.deepcopy(e_orig)
+assert e_deep is not e_orig
+assert e_deep.args == ('orig', 123)
+assert e_deep.custom is not e_orig.custom
+assert e_deep.custom == [1, 2]
+
+# Cyclic exception deepcopy
+e_cyc = ValueError('cyclic')
+e_cyc.cycle = e_cyc
+e_cyc_copy = copy.deepcopy(e_cyc)
+assert e_cyc_copy is not e_cyc
+assert e_cyc_copy.cycle is e_cyc_copy
+
 # === types that cannot be copied ===
 try:
     copy.deepcopy(copy)

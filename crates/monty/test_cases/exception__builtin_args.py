@@ -36,8 +36,8 @@ assert repr(e) == 'ValueError(1, 2)'
 try:
     e.args = 5
     assert False, 'should fail on int'
-except TypeError:
-    pass
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
 
 # StopIteration .value
 assert StopIteration().value is None
@@ -50,7 +50,59 @@ assert s.value == 1
 # SystemExit .code
 assert SystemExit().code is None
 assert SystemExit(3).code == 3
-assert SystemExit(1, 2).code == (1, 2)
+s_exit = SystemExit(1, 2)
+assert s_exit.code == (1, 2)
+assert s_exit.code is s_exit.args
+
+# StopIteration and SystemExit __init__
+si = StopIteration()
+si.__init__(99)
+assert si.args == (99,)
+assert si.value == 99
+
+se = SystemExit()
+se.__init__(100)
+assert se.args == (100,)
+assert se.code == 100
+
+# OneValue non-string exception args
+e_int = ValueError(42)
+assert e_int.args == (42,)
+assert str(e_int) == '42'
+assert repr(e_int) == 'ValueError(42)'
+
+e_list = ValueError([1, 2])
+assert e_list.args == ([1, 2],)
+assert str(e_list) == '[1, 2]'
+assert repr(e_list) == 'ValueError([1, 2])'
+
+k_int = KeyError(42)
+assert k_int.args == (42,)
+assert str(k_int) == '42'
+assert repr(k_int) == 'KeyError(42)'
+
+# Subclasses with defaults and kwargs
+mnf = ModuleNotFoundError('mod not found', name='foo', path='bar')
+assert mnf.name == 'foo'
+assert mnf.path == 'bar'
+assert mnf.args == ('mod not found',)
+
+mnf_default = ModuleNotFoundError()
+assert mnf_default.name is None
+assert mnf_default.path is None
+
+ule = UnboundLocalError('local not bound', name='var')
+assert ule.name == 'var'
+assert ule.args == ('local not bound',)
+
+ule_default = UnboundLocalError()
+assert ule_default.name is None
+
+# Calling instance.__init__
+e_reinit = ValueError('first')
+e_reinit.__init__('second', 'third')
+assert e_reinit.args == ('second', 'third')
+assert str(e_reinit) == "('second', 'third')"
 
 # KeyError str formatting
 assert str(KeyError()) == ''
@@ -83,20 +135,52 @@ assert ImportError().path is None
 try:
     ImportError('m', bogus=1)
     assert False, 'should fail on unexpected kwarg'
-except TypeError:
-    pass
+except TypeError as exc:
+    assert str(exc) == "ImportError() got an unexpected keyword argument 'bogus'"
 
 try:
     ValueError(a=1)
     assert False, 'should fail on kwarg'
-except TypeError:
-    pass
+except TypeError as exc:
+    assert str(exc) == 'ValueError() takes no keyword arguments'
 
 try:
     BaseException.__init__(ValueError(), a=1)
     assert False, 'should fail on kwarg'
-except TypeError:
-    pass
+except TypeError as exc:
+    assert str(exc) == 'ValueError() takes no keyword arguments'
+
+# BaseException.__new__ error paths
+try:
+    BaseException.__new__()
+    assert False, 'should fail without args'
+except TypeError as exc:
+    assert str(exc) == 'BaseException.__new__(): not enough arguments'
+
+try:
+    BaseException.__new__(123)
+    assert False, 'should fail on non-type'
+except TypeError as exc:
+    assert str(exc) == 'BaseException.__new__(X): X is not a type object (int)'
+
+try:
+    BaseException.__new__(int)
+    assert False, 'should fail on non-exception type'
+except TypeError as exc:
+    assert str(exc) == 'BaseException.__new__(int): int is not a subtype of BaseException'
+
+# BaseException.__init__ error paths
+try:
+    BaseException.__init__()
+    assert False, 'should fail without args'
+except TypeError as exc:
+    assert str(exc) == "descriptor '__init__' of 'BaseException' object needs an argument"
+
+try:
+    BaseException.__init__(123)
+    assert False, 'should fail when self is not an exception'
+except TypeError as exc:
+    assert str(exc) == "descriptor '__init__' requires a 'BaseException' object but received a 'int'"
 
 # BaseException.__new__ ignores kwargs and returns new instance
 v = BaseException.__new__(ValueError, 'test', a=1)
@@ -106,12 +190,6 @@ assert v.args == ('test',)
 # BaseException.__init__ reinitializes args
 BaseException.__init__(v, 'reinit1', 'reinit2')
 assert v.args == ('reinit1', 'reinit2')
-
-try:
-    BaseException.__init__(123)
-    assert False, 'should fail when self is not an exception'
-except TypeError:
-    pass
 
 # Custom attribute assignment on exception
 e_custom = ValueError('custom_test')

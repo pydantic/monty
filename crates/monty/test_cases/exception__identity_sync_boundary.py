@@ -48,7 +48,7 @@ class HasAttrTrap:
 
 trap = HasAttrTrap()
 for _ in range(50):
-    assert not hasattr(trap, 'x')
+    assert not hasattr(trap, 'x'), 'trap should not have attribute x'
     assert getattr(trap, 'x', 42) == 42
 
 
@@ -66,7 +66,7 @@ try:
     {u: 1}
     assert False, 'did not raise'
 except TypeError as e:
-    assert 'cannot hash' in str(e)
+    assert str(e) == "cannot use 'UnhashableTrap' as a dict key (cannot hash)"
 
 # === Sort key error identity ===
 key_err = ValueError('sort key error')

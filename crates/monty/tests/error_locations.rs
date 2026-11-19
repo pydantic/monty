@@ -77,3 +77,40 @@ recurse(50)
         );
     }
 }
+
+#[test]
+fn unhandled_exception_args_formatting() {
+    let cases = [
+        ("raise ValueError('a', 'b')", ExcType::ValueError, "('a', 'b')"),
+        ("raise ValueError(42)", ExcType::ValueError, "42"),
+        ("raise KeyError(42)", ExcType::KeyError, "42"),
+        ("raise KeyError('a', 'b')", ExcType::KeyError, "('a', 'b')"),
+        ("e = ValueError('a'); _ = e.args; raise e", ExcType::ValueError, "a"),
+    ];
+
+    for (code, expected_type, expected_msg) in cases {
+        let mut run =
+            MontyRun::new(code.to_string(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+        let err = run.run_no_limits(vec![]).expect_err("should raise exception");
+        assert_eq!(err.exc_type(), expected_type);
+        assert_eq!(err.message(), Some(expected_msg));
+    }
+}
+
+#[test]
+fn exported_exception_values() {
+    let cases = [
+        ("ValueError()", "ValueError()"),
+        ("ValueError('a')", "ValueError('a')"),
+        ("ValueError(42)", "ValueError('42')"),
+        ("ValueError('a', 'b')", "ValueError(\"('a', 'b')\")"),
+        ("e = ValueError(); _ = e.args; e", "ValueError()"),
+    ];
+
+    for (code, expected_repr) in cases {
+        let mut run =
+            MontyRun::new(code.to_string(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+        let obj = run.run_no_limits(vec![]).expect("should evaluate without error");
+        assert_eq!(obj.as_ref().py_repr(), expected_repr);
+    }
+}
