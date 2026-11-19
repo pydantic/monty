@@ -392,7 +392,7 @@ fn abspath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let AbspathArgs { path } = AbspathArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     let text = PathText::fspath(path, vm)?;
-    Ok(text.allocate(posix::abspath(vm.env.cwd.as_bytes(), &text.bytes), vm.heap))
+    Ok(text.allocate(posix::abspath(vm.cwd.as_bytes(), &text.bytes), vm.heap))
 }
 
 /// `os.path.relpath(path, start=None)` argument shape.
@@ -426,7 +426,7 @@ fn relpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if start_text.is_bytes != path_text.is_bytes {
         return Err(ExcType::type_error_mixed_path_components());
     }
-    let relative = posix::relpath(vm.env.cwd.as_bytes(), &path_text.bytes, &start_text.bytes);
+    let relative = posix::relpath(vm.cwd.as_bytes(), &path_text.bytes, &start_text.bytes);
     Ok(path_text.allocate(relative, vm.heap))
 }
 
@@ -1003,7 +1003,7 @@ fn realpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         return Err(ExcType::type_error_os_path("lstat", "path", accepted, "bytes"));
     }
     if text.bytes.is_empty() {
-        Ok(CallResult::Value(allocate_string(&*vm.env.cwd, vm.heap)))
+        Ok(CallResult::Value(allocate_string(&**vm.cwd, vm.heap)))
     } else {
         let path = String::from_utf8(text.bytes).expect("str input");
         Ok(CallResult::OsCallWithEffect {

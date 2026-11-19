@@ -542,15 +542,17 @@ fn repl_keeps_the_directory_across_snippets() {
     let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
     repl.set_cwd("/data");
     let ReplProgress::OsCall(call) = repl
-        .feed_start("import os\nos.chdir('sub')", vec![], PrintWriter::Stdout)
+        .feed_start("import os\nos.chdir('sub')\nhost_call()", vec![], PrintWriter::Stdout)
         .unwrap()
     else {
-        panic!("expected OsCall");
+        panic!("expected chdir");
     };
-    let ReplProgress::Complete { repl, .. } = call.resume(dir_stat(0o755, 0.0), PrintWriter::Stdout).unwrap() else {
-        panic!("expected Complete");
+    let suspended = call.resume(dir_stat(0o755, 0.0), PrintWriter::Stdout).unwrap();
+    let bytes = dump("repl.py", None, &[], SessionRef::Suspended(&suspended)).unwrap();
+    let Session::Suspended(loaded) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected suspended session");
     };
-    let mut repl = repl;
+    let mut repl = loaded.into_repl();
     assert_eq!(
         repl.feed_run("os.getcwd()", vec![], PrintWriter::Stdout).unwrap(),
         MontyObject::string("/data/sub".to_owned())

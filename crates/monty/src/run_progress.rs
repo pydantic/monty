@@ -15,7 +15,7 @@ use monty_types::{
 
 use crate::{
     asyncio::CallId,
-    bytecode::{FrameExit, PendingImport, PendingLookupEffect, VM, VMSnapshot},
+    bytecode::{ExecutionState, FrameExit, PendingImport, PendingLookupEffect, SuspendedExecution, VM, VMSnapshot},
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
     intern::Interns,
@@ -442,34 +442,29 @@ impl NameLookup {
         let name = self.name;
 
         heap.tracker.on_turn_start();
-        let (converted, vm_state) =
-            HeapReader::with(&mut heap, &mut (&mut executor, print), |reader, (executor, print)| {
-                // Restore the VM first, then convert inside its lifetime
-                let mut vm = VM::restore(
-                    snapshot_vm_state,
-                    &mut executor.tables,
-                    &executor.program,
-                    reader,
-                    print.reborrow(),
-                );
-
-                // Resolve the name lookup result with the VM alive
-                let answer = LookupAnswer::new(result, &mut vm);
-                let effect = vm.pending_lookup_effect.take();
-                let vm_result = resume_lookup(&mut vm, answer, effect, &scope, &name);
-
-                // Three-phase: convert while VM alive, snapshot, build progress
-                let converted = convert_frame_exit(vm_result, &mut vm);
-                let vm_state = check_snapshot_from_converted(&converted, vm);
-                (converted, vm_state)
-            });
-        build_run_progress(converted, vm_state, executor, heap)
+        let SuspendedExecution { mut state, snapshot } = snapshot_vm_state;
+        let (converted, vm_state) = resume_vm(snapshot, &mut executor, &mut state, &mut heap, print, |vm| {
+            resume_host_lookup(vm, result, &scope, &name)
+        });
+        build_run_progress(converted, vm_state, state, executor, heap)
     }
+}
+
+/// Converts a host lookup result and resumes the suspended lookup.
+pub(crate) fn resume_host_lookup(
+    vm: &mut VM<'_>,
+    result: NameLookupResult,
+    scope: &LookupScope,
+    name: &str,
+) -> RunResult<FrameExit> {
+    let answer = LookupAnswer::new(result, vm);
+    let effect = vm.pending_lookup_effect.take();
+    resume_lookup(vm, answer, effect, scope, name)
 }
 
 /// A host's [`NameLookupResult`] in interpreter terms, ready for
 /// [`resume_lookup`].
-pub(crate) enum LookupAnswer {
+enum LookupAnswer {
     /// The host served this value.
     Value(Value),
     /// The name / attribute does not exist.
@@ -513,7 +508,7 @@ impl LookupAnswer {
 /// the value is pushed (a namespace lookup also caches it in its slot), or
 /// `Undefined` raises the `NameError` / `AttributeError` an unanswered
 /// lookup gets.
-pub(crate) fn resume_lookup(
+fn resume_lookup(
     vm: &mut VM<'_>,
     answer: LookupAnswer,
     effect: Option<PendingLookupEffect>,
@@ -647,8 +642,8 @@ fn undefined_lookup_error(scope: &LookupScope, name: &str) -> RunError {
 pub struct ResolveFutures {
     /// The executor containing compiled code and interns.
     executor: Executor,
-    /// The VM state containing stack, frames, globals, and exception state.
-    vm_state: VMSnapshot,
+    /// Persistent state and suspended VM execution.
+    vm_state: SuspendedExecution,
     /// The heap containing all allocated objects.
     heap: Heap,
     /// The pending call_ids that this snapshot is waiting on.
@@ -661,7 +656,7 @@ impl ResolveFutures {
     /// Creates a new `ResolveFutures` from its parts.
     fn new(
         executor: Executor,
-        vm_state: VMSnapshot,
+        vm_state: SuspendedExecution,
         heap: Heap,
         pending_call_ids: Vec<u32>,
         position: SourceRange,
@@ -722,19 +717,31 @@ impl ResolveFutures {
             position,
         } = self;
 
-        let vm_state = HeapReader::with(&mut heap, &mut executor, |reader, executor| {
-            let mut vm = VM::restore(
-                vm_state,
-                &mut executor.tables,
-                &executor.program,
-                reader,
-                PrintWriter::Stdout,
-            );
-            vm.__force_gc_for_tests();
-            vm.snapshot()
-        });
+        let SuspendedExecution { mut state, snapshot } = vm_state;
+        let snapshot = HeapReader::with(
+            &mut heap,
+            &mut (&mut executor, &mut state),
+            |reader, (executor, state)| {
+                let mut vm = VM::restore(
+                    snapshot,
+                    state,
+                    &mut executor.tables,
+                    &executor.program,
+                    reader,
+                    PrintWriter::Stdout,
+                );
+                vm.__force_gc_for_tests();
+                vm.snapshot()
+            },
+        );
 
-        Self::new(executor, vm_state, heap, pending_call_ids, position)
+        Self::new(
+            executor,
+            SuspendedExecution { state, snapshot },
+            heap,
+            pending_call_ids,
+            position,
+        )
     }
 
     /// Number of tasks still live while this snapshot is suspended.
@@ -746,7 +753,7 @@ impl ResolveFutures {
     #[doc(hidden)]
     #[must_use]
     pub fn __live_task_count_for_tests(&self) -> usize {
-        self.vm_state.live_task_count()
+        self.vm_state.snapshot.live_task_count()
     }
 
     /// Resumes execution with results for some or all pending futures.
@@ -784,32 +791,18 @@ impl ResolveFutures {
             .map(|(call_id, _)| *call_id);
 
         heap.tracker.on_turn_start();
-        let (converted, vm_state) =
-            HeapReader::with(&mut heap, &mut (&mut executor, print), |reader, (executor, print)| {
-                // Restore the VM from the snapshot (must happen before any error return to clean up properly).
-                let mut vm = VM::restore(
-                    vm_state,
-                    &mut executor.tables,
-                    &executor.program,
-                    reader,
-                    print.reborrow(),
-                );
-
-                // Now check for invalid call_ids after VM is restored.
-                if let Some(call_id) = invalid_call_id {
-                    return Err(MontyException::runtime_error(format!(
-                        "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
-                    )));
-                }
-
-                let result = vm.resume_with_resolved_futures(results);
-
-                // Three-phase: convert while VM alive, snapshot, build progress
-                let converted = convert_frame_exit(result, &mut vm);
-                let vm_state = check_snapshot_from_converted(&converted, vm);
-                Ok((converted, vm_state))
-            })?;
-        build_run_progress(converted, vm_state, executor, heap)
+        let SuspendedExecution { mut state, snapshot } = vm_state;
+        if let Some(call_id) = invalid_call_id {
+            snapshot.abandon(&mut state, &mut heap);
+            state.drop_with(&mut heap);
+            return Err(MontyException::runtime_error(format!(
+                "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
+            )));
+        }
+        let (converted, vm_state) = resume_vm(snapshot, &mut executor, &mut state, &mut heap, print, |vm| {
+            vm.resume_with_resolved_futures(results)
+        });
+        build_run_progress(converted, vm_state, state, executor, heap)
     }
 }
 
@@ -826,8 +819,8 @@ impl ResolveFutures {
 pub(crate) struct Snapshot {
     /// The executor containing compiled code and interns.
     pub(crate) executor: Executor,
-    /// The VM state containing stack, frames, globals, and exception state.
-    pub(crate) vm_state: VMSnapshot,
+    /// Persistent state and suspended VM execution.
+    pub(crate) vm_state: SuspendedExecution,
     /// The heap containing all allocated objects.
     pub(crate) heap: Heap,
 }
@@ -857,24 +850,11 @@ impl Snapshot {
         } = self;
 
         heap.tracker.on_turn_start();
-        let (converted, vm_state) =
-            HeapReader::with(&mut heap, &mut (&mut executor, print), |reader, (executor, print)| {
-                let mut vm = VM::restore(
-                    vm_state,
-                    &mut executor.tables,
-                    &executor.program,
-                    reader,
-                    print.reborrow(),
-                );
-
-                let vm_result = resume_with_result(&mut vm, ext_result, eager_call_id);
-
-                // Three-phase: convert while VM alive, snapshot, build progress
-                let converted = convert_frame_exit(vm_result, &mut vm);
-                let vm_state = check_snapshot_from_converted(&converted, vm);
-                (converted, vm_state)
-            });
-        build_run_progress(converted, vm_state, executor, heap)
+        let SuspendedExecution { mut state, snapshot } = vm_state;
+        let (converted, vm_state) = resume_vm(snapshot, &mut executor, &mut state, &mut heap, print, |vm| {
+            resume_with_result(vm, ext_result, eager_call_id)
+        });
+        build_run_progress(converted, vm_state, state, executor, heap)
     }
 
     /// Raises `exc` uncatchably at the suspension point.
@@ -966,27 +946,47 @@ pub(crate) fn resume_with_result(
 /// Restores the VM and aborts uncatchably, rolling back any armed OS effect.
 fn abort_restored(
     mut executor: Executor,
-    vm_state: VMSnapshot,
+    vm_state: SuspendedExecution,
     mut heap: Heap,
     exc: MontyException,
     print: PrintWriter<'_>,
 ) -> Result<RunProgress, MontyException> {
     heap.tracker.on_turn_start();
-    let (converted, vm_state) =
-        HeapReader::with(&mut heap, &mut (&mut executor, print), |reader, (executor, print)| {
+    let SuspendedExecution { mut state, snapshot } = vm_state;
+    let (converted, vm_state) = resume_vm(snapshot, &mut executor, &mut state, &mut heap, print, |vm| {
+        vm.abort(exc)
+    });
+    build_run_progress(converted, vm_state, state, executor, heap)
+}
+
+/// Restores a suspended turn and converts its exit before releasing the VM.
+/// The caller starts a new turn when needed and owns progress assembly.
+pub(crate) fn resume_vm(
+    snapshot: VMSnapshot,
+    executor: &mut Executor,
+    state: &mut ExecutionState,
+    heap: &mut Heap,
+    print: PrintWriter<'_>,
+    execute: impl FnOnce(&mut VM<'_>) -> Result<FrameExit, RunError>,
+) -> (ConvertedExit, Option<VMSnapshot>) {
+    HeapReader::with(
+        heap,
+        &mut (executor, state, print),
+        |reader, (executor, state, print)| {
             let mut vm = VM::restore(
-                vm_state,
+                snapshot,
+                state,
                 &mut executor.tables,
                 &executor.program,
                 reader,
                 print.reborrow(),
             );
-            let vm_result = vm.abort(exc);
-            let converted = convert_frame_exit(vm_result, &mut vm);
+            let result = execute(&mut vm);
+            let converted = convert_frame_exit(result, &mut vm);
             let vm_state = check_snapshot_from_converted(&converted, vm);
             (converted, vm_state)
-        });
-    build_run_progress(converted, vm_state, executor, heap)
+        },
+    )
 }
 
 pub use monty_types::{ExtFunctionResult, NameLookupResult};
@@ -1205,21 +1205,33 @@ pub(crate) fn check_snapshot_from_converted(converted: &ConvertedExit, vm: VM<'_
 pub(crate) fn build_run_progress(
     converted: ConvertedExit,
     vm_state: Option<VMSnapshot>,
+    state: ExecutionState,
     executor: Executor,
-    heap: Heap,
+    mut heap: Heap,
 ) -> Result<RunProgress, MontyException> {
+    let Some(snapshot) = vm_state else {
+        state.drop_with(&mut heap);
+        return match converted {
+            ConvertedExit::Complete(obj) => Ok(RunProgress::Complete(obj)),
+            ConvertedExit::Error(err) => {
+                Err(err.into_python_exception(&executor.tables.interns, |_| Some(&*executor.program.code)))
+            }
+            _ => unreachable!("suspension requires a snapshot"),
+        };
+    };
+    let vm_state = SuspendedExecution { state, snapshot };
+
     macro_rules! new_snapshot {
         () => {
             Snapshot {
                 executor,
-                vm_state: vm_state.expect("snapshot should exist"),
+                vm_state,
                 heap,
             }
         };
     }
 
     match converted {
-        ConvertedExit::Complete(obj) => Ok(RunProgress::Complete(obj)),
         ConvertedExit::FunctionCall {
             function_name,
             args,
@@ -1255,7 +1267,7 @@ pub(crate) fn build_run_progress(
             position,
         } => Ok(RunProgress::ResolveFutures(ResolveFutures::new(
             executor,
-            vm_state.expect("snapshot should exist for ResolveFutures"),
+            vm_state,
             heap,
             pending_call_ids,
             position,
@@ -1266,8 +1278,6 @@ pub(crate) fn build_run_progress(
             scope,
             new_snapshot!(),
         ))),
-        ConvertedExit::Error(err) => {
-            Err(err.into_python_exception(&executor.tables.interns, |_| Some(&*executor.program.code)))
-        }
+        _ => unreachable!("only suspensions have snapshots"),
     }
 }

@@ -141,12 +141,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIterator> {
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{PrintWriter, ResourceTracker};
+    use monty_types::ResourceTracker;
 
     use super::*;
     use crate::{
         defer_drop,
-        heap::{Heap, HeapReader},
+        heap::Heap,
         identity::Identity,
         intern::CompileInterns,
         run::{Program, SessionTables},
@@ -164,8 +164,7 @@ mod tests {
             texts.iter().map(|text| interns.intern(text)).collect()
         };
 
-        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+        program.with_test_vm(&mut heap, &mut tables, |vm| {
             for (text, id) in texts.into_iter().zip(ids) {
                 let source = allocate_string_on_heap(text, vm.heap);
                 defer_drop!(source, vm);

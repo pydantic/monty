@@ -2413,12 +2413,11 @@ pub(crate) fn py_float_mod(a: f64, b: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{PrintWriter, ResourceTracker};
+    use monty_types::ResourceTracker;
     use num_bigint::BigInt;
 
     use super::*;
     use crate::{
-        heap::HeapReader,
         run::{Program, SessionTables},
         types::{
             LongInt,
@@ -2532,10 +2531,7 @@ mod tests {
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
-        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-            value.as_index(&mut vm, Type::List)
-        });
+        let result = program.with_test_vm(&mut heap, &mut tables, |vm| value.as_index(vm, Type::List));
         assert_eq!(result.unwrap(), 42);
         value.drop_with(&mut heap);
     }
@@ -2548,10 +2544,7 @@ mod tests {
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
-        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-            value.as_index(&mut vm, Type::List)
-        });
+        let result = program.with_test_vm(&mut heap, &mut tables, |vm| value.as_index(vm, Type::List));
         assert_eq!(result.unwrap(), -100);
         value.drop_with(&mut heap);
     }
@@ -2566,10 +2559,7 @@ mod tests {
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
-        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-            value.as_index(&mut vm, Type::List)
-        });
+        let result = program.with_test_vm(&mut heap, &mut tables, |vm| value.as_index(vm, Type::List));
         assert!(result.is_err());
         value.drop_with(&mut heap);
     }
@@ -2584,10 +2574,7 @@ mod tests {
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
-        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-            value.as_int(&mut vm)
-        });
+        let result = program.with_test_vm(&mut heap, &mut tables, |vm| value.as_int(vm));
         assert_eq!(result.unwrap(), 12345);
         value.drop_with(&mut heap);
     }
@@ -2601,10 +2588,7 @@ mod tests {
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
-        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-            value.as_int(&mut vm)
-        });
+        let result = program.with_test_vm(&mut heap, &mut tables, |vm| value.as_int(vm));
         assert!(result.is_err());
         value.drop_with(&mut heap);
     }
@@ -2617,10 +2601,7 @@ mod tests {
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
-        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-            value.as_index(&mut vm, Type::List)
-        });
+        let result = program.with_test_vm(&mut heap, &mut tables, |vm| value.as_index(vm, Type::List));
         assert_eq!(result.unwrap(), i64::MAX);
         value.drop_with(&mut heap);
     }
@@ -2633,10 +2614,7 @@ mod tests {
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
-        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-            value.as_index(&mut vm, Type::List)
-        });
+        let result = program.with_test_vm(&mut heap, &mut tables, |vm| value.as_index(vm, Type::List));
         assert_eq!(result.unwrap(), i64::MIN);
         value.drop_with(&mut heap);
     }
@@ -2650,10 +2628,7 @@ mod tests {
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
-        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-            value.as_index(&mut vm, Type::List)
-        });
+        let result = program.with_test_vm(&mut heap, &mut tables, |vm| value.as_index(vm, Type::List));
         assert!(result.is_err());
         value.drop_with(&mut heap);
     }
@@ -2667,10 +2642,7 @@ mod tests {
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
-        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-            value.as_index(&mut vm, Type::List)
-        });
+        let result = program.with_test_vm(&mut heap, &mut tables, |vm| value.as_index(vm, Type::List));
         assert!(result.is_err());
         value.drop_with(&mut heap);
     }

@@ -1969,12 +1969,10 @@ pub(crate) fn str_contains(container_str: &str, item: &Value, heap: &Heap, inter
 
 #[cfg(test)]
 mod tests {
-    use monty_types::PrintWriter;
 
     use super::*;
     use crate::{
         defer_drop_mut,
-        heap::HeapReader,
         run::{Program, SessionTables},
     };
 
@@ -1989,8 +1987,7 @@ mod tests {
             texts.iter().map(|text| interns.intern(text)).collect()
         };
 
-        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+        program.with_test_vm(&mut heap, &mut tables, |vm| {
             for (text, id) in texts.into_iter().zip(ids) {
                 let values = vec![
                     Value::InternString(id),
@@ -2087,8 +2084,7 @@ mod tests {
             texts.iter().map(|text| interns.intern(text)).collect()
         };
 
-        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+        program.with_test_vm(&mut heap, &mut tables, |vm| {
             let values: Vec<_> = texts
                 .iter()
                 .zip(ids)
@@ -2127,8 +2123,7 @@ mod tests {
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
 
-        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+        program.with_test_vm(&mut heap, &mut tables, |vm| {
             let values = vec![
                 Value::InternString(StringId::from_ascii(b'a')),
                 allocate_string("abcdefghijklmno", vm.heap),

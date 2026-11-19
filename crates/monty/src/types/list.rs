@@ -1320,12 +1320,12 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{PrintWriter, ResourceTracker};
+    use monty_types::ResourceTracker;
     use num_bigint::BigInt;
 
     use super::*;
     use crate::{
-        heap::{Heap, HeapReader},
+        heap::Heap,
         run::{Program, SessionTables},
         types::LongInt,
     };
@@ -1358,12 +1358,11 @@ mod tests {
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+        let result = program.with_test_vm(&mut heap, &mut tables, |vm| {
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
             };
-            list.py_setitem(key, new_value, &mut vm)
+            list.py_setitem(key, new_value, vm)
         });
 
         assert!(result.is_ok());
@@ -1392,12 +1391,11 @@ mod tests {
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+        let result = program.with_test_vm(&mut heap, &mut tables, |vm| {
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
             };
-            list.py_setitem(key, new_value, &mut vm)
+            list.py_setitem(key, new_value, vm)
         });
 
         assert!(result.is_ok());
@@ -1423,12 +1421,11 @@ mod tests {
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+        let result = program.with_test_vm(&mut heap, &mut tables, |vm| {
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
             };
-            list.py_setitem(key, new_value, &mut vm)
+            list.py_setitem(key, new_value, vm)
         });
 
         assert!(result.is_err());

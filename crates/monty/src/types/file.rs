@@ -1050,7 +1050,7 @@ pub(crate) fn apply_open_name(
     {
         let file = file.get_mut(vm.heap);
         if !file.path.is_empty() && !file.path.starts_with('/') {
-            file.path = posix_join(&vm.env.cwd, &file.path);
+            file.path = posix_join(vm.cwd, &file.path);
         }
         file.name = Some(name);
         file.newline = parsed;

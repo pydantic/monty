@@ -106,7 +106,7 @@ impl VM<'_> {
             let search_path = SEARCH_PATH
                 .iter()
                 .map(|entry| match entry {
-                    SearchEntry::Cwd => self.env.cwd.to_string(),
+                    SearchEntry::Cwd => self.cwd.to_string(),
                 })
                 .collect();
             PendingImport::top_level(name.to_owned()).suspend(search_path)
@@ -250,6 +250,7 @@ impl VM<'_> {
         let module = Module::file(name.clone(), namespace, path.to_owned());
         let module_id = self.heap.allocate(HeapData::Module(Box::new(module)));
         self.modules.insert(name, module_id, self.heap);
+        self.may_have_unfinished_imports = true;
         self.push(Value::Ref(module_id));
 
         self.heap.inc_ref(namespace);
@@ -342,7 +343,7 @@ impl VM<'_> {
             .filter_map(|dir| dir.as_str_heap(self.heap, self.interns))
             .filter(|dir| !dir.contains('\0'))
             .take(MAX_SEARCH_DIRS)
-            .map(|dir| posix_join(&self.env.cwd, dir))
+            .map(|dir| posix_join(self.cwd, dir))
             .collect()
     }
 

@@ -325,7 +325,7 @@ pub(crate) fn class_cwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             )),
         });
     }
-    let path = Path::new(vm.env.cwd.to_string());
+    let path = Path::new(vm.cwd.to_string());
     Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
 }
 

@@ -262,7 +262,7 @@ fn urandom(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// directory, held by the VM so no host round-trip is needed.
 fn getcwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("getcwd", vm.heap)?;
-    Ok(CallResult::Value(allocate_string(&*vm.env.cwd, vm.heap)))
+    Ok(CallResult::Value(allocate_string(&**vm.cwd, vm.heap)))
 }
 
 /// Implementation of `os.getcwdb()`: the working directory as bytes.
@@ -271,7 +271,7 @@ fn getcwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// filesystem encoding involved.
 fn getcwdb(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("getcwdb", vm.heap)?;
-    let bytes = Bytes::new(vm.env.cwd.as_bytes().to_vec());
+    let bytes = Bytes::new(vm.cwd.as_bytes().to_vec());
     Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Bytes(bytes)))))
 }
 
@@ -302,7 +302,7 @@ fn chdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         return Err(ExcType::value_error("chdir: embedded null character in path"));
     }
     // Keep every component until the host validates the target; normalize on success.
-    let path = posix_join(&vm.env.cwd, &spelled);
+    let path = posix_join(vm.cwd, &spelled);
     Ok(CallResult::OsCallWithEffect {
         call: OsFunctionCall::Stat(MontyPath::new(path.clone())),
         effect: PreConversionEffect::Chdir {

@@ -1683,9 +1683,10 @@ fn repl_frozen_cache_failure_and_abandonment() {
     assert_eq!(feed_run_print(&mut repl, "cached(1)").unwrap(), MontyObject::int(42));
 }
 
+/// A suspended or abandoned snippet keeps its runtime-created globals and RNG state.
 #[test]
 fn repl_start_run_pending_resolve_futures_roundtrip() {
-    let (mut repl, _) = init_repl("");
+    let (mut repl, _) = init_repl("import random");
     feed_run_print(
         &mut repl,
         r"
@@ -1696,12 +1697,23 @@ async def main():
     )
     .unwrap();
 
-    let progress = repl.feed_start("await main()", vec![], PrintWriter::Stdout).unwrap();
+    let progress = repl
+        .feed_start(
+            "random.seed(42)\nexec('shared = [21]')\nawait main()",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
     // With LoadGlobalCallable, foo() goes directly to FunctionCall
     let call = progress.into_function_call().expect("expected function call");
     let call_id = call.call_id;
 
     let progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+    let mut abandoned = round_trip_progress(&progress).into_repl();
+    let read_state = "(shared[0], random.random())";
+    let expected = MontyObject::tuple([MontyObject::int(21), MontyObject::float(0.639_426_798_457_883_7)]);
+    assert_eq!(feed_run_print(&mut abandoned, read_state).unwrap(), expected);
+
     let loaded = round_trip_progress(&progress);
     let state = loaded.into_resolve_futures().expect("expected resolve futures");
     assert_eq!(state.pending_call_ids(), &[call_id]);
@@ -1714,11 +1726,7 @@ async def main():
         .unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
     assert_eq!(value, MontyObject::int(42));
-    assert_eq!(
-        feed_run_print(&mut repl, "final_value = 42").unwrap(),
-        MontyObject::none()
-    );
-    assert_eq!(feed_run_print(&mut repl, "final_value").unwrap(), MontyObject::int(42));
+    assert_eq!(feed_run_print(&mut repl, read_state).unwrap(), expected);
 }
 
 #[test]
