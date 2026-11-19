@@ -264,6 +264,24 @@ complete-tests: ## Fill in incomplete test expectations using CPython
 generate-unicode-type: ## Regenerate the str character-property tables from the current CPython
 	uv run scripts/gen_unicode_type.py
 
+.PHONY: vendor-stdlib
+vendor-stdlib: ## Download the CPython stdlib modules listed in crates/monty/stdlib/vendor.toml
+	uv run scripts/vendor_stdlib.py
+	$(MAKE) update-licenses
+
+.PHONY: check-stdlib
+check-stdlib: ## Verify the vendored CPython stdlib modules match the pinned CPython release
+	uv run scripts/vendor_stdlib.py --check
+
+.PHONY: check-stdlib-patches
+check-stdlib-patches: ## Fail if a vendored CPython module passes its test case without its patches
+	uv run scripts/vendor_stdlib.py --check-patches
+
+.PHONY: stdlib-candidates
+stdlib-candidates: ## Report which CPython stdlib modules Monty can load, the first blocker of each, and every syntax blocker
+	cargo build --release -p monty-runtime --bin monty
+	uv run scripts/stdlib_candidates.py
+
 .PHONY: check-unicode-type
 check-unicode-type: generate-unicode-type ## Verify the checked-in str character-property tables match the current CPython
 	git diff --exit-code crates/monty/src/types/unicode_type_data.rs
@@ -271,16 +289,21 @@ check-unicode-type: generate-unicode-type ## Verify the checked-in str character
 .PHONY: update-typeshed
 update-typeshed: ## Update vendored typeshed from upstream
 	uv run crates/monty-typeshed/update.py
-	uv run ruff format
-	uv run ruff check --fix --fix-only --silent
+	$(MAKE) update-licenses
 
 .PHONY: check-typeshed
 check-typeshed: ## Check vendored typeshed stubs are in sync with upstream
 	uv run crates/monty-typeshed/check.py
 
+.PHONY: update-licenses
+update-licenses: ## Regenerate the crate and worker licence files from their sources
+	uv run scripts/check_licenses.py --write
+
 .PHONY: check-publish
 check-publish: ## Package and verify-build every publishable crate as `cargo publish` would, without uploading
+	uv run scripts/check_licenses.py
 	cargo publish --workspace --dry-run
+	uv run scripts/check_licenses.py --crates "$(or $(CARGO_TARGET_DIR),target)/package/tmp-crate"
 
 .PHONY: bench
 bench: ## Run benchmarks

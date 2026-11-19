@@ -4,6 +4,7 @@ The `monty` command-line binary for the
 [Monty](https://github.com/pydantic/monty) sandbox.
 
 Installing the wheel puts the compiled binary in the environment's scripts directory.
+The wheel includes the MIT licence for Monty and the upstream licences and notices for the embedded CPython modules and typeshed stubs.
 
 You normally don't install this directly — the
 [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) metapackage pulls

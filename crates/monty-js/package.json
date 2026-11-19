@@ -27,7 +27,7 @@
     "type": "git",
     "url": "https://github.com/pydantic/monty"
   },
-  "license": "MIT",
+  "license": "MIT AND Python-2.0.1 AND Apache-2.0",
   "files": [
     "dist",
     "native-addon.js",

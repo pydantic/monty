@@ -1,3 +1,4 @@
+# Modified from python/typeshed's stdlib/tomllib.pyi to exclude parse_float.
 from typing import Any
 
 from _typeshed import SupportsRead

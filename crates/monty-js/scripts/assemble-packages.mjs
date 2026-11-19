@@ -19,6 +19,7 @@ import { COMPONENT_MODULE_NAMES } from '../dist/worker/componentModules.js'
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const artifacts = resolve(process.argv[2] ?? join(root, 'artifacts'))
 const output = resolve(process.argv[3] ?? join(root, 'package-tarballs'))
+const workerLicense = join(root, '../monty-runtime/LICENSE')
 const runtimeArtifacts = {
   'darwin-x64': 'pypi_files-runtime-macos-x86_64-manylinux',
   'darwin-arm64': 'pypi_files-runtime-macos-aarch64-manylinux',
@@ -99,7 +100,8 @@ for (const triple of triples) {
   const installedBinary = join(platformDirectory, binary)
   extractRuntime(triple, installedBinary)
   if (!triple.startsWith('win32')) chmodSync(installedBinary, 0o755)
-  packAndValidate(platformDirectory, `monty-${triple}.tgz`, ['package.json', `monty.${triple}.node`, binary])
+  cpSync(workerLicense, join(platformDirectory, 'LICENSE'))
+  packAndValidate(platformDirectory, `monty-${triple}.tgz`, ['package.json', `monty.${triple}.node`, binary, 'LICENSE'])
 }
 
 const component = join(root, 'dist', 'worker', 'component', 'monty.component.js')
@@ -116,6 +118,7 @@ packAndValidate(mainDirectory, 'monty-main.tgz', [
   ...COMPONENT_MODULE_NAMES.map((name) => `dist/worker/component/${name}`),
   'native-addon.js',
   'native-addon.d.ts',
+  'LICENSE',
 ])
 
 /** Stages npm's publishable files with exact platform pins, leaving the development manifest unchanged. */
@@ -139,5 +142,6 @@ function stageMainPackage(destination) {
     mkdirSync(dirname(target), { recursive: true })
     cpSync(join(root, path), target)
   }
+  cpSync(workerLicense, join(destination, 'LICENSE'))
   writeFileSync(join(destination, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`)
 }

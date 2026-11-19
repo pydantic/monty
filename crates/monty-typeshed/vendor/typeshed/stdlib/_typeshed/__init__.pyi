@@ -22,26 +22,25 @@ from typing import (
     final,
     overload,
 )
-
 from typing_extensions import Buffer, LiteralString, Self as _Self, TypeAlias
 
-_KT = TypeVar('_KT')
-_KT_co = TypeVar('_KT_co', covariant=True)
-_KT_contra = TypeVar('_KT_contra', contravariant=True)
-_VT = TypeVar('_VT')
-_VT_co = TypeVar('_VT_co', covariant=True)
-_T = TypeVar('_T')
-_T_co = TypeVar('_T_co', covariant=True)
-_T_contra = TypeVar('_T_contra', contravariant=True)
+_KT = TypeVar("_KT")
+_KT_co = TypeVar("_KT_co", covariant=True)
+_KT_contra = TypeVar("_KT_contra", contravariant=True)
+_VT = TypeVar("_VT")
+_VT_co = TypeVar("_VT_co", covariant=True)
+_T = TypeVar("_T")
+_T_co = TypeVar("_T_co", covariant=True)
+_T_contra = TypeVar("_T_contra", contravariant=True)
 
 # Alternative to `typing_extensions.Self`, exclusively for use with `__new__`
 # in metaclasses:
 #     def __new__(cls: type[Self], ...) -> Self: ...
 # In other cases, use `typing_extensions.Self`.
-Self = TypeVar('Self')  # noqa: Y001
+Self = TypeVar("Self")  # noqa: Y001
 
 # covariant version of typing.AnyStr, useful for protocols
-AnyStr_co = TypeVar('AnyStr_co', str, bytes, covariant=True)  # noqa: Y001
+AnyStr_co = TypeVar("AnyStr_co", str, bytes, covariant=True)  # noqa: Y001
 
 # For partially known annotations. Usually, fields where type annotations
 # haven't been added are left unannotated, but in some situations this
@@ -105,7 +104,7 @@ class SupportsAllComparisons(
 ): ...
 
 SupportsRichComparison: TypeAlias = SupportsDunderLT[Any] | SupportsDunderGT[Any]
-SupportsRichComparisonT = TypeVar('SupportsRichComparisonT', bound=SupportsRichComparison)  # noqa: Y001
+SupportsRichComparisonT = TypeVar("SupportsRichComparisonT", bound=SupportsRichComparison)  # noqa: Y001
 
 # Dunder protocols
 
@@ -186,70 +185,70 @@ GenericPath: TypeAlias = AnyStr | PathLike[AnyStr]
 StrOrBytesPath: TypeAlias = str | bytes | PathLike[str] | PathLike[bytes]  # stable
 
 OpenTextModeUpdating: TypeAlias = Literal[
-    'r+',
-    '+r',
-    'rt+',
-    'r+t',
-    '+rt',
-    'tr+',
-    't+r',
-    '+tr',
-    'w+',
-    '+w',
-    'wt+',
-    'w+t',
-    '+wt',
-    'tw+',
-    't+w',
-    '+tw',
-    'a+',
-    '+a',
-    'at+',
-    'a+t',
-    '+at',
-    'ta+',
-    't+a',
-    '+ta',
-    'x+',
-    '+x',
-    'xt+',
-    'x+t',
-    '+xt',
-    'tx+',
-    't+x',
-    '+tx',
+    "r+",
+    "+r",
+    "rt+",
+    "r+t",
+    "+rt",
+    "tr+",
+    "t+r",
+    "+tr",
+    "w+",
+    "+w",
+    "wt+",
+    "w+t",
+    "+wt",
+    "tw+",
+    "t+w",
+    "+tw",
+    "a+",
+    "+a",
+    "at+",
+    "a+t",
+    "+at",
+    "ta+",
+    "t+a",
+    "+ta",
+    "x+",
+    "+x",
+    "xt+",
+    "x+t",
+    "+xt",
+    "tx+",
+    "t+x",
+    "+tx",
 ]
-OpenTextModeWriting: TypeAlias = Literal['w', 'wt', 'tw', 'a', 'at', 'ta', 'x', 'xt', 'tx']
-OpenTextModeReading: TypeAlias = Literal['r', 'rt', 'tr', 'U', 'rU', 'Ur', 'rtU', 'rUt', 'Urt', 'trU', 'tUr', 'Utr']
+OpenTextModeWriting: TypeAlias = Literal["w", "wt", "tw", "a", "at", "ta", "x", "xt", "tx"]
+OpenTextModeReading: TypeAlias = Literal["r", "rt", "tr", "U", "rU", "Ur", "rtU", "rUt", "Urt", "trU", "tUr", "Utr"]
 OpenTextMode: TypeAlias = OpenTextModeUpdating | OpenTextModeWriting | OpenTextModeReading
 OpenBinaryModeUpdating: TypeAlias = Literal[
-    'rb+',
-    'r+b',
-    '+rb',
-    'br+',
-    'b+r',
-    '+br',
-    'wb+',
-    'w+b',
-    '+wb',
-    'bw+',
-    'b+w',
-    '+bw',
-    'ab+',
-    'a+b',
-    '+ab',
-    'ba+',
-    'b+a',
-    '+ba',
-    'xb+',
-    'x+b',
-    '+xb',
-    'bx+',
-    'b+x',
-    '+bx',
+    "rb+",
+    "r+b",
+    "+rb",
+    "br+",
+    "b+r",
+    "+br",
+    "wb+",
+    "w+b",
+    "+wb",
+    "bw+",
+    "b+w",
+    "+bw",
+    "ab+",
+    "a+b",
+    "+ab",
+    "ba+",
+    "b+a",
+    "+ba",
+    "xb+",
+    "x+b",
+    "+xb",
+    "bx+",
+    "b+x",
+    "+bx",
 ]
-OpenBinaryModeWriting: TypeAlias = Literal['wb', 'bw', 'ab', 'ba', 'xb', 'bx']
-OpenBinaryModeReading: TypeAlias = Literal['rb', 'br', 'rbU', 'rUb', 'Urb', 'brU', 'bUr', 'Ubr']
+OpenBinaryModeWriting: TypeAlias = Literal["wb", "bw", "ab", "ba", "xb", "bx"]
+OpenBinaryModeReading: TypeAlias = Literal["rb", "br", "rbU", "rUb", "Urb", "brU", "bUr", "Ubr"]
 OpenBinaryMode: TypeAlias = OpenBinaryModeUpdating | OpenBinaryModeReading | OpenBinaryModeWriting
 
 # stable
@@ -347,11 +346,11 @@ class structseq(Generic[_T_co]):
         def __replace__(self, **kwargs: Any) -> _Self: ...
 
 # Superset of typing.AnyStr that also includes LiteralString
-AnyOrLiteralStr = TypeVar('AnyOrLiteralStr', str, bytes, LiteralString)  # noqa: Y001
+AnyOrLiteralStr = TypeVar("AnyOrLiteralStr", str, bytes, LiteralString)  # noqa: Y001
 
 # Represents when str or LiteralStr is acceptable. Useful for string processing
 # APIs where literalness of return value depends on literalness of inputs
-StrOrLiteralStr = TypeVar('StrOrLiteralStr', LiteralString, str)  # noqa: Y001
+StrOrLiteralStr = TypeVar("StrOrLiteralStr", LiteralString, str)  # noqa: Y001
 
 # Objects suitable to be passed to sys.setprofile, threading.setprofile, and similar
 ProfileFunction: TypeAlias = Callable[[FrameType, str, Any], object]
