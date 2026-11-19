@@ -1359,6 +1359,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_custom_extractors() {
+        let err = expand_err(&parse_quote! {
+            #[from_args(name = "f")]
+            struct S {
+                #[from_args(extract_with = first, extract_with = second)]
+                value: Value,
+            }
+        });
+        assert_snapshot!(err, @"duplicate `extract_with` attribute");
+
+        let err = expand_err(&parse_quote! {
+            #[from_args(name = "f")]
+            struct S {
+                #[from_args(varargs, extract_with = convert)]
+                values: Vec<Value>,
+            }
+        });
+        assert_snapshot!(err, @"`extract_with` requires a named parameter slot");
+    }
+
+    #[test]
     fn old_flag_spellings_are_rejected() {
         // The pre-`style` boolean flags were removed in one clean break; make
         // sure they fail loudly rather than being silently ignored.

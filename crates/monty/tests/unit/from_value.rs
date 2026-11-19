@@ -387,3 +387,20 @@ fn native_signature_matches_the_exact_keyword() {
         }
     });
 }
+
+#[monty_macros::py_signature("scale(value=1.5, /)")]
+fn raw_float_default(vm: &mut VM<'_>, args: &ScaleArgs) -> RunResult<Value> {
+    Ok(args.value.clone_with_heap(vm))
+}
+
+#[test]
+fn unannotated_float_default_keeps_supplied_values_unconverted() {
+    with_test_vm(|vm| {
+        assert!(matches!(
+            raw_float_default(vm, ArgValues::Empty).unwrap(),
+            Value::Float(1.5)
+        ));
+        let value = raw_float_default(vm, ArgValues::One(Value::None)).unwrap();
+        assert!(matches!(value, Value::None));
+    });
+}

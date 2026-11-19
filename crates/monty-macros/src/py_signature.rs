@@ -266,36 +266,5 @@ fn integer_default(expr: &Expr) -> Option<i64> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{Declaration, expand};
-
-    #[test]
-    fn def_rejects_parameter_annotations() {
-        for signature in ["f(x: str, /)", "f(x: float)", "f(*, x: SupportsIndex = -1)"] {
-            let declaration = syn::parse_str::<Declaration>(&format!(r#""{signature}", style = def"#)).unwrap();
-            let function = syn::parse_quote!(
-                fn f(args: &FArgs) {}
-            );
-            let error = expand(&declaration, function).unwrap_err();
-            assert_eq!(
-                error.to_string(),
-                "leave parameters unannotated with style = def and convert values in the function body"
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_duplicate_options() {
-        for options in [
-            "style = def, style = clinic",
-            r#"owner = "Counter", owner = "dict""#,
-            r#"kwarg_error_name = "first", kwarg_error_name = "second""#,
-        ] {
-            let result = syn::parse_str::<Declaration>(&format!(r#""f(a, b)", {options}"#));
-            assert_eq!(
-                result.err().expect(options).to_string(),
-                "duplicate py_signature option"
-            );
-        }
-    }
-}
+#[path = "../tests/unit/py_signature.rs"]
+mod tests;
