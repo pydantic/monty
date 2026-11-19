@@ -1105,7 +1105,7 @@ impl CmpOperator {
     }
 }
 
-/// Computes an FNV-1a hash over comparison-operator identities and serialization.
+/// Computes an FNV-1a hash over comparison-operator identities and legacy variant indices.
 #[cfg(test)]
 pub(crate) fn comparison_operators_fingerprint() -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -1132,10 +1132,8 @@ pub(crate) fn comparison_operators_fingerprint() -> u64 {
         update(&mut hash, &[operator as u8]);
         update(&mut hash, format!("{operator:?}").as_bytes());
         update(&mut hash, operator.as_str().as_bytes());
-        update(
-            &mut hash,
-            &postcard::to_allocvec(&operator).expect("CmpOperator serialization cannot fail"),
-        );
+        // Retain the former serialized-index field in the version fingerprint.
+        update(&mut hash, &[operator as u8]);
     }
     hash
 }

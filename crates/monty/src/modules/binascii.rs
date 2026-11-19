@@ -42,32 +42,33 @@ use crate::{
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 /// `binascii` module functions, one variant per Python-visible function.
+#[monty_macros::explicit_discriminants(checksum = 0x7ea4_5f35_3381_27f4)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 pub(crate) enum BinasciiFunctions {
     #[strum(serialize = "hexlify")]
-    Hexlify,
+    Hexlify = 0,
     #[strum(serialize = "unhexlify")]
-    Unhexlify,
+    Unhexlify = 1,
     #[strum(serialize = "b2a_hex")]
-    B2aHex,
+    B2aHex = 2,
     #[strum(serialize = "a2b_hex")]
-    A2bHex,
+    A2bHex = 3,
     #[strum(serialize = "b2a_base64")]
-    B2aBase64,
+    B2aBase64 = 4,
     #[strum(serialize = "a2b_base64")]
-    A2bBase64,
+    A2bBase64 = 5,
     #[strum(serialize = "crc32")]
-    Crc32,
+    Crc32 = 6,
     #[strum(serialize = "crc_hqx")]
-    CrcHqx,
+    CrcHqx = 7,
     #[strum(serialize = "b2a_uu")]
-    B2aUu,
+    B2aUu = 8,
     #[strum(serialize = "a2b_uu")]
-    A2bUu,
+    A2bUu = 9,
     #[strum(serialize = "b2a_qp")]
-    B2aQp,
+    B2aQp = 10,
     #[strum(serialize = "a2b_qp")]
-    A2bQp,
+    A2bQp = 11,
 }
 
 /// Static mapping of attribute names to functions for module creation.

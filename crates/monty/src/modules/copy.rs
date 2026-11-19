@@ -19,12 +19,13 @@ use crate::{
 };
 
 /// `copy` module functions, one variant per Python-visible function.
+#[monty_macros::explicit_discriminants(checksum = 0x17db_11bd_e96f_cd0c)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 pub(crate) enum CopyFunctions {
     #[strum(serialize = "copy")]
-    Copy,
+    Copy = 0,
     #[strum(serialize = "deepcopy")]
-    Deepcopy,
+    Deepcopy = 1,
 }
 
 /// Static mapping of attribute names to functions for module creation.

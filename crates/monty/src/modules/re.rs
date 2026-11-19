@@ -65,27 +65,28 @@ pub(crate) const ASCII: u16 = 256;
 /// Module-level `re` functions (`re.search(pattern, string)`, …), as opposed to the
 /// methods on a compiled `re.Pattern`. String patterns go through
 /// [`RePatternCache`], so repeated calls usually avoid recompiling.
+#[monty_macros::explicit_discriminants(checksum = 0xc297_04ae_1a6d_8963)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum ReFunctions {
     /// `re.compile(pattern, flags=0)` — compile a pattern into a `re.Pattern` object.
-    Compile,
+    Compile = 0,
     /// `re.search(pattern, string, flags=0)` — find first match anywhere in the string.
-    Search,
+    Search = 1,
     /// `re.match(pattern, string, flags=0)` — match anchored at the start.
-    Match,
+    Match = 2,
     /// `re.fullmatch(pattern, string, flags=0)` — match the entire string.
-    Fullmatch,
+    Fullmatch = 3,
     /// `re.findall(pattern, string, flags=0)` — return all non-overlapping matches.
-    Findall,
+    Findall = 4,
     /// `re.sub(pattern, repl, string, count=0, flags=0)` — substitute matches.
-    Sub,
+    Sub = 5,
     /// `re.split(pattern, string, maxsplit=0, flags=0)` — split string by pattern.
-    Split,
+    Split = 6,
     /// `re.finditer(pattern, string, flags=0)` — return a list of all matches.
-    Finditer,
+    Finditer = 7,
     /// `re.escape(pattern)` — escape all non-alphanumeric characters in pattern.
-    Escape,
+    Escape = 8,
 }
 
 /// Creates the `re` module: every [`ReFunctions`] variant plus the flag

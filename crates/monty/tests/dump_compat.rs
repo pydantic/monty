@@ -206,10 +206,10 @@ assert add5(2) == 7
 (result, c.value)
 ";
 
-/// A dump written by an earlier build at this `DUMP_VERSION` still loads and
-/// runs. Failing here means a data-layout change broke older dumps: add a
-/// `#[serde(alias)]` or `#[serde(default)]`, or bump `DUMP_VERSION` and
-/// regenerate with `UPDATE_DUMP_FIXTURE=1 cargo test -p monty --test dump_compat`.
+/// Checks that the current-version fixture still loads and runs.
+/// If the format changed, check both compatibility directions against published releases
+/// before updating the fixture with `UPDATE_DUMP_FIXTURE=1 cargo test -p monty --test dump_compat`.
+/// Do not overwrite a fixture for a published dump version to make this test pass.
 #[test]
 fn fixture_dump_loads_and_resumes() {
     let path = fixture_path();

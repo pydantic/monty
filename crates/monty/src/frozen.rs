@@ -123,33 +123,34 @@ impl FrozenFunction {
 
 /// Native primitives passed directly to internal Python functions.
 /// These identities and their signatures are part of the captured bytecode's ABI.
+#[monty_macros::explicit_discriminants(checksum = 0x47d0_77e5_f6a8_58b8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum FrozenFunctions {
     /// Rebuild a generic alias around resolved arguments (see `generic_alias::call_alias_with`).
-    AliasWith,
+    AliasWith = 0,
     /// Cache a class's evaluated `__annotations__` under `__annotations_cache__`.
-    CacheClassAnnotations,
+    CacheClassAnnotations = 1,
     /// Call an `__annotate__` function in an `annotationlib.Format` (see `annotations::call_annotate_helper`).
-    CallAnnotate,
+    CallAnnotate = 2,
     /// Evaluate one annotation string in explicit namespaces and name-resolution mode.
-    EvalHint,
+    EvalHint = 3,
     /// Call a user `__iter__` without validating its result yet.
-    GetIter,
+    GetIter = 4,
     /// Insert a successful result into a cache wrapper.
-    Store,
+    Store = 5,
     /// `annotationlib.type_repr`: a type by name, anything else by repr.
-    TypeRepr,
+    TypeRepr = 6,
     /// Check the result returned by a user `__iter__` method.
-    ValidateIterator,
+    ValidateIterator = 7,
     /// Build a map from already-acquired source iterators.
-    BuildMap,
+    BuildMap = 8,
     /// Build a filter from an already-acquired source iterator.
-    BuildFilter,
+    BuildFilter = 9,
     /// Raise a strict map's length-mismatch error.
-    MapLengthError,
+    MapLengthError = 10,
     /// Exit the loop beneath a deferred advancement's catcher, without pushing an item.
-    EndForIter,
+    EndForIter = 11,
 }
 
 /// Dispatches private helpers using the same argument ownership rules as public natives.

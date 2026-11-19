@@ -7,44 +7,33 @@ use crate::{
     heap::{HeapId, HeapItem},
 };
 
-/// Heap-backed Python string with lazy hash and ASCII caches.
-/// The text is immutable; caches are omitted from snapshots and recomputed on use.
-/// ASCII text has one byte per character, so length and indexing take O(1) time.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+/// Heap string with lazy character-count, ASCII and Python hash metadata.
+#[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(transparent)]
 pub(crate) struct HeapStr {
     text: Box<str>,
     #[serde(skip)]
     pub(super) cached_hash: Cell<Option<HashValue>>,
     #[serde(skip)]
-    cached_ascii: Cell<Option<bool>>,
+    // 0: unknown; 1: non-ASCII with unknown count; >= 2: character count.
+    char_len: Cell<usize>,
+}
+
+// Loading leaves metadata lazy, just like constructing a string from owned text.
+impl<'de> serde::Deserialize<'de> for HeapStr {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        <Box<str> as serde::Deserialize>::deserialize(deserializer).map(Self::new)
+    }
 }
 
 impl PartialEq for HeapStr {
-    /// Compares only the string content — the cached fields are pure
-    /// optimisations and must not affect equality.
+    /// Equality depends on text, independently of metadata and the cached hash.
     fn eq(&self, other: &Self) -> bool {
         self.text == other.text
     }
 }
 
 impl HeapStr {
-    /// Creates heap storage; use [`super::allocate_string`] or [`super::allocate_string_no_interning`] for values.
-    #[must_use]
-    pub(super) fn new(s: impl Into<Box<str>>) -> Self {
-        Self {
-            text: s.into(),
-            cached_hash: Cell::new(None),
-            cached_ascii: Cell::new(None),
-        }
-    }
-
-    /// Returns a reference to the inner string.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.text
-    }
-
     /// Returns the Python string hash, computing it only on the first call.
     pub fn hash(&self) -> HashValue {
         if let Some(hash) = self.cached_hash.get() {
@@ -57,24 +46,91 @@ impl HeapStr {
         }
     }
 
-    /// Whether every character is ASCII, scanning the text only on the first call.
-    pub fn is_ascii(&self) -> bool {
-        if let Some(ascii) = self.cached_ascii.get() {
-            ascii
-        } else {
-            let ascii = self.text.is_ascii();
-            self.cached_ascii.set(Some(ascii));
-            ascii
+    /// Creates a heap string from owned text.
+    ///
+    /// Use [`super::allocate_string`] or [`super::allocate_string_no_interning`] for values.
+    #[must_use]
+    pub(super) fn new(text: Box<str>) -> Self {
+        Self {
+            text,
+            cached_hash: Cell::new(None),
+            char_len: Cell::new(0),
         }
     }
 
-    /// The length in Unicode code points, as Python's `len()` reports it.
-    pub fn char_len(&self) -> usize {
-        if self.is_ascii() {
-            self.text.len()
+    /// Uses exact ASCII status supplied by the producing operation.
+    pub(super) fn with_ascii(ascii: bool, text: Box<str>) -> Self {
+        debug_assert_eq!(ascii, text.is_ascii());
+        let value = Self::new(text);
+        if ascii {
+            value.cache_char_len(value.text.len());
         } else {
-            self.text.chars().count()
+            value.char_len.set(1);
         }
+        value
+    }
+
+    /// Uses a character count accumulated by the producing operation.
+    pub(super) fn with_char_len(text: Box<str>, char_len: usize) -> Self {
+        debug_assert_eq!(char_len, text.chars().count());
+        let value = Self::new(text);
+        value.cache_char_len(char_len);
+        value
+    }
+
+    fn cache_char_len(&self, char_len: usize) {
+        // Count 1 overlaps the non-ASCII sentinel. ASCII singletons remain unknown;
+        // empty and single-character strings cost at most four bytes to recount.
+        self.char_len.set(if char_len == 1 && self.text.len() == 1 {
+            0
+        } else {
+            char_len
+        });
+    }
+
+    /// Reuses known counts, recounting at most four bytes for short heap strings.
+    pub(super) fn known_char_len(&self) -> Option<usize> {
+        match self.char_len.get() {
+            count @ 2.. => Some(count),
+            _ if self.text.len() <= 4 => Some(self.char_len()),
+            _ => None,
+        }
+    }
+
+    /// Returns a reference to the inner string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    /// Checks ASCII independently when the character count is unknown.
+    #[inline]
+    pub fn is_ascii(&self) -> bool {
+        match self.char_len.get() {
+            0 => {
+                let ascii = self.text.is_ascii();
+                if ascii {
+                    self.cache_char_len(self.text.len());
+                } else {
+                    self.char_len.set(1);
+                }
+                ascii
+            }
+            1 => false,
+            count => count == self.text.len(),
+        }
+    }
+
+    /// Counts Unicode code points on first use, then reuses counts of at least two.
+    #[inline]
+    pub fn char_len(&self) -> usize {
+        let count = self.char_len.get();
+        if count >= 2 {
+            return count;
+        }
+        let count = bytecount::num_chars(self.text.as_bytes());
+        self.cache_char_len(count);
+        count
     }
 }
 
@@ -88,7 +144,7 @@ impl ops::Deref for HeapStr {
 
 impl HeapItem for HeapStr {
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // No-op: strings don't hold Value references
+        // Strings do not hold heap references.
     }
 }
 
@@ -111,3 +167,7 @@ mod tests {
         assert!(!hashed.is_ascii());
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/heap_string_metadata.rs"]
+mod metadata_tests;
