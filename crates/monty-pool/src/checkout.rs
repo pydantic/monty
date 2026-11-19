@@ -30,7 +30,7 @@ use opentelemetry::trace::{FutureExt, TraceContextExt};
 use tokio::{task::spawn_blocking, time::Instant as DeadlineInstant};
 
 #[cfg(feature = "telemetry")]
-use crate::telemetry::{TelemetryContext, metrics::outcome};
+use crate::telemetry::{TelemetryContext, metrics::outcome, tracing::SnapshotOperation};
 use crate::{
     CrashCause, PoolConfig, PoolError, RemoteCause, cpu,
     pool::{CapacityGuard, PoolInner},
@@ -959,6 +959,27 @@ impl Checkout {
         mounts: Vec<MountSpec>,
         on_print: OnPrint<'_>,
     ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
+        #[cfg(feature = "telemetry")]
+        let span = self
+            .worker
+            .as_mut()
+            .and_then(|worker| worker.snapshot_span(SnapshotOperation::Restore));
+        let result = self.restore_inner(state, mounts, on_print).await;
+        #[cfg(feature = "telemetry")]
+        if let Some(span) = span {
+            // Restore errors can include host paths or an unexpected snapshot payload.
+            span.finish(result.as_ref().err().map(|_| &"restore failed"));
+        }
+        result
+    }
+
+    /// Restores session state while the API span records the whole call.
+    async fn restore_inner(
+        &mut self,
+        state: Vec<u8>,
+        mounts: Vec<MountSpec>,
+        on_print: OnPrint<'_>,
+    ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
         self.ensure_ready()?;
         let feed_mounts = Self::build_feed_mounts(mounts)?;
         // the dump carries its own limits/consumed time/script name — forget
@@ -1386,7 +1407,10 @@ impl Checkout {
     /// different worker after this one crashes. The session stays live.
     pub async fn dump(&mut self) -> Result<Vec<u8>, PoolError> {
         #[cfg(feature = "telemetry")]
-        let span = self.worker.as_mut().and_then(Worker::dump_span);
+        let span = self
+            .worker
+            .as_mut()
+            .and_then(|worker| worker.snapshot_span(SnapshotOperation::Dump));
         let result = async {
             self.open().await?;
             let request = request(pb::client_request::Kind::Dump(pb::Dump {}));

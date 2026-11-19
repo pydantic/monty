@@ -41,7 +41,7 @@ use tokio::{
 use crate::telemetry::{
     TelemetryContext,
     metrics::TurnMetrics,
-    tracing::{DumpSpan, Recorder},
+    tracing::{Recorder, SnapshotOperation, SnapshotSpan},
 };
 use crate::{
     MontyTransport, PoolConfig, PoolError, RemoteDisconnect,
@@ -192,10 +192,10 @@ impl Worker {
         }
     }
 
-    /// Starts a dump span only for the public API, not the raw forwarding interface.
+    /// Starts a span for an explicit snapshot API call.
     #[cfg(feature = "telemetry")]
-    pub(crate) fn dump_span(&mut self) -> Option<DumpSpan> {
-        self.recorder.as_mut().map(|recorder| recorder.dump_span())
+    pub(crate) fn snapshot_span(&mut self, operation: SnapshotOperation) -> Option<SnapshotSpan> {
+        self.recorder.as_mut().map(|recorder| recorder.snapshot_span(operation))
     }
 
     #[cfg(feature = "telemetry")]

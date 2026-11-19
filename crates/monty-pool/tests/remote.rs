@@ -5,11 +5,11 @@
 
 #[cfg(target_os = "linux")]
 mod binary;
-#[cfg(feature = "telemetry")]
-#[path = "remote/dump_telemetry.rs"]
-mod dump_telemetry;
 #[path = "support/grpc_mock.rs"]
 mod grpc_mock;
+#[cfg(feature = "telemetry")]
+#[path = "remote/snapshot_telemetry.rs"]
+mod snapshot_telemetry;
 
 #[cfg(feature = "telemetry")]
 use std::sync::Arc;

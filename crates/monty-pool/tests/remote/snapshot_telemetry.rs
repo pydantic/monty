@@ -1,4 +1,4 @@
-//! Dump spans follow the public operation, including setup, errors and cancellation.
+//! Snapshot API spans follow the public call through setup, errors and cancellation.
 
 use std::{
     future::ready,
@@ -8,11 +8,12 @@ use std::{
 };
 
 use logfire::{Logfire, config::AdvancedOptions, set_local_logfire};
-use monty_pool::{CheckoutOptions, Pool, PoolError, PrintFuture, ReplConfig, telemetry::TelemetryContext};
-use monty_proto::pb;
+use monty_pool::{CheckoutOptions, Pool, PoolError, PrintFuture, ReplConfig, TurnEvent, telemetry::TelemetryContext};
+use monty_proto::{decode_frame, pb};
+use monty_types::{MontyObject, NameLookupResult};
 use opentelemetry::{
     Value,
-    trace::{SpanContext, SpanId, Status, TraceFlags, TraceId, TraceState},
+    trace::{SpanContext, SpanId, Status, TraceContextExt, TraceFlags, TraceId, TraceState},
 };
 use opentelemetry_sdk::{
     logs::{InMemoryLogExporter, SimpleLogProcessor},
@@ -21,7 +22,7 @@ use opentelemetry_sdk::{
 use tokio::{sync::oneshot, time::timeout};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
-use super::{event_kind, join_server, mock_pool_config, read_request, send_event};
+use super::{event_kind, join_server, mock_pool_config, no_print, position, read_request, send_event};
 
 /// Setup and persistence acknowledgements bound the API span; raw forwarding emits no dump span.
 #[tokio::test]
@@ -226,6 +227,195 @@ async fn dump_status_caps_fatal_worker_messages() {
         format!("{PREFIX}{}", "é".repeat((LIMIT - PREFIX.len()) / 2))
     );
     assert_eq!(attribute(&recorded[0], "monty.error.truncated"), Some(true.into()));
+    pool.close().await;
+    join_server(server).await;
+}
+
+/// Restore latency ends at the API return. The restored execution keeps its callback span.
+#[tokio::test]
+async fn restore_span_ends_at_the_first_suspension() {
+    timeout(Duration::from_secs(10), Box::pin(restore_span_scenario()))
+        .await
+        .expect("restore telemetry scenario completed");
+}
+
+/// Hold the opening reply and check automatic span closure on each load outcome.
+async fn restore_span_scenario() {
+    let exporter = InMemorySpanExporter::default();
+    let logfire = logfire::configure()
+        .local()
+        .send_to_logfire(false)
+        .with_console(None)
+        .with_install_panic_handler(false)
+        .with_additional_span_processor(SimpleSpanProcessor::new(exporter.clone()))
+        .finish()
+        .expect("logfire");
+    let parent = SpanContext::new(
+        TraceId::from(27_u128),
+        SpanId::from(28_u64),
+        TraceFlags::SAMPLED,
+        true,
+        TraceState::default(),
+    );
+    let options = CheckoutOptions::default()
+        .with_telemetry(Some(TelemetryContext::for_logfire(logfire).with_parent(parent.clone())));
+    let (loading, load_request) = oneshot::channel();
+    let (loaded, load_reply) = mpsc::channel();
+    let (cancelling, cancel_request) = oneshot::channel();
+    let (mock, config) = mock_pool_config().await;
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        let request = socket.read_unsplit().expect("the first request");
+        let request = decode_frame::<pb::ClientRequest>(request.as_ref()).expect("decode request");
+        let Some(pb::client_request::Kind::Configure(configure)) = request.kind else {
+            panic!("expected Configure carrying Load");
+        };
+        assert!(matches!(configure.first, Some(pb::configure::First::Load(_))));
+        loading.send(SystemTime::now()).unwrap();
+        load_reply.recv().unwrap();
+        send_event(
+            &mut socket,
+            &pb::WorkerEvent {
+                restored_script_name: Some("restored.py".to_owned()),
+                execution_clock: Some(pb::ExecutionClock::Wall as i32),
+                ..event_kind(pb::worker_event::Kind::NameLookup(pb::NameLookup {
+                    name: "value".to_owned(),
+                    object_id: None,
+                    position: Some((&position()).into()),
+                }))
+            },
+        );
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::client_request::Kind::ResumeNameLookup(_)
+        ));
+        send_event(
+            &mut socket,
+            &event_kind(pb::worker_event::Kind::Complete(pb::Complete::from(MontyObject::int(
+                42,
+            )))),
+        );
+        assert!(matches!(read_request(&mut socket), pb::client_request::Kind::Load(_)));
+        send_event(&mut socket, &event_kind(pb::worker_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::client_request::Kind::Load(_)));
+        send_event(
+            &mut socket,
+            &event_kind(pb::worker_event::Kind::Error(pb::Error {
+                exception: Some(pb::RaisedException {
+                    exc_type: "RuntimeError".to_owned(),
+                    message: Some("snapshot unavailable".to_owned()),
+                    ..Default::default()
+                }),
+            })),
+        );
+        assert!(matches!(read_request(&mut socket), pb::client_request::Kind::Load(_)));
+        cancelling.send(()).unwrap();
+        assert!(socket.read().is_none());
+    });
+    let pool = Pool::new(config).await.unwrap();
+    let mut checkout = pool.checkout_with(&ReplConfig::default(), options).await.unwrap();
+    let mut ignore_print = no_print;
+    {
+        let restore = checkout.restore(vec![1, 2, 3], vec![], &mut ignore_print);
+        tokio::pin!(restore);
+        let sent_at = tokio::select! {
+            result = &mut restore => panic!("restore completed before the load reply: {result:?}"),
+            sent = load_request => sent.unwrap(),
+        };
+        assert!(
+            exporter
+                .get_finished_spans()
+                .unwrap()
+                .iter()
+                .all(|span| span.name != "restore")
+        );
+        let replied_at = SystemTime::now();
+        loaded.send(()).unwrap();
+        let (suspension, script_name) = restore.await.unwrap();
+        assert!(matches!(suspension, Some(TurnEvent::NameLookup { .. })));
+        assert_eq!(script_name.as_deref(), Some("restored.py"));
+        let spans = exporter.get_finished_spans().unwrap();
+        let span = spans.iter().find(|span| span.name == "restore").unwrap();
+        assert!(span.start_time <= sent_at);
+        assert!(span.end_time >= replied_at);
+        assert_eq!(span.span_context.trace_id(), parent.trace_id());
+        assert_eq!(span.parent_span_id, parent.span_id());
+        assert_eq!(attribute(span, "monty.outcome"), Some("ok".into()));
+        assert!(spans.iter().all(|span| span.name != "load"));
+    }
+    let callback = checkout.callback_context().span().span_context().clone();
+    assert_eq!(callback.trace_id(), parent.trace_id());
+    let result = checkout
+        .resume_name_lookup(NameLookupResult::from(MontyObject::int(42)), &mut no_print)
+        .await
+        .unwrap();
+    assert!(matches!(result, TurnEvent::Complete(value) if value == MontyObject::int(42)));
+    let spans = exporter.get_finished_spans().unwrap();
+    let restore = spans.iter().find(|span| span.name == "restore").unwrap();
+    let load = spans.iter().find(|span| span.name == "load").unwrap();
+    let call = spans.iter().find(|span| span.name == "name lookup {name}").unwrap();
+    assert_eq!(load.parent_span_id, restore.span_context.span_id());
+    assert_eq!(call.parent_span_id, load.span_context.span_id());
+    assert_eq!(callback.span_id(), load.span_context.span_id());
+    assert_eq!(attribute(load, "state_bytes"), Some("3".into()));
+
+    let raw_load = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Load(pb::Load { state: vec![4].into() })),
+        ..pb::ClientRequest::default()
+    };
+    let mut discard = |_: &pb::WorkerEvent| Box::pin(ready(())) as PrintFuture;
+    let raw_reply = checkout.turn_raw(&raw_load, &mut discard).await.unwrap();
+    assert!(matches!(raw_reply.kind, Some(pb::worker_event::Kind::Ok(_))));
+    let spans = exporter.get_finished_spans().unwrap();
+    assert_eq!(spans.iter().filter(|span| span.name == "restore").count(), 1);
+    let raw_span = spans
+        .iter()
+        .find(|span| attribute(span, "state_bytes") == Some("1".into()))
+        .unwrap();
+    assert_ne!(raw_span.parent_span_id, restore.span_context.span_id());
+
+    assert!(matches!(
+        checkout.restore(vec![5], vec![], &mut ignore_print).await,
+        Err(PoolError::Runtime(_))
+    ));
+    let spans = exporter.get_finished_spans().unwrap();
+    let refused = spans.iter().rfind(|span| span.name == "restore").unwrap();
+    assert_eq!(attribute(refused, "monty.outcome"), Some("error".into()));
+    assert_eq!(refused.status, Status::error("restore failed"));
+    {
+        let restore = checkout.restore(vec![6], vec![], &mut ignore_print);
+        tokio::pin!(restore);
+        tokio::select! {
+            result = &mut restore => panic!("restore completed before cancellation: {result:?}"),
+            requested = cancel_request => requested.unwrap(),
+        }
+    }
+    let spans = exporter.get_finished_spans().unwrap();
+    let mut restores = spans.iter().filter(|span| span.name == "restore");
+    assert_eq!(
+        restores.next().unwrap().span_context.span_id(),
+        restore.span_context.span_id()
+    );
+    assert_eq!(
+        restores.next().unwrap().span_context.span_id(),
+        refused.span_context.span_id()
+    );
+    assert_eq!(
+        attribute(restores.next().unwrap(), "monty.outcome"),
+        Some("cancelled".into())
+    );
+    assert!(restores.next().is_none());
+    let ambient = logfire::configure()
+        .local()
+        .send_to_logfire(false)
+        .with_console(None)
+        .with_install_panic_handler(false)
+        .finish()
+        .expect("ambient logfire");
+    {
+        let _ambient = set_local_logfire(ambient);
+        drop(checkout);
+    }
     pool.close().await;
     join_server(server).await;
 }
