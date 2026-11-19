@@ -3341,8 +3341,6 @@ impl<'h> HeapRead<'h, PyException> {
 impl<'h> HeapObjectRead<'h, PyException> {
     /// Computes `str(exc)`.
     pub fn py_str(&self, vm: &mut VM<'h>) -> RunResult<String> {
-        let mut guard = vm.recursion_guard()?;
-        let vm = &mut *guard;
         let (exc_type, args_copy) = {
             let exc = self.get(vm.heap);
             (exc.exc_type, exc.args.clone_with_heap(vm.heap))
@@ -3358,18 +3356,28 @@ impl<'h> HeapObjectRead<'h, PyException> {
                 }
             }
             ExceptionArgs::OneValue(v) => {
-                if exc_type == ExcType::KeyError {
-                    let v_clone = v.clone_with_heap(vm.heap);
-                    defer_drop!(v_clone, vm);
-                    let repr_val = v_clone.py_repr(vm)?;
-                    defer_drop!(repr_val, vm);
-                    Ok(repr_val.as_str(vm).unwrap_or("").to_owned())
+                if let Some(s) = v.as_str(vm) {
+                    if exc_type == ExcType::KeyError {
+                        Ok(StringRepr(s).to_string())
+                    } else {
+                        Ok(s.to_owned())
+                    }
                 } else {
-                    let v_clone = v.clone_with_heap(vm.heap);
-                    defer_drop!(v_clone, vm);
-                    let str_val = v_clone.py_str(vm)?;
-                    defer_drop!(str_val, vm);
-                    Ok(str_val.as_str(vm).unwrap_or("").to_owned())
+                    let mut guard = vm.recursion_guard()?;
+                    let vm = &mut *guard;
+                    if exc_type == ExcType::KeyError {
+                        let v_clone = v.clone_with_heap(vm.heap);
+                        defer_drop!(v_clone, vm);
+                        let repr_val = v_clone.py_repr(vm)?;
+                        defer_drop!(repr_val, vm);
+                        Ok(repr_val.as_str(vm).unwrap_or("").to_owned())
+                    } else {
+                        let v_clone = v.clone_with_heap(vm.heap);
+                        defer_drop!(v_clone, vm);
+                        let str_val = v_clone.py_str(vm)?;
+                        defer_drop!(str_val, vm);
+                        Ok(str_val.as_str(vm).unwrap_or("").to_owned())
+                    }
                 }
             }
             ExceptionArgs::Tuple(id) => {
@@ -3385,17 +3393,29 @@ impl<'h> HeapObjectRead<'h, PyException> {
                             _ => unreachable!(),
                         };
                         defer_drop!(item, vm);
-                        if exc_type == ExcType::KeyError {
-                            let repr_val = item.py_repr(vm)?;
-                            defer_drop!(repr_val, vm);
-                            Ok(repr_val.as_str(vm).unwrap_or("").to_owned())
+                        if let Some(s) = item.as_str(vm) {
+                            if exc_type == ExcType::KeyError {
+                                Ok(StringRepr(s).to_string())
+                            } else {
+                                Ok(s.to_owned())
+                            }
                         } else {
-                            let str_val = item.py_str(vm)?;
-                            defer_drop!(str_val, vm);
-                            Ok(str_val.as_str(vm).unwrap_or("").to_owned())
+                            let mut guard = vm.recursion_guard()?;
+                            let vm = &mut *guard;
+                            if exc_type == ExcType::KeyError {
+                                let repr_val = item.py_repr(vm)?;
+                                defer_drop!(repr_val, vm);
+                                Ok(repr_val.as_str(vm).unwrap_or("").to_owned())
+                            } else {
+                                let str_val = item.py_str(vm)?;
+                                defer_drop!(str_val, vm);
+                                Ok(str_val.as_str(vm).unwrap_or("").to_owned())
+                            }
                         }
                     }
                     _ => {
+                        let mut guard = vm.recursion_guard()?;
+                        let vm = &mut *guard;
                         vm.heap.inc_ref(*id);
                         let tuple_val = Value::Ref(*id);
                         defer_drop!(tuple_val, vm);
@@ -3410,8 +3430,6 @@ impl<'h> HeapObjectRead<'h, PyException> {
 
     /// Formats `repr(exc)` into a writer.
     pub fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        let mut guard = vm.recursion_guard()?;
-        let vm = &mut *guard;
         let (type_name, args_copy) = {
             let exc = self.get(vm.heap);
             let name = match exc.class {
@@ -3428,22 +3446,49 @@ impl<'h> HeapObjectRead<'h, PyException> {
         match args_copy {
             ExceptionArgs::Empty => {}
             ExceptionArgs::OneStr(s) => string_repr_fmt(s, f)?,
-            ExceptionArgs::OneValue(v) => v.py_repr_fmt(f, vm, heap_ids)?,
+            ExceptionArgs::OneValue(v) => {
+                if let Some(s) = v.as_str(vm) {
+                    string_repr_fmt(s, f)?;
+                } else {
+                    let mut guard = vm.recursion_guard()?;
+                    let vm = &mut *guard;
+                    v.py_repr_fmt(f, vm, heap_ids)?;
+                }
+            }
             ExceptionArgs::Tuple(id) => {
                 let len = match vm.heap.get(*id) {
                     HeapData::Tuple(t) => t.as_slice().len(),
                     _ => 0,
                 };
-                for i in 0..len {
-                    if i > 0 {
-                        f.write_str(", ")?;
+                let all_strings = (0..len).all(|i| match vm.heap.get(*id) {
+                    HeapData::Tuple(t) => t.as_slice()[i].as_str(vm).is_some(),
+                    _ => false,
+                });
+                if all_strings {
+                    for i in 0..len {
+                        if i > 0 {
+                            f.write_str(", ")?;
+                        }
+                        let s = match vm.heap.get(*id) {
+                            HeapData::Tuple(t) => t.as_slice()[i].as_str(vm).unwrap(),
+                            _ => unreachable!(),
+                        };
+                        string_repr_fmt(s, f)?;
                     }
-                    let item = match vm.heap.get(*id) {
-                        HeapData::Tuple(t) => t.as_slice()[i].clone_with_heap(vm.heap),
-                        _ => unreachable!(),
-                    };
-                    defer_drop!(item, vm);
-                    item.py_repr_fmt(f, vm, heap_ids)?;
+                } else {
+                    let mut guard = vm.recursion_guard()?;
+                    let vm = &mut *guard;
+                    for i in 0..len {
+                        if i > 0 {
+                            f.write_str(", ")?;
+                        }
+                        let item = match vm.heap.get(*id) {
+                            HeapData::Tuple(t) => t.as_slice()[i].clone_with_heap(vm.heap),
+                            _ => unreachable!(),
+                        };
+                        defer_drop!(item, vm);
+                        item.py_repr_fmt(f, vm, heap_ids)?;
+                    }
                 }
             }
         }
