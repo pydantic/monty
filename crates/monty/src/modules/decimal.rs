@@ -23,16 +23,17 @@ use crate::{
 };
 
 /// The functions of the `decimal` module.
+#[monty_macros::explicit_discriminants(checksum = 0x99d1_733d_2b53_6f20)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 pub(crate) enum DecimalFunctions {
     #[strum(serialize = "getcontext")]
-    Getcontext,
+    Getcontext = 0,
     #[strum(serialize = "setcontext")]
-    Setcontext,
+    Setcontext = 1,
     #[strum(serialize = "localcontext")]
-    Localcontext,
+    Localcontext = 2,
     #[strum(serialize = "IEEEContext")]
-    IeeeContext,
+    IeeeContext = 3,
 }
 
 /// The signal and condition classes, as `(attribute, exception type)`.
