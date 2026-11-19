@@ -384,6 +384,28 @@ fn bare_variadic_arguments_preserve_inline_storage() {
 }
 
 #[test]
+fn variadic_signatures_with_other_parameters_use_the_general_binder() {
+    for signature in [
+        "f(x, /, *items)",
+        "f(x: str, /, *items)",
+        "f(x=None, /, *items)",
+        "f(x, *items)",
+        "f(*items, x=None)",
+        "f(*items, **extra)",
+    ] {
+        let output = expand(&parse_quote!(#signature), adapter()).unwrap().to_string();
+        assert!(
+            output.contains("items : Vec < crate :: value :: Value >"),
+            "{signature}: expected a variadic collection"
+        );
+        assert!(
+            !output.contains("into_pos_only"),
+            "{signature}: used the inline iterator"
+        );
+    }
+}
+
+#[test]
 fn ownership_modes_share_the_one_argument_fast_path() {
     let shared = expand(&parse_quote!("f(x, /)"), adapter()).unwrap().to_string();
     assert_eq!(
