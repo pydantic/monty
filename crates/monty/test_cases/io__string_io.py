@@ -3,6 +3,13 @@ import io
 from io import StringIO
 
 
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 def check(exc_type, message, fn):
     try:
         fn()
@@ -43,12 +50,22 @@ check(ValueError, "illegal newline value: 'x'", lambda: StringIO('', 'x'))
 check(TypeError, 'newline must be str or None, not int', lambda: StringIO(1, 1))
 check(ValueError, "illegal newline value: 'x'", lambda: StringIO(1, 'x'))
 check(TypeError, 'StringIO() takes at most 2 arguments (3 given)', lambda: StringIO('', None, 1))
-check(TypeError, 'StringIO() takes at most 2 arguments (3 given)', lambda: StringIO('', None, foo=1))
+check(
+    TypeError,
+    _error_message(
+        monty="StringIO() got an unexpected keyword argument 'foo'",
+        cpython='StringIO() takes at most 2 arguments (3 given)',
+    ),
+    lambda: StringIO('', None, foo=1),
+)
 check(TypeError, "StringIO() got an unexpected keyword argument 'foo'", lambda: StringIO(foo=1))
 check(TypeError, "StringIO() got an unexpected keyword argument 'foo'", lambda: StringIO('', foo=1))
 check(
     TypeError,
-    "argument for StringIO() given by name ('initial_value') and position (1)",
+    _error_message(
+        monty="StringIO() got multiple values for argument 'initial_value'",
+        cpython="argument for StringIO() given by name ('initial_value') and position (1)",
+    ),
     lambda: StringIO('', initial_value=''),
 )
 

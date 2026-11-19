@@ -612,3 +612,17 @@ assert (b'a' * 200_000).find(missing) == -1
 assert (b'a' * 200_000).rfind(missing) == -1
 assert (missing in b'a' * 200_000) is False
 assert (b'a' * 200_000).count(missing) == 0
+
+
+class FailingMaxsplit:
+    def __index__(self):
+        raise ValueError('invalid maxsplit')
+
+
+for split in (lambda: b'a'.split([], FailingMaxsplit()), lambda: b'a'.rsplit([], FailingMaxsplit())):
+    try:
+        split()
+    except ValueError as exc:
+        assert str(exc) == 'invalid maxsplit'
+    else:
+        assert False

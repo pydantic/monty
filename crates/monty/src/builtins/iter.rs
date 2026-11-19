@@ -1,7 +1,8 @@
 //! Argument handling for `iter(object[, sentinel])`.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     types::callable_iterator::CallableIterator,
@@ -9,8 +10,9 @@ use crate::{
 };
 
 /// Acquires an iterator or creates a callable iterator which stops at its sentinel.
-pub(crate) fn builtin_iter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let IterArgs { object, sentinel } = IterArgs::from_args(args, vm)?;
+#[py_signature("iter(object, sentinel=..., /)")]
+pub(crate) fn builtin_iter(vm: &mut VM<'_>, params: &mut IterArgs) -> RunResult<CallResult> {
+    let IterArgsFields { object, sentinel } = params.take_all();
     if let Some(sentinel) = sentinel {
         if object.is_callable(vm) {
             let iter = CallableIterator::new(object, sentinel);
@@ -23,14 +25,4 @@ pub(crate) fn builtin_iter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRe
     } else {
         object.into_py_iter(vm)
     }
-}
-
-/// Argument shape for `iter(object, /)` and `iter(object, sentinel, /)`.
-#[derive(FromArgs)]
-#[from_args(name = "iter", style = unpack)]
-struct IterArgs {
-    #[from_args(pos_only)]
-    object: Value,
-    #[from_args(pos_only, default)]
-    sentinel: Option<Value>,
 }

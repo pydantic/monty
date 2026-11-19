@@ -11,7 +11,7 @@ use std::{fmt::Write, iter, str};
 pub(crate) use heap_str::HeapStr;
 pub(crate) use inline_str::InlineStr;
 pub(crate) use iterator::StringIterator;
-use monty_macros::pyattrs;
+use monty_macros::{py_signature, pyattrs};
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use smallvec::smallvec;
@@ -26,13 +26,13 @@ use super::{
     unicode_type_data::TypeRecord,
 };
 use crate::{
-    args::{ArgValues, FromArgs, FromValue, FromValueFail, StrArg},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     codecs::Codec,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
-    heap::{DropGuard, DropWithContext, Heap, HeapObjectRead},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapObjectRead},
     identity::Identity,
     intern::{Interns, StaticStrings, StringId},
     percent_format::percent_format,
@@ -356,18 +356,9 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
 /// `encoding`/`errors` are raw `Value`s validated in the body: CPython's
 /// `unicode_new` names a wrong type by its `tp_name` (`must be str, not
 /// NoneType`), not `_PyArg_BadArgument`'s `None` special case, so the macro's
-/// `bad_arg_named` wording can't be used. `vectorcall` + `at_most_total`
-/// model `unicode_vectorcall`'s dual arity wording.
-#[derive(FromArgs)]
-#[from_args(name = "str", at_most_total, vectorcall)]
-struct StrInitArgs {
-    #[from_args(default)]
-    object: Option<Value>,
-    #[from_args(default)]
-    encoding: Option<Value>,
-    #[from_args(default)]
-    errors: Option<Value>,
-}
+/// `bad_arg_named` wording can't be used.
+#[py_signature("str(object=..., encoding=..., errors=...)")]
+struct StrInitArgs;
 
 /// Rejects a non-str `encoding`/`errors` argument to `str()` with CPython's
 /// `str() argument '{name}' must be str, not {tp_name}` wording.
@@ -851,11 +842,9 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// If the string starts with the prefix string, return string[len(prefix):].
     /// Otherwise, return a copy of the original string.
-    #[pymethod(Removeprefix)]
-    fn removeprefix(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let prefix_value = args.get_one_arg("str.removeprefix", vm.heap)?;
-        defer_drop!(prefix_value, vm);
-        let prefix = extract_string_arg(prefix_value, vm)?;
+    #[pymethod(Removeprefix, "removeprefix(self, prefix, /)", owner = "str")]
+    fn removeprefix(s: &PyStr<'h>, params: &StrRemoveprefixArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+        let prefix = extract_string_arg(&params.prefix, vm)?;
 
         let s = s.as_str(vm);
         let result = s.strip_prefix(&prefix).unwrap_or(s).to_owned();
@@ -866,11 +855,9 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// If the string ends with the suffix string, return string[:-len(suffix)].
     /// Otherwise, return a copy of the original string.
-    #[pymethod(Removesuffix)]
-    fn removesuffix(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let suffix_value = args.get_one_arg("str.removesuffix", vm.heap)?;
-        defer_drop!(suffix_value, vm);
-        let suffix = extract_string_arg(suffix_value, vm)?;
+    #[pymethod(Removesuffix, "removesuffix(self, suffix, /)", owner = "str")]
+    fn removesuffix(s: &PyStr<'h>, params: &StrRemovesuffixArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+        let suffix = extract_string_arg(&params.suffix, vm)?;
 
         let s = s.as_str(vm);
         let result = s.strip_suffix(&suffix).unwrap_or(s).to_owned();
@@ -880,36 +867,34 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     /// Implements Python's `str.split(sep?, maxsplit?)` method.
     ///
     /// Returns a list of the words in the string, using sep as the delimiter string.
-    #[pymethod(Split)]
-    fn split(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let SplitArgs { sep, maxsplit } = SplitArgs::from_args(args, vm)?;
-        let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
+    #[pymethod(Split, "split(self, /, sep: str | None = None, maxsplit: i64 = -1) -> list")]
+    fn split(s: &PyStr<'h>, params: &SplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
         // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
         let mut items_guard = DropGuard::new(Vec::new(), vm);
         let (list_items, vm) = items_guard.as_parts_mut();
         let s = s.as_str(vm);
 
-        let parts: Vec<&str> = match &sep {
+        let parts: Vec<&str> = match params.sep.as_ref().map(|sep| sep.as_str(vm)) {
             Some(sep) => {
                 // Empty separator raises ValueError
                 if sep.is_empty() {
                     return Err(ExcType::value_error_empty_separator());
                 }
-                if maxsplit < 0 {
-                    collect_checked(s.split(sep.as_str()), &vm.heap.tracker)?
+                if params.maxsplit < 0 {
+                    collect_checked(s.split(sep), &vm.heap.tracker)?
                 } else {
                     // Safe cast: we've checked maxsplit >= 0
-                    let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                    collect_checked(s.splitn(max.saturating_add(1), sep.as_str()), &vm.heap.tracker)?
+                    let max = usize::try_from(params.maxsplit).unwrap_or(usize::MAX);
+                    collect_checked(s.splitn(max.saturating_add(1), sep), &vm.heap.tracker)?
                 }
             }
             None => {
                 // Split on whitespace, filtering empty strings
-                if maxsplit < 0 {
+                if params.maxsplit < 0 {
                     collect_checked(s.split(is_space).filter(|part| !part.is_empty()), &vm.heap.tracker)?
                 } else {
                     // Safe cast: we've checked maxsplit >= 0
-                    let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                    let max = usize::try_from(params.maxsplit).unwrap_or(usize::MAX);
                     split_whitespace_n(s, max, &vm.heap.tracker)?
                 }
             }
@@ -928,47 +913,46 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
 
         let (list_items, vm) = items_guard.into_parts();
         let list = super::List::new(list_items);
-        Ok(Value::allocate(list, vm.heap))
+        let heap_id = vm.heap.allocate(HeapData::List(list));
+        Ok(Value::Ref(heap_id))
     }
 
     /// Implements Python's `str.rsplit(sep?, maxsplit?)` method.
     ///
     /// Returns a list of the words in the string, using sep as the delimiter string,
     /// splitting from the right.
-    #[pymethod(Rsplit)]
-    fn rsplit(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let RsplitArgs { sep, maxsplit } = RsplitArgs::from_args(args, vm)?;
-        let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
+    #[pymethod(Rsplit, "rsplit(self, /, sep: str | None = None, maxsplit: i64 = -1) -> list")]
+    fn rsplit(s: &PyStr<'h>, params: &RsplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
         // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
         let mut items_guard = DropGuard::new(Vec::new(), vm);
         let (list_items, vm) = items_guard.as_parts_mut();
         let s = s.as_str(vm);
 
-        let parts: Vec<&str> = match &sep {
+        let parts: Vec<&str> = match params.sep.as_ref().map(|sep| sep.as_str(vm)) {
             Some(sep) => {
                 // Empty separator raises ValueError
                 if sep.is_empty() {
                     return Err(ExcType::value_error_empty_separator());
                 }
-                if maxsplit < 0 {
-                    let mut parts = collect_checked(s.rsplit(sep.as_str()), &vm.heap.tracker)?;
+                if params.maxsplit < 0 {
+                    let mut parts = collect_checked(s.rsplit(sep), &vm.heap.tracker)?;
                     parts.reverse();
                     parts
                 } else {
                     // Safe cast: we've checked maxsplit >= 0
-                    let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                    let mut parts = collect_checked(s.rsplitn(max.saturating_add(1), sep.as_str()), &vm.heap.tracker)?;
+                    let max = usize::try_from(params.maxsplit).unwrap_or(usize::MAX);
+                    let mut parts = collect_checked(s.rsplitn(max.saturating_add(1), sep), &vm.heap.tracker)?;
                     parts.reverse();
                     parts
                 }
             }
             None => {
                 // Split on whitespace from right
-                if maxsplit < 0 {
+                if params.maxsplit < 0 {
                     collect_checked(s.split(is_space).filter(|part| !part.is_empty()), &vm.heap.tracker)?
                 } else {
                     // Safe cast: we've checked maxsplit >= 0
-                    let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                    let max = usize::try_from(params.maxsplit).unwrap_or(usize::MAX);
                     rsplit_whitespace_n(s, max, &vm.heap.tracker)?
                 }
             }
@@ -987,7 +971,8 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
 
         let (list_items, vm) = items_guard.into_parts();
         let list = super::List::new(list_items);
-        Ok(Value::allocate(list, vm.heap))
+        let heap_id = vm.heap.allocate(HeapData::List(list));
+        Ok(Value::Ref(heap_id))
     }
 
     /// Implements Python's `str.splitlines(keepends?)` method.
@@ -1072,11 +1057,9 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Splits the string at the first occurrence of sep, and returns a 3-tuple
     /// containing the part before the separator, the separator itself, and the part after.
-    #[pymethod(Partition)]
-    fn partition(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let sep_value = args.get_one_arg("str.partition", vm.heap)?;
-        defer_drop!(sep_value, vm);
-        let sep = extract_string_arg(sep_value, vm)?;
+    #[pymethod(Partition, "partition(self, sep, /)", owner = "str")]
+    fn partition(s: &PyStr<'h>, params: &StrPartitionArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+        let sep = extract_string_arg(&params.sep, vm)?;
 
         if sep.is_empty() {
             return Err(ExcType::value_error_empty_separator());
@@ -1102,11 +1085,9 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Splits the string at the last occurrence of sep, and returns a 3-tuple
     /// containing the part before the separator, the separator itself, and the part after.
-    #[pymethod(Rpartition)]
-    fn rpartition(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let sep_value = args.get_one_arg("str.rpartition", vm.heap)?;
-        defer_drop!(sep_value, vm);
-        let sep = extract_string_arg(sep_value, vm)?;
+    #[pymethod(Rpartition, "rpartition(self, sep, /)", owner = "str")]
+    fn rpartition(s: &PyStr<'h>, params: &StrRpartitionArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+        let sep = extract_string_arg(&params.sep, vm)?;
 
         if sep.is_empty() {
             return Err(ExcType::value_error_empty_separator());
@@ -1132,23 +1113,19 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Returns a copy with all occurrences of substring old replaced by new.
     /// If count is given, only the first count occurrences are replaced.
-    #[pymethod(Replace)]
-    fn replace(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let ReplaceArgs { old, new, count } = ReplaceArgs::from_args(args, vm)?;
-        defer_drop!(old, vm);
-        defer_drop!(new, vm);
-        let old = old.as_str(vm);
-        let new = new.as_str(vm);
+    #[pymethod(Replace, "replace(self, old: str, new: str, /, count: i64 = -1) -> str")]
+    fn replace(s: &PyStr<'h>, params: &ReplaceArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+        let old = params.old.as_str(vm);
+        let new = params.new.as_str(vm);
         let s = s.as_str(vm);
-        let count = count.0;
 
-        check_replace_size(s.len(), old.len(), new.len(), count, &vm.heap.tracker)?;
+        check_replace_size(s.len(), old.len(), new.len(), params.count, &vm.heap.tracker)?;
 
-        let result = if count < 0 {
+        let result = if params.count < 0 {
             s.replace(old, new)
         } else {
             // Safe cast: we've checked count >= 0
-            let n = usize::try_from(count).unwrap_or(usize::MAX);
+            let n = usize::try_from(params.count).unwrap_or(usize::MAX);
             s.replacen(old, new, n)
         };
 
@@ -1238,11 +1215,9 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Returns a copy of the string left filled with ASCII '0' digits to make a
     /// string of length width. A sign prefix is handled correctly.
-    #[pymethod(Zfill)]
-    fn zfill(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let width_value = args.get_one_arg("str.zfill", vm.heap)?;
-        defer_drop!(width_value, vm);
-        let width_i64 = extract_int_arg(width_value, vm)?;
+    #[pymethod(Zfill, "zfill(self, width, /)", owner = "str")]
+    fn zfill(s: &PyStr<'h>, params: &StrZfillArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+        let width_i64 = extract_int_arg(&params.width, vm)?;
 
         // Safe cast: treat negative as 0, saturate large positive values
         let width = if width_i64 < 0 {
@@ -1287,20 +1262,12 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Returns a copy of the string where all tab characters are replaced by one or
     /// more spaces, depending on the current column and the given tab size.
-    #[pymethod(Expandtabs)]
-    fn expandtabs(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let ExpandtabsArgs { tabsize } = ExpandtabsArgs::from_args(args, vm)?;
-
-        let tabsize = match tabsize {
+    #[pymethod(Expandtabs, "expandtabs(tabsize=...)")]
+    fn expandtabs(s: &PyStr<'h>, params: &ExpandtabsArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+        let tabsize = match &params.tabsize {
             None => 8,
-            Some(val) => {
-                // `defer_drop!` rather than a trailing `drop_with`: the conversion
-                // raises for anything outside C `int`, and that `?` would otherwise
-                // leave `val`'s reference behind.
-                defer_drop!(val, vm);
-                // A negative tabsize expands to nothing, as CPython's `<= 0` test does.
-                usize::try_from(extract_c_int_arg(val, vm)?).unwrap_or(0)
-            }
+            // A negative tabsize expands to nothing.
+            Some(value) => usize::try_from(extract_c_int_arg(value, vm)?).unwrap_or(0),
         };
 
         let s = s.as_str(vm);
@@ -1354,17 +1321,15 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     /// is only looked up (and validated) when an actual encoding error occurs —
     /// `'hello'.encode('ascii', 'bogus')` succeeds because there's nothing for
     /// the handler to do.
-    #[pymethod(Encode)]
-    fn encode(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let EncodeArgs { encoding, errors } = EncodeArgs::from_args(args, vm)?;
-        defer_drop!(encoding, vm);
-        defer_drop!(errors, vm);
-        let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
-        let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
+    #[pymethod(Encode, "encode(encoding: str=..., errors: str=...)", bad_arg_named)]
+    fn encode(s: &PyStr<'h>, params: &EncodeArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+        let encoding = params.encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
+        let errors = params.errors.as_ref().map_or("strict", |e| e.as_str(vm));
 
         let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
         let bytes = codec.encode(s.as_str(vm), errors, &vm.heap.tracker)?;
-        Ok(Value::allocate(Bytes::new(bytes), vm.heap))
+        let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)));
+        Ok(Value::Ref(heap_id))
     }
 
     #[pymethod(Isidentifier)]
@@ -1617,14 +1582,11 @@ fn str_starts_ends_with<'h>(
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let pos = args.into_pos_only(method, vm.heap)?;
+    let pos = args.bind_positional_range(method, 1, 3, vm.heap)?;
     defer_drop!(pos, vm);
     let [affix, rest @ ..] = pos.as_slice() else {
-        return Err(ExcType::type_error_at_least(method, 1, 0));
+        unreachable!("arity checked by signature");
     };
-    if rest.len() > 2 {
-        return Err(ExcType::type_error_at_most(method, 3, pos.len()));
-    }
     let Some((start, end)) = string_search_range(s, rest, vm)? else {
         // `start` past `end` matches nothing, but each affix is still type-checked
         return Ok(Value::Bool(affix_matches(affix, "", method, |_, _| false, vm)?));
@@ -1693,17 +1655,14 @@ fn parse_search_args<'h>(
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<(String, SearchRange)> {
-    let pos = args.into_pos_only(method, vm.heap)?;
+    let pos = args.bind_positional_range(method, 1, 3, vm.heap)?;
     defer_drop!(pos, vm);
-    match pos.as_slice() {
-        [sub_value, bounds @ ..] if bounds.len() <= 2 => {
-            let sub = extract_string_arg(sub_value, vm)?;
-            let range = string_search_range(s, bounds, vm)?;
-            Ok((sub, range))
-        }
-        [] => Err(ExcType::type_error_at_least(method, 1, 0)),
-        _ => Err(ExcType::type_error_at_most(method, 3, pos.len())),
-    }
+    let [sub_value, bounds @ ..] = pos.as_slice() else {
+        unreachable!("arity checked by signature")
+    };
+    let sub = extract_string_arg(sub_value, vm)?;
+    let range = string_search_range(s, bounds, vm)?;
+    Ok((sub, range))
 }
 
 /// Normalizes explicit character bounds; entirely omitted/`None` bounds return `(0, usize::MAX)`.
@@ -1770,48 +1729,6 @@ fn parse_strip_arg(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
 // Split methods
 // =============================================================================
 
-/// Coerces extracted `sep` / `maxsplit` `Value`s into the runtime shape used
-/// by the actual `split`/`rsplit` implementations.
-///
-/// `sep = None` is documented as "split on whitespace", so it is mapped to
-/// `Option::None`; any other value is run through `extract_string_arg`.
-/// `maxsplit` is always coerced to `i64` via `extract_int_arg`. Each argument
-/// is dropped on every path so refcounts stay balanced.
-fn coerce_split_args(sep: Value, maxsplit: Value, vm: &mut VM<'_>) -> RunResult<(Option<String>, i64)> {
-    defer_drop!(sep, vm);
-    defer_drop!(maxsplit, vm);
-    let sep = match sep {
-        Value::None => None,
-        _ => Some(
-            sep.as_str(vm)
-                .ok_or_else(|| ExcType::type_error(format!("must be str or None, not {}", sep.py_type_name(vm))))?
-                .to_owned(),
-        ),
-    };
-    let maxsplit = extract_int_arg(maxsplit, vm)?;
-    Ok((sep, maxsplit))
-}
-
-/// Argument shape for `str.split(sep=None, maxsplit=-1)`.
-#[derive(FromArgs)]
-#[from_args(name = "split")]
-struct SplitArgs {
-    #[from_args(default = Value::None)]
-    sep: Value,
-    #[from_args(default = Value::Int(-1))]
-    maxsplit: Value,
-}
-
-/// Argument shape for `str.rsplit(sep=None, maxsplit=-1)`.
-#[derive(FromArgs)]
-#[from_args(name = "rsplit")]
-struct RsplitArgs {
-    #[from_args(default = Value::None)]
-    sep: Value,
-    #[from_args(default = Value::Int(-1))]
-    maxsplit: Value,
-}
-
 /// Split string on whitespace, returning at most `maxsplit + 1` parts.
 fn split_whitespace_n<'a>(
     s: &'a str,
@@ -1871,21 +1788,13 @@ fn rsplit_whitespace_n<'a>(
 /// Parses arguments for splitlines method.
 ///
 /// Supports both positional and keyword arguments for keepends.
-fn parse_splitlines_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<bool> {
-    let SplitlinesArgs { keepends } = SplitlinesArgs::from_args(args, vm)?;
-    let result = keepends.as_ref().is_some_and(value_is_truthy);
-    keepends.drop_with(vm.heap);
-    Ok(result)
-}
-
+///
 /// Argument shape for `str.splitlines(keepends=False)`. CPython evaluates
 /// `keepends` for truthiness rather than strict-typing, so the field stays as
 /// a raw `Value` for `value_is_truthy` to inspect.
-#[derive(FromArgs)]
-#[from_args(name = "splitlines", at_most_total)]
-struct SplitlinesArgs {
-    #[from_args(default)]
-    keepends: Option<Value>,
+#[py_signature("splitlines(keepends=...)")]
+fn parse_splitlines_args(params: &SplitlinesArgs, vm: &mut VM<'_>) -> RunResult<bool> {
+    Ok(params.keepends.as_ref().is_some_and(value_is_truthy))
 }
 
 /// Checks if a value is truthy for bool conversion.
@@ -1902,44 +1811,9 @@ fn value_is_truthy(v: &Value) -> bool {
 // Replace/modify methods
 // =============================================================================
 
-/// Wrapper for `count` in `str.replace`: converts an index integer without
-/// `_PyArg_BadArgument` wording (`EXPECTED_TYPE_NAME = None`), preserving
-/// CPython's `'str' object cannot be interpreted as an integer`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ReplaceCount(i64);
-
-impl FromValue for ReplaceCount {
-    const EXPECTED_TYPE_NAME: Option<&'static str> = None;
-
-    #[inline]
-    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
-        let result = value.as_int(vm);
-        value.drop_with(vm);
-        result.map(Self).map_err(FromValueFail::Raise)
-    }
-}
-
-/// Argument shape for `str.replace(old, new, count=-1)`.
-///
-/// `old` and `new` are positional-only at the C level — passing them as
-/// kwargs produces CPython's "takes at least 2 positional arguments"
-/// error, which the macro derives from the required pos-only count.
-/// Python 3.13 promoted `count` from positional-only to
-/// positional-or-keyword, hence the un-annotated default.
-#[derive(FromArgs)]
-#[from_args(name = "replace", bad_arg)]
-struct ReplaceArgs {
-    #[from_args(pos_only)]
-    old: StrArg,
-    #[from_args(pos_only)]
-    new: StrArg,
-    #[from_args(default = ReplaceCount(-1))]
-    count: ReplaceCount,
-}
-
 /// Parses arguments for justify methods (center, ljust, rjust).
 fn parse_justify_args(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<(usize, char)> {
-    let pos = args.into_pos_only(method, vm.heap)?;
+    let pos = args.bind_positional_range(method, 1, 2, vm.heap)?;
     defer_drop!(pos, vm);
 
     match pos.as_slice() {
@@ -1965,37 +1839,8 @@ fn parse_justify_args(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResu
             }
             Ok((width, fill_str.chars().next().unwrap()))
         }
-        [] => Err(ExcType::type_error_at_least(method, 1, 0)),
-        _ => Err(ExcType::type_error_at_most(method, 2, pos.len())),
+        _ => unreachable!("arity checked by signature"),
     }
-}
-
-/// Argument shape for `str.expandtabs(tabsize=8)`. `tabsize` is `Option<Value>`
-/// so callers can distinguish "absent" (default 8) from any explicit value
-/// without forcing the macro into a type-checked default.
-#[derive(FromArgs)]
-#[from_args(name = "expandtabs", at_most_total)]
-struct ExpandtabsArgs {
-    #[from_args(default)]
-    tabsize: Option<Value>,
-}
-
-/// Argument shape for `str.encode(encoding='utf-8', errors='strict')`.
-///
-/// `bad_arg_named` opts in to CPython's `_PyArg_BadArgument` named wording
-/// (`encode() argument 'encoding' must be str, not <type>`) so wrong-type
-/// errors match the C implementation. Both fields default to `None` (absent)
-/// and the implementation supplies `"utf-8"` / `"strict"` after extraction;
-/// CPython rejects explicit `None` here with the bad-arg error, which falls
-/// out naturally because `Option<StrArg>::from_value` delegates to
-/// `StrArg::from_value` and rejects `Value::None`.
-#[derive(FromArgs)]
-#[from_args(name = "encode", at_most_total, bad_arg_named)]
-struct EncodeArgs {
-    #[from_args(default)]
-    encoding: Option<StrArg>,
-    #[from_args(default)]
-    errors: Option<StrArg>,
 }
 
 /// Implements Python's `str.isidentifier()` predicate: `XID_Start` or `_`, then `XID_Continue`

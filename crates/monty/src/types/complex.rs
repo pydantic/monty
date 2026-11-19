@@ -9,11 +9,11 @@
 
 use std::fmt::Write;
 
-use monty_macros::pyattrs;
+use monty_macros::{py_signature, pyattrs};
 use monty_types::FormatComplex;
 
 use crate::{
-    args::{ArgValues, FromArgs, FromValue, FromValueFail},
+    args::{ArgValues, FromValue, FromValueFail},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -397,14 +397,8 @@ fn init_single(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
 
 /// Argument shape for `complex(real=0, imag=0)`; a string is only accepted
 /// through the single-positional form handled by [`init`].
-#[derive(FromArgs)]
-#[from_args(name = "complex", at_most_total, bad_arg_named)]
-struct ComplexArgs {
-    #[from_args(default)]
-    real: Option<Part>,
-    #[from_args(default)]
-    imag: Option<Part>,
-}
+#[py_signature("complex(real=..., imag=...)", bad_arg_named, convert(real = Part, imag = Part))]
+struct ComplexArgs;
 
 /// One `complex(...)` constructor argument: a real number or a complex.
 #[derive(Clone, Copy)]
@@ -455,8 +449,9 @@ impl FromValue for Part {
 }
 
 /// `complex.from_number(x)`: a number or complex, never a string.
-pub(crate) fn class_from_number(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("complex.from_number", vm.heap)?;
+#[py_signature("from_number(number, /)", error_name = "complex.from_number")]
+pub(crate) fn class_from_number(vm: &mut VM<'_>, params: &mut ComplexFromNumberArgs) -> RunResult<Value> {
+    let ComplexFromNumberArgsFields { number: value } = params.take_all();
     if let Value::Ref(id) = &value
         && matches!(vm.heap.get(*id), HeapData::Complex(_))
     {

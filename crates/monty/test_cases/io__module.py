@@ -8,6 +8,13 @@ import json
 from io import BytesIO, StringIO
 
 
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 def check(exc_type, message, fn):
     try:
         fn()
@@ -87,7 +94,14 @@ with io.open_code(str(root / 'io_text.txt')) as f:
     assert type(f) is io.BufferedReader
     assert f.read() == b'one\ntwo\n'
 check(TypeError, "open_code() argument 'path' must be str, not int", lambda: io.open_code(1))
-check(TypeError, "open_code() missing required argument 'path' (pos 1)", lambda: io.open_code())
+check(
+    TypeError,
+    _error_message(
+        monty="open_code() missing 1 required positional argument: 'path'",
+        cpython="open_code() missing required argument 'path' (pos 1)",
+    ),
+    lambda: io.open_code(),
+)
 
 # === text_encoding ===
 assert io.text_encoding(None) == 'locale'

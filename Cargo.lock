@@ -2532,6 +2532,8 @@ dependencies = [
  "insta",
  "proc-macro2",
  "quote",
+ "ruff_python_ast",
+ "ruff_python_parser",
  "syn 3.0.9",
 ]
 

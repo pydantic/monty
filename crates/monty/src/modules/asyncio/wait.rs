@@ -4,11 +4,12 @@
 //! this module validates the call, starts an optional host timer, and returns
 //! the awaitable.
 
+use monty_macros::py_signature;
 use monty_types::{OsFunctionCall, sleep_duration_saturating};
 use num_traits::ToPrimitive;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     asyncio::{UnawaitedWait, WaitFuture, WaitFutureState},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, SimpleException},
@@ -88,15 +89,8 @@ fn resolve_wait_timeout(timeout: &Value, vm: &mut VM<'_>) -> RunResult<(bool, Op
 
 /// `asyncio.wait(fs, *, timeout=None, return_when=...)` — a pure-Python `def`,
 /// so no argument is type-checked while binding.
-#[derive(FromArgs)]
-#[from_args(name = "wait", style = def)]
-struct WaitArgs {
-    fs: Value,
-    #[from_args(kw_only, default = None)]
-    timeout: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    return_when: Option<Value>,
-}
+#[py_signature("wait(fs, *, timeout=..., return_when=...)")]
+struct WaitArgs;
 
 /// Reads a wait timeout as float seconds.
 fn timeout_seconds(value: &Value, vm: &VM<'_>) -> RunResult<f64> {

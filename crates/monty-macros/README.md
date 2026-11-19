@@ -1,124 +1,87 @@
 # monty-macros
 
 Procedural macros used by the [`monty`](https://crates.io/crates/monty) crate.
-Not a public crate — consumers get the macros re-exported
-(`monty::args::FromArgs` / `monty::args::ToArgs`) and should not depend on
-`monty-macros` directly.
 
-## `#[derive(FromArgs)]`
+## `#[py_signature]`
 
-Generates the `from_args` body for a Rust-implemented Python function. The
-macro is deliberately thin: it emits a `static ParamSpec` describing the
-signature and one call to the runtime binder
-(`crates/monty/src/args/bind_native.rs`), which owns all positional/kwarg
-dispatch, arity checks, duplicate detection, and reference-count cleanup.
-The generated code then converts each raw slot via `FromValue` in
-declaration order and applies defaults.
+A Python signature on a native function generates the Rust argument struct and its `FromArgs` implementation.
 
 ```rust
-use monty::args::FromArgs;
-use monty::value::Value;
-
-#[derive(FromArgs)]
-#[from_args(name = "function", style = c)]
-struct DatetimeArgs {
-    year: i32,
-    month: i32,
-    day: i32,
-    #[from_args(default = 0)]
-    hour: i32,
-    #[from_args(default = Value::None)]
-    tzinfo: Value,
+#[py_signature("split(self, /, sep: str | None = None, maxsplit: i64 = -1) -> list")]
+fn str_split<'h>(s: &PyStr<'h>, params: &SplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    // ...
 }
-
-let DatetimeArgs { year, month, day, hour, tzinfo } =
-    DatetimeArgs::from_args(args, vm)?;
 ```
 
-Fields must appear in Python signature order:
-`[pos_only…] [pos_or_keyword…] [varargs] [kw_only…] [varkwargs]`, with
-required fields before optional ones in each region. Field types must
-implement `FromValue` (impls live in `monty::args::from_value`). Coercion
-failures are structured (`FromValueFail`): wrong-type failures get their
-wording from the extraction site (`bad_arg`/`bad_arg_named`, or the impl's
-`type_error`), while value-level failures (`ValueError`, `OverflowError`)
-surface unchanged. `str` arguments the function only reads should use
-`StrArg`, which validates without copying the text and lends `&str` via
-`as_str(vm)`.
+The adapter binds the arguments and keeps them in a cleanup guard for shared or mutable access.
+Inside a `#[pyattrs]` implementation, write the declaration on the method, for example
+`#[pymethod(Replace, "replace(self, old: str, new: str, /, count: i64 = -1)")]`.
+Name the generated struct parameter `params`. Variadic fields use the names in the signature.
+For example, `*args` and `**kwargs` become `params.args` and `params.kwargs`.
+Each keyword parameter needs an entry with its exact Python spelling in `StaticStrings`.
+Declare the receiver as an unannotated positional-only `self` parameter without a default.
+Use `owner = "Counter"` to qualify a bound method's name in binding errors.
+`kwarg_error_name` overrides the callable name in unexpected-keyword errors, as in `json.dump`.
 
-### `style` — pick the CPython parser family
+For a single argument, use the same handler shape as for several arguments.
+For `#[py_signature("abs(x, /)")]`, declare `params: &AbsArgs` and read the argument through `params.x`.
+The macro infers inline binding for small positional calls from the signature.
+Leave parameters unannotated when their operation runs in the body, as with the iterable passed to `enumerate`.
 
-The `style` attribute names the argument parser the target function uses in
-CPython. It selects both the error *wording* and the error *ordering*
-(binding errors vs conversion errors — see `ErrorFamily` in
-`crates/monty/src/args/bind_native.rs` for the exact contracts). Pick it by
-looking at how the function is implemented in CPython:
+For `f()` or a bound method such as `#[py_signature("keys(self, /)", owner = "dict")]`, the Rust
+body can omit the argument struct. The macro adds a trailing `ArgValues` parameter and calls
+`check_zero_args` before the body.
 
-| CPython implementation | `style` | tell-tale error wording |
-|---|---|---|
-| pure-Python `def` (`re` module, `json.dumps`, `Path.mkdir`) | `def` | `f() takes from 1 to 2 positional arguments but 3 were given` |
-| Argument Clinic — most modern builtins/methods (look for clinic blocks / `*.c.h` includes in the CPython source) | `clinic` (the default — omit it) | `replace() takes at least 2 positional arguments (1 given)` |
-| `PyArg_ParseTupleAndKeywords`, no `:name` in the format string | `c` | `function missing required argument 'day' (pos 3)` |
-| `PyArg_ParseTupleAndKeywords` with `:name` | `c_named` | `timezone() missing required argument 'offset' (pos 1)` |
-| `PyArg_UnpackTuple` (positional-only, fixed `min..max`) | `unpack` | `name expected at most 2 arguments, got 3` (`expected N …` when min == max) |
+### Ownership and conversion
 
-Style-derived behaviour that used to be separate flags: the C
-"… positional arguments …" overflow pivot turns on automatically for
-`style = c` and `style = c_named` structs with `kw_only` fields (CPython's
-`vgetargskeywords` / `_PyArg_UnpackKeywords` behave the same way; the named
-variant additionally says `takes exactly N positional argument(s)` when every
-positional param is required, e.g. `os.stat`), and `unpack` collapses to the
-exact-arity `expected N argument(s)` wording when no positional field has a
-default.
+Declare read-only arguments as `params: &SplitArgs`. A handler that moves fields takes
+`params: &mut PopArgs`. For example, `dict.pop` borrows `&params.key` for the lookup and
+calls `params.default.take()` on a miss. The guard releases the remaining fields on return.
+To transfer all fields, use `let SortedArgsFields { iterable, kwargs } = params.take_all();`.
+The caller owns those fields and must release them on every return path.
 
-Since CPython's `def` binding never type-checks, `style = def` structs
-should declare fields as raw `Value` (or `StrArg`-in-body) and coerce in the
-function body, so type errors carry the message the CPython function body
-would produce. `bad_arg` is rejected under `style = def` for the same
-reason. `varargs` is allowed: a `*args` signature never overflows, but a
-missing required parameter still wants the `def` wording.
+For callers that bind after method lookup, put `#[py_signature]` on a unit struct and call
+`Name::from_args(args, vm)?`. Generated fields have the struct's visibility.
 
-`style = unpack` models `PyArg_UnpackTuple`'s fixed positional `min..max`
-range, so the derive rejects anything outside that shape: every positional
-field must be `pos_only`, and `varargs`, `varkwargs`, and `at_most_total`
-are all incompatible.
+Use `reject_keywords` when keyword errors take precedence over arity on a small raw positional signature.
+When `*args` is the only parameter apart from `self`, the binder stores it in an `ArgPosIter` if there are no diagnostic modifiers.
+It preserves inline storage for small calls and exposes a slice through `as_slice()`.
+Signatures with other parameters collect `*args` into a `Vec<Value>`.
+The guard releases any elements left in a borrowed iterator when the handler returns.
 
-### Modifiers
+An unannotated parameter carries a Python value. A default of `...` distinguishes omission
+from a supplied value, including `None`.
+`int` binds an `IntArg`, keeping small integers inline and retaining the original storage for large integers.
+`SupportsIndex` also accepts objects with `__index__`, preserving the result's full width.
+Use `c_int` for a C `int` argument and `i64` for a signed 64-bit index.
+`float` extracts an `f64` through `__float__`, falling back to `__index__`.
+`bool` truth-tests the argument. Use `str` for borrowed text or `str | None` for nullable text.
+Use `convert(real = Part)` to select a Rust type implementing `FromValue`.
+When a custom converter accompanies an annotation, the converter checks the annotated input types.
+`error_name` overrides the name reported in binding errors. In a `macro_rules!` template,
+`#[py_signature("(iterable, r)", error_name = $name)]` uses the supplied Python identifier as the function name.
 
-- `at_most_total` — pre-count positionals + kwargs against all named parameters,
-  including keyword-only parameters, before dispatch (`{name}() takes at most N arguments (M given)`).
-  This is a per-function empirical fact, not derivable from the fields or
-  the style. Litmus test: call the CPython function with valid positionals
-  plus one bogus kwarg — if it reports `takes at most N arguments (M
-  given)`, set the flag; if it reports `unexpected keyword argument`,
-  don't. Only meaningful for the C-parser families (`clinic`/`c`/`c_named`)
-  on signatures with a fixed maximum — rejected under `style = def` /
-  `style = unpack` and with `varargs`/`varkwargs`.
-- `vectorcall` — kwarg-free calls check positional arity first with
-  `_PyArg_CheckPositional` wording (`{name} expected at most N arguments,
-  got M`), modeling `tp_vectorcall` fast paths (`int`, `str`) that only
-  fall back to the clinic parser when keywords are present. Requires the
-  default `clinic` style plus `at_most_total` (which supplies the
-  parenthesised wording for the kwargs path).
-- `bad_arg` / `bad_arg_named` — report `FromValue` wrong-type failures in
-  CPython's `_PyArg_BadArgument` wording (`{name}() argument {pos|'arg'}
-  must be {expected}, not {got}`).
-- `kwarg_error_name = "..."` — override the function name in the
-  unknown-kwarg error only (`json.dumps` reports `JSONEncoder.__init__`).
-  Under `style = unpack` it instead names the function in the blanket
-  `takes no keyword arguments` rejection (`unicodedata.name()`).
-- `kwargs_not_supported_yet` — reject every kwarg with a
-  `NotImplementedError`; a Monty TODO marker.
+### Binding errors
 
-Field-level attributes: `pos_only`, `kw_only` (must carry a `default` — the
-runtime binder's fast paths skip the missing-keyword check, so required
-keyword-only params are rejected at derive time), `varargs` (must be
-`Vec<Value>` — elements are handed over unconverted), `varkwargs`,
-`default[ = expr]`, `static_string = "..."` (override the `StaticStrings`
-variant used for kwarg matching; neither applies to `varargs`/`varkwargs`
-fields). All are documented inline in
-[`src/from_args.rs`](src/from_args.rs), which also carries `#[cfg(test)]`
-unit tests for every attribute-validation error.
+Generated adapters evaluate calls in three steps.
+
+1. Bind the call shape, including keywords, duplicates, positional overflow and missing arguments.
+2. Convert supplied arguments in parameter declaration order and apply defaults.
+3. Call the Rust handler for checks on the converted values.
+
+The default binder reports keyword conflicts and unknown keywords before positional overflow and missing arguments.
+Positional overflow reports the maximum allowed count and the count supplied.
+Once binding succeeds, the adapter stops at the first failed conversion. Protocol methods such as `__index__`
+can run at this step.
+
+See [native call diagnostics](../../docs/limitations/builtins.md#native-call-diagnostics) for the compatibility policy.
+
+- `bad_arg` and `bad_arg_named` add the argument position or name when a conversion reports a wrong type.
+- `reject_keywords` checks for keywords before arity on a small raw positional signature.
+- `kwargs_not_supported_yet` raises `NotImplementedError` when pending keyword support prevents binding.
+
+Use Python's `/`, `*`, `*args` and `**kwargs` markers for parameter roles.
+Keyword-only parameters currently require defaults. The generated binder exposes `**kwargs` as `KwargsValues`.
 
 ## `#[derive(ToArgs)]`
 

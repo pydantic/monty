@@ -1,4 +1,10 @@
 import math
+import sys
+
+
+def expected_error(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === Constants ===
 assert math.pi == 3.141592653589793
@@ -113,6 +119,35 @@ assert math.sqrt(False) == 0.0
 assert math.sqrt(float('inf')) == float('inf')
 assert math.isnan(math.sqrt(float('nan')))
 
+
+class FloatAndIndex:
+    def __float__(self):
+        return 16.0
+
+    def __index__(self):
+        raise AssertionError('__float__ takes precedence')
+
+
+class IndexOnly:
+    def __index__(self):
+        return 25
+
+
+class RaisingFloat(IndexOnly):
+    def __float__(self):
+        raise ValueError('float conversion failed')
+
+
+assert math.sqrt(FloatAndIndex()) == 4.0
+assert math.sqrt(IndexOnly()) == 5.0
+assert math.isclose(a=FloatAndIndex(), b=16.0)
+try:
+    math.sqrt(RaisingFloat())
+except ValueError as exc:
+    assert str(exc) == 'float conversion failed'
+else:
+    raise AssertionError('expected the exception from __float__')
+
 threw = False
 try:
     math.sqrt(-1)
@@ -177,6 +212,45 @@ assert math.pow(float('inf'), 0) == 1.0
 assert math.pow(float('nan'), 0) == 1.0
 assert math.pow(1, float('inf')) == 1.0
 assert math.pow(1, float('nan')) == 1.0
+assert math.pow(FloatAndIndex(), IndexOnly()) == 2**100
+
+pow_conversions = []
+
+
+class PowOperand:
+    def __init__(self, value):
+        self.value = value
+
+    def __float__(self):
+        pow_conversions.append(self.value)
+        return self.value
+
+
+assert math.pow(PowOperand(2.0), PowOperand(3.0)) == 8.0
+assert pow_conversions == [2.0, 3.0]
+pow_conversions.clear()
+try:
+    math.pow(RaisingFloat(), PowOperand(3.0))
+except ValueError as exc:
+    assert str(exc) == 'float conversion failed'
+else:
+    assert False, 'expected the exception from __float__'
+assert pow_conversions == []
+
+# Fixed-arity math functions use the same numeric conversion.
+assert math.copysign(FloatAndIndex(), -1) == -16.0
+assert math.nextafter(FloatAndIndex(), IndexOnly()) == math.nextafter(16.0, 25.0)
+assert math.atan2(IndexOnly(), FloatAndIndex()) == math.atan2(25.0, 16.0)
+assert math.fmod(IndexOnly(), FloatAndIndex()) == 9.0
+assert math.remainder(IndexOnly(), FloatAndIndex()) == -7.0
+assert math.fma(IndexOnly(), FloatAndIndex(), 1) == 401.0
+assert math.ldexp(FloatAndIndex(), 2) == 64.0
+try:
+    math.ldexp(0.0, IndexOnly())
+except TypeError:
+    pass
+else:
+    assert False, 'ldexp requires an integer exponent'
 
 threw = False
 try:
@@ -595,6 +669,13 @@ except TypeError:
     threw = True
 assert threw
 
+for function, name in [(math.gcd, 'gcd'), (math.lcm, 'lcm')]:
+    try:
+        function(1, value=2)
+        assert False, 'expected variadic math function to reject keywords'
+    except TypeError as e:
+        assert str(e) == f'math.{name}() takes no keyword arguments'
+
 # === math.comb() ===
 assert math.comb(5, 2) == 10
 assert math.comb(10, 0) == 1
@@ -645,7 +726,7 @@ assert threw
 
 threw = False
 try:
-    math.perm(5.0, 2)
+    math.perm(5.0, 2**100)
 except TypeError:
     threw = True
 assert threw
@@ -1509,10 +1590,34 @@ assert math.log(7**500) == 972.9550745276566
 assert math.log2(3**700) == 1109.4737505048092
 assert math.log10(3**700) == 333.9848783037637
 for compute, message in [
-    (lambda: math.log(), 'log expected at least 1 argument, got 0'),
-    (lambda: math.log(2, 10, 3), 'log expected at most 2 arguments, got 3'),
-    (lambda: math.perm(), 'perm expected at least 1 argument, got 0'),
-    (lambda: math.perm(1, 2, 3), 'perm expected at most 2 arguments, got 3'),
+    (
+        lambda: math.log(),
+        expected_error(
+            monty="log() missing 1 required positional argument: 'x'",
+            cpython='log expected at least 1 argument, got 0',
+        ),
+    ),
+    (
+        lambda: math.log(2, 10, 3),
+        expected_error(
+            monty='log() takes at most 2 arguments (3 given)',
+            cpython='log expected at most 2 arguments, got 3',
+        ),
+    ),
+    (
+        lambda: math.perm(),
+        expected_error(
+            monty="perm() missing 1 required positional argument: 'n'",
+            cpython='perm expected at least 1 argument, got 0',
+        ),
+    ),
+    (
+        lambda: math.perm(1, 2, 3),
+        expected_error(
+            monty='perm() takes at most 2 arguments (3 given)',
+            cpython='perm expected at most 2 arguments, got 3',
+        ),
+    ),
 ]:
     try:
         compute()

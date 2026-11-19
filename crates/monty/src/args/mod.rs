@@ -2,11 +2,20 @@ mod bind_native;
 mod bind_python;
 mod from_value;
 
-use std::{mem, slice, vec::IntoIter};
+use std::{
+    mem,
+    ops::{Deref, DerefMut},
+    slice,
+    vec::IntoIter,
+};
 
-pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
+pub(crate) use bind_native::{Bound, Param, ParamSpec};
 pub(crate) use bind_python::Signature;
-pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg};
+pub(crate) use from_value::{
+    ArgErrCtx, DefaultedStringArg, FromValue, FromValueFail, IntArg, LaxBool, StrArg, extract_i64_index, extract_index,
+    extract_nullable_str,
+};
+#[cfg(test)]
 pub(crate) use monty_macros::FromArgs;
 use monty_types::{
     CallArgs,
@@ -22,8 +31,43 @@ use crate::{
     object_bridge::{CallArgsExt, GraphExporter},
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
-    value::{EitherStr, Value},
+    value::Value,
 };
+
+/// Holds a handler's converted arguments until it returns or transfers them.
+pub(crate) struct NativeArgs<T>(Option<T>);
+
+impl<T> NativeArgs<T> {
+    pub(crate) fn new(fields: T) -> Self {
+        Self(Some(fields))
+    }
+
+    /// Transfers all fields. Accessing the bundle afterwards is a handler error.
+    #[must_use]
+    pub(crate) fn take_all(&mut self) -> T {
+        self.0.take().expect("arguments already taken")
+    }
+}
+
+impl<T> Deref for NativeArgs<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.0.as_ref().expect("arguments already taken")
+    }
+}
+
+impl<T> DerefMut for NativeArgs<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.0.as_mut().expect("arguments already taken")
+    }
+}
+
+impl<C, T: DropWithContext<C>> DropWithContext<C> for NativeArgs<T> {
+    fn drop_with(self, ctx: &mut C) {
+        self.0.drop_with(ctx);
+    }
+}
 
 /// Type for method call arguments.
 ///
@@ -237,6 +281,29 @@ impl ArgValues {
         }
     }
 
+    /// Keeps positional arguments in their inline storage while checking a declared arity.
+    pub(crate) fn bind_positional_range(
+        self,
+        name: &str,
+        min: usize,
+        max: usize,
+        heap: &mut Heap,
+    ) -> RunResult<ArgPosIter> {
+        let values = self.into_pos_only(name, heap)?;
+        let count = values.len();
+        if (min..=max).contains(&count) {
+            return Ok(values);
+        }
+        values.drop_with(heap);
+        Err(if min == max {
+            ExcType::type_error_arg_count(name, min, count)
+        } else if count < min {
+            ExcType::type_error_at_least(name, min, count)
+        } else {
+            ExcType::type_error_at_most(name, max, count)
+        })
+    }
+
     #[cold]
     fn unexpected_kwargs_error(kwargs: KwargsValues, method_name: &str, heap: &mut Heap) -> RunError {
         kwargs.drop_with(heap);
@@ -411,6 +478,13 @@ pub(crate) enum KwargsValues {
 }
 
 impl KwargsValues {
+    /// Moves the keyword arguments out and leaves an empty collection.
+    #[inline]
+    #[must_use]
+    pub(crate) fn take(&mut self) -> Self {
+        mem::replace(self, Self::Empty)
+    }
+
     /// A copy holding its own references; a dict becomes key/value pairs.
     pub(crate) fn clone_with_heap(&self, heap: &Heap) -> Self {
         let clone_pairs = |pairs: &mut dyn Iterator<Item = (&Value, &Value)>| {
@@ -455,27 +529,6 @@ impl KwargsValues {
                 .map(|(_, value)| value),
             Self::Pairs(kvs) => kvs.iter().find(|(key, _)| is_name(key)).map(|(_, value)| value),
             Self::Dict(dict) => dict.iter().find(|(key, _)| is_name(key)).map(|(_, value)| value),
-        }
-    }
-
-    /// The first keyword's name, for callables that accept none and report
-    /// CPython's `got an unexpected keyword argument`. A non-string key (only
-    /// possible via `**` unpacking) is CPython's `keywords must be strings`.
-    pub fn first_key(&self, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
-        let key = match self {
-            Self::Empty => return Ok(None),
-            Self::Inline(kvs) => {
-                return Ok(kvs.first().map(|(id, _)| EitherStr::Interned(*id).into_string(interns)));
-            }
-            Self::Pairs(kvs) => kvs.first().map(|(key, _)| key),
-            Self::Dict(dict) => dict.iter().next().map(|(key, _)| key),
-        };
-        match key {
-            None => Ok(None),
-            Some(key) => key
-                .as_either_str(heap)
-                .map(|key| Some(key.into_string(interns)))
-                .ok_or_else(ExcType::type_error_kwargs_nonstring_key),
         }
     }
 

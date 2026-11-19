@@ -1,6 +1,19 @@
 use super::*;
 
 #[test]
+fn native_keyword_tags_match_runtime_interning() {
+    for &tag in StaticStrings::VARIANTS {
+        let name = tag.into_str();
+        assert_eq!(
+            StaticStrings::from_keyword(name),
+            StaticStrings::from_str(name).ok(),
+            "{name:?}"
+        );
+    }
+    assert_eq!(StaticStrings::from_keyword("_key"), None);
+}
+
+#[test]
 fn character_lengths_survive_text_only_serialization() {
     for text in ["", "a", "ascii literal", "é", "aé🦀", "e\u{301}"] {
         let entry = InternedString::owned(Arc::from(text));

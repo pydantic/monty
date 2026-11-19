@@ -1,3 +1,5 @@
+import sys
+
 import functools
 
 # === reduce ===
@@ -151,7 +153,10 @@ try:
     functools.reduce(lambda a, b: a)
     assert False, 'expected reduce to fail'
 except TypeError as exc:
-    assert str(exc) == 'reduce() takes at least 2 positional arguments (1 given)'
+    if sys.platform == 'monty':
+        assert str(exc) == "reduce() missing 1 required positional argument: 'iterable'"
+    else:
+        assert str(exc) == 'reduce() takes at least 2 positional arguments (1 given)'
 
 try:
     functools.reduce(lambda a, b: a, [1], 2, 3)
@@ -170,4 +175,7 @@ try:
     functools.reduce(function=lambda a, b: a, iterable=[1])
     assert False, 'expected reduce to fail'
 except TypeError as exc:
-    assert str(exc) == 'reduce() takes at least 2 positional arguments (0 given)'
+    if sys.platform == 'monty':
+        assert str(exc) == "reduce() got some positional-only arguments passed as keyword arguments: 'function'"
+    else:
+        assert str(exc) == 'reduce() takes at least 2 positional arguments (0 given)'

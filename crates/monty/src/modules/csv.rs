@@ -12,8 +12,10 @@
 
 use std::mem;
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues},
+    args::{ArgValues, KwargsValues},
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -169,30 +171,10 @@ fn check_positional_shape(name: &str, args: ArgValues, vm: &mut VM<'_>) -> RunRe
 /// `reader(csvfile, dialect='excel', **fmtparams)` and `writer(...)`, as CPython parses them:
 /// the positionals by `PyArg_UnpackTuple` (checked first by `check_positional_shape`), the
 /// format parameters by `Dialect`'s anonymous `PyArg_ParseTupleAndKeywords`.
-#[derive(FromArgs)]
-#[from_args(name = "reader", style = c)]
-struct FmtParamArgs {
-    #[from_args(pos_only)]
-    f: Value,
-    #[from_args(default = None)]
-    dialect: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    delimiter: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    doublequote: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    escapechar: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    lineterminator: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    quotechar: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    quoting: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    skipinitialspace: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    strict: Option<Value>,
-}
+#[py_signature(
+    "reader(f, /, dialect=..., *, delimiter=..., doublequote=..., escapechar=..., lineterminator=..., quotechar=..., quoting=..., skipinitialspace=..., strict=...)"
+)]
+struct FmtParamArgs;
 
 impl FmtParamArgs {
     /// Splits the parse into the source, the `dialect` argument and the format parameters.
@@ -238,18 +220,17 @@ fn call_writer(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `csv.get_dialect(name)`: one of the built-in dialects.
-fn call_get_dialect(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let GetDialectArgs { name } = GetDialectArgs::from_args(args, vm)?;
-    defer_drop!(name, vm);
-    let dialect = name.as_str(vm).and_then(Dialect::by_name);
+#[py_signature("get_dialect(name)")]
+fn call_get_dialect(vm: &mut VM<'_>, params: &GetDialectArgs) -> RunResult<Value> {
+    let dialect = params.name.as_str(vm).and_then(Dialect::by_name);
     dialect
         .map(|dialect| CsvObject::Dialect(dialect).allocate(vm))
         .ok_or_else(ExcType::csv_unknown_dialect)
 }
 
 /// `csv.list_dialects()`: the built-in dialect names.
-fn call_list_dialects(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    args.check_zero_args("list_dialects", vm.heap)?;
+#[py_signature("list_dialects()")]
+fn call_list_dialects(vm: &mut VM<'_>) -> RunResult<Value> {
     let names = DIALECT_NAMES
         .iter()
         .map(|name| allocate_string(*name, vm.heap))
@@ -257,18 +238,10 @@ fn call_list_dialects(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::allocate(List::new(names), vm.heap))
 }
 
-/// `get_dialect(name)`: Argument Clinic, so `name` may be a keyword.
-#[derive(FromArgs)]
-#[from_args(name = "get_dialect", style = c_named, at_most_total)]
-struct GetDialectArgs {
-    name: Value,
-}
-
 /// `csv.field_size_limit([new_limit])`: reports CPython's default; the limit cannot change.
-fn call_field_size_limit(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let FieldSizeLimitArgs { new_limit: limit } = FieldSizeLimitArgs::from_args(args, vm)?;
-    defer_drop!(limit, vm);
-    match limit {
+#[py_signature("field_size_limit(new_limit=...)")]
+fn call_field_size_limit(vm: &mut VM<'_>, params: &FieldSizeLimitArgs) -> RunResult<Value> {
+    match &params.new_limit {
         None => Ok(Value::Int(
             i64::try_from(FIELD_SIZE_LIMIT).expect("the limit fits an int"),
         )),
@@ -279,17 +252,12 @@ fn call_field_size_limit(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
 }
 
-/// `field_size_limit(new_limit=<unrepresentable>)`: Argument Clinic, so the keyword form works.
-#[derive(FromArgs)]
-#[from_args(name = "field_size_limit", style = c_named, at_most_total)]
-struct FieldSizeLimitArgs {
-    #[from_args(default)]
-    new_limit: Option<Value>,
-}
-
 /// `_csv.Dialect(dialect=None, **fmtparams)`: a resolved dialect object.
-pub(crate) fn dialect_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let DialectArgs {
+#[py_signature(
+    "Dialect(dialect=..., *, delimiter=..., doublequote=..., escapechar=..., lineterminator=..., quotechar=..., quoting=..., skipinitialspace=..., strict=...)"
+)]
+pub(crate) fn dialect_init(vm: &mut VM<'_>, params: &mut DialectArgs) -> RunResult<Value> {
+    let DialectArgsFields {
         dialect,
         delimiter,
         doublequote,
@@ -299,9 +267,9 @@ pub(crate) fn dialect_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
         quoting,
         skipinitialspace,
         strict,
-    } = DialectArgs::from_args(args, vm)?;
+    } = params.take_all();
     defer_drop!(dialect, vm);
-    let params = FmtParams {
+    let format = FmtParams {
         delimiter,
         doublequote,
         escapechar,
@@ -311,56 +279,17 @@ pub(crate) fn dialect_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
         skipinitialspace,
         strict,
     };
-    let dialect = Dialect::resolve(dialect.as_ref(), params, vm)?;
+    let dialect = Dialect::resolve(dialect.as_ref(), format, vm)?;
     Ok(CsvObject::Dialect(dialect).allocate(vm))
 }
 
-/// `Dialect(dialect=None, delimiter=..., ...)`: every parameter optional, `dialect` positional too.
-#[derive(FromArgs)]
-#[from_args(name = "Dialect", style = c)]
-struct DialectArgs {
-    #[from_args(default = None)]
-    dialect: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    delimiter: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    doublequote: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    escapechar: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    lineterminator: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    quotechar: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    quoting: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    skipinitialspace: Option<Value>,
-    #[from_args(kw_only, default = None)]
-    strict: Option<Value>,
-}
-
-/// `DictReader(f, fieldnames=None, restkey=None, restval=None, dialect='excel', *args, **kwds)`.
-#[derive(FromArgs)]
-#[from_args(name = "DictReader.__init__", style = def)]
-struct DictReaderArgs {
-    f: Value,
-    #[from_args(default = Value::None)]
-    fieldnames: Value,
-    #[from_args(default = Value::None)]
-    restkey: Value,
-    #[from_args(default = Value::None)]
-    restval: Value,
-    #[from_args(default = None)]
-    dialect: Option<Value>,
-    #[from_args(varargs)]
-    args: Vec<Value>,
-    #[from_args(varkwargs)]
-    kwds: KwargsValues,
-}
-
 /// Builds a `csv.DictReader`; the wrapped `_csv.reader` gets `f`, `dialect` and the extras.
-pub(crate) fn dict_reader_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let DictReaderArgs {
+#[py_signature(
+    "__init__(f, fieldnames=None, restkey=None, restval=None, dialect=..., *args, **kwds)",
+    error_name = "DictReader.__init__"
+)]
+pub(crate) fn dict_reader_init(vm: &mut VM<'_>, params: &mut DictReaderArgs) -> RunResult<Value> {
+    let DictReaderArgsFields {
         f,
         fieldnames,
         restkey,
@@ -368,7 +297,7 @@ pub(crate) fn dict_reader_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
         dialect,
         args,
         kwds,
-    } = DictReaderArgs::from_args(args, vm)?;
+    } = params.take_all();
     let dialect = dialect.unwrap_or_else(|| excel_name(vm));
     // Everything is guarded before the first fallible step, so any rejection releases it all.
     let dialect_arg = dialect.clone_with_heap(vm.heap);
@@ -399,27 +328,13 @@ fn forwarded_args(f: Value, dialect: Value, args: Vec<Value>, kwds: KwargsValues
     ArgValues::from_parts(positional, kwds)
 }
 
-/// `DictWriter(f, fieldnames, restval='', extrasaction='raise', dialect='excel', *args, **kwds)`.
-#[derive(FromArgs)]
-#[from_args(name = "DictWriter.__init__", style = def)]
-struct DictWriterArgs {
-    f: Value,
-    fieldnames: Value,
-    #[from_args(default = None)]
-    restval: Option<Value>,
-    #[from_args(default = None)]
-    extrasaction: Option<Value>,
-    #[from_args(default = None)]
-    dialect: Option<Value>,
-    #[from_args(varargs)]
-    args: Vec<Value>,
-    #[from_args(varkwargs)]
-    kwds: KwargsValues,
-}
-
 /// Builds a `csv.DictWriter`; the wrapped `_csv.writer` gets `f`, `dialect` and the extras.
-pub(crate) fn dict_writer_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let DictWriterArgs {
+#[py_signature(
+    "__init__(f, fieldnames, restval=..., extrasaction=..., dialect=..., *args, **kwds)",
+    error_name = "DictWriter.__init__"
+)]
+pub(crate) fn dict_writer_init(vm: &mut VM<'_>, params: &mut DictWriterArgs) -> RunResult<Value> {
+    let DictWriterArgsFields {
         f,
         fieldnames,
         restval,
@@ -427,7 +342,7 @@ pub(crate) fn dict_writer_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
         dialect,
         args,
         kwds,
-    } = DictWriterArgs::from_args(args, vm)?;
+    } = params.take_all();
     let restval = restval.unwrap_or_else(|| static_str(StaticStrings::EmptyString, vm));
     let extrasaction = extrasaction.unwrap_or_else(|| static_str(StaticStrings::Raise, vm));
     let dialect = dialect.unwrap_or_else(|| excel_name(vm));

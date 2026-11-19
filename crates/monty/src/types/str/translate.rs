@@ -6,9 +6,11 @@
 
 use std::mem;
 
+use monty_macros::py_signature;
+
 use super::{PyStr, allocate_string, copy_format_template};
 use crate::{
-    args::{ArgValues, FromArgs, StrArg},
+    args::ArgValues,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -23,16 +25,12 @@ use crate::{
 ///
 /// CPython parses it with `PyArg_UnpackTuple` (the arity wording) after clinic-converting `y` and `z` to `str`
 /// (the `bad_arg` wording). It is a static method, so `kwarg_error_name` reports `str.maketrans()`.
-#[derive(FromArgs)]
-#[from_args(name = "maketrans", style = unpack, bad_arg, kwarg_error_name = "str.maketrans")]
-struct MaketransArgs {
-    #[from_args(pos_only)]
-    x: Value,
-    #[from_args(pos_only, default)]
-    y: Option<StrArg>,
-    #[from_args(pos_only, default)]
-    z: Option<StrArg>,
-}
+#[py_signature(
+    "maketrans(x, y: str=..., z: str=..., /)",
+    bad_arg,
+    kwarg_error_name = "str.maketrans"
+)]
+struct MaketransArgs;
 
 /// Implements `str.translate(table)`.
 ///

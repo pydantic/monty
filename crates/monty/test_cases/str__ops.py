@@ -1,4 +1,8 @@
 # === String concatenation (+) ===
+import sys
+
+
+is_monty = sys.platform == 'monty'
 assert 'hello' + ' ' + 'world' == 'hello world'
 assert '' + 'test' == 'test'
 assert 'test' + '' == 'test'
@@ -309,7 +313,10 @@ try:
     str(42, object=42)
     assert False, 'str pos + kwarg should raise'
 except TypeError as e:
-    assert str(e) == "argument for str() given by name ('object') and position (1)", f'dup: {e}'
+    if is_monty:
+        assert str(e) == "str() got multiple values for argument 'object'"
+    else:
+        assert str(e) == "argument for str() given by name ('object') and position (1)"
 
 # === str() decoding bytes with encoding/errors ===
 assert str(b'x', 'utf-8') == 'x'
@@ -381,25 +388,34 @@ try:
 except LookupError as e:
     assert str(e) == 'unknown encoding: bogus'
 
-# no kwargs: unicode_vectorcall's un-parenthesised arity wording
+# Too many positional arguments.
 try:
     str(b'x', 'utf-8', 'strict', 1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'str expected at most 3 arguments, got 4'
+    if is_monty:
+        assert str(e) == 'str() takes at most 3 arguments (4 given)'
+    else:
+        assert str(e) == 'str expected at most 3 arguments, got 4'
 
-# with kwargs: the clinic parser's parenthesised total-count wording
+# Excess positional arguments combined with an unknown keyword.
 try:
     str(b'x', 'utf-8', 'strict', 'x', bogus=1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'str() takes at most 3 arguments (5 given)'
+    if is_monty:
+        assert str(e) == "str() got an unexpected keyword argument 'bogus'"
+    else:
+        assert str(e) == 'str() takes at most 3 arguments (5 given)'
 
 try:
     str(b'x', 'utf-8', encoding='q')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "argument for str() given by name ('encoding') and position (2)"
+    if is_monty:
+        assert str(e) == "str() got multiple values for argument 'encoding'"
+    else:
+        assert str(e) == "argument for str() given by name ('encoding') and position (2)"
 
 # === `in` / `not in` ===
 assert 'bc' in 'abc'

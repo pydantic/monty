@@ -1,3 +1,5 @@
+import sys
+
 import copy
 import decimal
 from decimal import (
@@ -36,6 +38,11 @@ from decimal import (
     localcontext,
     setcontext,
 )
+
+
+def expected_error(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # CPython runs cases on shared threads, so start from a fresh default context.
 setcontext(Context())
@@ -139,7 +146,10 @@ try:
     setcontext()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == '_decimal.setcontext() takes exactly one argument (0 given)'
+    if sys.platform == 'monty':
+        assert str(e) == "_decimal.setcontext() missing 1 required positional argument: 'context'"
+    else:
+        assert str(e) == '_decimal.setcontext() takes exactly one argument (0 given)'
 try:
     setcontext(5)
     assert False, 'expected TypeError'
@@ -174,7 +184,10 @@ try:
     Context(1, 2, 3, 4, 5, 6, 7, 8, 9)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'function takes at most 8 arguments (9 given)'
+    if sys.platform == 'monty':
+        assert str(e) == 'Context() takes at most 8 arguments (9 given)'
+    else:
+        assert str(e) == 'function takes at most 8 arguments (9 given)'
 try:
     Context(rounding='x')
     assert False, 'expected TypeError'
@@ -533,7 +546,14 @@ for call, kind, message in [
     (lambda: c.add(1), TypeError, 'function takes exactly 2 arguments (1 given)'),
     (lambda: c.add(a=1, b=2), TypeError, 'add() takes no keyword arguments'),
     (lambda: c.fma(1, 2), TypeError, 'function takes exactly 3 arguments (2 given)'),
-    (lambda: c.power(1), TypeError, "function missing required argument 'b' (pos 2)"),
+    (
+        lambda: c.power(1),
+        TypeError,
+        expected_error(
+            monty="function() missing 1 required positional argument: 'b'",
+            cpython="function missing required argument 'b' (pos 2)",
+        ),
+    ),
     (lambda: c.add('1', 2), TypeError, 'conversion from str to Decimal is not supported'),
     (lambda: c.add(1.5, 2), TypeError, 'conversion from float to Decimal is not supported'),
     (lambda: c.canonical(1), TypeError, 'argument must be a Decimal'),

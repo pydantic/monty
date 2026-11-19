@@ -1,5 +1,12 @@
 import itertools
 
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 assert list(map(abs, [-1, 0, 1, -2])) == [1, 0, 1, 2]
 assert list(map(abs, [0, 0, 0])) == [0, 0, 0]
 
@@ -196,4 +203,7 @@ try:
     map(abs, [], **{'strict': True, 'other': 1})
     assert False, 'expected extra keyword to fail'
 except TypeError as exc:
-    assert str(exc) == 'map() takes at most 1 keyword argument (2 given)'
+    assert str(exc) == _error_message(
+        monty="map() got an unexpected keyword argument 'other'",
+        cpython='map() takes at most 1 keyword argument (2 given)',
+    )

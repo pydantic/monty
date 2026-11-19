@@ -1,7 +1,8 @@
 //! Implementation of the issubclass() builtin function.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -10,25 +11,13 @@ use crate::{
     value::Value,
 };
 
-/// Arguments of `issubclass(cls, classinfo, /)`.
-#[derive(FromArgs)]
-#[from_args(name = "issubclass", style = unpack)]
-struct IssubclassArgs {
-    #[from_args(pos_only)]
-    cls: Value,
-    #[from_args(pos_only)]
-    classinfo: Value,
-}
-
 /// Implementation of the issubclass() builtin function.
 ///
 /// Checks whether a class inherits from a class, or from any of a tuple or
 /// union of classes.
-pub fn builtin_issubclass(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let IssubclassArgs { cls, classinfo } = IssubclassArgs::from_args(args, vm)?;
-    defer_drop!(cls, vm);
-    defer_drop!(classinfo, vm);
-    issubclass_check(cls, classinfo, vm).map(Value::Bool)
+#[py_signature("issubclass(cls, classinfo, /)")]
+pub fn builtin_issubclass(vm: &mut VM<'_>, params: &IssubclassArgs) -> RunResult<Value> {
+    issubclass_check(&params.cls, &params.classinfo, vm).map(Value::Bool)
 }
 
 /// Whether `cls` is `classinfo`, a subclass of it, or of any member of a tuple

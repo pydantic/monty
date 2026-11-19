@@ -10,6 +10,13 @@ from pathlib import Path
 from random import Random
 
 # === Unbound native methods ===
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 items = []
 list.append(items, 2)
 list.extend(items, [3, 1])
@@ -39,7 +46,13 @@ for invalid, expected_error in [
     (lambda: str.upper([], [1]), "descriptor 'upper' for 'str' objects doesn't apply to a 'list' object"),
     (lambda: str.upper('foo', [1]), 'str.upper() takes no arguments (1 given)'),
     (lambda: str.upper('foo', extra=[1]), 'str.upper() takes no keyword arguments'),
-    (lambda: str.replace('foo'), 'replace() takes at least 2 positional arguments (0 given)'),
+    (
+        lambda: str.replace('foo'),
+        _error_message(
+            monty="replace() missing 2 required positional arguments: 'old' and 'new'",
+            cpython='replace() takes at least 2 positional arguments (0 given)',
+        ),
+    ),
     (lambda: list.append((), [1]), "descriptor 'append' for 'list' objects doesn't apply to a 'tuple' object"),
     (lambda: tuple.count([], [1]), "descriptor 'count' for 'tuple' objects doesn't apply to a 'list' object"),
     (
@@ -471,7 +484,10 @@ for receiver in [date(2024, 6, 15), datetime(2024, 6, 15, 10, 20, 30, 123, tzinf
     try:
         date.replace(receiver, 2025, year=2026)
     except TypeError as exc:
-        assert str(exc) == "argument for replace() given by name ('year') and position (1)"
+        assert str(exc) == _error_message(
+            monty="replace() got multiple values for argument 'year'",
+            cpython="argument for replace() given by name ('year') and position (1)",
+        )
     else:
         assert False, 'replace accepted a duplicate year'
     try:

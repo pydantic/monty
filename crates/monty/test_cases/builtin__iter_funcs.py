@@ -55,6 +55,23 @@ assert any(['', 'hello']) == True
 assert any(range(0, 5)) == True
 assert any(range(0, 1)) == False
 
+
+class BrokenIterable:
+    def __iter__(self):
+        raise ValueError('iterator acquisition failed')
+
+
+try:
+    any(BrokenIterable())
+except ValueError as exc:
+    assert str(exc) == 'iterator acquisition failed'
+else:
+    assert False, 'any must propagate __iter__ errors'
+
+items = iter([[], [1], [2]])
+assert any(items)
+assert next(items) == [2]
+
 # === all() ===
 # Basic all operations
 assert all([True, True, True]) == True

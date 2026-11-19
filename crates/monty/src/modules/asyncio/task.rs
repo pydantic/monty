@@ -4,8 +4,10 @@
 //! `ExternalFuture`; [`task_call_method`] serves the non-suspending `Task`
 //! attributes. The rest of the `asyncio` surface lives in the parent module.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     asyncio::{Awaiter, ExternalFutureState, TaskFuture, TaskFutureState},
     bytecode::{CallResult, VM},
     defer_drop,
@@ -249,13 +251,8 @@ enum ExternalStart {
 
 /// `asyncio.create_task(coro, *, name=None)` — a Python `def`, so `coro`
 /// binds positionally or by keyword and `name` is keyword-only.
-#[derive(FromArgs)]
-#[from_args(name = "create_task", style = def)]
-struct CreateTaskArgs {
-    coro: Value,
-    #[from_args(kw_only, default)]
-    name: Option<Value>,
-}
+#[py_signature("create_task(coro, *, name=...)")]
+struct CreateTaskArgs;
 
 /// Heap bytes `exception_value` needs for a cached error: the run-error copy,
 /// the exception payload it materialises, and that exception's heap entry.

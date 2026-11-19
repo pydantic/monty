@@ -7,7 +7,11 @@
 # - `del d[i]`: CPython supports it, but the `del` statement is unimplemented
 #   Monty-wide (a parse error), so including it would fail to parse the file.
 
+import sys
+
 from collections import deque
+
+is_monty = sys.platform == 'monty'
 
 # === Type name ===
 # The dotted `tp_name` shows in reprs and error messages, the bare one in
@@ -607,7 +611,10 @@ try:
     deque().count()
     assert False, 'expected count() with no args to fail'
 except TypeError as exc:
-    assert str(exc) == 'deque.count() takes exactly one argument (0 given)', str(exc)
+    if is_monty:
+        assert str(exc) == "deque.count() missing 1 required positional argument: 'value'"
+    else:
+        assert str(exc) == 'deque.count() takes exactly one argument (0 given)'
 
 try:
     deque().copy(1)
@@ -619,19 +626,28 @@ try:
     deque().index()
     assert False, 'expected index() with no args to fail'
 except TypeError as exc:
-    assert str(exc) == 'index expected at least 1 argument, got 0', str(exc)
+    if is_monty:
+        assert str(exc) == "index() missing 1 required positional argument: 'value'", str(exc)
+    else:
+        assert str(exc) == 'index expected at least 1 argument, got 0', str(exc)
 
 try:
     deque().insert(1)
     assert False, 'expected insert() with one arg to fail'
 except TypeError as exc:
-    assert str(exc) == 'insert expected 2 arguments, got 1', str(exc)
+    if is_monty:
+        assert str(exc) == "insert() missing 1 required positional argument: 'item'", str(exc)
+    else:
+        assert str(exc) == 'insert expected 2 arguments, got 1', str(exc)
 
 try:
     deque().rotate(1, 2)
     assert False, 'expected rotate() with two args to fail'
 except TypeError as exc:
-    assert str(exc) == 'rotate expected at most 1 argument, got 2', str(exc)
+    if is_monty:
+        assert str(exc) == 'rotate() takes at most 1 argument (2 given)', str(exc)
+    else:
+        assert str(exc) == 'rotate expected at most 1 argument, got 2', str(exc)
 
 # === str(type()) is qualified ===
 assert str(type(deque())) == "<class 'collections.deque'>", 'qualified class repr'

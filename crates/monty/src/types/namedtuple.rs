@@ -9,7 +9,7 @@ use std::{
     mem,
 };
 
-use monty_macros::pyattrs;
+use monty_macros::{py_signature, pyattrs};
 /// Python named tuple type, combining tuple-like indexing with named attribute access.
 ///
 /// Named tuples are like regular tuples but with field names, providing two ways
@@ -46,7 +46,7 @@ use crate::{
     types::{
         Dict, Slice, Type, TypeRef, Union, allocate_tuple,
         instance::BoundMethod,
-        iter::collect_owned_iterable,
+        iter::collect_iterable,
         key_hash::hash_or_culprit,
         py_trait::LazyHeapSet,
         sequence::SequenceItems,
@@ -656,8 +656,8 @@ impl<'h> HeapRead<'h, NamedTuple> {
     /// takes one argument per field), whereas a *structseq* returns
     /// `(tuple(self),)` because its `__new__` takes a single sequence. So
     /// `sys.version_info.__getnewargs__()` is `((3, 14, ...),)`, one level deeper.
-    fn method_getnewargs(&self, vm: &mut VM<'h>, args: ArgValues, from_factory: bool) -> RunResult<Value> {
-        args.check_zero_args("__getnewargs__", vm.heap)?;
+    #[py_signature("__getnewargs__(self, /)")]
+    fn method_getnewargs(&self, vm: &mut VM<'h>, from_factory: bool) -> RunResult<Value> {
         let items: TupleVec = self.cloned_items(vm)?.into_iter().collect();
         let values = allocate_tuple(items, vm.heap);
         if from_factory {
@@ -672,15 +672,13 @@ impl<'h> HeapRead<'h, NamedTuple> {
     }
 
     /// `p.count(x)` — how many items equal `x`, inherited from `tuple`.
-    fn method_count(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<Value> {
-        let value = args.get_one_arg("tuple.count", vm.heap)?;
-        defer_drop!(value, vm);
-
+    #[py_signature("count(self, value, /)", owner = "tuple")]
+    fn method_count(&self, vm: &mut VM<'h>, params: &TupleCountArgs) -> RunResult<Value> {
         let mut count = 0usize;
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some(item) = iter.next(vm)? {
-            if value.py_eq(item, vm)? {
+            if params.value.py_eq(item, vm)? {
                 count += 1;
             }
         }
@@ -689,25 +687,21 @@ impl<'h> HeapRead<'h, NamedTuple> {
 
     /// `p.index(x[, start[, stop]])` — index of the first item equal to `x`,
     /// inherited from `tuple`.
-    fn method_index(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<Value> {
-        let pos_args = args.into_pos_only("tuple.index", vm.heap)?;
-        defer_drop!(pos_args, vm);
-
+    #[py_signature("index(self, value, start=..., stop=..., /)", owner = "tuple")]
+    fn method_index(&self, vm: &mut VM<'h>, params: &IndexArgs) -> RunResult<Value> {
         let len = self.get(vm.heap).len();
-        let (value, start, end) = match pos_args.as_slice() {
-            [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
-            [value] => (value, 0, len),
-            [value, start_arg] => {
-                let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
-                (value, start, len)
-            }
-            [value, start_arg, end_arg] => {
-                let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
-                let end = normalize_sequence_index(value_to_i64_bound(end_arg, vm)?, len).max(start);
-                (value, start, end)
-            }
-            other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
-        };
+        let start_arg = params
+            .start
+            .as_ref()
+            .map(|start| value_to_i64_bound(start, vm))
+            .transpose()?;
+        let end_arg = params
+            .stop
+            .as_ref()
+            .map(|stop| value_to_i64_bound(stop, vm))
+            .transpose()?;
+        let start = start_arg.map_or(0, |start| normalize_sequence_index(start, len));
+        let end = end_arg.map_or(len, |end| normalize_sequence_index(end, len)).max(start);
 
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
@@ -716,7 +710,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
                 // No further matches possible inside [start, end).
                 break;
             }
-            if idx >= start && value.py_eq(item, vm)? {
+            if idx >= start && params.value.py_eq(item, vm)? {
                 return Ok(Value::Int(i64::try_from(idx).expect("index exceeds i64::MAX")));
             }
         }
@@ -724,8 +718,8 @@ impl<'h> HeapRead<'h, NamedTuple> {
     }
 
     /// `p._asdict()` — a new `dict` mapping each field name to its value.
-    fn method_asdict(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<Value> {
-        args.check_zero_args("_asdict", vm.heap)?;
+    #[py_signature("_asdict(self, /)")]
+    fn method_asdict(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let names = self.get(vm.heap).field_names.clone();
         let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(names.len());
         for (i, name) in names.iter().enumerate() {
@@ -742,6 +736,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
     /// Unknown field names raise `ValueError: Got unexpected field names: [...]`,
     /// matching CPython's list-repr wording.
     fn method_replace(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<Value> {
+        let ReplaceArgs { kwargs } = ReplaceArgs::from_args(args, vm)?;
         let name = self.get(vm.heap).name.clone();
         let field_names = self.get(vm.heap).field_names.clone();
         let class_id = self.get(vm.heap).class_id;
@@ -749,18 +744,6 @@ impl<'h> HeapRead<'h, NamedTuple> {
         let mut items: Vec<Value> = (0..n)
             .map(|i| self.get(vm.heap).items[i].clone_with_heap(vm.heap))
             .collect();
-
-        let (pos, kwargs) = args.into_parts();
-        let n_pos = pos.len();
-        if n_pos > 0 {
-            pos.drop_with(vm);
-            kwargs.drop_with(vm);
-            items.drop_with(vm);
-            return Err(ExcType::type_error(format!(
-                "_replace() takes 1 positional argument but {} were given",
-                n_pos + 1
-            )));
-        }
 
         let mut unexpected: Vec<String> = Vec::new();
         for (key, val) in normalize_kwargs(kwargs, vm) {
@@ -1233,16 +1216,16 @@ fn make_namedtuple(class_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> RunRes
 
 /// Shared `_make` body: collect the iterable, length-check it against the
 /// fields, and build the instance.
+#[py_signature("_make(iterable, /)")]
 fn make_from_iterable(
     name: EitherStr,
     field_names: Vec<EitherStr>,
     class_id: Option<HeapId>,
     vm: &mut VM<'_>,
-    args: ArgValues,
+    params: &MakeArgs,
 ) -> RunResult<Value> {
     let n = field_names.len();
-    let iterable = args.get_one_arg("_make", vm.heap)?;
-    let items = collect_owned_iterable::<Vec<Value>>(iterable, vm)?;
+    let items = collect_iterable(&params.iterable, vm)?;
     if items.len() != n {
         let got = items.len();
         items.drop_with(vm);
@@ -1273,6 +1256,9 @@ fn fields_tuple_from(names: &[EitherStr], vm: &mut VM<'_>) -> Value {
     let items: Vec<Value> = names.iter().map(|name| name.as_value(vm.heap)).collect();
     allocate_tuple(SmallVec::from_vec(items), vm.heap)
 }
+
+#[monty_macros::py_signature("_replace(self, /, **kwargs)")]
+struct ReplaceArgs;
 
 /// Normalizes call kwargs into `(name, value)` pairs, dropping non-interned
 /// keys' heap references. Non-string keys (only reachable via `**` unpacking)
@@ -1332,7 +1318,7 @@ impl<'heap> PyAttrs<'heap> for PyNamedTupleImpl {
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<Value> {
-        this.method_getnewargs(vm, args, this.get(vm.heap).class_id().is_some())
+        this.method_getnewargs(vm, this.get(vm.heap).class_id().is_some(), args)
     }
 
     #[pymethod(UnderAsdict)]

@@ -53,6 +53,9 @@ pub(crate) struct Partial {
 /// as owned clones (see [`Partial::clone_parts`]).
 type PartialParts = (Value, Vec<Value>, Vec<(Value, Value)>);
 
+#[monty_macros::py_signature("partial(func, /, *args, **keywords)")]
+struct PartialArgs;
+
 impl Partial {
     /// `functools.partial(func, /, *args, **keywords)`.
     ///
@@ -68,13 +71,15 @@ impl Partial {
             return Err(ExcType::partial_needs_argument());
         }
 
-        let (positional, keywords) = args.into_parts();
-        let positional = positional.collect::<Vec<_>>();
+        let PartialArgs {
+            func,
+            args: positional,
+            keywords,
+        } = PartialArgs::from_args(args, vm)?;
         defer_drop_mut!(positional, vm);
         let keywords = keywords.into_iter().collect::<Vec<_>>();
         defer_drop_mut!(keywords, vm);
 
-        let func = positional.remove(0);
         if !func.is_callable(vm) {
             func.drop_with(vm);
             return Err(ExcType::partial_not_callable());

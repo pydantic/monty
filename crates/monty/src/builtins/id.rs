@@ -1,13 +1,13 @@
 //! Implementation of the id() builtin function.
 
-use crate::{args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, value::Value};
+use monty_macros::py_signature;
+
+use crate::{bytecode::VM, exception_private::RunResult, value::Value};
 
 /// Implementation of the id() builtin function.
 ///
 /// Returns the identity of an object (unique integer for the object's lifetime).
-pub fn builtin_id(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("id", vm.heap)?;
-    defer_drop!(value, vm);
-
-    Ok(value.id().into_value(vm.heap))
+#[py_signature("id(obj, /)")]
+pub fn builtin_id(vm: &mut VM<'_>, params: &IdArgs) -> RunResult<Value> {
+    Ok(params.obj.id().into_value(vm.heap))
 }

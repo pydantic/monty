@@ -15,6 +15,8 @@
 //!   can simulate Monty's lower default depth on CPython too. Only allows
 //!   *lowering* the host-configured ceiling — see [`SysFunctions`].
 
+#[cfg(feature = "test-hooks")]
+use monty_macros::py_signature;
 use smallvec::SmallVec;
 
 #[cfg(feature = "test-hooks")]
@@ -330,10 +332,9 @@ pub(super) fn call(vm: &mut VM<'_>, function: SysFunctions, args: ArgValues) -> 
 /// dump, etc.). Attempts to raise raise `ValueError` with a message
 /// pointing at the current cap.
 #[cfg(feature = "test-hooks")]
-fn setrecursionlimit(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let arg = args.get_one_arg("sys.setrecursionlimit", vm.heap)?;
-    let Value::Int(limit) = arg else {
-        arg.drop_with(vm);
+#[py_signature("setrecursionlimit(limit, /)", error_name = "sys.setrecursionlimit")]
+fn setrecursionlimit(vm: &mut VM<'_>, params: &SysSetrecursionlimitArgs) -> RunResult<Value> {
+    let Value::Int(limit) = params.limit else {
         return Err(ExcType::type_error("sys.setrecursionlimit() argument must be int"));
     };
     let Ok(new_limit) = usize::try_from(limit) else {

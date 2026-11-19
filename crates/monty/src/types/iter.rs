@@ -3,10 +3,10 @@
 //! Concrete iterator state lives beside its iterable type. This module only
 //! provides suspendable iterator validation and synchronous collection machinery.
 
+use monty_macros::py_signature;
 use monty_types::{ResourceError, ResourceTracker};
 
 use crate::{
-    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -23,18 +23,18 @@ def __monty_iter(object, get_iter, validate):
 ";
 
 /// Invokes the user protocol without re-entering the instance's validation frame.
-pub(crate) fn call_get_iter(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    let object = args.get_one_arg("get_iter", vm.heap)?;
-    defer_drop!(object, vm);
-    let Some(instance) = object.read_as::<Instance>(vm.heap) else {
+#[py_signature("get_iter(object, /)")]
+pub(crate) fn call_get_iter(params: &GetIterArgs, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    let Some(instance) = params.object.read_as::<Instance>(vm.heap) else {
         unreachable!("only instances need frozen iterator validation")
     };
     instance.call_iter(vm)
 }
 
 /// Returns an owned iterator unchanged, rejecting invalid user `__iter__` results.
-pub(crate) fn call_validate_iterator(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let iterator = args.get_one_arg("validate_iterator", vm.heap)?;
+#[py_signature("validate_iterator(iterator, /)")]
+pub(crate) fn call_validate_iterator(params: &mut ValidateIteratorArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let ValidateIteratorArgsFields { iterator } = params.take_all();
     if iterator.py_is_iterator(vm) {
         Ok(iterator)
     } else {

@@ -14,6 +14,8 @@ use proc_macro::TokenStream;
 
 mod explicit_discriminants;
 mod from_args;
+#[cfg(feature = "native-signatures")]
+mod py_signature;
 mod pyattrs;
 mod to_args;
 
@@ -43,6 +45,21 @@ pub fn explicit_discriminants(args: TokenStream, input: TokenStream) -> TokenStr
         .into()
 }
 
+/// Generates a native call adapter from a Python signature.
+#[cfg(feature = "native-signatures")]
+#[proc_macro_attribute]
+pub fn py_signature(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let declaration = syn::parse_macro_input!(attr as py_signature::Declaration);
+    let item = syn::parse_macro_input!(item as syn::Item);
+    match item {
+        syn::Item::Fn(function) => py_signature::expand(&declaration, function),
+        syn::Item::Struct(item) => py_signature::expand_struct(&declaration, item),
+        item => Err(syn::Error::new_spanned(item, "expected a function or a unit struct")),
+    }
+    .unwrap_or_else(syn::Error::into_compile_error)
+    .into()
+}
+
 /// Derive `FromArgs::from_args`. Each struct field becomes a Python
 /// parameter; the generated body parses an `ArgValues` and populates the
 /// struct, returning `RunResult<Self>`.
@@ -53,7 +70,7 @@ pub fn explicit_discriminants(args: TokenStream, input: TokenStream) -> TokenStr
 /// required fields preceding optional ones in each region.
 ///
 /// `#[from_args(name = "...")]` is required on the struct. The remaining
-/// attributes select CPython error-wording style or field roles; see the
+/// attributes control diagnostics and field roles. See the
 /// crate `README.md` and the source docstrings.
 #[proc_macro_derive(FromArgs, attributes(from_args))]
 pub fn derive_from_args(input: TokenStream) -> TokenStream {

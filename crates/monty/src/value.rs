@@ -888,6 +888,13 @@ impl Value {
         Self::Ref(heap.allocate(payload.into_heap_data()))
     }
 
+    /// Moves the value out and leaves Python `None` in its place.
+    #[inline]
+    #[must_use]
+    pub(crate) fn take(&mut self) -> Self {
+        mem::replace(self, Self::None)
+    }
+
     /// Opens a Python-type view without copying heap payloads or borrowing this owner.
     /// Drop the view before releasing the owning `Value`, so its heap readers are gone at cleanup.
     pub(crate) fn py_value<'h>(&self, vm: &VM<'h>) -> PyValue<'h> {

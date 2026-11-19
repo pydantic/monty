@@ -16,11 +16,11 @@ use std::{
 };
 
 use ahash::AHasher;
-use monty_macros::pyattrs;
+use monty_macros::{py_signature, pyattrs};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, FrameGlobals, VM},
     defer_drop,
@@ -127,37 +127,18 @@ pub(crate) struct ForwardRef {
 }
 
 /// Arguments of `ForwardRef(arg, *, module=None, owner=None, is_argument=True, is_class=False)`.
-#[derive(FromArgs)]
-#[from_args(name = "ForwardRef.__init__", style = def)]
-struct ForwardRefArgs {
-    #[from_args(static_string = "Arg")]
-    arg: Value,
-    #[from_args(kw_only, default = Value::None, static_string = "ModuleKwarg")]
-    module: Value,
-    #[from_args(kw_only, default = Value::None)]
-    owner: Value,
-    #[from_args(kw_only, default = Value::Bool(true))]
-    is_argument: Value,
-    #[from_args(kw_only, default = Value::Bool(false))]
-    is_class: Value,
-}
+#[py_signature(
+    "__init__(arg, *, module=None, owner=None, is_argument=True, is_class=False)",
+    error_name = "ForwardRef.__init__"
+)]
+struct ForwardRefArgs;
 
 /// Arguments of `ForwardRef.evaluate(*, globals=None, locals=None, type_params=None, owner=None, format=Format.VALUE)`.
-#[derive(FromArgs)]
-#[from_args(name = "ForwardRef.evaluate", style = def)]
-struct EvaluateArgs {
-    #[from_args(kw_only, default = Value::None)]
-    globals: Value,
-    #[from_args(kw_only, default = Value::None)]
-    locals: Value,
-    /// Accepted and ignored: Monty has no type parameters.
-    #[from_args(kw_only, default = Value::None)]
-    type_params: Value,
-    #[from_args(kw_only, default = Value::None)]
-    owner: Value,
-    #[from_args(kw_only, default = Value::Int(1))]
-    format: Value,
-}
+#[py_signature(
+    "evaluate(*, globals=None, locals=None, type_params=None, owner=None, format=1)",
+    error_name = "ForwardRef.evaluate"
+)]
+struct EvaluateArgs;
 
 impl ForwardRef {
     /// `ForwardRef(arg, ...)`: `arg` must be a `str`; the keywords are stored as given.

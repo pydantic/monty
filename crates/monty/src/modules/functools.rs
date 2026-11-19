@@ -5,11 +5,12 @@
 //! names are absent from the namespace rather than stubbed, so they raise
 //! `AttributeError` up front.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
-    defer_drop,
     exception_private::RunResult,
     frozen::FrozenFunction,
     intern::StaticStrings,
@@ -88,35 +89,21 @@ pub(super) fn call(vm: &mut VM<'_>, function: FunctoolsFunctions, args: ArgValue
     }
 }
 
-/// Argument shape for `reduce(function, iterable, /[, initial])`.
-///
-/// CPython's Argument Clinic signature makes the first two positional-only
-/// while `initial` is also accepted by keyword, and counts positionals plus
-/// keywords together for the maximum (`at_most_total`): `reduce(f, x, 0,
-/// initial=1)` reports four arguments.
-#[derive(FromArgs)]
-#[from_args(name = "reduce", at_most_total)]
-struct ReduceArgs {
-    #[from_args(pos_only)]
-    function: Value,
-    #[from_args(pos_only)]
-    iterable: Value,
-    #[from_args(default)]
-    initial: Option<Value>,
-}
-
 /// `functools.reduce(function, iterable, /[, initial])` — fold `function` over
 /// `iterable` from the left.
 ///
 /// Native setup binds the arguments; a frozen Python frame owns acquisition,
 /// initial accumulator selection, and the callback loop.
-fn call_reduce(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let ReduceArgs {
+///
+/// Argument shape for `reduce(function, iterable, /[, initial])`.
+///
+#[py_signature("reduce(function, iterable, /, initial=...)")]
+fn call_reduce(vm: &mut VM<'_>, params: &mut ReduceArgs) -> RunResult<CallResult> {
+    let ReduceArgsFields {
         function,
         iterable,
         initial,
-    } = ReduceArgs::from_args(args, vm)?;
-
+    } = params.take_all();
     let has_initial = initial.is_some();
     vm.call_frozen_exact(
         FrozenFunction::FunctoolsReduce,
@@ -134,12 +121,8 @@ fn call_reduce(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 }
 
 /// Arguments to the unbounded caching decorator.
-#[derive(FromArgs)]
-#[from_args(name = "cache", style = def)]
-struct CacheArgs {
-    #[from_args(pos_only, static_string = "UserFunction")]
-    user_function: Value,
-}
+#[py_signature("cache(user_function, /)")]
+struct CacheArgs;
 
 /// Wraps a callable in an unbounded cache.
 fn call_cache(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
@@ -147,31 +130,19 @@ fn call_cache(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     lru_cache::allocate(Some(user_function), None, false, vm)
 }
 
-/// Arguments to the configurable caching decorator; the first may itself be callable.
-#[derive(FromArgs)]
-#[from_args(name = "lru_cache", style = def)]
-struct LruCacheArgs {
-    #[from_args(default = Value::Int(128))]
-    maxsize: Value,
-    #[from_args(default = Value::Bool(false))]
-    typed: Value,
-}
-
 /// Returns a configured decorator, or wraps a callable passed as the first argument.
-fn call_lru_cache_factory(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let LruCacheArgs { maxsize, typed } = LruCacheArgs::from_args(args, vm)?;
-    defer_drop!(maxsize, vm);
-    defer_drop!(typed, vm);
-    let typed_flag = typed.py_bool(vm)?;
-    match maxsize {
+#[py_signature("lru_cache(maxsize=128, typed=False)")]
+fn call_lru_cache_factory(vm: &mut VM<'_>, params: &LruCacheArgs) -> RunResult<Value> {
+    let typed_flag = params.typed.py_bool(vm)?;
+    match &params.maxsize {
         Value::Int(size) => {
             let size = u64::try_from(*size).unwrap_or(0);
             lru_cache::allocate(None, Some(size), typed_flag, vm)
         }
         Value::Bool(flag) => lru_cache::allocate(None, Some(u64::from(*flag)), typed_flag, vm),
         Value::None => lru_cache::allocate(None, None, typed_flag, vm),
-        _ if maxsize.is_callable(vm) => {
-            lru_cache::allocate(Some(maxsize.clone_with_heap(vm)), Some(128), typed_flag, vm)
+        _ if params.maxsize.is_callable(vm) => {
+            lru_cache::allocate(Some(params.maxsize.clone_with_heap(vm)), Some(128), typed_flag, vm)
         }
         _ => Err(lru_cache::bad_maxsize_error()),
     }

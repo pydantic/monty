@@ -1,13 +1,12 @@
 //! Implementation of the hasattr() builtin function.
 
+use monty_macros::py_signature;
 use monty_types::ExcType;
 
 use crate::{
-    args::ArgValues,
     builtins::Builtins,
     bytecode::{CallResult, PendingLookupEffect, VM},
-    defer_drop,
-    exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
+    exception_private::{RunError, RunResult, SimpleException},
     frozen::FrozenFunction,
     heap::DropWithContext,
     types::{
@@ -35,23 +34,21 @@ use crate::{
 /// hasattr(slice(1, 10), 'start') # True - slice has start attribute
 /// hasattr(42, 'nonexistent')    # False - int has no such attribute
 /// ```
-pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let positional = args.into_pos_only("hasattr", vm.heap)?;
-    defer_drop!(positional, vm);
-
-    let (object, name) = match positional.as_slice() {
-        [object, name] => (object, name),
-        other => return Err(ExcType::type_error_arg_count("hasattr", 2, other.len())),
-    };
-
-    let Some(name) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
+#[py_signature("hasattr(object, name, /)")]
+pub fn builtin_hasattr(vm: &mut VM<'_>, params: &HasattrArgs) -> RunResult<CallResult> {
+    let Some(name) = params
+        .name
+        .as_either_str(vm.heap)
+        .map(|s| s.resolve_interned(vm.interns))
+    else {
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
-            format!("attribute name must be string, not '{}'", name.py_type_name(vm)),
+            format!("attribute name must be string, not '{}'", params.name.py_type_name(vm)),
         )
         .into());
     };
 
+    let object = &params.object;
     match lookup_attribute_fast(object, &name, vm) {
         FastAttributeLookupResult::Found(value) => {
             value.drop_with(vm);

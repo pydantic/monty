@@ -155,7 +155,10 @@ try:
     tomllib.loads('a = 1', 'extra')
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'loads() takes 1 positional argument but 2 were given'
+    if sys.platform == 'monty':
+        assert str(exc) == 'loads() takes at most 1 argument (2 given)'
+    else:
+        assert str(exc) == 'loads() takes 1 positional argument but 2 were given'
 # `parse_float` is not implemented; CPython accepts it
 if sys.platform == 'monty':
     try:

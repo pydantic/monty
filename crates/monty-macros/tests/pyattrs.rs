@@ -190,7 +190,7 @@ fn rejects_invalid_attribute_declarations() {
         ),
         (
             "type Receiver = bool; #[pymethod(A, B)] fn first() {}",
-            "expected one StaticStrings key",
+            "expected a Python signature after the method key",
         ),
         (
             "type Receiver = bool; #[pymethod(A)] #[pyvalue(B)] fn first() {}",

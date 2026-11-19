@@ -3,17 +3,11 @@
 //! Parses a struct definition with `#[from_args(...)]` attributes into a
 //! validated [`Signature`], then renders a thin `from_args` method: a
 //! `static` `ParamSpec` describing the signature, one call to the runtime
-//! binder (`crate::args::bind`, which owns all dispatch, arity, kwarg and
+//! binder (`ParamSpec::bind`, which owns all dispatch, arity, kwarg and
 //! refcount-cleanup logic), and per-field `FromValue` conversions in
 //! declaration order. Everything that *can* live at runtime does — the macro
 //! only emits what must be compile-time: the spec, monomorphised conversion
 //! calls, default expressions, and the final struct build.
-//!
-//! The `style` attribute names the CPython argument-parser family the target
-//! function uses (see `ErrorFamily` in `crates/monty/src/args/bind_native.rs` and
-//! the table in `crates/monty-macros/README.md`); it selects both error
-//! wording and error ordering. Pick it by looking at how the function is
-//! implemented in CPython, not by the shape of the fields.
 //!
 //! The output is hard-coded against monty-internal paths (`crate::args::...`,
 //! `crate::exception_private::ExcType`, etc.) because this derive is only used
@@ -26,29 +20,18 @@ use syn::{Data, DataStruct, DeriveInput, Expr, Fields, Ident, LitStr, Token, Typ
 
 pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let signature = Signature::parse(input)?;
-    Ok(signature.render())
+    Ok(signature.render(false))
 }
 
 /// Parsed, validated signature for a single struct deriving `FromArgs`.
-struct Signature {
+pub(super) struct Signature {
     struct_ident: Ident,
     /// Function name embedded in error messages (the `{name}()` prefix).
     func_name: String,
-    /// CPython parser family from `style = ...` (default [`Style::Clinic`]).
-    style: Style,
     /// Fields in declaration order — also the positional dispatch order.
     fields: Vec<Field>,
     varargs_idx: Option<usize>,
     varkwargs_idx: Option<usize>,
-    /// Pre-count `positional + kwarg` against the positional max before
-    /// dispatch, reproducing `PyArg_ParseTupleAndKeywords`' total pre-check.
-    /// A per-function empirical fact, not derivable from fields or style —
-    /// see the litmus test in `crates/monty-macros/README.md`.
-    at_most_total: bool,
-    /// Kwarg-free calls check positional arity with `_PyArg_CheckPositional`
-    /// wording first, modeling `tp_vectorcall` fast paths (`int`, `str`) that
-    /// only fall back to the clinic parser when keywords are present.
-    vectorcall: bool,
     /// Override for the function name in the unknown-kwarg error only.
     /// Used by `json.dumps`, which forwards unmatched kwargs to
     /// `JSONEncoder.__init__` and so reports that name instead.
@@ -66,40 +49,13 @@ struct Signature {
     kwargs_not_supported_yet: bool,
 }
 
-/// CPython argument-parser family, set with `#[from_args(style = ...)]`.
-/// Mirrors the runtime `ErrorFamily` 1:1 (the `C` pivot flag is computed from
-/// the fields at render time, not spelled by the user).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Style {
-    /// `style = def` — pure-Python `def` binding (e.g. the `re` module
-    /// functions, `json.dumps`/`loads`).
-    Def,
-    /// Default — Argument Clinic `_PyArg_UnpackKeywords` (most modern
-    /// builtins and methods).
-    Clinic,
-    /// `style = c` — `PyArg_ParseTupleAndKeywords` with no name in the format
-    /// string; errors say `function takes …` (e.g. `date`, `datetime`).
-    C,
-    /// `style = c_named` — same parser with the name embedded (`:name`);
-    /// errors say `{name}() …` (e.g. `timezone`, `pow`).
-    CNamed,
-    /// `style = unpack` — `PyArg_UnpackTuple`: fixed positional `min..max`
-    /// range, `{name} expected …` wording (e.g. `unicodedata.name`). When
-    /// min == max the runtime collapses to `expected N argument(s)`, so
-    /// exact-arity callables use this style too.
-    Unpack,
-    /// `style = parse_tuple` — `PyArg_ParseTuple` with a `:name` and no
-    /// keywords at all: the same positional `min..max` range as
-    /// [`Unpack`](Self::Unpack), worded `{name}() takes at least/most N
-    /// argument(s) (M given)` (e.g. `time.gmtime`, `time.strftime`).
-    ParseTuple,
-}
-
 /// `_PyArg_BadArgument` wording shape. CPython splits between positional
 /// (`strftime` and other `_PyArg_ParseTuple` callers) and named
 /// (`open`, `str.encode`, `bytes.decode`, …).
 #[derive(Clone, Copy)]
 enum BadArgStyle {
+    /// Methods default to positional errors for FromValue fields. Custom extractors use their own wording.
+    MethodDefault,
     /// `{name}() argument {pos} must be {expected}, not {got}`.
     Positional,
     /// `{name}() argument '{arg_name}' must be {expected}, not {got}`.
@@ -115,6 +71,7 @@ struct Field {
     default: Option<DefaultExpr>,
     /// Override for the `StaticStrings` variant used in kwarg dispatch.
     static_string: Option<Ident>,
+    extract_with: Option<syn::Path>,
     /// 1-indexed slot in the positional region, used by "pos N" error
     /// messages. `None` for kw_only / varargs / varkwargs.
     pos_index: Option<usize>,
@@ -160,7 +117,7 @@ impl DefaultExpr {
 }
 
 impl Signature {
-    fn parse(input: &DeriveInput) -> syn::Result<Self> {
+    pub(super) fn parse(input: &DeriveInput) -> syn::Result<Self> {
         let DeriveInput {
             ident: struct_ident,
             data,
@@ -181,9 +138,6 @@ impl Signature {
 
         let StructAttrs {
             name: func_name,
-            style,
-            at_most_total,
-            vectorcall,
             kwarg_error_name,
             bad_arg,
             kwargs_not_supported_yet,
@@ -201,6 +155,7 @@ impl Signature {
                 kind: opts.kind,
                 default: opts.default,
                 static_string: opts.static_string,
+                extract_with: opts.extract_with,
                 pos_index: None,
                 slot_index: None,
             });
@@ -211,12 +166,9 @@ impl Signature {
         let signature = Self {
             struct_ident: struct_ident.clone(),
             func_name,
-            style,
             fields,
             varargs_idx,
             varkwargs_idx,
-            at_most_total,
-            vectorcall,
             kwarg_error_name,
             bad_arg,
             kwargs_not_supported_yet,
@@ -225,73 +177,9 @@ impl Signature {
         Ok(signature)
     }
 
-    /// Style/modifier/field compatibility checks — the single place invalid
-    /// combinations are rejected. Grouped per style, then the orthogonal
-    /// modifiers, so each rule reads as one line of the compatibility table.
+    /// Checks that the signature modifiers and field roles can be used together.
     fn validate(&self) -> syn::Result<()> {
         let err = |msg: &str| Err(syn::Error::new(self.struct_ident.span(), msg));
-
-        match self.style {
-            Style::Def => {
-                if self.bad_arg.is_some() {
-                    return err("`bad_arg`/`bad_arg_named` cannot be combined with `style = def` \
-                         — CPython `def` binding never type-checks while binding; declare \
-                         fields as raw `Value` and coerce in the function body");
-                }
-            }
-            Style::Unpack | Style::ParseTuple => {
-                let style = if self.style == Style::Unpack {
-                    "unpack"
-                } else {
-                    "parse_tuple"
-                };
-                if self.fields.iter().any(|f| matches!(f.kind, FieldKind::PosOrKeyword)) {
-                    return err(&format!(
-                        "`style = {style}` models a positional-only signature \
-                         — every positional field must be `pos_only`"
-                    ));
-                }
-                if self.varargs_idx.is_some() || self.varkwargs_idx.is_some() {
-                    return err(&format!(
-                        "`style = {style}` cannot be combined with `varargs` or `varkwargs` \
-                         — it models a fixed positional min..max range"
-                    ));
-                }
-            }
-            Style::Clinic | Style::C | Style::CNamed => {}
-        }
-
-        if self.at_most_total {
-            if matches!(self.style, Style::Def | Style::Unpack | Style::ParseTuple) {
-                return err(
-                    "`at_most_total` cannot be combined with `style = def`, `style = unpack` or \
-                     `style = parse_tuple` — the total pre-count models \
-                     `PyArg_ParseTupleAndKeywords`-family C parsers",
-                );
-            }
-            if self.varargs_idx.is_some() || self.varkwargs_idx.is_some() {
-                return err("`at_most_total` cannot be combined with `varargs` or `varkwargs` \
-                     — the up-front total-count check is only meaningful for \
-                     signatures with a fixed maximum");
-            }
-        }
-
-        if self.vectorcall && !(self.at_most_total && self.style == Style::Clinic) {
-            return err("`vectorcall` requires the default `clinic` style plus `at_most_total` \
-                 — it models a `tp_vectorcall` fast path in front of a clinic parser");
-        }
-
-        if self.kwarg_error_name.is_some()
-            && !matches!(
-                self.style,
-                Style::Def | Style::Clinic | Style::Unpack | Style::ParseTuple
-            )
-        {
-            return err("`kwarg_error_name` is only meaningful with `style = def`, the default \
-                 `clinic` style, `style = unpack` or `style = parse_tuple` (where it names the \
-                 function in the `takes no keyword arguments` error) — the C families defer \
-                 unknown-kwarg errors past binding");
-        }
 
         if self.kwargs_not_supported_yet {
             if self.varkwargs_idx.is_some() {
@@ -377,7 +265,31 @@ impl Signature {
         Ok(())
     }
 
-    fn render(&self) -> TokenStream {
+    /// Only structs generated by `py_signature` are borrowed by a guarded function body.
+    pub(super) fn drop_bound_args(&self) -> TokenStream {
+        let name = &self.struct_ident;
+        let fields = self.fields.iter().map(|field| {
+            let ident = &field.ident;
+            let ty = &field.ty;
+            match field.kind {
+                FieldKind::Varargs | FieldKind::Varkwargs => {
+                    quote!(crate::heap::DropWithContext::drop_with(self.#ident, heap);)
+                }
+                _ => quote!(<#ty as crate::args::FromValue>::drop_extracted(self.#ident, heap);),
+            }
+        });
+        quote! {
+            #[automatically_derived]
+            impl<C: crate::heap::ContainsHeap> crate::heap::DropWithContext<C> for #name {
+                fn drop_with(self, heap: &mut C) { #(#fields)* }
+            }
+        }
+    }
+
+    pub(super) fn render(mut self, bound_receiver: bool) -> TokenStream {
+        if bound_receiver {
+            self.bad_arg.get_or_insert(BadArgStyle::MethodDefault);
+        }
         let struct_ident = &self.struct_ident;
         // Dedicated owning-slots struct: holds the raw `Bound` returned by the
         // runtime binder plus one typed `Option` per named field. A `DropGuard`
@@ -397,8 +309,9 @@ impl Signature {
             .collect();
         let n_required_positional = positional.iter().filter(|f| f.default.is_none()).count();
 
+        let empty_keywords = quote!(crate::args::KwargsValues::Empty);
         let fast_empty = if n_required_positional == 0 {
-            let default_inits = self.default_field_inits(&positional, 0);
+            let default_inits = self.default_field_inits(&positional, 0, &empty_keywords);
             quote! {
                 if let crate::args::ArgValues::Empty = args {
                     return ::std::result::Result::Ok(Self {
@@ -413,12 +326,11 @@ impl Signature {
         let fast_one = if self.varargs_idx.is_none() && n_required_positional <= 1 && !positional.is_empty() {
             let f0 = positional[0];
             let f0_ident = &f0.ident;
-            let f0_ty = &f0.ty;
-            let f0_ctx = self.render_err_ctx(f0);
-            let default_inits = self.default_field_inits(&positional, 1);
+            let extract0 = self.render_extract_value(f0, &quote!(__v0));
+            let default_inits = self.default_field_inits(&positional, 1, &empty_keywords);
             quote! {
                 if let crate::args::ArgValues::One(__v0) = args {
-                    let __arg0 = <#f0_ty as crate::args::FromValue>::extract(__v0, vm, #f0_ctx)?;
+                    let __arg0 = #extract0?;
                     return ::std::result::Result::Ok(Self {
                         #f0_ident: __arg0,
                         #(#default_inits,)*
@@ -431,26 +343,25 @@ impl Signature {
 
         let fast_two = if self.varargs_idx.is_none() && n_required_positional <= 2 && positional.len() >= 2 {
             let f0 = positional[0];
+            let f1 = positional[1];
             let f0_ident = &f0.ident;
             let f0_ty = &f0.ty;
-            let f0_ctx = self.render_err_ctx(f0);
+            let extract0 = self.render_extract_value(f0, &quote!(__v0));
 
-            let f1 = positional[1];
             let f1_ident = &f1.ident;
-            let f1_ty = &f1.ty;
-            let f1_ctx = self.render_err_ctx(f1);
+            let extract1 = self.render_extract_value(f1, &quote!(__v1));
 
-            let default_inits = self.default_field_inits(&positional, 2);
+            let default_inits = self.default_field_inits(&positional, 2, &empty_keywords);
             quote! {
                 if let crate::args::ArgValues::Two(__v0, __v1) = args {
-                    let __arg0 = match <#f0_ty as crate::args::FromValue>::extract(__v0, vm, #f0_ctx) {
+                    let __arg0 = match #extract0 {
                         ::core::result::Result::Ok(__val) => __val,
                         ::core::result::Result::Err(__err) => {
                             crate::heap::DropWithContext::drop_with(__v1, vm);
                             return ::core::result::Result::Err(__err);
                         }
                     };
-                    let __arg1 = match <#f1_ty as crate::args::FromValue>::extract(__v1, vm, #f1_ctx) {
+                    let __arg1 = match #extract1 {
                         ::core::result::Result::Ok(__val) => __val,
                         ::core::result::Result::Err(__err) => {
                             <#f0_ty as crate::args::FromValue>::drop_extracted(__arg0, vm);
@@ -468,9 +379,29 @@ impl Signature {
             quote!()
         };
 
-        let spec = self.render_spec(&named);
+        let func_name = &self.func_name;
+        let binding = self.binding_spec(bound_receiver);
+        let fast_keywords = (n_required_positional == 0 && self.varkwargs_idx.is_some()).then(|| {
+            let inits = self.default_field_inits(&positional, 0, &quote!(__keywords));
+            quote! {
+                if __SPEC.forwards_keywords()
+                    && let crate::args::ArgValues::Kwargs(__keywords @ crate::args::KwargsValues::Inline(_)) = args
+                {
+                    return Ok(Self { #(#inits,)* });
+                }
+            }
+        });
         let conversions = named.iter().map(|f| self.render_conversion(f));
         let build_fields = self.fields.iter().map(render_build_field);
+        let (guarded, bindings, collector) = if self.varkwargs_idx.is_some() {
+            (
+                quote!((__slots, crate::args::KwargsValues::Empty)),
+                quote!((__slots, __keywords)),
+                quote!(Some(__keywords)),
+            )
+        } else {
+            (quote!(__slots), quote!(__slots), quote!(None))
+        };
 
         quote! {
             /// Owning slots for the corresponding `from_args`: the raw bound
@@ -497,10 +428,11 @@ impl Signature {
             #[automatically_derived]
             impl #struct_ident {
                 /// Extract arguments into `Self`. Binding (dispatch, arity,
-                /// kwargs, cleanup) happens in `crate::args::bind`; this body
-                /// only converts each raw slot in declaration order. On any
+                /// kwargs, cleanup) happens in `ParamSpec::bind`; this body
+                /// only converts the raw slots and applies defaults. On any
                 /// error path every remaining value is dropped via the slots
                 /// struct's `DropWithContext` impl (driven by a `DropGuard`).
+                #[inline]
                 pub(crate) fn from_args(
                     args: crate::args::ArgValues,
                     vm: &mut crate::bytecode::VM<'_>,
@@ -508,25 +440,30 @@ impl Signature {
                     #fast_empty
                     #fast_one
                     #fast_two
+                    Self::from_args_slow(args, vm)
+                }
 
-                    #spec
+                #[inline(never)]
+                fn from_args_slow(
+                    args: crate::args::ArgValues,
+                    vm: &mut crate::bytecode::VM<'_>,
+                ) -> crate::exception_private::RunResult<Self> {
+                    static __SPEC: crate::args::ParamSpec<#n_slots> = #binding;
+                    #fast_keywords
 
                     // The guard owns cleanup on every error path — including
                     // inside `bind`, which fills the slots in place. On the
                     // success path every slot is drained by the build below,
                     // so the guard's drop at scope exit is a cheap no-op.
-                    let mut __guard = crate::heap::DropGuard::new(
-                        #slots_struct_ident {
-                            raw: crate::args::Bound::new(&__SPEC),
-                            #(#slot_idents: ::std::option::Option::None,)*
-                        },
-                        vm,
-                    );
-                    let (__slots, vm) = __guard.as_parts_mut();
-                    crate::args::bind::<#n_slots>(&__SPEC, &mut __slots.raw, args, vm)?;
+                    let __slots = #slots_struct_ident {
+                        raw: crate::args::Bound::new(),
+                        #(#slot_idents: ::std::option::Option::None,)*
+                    };
+                    let mut __guard = crate::heap::DropGuard::new(#guarded, vm);
+                    let (#bindings, vm) = __guard.as_parts_mut();
+                    __SPEC.bind( #func_name, &mut __slots.raw, args, #collector, vm)?;
 
                     #(#conversions)*
-                    __slots.raw.finish()?;
 
                     ::std::result::Result::Ok(Self {
                         #(#build_fields)*
@@ -536,7 +473,7 @@ impl Signature {
         }
     }
 
-    fn default_field_inits(&self, positional: &[&Field], start_pos: usize) -> Vec<TokenStream> {
+    fn default_field_inits(&self, positional: &[&Field], start_pos: usize, keywords: &TokenStream) -> Vec<TokenStream> {
         let mut inits: Vec<TokenStream> = Vec::new();
         for f in &positional[start_pos..] {
             let ident = &f.ident;
@@ -562,96 +499,70 @@ impl Signature {
         }
         if let Some(idx) = self.varkwargs_idx {
             let ident = &self.fields[idx].ident;
-            inits.push(quote!(#ident: crate::args::KwargsValues::Empty));
+            inits.push(quote!(#ident: #keywords));
         }
         inits
     }
 
     /// The `static __SPEC: ParamSpec` literal interpreted by the runtime binder.
-    fn render_spec(&self, named: &[&Field]) -> TokenStream {
-        let func_name = self.func_name.as_str();
-        // Under `kwargs_not_supported_yet` no kwarg is ever dispatched (they
-        // are all rejected up front), so no field needs a matchable id — this
-        // also spares the `StaticStrings` variants those names would require.
+    fn binding_spec(&self, bound_receiver: bool) -> TokenStream {
+        let named: Vec<_> = self.named_fields().collect();
         let params = named.iter().map(|f| f.render_param(self.kwargs_not_supported_yet));
-        let family = self.render_family(named);
-        let n_positional = named
-            .iter()
-            .filter(|f| matches!(f.kind, FieldKind::PosOnly | FieldKind::PosOrKeyword))
-            .count();
-        let n_required_positional = named
-            .iter()
-            .filter(|f| matches!(f.kind, FieldKind::PosOnly | FieldKind::PosOrKeyword) && f.default.is_none())
-            .count();
-        let n_required_pos_only = named
-            .iter()
-            .filter(|f| matches!(f.kind, FieldKind::PosOnly) && f.default.is_none())
-            .count();
-        let varargs = self.varargs_idx.is_some();
-        let varkwargs = self.varkwargs_idx.is_some();
-        let at_most_total = self.at_most_total;
-        let vectorcall = self.vectorcall;
-        let kwargs_not_supported_yet = self.kwargs_not_supported_yet;
-        let kwarg_error_name = if let Some(name) = &self.kwarg_error_name {
-            quote! { ::std::option::Option::Some(#name) }
-        } else {
-            quote! { ::std::option::Option::None }
-        };
-        quote! {
-            static __SPEC: crate::args::ParamSpec = crate::args::ParamSpec {
-                func_name: #func_name,
-                family: #family,
-                params: &[#(#params),*],
-                n_positional: #n_positional,
-                n_required_positional: #n_required_positional,
-                n_required_pos_only: #n_required_pos_only,
-                varargs: #varargs,
-                varkwargs: #varkwargs,
-                at_most_total: #at_most_total,
-                vectorcall: #vectorcall,
-                kwargs_not_supported_yet: #kwargs_not_supported_yet,
-                kwarg_error_name: #kwarg_error_name,
-            };
-        }
+        let varargs = self.varargs_idx.map(|i| {
+            let name = self.fields[i].ident.to_string();
+            quote!(.varargs(#name))
+        });
+        let varkwargs = self.varkwargs_idx.map(|i| {
+            let name = self.fields[i].ident.to_string();
+            quote!(.varkwargs(#name))
+        });
+        let unsupported = self
+            .kwargs_not_supported_yet
+            .then(|| quote!(.kwargs_not_supported_yet()));
+        let receiver = bound_receiver.then(|| quote!(.bound_receiver()));
+        let error_name = self
+            .kwarg_error_name
+            .as_ref()
+            .map(|name| quote!(.kwarg_error_name(#name)));
+        quote!(crate::args::ParamSpec::new([#(#params),*]) #varargs #varkwargs #unsupported #receiver #error_name)
     }
 
-    /// The runtime `ErrorFamily` value for this style. The C families'
-    /// positional-pivot wording is derived, not spelled: CPython's
-    /// `vgetargskeywords` / `_PyArg_UnpackKeywords` switch to
-    /// `… positional argument(s) …` exactly when the function has
-    /// keyword-only parameters.
-    fn render_family(&self, named: &[&Field]) -> TokenStream {
-        let pivot = named.iter().any(|f| matches!(f.kind, FieldKind::KwOnly));
-        match self.style {
-            Style::Def => quote! { crate::args::ErrorFamily::Def },
-            Style::Clinic => quote! { crate::args::ErrorFamily::Clinic },
-            Style::C => quote! { crate::args::ErrorFamily::C { positional_pivot: #pivot } },
-            Style::CNamed => quote! { crate::args::ErrorFamily::CNamed { positional_pivot: #pivot } },
-            Style::Unpack => quote! { crate::args::ErrorFamily::Unpack },
-            Style::ParseTuple => quote! { crate::args::ErrorFamily::ParseTuple },
-        }
-    }
-
-    /// One field's conversion: `require` (required) or `take` (defaulted) the
-    /// raw slot, then `FromValue::extract_into` it into the typed slot. The
-    /// per-param call order is what lets the C families interleave
-    /// missing/conflict errors with conversion, exactly like CPython.
+    /// Convert a bound slot or leave an omitted optional argument for its default.
     fn render_conversion(&self, field: &Field) -> TokenStream {
         let ident = &field.ident;
-        let ty = &field.ty;
         let slot_index = field.slot_index.expect("named field has a slot");
-        let ctx = self.render_err_ctx(field);
+        let extract = self.render_extract(field, &quote!(__slots.#ident));
         if field.default.is_none() {
             quote! {
-                let __v = __slots.raw.require(#slot_index)?;
-                <#ty as crate::args::FromValue>::extract_into(__v, &mut __slots.#ident, vm, #ctx)?;
+                let __v = __slots.raw.require(#slot_index);
+                #extract
             }
         } else {
             quote! {
                 if let ::std::option::Option::Some(__v) = __slots.raw.take(#slot_index) {
-                    <#ty as crate::args::FromValue>::extract_into(__v, &mut __slots.#ident, vm, #ctx)?;
+                    #extract
                 }
             }
+        }
+    }
+
+    fn render_extract_value(&self, field: &Field, value: &TokenStream) -> TokenStream {
+        let ctx = self.render_err_ctx(field);
+        if let Some(path) = &field.extract_with {
+            quote!(#path(#value, vm, #ctx))
+        } else {
+            let ty = &field.ty;
+            quote!(<#ty as crate::args::FromValue>::extract(#value, vm, #ctx))
+        }
+    }
+
+    fn render_extract(&self, field: &Field, slot: &TokenStream) -> TokenStream {
+        let ctx = self.render_err_ctx(field);
+        if let Some(path) = &field.extract_with {
+            quote! { #slot = ::std::option::Option::Some(#path(__v, vm, #ctx)?); }
+        } else {
+            let ty = &field.ty;
+            quote! { <#ty as crate::args::FromValue>::extract_into(__v, &mut #slot, vm, #ctx)?; }
         }
     }
 
@@ -661,7 +572,10 @@ impl Signature {
         let func_name = self.func_name.as_str();
         match self.bad_arg {
             None => quote! { crate::args::ArgErrCtx::Plain },
-            Some(BadArgStyle::Positional) => {
+            Some(BadArgStyle::MethodDefault) if field.extract_with.is_some() => {
+                quote! { crate::args::ArgErrCtx::Plain }
+            }
+            Some(BadArgStyle::Positional | BadArgStyle::MethodDefault) => {
                 // kw_only fields have no positional index; CPython
                 // `_PyArg_BadArgument` callers don't use kw_only, so 0 is fine.
                 let pos = field.pos_index.unwrap_or(0);
@@ -778,7 +692,9 @@ fn render_build_field(field: &Field) -> TokenStream {
     let ident = &field.ident;
     match field.kind {
         FieldKind::Varargs => quote! { #ident: __slots.raw.take_varargs(), },
-        FieldKind::Varkwargs => quote! { #ident: __slots.raw.take_varkwargs(), },
+        FieldKind::Varkwargs => {
+            quote! { #ident: ::std::mem::replace(__keywords, crate::args::KwargsValues::Empty), }
+        }
         _ => match &field.default {
             None => quote! {
                 #ident: __slots.#ident.take().expect("required FromArgs slot checked before build"),
@@ -797,65 +713,24 @@ impl Field {
     /// The `Param` literal for the runtime spec.
     fn render_param(&self, never_matchable: bool) -> TokenStream {
         let name = self.ident.to_string();
-        let keyword_name = self.keyword_name_expr(never_matchable);
-        let kind = match self.kind {
-            FieldKind::PosOnly => quote! { crate::args::ParamKind::PosOnly },
-            FieldKind::PosOrKeyword => quote! { crate::args::ParamKind::PosOrKeyword },
-            FieldKind::KwOnly => quote! { crate::args::ParamKind::KwOnly },
-            FieldKind::Varargs | FieldKind::Varkwargs => unreachable!("varargs/varkwargs own no param slot"),
-        };
-        let required = self.default.is_none();
-        quote! {
-            crate::args::Param {
-                name: #name,
-                keyword_name: #keyword_name,
-                kind: #kind,
-                required: #required,
-            }
-        }
-    }
-
-    /// Executor-independent tag used to match this parameter by keyword.
-    fn keyword_name_expr(&self, never_matchable: bool) -> TokenStream {
-        if never_matchable || matches!(self.kind, FieldKind::PosOnly) && self.static_string.is_none() {
-            quote! { ::std::option::Option::None }
+        let constructor = if never_matchable || self.kind == FieldKind::PosOnly {
+            quote!(crate::args::Param::pos_only(#name))
         } else {
-            let variant = self.static_string_variant();
-            quote! { ::std::option::Option::Some(crate::intern::StaticStrings::#variant) }
-        }
-    }
-
-    /// The ASCII-letter or PascalCase variant for a field, unless explicitly overridden.
-    fn static_string_variant(&self) -> Ident {
-        if let Some(explicit) = &self.static_string {
-            explicit.clone()
-        } else {
-            let name = self.ident.to_string();
-            let variant = match name.as_bytes() {
-                [byte @ b'a'..=b'z'] => format!("AsciiLower{}", char::from(byte.to_ascii_uppercase())),
-                [b'A'..=b'Z'] => format!("Ascii{name}"),
-                _ => snake_to_pascal(&name),
+            let tag = if let Some(variant) = &self.static_string {
+                quote!(crate::intern::StaticStrings::#variant)
+            } else {
+                let message = format!("add the keyword `{name}` to StaticStrings");
+                quote!(crate::intern::StaticStrings::from_keyword(#name).expect(#message))
             };
-            Ident::new(&variant, self.ident.span())
-        }
+            match self.kind {
+                FieldKind::PosOrKeyword => quote!(crate::args::Param::keyword(#tag)),
+                FieldKind::KwOnly => quote!(crate::args::Param::kw_only(#tag)),
+                _ => unreachable!("collector fields have no slot"),
+            }
+        };
+        let optional = self.default.is_some().then(|| quote!(.optional()));
+        quote!(#constructor #optional)
     }
-}
-
-/// Converts a Rust snake-case field name to its `StaticStrings` variant name.
-fn snake_to_pascal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut upper = true;
-    for c in s.chars() {
-        if c == '_' {
-            upper = true;
-        } else if upper {
-            out.extend(c.to_uppercase());
-            upper = false;
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// True for a literal `Vec<Value>` type (by final path segments — the only
@@ -882,9 +757,6 @@ fn is_vec_of_value(ty: &Type) -> bool {
 /// Parsed `#[from_args(...)]` set on the struct itself.
 struct StructAttrs {
     name: String,
-    style: Style,
-    at_most_total: bool,
-    vectorcall: bool,
     kwarg_error_name: Option<String>,
     bad_arg: Option<BadArgStyle>,
     kwargs_not_supported_yet: bool,
@@ -893,9 +765,6 @@ struct StructAttrs {
 /// Parse the `#[from_args(...)]` attributes attached to the struct itself.
 fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
     let mut name: Option<String> = None;
-    let mut style: Option<Style> = None;
-    let mut at_most_total = false;
-    let mut vectorcall = false;
     let mut kwarg_error_name: Option<String> = None;
     let mut bad_arg: Option<BadArgStyle> = None;
     let mut kwargs_not_supported_yet = false;
@@ -907,34 +776,6 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
             if meta.path.is_ident("name") {
                 let value: LitStr = meta.value()?.parse()?;
                 name = Some(value.value());
-                Ok(())
-            } else if meta.path.is_ident("style") {
-                if style.is_some() {
-                    return Err(meta.error("duplicate `style` attribute"));
-                }
-                let value: Ident = meta.value()?.parse()?;
-                style = Some(match value.to_string().as_str() {
-                    "def" => Style::Def,
-                    "clinic" => Style::Clinic,
-                    "c" => Style::C,
-                    "c_named" => Style::CNamed,
-                    "unpack" => Style::Unpack,
-                    "parse_tuple" => Style::ParseTuple,
-                    other => {
-                        return Err(syn::Error::new(
-                            value.span(),
-                            format!(
-                                "unknown style `{other}`; expected `def`, `clinic`, `c`, `c_named`, `unpack`, or `parse_tuple`"
-                            ),
-                        ));
-                    }
-                });
-                Ok(())
-            } else if meta.path.is_ident("at_most_total") {
-                at_most_total = true;
-                Ok(())
-            } else if meta.path.is_ident("vectorcall") {
-                vectorcall = true;
                 Ok(())
             } else if meta.path.is_ident("kwarg_error_name") {
                 let value: LitStr = meta.value()?.parse()?;
@@ -957,8 +798,8 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 Ok(())
             } else {
                 Err(meta.error(
-                    "unknown struct attribute; expected `name = \"...\"`, `style = def|clinic|c|c_named|unpack|parse_tuple`, \
-                     `at_most_total`, `vectorcall`, `kwarg_error_name = \"...\"`, `bad_arg`, `bad_arg_named`, \
+                    "unknown struct attribute; expected `name = \"...\"`, \
+                     `kwarg_error_name = \"...\"`, `bad_arg`, `bad_arg_named`, \
                      or `kwargs_not_supported_yet`",
                 ))
             }
@@ -972,9 +813,6 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
     })?;
     Ok(StructAttrs {
         name,
-        style: style.unwrap_or(Style::Clinic),
-        at_most_total,
-        vectorcall,
         kwarg_error_name,
         bad_arg,
         kwargs_not_supported_yet,
@@ -983,6 +821,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
 
 #[derive(Default)]
 pub(crate) struct FieldAttrs {
+    pub(super) extract_with: Option<syn::Path>,
     pub(crate) kind: FieldKind,
     pub(crate) default: Option<DefaultExpr>,
     pub(crate) static_string: Option<Ident>,
@@ -1026,6 +865,12 @@ pub(crate) fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAt
                     out.default = Some(DefaultExpr::DefaultTrait);
                 }
                 Ok(())
+            } else if meta.path.is_ident("extract_with") {
+                if out.extract_with.is_some() {
+                    return Err(meta.error("duplicate `extract_with` attribute"));
+                }
+                out.extract_with = Some(meta.value()?.parse()?);
+                Ok(())
             } else if meta.path.is_ident("static_string") {
                 let value: LitStr = meta.value()?.parse()?;
                 out.static_string = Some(Ident::new(&value.value(), value.span()));
@@ -1034,6 +879,14 @@ pub(crate) fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAt
                 Err(meta.error("unknown field attribute"))
             }
         })?;
+    }
+    if let Some(path) = &out.extract_with
+        && matches!(out.kind, FieldKind::Varargs | FieldKind::Varkwargs)
+    {
+        return Err(syn::Error::new_spanned(
+            path,
+            "`extract_with` requires a named parameter slot",
+        ));
     }
     Ok(out)
 }
@@ -1064,10 +917,10 @@ mod tests {
     }
 
     #[test]
-    fn valid_one_struct_per_style() {
+    fn valid_signature_shapes() {
         expand_ok(&parse_quote! {
-            #[from_args(name = "search", style = def)]
-            struct Def {
+            #[from_args(name = "search")]
+            struct Search {
                 pattern: Value,
                 #[from_args(default)]
                 flags: Value,
@@ -1077,7 +930,7 @@ mod tests {
         });
         expand_ok(&parse_quote! {
             #[from_args(name = "replace")]
-            struct Clinic {
+            struct Replace {
                 #[from_args(pos_only)]
                 old: Value,
                 #[from_args(pos_only)]
@@ -1087,25 +940,8 @@ mod tests {
             }
         });
         expand_ok(&parse_quote! {
-            #[from_args(name = "date", style = c, at_most_total)]
-            struct C {
-                year: i32,
-                month: i32,
-                #[from_args(kw_only, default)]
-                fold: Value,
-            }
-        });
-        expand_ok(&parse_quote! {
-            #[from_args(name = "timezone", style = c_named, at_most_total)]
-            struct CNamed {
-                offset: Value,
-                #[from_args(default)]
-                name: Value,
-            }
-        });
-        expand_ok(&parse_quote! {
-            #[from_args(name = "unicodedata.name", style = unpack)]
-            struct Unpack {
+            #[from_args(name = "unicodedata.name")]
+            struct PositionalOnly {
                 #[from_args(pos_only)]
                 chr: Value,
                 #[from_args(pos_only, default)]
@@ -1130,84 +966,6 @@ mod tests {
                 kwargs: KwargsValues,
             }
         });
-    }
-
-    #[test]
-    fn unknown_style() {
-        let err = expand_err(&parse_quote! {
-            #[from_args(name = "f", style = fancy)]
-            struct S { a: Value }
-        });
-        assert_snapshot!(err, @"unknown style `fancy`; expected `def`, `clinic`, `c`, `c_named`, `unpack`, or `parse_tuple`");
-    }
-
-    #[test]
-    fn def_rejects_bad_arg() {
-        let err = expand_err(&parse_quote! {
-            #[from_args(name = "f", style = def, bad_arg)]
-            struct S { a: Value }
-        });
-        assert_snapshot!(err, @"`bad_arg`/`bad_arg_named` cannot be combined with `style = def` — CPython `def` binding never type-checks while binding; declare fields as raw `Value` and coerce in the function body");
-    }
-
-    #[test]
-    fn unpack_rejects_pos_or_keyword() {
-        let err = expand_err(&parse_quote! {
-            #[from_args(name = "f", style = unpack)]
-            struct S { a: Value }
-        });
-        assert_snapshot!(err, @"`style = unpack` models a positional-only signature — every positional field must be `pos_only`");
-    }
-
-    #[test]
-    fn at_most_total_rejects_def_and_unpack() {
-        let err = expand_err(&parse_quote! {
-            #[from_args(name = "f", style = def, at_most_total)]
-            struct S { a: Value }
-        });
-        assert_snapshot!(err, @"`at_most_total` cannot be combined with `style = def`, `style = unpack` or `style = parse_tuple` — the total pre-count models `PyArg_ParseTupleAndKeywords`-family C parsers");
-    }
-
-    #[test]
-    fn at_most_total_rejects_varargs() {
-        let err = expand_err(&parse_quote! {
-            #[from_args(name = "f", at_most_total)]
-            struct S {
-                #[from_args(varargs)]
-                args: Vec<Value>,
-            }
-        });
-        assert_snapshot!(err, @"`at_most_total` cannot be combined with `varargs` or `varkwargs` — the up-front total-count check is only meaningful for signatures with a fixed maximum");
-    }
-
-    #[test]
-    fn vectorcall_requires_clinic_and_at_most_total() {
-        let err = expand_err(&parse_quote! {
-            #[from_args(name = "int", vectorcall)]
-            struct S {
-                #[from_args(pos_only, default)]
-                x: Value,
-            }
-        });
-        assert_snapshot!(err, @"`vectorcall` requires the default `clinic` style plus `at_most_total` — it models a `tp_vectorcall` fast path in front of a clinic parser");
-        expand_ok(&parse_quote! {
-            #[from_args(name = "int", at_most_total, vectorcall)]
-            struct S {
-                #[from_args(pos_only, default)]
-                x: Value,
-                #[from_args(default)]
-                base: Value,
-            }
-        });
-    }
-
-    #[test]
-    fn kwarg_error_name_requires_def_or_clinic() {
-        let err = expand_err(&parse_quote! {
-            #[from_args(name = "f", style = c_named, kwarg_error_name = "g")]
-            struct S { a: Value }
-        });
-        assert_snapshot!(err, @"`kwarg_error_name` is only meaningful with `style = def`, the default `clinic` style, `style = unpack` or `style = parse_tuple` (where it names the function in the `takes no keyword arguments` error) — the C families defer unknown-kwarg errors past binding");
     }
 
     #[test]
@@ -1311,9 +1069,28 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_custom_extractors() {
+        let err = expand_err(&parse_quote! {
+            #[from_args(name = "f")]
+            struct S {
+                #[from_args(extract_with = first, extract_with = second)]
+                value: Value,
+            }
+        });
+        assert_snapshot!(err, @"duplicate `extract_with` attribute");
+
+        let err = expand_err(&parse_quote! {
+            #[from_args(name = "f")]
+            struct S {
+                #[from_args(varargs, extract_with = convert)]
+                values: Vec<Value>,
+            }
+        });
+        assert_snapshot!(err, @"`extract_with` requires a named parameter slot");
+    }
+
+    #[test]
     fn old_flag_spellings_are_rejected() {
-        // The pre-`style` boolean flags were removed in one clean break; make
-        // sure they fail loudly rather than being silently ignored.
         for old_flag in [
             "py_def",
             "c_error",

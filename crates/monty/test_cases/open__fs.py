@@ -198,14 +198,22 @@ try:
 except ValueError as exc:
     assert str(exc) == 'I/O operation on closed file.', f'unexpected closed-write message: {exc}'
 
-# an invalid ignored-kwarg type must not leak the file/mode arguments
+# Each nullable text argument reports its own name before open creates a file.
+invalid_options_path = root / 'invalid_options.txt'
+for option in ('encoding', 'errors', 'newline'):
+    try:
+        open(invalid_options_path, 'w', **{option: []})
+    except TypeError as exc:
+        assert str(exc) == f"open() argument '{option}' must be str or None, not list"
+    else:
+        assert False
 try:
-    open(root / 'hello.txt', encoding=123)
-    assert False, 'expected non-str encoding to fail'
+    open(invalid_options_path, 'w', buffering=0, errors=[])
 except TypeError as exc:
-    assert str(exc) == "open() argument 'encoding' must be str or None, not int", (
-        f'unexpected encoding type message: {exc}'
-    )
+    assert str(exc) == "open() argument 'errors' must be str or None, not list"
+else:
+    assert False
+assert not invalid_options_path.exists()
 
 # === Wrong-type `mode` matches CPython's `_PyArg_BadArgument` wording ===
 # Driven by `bad_arg_named` on `OpenArgs`. The `None`-vs-`NoneType` special

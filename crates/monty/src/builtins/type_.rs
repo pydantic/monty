@@ -2,9 +2,11 @@
 
 use std::mem;
 
+use monty_macros::py_signature;
+
 use super::object::builtin_object_init_subclass;
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues},
+    args::{ArgValues, KwargsValues},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -280,14 +282,8 @@ pub(crate) fn run_init_subclass(class_id: HeapId, kwargs: KwargsValues, vm: &mut
 }
 
 /// Arguments of `type.mro(cls, /)`.
-#[derive(FromArgs)]
-#[from_args(name = "type.mro")]
-struct TypeMroArgs {
-    #[from_args(pos_only, default)]
-    cls: Option<Value>,
-    #[from_args(varargs)]
-    extra: Vec<Value>,
-}
+#[py_signature("mro(cls=..., /, *extra)", error_name = "type.mro")]
+struct TypeMroArgs;
 
 /// `type.mro(cls)`: the class's method resolution order, as a fresh list.
 pub(crate) fn builtin_type_mro(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {

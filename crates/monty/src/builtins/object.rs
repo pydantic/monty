@@ -4,15 +4,13 @@
 //! They are reached as `object.__init__`, through a class that defines no
 //! override (`Foo.__init__`).
 
-use monty_macros::pyattrs;
+use monty_macros::{py_signature, pyattrs};
 
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues},
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::VM,
-    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropWithContext, HeapData, HeapId, HeapRead},
+    heap::{HeapData, HeapId, HeapRead},
     py_attrs::PyAttrs,
     types::{Dict, Instance, PyTrait, Type, TypeRef, instance::class_defines},
     value::Value,
@@ -58,32 +56,17 @@ pub(crate) fn object_method(name: &str) -> Option<BuiltinsFunctions> {
     })
 }
 
-/// Arguments of `object.__new__(cls, /, *args, **kwargs)`.
-#[derive(FromArgs)]
-#[from_args(name = "object.__new__")]
-struct ObjectNewArgs {
-    #[from_args(pos_only, default)]
-    cls: Option<Value>,
-    #[from_args(varargs)]
-    args: Vec<Value>,
-    #[from_args(varkwargs)]
-    kwargs: KwargsValues,
-}
-
 /// `object.__new__(cls, *args, **kwargs)`: a new, empty instance of the class `cls`.
 ///
 /// Extra arguments are an error unless the class overrides `__init__` and not
 /// `__new__`, CPython's `object_new` rule. Native classes have their own
 /// `__new__`, and `object()` itself cannot be built (see `limitations/classes.md`).
-pub(crate) fn builtin_object_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ObjectNewArgs { cls, args, kwargs } = ObjectNewArgs::from_args(args, vm)?;
-    let excess = !args.is_empty() || !kwargs.is_empty();
-    args.drop_with(vm);
-    kwargs.drop_with(vm);
-    let Some(cls) = cls else {
+#[py_signature("__new__(cls=..., /, *args, **kwargs)", error_name = "object.__new__")]
+pub(crate) fn builtin_object_new(vm: &mut VM<'_>, params: &ObjectNewArgs) -> RunResult<Value> {
+    let excess = !params.args.is_empty() || !params.kwargs.is_empty();
+    let Some(cls) = &params.cls else {
         return Err(ExcType::type_error("object.__new__(): not enough arguments"));
     };
-    defer_drop!(cls, vm);
     let class_id = match TypeRef::from_value(cls, vm.heap) {
         Some(TypeRef::Class(id)) if matches!(vm.heap.get(id), HeapData::Class(_)) => id,
         Some(TypeRef::Native(Type::Object)) => {
@@ -127,32 +110,17 @@ pub(crate) fn builtin_object_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<
     Ok(Value::allocate(instance, vm.heap))
 }
 
-/// Arguments of `object.__init__(self, /, *args, **kwargs)`.
-#[derive(FromArgs)]
-#[from_args(name = "object.__init__")]
-struct ObjectInitArgs {
-    #[from_args(pos_only, default)]
-    instance: Option<Value>,
-    #[from_args(varargs)]
-    args: Vec<Value>,
-    #[from_args(varkwargs)]
-    kwargs: KwargsValues,
-}
-
 /// `object.__init__(self, *args, **kwargs)`: does nothing, but rejects extra
 /// arguments unless the class overrides `__new__` and not `__init__`, CPython's
 /// `object_init` rule.
-pub(crate) fn builtin_object_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ObjectInitArgs { instance, args, kwargs } = ObjectInitArgs::from_args(args, vm)?;
-    let excess = !args.is_empty() || !kwargs.is_empty();
-    args.drop_with(vm);
-    kwargs.drop_with(vm);
-    let Some(instance) = instance else {
+#[py_signature("__init__(instance=..., /, *args, **kwargs)", error_name = "object.__init__")]
+pub(crate) fn builtin_object_init(vm: &mut VM<'_>, params: &ObjectInitArgs) -> RunResult<Value> {
+    let excess = !params.args.is_empty() || !params.kwargs.is_empty();
+    let Some(instance) = &params.instance else {
         return Err(ExcType::type_error(
             "descriptor '__init__' of 'object' object needs an argument",
         ));
     };
-    defer_drop!(instance, vm);
     if !excess {
         return Ok(Value::None);
     }
@@ -197,34 +165,20 @@ fn native_overrides_init(ty: Type) -> bool {
         )
 }
 
-/// Arguments of `object.__init_subclass__(cls, /)`, which accepts no keywords.
-#[derive(FromArgs)]
-#[from_args(name = "object.__init_subclass__")]
-struct ObjectInitSubclassArgs {
-    #[from_args(pos_only, default)]
-    cls: Option<Value>,
-    #[from_args(varargs)]
-    args: Vec<Value>,
-    #[from_args(varkwargs)]
-    kwargs: KwargsValues,
-}
-
 /// `object.__init_subclass__(cls)`: the hook run after a class statement,
 /// which does nothing but reject arguments the statement passed.
-pub(crate) fn builtin_object_init_subclass(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ObjectInitSubclassArgs { cls, args, kwargs } = ObjectInitSubclassArgs::from_args(args, vm)?;
-    let given = args.len();
-    let has_kwargs = !kwargs.is_empty();
-    args.drop_with(vm);
-    kwargs.drop_with(vm);
-    let name = match cls {
-        Some(cls) => {
-            defer_drop!(cls, vm);
-            match TypeRef::from_value(cls, vm.heap) {
-                Some(ty) => ty.dunder_name(vm.heap, vm.interns).into_owned(),
-                None => "object".to_owned(),
-            }
-        }
+#[py_signature(
+    "__init_subclass__(cls=..., /, *args, **kwargs)",
+    error_name = "object.__init_subclass__"
+)]
+pub(crate) fn builtin_object_init_subclass(vm: &mut VM<'_>, params: &ObjectInitSubclassArgs) -> RunResult<Value> {
+    let given = params.args.len();
+    let has_kwargs = !params.kwargs.is_empty();
+    let name = match &params.cls {
+        Some(cls) => match TypeRef::from_value(cls, vm.heap) {
+            Some(ty) => ty.dunder_name(vm.heap, vm.interns).into_owned(),
+            None => "object".to_owned(),
+        },
         None => "object".to_owned(),
     };
     if given > 0 {

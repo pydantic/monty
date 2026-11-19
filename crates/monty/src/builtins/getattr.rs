@@ -1,12 +1,11 @@
 //! Implementation of the getattr() builtin function.
 
+use monty_macros::py_signature;
 use monty_types::ExcType;
 
 use crate::{
-    args::ArgValues,
     builtins::Builtins,
     bytecode::{CallResult, PendingLookupEffect, VM},
-    defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     frozen::FrozenFunction,
     heap::DropWithContext,
@@ -37,24 +36,21 @@ use crate::{
 /// getattr(obj, 'y', None)       # Get obj.y or None if not found
 /// getattr(module, 'function')   # Get module.function
 /// ```
-pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let positional = args.into_pos_only("getattr", vm.heap)?;
-    defer_drop!(positional, vm);
-
-    let (object, name, default) = match positional.as_slice() {
-        too_few @ ([] | [_]) => return Err(ExcType::type_error_at_least("getattr", 2, too_few.len())),
-        [object, name] => (object, name, None),
-        [object, name, default] => (object, name, Some(default)),
-        too_many => return Err(ExcType::type_error_at_most("getattr", 3, too_many.len())),
-    };
-
-    let Some(attr) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
-        let ty = name.py_type_name(vm);
+#[py_signature("getattr(object, name, default=..., /)")]
+pub fn builtin_getattr(vm: &mut VM<'_>, params: &GetattrArgs) -> RunResult<CallResult> {
+    let Some(attr) = params
+        .name
+        .as_either_str(vm.heap)
+        .map(|s| s.resolve_interned(vm.interns))
+    else {
+        let ty = params.name.py_type_name(vm);
         return Err(
             SimpleException::new_msg(ExcType::TypeError, format!("attribute name must be string, not '{ty}'")).into(),
         );
     };
 
+    let object = &params.object;
+    let default = params.default.as_ref();
     let host_lookup = match lookup_attribute_fast(object, &attr, vm) {
         FastAttributeLookupResult::Found(value) => return Ok(CallResult::Value(value)),
         FastAttributeLookupResult::Missing => {

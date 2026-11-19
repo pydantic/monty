@@ -2,10 +2,11 @@
 
 use std::{fmt::Write, mem};
 
+use monty_macros::py_signature;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, RunReentryGuard, VM},
     defer_drop,
@@ -319,16 +320,8 @@ def __monty_filter_next(function, iterator, next_):
 ";
 
 /// Private map builder arguments, after the frozen constructor has acquired every iterator.
-#[derive(FromArgs)]
-#[from_args(name = "build_map")]
-struct BuildMapArgs {
-    #[from_args(pos_only)]
-    function: Value,
-    #[from_args(pos_only)]
-    iterators: Value,
-    #[from_args(pos_only)]
-    strict: bool,
-}
+#[py_signature("build_map(function, iterators, strict, /)", convert(strict = bool))]
+struct BuildMapArgs;
 
 /// Transfers already-acquired sources into a new map object.
 pub(crate) fn build_map(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {

@@ -244,7 +244,10 @@ try:
     sorted(1, 2)
     assert False, 'sorted() with too many positional arguments should raise TypeError'
 except TypeError as e:
-    assert e.args == ('sorted expected 1 argument, got 2',)
+    assert e.args in (
+        ('sorted() takes at most 1 positional argument (2 given)',),
+        ('sorted expected 1 argument, got 2',),
+    )
 
 try:
     sorted([1], nope=1)
@@ -309,13 +312,25 @@ assert list(enumerate(['x'])) == [(0, 'x')]
 assert list(enumerate(['a', 'b'], 1)) == [(1, 'a'), (2, 'b')]
 assert list(enumerate(['a', 'b'], 10)) == [(10, 'a'), (11, 'b')]
 
-# a non-iterable errors out of iterator construction without leaking a
-# heap-backed start=
+# Release a heap-backed start when iterator construction fails.
 try:
     enumerate(1, start=10**30)
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == "'int' object is not iterable"
+
+
+class FailingIndex:
+    def __index__(self):
+        raise ValueError('index before iterator')
+
+
+try:
+    enumerate(1, FailingIndex())
+except ValueError as e:
+    assert str(e) == 'index before iterator'
+else:
+    assert False
 
 # enumerate keyword forms (CPython's vectorcall accepts all of these)
 assert list(enumerate(['a', 'b'], start=1)) == [(1, 'a'), (2, 'b')]
@@ -323,6 +338,27 @@ assert list(enumerate(iterable=['a'])) == [(0, 'a')]
 assert list(enumerate(iterable=['a'], start=2)) == [(2, 'a')]
 assert list(enumerate(start=2, iterable=['a'])) == [(2, 'a')]
 assert list(enumerate(['a'], start=True)) == [(1, 'a')]
+
+# Both the initial index and later indices can exceed a signed machine word.
+for first in (2**63 - 1, -(2**63) - 1, 10**100, -(10**100)):
+    assert list(enumerate('abc', first)) == [(first, 'a'), (first + 1, 'b'), (first + 2, 'c')]
+
+index_calls = []
+
+
+class WideIndex:
+    def __index__(self):
+        index_calls.append(1)
+        return 10**80
+
+
+assert list(enumerate('ab', start=WideIndex())) == [(10**80, 'a'), (10**80 + 1, 'b')]
+assert index_calls == [1]
+try:
+    enumerate(1, start=[])
+    assert False, 'start must support __index__'
+except TypeError as e:
+    assert str(e) == "'list' object cannot be interpreted as an integer"
 
 # enumerate string
 assert list(enumerate('ab')) == [(0, 'a'), (1, 'b')]

@@ -2,9 +2,11 @@
 
 use std::fmt::{self, Write};
 
+use monty_macros::py_signature;
+
 use super::{LazyHeapSet, PyTrait, Type, instance::bind_method};
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::type_of_ref,
     bytecode::{CallResult, RunReentryGuard, VM},
     defer_drop,
@@ -68,44 +70,20 @@ impl BuiltinDescriptor {
 }
 
 /// Optional property accessors; None leaves the corresponding operation unavailable.
-#[derive(FromArgs)]
-#[from_args(name = "property")]
-struct PropertyArgs {
-    #[from_args(default)]
-    fget: Option<Value>,
-    #[from_args(default)]
-    fset: Option<Value>,
-    #[from_args(default)]
-    fdel: Option<Value>,
-    #[from_args(default)]
-    doc: Option<Value>,
-}
+#[py_signature("property(fget=..., fset=..., fdel=..., doc=...)")]
+struct PropertyArgs;
 
 /// The callable to bind to the eventual owner class.
-#[derive(FromArgs)]
-#[from_args(name = "classmethod")]
-struct ClassMethodArgs {
-    #[from_args(pos_only)]
-    function: Value,
-}
+#[py_signature("classmethod(function, /)")]
+struct ClassMethodArgs;
 
 /// The callable returned unchanged by staticmethod.__get__.
-#[derive(FromArgs)]
-#[from_args(name = "staticmethod")]
-struct StaticMethodArgs {
-    #[from_args(pos_only)]
-    function: Value,
-}
+#[py_signature("staticmethod(function, /)")]
+struct StaticMethodArgs;
 
 /// Receiver and replacement callable after the accessor-specific arity check.
-#[derive(FromArgs)]
-#[from_args(name = "property accessor")]
-struct AccessorArgs {
-    #[from_args(pos_only)]
-    receiver: Value,
-    #[from_args(pos_only)]
-    function: Value,
-}
+#[py_signature("accessor(receiver, function, /)", error_name = "property accessor")]
+struct AccessorArgs;
 
 /// Construct a property and initialize its name from the getter, when available.
 pub(crate) fn property_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {

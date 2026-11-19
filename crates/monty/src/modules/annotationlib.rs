@@ -6,11 +6,12 @@
 //! - `get_annotations()`: an object's annotations evaluated as written, which
 //!   `typing.get_type_hints()` builds on
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::Builtins,
     bytecode::{CallResult, VM},
-    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     intern::StaticStrings,
     modules::{
@@ -77,48 +78,21 @@ fn format_class(vm: &mut VM<'_>) -> Value {
     Value::allocate(Class::new(name, namespace, vm.heap), vm.heap)
 }
 
-/// Arguments of `get_annotations(obj, *, globals=None, locals=None, eval_str=False, format=Format.VALUE)`.
-#[derive(FromArgs)]
-#[from_args(name = "get_annotations", style = def)]
-struct GetAnnotationsArgs {
-    obj: Value,
-    #[from_args(kw_only, default = Value::None)]
-    globals: Value,
-    #[from_args(kw_only, default = Value::None)]
-    locals: Value,
-    #[from_args(kw_only, default = Value::Bool(false))]
-    eval_str: Value,
-    #[from_args(kw_only, default = Value::Int(1))]
-    format: Value,
-}
-
 /// `annotationlib.get_annotations()`: `obj`'s annotations evaluated where they were
 /// written (or as stored, in `STRING` format), without resolving forward references.
-fn get_annotations(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let GetAnnotationsArgs {
-        obj,
-        globals,
-        locals,
-        eval_str,
-        format,
-    } = GetAnnotationsArgs::from_args(args, vm)?;
-    defer_drop!(obj, vm);
-    defer_drop!(globals, vm);
-    defer_drop!(locals, vm);
-    defer_drop!(eval_str, vm);
-    defer_drop!(format, vm);
-
-    let eval_str = eval_str.py_bool(vm)?;
-    if eval_str && format_code(format) != Some(1) {
+#[py_signature("get_annotations(obj, *, globals=None, locals=None, eval_str=False, format=1)")]
+fn get_annotations(vm: &mut VM<'_>, params: &GetAnnotationsArgs) -> RunResult<CallResult> {
+    let eval_str = params.eval_str.py_bool(vm)?;
+    if eval_str && format_code(&params.format) != Some(1) {
         return Err(ExcType::value_error(
             "eval_str=True is only supported with format=Format.VALUE",
         ));
     }
-    let format = HintFormat::parse(format, false, vm)?;
-    let globalns = namespace_dict(globals, "get_annotations", "globals", vm)?;
-    let localns = namespace_dict(locals, "get_annotations", "locals", vm)?;
+    let format = HintFormat::parse(&params.format, false, vm)?;
+    let globalns = namespace_dict(&params.globals, "get_annotations", "globals", vm)?;
+    let localns = namespace_dict(&params.locals, "get_annotations", "locals", vm)?;
     collect_hints(
-        obj,
+        &params.obj,
         &HintsRequest {
             format,
             globalns,

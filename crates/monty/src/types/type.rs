@@ -7,12 +7,13 @@
 
 use std::fmt;
 
+use monty_macros::py_signature;
 use num_bigint::BigInt;
 
 use super::native::Constructor;
 pub use super::native::Type;
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
@@ -238,11 +239,11 @@ const CALLABLE_TYPES: [Type; 17] = [
 ];
 
 /// `float(x=0.0, /)`: numeric coercion, then str/bytes parsing.
-pub(crate) fn float_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let Some(v) = args.get_zero_one_arg("float", vm.heap)? else {
+#[py_signature("float(x=..., /)")]
+pub(crate) fn float_init(vm: &mut VM<'_>, params: &FloatArgs) -> RunResult<Value> {
+    let Some(v) = &params.x else {
         return Ok(Value::Float(0.0));
     };
-    defer_drop!(v, vm);
     if let Some(value) = v.py_float(vm)? {
         Ok(Value::Float(value))
     } else {
@@ -255,11 +256,11 @@ pub(crate) fn float_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `bool(x=False, /)`: the truth value of `x`.
-pub(crate) fn bool_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let Some(v) = args.get_zero_one_arg("bool", vm.heap)? else {
+#[py_signature("bool(object=..., /)")]
+pub(crate) fn bool_init(vm: &mut VM<'_>, params: &BoolArgs) -> RunResult<Value> {
+    let Some(v) = &params.object else {
         return Ok(Value::Bool(false));
     };
-    defer_drop!(v, vm);
     Ok(Value::Bool(v.py_bool(vm)?))
 }
 
@@ -342,35 +343,18 @@ fn value_error_could_not_convert_string_to_float(value: impl fmt::Display) -> Ru
     .into()
 }
 
-/// Argument shape for `int(x=..., /, base=...)`. `x` is positional-only with
-/// no kwarg id, so `int(x=1)` reports an unknown keyword exactly like CPython;
-/// `vectorcall` + `at_most_total` model `long_vectorcall`'s dual arity wording.
-#[derive(FromArgs)]
-#[from_args(name = "int", at_most_total, vectorcall)]
-struct IntArgs {
-    #[from_args(pos_only, default)]
-    x: Option<Value>,
-    #[from_args(default)]
-    base: Option<Value>,
-}
-
 /// Implements the `int()` constructor: numeric coercion, and str/bytes
 /// parsing with an optional base (auto-detected when `base=0`).
-pub(crate) fn int_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let IntArgs { x, base } = IntArgs::from_args(args, vm)?;
-    let Some(x) = x else {
-        // `int()` → 0; `int(base=N)` complains about the missing value even
-        // before validating the base, matching `long_new_impl`'s ordering.
-        return match base {
+///
+#[py_signature("int(x=..., /, base=...)")]
+pub(crate) fn int_init(vm: &mut VM<'_>, params: &IntArgs) -> RunResult<Value> {
+    let Some(x) = &params.x else {
+        return match params.base {
             None => Ok(Value::Int(0)),
-            Some(base) => {
-                base.drop_with(vm);
-                Err(ExcType::type_error_int_missing_string_argument())
-            }
+            Some(_) => Err(ExcType::type_error_int_missing_string_argument()),
         };
     };
-    defer_drop!(x, vm);
-    match base {
+    match &params.base {
         None => int_convert(x, vm),
         Some(base) => {
             let base = int_base(base, vm)?;
@@ -398,14 +382,11 @@ fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     }
 }
 
-/// Resolves the `base` argument to `0` or `2..=36`, consuming the value.
+/// Resolves a borrowed `base` argument to `0` or `2..=36`.
 ///
-/// Mirrors CPython: the base goes through `PyNumber_AsSsize_t(obase, NULL)`,
-/// which *clamps* out-of-i64 ints instead of raising — so a `LongInt` base
-/// lands in the range error, not `OverflowError`; non-integers raise
-/// `TypeError` before the range is checked.
-fn int_base(base: Value, vm: &mut VM<'_>) -> RunResult<u32> {
-    defer_drop!(base, vm);
+/// Index conversion saturates outside the `i64` range so large bases raise the range error.
+/// An error from the index protocol propagates before the range check.
+fn int_base(base: &Value, vm: &mut VM<'_>) -> RunResult<u32> {
     let n = base.saturating_index(vm)?;
     match u32::try_from(n) {
         Ok(0) => Ok(0),

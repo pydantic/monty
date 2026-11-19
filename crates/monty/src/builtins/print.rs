@@ -1,9 +1,10 @@
 //! Implementation of the print() builtin function.
 
+use monty_macros::py_signature;
 use monty_types::PrintStream;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::{ArgValues, DefaultedStringArg},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
@@ -23,31 +24,18 @@ use crate::{
 ///   anything else raises `TypeError`
 /// - `flush`: whether to flush the stream (accepted but ignored — Monty
 ///   doesn't buffer stdout)
-pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let PrintArgs {
-        objects,
-        sep,
-        end,
-        file,
-        flush: _,
-    } = PrintArgs::from_args(args, vm)?;
-    defer_drop!(objects, vm);
-    defer_drop!(sep, vm);
-    defer_drop!(end, vm);
-    defer_drop!(file, vm);
-
-    // `sep` and `end` are checked before `file` because CPython reports them in
-    // that order: `print(x, sep=1, file=3)` raises about `sep`, not the file.
-    let sep_str = extract_string_kwarg(sep, "sep", vm)?;
-    let end_str = extract_string_kwarg(end, "end", vm)?;
-    let target = print_target(file, vm)?;
+#[py_signature(r"print(*args, sep=' ', end='\n', file=None, flush=False)")]
+pub fn builtin_print(vm: &mut VM<'_>, params: &PrintArgs) -> RunResult<Value> {
+    let sep_str = extract_string_kwarg(&params.sep, "sep", " ", vm)?;
+    let end_str = extract_string_kwarg(&params.end, "end", "\n", vm)?;
+    let target = print_target(&params.file, vm)?;
 
     let mut first = true;
-    for value in objects.as_slice() {
+    for value in &params.args {
         if first {
             first = false;
         } else {
-            target.write_or_push(sep_str.as_deref(), ' ', vm)?;
+            sep_str.write_to(&target, vm)?;
         }
         let s = value.py_str(vm)?;
         defer_drop!(s, vm);
@@ -61,7 +49,7 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             PrintTarget::Stream(stream) => write_to_stream(stream, s.clone_with_heap(vm.heap), vm)?,
         }
     }
-    target.write_or_push(end_str.as_deref(), '\n', vm)?;
+    end_str.write_to(&target, vm)?;
     Ok(Value::None)
 }
 
@@ -73,17 +61,26 @@ enum PrintTarget<'a> {
     Stream(&'a Value),
 }
 
-impl PrintTarget<'_> {
-    /// Writes a `sep` / `end` piece: the given text, or `default` when it is
-    /// `None`, which the host's writer receives as a single pushed char.
-    fn write_or_push(&self, text: Option<&str>, default: char, vm: &mut VM<'_>) -> RunResult<()> {
-        match (self, text) {
-            (Self::Output(stream), Some(text)) => Ok(vm.print_writer.write(*stream, text.into())?),
-            (Self::Output(stream), None) => Ok(vm.print_writer.push(*stream, default)?),
-            (Self::Stream(stream), Some(text)) => write_to_stream(stream, allocate_string(text, vm.heap), vm),
-            (Self::Stream(stream), None) => {
-                write_to_stream(stream, allocate_string(default.encode_utf8(&mut [0; 4]), vm.heap), vm)
+enum PrintPiece {
+    Default(&'static str),
+    Supplied(String),
+}
+
+impl PrintPiece {
+    fn write_to(&self, target: &PrintTarget<'_>, vm: &mut VM<'_>) -> RunResult<()> {
+        let text = match self {
+            Self::Default(text) => {
+                // The host receives default separators and terminators through its single-character callback.
+                if let (PrintTarget::Output(stream), [byte]) = (target, text.as_bytes()) {
+                    return Ok(vm.print_writer.push(*stream, char::from(*byte))?);
+                }
+                *text
             }
+            Self::Supplied(text) => text.as_str(),
+        };
+        match target {
+            PrintTarget::Output(stream) => Ok(vm.print_writer.write(*stream, text.into())?),
+            PrintTarget::Stream(stream) => write_to_stream(stream, allocate_string(text, vm.heap), vm),
         }
     }
 }
@@ -122,37 +119,20 @@ fn print_target<'a>(file: &'a Value, vm: &VM<'_>) -> RunResult<PrintTarget<'a>> 
     }
 }
 
-/// Argument shape for `print(*objects, sep=' ', end='\n', file=sys.stdout, flush=False)`.
-///
-/// Every kwarg is held as a raw `Value` so the caller can do the
-/// "must be None or str" coercion inline, and so `flush` can be accepted
-/// without forcing a type check. `file` is resolved by `print_stream`.
-#[derive(FromArgs)]
-#[from_args(name = "print")]
-struct PrintArgs {
-    #[from_args(varargs)]
-    objects: Vec<Value>,
-    #[from_args(default = Value::None)]
-    sep: Value,
-    #[from_args(default = Value::None)]
-    end: Value,
-    #[from_args(default = Value::None)]
-    file: Value,
-    /// Accepted from Python for CPython compatibility but never consumed:
-    /// Monty doesn't buffer stdout, so there is nothing to flush.
-    #[expect(dead_code, reason = "accepted but ignored — Monty doesn't buffer stdout")]
-    #[from_args(default = Value::None)]
-    flush: Value,
-}
-
-/// Extracts a string value from a print() kwarg.
-///
-/// The kwarg can be None (returns None) or a string (returns Some).
-/// Raises TypeError for other types.
-fn extract_string_kwarg(value: &Value, name: &str, vm: &VM<'_>) -> RunResult<Option<String>> {
+/// CPython treats an explicit `None` as the default separator or terminator.
+fn extract_string_kwarg(
+    arg: &DefaultedStringArg,
+    name: &str,
+    default: &'static str,
+    vm: &VM<'_>,
+) -> RunResult<PrintPiece> {
+    let value = match arg {
+        DefaultedStringArg::Omitted(default) => return Ok(PrintPiece::Default(default)),
+        DefaultedStringArg::Supplied(value) => value,
+    };
     match value.py_value(vm) {
-        PyValue::None => Ok(None),
-        PyValue::Str(string) => Ok(Some(string.as_str(vm).to_owned())),
+        PyValue::None => Ok(PrintPiece::Default(default)),
+        PyValue::Str(string) => Ok(PrintPiece::Supplied(string.as_str(vm).to_owned())),
         _ => Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("{} must be None or a string, not {}", name, value.py_type_name(vm)),

@@ -6,6 +6,7 @@
 # what verify the hooks.
 # `gc.collect()` returns different counts on CPython and Monty, so it isn't asserted.
 import gc
+import sys
 
 import functools
 
@@ -78,3 +79,12 @@ live_cache()
 gc.collect()
 assert live[0]()[0][0] is live
 assert live_cache() is live
+
+# CPython shares its GC state across the fixture runner.
+if sys.platform == 'monty':
+    assert gc.disable() is None
+    try:
+        assert arg_cycle() == 1
+        assert gc.collect() > 0
+    finally:
+        assert gc.enable() is None

@@ -7,6 +7,7 @@
 
 use std::{fmt::Write, mem, sync::Arc};
 
+use monty_macros::py_signature;
 use monty_types::ResourceTracker;
 use serde::{Deserialize, Serialize};
 
@@ -100,10 +101,13 @@ pub(crate) fn write_method(target: &Value, vm: &mut VM<'_>) -> RunResult<Option<
 }
 
 /// `writer.writerow(row)`: formats `row` and returns whatever the target's `write()` returns.
-pub(super) fn writerow<'h>(obj: &HeapRead<'h, CsvObject>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-    let row = args.get_one_arg("writer.writerow", vm.heap)?;
-    defer_drop!(row, vm);
-    let items = row_items(row, vm)?;
+#[py_signature("writerow(self, row, /)", owner = "writer")]
+pub(super) fn writerow<'h>(
+    obj: &HeapRead<'h, CsvObject>,
+    params: &WriterWriterowArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    let items = row_items(&params.row, vm)?;
     defer_drop!(items, vm);
     write_fields(obj, items, vm)
 }
@@ -127,15 +131,18 @@ pub(super) fn write_fields<'h>(
 ///
 /// A file target receives all the lines in one host write, since a Rust loop cannot suspend
 /// once per row; any other target's `write()` is called synchronously as each row arrives.
-pub(super) fn writerows<'h>(obj: &HeapRead<'h, CsvObject>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-    let rows = args.get_one_arg("writer.writerows", vm.heap)?;
-    defer_drop!(rows, vm);
+#[py_signature("writerows(self, rows, /)", owner = "writer")]
+pub(super) fn writerows<'h>(
+    obj: &HeapRead<'h, CsvObject>,
+    params: &WriterWriterowsArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
     let (target, write, dialect) = parts(obj, vm);
     defer_drop!(target, vm);
     defer_drop!(write, vm);
     let terminator_chars = terminator_chars(&dialect.lineterminator);
     if is_file(target, vm) {
-        let rows: Vec<Value> = collect_owned_iterable(rows.clone_with_heap(vm.heap), vm)?;
+        let rows: Vec<Value> = collect_owned_iterable(params.rows.clone_with_heap(vm.heap), vm)?;
         defer_drop!(rows, vm);
         let mut lines = String::new();
         for row in rows {
@@ -150,7 +157,7 @@ pub(super) fn writerows<'h>(obj: &HeapRead<'h, CsvObject>, args: ArgValues, vm: 
             write_line(target, write, lines, vm).map(discard_write_result)
         }
     } else {
-        let iterator = rows.py_iter(vm)?.require_synchronous(vm)?;
+        let iterator = params.rows.py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iterator, vm);
         // One line buffer serves every row, so each costs a single exact-size allocation.
         let mut line = String::new();

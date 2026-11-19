@@ -1,7 +1,9 @@
 //! Binary search and sorted insertion, matching CPython's `_bisect` accelerator.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -66,18 +68,8 @@ fn convert_hi(value: &Value, vm: &mut VM<'_>) -> RunResult<i64> {
 // Separate derives preserve each function's name in Clinic binding errors.
 macro_rules! arguments {
     ($ty:ident, $name:literal) => {
-        #[derive(FromArgs)]
-        #[from_args(name = $name, style = c_named)]
-        struct $ty {
-            a: Value,
-            x: Value,
-            #[from_args(default = Value::Int(0))]
-            lo: Value,
-            #[from_args(default = Value::None)]
-            hi: Value,
-            #[from_args(kw_only, default = Value::None)]
-            key: Value,
-        }
+        #[py_signature("(a, x, lo=0, hi=None, *, key=None)", error_name = $name)]
+        struct $ty;
     };
 }
 arguments!(BisectLeftArgs, "bisect_left");
