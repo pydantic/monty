@@ -125,6 +125,8 @@ works on classes; see [classes.md](classes.md#inheritance).
     begin, so mutating that one is never observed. Absent mutation every result
     agrees. `&` and `isdisjoint` walk and probe the same operands as CPython, set-to-set operators do not
     re-hash at all, and dict-view equality (`d.keys() == s`) raises exactly where CPython does.
+- **`enumerate` argument errors** — invalid calls raise `TypeError`. The message can
+    differ from CPython's, including which argument it reports for `enumerate(start=1)`.
 - **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager, not lazy** —
     each drains its source and returns a `list`, so `type(enumerate(x)).__name__`
     is `'list'` rather than `'enumerate'`. Observable several ways: a

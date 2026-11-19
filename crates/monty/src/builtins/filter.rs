@@ -7,6 +7,8 @@
 //! - Type constructors (int, str, float, etc.)
 //! - User-defined functions (via `call_predicate`)
 
+use monty_macros::bind_positional;
+
 use crate::{
     args::ArgValues,
     bytecode::VM,
@@ -31,7 +33,7 @@ use crate::{
 /// filter(None, [0, 1, False, True, ''])   # [1, True]
 /// ```
 pub fn builtin_filter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (function, iterable) = args.get_two_args("filter", vm.heap)?;
+    let (function, iterable) = bind_positional!(args, vm.heap, "filter(function, iterable, /)")?;
     defer_drop!(function, vm);
 
     let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;

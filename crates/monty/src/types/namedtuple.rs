@@ -9,6 +9,7 @@ use std::{
     mem,
 };
 
+use monty_macros::bind_positional;
 /// Python named tuple type, combining tuple-like indexing with named attribute access.
 ///
 /// Named tuples are like regular tuples but with field names, providing two ways
@@ -685,7 +686,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
     /// `(tuple(self),)` because its `__new__` takes a single sequence. So
     /// `sys.version_info.__getnewargs__()` is `((3, 14, ...),)`, one level deeper.
     fn method_getnewargs(&self, vm: &mut VM<'h>, args: ArgValues, from_factory: bool) -> RunResult<Value> {
-        args.check_zero_args("__getnewargs__", vm.heap)?;
+        bind_positional!(args, vm.heap, "__getnewargs__()")?;
         let items: TupleVec = self.cloned_items(vm)?.into_iter().collect();
         let values = allocate_tuple(items, vm.heap);
         if from_factory {
@@ -701,7 +702,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
 
     /// `p.count(x)` — how many items equal `x`, inherited from `tuple`.
     fn method_count(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<Value> {
-        let value = args.get_one_arg("tuple.count", vm.heap)?;
+        let value = bind_positional!(args, vm.heap, "tuple.count(value, /)")?;
         defer_drop!(value, vm);
 
         let mut count = 0usize;
@@ -718,12 +719,11 @@ impl<'h> HeapRead<'h, NamedTuple> {
     /// `p.index(x[, start[, stop]])` — index of the first item equal to `x`,
     /// inherited from `tuple`.
     fn method_index(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<Value> {
-        let pos_args = args.into_pos_only("tuple.index", vm.heap)?;
+        let pos_args = bind_positional!(args, vm.heap, "tuple.index(value, start=..., stop=..., /)", iter)?;
         defer_drop!(pos_args, vm);
 
         let len = self.get(vm.heap).len();
         let (value, start, end) = match pos_args.as_slice() {
-            [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
             [value] => (value, 0, len),
             [value, start_arg] => {
                 let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
@@ -734,7 +734,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
                 let end = normalize_sequence_index(value_to_i64_bound(end_arg, vm)?, len).max(start);
                 (value, start, end)
             }
-            other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
+            _ => unreachable!("arity checked by signature"),
         };
 
         let iter = self.iter(vm)?;
@@ -753,7 +753,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
 
     /// `p._asdict()` — a new `dict` mapping each field name to its value.
     fn method_asdict(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<Value> {
-        args.check_zero_args("_asdict", vm.heap)?;
+        bind_positional!(args, vm.heap, "_asdict()")?;
         let names = self.get(vm.heap).field_names.clone();
         let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(names.len());
         for (i, name) in names.iter().enumerate() {
@@ -1276,7 +1276,7 @@ fn make_from_iterable(
     args: ArgValues,
 ) -> RunResult<Value> {
     let n = field_names.len();
-    let iterable = args.get_one_arg("_make", vm.heap)?;
+    let iterable = bind_positional!(args, vm.heap, "_make(iterable, /)")?;
     let items = collect_owned_iterable::<Vec<Value>>(iterable, vm)?;
     if items.len() != n {
         let got = items.len();

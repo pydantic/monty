@@ -542,6 +542,7 @@ impl Signature {
                 /// only converts the raw slots and applies defaults. On any
                 /// error path every remaining value is dropped via the slots
                 /// struct's `DropWithContext` impl (driven by a `DropGuard`).
+                #[inline]
                 pub(crate) fn from_args(
                     args: crate::args::ArgValues,
                     vm: &mut crate::bytecode::VM<'_>,
@@ -549,7 +550,14 @@ impl Signature {
                     #fast_empty
                     #fast_one
                     #fast_two
+                    Self::from_args_slow(args, vm)
+                }
 
+                #[inline(never)]
+                fn from_args_slow(
+                    args: crate::args::ArgValues,
+                    vm: &mut crate::bytecode::VM<'_>,
+                ) -> crate::exception_private::RunResult<Self> {
                     static __SPEC: crate::args::ParamSpec = #binding;
                     #fast_keywords
 
@@ -1016,7 +1024,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
 
 #[derive(Default)]
 pub(crate) struct FieldAttrs {
-    extract_with: Option<syn::Path>,
+    pub(super) extract_with: Option<syn::Path>,
     pub(crate) kind: FieldKind,
     pub(crate) default: Option<DefaultExpr>,
     pub(crate) static_string: Option<Ident>,

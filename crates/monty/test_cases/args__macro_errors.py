@@ -742,48 +742,26 @@ try:
 except TypeError as e:
     assert str(e) == "round() got an unexpected keyword argument 'bogus'"
 
-# =====================================================================
-# === enumerate — CPython's hand-written vectorcall parser           ===
-# =====================================================================
-# CPython special-cases enumerate's argument parsing (enumobject.c
-# `enumerate_vectorcall`), so its errors match no parser family; Monty
-# mirrors that parser exactly, quirks included.
+# enumerate accepts positional and keyword arguments. CPython has a custom
+# parser, so the TypeError text can differ when a call has several errors.
+for positional, keywords in [
+    ((), {}),
+    ((), {'start': 1}),
+    (([1],), {'iterable': [2]}),
+    (([1],), {'bogus': 1}),
+    ((), {'start': 1, 'bogus': 1, 'iterable': [1]}),
+    ((), {'bogus': 1}),
+    ((), {'start': 1, 'bogus': 2}),
+    ((), {'bogus': 2, 'start': 1}),
+    ((), {'iterable': [1], 'bogus': 1}),
+]:
+    try:
+        enumerate(*positional, **keywords)
+    except TypeError:
+        pass
+    else:
+        assert False, (positional, keywords)
 
-try:
-    enumerate()
-    assert False, 'enumerate() should raise'
-except TypeError as e:
-    assert str(e) == "enumerate() missing required argument 'iterable'"
-
-# Quirk: any unrecognised zero-positional keyword shape reports the missing
-# iterable — even when `iterable=` was actually passed.
-try:
-    enumerate(start=1, bogus=1, iterable=[1])
-    assert False, 'enumerate 3-kwarg form should raise'
-except TypeError as e:
-    assert str(e) == "enumerate() missing required argument 'iterable'"
-
-# Quirk: keyword names are validated positionally against the accepted
-# shapes, so a lone `start=` reports 'start' as invalid.
-try:
-    enumerate(start=1)
-    assert False, 'enumerate(start=1) should raise'
-except TypeError as e:
-    assert str(e) == "'start' is an invalid keyword argument for enumerate()"
-
-try:
-    enumerate([1], iterable=[2])
-    assert False, 'enumerate positional + iterable= should raise'
-except TypeError as e:
-    assert str(e) == "'iterable' is an invalid keyword argument for enumerate()"
-
-try:
-    enumerate([1], bogus=1)
-    assert False, 'enumerate with unknown kwarg should raise'
-except TypeError as e:
-    assert str(e) == "'bogus' is an invalid keyword argument for enumerate()"
-
-# Total pre-count fires whenever at least one positional is present.
 try:
     enumerate([1], 0, 0)
     assert False, 'enumerate with 3 positionals should raise'
@@ -822,36 +800,6 @@ try:
 except TypeError as e:
     assert str(e) == "sum() can't sum strings [use ''.join(seq) instead]"
 
-# === enumerate: lone unknown keyword ===
-try:
-    enumerate(bogus=1)
-    assert False, 'enumerate(bogus=1) should raise'
-except TypeError as e:
-    assert str(e) == "'bogus' is an invalid keyword argument for enumerate()"
-
-# === enumerate: two-kwarg form, each rejection branch ===
-# swapped order (start first) with a bad second name
-try:
-    enumerate(start=1, bogus=2)
-    assert False, 'enumerate(start=, bogus=) should raise'
-except TypeError as e:
-    assert str(e) == "'bogus' is an invalid keyword argument for enumerate()"
-
-# unswapped order with a bad first name
-try:
-    enumerate(bogus=2, start=1)
-    assert False, 'enumerate(bogus=, start=) should raise'
-except TypeError as e:
-    assert str(e) == "'bogus' is an invalid keyword argument for enumerate()"
-
-# unswapped order with a good first and bad second name
-try:
-    enumerate(iterable=[1], bogus=1)
-    assert False, 'enumerate(iterable=, bogus=) should raise'
-except TypeError as e:
-    assert str(e) == "'bogus' is an invalid keyword argument for enumerate()"
-
-# === enumerate: non-string keys reach its hand-written key check ===
 try:
     enumerate([1], **{1: 2})
     assert False, 'enumerate non-string key should raise'

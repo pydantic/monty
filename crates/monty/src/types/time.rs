@@ -19,7 +19,7 @@ use std::{
 };
 
 use chrono::{NaiveDate, NaiveTime, format::StrftimeItems};
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 use monty_types::ResourceTracker;
 
 use crate::{
@@ -158,7 +158,7 @@ impl Time {
 /// blames the positional limit (the overflow could still have filled keyword-only
 /// `fold`), a seventh the total. `tzinfo` stays a raw [`Value`] so the
 /// None-or-timezone check runs in the body with CPython's wording.
-#[py_signature("time(hour: int=0, minute: int=0, second: int=0, microsecond: int=0, tzinfo=None, *, fold: int=0)", style = c, error_name = "function")]
+#[py_signature("time(hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)", style = c, error_name = "function")]
 pub(crate) fn init(
     vm: &mut VM<'_>,
     TimeInitArgs {
@@ -246,9 +246,7 @@ pub(crate) fn class_method(
 /// so the accepted grammar (and the rejection message) stays consistent across
 /// the three classes.
 pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args
-        .reject_kwargs("time.fromisoformat", vm.heap)?
-        .get_one_arg("time.fromisoformat", vm.heap)?;
+    let value = bind_positional!(args, vm.heap, "time.fromisoformat(time_string, /)", reject_keywords)?;
     let s = date::extract_str_arg(&value, "fromisoformat", vm.heap, vm.interns);
     value.drop_with(vm.heap);
     let s = s?;
@@ -589,12 +587,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
             }
             Some(StaticStrings::Replace) => self.replace(vm, args).map(CallResult::Value),
             Some(StaticStrings::Utcoffset) => {
-                args.check_zero_args("time.utcoffset", vm.heap)?;
+                bind_positional!(args, vm.heap, "time.utcoffset()")?;
                 let offset_seconds = attached_offset(self.get(vm.heap), vm.heap);
                 Ok(CallResult::Value(timezone::utcoffset_value(offset_seconds, vm.heap)))
             }
             Some(StaticStrings::Tzname) => {
-                args.check_zero_args("time.tzname", vm.heap)?;
+                bind_positional!(args, vm.heap, "time.tzname()")?;
                 let Some(tz) = attached_timezone(self.get(vm.heap), vm.heap) else {
                     return Ok(CallResult::Value(Value::None));
                 };
@@ -602,7 +600,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
                 Ok(CallResult::Value(allocate_string(name, vm.heap)))
             }
             Some(StaticStrings::Dst) => {
-                args.check_zero_args("time.dst", vm.heap)?;
+                bind_positional!(args, vm.heap, "time.dst()")?;
                 // Only fixed-offset zones exist, and none of them observes DST.
                 Ok(CallResult::Value(Value::None))
             }
@@ -688,6 +686,6 @@ impl<'h> HeapObjectRead<'h, Time> {
 /// "kwarg absent" (keep the current zone) stays distinct from `tzinfo=None`
 /// (make the time naive).
 #[py_signature(
-    "replace(*, hour: int=..., minute: int=..., second: int=..., microsecond: int=..., tzinfo=..., fold: int=...)"
+    "replace(*, hour: c_int=..., minute: c_int=..., second: c_int=..., microsecond: c_int=..., tzinfo=..., fold: c_int=...)"
 )]
 struct TimeReplaceArgs;

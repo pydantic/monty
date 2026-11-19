@@ -6,7 +6,7 @@
 
 use std::mem;
 
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 use smallvec::SmallVec;
 
 use super::value_to_float;
@@ -122,8 +122,7 @@ fn two_product(a: f64, b: f64) -> (f64, f64) {
 
 /// Sums non-overlapping partials, preserving cancellation and half-even rounding.
 pub(crate) fn fsum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let args = args.reject_kwargs("math.fsum", vm.heap)?;
-    let iterable = args.get_one_arg("math.fsum", vm.heap)?;
+    let iterable = bind_positional!(args, vm.heap, "math.fsum(seq, /)", reject_keywords)?;
     let iterator = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);

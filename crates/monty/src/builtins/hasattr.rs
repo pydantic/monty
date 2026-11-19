@@ -1,12 +1,13 @@
 //! Implementation of the hasattr() builtin function.
 
+use monty_macros::bind_positional;
 use monty_types::ExcType;
 
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, PendingLookupEffect, VM},
     defer_drop,
-    exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
+    exception_private::{RunError, RunResult, SimpleException},
     heap::DropWithContext,
     value::Value,
 };
@@ -30,12 +31,11 @@ use crate::{
 /// hasattr(42, 'nonexistent')    # False - int has no such attribute
 /// ```
 pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let positional = args.into_pos_only("hasattr", vm.heap)?;
+    let positional = bind_positional!(args, vm.heap, "hasattr(object, name, /)", iter)?;
     defer_drop!(positional, vm);
 
-    let (object, name) = match positional.as_slice() {
-        [object, name] => (object, name),
-        other => return Err(ExcType::type_error_arg_count("hasattr", 2, other.len())),
+    let [object, name] = positional.as_slice() else {
+        unreachable!("arity checked by signature")
     };
 
     let Some(name) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {

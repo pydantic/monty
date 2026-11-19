@@ -8,7 +8,7 @@
 
 use std::{cell::Cell, fmt::Write, mem::take};
 
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -395,16 +395,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LruCache> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let value = match attr.static_string(vm.interns) {
             Some(StaticStrings::CacheInfo) => {
-                args.check_zero_args("_lru_cache_wrapper.cache_info", vm.heap)?;
+                bind_positional!(args, vm.heap, "_lru_cache_wrapper.cache_info()")?;
                 self.cache_info(vm)
             }
             Some(StaticStrings::CacheClear) => {
-                args.check_zero_args("_lru_cache_wrapper.cache_clear", vm.heap)?;
+                bind_positional!(args, vm.heap, "_lru_cache_wrapper.cache_clear()")?;
                 self.cache_clear(vm);
                 Value::None
             }
             Some(StaticStrings::CacheParameters) => {
-                args.check_zero_args("_lru_cache_wrapper.cache_parameters", vm.heap)?;
+                bind_positional!(args, vm.heap, "_lru_cache_wrapper.cache_parameters()")?;
                 self.cache_parameters(vm)?
             }
             // `f.__wrapped__(...)` is an ordinary call of the attribute's

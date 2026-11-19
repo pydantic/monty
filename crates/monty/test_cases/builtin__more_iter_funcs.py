@@ -309,8 +309,7 @@ assert list(enumerate(['x'])) == [(0, 'x')]
 assert list(enumerate(['a', 'b'], 1)) == [(1, 'a'), (2, 'b')]
 assert list(enumerate(['a', 'b'], 10)) == [(10, 'a'), (11, 'b')]
 
-# a non-iterable errors out of iterator construction without leaking a
-# heap-backed start=
+# A valid large start still reaches iteration.
 try:
     enumerate(1, start=10**30)
     assert False, 'expected TypeError'
@@ -323,6 +322,27 @@ assert list(enumerate(iterable=['a'])) == [(0, 'a')]
 assert list(enumerate(iterable=['a'], start=2)) == [(2, 'a')]
 assert list(enumerate(start=2, iterable=['a'])) == [(2, 'a')]
 assert list(enumerate(['a'], start=True)) == [(1, 'a')]
+
+# Both the initial index and later indices can exceed a signed machine word.
+for first in (2**63 - 1, -(2**63) - 1, 10**100, -(10**100)):
+    assert list(enumerate('abc', first)) == [(first, 'a'), (first + 1, 'b'), (first + 2, 'c')]
+
+index_calls = []
+
+
+class WideIndex:
+    def __index__(self):
+        index_calls.append(1)
+        return 10**80
+
+
+assert list(enumerate('ab', start=WideIndex())) == [(10**80, 'a'), (10**80 + 1, 'b')]
+assert index_calls == [1]
+try:
+    enumerate(1, start=[])
+    assert False, 'start must support __index__'
+except TypeError as e:
+    assert str(e) == "'list' object cannot be interpreted as an integer"
 
 # enumerate string
 assert list(enumerate('ab')) == [(0, 'a'), (1, 'b')]

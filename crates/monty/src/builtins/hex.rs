@@ -1,15 +1,16 @@
 //! Implementation of the hex() builtin function.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, py_value::PyValue,
+    bytecode::VM, defer_drop, exception_private::RunResult, py_value::PyValue,
     types::str::allocate_string_no_interning, value::Value,
 };
 
 /// Converts an integer or `__index__` result to a hexadecimal string prefixed with `0x`.
-pub fn builtin_hex(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("hex", vm.heap)?;
-    defer_drop!(value, vm);
-    let index = value.py_index(vm)?;
+#[py_signature("hex(number, /)", style = one_arg)]
+pub fn builtin_hex(vm: &mut VM<'_>, number: &Value) -> RunResult<Value> {
+    let index = number.py_index(vm)?;
     defer_drop!(index, vm);
 
     let PyValue::Int(integer) = index.py_value(vm) else {

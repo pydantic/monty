@@ -13,7 +13,7 @@ mod legacy;
 mod method;
 mod options;
 
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 
 pub(crate) use self::{
     field::DataclassField,
@@ -825,7 +825,7 @@ pub(crate) fn is_dataclass_class(class_id: HeapId, vm: &VM<'_>) -> bool {
 /// `is_dataclass(obj)` — true when `obj` is a dataclass **class** or an
 /// **instance** of one (matching CPython, which accepts both).
 fn is_dataclass(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let arg = args.get_one_arg("is_dataclass", vm.heap)?;
+    let arg = bind_positional!(args, vm.heap, "is_dataclass(obj, /)")?;
     let result = match &arg {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Class(_) => is_dataclass_class(*id, vm),

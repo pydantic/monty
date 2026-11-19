@@ -7,7 +7,7 @@ Procedural macros used by the [`monty`](https://crates.io/crates/monty) crate.
 A Python signature on a native function generates the Rust argument struct and its `FromArgs` implementation.
 
 ```rust
-#[py_signature("split(self, /, sep: str | None = None, maxsplit: SupportsIndex = -1) -> list")]
+#[py_signature("split(self, /, sep: str | None = None, maxsplit: i64 = -1) -> list")]
 fn str_split<'h>(s: &PyStr<'h>, args: &SplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     // ...
 }
@@ -25,6 +25,9 @@ For a builtin that uses Monty’s `ArgValues::get_one_arg` calling convention, u
 `#[py_signature("len(obj, /)", style = one_arg)]` and declare the Rust parameter as `obj: &Value`.
 The macro emits the existing helper call and guards the returned value for the function body.
 This preserves the helper’s arity errors, including its positional-count error for keyword calls.
+A typed parameter such as `sqrt(x: float, /)` runs the converter after the same arity check.
+The body owns the extracted value. Leave parameters unannotated when their operation runs in the body,
+as with the iterable passed to `enumerate`.
 
 For two required positional values, `#[py_signature("divmod(x, y, /)", style = two_args)]`
 binds the Rust parameter `(x, y): (&Value, &Value)` directly. Keywords take precedence over arity errors.
@@ -41,10 +44,19 @@ transfers them to the body, which must release them on success and error.
 For callers that bind after method lookup, put `#[py_signature]` on a unit struct and call
 `Name::from_args(args, vm)?`. Generated fields have the struct's visibility.
 
+Inside a method dispatch arm, `bind_positional!(args, vm.heap, "list.append(object, /)")?` returns
+the owned argument. The parameter list selects the fixed-arity helper. An optional parameter
+(`=...`) returns an `Option<Value>`. Use `reject_keywords` for methods that report keyword errors
+before counting positional arguments. For several methods with the same parameters, pass the name
+separately, as in `bind_positional!(args, vm.heap, "(chars=..., /)", name = method)?`.
+`*args` returns an owning iterator. For a bounded positional signature, `iter` checks the count and
+returns the same iterator, so a caller can borrow its slice without allocating.
+
 An unannotated parameter carries a Python value. A default of `...` distinguishes omission
-from a supplied value, including `None`. For C parsers, `int` extracts a C `int` (`i32`),
-`SupportsIndex` extracts an index (`i64`), `float` extracts an `f64`, and `bool` truth-tests
-the argument. Use `str` for borrowed text or `str | None` for nullable text.
+from a supplied value, including `None`. `int` binds a full-width Python integer.
+`SupportsIndex` also accepts objects with `__index__`, preserving the result's full width.
+Use `c_int` for a C `int` argument and `i64` for a signed 64-bit index.
+`float` extracts an `f64`, and `bool` truth-tests the argument. Use `str` for borrowed text or `str | None` for nullable text.
 Use `convert(real = Part)` to select a Rust type implementing `FromValue`.
 `error_name` overrides the name reported in binding errors. In a `macro_rules!` template,
 `#[py_signature("(iterable, r)", error_name = $name)]` uses the supplied Python identifier as the function name.

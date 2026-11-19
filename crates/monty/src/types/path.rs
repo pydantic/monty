@@ -11,7 +11,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 use monty_types::MontyPath;
 use smallvec::SmallVec;
 
@@ -260,7 +260,7 @@ impl Path {
     /// - `Path('a', 'b', 'c')` returns `Path('a/b/c')`
     /// - If an absolute path appears, it replaces everything before it.
     pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        let pos_args = args.into_pos_only("Path", vm.heap)?;
+        let pos_args = bind_positional!(args, vm.heap, "Path(*pathsegments)")?;
         defer_drop!(pos_args, vm);
 
         let path = match pos_args.as_slice() {
@@ -596,17 +596,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
                 return walk_call(top, true, top_down, on_error, follow_symlinks, vm);
             }
             StaticStrings::IsAbsolute => {
-                args.check_zero_args("is_absolute", vm.heap)?;
+                bind_positional!(args, vm.heap, "is_absolute()")?;
                 Ok(Value::Bool(self.get(vm.heap).is_absolute()))
             }
             StaticStrings::Joinpath => {
-                let pos_args = args.into_pos_only("joinpath", vm.heap)?;
+                let pos_args = bind_positional!(args, vm.heap, "joinpath(*pathsegments)")?;
                 defer_drop!(pos_args, vm);
                 let path = fold_joinpath(self.get(vm.heap).clone(), pos_args.as_slice(), vm)?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
             }
             StaticStrings::WithName => {
-                let name_val = args.get_one_arg("with_name", vm.heap)?;
+                let name_val = bind_positional!(args, vm.heap, "with_name(name, /)")?;
                 defer_drop!(name_val, vm);
                 let name = name_val.try_to_str(vm)?.to_owned();
                 let result = self
@@ -616,7 +616,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
             }
             StaticStrings::WithStem => {
-                let stem_val = args.get_one_arg("with_stem", vm.heap)?;
+                let stem_val = bind_positional!(args, vm.heap, "with_stem(stem, /)")?;
                 defer_drop!(stem_val, vm);
                 let stem = stem_val.try_to_str(vm)?.to_owned();
                 let result = self
@@ -626,7 +626,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
             }
             StaticStrings::WithSuffix => {
-                let suffix_val = args.get_one_arg("with_suffix", vm.heap)?;
+                let suffix_val = bind_positional!(args, vm.heap, "with_suffix(suffix, /)")?;
                 defer_drop!(suffix_val, vm);
                 let suffix = suffix_val.try_to_str(vm)?.to_owned();
                 let result = self
@@ -636,7 +636,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
             }
             StaticStrings::AsPosix | StaticStrings::Fspath => {
-                args.check_zero_args(method.into(), vm.heap)?;
+                bind_positional!(args, vm.heap, "()", name = method.into())?;
                 Ok(allocate_string(self.get(vm.heap).as_posix(), vm.heap))
             }
             StaticStrings::Open => {

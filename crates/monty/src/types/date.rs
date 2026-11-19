@@ -11,7 +11,7 @@ use std::{
 };
 
 use chrono::{Datelike, NaiveDate, NaiveTime, format::StrftimeItems};
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 use monty_types::{OsFunctionCall, ResourceTracker};
 
 use crate::{
@@ -136,7 +136,7 @@ pub(crate) fn to_ymd(date: Date) -> (i32, u32, u32) {
 /// required argument 'X' (pos N)", etc. Unlike `datetime()` it has no
 /// keyword-only fields, so the derive keeps the plain (non-"positional")
 /// at-most wording automatically.
-#[py_signature("date(year: int, month: int, day: int)", style = c, at_most_total, error_name = "function")]
+#[py_signature("date(year: c_int, month: c_int, day: c_int)", style = c, at_most_total, error_name = "function")]
 pub(crate) fn init(vm: &mut VM<'_>, DateInitArgs { year, month, day }: DateInitArgs) -> RunResult<Value> {
     let date = from_ymd(year, month, day)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::Date(date))))
@@ -168,8 +168,8 @@ pub(crate) fn class_method(
 
 /// Reads `date.today()` from the session's clock in the session zone. A `CallHost`
 /// clock requests a `DateToday` answer constructed with `MontyObject::date`.
-pub(crate) fn class_today(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    args.check_zero_args("date.today", vm.heap)?;
+#[py_signature("today()", error_name = "date.today")]
+pub(crate) fn class_today(vm: &mut VM<'_>) -> RunResult<CallResult> {
     Ok(match datetime::sandbox_instant(vm)? {
         None => CallResult::OsCall(OsFunctionCall::DateToday),
         Some(utc) => {
@@ -182,9 +182,7 @@ pub(crate) fn class_today(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRes
 /// Classmethod `date.fromtimestamp(timestamp)`: the session-local date of a Unix
 /// timestamp, read in the session zone as CPython reads it in the host's.
 pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args
-        .reject_kwargs("date.fromtimestamp", vm.heap)?
-        .get_one_arg("date.fromtimestamp", vm.heap)?;
+    let value = bind_positional!(args, vm.heap, "date.fromtimestamp(timestamp, /)", reject_keywords)?;
     defer_drop!(value, vm);
     // `date` floors to whole seconds and uses `__index__`-style wording, where
     // `datetime` rounds to microseconds and names both numeric types.
@@ -200,9 +198,7 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult
 /// Parses ISO 8601 date strings in the formats `YYYY-MM-DD` and `YYYYMMDD`,
 /// matching CPython 3.11+ behavior.
 pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let value = args
-        .reject_kwargs("date.fromisoformat", heap)?
-        .get_one_arg("date.fromisoformat", heap)?;
+    let value = bind_positional!(args, heap, "date.fromisoformat(date_string, /)", reject_keywords)?;
     let s = extract_str_arg(&value, "fromisoformat", heap, interns);
     value.drop_with(heap);
     let s = s?;
@@ -306,7 +302,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
         let date = *self.get(vm.heap);
         match attr.static_string(vm.interns) {
             Some(StaticStrings::Isoformat) => {
-                args.check_zero_args("date.isoformat", vm.heap)?;
+                bind_positional!(args, vm.heap, "date.isoformat()")?;
                 let (year, month, day) = to_ymd(date);
                 Ok(CallResult::Value(allocate_string_no_interning(
                     format!("{year:04}-{month:02}-{day:02}"),
@@ -336,13 +332,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
                 )))
             }
             Some(StaticStrings::Weekday) => {
-                args.check_zero_args("date.weekday", vm.heap)?;
+                bind_positional!(args, vm.heap, "date.weekday()")?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     date.0.weekday().num_days_from_monday(),
                 ))))
             }
             Some(StaticStrings::Isoweekday) => {
-                args.check_zero_args("date.isoweekday", vm.heap)?;
+                bind_positional!(args, vm.heap, "date.isoweekday()")?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     date.0.weekday().number_from_monday(),
                 ))))
@@ -546,5 +542,5 @@ pub(crate) struct StrftimeArgs;
 
 /// Keyword arguments for `date.replace()`. All keyword-only; absent fields
 /// inherit the original date's component via `unwrap_or` at the call site.
-#[py_signature("replace(*, year: int=..., month: int=..., day: int=...)")]
+#[py_signature("replace(*, year: c_int=..., month: c_int=..., day: c_int=...)")]
 struct DateReplaceArgs;

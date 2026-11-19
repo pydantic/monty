@@ -1,14 +1,15 @@
 //! Implementation of the all() builtin function.
 
-use crate::{args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, types::PyTrait, value::Value};
+use monty_macros::py_signature;
+
+use crate::{bytecode::VM, defer_drop, exception_private::RunResult, types::PyTrait, value::Value};
 
 /// Implementation of the all() builtin function.
 ///
 /// Returns True if all elements of the iterable are true (or if the iterable is empty).
 /// Short-circuits on the first falsy value.
-pub fn builtin_all(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let iterable = args.get_one_arg("all", vm.heap)?;
-    defer_drop!(iterable, vm);
+#[py_signature("all(iterable, /)", style = one_arg)]
+pub fn builtin_all(vm: &mut VM<'_>, iterable: &Value) -> RunResult<Value> {
     let iter = iterable.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);

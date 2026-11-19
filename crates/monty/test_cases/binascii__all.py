@@ -98,6 +98,12 @@ assert binascii.unhexlify('dead') == b'\xde\xad'
 assert binascii.a2b_hex(b'dead') == b'\xde\xad'
 
 try:
+    binascii.unhexlify([], [])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'binascii.unhexlify() takes exactly one argument (2 given)'
+
+try:
     binascii.unhexlify(b'abc')
     assert False, 'expected binascii.Error'
 except binascii.Error as exc:
@@ -335,7 +341,7 @@ except TypeError as exc:
     assert str(exc) == 'binascii.a2b_uu() takes no keyword arguments'
 
 try:
-    binascii.a2b_uu(b'!80', 1)
+    binascii.a2b_uu([], [])
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == 'binascii.a2b_uu() takes exactly one argument (2 given)'

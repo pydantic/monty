@@ -8,9 +8,8 @@ the `/python-playground` skill before pinning it in a test.
 
 ## Declare parameters with `#[py_signature]`
 
-Declare the Python parameter list on the Rust function. Trivial positional functions may
-also use the existing `ArgValues` helpers. Use a named signature struct when dispatchers share
-a binder. The [macro reference](../../../monty-macros/README.md) covers ownership, defaults and converters.
+Declare the Python parameter list on the Rust function. Use `bind_positional!` inside a method
+dispatch arm that consumes raw positional values. Use a named signature struct when dispatchers share a binder. The [macro reference](../../../monty-macros/README.md) covers ownership, defaults and converters.
 
 ### Pick the `style` by how CPython implements the function
 

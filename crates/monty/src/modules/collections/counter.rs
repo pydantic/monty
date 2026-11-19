@@ -10,7 +10,7 @@
 
 use std::{cmp::Ordering, mem};
 
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 use smallvec::smallvec;
 
 use crate::{
@@ -380,7 +380,7 @@ pub(crate) fn counter_most_common<'h>(
 ) -> RunResult<Value> {
     // Huge positive limits return every item; negative limits return none.
     let limit = {
-        let n_arg = args.get_zero_one_arg("most_common", vm.heap)?;
+        let n_arg = bind_positional!(args, vm.heap, "most_common(n=..., /)")?;
         defer_drop!(n_arg, vm);
         match n_arg.as_ref().map(|value| value.py_value(vm)) {
             None | Some(PyValue::None) => None,
@@ -559,7 +559,7 @@ pub(crate) fn counter_elements<'h>(
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    args.check_zero_args("elements", vm.heap)?;
+    bind_positional!(args, vm.heap, "elements()")?;
 
     // Resolve every repetition length up front: a count that `itertools.repeat`
     // rejects — non-integer (TypeError) or outside `ssize_t` (OverflowError) —

@@ -21,7 +21,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 use monty_types::ResourceTracker;
 use serde::{Deserialize, Serialize};
 
@@ -507,7 +507,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
                     args.drop_with(vm);
                     return Err(ExcType::type_error_no_kwargs(&method("update")));
                 }
-                let data = args.get_one_arg(&method("update"), vm.heap)?;
+                let data = bind_positional!(args, vm.heap, "(data, /)", name = &method("update"))?;
                 defer_drop!(data, vm);
                 let data = data.py_value(vm);
                 // The input borrows the heap, so the state is lifted out while
@@ -531,17 +531,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
                 Ok(CallResult::Value(allocate_string(hex_string(&digest), vm.heap)))
             }
             Some(StaticStrings::Digest) => {
-                args.check_zero_args(&method("digest"), vm.heap)?;
+                bind_positional!(args, vm.heap, "()", name = &method("digest"))?;
                 let digest = self.get(vm.heap).digest();
                 Ok(CallResult::Value(allocate_bytes(digest.to_vec(), vm.heap)))
             }
             Some(StaticStrings::Hexdigest) => {
-                args.check_zero_args(&method("hexdigest"), vm.heap)?;
+                bind_positional!(args, vm.heap, "()", name = &method("hexdigest"))?;
                 let digest = self.get(vm.heap).digest();
                 Ok(CallResult::Value(allocate_string(hex_string(&digest), vm.heap)))
             }
             Some(StaticStrings::Copy) => {
-                args.check_zero_args(&method("copy"), vm.heap)?;
+                bind_positional!(args, vm.heap, "()", name = &method("copy"))?;
                 Ok(CallResult::Value(self.allocate_like(vm)))
             }
             _ => {

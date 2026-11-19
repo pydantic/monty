@@ -7,7 +7,7 @@
 
 use std::mem;
 
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 
 use crate::{
     args::ArgValues,
@@ -171,24 +171,10 @@ fn call_count(vm: &mut VM<'_>, CountArgs { start, step }: CountArgs) -> RunResul
 /// Argument shape for `repeat(object, times=?)`.
 ///
 /// CPython parses this with `"O|n:repeat"` — see [`CountArgs`] for why that
-/// means `c_named` + `at_most_total`. `times` stays a raw `Value` so the
-/// `__index__` coercion (and its `OverflowError`) happens in the body.
-#[py_signature("repeat(object, times=...)", style = c_named, at_most_total)]
+/// means `c_named` + `at_most_total`.
+#[py_signature("repeat(object, times: i64=...)", style = c_named, at_most_total)]
 fn call_repeat(vm: &mut VM<'_>, RepeatArgs { object, times }: RepeatArgs) -> RunResult<Value> {
-    let remaining = match times {
-        None => None,
-        Some(times) => {
-            let count = repeat_times(&times, vm);
-            times.drop_with(vm);
-            match count {
-                Ok(count) => Some(count),
-                Err(error) => {
-                    object.drop_with(vm);
-                    return Err(error);
-                }
-            }
-        }
-    };
+    let remaining = times.map(|n| usize::try_from(n.max(0)).unwrap_or(usize::MAX));
     let iter = ItertoolsIter::Repeat(Repeat::new(object, remaining));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -214,21 +200,6 @@ fn normalize_bool(value: Value) -> Value {
         Value::Bool(b) => Value::Int(i64::from(b)),
         other => other,
     }
-}
-
-/// Coerces `repeat`'s `times` the way CPython's `n` format unit does.
-///
-/// Negative counts clamp to zero (`repeat(x, -1)` is empty) and a `times` too
-/// large for a machine integer raises `OverflowError`, matching the conversion
-/// to `Py_ssize_t`. `bool` is accepted because it is an `int` subclass.
-fn repeat_times(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
-    let count = match value {
-        Value::Bool(b) => i64::from(*b),
-        other => other.as_int(vm)?,
-    };
-    // Saturates rather than wrapping on a 32-bit host, where a `times` between
-    // `usize::MAX` and `i64::MAX` is still effectively infinite.
-    Ok(usize::try_from(count.max(0)).unwrap_or(usize::MAX))
 }
 
 /// `itertools.pairwise(iterable)` — successive overlapping pairs.
@@ -371,12 +342,8 @@ fn islice_index(value: &Value, vm: &mut VM<'_>) -> RunResult<IsliceBound> {
 }
 
 /// `itertools.chain(*iterables)` — each argument's items, back to back.
-///
-/// Uses `into_pos_only` because the derive cannot express unbounded `*args`
-/// with no keywords: `style = unpack` models a fixed `min..max` and rejects
-/// `varargs`.
 fn call_chain(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let iterables: Vec<Value> = args.into_pos_only("chain", vm.heap)?.collect();
+    let iterables: Vec<Value> = bind_positional!(args, vm.heap, "chain(*iterables)")?.collect();
     // Arguments are NOT resolved here: CPython calls `iter()` on each only as it
     // reaches it, so `chain([1], 5)` constructs and raises mid-consumption.
     let iter = ItertoolsIter::Chain(Chain::new(iterables));
@@ -743,13 +710,7 @@ fn call_groupby(vm: &mut VM<'_>, GroupbyArgs { iterable, key }: GroupbyArgs) -> 
 /// `METH_O` in CPython, so keywords are rejected wholesale and the arity
 /// wording is `takes exactly one argument (N given)`.
 fn call_chain_from_iterable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let mut positional = args.into_pos_only("chain.from_iterable", vm.heap)?;
-    let count = positional.len();
-    if count != 1 {
-        positional.drop_with(vm);
-        return Err(ExcType::type_error_arg_count("chain.from_iterable", 1, count));
-    }
-    let iterable = positional.next().expect("exactly one positional argument");
+    let iterable = bind_positional!(args, vm.heap, "chain.from_iterable(iterable, /)", reject_keywords)?;
     // The outer iterable is resolved now — `chain.from_iterable(5)` raises
     // here — while its items are resolved one at a time, as `chain`'s
     // arguments are.

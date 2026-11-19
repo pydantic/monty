@@ -3,6 +3,7 @@
 //! Concrete iterator state lives beside its iterable type. This module only
 //! provides suspendable iterator validation and synchronous collection machinery.
 
+use monty_macros::bind_positional;
 use monty_types::{ResourceError, ResourceTracker};
 
 use crate::{
@@ -24,7 +25,7 @@ def __monty_iter(object, get_iter, validate):
 
 /// Invokes the user protocol without re-entering the instance's validation frame.
 pub(crate) fn call_get_iter(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    let object = args.get_one_arg("get_iter", vm.heap)?;
+    let object = bind_positional!(args, vm.heap, "get_iter(object, /)")?;
     defer_drop!(object, vm);
     let Some(HeapReadOutput::Instance(instance)) = object.read_heap(vm) else {
         unreachable!("only instances need frozen iterator validation")
@@ -34,7 +35,7 @@ pub(crate) fn call_get_iter(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallR
 
 /// Returns an owned iterator unchanged, rejecting invalid user `__iter__` results.
 pub(crate) fn call_validate_iterator(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let iterator = args.get_one_arg("validate_iterator", vm.heap)?;
+    let iterator = bind_positional!(args, vm.heap, "validate_iterator(iterator, /)")?;
     if iterator.py_is_iterator(vm) {
         Ok(iterator)
     } else {

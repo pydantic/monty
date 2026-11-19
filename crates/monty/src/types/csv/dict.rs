@@ -3,6 +3,7 @@
 
 use std::{mem, sync::Arc};
 
+use monty_macros::bind_positional;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -271,7 +272,7 @@ pub(super) fn writer_writerow<'h>(
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
-    let rowdict = args.get_one_arg("DictWriter.writerow", vm.heap)?;
+    let rowdict = bind_positional!(args, vm.heap, "DictWriter.writerow(rowdict, /)")?;
     defer_drop!(rowdict, vm);
     let spec: Option<RowSpec> = None;
     defer_drop_mut!(spec, vm);
@@ -288,7 +289,7 @@ pub(super) fn writer_writeheader<'h>(
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
-    args.check_zero_args("DictWriter.writeheader", vm.heap)?;
+    bind_positional!(args, vm.heap, "DictWriter.writeheader()")?;
     let fieldnames = dict_writer_part(obj, vm, |writer| writer.fieldnames.clone_with_heap(vm.heap));
     defer_drop!(fieldnames, vm);
     let names = fieldnames_items(fieldnames, vm)?;
@@ -319,7 +320,7 @@ pub(super) fn writer_writerows<'h>(
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
-    let rowdicts = args.get_one_arg("DictWriter.writerows", vm.heap)?;
+    let rowdicts = bind_positional!(args, vm.heap, "DictWriter.writerows(rowdicts, /)")?;
     defer_drop!(rowdicts, vm);
     let writer = dict_writer_part(obj, vm, |writer| writer.writer.clone_with_heap(vm.heap));
     defer_drop!(writer, vm);

@@ -7,6 +7,7 @@ use std::{
     mem,
 };
 
+use monty_macros::bind_positional;
 /// Python tuple type using `SmallVec` for inline storage of small tuples.
 ///
 /// This type provides Python tuple semantics. Tuples are immutable sequences
@@ -123,7 +124,7 @@ impl Tuple {
     /// - `tuple()` with no args returns an empty tuple (singleton)
     /// - `tuple(iterable)` creates a tuple from any iterable (list, tuple, range, str, bytes, dict)
     pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("tuple", vm.heap)?;
+        let value = bind_positional!(args, vm.heap, "tuple(iterable=..., /)")?;
         match value {
             None => {
                 // Use empty tuple singleton
@@ -557,12 +558,11 @@ impl HeapItem for Tuple {
 /// Returns the index of the first occurrence of value.
 /// Raises ValueError if the value is not found.
 fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let pos_args = args.into_pos_only("tuple.index", vm.heap)?;
+    let pos_args = bind_positional!(args, vm.heap, "tuple.index(value, start=..., stop=..., /)", iter)?;
     defer_drop!(pos_args, vm);
 
     let len = tuple.get(vm.heap).as_slice().len();
     let (value, start, end) = match pos_args.as_slice() {
-        [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
         [value] => (value, 0, len),
         [value, start_arg] => {
             let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
@@ -573,7 +573,7 @@ fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>
             let end = normalize_sequence_index(value_to_i64_bound(end_arg, vm)?, len).max(start);
             (value, start, end)
         }
-        other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
+        _ => unreachable!("arity checked by signature"),
     };
 
     // Nested short offset searches may never reach an iterator checkpoint.
@@ -601,7 +601,7 @@ fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>
 ///
 /// Returns the number of occurrences of value in the tuple.
 fn tuple_count<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let value = args.get_one_arg("tuple.count", vm.heap)?;
+    let value = bind_positional!(args, vm.heap, "tuple.count(value, /)")?;
     defer_drop!(value, vm);
 
     let mut count = 0usize;

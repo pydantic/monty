@@ -9,6 +9,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+use monty_macros::bind_positional;
 use num_integer::div_ceil;
 
 use crate::{
@@ -117,11 +118,10 @@ impl Range {
     /// - `range(start, stop)` - range from start to stop
     /// - `range(start, stop, step)` - range with custom step
     pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        let pos_args = args.into_pos_only("range", vm.heap)?;
+        let pos_args = bind_positional!(args, vm.heap, "range(start, stop=..., step=..., /)", iter)?;
         defer_drop!(pos_args, vm);
 
         let range = match pos_args.as_slice() {
-            [] => return Err(ExcType::type_error_at_least("range", 1, 0)),
             [first_arg] => {
                 let stop = first_arg.as_int(vm)?;
                 Self::from_stop(stop)
@@ -140,7 +140,7 @@ impl Range {
                 }
                 Self::new(start, stop, step)
             }
-            _ => return Err(ExcType::type_error_at_most("range", 3, pos_args.len())),
+            _ => unreachable!("arity checked by signature"),
         };
 
         Ok(Value::Ref(vm.heap.allocate(HeapData::Range(range))))

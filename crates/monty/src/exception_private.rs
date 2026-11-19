@@ -966,31 +966,6 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::not_implemented(msg).into()
     }
 
-    /// Creates a TypeError for a missing required argument without a position,
-    /// as raised by hand-written vectorcall fast paths like `enumerate`:
-    /// `{name}() missing required argument '{arg_name}'`
-    #[must_use]
-    fn type_error_missing_required_no_pos(name: &str, arg_name: &str) -> RunError {
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("{name}() missing required argument '{arg_name}'"),
-        )
-        .into()
-    }
-
-    /// Creates a TypeError for a keyword rejected by a hand-written vectorcall
-    /// fast path (CPython's `enumerate` wording, distinct from the parser
-    /// families' "unexpected keyword argument"):
-    /// `'{key}' is an invalid keyword argument for {name}()`
-    #[must_use]
-    fn type_error_invalid_keyword_argument(name: &str, key: &str) -> RunError {
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("'{key}' is an invalid keyword argument for {name}()"),
-        )
-        .into()
-    }
-
     /// Creates a TypeError matching CPython's `_PyArg_BadArgument`
     /// positional-style wording: `{name}() argument {pos} must be
     /// {expected}, not {got}`.
@@ -2766,18 +2741,16 @@ impl ExcTypeExt for ExcType {
     /// Allocates an exception for constructors like `ValueError('message')`.
     /// Currently supports zero or one string argument.
     fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        defer_drop!(args, vm);
-        let exc = match args {
-            ArgValues::Empty => Ok(SimpleException::new_none(self)),
-            ArgValues::One(value) => match value.py_value(vm) {
+        let unsupported = || RunError::internal("exceptions can only be called with zero or one string argument");
+        let message = monty_macros::bind_positional!(args, vm.heap, "(message=..., /)", name = self.into())
+            .map_err(|_| unsupported())?;
+        defer_drop!(message, vm);
+        let exc = match message {
+            None => Ok(SimpleException::new_none(self)),
+            Some(value) => match value.py_value(vm) {
                 PyValue::Str(string) => Ok(SimpleException::new_msg(self, string.as_str(vm))),
-                _ => Err(RunError::internal(
-                    "exceptions can only be called with zero or one string argument",
-                )),
+                _ => Err(unsupported()),
             },
-            _ => Err(RunError::internal(
-                "exceptions can only be called with zero or one string argument",
-            )),
         }?;
         let heap_id = vm.heap.allocate(HeapData::Exception(exc));
         Ok(Value::Ref(heap_id))

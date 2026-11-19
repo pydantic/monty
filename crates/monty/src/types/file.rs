@@ -78,6 +78,7 @@ use std::{
     mem,
 };
 
+use monty_macros::bind_positional;
 use monty_types::{
     MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, WriteBytesAtArgs,
     unstable::MontyNode,
@@ -589,7 +590,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     /// operations. The buffer holds the full file content; further reads
     /// slice it in pure Monty.
     fn read(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        let spec = parse_read_size_arg(args.get_zero_one_arg("read", vm.heap)?, vm)?;
+        let spec = parse_read_size_arg(bind_positional!(args, vm.heap, "read(size=..., /)")?, vm)?;
         if matches!(spec, ReadSpec::Size(0)) {
             // `read(0)`: empty result without any OS call, position unchanged.
             // Open/readable checks still happen to match CPython's error order.
@@ -611,14 +612,14 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     /// `\n`, or the rest of the buffer if the final line has no newline. At
     /// EOF returns `''`/`b''`.
     fn readline(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        args.check_zero_args("readline", vm.heap)?;
+        bind_positional!(args, vm.heap, "readline()")?;
         self.read_with_spec(vm, ReadSpec::Line)
     }
 
     /// Implements `file.readlines()` — returns a `list[str]` (or `list[bytes]`
     /// for binary mode) of every remaining line.
     fn readlines(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        args.check_zero_args("readlines", vm.heap)?;
+        bind_positional!(args, vm.heap, "readlines()")?;
         self.read_with_spec(vm, ReadSpec::Lines)
     }
 
@@ -628,7 +629,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     /// divergence from CPython, which returns an opaque byte cookie); in
     /// binary mode it is a byte offset, which matches CPython.
     fn tell(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        args.check_zero_args("tell", vm.heap)?;
+        bind_positional!(args, vm.heap, "tell()")?;
         let file = self.get(vm.heap);
         file.ensure_open()?;
         // Positions never exceed the buffer length, and the buffer is bounded
@@ -775,7 +776,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     /// As with [`Self::read`], the first OS-call argument is the file object
     /// itself, delivered to the host as a `MontyNode::FileHandle`.
     fn write(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        let data = args.get_one_arg("write", vm.heap)?;
+        let data = bind_positional!(args, vm.heap, "write(data, /)")?;
         defer_drop!(data, vm);
         let binary = self.get(vm.heap).mode.is_binary();
         validate_write_data(data, binary, vm)?;
@@ -937,7 +938,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     /// alive via their own refcounts, so this release is safe — it only
     /// frees the buffer if nothing else points at it.
     fn close(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        args.check_zero_args("close", vm.heap)?;
+        bind_positional!(args, vm.heap, "close()")?;
         let buffer_id = {
             let file = self.get_mut(vm.heap);
             file.closed = true;
@@ -955,14 +956,14 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
 
     /// Implements `flush()` as a no-op because writes are committed immediately.
     fn flush(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        args.check_zero_args("flush", vm.heap)?;
+        bind_positional!(args, vm.heap, "flush()")?;
         self.get(vm.heap).ensure_open()?;
         Ok(CallResult::Value(Value::None))
     }
 
     /// Returns whether this file object supports `read()`.
     fn readable(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        args.check_zero_args("readable", vm.heap)?;
+        bind_positional!(args, vm.heap, "readable()")?;
         let file = self.get(vm.heap);
         file.ensure_open()?;
         Ok(CallResult::Value(Value::Bool(file.mode.readable())))
@@ -970,7 +971,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
 
     /// Returns whether this file object supports `write()`.
     fn writable(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        args.check_zero_args("writable", vm.heap)?;
+        bind_positional!(args, vm.heap, "writable()")?;
         let file = self.get(vm.heap);
         file.ensure_open()?;
         Ok(CallResult::Value(Value::Bool(file.mode.writable())))
@@ -980,7 +981,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     /// support logical `seek()` / `tell()` state even though actual host I/O is
     /// still performed as one-shot calls.
     fn seekable(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        args.check_zero_args("seekable", vm.heap)?;
+        bind_positional!(args, vm.heap, "seekable()")?;
         self.get(vm.heap).ensure_open()?;
         Ok(CallResult::Value(Value::Bool(true)))
     }
@@ -1738,7 +1739,7 @@ fn populate_buffer_meta<'h>(file: &HeapReadMut<'h, OpenFile>, vm: &mut VM<'h>) -
 /// `whence` outside `{0, 1, 2}` is deferred to `compute_slice` so the error
 /// matches CPython's `invalid whence` message.
 fn parse_seek_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(i64, i64)> {
-    let (offset, maybe_whence) = args.get_one_two_args("seek", vm.heap)?;
+    let (offset, maybe_whence) = bind_positional!(args, vm.heap, "seek(offset, whence=..., /)")?;
     let offset_int = offset.as_int(vm)?;
     let whence_int = match maybe_whence {
         Some(w) => w.as_int(vm)?,

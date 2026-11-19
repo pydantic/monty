@@ -2,7 +2,7 @@
 
 use std::mem;
 
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 
 use super::object::builtin_object_init_subclass;
 use crate::{
@@ -22,27 +22,14 @@ use crate::{
 /// `type(name, bases, dict)` dynamically creates a new class, mirroring
 /// CPython. Any other positional count is a `TypeError`.
 pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (mut pos, kwargs) = args.into_parts();
-    match pos.len() {
+    match args.count() {
         1 => {
-            let value = pos.next().expect("length checked");
-            if kwargs.is_empty() {
-                Ok(type_of(vm, value))
-            } else {
-                value.drop_with(vm);
-                kwargs.drop_with(vm);
-                Err(ExcType::type_error_no_kwargs("type"))
-            }
+            let obj = bind_positional!(args, vm.heap, "type(obj, /)", reject_keywords)?;
+            Ok(type_of(vm, obj))
         }
-        3 => {
-            let name = pos.next().expect("length checked");
-            let bases = pos.next().expect("length checked");
-            let namespace = pos.next().expect("length checked");
-            create_class(vm, name, bases, namespace, kwargs)
-        }
+        3 => create_class(vm, args),
         _ => {
-            pos.drop_with(vm);
-            kwargs.drop_with(vm);
+            args.drop_with(vm);
             Err(ExcType::type_error("type() takes 1 or 3 arguments"))
         }
     }
@@ -76,12 +63,15 @@ pub(crate) fn type_of_ref(vm: &mut VM<'_>, value: &Value) -> Value {
 /// the dict omits it, and `__hash__ = None` when it defines `__eq__` without
 /// `__hash__`, as CPython's `type_new` does. Keyword arguments go to the
 /// parent's `__init_subclass__`.
+#[py_signature("type(name, bases, namespace, /, **kwargs)", style = unpack)]
 fn create_class(
     vm: &mut VM<'_>,
-    name: Value,
-    bases: Value,
-    namespace: Value,
-    kwargs: KwargsValues,
+    TypeNewArgs {
+        name,
+        bases,
+        namespace,
+        kwargs,
+    }: TypeNewArgs,
 ) -> RunResult<Value> {
     defer_drop!(name, vm);
     defer_drop!(bases, vm);

@@ -10,7 +10,7 @@
 
 use std::{fmt::Write, iter};
 
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 use smallvec::smallvec;
 
 use super::{
@@ -160,18 +160,17 @@ pub(crate) fn as_context(value: &Value, vm: &VM<'_>) -> Option<HeapId> {
 }
 
 /// `decimal.getcontext()`.
-pub(crate) fn getcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    args.check_zero_args("_decimal.getcontext", vm.heap)?;
+#[py_signature("getcontext()", error_name = "_decimal.getcontext")]
+pub(crate) fn getcontext(vm: &mut VM<'_>) -> RunResult<Value> {
     let id = current_context(vm);
     vm.heap.inc_ref(id);
     Ok(Value::Ref(id))
 }
 
 /// `decimal.setcontext(context)`.
-pub(crate) fn setcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("_decimal.setcontext", vm.heap)?;
-    defer_drop!(value, vm);
-    let id = as_context(value, vm).ok_or_else(|| ExcType::type_error("argument must be a context"))?;
+#[py_signature("setcontext(context, /)", style = one_arg, error_name = "_decimal.setcontext")]
+pub(crate) fn setcontext(vm: &mut VM<'_>, context: &Value) -> RunResult<Value> {
+    let id = as_context(context, vm).ok_or_else(|| ExcType::type_error("argument must be a context"))?;
     set_current(vm, id);
     Ok(Value::None)
 }
@@ -235,9 +234,8 @@ pub(crate) fn init(
 }
 
 /// `decimal.IEEEContext(bits)`: the context of an IEEE 754 decimal interchange format.
-pub(crate) fn ieee_context(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let bits = args.get_one_arg("IEEEContext", vm.heap)?;
-    defer_drop!(bits, vm);
+#[py_signature("IEEEContext(bits, /)", style = one_arg)]
+pub(crate) fn ieee_context(vm: &mut VM<'_>, bits: &Value) -> RunResult<Value> {
     let bits = match bits {
         Value::Int(n) => *n,
         Value::Bool(b) => i64::from(*b),
@@ -527,23 +525,25 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DecContext> {
         let name = attr.as_str(vm.interns);
         match name {
             "clear_flags" => {
-                args.check_zero_args("Context.clear_flags", vm.heap)?;
+                bind_positional!(args, vm.heap, "Context.clear_flags()")?;
                 self.get_mut(vm.heap).flags = Conditions::EMPTY;
                 Ok(CallResult::Value(Value::None))
             }
             "clear_traps" => {
-                args.check_zero_args("Context.clear_traps", vm.heap)?;
+                bind_positional!(args, vm.heap, "Context.clear_traps()")?;
                 self.get_mut(vm.heap).traps = Conditions::EMPTY;
                 Ok(CallResult::Value(Value::None))
             }
             "copy" | "__copy__" => {
-                args.check_zero_args(
-                    if name == "copy" {
+                bind_positional!(
+                    args,
+                    vm.heap,
+                    "()",
+                    name = if name == "copy" {
                         "Context.copy"
                     } else {
                         "Context.__copy__"
-                    },
-                    vm.heap,
+                    }
                 )?;
                 let settings = *self.get(vm.heap);
                 Ok(CallResult::Value(Value::Ref(
@@ -551,11 +551,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DecContext> {
                 )))
             }
             "Etiny" => {
-                args.check_zero_args("Context.Etiny", vm.heap)?;
+                bind_positional!(args, vm.heap, "Context.Etiny()")?;
                 Ok(CallResult::Value(Value::Int(self.get(vm.heap).etiny())))
             }
             "Etop" => {
-                args.check_zero_args("Context.Etop", vm.heap)?;
+                bind_positional!(args, vm.heap, "Context.Etop()")?;
                 Ok(CallResult::Value(Value::Int(self.get(vm.heap).etop())))
             }
             _ => match ContextMethod::from_name(name) {
@@ -772,23 +772,23 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SignalDict> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let value = match attr.as_str(vm.interns) {
             "keys" => {
-                args.check_zero_args("keys", vm.heap)?;
+                bind_positional!(args, vm.heap, "keys()")?;
                 self.listing(SignalDictPart::Keys, vm)
             }
             "values" => {
-                args.check_zero_args("values", vm.heap)?;
+                bind_positional!(args, vm.heap, "values()")?;
                 self.listing(SignalDictPart::Values, vm)
             }
             "items" => {
-                args.check_zero_args("items", vm.heap)?;
+                bind_positional!(args, vm.heap, "items()")?;
                 self.listing(SignalDictPart::Items, vm)
             }
             "copy" => {
-                args.check_zero_args("copy", vm.heap)?;
+                bind_positional!(args, vm.heap, "copy()")?;
                 self.to_dict(vm)?
             }
             "get" => {
-                let (key, default) = args.get_one_two_args("get", vm.heap)?;
+                let (key, default) = bind_positional!(args, vm.heap, "get(key, default=..., /)")?;
                 defer_drop!(key, vm);
                 match signal_of(key) {
                     Some(signal) => {
@@ -799,7 +799,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SignalDict> {
                 }
             }
             "update" => {
-                if let Some(other) = args.get_zero_one_arg("update", vm.heap)? {
+                if let Some(other) = bind_positional!(args, vm.heap, "update(other=..., /)")? {
                     defer_drop!(other, vm);
                     self.update(other, vm)?;
                 }

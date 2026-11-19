@@ -404,3 +404,21 @@ fn unannotated_float_default_keeps_supplied_values_unconverted() {
         assert!(matches!(value, Value::None));
     });
 }
+
+#[test]
+fn full_width_signature_defaults_and_omissions() {
+    #[monty_macros::py_signature("wide(x: int=-0x1_0000_0000_0000_0000, index: SupportsIndex=..., /)")]
+    struct WideArgs;
+
+    with_test_vm(|vm| {
+        let wide = -(BigInt::from(1) << 64_u8);
+        let defaults = WideArgs::from_args(ArgValues::Empty, vm).unwrap();
+        assert_eq!(defaults.x.inner(), &wide);
+        assert!(defaults.index.is_none());
+
+        let input = LongInt::new(wide.clone()).into_value(vm.heap);
+        let supplied = WideArgs::from_args(ArgValues::Two(Value::Bool(true), input), vm).unwrap();
+        assert_eq!(supplied.x.inner(), &BigInt::from(1));
+        assert_eq!(supplied.index.unwrap().inner(), &wide);
+    });
+}

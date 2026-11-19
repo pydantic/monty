@@ -19,7 +19,7 @@
 //! where CPython accepts an fd as the path is a closed fd here, so it fails
 //! as one would there (see [`PathArgError`]).
 
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs};
 
 use crate::{
@@ -214,7 +214,7 @@ fn walk(
 /// oversized request never leaves the sandbox when a limit is set (hosts
 /// still cap it themselves). The reply must be exactly `size` bytes,
 /// enforced by [`PreConversionEffect::UrandomLength`] before it is converted.
-#[py_signature("urandom(size: SupportsIndex, /) -> bytes")]
+#[py_signature("urandom(size: i64, /) -> bytes")]
 fn urandom(vm: &mut VM<'_>, args: &UrandomArgs) -> RunResult<CallResult> {
     if args.size < 0 {
         return Err(ExcType::value_error("negative argument not allowed"));
@@ -230,8 +230,8 @@ fn urandom(vm: &mut VM<'_>, args: &UrandomArgs) -> RunResult<CallResult> {
 
 /// Implementation of `os.getcwd()` — the sandbox's virtual working
 /// directory, held by the VM so no host round-trip is needed.
-fn getcwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    args.check_zero_args("getcwd", vm.heap)?;
+#[py_signature("getcwd()")]
+fn getcwd(vm: &mut VM<'_>) -> RunResult<CallResult> {
     Ok(CallResult::Value(allocate_string(&*vm.env.cwd, vm.heap)))
 }
 
@@ -239,8 +239,8 @@ fn getcwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 ///
 /// Virtual paths are always UTF-8, so this is `os.getcwd().encode()` with no
 /// filesystem encoding involved.
-fn getcwdb(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    args.check_zero_args("getcwdb", vm.heap)?;
+#[py_signature("getcwdb()")]
+fn getcwdb(vm: &mut VM<'_>) -> RunResult<CallResult> {
     let bytes = Bytes::new(vm.env.cwd.as_bytes().to_vec());
     Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Bytes(bytes)))))
 }
@@ -284,7 +284,7 @@ fn chdir(vm: &mut VM<'_>, ChdirArgs { path }: &ChdirArgs) -> RunResult<CallResul
 /// `os._Environ` in the CPython stdlib, so it lives inline here rather
 /// than as a shared helper.
 fn getenv(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let (key_value, default_value) = args.get_one_two_args("os.getenv", vm.heap)?;
+    let (key_value, default_value) = bind_positional!(args, vm.heap, "os.getenv(key, default=..., /)")?;
     if let Some(key) = key_value.as_either_str(vm.heap) {
         key_value.drop_with(vm.heap);
         Ok(CallResult::OsCall(OsFunctionCall::Getenv(GetenvArgs {

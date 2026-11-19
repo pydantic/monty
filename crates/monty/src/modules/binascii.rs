@@ -16,7 +16,7 @@
 //! The byte-level codecs live in [`super::base64`], where they were written
 //! first; `binascii` re-exposes them under the names CPython puts them at.
 
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 use monty_types::ResourceTracker;
 
 use crate::{
@@ -25,7 +25,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, HeapData},
+    heap::HeapData,
     intern::StaticStrings,
     modules::{
         ModuleFunctions,
@@ -164,12 +164,7 @@ fn call_hexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value
 /// keywords are rejected wholesale before the arity is even counted, both
 /// under the module-qualified `name`.
 fn call_unhexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value> {
-    let mut positional = args.into_pos_only(name, vm.heap)?;
-    let count = positional.len();
-    let Some(hexstr) = positional.next().filter(|_| count == 1) else {
-        positional.drop_with(vm.heap);
-        return Err(ExcType::type_error_arg_count(name, 1, count));
-    };
+    let hexstr = bind_positional!(args, vm.heap, "(hexstr, /)", name = name, reject_keywords)?;
     defer_drop!(hexstr, vm);
 
     let decoded = hex_decode(decode_input_described(hexstr, vm, "bytes, buffer or ASCII string")?.as_ref())?;
@@ -245,12 +240,7 @@ fn call_b2a_uu(vm: &mut VM<'_>, B2aUuArgs { data, backtick }: &B2aUuArgs) -> Run
 /// `binascii.a2b_uu(data)` — the inverse, tolerant of either padding
 /// convention and of a line truncated before its length byte promised.
 fn call_a2b_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let mut positional = args.into_pos_only("binascii.a2b_uu", vm.heap)?;
-    let count = positional.len();
-    let Some(data) = positional.next().filter(|_| count == 1) else {
-        positional.drop_with(vm.heap);
-        return Err(ExcType::type_error_arg_count("binascii.a2b_uu", 1, count));
-    };
+    let data = bind_positional!(args, vm.heap, "binascii.a2b_uu(data, /)", reject_keywords)?;
     defer_drop!(data, vm);
 
     let decoded = uu_decode(decode_input_described(data, vm, "bytes, buffer or ASCII string")?.as_ref())?;
@@ -302,11 +292,11 @@ fn call_a2b_qp(vm: &mut VM<'_>, A2bQpArgs { data, header }: &A2bQpArgs) -> RunRe
 ///
 /// `PyArg_ParseTupleAndKeywords` with a `:name`, plus the up-front count that
 /// reports `takes at most 3 arguments` rather than an unexpected keyword.
-#[py_signature("hexlify(data, sep=..., bytes_per_sep: int=1)", style = c_named, at_most_total)]
+#[py_signature("hexlify(data, sep=..., bytes_per_sep: c_int=1)", style = c_named, at_most_total)]
 struct HexlifyArgs;
 
 /// The same shape under the `b2a_hex` name, which its signature errors report.
-#[py_signature("b2a_hex(data, sep=..., bytes_per_sep: int=1)", style = c_named, at_most_total)]
+#[py_signature("b2a_hex(data, sep=..., bytes_per_sep: c_int=1)", style = c_named, at_most_total)]
 struct B2aHexArgs;
 
 /// Reduces an `int` to the `unsigned int` CPython's `I` format takes, which

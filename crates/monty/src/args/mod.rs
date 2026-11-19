@@ -7,8 +7,8 @@ use std::{mem, slice, vec::IntoIter};
 pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
 pub(crate) use bind_python::Signature;
 pub(crate) use from_value::{
-    ArgErrCtx, DefaultedStringArg, FromValue, FromValueFail, LaxBool, StrArg, extract_index, extract_nullable_str,
-    is_long_int, long_int,
+    ArgErrCtx, DefaultedStringArg, FromValue, FromValueFail, LaxBool, StrArg, extract_i64_index, extract_index,
+    extract_nullable_str, is_long_int, long_int,
 };
 #[cfg(test)]
 pub(crate) use monty_macros::FromArgs;
@@ -255,6 +255,29 @@ impl ArgValues {
                 }
             }
         }
+    }
+
+    /// Keeps positional arguments in their inline storage while checking a declared arity.
+    pub(crate) fn bind_positional_range(
+        self,
+        name: &str,
+        min: usize,
+        max: usize,
+        heap: &mut Heap,
+    ) -> RunResult<ArgPosIter> {
+        let values = self.into_pos_only(name, heap)?;
+        let count = values.len();
+        if (min..=max).contains(&count) {
+            return Ok(values);
+        }
+        values.drop_with(heap);
+        Err(if min == max {
+            ExcType::type_error_arg_count(name, min, count)
+        } else if count < min {
+            ExcType::type_error_at_least(name, min, count)
+        } else {
+            ExcType::type_error_at_most(name, max, count)
+        })
     }
 
     #[cold]

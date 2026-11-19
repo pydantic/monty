@@ -8,7 +8,7 @@
 //! Other asyncio functions (`create_task`, `wait`, etc.) are not implemented.
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
 
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 use monty_types::{OsFunctionCall, sleep_duration_saturating};
 use num_traits::ToPrimitive;
 
@@ -132,7 +132,7 @@ fn delay_seconds(delay: &Value, vm: &VM<'_>) -> RunResult<f64> {
 /// Returns `CallResult::AwaitValue` so the VM executes `exec_get_awaitable` on
 /// the value, which handles validation that it's actually a coroutine/awaitable.
 fn run(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
-    let coroutine = args.get_one_arg("asyncio.run", heap)?;
+    let coroutine = bind_positional!(args, heap, "asyncio.run(main, /)")?;
     Ok(CallResult::AwaitValue(coroutine))
 }
 

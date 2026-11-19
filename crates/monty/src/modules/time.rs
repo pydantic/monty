@@ -10,7 +10,7 @@
 use std::{borrow::Cow, time::Duration};
 
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeDelta, Timelike, format::StrftimeItems};
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 use monty_types::{
     MontyTimeZone, OsFunctionCall, ProcessTime, ResourceTracker, SandboxTimeZone, SleepError, SleepMode, TimeCaller,
     local_wall_clock, sleep_duration, unix_seconds,
@@ -148,7 +148,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: TimeFunctions, args: ArgValues) ->
 /// `perf_counter`), which need no work on resume. All share the `time.time` OS
 /// call; `caller` tells the host which one asked.
 fn clock(vm: &mut VM<'_>, args: ArgValues, caller: TimeCaller, reading: Option<ClockReading>) -> RunResult<CallResult> {
-    args.check_zero_args(caller.as_str(), vm.heap)?;
+    bind_positional!(args, vm.heap, "()", name = caller.as_str())?;
     let Some(utc) = sandbox_instant(vm)? else {
         return Ok(suspend_for_clock(caller, reading));
     };
@@ -263,7 +263,7 @@ pub(crate) fn apply_clock_reading(reading: ClockReading, reply: Value, vm: &mut 
 /// than its clock, and never suspend. Monty has no threads, so the thread clock
 /// is the process clock.
 fn process_time(vm: &mut VM<'_>, args: ArgValues, function: TimeFunctions, nanoseconds: bool) -> RunResult<CallResult> {
-    args.check_zero_args(&format!("time.{function}"), vm.heap)?;
+    bind_positional!(args, vm.heap, "()", name = &format!("time.{function}"))?;
     let elapsed = match vm.env.os_policy.process_time {
         ProcessTime::Zero => Duration::ZERO,
         ProcessTime::Elapsed => vm.heap.tracker.elapsed(),
@@ -282,9 +282,7 @@ fn process_time(vm: &mut VM<'_>, args: ArgValues, function: TimeFunctions, nanos
 /// regardless of the host's answer; `Zero` skips the wait.
 fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     // METH_O in CPython: keywords are refused wholesale, before arity.
-    let seconds = args
-        .reject_kwargs("time.sleep", vm.heap)?
-        .get_one_arg("time.sleep", vm.heap)?;
+    let seconds = bind_positional!(args, vm.heap, "time.sleep(seconds, /)", reject_keywords)?;
     let result = sleep_seconds(&seconds, vm).and_then(|secs| {
         sleep_duration(secs).map_err(|err| match err {
             SleepError::NotANumber => ExcType::invalid_nan(),
@@ -359,9 +357,7 @@ fn sleep_seconds(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
 /// `time.mktime(t)`: the inverse of `localtime`, reading `t` as wall time in the
 /// session zone. `METH_O` in CPython, hence the module-qualified arity message.
 fn mktime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let value = args
-        .reject_kwargs("time.mktime", vm.heap)?
-        .get_one_arg("time.mktime", vm.heap)?;
+    let value = bind_positional!(args, vm.heap, "time.mktime(t, /)", reject_keywords)?;
     // Only the wall clock matters, and CPython does not range-check the
     // weekday or year day here as `asctime`/`strftime` do.
     let wall = time_tuple_parts(&value, "mktime", vm).and_then(|(items, _)| naive_from_time_tuple(&items));
@@ -378,10 +374,7 @@ fn mktime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `time.asctime(t=None)`: the fixed 24-character form, from `t` or the clock.
 /// `PyArg_UnpackTuple` in CPython, unlike its `gmtime` neighbours.
 fn asctime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let Some(value) = args
-        .reject_kwargs("asctime", vm.heap)?
-        .get_zero_one_arg("asctime", vm.heap)?
-    else {
+    let Some(value) = bind_positional!(args, vm.heap, "asctime(t=..., /)", reject_keywords)? else {
         return suspend_or_apply(vm, TimeCaller::Asctime, ClockReading::Ctime);
     };
     let fields = time_fields(&value, "asctime", vm);

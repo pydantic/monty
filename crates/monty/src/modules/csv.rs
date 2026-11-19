@@ -234,8 +234,8 @@ fn call_get_dialect(vm: &mut VM<'_>, GetDialectArgs { name }: &GetDialectArgs) -
 }
 
 /// `csv.list_dialects()`: the built-in dialect names.
-fn call_list_dialects(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    args.check_zero_args("list_dialects", vm.heap)?;
+#[py_signature("list_dialects()")]
+fn call_list_dialects(vm: &mut VM<'_>) -> RunResult<Value> {
     let names = DIALECT_NAMES
         .iter()
         .map(|name| allocate_string(*name, vm.heap))

@@ -6,6 +6,7 @@
 
 use std::mem;
 
+use monty_macros::bind_positional;
 use monty_types::{MontyUuid, OsFunctionCall};
 
 use super::{
@@ -1376,7 +1377,7 @@ fn dispatch_dunder(
     Some(match static_str {
         StaticStrings::Enter => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");
-            args.check_zero_args("__enter__", vm.heap)
+            bind_positional!(args, vm.heap, "__enter__()")
                 .and_then(|()| PyValue::from_heap(heap_id, vm.heap).py_enter(vm))
         }
         StaticStrings::Exit => {
@@ -1407,10 +1408,10 @@ fn dispatch_dunder(
 /// type from `val` and Monty has no traceback objects (see
 /// `limitations/with.md`).
 fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<CallResult, RunError> {
-    let positional = args.into_pos_only("__exit__", vm.heap)?;
+    let positional = bind_positional!(args, vm.heap, "__exit__(exc_type, exc_value, traceback, /)", iter)?;
     defer_drop!(positional, vm);
     let [typ, val, tb] = positional.as_slice() else {
-        return Err(ExcType::type_error_arg_count("__exit__", 3, positional.len()));
+        unreachable!("arity checked by signature");
     };
     let _ = (typ, tb);
     let exc = match val {

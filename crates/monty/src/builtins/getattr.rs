@@ -1,12 +1,13 @@
 //! Implementation of the getattr() builtin function.
 
+use monty_macros::bind_positional;
 use monty_types::ExcType;
 
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, PendingLookupEffect, VM},
     defer_drop,
-    exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
+    exception_private::{RunError, RunResult, SimpleException},
     heap::DropWithContext,
 };
 
@@ -31,15 +32,13 @@ use crate::{
 /// getattr(module, 'function')   # Get module.function
 /// ```
 pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let positional = args.into_pos_only("getattr", vm.heap)?;
+    let positional = bind_positional!(args, vm.heap, "getattr(object, name, default=..., /)", iter)?;
     defer_drop!(positional, vm);
 
-    let (object, name, default) = match positional.as_slice() {
-        too_few @ ([] | [_]) => return Err(ExcType::type_error_at_least("getattr", 2, too_few.len())),
-        [object, name] => (object, name, None),
-        [object, name, default] => (object, name, Some(default)),
-        too_many => return Err(ExcType::type_error_at_most("getattr", 3, too_many.len())),
+    let [object, name, rest @ ..] = positional.as_slice() else {
+        unreachable!("arity checked by signature")
     };
+    let default = rest.first();
 
     let Some(attr) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
         let ty = name.py_type_name(vm);

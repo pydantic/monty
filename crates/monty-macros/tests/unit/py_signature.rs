@@ -53,14 +53,11 @@ fn rejects_invalid_signatures() {
         ("f(x: bytes)", "unsupported native parameter annotation"),
         ("f(x: str = 1)", "unsupported default for this parameter type"),
         ("f(x = 1e999)", "unsupported default for this parameter type"),
-        ("f(x: SupportsIndex = 0.5)", "expected an i64 literal for SupportsIndex"),
+        ("f(x: SupportsIndex = 0.5)", "expected an integer literal"),
+        ("f(x: SupportsIndex = None)", "expected an integer literal"),
         (
-            "f(x: SupportsIndex = None)",
-            "expected an i64 literal for SupportsIndex",
-        ),
-        (
-            "f(x: SupportsIndex = 9223372036854775808)",
-            "expected an i64 literal for SupportsIndex",
+            "f(x: i64 = 9223372036854775808)",
+            "expected a signed 64-bit integer literal",
         ),
     ] {
         let declaration = parse_quote!(#signature);
@@ -112,7 +109,7 @@ fn generates_bound_fields_in_declaration_order() {
             scale: crate::value::Value,
             items: Vec<crate::value::Value>,
             sep: Option<crate::args::StrArg>,
-            limit: i64,
+            limit: crate::types::LongInt,
             ratio: f64,
             end: crate::args::DefaultedStringArg,
             flag: crate::value::Value,
@@ -125,19 +122,12 @@ fn generates_bound_fields_in_declaration_order() {
 
 #[test]
 fn one_arg_requires_one_positional_only_argument() {
-    for signature in [
-        "f()",
-        "f(x)",
-        "f(x=1.0, /)",
-        "f(x: str, /)",
-        "f(x, y, /)",
-        "f(x, /, **kwargs)",
-    ] {
+    for signature in ["f()", "f(x)", "f(x=1.0, /)", "f(x, y, /)", "f(x, /, **kwargs)"] {
         let declaration = parse_quote!(#signature, style = one_arg);
         let error = expand(&declaration, adapter()).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "`style = one_arg` requires one unannotated positional-only parameter without a default"
+            "`style = one_arg` requires one positional-only parameter without a default"
         );
     }
 }
@@ -266,7 +256,7 @@ fn a_callable_with_parameters_still_needs_a_binder() {
 #[test]
 fn named_binder_preserves_visibility_and_defaults() {
     let declaration = parse_quote!(
-        "(x: int = -1, y=..., *, truth: bool=False)",
+        "(x: c_int = -1, y=..., *, truth: bool=False)",
         error_name = "sample",
         convert(y = Part)
     );
@@ -324,7 +314,7 @@ fn rejects_invalid_named_binders_and_converters() {
             "a custom converter supplies the parameter type",
         ),
         (r#""f(x=None)", convert(x = T)"#, "unsupported custom converter default"),
-        (r#""f(x: int=2147483648)""#, "expected a C int literal"),
+        (r#""f(x: c_int=2147483648)""#, "expected a C int literal"),
         (
             r#""f(x, /)", style = one_arg, bad_arg"#,
             "fixed-arity helpers do not accept parser modifiers or custom converters",
@@ -377,5 +367,19 @@ fn two_args_requires_an_ordered_pair_of_raw_values() {
             expand(&declaration, function.clone()).unwrap_err().to_string(),
             expected
         );
+    }
+}
+
+#[test]
+fn full_width_integer_defaults_preserve_magnitude_and_sign() {
+    for (literal, decimal) in [
+        ("0X1_0000_0000_0000_0000", "18446744073709551616"),
+        ("-18446744073709551617", "-18446744073709551617"),
+    ] {
+        let signature = format!("f(x: SupportsIndex={literal}, *, default: int={literal}, y: SupportsIndex=...)");
+        let declaration = parse_quote!(#signature);
+        let expanded = expand(&declaration, adapter()).unwrap().to_string();
+        assert!(expanded.contains(decimal), "{expanded}");
+        assert!(expanded.contains("Option < crate :: types :: LongInt >"), "{expanded}");
     }
 }

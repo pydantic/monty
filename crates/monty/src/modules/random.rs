@@ -20,7 +20,7 @@ use std::{
 };
 
 use ahash::AHashSet;
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 use monty_types::ResourceTracker;
 use num_bigint::{BigInt, BigUint};
 use serde::{Deserialize, Serialize};
@@ -318,7 +318,7 @@ fn version_number(version: &Value) -> i64 {
 
 /// `getstate()`: `(3, (624 words..., index), gauss_next)`.
 fn getstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    args.check_zero_args("Random.getstate", vm.heap)?;
+    bind_positional!(args, vm.heap, "Random.getstate()")?;
     let (words, index, gauss_next) = target.with_generator(vm, |random, _| {
         let (words, index) = random.rng().state();
         (words.to_vec(), index, random.gauss_next())
@@ -496,7 +496,7 @@ fn state_word(entry: &Value, vm: &VM<'_>) -> RunResult<u32> {
 
 /// `random()`: the next float in `[0, 1)`.
 fn random(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    args.check_zero_args("Random.random", vm.heap)?;
+    bind_positional!(args, vm.heap, "Random.random()")?;
     Ok(Value::Float(
         target.with_generator(vm, |random, _| random.rng().random()),
     ))
@@ -505,9 +505,7 @@ fn random(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<V
 /// `getrandbits(k)`: `k` random bits as a non-negative int.
 fn getrandbits(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     // A clinic `uint64_t` parameter: keywords are refused before the count.
-    let k = args
-        .reject_kwargs("Random.getrandbits", vm.heap)?
-        .get_one_arg("Random.getrandbits", vm.heap)?;
+    let k = bind_positional!(args, vm.heap, "Random.getrandbits(k, /)", reject_keywords)?;
     defer_drop!(k, vm);
     let k = k.as_int_with_overflow(vm, ExcType::overflow_c_uint64)?;
     let k = u64::try_from(k).map_err(|_| ExcType::value_error_negative_int())?;

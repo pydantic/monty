@@ -12,7 +12,7 @@ use std::{
 };
 
 use chrono::TimeDelta as ChronoTimeDelta;
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 use smallvec::smallvec;
 
 use crate::{
@@ -548,7 +548,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
         if attr.static_string(vm.interns) == Some(StaticStrings::TotalSeconds) {
             // Copy the TimeDelta to release the HeapRead borrow before checking args
             let td = *self.get(vm.heap);
-            args.check_zero_args("timedelta.total_seconds", vm.heap)?;
+            bind_positional!(args, vm.heap, "timedelta.total_seconds()")?;
             return Ok(CallResult::Value(Value::Float(total_seconds(&td))));
         }
         Err(ExcType::attribute_error_method(Type::TimeDelta, attr, args, vm))

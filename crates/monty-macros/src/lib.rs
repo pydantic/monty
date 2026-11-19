@@ -11,6 +11,8 @@
 
 use proc_macro::TokenStream;
 
+#[cfg(feature = "native-signatures")]
+mod bind_positional;
 mod explicit_discriminants;
 mod from_args;
 #[cfg(feature = "native-signatures")]
@@ -24,6 +26,16 @@ mod to_args;
 #[proc_macro_attribute]
 pub fn explicit_discriminants(args: TokenStream, input: TokenStream) -> TokenStream {
     explicit_discriminants::expand(args.into(), input.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Binds an owned positional argument list at the point of method dispatch.
+#[cfg(feature = "native-signatures")]
+#[proc_macro]
+pub fn bind_positional(input: TokenStream) -> TokenStream {
+    syn::parse_macro_input!(input as bind_positional::Input)
+        .expand()
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

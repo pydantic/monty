@@ -9,7 +9,7 @@ use std::{fmt::Write, str};
 pub(crate) use heap_str::HeapStr;
 pub(crate) use inline_str::InlineStr;
 pub(crate) use iterator::StringIterator;
-use monty_macros::py_signature;
+use monty_macros::{bind_positional, py_signature};
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use smallvec::smallvec;
@@ -518,64 +518,64 @@ fn call_str_method_impl<'h>(
     match method {
         // Simple transformations (no arguments)
         StaticStrings::Lower => {
-            args.check_zero_args("str.lower", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.lower()")?;
             Ok(str_lower(s.as_str(vm), vm))
         }
         StaticStrings::Upper => {
-            args.check_zero_args("str.upper", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.upper()")?;
             Ok(str_upper(s.as_str(vm), vm))
         }
         StaticStrings::Capitalize => {
-            args.check_zero_args("str.capitalize", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.capitalize()")?;
             Ok(str_capitalize(s.as_str(vm), vm))
         }
         StaticStrings::Title => {
-            args.check_zero_args("str.title", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.title()")?;
             Ok(str_title(s.as_str(vm), vm))
         }
         StaticStrings::Swapcase => {
-            args.check_zero_args("str.swapcase", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.swapcase()")?;
             Ok(str_swapcase(s.as_str(vm), vm))
         }
         StaticStrings::Casefold => {
-            args.check_zero_args("str.casefold", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.casefold()")?;
             Ok(str_casefold(s.as_str(vm), vm))
         }
         // Predicate methods (no arguments, return bool)
         StaticStrings::Isalpha => {
-            args.check_zero_args("str.isalpha", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.isalpha()")?;
             Ok(Value::Bool(str_isalpha(s.as_str(vm))))
         }
         StaticStrings::Isdigit => {
-            args.check_zero_args("str.isdigit", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.isdigit()")?;
             Ok(Value::Bool(str_isdigit(s.as_str(vm))))
         }
         StaticStrings::Isalnum => {
-            args.check_zero_args("str.isalnum", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.isalnum()")?;
             Ok(Value::Bool(str_isalnum(s.as_str(vm))))
         }
         StaticStrings::Isnumeric => {
-            args.check_zero_args("str.isnumeric", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.isnumeric()")?;
             Ok(Value::Bool(str_isnumeric(s.as_str(vm))))
         }
         StaticStrings::Isspace => {
-            args.check_zero_args("str.isspace", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.isspace()")?;
             Ok(Value::Bool(str_isspace(s.as_str(vm))))
         }
         StaticStrings::Islower => {
-            args.check_zero_args("str.islower", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.islower()")?;
             Ok(Value::Bool(str_islower(s.as_str(vm))))
         }
         StaticStrings::Isupper => {
-            args.check_zero_args("str.isupper", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.isupper()")?;
             Ok(Value::Bool(str_isupper(s.as_str(vm))))
         }
         StaticStrings::Isascii => {
-            args.check_zero_args("str.isascii", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.isascii()")?;
             Ok(Value::Bool(s.is_ascii(vm)))
         }
         StaticStrings::Isdecimal => {
-            args.check_zero_args("str.isdecimal", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.isdecimal()")?;
             Ok(Value::Bool(str_isdecimal(s.as_str(vm))))
         }
         // Search methods
@@ -618,20 +618,20 @@ fn call_str_method_impl<'h>(
         // Additional methods
         StaticStrings::Encode => str_encode(s, args, vm),
         StaticStrings::Isidentifier => {
-            args.check_zero_args("str.isidentifier", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.isidentifier()")?;
             Ok(Value::Bool(str_isidentifier(s.as_str(vm))))
         }
         StaticStrings::Istitle => {
-            args.check_zero_args("str.istitle", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.istitle()")?;
             Ok(Value::Bool(str_istitle(s.as_str(vm))))
         }
         StaticStrings::Isprintable => {
-            args.check_zero_args("str.isprintable", vm.heap)?;
+            bind_positional!(args, vm.heap, "str.isprintable()")?;
             Ok(Value::Bool(str_isprintable(s.as_str(vm))))
         }
         // Existing method
         StaticStrings::Join => {
-            let iterable = args.get_one_arg("str.join", vm.heap)?;
+            let iterable = bind_positional!(args, vm.heap, "str.join(iterable, /)")?;
             str_join(s, iterable, vm)
         }
         _ => {
@@ -1011,14 +1011,11 @@ fn str_starts_ends_with<'h>(
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let pos = args.into_pos_only(method, vm.heap)?;
+    let pos = bind_positional!(args, vm.heap, "(affix, start=..., end=..., /)", name = method, iter)?;
     defer_drop!(pos, vm);
     let [affix, rest @ ..] = pos.as_slice() else {
-        return Err(ExcType::type_error_at_least(method, 1, 0));
+        unreachable!("arity checked by signature");
     };
-    if rest.len() > 2 {
-        return Err(ExcType::type_error_at_most(method, 3, pos.len()));
-    }
     let Some((start, end)) = string_search_range(s, rest, vm)? else {
         // `start` past `end` matches nothing, but each affix is still type-checked
         return Ok(Value::Bool(affix_matches(affix, "", method, |_, _| false, vm)?));
@@ -1090,17 +1087,14 @@ fn parse_search_args<'h>(
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<(String, SearchRange)> {
-    let pos = args.into_pos_only(method, vm.heap)?;
+    let pos = bind_positional!(args, vm.heap, "(sub, start=..., end=..., /)", name = method, iter)?;
     defer_drop!(pos, vm);
-    match pos.as_slice() {
-        [sub_value, bounds @ ..] if bounds.len() <= 2 => {
-            let sub = extract_string_arg(sub_value, vm)?;
-            let range = string_search_range(s, bounds, vm)?;
-            Ok((sub, range))
-        }
-        [] => Err(ExcType::type_error_at_least(method, 1, 0)),
-        _ => Err(ExcType::type_error_at_most(method, 3, pos.len())),
-    }
+    let [sub_value, bounds @ ..] = pos.as_slice() else {
+        unreachable!("arity checked by signature")
+    };
+    let sub = extract_string_arg(sub_value, vm)?;
+    let range = string_search_range(s, bounds, vm)?;
+    Ok((sub, range))
 }
 
 /// Normalizes explicit character bounds; entirely omitted/`None` bounds return `(0, usize::MAX)`.
@@ -1191,7 +1185,7 @@ fn str_rstrip<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<
 ///
 /// Accepts None as a value meaning "use default whitespace stripping".
 fn parse_strip_arg(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Option<String>> {
-    let value = args.get_zero_one_arg(method, vm.heap)?;
+    let value = bind_positional!(args, vm.heap, "(chars=..., /)", name = method)?;
     match value {
         None => Ok(None),
         Some(Value::None) => Ok(None), // Explicit None means default whitespace
@@ -1208,7 +1202,7 @@ fn parse_strip_arg(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
 /// If the string starts with the prefix string, return string[len(prefix):].
 /// Otherwise, return a copy of the original string.
 fn str_removeprefix<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let prefix_value = args.get_one_arg("str.removeprefix", vm.heap)?;
+    let prefix_value = bind_positional!(args, vm.heap, "str.removeprefix(prefix, /)")?;
     defer_drop!(prefix_value, vm);
     let prefix = extract_string_arg(prefix_value, vm)?;
 
@@ -1222,7 +1216,7 @@ fn str_removeprefix<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunR
 /// If the string ends with the suffix string, return string[:-len(suffix)].
 /// Otherwise, return a copy of the original string.
 fn str_removesuffix<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let suffix_value = args.get_one_arg("str.removesuffix", vm.heap)?;
+    let suffix_value = bind_positional!(args, vm.heap, "str.removesuffix(suffix, /)")?;
     defer_drop!(suffix_value, vm);
     let suffix = extract_string_arg(suffix_value, vm)?;
 
@@ -1238,7 +1232,7 @@ fn str_removesuffix<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunR
 /// Implements Python's `str.split(sep?, maxsplit?)` method.
 ///
 /// Returns a list of the words in the string, using sep as the delimiter string.
-#[py_signature("split(self, /, sep: str | None = None, maxsplit: SupportsIndex = -1) -> list")]
+#[py_signature("split(self, /, sep: str | None = None, maxsplit: i64 = -1) -> list")]
 fn str_split<'h>(s: &PyStr<'h>, args: &SplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let maxsplit = args.maxsplit;
     // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
@@ -1293,7 +1287,7 @@ fn str_split<'h>(s: &PyStr<'h>, args: &SplitArgs, vm: &mut VM<'h>) -> RunResult<
 ///
 /// Returns a list of the words in the string, using sep as the delimiter string,
 /// splitting from the right.
-#[py_signature("rsplit(self, /, sep: str | None = None, maxsplit: SupportsIndex = -1) -> list")]
+#[py_signature("rsplit(self, /, sep: str | None = None, maxsplit: i64 = -1) -> list")]
 fn str_rsplit<'h>(s: &PyStr<'h>, args: &RsplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let maxsplit = args.maxsplit;
     // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
@@ -1511,7 +1505,7 @@ fn value_is_truthy(v: &Value) -> bool {
 /// Splits the string at the first occurrence of sep, and returns a 3-tuple
 /// containing the part before the separator, the separator itself, and the part after.
 fn str_partition<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let sep_value = args.get_one_arg("str.partition", vm.heap)?;
+    let sep_value = bind_positional!(args, vm.heap, "str.partition(sep, /)")?;
     defer_drop!(sep_value, vm);
     let sep = extract_string_arg(sep_value, vm)?;
 
@@ -1540,7 +1534,7 @@ fn str_partition<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResu
 /// Splits the string at the last occurrence of sep, and returns a 3-tuple
 /// containing the part before the separator, the separator itself, and the part after.
 fn str_rpartition<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let sep_value = args.get_one_arg("str.rpartition", vm.heap)?;
+    let sep_value = bind_positional!(args, vm.heap, "str.rpartition(sep, /)")?;
     defer_drop!(sep_value, vm);
     let sep = extract_string_arg(sep_value, vm)?;
 
@@ -1572,7 +1566,7 @@ fn str_rpartition<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunRes
 ///
 /// Returns a copy with all occurrences of substring old replaced by new.
 /// If count is given, only the first count occurrences are replaced.
-#[py_signature("replace(self, old: str, new: str, /, count: SupportsIndex = -1) -> str")]
+#[py_signature("replace(self, old: str, new: str, /, count: i64 = -1) -> str")]
 fn str_replace<'h>(s: &PyStr<'h>, args: &ReplaceArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let old = args.old.as_str(vm);
     let new = args.new.as_str(vm);
@@ -1670,7 +1664,7 @@ fn str_rjust<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
 
 /// Parses arguments for justify methods (center, ljust, rjust).
 fn parse_justify_args(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<(usize, char)> {
-    let pos = args.into_pos_only(method, vm.heap)?;
+    let pos = bind_positional!(args, vm.heap, "(width, fillchar=..., /)", name = method, iter)?;
     defer_drop!(pos, vm);
 
     match pos.as_slice() {
@@ -1696,8 +1690,7 @@ fn parse_justify_args(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResu
             }
             Ok((width, fill_str.chars().next().unwrap()))
         }
-        [] => Err(ExcType::type_error_at_least(method, 1, 0)),
-        _ => Err(ExcType::type_error_at_most(method, 2, pos.len())),
+        _ => unreachable!("arity checked by signature"),
     }
 }
 
@@ -1706,7 +1699,7 @@ fn parse_justify_args(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResu
 /// Returns a copy of the string left filled with ASCII '0' digits to make a
 /// string of length width. A sign prefix is handled correctly.
 fn str_zfill<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let width_value = args.get_one_arg("str.zfill", vm.heap)?;
+    let width_value = bind_positional!(args, vm.heap, "str.zfill(width, /)")?;
     defer_drop!(width_value, vm);
     let width_i64 = extract_int_arg(width_value, vm)?;
 

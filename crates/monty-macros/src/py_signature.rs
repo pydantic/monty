@@ -11,7 +11,7 @@ use syn::{
     parse_quote,
 };
 
-use crate::from_args::Signature;
+use crate::from_args::{Signature, parse_field_attrs};
 
 pub(super) struct Declaration {
     signature: LitStr,
@@ -210,7 +210,12 @@ fn parse_function(declaration: &Declaration) -> syn::Result<StmtFunctionDef> {
     } else {
         format!("def {signature}: pass")
     };
-    let parsed = parse_module(&source).map_err(|e| error(&e.to_string()))?;
+    parse_signature_source(literal, &source)
+}
+
+pub(super) fn parse_signature_source(literal: &LitStr, source: &str) -> syn::Result<StmtFunctionDef> {
+    let error = |message: &str| syn::Error::new(literal.span(), message);
+    let parsed = parse_module(source).map_err(|e| error(&e.to_string()))?;
     let mut body = parsed.into_syntax().body.into_iter();
     let (Some(Stmt::FunctionDef(def)), None) = (body.next(), body.next()) else {
         return Err(error("expected one Python function signature"));
@@ -359,7 +364,7 @@ fn positional_adapter(
 ) -> syn::Result<TokenStream> {
     let literal = &declaration.signature;
     let error = |message: &str| syn::Error::new(literal.span(), message);
-    if !declaration.modifiers.is_empty() || !declaration.converters.is_empty() || declaration.error_name.is_some() {
+    if !declaration.modifiers.is_empty() || !declaration.converters.is_empty() {
         return Err(error(
             "fixed-arity helpers do not accept parser modifiers or custom converters",
         ));
@@ -370,17 +375,24 @@ fn positional_adapter(
         let Some(param) = params
             .posonlyargs
             .first()
-            .filter(|p| params.iter().count() == 1 && p.default().is_none() && p.annotation().is_none())
+            .filter(|p| params.iter().count() == 1 && p.default().is_none())
         else {
             return Err(error(
-                "`style = one_arg` requires one unannotated positional-only parameter without a default",
+                "`style = one_arg` requires one positional-only parameter without a default",
             ));
         };
         if declaration.owner.is_some() || declaration.kwarg_error_name.is_some() {
             return Err(error("`style = one_arg` uses the callable name for errors"));
         }
         let field = field_name(&param.parameter, literal)?;
-        return single_positional_adapter(function, name, &field);
+        let typed = param
+            .annotation()
+            .map(|_| {
+                let field = named_field(param, &quote!(pos_only,), declaration)?;
+                syn::Field::parse_named.parse2(field)
+            })
+            .transpose()?;
+        return single_positional_adapter(function, &callable_name(declaration, name), &field, typed.as_ref());
     }
     let [first, second] = params.posonlyargs.as_slice() else {
         return Err(error("`style = two_args` requires two positional-only parameters"));
@@ -388,6 +400,7 @@ fn positional_adapter(
     if params.iter().count() != 2
         || params.iter().any(|p| p.annotation().is_some() || p.default().is_some())
         || declaration.owner.is_some()
+        || declaration.error_name.is_some()
         || declaration.kwarg_error_name.is_some()
     {
         return Err(error(
@@ -420,7 +433,12 @@ fn positional_adapter(
 }
 
 /// Bind the object with the same arity check and drop guard as a handwritten one-argument builtin.
-fn single_positional_adapter(mut function: ItemFn, name: &str, field: &Ident) -> syn::Result<TokenStream> {
+fn single_positional_adapter(
+    mut function: ItemFn,
+    name: &str,
+    field: &Ident,
+    typed: Option<&syn::Field>,
+) -> syn::Result<TokenStream> {
     let arg = function
         .sig
         .inputs
@@ -435,19 +453,31 @@ fn single_positional_adapter(mut function: ItemFn, name: &str, field: &Ident) ->
                 format!("expected a parameter named `{field}` of type &Value"),
             )
         })?;
-    if !matches!(arg.ty.as_ref(), Type::Reference(reference) if reference.mutability.is_none()
-        && matches!(reference.elem.as_ref(), Type::Path(path) if path.path.is_ident("Value")))
-    {
-        return Err(syn::Error::new_spanned(
-            &arg.ty,
-            "expected &Value for a single positional argument",
-        ));
-    }
+    let bind = if let Some(typed) = typed {
+        let expected = &arg.ty;
+        let ty = &typed.ty;
+        let convert = if let Some(extract) = parse_field_attrs(&typed.attrs)?.extract_with {
+            quote!(#extract(#field, vm)?)
+        } else {
+            quote!(<#ty as crate::args::FromValue>::extract(#field, vm, crate::args::ArgErrCtx::Plain)?)
+        };
+        quote!(let #field: #ty = #convert; let #field: #expected = #field;)
+    } else {
+        if !matches!(arg.ty.as_ref(), Type::Reference(reference) if reference.mutability.is_none()
+            && matches!(reference.elem.as_ref(), Type::Path(path) if path.path.is_ident("Value")))
+        {
+            return Err(syn::Error::new_spanned(
+                &arg.ty,
+                "expected &Value for a single positional argument",
+            ));
+        }
+        quote!(crate::defer_drop!(#field, vm);)
+    };
     *arg.ty = parse_quote!(crate::args::ArgValues);
     let body = function.block;
     function.block = Box::new(parse_quote!({
         let #field = #field.get_one_arg(#name, vm.heap)?;
-        crate::defer_drop!(#field, vm);
+        #bind
         #body
     }));
     Ok(quote!(#function))
@@ -518,12 +548,13 @@ fn named_field(
         None if matches!(param.default(), Some(Expr::StringLiteral(_))) => quote!(crate::args::DefaultedStringArg),
         None => quote!(crate::value::Value),
 
-        Some("int") => quote!(i32),
+        Some("c_int") => quote!(i32),
         Some("bool") => quote!(crate::args::LaxBool),
         Some("str") => quote!(crate::args::StrArg),
         Some("str | None") => quote!(Option<crate::args::StrArg>),
         Some("float") => quote!(f64),
-        Some("SupportsIndex") => quote!(i64),
+        Some("i64") => quote!(i64),
+        Some("int" | "SupportsIndex") => quote!(crate::types::LongInt),
         Some(_) => return Err(error("unsupported native parameter annotation")),
     };
     let ty = if annotation.is_some() && matches!(param.default(), Some(Expr::EllipsisLiteral(_))) {
@@ -533,14 +564,16 @@ fn named_field(
     };
     let default = match (annotation, param.default()) {
         (_, None) => quote!(),
-        (None | Some("str" | "int"), Some(Expr::EllipsisLiteral(_))) => quote!(default),
+        (None | Some("str" | "int" | "c_int" | "SupportsIndex" | "i64"), Some(Expr::EllipsisLiteral(_))) => {
+            quote!(default)
+        }
         (Some("str | None"), Some(Expr::NoneLiteral(_))) => quote!(default),
         (None, Some(Expr::NoneLiteral(_))) => quote!(default = crate::value::Value::None),
         (Some("bool"), Some(Expr::BooleanLiteral(b))) => {
             let value = b.value;
             quote!(default = crate::args::LaxBool::new(#value))
         }
-        (Some("int"), Some(expr)) => {
+        (Some("c_int"), Some(expr)) => {
             let value = integer_default(expr)
                 .and_then(|n| i32::try_from(n).ok())
                 .ok_or_else(|| error("expected a C int literal"))?;
@@ -567,18 +600,42 @@ fn named_field(
             let value = s.value.to_str();
             quote!(default = crate::args::DefaultedStringArg::Omitted(#value))
         }
-        (Some("SupportsIndex"), Some(expr)) => {
-            let n = integer_default(expr).ok_or_else(|| error("expected an i64 literal for SupportsIndex"))?;
+        (Some("int" | "SupportsIndex"), Some(expr)) => {
+            let integer = full_width_default(expr).ok_or_else(|| error("expected an integer literal"))?;
+            quote!(default = #integer)
+        }
+        (Some("i64"), Some(expr)) => {
+            let n = integer_default(expr).ok_or_else(|| error("expected a signed 64-bit integer literal"))?;
             quote!(default = #n)
         }
         _ => return Err(error("unsupported default for this parameter type")),
     };
     let extractor = match annotation {
         Some("SupportsIndex") => quote!(extract_with = crate::args::extract_index,),
+        Some("i64") => quote!(extract_with = crate::args::extract_i64_index,),
         Some("str | None") => quote!(extract_with = crate::args::extract_nullable_str,),
         _ => quote!(),
     };
     Ok(quote!(#[from_args(#role #extractor #default)] #ident: #ty))
+}
+
+fn full_width_default(expr: &Expr) -> Option<TokenStream> {
+    if let Some(n) = integer_default(expr) {
+        return Some(quote!(crate::types::LongInt::from(#n)));
+    }
+    let (magnitude, sign) = match expr {
+        Expr::UnaryOp(op) if op.op == UnaryOp::USub => (op.operand.as_ref(), "-"),
+        _ => (expr, ""),
+    };
+    let Expr::NumberLiteral(number) = magnitude else {
+        return None;
+    };
+    let Number::Int(integer) = &number.value else {
+        return None;
+    };
+    let literal = syn::parse_str::<syn::LitInt>(&integer.to_string().to_ascii_lowercase()).ok()?;
+    let decimal = format!("{sign}{}", literal.base10_digits());
+    Some(quote!(crate::types::LongInt::new(#decimal.parse().expect("validated integer literal"))))
 }
 
 fn integer_default(expr: &Expr) -> Option<i64> {

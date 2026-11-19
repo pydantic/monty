@@ -22,7 +22,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapData},
-    types::PyTrait,
+    types::{LongInt, PyTrait},
     value::Value,
 };
 
@@ -242,10 +242,41 @@ impl FromValue for DefaultedStringArg {
     }
 }
 
-pub(crate) fn extract_index(value: Value, vm: &mut VM<'_>) -> RunResult<i64> {
+/// Copies a Python integer into a Rust-owned arbitrary-precision argument.
+impl FromValue for LongInt {
+    const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
+
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        match value {
+            Value::Int(n) => Ok(Self::from(n)),
+            Value::Bool(b) => Ok(Self::from(i64::from(b))),
+            other => {
+                let Some(n) = other.as_long_int(vm) else {
+                    return Err(FromValueFail::WrongType(other));
+                };
+                let result = Self::new(n.clone());
+                other.drop_with(vm);
+                Ok(result)
+            }
+        }
+    }
+
+    fn type_error(got: &str) -> RunError {
+        ExcType::type_error_not_integer(got)
+    }
+}
+
+/// Native signatures use `Option<LongInt>` for an omittable index.
+pub(crate) fn extract_index<T: From<LongInt>>(value: Value, vm: &mut VM<'_>) -> RunResult<T> {
+    let index = value.py_index(vm);
+    value.drop_with(vm);
+    LongInt::extract(index?, vm, ArgErrCtx::Plain).map(T::from)
+}
+
+pub(crate) fn extract_i64_index<T: From<i64>>(value: Value, vm: &mut VM<'_>) -> RunResult<T> {
     let result = value.as_int(vm);
     value.drop_with(vm);
-    result
+    result.map(T::from)
 }
 
 impl FromValue for i64 {

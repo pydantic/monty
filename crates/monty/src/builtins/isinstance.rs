@@ -1,5 +1,7 @@
 //! Implementation of the isinstance() builtin function.
 
+use monty_macros::bind_positional;
+
 use crate::{
     args::ArgValues,
     bytecode::VM,
@@ -14,7 +16,7 @@ use crate::{
 ///
 /// Checks if an object is an instance of a class or a tuple of classes.
 pub fn builtin_isinstance(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (obj, classinfo) = args.get_two_args("isinstance", vm.heap)?;
+    let (obj, classinfo) = bind_positional!(args, vm.heap, "isinstance(obj, class_or_tuple, /)")?;
     defer_drop!(obj, vm);
     defer_drop!(classinfo, vm);
 
