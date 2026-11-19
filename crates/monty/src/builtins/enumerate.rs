@@ -3,6 +3,7 @@
 use std::mem;
 
 use monty_macros::py_signature;
+use monty_types::ResourceError;
 use num_bigint::BigInt;
 use smallvec::smallvec;
 
@@ -35,14 +36,25 @@ pub fn builtin_enumerate(vm: &mut VM<'_>, args: &mut EnumerateArgs) -> RunResult
 
     while let Some(item) = iter.py_next(vm)? {
         let offset = result.len();
-        let index = if let Some(n) = small_start.and_then(|n| n.checked_add_unsigned(offset as u64)) {
-            Value::Int(n)
+        let (index, item) = if let Some(n) = small_start.and_then(|n| n.checked_add_unsigned(offset as u64)) {
+            (Value::Int(n), item)
         } else {
-            let index = args
-                .start
-                .view(vm)
-                .with_value(vm, |n| BigInt::from(n) + offset, |n| n + offset);
-            LongInt::new(index).into_value(vm.heap)
+            let mut item_guard = DropGuard::new(item, vm);
+            let (_, vm) = item_guard.as_parts_mut();
+            let index = args.start.view(vm).with_value(
+                vm,
+                |n| Ok(BigInt::from(n) + offset),
+                |n| {
+                    let bytes = usize::try_from(n.bits().div_ceil(64))
+                        .unwrap_or(usize::MAX)
+                        .saturating_mul(8);
+                    // A carry can grow the cloned magnitude while its old buffer is still live.
+                    vm.heap.tracker.check_allocation(bytes.saturating_mul(3))?;
+                    Ok::<_, ResourceError>(n + offset)
+                },
+            )?;
+            let (item, vm) = item_guard.into_parts();
+            (LongInt::new(index).into_value(vm.heap), item)
         };
         let tuple_val = allocate_tuple(smallvec![index, item], vm.heap);
         result.push(tuple_val);
