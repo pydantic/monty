@@ -324,11 +324,12 @@ fn external_function_in_deepcopy_raises_not_implemented() {
     "#);
 }
 
-/// `for` still requires synchronous advancement, so an external call in
-/// `__next__` raises at that call site rather than suspending the loop.
+/// `set()` still requires synchronous advancement, so an external call in
+/// `__next__` raises at that call site rather than suspending. (`for`, `list()`,
+/// `tuple()` and `sum()` suspend instead; see `ext_call__native_continuation.py`.)
 #[test]
 fn external_function_in_next_raises_not_implemented() {
-    let code = "class Foo:\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        return ext_fn()\n\nfor _x in Foo():\n    pass";
+    let code = "class Foo:\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        return ext_fn()\n\nset(Foo())";
     let mut ex = MontyRun::new(
         code.to_owned(),
         "test.py",
@@ -342,8 +343,8 @@ fn external_function_in_next_raises_not_implemented() {
     assert_snapshot!(err.to_string(), @r#"
     Traceback (most recent call last):
       File "test.py", line 8, in <module>
-        for _x in Foo():
-                  ~~~~~
+        set(Foo())
+        ~~~~~~~~~~
       File "test.py", line 6, in __next__
         return ext_fn()
                ~~~~~~~~
@@ -412,7 +413,7 @@ class DirectNext:
 
 for _ in range(3):
     assert list(RecoverIter()) == [1, 2]
-    assert list(RecoverNext()) == []
+    assert set(RecoverNext()) == set()
     try:
         list(FailIter())
         assert False, 'expected synchronous acquisition to fail'

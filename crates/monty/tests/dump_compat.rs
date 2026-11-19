@@ -6,7 +6,7 @@
 //! `DUMP_VERSION`, and a synthetic old/new type pair round-tripped through the
 //! codec itself.
 
-use std::{env, fs, path::PathBuf, thread, time::Duration};
+use std::{env, fs, mem, path::PathBuf, thread, time::Duration};
 
 use insta::assert_snapshot;
 use monty::{DUMP_VERSION, Dump, MontyRepl, ReplProgress, Session, SessionRef, dump};
@@ -290,6 +290,119 @@ fn older_version_fixtures_load_and_resume() {
         let progress = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
         let (_, value) = progress.into_complete().expect("host_call resumed to completion");
         assert_eq!(value, MontyObject::int(42));
+    }
+}
+
+/// Classes for `native_continuations_v16_suspended.bin`: three native consumers of user iterators,
+/// each waiting on the `__next__` frame of the next, with the innermost suspended on `host_item`.
+const NATIVE_CONT_STATE: &str = r"
+class Leaf:
+    def __init__(self, stop):
+        self.n = 0
+        self.stop = stop
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.n += 1
+        if self.n > self.stop:
+            raise StopIteration
+        return host_item(self.n)
+
+
+class Once:
+    def __init__(self, make):
+        self.make = make
+        self.done = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.done:
+            raise StopIteration
+        self.done = True
+        return self.make()
+
+
+def mid_rows():
+    return list(Leaf(2))
+
+
+def top_row():
+    rows = []
+    for row in Once(mid_rows):
+        rows.append(row)
+    return sum(rows[0])
+";
+
+/// Suspends in `Leaf.__next__` under a `list()` (in `mid_rows`), a `for` (in `top_row`) and a `sum()`.
+const NATIVE_CONT_CALL: &str = "sum(Once(top_row), 5)";
+
+/// A session dumped while suspended inside native continuations (`sum`, `for`, `list` over user
+/// iterators) still loads and finishes each one. Regenerate only if the continuation format changes
+/// incompatibly, with `UPDATE_DUMP_FIXTURE=1 cargo test -p monty --test dump_compat`.
+#[test]
+fn native_continuations_fixture_loads_and_resumes() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native_continuations_v16_suspended.bin");
+    if env::var_os(UPDATE_FIXTURE).is_some() {
+        let mut repl = MontyRepl::new("native.py", ResourceTracker::default(), CompileOptions::default());
+        repl.feed_run(NATIVE_CONT_STATE, vec![], PrintWriter::Stdout).unwrap();
+        let mut progress = repl.feed_start(NATIVE_CONT_CALL, vec![], PrintWriter::Stdout).unwrap();
+        while let ReplProgress::NameLookup(lookup) = progress {
+            let host = MontyObject::function(lookup.name.clone(), None);
+            progress = lookup
+                .resume(NameLookupResult::Value(host), PrintWriter::Stdout)
+                .unwrap();
+        }
+        let ReplProgress::FunctionCall(call) = &progress else {
+            panic!("the fixture must suspend on host_item, got {progress:?}");
+        };
+        assert_eq!(call.function_name, "host_item");
+        let bytes = dump("native.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+        fs::write(&path, bytes).unwrap();
+        // Abandon rather than drop, so the suspended frames and continuations are released.
+        drop(progress.into_repl());
+        eprintln!("updated {}", path.display());
+        return;
+    }
+    let loaded = Dump::load(&fs::read(&path).unwrap()).expect("a suspended native-continuation dump loads");
+    let Session::Suspended(progress) = loaded.state else {
+        panic!("the fixture was dumped suspended");
+    };
+    let mut progress = *progress;
+    // `host_item(n)` answers `n * 10`: `Leaf(2)` collects [10, 20], `top_row` sums it, `sum` adds 5.
+    let mut calls = Vec::new();
+    loop {
+        progress = match progress {
+            ReplProgress::FunctionCall(call) => {
+                assert_eq!(call.function_name, "host_item");
+                let n = call
+                    .args
+                    .args()
+                    .next()
+                    .and_then(|arg| arg.as_int())
+                    .expect("one int argument");
+                calls.push(n);
+                call.resume(MontyObject::int(n * 10), PrintWriter::Stdout).unwrap()
+            }
+            ReplProgress::Complete { value, .. } => {
+                assert_eq!(value, MontyObject::int(35));
+                assert_eq!(calls, vec![1, 2]);
+                return;
+            }
+            other => panic!("expected host_item or completion, got {other:?}"),
+        };
+        // Later suspensions inside the same continuations go through the dump format too.
+        if matches!(progress, ReplProgress::FunctionCall(_)) {
+            let bytes = dump("native.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+            let Session::Suspended(reloaded) = Dump::load(&bytes).unwrap().state else {
+                panic!("re-dumped a suspended session");
+            };
+            // The original is abandoned rather than dropped, which releases its continuations.
+            drop(mem::replace(&mut progress, *reloaded).into_repl());
+        }
     }
 }
 

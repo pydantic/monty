@@ -4,7 +4,7 @@ use std::fmt::{self, Write};
 
 use monty_types::ResourceError;
 
-use super::VM;
+use super::{NativeCont, VM};
 use crate::{
     builtins::Builtins,
     defer_drop,
@@ -52,6 +52,8 @@ enum ExceptionHandlingResult {
     Unhandled(RunError),
     /// The newly activated task has an exception to handle before running bytecode.
     NextTask(RunError),
+    /// A native continuation raised a new error in the caller frame, which must be handled from scratch.
+    Raised(RunError),
 }
 
 impl VM<'_> {
@@ -439,7 +441,9 @@ impl VM<'_> {
             match self.handle_exception_step(error, raised.take()) {
                 ExceptionHandlingResult::Caught => return None,
                 ExceptionHandlingResult::Unhandled(error) => return Some(error),
-                ExceptionHandlingResult::NextTask(next_error) => error = next_error,
+                ExceptionHandlingResult::NextTask(next_error) | ExceptionHandlingResult::Raised(next_error) => {
+                    error = next_error;
+                }
             }
         }
     }
@@ -566,6 +570,7 @@ impl VM<'_> {
 
             // A raising module body must not stay cached; checked before the pop.
             let is_initializer = this.current_frame().is_initializer;
+            let continuation = this.current_frame_mut().continuation.take();
             // Synchronous evaluation stops unwinding here, but its caller still
             // belongs in the traceback when the error crosses that boundary.
             let should_return = this.pop_frame();
@@ -584,6 +589,22 @@ impl VM<'_> {
                     RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
                     RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
                     RunError::Internal(_) => {}
+                }
+            }
+            if let Some(cont) = continuation {
+                debug_assert!(!should_return, "continuation frames never stop a synchronous run");
+                if NativeCont::catches(&error) {
+                    // The consumer swallows exhaustion; whatever it raises instead starts afresh.
+                    drop(exc_guard);
+                    return match self.resume_native(*cont, call_offset, Err(error)) {
+                        Ok(()) => ExceptionHandlingResult::Caught,
+                        Err(error) => ExceptionHandlingResult::Raised(error),
+                    };
+                }
+                // Keep unwinding the same exception object from the consumer's call site.
+                cont.drop_with(this);
+                if let Some(off) = call_offset {
+                    this.instruction_ip = off as usize;
                 }
             }
             if should_return {

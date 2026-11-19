@@ -518,6 +518,7 @@ impl<'h> VM<'h> {
                 is_initializer: f.is_initializer,
                 namespace: f.namespace,
                 import_from_module: f.import_from_module,
+                continuation: f.continuation,
             })
             .collect();
         // The namespace moves across so the frame left behind releases nothing.
@@ -532,6 +533,7 @@ impl<'h> VM<'h> {
             is_initializer: current.is_initializer,
             namespace: mem::take(&mut current.namespace),
             import_from_module: current.import_from_module,
+            continuation: current.continuation.take(),
         });
 
         // Count this task's recursion depth contribution and subtract it from
@@ -600,6 +602,7 @@ impl<'h> VM<'h> {
                         namespace: sf.namespace,
                         is_initializer: sf.is_initializer,
                         import_from_module: sf.import_from_module,
+                        continuation: sf.continuation,
                     }
                 })
                 .collect();
