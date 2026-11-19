@@ -6,12 +6,9 @@ here is published.
 
 ## What goes here
 
-Every pull request that changes a CPython divergence MUST update its topic page here.
-Docstrings and inline comments do not count: the divergence has to be written down here.
-Host-API contracts belong in the relevant `docs/` topic and binding reference; implementation rationale belongs in
-crate READMEs or code comments, not a general limitations page.
-Do not record migration history or differences from a removed Monty API.
-Check for an existing explanation before adding a caveat, and link to its owner rather than duplicating it.
+Follow the [contributor documentation policy](../../CONTRIBUTING.md#documentation) for when these pages must be
+updated and what belongs here.
+Do not record differences from a removed Monty API.
 
 One file per feature, named after the builtin, module, or construct it covers (`open.md`, `asyncio.md`, `re.md`).
 Add a section to an existing file when the feature is already documented; create a new file only when there is no
@@ -37,7 +34,7 @@ Link between pages with relative markdown links (`see [classes.md](classes.md)`)
 prose, so the reference works on the site as well as in the repository.
 `mkdocs build --strict` fails on a link to a page that does not exist.
 Host-side `pydantic_monty` types link to their API page as `[`MountDir`][pydantic_monty.MountDir]` and Rust items as
-`[`Checkout`](../api/rust/monty-pool.md#checkout)`, per the docs rules in the root `CLAUDE.md`.
+`[`Checkout`](../api/rust/monty-pool.md#checkout)`, per the docs rules in the root `AGENTS.md`.
 
 Python snippets on these pages are sandbox-side code, so they are marked ```` ```python test="skip" ````;
 `make test-docs` would otherwise run them under CPython.
@@ -54,4 +51,4 @@ A divergence belongs here, not in a concept page.
 When a change alters the shape of the subset — a stdlib module becomes importable, a parse-time rejection is added or
 lifted — update `index.md` as well as the page for the feature.
 The root `README.md` links to the subset overview rather than maintaining its own feature list.
-See "Documentation surfaces that must stay in sync" in the repository's `CLAUDE.md`.
+See "Documentation surfaces that must stay in sync" in the repository's `AGENTS.md`.

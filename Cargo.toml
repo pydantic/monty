@@ -124,7 +124,7 @@ jiff = { version = "1.0", default-features = false, features = [
     "std",
     "serde",
 ] }
-# `phf` backs `#[strum(use_phf)]`, used only on large `EnumString` enums (see CLAUDE.md).
+# `phf` backs `#[strum(use_phf)]`, used only on large `EnumString` enums (see AGENTS.md).
 strum = { version = "0.28", features = ["derive", "phf"] }
 itoa = "1"
 ahash = { version = "0.8.0", features = ["serde"] }
