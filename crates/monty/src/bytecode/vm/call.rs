@@ -28,6 +28,7 @@ use crate::{
     os_dispatch::{PendingEffect, release_pending_effect},
     py_value::PyValue,
     resource_checks::check_estimated_size,
+    scope::{Local, ScopedVM},
     types::{
         Dict, Instance, PyTrait, Type, TypeRef,
         instance::{class_defines, class_lookup},
@@ -118,6 +119,12 @@ pub(crate) enum CallResult {
 }
 
 impl CallResult {
+    /// Completes a call and gives the scope ownership of the return value.
+    pub(crate) fn synchronous<'s>(self, scope: &mut ScopedVM<'s, '_>) -> RunResult<Local<'s>> {
+        let value = self.require_synchronous(scope.vm())?;
+        Ok(scope.keep(value))
+    }
+
     /// Completes a call at a Rust boundary that cannot yield to the host.
     /// Python frames still run; unsupported suspensions are raised inside them and cleaned up.
     /// Consume immediately after dispatch, before running any of the installed frame's bytecode.

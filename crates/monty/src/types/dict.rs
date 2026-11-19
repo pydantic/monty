@@ -982,20 +982,22 @@ impl<'h> HeapReadMut<'h, Dict> {
 
     /// Merges key-value pairs from an iterable of 2-item pairs.
     fn merge_from_iterable_pairs(&self, iterable: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
-        defer_drop!(iter, vm);
-        let mut iter = iter.read(vm);
+        vm.scope(|scope| {
+            let iter = iterable.into_py_iter(scope.vm())?.synchronous(scope)?;
+            let mut iter = iter.read(scope.vm());
+            let vm = scope.vm();
 
-        let mut index = 0;
-        while let Some(item) = iter.py_next(vm)? {
-            let (key, value) = unpack_update_pair(item, index, vm)?;
-            if let Some(old_value) = self.set(key, value, vm)? {
-                old_value.drop_with(vm);
+            let mut index = 0;
+            while let Some(item) = iter.py_next(vm)? {
+                let (key, value) = unpack_update_pair(item, index, vm)?;
+                if let Some(old_value) = self.set(key, value, vm)? {
+                    old_value.drop_with(vm);
+                }
+                index += 1;
             }
-            index += 1;
-        }
 
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Merges kwargs into self.
@@ -1550,19 +1552,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
                 )
                 .into());
             }
-            StaticStrings::Get => {
-                let (key, default) = args.get_one_two_args("get", vm.heap)?;
-                // Release both arguments if hashing or equality raises.
-                let mut pending = DropGuard::new((key, default), vm);
-                let ((key, _), vm) = pending.as_parts();
-                if let Some(value) = self.dict_get(key, vm)? {
-                    Ok(value)
-                } else {
-                    let ((key, default), vm) = pending.into_parts();
-                    key.drop_with(vm);
-                    Ok(default.unwrap_or(Value::None))
-                }
-            }
+            StaticStrings::Get => vm.scope(|scope| {
+                let (key, default) = args.get_one_two_args("get", scope.vm().heap)?;
+                let key = scope.keep(key);
+                let default = default.map(|value| scope.keep(value));
+                Ok(self
+                    .dict_get(&key, scope.vm())?
+                    .unwrap_or_else(|| default.map_or(Value::None, |value| scope.take(value))))
+            }),
             StaticStrings::Keys => {
                 args.check_zero_args("dict.keys", vm.heap)?;
                 let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(self.id())));
@@ -1903,20 +1900,22 @@ pub(crate) fn check_pairs_into_fresh_dict(len: usize, vm: &VM<'_>) -> RunResult<
 /// Each item from `iterable` is treated as `(key, value)`; see
 /// [`unpack_update_pair`] for the errors a malformed item raises.
 fn dict_merge_from_iterable_pairs(dict: &mut Dict, iterable: Value, vm: &mut VM<'_>) -> RunResult<()> {
-    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
-    defer_drop!(iter, vm);
-    let mut iter = iter.read(vm);
+    vm.scope(|scope| {
+        let iter = iterable.into_py_iter(scope.vm())?.synchronous(scope)?;
+        let mut iter = iter.read(scope.vm());
+        let vm = scope.vm();
 
-    let mut index = 0;
-    while let Some(item) = iter.py_next(vm)? {
-        let (key, value) = unpack_update_pair(item, index, vm)?;
-        if let Some(old_value) = dict.set(key, value, vm)? {
-            old_value.drop_with(vm);
+        let mut index = 0;
+        while let Some(item) = iter.py_next(vm)? {
+            let (key, value) = unpack_update_pair(item, index, vm)?;
+            if let Some(old_value) = dict.set(key, value, vm)? {
+                old_value.drop_with(vm);
+            }
+            index += 1;
         }
-        index += 1;
-    }
 
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Splits the `index`th item of a `dict.update()` sequence into its key and
@@ -1926,33 +1925,31 @@ fn dict_merge_from_iterable_pairs(dict: &mut Dict, iterable: Value, vm: &mut VM<
 /// the element's full length: an over-long item is drained to count it,
 /// polling the time limit as it goes.
 fn unpack_update_pair(item: Value, index: usize, vm: &mut VM<'_>) -> RunResult<(Value, Value)> {
-    let pair_iter = item.into_py_iter(vm)?.require_synchronous(vm)?;
-    defer_drop!(pair_iter, vm);
-    let mut pair_iter = pair_iter.read(vm);
+    vm.scope(|scope| {
+        let iterator = item.into_py_iter(scope.vm())?.synchronous(scope)?;
+        let mut pair_iter = iterator.read(scope.vm());
 
-    let Some(key) = pair_iter.py_next(vm)? else {
-        return Err(ExcType::value_error_update_sequence_length(index, 0));
-    };
-    let mut key_guard = DropGuard::new(key, vm);
+        let Some(key) = pair_iter.py_next(scope.vm())? else {
+            return Err(ExcType::value_error_update_sequence_length(index, 0));
+        };
+        let key = scope.keep(key);
+        let Some(value) = pair_iter.py_next(scope.vm())? else {
+            return Err(ExcType::value_error_update_sequence_length(index, 1));
+        };
+        let value = scope.keep(value);
 
-    let Some(value) = pair_iter.py_next(key_guard.ctx())? else {
-        return Err(ExcType::value_error_update_sequence_length(index, 1));
-    };
-    let mut value_guard = DropGuard::new(value, key_guard.ctx());
-
-    let mut length = 2;
-    while let Some(extra) = pair_iter.py_next(value_guard.ctx())? {
-        extra.drop_with(value_guard.ctx());
-        length += 1;
-        value_guard.ctx().heap.tracker.check_memory_time_every(length)?;
-    }
-    if length != 2 {
-        return Err(ExcType::value_error_update_sequence_length(index, length));
-    }
-
-    let value = value_guard.into_inner();
-    let key = key_guard.into_inner();
-    Ok((key, value))
+        let vm = scope.vm();
+        let mut length = 2;
+        while let Some(extra) = pair_iter.py_next(vm)? {
+            extra.drop_with(vm);
+            length += 1;
+            vm.heap.tracker.check_memory_time_every(length)?;
+        }
+        if length != 2 {
+            return Err(ExcType::value_error_update_sequence_length(index, length));
+        }
+        Ok((scope.take(key), scope.take(value)))
+    })
 }
 
 /// Merges keyword arguments into a dict.

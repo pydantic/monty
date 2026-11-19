@@ -23,26 +23,18 @@ use crate::{
 /// - `flush`: whether to flush the stream (accepted but ignored — Monty
 ///   doesn't buffer stdout)
 pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let PrintArgs {
-        objects,
-        sep,
-        end,
-        file,
-        flush: _,
-    } = PrintArgs::from_args(args, vm)?;
-    defer_drop!(objects, vm);
-    defer_drop!(sep, vm);
-    defer_drop!(end, vm);
-    defer_drop!(file, vm);
+    vm.with_args(args, print_objects)
+}
 
+fn print_objects(args: &PrintArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     // `sep` and `end` are checked before `file` because CPython reports them in
     // that order: `print(x, sep=1, file=3)` raises about `sep`, not the file.
-    let sep_str = extract_string_kwarg(sep, "sep", vm)?;
-    let end_str = extract_string_kwarg(end, "end", vm)?;
-    let stream = print_stream(file, vm)?;
+    let sep_str = extract_string_kwarg(&args.sep, "sep", vm)?;
+    let end_str = extract_string_kwarg(&args.end, "end", vm)?;
+    let stream = print_stream(&args.file, vm)?;
 
     let mut first = true;
-    for value in objects.as_slice() {
+    for value in &args.objects {
         if first {
             first = false;
         } else if let Some(sep) = &sep_str {
@@ -105,9 +97,7 @@ struct PrintArgs {
     end: Value,
     #[from_args(default = Value::None)]
     file: Value,
-    /// Accepted from Python for CPython compatibility but never consumed:
-    /// Monty doesn't buffer stdout, so there is nothing to flush.
-    #[expect(dead_code, reason = "accepted but ignored — Monty doesn't buffer stdout")]
+    /// Monty accepts `flush` but writes to the stream immediately.
     #[from_args(default = Value::None)]
     flush: Value,
 }

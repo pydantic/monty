@@ -471,6 +471,10 @@ impl Signature {
         let spec = self.render_spec(&named);
         let conversions = named.iter().map(|f| self.render_conversion(f));
         let build_fields = self.fields.iter().map(render_build_field);
+        let collectors = [self.varargs_idx, self.varkwargs_idx]
+            .into_iter()
+            .flatten()
+            .map(|idx| &self.fields[idx].ident);
 
         quote! {
             /// Owning slots for the corresponding `from_args`: the raw bound
@@ -495,13 +499,21 @@ impl Signature {
             }
 
             #[automatically_derived]
-            impl #struct_ident {
+            impl<__C: crate::heap::ContainsHeap> crate::heap::DropWithContext<__C> for #struct_ident {
+                fn drop_with(self, heap: &mut __C) {
+                    #(<#slot_tys as crate::args::FromValue>::drop_extracted(self.#slot_idents, heap);)*
+                    #(crate::heap::DropWithContext::drop_with(self.#collectors, heap);)*
+                }
+            }
+
+            #[automatically_derived]
+            impl crate::args::FromArgs for #struct_ident {
                 /// Extract arguments into `Self`. Binding (dispatch, arity,
                 /// kwargs, cleanup) happens in `crate::args::bind`; this body
                 /// only converts each raw slot in declaration order. On any
                 /// error path every remaining value is dropped via the slots
                 /// struct's `DropWithContext` impl (driven by a `DropGuard`).
-                pub(crate) fn from_args(
+                fn from_args(
                     args: crate::args::ArgValues,
                     vm: &mut crate::bytecode::VM<'_>,
                 ) -> crate::exception_private::RunResult<Self> {
