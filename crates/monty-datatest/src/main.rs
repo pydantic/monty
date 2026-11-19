@@ -990,11 +990,11 @@ impl ScanSource for VirtualScanSource<'_> {
 
     /// Unbounded: the harness runs only checked-in fixtures, whose writes the
     /// test resets, so a scan never sees more than a test created.
-    fn visit(&mut self) -> Result<(), Infallible> {
+    fn spend(&mut self, _units: usize) -> Result<(), Infallible> {
         Ok(())
     }
 
-    /// Free, as [`Self::visit`] is.
+    /// Free, as [`Self::spend`] is.
     fn charge(&mut self, _bytes: usize) -> Result<(), Infallible> {
         Ok(())
     }

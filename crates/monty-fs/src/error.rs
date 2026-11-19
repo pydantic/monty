@@ -95,8 +95,9 @@ pub enum MountError {
     /// The configured byte limit that was exceeded.
     MemoryUsageLimitExceeded(u64),
 
-    /// A directory scan examined more entries than its cap (the payload),
-    /// which a glob pattern can multiply far beyond the size of the tree.
+    /// A directory scan did more work than its cap (the payload, in
+    /// `ScanSource::spend` units), which a glob pattern can multiply far
+    /// beyond the size of the tree.
     ScanLimitExceeded(u64),
 }
 
@@ -211,7 +212,7 @@ impl MountError {
             // that the result was cut short rather than see an empty match.
             Self::ScanLimitExceeded(limit) => MontyException::new(
                 ExcType::RuntimeError,
-                Some(format!("directory scan examined more than {limit} entries")),
+                Some(format!("directory scan exceeded its work limit of {limit} steps")),
             ),
         }
     }
@@ -262,7 +263,7 @@ impl fmt::Display for MountError {
                     format_bytes_pretty(*limit)
                 )
             }
-            Self::ScanLimitExceeded(limit) => write!(f, "directory scan examined more than {limit} entries"),
+            Self::ScanLimitExceeded(limit) => write!(f, "directory scan exceeded its work limit of {limit} steps"),
         }
     }
 }

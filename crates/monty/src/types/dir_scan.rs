@@ -894,11 +894,7 @@ impl GlobSetup {
                     return Ok(if exists { vec![self.base.clone()] } else { Vec::new() });
                 }
                 let selector = GlobSelector::new(&self.parts, self.case_sensitive, self.recurse_symlinks);
-                let mut tree = TrackedTree {
-                    tree,
-                    tracker,
-                    visits: 0,
-                };
+                let mut tree = TrackedTree { tree, tracker, work: 0 };
                 // A tree never caps its matches.
                 selector.select(&mut tree)?.unwrap_or_default()
             }
@@ -922,13 +918,18 @@ impl GlobSetup {
 }
 
 /// A reply's tree read under the sandbox's limits: the selector's work and
-/// the matches it collects grow with every entry visited, so each visit is a
-/// poll of the memory and time limits.
+/// the matches it collects grow with every entry visited, so the work it
+/// reports paces polls of the memory and time limits.
 struct TrackedTree<'a> {
     tree: ScanTree,
     tracker: &'a ResourceTracker,
-    /// Visits so far, which paces the polls.
-    visits: usize,
+    /// Work so far, which paces the polls.
+    work: usize,
+}
+
+impl TrackedTree<'_> {
+    /// Units of work between polls: tens of microseconds of matching.
+    const POLL_INTERVAL: usize = 1 << 14;
 }
 
 impl ScanSource for TrackedTree<'_> {
@@ -944,12 +945,17 @@ impl ScanSource for TrackedTree<'_> {
         Ok(info)
     }
 
-    fn visit(&mut self) -> Result<(), ResourceError> {
-        self.visits += 1;
-        self.tracker.check_memory_time_every(self.visits)
+    fn spend(&mut self, units: usize) -> Result<(), ResourceError> {
+        let polls = self.work / Self::POLL_INTERVAL;
+        self.work = self.work.saturating_add(units);
+        if self.work / Self::POLL_INTERVAL > polls {
+            self.tracker.check_memory_time()
+        } else {
+            Ok(())
+        }
     }
 
-    /// Free: glob states are real allocations, which the visits' polls see.
+    /// Free: glob states are real allocations, which the polls see.
     fn charge(&mut self, _bytes: usize) -> Result<(), ResourceError> {
         Ok(())
     }

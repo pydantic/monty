@@ -228,7 +228,7 @@ impl ScanSource for Counting {
         self.0.lookup(path)
     }
 
-    fn visit(&mut self) -> Result<(), Infallible> {
+    fn spend(&mut self, _units: usize) -> Result<(), Infallible> {
         Ok(())
     }
 
@@ -267,6 +267,158 @@ fn dot_dot_routes_collapse() {
     assert!(source.1 < 100, "listed {} times", source.1);
 }
 
+/// `chains` directories, each holding a chain of `depth` nested `d` directories.
+fn chains(chains: usize, depth: usize) -> ScanTree {
+    let mut paths = vec![String::new()];
+    for chain in 0..chains {
+        let mut path = format!("c{chain}");
+        paths.push(path.clone());
+        for _ in 0..depth {
+            path.push_str("/d");
+            paths.push(path.clone());
+        }
+    }
+    let items: Vec<(&str, char)> = paths.iter().map(|path| (path.as_str(), 'd')).collect();
+    tree(&items)
+}
+
+/// The directories of [`chains`] below the root with a child, sorted.
+fn chain_parents(chains: usize, depth: usize) -> Vec<String> {
+    let mut parents: Vec<String> = (0..chains)
+        .flat_map(|chain| (0..depth).map(move |level| format!("c{chain}{}", "/d".repeat(level))))
+        .collect();
+    parents.sort();
+    parents
+}
+
+/// Globs `pattern` over `tree`, returning its sorted matches and how many listings it read.
+fn listings(tree: ScanTree, pattern: &str, recurse_symlinks: bool) -> (Vec<String>, usize) {
+    let parts: Vec<String> = pattern.split('/').map(str::to_owned).collect();
+    let mut source = Counting(tree, 0);
+    let mut matches = all_matches(&GlobSelector::new(&parts, None, recurse_symlinks), &mut source);
+    matches.sort();
+    (matches, source.1)
+}
+
+/// Each `**` step walks a directory once, rather than once per ancestor it was
+/// reached from: `**/..` re-queues every parent, so repeating it would cost
+/// depth × entries per step.
+#[test]
+fn recursive_steps_walk_each_directory_once() {
+    let entries = 10 * 21 + 1;
+    let pattern = ["**/.."; 10].join("/");
+    let mut expected = chain_parents(10, 20);
+    expected.insert(0, String::new());
+    for recurse_symlinks in [false, true] {
+        let (matches, listings) = listings(chains(10, 20), &pattern, recurse_symlinks);
+        assert_eq!(matches, expected, "recurse_symlinks={recurse_symlinks}");
+        assert!(
+            listings <= 10 * entries,
+            "recurse_symlinks={recurse_symlinks}: {listings} listings"
+        );
+    }
+}
+
+/// Following symlinks, the parts after `**` merge into one matcher relative to
+/// each walk's origin, so every origin is walked and none is skipped.
+#[test]
+fn merged_recursive_steps_match_from_every_origin() {
+    let pattern = ["**/d/.."; 10].join("/");
+    let (matches, _) = listings(chains(10, 20), &pattern, true);
+    assert_eq!(matches, chain_parents(10, 20));
+}
+
+/// A source that totals the work a scan reports and fails past `cap` units, as a host does.
+struct Working {
+    tree: ScanTree,
+    work: usize,
+    cap: usize,
+}
+
+impl ScanSource for Working {
+    type Error = usize;
+
+    fn list(&mut self, dir: &str) -> Result<Option<Listing>, usize> {
+        let Ok(listing) = self.tree.list(dir);
+        Ok(listing)
+    }
+
+    fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, usize> {
+        let Ok(info) = self.tree.lookup(path);
+        Ok(info)
+    }
+
+    fn spend(&mut self, units: usize) -> Result<(), usize> {
+        self.work += units;
+        if self.work > self.cap { Err(self.work) } else { Ok(()) }
+    }
+
+    fn charge(&mut self, _bytes: usize) -> Result<(), usize> {
+        Ok(())
+    }
+}
+
+/// The work `pattern` reports over `tree`, or the total that passed `cap`.
+fn work(tree: ScanTree, pattern: &str, recurse_symlinks: bool, cap: usize) -> Result<usize, usize> {
+    let parts: Vec<String> = pattern.split('/').map(str::to_owned).collect();
+    let mut source = Working { tree, work: 0, cap };
+    GlobSelector::new(&parts, None, recurse_symlinks).select(&mut source)?;
+    Ok(source.work)
+}
+
+/// A match reports the steps it took, so a pattern built to backtrack costs
+/// pattern length × name length where a plain one costs the name's length.
+#[test]
+fn segment_matches_count_their_steps() {
+    let name = "a".repeat(200);
+    let steps = |pattern: &str| {
+        let mut work = 0;
+        SegmentPattern::new(pattern, true).matches_counted(&name, &mut work);
+        work
+    };
+    // one step per character, and one to take up the `*`
+    assert_eq!(steps("a*"), 201);
+    assert_eq!(steps("b*"), 1);
+    let backtracking = steps(&("*".to_owned() + &"a".repeat(100) + "b"));
+    assert!(backtracking > 100 * 100, "{backtracking} steps");
+}
+
+/// A scan reports work in proportion to what it does, whichever of the names,
+/// the parts or the repeated walks a pattern multiplies, and a cap stops it.
+#[test]
+fn scans_report_the_work_a_pattern_multiplies() {
+    let names: Vec<String> = (0..50).map(|i| format!("{i:0200}")).collect();
+    let mut entries = vec![(String::new(), 'd')];
+    entries.extend(names.iter().map(|name| (name.clone(), 'd')));
+    let entries: Vec<(&str, char)> = entries.iter().map(|(path, kind)| (path.as_str(), *kind)).collect();
+    let plain = work(tree(&entries), "*", false, usize::MAX).unwrap();
+    // each entry's path is built once
+    assert!(plain < 50 * 2 * 210, "{plain} units");
+
+    // a backtracking matcher costs its steps
+    let slow = "*".to_owned() + &"0".repeat(100) + "x";
+    let backtracking = work(tree(&entries), &slow, false, usize::MAX).unwrap();
+    assert!(backtracking > 50 * 100 * 90, "{backtracking} units");
+
+    // parts that return to the same directories cost each visit
+    let returning = work(tree(&entries), &("*/../".repeat(20) + "*"), false, usize::MAX).unwrap();
+    assert!(returning > 20 * plain, "{returning} units");
+
+    // a final `**` re-walks each chain from every ancestor
+    let single = work(chains(10, 20), "**", false, usize::MAX).unwrap();
+    let repeated = work(chains(10, 20), "**/*/**", false, usize::MAX).unwrap();
+    assert!(repeated > 5 * single, "{repeated} units against {single}");
+    // as a merged `**` does from every origin
+    let merged = work(chains(10, 20), "**/d/../**/d/..", true, usize::MAX).unwrap();
+    assert!(merged > 5 * single, "{merged} units against {single}");
+
+    let stopped = work(chains(10, 20), "**/*/**", false, repeated / 2).unwrap_err();
+    assert!(
+        stopped > repeated / 2 && stopped < repeated / 2 + 1000,
+        "{stopped} units"
+    );
+}
+
 /// A source that totals what a scan charges it and fails past `cap` bytes.
 struct Charging {
     tree: ScanTree,
@@ -287,7 +439,7 @@ impl ScanSource for Charging {
         Ok(info)
     }
 
-    fn visit(&mut self) -> Result<(), usize> {
+    fn spend(&mut self, _units: usize) -> Result<(), usize> {
         Ok(())
     }
 
