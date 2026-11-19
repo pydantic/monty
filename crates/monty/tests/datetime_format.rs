@@ -7,9 +7,11 @@
 //! test_case would fail on a macOS CI runner. They live here instead. See
 //! limitations/datetime.md.
 
+use std::time::{Duration, Instant};
+
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, MontyObject};
+use monty_types::{CompileOptions, ExcType, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
 
 /// Runs a snippet and returns its result as a `String`.
 fn run_str(code: &str) -> String {
@@ -239,6 +241,21 @@ True
 ";
     let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::bool(true));
+}
+
+/// The memoized field search is still quadratic, so it polls the clock: a hostile
+/// format that runs for seconds unpolled stops near the time limit.
+#[test]
+fn hostile_strptime_fields_respect_the_time_limit() {
+    let code = "from datetime import datetime\ndatetime.strptime('1' * 6000 + 'Y', '%H' * 4000 + 'X')";
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let start = Instant::now();
+    let exc = runner
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
 }
 
 /// A `%z` offset carrying a colon before its seconds only. Both interpreters

@@ -6,7 +6,7 @@ use jiff::{
     civil::{Date as CivilDate, DateTime as CivilDateTime, Time as CivilTime},
     fmt::strtime::BrokenDownTime,
 };
-use monty_types::OsPolicy;
+use monty_types::{OsPolicy, ResourceTracker};
 
 use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -22,7 +22,8 @@ pub(crate) struct ParsedTime {
 }
 
 /// Parses with Python's defaults, zone names and trailing-input diagnostics.
-pub(crate) fn parse(input: &str, format: &str, policy: &OsPolicy) -> RunResult<ParsedTime> {
+/// The field search is superlinear in the worst case, so it polls `tracker`'s clock.
+pub(crate) fn parse(input: &str, format: &str, policy: &OsPolicy, tracker: &ResourceTracker) -> RunResult<ParsedTime> {
     let mismatch = || format_mismatch(input, format);
     let expanded = expand_format(format)?;
     let zones = if expanded.contains("%Z") {
@@ -35,7 +36,7 @@ pub(crate) fn parse(input: &str, format: &str, policy: &OsPolicy) -> RunResult<P
     let names = zones.map(|zones| {
         [zones.standard, zones.daylight_zone].map(|zone| tzname_string(zone.offset_seconds, zone.name.as_deref()))
     });
-    let matched = match_fields(input, &expanded, names.as_ref()).ok_or_else(mismatch)?;
+    let matched = match_fields(input, &expanded, names.as_ref(), tracker)?.ok_or_else(mismatch)?;
     if !matched.remaining.is_empty() {
         return Err(ExcType::value_error(format_args!(
             "unconverted data remains: {}",
@@ -99,12 +100,19 @@ struct FieldMatch<'f> {
 }
 
 /// Matches raw clock and zone fields before Jiff normalizes their values.
-/// Failed suffixes are memoized so ambiguous numeric fields cannot cause exponential retries.
-fn match_fields<'a>(input: &'a str, mut format: &str, zones: Option<&[String; 2]>) -> Option<MatchedFields<'a>> {
+/// Failed suffixes are memoized so ambiguous numeric fields cannot cause exponential retries;
+/// the remaining search is still quadratic, so each step polls the clock.
+fn match_fields<'a>(
+    input: &'a str,
+    mut format: &str,
+    zones: Option<&[String; 2]>,
+    tracker: &ResourceTracker,
+) -> RunResult<Option<MatchedFields<'a>>> {
     let mut fields = Vec::new();
     let mut failed = AHashSet::default();
     let mut at = 0;
-    loop {
+    for step in 0.. {
+        tracker.check_time_every(step)?;
         if !failed.contains(&(format.len(), at)) {
             if let Some((before, field, after)) = split_field(format) {
                 if let Ok((_, consumed)) = BrokenDownTime::parse_prefix(before, &input[at..])
@@ -124,12 +132,16 @@ fn match_fields<'a>(input: &'a str, mut format: &str, zones: Option<&[String; 2]
                     continue;
                 }
             } else if let Ok((_, consumed)) = BrokenDownTime::parse_prefix(format, &input[at..]) {
-                return collect_fields(input, &fields, format, at, consumed);
+                return Ok(collect_fields(input, &fields, format, at, consumed));
             }
         }
         failed.insert((format.len(), at));
-        (at, format) = retry_field(&mut fields, &mut failed)?;
+        let Some(next) = retry_field(&mut fields, &mut failed) else {
+            return Ok(None);
+        };
+        (at, format) = next;
     }
+    unreachable!("the search ends before `usize::MAX` steps")
 }
 
 /// Retries the nearest shorter field without recursion or copying partial buffers.

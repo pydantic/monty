@@ -459,7 +459,7 @@ fn strptime_result(data_string: &Value, format: &Value, vm: &mut VM<'_>) -> RunR
         Value::None => DEFAULT_STRPTIME_FORMAT.to_owned(),
         other => string_arg(other, "strptime", 2, vm)?,
     };
-    let parsed = datetime_type::strptime::parse(&text, &format, vm.env.os_policy)?;
+    let parsed = datetime_type::strptime::parse(&text, &format, vm.env.os_policy, &vm.heap.tracker)?;
     // A `%z` offset is parsed but dropped, so the zone half stays unset; CPython
     // records it in `tm_gmtoff` (see `limitations/time.md`).
     let mut fields = TimeFields::naive(parsed.wall);
@@ -608,9 +608,9 @@ impl TimeFields {
         while let Some(percent) = rest.find('%') {
             let (before, from_percent) = rest.split_at(percent);
             out.push_str(before)?;
-            // A flagged leap second (`%-S`) takes the bare substitution, not Jiff's clamped 59.
+            // A flagged leap second (`%-S`, `%0s`) takes the bare substitution, not Jiff's clamped 59.
             let (flags, directive) = flagged_conversion(&from_percent[1..])
-                .filter(|&(_, c)| c == 'S' && self.second > 59)
+                .filter(|&(_, c)| matches!(c, 'S' | 's') && self.second > 59)
                 .map_or((0, from_percent[1..].chars().next()), |(flags, c)| (flags, Some(c)));
             let substitute = match directive {
                 Some('a') => Some(short.to_owned()),

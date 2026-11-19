@@ -172,11 +172,13 @@ if sys.platform != 'win32':
     assert time.strftime('%-S|%_S|%0S|%S', (2024, 1, 1, 23, 59, 60, 0, 1, 0)) == '60|60|60|60'
     assert time.strftime('%-S|%-M', (2024, 1, 1, 23, 5, 7, 0, 1, 0)) == '7|5'
     # and `%s` counts a leap second into the next minute, as `mktime` does
-    assert time.strftime('%s', (2024, 1, 1, 23, 59, 60, 0, 1, 0)) == '1704153600'
+    assert time.strftime('%s|%-s|%0s', (2024, 1, 1, 23, 59, 60, 0, 1, 0)) == '1704153600|1704153600|1704153600'
 
 # === a time tuple's year is a C int ===
-for _year, _message in [(2**31, 'greater than maximum'), (-(2**31) - 1, 'less than minimum')]:
-    _tuple = (_year, 1, 1, 0, 0, 0, 0, 1, -1)
-    check(lambda: time.mktime(_tuple), 'OverflowError: signed integer is ' + _message)
-    check(lambda: time.asctime(_tuple), 'OverflowError: signed integer is ' + _message)
-    check(lambda: time.strftime('%Y', _tuple), 'OverflowError: signed integer is ' + _message)
+# Windows CPython's 32-bit C `long` overflows first, with a different message
+if sys.platform != 'win32':
+    for _year, _message in [(2**31, 'greater than maximum'), (-(2**31) - 1, 'less than minimum')]:
+        _tuple = (_year, 1, 1, 0, 0, 0, 0, 1, -1)
+        check(lambda: time.mktime(_tuple), 'OverflowError: signed integer is ' + _message)
+        check(lambda: time.asctime(_tuple), 'OverflowError: signed integer is ' + _message)
+        check(lambda: time.strftime('%Y', _tuple), 'OverflowError: signed integer is ' + _message)

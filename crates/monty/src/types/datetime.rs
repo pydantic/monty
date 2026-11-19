@@ -636,7 +636,7 @@ pub(crate) fn class_strptime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Valu
         wall: naive,
         second,
         offset_seconds,
-    } = strptime::parse(&date_string, &fmt, vm.env.os_policy)?;
+    } = strptime::parse(&date_string, &fmt, vm.env.os_policy, &heap.tracker)?;
 
     if !year_in_python_range(naive.date().year()) {
         return Err(SimpleException::new_msg(ExcType::ValueError, "year is out of range").into());
