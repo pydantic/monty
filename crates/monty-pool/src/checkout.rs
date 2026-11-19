@@ -1384,15 +1384,26 @@ impl Checkout {
     /// Serializes the session (idle or suspended) into opaque bytes that
     /// [`Checkout::restore`] can restore — including into a
     /// different worker after this one crashes. The session stays live.
+    /// Remote relays return an opaque snapshot handle after durable storage acknowledges the dump.
     pub async fn dump(&mut self) -> Result<Vec<u8>, PoolError> {
-        self.open().await?;
-        let request = request(pb::client_request::Kind::Dump(pb::Dump {}));
-        let mut no_print = on_print_sync(|_, _| {});
-        let deadline = self.pool.config.request_timeout;
-        match self.request_turn(&request, deadline, &mut no_print).await? {
-            ControlEvent::Dump(state) => Ok(state),
-            other => Err(self.protocol_violation(format!("unexpected reply to Dump: {other:?}"))),
+        #[cfg(feature = "telemetry")]
+        let span = self.worker.as_ref().and_then(Worker::dump_span);
+        let result = async {
+            self.open().await?;
+            let request = request(pb::client_request::Kind::Dump(pb::Dump {}));
+            let mut no_print = on_print_sync(|_, _| {});
+            let deadline = self.pool.config.request_timeout;
+            match self.request_turn(&request, deadline, &mut no_print).await? {
+                ControlEvent::Dump(state) => Ok(state),
+                other => Err(self.protocol_violation(format!("unexpected reply to Dump: {other:?}"))),
+            }
         }
+        .await;
+        #[cfg(feature = "telemetry")]
+        if let Some(span) = span {
+            span.finish(result.as_ref().err().map(ToString::to_string));
+        }
+        result
     }
 
     /// Discard the worker and wait for its subprocess to exit, including after a cancelled turn.

@@ -23,7 +23,7 @@ use monty_types::{
     DEFAULT_MAX_SUSPENSIONS, MontyUuid, SourceRange, bytes_repr,
     unstable::{MontyNode, NodeId},
 };
-use opentelemetry::Value as OtelValue;
+use opentelemetry::{Value as OtelValue, trace::Status};
 use tracing::{Span, field::Empty};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -35,10 +35,38 @@ use crate::telemetry::{
     },
 };
 
+/// OpenTelemetry error severity used by Logfire to display a failed operation.
+const LEVEL_ERROR: i64 = 17;
+
 /// Starts the OTel span eagerly without entering it or fixing its end time.
 fn start_span(span: Span) -> Span {
     let _ = span.context();
     span
+}
+
+/// Owns the API span until completion or cancellation without keeping it on the worker.
+pub(crate) struct DumpSpan {
+    span: Span,
+    outcome: &'static str,
+}
+
+impl DumpSpan {
+    /// Set a terminal result before the guard records its outcome once.
+    pub(crate) fn finish(mut self, error: Option<String>) {
+        self.outcome = if let Some(error) = error {
+            self.span.set_status(Status::error(error));
+            self.span.set_attribute("logfire.level_num", LEVEL_ERROR);
+            "error"
+        } else {
+            "ok"
+        };
+    }
+}
+
+impl Drop for DumpSpan {
+    fn drop(&mut self) {
+        self.span.record("monty.outcome", self.outcome);
+    }
 }
 
 /// Records one worker's protocol turns to the pool's logfire.
@@ -50,8 +78,7 @@ pub(crate) struct Recorder {
     /// OS pid of the worker, recorded on its session spans (`None` for a
     /// remote worker).
     worker_pid: Option<u32>,
-    /// The span of a housekeeping turn (`Load`, `Dump`, ...), closed by the
-    /// turn-ending event. Innermost: a `Dump` can run mid-suspension.
+    /// The span of a housekeeping turn (`Load`, `Reset`, ...), closed by the turn-ending event.
     turn: Option<Span>,
     /// The span of the suspension the feed is blocked on, closed when the
     /// answering `Resume*` is sent so its duration is the host round-trip.
@@ -73,7 +100,7 @@ pub(crate) struct Recorder {
     /// `Reset` closes it.
     session: Option<Span>,
     /// Whether the current turn is a `Dump`: an `Error` reply to one leaves
-    /// the feed suspended and resumable, so it closes only the dump span.
+    /// the feed suspended and resumable.
     dump_turn: bool,
     /// One-shot host context consumed when `Configure` starts the root span.
     adapter_context: Option<TelemetryContext>,
@@ -111,6 +138,26 @@ impl Recorder {
     pub(crate) fn mark_resumed(&mut self) {
         if let Some(session) = &self.session {
             session.set_attribute("resumed", true);
+        }
+    }
+
+    /// Starts the public dump operation without tracing raw worker serialization turns.
+    pub(crate) fn dump_span(&self) -> DumpSpan {
+        let _logfire = self.logfire.clone().map(set_local_logfire);
+        let parent = self.context_span();
+        let span = if parent.is_none() {
+            logfire::span!("dump", monty.outcome = Empty)
+        } else {
+            logfire::span!(parent: &parent, "dump", monty.outcome = Empty)
+        };
+        if parent.is_none()
+            && let Some(context) = self.adapter_context.clone().and_then(TelemetryContext::into_parent)
+        {
+            let _ = span.set_parent(context);
+        }
+        DumpSpan {
+            span: start_span(span),
+            outcome: "cancelled",
         }
     }
 
@@ -297,14 +344,6 @@ impl Recorder {
             }
             Some(pb::client_request::Kind::Dump(_)) => {
                 self.dump_turn = true;
-                self.turn = Some(start_span(logfire::span!(
-                    parent: self.context_span(),
-                    "dump",
-                    // filled in by the `DumpResult` reply
-                    state_bytes = Empty,
-                    total_execution_micros = Empty,
-                    max_feed_duration_micros = Empty,
-                )));
             }
             // no span of its own: the session is normally already reset, and
             // a lone "shutdown" span would start a whole trace for a worker
@@ -442,8 +481,7 @@ impl Recorder {
             }
             Some(pb::worker_event::Kind::Error(e)) => {
                 record_error(e, micros, max_feed_duration, &self.context_span());
-                // an error reply to `Dump` leaves the feed suspended and
-                // resumable, so it closes only the dump span
+                // An error reply to `Dump` leaves the feed suspended and resumable.
                 if self.dump_turn {
                     self.turn = None;
                 } else {
@@ -462,17 +500,8 @@ impl Recorder {
                 );
                 self.end_feed();
             }
-            // the dump span carries its own result, and closes on it
-            Some(pb::worker_event::Kind::DumpResult(d)) => {
-                if let Some(dump) = &self.turn {
-                    dump.record("state_bytes", int_attr(d.state.len()));
-                    dump.record("total_execution_micros", int_attr(micros));
-                    if let Some(max_feed_duration) = max_feed_duration {
-                        dump.record("max_feed_duration_micros", int_attr(max_feed_duration));
-                    }
-                }
-                self.turn = None;
-            }
+            // The public dump operation owns its span. Raw serialization remains in metrics.
+            Some(pb::worker_event::Kind::DumpResult(_)) => self.turn = None,
             // only a serving relay sends this (a remote worker's server is
             // shutting down); its final state dump is absent when there was no
             // session or the dump failed. The worker is discarded right after,
@@ -1600,8 +1629,7 @@ mod tests {
         assert_eq!(flags[0].value, true.into());
     }
 
-    /// A `Load` and a `Dump` report their result on their own span, so a
-    /// housekeeping turn is one span with nothing hanging off it.
+    /// Load results belong to their turn span. Raw dumps emit no serialization span.
     #[test]
     fn housekeeping_turns_report_on_their_span() {
         let (logfire, spans, logs) = test_logfire();
@@ -1641,8 +1669,7 @@ mod tests {
                 .map(|kv| kv.value.clone())
         };
         assert_eq!(attr("load", "script_name"), Some("dumped.py".into()));
-        assert_eq!(attr("dump", "state_bytes"), Some(16.into()));
-        assert_eq!(attr("dump", "total_execution_micros"), Some(42.into()));
+        assert_eq!(spans.iter().filter(|span| span.name == "dump").count(), 0);
         assert!(logs.get_emitted_logs().unwrap().is_empty());
     }
 

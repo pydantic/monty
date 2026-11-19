@@ -5,6 +5,9 @@
 
 #[cfg(target_os = "linux")]
 mod binary;
+#[cfg(feature = "telemetry")]
+#[path = "remote/dump_telemetry.rs"]
+mod dump_telemetry;
 #[path = "support/grpc_mock.rs"]
 mod grpc_mock;
 
