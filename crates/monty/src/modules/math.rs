@@ -482,18 +482,16 @@ fn math_cbrt(vm: &mut VM<'_>, params: &CbrtArgs) -> RunResult<Value> {
 /// Always returns a float. Unlike the builtin `pow()`, does not support
 /// three-argument modular exponentiation. Raises `ValueError` for
 /// negative base with non-integer exponent.
-#[py_signature("pow(x, y, /)", error_name = "math.pow")]
+#[py_signature("pow(x: float, y: float, /)", error_name = "math.pow")]
 fn math_pow(vm: &mut VM<'_>, params: &MathPowArgs) -> RunResult<Value> {
-    let x = value_to_float(&params.x, vm)?;
-    let y = value_to_float(&params.y, vm)?;
-    let result = x.powf(y);
+    let result = params.x.powf(params.y);
     // CPython raises ValueError for domain errors: 0**negative, negative**non-integer
-    if result.is_nan() && !x.is_nan() && !y.is_nan() {
+    if result.is_nan() && !params.x.is_nan() && !params.y.is_nan() {
         return Err(math_domain_error());
     }
-    if result.is_infinite() && x.is_finite() && y.is_finite() {
+    if result.is_infinite() && params.x.is_finite() && params.y.is_finite() {
         // 0**negative is a domain error (ValueError), not overflow
-        if x == 0.0 && y < 0.0 {
+        if params.x == 0.0 && params.y < 0.0 {
             return Err(math_domain_error());
         }
         return Err(math_range_error());
@@ -684,11 +682,9 @@ fn math_isfinite(vm: &mut VM<'_>, params: &IsfiniteArgs) -> RunResult<Value> {
 /// `math.copysign(x, y)` — returns x with the sign of y.
 ///
 /// Always returns a float.
-#[py_signature("copysign(x, y, /)", error_name = "math.copysign")]
+#[py_signature("copysign(x: float, y: float, /)", error_name = "math.copysign")]
 fn math_copysign(vm: &mut VM<'_>, params: &MathCopysignArgs) -> RunResult<Value> {
-    let x = value_to_float(&params.x, vm)?;
-    let y = value_to_float(&params.y, vm)?;
-    Ok(Value::Float(x.copysign(y)))
+    Ok(Value::Float(params.x.copysign(params.y)))
 }
 
 /// Raises `ValueError` if either tolerance is negative.
@@ -720,12 +716,9 @@ fn math_isclose(vm: &mut VM<'_>, params: &IscloseArgs) -> RunResult<Value> {
 }
 
 /// `math.nextafter(x, y)` — returns the next float after x towards y.
-#[py_signature("nextafter(x, y, /)", error_name = "math.nextafter")]
+#[py_signature("nextafter(x: float, y: float, /)", error_name = "math.nextafter")]
 fn math_nextafter(vm: &mut VM<'_>, params: &MathNextafterArgs) -> RunResult<Value> {
-    let x = value_to_float(&params.x, vm)?;
-    let y = value_to_float(&params.y, vm)?;
-
-    Ok(Value::Float(libm::nextafter(x, y)))
+    Ok(Value::Float(libm::nextafter(params.x, params.y)))
 }
 
 /// `math.ulp(x)` — returns the value of the least significant bit of x.
@@ -803,11 +796,9 @@ fn math_atan(vm: &mut VM<'_>, params: &AtanArgs) -> RunResult<Value> {
 
 /// `math.atan2(y, x)` — returns atan(y/x) in radians, using the signs of both
 /// to determine the correct quadrant.
-#[py_signature("atan2(y, x, /)", error_name = "math.atan2")]
+#[py_signature("atan2(y: float, x: float, /)", error_name = "math.atan2")]
 fn math_atan2(vm: &mut VM<'_>, params: &MathAtan2Args) -> RunResult<Value> {
-    let y = value_to_float(&params.y, vm)?;
-    let x = value_to_float(&params.x, vm)?;
-    Ok(Value::Float(y.atan2(x)))
+    Ok(Value::Float(params.y.atan2(params.x)))
 }
 
 // ==========================
@@ -1077,44 +1068,38 @@ fn math_perm(vm: &mut VM<'_>, params: &PermArgs) -> RunResult<Value> {
 ///
 /// Unlike `x % y`, the result has the same sign as x. Raises `ValueError`
 /// when y is zero (CPython: "math domain error").
-#[py_signature("fmod(x, y, /)", error_name = "math.fmod")]
+#[py_signature("fmod(x: float, y: float, /)", error_name = "math.fmod")]
 fn math_fmod(vm: &mut VM<'_>, params: &MathFmodArgs) -> RunResult<Value> {
-    let x = value_to_float(&params.x, vm)?;
-    let y = value_to_float(&params.y, vm)?;
-
-    if y == 0.0 || x.is_infinite() {
+    if params.y == 0.0 || params.x.is_infinite() {
         // CPython raises for both fmod(x, 0) and fmod(inf, y)
         // but NaN inputs propagate
-        if !x.is_nan() && !y.is_nan() {
+        if !params.x.is_nan() && !params.y.is_nan() {
             return Err(math_domain_error());
         }
     }
-    Ok(Value::Float(x % y))
+    Ok(Value::Float(params.x % params.y))
 }
 
 /// `math.remainder(x, y)` — IEEE 754 remainder of x with respect to y.
 ///
 /// The result is `x - n*y` where n is the closest integer to `x/y`.
-#[py_signature("remainder(x, y, /)", error_name = "math.remainder")]
+#[py_signature("remainder(x: float, y: float, /)", error_name = "math.remainder")]
 fn math_remainder(vm: &mut VM<'_>, params: &MathRemainderArgs) -> RunResult<Value> {
-    let x = value_to_float(&params.x, vm)?;
-    let y = value_to_float(&params.y, vm)?;
-
     // NaN propagates
-    if x.is_nan() || y.is_nan() {
+    if params.x.is_nan() || params.y.is_nan() {
         return Ok(Value::Float(f64::NAN));
     }
-    if y == 0.0 {
+    if params.y == 0.0 {
         return Err(math_domain_error());
     }
-    if x.is_infinite() {
+    if params.x.is_infinite() {
         return Err(math_domain_error());
     }
-    if y.is_infinite() {
-        return Ok(Value::Float(x));
+    if params.y.is_infinite() {
+        return Ok(Value::Float(params.x));
     }
 
-    Ok(Value::Float(libm::remainder(x, y)))
+    Ok(Value::Float(libm::remainder(params.x, params.y)))
 }
 
 /// `math.modf(x)` — returns the fractional and integer parts of x as a tuple.
@@ -1140,31 +1125,24 @@ fn math_frexp(vm: &mut VM<'_>, params: &FrexpArgs) -> RunResult<Value> {
 
 /// `math.ldexp(x, i)` — returns `x * 2**i`, the inverse of `frexp`.
 ///
-/// Clamps the exponent to `i32` range before calling `libm::ldexp`, which is safe
-/// because IEEE 754 double exponents only span -1074 to +1023 — any `i64` outside
-/// `i32` range would trivially overflow or underflow anyway.
-#[py_signature("ldexp(x, i, /)", error_name = "math.ldexp")]
+/// Clamps the exponent to the `i32` range before calling `libm::ldexp`.
+/// For finite nonzero inputs, exponents outside that range already overflow or underflow.
+#[py_signature("ldexp(x: float, i: int, /)", error_name = "math.ldexp")]
 fn math_ldexp(vm: &mut VM<'_>, params: &MathLdexpArgs) -> RunResult<Value> {
-    let x = value_to_float(&params.x, vm)?;
-    // An exponent beyond `i64` saturates: the result overflows or underflows either way.
-    let i = match &params.i {
-        Value::Int(i) => *i,
-        Value::Bool(b) => i64::from(*b),
-        _ => params
-            .i
-            .long_int_to_i64_saturating(vm)
-            .ok_or_else(|| not_an_integer_error(&params.i, vm))?,
-    };
-
     // Special cases: inf/nan/zero pass through regardless of exponent
-    if x.is_nan() || x.is_infinite() || x == 0.0 {
-        return Ok(Value::Float(x));
+    if !params.x.is_finite() || params.x == 0.0 {
+        return Ok(Value::Float(params.x));
     }
 
-    // Clamp i64 to i32 range — exponents beyond ±2 billion trivially overflow/underflow
-    #[expect(clippy::cast_possible_truncation, reason = "clamped to i32 range first")]
-    let exp = i.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
-    let result = libm::ldexp(x, exp);
+    let exp = params.i.view(vm).with_value(
+        vm,
+        |i| i32::try_from(i).unwrap_or(if i < 0 { i32::MIN } else { i32::MAX }),
+        |i| {
+            i.to_i32()
+                .unwrap_or_else(|| if i.is_negative() { i32::MIN } else { i32::MAX })
+        },
+    );
+    let result = libm::ldexp(params.x, exp);
 
     // If the result overflowed to infinity, CPython raises OverflowError
     if result.is_infinite() {

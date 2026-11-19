@@ -212,6 +212,45 @@ assert math.pow(float('inf'), 0) == 1.0
 assert math.pow(float('nan'), 0) == 1.0
 assert math.pow(1, float('inf')) == 1.0
 assert math.pow(1, float('nan')) == 1.0
+assert math.pow(FloatAndIndex(), IndexOnly()) == 2**100
+
+pow_conversions = []
+
+
+class PowOperand:
+    def __init__(self, value):
+        self.value = value
+
+    def __float__(self):
+        pow_conversions.append(self.value)
+        return self.value
+
+
+assert math.pow(PowOperand(2.0), PowOperand(3.0)) == 8.0
+assert pow_conversions == [2.0, 3.0]
+pow_conversions.clear()
+try:
+    math.pow(RaisingFloat(), PowOperand(3.0))
+except ValueError as exc:
+    assert str(exc) == 'float conversion failed'
+else:
+    assert False, 'expected the exception from __float__'
+assert pow_conversions == []
+
+# Fixed-arity math functions use the same numeric conversion.
+assert math.copysign(FloatAndIndex(), -1) == -16.0
+assert math.nextafter(FloatAndIndex(), IndexOnly()) == math.nextafter(16.0, 25.0)
+assert math.atan2(IndexOnly(), FloatAndIndex()) == math.atan2(25.0, 16.0)
+assert math.fmod(IndexOnly(), FloatAndIndex()) == 9.0
+assert math.remainder(IndexOnly(), FloatAndIndex()) == -7.0
+assert math.fma(IndexOnly(), FloatAndIndex(), 1) == 401.0
+assert math.ldexp(FloatAndIndex(), 2) == 64.0
+try:
+    math.ldexp(0.0, IndexOnly())
+except TypeError:
+    pass
+else:
+    assert False, 'ldexp requires an integer exponent'
 
 threw = False
 try:

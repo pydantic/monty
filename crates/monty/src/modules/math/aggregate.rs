@@ -342,15 +342,12 @@ fn add(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 }
 
 /// Performs one rounding and raises CPython's errors for invalid operations and overflow.
-#[py_signature("fma(x, y, z, /)", kwarg_error_name = "math.fma")]
+#[py_signature("fma(x: float, y: float, z: float, /)", kwarg_error_name = "math.fma")]
 pub(super) fn fma(vm: &mut VM<'_>, params: &FmaArgs) -> RunResult<Value> {
-    let x = value_to_float(&params.x, vm)?;
-    let y = value_to_float(&params.y, vm)?;
-    let z = value_to_float(&params.z, vm)?;
-    let result = x.mul_add(y, z);
-    if result.is_nan() && !x.is_nan() && !y.is_nan() && !z.is_nan() {
+    let result = params.x.mul_add(params.y, params.z);
+    if result.is_nan() && !params.x.is_nan() && !params.y.is_nan() && !params.z.is_nan() {
         Err(SimpleException::new_msg(ExcType::ValueError, "invalid operation in fma").into())
-    } else if result.is_infinite() && x.is_finite() && y.is_finite() && z.is_finite() {
+    } else if result.is_infinite() && params.x.is_finite() && params.y.is_finite() && params.z.is_finite() {
         Err(SimpleException::new_msg(ExcType::OverflowError, "overflow in fma").into())
     } else {
         Ok(Value::Float(result))
