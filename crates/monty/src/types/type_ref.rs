@@ -296,3 +296,31 @@ pub(crate) fn c3_merge(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use monty_types::ResourceTracker;
+
+    use super::*;
+    use crate::{
+        heap::HeapData,
+        types::{Class, Dict},
+        value::EitherStr,
+    };
+
+    #[test]
+    fn test_type_ref_to_owned() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let native = TypeRef::Native(Type::Int);
+        let owned_native = native.to_owned(&heap);
+        assert_eq!(owned_native, OwnedTypeRef::Native(Type::Int));
+
+        let class = Class::new(EitherStr::Heap("Foo".to_string()), Dict::new());
+        let class_id = heap.allocate(HeapData::Class(Box::new(class)));
+        let class_ref = TypeRef::Class(class_id);
+        let owned_class = class_ref.to_owned(&heap);
+        assert_eq!(owned_class, OwnedTypeRef::Class(class_id));
+        heap.dec_ref(class_id);
+        heap.dec_ref(class_id);
+    }
+}

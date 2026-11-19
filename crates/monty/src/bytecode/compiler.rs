@@ -4297,3 +4297,23 @@ fn has_unpack_seq(items: &[SequenceItem]) -> bool {
 fn has_unpack_dict(items: &[DictItem]) -> bool {
     items.iter().any(|i| matches!(i, DictItem::Unpack(_)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::CodeRange;
+
+    #[test]
+    fn test_compile_error_into_file_run_error() {
+        let err = CompileError::new("syntax error", CodeRange::default());
+        let run_err = err.into_file_run_error("foo.py", "x = 1");
+        match run_err {
+            RunError::Exc(raise) => {
+                assert!(raise.instance.is_none());
+                assert!(raise.frame.is_none());
+                assert!(raise.snippet_frame.is_some());
+            }
+            _ => panic!("expected RunError::Exc"),
+        }
+    }
+}
