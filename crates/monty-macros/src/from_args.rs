@@ -399,6 +399,7 @@ impl Signature {
         if let Some(last) = check_last {
             named.sort_by_key(|field| field.ident == *last);
         }
+        let single_positional = self.render_single_positional();
         let defaults_call = self.render_defaults_call();
         let conversions = named.iter().map(|f| self.render_conversion(f));
         let build_fields = self.fields.iter().map(render_build_field);
@@ -458,6 +459,7 @@ impl Signature {
                     vm: &mut crate::bytecode::VM<'_>,
                 ) -> crate::exception_private::RunResult<Self> {
                     #spec
+                    #single_positional
                     #defaults_call
 
                     // The guard owns cleanup on every error path — including
@@ -483,9 +485,35 @@ impl Signature {
         }
     }
 
+    /// Bind `f(source, **kwargs)` directly when only the source was supplied.
+    fn render_single_positional(&self) -> Option<TokenStream> {
+        let [source, keywords] = self.fields.as_slice() else {
+            return None;
+        };
+        if !matches!(source.kind, FieldKind::PosOnly | FieldKind::PosOrKeyword) || keywords.kind != FieldKind::Varkwargs
+        {
+            return None;
+        }
+        let extract = self.render_extract(source, &quote!(__source));
+        let source = &source.ident;
+        let keywords = &keywords.ident;
+        Some(quote! {
+            if let crate::args::ArgValues::One(__v) = args {
+                let mut __source = None;
+                #extract
+                return Ok(Self {
+                    #source: __source.expect("successful extraction fills the slot"),
+                    #keywords: crate::args::KwargsValues::Empty,
+                });
+            }
+        })
+    }
+
     /// Builds the result from defaults when the call leaves every named slot empty.
     fn render_defaults_call(&self) -> Option<TokenStream> {
-        let collector = &self.fields[self.varkwargs_idx?].ident;
+        if self.varargs_idx.is_none() && self.varkwargs_idx.is_none() {
+            return None;
+        }
         let mut fields = Vec::new();
         for field in self.named_fields() {
             let name = &field.ident;
@@ -496,6 +524,13 @@ impl Signature {
             let name = &self.fields[i].ident;
             fields.push(quote!(#name: ::std::vec::Vec::new(),));
         }
+        let Some(collector) = self.varkwargs_idx.map(|i| &self.fields[i].ident) else {
+            return Some(quote! {
+                if matches!(args, crate::args::ArgValues::Empty) {
+                    return Ok(Self { #(#fields)* });
+                }
+            });
+        };
         Some(quote! {
             if matches!(args, crate::args::ArgValues::Empty)
                 || (__spec.forwards_keywords()
@@ -579,14 +614,8 @@ impl Signature {
     /// missing/conflict errors with conversion, exactly like CPython.
     fn render_conversion(&self, field: &Field) -> TokenStream {
         let ident = &field.ident;
-        let ty = &field.ty;
         let slot_index = field.slot_index.expect("named field has a slot");
-        let extract = if let Some(path) = &field.extract_with {
-            quote! { __slots.#ident = ::std::option::Option::Some(#path(__v, vm)?); }
-        } else {
-            let ctx = self.render_err_ctx(field);
-            quote! { <#ty as crate::args::FromValue>::extract_into(__v, &mut __slots.#ident, vm, #ctx)?; }
-        };
+        let extract = self.render_extract(field, &quote!(__slots.#ident));
         if field.default.is_none() {
             quote! {
                 let __v = __slots.raw.require(#slot_index)?;
@@ -598,6 +627,16 @@ impl Signature {
                     #extract
                 }
             }
+        }
+    }
+
+    fn render_extract(&self, field: &Field, slot: &TokenStream) -> TokenStream {
+        if let Some(path) = &field.extract_with {
+            quote! { #slot = ::std::option::Option::Some(#path(__v, vm)?); }
+        } else {
+            let ty = &field.ty;
+            let ctx = self.render_err_ctx(field);
+            quote! { <#ty as crate::args::FromValue>::extract_into(__v, &mut #slot, vm, #ctx)?; }
         }
     }
 

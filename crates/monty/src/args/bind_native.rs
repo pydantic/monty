@@ -187,7 +187,12 @@ fn bind_slow<const N: usize>(
     // On (deferred) overflow without `*args` the excess stays in the iterator;
     // the guard drains it when the overflow error returns below.
     if spec.varargs {
-        bound.varargs.extend(state.pos.by_ref());
+        bound.varargs = match mem::replace(&mut state.pos, ArgPosIter::Empty) {
+            ArgPosIter::Empty => Vec::new(),
+            ArgPosIter::One(value) => vec![value],
+            ArgPosIter::Two(values) => Vec::from(values),
+            ArgPosIter::Vec(values) => values.collect(),
+        };
     }
 
     for (key, value) in state.kwargs.by_ref() {

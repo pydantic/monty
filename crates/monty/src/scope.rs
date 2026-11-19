@@ -147,6 +147,27 @@ mod tests {
     }
 
     #[test]
+    fn single_positional_conversion_releases_rejected_value() {
+        #[derive(FromArgs)]
+        #[from_args(name = "count")]
+        struct CountArgs {
+            #[from_args(pos_only)]
+            count: i64,
+            #[from_args(varkwargs)]
+            keywords: KwargsValues,
+        }
+
+        with_vm(|vm| {
+            let value = allocate_string_on_heap("not an integer", vm.heap);
+            defer_drop!(value, vm);
+            let Value::Ref(id) = *value else { unreachable!() };
+            let args = ArgValues::One(value.clone_with_heap(vm));
+            assert!(CountArgs::from_args(args, vm).is_err());
+            assert_eq!(vm.heap.get_refcount(id), 1);
+        });
+    }
+
+    #[test]
     fn conversion_error_releases_forwarded_keywords() {
         with_vm(|vm| {
             let value = allocate_string_on_heap("keyword value", vm.heap);
