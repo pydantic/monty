@@ -89,22 +89,30 @@ pub(super) fn byte_offset<E>(
         }
         return Ok(byte);
     }
-    // Average width >= 1.5 bytes/code point selects the later bulk-scan crossover.
-    let heavy = text.len() - characters >= characters.div_ceil(2);
-    if target > anchor.character {
-        Ok(anchor.byte + forward(&text[anchor.byte..], n, heavy, &check_time)?)
+    // Use the higher threshold when UTF-8 averages at least 1.5 bytes per code point.
+    let bulk_threshold = if text.len() - characters >= characters.div_ceil(2) {
+        512
     } else {
-        Ok(anchor.byte - backward(&text[..anchor.byte], n, heavy, &check_time)?)
+        128
+    };
+    if target > anchor.character {
+        Ok(anchor.byte + forward(&text[anchor.byte..], n, bulk_threshold, &check_time)?)
+    } else {
+        Ok(anchor.byte - backward(&text[..anchor.byte], n, bulk_threshold, &check_time)?)
     }
 }
 
 /// Returns bytes consumed from a UTF-8 suffix, choosing scalar, SIMD or bulk counting by skip distance.
-/// SIMD setup is avoided below eight code points; bulk counting starts at 128, or 512 for dense text.
-fn forward<E>(text: &str, n: usize, heavy: bool, check_time: &impl Fn() -> Result<(), E>) -> Result<usize, E> {
+fn forward<E>(
+    text: &str,
+    n: usize,
+    bulk_threshold: usize,
+    check_time: &impl Fn() -> Result<(), E>,
+) -> Result<usize, E> {
     if n < 8 {
         return Ok(chars_nth(text, n));
     }
-    if n < 128 || (heavy && n < 512) {
+    if n < bulk_threshold {
         return Ok(wide16(text, n));
     }
     let (mut remaining, mut byte, mut checked) = (n, 0, 0);
@@ -135,11 +143,16 @@ fn forward<E>(text: &str, n: usize, heavy: bool, check_time: &impl Fn() -> Resul
 
 /// Returns bytes removed from a UTF-8 prefix, using the same skip thresholds as forward traversal.
 /// The caller subtracts this distance from its anchor's absolute byte offset.
-fn backward<E>(text: &str, n: usize, heavy: bool, check_time: &impl Fn() -> Result<(), E>) -> Result<usize, E> {
+fn backward<E>(
+    text: &str,
+    n: usize,
+    bulk_threshold: usize,
+    check_time: &impl Fn() -> Result<(), E>,
+) -> Result<usize, E> {
     if n < 8 {
         return Ok(chars_nth_back(text, n));
     }
-    if n < 128 || (heavy && n < 512) {
+    if n < bulk_threshold {
         return Ok(wide16_back(text, n));
     }
     let (mut remaining, mut end, mut checked) = (n, text.len(), text.len());
