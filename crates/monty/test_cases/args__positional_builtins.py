@@ -1,10 +1,16 @@
-def check_type_error(call, message):
+import sys
+
+is_monty = sys.platform == 'monty'
+
+
+def check_type_error(call, monty, *, cpython=None):
+    expected = monty if is_monty or cpython is None else cpython
     try:
         call()
     except TypeError as exc:
-        assert str(exc) in (message if isinstance(message, tuple) else (message,))
+        assert str(exc) == expected, (str(exc), expected)
     else:
-        assert False, message
+        assert False, expected
 
 
 assert len('é🙂') == 2
@@ -19,17 +25,19 @@ check_type_error(lambda: len(42), "object of type 'int' has no len()")
 
 assert divmod(-7, 3) == (-3, 2)
 check_type_error(
-    lambda: divmod(1), ("divmod() missing 1 required positional argument: 'y'", 'divmod expected 2 arguments, got 1')
+    lambda: divmod(1),
+    monty="divmod() missing 1 required positional argument: 'y'",
+    cpython='divmod expected 2 arguments, got 1',
 )
 check_type_error(
-    lambda: divmod(1, 2, 3), ('divmod() takes at most 2 arguments (3 given)', 'divmod expected 2 arguments, got 3')
+    lambda: divmod(1, 2, 3),
+    monty='divmod() takes at most 2 arguments (3 given)',
+    cpython='divmod expected 2 arguments, got 3',
 )
 check_type_error(
     lambda: divmod(1, 2, x=[]),
-    (
-        "divmod() got some positional-only arguments passed as keyword arguments: 'x'",
-        'divmod() takes no keyword arguments',
-    ),
+    monty="divmod() got some positional-only arguments passed as keyword arguments: 'x'",
+    cpython='divmod() takes no keyword arguments',
 )
 
 items = [10, 20]
@@ -37,14 +45,14 @@ assert items.pop() == 20
 assert items.pop(0) == 10
 check_type_error(lambda: items.pop(None), "'NoneType' object cannot be interpreted as an integer")
 check_type_error(
-    lambda: items.pop(1, 2), ('pop() takes at most 1 argument (2 given)', 'pop expected at most 1 argument, got 2')
+    lambda: items.pop(1, 2),
+    monty='pop() takes at most 1 argument (2 given)',
+    cpython='pop expected at most 1 argument, got 2',
 )
 check_type_error(
     lambda: items.pop(index=0),
-    (
-        "pop() got some positional-only arguments passed as keyword arguments: 'index'",
-        'list.pop() takes no keyword arguments',
-    ),
+    monty="pop() got some positional-only arguments passed as keyword arguments: 'index'",
+    cpython='list.pop() takes no keyword arguments',
 )
 
 fallback = []
@@ -55,18 +63,18 @@ assert mapping.get('miss', fallback) is fallback
 assert mapping.get('hit', []) is fallback
 check_type_error(
     lambda: mapping.get(),
-    ("get() missing 1 required positional argument: 'key'", 'get expected at least 1 argument, got 0'),
+    monty="get() missing 1 required positional argument: 'key'",
+    cpython='get expected at least 1 argument, got 0',
 )
 check_type_error(
     lambda: mapping.get(1, 2, 3),
-    ('get() takes at most 2 arguments (3 given)', 'get expected at most 2 arguments, got 3'),
+    monty='get() takes at most 2 arguments (3 given)',
+    cpython='get expected at most 2 arguments, got 3',
 )
 check_type_error(
     lambda: mapping.get(1, 2, 3, key=[]),
-    (
-        "get() got some positional-only arguments passed as keyword arguments: 'key'",
-        'dict.get() takes no keyword arguments',
-    ),
+    monty="get() got some positional-only arguments passed as keyword arguments: 'key'",
+    cpython='dict.get() takes no keyword arguments',
 )
 check_type_error(lambda: mapping.get([], []), "cannot use 'list' as a dict key (unhashable type: 'list')")
 
@@ -101,43 +109,41 @@ target['key'] = 1
 check_type_error(lambda: target.pop([], fallback), "cannot use 'list' as a dict key (unhashable type: 'list')")
 check_type_error(
     lambda: target.pop(),
-    ("pop() missing 1 required positional argument: 'key'", 'pop expected at least 1 argument, got 0'),
+    monty="pop() missing 1 required positional argument: 'key'",
+    cpython='pop expected at least 1 argument, got 0',
 )
 check_type_error(
     lambda: target.pop(1, 2, 3),
-    ('pop() takes at most 2 arguments (3 given)', 'pop expected at most 2 arguments, got 3'),
+    monty='pop() takes at most 2 arguments (3 given)',
+    cpython='pop expected at most 2 arguments, got 3',
 )
 check_type_error(
     lambda: target.pop(1, 2, 3, key=[]),
-    (
-        "pop() got some positional-only arguments passed as keyword arguments: 'key'",
-        'dict.pop() takes no keyword arguments',
-    ),
+    monty="pop() got some positional-only arguments passed as keyword arguments: 'key'",
+    cpython='dict.pop() takes no keyword arguments',
 )
 assert target == {'key': 1}
 
 defaults = {}
 check_type_error(
     lambda: defaults.setdefault(),
-    ("setdefault() missing 1 required positional argument: 'key'", 'setdefault expected at least 1 argument, got 0'),
+    monty="setdefault() missing 1 required positional argument: 'key'",
+    cpython='setdefault expected at least 1 argument, got 0',
 )
 check_type_error(
     lambda: defaults.setdefault(1, 2, 3),
-    ('setdefault() takes at most 2 arguments (3 given)', 'setdefault expected at most 2 arguments, got 3'),
+    monty='setdefault() takes at most 2 arguments (3 given)',
+    cpython='setdefault expected at most 2 arguments, got 3',
 )
 check_type_error(
     lambda: defaults.setdefault(key=1),
-    (
-        "setdefault() got some positional-only arguments passed as keyword arguments: 'key'",
-        'dict.setdefault() takes no keyword arguments',
-    ),
+    monty="setdefault() got some positional-only arguments passed as keyword arguments: 'key'",
+    cpython='dict.setdefault() takes no keyword arguments',
 )
 check_type_error(
     lambda: defaults.setdefault(1, 2, 3, default=[]),
-    (
-        "setdefault() got some positional-only arguments passed as keyword arguments: 'default'",
-        'dict.setdefault() takes no keyword arguments',
-    ),
+    monty="setdefault() got some positional-only arguments passed as keyword arguments: 'default'",
+    cpython='dict.setdefault() takes no keyword arguments',
 )
 assert defaults == {}
 assert defaults.setdefault('omitted') is None
