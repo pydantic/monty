@@ -10,6 +10,7 @@
 
 use std::{cmp::Ordering, mem};
 
+use monty_macros::py_signature;
 use smallvec::smallvec;
 
 use crate::{
@@ -230,6 +231,9 @@ pub(crate) fn counter_update<'h>(
     // via `self.update(kwds)`, so these follow the mapping path — including the
     // empty-Counter fast path, re-evaluated after the iterable was folded in.
     let (kwargs, vm) = kwargs_guard.into_parts();
+    if matches!(kwargs, KwargsValues::Empty) {
+        return Ok(());
+    }
     let kwarg_pairs = counter_kwarg_deltas(kwargs);
     counter_merge_mapping(counter, kwarg_pairs, subtract, vm)?;
     Ok(())
@@ -298,32 +302,27 @@ fn counter_kwarg_deltas(kwargs: KwargsValues) -> Vec<(Value, Value)> {
     }
 }
 
-/// `Counter.update`/`subtract` method body: binds `iterable=None, /, **kwargs`
-/// and folds the counts in. Returns `None`.
-///
-/// The binding is hand-rolled rather than `#[derive(FromArgs)]`: these are
-/// pure-Python `def` methods, so CPython's over-arity error counts the implicit
-/// `self` (`Counter.update() takes from 1 to 2 positional arguments but 3 were
-/// given`), which the derive's `def` family — positional-only, no receiver —
-/// cannot express. The `+ 1`s below re-introduce that `self`.
+#[py_signature("update(self, iterable=None, /, **kwds)", style = def, owner = "Counter")]
 pub(crate) fn counter_update_method<'h>(
     counter: &mut HeapObjectRead<'h, Dict>,
-    args: ArgValues,
-    subtract: bool,
+    args: &mut UpdateArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let (mut pos, kwargs) = args.into_parts();
-    let total = pos.len();
-    let source = (total > 0).then(|| pos.next().expect("len checked"));
-    // CPython names the specific method (with the `Counter.` qualifier) here.
-    let name = if subtract { "Counter.subtract" } else { "Counter.update" };
-    if total > 1 {
-        source.drop_with(vm);
-        pos.drop_with(vm);
-        kwargs.drop_with(vm);
-        return Err(ExcType::type_error_too_many_positional_range(name, 1, 2, total + 1, 0));
-    }
-    counter_update(counter, source, kwargs, subtract, vm)?;
+    let source = mem::replace(&mut args.iterable, Value::None);
+    let kwargs = mem::replace(&mut args.kwds, KwargsValues::Empty);
+    counter_update(counter, Some(source), kwargs, false, vm)?;
+    Ok(Value::None)
+}
+
+#[py_signature("subtract(self, iterable=None, /, **kwds)", style = def, owner = "Counter")]
+pub(crate) fn counter_subtract_method<'h>(
+    counter: &mut HeapObjectRead<'h, Dict>,
+    args: &mut SubtractArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    let source = mem::replace(&mut args.iterable, Value::None);
+    let kwargs = mem::replace(&mut args.kwds, KwargsValues::Empty);
+    counter_update(counter, Some(source), kwargs, true, vm)?;
     Ok(Value::None)
 }
 

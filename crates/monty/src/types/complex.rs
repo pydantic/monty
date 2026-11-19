@@ -9,10 +9,11 @@
 
 use std::fmt::Write;
 
+use monty_macros::py_signature;
 use monty_types::FormatComplex;
 
 use crate::{
-    args::{ArgValues, FromArgs, FromValue, FromValueFail},
+    args::{ArgValues, FromValue, FromValueFail},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -395,14 +396,8 @@ fn init_single(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
 
 /// Argument shape for `complex(real=0, imag=0)`; a string is only accepted
 /// through the single-positional form handled by [`init`].
-#[derive(FromArgs)]
-#[from_args(name = "complex", at_most_total, bad_arg_named)]
-struct ComplexArgs {
-    #[from_args(default)]
-    real: Option<Part>,
-    #[from_args(default)]
-    imag: Option<Part>,
-}
+#[py_signature("complex(real=..., imag=...)", at_most_total, bad_arg_named, convert(real = Part, imag = Part))]
+struct ComplexArgs;
 
 /// One `complex(...)` constructor argument: a real number or a complex.
 #[derive(Clone, Copy)]

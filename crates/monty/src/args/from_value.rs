@@ -224,6 +224,30 @@ impl FromValue for i32 {
     }
 }
 
+/// Preserves whether the caller supplied a value when binding a string default.
+pub(crate) enum DefaultedStringArg {
+    Omitted(&'static str),
+    Supplied(Value),
+}
+
+impl FromValue for DefaultedStringArg {
+    fn from_value(value: Value, _vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        Ok(Self::Supplied(value))
+    }
+
+    fn drop_extracted(self, heap: &mut impl ContainsHeap) {
+        if let Self::Supplied(value) = self {
+            value.drop_with(heap);
+        }
+    }
+}
+
+pub(crate) fn extract_index(value: Value, vm: &mut VM<'_>) -> RunResult<i64> {
+    let result = value.as_int(vm);
+    value.drop_with(vm);
+    result
+}
+
 impl FromValue for i64 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
@@ -381,6 +405,17 @@ impl FromValue for bool {
 /// (the macro's error paths use [`FromValue::drop_extracted`]).
 #[derive(Debug)]
 pub(crate) struct StrArg(Value);
+
+pub(crate) fn extract_nullable_str(value: Value, vm: &mut VM<'_>) -> RunResult<Option<StrArg>> {
+    if matches!(value, Value::None) {
+        Ok(None)
+    } else if value.is_str(vm.heap) {
+        Ok(Some(StrArg(value)))
+    } else {
+        value.drop_with(vm);
+        Err(ExcType::type_error("expected str"))
+    }
+}
 
 impl FromValue for StrArg {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("str");

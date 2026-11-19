@@ -34,7 +34,7 @@ use ahash::{AHashMap, AHashSet};
 pub(crate) use compile::CompileInterns;
 use num_bigint::BigInt;
 use storage::Entries;
-use strum::{EnumString, FromRepr, IntoStaticStr};
+use strum::{EnumString, FromRepr, IntoStaticStr, VariantArray};
 
 use crate::{
     frozen::FrozenFunction,
@@ -143,8 +143,8 @@ pub(crate) static RESERVED_STRS: [&str; 129] = const {
 /// or loaded from a dump) a compile-time perfect-hash lookup. strum's default is
 /// a `match` that LLVM turns into a chain of comparisons per text length.
 #[repr(u16)]
-#[derive(Debug, Clone, Copy, EnumString, FromRepr, IntoStaticStr, PartialEq, Eq, Hash)]
-#[strum(serialize_all = "snake_case", use_phf)]
+#[derive(Debug, Clone, Copy, EnumString, FromRepr, IntoStaticStr, VariantArray, PartialEq, Eq, Hash)]
+#[strum(serialize_all = "snake_case", use_phf, const_into_str)]
 pub enum StaticStrings {
     /// ASCII character 0x00.
     #[strum(serialize = "\x00")]
@@ -2743,6 +2743,27 @@ pub enum StaticStrings {
     Zfill,
     /// `itertools.zip_longest()` function.
     ZipLongest,
+}
+
+impl StaticStrings {
+    /// Resolves a native parameter's Python spelling when the compiler builds its static binding table.
+    pub(crate) const fn from_keyword(name: &str) -> Option<Self> {
+        let mut candidates = Self::VARIANTS;
+        while let Some((candidate, rest)) = candidates.split_first() {
+            let text = candidate.into_str().as_bytes();
+            if text.len() == name.len() {
+                let mut i = 0;
+                while i < text.len() && text[i] == name.as_bytes()[i] {
+                    i += 1;
+                }
+                if i == text.len() {
+                    return Some(*candidate);
+                }
+            }
+            candidates = rest;
+        }
+        None
+    }
 }
 
 /// One immutable interned string with directly accessible dispatch metadata.

@@ -12,12 +12,13 @@
 //! `geometric_mean`, `harmonic_mean`, `median_grouped`, `covariance`, `correlation`
 //! and `linear_regression` are not provided.
 
+use monty_macros::py_signature;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{One, Signed, Zero};
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
@@ -118,19 +119,16 @@ fn mean(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 macro_rules! data_args {
     ($name:ident, $func:literal) => {
         #[doc = concat!("The arguments of `statistics.", $func, "(data)`.")]
-        #[derive(FromArgs)]
-        #[from_args(name = $func, style = def)]
-        struct $name {
-            data: Value,
-        }
+        #[py_signature("(data)", style = def, error_name = $func)]
+        struct $name;
     };
 }
 
 data_args!(MeanArgs, "mean");
 
 /// `fmean(data, weights=None)`: the mean as a float, through `math.fsum` / `math.sumprod` as CPython computes it.
-fn fmean(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let FmeanArgs { data, weights } = FmeanArgs::from_args(args, vm)?;
+#[py_signature("fmean(data, weights=None)", style = def)]
+fn fmean(vm: &mut VM<'_>, FmeanArgs { data, weights }: FmeanArgs) -> RunResult<Value> {
     if matches!(weights, Value::None) {
         // CPython divides `fsum(data)` by `len(data)` when there is one, and otherwise counts the items.
         let (data, n) = if let Some(n) = data.py_len(vm) {
@@ -148,15 +146,6 @@ fn fmean(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     } else {
         weighted_fmean(data, weights, vm)
     }
-}
-
-/// The arguments of `statistics.fmean(data, weights=None)`.
-#[derive(FromArgs)]
-#[from_args(name = "fmean", style = def)]
-struct FmeanArgs {
-    data: Value,
-    #[from_args(default = Value::None)]
-    weights: Value,
 }
 
 /// `fmean(data, weights)`: `sum(x * w) / sum(w)`.
@@ -250,40 +239,20 @@ fn spread(vm: &mut VM<'_>, args: ArgValues, kind: Spread) -> RunResult<Value> {
 }
 
 /// The arguments of `statistics.variance(data, xbar=None)`.
-#[derive(FromArgs)]
-#[from_args(name = "variance", style = def)]
-struct VarianceArgs {
-    data: Value,
-    #[from_args(default = Value::None)]
-    xbar: Value,
-}
+#[py_signature("variance(data, xbar=None)", style = def)]
+struct VarianceArgs;
 
 /// The arguments of `statistics.stdev(data, xbar=None)`.
-#[derive(FromArgs)]
-#[from_args(name = "stdev", style = def)]
-struct StdevArgs {
-    data: Value,
-    #[from_args(default = Value::None)]
-    xbar: Value,
-}
+#[py_signature("stdev(data, xbar=None)", style = def)]
+struct StdevArgs;
 
 /// The arguments of `statistics.pvariance(data, mu=None)`.
-#[derive(FromArgs)]
-#[from_args(name = "pvariance", style = def)]
-struct PvarianceArgs {
-    data: Value,
-    #[from_args(default = Value::None)]
-    mu: Value,
-}
+#[py_signature("pvariance(data, mu=None)", style = def)]
+struct PvarianceArgs;
 
 /// The arguments of `statistics.pstdev(data, mu=None)`.
-#[derive(FromArgs)]
-#[from_args(name = "pstdev", style = def)]
-struct PstdevArgs {
-    data: Value,
-    #[from_args(default = Value::None)]
-    mu: Value,
-}
+#[py_signature("pstdev(data, mu=None)", style = def)]
+struct PstdevArgs;
 
 /// The body CPython's four variance functions share: the sum of squares, the count check, then the mean
 /// square (`variance`) or its correctly rounded root (`stdev`).
@@ -439,8 +408,8 @@ fn sorted_items(data: Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
 ///
 /// Follows CPython's order: `n < 1` is an ordinary comparison, a single datum is `data * (n - 1)`, and `method`
 /// is checked before `n` bounds the loop, so each bad argument raises what CPython raises.
-fn quantiles(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let QuantilesArgs { data, n, method } = QuantilesArgs::from_args(args, vm)?;
+#[py_signature("quantiles(data, *, n=4, method=...)", style = def)]
+fn quantiles(vm: &mut VM<'_>, QuantilesArgs { data, n, method }: QuantilesArgs) -> RunResult<Value> {
     defer_drop!(n, vm);
     defer_drop!(method, vm);
     let mut data_guard = DropGuard::new(data, vm);
@@ -451,19 +420,8 @@ fn quantiles(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let (data, vm) = data_guard.into_parts();
         let items = sorted_items(data, vm)?;
         defer_drop!(items, vm);
-        quantile_values(items, n, method, vm)
+        quantile_values(items, n, method.as_ref().unwrap_or(&Value::Undefined), vm)
     }
-}
-
-/// The arguments of `statistics.quantiles(data, *, n=4, method='exclusive')`.
-#[derive(FromArgs)]
-#[from_args(name = "quantiles", style = def)]
-struct QuantilesArgs {
-    data: Value,
-    #[from_args(kw_only, default = Value::Int(4))]
-    n: Value,
-    #[from_args(kw_only, default = Value::Undefined)]
-    method: Value,
 }
 
 /// The cut points of sorted `items`, once `n` has passed the `n < 1` check.

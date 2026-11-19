@@ -19,10 +19,11 @@ use std::{
 };
 
 use chrono::{NaiveDate, NaiveTime, format::StrftimeItems};
+use monty_macros::py_signature;
 use monty_types::ResourceTracker;
 
 use crate::{
-    args::{ArgValues, FromArgs, StrArg},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
@@ -149,15 +150,26 @@ impl Time {
 }
 
 /// Constructor for `time(hour=0, minute=0, second=0, microsecond=0, tzinfo=None, *, fold=0)`.
-pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let TimeInitArgs {
+///
+/// Argument shape for `time(hour=0, minute=0, second=0, microsecond=0,
+/// tzinfo=None, *, fold=0)`.
+///
+/// `style = c` reproduces CPython's two over-arity wordings: a sixth positional
+/// blames the positional limit (the overflow could still have filled keyword-only
+/// `fold`), a seventh the total. `tzinfo` stays a raw [`Value`] so the
+/// None-or-timezone check runs in the body with CPython's wording.
+#[py_signature("time(hour: int=0, minute: int=0, second: int=0, microsecond: int=0, tzinfo=None, *, fold: int=0)", style = c, error_name = "function")]
+pub(crate) fn init(
+    vm: &mut VM<'_>,
+    TimeInitArgs {
         hour,
         minute,
         second,
         microsecond,
         tzinfo,
         fold,
-    } = TimeInitArgs::from_args(args, vm)?;
+    }: TimeInitArgs,
+) -> RunResult<Value> {
     // `tzinfo` owns the input ref; hold it until `attach_tzinfo` has taken its
     // own reference, or the TimeZone could be freed out from under us.
     defer_drop_mut!(tzinfo, vm);
@@ -271,30 +283,6 @@ pub(crate) fn allocate_naive(hour: i32, minute: i32, second: i32, microsecond: i
     let time =
         from_components(hour, minute, second, microsecond, 0).expect("caller guarantees in-range time components");
     Value::Ref(heap.allocate(HeapData::Time(time)))
-}
-
-/// Argument shape for `time(hour=0, minute=0, second=0, microsecond=0,
-/// tzinfo=None, *, fold=0)`.
-///
-/// `style = c` reproduces CPython's two over-arity wordings: a sixth positional
-/// blames the positional limit (the overflow could still have filled keyword-only
-/// `fold`), a seventh the total. `tzinfo` stays a raw [`Value`] so the
-/// None-or-timezone check runs in the body with CPython's wording.
-#[derive(FromArgs)]
-#[from_args(name = "function", style = c)]
-struct TimeInitArgs {
-    #[from_args(default = 0)]
-    hour: i32,
-    #[from_args(default = 0)]
-    minute: i32,
-    #[from_args(default = 0)]
-    second: i32,
-    #[from_args(default = 0)]
-    microsecond: i32,
-    #[from_args(default = Value::None)]
-    tzinfo: Value,
-    #[from_args(kw_only, default = 0)]
-    fold: i32,
 }
 
 /// Validates the civil components and builds a naive `Time`.
@@ -449,12 +437,8 @@ impl TimeSpec {
 /// CPython implements it with Argument Clinic and reports the bare method name,
 /// the same shape [`StrftimeArgs`] has — including `bad_arg`, which supplies
 /// `isoformat() argument 1 must be str, not int`.
-#[derive(FromArgs)]
-#[from_args(name = "isoformat", style = c_named, at_most_total, bad_arg)]
-struct IsoformatArgs {
-    #[from_args(default)]
-    timespec: Option<StrArg>,
-}
+#[py_signature("isoformat(timespec: str=...)", style = c_named, at_most_total, bad_arg)]
+struct IsoformatArgs;
 
 /// Formats a `Time` with a `strftime` directive string, shared by
 /// `time.strftime()` and f-string formatting (`f"{t:%H:%M}"`).
@@ -703,19 +687,7 @@ impl<'h> HeapObjectRead<'h, Time> {
 /// for both; see limitations/datetime.md). `tzinfo` is an `Option<Value>` so
 /// "kwarg absent" (keep the current zone) stays distinct from `tzinfo=None`
 /// (make the time naive).
-#[derive(FromArgs)]
-#[from_args(name = "replace")]
-struct TimeReplaceArgs {
-    #[from_args(kw_only, default)]
-    hour: Option<i32>,
-    #[from_args(kw_only, default)]
-    minute: Option<i32>,
-    #[from_args(kw_only, default)]
-    second: Option<i32>,
-    #[from_args(kw_only, default)]
-    microsecond: Option<i32>,
-    #[from_args(kw_only, default)]
-    tzinfo: Option<Value>,
-    #[from_args(kw_only, default)]
-    fold: Option<i32>,
-}
+#[py_signature(
+    "replace(*, hour: int=..., minute: int=..., second: int=..., microsecond: int=..., tzinfo=..., fold: int=...)"
+)]
+struct TimeReplaceArgs;

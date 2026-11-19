@@ -57,9 +57,8 @@ pub fn builtin_enumerate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// Extracts `enumerate(iterable, start=0)` arguments, faithfully mirroring
-/// CPython's hand-written `enumerate_vectorcall` (Objects/enumobject.c) —
-/// which `#[derive(FromArgs)]` cannot express. Its quirks are deliberate:
-/// keyword names are validated by *position* against the accepted shapes, and
+/// CPython's `enumerate_vectorcall` (Objects/enumobject.c).
+/// Keyword names are validated by *position* against the accepted shapes, and
 /// zero positionals with an unrecognised keyword shape reports the missing
 /// `iterable` even when `iterable=` was actually passed.
 fn extract_enumerate_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Value, Option<Value>)> {

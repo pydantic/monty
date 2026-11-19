@@ -11,10 +11,11 @@
 
 use std::{cell::OnceCell, cmp::Ordering, fmt::Write};
 
+use monty_macros::py_signature;
 use smallvec::smallvec;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -498,9 +499,5 @@ fn group_index(n: i64) -> usize {
 
 /// Argument shape for `re.Match.groupdict(default=None)` — one optional
 /// pos-or-keyword `default` value used to fill groups that didn't match.
-#[derive(FromArgs)]
-#[from_args(name = "groupdict", at_most_total)]
-struct GroupdictArgs {
-    #[from_args(default)]
-    default: Option<Value>,
-}
+#[py_signature("groupdict(default=...)", at_most_total)]
+struct GroupdictArgs;

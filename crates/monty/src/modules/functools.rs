@@ -5,11 +5,12 @@
 //! names are absent from the namespace rather than stubbed, so they raise
 //! `AttributeError` up front.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
-    defer_drop,
     exception_private::RunResult,
     frozen::FrozenFunction,
     intern::StaticStrings,
@@ -88,35 +89,27 @@ pub(super) fn call(vm: &mut VM<'_>, function: FunctoolsFunctions, args: ArgValue
     }
 }
 
+/// `functools.reduce(function, iterable, /[, initial])` — fold `function` over
+/// `iterable` from the left.
+///
+/// Native setup binds the arguments; a frozen Python frame owns acquisition,
+/// initial accumulator selection, and the callback loop.
+///
 /// Argument shape for `reduce(function, iterable, /[, initial])`.
 ///
 /// CPython's Argument Clinic signature makes the first two positional-only
 /// while `initial` is also accepted by keyword, and counts positionals plus
 /// keywords together for the maximum (`at_most_total`): `reduce(f, x, 0,
 /// initial=1)` reports four arguments.
-#[derive(FromArgs)]
-#[from_args(name = "reduce", at_most_total)]
-struct ReduceArgs {
-    #[from_args(pos_only)]
-    function: Value,
-    #[from_args(pos_only)]
-    iterable: Value,
-    #[from_args(default)]
-    initial: Option<Value>,
-}
-
-/// `functools.reduce(function, iterable, /[, initial])` — fold `function` over
-/// `iterable` from the left.
-///
-/// Native setup binds the arguments; a frozen Python frame owns acquisition,
-/// initial accumulator selection, and the callback loop.
-fn call_reduce(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let ReduceArgs {
+#[py_signature("reduce(function, iterable, /, initial=...)", at_most_total)]
+fn call_reduce(
+    vm: &mut VM<'_>,
+    ReduceArgs {
         function,
         iterable,
         initial,
-    } = ReduceArgs::from_args(args, vm)?;
-
+    }: ReduceArgs,
+) -> RunResult<CallResult> {
     let has_initial = initial.is_some();
     vm.call_frozen_exact(
         FrozenFunction::FunctoolsReduce,
@@ -134,12 +127,8 @@ fn call_reduce(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 }
 
 /// Arguments to the unbounded caching decorator.
-#[derive(FromArgs)]
-#[from_args(name = "cache", style = def)]
-struct CacheArgs {
-    #[from_args(pos_only, static_string = "UserFunction")]
-    user_function: Value,
-}
+#[py_signature("cache(user_function, /)", style = def)]
+struct CacheArgs;
 
 /// Wraps a callable in an unbounded cache.
 fn call_cache(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
@@ -147,21 +136,9 @@ fn call_cache(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     lru_cache::allocate(Some(user_function), None, false, vm)
 }
 
-/// Arguments to the configurable caching decorator; the first may itself be callable.
-#[derive(FromArgs)]
-#[from_args(name = "lru_cache", style = def)]
-struct LruCacheArgs {
-    #[from_args(default = Value::Int(128))]
-    maxsize: Value,
-    #[from_args(default = Value::Bool(false))]
-    typed: Value,
-}
-
 /// Returns a configured decorator, or wraps a callable passed as the first argument.
-fn call_lru_cache_factory(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let LruCacheArgs { maxsize, typed } = LruCacheArgs::from_args(args, vm)?;
-    defer_drop!(maxsize, vm);
-    defer_drop!(typed, vm);
+#[py_signature("lru_cache(maxsize=128, typed=False)", style = def)]
+fn call_lru_cache_factory(vm: &mut VM<'_>, LruCacheArgs { maxsize, typed }: &LruCacheArgs) -> RunResult<Value> {
     let typed_flag = typed.py_bool(vm)?;
     match maxsize {
         Value::Int(size) => {

@@ -15,11 +15,12 @@
 use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str};
 
 use fancy_regex::{CompileError, Error as RegexError, Regex, RegexBuilder};
+use monty_macros::py_signature;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use smallvec::SmallVec;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -619,12 +620,16 @@ impl HeapItem for RePattern {
 /// Separated from the main `py_call_attr` match to keep the borrow checker happy —
 /// extracting multiple string arguments requires careful ordering of borrows.
 /// Supports `count` as either positional or keyword argument.
-fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let PatternSubArgs {
+#[py_signature("sub(repl, string, count=...)", style = c_named, at_most_total)]
+fn call_pattern_sub<'h>(
+    pattern: &HeapRead<'h, RePattern>,
+    PatternSubArgs {
         repl: repl_val,
         string: string_val,
         count: count_val,
-    } = PatternSubArgs::from_args(args, vm)?;
+    }: PatternSubArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
     defer_drop!(repl_val, vm);
     defer_drop!(string_val, vm);
 
@@ -657,44 +662,20 @@ fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: 
 /// Handles `pattern.split(string, maxsplit=0)` argument extraction and dispatch.
 ///
 /// Supports `maxsplit` as either positional or keyword argument.
-fn call_pattern_split<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let PatternSplitArgs {
+#[py_signature("split(string, maxsplit=...)", style = c_named, at_most_total)]
+fn call_pattern_split<'h>(
+    pattern: &HeapRead<'h, RePattern>,
+    PatternSplitArgs {
         string: string_val,
         maxsplit: maxsplit_val,
-    } = PatternSplitArgs::from_args(args, vm)?;
+    }: PatternSplitArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
     defer_drop!(string_val, vm);
 
     let maxsplit = extract_maxsplit(maxsplit_val, vm)?;
     let text = string_val.try_to_str(vm)?.to_owned();
     pattern.get(vm.heap).split(&text, maxsplit, vm.heap)
-}
-
-/// Argument shape for `Pattern.sub(repl, string, count=0)`.
-///
-/// `string` uses `static_string = "StringAttr"` because `StringAttr` is the
-/// `StaticStrings` entry that interns `"string"` (the bare `String` variant
-/// is taken by the `re.Pattern.string` attribute name in CPython's class
-/// hierarchy).
-#[derive(FromArgs)]
-#[from_args(name = "sub", style = c_named, at_most_total)]
-struct PatternSubArgs {
-    repl: Value,
-    #[from_args(static_string = "StringAttr")]
-    string: Value,
-    #[from_args(default)]
-    count: Option<Value>,
-}
-
-/// Argument shape for `Pattern.split(string, maxsplit=0)`.
-///
-/// See `PatternSubArgs` for why `string` uses `static_string`.
-#[derive(FromArgs)]
-#[from_args(name = "split", style = c_named, at_most_total)]
-struct PatternSplitArgs {
-    #[from_args(static_string = "StringAttr")]
-    string: Value,
-    #[from_args(default)]
-    maxsplit: Option<Value>,
 }
 
 /// Extracts a `maxsplit` value from an optional `Value` for [`RePattern::split`].

@@ -5,6 +5,7 @@ use std::{
     mem, ptr, vec,
 };
 
+use monty_macros::py_signature;
 use serde::ser::SerializeStruct;
 use smallvec::smallvec;
 
@@ -12,7 +13,7 @@ use super::{
     DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple, list::repr_should_truncate,
 };
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues},
+    args::{ArgValues, KwargsValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -26,7 +27,8 @@ use crate::{
         collections::{
             counter::{
                 CounterCmp, CounterOp, counter_binary_op, counter_compare, counter_elements, counter_inplace_op,
-                counter_most_common, counter_order, counter_total, counter_unary_op, counter_update_method,
+                counter_most_common, counter_order, counter_subtract_method, counter_total, counter_unary_op,
+                counter_update_method,
             },
             defaultdict::defaultdict_missing,
         },
@@ -848,14 +850,8 @@ impl Dict {
 /// `source` is an optional positional (mapping or iterable of pairs).
 /// `extras` collects every additional keyword argument so they can be merged
 /// into the dict after the source.
-#[derive(FromArgs)]
-#[from_args(name = "dict")]
-struct DictInitArgs {
-    #[from_args(pos_only, default)]
-    source: Option<Value>,
-    #[from_args(varkwargs)]
-    extras: KwargsValues,
-}
+#[py_signature("dict(source=..., /, **extras)")]
+struct DictInitArgs;
 
 /// Heap-only equality for probe candidates, mirroring `py_eq` for pairs whose
 /// comparison can never re-enter the VM.
@@ -1540,9 +1536,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
                 args.check_zero_args("total", vm.heap)?;
                 counter_total(self, vm)
             }
-            StaticStrings::Subtract if self.get(vm.heap).is_counter() => counter_update_method(self, args, true, vm),
+            StaticStrings::Subtract if self.get(vm.heap).is_counter() => counter_subtract_method(self, args, vm),
             // Counter overrides `update` to add counts, and disables `fromkeys`.
-            StaticStrings::Update if self.get(vm.heap).is_counter() => counter_update_method(self, args, false, vm),
+            StaticStrings::Update if self.get(vm.heap).is_counter() => counter_update_method(self, args, vm),
             StaticStrings::Fromkeys if self.get(vm.heap).is_counter() => {
                 args.drop_with(vm);
                 return Err(ExcType::not_implemented(
@@ -1550,65 +1546,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
                 )
                 .into());
             }
-            StaticStrings::Get => {
-                let (key, default) = args.get_one_two_args("get", vm.heap)?;
-                // Release both arguments if hashing or equality raises.
-                let mut pending = DropGuard::new((key, default), vm);
-                let ((key, _), vm) = pending.as_parts();
-                if let Some(value) = self.dict_get(key, vm)? {
-                    Ok(value)
-                } else {
-                    let ((key, default), vm) = pending.into_parts();
-                    key.drop_with(vm);
-                    Ok(default.unwrap_or(Value::None))
-                }
-            }
-            StaticStrings::Keys => {
-                args.check_zero_args("dict.keys", vm.heap)?;
-                let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(self.id())));
-                vm.heap.inc_ref(self.id());
-                Ok(Value::Ref(view_id))
-            }
-            StaticStrings::Values => {
-                args.check_zero_args("dict.values", vm.heap)?;
-                let view_id = vm
-                    .heap
-                    .allocate(HeapData::DictValuesView(DictValuesView::new(self.id())));
-                vm.heap.inc_ref(self.id());
-                Ok(Value::Ref(view_id))
-            }
-            StaticStrings::Items => {
-                args.check_zero_args("dict.items", vm.heap)?;
-                let view_id = vm.heap.allocate(HeapData::DictItemsView(DictItemsView::new(self.id())));
-                vm.heap.inc_ref(self.id());
-                Ok(Value::Ref(view_id))
-            }
-            StaticStrings::Pop => {
-                // dict.pop() accepts 1 or 2 arguments (key, optional default)
-                let (key, default) = args.get_one_two_args("pop", vm.heap)?;
-                defer_drop!(key, vm);
-                let mut default_guard = DropGuard::new(default, vm);
-                let vm = default_guard.ctx();
-                // CPython's `PyDict_Pop` returns before hashing when the dict is empty.
-                let popped = if self.get(vm.heap).is_empty() {
-                    None
-                } else {
-                    self.pop(key, vm)?
-                };
-                if let Some((old_key, value)) = popped {
-                    // Drop the old key - we don't need it
-                    old_key.drop_with(vm);
-                    Ok(value)
-                } else {
-                    let (default, vm) = default_guard.into_parts();
-                    // No matching key - return default if provided, else KeyError
-                    if let Some(d) = default {
-                        Ok(d)
-                    } else {
-                        Err(ExcType::key_error(key, vm))
-                    }
-                }
-            }
+            StaticStrings::Get => dict_get_method(self, args, vm),
+            StaticStrings::Keys => self.keys(vm, args),
+            StaticStrings::Values => self.values_view(vm, args),
+            StaticStrings::Items => self.items_view(vm, args),
+            StaticStrings::Pop => dict_pop(self, args, vm),
             StaticStrings::Clear => {
                 args.check_zero_args("dict.clear", vm.heap)?;
                 dict_clear(self, vm);
@@ -1652,6 +1594,29 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
 }
 
 impl<'h> HeapObjectRead<'h, Dict> {
+    #[py_signature("keys(self, /)", owner = "dict")]
+    fn keys(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(self.id())));
+        vm.heap.inc_ref(self.id());
+        Ok(Value::Ref(view_id))
+    }
+
+    #[py_signature("values(self, /)", owner = "dict")]
+    fn values_view(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        let view = vm
+            .heap
+            .allocate(HeapData::DictValuesView(DictValuesView::new(self.id())));
+        vm.heap.inc_ref(self.id());
+        Ok(Value::Ref(view))
+    }
+
+    #[py_signature("items(self, /)", owner = "dict")]
+    fn items_view(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        let view = vm.heap.allocate(HeapData::DictItemsView(DictItemsView::new(self.id())));
+        vm.heap.inc_ref(self.id());
+        Ok(Value::Ref(view))
+    }
+
     /// Runs a binary `Counter` operator (`+ - & |`), which needs *both* operands
     /// to be Counters.
     ///
@@ -1804,38 +1769,45 @@ fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> Run
     Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Dict(merged)))))
 }
 
-/// Implements Python's `dict.update([other], **kwargs)` method.
-///
-/// Updates the dict with key-value pairs from `other` and/or `kwargs`.
-/// If `other` is a dict, copies its key-value pairs.
-/// If `other` is an iterable, expects pairs of (key, value).
-/// Keyword arguments are also added to the dict.
-fn dict_update<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let DictUpdateArgs { source, extras } = DictUpdateArgs::from_args(args, vm)?;
-    let mut kwargs_guard = DropGuard::new(extras, vm);
-
-    if let Some(other_value) = source {
-        let other_value_guard = DropGuard::new(other_value, kwargs_guard.ctx());
-        let other_value = other_value_guard.into_inner();
-        dict.merge_from_value(other_value, kwargs_guard.ctx())?;
+#[py_signature("get(key, default=None, /)", style = unpack, kwarg_error_name = "dict.get")]
+fn dict_get_method<'h>(
+    dict: &HeapObjectRead<'h, Dict>,
+    GetArgs { key, default }: GetArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    let mut pending = DropGuard::new((key, default), vm);
+    let ((key, _), vm) = pending.as_parts();
+    if let Some(value) = dict.dict_get(key, vm)? {
+        Ok(value)
+    } else {
+        let ((key, default), vm) = pending.into_parts();
+        key.drop_with(vm);
+        Ok(default)
     }
-
-    let kwargs = kwargs_guard.into_inner();
-    dict.merge_from_kwargs(kwargs, vm)?;
-    Ok(Value::None)
 }
 
-/// Argument shape for `dict.update([other], **kwargs)`.
-///
-/// Mirrors [`DictInitArgs`] — an optional positional source plus arbitrary
-/// kwargs that are merged into the dict after the source.
-#[derive(FromArgs)]
-#[from_args(name = "update")]
-struct DictUpdateArgs {
-    #[from_args(pos_only, default)]
-    source: Option<Value>,
-    #[from_args(varkwargs)]
-    extras: KwargsValues,
+#[py_signature("pop(key, default=..., /)", style = unpack, kwarg_error_name = "dict.pop")]
+fn dict_pop<'h>(dict: &HeapObjectRead<'h, Dict>, args: &mut PopArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    // CPython skips hashing the key when the dictionary is empty.
+    if !dict.get(vm.heap).is_empty()
+        && let Some((old_key, value)) = dict.pop(&args.key, vm)?
+    {
+        old_key.drop_with(vm);
+        Ok(value)
+    } else {
+        args.default.take().ok_or_else(|| ExcType::key_error(&args.key, vm))
+    }
+}
+
+#[py_signature("update(self, other=..., /, **kwargs) -> None")]
+fn dict_update<'h>(dict: &HeapReadMut<'h, Dict>, args: &mut UpdateArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    if let Some(other) = args.other.take() {
+        dict.merge_from_value(other, vm)?;
+    }
+    if !matches!(args.kwargs, KwargsValues::Empty) {
+        dict.merge_from_kwargs(mem::replace(&mut args.kwargs, KwargsValues::Empty), vm)?;
+    }
+    Ok(Value::None)
 }
 
 /// Merges key-value pairs from either a dict or an iterable of 2-item pairs.
@@ -1973,8 +1945,12 @@ fn dict_merge_from_kwargs(dict: &mut Dict, kwargs: KwargsValues, vm: &mut VM<'_>
 ///
 /// If key is in the dict, return its value.
 /// If not, insert key with a value of default (or None) and return default.
-fn dict_setdefault<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let (key, default) = args.get_one_two_args("setdefault", vm.heap)?;
+#[py_signature("setdefault(key, default=None, /)", style = unpack, kwarg_error_name = "dict.setdefault")]
+fn dict_setdefault<'h>(
+    dict: &HeapReadMut<'h, Dict>,
+    SetdefaultArgs { key, default }: SetdefaultArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
     // Hashing/equality can raise before either argument is stored.
     let mut pending = DropGuard::new((key, default), vm);
     let ((key, _), vm) = pending.as_parts();
@@ -1985,7 +1961,6 @@ fn dict_setdefault<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut V
         // No Python code runs after the probe, so insertion can reuse its hash without another lookup.
         dict.get(vm.heap).table.check_growth(&vm.heap.tracker)?;
         let ((key, default), vm) = pending.into_parts();
-        let default = default.unwrap_or(Value::None);
         let result = default.clone_with_heap(vm.heap);
         let dict = dict.get_mut(vm.heap);
         dict.contains_refs |= matches!(key, Value::Ref(_)) || matches!(default, Value::Ref(_));

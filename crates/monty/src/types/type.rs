@@ -7,12 +7,13 @@
 
 use std::fmt;
 
+use monty_macros::py_signature;
 use num_bigint::BigInt;
 
 use super::native::Constructor;
 pub use super::native::Type;
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
@@ -309,22 +310,14 @@ fn value_error_could_not_convert_string_to_float(value: impl fmt::Display) -> Ru
     .into()
 }
 
+/// Implements the `int()` constructor: numeric coercion, and str/bytes
+/// parsing with an optional base (auto-detected when `base=0`).
+///
 /// Argument shape for `int(x=..., /, base=...)`. `x` is positional-only with
 /// no kwarg id, so `int(x=1)` reports an unknown keyword exactly like CPython;
 /// `vectorcall` + `at_most_total` model `long_vectorcall`'s dual arity wording.
-#[derive(FromArgs)]
-#[from_args(name = "int", at_most_total, vectorcall)]
-struct IntArgs {
-    #[from_args(pos_only, default)]
-    x: Option<Value>,
-    #[from_args(default)]
-    base: Option<Value>,
-}
-
-/// Implements the `int()` constructor: numeric coercion, and str/bytes
-/// parsing with an optional base (auto-detected when `base=0`).
-pub(crate) fn int_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let IntArgs { x, base } = IntArgs::from_args(args, vm)?;
+#[py_signature("int(x=..., /, base=...)", at_most_total, vectorcall)]
+pub(crate) fn int_init(vm: &mut VM<'_>, IntArgs { x, base }: IntArgs) -> RunResult<Value> {
     let Some(x) = x else {
         // `int()` → 0; `int(base=N)` complains about the missing value even
         // before validating the base, matching `long_new_impl`'s ordering.

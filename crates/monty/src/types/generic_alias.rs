@@ -17,11 +17,12 @@ use std::{
 };
 
 use ahash::{AHashMap, AHasher};
+use monty_macros::py_signature;
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
@@ -811,12 +812,15 @@ fn abstract_class_error(name: &str, methods: &str) -> String {
 /// Frozen helper for `typing.get_type_hints`: `alias_with(alias, args, include_extras)`
 /// rebuilds `alias` around the resolved `args` tuple (the alias itself when they
 /// are unchanged), and strips `Annotated[T, ...]` to `T` unless `include_extras`.
-pub(crate) fn call_alias_with(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let AliasWithArgs {
+#[py_signature("alias_with(alias, resolved, include_extras, /)")]
+pub(crate) fn call_alias_with(
+    AliasWithArgs {
         alias,
         resolved,
         include_extras,
-    } = AliasWithArgs::from_args(args, vm)?;
+    }: AliasWithArgs,
+    vm: &mut VM<'_>,
+) -> RunResult<Value> {
     defer_drop!(alias, vm);
     defer_drop!(resolved, vm);
     let Some(HeapReadOutput::GenericAlias(generic)) = alias.read_heap(vm) else {
@@ -850,18 +854,6 @@ pub(crate) fn call_alias_with(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Val
     } else {
         Ok(GenericAlias::allocate(origin, resolved.clone_with_heap(vm), vm))
     }
-}
-
-/// Arguments of the private `alias_with` helper.
-#[derive(FromArgs)]
-#[from_args(name = "alias_with")]
-struct AliasWithArgs {
-    #[from_args(pos_only)]
-    alias: Value,
-    #[from_args(pos_only)]
-    resolved: Value,
-    #[from_args(pos_only)]
-    include_extras: Value,
 }
 
 /// Writes one `__args__` item the way CPython's `ga_repr_item` does: a type

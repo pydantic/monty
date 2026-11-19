@@ -9,6 +9,7 @@
 
 use std::{borrow::Cow, cmp::Ordering, fmt::Write, mem};
 
+use monty_macros::py_signature;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{Pow, ToPrimitive, Zero};
@@ -22,7 +23,7 @@ use super::{
     py_context::{apply_status, as_context, current_context, settings_of},
 };
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -164,21 +165,10 @@ fn decimal_at<'a>(vm: &'a VM<'_>, id: HeapId) -> &'a Decimal {
 // Construction
 // ============================================================================
 
-/// Arguments of `decimal.Decimal(value='0', context=None)`.
-#[derive(FromArgs)]
-#[from_args(name = "Decimal", style = c)]
-struct DecimalArgs {
-    /// `Undefined` stands for the omitted argument, `Decimal()` being `Decimal('0')`.
-    #[from_args(default = Value::Undefined)]
-    value: Value,
-    #[from_args(default = Value::None)]
-    context: Value,
-}
-
 /// `decimal.Decimal(value='0', context=None)`: an exact conversion. The context only
 /// decides whether a malformed string or an `float` raises.
-pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let DecimalArgs { value, context } = DecimalArgs::from_args(args, vm)?;
+#[py_signature("Decimal(value=..., context=None)", style = c)]
+pub(crate) fn init(vm: &mut VM<'_>, DecimalArgs { value, context }: DecimalArgs) -> RunResult<Value> {
     defer_drop!(context, vm);
     let ctx_id = context_arg(context, vm);
     let ctx_id = match ctx_id {
@@ -188,9 +178,9 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             return Err(err);
         }
     };
-    if matches!(value, Value::Undefined) {
+    let Some(value) = value else {
         return Ok(decimal_value(Decimal::zero(false, 0), vm));
-    }
+    };
     if as_decimal(&value, vm).is_some() {
         return Ok(value);
     }
@@ -1021,52 +1011,24 @@ fn as_tuple(d: &Decimal, vm: &VM<'_>) -> Value {
 }
 
 /// Arguments of the methods taking only `context=None`.
-#[derive(FromArgs)]
-#[from_args(name = "function", style = c)]
-struct ContextOnlyArgs {
-    #[from_args(default = Value::None)]
-    context: Value,
-}
+#[py_signature("function(context=None)", style = c)]
+struct ContextOnlyArgs;
 
 /// Arguments of the binary methods, `(other, context=None)`.
-#[derive(FromArgs)]
-#[from_args(name = "function", style = c)]
-struct OtherArgs {
-    other: Value,
-    #[from_args(default = Value::None)]
-    context: Value,
-}
+#[py_signature("function(other, context=None)", style = c)]
+struct OtherArgs;
 
 /// Arguments of `quantize(exp, rounding=None, context=None)`.
-#[derive(FromArgs)]
-#[from_args(name = "function", style = c)]
-struct QuantizeArgs {
-    exp: Value,
-    #[from_args(default = Value::None)]
-    rounding: Value,
-    #[from_args(default = Value::None)]
-    context: Value,
-}
+#[py_signature("function(exp, rounding=None, context=None)", style = c)]
+struct QuantizeArgs;
 
 /// Arguments of `fma(other, third, context=None)`.
-#[derive(FromArgs)]
-#[from_args(name = "function", style = c)]
-struct FmaArgs {
-    other: Value,
-    third: Value,
-    #[from_args(default = Value::None)]
-    context: Value,
-}
+#[py_signature("function(other, third, context=None)", style = c)]
+struct FmaArgs;
 
 /// Arguments of the `to_integral*` methods, `(rounding=None, context=None)`.
-#[derive(FromArgs)]
-#[from_args(name = "function", style = c)]
-struct RoundingArgs {
-    #[from_args(default = Value::None)]
-    rounding: Value,
-    #[from_args(default = Value::None)]
-    context: Value,
-}
+#[py_signature("function(rounding=None, context=None)", style = c)]
+struct RoundingArgs;
 
 // ============================================================================
 // Shared operations
@@ -1435,14 +1397,8 @@ impl ContextMethod {
 }
 
 /// Arguments of `Context.power(a, b, modulo=None)`.
-#[derive(FromArgs)]
-#[from_args(name = "function", style = c)]
-struct PowerArgs {
-    a: Value,
-    b: Value,
-    #[from_args(default = Value::None)]
-    modulo: Value,
-}
+#[py_signature("function(a, b, modulo=None)", style = c)]
+struct PowerArgs;
 
 /// Calls a `Context` arithmetic method; the operation runs under that context.
 pub(crate) fn call_context_method(

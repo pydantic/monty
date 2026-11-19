@@ -13,12 +13,13 @@ use chrono::{
     Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike,
     format::{Parsed, StrftimeItems, parse as chrono_parse, parse_and_remainder},
 };
+use monty_macros::py_signature;
 use monty_types::{
     DateTimeSource, MontyDateTime, MontyTimeZone, OsFunctionCall, ResourceTracker, SandboxTimeZone, local_wall_clock,
 };
 
 use crate::{
-    args::{ArgValues, FromArgs, StrArg},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -236,8 +237,24 @@ pub(crate) fn to_monty_datetime(datetime: &DateTime) -> Option<MontyDateTime> {
 }
 
 /// Constructor for `datetime(...)`.
-pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let DatetimeInitArgs {
+///
+/// Argument shape for `datetime(year, month, day, hour=0, minute=0, second=0,
+/// microsecond=0, tzinfo=None, *, fold=0)`.
+///
+/// CPython emits two distinct wordings for over-arity: when the overflow
+/// could still fit in the keyword-only tail (`actual <= 9`) the message is
+/// "function takes at most 8 *positional* arguments"; once it exceeds the
+/// total slot count it switches to "function takes at most 9 arguments".
+/// The derive turns the pivot on automatically for `style = c` structs with
+/// keyword-only fields — the trailing kw-only `fold` slot is what bumps
+/// `max_total` to 9.
+///
+/// `fold` itself is accepted for CPython parity but currently has no effect
+/// on the stored datetime — Monty does not track DST-fold disambiguation.
+#[py_signature("function(year: int, month: int, day: int, hour: int=0, minute: int=0, second: int=0, microsecond: int=0, tzinfo=None, *, fold: int=0)", style = c)]
+pub(crate) fn init(
+    vm: &mut VM<'_>,
+    DatetimeInitArgs {
         year,
         month,
         day,
@@ -247,7 +264,8 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         microsecond,
         tzinfo,
         fold,
-    } = DatetimeInitArgs::from_args(args, vm)?;
+    }: DatetimeInitArgs,
+) -> RunResult<Value> {
     // `tzinfo` owns the input ref; keep it alive across `tzinfo_from_value` and
     // `from_components` so the heap-allocated TimeZone (if any) is not freed
     // before `attach_or_allocate_tzinfo_ref` takes its own reference.
@@ -262,39 +280,6 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (tz, tz_ref) = tzinfo_from_value(tzinfo, vm.heap, vm.interns)?;
     let dt = from_components(year, month, day, hour, minute, second, microsecond, tz, tz_ref, vm.heap)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))))
-}
-
-/// Argument shape for `datetime(year, month, day, hour=0, minute=0, second=0,
-/// microsecond=0, tzinfo=None, *, fold=0)`.
-///
-/// CPython emits two distinct wordings for over-arity: when the overflow
-/// could still fit in the keyword-only tail (`actual <= 9`) the message is
-/// "function takes at most 8 *positional* arguments"; once it exceeds the
-/// total slot count it switches to "function takes at most 9 arguments".
-/// The derive turns the pivot on automatically for `style = c` structs with
-/// keyword-only fields — the trailing kw-only `fold` slot is what bumps
-/// `max_total` to 9.
-///
-/// `fold` itself is accepted for CPython parity but currently has no effect
-/// on the stored datetime — Monty does not track DST-fold disambiguation.
-#[derive(FromArgs)]
-#[from_args(name = "function", style = c)]
-struct DatetimeInitArgs {
-    year: i32,
-    month: i32,
-    day: i32,
-    #[from_args(default = 0)]
-    hour: i32,
-    #[from_args(default = 0)]
-    minute: i32,
-    #[from_args(default = 0)]
-    second: i32,
-    #[from_args(default = 0)]
-    microsecond: i32,
-    #[from_args(default = Value::None)]
-    tzinfo: Value,
-    #[from_args(kw_only, default = 0)]
-    fold: i32,
 }
 
 /// `datetime.min`, `datetime.max` and `datetime.resolution`.
@@ -326,9 +311,15 @@ pub(crate) fn class_method(
 /// Reads `datetime.now(tz=None)` from the session clock, preserving `tz` identity.
 /// Naive results use the session zone. A `CallHost` clock yields `DateTimeNow`
 /// with a validated [`Option<MontyTimeZone>`] for the host to answer.
-pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let NowArgs { tz } = NowArgs::from_args(args, vm)?;
-    defer_drop!(tz, vm);
+///
+/// Argument shape for `datetime.now(tz=None)`.
+///
+/// `tz` stays a raw [`Value`] so the None-or-timezone check runs in the body
+/// (`tzinfo_from_value`) with CPython's tzinfo wording. `at_most_total`
+/// matches CPython's `PyArg_ParseTupleAndKeywords` pre-count: a duplicate tz
+/// (`now(utc, tz=utc)`) reports "takes at most 1 argument (2 given)".
+#[py_signature("now(tz=None)", at_most_total)]
+pub(crate) fn class_now(vm: &mut VM<'_>, NowArgs { tz }: &NowArgs) -> RunResult<CallResult> {
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
     // Invalid fixed instants raise; only CallHost falls back to the host's clock.
     let Some(utc) = sandbox_instant(vm)? else {
@@ -350,10 +341,15 @@ pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
 /// `datetime.fromtimestamp(timestamp, tz=None)`: the instant `timestamp` seconds
 /// after the Unix epoch, as wall-clock time in `tz`, or in the session zone when
 /// `tz` is `None` (CPython reads the host's zone there).
-pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let FromtimestampArgs { timestamp, tz } = FromtimestampArgs::from_args(args, vm)?;
-    defer_drop!(timestamp, vm);
-    defer_drop!(tz, vm);
+///
+/// Argument shape for `datetime.fromtimestamp(timestamp, tz=None)`, a
+/// `PyArg_ParseTupleAndKeywords` parser: `at_most_total` gives CPython's
+/// `fromtimestamp() takes at most 2 arguments (3 given)` for a duplicated `tz`.
+#[py_signature("fromtimestamp(timestamp, tz=None)", style = c_named, at_most_total)]
+pub(crate) fn class_fromtimestamp(
+    vm: &mut VM<'_>,
+    FromtimestampArgs { timestamp, tz }: &FromtimestampArgs,
+) -> RunResult<Value> {
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
     let utc = timestamp_to_utc(timestamp, TimestampRounding::HalfEven, vm)?
         .ok_or_else(|| timestamp_not_a_number(timestamp, vm))?;
@@ -387,17 +383,6 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult
     };
     attach_or_allocate_tzinfo_ref(&mut dt, tz_ref, vm.heap);
     Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))))
-}
-
-/// Argument shape for `datetime.fromtimestamp(timestamp, tz=None)`, a
-/// `PyArg_ParseTupleAndKeywords` parser: `at_most_total` gives CPython's
-/// `fromtimestamp() takes at most 2 arguments (3 given)` for a duplicated `tz`.
-#[derive(FromArgs)]
-#[from_args(name = "fromtimestamp", style = c_named, at_most_total)]
-struct FromtimestampArgs {
-    timestamp: Value,
-    #[from_args(default = Value::None)]
-    tz: Value,
 }
 
 /// How a float `fromtimestamp()` argument is cut to the result's precision:
@@ -523,9 +508,11 @@ fn timestamp_not_a_number(value: &Value, vm: &VM<'_>) -> RunError {
 /// `datetime.astimezone(tz=None)`: the same instant in `tz`, or in the sandbox
 /// zone at that instant when `tz` is `None`. A naive value is read as sandbox-local
 /// wall time, as CPython reads it in the host's zone.
-fn astimezone(dt: &DateTime, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let AstimezoneArgs { tz } = AstimezoneArgs::from_args(args, vm)?;
-    defer_drop!(tz, vm);
+///
+/// Argument shape for `datetime.astimezone(tz=None)`, checked like [`NowArgs`]:
+/// `at_most_total` gives CPython's `astimezone() takes at most 1 argument (2 given)`.
+#[py_signature("astimezone(tz=None)", at_most_total)]
+fn astimezone(dt: &DateTime, vm: &mut VM<'_>, AstimezoneArgs { tz }: &AstimezoneArgs) -> RunResult<CallResult> {
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
     let zone = &vm.env.os_policy.timezone;
     // CPython forms `self - utcoffset()` as a datetime, so the UTC intermediate
@@ -568,15 +555,6 @@ fn probe_neighbouring_days(date: NaiveDate) -> RunResult<()> {
     }
 }
 
-/// Argument shape for `datetime.astimezone(tz=None)`, checked like [`NowArgs`]:
-/// `at_most_total` gives CPython's `astimezone() takes at most 1 argument (2 given)`.
-#[derive(FromArgs)]
-#[from_args(name = "astimezone", at_most_total)]
-struct AstimezoneArgs {
-    #[from_args(default = Value::None)]
-    tz: Value,
-}
-
 /// Reads the session clock in UTC; `None` means `CallHost` and requires suspension.
 /// Unrepresentable fixed instants raise `OverflowError` for all three clock calls.
 pub(crate) fn sandbox_instant(vm: &VM<'_>) -> RunResult<Option<NaiveDateTime>> {
@@ -595,19 +573,6 @@ pub(crate) fn sandbox_local_wall_clock(vm: &VM<'_>, utc: NaiveDateTime) -> RunRe
 
 fn date_out_of_range() -> RunError {
     SimpleException::new_msg(ExcType::OverflowError, DATE_OUT_OF_RANGE).into()
-}
-
-/// Argument shape for `datetime.now(tz=None)`.
-///
-/// `tz` stays a raw [`Value`] so the None-or-timezone check runs in the body
-/// (`tzinfo_from_value`) with CPython's tzinfo wording. `at_most_total`
-/// matches CPython's `PyArg_ParseTupleAndKeywords` pre-count: a duplicate tz
-/// (`now(utc, tz=utc)`) reports "takes at most 1 argument (2 given)".
-#[derive(FromArgs)]
-#[from_args(name = "now", at_most_total)]
-struct NowArgs {
-    #[from_args(default = Value::None)]
-    tz: Value,
 }
 
 /// Classmethod `datetime.strptime(date_string, format)`.
@@ -703,8 +668,14 @@ pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &In
 /// `date` subclass), in which case only its date part is used. The result takes
 /// the time's timezone unless a third argument overrides it; passing `None`
 /// explicitly is how CPython drops an aware time's zone.
-pub(crate) fn class_combine(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let CombineArgs { date, time, tzinfo } = CombineArgs::from_args(args, vm)?;
+///
+/// Argument shape for `datetime.combine(date, time, tzinfo=self.tzinfo)`.
+///
+/// Every field stays a raw [`Value`] so the type checks run in the body with
+/// CPython's own wording (`combine() argument 1 must be datetime.date, not
+/// str`, and the shared `tzinfo argument must be ...` message).
+#[py_signature("combine(date, time, tzinfo=...)", style = c_named, at_most_total)]
+pub(crate) fn class_combine(vm: &mut VM<'_>, CombineArgs { date, time, tzinfo }: CombineArgs) -> RunResult<Value> {
     defer_drop!(date, vm);
     defer_drop!(time, vm);
     // Guarded before the two type checks below, since both can fail while
@@ -739,22 +710,6 @@ fn combine_allocate(
     let (hour, minute, second, microsecond) = time.components_i32();
     let combined = from_components(year, month, day, hour, minute, second, microsecond, tz, tz_ref, vm.heap)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(combined))))
-}
-
-/// Argument shape for `datetime.combine(date, time, tzinfo=self.tzinfo)`.
-///
-/// Every field stays a raw [`Value`] so the type checks run in the body with
-/// CPython's own wording (`combine() argument 1 must be datetime.date, not
-/// str`, and the shared `tzinfo argument must be ...` message).
-#[derive(FromArgs)]
-#[from_args(name = "combine", style = c_named, at_most_total)]
-struct CombineArgs {
-    date: Value,
-    time: Value,
-    // `Option<Value>` keeps "omitted" (inherit the time's zone) distinct from an
-    // explicit `tzinfo=None` (make the result naive).
-    #[from_args(default)]
-    tzinfo: Option<Value>,
 }
 
 /// Extracts `(year, month, day)` from `combine`'s first argument.
@@ -1306,14 +1261,8 @@ fn format_isoformat(dt: &DateTime, sep: char, spec: TimeSpec) -> String {
 /// `FromValue` impl produces — it reports the *length* of a rejected string
 /// (`not a string of length 2`) — so [`isoformat_separator`] checks it in the
 /// body. `bad_arg` still covers `timespec`.
-#[derive(FromArgs)]
-#[from_args(name = "isoformat", style = c_named, at_most_total, bad_arg)]
-struct IsoformatArgs {
-    #[from_args(default)]
-    sep: Option<Value>,
-    #[from_args(default)]
-    timespec: Option<StrArg>,
-}
+#[py_signature("isoformat(sep=..., timespec: str=...)", style = c_named, at_most_total, bad_arg)]
+struct IsoformatArgs;
 
 /// Validates `isoformat`'s `sep` argument: any single character, `'T'` by default.
 ///
@@ -1709,23 +1658,7 @@ impl<'h> HeapObjectRead<'h, DateTime> {
 /// inherit the existing datetime component via `unwrap_or_else` at the call
 /// site. `tzinfo` uses `Option<Value>` to distinguish "kwarg absent" (preserve
 /// existing) from "tzinfo=None" (clear).
-#[derive(FromArgs)]
-#[from_args(name = "replace")]
-struct DatetimeReplaceArgs {
-    #[from_args(kw_only, default)]
-    year: Option<i32>,
-    #[from_args(kw_only, default)]
-    month: Option<i32>,
-    #[from_args(kw_only, default)]
-    day: Option<i32>,
-    #[from_args(kw_only, default)]
-    hour: Option<i32>,
-    #[from_args(kw_only, default)]
-    minute: Option<i32>,
-    #[from_args(kw_only, default)]
-    second: Option<i32>,
-    #[from_args(kw_only, default)]
-    microsecond: Option<i32>,
-    #[from_args(kw_only, default)]
-    tzinfo: Option<Value>,
-}
+#[py_signature(
+    "replace(*, year: int=..., month: int=..., day: int=..., hour: int=..., minute: int=..., second: int=..., microsecond: int=..., tzinfo=...)"
+)]
+struct DatetimeReplaceArgs;

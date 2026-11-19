@@ -8,11 +8,12 @@
 //! Other asyncio functions (`create_task`, `wait`, etc.) are not implemented.
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
 
+use monty_macros::py_signature;
 use monty_types::{OsFunctionCall, sleep_duration_saturating};
 use num_traits::ToPrimitive;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     asyncio::GatherFuture,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
@@ -76,8 +77,11 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
 /// Unlike CPython, waiting starts at the call. The host answers with a future
 /// or inline; [`host_sleep`] determines the destination and delay.
 /// `Zero` and zero-length system sleeps settle immediately. See `limitations/asyncio.md`.
-fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let SleepArgs { delay, result } = SleepArgs::from_args(args, vm)?;
+///
+/// `asyncio.sleep(delay, result=None)` — a pure-Python `def` in CPython, so
+/// both parameters bind by keyword and neither is type-checked while binding.
+#[py_signature("sleep(delay, result=None)", style = def)]
+fn sleep(vm: &mut VM<'_>, SleepArgs { delay, result }: SleepArgs) -> RunResult<CallResult> {
     // `result` outlives `delay`: it moves into the awaitable once the delay is valid.
     let mut result_guard = DropGuard::new(result, vm);
     let delay = {
@@ -100,17 +104,6 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         call,
         effect: PostConversionEffect::SleepResult { result }.into(),
     })
-}
-
-/// `asyncio.sleep(delay, result=None)` — a pure-Python `def` in CPython, so
-/// both parameters bind by keyword and neither is type-checked while binding.
-#[derive(FromArgs)]
-#[from_args(name = "sleep", style = def)]
-struct SleepArgs {
-    #[from_args(static_string = "Delay")]
-    delay: Value,
-    #[from_args(static_string = "ResultArg", default = Value::None)]
-    result: Value,
 }
 
 /// Reads `delay` as float seconds.
@@ -204,9 +197,5 @@ pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `TypeError: gather() takes no keyword arguments` from `into_pos_only`.
 /// When CPython's `return_exceptions=False` is wired up this becomes a
 /// regular `kw_only` slot and the flag goes away.
-#[derive(FromArgs)]
-#[from_args(name = "gather", kwargs_not_supported_yet)]
-struct GatherArgs {
-    #[from_args(varargs)]
-    awaitables: Vec<Value>,
-}
+#[py_signature("gather(*awaitables)", kwargs_not_supported_yet)]
+struct GatherArgs;

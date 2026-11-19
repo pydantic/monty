@@ -13,6 +13,8 @@ use proc_macro::TokenStream;
 
 mod explicit_discriminants;
 mod from_args;
+#[cfg(feature = "native-signatures")]
+mod py_signature;
 mod to_args;
 
 /// Requires distinct explicit integer identity codes and a matching `checksum` argument.
@@ -24,6 +26,21 @@ pub fn explicit_discriminants(args: TokenStream, input: TokenStream) -> TokenStr
     explicit_discriminants::expand(args.into(), input.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
+}
+
+/// Generates a native call adapter from a Python signature.
+#[cfg(feature = "native-signatures")]
+#[proc_macro_attribute]
+pub fn py_signature(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let declaration = syn::parse_macro_input!(attr as py_signature::Declaration);
+    let item = syn::parse_macro_input!(item as syn::Item);
+    match item {
+        syn::Item::Fn(function) => py_signature::expand(&declaration, function),
+        syn::Item::Struct(item) => py_signature::expand_struct(&declaration, item),
+        item => Err(syn::Error::new_spanned(item, "expected a function or a unit struct")),
+    }
+    .unwrap_or_else(syn::Error::into_compile_error)
+    .into()
 }
 
 /// Derive `FromArgs::from_args`. Each struct field becomes a Python

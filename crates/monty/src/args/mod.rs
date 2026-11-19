@@ -6,7 +6,11 @@ use std::{mem, slice, vec::IntoIter};
 
 pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
 pub(crate) use bind_python::Signature;
-pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg, is_long_int, long_int};
+pub(crate) use from_value::{
+    ArgErrCtx, DefaultedStringArg, FromValue, FromValueFail, LaxBool, StrArg, extract_index, extract_nullable_str,
+    is_long_int, long_int,
+};
+#[cfg(test)]
 pub(crate) use monty_macros::FromArgs;
 use monty_types::{
     CallArgs,
@@ -22,7 +26,7 @@ use crate::{
     object_bridge::{CallArgsExt, GraphExporter},
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Type for method call arguments.
@@ -121,6 +125,22 @@ impl ArgValues {
                 let count = other.count();
                 other.drop_with(heap);
                 Err(ExcType::type_error_arg_count(name, 2, count))
+            }
+        }
+    }
+
+    /// Two positional arguments with PyArg_UnpackTuple's keyword and arity errors.
+    pub(crate) fn unpack_two_args(self, name: &str, heap: &mut Heap) -> RunResult<(Value, Value)> {
+        match self {
+            Self::Two(a, b) => Ok((a, b)),
+            other => {
+                let error = if other.has_kwargs() {
+                    ExcType::type_error_no_kwargs(name)
+                } else {
+                    ExcType::type_error_expected_exact(name, 2, other.count())
+                };
+                other.drop_with(heap);
+                Err(error)
             }
         }
     }
@@ -455,27 +475,6 @@ impl KwargsValues {
                 .map(|(_, value)| value),
             Self::Pairs(kvs) => kvs.iter().find(|(key, _)| is_name(key)).map(|(_, value)| value),
             Self::Dict(dict) => dict.iter().find(|(key, _)| is_name(key)).map(|(_, value)| value),
-        }
-    }
-
-    /// The first keyword's name, for callables that accept none and report
-    /// CPython's `got an unexpected keyword argument`. A non-string key (only
-    /// possible via `**` unpacking) is CPython's `keywords must be strings`.
-    pub fn first_key(&self, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
-        let key = match self {
-            Self::Empty => return Ok(None),
-            Self::Inline(kvs) => {
-                return Ok(kvs.first().map(|(id, _)| EitherStr::Interned(*id).into_string(interns)));
-            }
-            Self::Pairs(kvs) => kvs.first().map(|(key, _)| key),
-            Self::Dict(dict) => dict.iter().next().map(|(key, _)| key),
-        };
-        match key {
-            None => Ok(None),
-            Some(key) => key
-                .as_either_str(heap)
-                .map(|key| Some(key.into_string(interns)))
-                .ok_or_else(ExcType::type_error_kwargs_nonstring_key),
         }
     }
 

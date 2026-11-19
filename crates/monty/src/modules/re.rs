@@ -33,9 +33,10 @@
 use std::rc::Rc;
 
 use ahash::RandomState;
+use monty_macros::py_signature;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
@@ -199,8 +200,8 @@ pub(super) fn call(vm: &mut VM<'_>, function: ReFunctions, args: ArgValues) -> R
 /// `re.compile(pattern, flags=0)` — returns a reusable `re.Pattern`. An
 /// already-compiled pattern passes through unchanged (`re.compile(p) is p`,
 /// matching CPython's `_compile`).
-fn call_compile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ReCompileArgs { pattern, flags } = ReCompileArgs::from_args(args, vm)?;
+#[py_signature("compile(pattern, flags=0)", style = def)]
+fn call_compile(vm: &mut VM<'_>, ReCompileArgs { pattern, flags }: ReCompileArgs) -> RunResult<Value> {
     match resolve_pattern(pattern, flags, vm)? {
         // Clone out of the shared cache entry: the returned `re.Pattern` is the
         // user's own object, independent of the cache.
@@ -215,8 +216,8 @@ fn call_compile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `re.search(pattern, string, flags=0)` — scan for a match anywhere in the string,
 /// returning a `re.Match` or `None`.
-fn call_search(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ReSearchArgs { pattern, string, flags } = ReSearchArgs::from_args(args, vm)?;
+#[py_signature("search(pattern, string, flags=0)", style = def)]
+fn call_search(vm: &mut VM<'_>, ReSearchArgs { pattern, string, flags }: ReSearchArgs) -> RunResult<Value> {
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
@@ -225,8 +226,8 @@ fn call_search(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `re.match(pattern, string, flags=0)` — match anchored at position 0, returning a
 /// `re.Match` or `None`.
-fn call_match(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ReMatchArgs { pattern, string, flags } = ReMatchArgs::from_args(args, vm)?;
+#[py_signature("match(pattern, string, flags=0)", style = def)]
+fn call_match(vm: &mut VM<'_>, ReMatchArgs { pattern, string, flags }: ReMatchArgs) -> RunResult<Value> {
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
@@ -237,8 +238,8 @@ fn call_match(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `re.fullmatch(pattern, string, flags=0)` — match the whole string, returning a
 /// `re.Match` or `None`.
-fn call_fullmatch(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ReFullmatchArgs { pattern, string, flags } = ReFullmatchArgs::from_args(args, vm)?;
+#[py_signature("fullmatch(pattern, string, flags=0)", style = def)]
+fn call_fullmatch(vm: &mut VM<'_>, ReFullmatchArgs { pattern, string, flags }: ReFullmatchArgs) -> RunResult<Value> {
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
@@ -249,8 +250,8 @@ fn call_fullmatch(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `re.findall(pattern, string, flags=0)` — all non-overlapping matches, as a list of
 /// strings or of tuples depending on the capture-group count (as CPython).
-fn call_findall(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ReFindallArgs { pattern, string, flags } = ReFindallArgs::from_args(args, vm)?;
+#[py_signature("findall(pattern, string, flags=0)", style = def)]
+fn call_findall(vm: &mut VM<'_>, ReFindallArgs { pattern, string, flags }: ReFindallArgs) -> RunResult<Value> {
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
@@ -263,14 +264,17 @@ fn call_findall(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// The pattern resolves *before* `count` is validated, so a bad pattern (or flags
 /// with a compiled pattern) wins over a bad count — as in CPython, where `_compile`
 /// runs before `Pattern.sub` parses its arguments.
-fn call_sub(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ReSubArgs {
+#[py_signature("sub(pattern, repl, string, count=..., flags=0)", style = def)]
+fn call_sub(
+    vm: &mut VM<'_>,
+    ReSubArgs {
         pattern,
         repl,
         string,
         count,
         flags,
-    } = ReSubArgs::from_args(args, vm)?;
+    }: ReSubArgs,
+) -> RunResult<Value> {
     defer_drop!(string, vm);
     defer_drop!(repl, vm);
     // `count` must outlive `resolve_pattern`'s `?` (pattern errors win over a
@@ -308,13 +312,16 @@ fn call_sub(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `re.split(pattern, string, maxsplit=0, flags=0)` — split on pattern occurrences.
 /// A non-zero `maxsplit` caps the splits, leaving the remainder as the final element.
-fn call_split(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ReSplitArgs {
+#[py_signature("split(pattern, string, maxsplit=..., flags=0)", style = def)]
+fn call_split(
+    vm: &mut VM<'_>,
+    ReSplitArgs {
         pattern,
         string,
         maxsplit,
         flags,
-    } = ReSplitArgs::from_args(args, vm)?;
+    }: ReSplitArgs,
+) -> RunResult<Value> {
     defer_drop!(string, vm);
     // As in `call_sub`: `maxsplit` must survive a pattern/flags error, so
     // guard it before `resolve_pattern` and `take` it out afterwards.
@@ -324,130 +331,6 @@ fn call_split(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let maxsplit = extract_maxsplit(maxsplit.take(), vm)?;
     resolved.get(vm.heap).split(subject_str(string, vm)?, maxsplit, vm.heap)
-}
-
-/// Argument shape for `re.sub(pattern, repl, string, count=0, flags=0)`.
-///
-/// `pattern` / `string` need `static_string =` overrides because the `Pattern` /
-/// `String` interner entries are taken (by the `re.Pattern` class name and
-/// `match.string`); the interned text is still `"pattern"` / `"string"`.
-///
-/// Every field is a raw `Value`: CPython's `def` binding never type-checks, so all
-/// coercion happens in the body, in CPython's error order.
-#[derive(FromArgs)]
-#[from_args(name = "sub", style = def)]
-struct ReSubArgs {
-    #[from_args(static_string = "PatternAttr")]
-    pattern: Value,
-    repl: Value,
-    #[from_args(static_string = "StringAttr")]
-    string: Value,
-    #[from_args(default)]
-    count: Option<Value>,
-    #[from_args(default = Value::Int(0))]
-    flags: Value,
-}
-
-/// Argument shape for `re.split(pattern, string, maxsplit=0, flags=0)`.
-///
-/// See `ReSubArgs` for why `pattern` / `string` use `static_string`.
-#[derive(FromArgs)]
-#[from_args(name = "split", style = def)]
-struct ReSplitArgs {
-    #[from_args(static_string = "PatternAttr")]
-    pattern: Value,
-    #[from_args(static_string = "StringAttr")]
-    string: Value,
-    #[from_args(default)]
-    maxsplit: Option<Value>,
-    #[from_args(default = Value::Int(0))]
-    flags: Value,
-}
-
-/// Argument shape for `re.compile(pattern, flags=0)`.
-#[derive(FromArgs)]
-#[from_args(name = "compile", style = def)]
-struct ReCompileArgs {
-    #[from_args(static_string = "PatternAttr")]
-    pattern: Value,
-    #[from_args(default = Value::Int(0))]
-    flags: Value,
-}
-
-/// Argument shape for `re.escape(pattern)`.
-///
-/// `pattern` stays a plain `Value`: CPython's `escape` is a str-only helper
-/// whose non-str error (the `decoding to str: …` fallback) differs from the
-/// pattern wording [`PatternArg`] produces.
-#[derive(FromArgs)]
-#[from_args(name = "escape", style = def)]
-struct ReEscapeArgs {
-    #[from_args(static_string = "PatternAttr")]
-    pattern: Value,
-}
-
-/// Argument shape for `re.search(pattern, string, flags=0)`; `re.match`,
-/// `re.fullmatch`, `re.findall`, and `re.finditer` share it under their own
-/// names below (the function name is baked into each struct's errors).
-///
-/// See `ReSubArgs` for why `pattern` / `string` use `static_string`.
-#[derive(FromArgs)]
-#[from_args(name = "search", style = def)]
-struct ReSearchArgs {
-    #[from_args(static_string = "PatternAttr")]
-    pattern: Value,
-    #[from_args(static_string = "StringAttr")]
-    string: Value,
-    #[from_args(default = Value::Int(0))]
-    flags: Value,
-}
-
-/// Argument shape for `re.match(pattern, string, flags=0)` — see [`ReSearchArgs`].
-#[derive(FromArgs)]
-#[from_args(name = "match", style = def)]
-struct ReMatchArgs {
-    #[from_args(static_string = "PatternAttr")]
-    pattern: Value,
-    #[from_args(static_string = "StringAttr")]
-    string: Value,
-    #[from_args(default = Value::Int(0))]
-    flags: Value,
-}
-
-/// Argument shape for `re.fullmatch(pattern, string, flags=0)` — see [`ReSearchArgs`].
-#[derive(FromArgs)]
-#[from_args(name = "fullmatch", style = def)]
-struct ReFullmatchArgs {
-    #[from_args(static_string = "PatternAttr")]
-    pattern: Value,
-    #[from_args(static_string = "StringAttr")]
-    string: Value,
-    #[from_args(default = Value::Int(0))]
-    flags: Value,
-}
-
-/// Argument shape for `re.findall(pattern, string, flags=0)` — see [`ReSearchArgs`].
-#[derive(FromArgs)]
-#[from_args(name = "findall", style = def)]
-struct ReFindallArgs {
-    #[from_args(static_string = "PatternAttr")]
-    pattern: Value,
-    #[from_args(static_string = "StringAttr")]
-    string: Value,
-    #[from_args(default = Value::Int(0))]
-    flags: Value,
-}
-
-/// Argument shape for `re.finditer(pattern, string, flags=0)` — see [`ReSearchArgs`].
-#[derive(FromArgs)]
-#[from_args(name = "finditer", style = def)]
-struct ReFinditerArgs {
-    #[from_args(static_string = "PatternAttr")]
-    pattern: Value,
-    #[from_args(static_string = "StringAttr")]
-    string: Value,
-    #[from_args(default = Value::Int(0))]
-    flags: Value,
 }
 
 /// Validates the `string` subject and borrows its text from the heap, zero-copy.
@@ -731,8 +614,8 @@ fn resolve_pattern(pattern: Value, flags: Value, vm: &mut VM<'_>) -> RunResult<R
 /// Eagerly collected rather than CPython's lazy iterator: `for m in re.finditer(...)`
 /// works, but `next()` on the result raises and it can be iterated twice (see
 /// `limitations/re.md`).
-fn call_finditer(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ReFinditerArgs { pattern, string, flags } = ReFinditerArgs::from_args(args, vm)?;
+#[py_signature("finditer(pattern, string, flags=0)", style = def)]
+fn call_finditer(vm: &mut VM<'_>, ReFinditerArgs { pattern, string, flags }: ReFinditerArgs) -> RunResult<Value> {
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
@@ -743,9 +626,14 @@ fn call_finditer(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `re.escape(pattern)` — backslash-escape regex metacharacters and whitespace,
 /// matching CPython 3.7+: `\t \n \v \f \r   # $ & ( ) * + - . ? [ \ ] ^ { | } ~`
-fn call_escape(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ReEscapeArgs { pattern } = ReEscapeArgs::from_args(args, vm)?;
-    defer_drop!(pattern, vm);
+///
+/// Argument shape for `re.escape(pattern)`.
+///
+/// `pattern` stays a plain `Value`: CPython's `escape` is a str-only helper
+/// whose non-str error (the `decoding to str: …` fallback) differs from the
+/// pattern wording [`PatternArg`] produces.
+#[py_signature("escape(pattern)", style = def)]
+fn call_escape(vm: &mut VM<'_>, ReEscapeArgs { pattern }: &ReEscapeArgs) -> RunResult<Value> {
     let Some(text) = pattern.as_str(vm) else {
         // CPython's escape() falls back to `str(pattern, 'latin1')` for
         // non-str input, so this is the (incidental) message it raises.

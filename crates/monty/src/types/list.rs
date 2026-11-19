@@ -1,5 +1,6 @@
 use std::{cmp::Ordering, fmt::Write, mem};
 
+use monty_macros::py_signature;
 use monty_types::ResourceError;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -905,20 +906,9 @@ fn list_insert<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h
 ///
 /// Removes the item at the given index (default: -1) and returns it.
 /// Raises IndexError if the list is empty or the index is out of range.
-fn list_pop<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let index_arg = args.get_zero_one_arg("list.pop", vm.heap)?;
-
-    // Validate index type FIRST (if provided), matching Python's validation order.
-    // Python raises TypeError for bad index type even on empty list.
-    let index_i64 = if let Some(v) = index_arg {
-        let result = v.as_int(vm);
-        v.drop_with(vm);
-        result?
-    } else {
-        -1
-    };
-
-    // THEN check empty list
+#[py_signature("pop(index: SupportsIndex=-1, /)", style = unpack, kwarg_error_name = "list.pop")]
+fn list_pop<'h>(list: &HeapReadMut<'h, List>, args: &PopArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let index_i64 = args.index;
     if list.get(vm.heap).items.is_empty() {
         return Err(ExcType::index_error_pop_empty_list());
     }

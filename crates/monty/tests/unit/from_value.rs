@@ -3,7 +3,7 @@ use num_bigint::BigInt;
 
 use super::*;
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::{ArgValues, FromArgs, KwargsValues},
     bytecode::VM,
     heap::{Heap, HeapData, HeapReader},
     run::{Program, SessionTables},
@@ -364,5 +364,43 @@ fn from_args_vm_field_and_block_default() {
         assert_eq!(parsed.vm, 10);
         assert_eq!(parsed.other, 20);
         assert_eq!(parsed.extra, 7);
+    });
+}
+
+#[monty_macros::py_signature("f(*, _replace=None)", style = def)]
+fn underscored_keyword(vm: &mut VM<'_>, args: &FArgs) -> RunResult<i64> {
+    let FArgs { _replace: value } = args;
+    value.as_int(vm)
+}
+
+#[test]
+fn native_signature_matches_the_exact_keyword() {
+    with_test_vm(|vm| {
+        for (name, expected) in [("_replace", Some(1)), ("replace", None)] {
+            let key = allocate_string(name.to_owned(), vm.heap);
+            let kwargs = KwargsValues::Pairs(vec![(key, Value::Int(1))]);
+            assert_eq!(
+                underscored_keyword(vm, ArgValues::Kwargs(kwargs)).ok(),
+                expected,
+                "{name}"
+            );
+        }
+    });
+}
+
+#[monty_macros::py_signature("scale(value=1.5, /)")]
+fn raw_float_default(vm: &mut VM<'_>, args: &ScaleArgs) -> RunResult<Value> {
+    Ok(args.value.clone_with_heap(vm))
+}
+
+#[test]
+fn unannotated_float_default_keeps_supplied_values_unconverted() {
+    with_test_vm(|vm| {
+        assert!(matches!(
+            raw_float_default(vm, ArgValues::Empty).unwrap(),
+            Value::Float(1.5)
+        ));
+        let value = raw_float_default(vm, ArgValues::One(Value::None)).unwrap();
+        assert!(matches!(value, Value::None));
     });
 }

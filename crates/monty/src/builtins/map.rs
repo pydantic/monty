@@ -2,8 +2,10 @@
 
 use std::{iter, mem};
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues},
+    args::{ArgValues, KwargsValues},
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -123,13 +125,5 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `function` and the first `iterable` are required; any further iterables
 /// are collected by `extra_iterables`. `map` doesn't accept kwargs, so the
 /// macro's default unknown-kwarg error path is exactly what we want.
-#[derive(FromArgs)]
-#[from_args(name = "map")]
-struct MapArgs {
-    #[from_args(pos_only)]
-    function: Value,
-    #[from_args(pos_only)]
-    first_iterable: Value,
-    #[from_args(varargs)]
-    extra_iterables: Vec<Value>,
-}
+#[py_signature("map(function, first_iterable, /, *extra_iterables)")]
+struct MapArgs;

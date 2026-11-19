@@ -6,26 +6,18 @@ Guidance for the Python stdlib modules implemented in this directory
 match CPython 3.14 byte-for-byte. Verify every message against CPython with
 the `/python-playground` skill before pinning it in a test.
 
-## Always use `#[derive(FromArgs)]` for function parameters
+## Declare parameters with `#[py_signature]`
 
-Any function beyond the trivial 0/1/2-positional shapes (covered by
-`ArgValues::check_zero_args` / `get_one_arg` / `get_two_args` /
-`get_zero_one_arg` / `into_pos_only`) MUST define its parameters with a
-`#[derive(FromArgs)]` struct. Never hand-roll `args.into_parts()` loops —
-they leak refcounts and diverge from CPython's wording. The derive emits a
-static param spec driven by the runtime binder
-(`crate::args::bind_native`), which handles dispatch, arity errors, kwarg
-matching, duplicate/conflict detection, and refcount cleanup mechanically.
+Declare the Python parameter list on the Rust function. Trivial positional functions may
+also use the existing `ArgValues` helpers. Use a named signature struct when dispatchers share
+a binder. The [macro reference](../../../monty-macros/README.md) covers ownership, defaults and converters.
 
-Full attribute reference: `crates/monty-macros/README.md` (including the
-CPython-family table and the `at_most_total` litmus test).
-
-### 1. Pick the `style` by how CPython implements the function
+### Pick the `style` by how CPython implements the function
 
 | CPython implementation                                                                                                                                                                            | `style`                                                       |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | pure-Python `def` (the `re` functions, `json.dumps`)                                                                                                                                              | `style = def`                                                 |
-| Argument Clinic, positional-only (`sorted`, `math.pow`)                                                                                                                                           | default — omit `style`                                        |
+| Argument Clinic, positional-only (`math.pow`)                                                                                                                                                     | default — omit `style`                                        |
 | Argument Clinic with keyword-capable params (`accumulate`, `os.stat`)                                                                                                                             | `style = c_named` — it shares `_PyArg_UnpackKeywords` wording |
 | `PyArg_ParseTupleAndKeywords`, anonymous `function` errors                                                                                                                                        | `style = c`                                                   |
 | same, with the name embedded (`timezone() missing …`)                                                                                                                                             | `style = c_named`                                             |
@@ -37,91 +29,22 @@ kwargs last; clinic/def bind fully before any conversion). When unsure, probe
 CPython: call the function with a bad type + a bogus kwarg, too many args,
 etc., and match the observed messages.
 
-### 2. Typical shapes (real examples from this directory)
+### Parameters and ownership
 
-A pure-Python `def` — fields stay raw `Value` because CPython `def` binding
-never type-checks; coerce in the body (`re.rs`):
+`re.search` uses `#[py_signature("search(pattern, string, flags=0)", style = def)]`.
+Each field holds a Python value. The body applies the conversions in the same order as CPython.
+`itertools.accumulate` declares `accumulate(iterable, func=None, *, initial=None)` with
+`style = c_named`, so passing three positionals produces CPython's positional overflow error.
 
-```rust
-#[derive(FromArgs)]
-#[from_args(name = "search", style = def)]
-struct ReSearchArgs {
-    #[from_args(static_string = "PatternAttr")]
-    pattern: Value,
-    #[from_args(static_string = "StringAttr")]
-    string: Value,
-    #[from_args(default = Value::Int(0))]
-    flags: Value,
-}
-```
+For C functions, use `str` for text that the body only reads. In `unicodedata.normalize`,
+both `form` and `unistr` are extracted as strings before the body validates the normalization form.
+Use `=...` when omission differs from an explicit `None`.
 
-A clinic function with keyword-capable positionals and a keyword-only tail
-(`itertools.rs`) — `c_named` per the table, so overflow reports `accumulate() takes at most 2 positional arguments (3 given)`:
+Borrow the argument struct to have the adapter release its fields on return.
+When the body takes ownership by destructuring the argument struct, it must consume
+or guard each heap reference on every path.
 
-```rust
-#[derive(FromArgs)]
-#[from_args(name = "accumulate", style = c_named)]
-struct AccumulateArgs {
-    #[from_args(static_string = "IterableArg")]
-    iterable: Value,
-    #[from_args(default = Value::None)]
-    func: Value,
-    #[from_args(kw_only, default = Value::None)]
-    initial: Value,
-}
-```
-
-A positional-only C function with typed extraction (`unicodedata.rs`) —
-`StrArg` borrows the text zero-copy. Note the form *name* is validated in the
-body (`NormForm::parse`), not during extraction: CPython type-checks every
-argument before the body rejects a bad value, so value checks must not run
-inside `FromValue`:
-
-```rust
-#[derive(FromArgs)]
-#[from_args(name = "normalize", style = unpack, bad_arg)]
-struct NormalizeArgs {
-    #[from_args(pos_only)]
-    form: StrArg,
-    #[from_args(pos_only)]
-    unistr: StrArg,
-}
-```
-
-Calling and consuming — sketch; see `unicodedata.rs` for the real body (note
-`defer_drop!` for fields that hold heap refs):
-
-```rust
-fn call_normalize(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let NormalizeArgs { form, unistr } = NormalizeArgs::from_args(args, vm)?;
-    defer_drop!(unistr, vm);
-    let normalized = form.apply(unistr.as_str(vm)); // sketch — do the work here
-    // ... allocate and return the result; the guard releases `unistr`
-}
-```
-
-### 3. Field rules
-
-- Declaration order = Python signature order:
-    `[pos_only…] [pos_or_keyword…] [varargs] [kw_only…] [varkwargs]`, required
-    fields before defaulted ones in the positional region.
-- **Typed fields** (`i64`, `i32`, `bool`, `StrArg`, `Option<T>`, custom
-    `FromValue` impls) are only for functions implemented in C in CPython —
-    pair with `bad_arg` / `bad_arg_named` when CPython uses
-    `_PyArg_BadArgument` wording (`f() argument 1 must be str, not int`).
-- **`style = def` fields must be raw `Value`** (coerce in the body so the
-    error message matches what CPython's function body raises).
-- Prefer `StrArg` over `String` for str params the function only reads — it
-    validates without copying and lends `&str` via `.as_str(vm)`.
-- Field names that aren't single ASCII chars need a `StaticStrings` variant
-    (in `crate::intern`) for kwarg matching — add one, or point
-    `static_string = "ExistingVariant"` at an existing one.
-- `Value` / `StrArg` / `Option<Value>` fields hold heap references: bind
-    them with `defer_drop!` in the body, or otherwise guarantee
-    `drop_with` on every path.
-- `varargs` fields must be `Vec<Value>`; convert elements in the body.
-
-### 4. Tests and docs
+### Tests and docs
 
 - Add behaviour tests to `crates/monty/test_cases/` (dual-run against
     CPython — asserts must pass on both engines; exact `==` messages, never

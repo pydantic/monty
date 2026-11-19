@@ -1,7 +1,8 @@
 //! Implementation of the reversed() builtin function.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::HeapData,
@@ -9,24 +10,17 @@ use crate::{
     value::Value,
 };
 
-/// Argument shape for `reversed(sequence, /)` — positional-only, so
-/// `style = unpack` gives CPython's exact-arity wording
-/// (`reversed expected 1 argument, got 2`) and the blanket
-/// `reversed() takes no keyword arguments` rejection.
-#[derive(FromArgs)]
-#[from_args(name = "reversed", style = unpack)]
-struct ReversedArgs {
-    #[from_args(pos_only)]
-    sequence: Value,
-}
-
 /// Implementation of the reversed() builtin function.
 ///
 /// Returns a list with elements in reverse order.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_reversed(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ReversedArgs { sequence } = ReversedArgs::from_args(args, vm)?;
-
+///
+/// Argument shape for `reversed(sequence, /)` — positional-only, so
+/// `style = unpack` gives CPython's exact-arity wording
+/// (`reversed expected 1 argument, got 2`) and the blanket
+/// `reversed() takes no keyword arguments` rejection.
+#[py_signature("reversed(sequence, /)", style = unpack)]
+pub fn builtin_reversed(vm: &mut VM<'_>, ReversedArgs { sequence }: ReversedArgs) -> RunResult<Value> {
     // Being iterable is not enough: CPython needs `__reversed__`, or
     // `__len__` + `__getitem__`. Check before iterating so unordered and
     // one-shot iterables are rejected rather than silently reversed.

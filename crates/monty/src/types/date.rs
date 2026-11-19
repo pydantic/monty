@@ -11,10 +11,11 @@ use std::{
 };
 
 use chrono::{Datelike, NaiveDate, NaiveTime, format::StrftimeItems};
+use monty_macros::py_signature;
 use monty_types::{OsFunctionCall, ResourceTracker};
 
 use crate::{
-    args::{ArgValues, FromArgs, StrArg},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -127,12 +128,7 @@ pub(crate) fn to_ymd(date: Date) -> (i32, u32, u32) {
 }
 
 /// Constructor for `date(year, month, day)`.
-pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let DateInitArgs { year, month, day } = DateInitArgs::from_args(args, vm)?;
-    let date = from_ymd(year, month, day)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Date(date))))
-}
-
+///
 /// Argument shape for `date(year, month, day)`.
 ///
 /// CPython's `date()` is C-implemented (`PyArg_ParseTupleAndKeywords`), hence
@@ -140,12 +136,10 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// required argument 'X' (pos N)", etc. Unlike `datetime()` it has no
 /// keyword-only fields, so the derive keeps the plain (non-"positional")
 /// at-most wording automatically.
-#[derive(FromArgs)]
-#[from_args(name = "function", style = c, at_most_total)]
-struct DateInitArgs {
-    year: i32,
-    month: i32,
-    day: i32,
+#[py_signature("date(year: int, month: int, day: int)", style = c, at_most_total, error_name = "function")]
+pub(crate) fn init(vm: &mut VM<'_>, DateInitArgs { year, month, day }: DateInitArgs) -> RunResult<Value> {
+    let date = from_ymd(year, month, day)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Date(date))))
 }
 
 /// `date.min`, `date.max` and `date.resolution`.
@@ -547,21 +541,10 @@ pub(crate) fn invalid_strftime_error() -> RunError {
 /// form (`strftime() argument 1 must be str, not <type>`), including the
 /// `None`-vs-`NoneType` special case — so the type-check logic lives in
 /// the derive rather than a hand-written extract helper.
-#[derive(FromArgs)]
-#[from_args(name = "strftime", style = c_named, at_most_total, bad_arg)]
-pub(crate) struct StrftimeArgs {
-    pub(crate) format: StrArg,
-}
+#[py_signature("strftime(format: str)", style = c_named, at_most_total, bad_arg)]
+pub(crate) struct StrftimeArgs;
 
 /// Keyword arguments for `date.replace()`. All keyword-only; absent fields
 /// inherit the original date's component via `unwrap_or` at the call site.
-#[derive(FromArgs)]
-#[from_args(name = "replace")]
-struct DateReplaceArgs {
-    #[from_args(kw_only, default)]
-    year: Option<i32>,
-    #[from_args(kw_only, default)]
-    month: Option<i32>,
-    #[from_args(kw_only, default)]
-    day: Option<i32>,
-}
+#[py_signature("replace(*, year: int=..., month: int=..., day: int=...)")]
+struct DateReplaceArgs;
