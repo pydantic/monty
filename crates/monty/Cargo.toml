@@ -28,7 +28,6 @@ ahash = { workspace = true }
 indexmap = { workspace = true }
 itoa = { workspace = true }
 serde = { workspace = true }
-postcard = { workspace = true }
 minicbor-serde = { workspace = true }
 serde_bytes = { workspace = true }
 strum = { workspace = true }

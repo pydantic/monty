@@ -1,0 +1,19 @@
+---
+source: crates/monty-macros/tests/explicit_discriminants.rs
+expression: "errors.join(\"\\n\\n\")"
+---
+identity-code checksum mismatch: expected 0x1afb_274d_8a10_ccbd, actual 0x5693_15e7_62b1_bff6
+review existing codes before updating to:
+#[monty_macros::explicit_discriminants(checksum = 0x5693_15e7_62b1_bff6)]
+
+identity-code checksum mismatch: expected 0x1afb_274d_8a10_ccbd, actual 0xd2a5_7fa3_8fe3_7689
+review existing codes before updating to:
+#[monty_macros::explicit_discriminants(checksum = 0xd2a5_7fa3_8fe3_7689)]
+
+identity-code checksum mismatch: expected 0x1afb_274d_8a10_ccbd, actual 0xae7b_76fe_a4f1_dd50
+review existing codes before updating to:
+#[monty_macros::explicit_discriminants(checksum = 0xae7b_76fe_a4f1_dd50)]
+
+identity-code checksum mismatch: expected 0x1afb_274d_8a10_ccbd, actual 0xa312_5c3c_6e7c_4672
+review existing codes before updating to:
+#[monty_macros::explicit_discriminants(checksum = 0xa312_5c3c_6e7c_4672)]

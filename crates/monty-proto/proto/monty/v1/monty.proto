@@ -272,6 +272,42 @@ message Type {
   // attrs, an empty set leaves them unchanged. The worker never sends attrs
   // for a sandbox class.
   NodePairs attrs = 5;
+  // How the sandbox compares instances with `==`, so a host proxy can follow
+  // it. Only the worker sets it, for sandbox classes; the zero value (and an
+  // older worker's absent field) means identity.
+  ClassEq eq = 6;
+  // The fields a CLASS_EQ_FIELDS rule compares, in order; empty otherwise.
+  repeated string eq_fields = 7;
+  // How the sandbox hashes instances; zero means identity, as for `eq`.
+  ClassHash hash = 8;
+  // The fields a CLASS_HASH_FIELDS rule hashes, in order; empty otherwise.
+  repeated string hash_fields = 9;
+}
+
+// How a class's instances compare with `==` in the sandbox. A host cannot run
+// sandbox code, so only rules it can replay exactly carry detail. A value this
+// peer does not know reads as CUSTOM.
+enum ClassEq {
+  // No `__eq__`: equal only to the same object.
+  CLASS_EQ_IDENTITY = 0;
+  // A `@dataclass`-generated `__eq__`: equal to an instance of the same class
+  // whose `eq_fields` are all `==`.
+  CLASS_EQ_FIELDS = 1;
+  // A user-defined `__eq__`.
+  CLASS_EQ_CUSTOM = 2;
+}
+
+// How a class's instances hash in the sandbox. A value this peer does not
+// know reads as CUSTOM.
+enum ClassHash {
+  // No `__hash__` and no `__eq__`: hashed by identity.
+  CLASS_HASH_IDENTITY = 0;
+  // A `@dataclass`-generated `__hash__` over `hash_fields`.
+  CLASS_HASH_FIELDS = 1;
+  // `__hash__ = None`, explicit or implied by defining `__eq__`.
+  CLASS_HASH_UNHASHABLE = 2;
+  // A user-defined `__hash__`.
+  CLASS_HASH_CUSTOM = 3;
 }
 
 // A class instance crossing the sandbox boundary. Host-backed instances route
