@@ -425,7 +425,7 @@ inspected_bat = itertools.batched('AB', 2, strict=strict_flag)
 zip_resolved = [1]
 zip_unreached = [2]
 try:
-    itertools.zip_longest(zip_resolved, 5, zip_unreached)
+    itertools.zip_longest(zip_resolved, 5, zip_unreached, fillvalue=zip_unreached)
     assert False, 'expected zip_longest to reject a non-iterable'
 except TypeError:
     pass

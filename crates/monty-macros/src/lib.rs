@@ -13,6 +13,8 @@ use proc_macro::TokenStream;
 
 mod explicit_discriminants;
 mod from_args;
+#[cfg(feature = "native-signatures")]
+mod py_signature;
 mod to_args;
 
 /// Requires distinct explicit integer identity codes and a matching `checksum` argument.
@@ -22,6 +24,17 @@ mod to_args;
 #[proc_macro_attribute]
 pub fn explicit_discriminants(args: TokenStream, input: TokenStream) -> TokenStream {
     explicit_discriminants::expand(args.into(), input.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Generates a native call adapter from a Python signature.
+#[cfg(feature = "native-signatures")]
+#[proc_macro_attribute]
+pub fn py_signature(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let declaration = syn::parse_macro_input!(attr as py_signature::Declaration);
+    let function = syn::parse_macro_input!(item as syn::ItemFn);
+    py_signature::expand(&declaration, function)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

@@ -7,6 +7,8 @@
 
 use std::mem;
 
+use monty_macros::py_signature;
+
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
     builtins::Builtins,
@@ -606,42 +608,14 @@ fn ssize_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<isize> {
     isize::try_from(n).map_err(|_| ExcType::overflow_c_ssize_t())
 }
 
-/// Argument shape for `zip_longest(*iterables, fillvalue=None)`.
-///
-/// The only adaptor with both `*args` and a keyword. CPython hand-rolls the
-/// parse rather than using a parser family, and its rejection names no
-/// argument (`zip_longest() got an unexpected keyword argument`) — the derive
-/// appends the offending name, which `limitations/itertools.md` records.
-#[derive(FromArgs)]
-#[from_args(name = "zip_longest")]
-struct ZipLongestArgs {
-    #[from_args(varargs)]
-    iterables: Vec<Value>,
-    #[from_args(kw_only, default = Value::None)]
-    fillvalue: Value,
-}
-
-/// `itertools.zip_longest(*iterables, fillvalue=None)` — zip to the longest.
-fn call_zip_longest(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ZipLongestArgs { iterables, fillvalue } = ZipLongestArgs::from_args(args, vm)?;
-    // Every argument is resolved up front, unlike `chain`'s lazy ones, so a
-    // later non-iterable must release the arguments never reached as well. The
-    // `Value::None` swap leaves those in the guard's vec: draining it instead
-    // would hand the tail to a Rust `Drop`, which cannot `drop_with`.
-    defer_drop_mut!(iterables, vm);
-    let mut guard = DropGuard::new(Vec::with_capacity(iterables.len()), vm);
-    for slot in iterables.iter_mut() {
+#[py_signature("zip_longest(*iterables, fillvalue=None)")]
+fn call_zip_longest(vm: &mut VM<'_>, args: &mut ZipLongestArgs) -> RunResult<Value> {
+    for slot in &mut args.iterables {
         let iterable = mem::replace(slot, Value::None);
-        let (resolved, vm) = guard.as_parts_mut();
-        match iterable.into_py_iter(vm).and_then(|call| call.require_synchronous(vm)) {
-            Ok(source) => resolved.push(source),
-            Err(error) => {
-                fillvalue.drop_with(vm);
-                return Err(error);
-            }
-        }
+        *slot = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     }
-    let (sources, vm) = guard.into_parts();
+    let sources = mem::take(&mut args.iterables);
+    let fillvalue = mem::replace(&mut args.fillvalue, Value::None);
     let iter = ItertoolsIter::ZipLongest(ZipLongest::new(sources, fillvalue));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }

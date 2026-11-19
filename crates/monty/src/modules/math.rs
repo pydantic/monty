@@ -25,6 +25,7 @@
 
 use std::f64::consts;
 
+use monty_macros::py_signature;
 use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -32,7 +33,7 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use smallvec::smallvec;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::{ArgValues, FromValue, FromValueFail},
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -732,21 +733,10 @@ fn math_copysign(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Float(x.copysign(y)))
 }
 
-/// `math.isclose(a, b, *, rel_tol=1e-9, abs_tol=0.0)` — returns True if a and b are close.
-///
-/// Supports keyword-only `rel_tol` and `abs_tol` parameters matching CPython.
 /// Raises `ValueError` if either tolerance is negative.
-fn math_isclose(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let IscloseArgs { a, b, rel_tol, abs_tol } = IscloseArgs::from_args(args, vm)?;
-    defer_drop!(a, vm);
-    defer_drop!(b, vm);
-    defer_drop!(rel_tol, vm);
-    defer_drop!(abs_tol, vm);
-
-    let a = value_to_float(a, vm)?;
-    let b = value_to_float(b, vm)?;
-    let rel_tol = value_to_float(rel_tol, vm)?;
-    let abs_tol = value_to_float(abs_tol, vm)?;
+#[py_signature("isclose(a: float, b: float, *, rel_tol: float = 1e-09, abs_tol: float = 0.0) -> bool")]
+fn math_isclose(vm: &mut VM<'_>, args: &IscloseArgs) -> RunResult<Value> {
+    let IscloseArgs { a, b, rel_tol, abs_tol } = *args;
 
     if rel_tol < 0.0 || abs_tol < 0.0 {
         return Err(SimpleException::new_msg(ExcType::ValueError, "tolerances must be non-negative").into());
@@ -771,23 +761,6 @@ fn math_isclose(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let diff = (a - b).abs();
     let result = diff <= (rel_tol * a.abs().max(b.abs())).max(abs_tol);
     Ok(Value::Bool(result))
-}
-
-/// Argument shape for `math.isclose(a, b, *, rel_tol=1e-9, abs_tol=0.0)`.
-///
-/// `a`/`b` are positional-or-keyword (matching CPython); `rel_tol`/`abs_tol`
-/// are keyword-only. All four are held as raw `Value` so the function body can
-/// run `value_to_float` for the math-specific Int/Float coercion (which
-/// `bool::from_value` and `i64::from_value` don't cover).
-#[derive(FromArgs)]
-#[from_args(name = "isclose")]
-struct IscloseArgs {
-    a: Value,
-    b: Value,
-    #[from_args(kw_only, default = Value::Float(1e-9))]
-    rel_tol: Value,
-    #[from_args(kw_only, default = Value::Float(0.0))]
-    abs_tol: Value,
 }
 
 /// `math.nextafter(x, y)` — returns the next float after x towards y.
@@ -1406,6 +1379,14 @@ fn value_to_float(value: &Value, vm: &VM<'_>) -> RunResult<f64> {
                 None => Err(ExcType::type_error_not_real_number(&value.py_type_name(vm))),
             },
         },
+    }
+}
+
+impl FromValue for f64 {
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        let result = value_to_float(&value, vm);
+        value.drop_with(vm);
+        result.map_err(FromValueFail::Raise)
     }
 }
 

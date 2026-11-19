@@ -160,6 +160,17 @@ d = {}
 d.update(a=1, b=2)
 assert d == {'a': 1, 'b': 2}
 
+d = {}
+d.update(other=1)
+assert d == {'other': 1}
+for invalid_source in (None, ...):
+    try:
+        d.update(invalid_source, skipped=True)
+        assert False, 'expected a non-iterable source to fail'
+    except TypeError:
+        pass
+assert d == {'other': 1}
+
 # update with both positional dict and kwargs
 d = {'a': 1}
 d.update({'b': 2}, c=3)

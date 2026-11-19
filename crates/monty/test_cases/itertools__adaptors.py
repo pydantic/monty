@@ -939,7 +939,7 @@ except StopIteration:
 # Every `zip_longest` argument is resolved eagerly, so a later non-iterable
 # raises at construction rather than on the first `next`.
 try:
-    itertools.zip_longest([1], 5)
+    itertools.zip_longest([1], 5, [3], fillvalue=[])
     assert False, 'expected zip_longest to reject a non-iterable'
 except TypeError as exc:
     assert str(exc) == "'int' object is not iterable"

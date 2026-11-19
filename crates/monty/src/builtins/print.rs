@@ -1,54 +1,32 @@
 //! Implementation of the print() builtin function.
 
+use monty_macros::py_signature;
 use monty_types::PrintStream;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::DefaultedStringArg,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     intern::StaticStrings,
-    py_value::PyValue,
     types::PyTrait,
     value::{Marker, Value},
 };
 
-/// Implementation of the print() builtin function.
-///
-/// Supports the following keyword arguments:
-/// - `sep`: separator between values (default: " ")
-/// - `end`: string appended after the last value (default: "\n")
-/// - `file`: `sys.stdout` (the default) or `sys.stderr`; anything else raises
-///   `TypeError`, since Monty has no file objects to write into
-/// - `flush`: whether to flush the stream (accepted but ignored — Monty
-///   doesn't buffer stdout)
-pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let PrintArgs {
-        objects,
-        sep,
-        end,
-        file,
-        flush: _,
-    } = PrintArgs::from_args(args, vm)?;
-    defer_drop!(objects, vm);
-    defer_drop!(sep, vm);
-    defer_drop!(end, vm);
-    defer_drop!(file, vm);
-
+#[py_signature(r"print(*args, sep=' ', end='\n', file=None, flush=False)")]
+pub fn builtin_print(vm: &mut VM<'_>, bound: &PrintArgs) -> RunResult<Value> {
     // `sep` and `end` are checked before `file` because CPython reports them in
     // that order: `print(x, sep=1, file=3)` raises about `sep`, not the file.
-    let sep_str = extract_string_kwarg(sep, "sep", vm)?;
-    let end_str = extract_string_kwarg(end, "end", vm)?;
-    let stream = print_stream(file, vm)?;
+    let sep = delimiter(&bound.sep, "sep", ' ', vm)?;
+    let end = delimiter(&bound.end, "end", '\n', vm)?;
+    let stream = print_stream(&bound.file, vm)?;
 
     let mut first = true;
-    for value in objects.as_slice() {
+    for value in &bound.args {
         if first {
             first = false;
-        } else if let Some(sep) = &sep_str {
-            vm.print_writer.write(stream, sep.as_str().into())?;
         } else {
-            vm.print_writer.push(stream, ' ')?;
+            sep.write(stream, vm)?;
         }
         let s = value.py_str(vm)?;
         defer_drop!(s, vm);
@@ -60,12 +38,7 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         )?;
     }
 
-    if let Some(end) = end_str {
-        vm.print_writer.write(stream, end.into())?;
-    } else {
-        vm.print_writer.push(stream, '\n')?;
-    }
-
+    end.write(stream, vm)?;
     Ok(Value::None)
 }
 
@@ -89,40 +62,42 @@ fn print_stream(file: &Value, vm: &VM<'_>) -> RunResult<PrintStream> {
     }
 }
 
-/// Argument shape for `print(*objects, sep=' ', end='\n', file=sys.stdout, flush=False)`.
-///
-/// Every kwarg is held as a raw `Value` so the caller can do the
-/// "must be None or str" coercion inline, and so `flush` can be accepted
-/// without forcing a type check. `file` is resolved by `print_stream`.
-#[derive(FromArgs)]
-#[from_args(name = "print")]
-struct PrintArgs {
-    #[from_args(varargs)]
-    objects: Vec<Value>,
-    #[from_args(default = Value::None)]
-    sep: Value,
-    #[from_args(default = Value::None)]
-    end: Value,
-    #[from_args(default = Value::None)]
-    file: Value,
-    /// Accepted from Python for CPython compatibility but never consumed:
-    /// Monty doesn't buffer stdout, so there is nothing to flush.
-    #[expect(dead_code, reason = "accepted but ignored — Monty doesn't buffer stdout")]
-    #[from_args(default = Value::None)]
-    flush: Value,
+enum Delimiter<'a> {
+    Char(char),
+    Text(&'a str),
+    Value(&'a Value),
 }
 
-/// Extracts a string value from a print() kwarg.
-///
-/// The kwarg can be None (returns None) or a string (returns Some).
-/// Raises TypeError for other types.
-fn extract_string_kwarg(value: &Value, name: &str, vm: &VM<'_>) -> RunResult<Option<String>> {
-    match value.py_value(vm) {
-        PyValue::None => Ok(None),
-        PyValue::Str(string) => Ok(Some(string.as_str(vm).to_owned())),
-        _ => Err(SimpleException::new_msg(
+impl Delimiter<'_> {
+    fn write(&self, stream: PrintStream, vm: &mut VM<'_>) -> RunResult<()> {
+        match self {
+            Self::Char(c) => vm.print_writer.push(stream, *c)?,
+            Self::Text(text) => vm.print_writer.write(stream, (*text).into())?,
+            Self::Value(value) => {
+                let text = value
+                    .as_str_heap(vm.heap, vm.interns)
+                    .expect("validated print delimiter");
+                vm.print_writer.write(stream, text.into())?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn delimiter<'a>(arg: &'a DefaultedStringArg, name: &str, none: char, vm: &VM<'_>) -> RunResult<Delimiter<'a>> {
+    match arg {
+        DefaultedStringArg::Omitted(text) => {
+            let mut chars = text.chars();
+            Ok(match (chars.next(), chars.next()) {
+                (Some(c), None) => Delimiter::Char(c),
+                _ => Delimiter::Text(text),
+            })
+        }
+        DefaultedStringArg::Supplied(Value::None) => Ok(Delimiter::Char(none)),
+        DefaultedStringArg::Supplied(value) if value.is_str(vm.heap) => Ok(Delimiter::Value(value)),
+        DefaultedStringArg::Supplied(value) => Err(SimpleException::new_msg(
             ExcType::TypeError,
-            format!("{} must be None or a string, not {}", name, value.py_type_name(vm)),
+            format!("{name} must be None or a string, not {}", value.py_type_name(vm)),
         )
         .into()),
     }

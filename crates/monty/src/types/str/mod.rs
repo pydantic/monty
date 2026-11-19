@@ -9,6 +9,7 @@ use std::{fmt::Write, str};
 pub(crate) use heap_str::HeapStr;
 pub(crate) use inline_str::InlineStr;
 pub(crate) use iterator::StringIterator;
+use monty_macros::py_signature;
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use smallvec::smallvec;
@@ -19,7 +20,7 @@ use super::{
     unicode_type_data::TypeRecord,
 };
 use crate::{
-    args::{ArgValues, FromArgs, FromValue, FromValueFail, StrArg},
+    args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     codecs::Codec,
     defer_drop,
@@ -1245,26 +1246,26 @@ fn str_removesuffix<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunR
 /// Implements Python's `str.split(sep?, maxsplit?)` method.
 ///
 /// Returns a list of the words in the string, using sep as the delimiter string.
-fn str_split<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let SplitArgs { sep, maxsplit } = SplitArgs::from_args(args, vm)?;
-    let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
+#[py_signature("split(self, /, sep: str | None = None, maxsplit: SupportsIndex = -1) -> list")]
+fn str_split<'h>(s: &PyStr<'h>, args: &SplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let maxsplit = args.maxsplit;
     // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
     let mut items_guard = DropGuard::new(Vec::new(), vm);
     let (list_items, vm) = items_guard.as_parts_mut();
     let s = s.as_str(vm);
 
-    let parts: Vec<&str> = match &sep {
+    let parts: Vec<&str> = match args.sep.as_ref().map(|sep| sep.as_str(vm)) {
         Some(sep) => {
             // Empty separator raises ValueError
             if sep.is_empty() {
                 return Err(ExcType::value_error_empty_separator());
             }
             if maxsplit < 0 {
-                collect_checked(s.split(sep.as_str()), &vm.heap.tracker)?
+                collect_checked(s.split(sep), &vm.heap.tracker)?
             } else {
                 // Safe cast: we've checked maxsplit >= 0
                 let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                collect_checked(s.splitn(max.saturating_add(1), sep.as_str()), &vm.heap.tracker)?
+                collect_checked(s.splitn(max.saturating_add(1), sep), &vm.heap.tracker)?
             }
         }
         None => {
@@ -1300,28 +1301,28 @@ fn str_split<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
 ///
 /// Returns a list of the words in the string, using sep as the delimiter string,
 /// splitting from the right.
-fn str_rsplit<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let RsplitArgs { sep, maxsplit } = RsplitArgs::from_args(args, vm)?;
-    let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
+#[py_signature("rsplit(self, /, sep: str | None = None, maxsplit: SupportsIndex = -1) -> list")]
+fn str_rsplit<'h>(s: &PyStr<'h>, args: &RsplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let maxsplit = args.maxsplit;
     // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
     let mut items_guard = DropGuard::new(Vec::new(), vm);
     let (list_items, vm) = items_guard.as_parts_mut();
     let s = s.as_str(vm);
 
-    let parts: Vec<&str> = match &sep {
+    let parts: Vec<&str> = match args.sep.as_ref().map(|sep| sep.as_str(vm)) {
         Some(sep) => {
             // Empty separator raises ValueError
             if sep.is_empty() {
                 return Err(ExcType::value_error_empty_separator());
             }
             if maxsplit < 0 {
-                let mut parts = collect_checked(s.rsplit(sep.as_str()), &vm.heap.tracker)?;
+                let mut parts = collect_checked(s.rsplit(sep), &vm.heap.tracker)?;
                 parts.reverse();
                 parts
             } else {
                 // Safe cast: we've checked maxsplit >= 0
                 let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                let mut parts = collect_checked(s.rsplitn(max.saturating_add(1), sep.as_str()), &vm.heap.tracker)?;
+                let mut parts = collect_checked(s.rsplitn(max.saturating_add(1), sep), &vm.heap.tracker)?;
                 parts.reverse();
                 parts
             }
@@ -1353,44 +1354,6 @@ fn str_rsplit<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<
     let list = super::List::new(list_items);
     let heap_id = vm.heap.allocate(HeapData::List(list));
     Ok(Value::Ref(heap_id))
-}
-
-/// Coerces extracted `sep` / `maxsplit` `Value`s into the runtime shape used
-/// by the actual `split`/`rsplit` implementations.
-///
-/// `sep = None` is documented as "split on whitespace", so it is mapped to
-/// `Option::None`; any other value is run through `extract_string_arg`.
-/// `maxsplit` is always coerced to `i64` via `extract_int_arg`. Each argument
-/// is dropped on every path so refcounts stay balanced.
-fn coerce_split_args(sep: Value, maxsplit: Value, vm: &mut VM<'_>) -> RunResult<(Option<String>, i64)> {
-    defer_drop!(sep, vm);
-    defer_drop!(maxsplit, vm);
-    let sep = match sep {
-        Value::None => None,
-        _ => Some(extract_string_arg(sep, vm)?),
-    };
-    let maxsplit = extract_int_arg(maxsplit, vm)?;
-    Ok((sep, maxsplit))
-}
-
-/// Argument shape for `str.split(sep=None, maxsplit=-1)`.
-#[derive(FromArgs)]
-#[from_args(name = "split")]
-struct SplitArgs {
-    #[from_args(default = Value::None)]
-    sep: Value,
-    #[from_args(default = Value::Int(-1))]
-    maxsplit: Value,
-}
-
-/// Argument shape for `str.rsplit(sep=None, maxsplit=-1)`.
-#[derive(FromArgs)]
-#[from_args(name = "rsplit")]
-struct RsplitArgs {
-    #[from_args(default = Value::None)]
-    sep: Value,
-    #[from_args(default = Value::Int(-1))]
-    maxsplit: Value,
 }
 
 /// Split string on whitespace, returning at most `maxsplit + 1` parts.
@@ -1623,14 +1586,12 @@ fn str_rpartition<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunRes
 ///
 /// Returns a copy with all occurrences of substring old replaced by new.
 /// If count is given, only the first count occurrences are replaced.
-fn str_replace<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let ReplaceArgs { old, new, count } = ReplaceArgs::from_args(args, vm)?;
-    defer_drop!(old, vm);
-    defer_drop!(new, vm);
-    let old = old.as_str(vm);
-    let new = new.as_str(vm);
+#[py_signature("replace(self, old: str, new: str, /, count: SupportsIndex = -1) -> str")]
+fn str_replace<'h>(s: &PyStr<'h>, args: &ReplaceArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let old = args.old.as_str(vm);
+    let new = args.new.as_str(vm);
+    let count = args.count;
     let s = s.as_str(vm);
-    let count = count.0;
 
     check_replace_size(s.len(), old.len(), new.len(), count, &vm.heap.tracker)?;
 
@@ -1643,41 +1604,6 @@ fn str_replace<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult
     };
 
     Ok(allocate_string(result, vm.heap))
-}
-
-/// Wrapper for `count` in `str.replace`: converts an index integer without
-/// `_PyArg_BadArgument` wording (`EXPECTED_TYPE_NAME = None`), preserving
-/// CPython's `'str' object cannot be interpreted as an integer`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ReplaceCount(i64);
-
-impl FromValue for ReplaceCount {
-    const EXPECTED_TYPE_NAME: Option<&'static str> = None;
-
-    #[inline]
-    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
-        let result = value.as_int(vm);
-        value.drop_with(vm);
-        result.map(Self).map_err(FromValueFail::Raise)
-    }
-}
-
-/// Argument shape for `str.replace(old, new, count=-1)`.
-///
-/// `old` and `new` are positional-only at the C level — passing them as
-/// kwargs produces CPython's "takes at least 2 positional arguments"
-/// error, which the macro derives from the required pos-only count.
-/// Python 3.13 promoted `count` from positional-only to
-/// positional-or-keyword, hence the un-annotated default.
-#[derive(FromArgs)]
-#[from_args(name = "replace", bad_arg)]
-struct ReplaceArgs {
-    #[from_args(pos_only)]
-    old: StrArg,
-    #[from_args(pos_only)]
-    new: StrArg,
-    #[from_args(default = ReplaceCount(-1))]
-    count: ReplaceCount,
 }
 
 /// Implements Python's `str.center(width, fillchar?)` method.

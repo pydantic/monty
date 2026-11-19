@@ -20,7 +20,7 @@ use std::{
 };
 
 use ahash::AHashSet;
-use monty_types::{OsFunctionCall, ResourceTracker, UrandomArgs};
+use monty_types::ResourceTracker;
 use num_bigint::{BigInt, BigUint};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -34,7 +34,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    os_dispatch::{PostConversionEffect, urandom_reply_error},
+    os_dispatch::{PostConversionEffect, urandom_call, urandom_reply_error},
     types::{
         List, LongInt, Module, PyTrait, Type,
         bytes::allocate_bytes,
@@ -185,9 +185,7 @@ fn request_entropy(target: RandomTarget, retry: Option<RandomRetry>, vm: &mut VM
         vm.heap.inc_ref(id);
     }
     CallResult::OsCallWithEffect {
-        call: OsFunctionCall::Urandom(UrandomArgs {
-            size: SEED_BYTES as u64,
-        }),
+        call: urandom_call(SEED_BYTES),
         effect: PostConversionEffect::SeedRandom { target, retry }.into(),
     }
 }

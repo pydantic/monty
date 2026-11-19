@@ -24,7 +24,7 @@ use std::{borrow::Cow, mem};
 use ahash::AHashSet;
 use monty_types::{
     ExcType, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-    RenameCallArgs, ResourceTracker, normalize_virtual_path,
+    RenameCallArgs, ResourceTracker, UrandomArgs, normalize_virtual_path,
     unstable::{self, MontyNode},
 };
 
@@ -509,6 +509,10 @@ pub(crate) fn check_chdir_stat(value: &MontyObject, spelled: &str) -> Result<(),
 /// may return `str` entries instead of paths — both work.
 pub(crate) fn listdir_names(value: MontyObject) -> Result<MontyObject, RunError> {
     directory_entries(value, None)
+}
+
+pub(crate) fn urandom_call(size: usize) -> OsFunctionCall {
+    OsFunctionCall::Urandom(UrandomArgs { size: size as u64 })
 }
 
 /// Accepts an `os.urandom` reply only as `bytes` of the requested length.
