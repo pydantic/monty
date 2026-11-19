@@ -11,8 +11,10 @@ Usage:
 """
 
 import ast
+import re
 import shutil
 import subprocess
+from copy import deepcopy
 from pathlib import Path
 
 # Whitelisted builtin functions (from crates/monty/src/builtins/)
@@ -343,6 +345,37 @@ def filter_if_block(node: ast.If) -> ast.If | None:
     return ast.copy_location(new_node, node)
 
 
+def apply_str_replace_signature(tree: ast.Module) -> None:
+    """Generate the current str.replace overloads from the declaration on its Rust implementation."""
+    rust = (REPO_ROOT / 'crates/monty/src/types/str/mod.rs').read_text()
+    match = re.search(
+        r'#\[monty_macros::native_signature\(\s*("replace\([^"\\]*")\s*,?\s*\)\]\s*fn str_replace\b', rust
+    )
+    if match is None:
+        raise ValueError('missing inline Python signature on str_replace')
+    declaration = ast.parse(f'def {ast.literal_eval(match[1])}: ...').body[0]
+    assert isinstance(declaration, ast.FunctionDef)
+    str_class = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'str')
+    for node in str_class.body:
+        if not isinstance(node, ast.If) or ast.unparse(node.test) != 'sys.version_info >= (3, 13)':
+            continue
+        methods = [f for f in node.body if isinstance(f, ast.FunctionDef) and f.name == 'replace']
+        if len(methods) != 2:
+            continue
+        for method in methods:
+            literal_receiver = method.args.posonlyargs[0].annotation is not None
+            method.args = deepcopy(declaration.args)
+            method.returns = deepcopy(declaration.returns)
+            if literal_receiver:
+                # typeshed preserves literal strings when both replacements are literal strings.
+                method.args.posonlyargs[0].annotation = ast.Name(id='LiteralString', ctx=ast.Load())
+                for name in ast.walk(method):
+                    if isinstance(name, ast.Name) and name.id == 'str':
+                        name.id = 'LiteralString'
+        return
+    raise ValueError('expected the Python 3.13+ str.replace overloads in builtins.pyi')
+
+
 def filter_builtins(source: str) -> str:
     """Filter builtins.pyi to keep only allowed classes and functions.
 
@@ -358,6 +391,7 @@ def filter_builtins(source: str) -> str:
     """
     tree = ast.parse(source)
     tree.body = filter_statements(tree.body)
+    apply_str_replace_signature(tree)
     ast.fix_missing_locations(tree)
     return ast.unparse(tree)
 

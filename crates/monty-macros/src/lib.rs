@@ -19,7 +19,7 @@ mod to_args;
 #[cfg(feature = "native-signatures")]
 #[proc_macro_attribute]
 pub fn native_signature(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let declaration = syn::parse_macro_input!(attr as native_signature::Declaration);
+    let declaration = syn::parse_macro_input!(attr as syn::LitStr);
     let function = syn::parse_macro_input!(item as syn::ItemFn);
     native_signature::expand(&declaration, function)
         .unwrap_or_else(syn::Error::into_compile_error)

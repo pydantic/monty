@@ -582,7 +582,7 @@ fn call_str_method_impl<'h>(
         StaticStrings::Partition => str_partition(s, args, vm),
         StaticStrings::Rpartition => str_rpartition(s, args, vm),
         // Replace/modify methods
-        StaticStrings::Replace => str_replace(s, vm, args),
+        StaticStrings::Replace => str_replace(s, args, vm),
         StaticStrings::Center => str_center(s, args, vm),
         StaticStrings::Ljust => str_ljust(s, args, vm),
         StaticStrings::Rjust => str_rjust(s, args, vm),
@@ -1591,8 +1591,8 @@ fn str_rpartition<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunRes
 ///
 /// Returns a copy with all occurrences of substring old replaced by new.
 /// If count is given, only the first count occurrences are replaced.
-#[monty_macros::native_signature(typeshed = "str.replace")]
-fn str_replace<'h>(s: &PyStr<'h>, vm: &mut VM<'h>, args: &ReplaceArgs) -> RunResult<Value> {
+#[monty_macros::native_signature("replace(self, old: str, new: str, /, count: SupportsIndex = -1) -> str")]
+fn str_replace<'h>(s: &PyStr<'h>, args: &ReplaceArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let old = args.old.as_str(vm);
     let new = args.new.as_str(vm);
     let count = args.count.0;

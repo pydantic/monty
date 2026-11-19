@@ -733,7 +733,7 @@ impl Field {
 }
 
 /// Converts a Rust snake-case field name to its `StaticStrings` variant name.
-fn snake_to_pascal(s: &str) -> String {
+pub(super) fn snake_to_pascal(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut upper = true;
     for c in s.chars() {

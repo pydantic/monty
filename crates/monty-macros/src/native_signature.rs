@@ -2,129 +2,23 @@
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use ruff_python_ast::{CmpOp, Expr, Number, Parameter, ParameterWithDefault, Stmt, StmtFunctionDef, UnaryOp};
+use ruff_python_ast::{Expr, Number, Parameter, ParameterWithDefault, Stmt, UnaryOp};
 use ruff_python_parser::parse_module;
 use ruff_text_size::Ranged;
-use syn::{
-    DeriveInput, FnArg, ItemFn, LitStr, Pat, Token,
-    parse::{Parse, ParseStream},
-    parse_quote,
-};
+use syn::{DeriveInput, FnArg, ItemFn, LitStr, Pat, Type, parse_quote};
 
-use crate::from_args::Signature;
+use crate::from_args::{Signature, snake_to_pascal};
 
-pub(super) enum Declaration {
-    Inline(LitStr),
-    Typeshed(LitStr),
-}
-
-impl Parse for Declaration {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        if input.peek(LitStr) {
-            return input.parse().map(Self::Inline);
-        }
-        let key: syn::Ident = input.parse()?;
-        if key != "typeshed" {
-            return Err(syn::Error::new(key.span(), "expected typeshed or a Python declaration"));
-        }
-        input.parse::<Token![=]>()?;
-        input.parse().map(Self::Typeshed)
-    }
-}
-
-pub(super) fn expand(declaration: &Declaration, function: ItemFn) -> syn::Result<TokenStream> {
-    let (literal, source) = match declaration {
-        Declaration::Inline(literal) => (literal, format!("def {}: pass", literal.value())),
-        Declaration::Typeshed(literal) => {
-            let builtins = monty_typeshed::file_system()
-                .read_to_string("stdlib/builtins.pyi")
-                .map_err(|e| syn::Error::new(literal.span(), e.to_string()))?;
-            (literal, builtins)
-        }
-    };
+pub(super) fn expand(literal: &LitStr, mut function: ItemFn) -> syn::Result<TokenStream> {
     let error = |message: &str| syn::Error::new(literal.span(), message);
+    let source = format!("def {}: pass", literal.value());
     let parsed = parse_module(&source).map_err(|e| error(&e.to_string()))?;
-    let stmts = &parsed.syntax().body;
-    let def = match declaration {
-        Declaration::Inline(_) => match &stmts[..] {
-            [Stmt::FunctionDef(def)] if matches!(&def.body[..], [Stmt::Pass(_)]) => def,
-            _ => return Err(error("expected one Python signature")),
-        },
-        Declaration::Typeshed(_) => {
-            let path = literal.value();
-            let (class, method) = path.split_once('.').ok_or_else(|| error("expected Class.method"))?;
-            let class = stmts
-                .iter()
-                .filter_map(Stmt::as_class_def_stmt)
-                .find(|c| c.name.as_str() == class)
-                .ok_or_else(|| error("class missing from builtins.pyi"))?;
-            let mut methods = Vec::new();
-            find_methods(&class.body, method, &mut methods).map_err(error)?;
-            match methods.as_slice() {
-                [def] => *def,
-                _ => return Err(error("expected one general overload in builtins.pyi")),
-            }
-        }
+    let [Stmt::FunctionDef(def)] = &parsed.syntax().body[..] else {
+        return Err(error("expected one Python function signature"));
     };
-    generate(literal, &source, def, function)
-}
-
-// Use the general overload. Overloads that specialize the receiver (e.g. LiteralString)
-// describe a more precise return type to the static checker.
-fn find_methods<'a>(stmts: &'a [Stmt], method: &str, found: &mut Vec<&'a StmtFunctionDef>) -> Result<(), &'static str> {
-    for stmt in stmts {
-        match stmt {
-            Stmt::FunctionDef(def)
-                if def.name.as_str() == method
-                    && def
-                        .parameters
-                        .posonlyargs
-                        .first()
-                        .is_some_and(|p| p.name().as_str() == "self" && p.annotation().is_none()) =>
-            {
-                found.push(def);
-            }
-            Stmt::If(branch) => {
-                let mut yes = Vec::new();
-                let mut no = Vec::new();
-                find_methods(&branch.body, method, &mut yes)?;
-                for clause in &branch.elif_else_clauses {
-                    find_methods(&clause.body, method, &mut no)?;
-                }
-                if !yes.is_empty() || !no.is_empty() {
-                    if branch.elif_else_clauses.iter().any(|clause| clause.test.is_some()) {
-                        return Err("unsupported elif around native overloads");
-                    }
-                    let active =
-                        version_guard(&branch.test).ok_or("unsupported version guard around native overloads")?;
-                    found.extend(if active { yes } else { no });
-                }
-            }
-            _ => {}
-        }
+    if !matches!(&def.body[..], [Stmt::Pass(_)]) {
+        return Err(error("expected a Python function signature without a body"));
     }
-    Ok(())
-}
-
-fn version_guard(expr: &Expr) -> Option<bool> {
-    let comparison = expr.as_compare_expr()?;
-    let [Expr::Attribute(attr), Expr::Tuple(version)] = &*comparison.operands else {
-        return None;
-    };
-    if attr.value.as_name_expr()?.id.as_str() != "sys" || attr.attr.as_str() != "version_info" {
-        return None;
-    }
-    let [major, minor] = &version.elts[..] else { return None };
-    let version = (integer_default(major)?, integer_default(minor)?);
-    match &*comparison.ops {
-        [CmpOp::GtE] => Some((3, 14) >= version),
-        [CmpOp::Lt] => Some((3, 14) < version),
-        _ => None,
-    }
-}
-
-fn generate(literal: &LitStr, source: &str, def: &StmtFunctionDef, mut function: ItemFn) -> syn::Result<TokenStream> {
-    let error = |message: &str| syn::Error::new(literal.span(), message);
     let name = def.name.as_str();
     let params = &def.parameters;
     let receiver = params.posonlyargs.first().is_some_and(|p| p.name().as_str() == "self");
@@ -149,24 +43,27 @@ fn generate(literal: &LitStr, source: &str, def: &StmtFunctionDef, mut function:
         return Err(error("variadic keyword parameters are unsupported"));
     }
 
-    let Some(FnArg::Typed(bound)) = function.sig.inputs.last_mut() else {
-        return Err(error("expected the bound arguments as the final Rust parameter"));
-    };
+    let bound_name = format_ident!("{}Args", snake_to_pascal(name));
+    let bound = function
+        .sig
+        .inputs
+        .iter_mut()
+        .find_map(|input| {
+            let FnArg::Typed(arg) = input else { return None };
+            let Type::Reference(reference) = arg.ty.as_ref() else {
+                return None;
+            };
+            let Type::Path(path) = reference.elem.as_ref() else {
+                return None;
+            };
+            path.path.is_ident(&bound_name).then_some(arg)
+        })
+        .ok_or_else(|| error(&format!("expected a parameter of type &{bound_name}")))?;
     let Pat::Ident(pattern) = &*bound.pat else {
         return Err(error("expected a name for the bound arguments"));
     };
     let arg = pattern.ident.clone();
     let bound_ty = bound.ty.clone();
-    let syn::Type::Reference(reference) = &*bound_ty else {
-        return Err(error("expected a reference to the generated argument struct"));
-    };
-    let syn::Type::Path(path) = &*reference.elem else {
-        return Err(error("expected a bound argument type name"));
-    };
-    let bound_name = path
-        .path
-        .get_ident()
-        .ok_or_else(|| error("expected a local argument type name"))?;
     let style = receiver.then(|| quote!(, bad_arg));
     let input: DeriveInput = syn::parse2(quote! {
         #[from_args(name = #name #style)]
