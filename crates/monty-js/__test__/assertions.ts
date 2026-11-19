@@ -1,4 +1,5 @@
 import { expect } from 'vitest'
+import type { MontyRuntimeError } from '@pydantic/monty'
 
 interface ThrowsOptions<T extends Error> {
   instanceOf?: new (...args: never[]) => T
@@ -30,7 +31,13 @@ export const t = {
  * Linux and Windows) — an exact match would make these tests OS-specific. The
  * tolerance stays far below what a mis-accounted allocation would move it by.
  */
-export function assertMemoryError(error: Error, expected: number, maxMemory: number, tolerance = 1024): void {
+export function assertMemoryError(
+  error: MontyRuntimeError,
+  expected: number,
+  maxMemory: number,
+  tolerance = 1024,
+): void {
+  expect(error.exception.typeName).toBe('MemoryError')
   const match = /^MemoryError: memory limit exceeded: (\d+) bytes > (\d+) bytes$/.exec(error.message)
   if (match === null) {
     throw new Error(`unexpected MemoryError message: ${error.message}`)

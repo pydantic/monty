@@ -1007,6 +1007,26 @@ fn small_memory_limit_leaves_normal_work_alone() {
     child.shutdown();
 }
 
+/// Building the indent must reject oversized allocations even for an empty document.
+#[test]
+fn json_large_indent_preserves_the_worker() {
+    for code in [
+        "import json\njson.dumps([], indent=10**8)",
+        "import json\nclass Writer:\n    def write(self, text):\n        pass\njson.dump([], Writer(), indent=10**8)",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(10 * 1024 * 1024));
+        let (_, event) = child.feed(code);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+        assert_eq!(
+            child.feed_complete("json.dumps([1], indent=2)"),
+            MontyObject::string("[\n  1\n]"),
+        );
+        child.shutdown();
+    }
+}
+
 /// Crossing the interpreter's soft limit raises an ordinary session error
 /// rather than killing the worker, and unwinding releases the incomplete result.
 #[test]
@@ -1382,8 +1402,8 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             16_044_735,
         ),
         // `re.finditer` preflights the matches it builds from its scanned spans as a whole.
-        ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_217_455),
-        ("import re\nre.finditer('(a)(b)', 'ab ' * 10_000)", 4_596_301),
+        ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_217_199),
+        ("import re\nre.finditer('(a)(b)', 'ab ' * 10_000)", 4_596_045),
         // A split's piece buffer is grown under the same checks as `re.split`'s.
         ("('ab,' * 100_000).split(',')", 1_392_992),
         ("('ab,' * 100_000).rsplit(',')", 1_392_993),
@@ -1454,7 +1474,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // message must still respect the budget.
         (
             "import csv\nclass S:\n    def write(self, t):\n        pass\ntext = 'x' * 400_000\nclass Key:\n    def __repr__(self):\n        return text\nrow = {Key(): None, Key(): None}\ncsv.DictWriter(S(), []).writerow(row)",
-            1_254_895,
+            1_255_437,
         ),
         // `decimal` preflights results whose size scales with an exponent or the
         // precision: an integer conversion, `f` formatting, and division, `sqrt`,

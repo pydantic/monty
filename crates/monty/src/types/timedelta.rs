@@ -331,14 +331,15 @@ impl FromValue for DeltaComponent {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
     fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
-        let result = match value {
+        match value {
             Value::Bool(b) => Ok(Self(i128::from(b))),
             Value::Int(i) => Ok(Self(i128::from(i))),
-            _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_int())),
-            _ => Err(FromValueFail::WrongType),
-        };
-        value.drop_with(vm);
-        result
+            _ if is_long_int(&value, vm) => {
+                value.drop_with(vm);
+                Err(FromValueFail::Raise(ExcType::overflow_c_int()))
+            }
+            other => Err(FromValueFail::WrongType(other)),
+        }
     }
 
     fn type_error(got: &str) -> RunError {

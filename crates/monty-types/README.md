@@ -19,6 +19,8 @@ implementation**.
   They may change or disappear in any release; prefer value constructors and typed accessors when possible.
 - `MontyException` / `ExcType` — exceptions with tracebacks (`StackFrame`,
   `CodeLoc`) and structured payloads (`ExcData`).
+  `ExcType`'s explicit discriminants are permanent exception-class identity codes, checked at compile time;
+  existing codes must never change or be reused.
 - `OsFunctionCall` — the typed OS-call payloads sandboxed code suspends with
   (file reads/writes, `open()`, `os.getenv`, ...), plus the `stat_result`
   builders hosts use to answer them.
