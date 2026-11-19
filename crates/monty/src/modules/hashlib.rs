@@ -23,15 +23,15 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithContext, HeapData, HeapId},
+    heap::{ContainsHeap, DropWithContext, HeapData},
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
-        BuiltinType, Module, Set, allocate_string,
+        Module, Set, Type, allocate_string,
         bytes::allocate_bytes,
         hashlib::{Blake2Params, Blake2b, Blake2s, DigestBytes, HashAlgorithm, HashObject, hash_input},
     },
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// `hashlib` module functions, one variant per Python-visible function.
@@ -39,25 +39,26 @@ use crate::{
 /// `blake2b` and `blake2s` are types rather than functions, as in CPython, so
 /// they are not here. Serialized into dumps by variant name, so renaming one
 /// needs `#[serde(alias)]`.
+#[monty_macros::explicit_discriminants(checksum = 0x05ef_ded8_6896_9495)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum HashlibFunctions {
-    Md5,
-    Sha1,
-    Sha224,
-    Sha256,
-    Sha384,
-    Sha512,
-    Sha3_224,
-    Sha3_256,
-    Sha3_384,
-    Sha3_512,
+    Md5 = 0,
+    Sha1 = 1,
+    Sha224 = 2,
+    Sha256 = 3,
+    Sha384 = 4,
+    Sha512 = 5,
+    Sha3_224 = 6,
+    Sha3_256 = 7,
+    Sha3_384 = 8,
+    Sha3_512 = 9,
     #[strum(serialize = "shake_128")]
-    Shake128,
+    Shake128 = 10,
     #[strum(serialize = "shake_256")]
-    Shake256,
-    New,
-    Pbkdf2Hmac,
+    Shake256 = 11,
+    New = 12,
+    Pbkdf2Hmac = 13,
 }
 
 /// Static mapping of attribute names to functions for module creation.
@@ -78,27 +79,27 @@ const HASHLIB_FUNCTIONS: &[(StaticStrings, HashlibFunctions)] = &[
     (StaticStrings::Pbkdf2Hmac, HashlibFunctions::Pbkdf2Hmac),
 ];
 
-/// Creates the `hashlib` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `hashlib` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Hashlib, vm.interns);
     for (name, func) in HASHLIB_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Hashlib(*func)), vm);
     }
     module.set_attr(
         StaticStrings::Blake2b,
-        Value::Builtin(Builtins::Type(BuiltinType::Blake2b)),
+        Value::Builtin(Builtins::Type(Type::Blake2b)),
         vm,
     );
     module.set_attr(
         StaticStrings::Blake2s,
-        Value::Builtin(Builtins::Type(BuiltinType::Blake2s)),
+        Value::Builtin(Builtins::Type(Type::Blake2s)),
         vm,
     );
     // Two sets, as in CPython, where mutating one leaves the other alone.
     for name in [StaticStrings::AlgorithmsGuaranteed, StaticStrings::AlgorithmsAvailable] {
         module.set_attr(name, algorithm_names(vm), vm);
     }
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// A fresh `set` of every algorithm name.
@@ -468,6 +469,34 @@ macro_rules! blake2_constructor_args {
 }
 
 blake2_constructor_args!(Blake2bArgs => "blake2b", Blake2sArgs => "blake2s");
+
+/// The `blake2b` constructor, for the native type table.
+pub(crate) fn blake2b_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    blake2_init(Blake2Kind::Blake2b, vm, args)
+}
+
+/// The `blake2s` constructor, for the native type table.
+pub(crate) fn blake2s_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    blake2_init(Blake2Kind::Blake2s, vm, args)
+}
+
+/// `blake2b`'s size limits, on the class and so on its instances.
+pub(crate) fn blake2b_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+    match attr.static_string(vm.interns)? {
+        StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize => Some(Value::Int(64)),
+        StaticStrings::SaltSize | StaticStrings::PersonSize => Some(Value::Int(16)),
+        _ => None,
+    }
+}
+
+/// `blake2s`'s size limits, on the class and so on its instances.
+pub(crate) fn blake2s_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+    match attr.static_string(vm.interns)? {
+        StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize => Some(Value::Int(32)),
+        StaticStrings::SaltSize | StaticStrings::PersonSize => Some(Value::Int(8)),
+        _ => None,
+    }
+}
 
 /// `blake2b(...)` / `blake2s(...)`, also reached through `hashlib.new()`.
 ///

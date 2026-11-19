@@ -12,6 +12,7 @@ use pyo3::{
     exceptions::{PyBaseException, PyTypeError, PyValueError},
     intern,
     prelude::*,
+    sync::PyOnceLock,
     types::{
         PyBool, PyBytes, PyComplex, PyDate, PyDateAccess, PyDateTime, PyDelta, PyDict, PyFloat, PyFrozenSet, PyInt,
         PyList, PyModule, PySet, PyString, PyTime, PyTuple, PyType,
@@ -24,9 +25,9 @@ use super::{
         is_class_type_wrapper, wrapper_uuid,
     },
     convert::{
-        CoroutineFunctionExt, PyMontyFileHandle, get_datetime_timezone_type, get_decimal_type, get_docstring, get_name,
-        get_pure_posix_path, py_datetime_to_monty, py_time_to_monty, py_timedelta_to_monty, py_timezone_to_monty,
-        py_type_object_to_monty,
+        CoroutineFunctionExt, PyMontyFileHandle, get_datetime_timezone_type, get_decimal_type, get_docstring,
+        get_monty_namedtuple, get_name, get_pure_posix_path, py_datetime_to_monty, py_time_to_monty,
+        py_timedelta_to_monty, py_timezone_to_monty, py_type_object_to_monty,
     },
     exceptions::{exc_py_to_monty, exc_to_monty_node},
     external_module::PyExternalModule,
@@ -515,6 +516,7 @@ impl<'py> ClassTypeSource<'py> {
                 // sandbox never needs a rule for them.
                 eq: ClassEq::Identity,
                 hash: ClassHash::Identity,
+                unhashable_message: PyOnceLock::new(),
             }),
             attrs,
             identity: Some(wrapper.clone()),
@@ -527,17 +529,22 @@ impl<'py> ClassTypeSource<'py> {
         Self::node_from(Arc::clone(&self.class_type), attrs)
     }
 
-    /// The class node for a header and its attr pairs.
+    /// The class node for a header and its attr pairs, moving the header's
+    /// name and rules out when nothing else shares it.
     fn node_from(class_type: Arc<ClassHeader>, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
-        let class_type = Arc::unwrap_or_clone(class_type);
+        let (id, host_defined, is_dataclass) = (class_type.id, class_type.host_defined, class_type.is_dataclass);
+        let (name, eq, hash) = match Arc::try_unwrap(class_type) {
+            Ok(header) => (header.name, header.eq, header.hash),
+            Err(shared) => (shared.name.clone(), shared.eq.clone(), shared.hash.clone()),
+        };
         MontyNode::ClassType(Box::new(ClassTypeNode {
-            name: class_type.name,
-            id: class_type.id,
-            host_defined: class_type.host_defined,
-            is_dataclass: class_type.is_dataclass,
+            name,
+            id,
+            host_defined,
+            is_dataclass,
             attrs,
-            eq: class_type.eq,
-            hash: class_type.hash,
+            eq,
+            hash,
         }))
     }
 }
@@ -564,16 +571,22 @@ fn id_pairs(ids: &[NodeId]) -> Vec<(NodeId, NodeId)> {
 }
 
 /// The full type name of a namedtuple (e.g. `os.stat_result`), dropping the
-/// module prefix for built-ins.
+/// module prefix for built-ins. A `MontyNamedTuple` decoded from the sandbox
+/// carries the name it arrived with, since its class is shared by every type.
 fn namedtuple_type_name(obj: &Bound<'_, PyAny>) -> PyResult<String> {
-    let py_type = obj.get_type();
-    let simple_name = py_type.name()?.to_string();
-    let module: String = py_type.getattr("__module__")?.extract()?;
-    Ok(if module.starts_with('_') || module == "builtins" {
-        simple_name
+    let py = obj.py();
+    if obj.is_instance(get_monty_namedtuple(py)?)? {
+        obj.getattr(intern!(py, "_type_name"))?.extract()
     } else {
-        format!("{module}.{simple_name}")
-    })
+        let py_type = obj.get_type();
+        let simple_name = py_type.name()?.to_string();
+        let module: String = py_type.getattr("__module__")?.extract()?;
+        Ok(if module.starts_with('_') || module == "builtins" {
+            simple_name
+        } else {
+            format!("{module}.{simple_name}")
+        })
+    }
 }
 
 /// A host callable with no richer Monty mapping, carrying its `__name__` and

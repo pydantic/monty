@@ -59,6 +59,7 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
             MontyObject::string("mock".to_owned())
         }
         OsFunctionCall::ReadBytes(_) => MontyObject::bytes(vec![]),
+        OsFunctionCall::WriteBytesAt(args) => MontyObject::int(i64::try_from(args.data.len()).unwrap()),
         OsFunctionCall::Stat(_) => MontyObject::none(),
         OsFunctionCall::Iterdir(_) => MontyObject::list([]),
         OsFunctionCall::Scan(_) => scan_reply([]),

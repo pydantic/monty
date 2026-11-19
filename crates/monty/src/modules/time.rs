@@ -21,7 +21,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
@@ -38,29 +38,29 @@ use crate::{
 
 /// `time` module functions, each a Python-visible callable.
 ///
-/// Serialised by declaration index through `ModuleFunctions`, so new variants
-/// must be appended.
+/// Variant names persist in dumps; explicit discriminants preserve numeric identities.
+#[monty_macros::explicit_discriminants(checksum = 0xd0fc_8b76_7b3d_a116)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum TimeFunctions {
-    Time,
-    Sleep,
-    TimeNs,
-    Monotonic,
-    MonotonicNs,
-    PerfCounter,
-    PerfCounterNs,
-    ProcessTime,
-    ProcessTimeNs,
-    ThreadTime,
-    ThreadTimeNs,
-    Gmtime,
-    Localtime,
-    Mktime,
-    Asctime,
-    Ctime,
-    Strftime,
-    Strptime,
+    Time = 0,
+    Sleep = 1,
+    TimeNs = 2,
+    Monotonic = 3,
+    MonotonicNs = 4,
+    PerfCounter = 5,
+    PerfCounterNs = 6,
+    ProcessTime = 7,
+    ProcessTimeNs = 8,
+    ThreadTime = 9,
+    ThreadTimeNs = 10,
+    Gmtime = 11,
+    Localtime = 12,
+    Mktime = 13,
+    Asctime = 14,
+    Ctime = 15,
+    Strftime = 16,
+    Strptime = 17,
 }
 
 /// Every function the module exposes, paired with the name it binds to.
@@ -85,15 +85,15 @@ const FUNCTIONS: [(StaticStrings, TimeFunctions); 18] = [
     (StaticStrings::Strptime, TimeFunctions::Strptime),
 ];
 
-/// Creates the `time` module and allocates it on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `time` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Time, vm.interns);
     for (name, function) in FUNCTIONS {
         module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Time(function)), vm);
     }
     set_zone_constants(&mut module, vm);
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Sets `timezone`, `altzone`, `daylight` and `tzname` from the sandbox zone,

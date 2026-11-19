@@ -99,8 +99,8 @@ An uncaught conversion exception ends the feed as a runtime error.
 Values supplied through `inputs` or `external_lookup` instead fail host-side;
 see [Python error handling](../quickstart/python.md#errors).
 
-Some sandbox results have no CPython equivalent, such as a namedtuple field starting with `_` (which `rename=True`
-produces).
+Some sandbox results have no CPython equivalent, such as a set containing a dataclass proxy whose hash reads a field
+the instance never set (see [classes.md](classes.md)).
 A Python host also rejects a value whose dict and set keys share too many CPython hashes, with `ValueError`.
 The sandbox hashes `int`s differently, so on 64-bit hosts keys like `k * (2**61 - 1)` are cheap to build there,
 but all hash to 0 in CPython, where inserting n of them costs O(n²).
@@ -118,6 +118,22 @@ JavaScript hosts cannot see engine hashes, so they bound time instead: inserting
 250 ms plus 1 µs per key, after which decoding fails with an `Error`.
 Keys that share a bucket in the host engine, such as BigInts with equal low 64 bits in V8, reach this limit.
 Because the limit is a time limit, a heavily loaded host could, rarely, reject a large value whose keys do not collide.
+
+A Python host receives every namedtuple as an instance of one class, [`MontyNamedTuple`][pydantic_monty.MontyNamedTuple],
+rather than of a class per sandbox type, so the sandbox cannot make the host build classes.
+Field access, indexing, equality, `repr`, `_fields`, `_asdict()`, `_replace()` and `_make()` behave as on a
+`collections.namedtuple` instance, but:
+
+- `type(p)` is `MontyNamedTuple`; the sandbox type name is `p._type_name`, such as `'Point'` for a namedtuple defined
+    in sandbox code or `'sys.version_info'`.
+- `isinstance` against the sandbox type and class-level API such as `type(p)._make(...)` or `type(p)(...)` do not
+    work, and `__match_args__` is not set, so only keyword class patterns match.
+- Setting any attribute raises `AttributeError: '<name>' object is immutable`, and `vars(p)` returns the instance's
+    `_type_name` and `_fields`.
+- `_field_defaults` is always empty.
+- Fields starting with `_`, which `rename=True` produces, are kept, though a host namedtuple class cannot have them.
+- Each instance carries a `__dict__`, so it costs more memory than a `collections.namedtuple` instance, and field
+    access runs Python code rather than a C accessor, so it is slower.
 
 ## Message size
 

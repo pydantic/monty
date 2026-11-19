@@ -573,6 +573,8 @@ def test_frozen_dataclass_setattr_mutates_sandbox_copy(monty_run: RunMonty):
 def test_frozen_instance_error_from_external_function(monty_run: RunMonty):
     """FrozenInstanceError raised by an external function is properly converted."""
     code = """
+from dataclasses import FrozenInstanceError
+
 try:
     fail()
 except FrozenInstanceError:
@@ -935,6 +937,44 @@ def test_dataclass_field_missing_from_attributes_raises(monty_run: RunMonty):
     with pytest.raises(AttributeError) as exc_info:
         _ = a == b
     assert exc_info.value.args[0] == snapshot("'P' object has no attribute 'y'")
+
+
+class Tracked:
+    """A host class whose `__eq__` and `__hash__` record every call."""
+
+    calls: list[str] = []
+
+    def __eq__(self, other: object) -> bool:
+        Tracked.calls.append('eq')
+        return self is other
+
+    def __hash__(self) -> int:
+        Tracked.calls.append('hash')
+        return 0
+
+
+def test_dataclass_holding_host_objects_compares_by_identity(session: MontySession):
+    """Replaying a generated `__eq__` or hashing the compared fields would call a
+    host object's `__eq__` / `__hash__`, which the sandbox was never given, so a
+    proxy reaching one, directly or through containers, compares by identity."""
+    Tracked.calls.clear()
+    code = (
+        '@dataclass\nclass K:\n    item: object\n    def __hash__(self):\n        return 0\n'
+        'k = K(a)\nkeys = {k: 1, K((b,)): 2, K([a]): 3, K({1: b}): 4}'
+    )
+    session.feed_run(DATACLASS_IMPORT + code, inputs={'a': ClassInstance(Tracked()), 'b': ClassInstance(Tracked())})
+    keys = session.feed_run('keys')
+    assert list(keys.values()) == [1, 2, 3, 4]
+    # separate results, so distinct proxies of the one sandbox object
+    first, second = session.feed_run('k'), session.feed_run('k')
+    assert first is not second
+    assert first == second
+    assert hash(first) == hash(second)
+    # equal fields but a distinct object: the sandbox says equal, the host does not
+    distinct = session.feed_run('K(a)')
+    assert first != distinct
+    assert len({*keys, first, distinct}) == 5
+    assert Tracked.calls == []
 
 
 def test_custom_eq_proxies_compare_by_identity(session: MontySession):
@@ -1668,3 +1708,28 @@ def test_deep_proxy_chain_hashes_from_the_leaf_up(monty_run: RunMonty):
     for node in nodes:
         hash(node)
     assert hash(nodes[-1]) == hash(nodes[-1])
+
+
+def test_hash_errors_keep_no_message_per_instance(monty_run: RunMonty):
+    """Proxies cache an unhashable error, whose message is built once per class,
+    so a long sandbox class name is not copied once per instance. A missing
+    field's error names the field, so it is built per raise and not cached."""
+    code = (
+        "U = dataclass(type('U' * 1000, (), {}))\n"
+        '@dataclass\nclass P:\n    x: int\n    y: int\n    def __init__(self, x):\n        self.x = x\n'
+        '    def __hash__(self):\n        return 0\n'
+        '[U(), U(), P(1), P(2)]'
+    )
+    first_u, second_u, first_p, second_p = monty_run(DATACLASS_IMPORT + code)
+    messages: list[object] = []
+    for proxy in (first_u, second_u, first_p, second_p):
+        with pytest.raises((TypeError, AttributeError)) as exc_info:
+            hash(proxy)
+        messages.append(exc_info.value.args[0])
+    assert messages[0] == f'unhashable type: {"U" * 1000!r}'
+    assert messages[0] is messages[1]
+    assert messages[2] == snapshot("'P' object has no attribute 'y'")
+    with pytest.raises(AttributeError) as exc_info:
+        hash(first_p)
+    assert exc_info.value.args[0] == messages[2]
+    assert exc_info.value.args[0] is not messages[2]

@@ -32,7 +32,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    heap::{DropGuard, Heap, HeapData, HeapId},
+    heap::{DropGuard, Heap},
     intern::StaticStrings,
     modules::ModuleFunctions,
     string_builder::StringBuilder,
@@ -49,15 +49,16 @@ use crate::{
 const UNIDATA_VERSION: &str = "16.0.0";
 
 /// `unicodedata` module functions — each variant corresponds to a Python-visible function.
+#[monty_macros::explicit_discriminants(checksum = 0xd863_1aaf_1194_df41)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum UnicodedataFunctions {
-    Category,
-    Name,
-    Lookup,
-    Combining,
-    Normalize,
-    IsNormalized,
+    Category = 0,
+    Name = 1,
+    Lookup = 2,
+    Combining = 3,
+    Normalize = 4,
+    IsNormalized = 5,
 }
 
 /// Static mapping of attribute names to functions for module creation.
@@ -70,8 +71,8 @@ const UNICODEDATA_FUNCTIONS: &[(StaticStrings, UnicodedataFunctions)] = &[
     (StaticStrings::IsNormalized, UnicodedataFunctions::IsNormalized),
 ];
 
-/// Creates the `unicodedata` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `unicodedata` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Unicodedata, vm.interns);
 
     for (name, func) in UNICODEDATA_FUNCTIONS {
@@ -81,7 +82,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let version = allocate_string(UNIDATA_VERSION, vm.heap);
     module.set_attr(StaticStrings::UnidataVersion, version, vm);
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `unicodedata` module function.

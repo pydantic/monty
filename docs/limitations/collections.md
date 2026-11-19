@@ -42,9 +42,10 @@ too, rather than something that type-checks and then fails at runtime.
     before the extend begins and appends nothing, where CPython appends whatever
     was yielded first.
 
-`del d[i]` and subclassing (`class Q(deque)`) both fail at *compile* time: the
-`del` statement and class inheritance are unimplemented Monty-wide (see
-[language.md](language.md) / [classes.md](classes.md)), not deque limitations.
+`del d[i]` fails at *compile* time, since the `del` statement is unimplemented
+Monty-wide (see [language.md](language.md)), and subclassing (`class Q(deque)`)
+raises `TypeError`, since classes inherit only from classes and `object` (see
+[classes.md](classes.md#inheritance)); neither is a deque limitation.
 
 ## `namedtuple`
 
@@ -68,6 +69,9 @@ divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
 - **`elements()` returns a list**, not CPython's lazy iterator. The values and
     order match, but the whole sequence is built up front, so a very large count
     can hit the memory limit where CPython would stream.
+- **Counting from a mapping into an empty `Counter` hashes each key.** `Counter(mapping)`, and `update(mapping)` on an
+    empty `Counter`, call each key's `__hash__` once more than CPython, whose `dict.update` reuses the hashes the
+    mapping already stores.
 - **Crosses the host boundary as a plain `dict`.**
 
 ## Qualified vs bare type names
