@@ -194,8 +194,8 @@ impl Worker {
 
     /// Starts a dump span only for the public API, not the raw forwarding interface.
     #[cfg(feature = "telemetry")]
-    pub(crate) fn dump_span(&self) -> Option<DumpSpan> {
-        self.recorder.as_ref().map(|recorder| recorder.dump_span())
+    pub(crate) fn dump_span(&mut self) -> Option<DumpSpan> {
+        self.recorder.as_mut().map(|recorder| recorder.dump_span())
     }
 
     #[cfg(feature = "telemetry")]

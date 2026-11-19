@@ -1384,10 +1384,9 @@ impl Checkout {
     /// Serializes the session (idle or suspended) into opaque bytes that
     /// [`Checkout::restore`] can restore — including into a
     /// different worker after this one crashes. The session stays live.
-    /// Remote relays return an opaque snapshot handle after durable storage acknowledges the dump.
     pub async fn dump(&mut self) -> Result<Vec<u8>, PoolError> {
         #[cfg(feature = "telemetry")]
-        let span = self.worker.as_ref().and_then(Worker::dump_span);
+        let span = self.worker.as_mut().and_then(Worker::dump_span);
         let result = async {
             self.open().await?;
             let request = request(pb::client_request::Kind::Dump(pb::Dump {}));
@@ -1401,7 +1400,7 @@ impl Checkout {
         .await;
         #[cfg(feature = "telemetry")]
         if let Some(span) = span {
-            span.finish(result.as_ref().err().map(ToString::to_string));
+            span.finish(result.as_ref().err());
         }
         result
     }

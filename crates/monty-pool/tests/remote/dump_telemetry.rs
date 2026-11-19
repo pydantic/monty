@@ -7,13 +7,17 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use logfire::config::AdvancedOptions;
 use monty_pool::{CheckoutOptions, Pool, PoolError, PrintFuture, ReplConfig, telemetry::TelemetryContext};
 use monty_proto::pb;
 use opentelemetry::{
     Value,
     trace::{SpanContext, SpanId, Status, TraceFlags, TraceId, TraceState},
 };
-use opentelemetry_sdk::trace::{InMemorySpanExporter, SimpleSpanProcessor, SpanData};
+use opentelemetry_sdk::{
+    logs::{InMemoryLogExporter, SimpleLogProcessor},
+    trace::{InMemorySpanExporter, SimpleSpanProcessor, SpanData},
+};
 use tokio::{sync::oneshot, time::timeout};
 
 use super::{event_kind, join_server, mock_pool_config, read_request, send_event};
@@ -29,12 +33,14 @@ async fn dump_spans_cover_the_api_and_close_on_success_error_and_cancellation() 
 /// Exercise one traced checkout through acknowledged, raw, refused and cancelled dumps.
 async fn dump_span_scenario() {
     let spans = InMemorySpanExporter::default();
+    let logs = InMemoryLogExporter::default();
     let logfire = logfire::configure()
         .local()
         .send_to_logfire(false)
         .with_console(None)
         .with_install_panic_handler(false)
         .with_additional_span_processor(SimpleSpanProcessor::new(spans.clone()))
+        .with_advanced_options(AdvancedOptions::default().with_log_processor(SimpleLogProcessor::new(logs.clone())))
         .finish()
         .expect("logfire");
     let parent = SpanContext::new(
@@ -128,6 +134,21 @@ async fn dump_span_scenario() {
     assert_eq!(recorded.len(), 2);
     assert_eq!(attribute(&recorded[1], "monty.outcome"), Some("error".into()));
     assert_eq!(attribute(&recorded[1], "logfire.level_num"), Some(17_i64.into()));
+    let emitted = logs.get_emitted_logs().unwrap();
+    let errors: Vec<_> = emitted
+        .iter()
+        .filter(|entry| {
+            entry
+                .record
+                .attributes_iter()
+                .any(|(key, _)| key.as_str() == "exc_type")
+        })
+        .collect();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(
+        errors[0].record.trace_context().unwrap().span_id,
+        recorded[1].span_context.span_id()
+    );
     assert_eq!(
         recorded[1].status,
         Status::error("RuntimeError: snapshot store refused the dump")
@@ -146,6 +167,59 @@ async fn dump_span_scenario() {
     assert_eq!(attribute(&recorded[2], "monty.outcome"), Some("cancelled".into()));
     assert!(recorded[2].start_time >= configured_at);
     checkout.terminate().await;
+    pool.close().await;
+    join_server(server).await;
+}
+
+/// Worker-controlled fatal messages stay bounded while formatting the status, including UTF-8 boundaries.
+#[tokio::test]
+async fn dump_status_caps_fatal_worker_messages() {
+    const LIMIT: usize = 64 * 1024;
+    const PREFIX: &str = "monty worker crashed: ";
+    let spans = InMemorySpanExporter::default();
+    let logfire = logfire::configure()
+        .local()
+        .send_to_logfire(false)
+        .with_console(None)
+        .with_install_panic_handler(false)
+        .with_additional_span_processor(SimpleSpanProcessor::new(spans.clone()))
+        .finish()
+        .unwrap();
+    let options = CheckoutOptions::default().with_telemetry(Some(TelemetryContext::for_logfire(logfire.clone())));
+    let (mock, config) = mock_pool_config().await;
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::client_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::worker_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::client_request::Kind::Dump(_)));
+        send_event(
+            &mut socket,
+            &event_kind(pb::worker_event::Kind::FatalError(pb::FatalError {
+                message: "é".repeat(1024 * 1024),
+            })),
+        );
+        assert!(socket.read().is_none());
+    });
+    let pool = Pool::new(config).await.unwrap();
+    let mut checkout = pool.checkout_with(&ReplConfig::default(), options).await.unwrap();
+    assert!(matches!(
+        timeout(Duration::from_secs(10), checkout.dump()).await.unwrap(),
+        Err(PoolError::Crashed { .. })
+    ));
+    let recorded = dump_spans(&spans);
+    assert_eq!(recorded.len(), 1);
+    let Status::Error { description } = &recorded[0].status else {
+        panic!("fatal dump status");
+    };
+    assert_eq!(description.len(), LIMIT);
+    assert_eq!(
+        description.as_ref(),
+        format!("{PREFIX}{}", "é".repeat((LIMIT - PREFIX.len()) / 2))
+    );
+    assert_eq!(attribute(&recorded[0], "length_limit_exceeded"), Some(true.into()));
     pool.close().await;
     join_server(server).await;
 }

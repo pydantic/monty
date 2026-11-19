@@ -15,6 +15,7 @@ use std::{
     collections::BTreeMap,
     fmt::{self, Write},
     mem,
+    sync::{Arc, Weak},
 };
 
 use logfire::{Logfire, set_local_logfire};
@@ -46,16 +47,20 @@ fn start_span(span: Span) -> Span {
 
 /// Owns the API span until completion or cancellation without keeping it on the worker.
 pub(crate) struct DumpSpan {
-    span: Span,
+    span: Arc<Span>,
     outcome: &'static str,
 }
 
 impl DumpSpan {
     /// Set a terminal result before the guard records its outcome once.
-    pub(crate) fn finish(mut self, error: Option<String>) {
+    pub(crate) fn finish(mut self, error: Option<&impl fmt::Display>) {
         self.outcome = if let Some(error) = error {
-            self.span.set_status(Status::error(error));
+            let (message, cut) = capped_text(|writer| write!(writer, "{error}"));
+            self.span.set_status(Status::error(message));
             self.span.set_attribute("logfire.level_num", LEVEL_ERROR);
+            if cut {
+                self.span.set_attribute("length_limit_exceeded", true);
+            }
             "error"
         } else {
             "ok"
@@ -102,6 +107,8 @@ pub(crate) struct Recorder {
     /// Whether the current turn is a `Dump`: an `Error` reply to one leaves
     /// the feed suspended and resumable.
     dump_turn: bool,
+    /// Lets dump errors use the API span without keeping a cancelled operation open.
+    dump_parent: Weak<Span>,
     /// One-shot host context consumed when `Configure` starts the root span.
     adapter_context: Option<TelemetryContext>,
     /// Scoped dispatcher installed only while this recorder emits telemetry.
@@ -122,6 +129,7 @@ impl Recorder {
             feed: None,
             session: None,
             dump_turn: false,
+            dump_parent: Weak::new(),
             adapter_context: None,
             logfire: None,
         }
@@ -142,7 +150,7 @@ impl Recorder {
     }
 
     /// Starts the public dump operation without tracing raw worker serialization turns.
-    pub(crate) fn dump_span(&self) -> DumpSpan {
+    pub(crate) fn dump_span(&mut self) -> DumpSpan {
         let _logfire = self.logfire.clone().map(set_local_logfire);
         let parent = self.context_span();
         let span = if parent.is_none() {
@@ -155,8 +163,10 @@ impl Recorder {
         {
             let _ = span.set_parent(context);
         }
+        let span = Arc::new(start_span(span));
+        self.dump_parent = Arc::downgrade(&span);
         DumpSpan {
-            span: start_span(span),
+            span,
             outcome: "cancelled",
         }
     }
@@ -623,13 +633,19 @@ impl Recorder {
     }
 
     fn context_span(&self) -> Span {
-        self.turn
-            .as_ref()
-            .or(self.pending.as_ref().map(OpenSpan::span))
-            .or(self.feed.as_ref().map(OpenSpan::span))
-            .or(self.session.as_ref())
-            .cloned()
-            .unwrap_or_else(Span::none)
+        if self.dump_turn
+            && let Some(span) = self.dump_parent.upgrade()
+        {
+            (*span).clone()
+        } else {
+            self.turn
+                .as_ref()
+                .or(self.pending.as_ref().map(OpenSpan::span))
+                .or(self.feed.as_ref().map(OpenSpan::span))
+                .or(self.session.as_ref())
+                .cloned()
+                .unwrap_or_else(Span::none)
+        }
     }
 
     /// Records the host's answer on the suspension span it answers, then
