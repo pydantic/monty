@@ -2,7 +2,7 @@ use std::{borrow::Cow, cmp::Ordering, fmt::Write, str};
 
 use ahash::AHashSet;
 
-use super::{Type, allocate_string};
+use super::{TypeRef, allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -107,13 +107,13 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// Used for error messages and the `type()` builtin.
     /// Takes heap reference for cases where nested Value lookups are needed.
-    fn py_type(&self, vm: &VM<'h>) -> Type;
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef;
 
     /// The type name used in error messages (`'list'`, `'MutablePoint'`).
     ///
-    /// Defaults to [`py_type`](Self::py_type)'s name; types whose [`Type`]
-    /// carries no class identity (host class instances, named tuples)
-    /// override it to name their real class rather than a placeholder.
+    /// Defaults to [`py_type`](Self::py_type)'s name; types whose [`TypeRef`]
+    /// is a native placeholder (host class instances, named tuples) override it
+    /// to name their real class.
     /// Borrows only `vm.interns`, so it survives heap cleanup.
     fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
         self.py_type(vm).name(vm.heap, vm.interns)

@@ -1678,3 +1678,18 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == 'date.fromtimestamp() takes no keyword arguments'
+
+# === fromisoformat is positional-only ===
+for _call, _msg in [
+    (lambda: datetime.date.fromisoformat(date_string='2020-01-01'), 'date.fromisoformat() takes no keyword arguments'),
+    (
+        lambda: datetime.datetime.fromisoformat(date_string='2020-01-01'),
+        'datetime.fromisoformat() takes no keyword arguments',
+    ),
+    (lambda: datetime.time.fromisoformat(time_string='10:00'), 'time.fromisoformat() takes no keyword arguments'),
+]:
+    try:
+        _call()
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == _msg

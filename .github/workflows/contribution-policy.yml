@@ -1,0 +1,41 @@
+name: contribution policy
+
+on:
+  # Fork PRs need the base repo's token to comment and close; no PR code is checked out or run.
+  pull_request_target: # zizmor: ignore[dangerous-triggers] -- Only uses GitHub CLI to comment on and close a labelled PR; never checks out or executes PR code
+    types: [labeled]
+
+permissions: {}
+
+concurrency:
+  group: contribution-policy-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  close-pr:
+    if: >-
+      github.event.label.name == 'close: contribution-policy' && github.event.pull_request.state == 'open'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Explain the contribution policy and close the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GUIDE_URL: ${{ github.server_url }}/${{ github.repository }}/blob/${{ github.event.repository.default_branch }}/CONTRIBUTING.md#what-we-accept
+        run: |
+          state=$(gh pr view "$PR_NUMBER" --json state --jq .state)
+          if [ "$state" != 'OPEN' ]; then
+            exit 0
+          fi
+
+          gh pr close "$PR_NUMBER" --comment "Thank you for the contribution.
+
+          We're closing this PR under our [contribution policy](${GUIDE_URL}).
+          We generally reserve new feature PRs for recognised contributors or work agreed with a maintainer in advance.
+          Small, focused CPython compatibility fixes remain welcome from new contributors.
+
+          Please don't open a replacement PR for this change unless a maintainer invites you to do so."

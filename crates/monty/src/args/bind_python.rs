@@ -611,8 +611,7 @@ impl Signature {
     fn kwarg_defaults_count(&self) -> usize {
         self.kwarg_default_map
             .as_deref()
-            .map(|v| v.iter().filter(|&x| x.is_some()).count())
-            .unwrap_or_default()
+            .map_or_default(|v| v.iter().filter(|&x| x.is_some()).count())
     }
 
     /// Returns the number of positional-only parameters.

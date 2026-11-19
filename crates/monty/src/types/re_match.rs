@@ -21,7 +21,7 @@ use crate::{
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
     types::{
-        Dict, LazyHeapSet, PyTrait, Type, allocate_tuple,
+        Dict, LazyHeapSet, PyTrait, Type, TypeRef, allocate_tuple,
         str::{allocate_string, string_repr_fmt},
     },
     value::{EitherStr, Value},
@@ -315,8 +315,8 @@ impl ReMatch {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::ReMatch
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::ReMatch.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

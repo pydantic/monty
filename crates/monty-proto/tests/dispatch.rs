@@ -827,13 +827,13 @@ fn a_module_without_a_stub_is_asked_for_once() {
         };
         assert_eq!(
             expect_typing_error(event),
-            "main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`\n\
-             main.py:1:15: error[unresolved-import] Cannot resolve imported module `other`\n"
+            "main.py:1:8: error[import-not-found] Cannot resolve imported module `tools`\n\
+             main.py:1:15: error[import-not-found] Cannot resolve imported module `other`\n"
         );
         let (_, event) = feed(&mut worker, "import tools");
         assert_eq!(
             expect_typing_error(event),
-            "main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`\n"
+            "main.py:1:8: error[import-not-found] Cannot resolve imported module `tools`\n"
         );
     }
 }
@@ -1011,7 +1011,7 @@ fn load_restores_the_received_module_stubs() {
         vec!["tools".to_owned(), "other".to_owned()]
     );
     let event = answer_stubs_with(&mut worker, &[("tools", Some("x: int\n"))]);
-    insta::assert_snapshot!(expect_typing_error(event), @"main.py:1:15: error[unresolved-import] Cannot resolve imported module `other`");
+    insta::assert_snapshot!(expect_typing_error(event), @"main.py:1:15: error[import-not-found] Cannot resolve imported module `other`");
     let request = frame_request(pb::client_request::Kind::Dump(pb::Dump {}));
     let (bytes, _) = dispatch_frame(&mut worker, &request);
     let pb::worker_event::Kind::DumpResult(result) = split_turn(&bytes).1 else {
@@ -1024,7 +1024,7 @@ fn load_restores_the_received_module_stubs() {
     let (bytes, _) = dispatch_frame(&mut worker, &request);
     assert!(matches!(split_turn(&bytes).1, pb::worker_event::Kind::Ok(_)));
     let (_, event) = feed(&mut worker, "import other");
-    insta::assert_snapshot!(expect_typing_error(event), @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `other`");
+    insta::assert_snapshot!(expect_typing_error(event), @"main.py:1:8: error[import-not-found] Cannot resolve imported module `other`");
     let (_, event) = feed(&mut worker, "import tools\ntools.x");
     assert_eq!(expect_import(event), "tools");
 }

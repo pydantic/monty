@@ -101,6 +101,9 @@ pub enum OsFunctionCall {
     /// Append bytes to file.
     #[strum(serialize = "Path.append_bytes")]
     AppendBytes(PathBytesDataArgs),
+    /// Overwrite bytes at an absolute offset in an existing file.
+    #[strum(serialize = "Path.write_bytes_at")]
+    WriteBytesAt(WriteBytesAtArgs),
 
     // ---- FS mutate (custom shapes) ----------------------------------------
     /// Open a file. The host performs the open-time effect (truncate for
@@ -240,6 +243,7 @@ impl OsFunctionCall {
             // Multi-field variants delegate to their derived `ToArgs`.
             Self::WriteText(a) | Self::AppendText(a) => a.to_args(),
             Self::WriteBytes(a) | Self::AppendBytes(a) => a.to_args(),
+            Self::WriteBytesAt(a) => a.to_args(),
             Self::Open(a) => a.to_args(),
             Self::CreateExclusive(a) => a.to_args(),
             Self::Mkdir(a) => a.to_args(),
@@ -274,6 +278,7 @@ impl OsFunctionCall {
             | Self::WriteBytes(_)
             | Self::AppendText(_)
             | Self::AppendBytes(_)
+            | Self::WriteBytesAt(_)
             | Self::Mkdir(_)
             | Self::CreateExclusive(_)
             | Self::Unlink(_)
@@ -367,6 +372,7 @@ impl OsFunctionCall {
             | Self::Rmdir(p) => Some(p.as_str()),
             Self::WriteText(a) | Self::AppendText(a) => Some(a.path.as_str()),
             Self::WriteBytes(a) | Self::AppendBytes(a) => Some(a.path.as_str()),
+            Self::WriteBytesAt(a) => Some(a.path.as_str()),
             Self::Open(a) => Some(a.path.as_str()),
             Self::CreateExclusive(a) => Some(a.path.as_str()),
             Self::Mkdir(a) => Some(a.path.as_str()),
@@ -419,6 +425,7 @@ impl OsFunctionCall {
             | Self::Rmdir(p) => (Some(p), None),
             Self::WriteText(a) | Self::AppendText(a) => (Some(&mut a.path), None),
             Self::WriteBytes(a) | Self::AppendBytes(a) => (Some(&mut a.path), None),
+            Self::WriteBytesAt(a) => (Some(&mut a.path), None),
             Self::Open(a) => (Some(&mut a.path), None),
             Self::CreateExclusive(a) => (Some(&mut a.path), None),
             Self::Mkdir(a) => (Some(&mut a.path), None),
@@ -626,6 +633,31 @@ pub struct PathBytesDataArgs {
     pub data: Vec<u8>,
 }
 
+/// A binary overwrite; hosts must validate the range before modifying storage.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
+pub struct WriteBytesAtArgs {
+    pub path: MontyPath,
+    pub offset: u64,
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+}
+
+impl WriteBytesAtArgs {
+    /// Restricts positions and their sum to the signed file-position range.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.offset > i64::MAX as u64
+            || self
+                .offset
+                .checked_add(self.data.len() as u64)
+                .is_none_or(|end| end > i64::MAX as u64)
+        {
+            Err("write range exceeds the supported file-position range")
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// Arguments to `open()`: a virtual path and a parsed file mode.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
 pub struct OpenCallArgs {
@@ -646,7 +678,7 @@ pub struct CreateExclusiveCallArgs {
 }
 
 impl CreateExclusiveCallArgs {
-    /// Rejects update modes, execute bits and permission bits outside the access mask.
+    /// Rejects unsupported update modes, execute bits and bits outside the access mask.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.permissions > 0o777 {
             Err("permissions must be between 0 and 0o777")
@@ -654,7 +686,7 @@ impl CreateExclusiveCallArgs {
             Err("execute permission bits are not supported")
         } else if matches!(
             self.mode,
-            FileMode::ReadUpdate(_) | FileMode::WriteUpdate(_) | FileMode::AppendUpdate(_)
+            FileMode::ReadUpdate(_) | FileMode::WriteUpdate(false) | FileMode::AppendUpdate(_)
         ) {
             Err("update modes ('+') are not yet supported")
         } else {

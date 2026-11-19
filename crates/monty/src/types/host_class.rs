@@ -5,7 +5,10 @@ use std::{
     mem,
 };
 
-use monty_types::{MontyUuid, unstable::ClassTypeNode};
+use monty_types::{
+    MontyUuid,
+    unstable::{ClassEq, ClassHash, ClassTypeNode},
+};
 
 use super::{Dict, LazyHeapSet, PyTrait, list::repr_should_truncate, str::allocate_string};
 use crate::{
@@ -20,7 +23,7 @@ use crate::{
         heap_read_ref_as_field_mut,
     },
     intern::Interns,
-    types::{Type, Union},
+    types::{Type, TypeRef, Union},
     value::{EitherStr, Value},
 };
 
@@ -132,8 +135,8 @@ impl<'h> HeapRead<'h, HostClass> {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::HostClass
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        TypeRef::Class(self.get(vm.heap).class_id())
     }
 
     /// The real class name (`'Point'`), not the `Type::HostClass` placeholder.
@@ -441,6 +444,10 @@ impl HostClassType {
             host_defined: true,
             is_dataclass: self.is_dataclass,
             attrs: Vec::new(),
+            // A host proxy of a host class compares by identity: the sandbox
+            // never learns how the host's class compares.
+            eq: ClassEq::Identity,
+            hash: ClassHash::Identity,
         }
     }
 }
@@ -483,8 +490,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
         })
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Type
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Type.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

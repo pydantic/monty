@@ -62,7 +62,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::RunResult,
     heap::{HeapId, HeapItem, HeapObjectRead},
-    types::{LazyHeapSet, PyTrait, Type},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef},
     value::Value,
 };
 
@@ -331,8 +331,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
         true
     }
 
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).py_type()
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        self.get(vm.heap).py_type().into()
     }
 
     /// `None` for every adaptor: CPython exposes remaining counts through

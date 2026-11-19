@@ -1300,6 +1300,44 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
             });
             MontyObject::int(byte_count as i64).into()
         }
+        OsFunctionCall::WriteBytesAt(args) => {
+            if let Err(message) = args.validate() {
+                return MontyException::new(ExcType::ValueError, Some(message.to_owned())).into();
+            }
+            let path = args.path.as_str();
+            let Some(mut file) = get_virtual_file(path) else {
+                let exc = if is_virtual_dir(path) {
+                    ExcType::IsADirectoryError
+                } else {
+                    ExcType::FileNotFoundError
+                };
+                return MontyException::new(exc, Some(path.to_owned())).into();
+            };
+            if !args.data.is_empty() {
+                let Some(end) = usize::try_from(args.offset)
+                    .ok()
+                    .and_then(|offset| offset.checked_add(args.data.len()))
+                else {
+                    return MontyException::new(ExcType::ValueError, Some("write range is too large".to_owned()))
+                        .into();
+                };
+                if end > 50_000_000 {
+                    return MontyException::new(
+                        ExcType::MemoryError,
+                        Some("virtual fixture file is too large".to_owned()),
+                    )
+                    .into();
+                }
+                file.content.resize(file.content.len().max(end), 0);
+                file.content[end - args.data.len()..end].copy_from_slice(&args.data);
+                MUTABLE_VFS.with(|vfs| {
+                    vfs.borrow_mut()
+                        .files
+                        .insert(path.to_owned(), (file.content, file.mode));
+                });
+            }
+            MontyObject::int(args.data.len() as i64).into()
+        }
         OsFunctionCall::AppendText(args) => {
             let path = args.path.as_str().to_owned();
             let text = args.data.as_str();
@@ -1342,8 +1380,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
 
             let parent = Path::new(&path)
                 .parent()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
+                .map_or_default(|p| p.to_string_lossy().to_string());
             if !parent.is_empty() && !is_virtual_dir(&parent) {
                 if parents {
                     create_parent_dirs(&parent);
@@ -2256,6 +2293,7 @@ fn wrap_code_for_async(code: &str, need_return_value: bool) -> (String, Option<S
 /// file's globals before execution.
 ///
 /// When `async_mode` is true, code is wrapped in an async context before execution.
+/// A `mount-fs` case gets a fresh temp directory as `root`, as in the non-traceback path.
 fn run_traceback_script(path: &Path, test_name: &str, config: &TestConfig) -> Result<String, TestFailure> {
     // Serialize CPython work across the whole process; see [`CPYTHON_TEST_LOCK`].
     let _cpython_guard = CPYTHON_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
@@ -2271,13 +2309,24 @@ fn run_traceback_script(path: &Path, test_name: &str, config: &TestConfig) -> Re
             .canonicalize()
             .expect("Failed to get absolute path");
         let path_str = abs_path.to_str().expect("Invalid UTF-8 in path");
+        // A mount-fs case writes its modules under `root`; the directory must outlive the run.
+        let mount_tmpdir = config.mount_fs.then(create_mount_fs_tempdir);
+        let mount_root = mount_tmpdir
+            .as_ref()
+            .map(|tmpdir| tmpdir.path().to_string_lossy().into_owned());
 
         // Call run_file_and_get_traceback with the recursion limit, iter_mode, and async_mode flags.
         // Only `CPythonTestTimeout` escapes the script's own `except BaseException`; its
         // traceback becomes the actual output so the case fails naming the watchdog.
-        match run_traceback.call_method1(
+        let traceback = match run_traceback.call_method1(
             "run_file_and_get_traceback",
-            (path_str, TEST_RECURSION_LIMIT, config.iter_mode, config.async_mode),
+            (
+                path_str,
+                TEST_RECURSION_LIMIT,
+                config.iter_mode,
+                config.async_mode,
+                mount_root,
+            ),
         ) {
             Err(err) => format_traceback(py, &err),
             // None means no exception was raised
@@ -2285,7 +2334,11 @@ fn run_traceback_script(path: &Path, test_name: &str, config: &TestConfig) -> Re
             Ok(result) => result
                 .extract()
                 .expect("Failed to extract string from return value of run_file_and_get_traceback"),
+        };
+        if let Some(tmpdir) = &mount_tmpdir {
+            forget_mount_imports(py, tmpdir.path());
         }
+        traceback
     });
     watchdog.check(test_name).map(|()| traceback)
 }
@@ -3007,14 +3060,10 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 // Generate tests for all fixture files using datatest-stable harness macro
-datatest_stable::harness!(
-    run_test_cases_monty,
-    TEST_CASES_DIR,
-    r"^.*\.py$",
-    run_test_cases_cpython,
-    TEST_CASES_DIR,
-    r"^.*\.py$",
-);
+datatest_stable::harness! {
+    { test = run_test_cases_monty, root = TEST_CASES_DIR, pattern = r"^.*\.py$" },
+    { test = run_test_cases_cpython, root = TEST_CASES_DIR, pattern = r"^.*\.py$" },
+}
 
 #[cfg(test)]
 #[path = "../tests/units/create_exclusive.rs"]

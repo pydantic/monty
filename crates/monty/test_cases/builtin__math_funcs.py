@@ -33,6 +33,21 @@ assert round(number=3.14159, ndigits=2) == 3.14
 assert round(ndigits=2, number=3.14159) == 3.14
 assert repr(round(-0.4, 0)) == '-0.0'
 assert repr(round(-0.5, 0)) == '-0.0'
+# ndigits rounds the exact binary value: 2.675 is stored as 2.67499..., so it is not a tie
+assert round(2.675, 2) == 2.67
+assert round(1.005, 2) == 1.0
+assert round(0.285, 2) == 0.28
+assert round(-2.675, 2) == -2.67
+# exact binary ties still round to even
+assert round(0.125, 2) == 0.12
+assert round(0.375, 2) == 0.38
+assert round(0.25, 1) == 0.2
+assert repr(round(-0.125, 2)) == '-0.12'
+assert repr(round(-0.001, 2)) == '-0.0'
+assert round(123456789.987654321, 4) == 123456789.9877
+assert round(1e300, 2) == 1e300
+assert round(5e-324, 330) == 5e-324
+assert round(1e-320, 2) == 0.0
 
 # round() on a long int rounds exactly, half to even, like `int.__round__`
 big = 2**70
