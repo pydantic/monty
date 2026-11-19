@@ -3017,32 +3017,12 @@ impl ExceptionArgs {
     }
 
     /// Formats the exception arguments into a message string.
-    pub(crate) fn format_arg(&self, vm: &mut VM<'_>, exc_type: ExcType) -> RunResult<Option<String>> {
+    pub(crate) fn format_arg(&self, vm: &mut VM<'_>) -> RunResult<Option<String>> {
         match self {
             Self::Empty => Ok(None),
-            Self::OneStr(s) => {
-                if exc_type == ExcType::KeyError {
-                    Ok(Some(StringRepr(s).to_string()))
-                } else {
-                    Ok(Some(s.clone()))
-                }
-            }
+            Self::OneStr(s) => Ok(Some(s.clone())),
             Self::OneValue(v) => {
-                if exc_type == ExcType::KeyError {
-                    let v_clone = v.clone_with_heap(vm.heap);
-                    defer_drop!(v_clone, vm);
-                    match v_clone.py_repr(vm) {
-                        Ok(repr_val) => {
-                            defer_drop!(repr_val, vm);
-                            Ok(repr_val.as_str(vm).map(ToOwned::to_owned))
-                        }
-                        Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => Err(err),
-                        Err(RunError::Exc(exc)) => {
-                            exc.drop_with(vm);
-                            Ok(Some("<exception str() failed>".to_owned()))
-                        }
-                    }
-                } else if let Some(s) = v.as_str(vm) {
+                if let Some(s) = v.as_str(vm) {
                     Ok(Some(s.to_owned()))
                 } else {
                     let v_clone = v.clone_with_heap(vm.heap);
@@ -3074,19 +3054,7 @@ impl ExceptionArgs {
                             _ => unreachable!(),
                         };
                         defer_drop!(item, vm);
-                        if exc_type == ExcType::KeyError {
-                            match item.py_repr(vm) {
-                                Ok(repr_val) => {
-                                    defer_drop!(repr_val, vm);
-                                    Ok(repr_val.as_str(vm).map(ToOwned::to_owned))
-                                }
-                                Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => Err(err),
-                                Err(RunError::Exc(exc)) => {
-                                    exc.drop_with(vm);
-                                    Ok(Some("<exception str() failed>".to_owned()))
-                                }
-                            }
-                        } else if let Some(s) = item.as_str(vm) {
+                        if let Some(s) = item.as_str(vm) {
                             Ok(Some(s.to_owned()))
                         } else {
                             match item.py_str(vm) {
@@ -3247,7 +3215,7 @@ impl PyException {
         data: ExcData,
         vm: &mut VM<'_>,
     ) -> SimpleException {
-        let arg = match args.format_arg(vm, exc_type) {
+        let arg = match args.format_arg(vm) {
             Ok(s) => s,
             Err(RunError::Exc(exc)) => {
                 exc.drop_with(vm);

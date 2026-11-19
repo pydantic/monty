@@ -591,16 +591,15 @@ impl VM<'_> {
                     let args_opt = match exc_val {
                         Value::Ref(id) => match vm_ref.heap.get(*id) {
                             HeapData::Exception(e) => {
-                                let exc_type = e.exc_type;
                                 let args = e.args.clone_with_heap(vm_ref.heap);
-                                Some((exc_type, args))
+                                Some(args)
                             }
                             _ => None,
                         },
                         _ => None,
                     };
-                    if let Some((exc_type, args)) = args_opt {
-                        match args.format_arg(vm_ref, exc_type) {
+                    if let Some(args) = args_opt {
+                        match args.format_arg(vm_ref) {
                             Ok(formatted) => {
                                 exc_raise.exc.arg = formatted;
                             }
