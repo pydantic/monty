@@ -145,6 +145,21 @@ pub(crate) enum DefaultExpr {
     Explicit(Box<Expr>),
 }
 
+impl DefaultExpr {
+    /// Renders an expression evaluating to the default value.
+    ///
+    /// Explicit expressions are wrapped in `(|| { #expr })()` so early-returns
+    /// inside blocks (e.g. `default = { return 7; }`) return from the closure
+    /// rather than the enclosing `from_args` function, matching the general
+    /// path's `unwrap_or_else(|| { #expr })`.
+    fn render_init(&self) -> TokenStream {
+        match self {
+            Self::DefaultTrait => quote!(::core::default::Default::default()),
+            Self::Explicit(expr) => quote!((|| { #expr })()),
+        }
+    }
+}
+
 impl Signature {
     pub(super) fn parse(input: &DeriveInput) -> syn::Result<Self> {
         let DeriveInput {
@@ -389,6 +404,86 @@ impl Signature {
         let slot_idents: Vec<&Ident> = named.iter().map(|f| &f.ident).collect();
         let slot_tys: Vec<&Type> = named.iter().map(|f| &f.ty).collect();
 
+        let positional: Vec<&Field> = self
+            .fields
+            .iter()
+            .filter(|f| matches!(f.kind, FieldKind::PosOnly | FieldKind::PosOrKeyword))
+            .collect();
+        let n_required_positional = positional.iter().filter(|f| f.default.is_none()).count();
+
+        let empty_keywords = quote!(crate::args::KwargsValues::Empty);
+        let fast_empty = if n_required_positional == 0 {
+            let default_inits = self.default_field_inits(&positional, 0, &empty_keywords);
+            quote! {
+                if let crate::args::ArgValues::Empty = args {
+                    return ::std::result::Result::Ok(Self {
+                        #(#default_inits,)*
+                    });
+                }
+            }
+        } else {
+            quote!()
+        };
+
+        let fast_one = if self.varargs_idx.is_none() && n_required_positional <= 1 && !positional.is_empty() {
+            let f0 = positional[0];
+            let f0_ident = &f0.ident;
+            let extract0 = self.render_extract_value(f0, &quote!(__v0));
+            let default_inits = self.default_field_inits(&positional, 1, &empty_keywords);
+            quote! {
+                if let crate::args::ArgValues::One(__v0) = args {
+                    let __arg0 = #extract0?;
+                    return ::std::result::Result::Ok(Self {
+                        #f0_ident: __arg0,
+                        #(#default_inits,)*
+                    });
+                }
+            }
+        } else {
+            quote!()
+        };
+
+        let fast_two = if self.varargs_idx.is_none() && n_required_positional <= 2 && positional.len() >= 2 {
+            let (f0, f1, inputs) = if check_last == Some(&positional[0].ident) {
+                (positional[1], positional[0], quote!(__v1, __v0))
+            } else {
+                (positional[0], positional[1], quote!(__v0, __v1))
+            };
+            let f0_ident = &f0.ident;
+            let f0_ty = &f0.ty;
+            let extract0 = self.render_extract_value(f0, &quote!(__v0));
+
+            let f1_ident = &f1.ident;
+            let extract1 = self.render_extract_value(f1, &quote!(__v1));
+
+            let default_inits = self.default_field_inits(&positional, 2, &empty_keywords);
+            quote! {
+                if let crate::args::ArgValues::Two(#inputs) = args {
+                    let __arg0 = match #extract0 {
+                        ::core::result::Result::Ok(__val) => __val,
+                        ::core::result::Result::Err(__err) => {
+                            crate::heap::DropWithContext::drop_with(__v1, vm);
+                            return ::core::result::Result::Err(__err);
+                        }
+                    };
+                    let __arg1 = match #extract1 {
+                        ::core::result::Result::Ok(__val) => __val,
+                        ::core::result::Result::Err(__err) => {
+                            <#f0_ty as crate::args::FromValue>::drop_extracted(__arg0, vm);
+                            return ::core::result::Result::Err(__err);
+                        }
+                    };
+                    return ::core::result::Result::Ok(Self {
+                        #f0_ident: __arg0,
+                        #f1_ident: __arg1,
+                        #(#default_inits,)*
+                    });
+                }
+            }
+        } else {
+            quote!()
+        };
+
         let spec = shared_spec.map_or_else(
             || {
                 let binding = self.binding_spec(false);
@@ -399,8 +494,16 @@ impl Signature {
         if let Some(last) = check_last {
             named.sort_by_key(|field| field.ident == *last);
         }
-        let single_positional = self.render_single_positional();
-        let defaults_call = self.render_defaults_call();
+        let fast_keywords = (n_required_positional == 0 && self.varkwargs_idx.is_some()).then(|| {
+            let inits = self.default_field_inits(&positional, 0, &quote!(__keywords));
+            quote! {
+                if __spec.forwards_keywords()
+                    && let crate::args::ArgValues::Kwargs(__keywords @ crate::args::KwargsValues::Inline(_)) = args
+                {
+                    return Ok(Self { #(#inits,)* });
+                }
+            }
+        });
         let conversions = named.iter().map(|f| self.render_conversion(f));
         let build_fields = self.fields.iter().map(render_build_field);
         let (guarded, bindings, collector) = if self.varkwargs_idx.is_some() {
@@ -458,9 +561,12 @@ impl Signature {
                     args: crate::args::ArgValues,
                     vm: &mut crate::bytecode::VM<'_>,
                 ) -> crate::exception_private::RunResult<Self> {
+                    #fast_empty
+                    #fast_one
+                    #fast_two
+
                     #spec
-                    #single_positional
-                    #defaults_call
+                    #fast_keywords
 
                     // The guard owns cleanup on every error path — including
                     // inside `bind`, which fills the slots in place. On the
@@ -485,61 +591,35 @@ impl Signature {
         }
     }
 
-    /// Bind `f(source, **kwargs)` directly when only the source was supplied.
-    fn render_single_positional(&self) -> Option<TokenStream> {
-        let [source, keywords] = self.fields.as_slice() else {
-            return None;
-        };
-        if !matches!(source.kind, FieldKind::PosOnly | FieldKind::PosOrKeyword) || keywords.kind != FieldKind::Varkwargs
-        {
-            return None;
+    fn default_field_inits(&self, positional: &[&Field], start_pos: usize, keywords: &TokenStream) -> Vec<TokenStream> {
+        let mut inits: Vec<TokenStream> = Vec::new();
+        for f in &positional[start_pos..] {
+            let ident = &f.ident;
+            let default_expr = f
+                .default
+                .as_ref()
+                .expect("fields at or after start_pos in fast path must have defaults")
+                .render_init();
+            inits.push(quote!(#ident: #default_expr));
         }
-        let extract = self.render_extract(source, &quote!(__source));
-        let source = &source.ident;
-        let keywords = &keywords.ident;
-        Some(quote! {
-            if let crate::args::ArgValues::One(__v) = args {
-                let mut __source = None;
-                #extract
-                return Ok(Self {
-                    #source: __source.expect("successful extraction fills the slot"),
-                    #keywords: crate::args::KwargsValues::Empty,
-                });
-            }
-        })
-    }
-
-    /// Builds the result from defaults when the call leaves every named slot empty.
-    fn render_defaults_call(&self) -> Option<TokenStream> {
-        if self.varargs_idx.is_none() && self.varkwargs_idx.is_none() {
-            return None;
+        if let Some(idx) = self.varargs_idx {
+            let ident = &self.fields[idx].ident;
+            inits.push(quote!(#ident: ::std::vec::Vec::new()));
         }
-        let mut fields = Vec::new();
-        for field in self.named_fields() {
-            let name = &field.ident;
-            let default = field.default.as_ref()?.apply(&quote!(::std::option::Option::None));
-            fields.push(quote!(#name: #default,));
+        for f in self.fields.iter().filter(|f| matches!(f.kind, FieldKind::KwOnly)) {
+            let ident = &f.ident;
+            let default_expr = f
+                .default
+                .as_ref()
+                .expect("kw_only fields must have defaults")
+                .render_init();
+            inits.push(quote!(#ident: #default_expr));
         }
-        if let Some(i) = self.varargs_idx {
-            let name = &self.fields[i].ident;
-            fields.push(quote!(#name: ::std::vec::Vec::new(),));
+        if let Some(idx) = self.varkwargs_idx {
+            let ident = &self.fields[idx].ident;
+            inits.push(quote!(#ident: #keywords));
         }
-        let Some(collector) = self.varkwargs_idx.map(|i| &self.fields[i].ident) else {
-            return Some(quote! {
-                if matches!(args, crate::args::ArgValues::Empty) {
-                    return Ok(Self { #(#fields)* });
-                }
-            });
-        };
-        Some(quote! {
-            if matches!(args, crate::args::ArgValues::Empty)
-                || (__spec.forwards_keywords()
-                    && matches!(args, crate::args::ArgValues::Kwargs(crate::args::KwargsValues::Inline(_))))
-            {
-                let (_, keywords) = args.into_parts();
-                return Ok(Self { #(#fields)* #collector: keywords });
-            }
-        })
+        inits
     }
 
     /// The `static __SPEC: ParamSpec` literal interpreted by the runtime binder.
@@ -627,6 +707,16 @@ impl Signature {
                     #extract
                 }
             }
+        }
+    }
+
+    fn render_extract_value(&self, field: &Field, value: &TokenStream) -> TokenStream {
+        if let Some(path) = &field.extract_with {
+            quote!(#path(#value, vm))
+        } else {
+            let ty = &field.ty;
+            let ctx = self.render_err_ctx(field);
+            quote!(<#ty as crate::args::FromValue>::extract(#value, vm, #ctx))
         }
     }
 
@@ -770,20 +860,13 @@ fn render_build_field(field: &Field) -> TokenStream {
             None => quote! {
                 #ident: __slots.#ident.take().expect("required FromArgs slot checked before build"),
             },
-            Some(default) => {
-                let value = default.apply(&quote!(__slots.#ident.take()));
-                quote!(#ident: #value,)
-            }
+            Some(DefaultExpr::DefaultTrait) => quote! {
+                #ident: __slots.#ident.take().unwrap_or_default(),
+            },
+            Some(DefaultExpr::Explicit(expr)) => quote! {
+                #ident: __slots.#ident.take().unwrap_or_else(|| { #expr }),
+            },
         },
-    }
-}
-
-impl DefaultExpr {
-    fn apply(&self, slot: &TokenStream) -> TokenStream {
-        match self {
-            Self::DefaultTrait => quote!(#slot.unwrap_or_default()),
-            Self::Explicit(expr) => quote!(#slot.unwrap_or_else(|| { #expr })),
-        }
     }
 }
 

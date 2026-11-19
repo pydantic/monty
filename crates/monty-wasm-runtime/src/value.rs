@@ -13,7 +13,7 @@ use monty_proto::DEFAULT_MAX_DECODE_BYTES;
 use monty_types::{
     BuiltinsFunctions, FileMode, MontyComplex, MontyDate, MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta,
     MontyTimeZone, MontyType, MontyUuid,
-    unstable::{ClassTypeNode as MontyClassTypeNode, MontyGraph, MontyNode, NodeId},
+    unstable::{ClassEq, ClassHash, ClassTypeNode as MontyClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 
 use crate::bindings::exports::pydantic::monty::worker::{
@@ -223,6 +223,10 @@ fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
             host_defined: value.host_defined,
             is_dataclass: value.is_dataclass,
             attrs: id_pairs(value.attrs),
+            // The WIT record carries no equality rule: JS proxies compare by
+            // reference, and the sandbox reads none for a class it receives.
+            eq: ClassEq::Identity,
+            hash: ClassHash::Identity,
         })),
         ValueNode::BuiltinFunction(value) => MontyNode::BuiltinFunction(
             value
