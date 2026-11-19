@@ -7,7 +7,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use logfire::config::AdvancedOptions;
+use logfire::{Logfire, config::AdvancedOptions, set_local_logfire};
 use monty_pool::{CheckoutOptions, Pool, PoolError, PrintFuture, ReplConfig, telemetry::TelemetryContext};
 use monty_proto::pb;
 use opentelemetry::{
@@ -19,6 +19,7 @@ use opentelemetry_sdk::{
     trace::{InMemorySpanExporter, SimpleSpanProcessor, SpanData},
 };
 use tokio::{sync::oneshot, time::timeout};
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use super::{event_kind, join_server, mock_pool_config, read_request, send_event};
 
@@ -50,8 +51,9 @@ async fn dump_span_scenario() {
         true,
         TraceState::default(),
     );
-    let options = CheckoutOptions::default()
-        .with_telemetry(Some(TelemetryContext::for_logfire(logfire).with_parent(parent.clone())));
+    let options = CheckoutOptions::default().with_telemetry(Some(
+        TelemetryContext::for_logfire(logfire.clone()).with_parent(parent.clone()),
+    ));
     let (configured, configuration) = oneshot::channel();
     let (configure_ack, configure_release) = mpsc::channel();
     let (dumping, dump_request) = oneshot::channel();
@@ -133,7 +135,11 @@ async fn dump_span_scenario() {
     let recorded = dump_spans(&spans);
     assert_eq!(recorded.len(), 2);
     assert_eq!(attribute(&recorded[1], "monty.outcome"), Some("error".into()));
-    assert_eq!(attribute(&recorded[1], "logfire.level_num"), Some(17_i64.into()));
+    assert_eq!(
+        attribute(&recorded[1], "logfire.level_num"),
+        provider_error_level(&logfire, &spans)
+    );
+    assert_eq!(attribute(&recorded[1], "logfire.msg_template"), None);
     let emitted = logs.get_emitted_logs().unwrap();
     let errors: Vec<_> = emitted
         .iter()
@@ -219,9 +225,24 @@ async fn dump_status_caps_fatal_worker_messages() {
         description.as_ref(),
         format!("{PREFIX}{}", "é".repeat((LIMIT - PREFIX.len()) / 2))
     );
-    assert_eq!(attribute(&recorded[0], "length_limit_exceeded"), Some(true.into()));
+    assert_eq!(attribute(&recorded[0], "monty.error.truncated"), Some(true.into()));
     pool.close().await;
     join_server(server).await;
+}
+
+/// Derive provider-owned error metadata from a plain span that Monty does not customize.
+fn provider_error_level(logfire: &Logfire, exporter: &InMemorySpanExporter) -> Option<Value> {
+    let _provider = set_local_logfire(logfire.clone());
+    let span = tracing::info_span!("provider error reference");
+    let _ = span.context();
+    span.set_status(Status::error("provider error reference"));
+    drop(span);
+    let recorded = exporter.get_finished_spans().unwrap();
+    let reference = recorded
+        .iter()
+        .find(|span| span.name == "provider error reference")
+        .unwrap();
+    attribute(reference, "logfire.level_num")
 }
 
 /// Read only completed dump operations from the synchronous exporter.

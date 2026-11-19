@@ -36,9 +36,6 @@ use crate::telemetry::{
     },
 };
 
-/// OpenTelemetry error severity used by Logfire to display a failed operation.
-const LEVEL_ERROR: i64 = 17;
-
 /// Starts the OTel span eagerly without entering it or fixing its end time.
 fn start_span(span: Span) -> Span {
     let _ = span.context();
@@ -57,9 +54,8 @@ impl DumpSpan {
         self.outcome = if let Some(error) = error {
             let (message, cut) = capped_text(|writer| write!(writer, "{error}"));
             self.span.set_status(Status::error(message));
-            self.span.set_attribute("logfire.level_num", LEVEL_ERROR);
             if cut {
-                self.span.set_attribute("length_limit_exceeded", true);
+                self.span.set_attribute("monty.error.truncated", true);
             }
             "error"
         } else {
@@ -154,9 +150,9 @@ impl Recorder {
         let _logfire = self.logfire.clone().map(set_local_logfire);
         let parent = self.context_span();
         let span = if parent.is_none() {
-            logfire::span!("dump", monty.outcome = Empty)
+            tracing::info_span!("dump", monty.outcome = Empty)
         } else {
-            logfire::span!(parent: &parent, "dump", monty.outcome = Empty)
+            tracing::info_span!(parent: &parent, "dump", monty.outcome = Empty)
         };
         if parent.is_none()
             && let Some(context) = self.adapter_context.clone().and_then(TelemetryContext::into_parent)

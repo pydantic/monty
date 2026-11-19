@@ -242,6 +242,8 @@ configuration and the complete remote response wait. A raw `turn_raw` dump does 
 create a serialization span. `monty.turn.duration` and `monty.snapshot.bytes` retain the raw turn
 timing and size measurements. On a forwarding worker, these measure the subprocess round trip
 and serialized state size. On a remote client, they measure the relay round trip and returned snapshot size.
+The dump span uses standard tracing and OpenTelemetry status. Monty records its outcome and error
+truncation under `monty.*`. The configured provider owns vendor-specific metadata.
 
 The adapter configures a process-global Rust pipeline and returns a handle that creates each
 checkout's serialized parent context. Span and log records are emitted through
