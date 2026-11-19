@@ -27,8 +27,8 @@
 //!
 //! Suspendable advancement loads an unread file through [`buffer_load_call`]
 //! with a `FileNext` effect, then returns the first line. This applies to
-//! `next()`, loops and lazy `map`/`filter` consumers. Synchronous `py_next`
-//! still rejects an unread file with `NotImplementedError`.
+//! `next()`, loops and lazy `map`/`filter` consumers. For synchronous consumers,
+//! [`PyValue::next_sync`](crate::py_value::PyValue::next_sync) rejects an unread file with `NotImplementedError`.
 //!
 //! [`buffer_load_call`]: HeapObjectRead::buffer_load_call
 //!

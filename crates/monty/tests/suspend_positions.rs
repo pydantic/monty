@@ -51,7 +51,12 @@ fn function_call_points_at_the_call_expression() {
 fn a_deferred_map_item_points_into_the_loop() {
     let code = "items = map(fetch, [42])\n[x for x in items]";
     let call = start(code).into_function_call().unwrap();
-    assert_eq!(covered(&call.position, "test.py", code), "items");
+    let start = code.rfind("items").unwrap();
+    assert_eq!(call.position.filename, "test.py");
+    assert_eq!(
+        call.position.start as usize..call.position.end as usize,
+        start..start + "items".len()
+    );
     let done = call.resume(MontyObject::int(42), PrintWriter::Disabled).unwrap();
     assert_eq!(done.into_complete().unwrap(), MontyObject::list([MontyObject::int(42)]));
 }

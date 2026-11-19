@@ -181,6 +181,11 @@ infinite = map(abs, itertools.count(-2))
 assert [next(infinite), next(infinite), next(infinite)] == [2, 1, 0]
 
 # === Keyword validation precedes positional arity ===
+try:
+    map(bad=True)
+    assert False, 'expected unknown map keyword to fail'
+except TypeError as exc:
+    assert str(exc) == "map() got an unexpected keyword argument 'bad'"
 for args in [(), (abs,)]:
     try:
         map(*args, strict=True)
