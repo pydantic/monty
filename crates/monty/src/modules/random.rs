@@ -291,7 +291,8 @@ fn call_seeded(target: RandomTarget, function: RandomFunctions, args: ArgValues,
 /// `seed(a=None, version=2)`: `None` takes a fresh state according to `RandomStart`;
 /// explicit seeds follow `random.py`.
 #[py_signature("seed(a=None, version=2)", style = def, error_name = "Random.seed")]
-fn seed(target: RandomTarget, SeedArgs { a, version }: &SeedArgs, vm: &mut VM<'_>) -> RunResult<CallResult> {
+fn seed(target: RandomTarget, args: &SeedArgs, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    let SeedArgs { a, version } = args;
     let state = if matches!(a, Value::None) {
         match vm.random.fresh_state(&vm.env.os_policy.random_start)? {
             Some(state) => state,
@@ -339,7 +340,8 @@ fn getstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
 /// `setstate(state)`: restores a `getstate()` tuple, accepting version 2
 /// states (signed words) as CPython does.
 #[py_signature("setstate(state)", style = def, error_name = "Random.setstate")]
-fn setstate(target: RandomTarget, SetstateArgs { state }: &SetstateArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+fn setstate(target: RandomTarget, args: &SetstateArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let SetstateArgs { state } = args;
     // `version = state[0]` runs before the unpack, so a non-subscriptable
     // state reports that rather than an unpack failure.
     let version = state.py_getitem(&Value::Int(0), vm)?;
@@ -528,7 +530,8 @@ fn getrandbits(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunRes
 
 /// `randbytes(n)`: `n` random bytes, the little-endian bytes of `getrandbits(8n)`.
 #[py_signature("randbytes(n)", style = def, error_name = "Random.randbytes")]
-fn randbytes(target: RandomTarget, RandbytesArgs { n }: &RandbytesArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+fn randbytes(target: RandomTarget, args: &RandbytesArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let RandbytesArgs { n } = args;
     // `getrandbits(n * 8)` is what rejects a negative or oversized count.
     let n = n.as_int_with_overflow(vm, ExcType::overflow_c_uint64)?;
     let n = usize::try_from(n).map_err(|_| ExcType::value_error_negative_int())?;
@@ -561,11 +564,8 @@ fn randbytes(target: RandomTarget, RandbytesArgs { n }: &RandbytesArgs, vm: &mut
 /// rather than defaulted so the `step is not _ONE` check can tell an explicit
 /// step from the default.
 #[py_signature("randrange(start, stop=None, step=...)", style = def, error_name = "Random.randrange")]
-fn randrange(
-    target: RandomTarget,
-    RandrangeArgs { start, stop, step }: &RandrangeArgs,
-    vm: &mut VM<'_>,
-) -> RunResult<Value> {
+fn randrange(target: RandomTarget, args: &RandrangeArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let RandrangeArgs { start, stop, step } = args;
     let istart = i128::from(start.as_int(vm)?);
     if matches!(stop, Value::None) {
         // CPython tests `step is not _ONE`, and `1` is that very object.
@@ -627,7 +627,8 @@ fn randrange(
 
 /// `randint(a, b)`: a random int in `[a, b]`.
 #[py_signature("randint(a, b)", style = def, error_name = "Random.randint")]
-fn randint(target: RandomTarget, RandintArgs { a, b }: &RandintArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+fn randint(target: RandomTarget, args: &RandintArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let RandintArgs { a, b } = args;
     let a = i128::from(a.as_int(vm)?);
     let b = i128::from(b.as_int(vm)?);
     if b < a {
@@ -676,7 +677,8 @@ fn int_arg_str(value: &Value) -> String {
 
 /// `choice(seq)`: `seq[randbelow(len(seq))]`.
 #[py_signature("choice(seq)", style = def, error_name = "Random.choice")]
-fn choice(target: RandomTarget, ChoiceArgs { seq }: &ChoiceArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+fn choice(target: RandomTarget, args: &ChoiceArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let ChoiceArgs { seq } = args;
     let len = len_of(seq, vm)?;
     if len == 0 {
         return Err(ExcType::index_error("Cannot choose from an empty sequence"));
@@ -691,7 +693,8 @@ fn choice(target: RandomTarget, ChoiceArgs { seq }: &ChoiceArgs, vm: &mut VM<'_>
 /// x[i]` per swap, as `random.py` does, so a tuple, `str`, set or dict fails
 /// (or, for a dict keyed `0..n`, succeeds) exactly where CPython does.
 #[py_signature("shuffle(x)", style = def, error_name = "Random.shuffle")]
-fn shuffle(target: RandomTarget, ShuffleArgs { x }: ShuffleArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+fn shuffle(target: RandomTarget, args: ShuffleArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let ShuffleArgs { x } = args;
     defer_drop_mut!(x, vm);
     let len = len_of(x, vm)?;
     if let Value::Ref(id) = x
@@ -737,11 +740,8 @@ fn swap_items(x: &mut Value, i: i64, j: i64, vm: &mut VM<'_>) -> RunResult<()> {
 /// order, drawn exactly as CPython does (pool below its set-size threshold,
 /// rejection into a set above it).
 #[py_signature("sample(population, k, *, counts=None)", style = def, error_name = "Random.sample")]
-fn sample(
-    target: RandomTarget,
-    SampleArgs { population, k, counts }: &SampleArgs,
-    vm: &mut VM<'_>,
-) -> RunResult<Value> {
+fn sample(target: RandomTarget, args: &SampleArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let SampleArgs { population, k, counts } = args;
     if !population.py_type_heap(vm.heap).native().is_some_and(is_sequence) {
         return Err(ExcType::type_error(
             "Population must be a sequence.  For dicts or sets, use sorted(d).",
@@ -861,16 +861,13 @@ fn cumulative_counts(counts: &Value, vm: &mut VM<'_>) -> RunResult<Vec<i128>> {
 /// `choices(population, weights=None, *, cum_weights=None, k=1)`: `k` picks
 /// with replacement, uniform or by (cumulative) weight.
 #[py_signature("choices(population, weights=None, *, cum_weights=None, k=1)", style = def, error_name = "Random.choices")]
-fn choices(
-    target: RandomTarget,
-    ChoicesArgs {
+fn choices(target: RandomTarget, args: ChoicesArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let ChoicesArgs {
         population,
         weights,
         cum_weights,
         k,
-    }: ChoicesArgs,
-    vm: &mut VM<'_>,
-) -> RunResult<Value> {
+    } = args;
     defer_drop!(population, vm);
     defer_drop!(weights, vm);
     defer_drop!(cum_weights, vm);
@@ -1039,7 +1036,8 @@ fn index_value(index: u128) -> i64 {
 
 /// `uniform(a, b)`: `a + (b - a) * random()`.
 #[py_signature("uniform(a, b)", style = def, error_name = "Random.uniform")]
-fn uniform(target: RandomTarget, UniformArgs { a, b }: &UniformArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+fn uniform(target: RandomTarget, args: &UniformArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let UniformArgs { a, b } = args;
     let (a, b) = (to_float(a, vm)?, to_float(b, vm)?);
     let r = target.with_generator(vm, |random, _| random.rng().random());
     Ok(Value::Float(a + (b - a) * r))
@@ -1049,11 +1047,8 @@ fn uniform(target: RandomTarget, UniformArgs { a, b }: &UniformArgs, vm: &mut VM
 /// With `mode` given and `low == high`, CPython catches the `ZeroDivisionError`
 /// and returns `low` itself, so an int `low` comes back as an int.
 #[py_signature("triangular(low=0.0, high=1.0, mode=None)", style = def, error_name = "Random.triangular")]
-fn triangular(
-    target: RandomTarget,
-    TriangularArgs { low, high, mode }: &TriangularArgs,
-    vm: &mut VM<'_>,
-) -> RunResult<Value> {
+fn triangular(target: RandomTarget, args: &TriangularArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let TriangularArgs { low, high, mode } = args;
     let (low_value, high_value) = (low, high);
     let (mut low, mut high) = (to_float(low_value, vm)?, to_float(high_value, vm)?);
     let mode = if matches!(mode, Value::None) {
@@ -1078,7 +1073,8 @@ fn triangular(
 
 /// `normalvariate(mu=0.0, sigma=1.0)`: Kinderman–Monahan ratio of uniforms.
 #[py_signature("normalvariate(mu=0.0, sigma=1.0)", style = def, error_name = "Random.normalvariate")]
-fn normalvariate(target: RandomTarget, NormalArgs { mu, sigma }: &NormalArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+fn normalvariate(target: RandomTarget, args: &NormalArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let NormalArgs { mu, sigma } = args;
     let (mu, sigma) = (to_float(mu, vm)?, to_float(sigma, vm)?);
     let z = target.with_generator(vm, |random, vm| normal_deviate(random.rng(), &vm.heap.tracker))?;
     Ok(Value::Float(mu + z * sigma))
@@ -1105,7 +1101,8 @@ fn normal_deviate(rng: &mut Mt19937, tracker: &ResourceTracker) -> RunResult<f64
 /// `gauss(mu=0.0, sigma=1.0)`: Box–Muller, keeping the second deviate for
 /// the next call.
 #[py_signature("gauss(mu=0.0, sigma=1.0)", style = def, error_name = "Random.gauss")]
-fn gauss(target: RandomTarget, GaussArgs { mu, sigma }: &GaussArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+fn gauss(target: RandomTarget, args: &GaussArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let GaussArgs { mu, sigma } = args;
     let (mu, sigma) = (to_float(mu, vm)?, to_float(sigma, vm)?);
     Ok(Value::Float(target.with_generator(vm, |random, _| {
         let z = if let Some(z) = random.take_gauss_next() {
@@ -1123,7 +1120,8 @@ fn gauss(target: RandomTarget, GaussArgs { mu, sigma }: &GaussArgs, vm: &mut VM<
 
 /// `lognormvariate(mu, sigma)`: `exp(normalvariate(mu, sigma))`.
 #[py_signature("lognormvariate(mu, sigma)", style = def, error_name = "Random.lognormvariate")]
-fn lognormvariate(target: RandomTarget, LognormArgs { mu, sigma }: &LognormArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+fn lognormvariate(target: RandomTarget, args: &LognormArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let LognormArgs { mu, sigma } = args;
     let (mu, sigma) = (to_float(mu, vm)?, to_float(sigma, vm)?);
     let z = target.with_generator(vm, |random, vm| normal_deviate(random.rng(), &vm.heap.tracker))?;
     let exponent = mu + z * sigma;
@@ -1137,7 +1135,8 @@ fn lognormvariate(target: RandomTarget, LognormArgs { mu, sigma }: &LognormArgs,
 
 /// `expovariate(lambd=1.0)`: `-log(1 - random()) / lambd`.
 #[py_signature("expovariate(lambd=1.0)", style = def, error_name = "Random.expovariate")]
-fn expovariate(target: RandomTarget, ExpovariateArgs { lambd }: &ExpovariateArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+fn expovariate(target: RandomTarget, args: &ExpovariateArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let ExpovariateArgs { lambd } = args;
     let lambd = to_float(lambd, vm)?;
     let r = target.with_generator(vm, |random, _| random.rng().random());
     let numerator = -(1.0 - r).ln();
@@ -1146,11 +1145,8 @@ fn expovariate(target: RandomTarget, ExpovariateArgs { lambd }: &ExpovariateArgs
 
 /// `vonmisesvariate(mu, kappa)`: Fisher's circular distribution algorithm.
 #[py_signature("vonmisesvariate(mu, kappa)", style = def, error_name = "Random.vonmisesvariate")]
-fn vonmisesvariate(
-    target: RandomTarget,
-    VonmisesArgs { mu, kappa }: &VonmisesArgs,
-    vm: &mut VM<'_>,
-) -> RunResult<Value> {
+fn vonmisesvariate(target: RandomTarget, args: &VonmisesArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let VonmisesArgs { mu, kappa } = args;
     let (mu, kappa) = (to_float(mu, vm)?, to_float(kappa, vm)?);
     target.with_generator(vm, |random, vm| {
         let rng = random.rng();
@@ -1186,7 +1182,8 @@ fn vonmisesvariate(
 /// `gammavariate(alpha, beta)`: the gamma distribution, by Cheng's method
 /// above `alpha == 1`, exponential at it, and Kennedy & Gentle's below.
 #[py_signature("gammavariate(alpha, beta)", style = def, error_name = "Random.gammavariate")]
-fn gammavariate(target: RandomTarget, GammaArgs { alpha, beta }: &GammaArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+fn gammavariate(target: RandomTarget, args: &GammaArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let GammaArgs { alpha, beta } = args;
     let (alpha, beta) = (to_float(alpha, vm)?, to_float(beta, vm)?);
     if alpha <= 0.0 || beta <= 0.0 {
         return Err(ExcType::value_error("gammavariate: alpha and beta must be > 0.0"));
@@ -1256,7 +1253,8 @@ fn gamma_deviate(rng: &mut Mt19937, alpha: f64, beta: f64, tracker: &ResourceTra
 
 /// `betavariate(alpha, beta)`: a ratio of two gamma deviates.
 #[py_signature("betavariate(alpha, beta)", style = def, error_name = "Random.betavariate")]
-fn betavariate(target: RandomTarget, BetaArgs { alpha, beta }: &BetaArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+fn betavariate(target: RandomTarget, args: &BetaArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let BetaArgs { alpha, beta } = args;
     let (alpha, beta) = (to_float(alpha, vm)?, to_float(beta, vm)?);
     // Both inner `gammavariate` calls validate; the first rejects `alpha`,
     // and `beta` only gets checked once `y` is non-zero, as in CPython.
@@ -1280,7 +1278,8 @@ fn betavariate(target: RandomTarget, BetaArgs { alpha, beta }: &BetaArgs, vm: &m
 
 /// `paretovariate(alpha)`: `(1 - random()) ** (-1 / alpha)`.
 #[py_signature("paretovariate(alpha)", style = def, error_name = "Random.paretovariate")]
-fn paretovariate(target: RandomTarget, ParetoArgs { alpha }: &ParetoArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+fn paretovariate(target: RandomTarget, args: &ParetoArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let ParetoArgs { alpha } = args;
     let alpha = to_float(alpha, vm)?;
     let u = 1.0 - target.with_generator(vm, |random, _| random.rng().random());
     float_pow(u, float_div(-1.0, alpha)?).map(Value::Float)
@@ -1288,11 +1287,8 @@ fn paretovariate(target: RandomTarget, ParetoArgs { alpha }: &ParetoArgs, vm: &m
 
 /// `weibullvariate(alpha, beta)`: `alpha * (-log(1 - random())) ** (1 / beta)`.
 #[py_signature("weibullvariate(alpha, beta)", style = def, error_name = "Random.weibullvariate")]
-fn weibullvariate(
-    target: RandomTarget,
-    WeibullArgs { alpha, beta }: &WeibullArgs,
-    vm: &mut VM<'_>,
-) -> RunResult<Value> {
+fn weibullvariate(target: RandomTarget, args: &WeibullArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let WeibullArgs { alpha, beta } = args;
     let (alpha, beta) = (to_float(alpha, vm)?, to_float(beta, vm)?);
     let u = 1.0 - target.with_generator(vm, |random, _| random.rng().random());
     Ok(Value::Float(alpha * float_pow(-u.ln(), float_div(1.0, beta)?)?))
@@ -1305,7 +1301,8 @@ fn weibullvariate(
     reason = "`p == 0.0` / `p == 1.0` are exact edge cases in random.py"
 )]
 #[py_signature("binomialvariate(n=1, p=0.5)", style = def, error_name = "Random.binomialvariate")]
-fn binomialvariate(target: RandomTarget, BinomialArgs { n, p }: &BinomialArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+fn binomialvariate(target: RandomTarget, args: &BinomialArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let BinomialArgs { n, p } = args;
     let n = n.as_int(vm)?;
     let p = to_float(p, vm)?;
     if n < 0 {

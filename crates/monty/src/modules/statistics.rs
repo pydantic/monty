@@ -128,7 +128,8 @@ data_args!(MeanArgs, "mean");
 
 /// `fmean(data, weights=None)`: the mean as a float, through `math.fsum` / `math.sumprod` as CPython computes it.
 #[py_signature("fmean(data, weights=None)", style = def)]
-fn fmean(vm: &mut VM<'_>, FmeanArgs { data, weights }: FmeanArgs) -> RunResult<Value> {
+fn fmean(vm: &mut VM<'_>, args: FmeanArgs) -> RunResult<Value> {
+    let FmeanArgs { data, weights } = args;
     if matches!(weights, Value::None) {
         // CPython divides `fsum(data)` by `len(data)` when there is one, and otherwise counts the items.
         let (data, n) = if let Some(n) = data.py_len(vm) {
@@ -409,7 +410,8 @@ fn sorted_items(data: Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
 /// Follows CPython's order: `n < 1` is an ordinary comparison, a single datum is `data * (n - 1)`, and `method`
 /// is checked before `n` bounds the loop, so each bad argument raises what CPython raises.
 #[py_signature("quantiles(data, *, n=4, method=...)", style = def)]
-fn quantiles(vm: &mut VM<'_>, QuantilesArgs { data, n, method }: QuantilesArgs) -> RunResult<Value> {
+fn quantiles(vm: &mut VM<'_>, args: QuantilesArgs) -> RunResult<Value> {
+    let QuantilesArgs { data, n, method } = args;
     defer_drop!(n, vm);
     defer_drop!(method, vm);
     let mut data_guard = DropGuard::new(data, vm);

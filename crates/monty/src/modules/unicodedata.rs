@@ -124,13 +124,11 @@ fn uni_category(vm: &mut VM<'_>, chr: &Value) -> RunResult<Value> {
 /// character has no name. `style = unpack` gives the `PyArg_UnpackTuple` arity
 /// wording CPython uses here (`name expected at most 2 arguments, got 3`).
 #[py_signature("name(chr, default=..., /)", style = unpack, kwarg_error_name = "unicodedata.name")]
-fn uni_name(
-    vm: &mut VM<'_>,
-    NameArgs {
+fn uni_name(vm: &mut VM<'_>, args: NameArgs) -> RunResult<Value> {
+    let NameArgs {
         chr: chr_val,
         default: default_val,
-    }: NameArgs,
-) -> RunResult<Value> {
+    } = args;
     defer_drop!(chr_val, vm);
     let mut default_guard = DropGuard::new(default_val, vm);
     let vm = default_guard.ctx();
@@ -171,7 +169,7 @@ fn uni_combining(vm: &mut VM<'_>, chr: &Value) -> RunResult<Value> {
 ///
 /// Argument shape for `normalize(form, unistr, /)`.
 ///
-/// Both arguments are positional-only, zero-copy [`StrArg`]s: `bad_arg` gives
+/// Both positional-only arguments use [`StrArg`](crate::args::StrArg). `bad_arg` gives
 /// the exact `normalize() argument N must be str, not <type>` type error for
 /// both. The form's *value* is validated by [`NormForm::parse`] in the body —
 /// CPython type-checks every argument before rejecting an unknown form name,
@@ -179,14 +177,16 @@ fn uni_combining(vm: &mut VM<'_>, chr: &Value) -> RunResult<Value> {
 /// `ValueError`. `style = unpack` (with min == max here) reproduces CPython's
 /// `normalize expected 2 arguments, got N` arity error.
 #[py_signature("normalize(form: str, unistr: str, /)", style = unpack, bad_arg, kwarg_error_name = "unicodedata.normalize")]
-fn uni_normalize(vm: &mut VM<'_>, NormalizeArgs { form, unistr }: &NormalizeArgs) -> RunResult<Value> {
+fn uni_normalize(vm: &mut VM<'_>, args: &NormalizeArgs) -> RunResult<Value> {
+    let NormalizeArgs { form, unistr } = args;
     let form = NormForm::parse(form.as_str(vm))?;
     normalize_with(form, unistr.as_str(vm), vm.heap)
 }
 
 /// `unicodedata.is_normalized(form, unistr)` — whether a string is already normalized.
 #[py_signature("is_normalized(form: str, unistr: str, /)", style = unpack, bad_arg, kwarg_error_name = "unicodedata.is_normalized")]
-fn uni_is_normalized(vm: &mut VM<'_>, IsNormalizedArgs { form, unistr }: &IsNormalizedArgs) -> RunResult<Value> {
+fn uni_is_normalized(vm: &mut VM<'_>, args: &IsNormalizedArgs) -> RunResult<Value> {
+    let IsNormalizedArgs { form, unistr } = args;
     let normalized = match NormForm::parse(form.as_str(vm))? {
         NormForm::Nfc => unicode_normalization::is_nfc(unistr.as_str(vm)),
         NormForm::Nfd => unicode_normalization::is_nfd(unistr.as_str(vm)),

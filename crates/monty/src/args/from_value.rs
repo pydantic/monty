@@ -43,6 +43,38 @@ pub(crate) enum ArgErrCtx {
     },
 }
 
+impl ArgErrCtx {
+    fn wrong_type(
+        self,
+        rejected: &Value,
+        vm: &VM<'_>,
+        expected: Option<&str>,
+        plain: impl FnOnce(&str) -> RunError,
+    ) -> RunError {
+        let got_type = rejected.py_type_heap(vm.heap);
+        match (self, expected) {
+            (Self::BadArgPos { func_name, pos }, Some(expected)) => {
+                let arg_name = got_type.cpython_arg_name(vm.heap, vm.interns);
+                ExcType::type_error_bad_arg_pos(func_name, pos, expected, arg_name)
+            }
+            (
+                Self::BadArgNamed {
+                    func_name,
+                    arg_name: name,
+                },
+                Some(expected),
+            ) => {
+                let arg_name = got_type.cpython_arg_name(vm.heap, vm.interns);
+                ExcType::type_error_bad_arg_named(func_name, name, expected, arg_name)
+            }
+            _ => {
+                let got = got_type.name(vm.heap, vm.interns);
+                plain(&got)
+            }
+        }
+    }
+}
+
 /// A failed [`FromValue`] coercion, split by *why* it failed so extraction
 /// sites never have to reverse-engineer the reason from an error message.
 #[derive(Debug)]
@@ -144,27 +176,7 @@ pub(crate) trait FromValue: Sized {
             FromValueFail::WrongType(rejected) => {
                 // Capture the offending type name *before* dropping `rejected`,
                 // as dropping the last reference to an instance can free its class.
-                let got_type = rejected.py_type_heap(vm.heap);
-                let err = match (ctx, Self::EXPECTED_TYPE_NAME) {
-                    (ArgErrCtx::BadArgPos { func_name, pos }, Some(expected)) => {
-                        let arg_name = got_type.cpython_arg_name(vm.heap, vm.interns);
-                        ExcType::type_error_bad_arg_pos(func_name, pos, expected, arg_name)
-                    }
-                    (
-                        ArgErrCtx::BadArgNamed {
-                            func_name,
-                            arg_name: name,
-                        },
-                        Some(expected),
-                    ) => {
-                        let arg_name = got_type.cpython_arg_name(vm.heap, vm.interns);
-                        ExcType::type_error_bad_arg_named(func_name, name, expected, arg_name)
-                    }
-                    _ => {
-                        let got = got_type.name(vm.heap, vm.interns);
-                        Self::type_error(&got)
-                    }
-                };
+                let err = ctx.wrong_type(&rejected, vm, Self::EXPECTED_TYPE_NAME, Self::type_error);
                 rejected.drop_with(vm);
                 err
             }
@@ -316,7 +328,7 @@ impl<C: ContainsHeap> DropWithContext<C> for IntArg {
     }
 }
 
-pub(crate) fn extract_index<T: From<IntArg>>(value: Value, vm: &mut VM<'_>) -> RunResult<T> {
+pub(crate) fn extract_index<T: From<IntArg>>(value: Value, vm: &mut VM<'_>, _: ArgErrCtx) -> RunResult<T> {
     let index = match IntArg::from_integer(value, vm) {
         Ok(integer) => integer,
         Err(other) => {
@@ -328,7 +340,7 @@ pub(crate) fn extract_index<T: From<IntArg>>(value: Value, vm: &mut VM<'_>) -> R
     Ok(T::from(index))
 }
 
-pub(crate) fn extract_i64_index<T: From<i64>>(value: Value, vm: &mut VM<'_>) -> RunResult<T> {
+pub(crate) fn extract_i64_index<T: From<i64>>(value: Value, vm: &mut VM<'_>, _: ArgErrCtx) -> RunResult<T> {
     let result = value.as_int(vm);
     value.drop_with(vm);
     result.map(T::from)
@@ -492,14 +504,17 @@ impl FromValue for bool {
 #[derive(Debug)]
 pub(crate) struct StrArg(Value);
 
-pub(crate) fn extract_nullable_str(value: Value, vm: &mut VM<'_>) -> RunResult<Option<StrArg>> {
+pub(crate) fn extract_nullable_str(value: Value, vm: &mut VM<'_>, ctx: ArgErrCtx) -> RunResult<Option<StrArg>> {
     if matches!(value, Value::None) {
         Ok(None)
     } else if value.is_str(vm.heap) {
         Ok(Some(StrArg(value)))
     } else {
+        let err = ctx.wrong_type(&value, vm, Some("str or None"), |got| {
+            ExcType::type_error(format!("must be str or None, not {got}"))
+        });
         value.drop_with(vm);
-        Err(ExcType::type_error("expected str"))
+        Err(err)
     }
 }
 

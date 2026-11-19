@@ -850,7 +850,8 @@ fn call_deque_method<'h>(
 /// `deque.rotate([n])` — `PyArg_UnpackTuple`, so the arity error is
 /// `rotate expected at most 1 argument, got 2` (no type name).
 #[py_signature("rotate(n=1, /)", style = unpack)]
-fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, RotateArgs { n }: &RotateArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, args: &RotateArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let RotateArgs { n } = args;
     // A big int is a valid rotation count; only one out of `i64` range is an
     // `OverflowError`, matching CPython's `PyNumber_AsSsize_t`.
     let n = match read_ssize(n, vm, ExcType::overflow_c_ssize_t) {
@@ -878,14 +879,11 @@ fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, RotateArgs { n }: &RotateArgs, vm:
 /// `deque.insert(i, x)` — `PyArg_UnpackTuple` with a fixed arity, so the error is
 /// `insert expected 2 arguments, got 1`.
 #[py_signature("insert(index, item, /)", style = unpack)]
-fn insert<'h>(
-    deque: &HeapReadMut<'h, Deque>,
-    InsertArgs {
+fn insert<'h>(deque: &HeapReadMut<'h, Deque>, args: InsertArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let InsertArgs {
         index: index_value,
         item,
-    }: InsertArgs,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
+    } = args;
     defer_drop!(index_value, vm);
     // Every failing branch below releases `item` through the guard. The insert
     // at the end takes it back out.
@@ -959,15 +957,12 @@ fn remove<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) 
 /// `deque.index(x[, start[, stop]])` — `PyArg_UnpackTuple` with `min < max`, so a
 /// missing `x` reports `index expected at least 1 argument, got 0`.
 #[py_signature("index(value, start=..., stop=..., /)", style = unpack)]
-fn index<'h>(
-    deque: &HeapRead<'h, Deque>,
-    IndexArgs {
+fn index<'h>(deque: &HeapRead<'h, Deque>, args: IndexArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let IndexArgs {
         value: target,
         start,
         stop,
-    }: IndexArgs,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
+    } = args;
     defer_drop!(target, vm);
     defer_drop!(start, vm);
     defer_drop!(stop, vm);

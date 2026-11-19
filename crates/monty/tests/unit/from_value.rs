@@ -429,6 +429,48 @@ fn full_width_signature_defaults_and_omissions() {
 }
 
 #[test]
+fn optional_bool_distinguishes_omission_from_false() {
+    #[monty_macros::py_signature("flag(enabled: bool=..., /)")]
+    struct FlagArgs;
+    with_test_vm(|vm| {
+        for (arg, expected) in [
+            (None, None),
+            (Some(Value::None), Some(false)),
+            (Some(Value::Int(1)), Some(true)),
+        ] {
+            let args = arg.map_or(ArgValues::Empty, ArgValues::One);
+            let bound = FlagArgs::from_args(args, vm).unwrap();
+            assert_eq!(bound.enabled.map(LaxBool::bool), expected);
+        }
+    });
+}
+
+#[test]
+fn borrowed_one_arg_adapter_releases_heap_strings_on_return() {
+    const TEXT: &str = "heap-backed argument that exceeds inline storage";
+    #[monty_macros::py_signature("check(text: str | None, /)", style = one_arg)]
+    fn check(vm: &mut VM<'_>, text: &Option<StrArg>) -> RunResult<bool> {
+        if let Some(text) = text {
+            assert_eq!(text.as_str(vm), TEXT);
+            return Err(ExcType::type_error("body failed"));
+        }
+        Ok(true)
+    }
+
+    with_test_vm(|vm| {
+        assert!(check(vm, ArgValues::One(Value::None)).unwrap());
+        let text = allocate_string(TEXT, vm.heap);
+        let Value::Ref(id) = text else {
+            panic!("expected heap string")
+        };
+        let arg = text.clone_with_heap(vm);
+        assert!(check(vm, ArgValues::One(arg)).is_err());
+        assert_eq!(vm.heap.get_refcount(id), 1);
+        text.drop_with(vm);
+    });
+}
+
+#[test]
 fn signed_integer_defaults_include_both_endpoints() {
     #[monty_macros::py_signature("bounds(low: i64=-9223372036854775808, high: i64=9223372036854775807, /)")]
     struct Bounds;

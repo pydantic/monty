@@ -201,7 +201,8 @@ pub(super) fn call(vm: &mut VM<'_>, function: ReFunctions, args: ArgValues) -> R
 /// already-compiled pattern passes through unchanged (`re.compile(p) is p`,
 /// matching CPython's `_compile`).
 #[py_signature("compile(pattern, flags=0)", style = def)]
-fn call_compile(vm: &mut VM<'_>, ReCompileArgs { pattern, flags }: ReCompileArgs) -> RunResult<Value> {
+fn call_compile(vm: &mut VM<'_>, args: ReCompileArgs) -> RunResult<Value> {
+    let ReCompileArgs { pattern, flags } = args;
     match resolve_pattern(pattern, flags, vm)? {
         // Clone out of the shared cache entry: the returned `re.Pattern` is the
         // user's own object, independent of the cache.
@@ -217,7 +218,8 @@ fn call_compile(vm: &mut VM<'_>, ReCompileArgs { pattern, flags }: ReCompileArgs
 /// `re.search(pattern, string, flags=0)` — scan for a match anywhere in the string,
 /// returning a `re.Match` or `None`.
 #[py_signature("search(pattern, string, flags=0)", style = def)]
-fn call_search(vm: &mut VM<'_>, ReSearchArgs { pattern, string, flags }: ReSearchArgs) -> RunResult<Value> {
+fn call_search(vm: &mut VM<'_>, args: ReSearchArgs) -> RunResult<Value> {
+    let ReSearchArgs { pattern, string, flags } = args;
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
@@ -227,7 +229,8 @@ fn call_search(vm: &mut VM<'_>, ReSearchArgs { pattern, string, flags }: ReSearc
 /// `re.match(pattern, string, flags=0)` — match anchored at position 0, returning a
 /// `re.Match` or `None`.
 #[py_signature("match(pattern, string, flags=0)", style = def)]
-fn call_match(vm: &mut VM<'_>, ReMatchArgs { pattern, string, flags }: ReMatchArgs) -> RunResult<Value> {
+fn call_match(vm: &mut VM<'_>, args: ReMatchArgs) -> RunResult<Value> {
+    let ReMatchArgs { pattern, string, flags } = args;
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
@@ -239,7 +242,8 @@ fn call_match(vm: &mut VM<'_>, ReMatchArgs { pattern, string, flags }: ReMatchAr
 /// `re.fullmatch(pattern, string, flags=0)` — match the whole string, returning a
 /// `re.Match` or `None`.
 #[py_signature("fullmatch(pattern, string, flags=0)", style = def)]
-fn call_fullmatch(vm: &mut VM<'_>, ReFullmatchArgs { pattern, string, flags }: ReFullmatchArgs) -> RunResult<Value> {
+fn call_fullmatch(vm: &mut VM<'_>, args: ReFullmatchArgs) -> RunResult<Value> {
+    let ReFullmatchArgs { pattern, string, flags } = args;
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
@@ -251,7 +255,8 @@ fn call_fullmatch(vm: &mut VM<'_>, ReFullmatchArgs { pattern, string, flags }: R
 /// `re.findall(pattern, string, flags=0)` — all non-overlapping matches, as a list of
 /// strings or of tuples depending on the capture-group count (as CPython).
 #[py_signature("findall(pattern, string, flags=0)", style = def)]
-fn call_findall(vm: &mut VM<'_>, ReFindallArgs { pattern, string, flags }: ReFindallArgs) -> RunResult<Value> {
+fn call_findall(vm: &mut VM<'_>, args: ReFindallArgs) -> RunResult<Value> {
+    let ReFindallArgs { pattern, string, flags } = args;
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
@@ -265,16 +270,14 @@ fn call_findall(vm: &mut VM<'_>, ReFindallArgs { pattern, string, flags }: ReFin
 /// with a compiled pattern) wins over a bad count — as in CPython, where `_compile`
 /// runs before `Pattern.sub` parses its arguments.
 #[py_signature("sub(pattern, repl, string, count=..., flags=0)", style = def)]
-fn call_sub(
-    vm: &mut VM<'_>,
-    ReSubArgs {
+fn call_sub(vm: &mut VM<'_>, args: ReSubArgs) -> RunResult<Value> {
+    let ReSubArgs {
         pattern,
         repl,
         string,
         count,
         flags,
-    }: ReSubArgs,
-) -> RunResult<Value> {
+    } = args;
     defer_drop!(string, vm);
     defer_drop!(repl, vm);
     // `count` must outlive `resolve_pattern`'s `?` (pattern errors win over a
@@ -313,15 +316,13 @@ fn call_sub(
 /// `re.split(pattern, string, maxsplit=0, flags=0)` — split on pattern occurrences.
 /// A non-zero `maxsplit` caps the splits, leaving the remainder as the final element.
 #[py_signature("split(pattern, string, maxsplit=..., flags=0)", style = def)]
-fn call_split(
-    vm: &mut VM<'_>,
-    ReSplitArgs {
+fn call_split(vm: &mut VM<'_>, args: ReSplitArgs) -> RunResult<Value> {
+    let ReSplitArgs {
         pattern,
         string,
         maxsplit,
         flags,
-    }: ReSplitArgs,
-) -> RunResult<Value> {
+    } = args;
     defer_drop!(string, vm);
     // As in `call_sub`: `maxsplit` must survive a pattern/flags error, so
     // guard it before `resolve_pattern` and `take` it out afterwards.
@@ -615,7 +616,8 @@ fn resolve_pattern(pattern: Value, flags: Value, vm: &mut VM<'_>) -> RunResult<R
 /// works, but `next()` on the result raises and it can be iterated twice (see
 /// `limitations/re.md`).
 #[py_signature("finditer(pattern, string, flags=0)", style = def)]
-fn call_finditer(vm: &mut VM<'_>, ReFinditerArgs { pattern, string, flags }: ReFinditerArgs) -> RunResult<Value> {
+fn call_finditer(vm: &mut VM<'_>, args: ReFinditerArgs) -> RunResult<Value> {
+    let ReFinditerArgs { pattern, string, flags } = args;
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
@@ -633,7 +635,8 @@ fn call_finditer(vm: &mut VM<'_>, ReFinditerArgs { pattern, string, flags }: ReF
 /// whose non-str error (the `decoding to str: …` fallback) differs from the
 /// pattern wording [`PatternArg`] produces.
 #[py_signature("escape(pattern)", style = def)]
-fn call_escape(vm: &mut VM<'_>, ReEscapeArgs { pattern }: &ReEscapeArgs) -> RunResult<Value> {
+fn call_escape(vm: &mut VM<'_>, args: &ReEscapeArgs) -> RunResult<Value> {
+    let ReEscapeArgs { pattern } = args;
     let Some(text) = pattern.as_str(vm) else {
         // CPython's escape() falls back to `str(pattern, 'latin1')` for
         // non-str input, so this is the (incidental) message it raises.

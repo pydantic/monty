@@ -15,6 +15,7 @@ import binascii
 import bisect
 import copy
 import datetime
+import itertools
 import json
 import math
 import re
@@ -742,23 +743,31 @@ try:
 except TypeError as e:
     assert str(e) == "round() got an unexpected keyword argument 'bogus'"
 
-# enumerate accepts positional and keyword arguments. CPython has a custom
-# parser, so the TypeError text can differ when a call has several errors.
-for positional, keywords in [
-    ((), {}),
-    ((), {'start': 1}),
-    (([1],), {'iterable': [2]}),
-    (([1],), {'bogus': 1}),
-    ((), {'start': 1, 'bogus': 1, 'iterable': [1]}),
-    ((), {'bogus': 1}),
-    ((), {'start': 1, 'bogus': 2}),
-    ((), {'bogus': 2, 'start': 1}),
-    ((), {'iterable': [1], 'bogus': 1}),
+# enumerate uses Monty's shared binder and CPython's custom constructor parser.
+missing = "enumerate() missing required argument 'iterable'"
+monty_missing = "enumerate() missing 1 required positional argument: 'iterable'"
+invalid = "'bogus' is an invalid keyword argument for enumerate()"
+monty_unknown = "enumerate() got an unexpected keyword argument 'bogus'"
+for positional, keywords, monty_error, cpython_error in [
+    ((), {}, monty_missing, missing),
+    ((), {'start': 1}, monty_missing, "'start' is an invalid keyword argument for enumerate()"),
+    (
+        ([1],),
+        {'iterable': [2]},
+        "argument for enumerate() given by name ('iterable') and position (1)",
+        "'iterable' is an invalid keyword argument for enumerate()",
+    ),
+    (([1],), {'bogus': 1}, monty_unknown, invalid),
+    ((), {'start': 1, 'bogus': 1, 'iterable': [1]}, 'enumerate() takes at most 2 keyword arguments (3 given)', missing),
+    ((), {'bogus': 1}, monty_unknown, invalid),
+    ((), {'start': 1, 'bogus': 2}, monty_unknown, invalid),
+    ((), {'bogus': 2, 'start': 1}, monty_unknown, invalid),
+    ((), {'iterable': [1], 'bogus': 1}, monty_unknown, invalid),
 ]:
     try:
         enumerate(*positional, **keywords)
-    except TypeError:
-        pass
+    except TypeError as e:
+        assert str(e) == (monty_error if is_monty else cpython_error)
     else:
         assert False, (positional, keywords)
 
@@ -773,6 +782,15 @@ try:
     assert False, 'enumerate 1-pos 2-kwarg should raise'
 except TypeError as e:
     assert str(e) == 'enumerate() takes at most 2 arguments (3 given)'
+
+for index in (1 << 100, -(1 << 100)):
+    for call in (lambda i: [0].pop(i), lambda i: itertools.repeat('x', i)):
+        try:
+            call(index)
+        except OverflowError as e:
+            assert str(e) == 'Python int too large to convert to C ssize_t'
+        else:
+            assert False
 
 # === unpack: arity wording (`{name} expected …`, no parentheses) ===
 try:

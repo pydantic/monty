@@ -100,6 +100,8 @@ enum Style {
 /// (`open`, `str.encode`, `bytes.decode`, …).
 #[derive(Clone, Copy)]
 enum BadArgStyle {
+    /// Methods default to positional errors for FromValue fields. Custom extractors use their own wording.
+    MethodDefault,
     /// `{name}() argument {pos} must be {expected}, not {got}`.
     Positional,
     /// `{name}() argument '{arg_name}' must be {expected}, not {got}`.
@@ -400,7 +402,10 @@ impl Signature {
         }
     }
 
-    pub(super) fn render(&self, bound_receiver: bool) -> TokenStream {
+    pub(super) fn render(mut self, bound_receiver: bool) -> TokenStream {
+        if bound_receiver && self.style != Style::Def {
+            self.bad_arg.get_or_insert(BadArgStyle::MethodDefault);
+        }
         let struct_ident = &self.struct_ident;
         // Dedicated owning-slots struct: holds the raw `Bound` returned by the
         // runtime binder plus one typed `Option` per named field. A `DropGuard`
@@ -704,21 +709,21 @@ impl Signature {
     }
 
     fn render_extract_value(&self, field: &Field, value: &TokenStream) -> TokenStream {
+        let ctx = self.render_err_ctx(field);
         if let Some(path) = &field.extract_with {
-            quote!(#path(#value, vm))
+            quote!(#path(#value, vm, #ctx))
         } else {
             let ty = &field.ty;
-            let ctx = self.render_err_ctx(field);
             quote!(<#ty as crate::args::FromValue>::extract(#value, vm, #ctx))
         }
     }
 
     fn render_extract(&self, field: &Field, slot: &TokenStream) -> TokenStream {
+        let ctx = self.render_err_ctx(field);
         if let Some(path) = &field.extract_with {
-            quote! { #slot = ::std::option::Option::Some(#path(__v, vm)?); }
+            quote! { #slot = ::std::option::Option::Some(#path(__v, vm, #ctx)?); }
         } else {
             let ty = &field.ty;
-            let ctx = self.render_err_ctx(field);
             quote! { <#ty as crate::args::FromValue>::extract_into(__v, &mut #slot, vm, #ctx)?; }
         }
     }
@@ -729,7 +734,10 @@ impl Signature {
         let func_name = self.func_name.as_str();
         match self.bad_arg {
             None => quote! { crate::args::ArgErrCtx::Plain },
-            Some(BadArgStyle::Positional) => {
+            Some(BadArgStyle::MethodDefault) if field.extract_with.is_some() => {
+                quote! { crate::args::ArgErrCtx::Plain }
+            }
+            Some(BadArgStyle::Positional | BadArgStyle::MethodDefault) => {
                 // kw_only fields have no positional index; CPython
                 // `_PyArg_BadArgument` callers don't use kw_only, so 0 is fine.
                 let pos = field.pos_index.unwrap_or(0);

@@ -159,17 +159,15 @@ impl Time {
 /// `fold`), a seventh the total. `tzinfo` stays a raw [`Value`] so the
 /// None-or-timezone check runs in the body with CPython's wording.
 #[py_signature("time(hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)", style = c, error_name = "function")]
-pub(crate) fn init(
-    vm: &mut VM<'_>,
-    TimeInitArgs {
+pub(crate) fn init(vm: &mut VM<'_>, args: TimeInitArgs) -> RunResult<Value> {
+    let TimeInitArgs {
         hour,
         minute,
         second,
         microsecond,
         tzinfo,
         fold,
-    }: TimeInitArgs,
-) -> RunResult<Value> {
+    } = args;
     // `tzinfo` owns the input ref; hold it until `attach_tzinfo` has taken its
     // own reference, or the TimeZone could be freed out from under us.
     defer_drop_mut!(tzinfo, vm);

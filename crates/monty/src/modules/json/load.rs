@@ -77,14 +77,12 @@ const JSON_RECURSION_LIMIT: usize = 200;
 /// the macro emits the "unexpected keyword" error for them, naming
 /// `JSONDecoder.__init__` as CPython does for a keyword the decoder rejects.
 #[py_signature("loads(s, *, parse_float=None, parse_int=None)", style = def, kwarg_error_name = "JSONDecoder.__init__")]
-pub(super) fn call_loads(
-    vm: &mut VM<'_>,
-    JsonLoadsArgs {
+pub(super) fn call_loads(vm: &mut VM<'_>, args: JsonLoadsArgs) -> RunResult<Value> {
+    let JsonLoadsArgs {
         s,
         parse_float,
         parse_int,
-    }: JsonLoadsArgs,
-) -> RunResult<Value> {
+    } = args;
     let hooks = [parse_float, parse_int];
     defer_drop!(hooks, vm);
     defer_drop_mut!(s, vm);
@@ -114,7 +112,8 @@ struct NumberHooks<'a> {
 /// Argument shape for `json.load(fp)`, a pure-Python `def` like [`JsonLoadsArgs`]
 /// with the same keyword policy.
 #[py_signature("load(fp)", style = def, kwarg_error_name = "JSONDecoder.__init__")]
-pub(super) fn call_load(vm: &mut VM<'_>, JsonLoadArgs { fp }: &JsonLoadArgs) -> RunResult<CallResult> {
+pub(super) fn call_load(vm: &mut VM<'_>, args: &JsonLoadArgs) -> RunResult<CallResult> {
+    let JsonLoadArgs { fp } = args;
     match FileTarget::reader(fp, vm)? {
         FileTarget::OpenFile(file_id) => {
             let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {

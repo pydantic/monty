@@ -198,17 +198,15 @@ pub(crate) fn class_namespace_copy(class_id: HeapId, vm: &mut VM<'_>) -> RunResu
 /// Frozen helper: calls `annotate(format)` under `classdict` for `owner`, with
 /// unresolved names handled per `fake` (see [`missing_names`]).
 #[py_signature("call_annotate(annotate, classdict, format, fake, owner, is_class, /)")]
-pub(crate) fn call_annotate_helper(
-    CallAnnotateArgs {
+pub(crate) fn call_annotate_helper(args: CallAnnotateArgs, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    let CallAnnotateArgs {
         annotate,
         classdict,
         format,
         fake,
         owner,
         is_class,
-    }: CallAnnotateArgs,
-    vm: &mut VM<'_>,
-) -> RunResult<CallResult> {
+    } = args;
     defer_drop!(annotate, vm);
     defer_drop!(classdict, vm);
     defer_drop!(owner, vm);

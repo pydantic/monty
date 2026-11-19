@@ -384,7 +384,8 @@ fn asctime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `time.strftime(format, t=None)`, formatting `t` or the clock.
 #[py_signature("strftime(format, t=None, /)", style = parse_tuple)]
-fn strftime(vm: &mut VM<'_>, StrftimeArgs { format, t }: StrftimeArgs) -> RunResult<CallResult> {
+fn strftime(vm: &mut VM<'_>, args: StrftimeArgs) -> RunResult<CallResult> {
+    let StrftimeArgs { format, t } = args;
     let result = strftime_result(&format, &t, vm);
     (format, t).drop_with(vm.heap);
     result
@@ -406,7 +407,8 @@ fn strftime_result(format: &Value, t: &Value, vm: &mut VM<'_>) -> RunResult<Call
 /// CPython's is the pure-Python `_strptime_time`, which is why the binding
 /// errors name that function rather than `strptime`.
 #[py_signature("_strptime_time(data_string, format=None)", style = def)]
-fn strptime(vm: &mut VM<'_>, StrptimeArgs { data_string, format }: StrptimeArgs) -> RunResult<CallResult> {
+fn strptime(vm: &mut VM<'_>, args: StrptimeArgs) -> RunResult<CallResult> {
+    let StrptimeArgs { data_string, format } = args;
     let result = strptime_result(&data_string, &format, vm);
     (data_string, format).drop_with(vm.heap);
     result.map(CallResult::Value)

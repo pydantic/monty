@@ -17,7 +17,8 @@ use crate::{bytecode::VM, exception_private::RunResult, types::str::allocate_str
 /// `format() takes no keyword arguments` rejection; `bad_arg` supplies
 /// `format() argument 2 must be str, not int`.
 #[py_signature("format(value, format_spec: str=..., /)", style = unpack, bad_arg)]
-pub fn builtin_format(vm: &mut VM<'_>, FormatArgs { value, format_spec }: &FormatArgs) -> RunResult<Value> {
+pub fn builtin_format(vm: &mut VM<'_>, args: &FormatArgs) -> RunResult<Value> {
+    let FormatArgs { value, format_spec } = args;
     // The spec borrows `vm`, which the formatter needs mutably; it is already
     // tracked so copying it out is bounded.
     let spec = format_spec.as_ref().map(|spec| spec.as_str(vm).to_owned());

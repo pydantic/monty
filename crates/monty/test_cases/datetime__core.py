@@ -1153,6 +1153,10 @@ try:
 except OverflowError as e:
     assert str(e) == 'days=-1000000000; must have magnitude <= 999999999', f'td neg overflow: {e}'
 
+assert datetime.timedelta(1, 2, 3, 4, 5, 6, 7) == datetime.timedelta(
+    days=1, seconds=2, microseconds=3, milliseconds=4, minutes=5, hours=6, weeks=7
+)
+
 # === timedelta constructor: duplicate kwargs (timedelta.rs init) ===
 # Both engines use the clinic conflict wording "argument for X given by
 # name (...) and position (...)"; only the descriptor differs — CPython
@@ -1215,7 +1219,7 @@ except TypeError as e:
     else:
         assert str(e) == 'unsupported type for timedelta days component: str', f'td non-int days: {e}'
 
-# timedelta: kw_only milliseconds as wrong type — exercises the kw_only path
+# timedelta: milliseconds supplied by keyword with the wrong type
 try:
     datetime.timedelta(milliseconds=[1, 2])
     assert False, 'timedelta(milliseconds=non-int) should raise TypeError'

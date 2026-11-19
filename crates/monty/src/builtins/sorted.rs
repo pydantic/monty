@@ -43,7 +43,8 @@ fn clone_slice_with_checks(
 /// unknown-kwarg errors uniformly read `sort() got an unexpected keyword
 /// argument 'X'` without any wording overrides.
 #[monty_macros::py_signature("sorted(iterable, /, **kwargs)", style = unpack)]
-pub fn builtin_sorted(vm: &mut VM<'_>, SortedArgs { iterable, kwargs }: SortedArgs) -> RunResult<Value> {
+pub fn builtin_sorted(vm: &mut VM<'_>, args: SortedArgs) -> RunResult<Value> {
+    let SortedArgs { iterable, kwargs } = args;
     let items = if let Value::Ref(id) = &iterable
         && let slice = match vm.heap.get(*id) {
             HeapData::List(list) => Some(list.as_slice()),

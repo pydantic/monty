@@ -774,3 +774,12 @@ try:
     assert False, 'splitlines pos + kwarg should raise'
 except TypeError as e:
     assert str(e) == 'splitlines() takes at most 1 argument (2 given)', f'dup: {e}'
+
+
+for split in (lambda: 'a'.split([]), lambda: 'a'.rsplit([])):
+    try:
+        split()
+    except TypeError as exc:
+        assert str(exc) == 'must be str or None, not list'
+    else:
+        assert False

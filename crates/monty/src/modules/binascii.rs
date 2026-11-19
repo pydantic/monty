@@ -174,7 +174,8 @@ fn call_unhexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Val
 /// `binascii.b2a_base64(data, *, newline=True)` — base64 with the trailing
 /// newline `encodebytes` relies on.
 #[py_signature("b2a_base64(data, /, *, newline=True)", style = c_named)]
-fn call_b2a_base64(vm: &mut VM<'_>, B2aBase64Args { data, newline }: &B2aBase64Args) -> RunResult<Value> {
+fn call_b2a_base64(vm: &mut VM<'_>, args: &B2aBase64Args) -> RunResult<Value> {
+    let B2aBase64Args { data, newline } = args;
     // Resolved before encoding so the newline is reserved with the rest, which
     // is also where CPython's Argument Clinic `p` converter reads it.
     let newline = newline.py_bool(vm)?;
@@ -188,7 +189,8 @@ fn call_b2a_base64(vm: &mut VM<'_>, B2aBase64Args { data, newline }: &B2aBase64A
 /// `binascii.a2b_base64(data, *, strict_mode=False)` — the decoder every
 /// `base64` decode path funnels into.
 #[py_signature("a2b_base64(data, /, *, strict_mode=False)", style = c_named)]
-fn call_a2b_base64(vm: &mut VM<'_>, A2bBase64Args { data, strict_mode }: &A2bBase64Args) -> RunResult<Value> {
+fn call_a2b_base64(vm: &mut VM<'_>, args: &A2bBase64Args) -> RunResult<Value> {
+    let A2bBase64Args { data, strict_mode } = args;
     let strict = strict_mode.py_bool(vm)?;
     let decoded = b64_decode(
         decode_input_described(data, vm, "bytes, buffer or ASCII string")?.as_ref(),
@@ -203,7 +205,8 @@ fn call_a2b_base64(vm: &mut VM<'_>, A2bBase64Args { data, strict_mode }: &A2bBas
 /// Argument shape for `crc32(data, crc=0)` — positional-only, so keywords are
 /// rejected outright with the module-qualified name.
 #[py_signature("crc32(data, crc=..., /)", style = unpack, kwarg_error_name = "binascii.crc32")]
-fn call_crc32(vm: &mut VM<'_>, Crc32Args { data, crc }: &Crc32Args) -> RunResult<Value> {
+fn call_crc32(vm: &mut VM<'_>, args: &Crc32Args) -> RunResult<Value> {
+    let Crc32Args { data, crc } = args;
     // CPython converts `crc` with the `I` format, which takes any int modulo
     // 2**32 rather than rejecting one out of range.
     let seed = match crc {
@@ -220,7 +223,8 @@ fn call_crc32(vm: &mut VM<'_>, Crc32Args { data, crc }: &Crc32Args) -> RunResult
 /// Argument shape for `crc_hqx(data, crc)` — like `crc32`, but with `crc`
 /// required rather than defaulted.
 #[py_signature("crc_hqx(data, crc, /)", style = unpack, kwarg_error_name = "binascii.crc_hqx")]
-fn call_crc_hqx(vm: &mut VM<'_>, CrcHqxArgs { data, crc }: &CrcHqxArgs) -> RunResult<Value> {
+fn call_crc_hqx(vm: &mut VM<'_>, args: &CrcHqxArgs) -> RunResult<Value> {
+    let CrcHqxArgs { data, crc } = args;
     // The `I` format takes the seed modulo 2**32, then the body narrows it to
     // the 16 bits the register holds — so `-1` and `0xffff` seed alike.
     let seed = u16::try_from(wrapping_u32(crc, vm)? & 0xffff).expect("masked below 2**16");
@@ -231,7 +235,8 @@ fn call_crc_hqx(vm: &mut VM<'_>, CrcHqxArgs { data, crc }: &CrcHqxArgs) -> RunRe
 /// `binascii.b2a_uu(data, *, backtick=False)` — one uuencoded line, newline
 /// included, for at most the 45 bytes the line-length byte can describe.
 #[py_signature("b2a_uu(data, /, *, backtick=False)", style = c_named)]
-fn call_b2a_uu(vm: &mut VM<'_>, B2aUuArgs { data, backtick }: &B2aUuArgs) -> RunResult<Value> {
+fn call_b2a_uu(vm: &mut VM<'_>, args: &B2aUuArgs) -> RunResult<Value> {
+    let B2aUuArgs { data, backtick } = args;
     let backtick = backtick.py_bool(vm)?;
     let encoded = uu_encode(encode_input(data, vm)?.as_ref(), backtick)?;
     Ok(allocate_bytes(encoded, vm.heap))
@@ -253,15 +258,13 @@ fn call_a2b_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Argument shape for `b2a_qp(data, quotetabs=False, istext=True, header=False)`,
 /// whose three flags are all positional-or-keyword.
 #[py_signature("b2a_qp(data, quotetabs=False, istext=True, header=False)", style = c_named, at_most_total)]
-fn call_b2a_qp(
-    vm: &mut VM<'_>,
-    B2aQpArgs {
+fn call_b2a_qp(vm: &mut VM<'_>, args: B2aQpArgs) -> RunResult<Value> {
+    let B2aQpArgs {
         data,
         quotetabs,
         istext,
         header,
-    }: B2aQpArgs,
-) -> RunResult<Value> {
+    } = args;
     defer_drop!(data, vm);
     defer_drop!(quotetabs, vm);
     defer_drop!(istext, vm);
@@ -279,7 +282,8 @@ fn call_b2a_qp(
 /// `binascii.a2b_qp(data, header=False)` — quoted-printable decoding, which
 /// never fails: anything malformed is copied through verbatim.
 #[py_signature("a2b_qp(data, header=False)", style = c_named, at_most_total)]
-fn call_a2b_qp(vm: &mut VM<'_>, A2bQpArgs { data, header }: &A2bQpArgs) -> RunResult<Value> {
+fn call_a2b_qp(vm: &mut VM<'_>, args: &A2bQpArgs) -> RunResult<Value> {
+    let A2bQpArgs { data, header } = args;
     let header = header.py_bool(vm)?;
     let decoded = qp_decode(
         decode_input_described(data, vm, "bytes, buffer or ASCII string")?.as_ref(),

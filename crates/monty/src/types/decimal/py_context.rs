@@ -179,9 +179,8 @@ pub(crate) fn setcontext(vm: &mut VM<'_>, context: &Value) -> RunResult<Value> {
 /// `ctx` (or of the current context), with the given attributes changed, for the
 /// duration of a `with` block.
 #[py_signature("localcontext(ctx=None, *, prec=None, rounding=None, Emin=None, Emax=None, capitals=None, clamp=None, flags=None, traps=None)", style = c)]
-pub(crate) fn localcontext(
-    vm: &mut VM<'_>,
-    LocalContextArgs {
+pub(crate) fn localcontext(vm: &mut VM<'_>, args: LocalContextArgs) -> RunResult<Value> {
+    let LocalContextArgs {
         ctx,
         prec,
         rounding,
@@ -191,8 +190,7 @@ pub(crate) fn localcontext(
         clamp,
         flags,
         traps,
-    }: LocalContextArgs,
-) -> RunResult<Value> {
+    } = args;
     let fields = [prec, rounding, emin, emax, capitals, clamp, flags, traps];
     defer_drop!(fields, vm);
     defer_drop!(ctx, vm);
@@ -211,9 +209,8 @@ pub(crate) fn localcontext(
 /// `decimal.Context(prec=None, rounding=None, Emin=None, Emax=None, capitals=None,
 /// clamp=None, flags=None, traps=None)`: a new context starting from `DefaultContext`.
 #[py_signature("Context(prec=None, rounding=None, Emin=None, Emax=None, capitals=None, clamp=None, flags=None, traps=None)", style = c)]
-pub(crate) fn init(
-    vm: &mut VM<'_>,
-    ContextArgs {
+pub(crate) fn init(vm: &mut VM<'_>, args: ContextArgs) -> RunResult<Value> {
+    let ContextArgs {
         prec,
         rounding,
         Emin: emin,
@@ -222,8 +219,7 @@ pub(crate) fn init(
         clamp,
         flags,
         traps,
-    }: ContextArgs,
-) -> RunResult<Value> {
+    } = args;
     let fields = [prec, rounding, emin, emax, capitals, clamp, flags, traps];
     defer_drop!(fields, vm);
     let default = template_id(vm, Template::Default);

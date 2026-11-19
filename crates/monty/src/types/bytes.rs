@@ -720,11 +720,8 @@ fn call_bytes_method_impl<'h>(
 /// out naturally because `Option<StrArg>::from_value` delegates to
 /// `StrArg::from_value` and rejects `Value::None`.
 #[py_signature("decode(encoding: str=..., errors: str=...)", at_most_total, bad_arg_named)]
-fn bytes_decode<'h>(
-    bytes: &impl HeapView<'h, [u8]>,
-    BytesDecodeArgs { encoding, errors }: &BytesDecodeArgs,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
+fn bytes_decode<'h>(bytes: &impl HeapView<'h, [u8]>, args: &BytesDecodeArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let BytesDecodeArgs { encoding, errors } = args;
     let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
     let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
 
@@ -1455,11 +1452,8 @@ fn bytes_removesuffix<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: 
 ///
 /// Returns a list of the bytes split by the separator.
 #[py_signature("split(sep=None, maxsplit: i64=-1)")]
-fn bytes_split<'h>(
-    bytes: &impl HeapView<'h, [u8]>,
-    BytesSplitArgs { sep, maxsplit }: BytesSplitArgs,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
+fn bytes_split<'h>(bytes: &impl HeapView<'h, [u8]>, args: BytesSplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let BytesSplitArgs { sep, maxsplit } = args;
     let sep = bytes_separator(sep, vm)?;
 
     // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
@@ -1508,11 +1502,8 @@ fn bytes_split<'h>(
 ///
 /// Returns a list of the bytes split by the separator, splitting from the right.
 #[py_signature("rsplit(sep=None, maxsplit: i64=-1)")]
-fn bytes_rsplit<'h>(
-    bytes: &impl HeapView<'h, [u8]>,
-    BytesRsplitArgs { sep, maxsplit }: BytesRsplitArgs,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
+fn bytes_rsplit<'h>(bytes: &impl HeapView<'h, [u8]>, args: BytesRsplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let BytesRsplitArgs { sep, maxsplit } = args;
     let sep = bytes_separator(sep, vm)?;
 
     // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
@@ -1800,10 +1791,8 @@ fn bytes_splitlines<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &m
 /// `keepends` for truthiness rather than strict-typing, so the field stays as
 /// a raw `Value` for `py_bool` to inspect.
 #[py_signature("splitlines(keepends=...)")]
-fn parse_bytes_splitlines_args(
-    BytesSplitlinesArgs { keepends }: BytesSplitlinesArgs,
-    vm: &mut VM<'_>,
-) -> RunResult<bool> {
+fn parse_bytes_splitlines_args(args: BytesSplitlinesArgs, vm: &mut VM<'_>) -> RunResult<bool> {
+    let BytesSplitlinesArgs { keepends } = args;
     let result = match keepends {
         None => false,
         Some(v) => {
@@ -1899,9 +1888,10 @@ fn bytes_replace<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut 
 #[py_signature("replace(old, new, count=-1)")]
 fn parse_bytes_replace_args(
     _method: &str,
-    BytesReplaceArgs { old, new, count }: &BytesReplaceArgs,
+    args: &BytesReplaceArgs,
     vm: &mut VM<'_>,
 ) -> RunResult<(Vec<u8>, Vec<u8>, i64)> {
+    let BytesReplaceArgs { old, new, count } = args;
     let old_b = extract_bytes_only(old, vm)?.to_owned();
     let new_b = extract_bytes_only(new, vm)?.to_owned();
     let count_i = count.as_int(vm)?;
@@ -2308,10 +2298,8 @@ fn bytes_hex<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'
 /// kwargs and the flag goes away when the kwarg dispatch is plumbed
 /// through.
 #[py_signature("hex(sep=None, bytes_per_sep=None)", style = c_named, at_most_total, kwargs_not_supported_yet, error_name = "bytes.hex")]
-fn parse_bytes_hex_args(
-    BytesHexArgs { sep, bytes_per_sep }: &BytesHexArgs,
-    vm: &mut VM<'_>,
-) -> RunResult<(Option<char>, i64)> {
+fn parse_bytes_hex_args(args: &BytesHexArgs, vm: &mut VM<'_>) -> RunResult<(Option<char>, i64)> {
+    let BytesHexArgs { sep, bytes_per_sep } = args;
     let Some(sep_value) = (match &sep {
         Value::None => None,
         v => Some(v),

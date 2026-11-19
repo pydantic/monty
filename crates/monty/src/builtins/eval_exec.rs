@@ -33,14 +33,12 @@ use crate::{
 /// Parses `source` as one expression and runs it in the given (or the
 /// caller's) namespace; the expression's value is the call's result.
 #[py_signature("eval(source, /, globals=None, locals=None)", at_most_total)]
-pub fn builtin_eval(
-    vm: &mut VM<'_>,
-    EvalArgs {
+pub fn builtin_eval(vm: &mut VM<'_>, args: EvalArgs) -> RunResult<CallResult> {
+    let EvalArgs {
         source,
         globals,
         locals,
-    }: EvalArgs,
-) -> RunResult<CallResult> {
+    } = args;
     defer_drop!(source, vm);
     defer_drop!(globals, vm);
     defer_drop!(locals, vm);
@@ -56,15 +54,13 @@ pub fn builtin_eval(
 /// Compiles `source` as a module and runs it in the given (or the caller's)
 /// namespace; the call's result is `None`.
 #[py_signature("exec(source, /, globals=None, locals=None, *, closure=None)")]
-pub fn builtin_exec(
-    vm: &mut VM<'_>,
-    ExecArgs {
+pub fn builtin_exec(vm: &mut VM<'_>, args: ExecArgs) -> RunResult<CallResult> {
+    let ExecArgs {
         source,
         globals,
         locals,
         closure,
-    }: ExecArgs,
-) -> RunResult<CallResult> {
+    } = args;
     defer_drop!(source, vm);
     defer_drop!(globals, vm);
     defer_drop!(locals, vm);

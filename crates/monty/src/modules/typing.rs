@@ -135,14 +135,16 @@ pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) 
 
 /// `typing.cast()`: returns `val`; `typ` is any object, a string forward reference included.
 #[py_signature("cast(typ, val)", style = def)]
-fn cast(vm: &mut VM<'_>, CastArgs { typ, val }: CastArgs) -> RunResult<CallResult> {
+fn cast(vm: &mut VM<'_>, args: CastArgs) -> RunResult<CallResult> {
+    let CastArgs { typ, val } = args;
     defer_drop!(typ, vm);
     Ok(CallResult::Value(val))
 }
 
 /// `typing.assert_type()`: returns `val`; only a static type checker looks at `typ`.
 #[py_signature("assert_type(val, typ, /)", style = def)]
-fn assert_type(vm: &mut VM<'_>, AssertTypeArgs { val, typ }: AssertTypeArgs) -> RunResult<CallResult> {
+fn assert_type(vm: &mut VM<'_>, args: AssertTypeArgs) -> RunResult<CallResult> {
+    let AssertTypeArgs { val, typ } = args;
     defer_drop!(typ, vm);
     Ok(CallResult::Value(val))
 }
@@ -181,7 +183,8 @@ impl fmt::Write for CappedRepr {
 
 /// `typing.assert_never()`: always raises `AssertionError` quoting a bounded `repr(arg)`.
 #[py_signature("assert_never(arg, /)", style = def)]
-fn assert_never(vm: &mut VM<'_>, AssertNeverArgs { arg }: &AssertNeverArgs) -> RunResult<CallResult> {
+fn assert_never(vm: &mut VM<'_>, args: &AssertNeverArgs) -> RunResult<CallResult> {
+    let AssertNeverArgs { arg } = args;
     // The repr is written into a capped buffer that refuses text past the limit, so a huge or
     // deeply nested value never has its whole repr built in host memory.
     let mut capped = CappedRepr::default();
@@ -386,16 +389,14 @@ def __monty_get_annotations(owner, annotate, stored, classdict, scopes, format_,
 
 /// `typing.get_type_hints()`: see [`collect_hints`].
 #[py_signature("get_type_hints(obj, globalns=None, localns=None, include_extras=False, *, format=None)", style = def)]
-fn get_type_hints(
-    vm: &mut VM<'_>,
-    GetTypeHintsArgs {
+fn get_type_hints(vm: &mut VM<'_>, args: GetTypeHintsArgs) -> RunResult<CallResult> {
+    let GetTypeHintsArgs {
         obj,
         globalns,
         localns,
         include_extras,
         format,
-    }: GetTypeHintsArgs,
-) -> RunResult<CallResult> {
+    } = args;
     defer_drop!(obj, vm);
     defer_drop!(globalns, vm);
     defer_drop!(localns, vm);
@@ -806,8 +807,8 @@ pub(crate) fn namespace_dict(value: &Value, function: &str, param: &str, vm: &VM
 /// Frozen helper: evaluates one annotation string; the namespaces are dicts or
 /// `None`, built by [`collect_hints`] and never seen by user code.
 #[py_signature("eval_hint(source, globals, locals, globals_first, forward_ref, missing, owner, is_class, /)")]
-pub(crate) fn call_eval_hint(
-    EvalHintArgs {
+pub(crate) fn call_eval_hint(args: EvalHintArgs, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    let EvalHintArgs {
         source,
         globals,
         locals,
@@ -816,9 +817,7 @@ pub(crate) fn call_eval_hint(
         missing,
         owner,
         is_class,
-    }: EvalHintArgs,
-    vm: &mut VM<'_>,
-) -> RunResult<CallResult> {
+    } = args;
     defer_drop!(source, vm);
     defer_drop!(globals, vm);
     defer_drop!(locals, vm);

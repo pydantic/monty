@@ -252,9 +252,8 @@ pub(crate) fn to_monty_datetime(datetime: &DateTime) -> Option<MontyDateTime> {
 /// `fold` itself is accepted for CPython parity but currently has no effect
 /// on the stored datetime — Monty does not track DST-fold disambiguation.
 #[py_signature("function(year: c_int, month: c_int, day: c_int, hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)", style = c)]
-pub(crate) fn init(
-    vm: &mut VM<'_>,
-    DatetimeInitArgs {
+pub(crate) fn init(vm: &mut VM<'_>, args: DatetimeInitArgs) -> RunResult<Value> {
+    let DatetimeInitArgs {
         year,
         month,
         day,
@@ -264,8 +263,7 @@ pub(crate) fn init(
         microsecond,
         tzinfo,
         fold,
-    }: DatetimeInitArgs,
-) -> RunResult<Value> {
+    } = args;
     // `tzinfo` owns the input ref; keep it alive across `tzinfo_from_value` and
     // `from_components` so the heap-allocated TimeZone (if any) is not freed
     // before `attach_or_allocate_tzinfo_ref` takes its own reference.
@@ -319,7 +317,8 @@ pub(crate) fn class_method(
 /// matches CPython's `PyArg_ParseTupleAndKeywords` pre-count: a duplicate tz
 /// (`now(utc, tz=utc)`) reports "takes at most 1 argument (2 given)".
 #[py_signature("now(tz=None)", at_most_total)]
-pub(crate) fn class_now(vm: &mut VM<'_>, NowArgs { tz }: &NowArgs) -> RunResult<CallResult> {
+pub(crate) fn class_now(vm: &mut VM<'_>, args: &NowArgs) -> RunResult<CallResult> {
+    let NowArgs { tz } = args;
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
     // Invalid fixed instants raise; only CallHost falls back to the host's clock.
     let Some(utc) = sandbox_instant(vm)? else {
@@ -346,10 +345,8 @@ pub(crate) fn class_now(vm: &mut VM<'_>, NowArgs { tz }: &NowArgs) -> RunResult<
 /// `PyArg_ParseTupleAndKeywords` parser: `at_most_total` gives CPython's
 /// `fromtimestamp() takes at most 2 arguments (3 given)` for a duplicated `tz`.
 #[py_signature("fromtimestamp(timestamp, tz=None)", style = c_named, at_most_total)]
-pub(crate) fn class_fromtimestamp(
-    vm: &mut VM<'_>,
-    FromtimestampArgs { timestamp, tz }: &FromtimestampArgs,
-) -> RunResult<Value> {
+pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: &FromtimestampArgs) -> RunResult<Value> {
+    let FromtimestampArgs { timestamp, tz } = args;
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
     let utc = timestamp_to_utc(timestamp, TimestampRounding::HalfEven, vm)?
         .ok_or_else(|| timestamp_not_a_number(timestamp, vm))?;
@@ -512,7 +509,8 @@ fn timestamp_not_a_number(value: &Value, vm: &VM<'_>) -> RunError {
 /// Argument shape for `datetime.astimezone(tz=None)`, checked like [`NowArgs`]:
 /// `at_most_total` gives CPython's `astimezone() takes at most 1 argument (2 given)`.
 #[py_signature("astimezone(tz=None)", at_most_total)]
-fn astimezone(dt: &DateTime, vm: &mut VM<'_>, AstimezoneArgs { tz }: &AstimezoneArgs) -> RunResult<CallResult> {
+fn astimezone(dt: &DateTime, vm: &mut VM<'_>, args: &AstimezoneArgs) -> RunResult<CallResult> {
+    let AstimezoneArgs { tz } = args;
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
     let zone = &vm.env.os_policy.timezone;
     // CPython forms `self - utcoffset()` as a datetime, so the UTC intermediate
@@ -673,7 +671,8 @@ pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &In
 /// CPython's own wording (`combine() argument 1 must be datetime.date, not
 /// str`, and the shared `tzinfo argument must be ...` message).
 #[py_signature("combine(date, time, tzinfo=...)", style = c_named, at_most_total)]
-pub(crate) fn class_combine(vm: &mut VM<'_>, CombineArgs { date, time, tzinfo }: CombineArgs) -> RunResult<Value> {
+pub(crate) fn class_combine(vm: &mut VM<'_>, args: CombineArgs) -> RunResult<Value> {
+    let CombineArgs { date, time, tzinfo } = args;
     defer_drop!(date, vm);
     defer_drop!(time, vm);
     // Guarded before the two type checks below, since both can fail while

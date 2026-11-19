@@ -102,14 +102,12 @@ pub(super) fn call(vm: &mut VM<'_>, function: FunctoolsFunctions, args: ArgValue
 /// keywords together for the maximum (`at_most_total`): `reduce(f, x, 0,
 /// initial=1)` reports four arguments.
 #[py_signature("reduce(function, iterable, /, initial=...)", at_most_total)]
-fn call_reduce(
-    vm: &mut VM<'_>,
-    ReduceArgs {
+fn call_reduce(vm: &mut VM<'_>, args: ReduceArgs) -> RunResult<CallResult> {
+    let ReduceArgs {
         function,
         iterable,
         initial,
-    }: ReduceArgs,
-) -> RunResult<CallResult> {
+    } = args;
     let has_initial = initial.is_some();
     vm.call_frozen_exact(
         FrozenFunction::FunctoolsReduce,
@@ -138,7 +136,8 @@ fn call_cache(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// Returns a configured decorator, or wraps a callable passed as the first argument.
 #[py_signature("lru_cache(maxsize=128, typed=False)", style = def)]
-fn call_lru_cache_factory(vm: &mut VM<'_>, LruCacheArgs { maxsize, typed }: &LruCacheArgs) -> RunResult<Value> {
+fn call_lru_cache_factory(vm: &mut VM<'_>, args: &LruCacheArgs) -> RunResult<Value> {
+    let LruCacheArgs { maxsize, typed } = args;
     let typed_flag = typed.py_bool(vm)?;
     match maxsize {
         Value::Int(size) => {

@@ -236,7 +236,8 @@ struct OpensslNewArgs;
 /// `hashlib.new(name, *args, **kwargs)`, a pure-Python `def` that routes
 /// BLAKE2 names to the `_blake2` types and everything else to `_hashlib.new`.
 #[py_signature("__hash_new(name, *args, **kwargs)", style = def)]
-fn call_new(vm: &mut VM<'_>, HashNewArgs { name, args, kwargs }: HashNewArgs) -> RunResult<Value> {
+fn call_new(vm: &mut VM<'_>, args: HashNewArgs) -> RunResult<Value> {
+    let HashNewArgs { name, args, kwargs } = args;
     let blake2 = name.as_str(vm).and_then(Blake2Kind::from_name);
     if let Some(kind) = blake2 {
         name.drop_with(vm);
@@ -617,16 +618,14 @@ fn overflow_error(msg: impl Display) -> RunError {
 /// function whose `password`, `salt` and `iterations` convert in the body so
 /// their errors come out in signature order.
 #[py_signature("pbkdf2_hmac(hash_name: str, password, salt, iterations, dklen=None)", style = c_named, bad_arg_named, at_most_total)]
-fn call_pbkdf2_hmac(
-    vm: &mut VM<'_>,
-    Pbkdf2HmacArgs {
+fn call_pbkdf2_hmac(vm: &mut VM<'_>, args: Pbkdf2HmacArgs) -> RunResult<Value> {
+    let Pbkdf2HmacArgs {
         hash_name,
         password,
         salt,
         iterations,
         dklen,
-    }: Pbkdf2HmacArgs,
-) -> RunResult<Value> {
+    } = args;
     defer_drop!(hash_name, vm);
     defer_drop!(password, vm);
     defer_drop!(salt, vm);

@@ -13,7 +13,7 @@ mod legacy;
 mod method;
 mod options;
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 
 pub(crate) use self::{
     field::DataclassField,
@@ -124,9 +124,8 @@ pub(super) fn call(vm: &mut VM<'_>, func: DataclassesFunctions, args: ArgValues)
 /// Raw `Value` fields because CPython's `def` type-checks nothing; the body
 /// takes each option's truthiness instead.
 #[py_signature("dataclass(cls=None, /, *, init=True, repr=True, eq=True, order=False, unsafe_hash=False, frozen=False, match_args=True, kw_only=False, slots=False, weakref_slot=False)", style = def)]
-fn dataclass_decorator(
-    vm: &mut VM<'_>,
-    DataclassArgs {
+fn dataclass_decorator(vm: &mut VM<'_>, args: DataclassArgs) -> RunResult<Value> {
+    let DataclassArgs {
         cls,
         init,
         repr,
@@ -138,8 +137,7 @@ fn dataclass_decorator(
         kw_only,
         slots,
         weakref_slot,
-    }: DataclassArgs,
-) -> RunResult<Value> {
+    } = args;
     // CPython's `dataclass` is a `def`, so it type-checks nothing and takes each
     // option's truthiness. That runs user code — a `__bool__` may raise — so
     // `cls` and all ten flags are guarded before the first read.
@@ -824,9 +822,10 @@ pub(crate) fn is_dataclass_class(class_id: HeapId, vm: &VM<'_>) -> bool {
 
 /// `is_dataclass(obj)` — true when `obj` is a dataclass **class** or an
 /// **instance** of one (matching CPython, which accepts both).
-fn is_dataclass(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let arg = bind_positional!(args, vm.heap, "is_dataclass(obj, /)")?;
-    let result = match &arg {
+#[py_signature("is_dataclass(obj)", style = def)]
+fn is_dataclass(vm: &mut VM<'_>, args: &IsDataclassArgs) -> RunResult<Value> {
+    let IsDataclassArgs { obj } = args;
+    let result = match obj {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Class(_) => is_dataclass_class(*id, vm),
             HeapData::Instance(instance) => is_dataclass_class(instance.class(), vm),
@@ -838,6 +837,5 @@ fn is_dataclass(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         },
         _ => false,
     };
-    arg.drop_with(vm);
     Ok(Value::Bool(result))
 }

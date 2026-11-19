@@ -1484,7 +1484,8 @@ fn str_splitlines<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunRes
 /// `keepends` for truthiness rather than strict-typing, so the field stays as
 /// a raw `Value` for `value_is_truthy` to inspect.
 #[py_signature("splitlines(keepends=...)", at_most_total)]
-fn parse_splitlines_args(SplitlinesArgs { keepends }: SplitlinesArgs, vm: &mut VM<'_>) -> RunResult<bool> {
+fn parse_splitlines_args(args: SplitlinesArgs, vm: &mut VM<'_>) -> RunResult<bool> {
+    let SplitlinesArgs { keepends } = args;
     let result = keepends.as_ref().is_some_and(value_is_truthy);
     keepends.drop_with(vm.heap);
     Ok(result)
@@ -1751,7 +1752,8 @@ fn str_zfill<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
 /// so callers can distinguish "absent" (default 8) from any explicit value
 /// without forcing the macro into a type-checked default.
 #[py_signature("expandtabs(tabsize=...)", at_most_total)]
-fn str_expandtabs<'h>(s: &PyStr<'h>, ExpandtabsArgs { tabsize }: ExpandtabsArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_expandtabs<'h>(s: &PyStr<'h>, args: ExpandtabsArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let ExpandtabsArgs { tabsize } = args;
     let tabsize = match tabsize {
         None => 8,
         Some(val) => {
@@ -1814,7 +1816,8 @@ fn str_expandtabs<'h>(s: &PyStr<'h>, ExpandtabsArgs { tabsize }: ExpandtabsArgs,
 /// out naturally because `Option<StrArg>::from_value` delegates to
 /// `StrArg::from_value` and rejects `Value::None`.
 #[py_signature("encode(encoding: str=..., errors: str=...)", at_most_total, bad_arg_named)]
-fn str_encode<'h>(s: &PyStr<'h>, EncodeArgs { encoding, errors }: &EncodeArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_encode<'h>(s: &PyStr<'h>, args: &EncodeArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let EncodeArgs { encoding, errors } = args;
     let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
     let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
 

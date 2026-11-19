@@ -95,7 +95,8 @@ pub(super) fn call(vm: &mut VM<'_>, function: TomllibFunctions, args: ArgValues)
 /// `style = def` wording. `parse_float` is not implemented: leaving it off the
 /// struct makes the macro reject it as an unexpected keyword.
 #[py_signature("loads(s, /)", style = def)]
-fn call_loads(vm: &mut VM<'_>, TomlLoadsArgs { s }: &TomlLoadsArgs) -> RunResult<Value> {
+fn call_loads(vm: &mut VM<'_>, args: &TomlLoadsArgs) -> RunResult<Value> {
+    let TomlLoadsArgs { s } = args;
     let source = s
         .as_str(vm)
         .ok_or_else(|| ExcType::toml_loads_type_error(&s.py_type_name(vm)))?;
@@ -113,7 +114,8 @@ fn call_loads(vm: &mut VM<'_>, TomlLoadsArgs { s }: &TomlLoadsArgs) -> RunResult
 /// Argument shape for `tomllib.load(fp, /, *, parse_float=float)`; see
 /// [`TomlLoadsArgs`] for why `parse_float` is absent.
 #[py_signature("load(fp, /)", style = def)]
-fn call_load(vm: &mut VM<'_>, TomlLoadArgs { fp }: &TomlLoadArgs) -> RunResult<CallResult> {
+fn call_load(vm: &mut VM<'_>, args: &TomlLoadArgs) -> RunResult<CallResult> {
+    let TomlLoadArgs { fp } = args;
     let Value::Ref(file_id) = fp else {
         return Err(ExcType::attribute_error(fp.py_type_name(vm), "read"));
     };

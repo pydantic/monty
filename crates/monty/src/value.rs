@@ -271,17 +271,6 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_len(&self, vm: &VM<'_>) -> Option<usize> {
-        // These built-in lengths need no Python dispatch or heap-object guard.
-        match self {
-            Self::InternString(id) => return Some(vm.interns.str_char_len(*id)),
-            Self::InlineString(text) => return Some(text.char_len()),
-            Self::Ref(id) => match vm.heap.get(*id) {
-                HeapData::List(list) => return Some(list.len()),
-                HeapData::Tuple(tuple) => return Some(tuple.as_slice().len()),
-                _ => {}
-            },
-            _ => {}
-        }
         self.py_value(vm).py_len(vm)
     }
 

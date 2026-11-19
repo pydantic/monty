@@ -14,15 +14,15 @@ use crate::{
 };
 
 #[py_signature(r"print(*args, sep=' ', end='\n', file=None, flush=False)")]
-pub fn builtin_print(vm: &mut VM<'_>, bound: &PrintArgs) -> RunResult<Value> {
+pub fn builtin_print(vm: &mut VM<'_>, args: &PrintArgs) -> RunResult<Value> {
     // `sep` and `end` are checked before `file` because CPython reports them in
     // that order: `print(x, sep=1, file=3)` raises about `sep`, not the file.
-    let sep = delimiter(&bound.sep, "sep", ' ', vm)?;
-    let end = delimiter(&bound.end, "end", '\n', vm)?;
-    let stream = print_stream(&bound.file, vm)?;
+    let sep = delimiter(&args.sep, "sep", ' ', vm)?;
+    let end = delimiter(&args.end, "end", '\n', vm)?;
+    let stream = print_stream(&args.file, vm)?;
 
     let mut first = true;
-    for value in &bound.args {
+    for value in &args.args {
         if first {
             first = false;
         } else {

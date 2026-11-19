@@ -36,10 +36,8 @@ pub(crate) fn object_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Val
 /// `__new__`, CPython's `object_new` rule. Native classes have their own
 /// `__new__`, and `object()` itself cannot be built (see `limitations/classes.md`).
 #[py_signature("__new__(cls=..., /, *args, **kwargs)", error_name = "object.__new__")]
-pub(crate) fn builtin_object_new(
-    vm: &mut VM<'_>,
-    ObjectNewArgs { cls, args, kwargs }: ObjectNewArgs,
-) -> RunResult<Value> {
+pub(crate) fn builtin_object_new(vm: &mut VM<'_>, args: ObjectNewArgs) -> RunResult<Value> {
+    let ObjectNewArgs { cls, args, kwargs } = args;
     let excess = !args.is_empty() || !kwargs.is_empty();
     args.drop_with(vm);
     kwargs.drop_with(vm);
@@ -94,10 +92,8 @@ pub(crate) fn builtin_object_new(
 /// arguments unless the class overrides `__new__` and not `__init__`, CPython's
 /// `object_init` rule.
 #[py_signature("__init__(instance=..., /, *args, **kwargs)", error_name = "object.__init__")]
-pub(crate) fn builtin_object_init(
-    vm: &mut VM<'_>,
-    ObjectInitArgs { instance, args, kwargs }: ObjectInitArgs,
-) -> RunResult<Value> {
+pub(crate) fn builtin_object_init(vm: &mut VM<'_>, args: ObjectInitArgs) -> RunResult<Value> {
+    let ObjectInitArgs { instance, args, kwargs } = args;
     let excess = !args.is_empty() || !kwargs.is_empty();
     args.drop_with(vm);
     kwargs.drop_with(vm);
@@ -155,10 +151,8 @@ fn native_overrides_init(ty: Type) -> bool {
     "__init_subclass__(cls=..., /, *args, **kwargs)",
     error_name = "object.__init_subclass__"
 )]
-pub(crate) fn builtin_object_init_subclass(
-    vm: &mut VM<'_>,
-    ObjectInitSubclassArgs { cls, args, kwargs }: ObjectInitSubclassArgs,
-) -> RunResult<Value> {
+pub(crate) fn builtin_object_init_subclass(vm: &mut VM<'_>, args: ObjectInitSubclassArgs) -> RunResult<Value> {
+    let ObjectInitSubclassArgs { cls, args, kwargs } = args;
     let given = args.len();
     let has_kwargs = !kwargs.is_empty();
     args.drop_with(vm);

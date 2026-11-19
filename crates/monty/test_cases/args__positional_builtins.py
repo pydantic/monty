@@ -2,7 +2,7 @@ def check_type_error(call, message):
     try:
         call()
     except TypeError as exc:
-        assert str(exc) == message, str(exc)
+        assert str(exc) == message
     else:
         assert False, message
 
@@ -12,6 +12,9 @@ assert len(chr(0x1F642) + chr(0x301)) == 2
 assert len(('x', 'y')) == 2
 assert len([[], [], []]) == 3
 assert len({'one': 1}.keys()) == 1
+assert len({'a': 1, 'b': 2}) == 2
+assert len(b'abc' * 4) == 12
+assert len(range(3)) == 3
 check_type_error(lambda: len(42), "object of type 'int' has no len()")
 
 assert divmod(-7, 3) == (-3, 2)

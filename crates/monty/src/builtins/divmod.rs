@@ -10,6 +10,7 @@ use crate::{bytecode::VM, exception_private::RunResult, value::Value};
 /// The per-type arithmetic lives with the types themselves, reached through
 /// `__divmod__` / `__rdivmod__` like every other numeric operation.
 #[py_signature("divmod(x, y, /)", style = two_args)]
-pub fn builtin_divmod(vm: &mut VM<'_>, (x, y): (&Value, &Value)) -> RunResult<Value> {
+pub fn builtin_divmod(vm: &mut VM<'_>, args: (&Value, &Value)) -> RunResult<Value> {
+    let (x, y) = args;
     x.py_divmod(y, vm)
 }

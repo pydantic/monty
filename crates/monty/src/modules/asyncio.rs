@@ -81,7 +81,8 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
 /// `asyncio.sleep(delay, result=None)` — a pure-Python `def` in CPython, so
 /// both parameters bind by keyword and neither is type-checked while binding.
 #[py_signature("sleep(delay, result=None)", style = def)]
-fn sleep(vm: &mut VM<'_>, SleepArgs { delay, result }: SleepArgs) -> RunResult<CallResult> {
+fn sleep(vm: &mut VM<'_>, args: SleepArgs) -> RunResult<CallResult> {
+    let SleepArgs { delay, result } = args;
     // `result` outlives `delay`: it moves into the awaitable once the delay is valid.
     let mut result_guard = DropGuard::new(result, vm);
     let delay = {

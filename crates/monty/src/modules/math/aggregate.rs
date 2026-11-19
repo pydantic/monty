@@ -38,7 +38,8 @@ pub(super) fn hypot(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// Collects both points before checking dimensions and converting coordinates.
 #[py_signature("dist(p, q, /)", style = unpack, kwarg_error_name = "math.dist")]
-pub(super) fn dist(vm: &mut VM<'_>, DistArgs { p, q }: &DistArgs) -> RunResult<Value> {
+pub(super) fn dist(vm: &mut VM<'_>, args: &DistArgs) -> RunResult<Value> {
+    let DistArgs { p, q } = args;
     let p = collect_iterable(p, vm)?;
     defer_drop!(p, vm);
     let q = collect_iterable(q, vm)?;
@@ -204,7 +205,8 @@ fn round_partials(partials: &mut SmallVec<[f64; 32]>) -> f64 {
 
 /// Multiplies through Python's numeric protocol, retaining arbitrary-size integer results.
 #[py_signature("prod(iterable, /, *, start=1)", style = c_named, at_most_total)]
-pub(super) fn prod(vm: &mut VM<'_>, ProdArgs { iterable, start }: ProdArgs) -> RunResult<Value> {
+pub(super) fn prod(vm: &mut VM<'_>, args: ProdArgs) -> RunResult<Value> {
+    let ProdArgs { iterable, start } = args;
     let mut result = DropGuard::new(start, vm);
     {
         let (total, vm) = result.as_parts_mut();
@@ -254,7 +256,8 @@ impl Triple {
 
 /// Uses exact integer arithmetic and compensated float products before generic arithmetic.
 #[py_signature("sumprod(p, q, /)", style = unpack, kwarg_error_name = "math.sumprod")]
-pub(crate) fn sumprod(vm: &mut VM<'_>, SumprodArgs { p, q }: &SumprodArgs) -> RunResult<Value> {
+pub(crate) fn sumprod(vm: &mut VM<'_>, args: &SumprodArgs) -> RunResult<Value> {
+    let SumprodArgs { p, q } = args;
     let p = p.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(p, vm);
     let q = q.py_iter(vm)?.require_synchronous(vm)?;
@@ -347,7 +350,8 @@ fn add(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 
 /// Performs one rounding and raises CPython's errors for invalid operations and overflow.
 #[py_signature("fma(x, y, z, /)", style = unpack, kwarg_error_name = "math.fma")]
-pub(super) fn fma(vm: &mut VM<'_>, FmaArgs { x, y, z }: &FmaArgs) -> RunResult<Value> {
+pub(super) fn fma(vm: &mut VM<'_>, args: &FmaArgs) -> RunResult<Value> {
+    let FmaArgs { x, y, z } = args;
     let x = value_to_float(x, vm)?;
     let y = value_to_float(y, vm)?;
     let z = value_to_float(z, vm)?;

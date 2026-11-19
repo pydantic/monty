@@ -41,7 +41,8 @@ def __monty_next_default(iterator, default, next_, stop_iteration):
 /// CPython, so `style = unpack` gives the `PyArg_UnpackTuple` arity wording
 /// and the blanket `next() takes no keyword arguments` rejection.
 #[py_signature("next(iterator, default=..., /)", style = unpack)]
-pub fn builtin_next(vm: &mut VM<'_>, NextArgs { iterator, default }: NextArgs) -> RunResult<CallResult> {
+pub fn builtin_next(vm: &mut VM<'_>, args: NextArgs) -> RunResult<CallResult> {
+    let NextArgs { iterator, default } = args;
     defer_drop!(iterator, vm);
     match iterator.read_heap(vm) {
         Some(HeapReadOutput::Instance(instance)) => {

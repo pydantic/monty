@@ -248,18 +248,9 @@ pub(crate) fn allocate_micros(total_microseconds: i128, heap: &Heap) -> Value {
 }
 
 /// Creates a `timedelta` from constructor arguments.
-///
-/// Supports positional `(days, seconds, microseconds)` and keyword arguments
-/// `days`, `seconds`, `microseconds`, `milliseconds`, `minutes`, `hours`, `weeks`.
-///
-/// Argument shape for `timedelta(days=0, seconds=0, microseconds=0, *, milliseconds=0, minutes=0, hours=0, weeks=0)`.
-///
-/// CPython accepts the first three as positional-or-keyword and the rest as
-/// keyword-only. All default to 0 so an empty `timedelta()` is legal.
-#[py_signature("timedelta(days=0, seconds=0, microseconds=0, *, milliseconds=0, minutes=0, hours=0, weeks=0)", convert(days = DeltaComponent, seconds = DeltaComponent, microseconds = DeltaComponent, milliseconds = DeltaComponent, minutes = DeltaComponent, hours = DeltaComponent, weeks = DeltaComponent))]
-pub(crate) fn init(
-    vm: &mut VM<'_>,
-    TimedeltaArgs {
+#[py_signature("timedelta(days=0, seconds=0, microseconds=0, milliseconds=0, minutes=0, hours=0, weeks=0)", convert(days = DeltaComponent, seconds = DeltaComponent, microseconds = DeltaComponent, milliseconds = DeltaComponent, minutes = DeltaComponent, hours = DeltaComponent, weeks = DeltaComponent))]
+pub(crate) fn init(vm: &mut VM<'_>, args: TimedeltaArgs) -> RunResult<Value> {
+    let TimedeltaArgs {
         days,
         seconds,
         microseconds,
@@ -267,8 +258,7 @@ pub(crate) fn init(
         minutes,
         hours,
         weeks,
-    }: TimedeltaArgs,
-) -> RunResult<Value> {
+    } = args;
     let total_microseconds = checked_component(weeks, 7 * DAY_MICROSECONDS)?
         + checked_component(days, DAY_MICROSECONDS)?
         + checked_component(hours, HOUR_MICROSECONDS)?

@@ -123,13 +123,11 @@ pub(crate) fn defaultdict_class_method(
 /// Reached via [`Type::call`](crate::types::Type::call) — `collections.Counter`
 /// is exposed as the type object, so `type(c) is Counter` holds.
 #[py_signature("__init__(self, iterable=..., /, **kwargs)", style = def, owner = "Counter")]
-pub(crate) fn counter_init(
-    vm: &mut VM<'_>,
-    CounterInitArgs {
+pub(crate) fn counter_init(vm: &mut VM<'_>, args: CounterInitArgs) -> RunResult<Value> {
+    let CounterInitArgs {
         iterable: source,
         kwargs,
-    }: CounterInitArgs,
-) -> RunResult<Value> {
+    } = args;
     let mut dict = Dict::new();
     dict.make_counter();
     let value = Value::Ref(vm.heap.allocate(HeapData::Dict(dict)));
@@ -157,14 +155,12 @@ pub(crate) fn counter_init(
 /// Reached via [`Type::call`](crate::types::Type::call) — `collections.defaultdict`
 /// is exposed as the type object, so `type(d) is defaultdict` holds.
 #[py_signature("defaultdict(default_factory=..., /, *args, **kwargs)")]
-pub(crate) fn defaultdict_init(
-    vm: &mut VM<'_>,
-    DefaultdictArgs {
+pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: DefaultdictArgs) -> RunResult<Value> {
+    let DefaultdictArgs {
         default_factory: factory_arg,
         args,
         kwargs,
-    }: DefaultdictArgs,
-) -> RunResult<Value> {
+    } = args;
     let factory = match factory_arg {
         None | Some(Value::None) => None,
         Some(value) if value.is_callable(vm) => Some(value),
@@ -211,16 +207,14 @@ pub(crate) fn defaultdict_init(
 /// CPython's `namedtuple` is a pure-Python `def`, so fields stay raw `Value`
 /// (`def` binding never type-checks) and coercion happens in the body.
 #[py_signature("namedtuple(typename, field_names, *, rename=False, defaults=None, module=None)", style = def)]
-fn namedtuple(
-    vm: &mut VM<'_>,
-    NamedtupleArgs {
+fn namedtuple(vm: &mut VM<'_>, args: NamedtupleArgs) -> RunResult<Value> {
+    let NamedtupleArgs {
         typename,
         field_names,
         rename,
         defaults,
         module,
-    }: NamedtupleArgs,
-) -> RunResult<Value> {
+    } = args;
     defer_drop!(typename, vm);
     defer_drop!(field_names, vm);
     defer_drop!(rename, vm);

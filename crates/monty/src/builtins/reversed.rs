@@ -20,7 +20,8 @@ use crate::{
 /// (`reversed expected 1 argument, got 2`) and the blanket
 /// `reversed() takes no keyword arguments` rejection.
 #[py_signature("reversed(sequence, /)", style = unpack)]
-pub fn builtin_reversed(vm: &mut VM<'_>, ReversedArgs { sequence }: ReversedArgs) -> RunResult<Value> {
+pub fn builtin_reversed(vm: &mut VM<'_>, args: ReversedArgs) -> RunResult<Value> {
+    let ReversedArgs { sequence } = args;
     // Being iterable is not enough: CPython needs `__reversed__`, or
     // `__len__` + `__getitem__`. Check before iterating so unordered and
     // one-shot iterables are rejected rather than silently reversed.

@@ -168,7 +168,8 @@ fn decimal_at<'a>(vm: &'a VM<'_>, id: HeapId) -> &'a Decimal {
 /// `decimal.Decimal(value='0', context=None)`: an exact conversion. The context only
 /// decides whether a malformed string or an `float` raises.
 #[py_signature("Decimal(value=..., context=None)", style = c)]
-pub(crate) fn init(vm: &mut VM<'_>, DecimalArgs { value, context }: DecimalArgs) -> RunResult<Value> {
+pub(crate) fn init(vm: &mut VM<'_>, args: DecimalArgs) -> RunResult<Value> {
+    let DecimalArgs { value, context } = args;
     defer_drop!(context, vm);
     let ctx_id = context_arg(context, vm);
     let ctx_id = match ctx_id {

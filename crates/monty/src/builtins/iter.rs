@@ -12,7 +12,8 @@ use crate::{
 
 /// Acquires an iterator or creates a callable iterator which stops at its sentinel.
 #[py_signature("iter(object, sentinel=..., /)", style = unpack)]
-pub(crate) fn builtin_iter(vm: &mut VM<'_>, IterArgs { object, sentinel }: IterArgs) -> RunResult<CallResult> {
+pub(crate) fn builtin_iter(vm: &mut VM<'_>, args: IterArgs) -> RunResult<CallResult> {
+    let IterArgs { object, sentinel } = args;
     if let Some(sentinel) = sentinel {
         if object.is_callable(vm) {
             let iter = CallableIterator::new(object, sentinel);

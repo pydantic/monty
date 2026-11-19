@@ -137,7 +137,8 @@ pub(crate) fn to_ymd(date: Date) -> (i32, u32, u32) {
 /// keyword-only fields, so the derive keeps the plain (non-"positional")
 /// at-most wording automatically.
 #[py_signature("date(year: c_int, month: c_int, day: c_int)", style = c, at_most_total, error_name = "function")]
-pub(crate) fn init(vm: &mut VM<'_>, DateInitArgs { year, month, day }: DateInitArgs) -> RunResult<Value> {
+pub(crate) fn init(vm: &mut VM<'_>, args: DateInitArgs) -> RunResult<Value> {
+    let DateInitArgs { year, month, day } = args;
     let date = from_ymd(year, month, day)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::Date(date))))
 }

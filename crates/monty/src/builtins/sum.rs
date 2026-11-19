@@ -25,7 +25,8 @@ use crate::{
 /// `at_most_total` reproduces `_PyArg_UnpackKeywords`' total pre-count
 /// (`sum() takes at most 2 arguments (3 given)`).
 #[py_signature("sum(iterable, /, start=0)", at_most_total)]
-pub fn builtin_sum(vm: &mut VM<'_>, SumArgs { iterable, start }: SumArgs) -> RunResult<Value> {
+pub fn builtin_sum(vm: &mut VM<'_>, args: SumArgs) -> RunResult<Value> {
+    let SumArgs { iterable, start } = args;
     defer_drop_mut!(start, vm);
 
     let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;

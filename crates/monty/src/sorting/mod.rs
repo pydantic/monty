@@ -42,11 +42,8 @@ use crate::{
 /// "no key"; `reverse` uses [`LaxBool`](crate::args::LaxBool) to match CPython's `bool()`-style
 /// truth test (so `reverse=[]` is `False`, not a `TypeError`).
 #[py_signature("sort(*, key=..., reverse: bool=False)")]
-pub fn parse_and_sort(
-    items: &mut [Value],
-    ListSortArgs { key, reverse }: ListSortArgs,
-    vm: &mut VM<'_>,
-) -> RunResult<()> {
+pub fn parse_and_sort(items: &mut [Value], args: ListSortArgs, vm: &mut VM<'_>) -> RunResult<()> {
+    let ListSortArgs { key, reverse } = args;
     let key_fn = match key {
         Some(v) if matches!(v, Value::None) => {
             v.drop_with(vm);

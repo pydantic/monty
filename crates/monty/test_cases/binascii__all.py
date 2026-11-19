@@ -1,5 +1,10 @@
 import binascii
 
+for decode, argument in [(binascii.a2b_uu, b'!00'), (binascii.unhexlify, '41'), (binascii.a2b_hex, '41')]:
+    assert decode(*[argument]) == b'A'
+    assert decode(*[argument], **{}) == b'A'
+
+
 # === hexlify / b2a_hex ===
 assert binascii.hexlify(b'') == b''
 assert binascii.hexlify(b'\xde\xad') == b'dead'

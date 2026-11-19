@@ -311,7 +311,8 @@ fn split_suffix(name: &str) -> (&str, &str) {
 /// A pure-Python classmethod in CPython, so its arity errors count `cls`:
 /// one stray positional is `takes 1 positional argument but 2 were given`.
 #[py_signature("cwd(self, /)", style = def, owner = "Path")]
-pub(crate) fn class_cwd(vm: &mut VM<'_>, CwdArgs {}: CwdArgs) -> RunResult<Value> {
+pub(crate) fn class_cwd(vm: &mut VM<'_>, args: CwdArgs) -> RunResult<Value> {
+    let CwdArgs {} = args;
     let path = Path::new(vm.env.cwd.to_string());
     Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
 }

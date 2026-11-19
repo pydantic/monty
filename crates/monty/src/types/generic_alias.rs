@@ -813,14 +813,12 @@ fn abstract_class_error(name: &str, methods: &str) -> String {
 /// rebuilds `alias` around the resolved `args` tuple (the alias itself when they
 /// are unchanged), and strips `Annotated[T, ...]` to `T` unless `include_extras`.
 #[py_signature("alias_with(alias, resolved, include_extras, /)")]
-pub(crate) fn call_alias_with(
-    AliasWithArgs {
+pub(crate) fn call_alias_with(args: AliasWithArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let AliasWithArgs {
         alias,
         resolved,
         include_extras,
-    }: AliasWithArgs,
-    vm: &mut VM<'_>,
-) -> RunResult<Value> {
+    } = args;
     defer_drop!(alias, vm);
     defer_drop!(resolved, vm);
     let Some(HeapReadOutput::GenericAlias(generic)) = alias.read_heap(vm) else {

@@ -309,12 +309,25 @@ assert list(enumerate(['x'])) == [(0, 'x')]
 assert list(enumerate(['a', 'b'], 1)) == [(1, 'a'), (2, 'b')]
 assert list(enumerate(['a', 'b'], 10)) == [(10, 'a'), (11, 'b')]
 
-# A valid large start still reaches iteration.
+# Release a heap-backed start when iterator construction fails.
 try:
     enumerate(1, start=10**30)
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == "'int' object is not iterable"
+
+
+class FailingIndex:
+    def __index__(self):
+        raise ValueError('index before iterator')
+
+
+try:
+    enumerate(1, FailingIndex())
+except ValueError as e:
+    assert str(e) == 'index before iterator'
+else:
+    assert False
 
 # enumerate keyword forms (CPython's vectorcall accepts all of these)
 assert list(enumerate(['a', 'b'], start=1)) == [(1, 'a'), (2, 'b')]

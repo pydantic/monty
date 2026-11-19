@@ -161,6 +161,24 @@ fn one_arg_checks_the_rust_argument() {
 }
 
 #[test]
+fn one_arg_requires_a_borrow_for_conversions_that_retain_heap_references() {
+    for (annotation, rust_type) in [
+        ("str", "StrArg"),
+        ("str | None", "Option<StrArg>"),
+        ("int", "IntArg"),
+        ("SupportsIndex", "IntArg"),
+    ] {
+        let signature = format!("f(x: {annotation}, /)");
+        let declaration = parse_quote!(#signature, style = one_arg);
+        let function = syn::parse_str(&format!("fn f(x: {rust_type}) {{}}")).unwrap();
+        assert_eq!(
+            expand(&declaration, function).unwrap_err().to_string(),
+            "borrow the converted argument so the binder can release its heap references"
+        );
+    }
+}
+
+#[test]
 fn one_arg_uses_the_declared_name_for_errors() {
     for options in [r#"owner = "T""#, r#"kwarg_error_name = "g""#] {
         let declaration = syn::parse_str::<Declaration>(&format!(r#""f(x, /)", style = one_arg, {options}"#)).unwrap();
@@ -373,6 +391,33 @@ fn only_borrowed_patterns_may_ignore_fields() {
         fn f(FArgs { x, y: mut other }: FArgs) {}
     );
     assert!(expand(&declaration, renamed).is_ok());
+}
+
+#[test]
+fn named_owned_args_require_a_full_destructure_before_any_return() {
+    let declaration = parse_quote!("f(x, y)");
+    for body in [
+        "return;",
+        "let CustomArgs { x, y } = other;",
+        "let CustomArgs { x, .. } = args;",
+        "let CustomArgs { x, y: _ } = args;",
+        "let CustomArgs { x, ref y } = args;",
+    ] {
+        let function = syn::parse_str(&format!("fn f(args: CustomArgs) {{ {body} }}")).unwrap();
+        assert!(expand(&declaration, function).is_err(), "{body}");
+    }
+    let function = parse_quote!(
+        fn f(ref args: CustomArgs) {
+            let CustomArgs { x, y } = args;
+        }
+    );
+    assert!(expand(&declaration, function).is_err());
+    let function = parse_quote!(
+        fn f(args: CustomArgs) {
+            let CustomArgs { x, y: mut other } = args;
+        }
+    );
+    assert!(expand(&declaration, function).is_ok());
 }
 
 #[test]

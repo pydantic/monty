@@ -27,12 +27,14 @@ For a builtin that uses Monty’s `ArgValues::get_one_arg` calling convention, u
 The macro emits the existing helper call and guards the returned value for the function body.
 This preserves the helper’s arity errors, including its positional-count error for keyword calls.
 A typed parameter such as `sqrt(x: float, /)` runs the converter after the same arity check.
-A reference parameter such as `number: &IntArg` borrows the converted value for the duration of the call.
+Use a shared reference for conversions that retain a Python object, such as `number: &IntArg` or `text: &StrArg`.
+The adapter releases it when the body returns.
 Leave parameters unannotated when their operation runs in the body,
 as with the iterable passed to `enumerate`.
 
 For two required positional values, `#[py_signature("divmod(x, y, /)", style = two_args)]`
-binds the Rust parameter `(x, y): (&Value, &Value)` directly. Keywords take precedence over arity errors.
+binds the Rust parameter `args: (&Value, &Value)`. Destructure it with `let (x, y) = args;`.
+Keywords take precedence over arity errors.
 
 For `f()` or a bound method such as `#[py_signature("keys(self, /)", owner = "dict")]`, the Rust
 body can omit the argument struct. The macro adds a trailing `ArgValues` parameter and calls
@@ -40,10 +42,10 @@ body can omit the argument struct. The macro adds a trailing `ArgValues` paramet
 
 ### Ownership and conversion
 
-A parameter such as `args: &SplitArgs` borrows the generated struct. Destructure a borrowed
-struct to name individual fields. An owned pattern such as `SortedArgs { iterable, kwargs }: SortedArgs`
-transfers them to the body, which must release them on success and error.
-Bind every owned field by name. Borrow the struct to omit fields with `..` or `_`.
+Take the generated struct as `args: &SplitArgs` and use its fields directly or destructure it in the body.
+For example, `let SplitArgs { sep, maxsplit } = args;` borrows both fields.
+When the body takes ownership, declare `args: SortedArgs` and begin with `let SortedArgs { iterable, kwargs } = args;`.
+Bind every owned field by name and release it on every return path.
 For callers that bind after method lookup, put `#[py_signature]` on a unit struct and call
 `Name::from_args(args, vm)?`. Generated fields have the struct's visibility.
 

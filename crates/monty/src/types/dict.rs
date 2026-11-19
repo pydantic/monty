@@ -1770,11 +1770,8 @@ fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> Run
 }
 
 #[py_signature("get(key, default=None, /)", style = unpack, kwarg_error_name = "dict.get")]
-fn dict_get_method<'h>(
-    dict: &HeapObjectRead<'h, Dict>,
-    GetArgs { key, default }: GetArgs,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
+fn dict_get_method<'h>(dict: &HeapObjectRead<'h, Dict>, args: GetArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let GetArgs { key, default } = args;
     let mut pending = DropGuard::new((key, default), vm);
     let ((key, _), vm) = pending.as_parts();
     if let Some(value) = dict.dict_get(key, vm)? {
@@ -1946,11 +1943,8 @@ fn dict_merge_from_kwargs(dict: &mut Dict, kwargs: KwargsValues, vm: &mut VM<'_>
 /// If key is in the dict, return its value.
 /// If not, insert key with a value of default (or None) and return default.
 #[py_signature("setdefault(key, default=None, /)", style = unpack, kwarg_error_name = "dict.setdefault")]
-fn dict_setdefault<'h>(
-    dict: &HeapReadMut<'h, Dict>,
-    SetdefaultArgs { key, default }: SetdefaultArgs,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
+fn dict_setdefault<'h>(dict: &HeapReadMut<'h, Dict>, args: SetdefaultArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let SetdefaultArgs { key, default } = args;
     // Hashing/equality can raise before either argument is stored.
     let mut pending = DropGuard::new((key, default), vm);
     let ((key, _), vm) = pending.as_parts();

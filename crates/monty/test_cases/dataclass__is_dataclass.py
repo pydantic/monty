@@ -31,6 +31,9 @@ assert not is_dataclass('hi'), 'a string is not a dataclass'
 
 # === is_dataclass on an instance ===
 e = Empty()
+assert is_dataclass(obj=Point)
+assert is_dataclass(obj=e)
+assert not is_dataclass(obj=Plain)
 assert is_dataclass(e), 'an instance of a dataclass is itself a dataclass'
 
 # === The decorated class is unchanged as a class object ===

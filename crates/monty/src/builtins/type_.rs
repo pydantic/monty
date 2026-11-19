@@ -64,15 +64,13 @@ pub(crate) fn type_of_ref(vm: &mut VM<'_>, value: &Value) -> Value {
 /// `__hash__`, as CPython's `type_new` does. Keyword arguments go to the
 /// parent's `__init_subclass__`.
 #[py_signature("type(name, bases, namespace, /, **kwargs)", style = unpack)]
-fn create_class(
-    vm: &mut VM<'_>,
-    TypeNewArgs {
+fn create_class(vm: &mut VM<'_>, args: TypeNewArgs) -> RunResult<Value> {
+    let TypeNewArgs {
         name,
         bases,
         namespace,
         kwargs,
-    }: TypeNewArgs,
-) -> RunResult<Value> {
+    } = args;
     defer_drop!(name, vm);
     defer_drop!(bases, vm);
     defer_drop!(namespace, vm);
