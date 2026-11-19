@@ -11,7 +11,7 @@ use syn::{
     parse_quote,
 };
 
-use crate::from_args::{Signature, snake_to_pascal};
+use crate::from_args::Signature;
 
 pub(super) struct Declaration {
     signature: LitStr,
@@ -68,6 +68,12 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
     }
     let name = def.name.as_str();
     let params = &def.parameters;
+    let is_def = declaration.style.as_ref().is_some_and(|style| style == "def");
+    if is_def && params.iter().any(|param| param.annotation().is_some()) {
+        return Err(error(
+            "leave parameters unannotated with style = def and convert values in the function body",
+        ));
+    }
     let receiver = params.posonlyargs.first().is_some_and(|p| p.name().as_str() == "self");
     let mut fields = Vec::new();
     for param in params.posonlyargs.iter().skip(usize::from(receiver)) {
@@ -128,7 +134,6 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
         .as_ref()
         .map_or_else(|| name.to_owned(), |owner| format!("{}.{name}", owner.value()));
     let style = declaration.style.as_ref().map(|style| quote!(, style = #style));
-    let is_def = declaration.style.as_ref().is_some_and(|style| style == "def");
     let bad_arg = (receiver && !is_def).then(|| quote!(, bad_arg));
     let kwarg_error = declaration
         .kwarg_error_name
@@ -162,6 +167,22 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
         #drop_args
         #function
     })
+}
+
+fn snake_to_pascal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut upper = true;
+    for c in s.chars() {
+        if c == '_' {
+            upper = true;
+        } else if upper {
+            out.extend(c.to_uppercase());
+            upper = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn field_name(param: &Parameter, literal: &LitStr) -> syn::Result<syn::Ident> {
@@ -246,7 +267,22 @@ fn integer_default(expr: &Expr) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::Declaration;
+    use super::{Declaration, expand};
+
+    #[test]
+    fn def_rejects_parameter_annotations() {
+        for signature in ["f(x: str, /)", "f(x: float)", "f(*, x: SupportsIndex = -1)"] {
+            let declaration = syn::parse_str::<Declaration>(&format!(r#""{signature}", style = def"#)).unwrap();
+            let function = syn::parse_quote!(
+                fn f(args: &FArgs) {}
+            );
+            let error = expand(&declaration, function).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "leave parameters unannotated with style = def and convert values in the function body"
+            );
+        }
+    }
 
     #[test]
     fn rejects_duplicate_options() {

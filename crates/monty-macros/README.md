@@ -18,9 +18,11 @@ fn str_split<'h>(s: &PyStr<'h>, args: &SplitArgs, vm: &mut VM<'h>) -> RunResult<
 
 The adapter binds the arguments, then uses Monty’s existing `defer_drop!` or `defer_drop_mut!` guard for the function body.
 Use `&mut` when the implementation needs to move a field out.
+Each keyword parameter needs an entry with its exact Python spelling in `StaticStrings`.
+With `style = def`, leave parameters unannotated and convert values in the function body.
 For a Python method, `style = def, owner = "Counter"` includes the receiver in positional arity errors and qualifies the
 method name.
-`kwarg_error_name` names a downstream callable that receives unexpected keywords, as in `json.dump`.
+`kwarg_error_name` overrides the callable name in unexpected-keyword errors, as in `json.dump`.
 
 ## `#[derive(FromArgs)]`
 

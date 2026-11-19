@@ -881,43 +881,14 @@ impl Field {
     fn keyword_name_expr(&self, never_matchable: bool) -> TokenStream {
         if never_matchable || matches!(self.kind, FieldKind::PosOnly) && self.static_string.is_none() {
             quote! { ::std::option::Option::None }
-        } else {
-            let variant = self.static_string_variant();
+        } else if let Some(variant) = &self.static_string {
             quote! { ::std::option::Option::Some(crate::intern::StaticStrings::#variant) }
-        }
-    }
-
-    /// The ASCII-letter or PascalCase variant for a field, unless explicitly overridden.
-    fn static_string_variant(&self) -> Ident {
-        if let Some(explicit) = &self.static_string {
-            explicit.clone()
         } else {
             let name = self.ident.to_string();
-            let variant = match name.as_bytes() {
-                [byte @ b'a'..=b'z'] => format!("AsciiLower{}", char::from(byte.to_ascii_uppercase())),
-                [b'A'..=b'Z'] => format!("Ascii{name}"),
-                _ => snake_to_pascal(&name),
-            };
-            Ident::new(&variant, self.ident.span())
+            let message = format!("add the keyword `{name}` to StaticStrings");
+            quote! { Some(crate::intern::StaticStrings::from_keyword(#name).expect(#message)) }
         }
     }
-}
-
-/// Converts a Rust snake-case field name to its `StaticStrings` variant name.
-pub(super) fn snake_to_pascal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut upper = true;
-    for c in s.chars() {
-        if c == '_' {
-            upper = true;
-        } else if upper {
-            out.extend(c.to_uppercase());
-            upper = false;
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// True for a literal `Vec<Value>` type (by final path segments — the only
