@@ -28,14 +28,13 @@ use self::counter::counter_update;
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::Builtins,
-    bytecode::{CallResult, VM},
+    bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
     types::{
         Dict, Module, NamedTupleClass, PyTrait, Type,
-        dict::{DictKind, dict_fromkeys},
         iter::collect_owned_iterable,
         str::{StringRepr, str_isidentifier},
     },
@@ -80,37 +79,6 @@ pub(crate) enum CollectionsFunctions {
 pub(super) fn call(vm: &mut VM<'_>, function: CollectionsFunctions, args: ArgValues) -> RunResult<Value> {
     match function {
         CollectionsFunctions::Namedtuple => namedtuple(vm, args),
-    }
-}
-
-/// `Counter.fromkeys`, which CPython deliberately disables.
-pub(crate) fn counter_class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
-        args.drop_with(vm);
-        Ok(Err(ExcType::not_implemented(
-            "Counter.fromkeys() is undefined.  Use Counter(iterable) instead.",
-        )
-        .into()))
-    } else {
-        Err(args)
-    }
-}
-
-/// `defaultdict.fromkeys(...)` builds `cls()`, a defaultdict with no factory,
-/// matching CPython's inherited `dict.fromkeys` classmethod.
-pub(crate) fn defaultdict_class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
-        Ok(dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value))
-    } else {
-        Err(args)
     }
 }
 

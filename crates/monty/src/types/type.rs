@@ -18,10 +18,12 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap},
-    intern::StaticStrings,
+    intern::{Interns, StaticStrings},
+    modules::collections,
+    py_attrs::{self, AttrDef},
     py_value::PyValue,
     types::{
-        GenericAlias, LongInt, PyTrait, allocate_tuple,
+        GenericAlias, LongInt, PyTrait, TypeRef, allocate_tuple,
         bytes::bytes_repr,
         instance::BoundMethod,
         long_int::INT_MAX_STR_DIGITS,
@@ -86,19 +88,47 @@ impl Type {
         CALLABLE_TYPES.get(usize::from(id)).copied()
     }
 
+    /// Returns the first definition in the MRO and the native namespace that owns it.
+    /// The owner validates descriptors; class methods bind to the accessing class.
+    pub(crate) fn lookup_attr(self, attr: &EitherStr, interns: &Interns) -> Option<(Self, AttrDef)> {
+        let name = attr.static_string(interns)?;
+        self.mro()
+            .find_map(|owner| (owner.def().attrs?.lookup)(name).map(|definition| (owner, definition)))
+    }
+
+    /// Calls registered methods on existing views, binding class methods to the receiver's class.
+    pub(crate) fn call_attr<'h>(
+        self,
+        obj: &mut PyValue<'h>,
+        attr: &EitherStr,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        match self.lookup_attr(attr, vm.interns) {
+            Some((owner, AttrDef::Method(call))) => py_attrs::call_method(owner, obj, attr, call, args, vm),
+            Some((_, AttrDef::ClassMethod(classmethod))) => classmethod(obj.py_type(vm), args, vm),
+            _ => obj.call_dynamic_attr(vm, attr, args),
+        }
+    }
+
     /// Dispatches calls on a type object's attribute (`dict.fromkeys(...)`).
     ///
     /// A type's own class methods run first, then `__class_getitem__`; any
     /// other name is looked up as a plain attribute and the result called, so
     /// `list.__name__()` raises `'str' object is not callable`.
     pub(crate) fn call_class_method(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        let args = match self.def().class_method {
-            Some(class_method) => match class_method(attr, args, vm) {
-                Ok(result) => return result,
-                Err(args) => args,
-            },
-            None => args,
-        };
+        match self.lookup_attr(attr, vm.interns) {
+            Some((_, AttrDef::ClassMethod(classmethod))) => {
+                return classmethod(TypeRef::Native(self), args, vm);
+            }
+            Some((Self::Counter, AttrDef::Method(call))) => {
+                return collections::counter::call_unbound(attr, call, args, vm);
+            }
+            Some((owner, AttrDef::Method(call))) => {
+                return py_attrs::call_unbound(owner, attr, call, args, vm);
+            }
+            _ => {}
+        }
         if self.has_class_getitem() && attr.static_string(vm.interns) == Some(StaticStrings::ClassGetitem) {
             // `list.__class_getitem__(int)` is `list[int]`; the error names the
             // bare type as CPython does (`deque.__class_getitem__()`).
@@ -149,9 +179,10 @@ impl Type {
     /// Every lookup allocates a fresh object, so `date.min is date.min` is
     /// `False` where CPython caches (see limitations/datetime.md).
     pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-        // Native ancestors' members are inherited too: `int.__init__` is `object`'s.
-        self.mro()
-            .find_map(|ty| ty.def().class_attr.and_then(|class_attr| class_attr(attr, vm)))
+        match self.lookup_attr(attr, vm.interns) {
+            Some((_, AttrDef::Value(get))) => Some(get(vm)),
+            _ => None,
+        }
     }
 
     /// The `AttributeError` for a name missing from this type object.

@@ -4,29 +4,46 @@
 //! They are reached as `object.__init__`, through a class that defines no
 //! override (`Foo.__init__`).
 
+use monty_macros::pyattrs;
+
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropWithContext, HeapData, HeapId},
+    heap::{DropWithContext, HeapData, HeapId, HeapRead},
+    py_attrs::PyAttrs,
     types::{Dict, Instance, PyTrait, Type, TypeRef, instance::class_defines},
-    value::{EitherStr, Value},
+    value::Value,
 };
 
-/// `object`'s class attributes, for the native type table.
-pub(crate) fn object_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    let function = match attr.as_str(vm.interns) {
-        // Exists so a class that hooks attribute writes has a way to perform
-        // one (see `limitations/classes.md`).
-        "__setattr__" => BuiltinsFunctions::ObjectSetattr,
-        "__new__" => BuiltinsFunctions::ObjectNew,
-        "__init__" => BuiltinsFunctions::ObjectInit,
-        "__init_subclass__" => BuiltinsFunctions::ObjectInitSubclass,
-        _ => return None,
-    };
-    Some(Value::Builtin(Builtins::Function(function)))
+/// Attributes inherited from object by native and Python classes.
+pub(crate) struct PyObjectImpl;
+
+#[pyattrs]
+impl<'h> PyAttrs<'h> for PyObjectImpl {
+    type Receiver = HeapRead<'h, Instance>;
+
+    #[pyvalue(DunderSetattr)]
+    fn __setattr__(_vm: &mut VM<'_>) -> Value {
+        Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectSetattr))
+    }
+
+    #[pyvalue(DunderNew)]
+    fn __new__(_vm: &mut VM<'_>) -> Value {
+        Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectNew))
+    }
+
+    #[pyvalue(DunderInit)]
+    fn __init__(_vm: &mut VM<'_>) -> Value {
+        Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInit))
+    }
+
+    #[pyvalue(DunderInitSubclass)]
+    fn __init_subclass__(_vm: &mut VM<'_>) -> Value {
+        Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass))
+    }
 }
 
 /// Arguments of `object.__new__(cls, /, *args, **kwargs)`.
