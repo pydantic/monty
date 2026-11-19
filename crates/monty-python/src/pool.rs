@@ -688,8 +688,9 @@ pub struct PyAsyncMontyRemote {
 
 #[pymethods]
 impl PyAsyncMontyRemote {
-    /// Creates the pool configuration; the connection is made by the first
-    /// checkout (no workers are pre-warmed).
+    /// Creates the pool configuration; nothing connects here. `__aenter__`
+    /// opens `pre_warm` sessions (in the background without `pre_warm_wait`),
+    /// otherwise the first checkout dials.
     ///
     /// `request_timeout` is the per-turn deadline in seconds (default 10.0): a
     /// server that admits the stream but never answers would otherwise leave
@@ -714,6 +715,8 @@ impl PyAsyncMontyRemote {
         max_decode_bytes = None,
         connect_headers = None,
         stream_async_calls = true,
+        pre_warm = 0,
+        pre_warm_wait = true,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -729,6 +732,8 @@ impl PyAsyncMontyRemote {
         max_decode_bytes: Option<usize>,
         connect_headers: Option<Py<PyAny>>,
         stream_async_calls: bool,
+        pre_warm: usize,
+        pre_warm_wait: bool,
     ) -> PyResult<Self> {
         // the keyword's former name, kept for one release
         let metadata = match (metadata, connect_headers) {
@@ -759,6 +764,8 @@ impl PyAsyncMontyRemote {
             auto_resume,
         )?;
         config.stream_async_calls = stream_async_calls;
+        config.min_processes = pre_warm;
+        config.pre_warm_wait = pre_warm_wait;
         if let Some(bytes) = max_decode_bytes {
             if bytes > DEFAULT_MAX_DECODE_BYTES {
                 return Err(PyValueError::new_err(format!(
@@ -774,9 +781,16 @@ impl PyAsyncMontyRemote {
         })
     }
 
-    /// Initializes the pool (off the event loop) and returns `self`.
+    /// Initializes the pool (off the event loop) and returns `self`. With
+    /// `pre_warm`, `metadata` is called here, on the caller's task, for the
+    /// sessions opened before any checkout.
     fn __aenter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
-        let config = slf.get().config.clone();
+        let mut config = slf.get().config.clone();
+        if config.min_processes > 0
+            && let Some(callback) = &slf.get().metadata
+        {
+            config.pre_warm_metadata = extract_metadata(py, callback)?;
+        }
         let slot = Arc::clone(&slf.get().pool);
         future_into_py(py, async move {
             let pool = Pool::new(config)
@@ -1349,9 +1363,9 @@ async fn finish_checkout(checkout: &SharedCheckout) {
 }
 
 /// Builds the remote-transport `monty-pool` config from the `AsyncMontyRemote`
-/// constructor arguments. Each checkout opens a stream to `url`; there is no
-/// pre-warming, so `min_processes` stays 0 and `max_processes` caps concurrent
-/// streams.
+/// constructor arguments. Each checkout opens a stream to `url`, or takes one
+/// of the `pre_warm` sessions the caller sets as `min_processes`; `max_processes`
+/// caps concurrent streams, pre-warmed ones included.
 fn parse_remote_config(
     url: String,
     max_processes: Option<usize>,

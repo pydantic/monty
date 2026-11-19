@@ -1,5 +1,6 @@
-// The remote pool: `MontyRemote` holds one HTTP/2 connection to a gRPC
-// server and opens a session stream per checkout instead of spawning local
+// The remote pool: `MontyRemote` opens a session per checkout on a remote
+// server, over gRPC (`http(s)://`, one HTTP/2 connection per pool) or
+// WebSocket (`ws(s)://`, one connection per session), instead of spawning local
 // `monty subprocess` workers. Dialing, framing, auto-resume after a server
 // drain and the per-turn watchdog all live in the native `monty-pool` crate
 // (shared with pydantic_monty's AsyncMontyRemote); sessions are the same
@@ -12,7 +13,7 @@ import { captureTelemetryContext } from './telemetry.js'
 
 /** Options for [`MontyRemote.create`]. */
 export interface MontyRemoteOptions {
-  /** Cap on concurrent session streams; checkouts beyond it wait (default: CPU count). */
+  /** Cap on concurrent sessions; checkouts beyond it wait (default: CPU count). */
   maxProcesses?: number
   /**
    * Seconds `checkout()` waits for capacity before rejecting (default: wait
@@ -21,10 +22,10 @@ export interface MontyRemoteOptions {
   checkoutTimeout?: number
   /**
    * Hard per-turn deadline in seconds (default 10, `null` disables): a turn
-   * that gets no answer in time has its stream ended and fails with
+   * that gets no answer in time has its session ended and fails with
    * `MontyCrashedError` (`timedOut: true`). Without it, a server that admits
-   * the stream but never answers blocks the turn until the far end ends it.
-   * It also bounds opening the stream, including the server's admission (30s
+   * the session but never answers blocks the turn until the far end ends it.
+   * It also bounds opening the session, including the server's admission (30s
    * when `null`). `installDependencies` is a turn too, and a real install can exceed 10s.
    * CPU-mode servers require a finite `requestTimeout`, otherwise checkout
    * throws `MontyConfigurationError`.
@@ -36,8 +37,8 @@ export interface MontyRemoteOptions {
    */
   requestTimeout?: number | null
   /**
-   * Called at each checkout for extra request metadata on that session's
-   * stream, e.g. a short-lived auth token: lowercase ASCII names, ASCII
+   * Called at each checkout for extra request metadata (WebSocket: upgrade
+   * headers) on that session, e.g. a short-lived auth token: lowercase ASCII names, ASCII
    * values. May return a promise. A resume after a server shutdown reuses
    * the metadata of the original checkout.
    */
@@ -56,7 +57,7 @@ export interface MontyRemoteOptions {
   /** As `feedDurationLimitGrace`, for the per-turn budget. */
   turnDurationLimitGrace?: number | null
   /**
-   * Resume a session a draining server stored on another stream instead of
+   * Resume a session a draining server stored on a new session instead of
    * raising `MontyShutdown` (default `true`). Only a server that stores
    * sessions can be resumed; see `MontyShutdown`.
    */
@@ -82,10 +83,10 @@ export interface RemoteCheckoutOptions extends CheckoutOptions {
 }
 
 /**
- * An async pool of remote `monty` workers reached over gRPC — the intended
- * peer is `monty-server`. The pool keeps one HTTP/2 connection to `url` and
- * each checkout opens a session stream on it; streams are never pre-warmed
- * or reused. The transport provides no isolation of its own: the server is
+ * An async pool of remote `monty` workers — the intended peer is
+ * `monty-server`. The URL's scheme picks the transport: gRPC for `http(s)://`
+ * (one HTTP/2 connection, a stream per checkout) or WebSocket for `ws(s)://`
+ * (a connection per checkout). Sessions are never pre-warmed or reused. The transport provides no isolation of its own: the server is
  * responsible for sandboxing. Also exported as `MontyWebsocket`, its deprecated former name.
  *
  * ```ts
@@ -106,9 +107,10 @@ export class MontyRemote {
   }
 
   /**
-   * Creates the pool. `url` is the server's `http://` or `https://` URL
-   * (`ws://` and `wss://` are read as those two); an `https://` certificate
-   * is verified against the operating system's trust store. Nothing is
+   * Creates the pool. `url` is the server's `http://` or `https://` URL for
+   * gRPC (host and optional port only), or its `ws://` or `wss://` URL for
+   * WebSocket (dialed as given, path and query included); an `https://` or
+   * `wss://` certificate is verified against the operating system's trust store. Nothing is
    * dialed until the first checkout.
    */
   static async create(url: string, options: MontyRemoteOptions = {}): Promise<MontyRemote> {
@@ -138,9 +140,9 @@ export class MontyRemote {
   }
 
   /**
-   * Opens a session stream to the server and creates a REPL session there.
+   * Opens a session on the server and creates a REPL session there.
    * Rejects with `MontyConnectError` when the connection fails;
-   * `MontyRefusedError` when the server refuses the stream, e.g. one at
+   * `MontyRefusedError` when the server refuses the session, e.g. one at
    * capacity; and `MontyDisconnectError` / `MontyShutdown` when it is lost
    * while being created. A server refusing the session's configuration
    * fails its first request with `MontyConfigurationError`. Release the
@@ -165,8 +167,8 @@ export class MontyRemote {
 
   /**
    * Shuts the pool down: pending and new checkouts reject. Sessions already
-   * checked out keep their streams until closed. Resolves once finished
-   * sessions' streams have closed (each bounded by a one-second grace).
+   * checked out keep their connections until closed. Resolves once finished
+   * sessions have closed (each bounded by a one-second grace).
    */
   async close(): Promise<void> {
     this.closing ??= this.native.close()

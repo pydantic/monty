@@ -7,6 +7,8 @@
 mod binary;
 #[path = "support/grpc_mock.rs"]
 mod grpc_mock;
+#[path = "support/opening.rs"]
+mod opening;
 
 #[cfg(feature = "telemetry")]
 use std::sync::Arc;
@@ -431,12 +433,12 @@ async fn an_unparsable_url_fails_the_pool() {
     assert_eq!(msg, "not a url: invalid URI");
 }
 
-/// Schemes are read without regard to case, `ws`/`wss` as `http`/`https`,
-/// and anything else is refused when the pool is made: tonic would dial an
-/// unknown scheme in plaintext, with the stream's metadata on it.
+/// Schemes are read without regard to case, and one naming no transport is
+/// refused when the pool is made: tonic would dial an unknown scheme in
+/// plaintext, with the stream's metadata on it.
 #[tokio::test]
 async fn url_schemes_are_normalised_and_unknown_ones_refused() {
-    for scheme in ["HTTP://", "WS://", "ws://"] {
+    for scheme in ["HTTP://", "Http://"] {
         let mock = MockServer::start().await;
         let url = mock.url().replace("http://", scheme);
         let server = thread::spawn(move || serve_mock_worker(&mock));
@@ -458,7 +460,7 @@ async fn url_schemes_are_normalised_and_unknown_ones_refused() {
         let scheme = url.split_once("://").unwrap().0;
         assert_eq!(
             msg,
-            format!("{url}: unsupported URL scheme {scheme:?}, expected http or https")
+            format!("{url}: unsupported URL scheme {scheme:?}, expected http, https, ws or wss")
         );
     }
 }
@@ -480,7 +482,7 @@ async fn url_paths_are_refused() {
         assert_eq!(
             msg,
             format!(
-                "{url}: a URL path, query or fragment is not supported; use only the scheme and host, with an optional port"
+                "{url}: a URL path, query or fragment is not supported for gRPC; use only the scheme and host, with an optional port"
             )
         );
     }
@@ -2505,6 +2507,55 @@ async fn shutdown_resumes_transparently() {
     // the reload started a new session under the ID its reply carried
     assert_eq!(checkout.session_id(), Some(&b"sess-2"[..]));
     checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+/// A resume never takes a pre-opened session, so when pre-warming fills the pool
+/// it retires one for the slot rather than waiting for capacity nothing frees.
+#[tokio::test]
+async fn a_resume_retires_a_pre_opened_session_at_the_cap() {
+    let mock = MockServer::start().await;
+    let mut config = PoolConfig::remote(mock.url());
+    config.min_processes = 1;
+    config.max_processes = 1;
+    config.checkout_timeout = Some(Duration::from_secs(5));
+    config.request_timeout = Some(Duration::from_secs(10));
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "1 + 1");
+        send_kind(&mut socket, shutdown(Some(b"parked-1")));
+        // a refill may land first: it is retired unused, so its stream ends silently
+        let mut socket = loop {
+            let mut socket = mock.accept();
+            if let Some(request) = try_read_request(&mut socket) {
+                assert!(
+                    matches!(request.kind, Some(pb::client_request::Kind::Configure(_))),
+                    "expected Configure, got {request:?}"
+                );
+                send_kind(&mut socket, ok_event());
+                break socket;
+            }
+        };
+        expect_load(&mut socket, b"parked-1");
+        send_with_session_id(&mut socket, ok_event(), b"sess-2");
+        expect_feed(&mut socket, "1 + 1");
+        send_complete(&mut socket);
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let event = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("the resume finds a slot");
+    assert!(
+        matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
+        "got {event:?}"
+    );
+    checkout.finish().await.expect("finish");
+    pool.close().await;
     join_server(server).await;
 }
 

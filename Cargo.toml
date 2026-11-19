@@ -151,6 +151,8 @@ clap = { version = "4", features = ["derive"] }
 # monty-pool adds the `channel` client with rustls (`aws-lc` to match the
 # `rustls` pin below), and tests add `server` for in-process mock servers.
 tonic = { version = "0.14.9", default-features = false }
+# WebSocket remote transport (monty-pool); rustls is configured by the pool, so no roots are bundled.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "__rustls-tls"] }
 # `Bytes` payloads for the opaque gRPC codec and the pool's event channel.
 bytes = "1"
 # `ReceiverStream` turns the pool's request channel into a gRPC request body.

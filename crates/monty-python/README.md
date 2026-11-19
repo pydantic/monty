@@ -19,8 +19,9 @@ pip install pydantic-monty-client
 
 ## Usage with a remote monty server
 
-You can use this library alone to connect to a remote monty server over gRPC: one HTTP/2 connection per pool, one
-stream per session. `AsyncMontyWebsocket` is the same class under its former name, deprecated.
+You can use this library alone to connect to a remote monty server, over gRPC for an `http://`/`https://` URL (one
+HTTP/2 connection per pool, one stream per session) or WebSocket for a `ws://`/`wss://` URL (one connection per
+session). `AsyncMontyWebsocket` is the same class under its former name, deprecated.
 
 ```python test="skip"
 from pydantic_monty import AsyncMontyRemote
@@ -40,6 +41,13 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
+`AsyncMontyRemote(url, pre_warm=2)` keeps two sessions open and ready, so a checkout takes one instead of dialing.
+`__aenter__` waits for them to open, raising if one cannot (`pre_warm_wait=False` opens them in the background
+instead); they are replaced in the background as checkouts take them, and count against `max_processes`.
+With `metadata`, `__aenter__` calls it for the first sessions and each replacement is dialed with the latest
+checkout's; a checkout takes only a session dialed with what its own `metadata` call returned, and a changed value
+closes and replaces the ready sessions.
+
 `MontyDisconnectError` exposes `status_code`, `status_message`, `cause` and `transport_error` when available.
 These fields preserve the status the server ended the stream with, or the transport or protocol failure, not proof that
 the request did or did not run.
@@ -53,7 +61,7 @@ Remote connection failures raise `MontyConnectError`, a `MontyError` subclass wi
 `status_message`, `cause` and `transport_error` attributes.
 A CPU-mode remote server requires a finite client `request_timeout`; without one, checkout raises `MontyConfigurationError`.
 Malformed request metadata also raises `MontyConfigurationError` before any connection attempt.
-Creating a pool with invalid settings raises it too: `min_processes` above `max_processes`, or a local CPU clock
+Creating a pool with invalid settings raises it too: `min_processes` (or `pre_warm`) above `max_processes`, or a local CPU clock
 off Linux or without a finite `request_timeout`.
 
 ## Host decode budget
