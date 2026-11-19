@@ -19,6 +19,7 @@ Each keyword parameter needs an entry with its exact Python spelling in `StaticS
 With `style = def`, leave parameters unannotated and convert values in the function body.
 For a Python method, `style = def, owner = "Counter"` includes the receiver in positional arity errors and qualifies the
 method name.
+Leave the bound `self` parameter unannotated and omit its default.
 `kwarg_error_name` overrides the callable name in unexpected-keyword errors, as in `json.dump`.
 
 For a builtin that uses Monty’s `ArgValues::get_one_arg` calling convention, use
@@ -41,6 +42,7 @@ body can omit the argument struct. The macro adds a trailing `ArgValues` paramet
 A parameter such as `args: &SplitArgs` borrows the generated struct. Destructure a borrowed
 struct to name individual fields. An owned pattern such as `SortedArgs { iterable, kwargs }: SortedArgs`
 transfers them to the body, which must release them on success and error.
+Bind every owned field by name. Borrow the struct to omit fields with `..` or `_`.
 For callers that bind after method lookup, put `#[py_signature]` on a unit struct and call
 `Name::from_args(args, vm)?`. Generated fields have the struct's visibility.
 
@@ -56,7 +58,8 @@ An unannotated parameter carries a Python value. A default of `...` distinguishe
 from a supplied value, including `None`. `int` binds a full-width Python integer.
 `SupportsIndex` also accepts objects with `__index__`, preserving the result's full width.
 Use `c_int` for a C `int` argument and `i64` for a signed 64-bit index.
-`float` extracts an `f64`, and `bool` truth-tests the argument. Use `str` for borrowed text or `str | None` for nullable text.
+`float` extracts an `f64` through `__float__`, falling back to `__index__`.
+`bool` truth-tests the argument. Use `str` for borrowed text or `str | None` for nullable text.
 Use `convert(real = Part)` to select a Rust type implementing `FromValue`.
 `error_name` overrides the name reported in binding errors. In a `macro_rules!` template,
 `#[py_signature("(iterable, r)", error_name = $name)]` uses the supplied Python identifier as the function name.

@@ -192,6 +192,22 @@ impl FromValue for Value {
     }
 }
 
+impl FromValue for f64 {
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        let result = match value.py_float(vm) {
+            Ok(Some(number)) => Ok(number),
+            Ok(None) => return Err(FromValueFail::WrongType(value)),
+            Err(err) => Err(FromValueFail::Raise(err)),
+        };
+        value.drop_with(vm);
+        result
+    }
+
+    fn type_error(got: &str) -> RunError {
+        ExcType::type_error_not_real_number(got)
+    }
+}
+
 impl FromValue for i32 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 

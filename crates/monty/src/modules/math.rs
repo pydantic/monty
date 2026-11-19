@@ -33,7 +33,7 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use smallvec::smallvec;
 
 use crate::{
-    args::{ArgValues, FromValue, FromValueFail},
+    args::ArgValues,
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -1271,14 +1271,6 @@ fn value_to_float(value: &Value, vm: &VM<'_>) -> RunResult<f64> {
                 None => Err(ExcType::type_error_not_real_number(&value.py_type_name(vm))),
             },
         },
-    }
-}
-
-impl FromValue for f64 {
-    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
-        let result = value_to_float(&value, vm);
-        value.drop_with(vm);
-        result.map_err(FromValueFail::Raise)
     }
 }
 

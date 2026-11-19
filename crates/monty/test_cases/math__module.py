@@ -113,6 +113,35 @@ assert math.sqrt(False) == 0.0
 assert math.sqrt(float('inf')) == float('inf')
 assert math.isnan(math.sqrt(float('nan')))
 
+
+class FloatAndIndex:
+    def __float__(self):
+        return 16.0
+
+    def __index__(self):
+        raise AssertionError('__float__ takes precedence')
+
+
+class IndexOnly:
+    def __index__(self):
+        return 25
+
+
+class RaisingFloat(IndexOnly):
+    def __float__(self):
+        raise ValueError('float conversion failed')
+
+
+assert math.sqrt(FloatAndIndex()) == 4.0
+assert math.sqrt(IndexOnly()) == 5.0
+assert math.isclose(a=FloatAndIndex(), b=16.0)
+try:
+    math.sqrt(RaisingFloat())
+except ValueError as exc:
+    assert str(exc) == 'float conversion failed'
+else:
+    raise AssertionError('expected the exception from __float__')
+
 threw = False
 try:
     math.sqrt(-1)

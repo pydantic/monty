@@ -110,6 +110,19 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
         if !matches!(ty, Type::Path(path) if path.path.is_ident(name)) {
             return Err(syn::Error::new_spanned(ty, "expected the destructured argument type"));
         }
+        if !borrowed {
+            if let Some(rest) = &pattern.rest {
+                return Err(syn::Error::new_spanned(
+                    rest,
+                    "bind every owned argument or borrow the argument struct",
+                ));
+            }
+            for field in &pattern.fields {
+                if !matches!(&*field.pat, Pat::Ident(ident) if ident.by_ref.is_none() && ident.subpat.is_none()) {
+                    return Err(syn::Error::new_spanned(&field.pat, "bind each owned argument by name"));
+                }
+            }
+        }
         let (bound, implementation) = arguments(declaration, &def, Some(name))?;
         let guard = borrowed.then(|| quote!(crate::defer_drop!(__bound, vm);));
         let original = function.block;
@@ -254,7 +267,11 @@ fn arguments(
             return Err(syn::Error::new(field.span(), "unknown converter parameter"));
         }
     }
-    let receiver = params.posonlyargs.first().is_some_and(|p| p.name().as_str() == "self");
+    let receiver = params.posonlyargs.first().filter(|p| p.name().as_str() == "self");
+    if receiver.is_some_and(|p| p.annotation().is_some() || p.default().is_some()) {
+        return Err(error("a bound receiver cannot have an annotation or a default"));
+    }
+    let receiver = receiver.is_some();
     let mut fields = Vec::new();
     for param in params.posonlyargs.iter().skip(usize::from(receiver)) {
         fields.push(named_field(param, &quote!(pos_only,), declaration)?);
@@ -338,11 +355,8 @@ fn zero_arg_name(declaration: &Declaration, def: &StmtFunctionDef) -> Option<Str
         return None;
     }
     let params = &def.parameters;
-    let receiver_only = params.iter().count() == 1
-        && params
-            .posonlyargs
-            .first()
-            .is_some_and(|p| p.name().as_str() == "self" && p.annotation().is_none() && p.default().is_none());
+    let receiver_only =
+        params.iter().count() == 1 && params.posonlyargs.first().is_some_and(|p| p.name().as_str() == "self");
     (params.is_empty() || receiver_only).then(|| callable_name(declaration, def.name.as_str()))
 }
 
@@ -623,30 +637,33 @@ fn full_width_default(expr: &Expr) -> Option<TokenStream> {
     if let Some(n) = integer_default(expr) {
         return Some(quote!(crate::types::LongInt::from(#n)));
     }
-    let (magnitude, sign) = match expr {
-        Expr::UnaryOp(op) if op.op == UnaryOp::USub => (op.operand.as_ref(), "-"),
-        _ => (expr, ""),
-    };
-    let Expr::NumberLiteral(number) = magnitude else {
-        return None;
-    };
-    let Number::Int(integer) = &number.value else {
-        return None;
-    };
+    let (integer, negative) = integer_literal(expr)?;
     let literal = syn::parse_str::<syn::LitInt>(&integer.to_string().to_ascii_lowercase()).ok()?;
+    let sign = if negative { "-" } else { "" };
     let decimal = format!("{sign}{}", literal.base10_digits());
     Some(quote!(crate::types::LongInt::new(#decimal.parse().expect("validated integer literal"))))
 }
 
 fn integer_default(expr: &Expr) -> Option<i64> {
-    match expr {
-        Expr::NumberLiteral(n) => match &n.value {
-            Number::Int(i) => i.as_i64(),
-            _ => None,
-        },
-        Expr::UnaryOp(op) if op.op == UnaryOp::USub => integer_default(&op.operand)?.checked_neg(),
-        _ => None,
+    let (integer, negative) = integer_literal(expr)?;
+    let magnitude = i128::from(integer.as_u64()?);
+    i64::try_from(if negative { -magnitude } else { magnitude }).ok()
+}
+
+fn integer_literal(mut expr: &Expr) -> Option<(&ruff_python_ast::Int, bool)> {
+    let mut negative = false;
+    while let Expr::UnaryOp(op) = expr {
+        if op.op != UnaryOp::USub {
+            return None;
+        }
+        negative = !negative;
+        expr = &op.operand;
     }
+    let Expr::NumberLiteral(number) = expr else { return None };
+    let Number::Int(integer) = &number.value else {
+        return None;
+    };
+    Some((integer, negative))
 }
 
 #[cfg(test)]

@@ -422,3 +422,14 @@ fn full_width_signature_defaults_and_omissions() {
         assert_eq!(supplied.index.unwrap().inner(), &wide);
     });
 }
+
+#[test]
+fn signed_integer_defaults_include_both_endpoints() {
+    #[monty_macros::py_signature("bounds(low: i64=-9223372036854775808, high: i64=9223372036854775807, /)")]
+    struct Bounds;
+
+    with_test_vm(|vm| {
+        let bounds = Bounds::from_args(ArgValues::Empty, vm).unwrap();
+        assert_eq!((bounds.low, bounds.high), (i64::MIN, i64::MAX));
+    });
+}

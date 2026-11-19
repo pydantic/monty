@@ -51,10 +51,22 @@ fn rejects_invalid_signatures() {
         ("f(mut)", "parameter name must also be a Rust identifier"),
         ("f(x: list[str])", "unsupported native parameter annotation"),
         ("f(x: bytes)", "unsupported native parameter annotation"),
+        (
+            "f(self: str, /, x)",
+            "a bound receiver cannot have an annotation or a default",
+        ),
+        (
+            "f(self=None, /)",
+            "a bound receiver cannot have an annotation or a default",
+        ),
         ("f(x: str = 1)", "unsupported default for this parameter type"),
         ("f(x = 1e999)", "unsupported default for this parameter type"),
         ("f(x: SupportsIndex = 0.5)", "expected an integer literal"),
         ("f(x: SupportsIndex = None)", "expected an integer literal"),
+        (
+            "f(x: i64 = -9223372036854775809)",
+            "expected a signed 64-bit integer literal",
+        ),
         (
             "f(x: i64 = 9223372036854775808)",
             "expected a signed 64-bit integer literal",
@@ -232,15 +244,7 @@ fn infers_the_same_check_for_a_named_binder() {
 
 #[test]
 fn a_callable_with_parameters_still_needs_a_binder() {
-    for signature in [
-        "f(x, /)",
-        "f(x)",
-        "f(self=None, /)",
-        "f(self: str, /)",
-        "f(*items)",
-        "f(*, x=None)",
-        "f(self, /, **kw)",
-    ] {
+    for signature in ["f(x, /)", "f(x)", "f(*items)", "f(*, x=None)", "f(self, /, **kw)"] {
         let declaration = parse_quote!(#signature);
         let function = parse_quote!(
             fn f(vm: &mut VM<'_>) {}
@@ -341,6 +345,34 @@ fn destructured_adapter_checks_the_argument_type() {
         expand(&declaration, function).unwrap_err().to_string(),
         "expected the destructured argument type"
     );
+}
+
+#[test]
+fn only_borrowed_patterns_may_ignore_fields() {
+    let declaration = parse_quote!("f(x, y)");
+    for (pattern, message) in [
+        (
+            "FArgs { x, .. }",
+            "bind every owned argument or borrow the argument struct",
+        ),
+        ("FArgs { x, y: _ }", "bind each owned argument by name"),
+    ] {
+        let owned = syn::parse_str(&format!("fn f({pattern}: FArgs) {{}}")).unwrap();
+        assert_eq!(expand(&declaration, owned).unwrap_err().to_string(), message);
+        let borrowed = syn::parse_str(&format!("fn f({pattern}: &FArgs) {{}}")).unwrap();
+        assert!(expand(&declaration, borrowed).is_ok());
+    }
+    let by_ref = parse_quote!(
+        fn f(FArgs { x, ref y }: FArgs) {}
+    );
+    assert_eq!(
+        expand(&declaration, by_ref).unwrap_err().to_string(),
+        "bind each owned argument by name"
+    );
+    let renamed = parse_quote!(
+        fn f(FArgs { x, y: mut other }: FArgs) {}
+    );
+    assert!(expand(&declaration, renamed).is_ok());
 }
 
 #[test]
