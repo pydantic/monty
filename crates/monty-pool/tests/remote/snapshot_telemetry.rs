@@ -1,13 +1,18 @@
 //! Snapshot API spans follow the public call through setup, errors and cancellation.
 
 use std::{
-    future::ready,
+    future::{poll_fn, ready},
+    pin::Pin,
     sync::mpsc,
     thread,
     time::{Duration, SystemTime},
 };
 
-use logfire::{Logfire, config::AdvancedOptions, set_local_logfire};
+use logfire::{
+    Logfire,
+    config::{AdvancedOptions, LogfireConfigBuilder},
+    set_local_logfire,
+};
 use monty_pool::{CheckoutOptions, Pool, PoolError, PrintFuture, ReplConfig, TurnEvent, telemetry::TelemetryContext};
 use monty_proto::{decode_frame, pb};
 use monty_types::{MontyObject, NameLookupResult};
@@ -22,7 +27,159 @@ use opentelemetry_sdk::{
 use tokio::{sync::oneshot, time::timeout};
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
-use super::{event_kind, join_server, mock_pool_config, no_print, position, read_request, send_event};
+use super::{
+    configure_with_session_id, event_kind, expect_configure, expect_load, join_server, mock_pool_config, no_print,
+    ok_event, position, read_request, send_event, send_kind, send_with_session_id, shutdown,
+};
+
+/// Dropping the API future preserves its trace and leaves the host span open.
+#[tokio::test]
+async fn cancelling_a_dump_preserves_the_ambient_parent() {
+    let spans = InMemorySpanExporter::default();
+    let logfire = local_logfire()
+        .with_additional_span_processor(SimpleSpanProcessor::new(spans.clone()))
+        .finish()
+        .unwrap();
+    let host = {
+        let _provider = set_local_logfire(logfire.clone());
+        tracing::info_span!("host request")
+    };
+    let host_context = host.context().span().span_context().clone();
+    let (configured, mut configuration) = oneshot::channel();
+    let (mock, config) = mock_pool_config().await;
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::client_request::Kind::Configure(_)
+        ));
+        configured.send(()).unwrap();
+        assert!(socket.read().is_none());
+    });
+    let pool = Pool::new(config).await.unwrap();
+    let options = CheckoutOptions::default().with_telemetry(Some(TelemetryContext::for_logfire(logfire.clone())));
+    let mut checkout = pool.checkout_with(&ReplConfig::default(), options).await.unwrap();
+    let mut dump = Box::pin(checkout.dump());
+    timeout(
+        Duration::from_secs(10),
+        poll_fn(|cx| {
+            let _provider = set_local_logfire(logfire.clone());
+            host.in_scope(|| {
+                assert!(dump.as_mut().poll(cx).is_pending());
+                Pin::new(&mut configuration).poll(cx)
+            })
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    let ambient = local_logfire().finish().unwrap();
+    {
+        let _ambient = set_local_logfire(ambient);
+        drop(dump);
+        drop(checkout);
+    }
+    let recorded = spans.get_finished_spans().unwrap();
+    assert!(recorded.iter().all(|span| span.name != "host request"));
+    let dump = recorded.iter().find(|span| span.name == "dump").unwrap();
+    assert_eq!(attribute(dump, "monty.outcome"), Some("cancelled".into()));
+    assert_eq!(dump.span_context.trace_id(), host_context.trace_id());
+    assert_eq!(dump.parent_span_id, host_context.span_id());
+    drop(host);
+    assert_eq!(
+        spans
+            .get_finished_spans()
+            .unwrap()
+            .iter()
+            .filter(|span| span.span_context.span_id() == host_context.span_id())
+            .count(),
+        1
+    );
+    pool.close().await;
+    join_server(server).await;
+}
+
+/// Base configuration for in-memory telemetry tests.
+fn local_logfire() -> LogfireConfigBuilder {
+    logfire::configure()
+        .local()
+        .send_to_logfire(false)
+        .with_console(None)
+        .with_install_panic_handler(false)
+}
+
+/// A replacement worker's refusal belongs to the original dump call.
+#[tokio::test]
+async fn dump_retry_error_keeps_the_original_operation_span() {
+    let spans = InMemorySpanExporter::default();
+    let logs = InMemoryLogExporter::default();
+    let logfire = local_logfire()
+        .with_additional_span_processor(SimpleSpanProcessor::new(spans.clone()))
+        .with_advanced_options(AdvancedOptions::default().with_log_processor(SimpleLogProcessor::new(logs.clone())))
+        .finish()
+        .unwrap();
+    let (mock, mut config) = mock_pool_config().await;
+    config.auto_resume = true;
+    let server = thread::spawn(move || {
+        let mut original = mock.accept();
+        configure_with_session_id(&mut original, b"sess-1");
+        assert!(matches!(read_request(&mut original), pb::client_request::Kind::Dump(_)));
+        send_kind(&mut original, shutdown(Some(b"parked")));
+        drop(original);
+
+        let mut replacement = mock.accept();
+        expect_configure(&mut replacement);
+        expect_load(&mut replacement, b"parked");
+        send_with_session_id(&mut replacement, ok_event(), b"sess-2");
+        assert!(matches!(
+            read_request(&mut replacement),
+            pb::client_request::Kind::Dump(_)
+        ));
+        send_kind(
+            &mut replacement,
+            pb::worker_event::Kind::Error(pb::Error {
+                exception: Some(pb::RaisedException {
+                    exc_type: "RuntimeError".to_owned(),
+                    message: Some("replacement refused the dump".to_owned()),
+                    ..Default::default()
+                }),
+            }),
+        );
+        assert!(replacement.read().is_none());
+    });
+    let pool = Pool::new(config).await.unwrap();
+    let options = CheckoutOptions::default().with_telemetry(Some(TelemetryContext::for_logfire(logfire.clone())));
+    let mut checkout = pool.checkout_with(&ReplConfig::default(), options).await.unwrap();
+    assert!(matches!(
+        timeout(Duration::from_secs(10), checkout.dump()).await.unwrap(),
+        Err(PoolError::Runtime(_))
+    ));
+    assert_eq!(checkout.session_id(), Some(&b"sess-2"[..]));
+    checkout.finish().await.unwrap();
+    pool.close().await;
+    join_server(server).await;
+
+    let recorded = dump_spans(&spans);
+    let [dump] = recorded.as_slice() else {
+        panic!("expected one dump operation");
+    };
+    assert_eq!(dump.status, Status::error("RuntimeError: replacement refused the dump"));
+    let emitted = logs.get_emitted_logs().unwrap();
+    let error = emitted
+        .iter()
+        .find(|entry| {
+            entry
+                .record
+                .attributes_iter()
+                .any(|(key, _)| key.as_str() == "exc_type")
+        })
+        .unwrap();
+    assert_eq!(
+        error.record.trace_context().unwrap().span_id,
+        dump.span_context.span_id()
+    );
+}
 
 /// Setup and persistence acknowledgements bound the API span; raw forwarding emits no dump span.
 #[tokio::test]
@@ -36,11 +193,7 @@ async fn dump_spans_cover_the_api_and_close_on_success_error_and_cancellation() 
 async fn dump_span_scenario() {
     let spans = InMemorySpanExporter::default();
     let logs = InMemoryLogExporter::default();
-    let logfire = logfire::configure()
-        .local()
-        .send_to_logfire(false)
-        .with_console(None)
-        .with_install_panic_handler(false)
+    let logfire = local_logfire()
         .with_additional_span_processor(SimpleSpanProcessor::new(spans.clone()))
         .with_advanced_options(AdvancedOptions::default().with_log_processor(SimpleLogProcessor::new(logs.clone())))
         .finish()
@@ -182,13 +335,9 @@ async fn dump_span_scenario() {
 #[tokio::test]
 async fn dump_status_caps_fatal_worker_messages() {
     const LIMIT: usize = 64 * 1024;
-    const PREFIX: &str = "monty worker crashed: ";
+    const PREFIX: &str = "monty worker crashed: x";
     let spans = InMemorySpanExporter::default();
-    let logfire = logfire::configure()
-        .local()
-        .send_to_logfire(false)
-        .with_console(None)
-        .with_install_panic_handler(false)
+    let logfire = local_logfire()
         .with_additional_span_processor(SimpleSpanProcessor::new(spans.clone()))
         .finish()
         .unwrap();
@@ -205,7 +354,7 @@ async fn dump_status_caps_fatal_worker_messages() {
         send_event(
             &mut socket,
             &event_kind(pb::worker_event::Kind::FatalError(pb::FatalError {
-                message: "é".repeat(1024 * 1024),
+                message: format!("x{}", "é".repeat(1024 * 1024)),
             })),
         );
         assert!(socket.read().is_none());
@@ -221,7 +370,7 @@ async fn dump_status_caps_fatal_worker_messages() {
     let Status::Error { description } = &recorded[0].status else {
         panic!("fatal dump status");
     };
-    assert_eq!(description.len(), LIMIT);
+    assert_eq!(description.len(), LIMIT - 1);
     assert_eq!(
         description.as_ref(),
         format!("{PREFIX}{}", "é".repeat((LIMIT - PREFIX.len()) / 2))
@@ -242,11 +391,7 @@ async fn restore_span_ends_at_the_first_suspension() {
 /// Hold the opening reply and check automatic span closure on each load outcome.
 async fn restore_span_scenario() {
     let exporter = InMemorySpanExporter::default();
-    let logfire = logfire::configure()
-        .local()
-        .send_to_logfire(false)
-        .with_console(None)
-        .with_install_panic_handler(false)
+    let logfire = local_logfire()
         .with_additional_span_processor(SimpleSpanProcessor::new(exporter.clone()))
         .finish()
         .expect("logfire");
@@ -405,13 +550,7 @@ async fn restore_span_scenario() {
         Some("cancelled".into())
     );
     assert!(restores.next().is_none());
-    let ambient = logfire::configure()
-        .local()
-        .send_to_logfire(false)
-        .with_console(None)
-        .with_install_panic_handler(false)
-        .finish()
-        .expect("ambient logfire");
+    let ambient = local_logfire().finish().expect("ambient logfire");
     {
         let _ambient = set_local_logfire(ambient);
         drop(checkout);

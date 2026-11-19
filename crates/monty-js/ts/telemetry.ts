@@ -134,6 +134,7 @@ const instruments = new Map<string, MetricHandle>()
 const directOwner = {}
 
 setCallbackContextHandlers({
+  capture: captureTelemetryContext,
   bindPrint(callback) {
     return AsyncResource.bind((stream, text, parent) =>
       withCallbackContext(parent ?? undefined, () => callback(stream, text)),

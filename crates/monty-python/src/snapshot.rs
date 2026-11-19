@@ -37,6 +37,7 @@ use std::{
 use monty_pool::{Checkout, OnPrint, PoolError, ResumeValue, TurnEvent};
 use monty_proto::python::{InstanceStore, exc_py_to_monty, py_to_monty_value, uuid_to_py};
 use monty_types::{CallArgs, ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult, SourceRange};
+use opentelemetry::trace::FutureExt as _;
 use pyo3::{
     Borrowed,
     exceptions::{PyBaseException, PyRuntimeError, PyTypeError},
@@ -69,7 +70,7 @@ use crate::{
         turn_fn,
     },
     print_target::PrintTarget,
-    telemetry::{capture_otel_context, snapshot_trace_context},
+    telemetry::{capture_otel_context, snapshot_operation_context, snapshot_trace_context},
 };
 
 /// Shared context threaded across a `feed_start` drive so each `resume` can
@@ -454,6 +455,7 @@ impl SnapshotState {
         // Check resumed only under the checkout lock
         let checkout = SharedCheckout::clone(&self.ctx.checkout);
         let resumed = &self.resumed;
+        let parent = snapshot_operation_context(py);
         let state = py
             .detach(|| {
                 block_on_sync(async {
@@ -462,7 +464,7 @@ impl SnapshotState {
                         return Ok(None);
                     }
                     match guard.as_mut() {
-                        Some(checkout) => checkout.dump().await.map(Some),
+                        Some(checkout) => checkout.dump().with_context(parent).await.map(Some),
                         None => Err(PoolError::Finished),
                     }
                 })

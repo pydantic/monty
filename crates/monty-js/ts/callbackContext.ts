@@ -7,6 +7,7 @@ type NativePrintCallback = (stream: 'stdout' | 'stderr', text: string, parent?: 
 type NativeStreamedCallCallback = (callId: number, parent?: string | null) => void
 
 interface CallbackContextHandlers {
+  capture(): Record<string, unknown> | undefined
   bindPrint(callback: NativePrintCallback): NativePrintCallback
   bindStreamedCall(callback: NativeStreamedCallCallback): NativeStreamedCallCallback
   run<T>(parent: string | undefined, callback: () => T): T
@@ -17,6 +18,11 @@ let handlers: CallbackContextHandlers | undefined
 
 export function setCallbackContextHandlers(value: CallbackContextHandlers): void {
   handlers = value
+}
+
+/** Captures the current app span in the native SDK. The WASM transport has no recorder. */
+export function captureOperationContext(): Record<string, unknown> | undefined {
+  return handlers?.capture()
 }
 
 export function bindPrintCallback(callback: NativePrintCallback): NativePrintCallback {

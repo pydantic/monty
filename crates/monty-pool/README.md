@@ -238,6 +238,7 @@ Supplying an SDK is therefore an
 explicit opt-in to recording potentially sensitive values.
 
 The `dump` and `restore` API spans cover the awaited snapshot call, including any initial session configuration and the relay response.
+Each API span uses the app context active at the call, or the checkout context if no app span is active.
 The `restore` span ends when the call returns, even if the restored execution is suspended.
 Its child `load` span stays open across any restored suspensions and parents their callback spans.
 Raw forwarding and automatic recovery do not create snapshot API spans.

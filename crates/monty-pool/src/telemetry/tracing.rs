@@ -15,7 +15,6 @@ use std::{
     collections::BTreeMap,
     fmt::{self, Write},
     mem,
-    sync::{Arc, Weak},
 };
 
 use logfire::{Logfire, set_local_logfire};
@@ -24,7 +23,10 @@ use monty_types::{
     DEFAULT_MAX_SUSPENSIONS, MontyUuid, SourceRange, bytes_repr,
     unstable::{MontyNode, NodeId},
 };
-use opentelemetry::{Value as OtelValue, trace::Status};
+use opentelemetry::{
+    Context, Value as OtelValue,
+    trace::{Status, TraceContextExt},
+};
 use tracing::{Span, field::Empty};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -51,11 +53,17 @@ pub(crate) enum SnapshotOperation {
 
 /// Owns the API span until completion or cancellation without keeping it on the worker.
 pub(crate) struct SnapshotSpan {
-    span: Arc<Span>,
+    span: Span,
+    operation: SnapshotOperation,
     outcome: &'static str,
 }
 
 impl SnapshotSpan {
+    /// Returns its span when the protocol record belongs to this API operation.
+    pub(crate) fn parent_for(&self, operation: SnapshotOperation) -> Option<&Span> {
+        (self.operation == operation && !self.span.is_none()).then_some(&self.span)
+    }
+
     /// Set a terminal result before the guard records its outcome once.
     pub(crate) fn finish(mut self, error: Option<&impl fmt::Display>) {
         self.outcome = if let Some(error) = error {
@@ -110,8 +118,6 @@ pub(crate) struct Recorder {
     /// Whether the current turn is a `Dump`: an `Error` reply to one leaves
     /// the feed suspended and resumable.
     dump_turn: bool,
-    /// Parents snapshot turns without keeping a cancelled operation open.
-    snapshot_parent: Option<(SnapshotOperation, Weak<Span>)>,
     /// One-shot host context consumed when `Configure` starts the root span.
     adapter_context: Option<TelemetryContext>,
     /// Scoped dispatcher installed only while this recorder emits telemetry.
@@ -132,7 +138,6 @@ impl Recorder {
             feed: None,
             session: None,
             dump_turn: false,
-            snapshot_parent: None,
             adapter_context: None,
             logfire: None,
         }
@@ -153,25 +158,31 @@ impl Recorder {
     }
 
     /// Starts a snapshot API span before the checkout sends any frames.
-    pub(crate) fn snapshot_span(&mut self, operation: SnapshotOperation) -> SnapshotSpan {
+    pub(crate) fn snapshot_span(&self, operation: SnapshotOperation) -> SnapshotSpan {
         let _logfire = self.logfire.clone().map(set_local_logfire);
-        let parent = self.context_span();
-        let span = match operation {
-            SnapshotOperation::Dump => tracing::info_span!("dump", monty.outcome = Empty),
-            SnapshotOperation::Restore => tracing::info_span!("restore", monty.outcome = Empty),
-        };
-        let context = if parent.is_none() {
-            self.adapter_context.clone().and_then(TelemetryContext::into_parent)
+        let context = Context::current();
+        let context = if context.span().span_context().is_valid() {
+            context
         } else {
-            Some(parent.context())
+            let parent = self.context_span();
+            if parent.is_none() {
+                self.adapter_context
+                    .clone()
+                    .and_then(TelemetryContext::into_parent)
+                    .unwrap_or(context)
+            } else {
+                parent.context()
+            }
         };
-        if let Some(context) = context {
-            let _ = span.set_parent(context);
-        }
-        let span = Arc::new(start_span(span));
-        self.snapshot_parent = Some((operation, Arc::downgrade(&span)));
+        // The future can drop under a different subscriber. Keep the parent in OTel only.
+        let span = match operation {
+            SnapshotOperation::Dump => tracing::info_span!(parent: None, "dump", monty.outcome = Empty),
+            SnapshotOperation::Restore => tracing::info_span!(parent: None, "restore", monty.outcome = Empty),
+        };
+        let _ = span.set_parent(context);
         SnapshotSpan {
-            span,
+            span: start_span(span),
+            operation,
             outcome: "cancelled",
         }
     }
@@ -222,6 +233,11 @@ impl Recorder {
     /// Starts recording one turn; called once the frame is on the wire, so a
     /// rejected oversize frame records nothing.
     pub(crate) fn begin_turn(&mut self, request: &pb::ClientRequest) {
+        self.begin_turn_with_parent(request, None);
+    }
+
+    /// Starts the wire turn with the parent of an explicit restore.
+    pub(crate) fn begin_turn_with_parent(&mut self, request: &pb::ClientRequest, restore_parent: Option<&Span>) {
         let _logfire = self.logfire.clone().map(set_local_logfire);
         // A restored suspended feed uses its `Load` turn as the feed span, so
         // resumes must preserve it until the eventual turn-ending event.
@@ -253,7 +269,7 @@ impl Recorder {
                     length_limit_exceeded = Empty,
                 );
                 // An OTel parent lets the API span close before a suspended load ends.
-                if let Some(restore) = self.snapshot_parent(SnapshotOperation::Restore) {
+                if let Some(restore) = restore_parent {
                     let _ = load.set_parent(restore.context());
                 }
                 self.turn = Some(start_span(load));
@@ -385,6 +401,11 @@ impl Recorder {
     /// Records one event from the worker: suspension events open the pending
     /// span, turn-ending events close the feed and turn spans.
     pub(crate) fn event(&mut self, event: &pb::WorkerEvent) {
+        self.event_with_parent(event, None);
+    }
+
+    /// Records the event under its dump call when the turn belongs to one.
+    pub(crate) fn event_with_parent(&mut self, event: &pb::WorkerEvent, dump_parent: Option<&Span>) {
         let _logfire = self.logfire.clone().map(set_local_logfire);
         // the budget travels with the elapsed time so `Load`-restored sessions,
         // whose limits come from the dump, show what it is measured against
@@ -500,7 +521,8 @@ impl Recorder {
                 self.end_feed();
             }
             Some(pb::worker_event::Kind::Error(e)) => {
-                record_error(e, micros, max_feed_duration, &self.context_span());
+                let parent = self.event_parent(dump_parent);
+                record_error(e, micros, max_feed_duration, &parent);
                 // An error reply to `Dump` leaves the feed suspended and resumable.
                 if self.dump_turn {
                     self.turn = None;
@@ -511,7 +533,7 @@ impl Recorder {
             Some(pb::worker_event::Kind::TypingError(t)) => {
                 let (diagnostics, cut) = truncate_str(&t.diagnostics);
                 logfire::error!(
-                    parent: self.context_span(),
+                    parent: self.event_parent(dump_parent),
                     "typing error",
                     diagnostics = diagnostics,
                     length_limit_exceeded = cut.then_some(true),
@@ -528,7 +550,7 @@ impl Recorder {
             // closing its spans.
             Some(pb::worker_event::Kind::Shutdown(s)) => {
                 logfire::info!(
-                    parent: self.context_span(),
+                    parent: self.event_parent(dump_parent),
                     "shutdown",
                     state_bytes = s.dump.as_ref().map(|bytes| bytes.len()),
                     total_execution_micros = micros,
@@ -541,7 +563,7 @@ impl Recorder {
             Some(pb::worker_event::Kind::FatalError(f)) => {
                 let (message, cut) = truncate_str(&f.message);
                 logfire::error!(
-                    parent: self.context_span(),
+                    parent: self.event_parent(dump_parent),
                     "fatal error",
                     message = message,
                     length_limit_exceeded = cut.then_some(true),
@@ -551,7 +573,7 @@ impl Recorder {
             Some(pb::worker_event::Kind::SessionRefused(r)) => {
                 let (message, cut) = truncate_str(&r.message);
                 logfire::error!(
-                    parent: self.context_span(),
+                    parent: self.event_parent(dump_parent),
                     "session refused",
                     message = message,
                     length_limit_exceeded = cut.then_some(true),
@@ -642,30 +664,19 @@ impl Recorder {
         OpenSpan::new(span, cut)
     }
 
-    /// Returns the live API parent for this snapshot turn.
-    fn snapshot_parent(&self, operation: SnapshotOperation) -> Option<Span> {
-        let (active, parent) = self.snapshot_parent.as_ref()?;
-        if *active == operation {
-            parent.upgrade().map(|span| (*span).clone())
-        } else {
-            None
-        }
+    /// Uses the API span for a dump event and the recorder's span for other events.
+    fn event_parent(&self, dump_parent: Option<&Span>) -> Span {
+        dump_parent.cloned().unwrap_or_else(|| self.context_span())
     }
 
     fn context_span(&self) -> Span {
-        if self.dump_turn
-            && let Some(span) = self.snapshot_parent(SnapshotOperation::Dump)
-        {
-            span
-        } else {
-            self.turn
-                .as_ref()
-                .or(self.pending.as_ref().map(OpenSpan::span))
-                .or(self.feed.as_ref().map(OpenSpan::span))
-                .or(self.session.as_ref())
-                .cloned()
-                .unwrap_or_else(Span::none)
-        }
+        self.turn
+            .as_ref()
+            .or(self.pending.as_ref().map(OpenSpan::span))
+            .or(self.feed.as_ref().map(OpenSpan::span))
+            .or(self.session.as_ref())
+            .cloned()
+            .unwrap_or_else(Span::none)
     }
 
     /// Records the host's answer on the suspension span it answers, then

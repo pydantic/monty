@@ -16,6 +16,7 @@ import { isAsyncFunction } from './asyncFunction.js'
 import {
   bindPrintCallback,
   bindStreamedCallCallback,
+  captureOperationContext,
   getCallbackContext,
   runWithCallbackContext,
 } from './callbackContext.js'
@@ -367,8 +368,12 @@ export class MontySession {
   async loadSession(state: Uint8Array): Promise<void> {
     this.claimFresh()
     const printTarget = new PrintTarget(undefined)
-    const turn = (await this.native.restore(bytesForNative(state), [], printTarget.write.bind(printTarget))) as
-      NativeTurn | LoadedTurn
+    const turn = (await this.native.restore(
+      bytesForNative(state),
+      [],
+      printTarget.write.bind(printTarget),
+      captureOperationContext(),
+    )) as NativeTurn | LoadedTurn
     switch (turn.kind) {
       case 'loaded':
         return
@@ -404,8 +409,12 @@ export class MontySession {
   async loadSnapshot(state: Uint8Array, options: LoadSnapshotOptions = {}): Promise<Snapshot> {
     this.claimFresh()
     const driver = this.newDriver(options)
-    const turn = (await this.native.restore(bytesForNative(state), mountsToNative(options.mount), driver.onPrint)) as
-      NativeTurn | LoadedTurn
+    const turn = (await this.native.restore(
+      bytesForNative(state),
+      mountsToNative(options.mount),
+      driver.onPrint,
+      captureOperationContext(),
+    )) as NativeTurn | LoadedTurn
     if (turn.kind === 'loaded') {
       throw await this.failedLoad(new Error('this dump is an idle session — use loadSession() to restore it'))
     }
@@ -1937,7 +1946,7 @@ async function dumpSession(
   onPrint: PrintCallback,
   poison: (err: Error) => Error,
 ): Promise<Buffer> {
-  const turn = (await native.dump(onPrint)) as NativeTurn | DumpedTurn
+  const turn = (await native.dump(onPrint, captureOperationContext())) as NativeTurn | DumpedTurn
   switch (turn.kind) {
     case 'dumped':
       return bufferFrom(turn.state)
