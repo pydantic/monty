@@ -30,7 +30,7 @@ use crate::{
         time, timedelta, timezone,
         r#type::{bool_init, float_init, int_init, union_init},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Facts about one native type, read through [`Type::def`].
@@ -69,12 +69,12 @@ pub(crate) struct TypeDef {
 }
 
 /// Resolves a class attribute, returning `None` when the type has no such member.
-pub(crate) type ClassAttrFn = for<'h> fn(&EitherStr, &mut VM<'h>) -> Option<Value>;
+pub(crate) type ClassAttrFn = for<'h> fn(&PyStr<'h>, &mut VM<'h>) -> Option<Value>;
 
 /// Calls a class method in place, handing `args` back as `Err` when the type has
 /// no method of that name so the caller can fall back to attribute lookup.
 pub(crate) type ClassMethodFn =
-    for<'h> fn(&EitherStr, ArgValues, &mut VM<'h>) -> Result<RunResult<CallResult>, ArgValues>;
+    for<'h> fn(&PyStr<'h>, ArgValues, &mut VM<'h>) -> Result<RunResult<CallResult>, ArgValues>;
 
 /// How calling a native type builds its instance.
 #[derive(Clone, Copy)]

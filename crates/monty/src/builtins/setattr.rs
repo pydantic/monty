@@ -7,6 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcTypeExt, RunResult, SimpleException},
+    types::str::PyStr,
     value::Value,
 };
 
@@ -29,7 +30,7 @@ pub fn builtin_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         other => return Err(ExcType::type_error_arg_count("setattr", 3, other.len())),
     };
 
-    let Some(name) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
+    let Some(name) = PyStr::from_value(name, vm).map(|s| s.resolve_interned(vm)) else {
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("attribute name must be string, not '{}'", name.py_type_name(vm)),

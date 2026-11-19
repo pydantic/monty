@@ -26,7 +26,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, HeapData},
     intern::{Interns, StringId},
     resource_checks::check_estimated_size,
-    types::{Dict, allocate_tuple},
+    types::{Dict, allocate_tuple, str::PyStr},
     value::{VALUE_SIZE, Value},
 };
 
@@ -376,15 +376,13 @@ impl Signature {
             let mut value_guard = DropGuard::new(value, vm);
             let vm = value_guard.ctx();
 
-            let Some(keyword_name) = key.as_either_str(vm.heap) else {
+            let Some(keyword_name) = PyStr::from_value(key, vm) else {
                 return Err(ExcType::type_error("keywords must be strings"));
             };
 
             // Check if this keyword matches a positional-only param (error)
             if let Some(pos_args) = &self.pos_args
-                && let Some(&param_id) = pos_args
-                    .iter()
-                    .find(|&&param_id| keyword_name.matches(param_id, vm.interns))
+                && let Some(&param_id) = pos_args.iter().find(|&&param_id| keyword_name.matches(param_id, vm))
             {
                 let func = vm.interns.get_str(func_name.name_id);
                 let param = vm.interns.get_str(param_id);
@@ -394,7 +392,7 @@ impl Signature {
             // Try positional-or-keyword params
             if let Some(args) = &self.args {
                 for (i, &param_id) in args.iter().enumerate() {
-                    if keyword_name.matches(param_id, vm.interns) {
+                    if keyword_name.matches(param_id, vm) {
                         let ns_idx = pos_param_count + i;
                         if !matches!(namespace[namespace_base + ns_idx], Value::Undefined) {
                             let func = vm.interns.get_str(func_name.name_id);
@@ -411,7 +409,7 @@ impl Signature {
             // Try keyword-only params
             if let Some(kwargs) = &self.kwargs {
                 for (i, &param_id) in kwargs.iter().enumerate() {
-                    if keyword_name.matches(param_id, vm.interns) {
+                    if keyword_name.matches(param_id, vm) {
                         let ns_idx = total_positional_params + var_args_offset + i;
                         if !matches!(namespace[namespace_base + ns_idx], Value::Undefined) {
                             let func = vm.interns.get_str(func_name.name_id);
@@ -426,6 +424,7 @@ impl Signature {
             }
 
             if let Some(excess_kwargs) = excess_kwargs {
+                drop(keyword_name);
                 // Consume both value and key into **kwargs dict
                 let (value, _) = value_guard.into_parts();
                 let (key, vm) = key_guard.into_parts();
@@ -434,8 +433,7 @@ impl Signature {
             }
 
             let func = vm.interns.get_str(func_name.name_id);
-            let key_str = keyword_name.as_str(vm.interns);
-            return Err(ExcType::type_error_unexpected_keyword(func, key_str));
+            return Err(ExcType::type_error_unexpected_keyword(func, keyword_name.as_str(vm)));
         }
 
         // 3.4. Raise the deferred too-many-positional error now that every

@@ -13,8 +13,9 @@ use crate::{
         Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, TypeRef, allocate_tuple,
         dict::{DictItemIterator, DictKeyIterator, DictValueIterator},
         iter::checked_preallocation_hint,
+        str::PyStr,
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Shared accessors for heap-backed dictionary view objects.
@@ -229,8 +230,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictKeysView> {
         Ok(f.write_str("])")?)
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm.interns) {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        match attr.static_string(vm) {
             Some(StaticStrings::Isdisjoint) => {
                 let other = args.get_one_arg("dict_keys.isdisjoint", vm.heap)?;
                 defer_drop!(other, vm);
@@ -424,8 +425,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictItemsView> {
         Ok(f.write_str("])")?)
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm.interns) {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        match attr.static_string(vm) {
             Some(StaticStrings::Isdisjoint) => {
                 let other = args.get_one_arg("dict_items.isdisjoint", vm.heap)?;
                 defer_drop!(other, vm);

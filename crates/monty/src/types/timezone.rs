@@ -22,11 +22,11 @@ use crate::{
     intern::{Interns, StaticStrings},
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
-        str::{StringRepr, allocate_string},
+        str::{PyStr, StringRepr, allocate_string},
         timedelta,
         timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Magnitude of the `timezone.min` / `timezone.max` class constants: 23:59.
@@ -230,8 +230,8 @@ pub(crate) fn utcoffset_value(offset_seconds: Option<i32>, heap: &Heap) -> Value
 }
 
 /// `timezone.utc`, `timezone.min` and `timezone.max`.
-pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    Some(match attr.static_string(vm.interns)? {
+pub(crate) fn class_attr<'h>(attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<Value> {
+    Some(match attr.static_string(vm)? {
         StaticStrings::Utc => vm.heap.get_timezone_utc(),
         StaticStrings::Min => allocate_offset(-MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
         StaticStrings::Max => allocate_offset(MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
@@ -345,10 +345,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
         Ok(allocate_string(s, vm.heap))
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         // Each method takes the `dt` it would need to resolve a DST rule. A fixed
         // offset has no such rule, so `take_dt_arg` validates and discards it.
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm) {
             Some(StaticStrings::Utcoffset) => {
                 take_dt_arg("timezone.utcoffset", args, vm)?;
                 let offset_seconds = self.get(vm.heap).offset_seconds;

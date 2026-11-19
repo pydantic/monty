@@ -24,8 +24,9 @@ use crate::{
             Accumulate, Batched, Chain, Combinations, Compress, Count, Cycle, DropWhile, FilterFalse, GroupBy, Islice,
             Pairwise, Permutations, Product, Repeat, StarMap, TakeWhile, ZipLongest, tee,
         },
+        str::PyStr,
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// The `itertools` callables that are not type objects.
@@ -100,8 +101,8 @@ pub(crate) fn call(vm: &mut VM<'_>, function: ItertoolsFunctions, args: ArgValue
 
 /// `chain.from_iterable`, the one attribute an `itertools` type carries. Handed
 /// out as a value so it can be bound and called later, not only called in place.
-pub(crate) fn chain_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    (attr.static_string(vm.interns) == Some(StaticStrings::FromIterable)).then_some(Value::ModuleFunction(
+pub(crate) fn chain_class_attr<'h>(attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<Value> {
+    (attr.static_string(vm) == Some(StaticStrings::FromIterable)).then_some(Value::ModuleFunction(
         ModuleFunctions::Itertools(ItertoolsFunctions::ChainFromIterable),
     ))
 }

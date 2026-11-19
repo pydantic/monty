@@ -23,8 +23,9 @@ use crate::{
         hash_table::{CloneTableEntry, Live, PyHashTable, TableCursor, TableEntry, TableProbe, TableSource, TableWalk},
         key_hash::{HashRole, hash_as, set_element_hash},
         list::repr_items_fmt,
+        str::PyStr,
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// Entry in the set storage, containing a value and its cached hash.
@@ -1149,7 +1150,7 @@ impl<'h> HeapRead<'h, FrozenSet> {
     fn call_storage_attr(
         &self,
         vm: &mut VM<'h>,
-        attr: &EitherStr,
+        attr: &PyStr<'h>,
         method: Option<StaticStrings>,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -1199,7 +1200,7 @@ impl<'h> HeapRead<'h, FrozenSet> {
             }
             _ => {
                 args.drop_with(vm);
-                return Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(vm.interns)));
+                return Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(vm)));
             }
         };
         value.map(CallResult::Value)
@@ -1312,8 +1313,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
         self.storage().repr_fmt(f, vm, heap_ids, "set")
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let value = match attr.static_string(vm.interns) {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        let value = match attr.static_string(vm) {
             Some(StaticStrings::Add) => {
                 let value = args.get_one_arg("set.add", vm.heap)?;
                 self.add(value, vm)?;
@@ -1396,7 +1397,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
             }
             _ => {
                 args.drop_with(vm);
-                return Err(ExcType::attribute_error(Type::Set, attr.as_str(vm.interns)));
+                return Err(ExcType::attribute_error(Type::Set, attr.as_str(vm)));
             }
         };
         value.map(CallResult::Value)
@@ -1626,8 +1627,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
         self.storage().repr_fmt(f, vm, heap_ids, "frozenset")
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let method = attr.static_string(vm.interns);
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        let method = attr.static_string(vm);
         if matches!(method, Some(StaticStrings::Copy)) {
             args.check_zero_args("frozenset.copy", vm.heap)?;
             // Identity copies preserve the cached hash and need no storage-method dispatch.

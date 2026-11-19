@@ -28,7 +28,6 @@ use crate::{
     source_nesting::{ast_depth_exceeded, ast_too_deep, nesting_bound_exceeded, parse_shallow},
     stringize::stringize_annotation,
     types::long_int::{INT_MAX_STR_DIGITS, bigint_cmp_f64, check_bigint_str_digits_limit},
-    value::EitherStr,
 };
 
 /// Maximum nesting depth for AST structures during parsing.
@@ -785,7 +784,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                         ..
                     }) => Ok(Node::AttrOpAssign {
                         object: self.parse_expression(*object)?,
-                        attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                        attr: self.interner.intern(attr.id()),
                         op,
                         value,
                         target_position: self.convert_range(range),
@@ -1748,7 +1747,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             }),
             AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(AssignTarget::Attr {
                 object: self.parse_expression(*value)?,
-                attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                attr: self.interner.intern(attr.id()),
                 target_position: self.convert_range(range),
             }),
             AstExpr::Tuple(ast::ExprTuple { elts, range, .. }) | AstExpr::List(ast::ExprList { elts, range, .. }) => {
@@ -2104,7 +2103,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                             position,
                             Expr::AttrCall {
                                 object,
-                                attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                                attr: self.interner.intern(attr.id()),
                                 args: Box::new(args),
                             },
                         ))
@@ -2180,7 +2179,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                     position,
                     Expr::AttrGet {
                         object,
-                        attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                        attr: self.interner.intern(attr.id()),
                     },
                 ))
             }
@@ -2499,7 +2498,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             }
             AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(UnpackTarget::Attr {
                 object: Box::new(self.parse_expression(*value)?),
-                attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                attr: self.interner.intern(attr.id()),
                 position: self.convert_range(range),
             }),
             AstExpr::Subscript(ast::ExprSubscript {

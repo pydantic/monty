@@ -91,7 +91,7 @@ fn create_class(
     defer_drop!(namespace, vm);
     defer_drop_mut!(kwargs, vm);
 
-    let Some(class_name) = name.as_either_str(vm.heap) else {
+    let Some(class_name) = name.as_str(vm) else {
         let got = name.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
         return Err(ExcType::type_error_bad_arg_pos("type.__new__", 1, "str", got));
     };
@@ -112,10 +112,9 @@ fn create_class(
     // them would hide the mistake — raise instead. Validated before cloning
     // any pairs so the error path has nothing to clean up.
     if let Some((bad_key, _)) = source.iter().find(|(k, _)| !k.is_str(vm.heap)) {
-        let name_str = class_name.as_str(vm.interns);
         let key_type = bad_key.py_type_heap(vm.heap).name(vm.heap, vm.interns);
         return Err(ExcType::type_error(format!(
-            "non-string key ({key_type}) in the namespace of class '{name_str}'"
+            "non-string key ({key_type}) in the namespace of class '{class_name}'"
         )));
     }
     let class_cell = match source.get_by_str("__classcell__", vm.heap, vm.interns) {
@@ -134,10 +133,7 @@ fn create_class(
     // while `source` still borrows the heap immutably.
     let mut pairs: Vec<(Value, Value)> = source
         .iter()
-        .filter(|(k, _)| {
-            k.as_either_str(vm.heap)
-                .is_none_or(|k| k.as_str(vm.interns) != "__classcell__")
-        })
+        .filter(|(k, _)| k.as_str(vm).is_none_or(|k| k != "__classcell__"))
         .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
         .collect();
     if source.get_by_str("__doc__", vm.heap, vm.interns).is_none() {
@@ -156,6 +152,7 @@ fn create_class(
     }
     let namespace_dict = Dict::from_pairs(pairs, vm)?;
 
+    let class_name = name.clone_either_str(vm.heap).expect("class name was validated");
     let owned_bases = bases
         .iter()
         .map(|base| match *base {

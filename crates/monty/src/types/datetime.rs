@@ -29,11 +29,11 @@ use crate::{
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type, TypeRef,
         date::{self, StrftimeArgs},
-        str::{StringRepr, allocate_string, allocate_string_no_interning},
+        str::{PyStr, StringRepr, allocate_string, allocate_string_no_interning},
         time::{self, Time, TimeSpec},
         timedelta, timezone,
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Number of microseconds in a single second.
@@ -298,8 +298,8 @@ struct DatetimeInitArgs {
 }
 
 /// `datetime.min`, `datetime.max` and `datetime.resolution`.
-pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    Some(match attr.static_string(vm.interns)? {
+pub(crate) fn class_attr<'h>(attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<Value> {
+    Some(match attr.static_string(vm)? {
         StaticStrings::Min => allocate_naive(1, 1, 1, 0, 0, 0, 0, vm.heap),
         StaticStrings::Max => allocate_naive(9999, 12, 31, 23, 59, 59, 999_999, vm.heap),
         StaticStrings::Resolution => timedelta::allocate_micros(1, vm.heap),
@@ -308,12 +308,12 @@ pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
 }
 
 /// `datetime.now()`, `fromtimestamp()`, `strptime()`, `fromisoformat()` and `combine()`.
-pub(crate) fn class_method(
-    attr: &EitherStr,
+pub(crate) fn class_method<'h>(
+    attr: &PyStr<'h>,
     args: ArgValues,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> Result<RunResult<CallResult>, ArgValues> {
-    Ok(match attr.static_string(vm.interns) {
+    Ok(match attr.static_string(vm) {
         Some(StaticStrings::Now) => class_now(vm, args),
         Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
         Some(StaticStrings::Strptime) => class_strptime(vm.heap, args, vm.interns).map(CallResult::Value),
@@ -1510,9 +1510,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         let dt = self.get(vm.heap).clone();
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm) {
             Some(StaticStrings::Isoformat) => {
                 let IsoformatArgs { sep, timespec } = IsoformatArgs::from_args(args, vm)?;
                 defer_drop!(sep, vm);
@@ -1604,11 +1604,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // Read only the field being asked for: cloning the whole `DateTime` would
         // copy the timezone name's `String` on every `dt.year`.
         let int_attr = |value: u32| Ok(Some(CallResult::Value(Value::Int(i64::from(value)))));
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm) {
             Some(StaticStrings::Year) => Ok(Some(CallResult::Value(Value::Int(i64::from(
                 self.get(vm.heap).naive.date().year(),
             ))))),

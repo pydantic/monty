@@ -98,7 +98,7 @@ The dump includes the interpreter state and the supplied script name, type-check
 Published releases with the same dump version can read and resume each other's dumps.
 This guarantee does not extend to unreleased Git revisions.
 A release that breaks compatibility in either direction uses a new dump version, even if it is a patch release.
-Loading checks the dump version:
+Current builds write dump format 16 and load formats 13–16, upgrading older state as needed:
 
 ```rust
 use monty::{Dump, MontyRepl, Session, SessionRef, dump};

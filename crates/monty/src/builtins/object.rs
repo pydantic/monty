@@ -11,13 +11,13 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropWithContext, HeapData, HeapId},
-    types::{Dict, Instance, PyTrait, Type, TypeRef, instance::class_defines},
-    value::{EitherStr, Value},
+    types::{Dict, Instance, PyTrait, Type, TypeRef, instance::class_defines, str::PyStr},
+    value::Value,
 };
 
 /// `object`'s class attributes, for the native type table.
-pub(crate) fn object_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    let function = match attr.as_str(vm.interns) {
+pub(crate) fn object_class_attr<'h>(attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<Value> {
+    let function = match attr.as_str(vm) {
         // Exists so a class that hooks attribute writes has a way to perform
         // one (see `limitations/classes.md`).
         "__setattr__" => BuiltinsFunctions::ObjectSetattr,

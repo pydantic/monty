@@ -30,8 +30,9 @@ use crate::{
         Module, Set, Type, allocate_string,
         bytes::allocate_bytes,
         hashlib::{Blake2Params, Blake2b, Blake2s, DigestBytes, HashAlgorithm, HashObject, hash_input},
+        str::PyStr,
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// `hashlib` module functions, one variant per Python-visible function.
@@ -481,8 +482,8 @@ pub(crate) fn blake2s_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 }
 
 /// `blake2b`'s size limits, on the class and so on its instances.
-pub(crate) fn blake2b_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    match attr.static_string(vm.interns)? {
+pub(crate) fn blake2b_class_attr<'h>(attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<Value> {
+    match attr.static_string(vm)? {
         StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize => Some(Value::Int(64)),
         StaticStrings::SaltSize | StaticStrings::PersonSize => Some(Value::Int(16)),
         _ => None,
@@ -490,8 +491,8 @@ pub(crate) fn blake2b_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Va
 }
 
 /// `blake2s`'s size limits, on the class and so on its instances.
-pub(crate) fn blake2s_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    match attr.static_string(vm.interns)? {
+pub(crate) fn blake2s_class_attr<'h>(attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<Value> {
+    match attr.static_string(vm)? {
         StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize => Some(Value::Int(32)),
         StaticStrings::SaltSize | StaticStrings::PersonSize => Some(Value::Int(8)),
         _ => None,

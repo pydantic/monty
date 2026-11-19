@@ -14,7 +14,7 @@ use crate::{
     name_map::namespace_overflow_message,
     namespace::NamespaceId,
     parse::CodeRange,
-    types::{Dict, List, Module, PyTrait},
+    types::{Dict, List, Module, PyTrait, str::PyStr},
     value::Value,
 };
 
@@ -107,7 +107,7 @@ impl VM<'_> {
     /// attribute as `getattr()` would, so a property can suspend for the host.
     fn import_star_load(&mut self) -> RunResult<CallResult> {
         let len = self.stack.len();
-        let Some(attr) = self.stack[len - 1].as_either_str(self.heap) else {
+        let Some(attr) = PyStr::from_value(&self.stack[len - 1], self) else {
             let module = self.import_star_module(2)?;
             let attrs = module_attrs(module, self)?;
             let from_all = attrs.get_by_str("__all__", self.heap, self.interns).is_some();

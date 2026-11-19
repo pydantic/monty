@@ -25,9 +25,10 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
     types::{
-        Dict, LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_string, iter::collect_iterable, tuple::allocate_tuple,
+        Dict, LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_string, iter::collect_iterable, str::PyStr,
+        tuple::allocate_tuple,
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// The heap slots holding the session's decimal contexts (see `Heap::decimal_context`).
@@ -528,8 +529,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DecContext> {
         Ok(self.get(vm.heap).write_repr(f)?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let Some(field) = ContextField::from_name(attr.as_str(vm.interns)) else {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let Some(field) = ContextField::from_name(attr.as_str(vm)) else {
             return Ok(None);
         };
         let value = match field {
@@ -546,10 +547,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DecContext> {
         Ok(Some(CallResult::Value(value)))
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         defer_drop!(value, vm);
-        let Some(field) = ContextField::from_name(name.as_str(vm.interns)) else {
-            return Err(ExcType::attribute_error(Type::DecimalContext, name.as_str(vm.interns)));
+        let Some(field) = ContextField::from_name(name.as_str(vm)) else {
+            return Err(ExcType::attribute_error(Type::DecimalContext, name.as_str(vm)));
         };
         let mut settings = *self.get(vm.heap);
         match field {
@@ -561,9 +562,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DecContext> {
         Ok(())
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         let id = self.id();
-        let name = attr.as_str(vm.interns);
+        let name = attr.as_str(vm);
         match name {
             "clear_flags" => {
                 args.check_zero_args("Context.clear_flags", vm.heap)?;
@@ -808,8 +809,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SignalDict> {
         keys.py_iter(vm)
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let value = match attr.as_str(vm.interns) {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
+        let value = match attr.as_str(vm) {
             "keys" => {
                 args.check_zero_args("keys", vm.heap)?;
                 self.listing(SignalDictPart::Keys, vm)

@@ -8,6 +8,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::DropWithContext,
+    types::str::PyStr,
 };
 
 /// Implementation of the getattr() builtin function.
@@ -41,7 +42,7 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         too_many => return Err(ExcType::type_error_at_most("getattr", 3, too_many.len())),
     };
 
-    let Some(attr) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
+    let Some(attr) = PyStr::from_value(name, vm).map(|s| s.resolve_interned(vm)) else {
         let ty = name.py_type_name(vm);
         return Err(
             SimpleException::new_msg(ExcType::TypeError, format!("attribute name must be string, not '{ty}'")).into(),

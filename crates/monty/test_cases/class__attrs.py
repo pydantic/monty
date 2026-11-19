@@ -41,6 +41,18 @@ setattr(p, 'fresh', 'n')
 assert p.fresh == 'n'
 assert not hasattr(q, 'fresh'), 'instance attr not shared with other instances'
 
+# === A computed name can also be the value, including during replacement ===
+shared_name = ''.join(['shared', '_attribute'])
+setattr(p, shared_name, shared_name)
+assert getattr(p, shared_name) is shared_name
+object.__setattr__(p, shared_name, shared_name)
+assert getattr(p, shared_name) is shared_name
+setattr(p, shared_name, 23)
+shared_name = None
+assert getattr(p, ''.join(['shared', '_attribute'])) == 23
+assert hasattr(p, ''.join(['shared', '_attribute']))
+assert not hasattr(q, ''.join(['shared', '_attribute'])), 'computed name is instance-local'
+
 # === unbound method access with explicit self ===
 assert Point.double(p) == 20
 assert Point.double(q) == 8

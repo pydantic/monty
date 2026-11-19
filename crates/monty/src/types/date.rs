@@ -24,12 +24,12 @@ use crate::{
     string_builder::StringBuilder,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, TypeRef, datetime,
-        str::{allocate_string, allocate_string_no_interning},
+        str::{PyStr, allocate_string, allocate_string_no_interning},
         timedelta,
         timedelta::DAY_MICROSECONDS,
         timezone::{format_offset_compact, format_offset_hms, tzname_string},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 const MICROSECONDS_PER_DAY: i128 = 86_400_000_000;
@@ -149,8 +149,8 @@ struct DateInitArgs {
 }
 
 /// `date.min`, `date.max` and `date.resolution`.
-pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    Some(match attr.static_string(vm.interns)? {
+pub(crate) fn class_attr<'h>(attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<Value> {
+    Some(match attr.static_string(vm)? {
         StaticStrings::Min => allocate_ymd(1, 1, 1, vm.heap),
         StaticStrings::Max => allocate_ymd(9999, 12, 31, vm.heap),
         StaticStrings::Resolution => timedelta::allocate_micros(DAY_MICROSECONDS, vm.heap),
@@ -159,12 +159,12 @@ pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
 }
 
 /// `date.today()`, `date.fromtimestamp()` and `date.fromisoformat()`.
-pub(crate) fn class_method(
-    attr: &EitherStr,
+pub(crate) fn class_method<'h>(
+    attr: &PyStr<'h>,
     args: ArgValues,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> Result<RunResult<CallResult>, ArgValues> {
-    Ok(match attr.static_string(vm.interns) {
+    Ok(match attr.static_string(vm) {
         Some(StaticStrings::Today) => class_today(vm, args),
         Some(StaticStrings::Fromisoformat) => class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value),
         Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
@@ -308,9 +308,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         let date = *self.get(vm.heap);
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm) {
             Some(StaticStrings::Isoformat) => {
                 args.check_zero_args("date.isoformat", vm.heap)?;
                 let (year, month, day) = to_ymd(date);
@@ -359,9 +359,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm) {
             Some(StaticStrings::Year) => Ok(Some(CallResult::Value(Value::Int(i64::from(year))))),
             Some(StaticStrings::Month) => Ok(Some(CallResult::Value(Value::Int(i64::from(month))))),
             Some(StaticStrings::Day) => Ok(Some(CallResult::Value(Value::Int(i64::from(day))))),
