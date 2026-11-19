@@ -34,12 +34,7 @@ pub fn builtin_sum(vm: &mut VM<'_>, params: SumArgs) -> RunResult<Value> {
         Some(Type::Bytes) => return Err(ExcType::type_error_sum_start("bytes", "b''")),
         _ => {}
     }
-    // Take the start value out of its guard (dropping `None` is a no-op).
-    let accumulator = start.take();
-
-    // DropGuard for accumulator: on success we extract it via into_inner(),
-    // on any error path it's dropped automatically
-    let mut acc_guard = DropGuard::new(accumulator, vm);
+    let mut acc_guard = DropGuard::new(start.take(), vm);
     let (accumulator, vm) = acc_guard.as_parts_mut();
 
     let mut phase = Phase::start(accumulator, vm);

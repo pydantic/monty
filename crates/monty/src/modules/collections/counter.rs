@@ -308,9 +308,7 @@ pub(crate) fn counter_update_method<'h>(
     params: &mut UpdateArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let source = params.iterable.take();
-    let kwargs = params.kwds.take();
-    counter_update(counter, Some(source), kwargs, false, vm)?;
+    counter_update(counter, Some(params.iterable.take()), params.kwds.take(), false, vm)?;
     Ok(Value::None)
 }
 
@@ -320,9 +318,7 @@ pub(crate) fn counter_subtract_method<'h>(
     params: &mut SubtractArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let source = params.iterable.take();
-    let kwargs = params.kwds.take();
-    counter_update(counter, Some(source), kwargs, true, vm)?;
+    counter_update(counter, Some(params.iterable.take()), params.kwds.take(), true, vm)?;
     Ok(Value::None)
 }
 

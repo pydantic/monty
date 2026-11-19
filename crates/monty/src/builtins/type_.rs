@@ -166,8 +166,7 @@ fn create_class(vm: &mut VM<'_>, params: TypeNewArgs) -> RunResult<Value> {
         previous.drop_with(vm);
     }
 
-    let kwargs = kwargs.take();
-    run_init_subclass(class_id, kwargs, vm)?;
+    run_init_subclass(class_id, kwargs.take(), vm)?;
     Ok(class_guard.into_inner())
 }
 

@@ -22,8 +22,7 @@ use crate::{
 /// argument first, for example in `enumerate(start=1)`.
 #[py_signature("enumerate(iterable, start: SupportsIndex=0)", bind = mut)]
 pub fn builtin_enumerate(vm: &mut VM<'_>, params: &mut EnumerateArgs) -> RunResult<Value> {
-    let iterable = params.iterable.take();
-    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
+    let iter = params.iterable.take().into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 
