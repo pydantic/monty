@@ -349,12 +349,10 @@ fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     }
 }
 
-/// Resolves the `base` argument to `0` or `2..=36`, consuming the value.
+/// Resolves a borrowed `base` argument to `0` or `2..=36`.
 ///
-/// Mirrors CPython: the base goes through `PyNumber_AsSsize_t(obase, NULL)`,
-/// which *clamps* out-of-i64 ints instead of raising — so a `LongInt` base
-/// lands in the range error, not `OverflowError`; non-integers raise
-/// `TypeError` before the range is checked.
+/// Index conversion saturates outside the `i64` range so large bases raise the range error.
+/// An error from the index protocol propagates before the range check.
 fn int_base(base: &Value, vm: &mut VM<'_>) -> RunResult<u32> {
     let n = base.saturating_index(vm)?;
     match u32::try_from(n) {

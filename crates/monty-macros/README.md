@@ -14,7 +14,8 @@ fn str_split<'h>(s: &PyStr<'h>, params: &SplitArgs, vm: &mut VM<'h>) -> RunResul
 ```
 
 The adapter binds the arguments and keeps them in a cleanup guard for shared or mutable access.
-Name the generated struct parameter `params`. Read `*args` and `**kwargs` through `params.args` and `params.kwargs`.
+Name the generated struct parameter `params`. Variadic fields use the names in the signature.
+For example, `*args` and `**kwargs` become `params.args` and `params.kwargs`.
 Each keyword parameter needs an entry with its exact Python spelling in `StaticStrings`.
 Declare the receiver as an unannotated positional-only `self` parameter without a default.
 Use `owner = "Counter"` to qualify a bound method's name in binding errors.
@@ -33,14 +34,15 @@ body can omit the argument struct. The macro adds a trailing `ArgValues` paramet
 
 Shared borrowing is the default. Take the generated struct as `params: &SplitArgs` and access fields as `params.sep`
 and `params.maxsplit`. You can also spell out `bind = shared`.
-Borrow inputs that the handler reads, converts or uses to create an iterator.
-To transfer bound values into a result, runtime state or a consuming API, use `bind = owned`.
-Declare `params: SortedArgs` and begin with `let SortedArgs { iterable, kwargs } = params;`.
-Bind every owned field by name and release it on every return path.
-For mixed ownership, set `bind = mut` and take `params: &mut PopArgs`. In `dict.pop`, the lookup borrows `&params.key`
-and a miss moves the optional default out with `params.default.take()`. The guard releases the remaining fields.
+Borrow inputs that the handler reads, converts or passes to a borrowing API such as `py_iter`.
+Use `bind = mut` to move individual fields into a result, runtime state or a consuming API such as `into_py_iter`.
+In `dict.pop`, take `params: &mut PopArgs`, borrow `&params.key` for the lookup and move the optional default
+out with `params.default.take()` on a miss. The guard releases the remaining fields.
 `params.iterable.take()` moves out a required `Value` and leaves Python `None`.
 `params.kwargs.take()` moves out the keyword arguments and leaves the collection empty.
+Use `bind = owned` to take responsibility for every field.
+Declare `params: SortedArgs` and begin with `let SortedArgs { iterable, kwargs } = params;`.
+Bind every owned field by name and release it on every return path.
 For callers that bind after method lookup, put `#[py_signature]` on a unit struct and call
 `Name::from_args(args, vm)?`. Generated fields have the struct's visibility.
 
