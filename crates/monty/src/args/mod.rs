@@ -438,6 +438,13 @@ pub(crate) enum KwargsValues {
 }
 
 impl KwargsValues {
+    /// Moves the keyword arguments out and leaves an empty collection.
+    #[inline]
+    #[must_use]
+    pub(crate) fn take(&mut self) -> Self {
+        mem::replace(self, Self::Empty)
+    }
+
     /// A copy holding its own references; a dict becomes key/value pairs.
     pub(crate) fn clone_with_heap(&self, heap: &Heap) -> Self {
         let clone_pairs = |pairs: &mut dyn Iterator<Item = (&Value, &Value)>| {

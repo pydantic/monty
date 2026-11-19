@@ -1802,7 +1802,7 @@ fn dict_update<'h>(dict: &HeapReadMut<'h, Dict>, params: &mut UpdateArgs, vm: &m
         dict.merge_from_value(other, vm)?;
     }
     if !matches!(params.kwargs, KwargsValues::Empty) {
-        dict.merge_from_kwargs(mem::replace(&mut params.kwargs, KwargsValues::Empty), vm)?;
+        dict.merge_from_kwargs(params.kwargs.take(), vm)?;
     }
     Ok(Value::None)
 }

@@ -39,7 +39,8 @@ Declare `params: SortedArgs` and begin with `let SortedArgs { iterable, kwargs }
 Bind every owned field by name and release it on every return path.
 For mixed ownership, set `bind = mut` and take `params: &mut PopArgs`. In `dict.pop`, the lookup borrows `&params.key`
 and a miss moves the optional default out with `params.default.take()`. The guard releases the remaining fields.
-For a required `Value`, use `mem::replace(&mut params.iterable, Value::None)` to move it out.
+`params.iterable.take()` moves out a required `Value` and leaves Python `None`.
+`params.kwargs.take()` moves out the keyword arguments and leaves the collection empty.
 For callers that bind after method lookup, put `#[py_signature]` on a unit struct and call
 `Name::from_args(args, vm)?`. Generated fields have the struct's visibility.
 

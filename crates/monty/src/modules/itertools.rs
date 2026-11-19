@@ -447,11 +447,11 @@ fn ssize_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<isize> {
 #[py_signature("zip_longest(*iterables, fillvalue=None)", bind = mut)]
 fn call_zip_longest(vm: &mut VM<'_>, params: &mut ZipLongestArgs) -> RunResult<Value> {
     for slot in &mut params.iterables {
-        let iterable = mem::replace(slot, Value::None);
+        let iterable = slot.take();
         *slot = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     }
     let sources = mem::take(&mut params.iterables);
-    let fillvalue = mem::replace(&mut params.fillvalue, Value::None);
+    let fillvalue = params.fillvalue.take();
     let iter = ItertoolsIter::ZipLongest(ZipLongest::new(sources, fillvalue));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }

@@ -35,7 +35,7 @@ pub fn builtin_sum(vm: &mut VM<'_>, params: SumArgs) -> RunResult<Value> {
         _ => {}
     }
     // Take the start value out of its guard (dropping `None` is a no-op).
-    let accumulator = mem::replace(start, Value::None);
+    let accumulator = start.take();
 
     // DropGuard for accumulator: on success we extract it via into_inner(),
     // on any error path it's dropped automatically
