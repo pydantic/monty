@@ -69,8 +69,10 @@ impl<'h> VM<'h> {
     }
 }
 
+#[expect(clippy::inline_always, reason = "inlining keep and take reduces dict.update latency")]
 impl<'s, 'h> ScopedVM<'s, 'h> {
     /// Transfers a value into the scope and returns a handle for borrowing it.
+    #[inline(always)]
     pub(crate) fn keep(&mut self, value: Value) -> Local<'s> {
         let repr = if let Value::Ref(id) = value {
             let slot = self.values.len();
@@ -89,6 +91,7 @@ impl<'s, 'h> ScopedVM<'s, 'h> {
     }
 
     /// Transfers the value out so it can be returned or stored.
+    #[inline(always)]
     pub(crate) fn take(&mut self, handle: Local<'s>) -> Value {
         match handle.repr {
             LocalRepr::Immediate(value) => value,
