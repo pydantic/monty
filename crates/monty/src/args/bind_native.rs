@@ -69,28 +69,43 @@ pub(crate) fn bind<const N: usize>(
     spec: &'static ParamSpec,
     bound: &mut Bound<N>,
     args: ArgValues,
+    collector: Option<&mut KwargsValues>,
     vm: &mut VM<'_>,
 ) -> RunResult<()> {
     // `spec` is passed explicitly (despite living in `bound` too) so the
     // inlined fast-path conditions constant-fold against the caller's
     // `static` instead of loading through the guard-wrapped `bound`.
     debug_assert!(ptr::eq(spec, bound.spec), "spec must match the bound's spec");
-    let args = match args {
-        ArgValues::Empty if spec.n_required_positional == 0 => {
+    debug_assert_eq!(collector.is_some(), spec.varkwargs);
+    let (args, collector) = match (args, collector) {
+        (ArgValues::Empty, _) if spec.n_required_positional == 0 => {
             return Ok(());
         }
-        ArgValues::One(v) if spec.n_required_positional <= 1 && spec.n_positional >= 1 => {
+        (ArgValues::One(v), _) if spec.n_required_positional <= 1 && spec.n_positional >= 1 => {
             bound.slots[0] = Some(v);
             return Ok(());
         }
-        ArgValues::Two(v1, v2) if spec.n_required_positional <= 2 && spec.n_positional >= 2 => {
+        (ArgValues::Two(v1, v2), _) if spec.n_required_positional <= 2 && spec.n_positional >= 2 => {
             bound.slots[0] = Some(v1);
             bound.slots[1] = Some(v2);
             return Ok(());
         }
+        (
+            ArgValues::ArgsKargs {
+                args,
+                kwargs: kwargs @ KwargsValues::Inline(_),
+            },
+            Some(slot),
+        ) if spec.forwards_keywords() && (spec.n_required_positional..=spec.n_positional).contains(&args.len()) => {
+            for (slot, value) in bound.slots.iter_mut().zip(args) {
+                *slot = Some(value);
+            }
+            *slot = kwargs;
+            return Ok(());
+        }
         other => other,
     };
-    bind_slow(spec, bound, args, vm)
+    bind_slow(spec, bound, args, collector, vm)
 }
 
 /// The general binding path: iterators, a cleanup guard, kwarg dispatch, and
@@ -99,12 +114,14 @@ fn bind_slow<const N: usize>(
     spec: &'static ParamSpec,
     bound: &mut Bound<N>,
     args: ArgValues,
+    collector: Option<&mut KwargsValues>,
     vm: &mut VM<'_>,
 ) -> RunResult<()> {
     let (pos, kwargs) = args.into_parts();
     let state = IterState {
         pos,
         kwargs: kwargs.into_iter(),
+        unmatched: Vec::new(),
     };
     // The guard drains both argument iterators on any `return Err(...)`;
     // values already moved into `bound` are covered by the *caller's* guard
@@ -210,7 +227,7 @@ fn bind_slow<const N: usize>(
                 // succeeded above) — keep it as a `Value` so runtime-built
                 // heap strings (e.g. `dict(**{k: 1})`) work, not just
                 // interned ids.
-                bound.varkwargs.push((key, value));
+                state.unmatched.push((key, value));
             }
             None if spec.family.defers_unknown_kwarg() => {
                 // C families raise unknown-kwarg *last* (after every missing,
@@ -271,7 +288,11 @@ fn bind_slow<const N: usize>(
         }
     }
 
-    // Both iterators are exhausted; the guard has nothing left to drain.
+    if let Some(slot) = collector
+        && !state.unmatched.is_empty()
+    {
+        *slot = KwargsValues::Pairs(mem::take(&mut state.unmatched));
+    }
     Ok(())
 }
 
@@ -316,6 +337,12 @@ pub(crate) struct ParamSpec {
 }
 
 impl ParamSpec {
+    /// Literal keyword names can go straight into the collector when no slot can match them.
+    #[inline]
+    pub(crate) fn forwards_keywords(&self) -> bool {
+        self.params.iter().all(|param| param.keyword_name.is_none())
+    }
+
     /// True when required positional-only params switch the arity wording to
     /// CPython's C-method form (`{name}() takes at least/most N positional
     /// arguments (M given)`). `def` keeps pure-Python wording even for
@@ -422,14 +449,13 @@ impl ErrorFamily {
 ///
 /// Holds heap references — every slot must be drained (via
 /// [`require`](Self::require) / [`take`](Self::take) /
-/// [`take_varargs`](Self::take_varargs) / [`take_varkwargs`](Self::take_varkwargs))
+/// [`take_varargs`](Self::take_varargs))
 /// or the whole value dropped with the heap. Generated code embeds it in the
 /// guarded slots struct so both happen automatically.
 pub(crate) struct Bound<const N: usize> {
     spec: &'static ParamSpec,
     slots: [Option<Value>; N],
     varargs: Vec<Value>,
-    varkwargs: Vec<(Value, Value)>,
     /// C families only: leftover-kwarg errors raised by [`finish`](Self::finish).
     /// Boxed because `RunError` is large and `Bound` is moved by value through
     /// the generated code — the common no-leftover call pays one niche'd word.
@@ -458,7 +484,6 @@ impl<const N: usize> Bound<N> {
             spec,
             slots: [const { None }; N],
             varargs: Vec::new(),
-            varkwargs: Vec::new(),
             deferred: None,
         }
     }
@@ -486,16 +511,6 @@ impl<const N: usize> Bound<N> {
     /// Take the collected `*args` values.
     pub(crate) fn take_varargs(&mut self) -> Vec<Value> {
         mem::take(&mut self.varargs)
-    }
-
-    /// Take the collected `**kwargs`, collapsing empty to `KwargsValues::Empty`
-    /// so callers get cheap emptiness checks.
-    pub(crate) fn take_varkwargs(&mut self) -> KwargsValues {
-        if self.varkwargs.is_empty() {
-            KwargsValues::Empty
-        } else {
-            KwargsValues::Pairs(mem::take(&mut self.varkwargs))
-        }
     }
 
     /// Raise the deferred C-family leftover-kwarg error, if any: the earliest-
@@ -549,10 +564,6 @@ impl<C: ContainsHeap, const N: usize> DropWithContext<C> for Bound<N> {
             slot.drop_with(heap);
         }
         self.varargs.drop_with(heap);
-        for (k, v) in self.varkwargs {
-            k.drop_with(heap);
-            v.drop_with(heap);
-        }
     }
 }
 
@@ -562,12 +573,14 @@ impl<C: ContainsHeap, const N: usize> DropWithContext<C> for Bound<N> {
 struct IterState {
     pos: ArgPosIter,
     kwargs: KwargsValuesIter,
+    unmatched: Vec<(Value, Value)>,
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for IterState {
     fn drop_with(self, heap: &mut C) {
         self.pos.drop_with(heap);
         self.kwargs.drop_with(heap);
+        self.unmatched.drop_with(heap);
     }
 }
 

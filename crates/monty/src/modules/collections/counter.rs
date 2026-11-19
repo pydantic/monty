@@ -231,6 +231,9 @@ pub(crate) fn counter_update<'h>(
     // via `self.update(kwds)`, so these follow the mapping path — including the
     // empty-Counter fast path, re-evaluated after the iterable was folded in.
     let (kwargs, vm) = kwargs_guard.into_parts();
+    if matches!(kwargs, KwargsValues::Empty) {
+        return Ok(());
+    }
     let kwarg_pairs = counter_kwarg_deltas(kwargs);
     counter_merge_mapping(counter, kwarg_pairs, subtract, vm)?;
     Ok(())

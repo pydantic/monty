@@ -399,8 +399,18 @@ impl Signature {
         if let Some(last) = check_last {
             named.sort_by_key(|field| field.ident == *last);
         }
+        let defaults_call = self.render_defaults_call();
         let conversions = named.iter().map(|f| self.render_conversion(f));
         let build_fields = self.fields.iter().map(render_build_field);
+        let (guarded, bindings, collector) = if self.varkwargs_idx.is_some() {
+            (
+                quote!((__slots, crate::args::KwargsValues::Empty)),
+                quote!((__slots, __keywords)),
+                quote!(Some(__keywords)),
+            )
+        } else {
+            (quote!(__slots), quote!(__slots), quote!(None))
+        };
         let collectors = [self.varargs_idx, self.varkwargs_idx]
             .into_iter()
             .flatten()
@@ -448,20 +458,19 @@ impl Signature {
                     vm: &mut crate::bytecode::VM<'_>,
                 ) -> crate::exception_private::RunResult<Self> {
                     #spec
+                    #defaults_call
 
                     // The guard owns cleanup on every error path — including
                     // inside `bind`, which fills the slots in place. On the
                     // success path every slot is drained by the build below,
                     // so the guard's drop at scope exit is a cheap no-op.
-                    let mut __guard = crate::heap::DropGuard::new(
-                        #slots_struct_ident {
-                            raw: crate::args::Bound::new(__spec),
-                            #(#slot_idents: ::std::option::Option::None,)*
-                        },
-                        vm,
-                    );
-                    let (__slots, vm) = __guard.as_parts_mut();
-                    crate::args::bind::<#n_slots>(__spec, &mut __slots.raw, args, vm)?;
+                    let __slots = #slots_struct_ident {
+                        raw: crate::args::Bound::new(__spec),
+                        #(#slot_idents: ::std::option::Option::None,)*
+                    };
+                    let mut __guard = crate::heap::DropGuard::new(#guarded, vm);
+                    let (#bindings, vm) = __guard.as_parts_mut();
+                    crate::args::bind::<#n_slots>(__spec, &mut __slots.raw, args, #collector, vm)?;
 
                     #(#conversions)*
                     __slots.raw.finish()?;
@@ -472,6 +481,30 @@ impl Signature {
                 }
             }
         }
+    }
+
+    /// Builds the result from defaults when the call leaves every named slot empty.
+    fn render_defaults_call(&self) -> Option<TokenStream> {
+        let collector = &self.fields[self.varkwargs_idx?].ident;
+        let mut fields = Vec::new();
+        for field in self.named_fields() {
+            let name = &field.ident;
+            let default = field.default.as_ref()?.apply(&quote!(::std::option::Option::None));
+            fields.push(quote!(#name: #default,));
+        }
+        if let Some(i) = self.varargs_idx {
+            let name = &self.fields[i].ident;
+            fields.push(quote!(#name: ::std::vec::Vec::new(),));
+        }
+        Some(quote! {
+            if matches!(args, crate::args::ArgValues::Empty)
+                || (__spec.forwards_keywords()
+                    && matches!(args, crate::args::ArgValues::Kwargs(crate::args::KwargsValues::Inline(_))))
+            {
+                let (_, keywords) = args.into_parts();
+                return Ok(Self { #(#fields)* #collector: keywords });
+            }
+        })
     }
 
     /// The `static __SPEC: ParamSpec` literal interpreted by the runtime binder.
@@ -691,18 +724,27 @@ fn render_build_field(field: &Field) -> TokenStream {
     let ident = &field.ident;
     match field.kind {
         FieldKind::Varargs => quote! { #ident: __slots.raw.take_varargs(), },
-        FieldKind::Varkwargs => quote! { #ident: __slots.raw.take_varkwargs(), },
+        FieldKind::Varkwargs => {
+            quote! { #ident: ::std::mem::replace(__keywords, crate::args::KwargsValues::Empty), }
+        }
         _ => match &field.default {
             None => quote! {
                 #ident: __slots.#ident.take().expect("required FromArgs slot checked before build"),
             },
-            Some(DefaultExpr::DefaultTrait) => quote! {
-                #ident: __slots.#ident.take().unwrap_or_default(),
-            },
-            Some(DefaultExpr::Explicit(expr)) => quote! {
-                #ident: __slots.#ident.take().unwrap_or_else(|| { #expr }),
-            },
+            Some(default) => {
+                let value = default.apply(&quote!(__slots.#ident.take()));
+                quote!(#ident: #value,)
+            }
         },
+    }
+}
+
+impl DefaultExpr {
+    fn apply(&self, slot: &TokenStream) -> TokenStream {
+        match self {
+            Self::DefaultTrait => quote!(#slot.unwrap_or_default()),
+            Self::Explicit(expr) => quote!(#slot.unwrap_or_else(|| { #expr })),
+        }
     }
 }
 

@@ -1808,7 +1808,9 @@ fn dict_update<'h>(dict: &HeapReadMut<'h, Dict>, args: &mut UpdateArgs, vm: &mut
     if let Some(other) = args.other.take() {
         dict.merge_from_value(other, vm)?;
     }
-    dict.merge_from_kwargs(mem::replace(&mut args.kwargs, KwargsValues::Empty), vm)?;
+    if !matches!(args.kwargs, KwargsValues::Empty) {
+        dict.merge_from_kwargs(mem::replace(&mut args.kwargs, KwargsValues::Empty), vm)?;
+    }
     Ok(Value::None)
 }
 

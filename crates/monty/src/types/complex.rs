@@ -432,7 +432,7 @@ impl FromValue for Part {
             match operand(&value, vm) {
                 Ok(Some(Operand::Real(r))) => Ok(Self::Real(r)),
                 Ok(Some(Operand::Complex(c))) => Ok(Self::Complex(c)),
-                Ok(None) => Err(FromValueFail::WrongType),
+                Ok(None) => return Err(FromValueFail::WrongType(value)),
                 Err(err) => Err(FromValueFail::Raise(err)),
             }
         };

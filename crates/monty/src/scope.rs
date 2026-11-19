@@ -147,6 +147,22 @@ mod tests {
     }
 
     #[test]
+    fn conversion_error_releases_forwarded_keywords() {
+        with_vm(|vm| {
+            let value = allocate_string_on_heap("keyword value", vm.heap);
+            defer_drop!(value, vm);
+            let Value::Ref(id) = *value else { unreachable!() };
+            let key = vm.interns.intern_runtime("text");
+            let args = ArgValues::ArgsKargs {
+                args: vec![Value::None],
+                kwargs: KwargsValues::Inline(vec![(key, value.clone_with_heap(vm))]),
+            };
+            assert!(CollectArgs::from_args(args, vm).is_err());
+            assert_eq!(vm.heap.get_refcount(id), 1);
+        });
+    }
+
+    #[test]
     fn with_args_releases_typed_fields_and_collectors_on_error() {
         with_vm(|vm| {
             let value = allocate_string_on_heap("key", vm.heap);

@@ -14,8 +14,6 @@
 //! `WrongType` lets the extraction site pick CPython's wording, `Raise`
 //! surfaces a fully-formed error unchanged.
 
-use std::borrow::Cow;
-
 use num_bigint::{BigInt, Sign};
 use num_traits::ToPrimitive;
 
@@ -46,14 +44,8 @@ pub(crate) enum ArgErrCtx {
 /// A failed [`FromValue`] coercion, split by *why* it failed so extraction
 /// sites never have to reverse-engineer the reason from an error message.
 pub(crate) enum FromValueFail {
-    /// The input value's type is unacceptable. Deliberately carries no
-    /// [`Type`]: the input has already been dropped by the time the failure
-    /// is reported, so a `Type::Instance` derived from it could dangle.
-    /// [`extract_into`](FromValue::extract_into) names the offending type
-    /// from a snapshot taken *before* the coercion ran; the extraction site
-    /// owns the wording — the per-site `_PyArg_BadArgument` forms
-    /// ([`ArgErrCtx`]) or the impl's [`FromValue::type_error`].
-    WrongType,
+    /// Keeps the offending value live until the extraction site has formatted its type name.
+    WrongType(Value),
     /// The type was acceptable but the value was not (`ValueError`,
     /// `OverflowError`, resource errors, …). Surfaces unchanged — never
     /// rewritten into a type error.
@@ -73,10 +65,8 @@ pub(crate) enum FromValueFail {
 /// coercion failure at extraction time would wrongly preempt later binding
 /// errors such as missing arguments or unexpected kwargs.
 ///
-/// Implementations *must* consume the input on every path: either drop it
-/// (`drop_with`) once any needed data has been read out, or transfer
-/// ownership into `Self` (the identity `Value` impl, [`StrArg`]) — in which
-/// case [`drop_extracted`](Self::drop_extracted) must release it.
+/// A converter either releases the input, retains it in the extracted field,
+/// or returns it in [`FromValueFail::WrongType`] for the caller to release.
 pub(crate) trait FromValue: Sized {
     /// CPython "must be X" type label used by `_PyArg_BadArgument`-style
     /// error messages ("argument N must be {EXPECTED_TYPE_NAME}, not {Y}").
@@ -92,8 +82,7 @@ pub(crate) trait FromValue: Sized {
     /// (e.g. `"str or None"`).
     const EXPECTED_TYPE_NAME: Option<&'static str> = None;
 
-    /// Convert a `Value` into `Self`. On error, the input value must have
-    /// been dropped before returning.
+    /// Converts an owned Python argument and transfers or releases its heap reference.
     ///
     /// Takes `&mut VM` so impls can both inspect the heap (for type coercion)
     /// and call `drop_with` on the input; this also lets `LaxBool` route
@@ -102,8 +91,7 @@ pub(crate) trait FromValue: Sized {
 
     /// The error for a [`FromValueFail::WrongType`] failure at a site with no
     /// `_PyArg_BadArgument` wording ([`ArgErrCtx::Plain`], `*args` elements).
-    /// `got` is the offending type's CPython arg-error name (e.g. `'Foo'` for
-    /// a user-class instance), snapshotted before the value was consumed.
+    /// `got` is the Python type name of the rejected value.
     ///
     /// The default is a generic `expected {EXPECTED_TYPE_NAME}, not {got}`;
     /// impls whose wrong-type error can actually surface through a `Plain`
@@ -132,8 +120,6 @@ pub(crate) trait FromValue: Sized {
     /// argument. Centralising it here — rather than inlining the equivalent
     /// tokens at each derive's call sites — keeps the generated code small: the
     /// body is monomorphised once per field type and shared across all derives.
-    /// On error the input `value` has already been dropped by `from_value`; the
-    /// caller remains responsible for draining the argument iterators.
     ///
     /// [`FromValueFail::Raise`] errors surface unchanged, so an impl can
     /// report a failure that is not a type mismatch — e.g. the int impls
@@ -143,41 +129,36 @@ pub(crate) trait FromValue: Sized {
     /// CPython does in the function body belongs in the body (see
     /// `NormForm::parse` in `unicodedata.rs`).
     fn extract_into(value: Value, slot: &mut Option<Self>, vm: &mut VM<'_>, ctx: ArgErrCtx) -> RunResult<()> {
-        // Capture both names before conversion can free the instance's class;
-        // they borrow only the interner, never the heap. `_PyArg_BadArgument`
-        // names `None` by value, the plain `type_error` fallback by type.
-        let got = Self::EXPECTED_TYPE_NAME.map(|_| {
-            let got_type = value.py_type_heap(vm.heap);
-            (
-                got_type.cpython_arg_name(vm.heap, vm.interns),
-                got_type.name(vm.heap, vm.interns),
-            )
-        });
         match Self::from_value(value, vm) {
             Ok(extracted) => {
                 *slot = Some(extracted);
                 Ok(())
             }
             Err(FromValueFail::Raise(err)) => Err(err),
-            Err(FromValueFail::WrongType) => {
-                // `WrongType` is only reported by impls with an
-                // `EXPECTED_TYPE_NAME`, so the snapshot is always present;
-                // "object" keeps that unreachable arm honest without a panic.
-                let (arg_name, got) = got.unwrap_or((Cow::Borrowed("object"), Cow::Borrowed("object")));
-                Err(match (ctx, Self::EXPECTED_TYPE_NAME) {
-                    (ArgErrCtx::BadArgPos { func_name, pos }, Some(expected)) => {
-                        ExcType::type_error_bad_arg_pos(func_name, pos, expected, arg_name)
-                    }
-                    (
-                        ArgErrCtx::BadArgNamed {
-                            func_name,
-                            arg_name: name,
-                        },
-                        Some(expected),
-                    ) => ExcType::type_error_bad_arg_named(func_name, name, expected, arg_name),
-                    _ => Self::type_error(&got),
-                })
+            Err(FromValueFail::WrongType(value)) => {
+                let err = ctx.wrong_type::<Self>(&value, vm);
+                value.drop_with(vm);
+                Err(err)
             }
+        }
+    }
+}
+
+impl ArgErrCtx {
+    #[cold]
+    fn wrong_type<T: FromValue>(self, value: &Value, vm: &VM<'_>) -> RunError {
+        let ty = value.py_type_heap(vm.heap);
+        match (self, T::EXPECTED_TYPE_NAME) {
+            (Self::BadArgPos { func_name, pos }, Some(expected)) => {
+                ExcType::type_error_bad_arg_pos(func_name, pos, expected, ty.cpython_arg_name(vm.heap, vm.interns))
+            }
+            (Self::BadArgNamed { func_name, arg_name }, Some(expected)) => ExcType::type_error_bad_arg_named(
+                func_name,
+                arg_name,
+                expected,
+                ty.cpython_arg_name(vm.heap, vm.interns),
+            ),
+            _ => T::type_error(&ty.name(vm.heap, vm.interns)),
         }
     }
 }
@@ -211,7 +192,7 @@ impl FromValue for i32 {
                 FromValueFail::Raise(SimpleException::new_msg(ExcType::OverflowError, msg).into())
             }),
             _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_long())),
-            _ => Err(FromValueFail::WrongType),
+            _ => return Err(FromValueFail::WrongType(value)),
         };
         value.drop_with(vm);
         result
@@ -255,7 +236,7 @@ impl FromValue for i64 {
             Value::Bool(b) => Ok(Self::from(b)),
             Value::Int(i) => Ok(i),
             _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_long())),
-            _ => Err(FromValueFail::WrongType),
+            _ => return Err(FromValueFail::WrongType(value)),
         };
         value.drop_with(vm);
         result
@@ -326,7 +307,7 @@ impl FromValue for u64 {
                 Some(big) => big
                     .to_u64()
                     .ok_or_else(|| FromValueFail::Raise(ExcType::overflow_c_unsigned_long())),
-                None => Err(FromValueFail::WrongType),
+                None => return Err(FromValueFail::WrongType(value)),
             },
         };
         value.drop_with(vm);
@@ -342,9 +323,24 @@ impl FromValue for f64 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("real number");
 
     fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
-        let result = value.py_float(vm);
-        value.drop_with(vm);
-        result.map_err(FromValueFail::Raise)?.ok_or(FromValueFail::WrongType)
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "Python converts integers to the nearest representable float"
+        )]
+        match value {
+            Value::Float(f) => Ok(f),
+            Value::Int(n) => Ok(n as Self),
+            Value::Bool(b) => Ok(Self::from(b)),
+            _ => {
+                let result = match value.py_float(vm) {
+                    Ok(Some(f)) => Ok(f),
+                    Ok(None) => return Err(FromValueFail::WrongType(value)),
+                    Err(err) => Err(FromValueFail::Raise(err)),
+                };
+                value.drop_with(vm);
+                result
+            }
+        }
     }
 
     fn type_error(got: &str) -> RunError {
@@ -355,13 +351,11 @@ impl FromValue for f64 {
 impl FromValue for bool {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("bool");
 
-    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
-        let result = match value {
+    fn from_value(value: Value, _vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        match value {
             Value::Bool(b) => Ok(b),
-            _ => Err(FromValueFail::WrongType),
-        };
-        value.drop_with(vm);
-        result
+            _ => Err(FromValueFail::WrongType(value)),
+        }
     }
 
     fn type_error(_got: &str) -> RunError {
@@ -402,8 +396,7 @@ impl FromValue for StrArg {
         if value.is_str(vm.heap) {
             Ok(Self(value))
         } else {
-            value.drop_with(vm);
-            Err(FromValueFail::WrongType)
+            Err(FromValueFail::WrongType(value))
         }
     }
 

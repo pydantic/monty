@@ -315,7 +315,7 @@ impl FromValue for DeltaComponent {
             Value::Bool(b) => Ok(Self(i128::from(b))),
             Value::Int(i) => Ok(Self(i128::from(i))),
             _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_int())),
-            _ => Err(FromValueFail::WrongType),
+            _ => return Err(FromValueFail::WrongType(value)),
         };
         value.drop_with(vm);
         result
