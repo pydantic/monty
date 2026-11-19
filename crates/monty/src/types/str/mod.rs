@@ -9,6 +9,7 @@ use std::{fmt::Write, str};
 pub(crate) use heap_str::HeapStr;
 pub(crate) use inline_str::InlineStr;
 pub(crate) use iterator::StringIterator;
+use monty_macros::py_signature;
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use smallvec::smallvec;
@@ -1591,11 +1592,11 @@ fn str_rpartition<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunRes
 ///
 /// Returns a copy with all occurrences of substring old replaced by new.
 /// If count is given, only the first count occurrences are replaced.
-#[monty_macros::native_signature("replace(self, old: str, new: str, /, count: SupportsIndex = -1) -> str")]
+#[py_signature("replace(self, old: str, new: str, /, count: SupportsIndex = -1) -> str")]
 fn str_replace<'h>(s: &PyStr<'h>, args: &ReplaceArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let old = args.old.as_str(vm);
     let new = args.new.as_str(vm);
-    let count = args.count.0;
+    let count = args.count;
     let s = s.as_str(vm);
 
     check_replace_size(s.len(), old.len(), new.len(), count, &vm.heap.tracker)?;

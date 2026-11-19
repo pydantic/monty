@@ -115,6 +115,7 @@ struct Field {
     default: Option<DefaultExpr>,
     /// Override for the `StaticStrings` variant used in kwarg dispatch.
     static_string: Option<Ident>,
+    extract_with: Option<syn::Path>,
     /// 1-indexed slot in the positional region, used by "pos N" error
     /// messages. `None` for kw_only / varargs / varkwargs.
     pos_index: Option<usize>,
@@ -186,6 +187,7 @@ impl Signature {
                 kind: opts.kind,
                 default: opts.default,
                 static_string: opts.static_string,
+                extract_with: opts.extract_with,
                 pos_index: None,
                 slot_index: None,
             });
@@ -524,23 +526,28 @@ impl Signature {
     }
 
     /// One field's conversion: `require` (required) or `take` (defaulted) the
-    /// raw slot, then `FromValue::extract_into` it into the typed slot. The
+    /// raw slot, then convert it into the typed slot. The
     /// per-param call order is what lets the C families interleave
     /// missing/conflict errors with conversion, exactly like CPython.
     fn render_conversion(&self, field: &Field) -> TokenStream {
         let ident = &field.ident;
         let ty = &field.ty;
         let slot_index = field.slot_index.expect("named field has a slot");
-        let ctx = self.render_err_ctx(field);
+        let extract = if let Some(path) = &field.extract_with {
+            quote! { __slots.#ident = ::std::option::Option::Some(#path(__v, vm)?); }
+        } else {
+            let ctx = self.render_err_ctx(field);
+            quote! { <#ty as crate::args::FromValue>::extract_into(__v, &mut __slots.#ident, vm, #ctx)?; }
+        };
         if field.default.is_none() {
             quote! {
                 let __v = __slots.raw.require(#slot_index)?;
-                <#ty as crate::args::FromValue>::extract_into(__v, &mut __slots.#ident, vm, #ctx)?;
+                #extract
             }
         } else {
             quote! {
                 if let ::std::option::Option::Some(__v) = __slots.raw.take(#slot_index) {
-                    <#ty as crate::args::FromValue>::extract_into(__v, &mut __slots.#ident, vm, #ctx)?;
+                    #extract
                 }
             }
         }
@@ -874,6 +881,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
 
 #[derive(Default)]
 pub(crate) struct FieldAttrs {
+    extract_with: Option<syn::Path>,
     pub(crate) kind: FieldKind,
     pub(crate) default: Option<DefaultExpr>,
     pub(crate) static_string: Option<Ident>,
@@ -917,6 +925,12 @@ pub(crate) fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAt
                     out.default = Some(DefaultExpr::DefaultTrait);
                 }
                 Ok(())
+            } else if meta.path.is_ident("extract_with") {
+                if out.extract_with.is_some() {
+                    return Err(meta.error("duplicate `extract_with` attribute"));
+                }
+                out.extract_with = Some(meta.value()?.parse()?);
+                Ok(())
             } else if meta.path.is_ident("static_string") {
                 let value: LitStr = meta.value()?.parse()?;
                 out.static_string = Some(Ident::new(&value.value(), value.span()));
@@ -925,6 +939,14 @@ pub(crate) fn parse_field_attrs(attrs: &[syn::Attribute]) -> syn::Result<FieldAt
                 Err(meta.error("unknown field attribute"))
             }
         })?;
+    }
+    if let Some(path) = &out.extract_with
+        && matches!(out.kind, FieldKind::Varargs | FieldKind::Varkwargs)
+    {
+        return Err(syn::Error::new_spanned(
+            path,
+            "`extract_with` requires a named parameter slot",
+        ));
     }
     Ok(out)
 }

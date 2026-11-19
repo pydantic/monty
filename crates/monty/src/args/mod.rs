@@ -7,7 +7,7 @@ use std::{mem, slice, vec::IntoIter};
 pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
 pub(crate) use bind_python::Signature;
 pub(crate) use from_value::{
-    ArgErrCtx, DefaultedStringArg, FromValue, FromValueFail, IndexArg, LaxBool, StrArg, is_long_int, long_int,
+    ArgErrCtx, DefaultedStringArg, FromValue, FromValueFail, LaxBool, StrArg, extract_index, is_long_int, long_int,
 };
 pub(crate) use monty_macros::FromArgs;
 use monty_types::{

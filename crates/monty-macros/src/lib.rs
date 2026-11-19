@@ -12,16 +12,16 @@ use proc_macro::TokenStream;
 
 mod from_args;
 #[cfg(feature = "native-signatures")]
-mod native_signature;
+mod py_signature;
 mod to_args;
 
 /// Generates a native call adapter and its runtime signature from a Python declaration.
 #[cfg(feature = "native-signatures")]
 #[proc_macro_attribute]
-pub fn native_signature(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn py_signature(attr: TokenStream, item: TokenStream) -> TokenStream {
     let declaration = syn::parse_macro_input!(attr as syn::LitStr);
     let function = syn::parse_macro_input!(item as syn::ItemFn);
-    native_signature::expand(&declaration, function)
+    py_signature::expand(&declaration, function)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

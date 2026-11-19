@@ -1,5 +1,6 @@
 //! Implementation of the print() builtin function.
 
+use monty_macros::py_signature;
 use monty_types::PrintStream;
 
 use crate::{
@@ -12,7 +13,7 @@ use crate::{
     value::{Marker, Value},
 };
 
-#[monty_macros::native_signature(r"print(*args, sep=' ', end='\n', file=None, flush=False)")]
+#[py_signature(r"print(*args, sep=' ', end='\n', file=None, flush=False)")]
 pub fn builtin_print(vm: &mut VM<'_>, bound: &PrintArgs) -> RunResult<Value> {
     // `sep` and `end` are checked before `file` because CPython reports them in
     // that order: `print(x, sep=1, file=3)` raises about `sep`, not the file.

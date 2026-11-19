@@ -64,7 +64,7 @@ source = {source_first: 1, source_last: 2}
 target = {Tripwire(): 3}
 
 try:
-    target.update(source)
+    target.update(source, pending=last_value)
     assert False, 'the update should trip on the first colliding entry'
 except ValueError as e:
     assert str(e) == 'tripped'

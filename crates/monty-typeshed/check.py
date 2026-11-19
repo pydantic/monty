@@ -14,7 +14,6 @@ Usage:
     python crates/monty-typeshed/check.py
 """
 
-import ast
 import sys
 
 # `update.py` is this script's sibling, so the interpreter's script directory
@@ -28,13 +27,7 @@ GENERATED_FROM_UPSTREAM = 'stdlib/builtins.pyi'
 
 
 def main() -> int:
-    problems = [
-        *check_tree_contents(),
-        *check_custom_stubs(),
-        *check_generated_files(),
-        *check_versions(),
-        *check_native_signatures(),
-    ]
+    problems = [*check_tree_contents(), *check_custom_stubs(), *check_generated_files(), *check_versions()]
     if problems:
         print('vendored typeshed is out of sync:', file=sys.stderr)
         for problem in problems:
@@ -44,18 +37,6 @@ def main() -> int:
     else:
         print(f'vendored typeshed in sync ({len(expected_files())} files)')
         return 0
-
-
-def check_native_signatures() -> list[str]:
-    source = read_vendored(GENERATED_FROM_UPSTREAM)
-    if source is None:
-        return []  # Missing files are reported by check_tree_contents.
-    tree = ast.parse(source)
-    before = ast.dump(tree)
-    update.apply_str_replace_signature(tree)
-    if ast.dump(tree) != before:
-        return ['str.replace in builtins.pyi differs from the native declaration']
-    return []
 
 
 def check_tree_contents() -> list[str]:

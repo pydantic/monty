@@ -2,8 +2,7 @@
 //! argument extraction.
 //!
 //! Companion to the `#[derive(FromArgs)]` macro in `monty-macros`. The derive
-//! generates code that calls [`FromValue::extract_into`] for every positional
-//! or keyword argument. The trait owns the cleanup of the input `Value` —
+//! uses [`FromValue::extract_into`] unless the field specifies a custom extractor. The trait owns the cleanup of the input `Value` —
 //! constrained impls drop the input, the identity impl for `Value` and the
 //! owning [`StrArg`] keep it. Generated callers also need to drop
 //! already-extracted owning fields on later error paths; for that they call
@@ -241,15 +240,10 @@ impl FromValue for DefaultedStringArg {
     }
 }
 
-/// A Python index narrowed to the interpreter's signed size for sequence operations.
-pub(crate) struct IndexArg(pub i64);
-
-impl FromValue for IndexArg {
-    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
-        let result = value.as_int(vm);
-        value.drop_with(vm);
-        result.map(Self).map_err(FromValueFail::Raise)
-    }
+pub(crate) fn extract_index(value: Value, vm: &mut VM<'_>) -> RunResult<i64> {
+    let result = value.as_int(vm);
+    value.drop_with(vm);
+    result
 }
 
 impl FromValue for i64 {

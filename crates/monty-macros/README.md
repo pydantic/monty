@@ -130,6 +130,10 @@ fields). All are documented inline in
 [`src/from_args.rs`](src/from_args.rs), which also carries `#[cfg(test)]`
 unit tests for every attribute-validation error.
 
+A named field can use `extract_with = path` to select its Python conversion independently of its Rust
+type. The function takes an owned `Value` and `&mut VM`, returns `RunResult<T>` for the field type
+`T`, and consumes the input on success and error. An omitted argument uses the field default.
+
 ## `#[derive(ToArgs)]`
 
 Projects a struct into the `CallArgs` a host callback takes, reusing the `#[from_args(...)]` field attributes.

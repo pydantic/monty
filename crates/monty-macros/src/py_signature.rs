@@ -39,8 +39,12 @@ pub(super) fn expand(literal: &LitStr, mut function: ItemFn) -> syn::Result<Toke
     for param in &params.kwonlyargs {
         fields.push(named_field(param, &quote!(kw_only,), literal)?);
     }
-    if params.kwarg.is_some() {
-        return Err(error("variadic keyword parameters are unsupported"));
+    if let Some(kwargs) = &params.kwarg {
+        let ident = field_name(kwargs, literal)?;
+        if kwargs.annotation.is_some() {
+            return Err(error("typed variadic parameters are unsupported"));
+        }
+        fields.push(quote!(#[from_args(varkwargs)] #ident: crate::args::KwargsValues));
     }
 
     let bound_name = format_ident!("{}Args", snake_to_pascal(name));
@@ -64,6 +68,11 @@ pub(super) fn expand(literal: &LitStr, mut function: ItemFn) -> syn::Result<Toke
     };
     let arg = pattern.ident.clone();
     let bound_ty = bound.ty.clone();
+    let with_args = if matches!(&*bound_ty, Type::Reference(reference) if reference.mutability.is_some()) {
+        quote!(with_args_mut)
+    } else {
+        quote!(with_args)
+    };
     let style = receiver.then(|| quote!(, bad_arg));
     let input: DeriveInput = syn::parse2(quote! {
         #[from_args(name = #name #style)]
@@ -83,7 +92,7 @@ pub(super) fn expand(literal: &LitStr, mut function: ItemFn) -> syn::Result<Toke
 
     *bound.ty = parse_quote!(crate::args::ArgValues);
     let body = function.block;
-    function.block = Box::new(parse_quote!({ vm.with_args(#arg, |#arg: #bound_ty, vm| #body) }));
+    function.block = Box::new(parse_quote!({ vm.#with_args(#arg, |#arg: #bound_ty, vm| #body) }));
     let display_param = |p: &ParameterWithDefault| {
         let mut text = p.name().as_str().to_owned();
         if let Some(default) = p.default() {
@@ -106,6 +115,9 @@ pub(super) fn expand(literal: &LitStr, mut function: ItemFn) -> syn::Result<Toke
         text.push("*".to_owned());
     }
     text.extend(params.kwonlyargs.iter().map(display_param));
+    if let Some(kwargs) = &params.kwarg {
+        text.push(format!("**{}", kwargs.name));
+    }
     let text_signature = format!("({})", text.join(", "));
     Ok(quote! {
         pub(crate) static #descriptor: crate::args::NativeSignature = crate::args::NativeSignature {
@@ -132,18 +144,26 @@ fn named_field(param: &ParameterWithDefault, role: &TokenStream, literal: &LitSt
         _ => return Err(error("expected a simple native parameter type")),
     };
     let ty = match annotation {
+        None if matches!(param.default(), Some(Expr::EllipsisLiteral(_))) => quote!(Option<crate::value::Value>),
         None if matches!(param.default(), Some(Expr::StringLiteral(_))) => quote!(crate::args::DefaultedStringArg),
         None => quote!(crate::value::Value),
         Some("str") => quote!(crate::args::StrArg),
-        Some("SupportsIndex") => quote!(crate::args::IndexArg),
+        Some("SupportsIndex") => quote!(i64),
         Some(_) => return Err(error("unsupported native parameter annotation")),
     };
     let default = match (annotation, param.default()) {
         (_, None) => quote!(),
+        (None, Some(Expr::EllipsisLiteral(_))) => quote!(default),
         (None, Some(Expr::NoneLiteral(_))) => quote!(default = crate::value::Value::None),
         (None, Some(Expr::BooleanLiteral(b))) => {
             let value = b.value;
             quote!(default = crate::value::Value::Bool(#value))
+        }
+        (None, Some(Expr::NumberLiteral(n)))
+            if let Number::Float(value) = n.value
+                && value.is_finite() =>
+        {
+            quote!(default = crate::value::Value::Float(#value))
         }
         (None, Some(Expr::StringLiteral(s))) => {
             let value = s.value.to_str();
@@ -151,11 +171,12 @@ fn named_field(param: &ParameterWithDefault, role: &TokenStream, literal: &LitSt
         }
         (Some("SupportsIndex"), Some(expr)) => {
             let n = integer_default(expr).ok_or_else(|| error("expected an i64 literal for SupportsIndex"))?;
-            quote!(default = crate::args::IndexArg(#n))
+            quote!(default = #n)
         }
         _ => return Err(error("unsupported default for this parameter type")),
     };
-    Ok(quote!(#[from_args(#role #default)] #ident: #ty))
+    let extractor = (annotation == Some("SupportsIndex")).then(|| quote!(extract_with = crate::args::extract_index,));
+    Ok(quote!(#[from_args(#role #extractor #default)] #ident: #ty))
 }
 
 fn integer_default(expr: &Expr) -> Option<i64> {

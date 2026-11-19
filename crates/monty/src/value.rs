@@ -1326,15 +1326,20 @@ impl Value {
                     None => Err(t.attribute_error(attr, vm)),
                 };
             }
-            Self::Builtin(Builtins::Function(func)) if attr.as_str(vm.interns) == "__text_signature__" => {
-                if let Some(signature) = func.signature() {
-                    return Ok(CallResult::Value(allocate_string(signature.text_signature, vm.heap)));
-                }
-            }
             // A plain `def` has its PEP 649 attributes and nothing else.
             Self::DefFunction(func_id) => {
                 if let Some(result) = annotations::function_getattr(*func_id, None, attr.as_str(vm.interns), vm) {
                     return result;
+                }
+            }
+            _ if attr.as_str(vm.interns) == "__text_signature__" => {
+                let signature = match self {
+                    Self::Builtin(Builtins::Function(func)) => func.signature(),
+                    Self::ModuleFunction(func) => func.signature(),
+                    _ => None,
+                };
+                if let Some(signature) = signature {
+                    return Ok(CallResult::Value(allocate_string(signature.text_signature, vm.heap)));
                 }
             }
             _ => {}

@@ -19,7 +19,8 @@
 //! where CPython accepts an fd as the path is a closed fd here, so it fails
 //! as one would there (see [`PathArgError`]).
 
-use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs, UrandomArgs};
+use monty_macros::py_signature;
+use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs};
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
@@ -227,24 +228,15 @@ fn walk(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     )
 }
 
-/// `os.urandom(size, /)` argument shape: clinic-parsed, positional-only.
-#[derive(FromArgs)]
-#[from_args(name = "urandom")]
-struct UrandomFnArgs {
-    #[from_args(pos_only)]
-    size: Value,
-}
-
 /// Implementation of `os.urandom(size)`: asks the host for `size` bytes of
 /// entropy. `size` is checked here so a negative count never reaches a
 /// handler, and checked against the memory limit before the call so an
 /// oversized request never leaves the sandbox when a limit is set (hosts
 /// still cap it themselves). The reply must be exactly `size` bytes,
 /// enforced by [`PreConversionEffect::UrandomLength`] before it is converted.
-fn urandom(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let UrandomFnArgs { size } = UrandomFnArgs::from_args(args, vm)?;
-    defer_drop!(size, vm);
-    let size = size.as_int_with_overflow(vm, ExcType::overflow_c_ssize_t)?;
+#[py_signature("urandom(size: SupportsIndex, /) -> bytes")]
+fn urandom(vm: &mut VM<'_>, args: &UrandomArgs) -> RunResult<CallResult> {
+    let size = args.size;
     if size < 0 {
         return Err(ExcType::value_error("negative argument not allowed"));
     }
@@ -252,7 +244,7 @@ fn urandom(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let len = usize::try_from(size).map_err(|_| ExcType::overflow_c_ssize_t())?;
     vm.heap.tracker.check_allocation(len)?;
     Ok(CallResult::OsCallWithEffect {
-        call: OsFunctionCall::Urandom(UrandomArgs { size: len as u64 }),
+        call: OsFunctionCall::Urandom(monty_types::UrandomArgs { size: len as u64 }),
         effect: PreConversionEffect::UrandomLength { size: len }.into(),
     })
 }

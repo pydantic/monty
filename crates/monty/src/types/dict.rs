@@ -5,6 +5,7 @@ use std::{
     mem, ptr, vec,
 };
 
+use monty_macros::py_signature;
 use serde::ser::SerializeStruct;
 use smallvec::smallvec;
 
@@ -1801,38 +1802,13 @@ fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> Run
     Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Dict(merged)))))
 }
 
-/// Implements Python's `dict.update([other], **kwargs)` method.
-///
-/// Updates the dict with key-value pairs from `other` and/or `kwargs`.
-/// If `other` is a dict, copies its key-value pairs.
-/// If `other` is an iterable, expects pairs of (key, value).
-/// Keyword arguments are also added to the dict.
-fn dict_update<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let DictUpdateArgs { source, extras } = DictUpdateArgs::from_args(args, vm)?;
-    let mut kwargs_guard = DropGuard::new(extras, vm);
-
-    if let Some(other_value) = source {
-        let other_value_guard = DropGuard::new(other_value, kwargs_guard.ctx());
-        let other_value = other_value_guard.into_inner();
-        dict.merge_from_value(other_value, kwargs_guard.ctx())?;
+#[py_signature("update(self, other=..., /, **kwargs) -> None")]
+fn dict_update<'h>(dict: &HeapReadMut<'h, Dict>, args: &mut UpdateArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    if let Some(other) = args.other.take() {
+        dict.merge_from_value(other, vm)?;
     }
-
-    let kwargs = kwargs_guard.into_inner();
-    dict.merge_from_kwargs(kwargs, vm)?;
+    dict.merge_from_kwargs(mem::replace(&mut args.kwargs, KwargsValues::Empty), vm)?;
     Ok(Value::None)
-}
-
-/// Argument shape for `dict.update([other], **kwargs)`.
-///
-/// Mirrors [`DictInitArgs`] — an optional positional source plus arbitrary
-/// kwargs that are merged into the dict after the source.
-#[derive(FromArgs)]
-#[from_args(name = "update")]
-struct DictUpdateArgs {
-    #[from_args(pos_only, default)]
-    source: Option<Value>,
-    #[from_args(varkwargs)]
-    extras: KwargsValues,
 }
 
 /// Merges key-value pairs from either a dict or an iterable of 2-item pairs.
