@@ -288,7 +288,7 @@ Incompatible changes to either calling convention require compatibility handling
 to argument order or meaning.
 Compatible source-body changes do not require a bump; restored sessions retain their captured implementations.
 Numeric identities are also observable state: a dump may contain a saved `id()` alongside its object.
-Fieldless builtin-function, module-function and property-operation enums use explicit discriminants, enforced by
+Fieldless builtin-function, exception-type, module-function and property-operation enums use explicit discriminants, enforced by
 `#[monty_macros::explicit_discriminants(checksum = ...)]`.
 The checksum pins sorted name/code pairs; existing codes must never change or be reused.
 Missing or stale checksums report a copyable attribute; review the mappings before copying it.

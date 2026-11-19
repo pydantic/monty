@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{BuiltinsFunctions, CompileOptions, ExcType};
+use monty_types::{BuiltinsFunctions, CompileOptions, ExcType, MontyObject, MontyType};
 use strum::VariantNames;
 
 /// Pins builtin, module-function and marker IDs independently of their encoder.
@@ -15,12 +15,7 @@ fn inline_identities_keep_legacy_numbers() {
         .copied()
         // Attribute access binds this hook to a fresh heap method, not an inline builtin.
         .filter(|name| *name != "object.__init_subclass__")
-        .chain(
-            ExcType::VARIANTS
-                .iter()
-                .copied()
-                .filter(|name| *name != "io.UnsupportedOperation"),
-        )
+        .chain(ExcType::VARIANTS.iter().copied())
         .chain([
             "bool",
             "int",
@@ -124,18 +119,26 @@ fn inline_identities_keep_legacy_numbers() {
         "import annotationlib, asyncio, base64, binascii, bisect, collections, copy, csv, dataclasses, datetime, decimal, fnmatch, functools, hashlib, itertools, json, math, os, pathlib, random, re, statistics, sys, time, tomllib, typing, unicodedata\nimport csv as _csv\nresults = []\n",
     );
     for name in names {
-        let expression = if name == "FrozenInstanceError" {
-            "dataclasses.FrozenInstanceError"
-        } else {
-            name
+        let expression = match name {
+            "FrozenInstanceError" => "dataclasses.FrozenInstanceError",
+            "io.UnsupportedOperation" => "unsupported_operation",
+            _ => name,
         };
         writeln!(code, "results.append({name:?} + ': ' + str(id({expression})))").unwrap();
     }
     code.push_str("'\\n'.join(results)");
-    let result = MontyRun::new(code, "identity.py", vec![], CompileOptions::default())
-        .unwrap()
-        .run_no_limits(vec![])
-        .unwrap();
+    // `io` is not importable; supply its exception class through the host boundary.
+    let result = MontyRun::new(
+        code,
+        "identity.py",
+        vec!["unsupported_operation".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap()
+    .run_no_limits(vec![MontyObject::type_object(MontyType::Exception(
+        ExcType::UnsupportedOperation,
+    ))])
+    .unwrap();
     assert_snapshot!(result.to_string());
 }
 
