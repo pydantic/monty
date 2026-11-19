@@ -103,9 +103,9 @@ Size the limit with headroom, and use an OS or cgroup limit to bound the process
 
 Operations whose result size is predictable from their inputs are **pre-checked before allocating**, above a 100 KB
 threshold, including integer multiplication, division and `divmod`, left shift, integer power, sequence repeat
-(`'x' * n`), `str.replace` / `bytes.replace`, `re.sub`, the padding methods, deque rotation and slicing, materialising
-an iterator into a container, f-string, `str.format()` or `%` formatting with a dynamic width or precision, and the
-`binascii` and `base64` conversions that can outgrow their input.
+(`'x' * n`), `str.replace` / `bytes.replace`, `re.sub`, `re.escape`, the `str` case methods, the padding methods,
+deque rotation and slicing, materialising an iterator into a container, f-string, `str.format()` or `%` formatting with
+a dynamic width or precision, and the `binascii` and `base64` conversions that can outgrow their input.
 So `'x' * 10**12` fails immediately rather than after consuming the machine's memory.
 
 Containers a program grows one element at a time are pre-checked as well, at the point the buffer would reallocate
@@ -113,7 +113,8 @@ rather than on every push: `list.append` and `list.insert`, `deque.append` and `
 assigning a new dict key.
 So are the value buffers a single call fills: the argument pack behind `f(*args)`, the array `json.loads` parses, the
 text `json.dumps` and `json.dump` build, the pieces `str.split`, `bytes.split` and `re.split` collect, the matches
-`re.finditer` builds, and the list `re.findall` builds for a pattern with at most one capture group.
+`re.finditer` builds, the list `re.findall` builds for a pattern with at most one capture group, and a `str` case
+mapping that outgrows its input (`'ΐ'.upper()` is three characters).
 A wider `findall` allocates a tuple per match and is not covered — see [the limitations note](limitations/resource_limits.md).
 
 A few integer operations carry their own caps regardless of `max_memory`:

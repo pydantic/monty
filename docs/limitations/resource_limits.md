@@ -54,6 +54,10 @@ Snippets rejected before execution retain none of their compilation products (se
     where Ascii85's `z` (and `y` with `foldspaces=True`) stands for a whole
     four-byte word. Each of these reserves what it pre-checked, so the buffer
     never grows past it.
+    `re.escape` and the `str` case methods (`lower`, `upper`, `casefold`,
+    `capitalize`, `title`, `swapcase`) are pre-checked too; a case mapping
+    that outgrows its input (`'ΐ'.upper()` is three characters) is checked
+    as the result grows.
     The pre-check threshold is 100 KB:
     estimates above that are checked against the remaining budget and rejected
     with `MemoryError` before allocation when they would exceed it.
