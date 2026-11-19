@@ -4,8 +4,6 @@
 //! must distinguish every identity category. Compact identities remain inline
 //! Python integers; only encodings outside `i64` require a heap `LongInt`.
 
-use serde::Serialize;
-
 use crate::{
     builtins::Builtins,
     heap::{Heap, HeapId},
@@ -14,10 +12,10 @@ use crate::{
     value::{Marker, Value},
 };
 
+mod payload;
+
 /// Number of low bits reserved for the identity category.
 const TAG_BITS: u8 = 5;
-/// Largest byte payload that can be shifted into a `u128` after adding its sentinel.
-const MAX_FIXED_BYTES: usize = 14;
 
 /// Complete identity key for a runtime value.
 ///
@@ -106,10 +104,10 @@ impl Identity {
             | Self::DefFunction(index)
             | Self::Heap(index) => u128::try_from(*index).expect("usize fits in u128"),
             Self::InlineString(text) => bytes_payload(text.as_str().as_bytes()),
-            Self::Builtin(value) => fixed_serde_payload(&value.identity_key()),
-            Self::ModuleFunction(value) => fixed_serde_payload(value),
-            Self::Marker(value) => fixed_serde_payload(value),
-            Self::Property(value) => fixed_serde_payload(value),
+            Self::Builtin(value) => payload::builtin(*value),
+            Self::ModuleFunction(value) => payload::module_function(*value),
+            Self::Marker(value) => payload::marker(*value),
+            Self::Property(value) => payload::property(*value),
         };
         (payload << TAG_BITS) | u128::from(self.tag())
     }
@@ -150,13 +148,6 @@ fn bytes_payload(bytes: &[u8]) -> u128 {
     bytes
         .iter()
         .fold(1, |payload, byte| (payload << u8::BITS) | u128::from(*byte))
-}
-
-/// Serializes a small enum payload into a stack buffer and preserves its length.
-fn fixed_serde_payload(value: &impl Serialize) -> u128 {
-    let mut buffer = [0; MAX_FIXED_BYTES];
-    let serialized = postcard::to_slice(value, &mut buffer).expect("identity enum payload fits in 14 bytes");
-    bytes_payload(serialized)
 }
 
 /// Maps signed integers into `u64` while keeping small magnitudes compact.
