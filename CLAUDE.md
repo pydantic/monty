@@ -261,15 +261,19 @@ Module code is held in an `Arc<Code>` so runner clones share it; frames borrow i
 `eval()` / `exec()` bodies are stored as functions in `Interns`.
 Snapshots store function IDs and offsets, rebuilding code borrows on restore.
 
-### Session dumps name their fields
+### Session dump compatibility
 
-Dumps (`crates/monty/src/dump_format.rs`) are CBOR through serde: derived structs are maps keyed by field name and
-enums by variant name (a `#[serde(transparent)]` newtype or a hand-written impl chooses its own shape and must keep
-it).
-Within one dump version, compatibility MUST hold in both directions: newer builds must read and resume older dumps,
-and older builds must read and resume newer dumps.
-Breaking either direction requires a `DUMP_VERSION` bump, even if a new decoder still accepts the old encoding.
-Adding a field with `#[serde(default)]` is compatible when older readers ignore it.
+Published releases with the same dump version MUST read and resume each other's dumps.
+This guarantee does not extend to unreleased Git revisions.
+Bump `DUMP_VERSION` on the first incompatible change since the last published release, even for a patch release.
+Further bumps before the next release are allowed but not required.
+Check both directions: a decoder that reads older dumps does not make a new encoding readable by older releases.
+
+Dumps (`crates/monty/src/dump_format.rs`) use CBOR through Serde.
+By default, named structs are maps keyed by field name and externally tagged enums are encoded by variant name.
+Untagged enums, transparent newtypes and custom serializers can use other layouts.
+Adding a named field is compatible if newer readers accept its absence (e.g. with `#[serde(default)]`) and older
+readers ignore it when present.
 Removing a field requires older readers to tolerate its absence; writing a new variant or renaming a serialized field
 is not automatically compatible.
 An alias only lets newer readers accept an older name; preserve the serialized name if older readers still need it.
@@ -283,14 +287,18 @@ rename every field and variant to one upper-case letter, since key strings other
 or variant on them takes an unused letter.
 `Code`'s location table is the exception: `bytecode/code/location_table.rs` writes it as one byte string of
 delta-encoded varints led by a format byte, which serde attributes cannot evolve. A layout change takes a new format
-byte and keeps the old decoder; a new encoding unreadable by older builds also requires a `DUMP_VERSION` bump.
+byte and keeps the old decoder.
+If an older release cannot read the new encoding, apply the dump version policy above.
 `LocationEntry`'s derived `Deserialize` only reads the per-entry maps of older dumps.
-`DUMP_VERSION` also bumps when the *meaning* of stored data changes: opcodes, `BuiltinsFunctions` discriminants
-(bytecode operands), `CmpOperator` values, the compiler's constant layout, how a key hashes (dict and
-set entries persist their hash, which is why keys without a heap identity hash by name or a persisted id such as a
-`FunctionId`, never by discriminant), a semantic change to a stored value, or a `sha1` / `sha2` crate upgrade that
-changes their `SerializableState` layout (`hashlib`'s SHA-1 and SHA-2 objects persist it verbatim). `crates/monty/tests/dump_compat.rs` loads a checked-in fixture written at the current version; a
-change that breaks it decides between an alias, a default, or a bump plus `UPDATE_DUMP_FIXTURE=1` to regenerate.
+Changes to the *meaning* of stored data can also break compatibility: opcodes, `BuiltinsFunctions` discriminants
+(bytecode operands), `CmpOperator` values, the compiler's constant layout, how a key hashes (dict and set entries
+persist their hash, which is why keys without a heap identity hash by name or a persisted id such as a `FunctionId`,
+never by discriminant), or a semantic change to a stored value.
+A `sha1` / `sha2` crate upgrade that changes their `SerializableState` layout also affects compatibility because
+`hashlib`'s SHA-1 and SHA-2 objects persist it verbatim.
+`crates/monty/tests/dump_compat.rs` loads a checked-in fixture written at the current version.
+If it fails, check compatibility in both directions before using `UPDATE_DUMP_FIXTURE=1` to update the fixture.
+Do not overwrite a fixture for a published dump version to make the test pass.
 Frozen function code is also persisted: Rust calls its captured entry signature, and that code calls private native helpers.
 Incompatible changes to either calling convention require compatibility handling or a version bump, including changes
 to argument order or meaning.
@@ -305,8 +313,8 @@ The payload-carrying `ModuleFunctions` also assigns explicit codes; `strum::Enum
 Native `Type` uses fixed codes in `legacy_index`, independently of its dense table indices.
 Keep existing numeric identity expectations unchanged when adding variants.
 Incompatible numeric identity changes need compatibility handling or a dump-version boundary that excludes affected dumps.
-When the old data still holds everything the new meaning needs, bump `DUMP_VERSION` but keep
-`MIN_SUPPORTED_DUMP_VERSION`, and convert in one of two places so the live heap never carries a legacy form:
+When an incompatible change needs a new dump version but the old data still holds everything the new meaning needs,
+keep `MIN_SUPPORTED_DUMP_VERSION` and convert in one of two places so the live heap never carries a legacy form:
 a `#[serde(from = "Dumped…")]` shim when one value's stored shape changed (see `TableCursor`), or an upgrade in
 `dump_upgrade.rs`, which `Dump::load` runs over an older dump's heap and interns; its module docs list the rules.
 The first upgrade is `modules/dataclasses/legacy.rs` (version 13), tested against the `dataclasses_v13*.bin` fixtures
