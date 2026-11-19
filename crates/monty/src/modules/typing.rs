@@ -102,10 +102,11 @@ const MARKER_ATTRS: &[StaticStrings] = &[
 ];
 
 /// `typing` module functions, each a Python-visible callable.
+#[monty_macros::explicit_discriminants(checksum = 0x0e79_0e6c_2461_cebf)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum TypingFunctions {
-    GetTypeHints,
+    GetTypeHints = 0,
 }
 
 /// Dispatches a `typing` module function call.

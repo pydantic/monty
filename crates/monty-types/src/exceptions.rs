@@ -243,6 +243,8 @@ fn frames_are_identical(a: &StackFrame, b: &StackFrame) -> bool {
 /// `PYTHON_EXC_NAMES` in `crates/monty-js/ts/errors.ts` and the `ExcType` literal in
 /// `pydantic_monty/__init__.py`. Both are hand-written, so `monty-proto`'s `exc_type_bridges` test
 /// reads them and pins them here — adding a variant without wiring the bridges fails that test.
+/// Explicit discriminants are permanent exception-class identity codes; never change or reuse them.
+#[monty_macros::explicit_discriminants(checksum = 0xcfe4_4685_6ead_4888)]
 #[derive(
     Debug,
     Clone,
@@ -261,81 +263,81 @@ fn frames_are_identical(a: &StackFrame, b: &StackFrame) -> bool {
 pub enum ExcType {
     /// The base of every ordinary exception; also the `Default`.
     #[default]
-    Exception,
+    Exception = 0,
 
     /// System exit exceptions
-    BaseException,
-    SystemExit,
-    KeyboardInterrupt,
+    BaseException = 1,
+    SystemExit = 2,
+    KeyboardInterrupt = 3,
 
     // --- ArithmeticError hierarchy ---
     /// Intermediate class for arithmetic errors.
-    ArithmeticError,
+    ArithmeticError = 4,
     /// Subclass of ArithmeticError.
-    OverflowError,
+    OverflowError = 5,
     /// Subclass of ArithmeticError.
-    ZeroDivisionError,
+    ZeroDivisionError = 6,
 
     // --- LookupError hierarchy ---
     /// Intermediate class for lookup errors.
-    LookupError,
+    LookupError = 7,
     /// Subclass of LookupError.
-    IndexError,
+    IndexError = 8,
     /// Subclass of LookupError.
-    KeyError,
+    KeyError = 9,
 
     // --- RuntimeError hierarchy ---
     /// Intermediate class for runtime errors.
-    RuntimeError,
+    RuntimeError = 10,
     /// Subclass of RuntimeError.
-    NotImplementedError,
+    NotImplementedError = 11,
     /// Subclass of RuntimeError.
-    RecursionError,
+    RecursionError = 12,
 
     // --- AttributeError hierarchy ---
-    AttributeError,
+    AttributeError = 13,
     /// Subclass of AttributeError (from dataclasses module).
-    FrozenInstanceError,
+    FrozenInstanceError = 14,
 
     // --- NameError hierarchy ---
-    NameError,
+    NameError = 15,
     /// Subclass of NameError - for accessing local variable before assignment.
-    UnboundLocalError,
+    UnboundLocalError = 16,
 
     // --- ValueError hierarchy ---
-    ValueError,
+    ValueError = 17,
     /// Subclass of ValueError - for encoding/decoding errors.
-    UnicodeDecodeError,
+    UnicodeDecodeError = 18,
     /// Subclass of ValueError - for encoding errors (e.g. `str.encode('ascii')`
     /// on a string containing non-ASCII characters).
-    UnicodeEncodeError,
+    UnicodeEncodeError = 19,
     /// Subclass of ValueError for invalid JSON syntax in `json.loads()`.
     #[strum(serialize = "json.JSONDecodeError")]
-    JsonDecodeError,
+    JsonDecodeError = 20,
     /// Subclass of ValueError for invalid TOML in `tomllib.loads()` / `tomllib.load()`.
     #[strum(serialize = "tomllib.TOMLDecodeError")]
-    TomlDecodeError,
+    TomlDecodeError = 21,
 
     // --- ImportError hierarchy ---
     /// Import-related errors (module not found, name not in module).
-    ImportError,
+    ImportError = 22,
     /// Subclass of ImportError - for when a module cannot be found.
-    ModuleNotFoundError,
+    ModuleNotFoundError = 23,
 
     // --- OSError hierarchy ---
     /// OS-related errors (file not found, permission denied, etc.)
-    OSError,
+    OSError = 24,
     /// Subclass of OSError - for when a file or directory cannot be found.
-    FileNotFoundError,
+    FileNotFoundError = 25,
     /// Subclass of OSError - for when a file already exists.
-    FileExistsError,
+    FileExistsError = 26,
     /// Subclass of OSError - for when a path is a directory but a file was expected.
-    IsADirectoryError,
+    IsADirectoryError = 27,
     /// Subclass of OSError - for when a path is not a directory but one was expected.
-    NotADirectoryError,
+    NotADirectoryError = 28,
     /// Subclass of OSError - for when an operation is not permitted (e.g., writing
     /// to a read-only mount, or attempting to access a path outside a mounted directory).
-    PermissionError,
+    PermissionError = 29,
     /// `io.UnsupportedOperation` - raised by file objects when a requested
     /// operation isn't allowed by the open mode (e.g. `read()` on `'w'`).
     ///
@@ -343,16 +345,16 @@ pub enum ExcType {
     /// interpreter's type table gives it both bases, so `except ValueError:`
     /// and `except OSError:` both catch it as in CPython.
     #[strum(serialize = "io.UnsupportedOperation")]
-    UnsupportedOperation,
+    UnsupportedOperation = 30,
     /// Subclass of OSError since Python 3.3 (PEP 3151).
-    TimeoutError,
+    TimeoutError = 31,
 
     // --- Standalone exception types ---
-    AssertionError,
-    MemoryError,
-    StopIteration,
-    SyntaxError,
-    TypeError,
+    AssertionError = 32,
+    MemoryError = 33,
+    StopIteration = 34,
+    SyntaxError = 35,
+    TypeError = 36,
 
     // --- Module-specific exception types ---
 
@@ -367,14 +369,14 @@ pub enum ExcType {
     /// As per CPython's implementation, it would be hard to convert `fancy-regex`'s error
     /// representations into the required attributes.
     #[strum(serialize = "re.PatternError")]
-    RePatternError,
+    RePatternError = 37,
 
     // --- binascii module ---
     /// `binascii.Error` - raised by the `base64` codecs for malformed input.
     ///
     /// A `ValueError` subclass in CPython, so `except ValueError:` catches it.
     #[strum(serialize = "binascii.Error")]
-    BinasciiError,
+    BinasciiError = 38,
 
     /// `binascii.Incomplete` - a direct `Exception` subclass, not a `ValueError`.
     ///
@@ -382,14 +384,14 @@ pub enum ExcType {
     /// 3.11, so the class survives only for `except binascii.Incomplete:` in
     /// older code. Monty exposes it for the same reason.
     #[strum(serialize = "binascii.Incomplete")]
-    BinasciiIncomplete,
+    BinasciiIncomplete = 39,
 
     // --- statistics module ---
     /// `statistics.StatisticsError` - raised for empty or too-small data sets.
     ///
     /// A `ValueError` subclass in CPython, so `except ValueError:` catches it.
     #[strum(serialize = "statistics.StatisticsError")]
-    StatisticsError,
+    StatisticsError = 40,
 
     // --- csv module ---
     /// `csv.Error` - raised by the `csv` readers and writers for malformed data
@@ -397,53 +399,53 @@ pub enum ExcType {
     ///
     /// A direct `Exception` subclass, named `_csv.Error` as in CPython.
     #[strum(serialize = "_csv.Error")]
-    CsvError,
+    CsvError = 41,
 
     // --- decimal module ---
     // CPython's decimal signals form a multiple-inheritance hierarchy under
     // `ArithmeticError`; the interpreter's type table records each one's bases.
     /// `decimal.DecimalException`, the base of every decimal signal.
     #[strum(serialize = "decimal.DecimalException")]
-    DecimalException,
+    DecimalException = 42,
     /// `decimal.Clamped`: an exponent was changed to fit the representation.
     #[strum(serialize = "decimal.Clamped")]
-    DecimalClamped,
+    DecimalClamped = 43,
     /// `decimal.InvalidOperation`: an operation with no meaningful result.
     #[strum(serialize = "decimal.InvalidOperation")]
-    DecimalInvalidOperation,
+    DecimalInvalidOperation = 44,
     /// `decimal.ConversionSyntax`: a malformed numeric string.
     #[strum(serialize = "decimal.ConversionSyntax")]
-    DecimalConversionSyntax,
+    DecimalConversionSyntax = 45,
     /// `decimal.DivisionByZero`: a finite non-zero dividend divided by zero.
     #[strum(serialize = "decimal.DivisionByZero")]
-    DecimalDivisionByZero,
+    DecimalDivisionByZero = 46,
     /// `decimal.DivisionImpossible`: an integer quotient too long for the precision.
     #[strum(serialize = "decimal.DivisionImpossible")]
-    DecimalDivisionImpossible,
+    DecimalDivisionImpossible = 47,
     /// `decimal.DivisionUndefined`: zero divided by zero.
     #[strum(serialize = "decimal.DivisionUndefined")]
-    DecimalDivisionUndefined,
+    DecimalDivisionUndefined = 48,
     /// `decimal.Inexact`: a result was rounded and lost non-zero digits.
     #[strum(serialize = "decimal.Inexact")]
-    DecimalInexact,
+    DecimalInexact = 49,
     /// `decimal.InvalidContext`: an invalid context setting was detected.
     #[strum(serialize = "decimal.InvalidContext")]
-    DecimalInvalidContext,
+    DecimalInvalidContext = 50,
     /// `decimal.Rounded`: a result was rounded, perhaps without losing digits.
     #[strum(serialize = "decimal.Rounded")]
-    DecimalRounded,
+    DecimalRounded = 51,
     /// `decimal.Subnormal`: a result's exponent fell below `Emin`.
     #[strum(serialize = "decimal.Subnormal")]
-    DecimalSubnormal,
+    DecimalSubnormal = 52,
     /// `decimal.Overflow`: a result's exponent exceeded `Emax`.
     #[strum(serialize = "decimal.Overflow")]
-    DecimalOverflow,
+    DecimalOverflow = 53,
     /// `decimal.Underflow`: a subnormal result was rounded.
     #[strum(serialize = "decimal.Underflow")]
-    DecimalUnderflow,
+    DecimalUnderflow = 54,
     /// `decimal.FloatOperation`: floats and Decimals were mixed.
     #[strum(serialize = "decimal.FloatOperation")]
-    DecimalFloatOperation,
+    DecimalFloatOperation = 55,
 }
 /// Structured payload attached to exception types whose CPython counterparts
 /// carry more than a message. Currently unicode and json decode errors have

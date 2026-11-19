@@ -26,7 +26,7 @@ The public data types (the `MontyGraph`/`MontyNode` value graph and the `MontyOb
 built on it, `MontyException`/`ExcType`, `OsFunctionCall` +
 its arg structs, `ResourceLimits`/`ResourceTracker`, `PrintStream`/`PrintWriter`,
 `CompileOptions`, `ExtFunctionResult`, `FileMode`, ...) live in `crates/monty-types`,
-which depends on no other monty crate except the `monty-macros` derives. `monty`
+which depends on no other monty crate except the `monty-macros` proc macros. `monty`
 depends on `monty-types` but does not blanket re-export it — only a few types
 are re-exported inline where they appear in `monty`'s public API (e.g.
 `run::CompileOptions`, `run_progress::{ExtFunctionResult, NameLookupResult}`).
@@ -280,7 +280,7 @@ or variant on them takes an unused letter.
 `Code`'s location table is the exception: `bytecode/code/location_table.rs` writes it as one byte string of
 delta-encoded varints led by a format byte, which serde attributes cannot evolve. A layout change takes a new format
 byte and keeps the old decoder; `LocationEntry`'s derived `Deserialize` only reads the per-entry maps of older dumps.
-`DUMP_VERSION` still bumps when the *meaning* of stored data changes: opcodes, `BuiltinsFunctions` order (its
+`DUMP_VERSION` still bumps when the *meaning* of stored data changes: opcodes, `BuiltinsFunctions` discriminants (its
 discriminants are bytecode operands), `CmpOperator` values, the compiler's constant layout, how a key hashes (dict and
 set entries persist their hash, which is why keys without a heap identity hash by name or a persisted id such as a
 `FunctionId`, never by discriminant), a semantic change to a stored value, or a `sha1` / `sha2` crate upgrade that
@@ -290,6 +290,16 @@ Frozen function code is also persisted: Rust calls its captured entry signature,
 Incompatible changes to either calling convention require compatibility handling or a version bump, including changes
 to argument order or meaning.
 Compatible source-body changes do not require a bump; restored sessions retain their captured implementations.
+Numeric identities are also observable state: a dump may contain a saved `id()` alongside its object.
+Fieldless builtin-function, exception-type, module-function and property-operation enums use explicit discriminants, enforced by
+`#[monty_macros::explicit_discriminants(checksum = ...)]`.
+The checksum pins sorted name/code pairs; existing codes must never change or be reused.
+Missing or stale checksums report a copyable attribute; review the mappings before copying it.
+Place the attribute before derives: it checks all declared variants, including inactive ones, with one checksum for every configuration.
+The payload-carrying `ModuleFunctions` also assigns explicit codes; `strum::EnumDiscriminants` exposes them to the encoder.
+Native `Type` uses fixed codes in `legacy_index`, independently of its dense table indices.
+Keep existing numeric identity expectations unchanged when adding variants.
+Incompatible numeric identity changes need compatibility handling or a dump-version boundary that excludes affected dumps.
 When the old data still holds everything the new meaning needs, bump `DUMP_VERSION` but keep
 `MIN_SUPPORTED_DUMP_VERSION`, and convert in one of two places so the live heap never carries a legacy form:
 a `#[serde(from = "Dumped…")]` shim when one value's stored shape changed (see `TableCursor`), or an upgrade in
