@@ -88,18 +88,19 @@ fn round_float_to_digits(value: f64, digits: i64) -> f64 {
         return value;
     }
     let rounded = if digits >= 0 {
-        let Ok(exp) = i32::try_from(digits) else {
+        // Like CPython's `double_round`: round the exact binary value to `digits` decimal places (ties to even)
+        // and convert back. Scaling by `10**digits` instead can land on a false tie: `2.675 * 100` is exactly
+        // `267.5`, although `2.675` is stored as 2.67499..., so `round(2.675, 2)` must be `2.67`.
+        // Rust's fixed-precision float formatting is exact and rounds ties to even, as CPython's dtoa does.
+        // Past CPython's `NDIGITS_MAX` every finite float is already exact.
+        const NDIGITS_MAX: i64 = 323;
+        if digits > NDIGITS_MAX {
+            return value;
+        }
+        let Ok(precision) = usize::try_from(digits) else {
             return value;
         };
-        let multiplier = 10_f64.powi(exp);
-        if !multiplier.is_finite() {
-            return value;
-        }
-        let scaled = value * multiplier;
-        if !scaled.is_finite() {
-            return value;
-        }
-        bankers_round(scaled) / multiplier
+        format!("{value:.precision$}").parse::<f64>().unwrap_or(value)
     } else {
         let Ok(exp) = i32::try_from(digits) else {
             return 0.0_f64.copysign(value);
