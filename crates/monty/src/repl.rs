@@ -26,10 +26,10 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, RunError},
     heap::{DropWithContext, Heap, HeapData, HeapReader},
-    intern::Interns,
+    intern::{Interns, StringId},
     name_map::NameMap,
     object_bridge::{MontyGraphExt, MontyObjectExt},
-    parse::source_nesting_exception,
+    parse::{check_source_length, source_nesting_exception},
     run::{CompileOptions, DEFAULT_CWD, Executor, Program, ReplSession, SessionTables},
     run_progress::{
         ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
@@ -150,16 +150,12 @@ impl MontyRepl {
         self.options
     }
 
-    /// Rejects a snippet whose nesting would let the parser grow its stack past
-    /// the limit, with the `SyntaxError` compiling it would raise.
-    ///
-    /// For hosts that want the verdict before doing other work on the snippet
-    /// (the worker type-checks after it); the returned [`CheckedSource`] lets
-    /// [`feed_start_checked`](Self::feed_start_checked) skip the scan. Plain
-    /// feeds scan for themselves (see `limitations/language.md`).
+    /// Checks source length and parser nesting before a host type-checks or compiles a snippet.
+    /// The returned [`CheckedSource`] lets [`feed_start_checked`](Self::feed_start_checked) skip the scan.
+    /// Plain feeds perform these checks themselves.
     ///
     /// # Errors
-    /// The `SyntaxError: Source is too deeply nested` located in the snippet.
+    /// A located `SyntaxError` if source exceeds `u32::MAX` UTF-8 bytes or its nesting bound.
     pub fn check_source<'a>(&self, code: &'a str) -> Result<CheckedSource<'a>, MontyException> {
         source_nesting_exception(code, &self.script_name, self.options.source_scan_threshold)?;
         Ok(CheckedSource(code))
@@ -677,7 +673,7 @@ impl MontyRepl {
     }
 }
 
-/// A snippet [`MontyRepl::check_source`] found within the nesting bound,
+/// A snippet [`MontyRepl::check_source`] found within the source-length and nesting bounds,
 /// which [`MontyRepl::feed_start_checked`] therefore need not scan again.
 ///
 /// The verdict used the checking REPL's `source_scan_threshold`, so feed it
@@ -1335,8 +1331,10 @@ pub enum ReplContinuationMode {
 ///   syntax error that should be shown immediately).
 #[must_use]
 pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
-    // Complete because feeding it raises the SyntaxError; parsing it here would grow the stack unguarded.
-    if !source_within_nesting_bound(source, SOURCE_SCAN_THRESHOLD) {
+    // Feeding invalid source reports SyntaxError; do not pass it to Ruff here.
+    if check_source_length(source.len(), StringId::default()).is_err()
+        || !source_within_nesting_bound(source, SOURCE_SCAN_THRESHOLD)
+    {
         return ReplContinuationMode::Complete;
     }
     // Complete for the same reason when its AST is too deep to drop.

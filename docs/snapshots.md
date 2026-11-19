@@ -386,14 +386,12 @@ Calling a loader after a feed or a previous load is rejected before restoration,
 - **A dump is your own session state, not untrusted input.** Loading checks the magic, the version, the size cap and the
     structural invariants the interpreter relies on (function metadata, for one), but it is not a security boundary:
     load only dumps this host produced.
-- **Dumps carry a format version.** The bytes are Monty's own dump format, a `MONTY\0` magic followed by a dump-format
-    version, then the state encoded as CBOR with every field and variant named.
-    A release that only changes the layout of stored data, adding fields that default when absent or removing and
-    reordering named fields, keeps the version, so its builds still load dumps written by earlier releases at that
-    version.
-    A release that changes what stored data means, such as the bytecode, bumps the version and says so in its release
-    notes.
-    Older builds then refuse the new dumps as too new.
+- **Dumps carry a format version.** The bytes start with `MONTY\0` and a dump version, followed by the state as CBOR.
+    Published releases with the same dump version can read and resume each other's dumps.
+    This guarantee does not extend to unreleased Git revisions.
+    A release that breaks compatibility in either direction, including a patch release, uses a new dump version and
+    notes the change in its release notes.
+    Older releases reject the new dumps even if the new release can still read older dumps.
     Where the old data still holds everything the new meaning needs, the newer build upgrades older dumps as it loads
     them: version 14 builds load version 13 dumps from 1.0 and 1.1, generating the methods their dataclasses lack, and
     version 15 builds rebase the source positions of `eval()` code in version 13 and 14 dumps.
