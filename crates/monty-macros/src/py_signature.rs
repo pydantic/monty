@@ -6,7 +6,7 @@ use ruff_python_ast::{Expr, Number, Operator, Parameter, ParameterWithDefault, S
 use ruff_python_parser::parse_module;
 use syn::{
     DeriveInput, FnArg, Ident, ItemFn, LitStr, Pat, Token, Type,
-    meta::parser,
+    meta::{ParseNestedMeta, parser},
     parse::{Parse, ParseStream, Parser},
     parse_quote,
 };
@@ -34,22 +34,29 @@ impl Parse for Declaration {
             input.parse::<Token![,]>()?;
             parser(|meta| {
                 if meta.path.is_ident("style") {
-                    declaration.style = Some(meta.value()?.parse()?);
+                    parse_option(&meta, &mut declaration.style)
                 } else if meta.path.is_ident("owner") {
-                    declaration.owner = Some(meta.value()?.parse()?);
+                    parse_option(&meta, &mut declaration.owner)
                 } else if meta.path.is_ident("kwarg_error_name") {
-                    declaration.kwarg_error_name = Some(meta.value()?.parse()?);
+                    parse_option(&meta, &mut declaration.kwarg_error_name)
                 } else if meta.path.is_ident("check_last") {
-                    declaration.check_last = Some(meta.value()?.parse()?);
+                    parse_option(&meta, &mut declaration.check_last)
                 } else {
-                    return Err(meta.error("unknown py_signature option"));
+                    Err(meta.error("unknown py_signature option"))
                 }
-                Ok(())
             })
             .parse2(input.parse()?)?;
         }
         Ok(declaration)
     }
+}
+
+fn parse_option<T: Parse>(meta: &ParseNestedMeta<'_>, slot: &mut Option<T>) -> syn::Result<()> {
+    if slot.is_some() {
+        return Err(meta.error("duplicate py_signature option"));
+    }
+    *slot = Some(meta.value()?.parse()?);
+    Ok(())
 }
 
 pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Result<TokenStream> {
@@ -232,5 +239,26 @@ fn integer_default(expr: &Expr) -> Option<i64> {
         },
         Expr::UnaryOp(op) if op.op == UnaryOp::USub => integer_default(&op.operand)?.checked_neg(),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Declaration;
+
+    #[test]
+    fn rejects_duplicate_options() {
+        for options in [
+            "style = def, style = clinic",
+            r#"owner = "Counter", owner = "dict""#,
+            r#"kwarg_error_name = "first", kwarg_error_name = "second""#,
+            "check_last = a, check_last = b",
+        ] {
+            let result = syn::parse_str::<Declaration>(&format!(r#""f(a, b)", {options}"#));
+            assert_eq!(
+                result.err().expect(options).to_string(),
+                "duplicate py_signature option"
+            );
+        }
     }
 }
