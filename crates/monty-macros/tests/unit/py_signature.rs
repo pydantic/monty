@@ -4,7 +4,7 @@ use super::{Declaration, expand};
 
 fn adapter() -> ItemFn {
     parse_quote! {
-        fn f(args: &FArgs) {}
+        fn f(params: &FArgs) {}
     }
 }
 
@@ -75,7 +75,7 @@ fn rejects_incompatible_rust_adapters() {
     );
     assert_eq!(
         expand(&declaration, function).unwrap_err().to_string(),
-        "expected a parameter named args with the bound argument type",
+        "expected `params` to name the bound argument struct",
     );
     let declaration = parse_quote!("f()", owner = "Counter");
     assert_eq!(
@@ -91,7 +91,7 @@ fn generates_bound_fields_in_declaration_order() {
         owner = "Example", bind = mut
     );
     let function = parse_quote!(
-        fn sample(args: &mut SampleFnArgs) {}
+        fn sample(params: &mut SampleFnArgs) {}
     );
     let expanded: ItemFn = syn::parse2(expand(&declaration, function).unwrap()).unwrap();
     let expected: ItemStruct = parse_quote! {
@@ -128,13 +128,13 @@ fn named_struct_binders_allow_rust_parameters_alongside_args() {
         (
             parse_quote!("f(vm, /)"),
             parse_quote!(
-                fn f(vm: &mut VM<'_>, args: &FArgs) {}
+                fn f(vm: &mut VM<'_>, params: &FArgs) {}
             ),
         ),
         (
             parse_quote!("f(x, /)"),
             parse_quote!(
-                fn f(x: State, args: &FArgs, vm: &mut VM<'_>) {}
+                fn f(x: State, params: &FArgs, vm: &mut VM<'_>) {}
             ),
         ),
     ] {
@@ -202,7 +202,7 @@ fn a_callable_with_parameters_still_needs_a_binder() {
         );
         assert_eq!(
             expand(&declaration, function).unwrap_err().to_string(),
-            "expected a parameter named args with the bound argument type",
+            "expected `params` to name the bound argument struct",
             "{signature}"
         );
     }
@@ -276,14 +276,14 @@ fn explicit_binding_must_match_the_rust_type() {
         (
             parse_quote!("f(x)"),
             parse_quote!(
-                fn f(args: FArgs) {}
+                fn f(params: FArgs) {}
             ),
             "shared binding requires &Args",
         ),
         (
             parse_quote!("f(x)"),
             parse_quote!(
-                fn f(args: &mut FArgs) {}
+                fn f(params: &mut FArgs) {}
             ),
             "shared binding requires &Args",
         ),
@@ -307,24 +307,24 @@ fn named_owned_args_require_a_full_destructure_before_any_return() {
     let declaration = parse_quote!("f(x, y)", bind = owned);
     for body in [
         "return;",
-        "let OtherArgs { x, y } = args;",
+        "let OtherArgs { x, y } = params;",
         "let CustomArgs { x, y } = other;",
-        "let CustomArgs { x, .. } = args;",
-        "let CustomArgs { x, y: _ } = args;",
-        "let CustomArgs { x, ref y } = args;",
+        "let CustomArgs { x, .. } = params;",
+        "let CustomArgs { x, y: _ } = params;",
+        "let CustomArgs { x, ref y } = params;",
     ] {
-        let function = syn::parse_str(&format!("fn f(args: CustomArgs) {{ {body} }}")).unwrap();
+        let function = syn::parse_str(&format!("fn f(params: CustomArgs) {{ {body} }}")).unwrap();
         assert!(expand(&declaration, function).is_err(), "{body}");
     }
     let function = parse_quote!(
-        fn f(ref args: CustomArgs) {
-            let CustomArgs { x, y } = args;
+        fn f(ref params: CustomArgs) {
+            let CustomArgs { x, y } = params;
         }
     );
     assert!(expand(&declaration, function).is_err());
     let function = parse_quote!(
-        fn f(args: CustomArgs) {
-            let CustomArgs { x, y: mut other } = args;
+        fn f(params: CustomArgs) {
+            let CustomArgs { x, y: mut other } = params;
         }
     );
     assert!(expand(&declaration, function).is_ok());
@@ -334,7 +334,7 @@ fn named_owned_args_require_a_full_destructure_before_any_return() {
 fn two_args_use_the_inline_storage() {
     let declaration = parse_quote!("divmod(x, y, /)");
     let function = parse_quote!(
-        fn divmod(vm: &mut VM<'_>, args: &DivmodArgs) {}
+        fn divmod(vm: &mut VM<'_>, params: &DivmodArgs) {}
     );
     let output = expand(&declaration, function).unwrap().to_string();
     assert!(output.contains("ArgValues :: Two"));
@@ -351,7 +351,7 @@ fn rejects_direct_arguments() {
             fn f(x: f64) {}
         ),
         parse_quote!(
-            fn f(args: (&Value, &Value)) {}
+            fn f(params: (&Value, &Value)) {}
         ),
         parse_quote!(
             fn f(positional: &ArgPosIter) {}
@@ -418,7 +418,7 @@ fn ownership_modes_share_the_one_argument_fast_path() {
     assert!(shared.contains("defer_drop !"));
 
     let mutable = parse_quote!(
-        fn f(args: &mut FArgs) {}
+        fn f(params: &mut FArgs) {}
     );
     let output = expand(&parse_quote!("f(x, /)", bind = mut), mutable)
         .unwrap()
@@ -427,8 +427,8 @@ fn ownership_modes_share_the_one_argument_fast_path() {
     assert!(output.contains("defer_drop_mut !"));
 
     let owned = parse_quote!(
-        fn f(args: FArgs) {
-            let FArgs { x } = args;
+        fn f(params: FArgs) {
+            let FArgs { x } = params;
             consume(x);
         }
     );

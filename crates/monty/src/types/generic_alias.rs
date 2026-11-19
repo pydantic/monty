@@ -813,18 +813,18 @@ fn abstract_class_error(name: &str, methods: &str) -> String {
 /// rebuilds `alias` around the resolved `args` tuple (the alias itself when they
 /// are unchanged), and strips `Annotated[T, ...]` to `T` unless `include_extras`.
 #[py_signature("alias_with(alias, resolved, include_extras, /)")]
-pub(crate) fn call_alias_with(args: &AliasWithArgs, vm: &mut VM<'_>) -> RunResult<Value> {
-    let Some(HeapReadOutput::GenericAlias(generic)) = args.alias.read_heap(vm) else {
+pub(crate) fn call_alias_with(params: &AliasWithArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let Some(HeapReadOutput::GenericAlias(generic)) = params.alias.read_heap(vm) else {
         unreachable!("frozen code passes a generic alias")
     };
     let (origin, stored_args) = generic.parts(vm);
     defer_drop!(stored_args, vm);
     if generic.get(vm.heap).is_annotated() {
-        let Some(HeapReadOutput::Tuple(resolved_items)) = args.resolved.read_heap(vm) else {
+        let Some(HeapReadOutput::Tuple(resolved_items)) = params.resolved.read_heap(vm) else {
             unreachable!("frozen code passes the resolved args as a tuple")
         };
         let inner = resolved_items.clone_item(0, vm);
-        if !matches!(&args.include_extras, Value::Bool(true)) {
+        if !matches!(&params.include_extras, Value::Bool(true)) {
             return Ok(inner);
         }
         let Some(HeapReadOutput::Tuple(stored)) = stored_args.read_heap(vm) else {
@@ -840,10 +840,10 @@ pub(crate) fn call_alias_with(args: &AliasWithArgs, vm: &mut VM<'_>) -> RunResul
         let key = allocate_tuple(items, vm.heap);
         return Ok(GenericAlias::allocate(origin, key, vm));
     }
-    if args.resolved.py_eq(stored_args, vm)? {
-        Ok(args.alias.clone_with_heap(vm))
+    if params.resolved.py_eq(stored_args, vm)? {
+        Ok(params.alias.clone_with_heap(vm))
     } else {
-        Ok(GenericAlias::allocate(origin, args.resolved.clone_with_heap(vm), vm))
+        Ok(GenericAlias::allocate(origin, params.resolved.clone_with_heap(vm), vm))
     }
 }
 

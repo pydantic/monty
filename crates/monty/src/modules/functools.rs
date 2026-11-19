@@ -98,12 +98,12 @@ pub(super) fn call(vm: &mut VM<'_>, function: FunctoolsFunctions, args: ArgValue
 /// Argument shape for `reduce(function, iterable, /[, initial])`.
 ///
 #[py_signature("reduce(function, iterable, /, initial=...)", bind = owned)]
-fn call_reduce(vm: &mut VM<'_>, args: ReduceArgs) -> RunResult<CallResult> {
+fn call_reduce(vm: &mut VM<'_>, params: ReduceArgs) -> RunResult<CallResult> {
     let ReduceArgs {
         function,
         iterable,
         initial,
-    } = args;
+    } = params;
     let has_initial = initial.is_some();
     vm.call_frozen_exact(
         FrozenFunction::FunctoolsReduce,
@@ -132,17 +132,17 @@ fn call_cache(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// Returns a configured decorator, or wraps a callable passed as the first argument.
 #[py_signature("lru_cache(maxsize=128, typed=False)")]
-fn call_lru_cache_factory(vm: &mut VM<'_>, args: &LruCacheArgs) -> RunResult<Value> {
-    let typed_flag = args.typed.py_bool(vm)?;
-    match &args.maxsize {
+fn call_lru_cache_factory(vm: &mut VM<'_>, params: &LruCacheArgs) -> RunResult<Value> {
+    let typed_flag = params.typed.py_bool(vm)?;
+    match &params.maxsize {
         Value::Int(size) => {
             let size = u64::try_from(*size).unwrap_or(0);
             lru_cache::allocate(None, Some(size), typed_flag, vm)
         }
         Value::Bool(flag) => lru_cache::allocate(None, Some(u64::from(*flag)), typed_flag, vm),
         Value::None => lru_cache::allocate(None, None, typed_flag, vm),
-        _ if args.maxsize.is_callable(vm) => {
-            lru_cache::allocate(Some(args.maxsize.clone_with_heap(vm)), Some(128), typed_flag, vm)
+        _ if params.maxsize.is_callable(vm) => {
+            lru_cache::allocate(Some(params.maxsize.clone_with_heap(vm)), Some(128), typed_flag, vm)
         }
         _ => Err(lru_cache::bad_maxsize_error()),
     }

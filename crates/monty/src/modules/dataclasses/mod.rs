@@ -124,7 +124,7 @@ pub(super) fn call(vm: &mut VM<'_>, func: DataclassesFunctions, args: ArgValues)
 /// Raw `Value` fields because CPython's `def` type-checks nothing; the body
 /// takes each option's truthiness instead.
 #[py_signature("dataclass(cls=None, /, *, init=True, repr=True, eq=True, order=False, unsafe_hash=False, frozen=False, match_args=True, kw_only=False, slots=False, weakref_slot=False)", bind = owned)]
-fn dataclass_decorator(vm: &mut VM<'_>, args: DataclassArgs) -> RunResult<Value> {
+fn dataclass_decorator(vm: &mut VM<'_>, params: DataclassArgs) -> RunResult<Value> {
     let DataclassArgs {
         cls,
         init,
@@ -137,7 +137,7 @@ fn dataclass_decorator(vm: &mut VM<'_>, args: DataclassArgs) -> RunResult<Value>
         kw_only,
         slots,
         weakref_slot,
-    } = args;
+    } = params;
     // CPython's `dataclass` is a `def`, so it type-checks nothing and takes each
     // option's truthiness. That runs user code — a `__bool__` may raise — so
     // `cls` and all ten flags are guarded before the first read.
@@ -823,8 +823,8 @@ pub(crate) fn is_dataclass_class(class_id: HeapId, vm: &VM<'_>) -> bool {
 /// `is_dataclass(obj)` — true when `obj` is a dataclass **class** or an
 /// **instance** of one (matching CPython, which accepts both).
 #[py_signature("is_dataclass(obj)")]
-fn is_dataclass(vm: &mut VM<'_>, args: &IsDataclassArgs) -> RunResult<Value> {
-    let result = match &args.obj {
+fn is_dataclass(vm: &mut VM<'_>, params: &IsDataclassArgs) -> RunResult<Value> {
+    let result = match &params.obj {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Class(_) => is_dataclass_class(*id, vm),
             HeapData::Instance(instance) => is_dataclass_class(instance.class(), vm),

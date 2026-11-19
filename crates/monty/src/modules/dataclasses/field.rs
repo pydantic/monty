@@ -149,7 +149,7 @@ impl<C: ContainsHeap> DropWithContext<C> for DataclassField {
 /// `field()` arguments, mirroring CPython's all-keyword-only signature.
 /// `MISSING` is the "not given" sentinel, since `None` is a legitimate default.
 #[py_signature("field(*, default=..., default_factory=..., init=True, repr=True, hash=None, compare=True, metadata=None, kw_only=..., doc=None)", bind = owned)]
-pub(super) fn field(vm: &mut VM<'_>, args: FieldArgs) -> RunResult<Value> {
+pub(super) fn field(vm: &mut VM<'_>, params: FieldArgs) -> RunResult<Value> {
     let FieldArgs {
         default,
         default_factory,
@@ -160,7 +160,7 @@ pub(super) fn field(vm: &mut VM<'_>, args: FieldArgs) -> RunResult<Value> {
         metadata,
         kw_only,
         doc,
-    } = args;
+    } = params;
     // `MISSING` means "not given", since `None` is a legitimate default.
     let kw_only = kw_only.unwrap_or(Value::Marker(Marker(StaticStrings::Missing)));
     let spec = DataclassField::new_spec(

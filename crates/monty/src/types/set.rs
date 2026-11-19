@@ -811,8 +811,8 @@ impl Set {
     /// - `set()` with no args returns an empty set
     /// - `set(iterable)` creates a set from any iterable (list, tuple, set, dict, range, str, bytes)
     #[py_signature("set(iterable=..., /)")]
-    pub fn init(vm: &mut VM<'_>, args: &SetArgs) -> RunResult<Value> {
-        let set = match &args.iterable {
+    pub fn init(vm: &mut VM<'_>, params: &SetArgs) -> RunResult<Value> {
+        let set = match &params.iterable {
             None => Self::new(),
             Some(v) => Self::from_iterable(v, vm)?,
         };
@@ -1509,8 +1509,8 @@ impl FrozenSet {
     /// - `frozenset()` with no args returns an empty frozenset
     /// - `frozenset(iterable)` creates a frozenset from any iterable (list, tuple, set, dict, range, str, bytes)
     #[py_signature("frozenset(iterable=..., /)", bind = owned)]
-    pub fn init(vm: &mut VM<'_>, args: FrozensetArgs) -> RunResult<Value> {
-        let FrozensetArgs { iterable: value } = args;
+    pub fn init(vm: &mut VM<'_>, params: FrozensetArgs) -> RunResult<Value> {
+        let FrozensetArgs { iterable: value } = params;
         match value {
             // An exact frozenset already has the required immutable storage.
             Some(v @ Value::Ref(id)) if matches!(vm.heap.get(id), HeapData::FrozenSet(_)) => Ok(v),

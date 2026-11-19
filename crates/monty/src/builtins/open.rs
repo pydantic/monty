@@ -34,30 +34,30 @@ use crate::{
     "open(file, mode: str=..., buffering=-1, encoding: str | None=None, errors: str | None=None, newline: str | None=None, closefd=True, opener=None)",
     bad_arg_named
 )]
-pub(crate) fn builtin_open(vm: &mut VM<'_>, args: &OpenArgs) -> RunResult<CallResult> {
-    if !matches!(&args.buffering, Value::Int(-1)) {
+pub(crate) fn builtin_open(vm: &mut VM<'_>, params: &OpenArgs) -> RunResult<CallResult> {
+    if !matches!(&params.buffering, Value::Int(-1)) {
         return Err(unsupported_kwarg("buffering"));
     }
-    if let Some(encoding) = &args.encoding {
+    if let Some(encoding) = &params.encoding {
         let text = encoding.as_str(vm);
         if !text.eq_ignore_ascii_case("utf-8") && !text.eq_ignore_ascii_case("utf8") {
             return Err(unsupported_kwarg("encoding"));
         }
     }
-    if args.errors.is_some() {
+    if params.errors.is_some() {
         return Err(unsupported_kwarg("errors"));
     }
-    if !matches!(&args.closefd, Value::Bool(true)) {
+    if !matches!(&params.closefd, Value::Bool(true)) {
         return Err(unsupported_kwarg("closefd"));
     }
-    if !matches!(&args.opener, Value::None) {
+    if !matches!(&params.opener, Value::None) {
         return Err(unsupported_kwarg("opener"));
     }
 
-    let path = extract_path_string(&args.file, vm)?;
+    let path = extract_path_string(&params.file, vm)?;
     // Parse here purely to reject malformed modes before the OS round-trip;
     // the file wrapper itself is built from the host's returned FileHandle.
-    let file_mode = args
+    let file_mode = params
         .mode
         .as_ref()
         .map_or("r", |m| m.as_str(vm))
@@ -65,14 +65,14 @@ pub(crate) fn builtin_open(vm: &mut VM<'_>, args: &OpenArgs) -> RunResult<CallRe
         .map_err(|e| RunError::from(SimpleException::new_msg(ExcType::ValueError, e)))?;
     // CPython rejects this pairing before opening; the value itself it checks
     // only after (see `apply_open_name`).
-    if file_mode.is_binary() && args.newline.is_some() {
+    if file_mode.is_binary() && params.newline.is_some() {
         return Err(ExcType::value_error("binary mode doesn't take a newline argument"));
     }
     if vm.env.legacy_binary_writes && matches!(file_mode, FileMode::WriteUpdate(true)) {
         return Err(ExcType::not_implemented("binary update mode requires positional filesystem writes").into());
     }
 
-    let name = if args.file.py_type(vm) == Type::Bytes {
+    let name = if params.file.py_type(vm) == Type::Bytes {
         FileName::Bytes(path.as_bytes().to_vec())
     } else {
         FileName::Str(path.clone())
@@ -84,7 +84,7 @@ pub(crate) fn builtin_open(vm: &mut VM<'_>, args: &OpenArgs) -> RunResult<CallRe
         }),
         effect: PostConversionEffect::OpenName {
             name,
-            newline: args.newline.as_ref().map(|s| s.as_str(vm).to_owned()),
+            newline: params.newline.as_ref().map(|s| s.as_str(vm).to_owned()),
         }
         .into(),
     })

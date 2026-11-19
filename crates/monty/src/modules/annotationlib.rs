@@ -82,18 +82,18 @@ fn format_class(vm: &mut VM<'_>) -> Value {
 /// `annotationlib.get_annotations()`: `obj`'s annotations evaluated where they were
 /// written (or as stored, in `STRING` format), without resolving forward references.
 #[py_signature("get_annotations(obj, *, globals=None, locals=None, eval_str=False, format=1)")]
-fn get_annotations(vm: &mut VM<'_>, args: &GetAnnotationsArgs) -> RunResult<CallResult> {
-    let eval_str = args.eval_str.py_bool(vm)?;
-    if eval_str && format_code(&args.format) != Some(1) {
+fn get_annotations(vm: &mut VM<'_>, params: &GetAnnotationsArgs) -> RunResult<CallResult> {
+    let eval_str = params.eval_str.py_bool(vm)?;
+    if eval_str && format_code(&params.format) != Some(1) {
         return Err(ExcType::value_error(
             "eval_str=True is only supported with format=Format.VALUE",
         ));
     }
-    let format = HintFormat::parse(&args.format, false, vm)?;
-    let globalns = namespace_dict(&args.globals, "get_annotations", "globals", vm)?;
-    let localns = namespace_dict(&args.locals, "get_annotations", "locals", vm)?;
+    let format = HintFormat::parse(&params.format, false, vm)?;
+    let globalns = namespace_dict(&params.globals, "get_annotations", "globals", vm)?;
+    let localns = namespace_dict(&params.locals, "get_annotations", "locals", vm)?;
     collect_hints(
-        &args.obj,
+        &params.obj,
         &HintsRequest {
             format,
             globalns,

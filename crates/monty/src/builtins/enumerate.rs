@@ -23,13 +23,13 @@ use crate::{
 /// Invalid calls raise `TypeError`. CPython’s custom parser can report a different
 /// argument first, for example in `enumerate(start=1)`.
 #[py_signature("enumerate(iterable, start: SupportsIndex=0)", bind = mut)]
-pub fn builtin_enumerate(vm: &mut VM<'_>, args: &mut EnumerateArgs) -> RunResult<Value> {
-    let iterable = mem::replace(&mut args.iterable, Value::None);
+pub fn builtin_enumerate(vm: &mut VM<'_>, params: &mut EnumerateArgs) -> RunResult<Value> {
+    let iterable = mem::replace(&mut params.iterable, Value::None);
     let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 
-    let small_start = args.start.view(vm).to_i64(vm);
+    let small_start = params.start.view(vm).to_i64(vm);
     let result: Vec<Value> = Vec::new();
     let mut result_guard = DropGuard::new(result, vm);
     let (result, vm) = result_guard.as_parts_mut();
@@ -41,7 +41,7 @@ pub fn builtin_enumerate(vm: &mut VM<'_>, args: &mut EnumerateArgs) -> RunResult
         } else {
             let mut item_guard = DropGuard::new(item, vm);
             let (_, vm) = item_guard.as_parts_mut();
-            let index = args.start.view(vm).with_value(
+            let index = params.start.view(vm).with_value(
                 vm,
                 |n| Ok(BigInt::from(n) + offset),
                 |n| {

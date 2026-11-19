@@ -368,8 +368,8 @@ fn from_args_vm_field_and_block_default() {
 }
 
 #[monty_macros::py_signature("f(*, _replace=None)")]
-fn underscored_keyword(vm: &mut VM<'_>, args: &FArgs) -> RunResult<i64> {
-    args._replace.as_int(vm)
+fn underscored_keyword(vm: &mut VM<'_>, params: &FArgs) -> RunResult<i64> {
+    params._replace.as_int(vm)
 }
 
 #[test]
@@ -388,8 +388,8 @@ fn native_signature_matches_the_exact_keyword() {
 }
 
 #[monty_macros::py_signature("scale(value=1.5, /)")]
-fn raw_float_default(vm: &mut VM<'_>, args: &ScaleArgs) -> RunResult<Value> {
-    Ok(args.value.clone_with_heap(vm))
+fn raw_float_default(vm: &mut VM<'_>, params: &ScaleArgs) -> RunResult<Value> {
+    Ok(params.value.clone_with_heap(vm))
 }
 
 #[test]
@@ -449,8 +449,8 @@ fn optional_bool_distinguishes_omission_from_false() {
 fn borrowed_one_arg_adapter_releases_heap_strings_on_return() {
     const TEXT: &str = "heap-backed argument that exceeds inline storage";
     #[monty_macros::py_signature("check(text: str | None, /)")]
-    fn check(vm: &mut VM<'_>, args: &CheckArgs) -> RunResult<bool> {
-        if let Some(text) = &args.text {
+    fn check(vm: &mut VM<'_>, params: &CheckArgs) -> RunResult<bool> {
+        if let Some(text) = &params.text {
             assert_eq!(text.as_str(vm), TEXT);
             return Err(ExcType::type_error("body failed"));
         }

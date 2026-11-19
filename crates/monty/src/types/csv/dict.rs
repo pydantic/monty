@@ -270,12 +270,12 @@ pub(super) fn reader_next<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut VM<'h>)
 #[py_signature("writerow(self, rowdict, /)", owner = "DictWriter")]
 pub(super) fn writer_writerow<'h>(
     obj: &HeapRead<'h, CsvObject>,
-    args: &DictwriterWriterowArgs,
+    params: &DictwriterWriterowArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
     let spec: Option<RowSpec> = None;
     defer_drop_mut!(spec, vm);
-    let items = dict_to_list(obj, spec, &args.rowdict, vm)?;
+    let items = dict_to_list(obj, spec, &params.rowdict, vm)?;
     defer_drop!(items, vm);
     write_items(obj, items, vm)
 }
@@ -313,7 +313,7 @@ pub(super) fn writer_writeheader<'h>(obj: &HeapRead<'h, CsvObject>, vm: &mut VM<
 #[py_signature("writerows(self, rowdicts, /)", owner = "DictWriter")]
 pub(super) fn writer_writerows<'h>(
     obj: &HeapRead<'h, CsvObject>,
-    args: &DictwriterWriterowsArgs,
+    params: &DictwriterWriterowsArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
     let writer = dict_writer_part(obj, vm, |writer| writer.writer.clone_with_heap(vm.heap));
@@ -326,7 +326,7 @@ pub(super) fn writer_writerows<'h>(
     let spec: Option<RowSpec> = None;
     defer_drop_mut!(spec, vm);
     if targets_file {
-        let rows = collect_iterable(&args.rowdicts, vm)?;
+        let rows = collect_iterable(&params.rowdicts, vm)?;
         defer_drop!(rows, vm);
         let mut lists_guard = DropGuard::new(Vec::with_capacity(rows.len()), vm);
         let (flattened, vm) = lists_guard.as_parts_mut();
@@ -342,7 +342,7 @@ pub(super) fn writer_writerows<'h>(
             super::writer::writerows(writer_obj, ArgValues::One(rows), vm)
         })
     } else {
-        let iterator = args.rowdicts.py_iter(vm)?.require_synchronous(vm)?;
+        let iterator = params.rowdicts.py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iterator, vm);
         let terminator_chars = terminator_chars(&dialect.lineterminator);
         let mut line = String::new();

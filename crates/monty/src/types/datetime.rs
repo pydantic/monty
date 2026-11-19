@@ -243,23 +243,23 @@ pub(crate) fn to_monty_datetime(datetime: &DateTime) -> Option<MontyDateTime> {
 #[py_signature(
     "datetime(year: c_int, month: c_int, day: c_int, hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)"
 )]
-pub(crate) fn init(vm: &mut VM<'_>, args: &DatetimeInitArgs) -> RunResult<Value> {
-    if args.fold != 0 && args.fold != 1 {
+pub(crate) fn init(vm: &mut VM<'_>, params: &DatetimeInitArgs) -> RunResult<Value> {
+    if params.fold != 0 && params.fold != 1 {
         return Err(SimpleException::new_msg(
             ExcType::ValueError,
-            format!("fold must be either 0 or 1, not {}", args.fold),
+            format!("fold must be either 0 or 1, not {}", params.fold),
         )
         .into());
     }
-    let (tz, tz_ref) = tzinfo_from_value(&args.tzinfo, vm.heap, vm.interns)?;
+    let (tz, tz_ref) = tzinfo_from_value(&params.tzinfo, vm.heap, vm.interns)?;
     let dt = from_components(
-        args.year,
-        args.month,
-        args.day,
-        args.hour,
-        args.minute,
-        args.second,
-        args.microsecond,
+        params.year,
+        params.month,
+        params.day,
+        params.hour,
+        params.minute,
+        params.second,
+        params.microsecond,
         tz,
         tz_ref,
         vm.heap,
@@ -297,8 +297,8 @@ pub(crate) fn class_method(
 /// Naive results use the session zone. A `CallHost` clock yields `DateTimeNow`
 /// with a validated [`Option<MontyTimeZone>`] for the host to answer.
 #[py_signature("now(tz=None)")]
-pub(crate) fn class_now(vm: &mut VM<'_>, args: &NowArgs) -> RunResult<CallResult> {
-    let (tz, tz_ref) = tzinfo_from_value(&args.tz, vm.heap, vm.interns)?;
+pub(crate) fn class_now(vm: &mut VM<'_>, params: &NowArgs) -> RunResult<CallResult> {
+    let (tz, tz_ref) = tzinfo_from_value(&params.tz, vm.heap, vm.interns)?;
     // Invalid fixed instants raise; only CallHost falls back to the host's clock.
     let Some(utc) = sandbox_instant(vm)? else {
         let tz = tz.map(|tz| MontyTimeZone {
@@ -320,10 +320,10 @@ pub(crate) fn class_now(vm: &mut VM<'_>, args: &NowArgs) -> RunResult<CallResult
 /// after the Unix epoch, as wall-clock time in `tz`, or in the session zone when
 /// `tz` is `None` (CPython reads the host's zone there).
 #[py_signature("fromtimestamp(timestamp, tz=None)")]
-pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: &FromtimestampArgs) -> RunResult<Value> {
-    let (tz, tz_ref) = tzinfo_from_value(&args.tz, vm.heap, vm.interns)?;
-    let utc = timestamp_to_utc(&args.timestamp, TimestampRounding::HalfEven, vm)?
-        .ok_or_else(|| timestamp_not_a_number(&args.timestamp, vm))?;
+pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, params: &FromtimestampArgs) -> RunResult<Value> {
+    let (tz, tz_ref) = tzinfo_from_value(&params.tz, vm.heap, vm.interns)?;
+    let utc = timestamp_to_utc(&params.timestamp, TimestampRounding::HalfEven, vm)?
+        .ok_or_else(|| timestamp_not_a_number(&params.timestamp, vm))?;
     let mut dt = if let Some(tz) = tz {
         // CPython builds the UTC value first, so its year error comes first, and a
         // shifted result that leaves the range is `fromutc()`'s overflow.
@@ -480,8 +480,8 @@ fn timestamp_not_a_number(value: &Value, vm: &VM<'_>) -> RunError {
 /// zone at that instant when `tz` is `None`. A naive value is read as sandbox-local
 /// wall time, as CPython reads it in the host's zone.
 #[py_signature("astimezone(tz=None)")]
-fn astimezone(dt: &DateTime, vm: &mut VM<'_>, args: &AstimezoneArgs) -> RunResult<CallResult> {
-    let (tz, tz_ref) = tzinfo_from_value(&args.tz, vm.heap, vm.interns)?;
+fn astimezone(dt: &DateTime, vm: &mut VM<'_>, params: &AstimezoneArgs) -> RunResult<CallResult> {
+    let (tz, tz_ref) = tzinfo_from_value(&params.tz, vm.heap, vm.interns)?;
     let zone = &vm.env.os_policy.timezone;
     // CPython forms `self - utcoffset()` as a datetime, so the UTC intermediate
     // must be in range as well as the result.
@@ -549,9 +549,9 @@ fn date_out_of_range() -> RunError {
 /// `NaiveDateTime::parse_from_str`, expanding Python `%f` directives into the
 /// chrono widths needed to accept 1 through 6 fractional digits.
 #[py_signature("strptime(date_string, format, /)", error_name = "datetime.strptime")]
-pub(crate) fn class_strptime(vm: &mut VM<'_>, args: &DatetimeStrptimeArgs) -> RunResult<Value> {
-    let date_string = date::extract_str_arg(&args.date_string, "strptime", vm.heap, vm.interns)?;
-    let fmt = date::extract_str_arg(&args.format, "strptime", vm.heap, vm.interns)?;
+pub(crate) fn class_strptime(vm: &mut VM<'_>, params: &DatetimeStrptimeArgs) -> RunResult<Value> {
+    let date_string = date::extract_str_arg(&params.date_string, "strptime", vm.heap, vm.interns)?;
+    let fmt = date::extract_str_arg(&params.format, "strptime", vm.heap, vm.interns)?;
 
     reject_bad_strptime_directive(&fmt)?;
 
@@ -616,8 +616,8 @@ fn reject_bad_strptime_directive(fmt: &str) -> RunResult<()> {
     error_name = "datetime.fromisoformat",
     reject_keywords
 )]
-pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: &DatetimeFromisoformatArgs) -> RunResult<Value> {
-    let s = date::extract_str_arg(&args.date_string, "fromisoformat", vm.heap, vm.interns)?;
+pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, params: &DatetimeFromisoformatArgs) -> RunResult<Value> {
+    let s = date::extract_str_arg(&params.date_string, "fromisoformat", vm.heap, vm.interns)?;
 
     let dt = parse_iso_datetime(&s, vm.heap)
         .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("Invalid isoformat string: '{s}'")))?;
@@ -638,17 +638,17 @@ pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: &DatetimeFromisoformatA
 /// CPython's own wording (`combine() argument 1 must be datetime.date, not
 /// str`, and the shared `tzinfo argument must be ...` message).
 #[py_signature("combine(date, time, tzinfo=...)")]
-pub(crate) fn class_combine(vm: &mut VM<'_>, args: &CombineArgs) -> RunResult<Value> {
+pub(crate) fn class_combine(vm: &mut VM<'_>, params: &CombineArgs) -> RunResult<Value> {
     // Guarded before the two type checks below, since both can fail while
     // holding the caller's `tzinfo` reference.
 
-    let date_part = combine_date_part(&args.date, vm)?;
-    let time_part = combine_time_part(&args.time, vm)?;
+    let date_part = combine_date_part(&params.date, vm)?;
+    let time_part = combine_time_part(&params.time, vm)?;
 
     // Absent keeps the time's zone; present (including `None`) replaces it.
     // Either way the zone is borrowed, so the guard above has to outlive
     // `combine_allocate` — which takes its own ref via `from_components`.
-    match args.tzinfo.as_ref() {
+    match params.tzinfo.as_ref() {
         None => {
             let tz = (time::attached_timezone(&time_part, vm.heap), time_part.tzinfo_ref());
             combine_allocate(vm, date_part, &time_part, tz)

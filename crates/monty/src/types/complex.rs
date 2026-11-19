@@ -462,8 +462,8 @@ pub(crate) fn class_method(
 
 /// `complex.from_number(x)`: a number or complex, never a string.
 #[py_signature("from_number(number, /)", error_name = "complex.from_number", bind = owned)]
-pub(crate) fn class_from_number(vm: &mut VM<'_>, args: ComplexFromNumberArgs) -> RunResult<Value> {
-    let ComplexFromNumberArgs { number: value } = args;
+pub(crate) fn class_from_number(vm: &mut VM<'_>, params: ComplexFromNumberArgs) -> RunResult<Value> {
+    let ComplexFromNumberArgs { number: value } = params;
     if let Value::Ref(id) = &value
         && matches!(vm.heap.get(*id), HeapData::Complex(_))
     {

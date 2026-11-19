@@ -8,19 +8,20 @@ A Python signature on a native function generates the Rust argument struct and i
 
 ```rust
 #[py_signature("split(self, /, sep: str | None = None, maxsplit: i64 = -1) -> list")]
-fn str_split<'h>(s: &PyStr<'h>, args: &SplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_split<'h>(s: &PyStr<'h>, params: &SplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     // ...
 }
 ```
 
 The adapter binds the arguments and keeps them in a cleanup guard for shared or mutable access.
+Name the generated struct parameter `params`. Read `*args` and `**kwargs` through `params.args` and `params.kwargs`.
 Each keyword parameter needs an entry with its exact Python spelling in `StaticStrings`.
 Declare the receiver as an unannotated positional-only `self` parameter without a default.
 Use `owner = "Counter"` to qualify a bound method's name in binding errors.
 `kwarg_error_name` overrides the callable name in unexpected-keyword errors, as in `json.dump`.
 
 For a single argument, use the same handler shape as for several arguments.
-For `#[py_signature("abs(x, /)")]`, declare `args: &AbsArgs` and read the argument through `args.x`.
+For `#[py_signature("abs(x, /)")]`, declare `params: &AbsArgs` and read the argument through `params.x`.
 The macro infers inline binding for small positional calls from the signature.
 Leave parameters unannotated when their operation runs in the body, as with the iterable passed to `enumerate`.
 
@@ -30,15 +31,15 @@ body can omit the argument struct. The macro adds a trailing `ArgValues` paramet
 
 ### Ownership and conversion
 
-Shared borrowing is the default. Take the generated struct as `args: &SplitArgs` and access fields as `args.sep`
-and `args.maxsplit`. You can also spell out `bind = shared`.
+Shared borrowing is the default. Take the generated struct as `params: &SplitArgs` and access fields as `params.sep`
+and `params.maxsplit`. You can also spell out `bind = shared`.
 Borrow inputs that the handler reads, converts or uses to create an iterator.
 To transfer bound values into a result, runtime state or a consuming API, use `bind = owned`.
-Declare `args: SortedArgs` and begin with `let SortedArgs { iterable, kwargs } = args;`.
+Declare `params: SortedArgs` and begin with `let SortedArgs { iterable, kwargs } = params;`.
 Bind every owned field by name and release it on every return path.
-For mixed ownership, set `bind = mut` and take `args: &mut PopArgs`. In `dict.pop`, the lookup borrows `&args.key`
-and a miss moves the optional default out with `args.default.take()`. The guard releases the remaining fields.
-For a required `Value`, use `mem::replace(&mut args.iterable, Value::None)` to move it out.
+For mixed ownership, set `bind = mut` and take `params: &mut PopArgs`. In `dict.pop`, the lookup borrows `&params.key`
+and a miss moves the optional default out with `params.default.take()`. The guard releases the remaining fields.
+For a required `Value`, use `mem::replace(&mut params.iterable, Value::None)` to move it out.
 For callers that bind after method lookup, put `#[py_signature]` on a unit struct and call
 `Name::from_args(args, vm)?`. Generated fields have the struct's visibility.
 

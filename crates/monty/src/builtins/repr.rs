@@ -10,6 +10,6 @@ use crate::{bytecode::VM, exception_private::RunResult, types::PyTrait, value::V
 /// `py_repr` already yields a heap `str` `Value`, so it is returned as-is
 /// without an intermediate `String` round-trip.
 #[py_signature("repr(obj, /)")]
-pub fn builtin_repr(vm: &mut VM<'_>, args: &ReprArgs) -> RunResult<Value> {
-    args.obj.py_repr(vm)
+pub fn builtin_repr(vm: &mut VM<'_>, params: &ReprArgs) -> RunResult<Value> {
+    params.obj.py_repr(vm)
 }

@@ -21,8 +21,8 @@ use crate::{
 
 /// Computes a norm without overflowing intermediate squares.
 #[py_signature("hypot(*coordinates)", error_name = "math.hypot")]
-pub(super) fn hypot(vm: &mut VM<'_>, args: &HypotArgs) -> RunResult<Value> {
-    let mut values = args
+pub(super) fn hypot(vm: &mut VM<'_>, params: &HypotArgs) -> RunResult<Value> {
+    let mut values = params
         .coordinates
         .as_slice()
         .iter()
@@ -33,10 +33,10 @@ pub(super) fn hypot(vm: &mut VM<'_>, args: &HypotArgs) -> RunResult<Value> {
 
 /// Collects both points before checking dimensions and converting coordinates.
 #[py_signature("dist(p, q, /)", kwarg_error_name = "math.dist")]
-pub(super) fn dist(vm: &mut VM<'_>, args: &DistArgs) -> RunResult<Value> {
-    let p = collect_iterable(&args.p, vm)?;
+pub(super) fn dist(vm: &mut VM<'_>, params: &DistArgs) -> RunResult<Value> {
+    let p = collect_iterable(&params.p, vm)?;
     defer_drop!(p, vm);
-    let q = collect_iterable(&args.q, vm)?;
+    let q = collect_iterable(&params.q, vm)?;
     defer_drop!(q, vm);
     if p.len() != q.len() {
         return Err(SimpleException::new_msg(
@@ -117,8 +117,8 @@ fn two_product(a: f64, b: f64) -> (f64, f64) {
 
 /// Sums non-overlapping partials, preserving cancellation and half-even rounding.
 #[py_signature("fsum(seq, /)", error_name = "math.fsum", reject_keywords)]
-pub(crate) fn fsum(vm: &mut VM<'_>, args: &MathFsumArgs) -> RunResult<Value> {
-    let iterator = args.seq.py_iter(vm)?.require_synchronous(vm)?;
+pub(crate) fn fsum(vm: &mut VM<'_>, params: &MathFsumArgs) -> RunResult<Value> {
+    let iterator = params.seq.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);
     let mut partials = SmallVec::<[f64; 32]>::new();
@@ -199,8 +199,8 @@ fn round_partials(partials: &mut SmallVec<[f64; 32]>) -> f64 {
 
 /// Multiplies through Python's numeric protocol, retaining arbitrary-size integer results.
 #[py_signature("prod(iterable, /, *, start=1)", bind = owned)]
-pub(super) fn prod(vm: &mut VM<'_>, args: ProdArgs) -> RunResult<Value> {
-    let ProdArgs { iterable, start } = args;
+pub(super) fn prod(vm: &mut VM<'_>, params: ProdArgs) -> RunResult<Value> {
+    let ProdArgs { iterable, start } = params;
     let mut result = DropGuard::new(start, vm);
     {
         let (total, vm) = result.as_parts_mut();
@@ -250,10 +250,10 @@ impl Triple {
 
 /// Uses exact integer arithmetic and compensated float products before generic arithmetic.
 #[py_signature("sumprod(p, q, /)", kwarg_error_name = "math.sumprod")]
-pub(crate) fn sumprod(vm: &mut VM<'_>, args: &SumprodArgs) -> RunResult<Value> {
-    let p = args.p.py_iter(vm)?.require_synchronous(vm)?;
+pub(crate) fn sumprod(vm: &mut VM<'_>, params: &SumprodArgs) -> RunResult<Value> {
+    let p = params.p.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(p, vm);
-    let q = args.q.py_iter(vm)?.require_synchronous(vm)?;
+    let q = params.q.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(q, vm);
     let mut p = p.read(vm);
     let mut q = q.read(vm);
@@ -343,10 +343,10 @@ fn add(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 
 /// Performs one rounding and raises CPython's errors for invalid operations and overflow.
 #[py_signature("fma(x, y, z, /)", kwarg_error_name = "math.fma")]
-pub(super) fn fma(vm: &mut VM<'_>, args: &FmaArgs) -> RunResult<Value> {
-    let x = value_to_float(&args.x, vm)?;
-    let y = value_to_float(&args.y, vm)?;
-    let z = value_to_float(&args.z, vm)?;
+pub(super) fn fma(vm: &mut VM<'_>, params: &FmaArgs) -> RunResult<Value> {
+    let x = value_to_float(&params.x, vm)?;
+    let y = value_to_float(&params.y, vm)?;
+    let z = value_to_float(&params.z, vm)?;
     let result = x.mul_add(y, z);
     if result.is_nan() && !x.is_nan() && !y.is_nan() && !z.is_nan() {
         Err(SimpleException::new_msg(ExcType::ValueError, "invalid operation in fma").into())

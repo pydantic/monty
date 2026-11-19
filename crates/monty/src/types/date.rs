@@ -129,8 +129,8 @@ pub(crate) fn to_ymd(date: Date) -> (i32, u32, u32) {
 
 /// Constructor for `date(year, month, day)`.
 #[py_signature("date(year: c_int, month: c_int, day: c_int)")]
-pub(crate) fn init(vm: &mut VM<'_>, args: &DateInitArgs) -> RunResult<Value> {
-    let date = from_ymd(args.year, args.month, args.day)?;
+pub(crate) fn init(vm: &mut VM<'_>, params: &DateInitArgs) -> RunResult<Value> {
+    let date = from_ymd(params.year, params.month, params.day)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::Date(date))))
 }
 
@@ -174,11 +174,11 @@ pub(crate) fn class_today(vm: &mut VM<'_>) -> RunResult<CallResult> {
 /// Classmethod `date.fromtimestamp(timestamp)`: the session-local date of a Unix
 /// timestamp, read in the session zone as CPython reads it in the host's.
 #[py_signature("fromtimestamp(timestamp, /)", error_name = "date.fromtimestamp", reject_keywords)]
-pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: &DateFromtimestampArgs) -> RunResult<Value> {
+pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, params: &DateFromtimestampArgs) -> RunResult<Value> {
     // `date` floors to whole seconds and uses `__index__`-style wording, where
     // `datetime` rounds to microseconds and names both numeric types.
-    let utc = datetime::timestamp_to_utc(&args.timestamp, datetime::TimestampRounding::Floor, vm)?
-        .ok_or_else(|| ExcType::type_error_not_integer(&args.timestamp.py_type_name(vm)))?;
+    let utc = datetime::timestamp_to_utc(&params.timestamp, datetime::TimestampRounding::Floor, vm)?
+        .ok_or_else(|| ExcType::type_error_not_integer(&params.timestamp.py_type_name(vm)))?;
     let offset = vm.env.os_policy.timezone.at(utc).offset_seconds;
     let local = datetime::wall_clock_at(utc, offset)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::Date(Date(local.date())))))
@@ -189,8 +189,8 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: &DateFromtimestampArgs)
 /// Parses ISO 8601 date strings in the formats `YYYY-MM-DD` and `YYYYMMDD`,
 /// matching CPython 3.11+ behavior.
 #[py_signature("fromisoformat(date_string, /)", error_name = "date.fromisoformat", reject_keywords)]
-pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: &DateFromisoformatArgs) -> RunResult<Value> {
-    let s = extract_str_arg(&args.date_string, "fromisoformat", vm.heap, vm.interns)?;
+pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, params: &DateFromisoformatArgs) -> RunResult<Value> {
+    let s = extract_str_arg(&params.date_string, "fromisoformat", vm.heap, vm.interns)?;
 
     let date = parse_iso_date(&s)
         .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("Invalid isoformat string: '{s}'")))?;

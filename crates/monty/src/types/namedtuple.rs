@@ -702,12 +702,12 @@ impl<'h> HeapRead<'h, NamedTuple> {
 
     /// `p.count(x)` — how many items equal `x`, inherited from `tuple`.
     #[py_signature("count(self, value, /)", owner = "tuple")]
-    fn method_count(&self, vm: &mut VM<'h>, args: &TupleCountArgs) -> RunResult<Value> {
+    fn method_count(&self, vm: &mut VM<'h>, params: &TupleCountArgs) -> RunResult<Value> {
         let mut count = 0usize;
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some(item) = iter.next(vm)? {
-            if args.value.py_eq(item, vm)? {
+            if params.value.py_eq(item, vm)? {
                 count += 1;
             }
         }
@@ -717,14 +717,14 @@ impl<'h> HeapRead<'h, NamedTuple> {
     /// `p.index(x[, start[, stop]])` — index of the first item equal to `x`,
     /// inherited from `tuple`.
     #[py_signature("index(self, value, start=..., stop=..., /)", owner = "tuple")]
-    fn method_index(&self, vm: &mut VM<'h>, args: &IndexArgs) -> RunResult<Value> {
+    fn method_index(&self, vm: &mut VM<'h>, params: &IndexArgs) -> RunResult<Value> {
         let len = self.get(vm.heap).len();
-        let start_arg = args
+        let start_arg = params
             .start
             .as_ref()
             .map(|start| value_to_i64_bound(start, vm))
             .transpose()?;
-        let end_arg = args
+        let end_arg = params
             .stop
             .as_ref()
             .map(|stop| value_to_i64_bound(stop, vm))
@@ -739,7 +739,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
                 // No further matches possible inside [start, end).
                 break;
             }
-            if idx >= start && args.value.py_eq(item, vm)? {
+            if idx >= start && params.value.py_eq(item, vm)? {
                 return Ok(Value::Int(i64::try_from(idx).expect("index exceeds i64::MAX")));
             }
         }
@@ -1269,10 +1269,10 @@ fn make_from_iterable(
     field_names: Vec<EitherStr>,
     class_id: Option<HeapId>,
     vm: &mut VM<'_>,
-    args: &MakeArgs,
+    params: &MakeArgs,
 ) -> RunResult<Value> {
     let n = field_names.len();
-    let items = collect_iterable(&args.iterable, vm)?;
+    let items = collect_iterable(&params.iterable, vm)?;
     if items.len() != n {
         let got = items.len();
         items.drop_with(vm);

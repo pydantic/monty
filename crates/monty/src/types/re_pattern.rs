@@ -621,14 +621,18 @@ impl HeapItem for RePattern {
 /// extracting multiple string arguments requires careful ordering of borrows.
 /// Supports `count` as either positional or keyword argument.
 #[py_signature("sub(repl, string, count=...)")]
-fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: &PatternSubArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let count = extract_count(args.count.as_ref(), vm)?;
+fn call_pattern_sub<'h>(
+    pattern: &HeapRead<'h, RePattern>,
+    params: &PatternSubArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    let count = extract_count(params.count.as_ref(), vm)?;
 
     // Check that repl is a string — callable replacement is not supported.
     // CPython processes the replacement template *before* its match loop, so
     // this check must precede the negative-count early return below: a bad
     // repl raises even when zero substitutions will run.
-    let Ok(repl) = args.repl.try_to_str(vm) else {
+    let Ok(repl) = params.repl.try_to_str(vm) else {
         return Err(ExcType::type_error(
             "callable replacement is not yet supported in re.sub()",
         ));
@@ -640,11 +644,11 @@ fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: &PatternSubArgs
         // The subject is still type-checked (`try_to_str` raises this method's
         // `expected string, not {t}` wording) before the refcount bump; no
         // need to re-allocate.
-        let _ = args.string.try_to_str(vm)?;
-        return Ok(args.string.clone_with_heap(vm.heap));
+        let _ = params.string.try_to_str(vm)?;
+        return Ok(params.string.clone_with_heap(vm.heap));
     };
 
-    let text = args.string.try_to_str(vm)?;
+    let text = params.string.try_to_str(vm)?;
     pattern.get(vm.heap).sub(repl, text, count, vm.heap)
 }
 
@@ -654,11 +658,11 @@ fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: &PatternSubArgs
 #[py_signature("split(string, maxsplit=...)")]
 fn call_pattern_split<'h>(
     pattern: &HeapRead<'h, RePattern>,
-    args: &PatternSplitArgs,
+    params: &PatternSplitArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let maxsplit = extract_maxsplit(args.maxsplit.as_ref(), vm)?;
-    let text = args.string.try_to_str(vm)?.to_owned();
+    let maxsplit = extract_maxsplit(params.maxsplit.as_ref(), vm)?;
+    let text = params.string.try_to_str(vm)?.to_owned();
     pattern.get(vm.heap).split(&text, maxsplit, vm.heap)
 }
 

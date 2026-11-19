@@ -16,8 +16,8 @@ use crate::{
 /// Checks whether a class inherits from a class, or from any of a tuple or
 /// union of classes.
 #[py_signature("issubclass(cls, classinfo, /)")]
-pub fn builtin_issubclass(vm: &mut VM<'_>, args: &IssubclassArgs) -> RunResult<Value> {
-    issubclass_check(&args.cls, &args.classinfo, vm).map(Value::Bool)
+pub fn builtin_issubclass(vm: &mut VM<'_>, params: &IssubclassArgs) -> RunResult<Value> {
+    issubclass_check(&params.cls, &params.classinfo, vm).map(Value::Bool)
 }
 
 /// Whether `cls` is `classinfo`, a subclass of it, or of any member of a tuple

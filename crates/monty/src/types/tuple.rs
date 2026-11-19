@@ -124,8 +124,8 @@ impl Tuple {
     /// - `tuple()` with no args returns an empty tuple (singleton)
     /// - `tuple(iterable)` creates a tuple from any iterable (list, tuple, range, str, bytes, dict)
     #[py_signature("tuple(iterable=..., /)", bind = owned)]
-    pub fn init(vm: &mut VM<'_>, args: TupleArgs) -> RunResult<Value> {
-        let TupleArgs { iterable: value } = args;
+    pub fn init(vm: &mut VM<'_>, params: TupleArgs) -> RunResult<Value> {
+        let TupleArgs { iterable: value } = params;
         match value {
             None => {
                 // Use empty tuple singleton
@@ -559,14 +559,14 @@ impl HeapItem for Tuple {
 /// Returns the index of the first occurrence of value.
 /// Raises ValueError if the value is not found.
 #[py_signature("index(self, value, start=..., stop=..., /)", owner = "tuple")]
-fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, args: &IndexArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, params: &IndexArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = tuple.get(vm.heap).as_slice().len();
-    let start_arg = args
+    let start_arg = params
         .start
         .as_ref()
         .map(|start| value_to_i64_bound(start, vm))
         .transpose()?;
-    let end_arg = args
+    let end_arg = params
         .stop
         .as_ref()
         .map(|stop| value_to_i64_bound(stop, vm))
@@ -586,7 +586,7 @@ fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, args: &IndexArgs, vm: &mut VM<'h
             // No further matches possible inside [start, end).
             break;
         }
-        if args.value.py_eq(item, vm)? {
+        if params.value.py_eq(item, vm)? {
             let idx_i64 = i64::try_from(idx).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx_i64));
         }
@@ -599,12 +599,12 @@ fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, args: &IndexArgs, vm: &mut VM<'h
 ///
 /// Returns the number of occurrences of value in the tuple.
 #[py_signature("count(self, value, /)", owner = "tuple")]
-fn tuple_count<'h>(tuple: &HeapRead<'h, Tuple>, args: &TupleCountArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+fn tuple_count<'h>(tuple: &HeapRead<'h, Tuple>, params: &TupleCountArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let mut count = 0usize;
     let iter = tuple.iter(vm)?;
     defer_drop_mut!(iter, vm);
     while let Some(item) = iter.next(vm)? {
-        if args.value.py_eq(item, vm)? {
+        if params.value.py_eq(item, vm)? {
             count += 1;
         }
     }

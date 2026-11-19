@@ -60,11 +60,11 @@ impl Slice {
     ///
     /// Each argument can be None to indicate "use default".
     #[py_signature("slice(start, stop=..., step=..., /)")]
-    pub fn init(vm: &mut VM<'_>, args: &SliceArgs) -> RunResult<Value> {
-        let first = value_to_option_i64(&args.start, vm)?;
-        let slice = if let Some(stop) = &args.stop {
+    pub fn init(vm: &mut VM<'_>, params: &SliceArgs) -> RunResult<Value> {
+        let first = value_to_option_i64(&params.start, vm)?;
+        let slice = if let Some(stop) = &params.stop {
             let stop = value_to_option_i64(stop, vm)?;
-            let step = args
+            let step = params
                 .step
                 .as_ref()
                 .map(|step| value_to_option_i64(step, vm))

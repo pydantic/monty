@@ -105,8 +105,8 @@ pub(super) fn call(vm: &mut VM<'_>, function: UnicodedataFunctions, args: ArgVal
 /// Returns e.g. `"Lu"` (uppercase letter), `"Nd"` (decimal digit), or `"Cn"`
 /// for unassigned code points.
 #[py_signature("category(chr, /)")]
-fn uni_category(vm: &mut VM<'_>, args: &CategoryArgs) -> RunResult<Value> {
-    let c = single_char(&args.chr, "category", None, vm)?;
+fn uni_category(vm: &mut VM<'_>, params: &CategoryArgs) -> RunResult<Value> {
+    let c = single_char(&params.chr, "category", None, vm)?;
     Ok(allocate_string(category_abbrev(get_general_category(c)), vm.heap))
 }
 
@@ -123,11 +123,11 @@ fn uni_category(vm: &mut VM<'_>, args: &CategoryArgs) -> RunResult<Value> {
 /// `FromArgs` equivalent); `default` is any object returned verbatim when the
 /// character has no name.
 #[py_signature("name(chr, default=..., /)", kwarg_error_name = "unicodedata.name", bind = owned)]
-fn uni_name(vm: &mut VM<'_>, args: NameArgs) -> RunResult<Value> {
+fn uni_name(vm: &mut VM<'_>, params: NameArgs) -> RunResult<Value> {
     let NameArgs {
         chr: chr_val,
         default: default_val,
-    } = args;
+    } = params;
     defer_drop!(chr_val, vm);
     let mut default_guard = DropGuard::new(default_val, vm);
     let vm = default_guard.ctx();
@@ -147,8 +147,8 @@ fn uni_name(vm: &mut VM<'_>, args: NameArgs) -> RunResult<Value> {
 /// Raises `KeyError("undefined character name '<name>'")` when no character has
 /// that name. Unlike CPython, named sequences are not resolved.
 #[py_signature("lookup(name, /)")]
-fn uni_lookup(vm: &mut VM<'_>, args: &LookupArgs) -> RunResult<Value> {
-    let name = args.name.try_to_str(vm)?;
+fn uni_lookup(vm: &mut VM<'_>, params: &LookupArgs) -> RunResult<Value> {
+    let name = params.name.try_to_str(vm)?;
     match unicode_names2::character(name) {
         Some(c) => Ok(allocate_string(c.to_string(), vm.heap)),
         None => Err(SimpleException::new_msg(ExcType::KeyError, format!("undefined character name '{name}'")).into()),
@@ -159,8 +159,8 @@ fn uni_lookup(vm: &mut VM<'_>, args: &LookupArgs) -> RunResult<Value> {
 ///
 /// Returns `0` for characters with no combining class (the common case).
 #[py_signature("combining(chr, /)")]
-fn uni_combining(vm: &mut VM<'_>, args: &CombiningArgs) -> RunResult<Value> {
-    let c = single_char(&args.chr, "combining", None, vm)?;
+fn uni_combining(vm: &mut VM<'_>, params: &CombiningArgs) -> RunResult<Value> {
+    let c = single_char(&params.chr, "combining", None, vm)?;
     Ok(Value::Int(i64::from(canonical_combining_class(c))))
 }
 
@@ -179,9 +179,9 @@ fn uni_combining(vm: &mut VM<'_>, args: &CombiningArgs) -> RunResult<Value> {
     bad_arg,
     kwarg_error_name = "unicodedata.normalize"
 )]
-fn uni_normalize(vm: &mut VM<'_>, args: &NormalizeArgs) -> RunResult<Value> {
-    let form = NormForm::parse(args.form.as_str(vm))?;
-    normalize_with(form, args.unistr.as_str(vm), vm.heap)
+fn uni_normalize(vm: &mut VM<'_>, params: &NormalizeArgs) -> RunResult<Value> {
+    let form = NormForm::parse(params.form.as_str(vm))?;
+    normalize_with(form, params.unistr.as_str(vm), vm.heap)
 }
 
 /// `unicodedata.is_normalized(form, unistr)` — whether a string is already normalized.
@@ -190,12 +190,12 @@ fn uni_normalize(vm: &mut VM<'_>, args: &NormalizeArgs) -> RunResult<Value> {
     bad_arg,
     kwarg_error_name = "unicodedata.is_normalized"
 )]
-fn uni_is_normalized(vm: &mut VM<'_>, args: &IsNormalizedArgs) -> RunResult<Value> {
-    let normalized = match NormForm::parse(args.form.as_str(vm))? {
-        NormForm::Nfc => unicode_normalization::is_nfc(args.unistr.as_str(vm)),
-        NormForm::Nfd => unicode_normalization::is_nfd(args.unistr.as_str(vm)),
-        NormForm::Nfkc => unicode_normalization::is_nfkc(args.unistr.as_str(vm)),
-        NormForm::Nfkd => unicode_normalization::is_nfkd(args.unistr.as_str(vm)),
+fn uni_is_normalized(vm: &mut VM<'_>, params: &IsNormalizedArgs) -> RunResult<Value> {
+    let normalized = match NormForm::parse(params.form.as_str(vm))? {
+        NormForm::Nfc => unicode_normalization::is_nfc(params.unistr.as_str(vm)),
+        NormForm::Nfd => unicode_normalization::is_nfd(params.unistr.as_str(vm)),
+        NormForm::Nfkc => unicode_normalization::is_nfkc(params.unistr.as_str(vm)),
+        NormForm::Nfkd => unicode_normalization::is_nfkd(params.unistr.as_str(vm)),
     };
     Ok(Value::Bool(normalized))
 }

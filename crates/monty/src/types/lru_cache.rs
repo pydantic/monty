@@ -184,8 +184,8 @@ struct CallArgs;
 /// function, so this shape is what its arity errors describe; Monty keeps the
 /// settings on a function-less wrapper instead.
 #[py_signature("decorating_function(user_function)", error_name = "lru_cache.<locals>.decorating_function", bind = owned)]
-fn decorate(maxsize: Option<u64>, typed: bool, args: DecoratingFunctionArgs, vm: &mut VM<'_>) -> RunResult<Value> {
-    let DecoratingFunctionArgs { user_function } = args;
+fn decorate(maxsize: Option<u64>, typed: bool, params: DecoratingFunctionArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let DecoratingFunctionArgs { user_function } = params;
     allocate(Some(user_function), maxsize, typed, vm)
 }
 
@@ -210,8 +210,8 @@ pub(crate) fn bad_maxsize_error() -> RunError {
 
 /// Private native entry for storing a successful frozen call's result.
 #[py_signature("store(cache, key, value, /)", bind = owned)]
-pub(crate) fn call_store(args: StoreArgs, vm: &mut VM<'_>) -> RunResult<Value> {
-    let StoreArgs { cache, key, value } = args;
+pub(crate) fn call_store(params: StoreArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let StoreArgs { cache, key, value } = params;
     defer_drop!(cache, vm);
     defer_drop!(value, vm);
     store_result(cache, key, value, vm)?;

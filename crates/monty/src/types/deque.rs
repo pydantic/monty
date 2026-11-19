@@ -842,12 +842,12 @@ fn call_deque_method<'h>(
 
 /// `deque.rotate([n=1])` — rotates right by `n` (left if negative), wrapping.
 #[py_signature("rotate(n=1, /)")]
-fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, args: &RotateArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, params: &RotateArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     // A big int is a valid rotation count; only one out of `i64` range is an
     // `OverflowError`, matching CPython's `PyNumber_AsSsize_t`.
-    let n = match read_ssize(&args.n, vm, ExcType::overflow_c_ssize_t) {
+    let n = match read_ssize(&params.n, vm, ExcType::overflow_c_ssize_t) {
         Some(res) => res?,
-        None => return Err(ExcType::type_error_not_an_integer(&args.n.py_type_name(vm))),
+        None => return Err(ExcType::type_error_not_an_integer(&params.n.py_type_name(vm))),
     };
     let this = deque.get_mut(vm.heap);
     let len = this.items.len();
@@ -867,11 +867,11 @@ fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, args: &RotateArgs, vm: &mut VM<'h>
 
 /// `deque.insert(i, x)` — raises if the deque is already at `maxlen`.
 #[py_signature("insert(index, item, /)", bind = owned)]
-fn insert<'h>(deque: &HeapReadMut<'h, Deque>, args: InsertArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+fn insert<'h>(deque: &HeapReadMut<'h, Deque>, params: InsertArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let InsertArgs {
         index: index_value,
         item,
-    } = args;
+    } = params;
     defer_drop!(index_value, vm);
     // Every failing branch below releases `item` through the guard. The insert
     // at the end takes it back out.
@@ -911,7 +911,7 @@ fn insert<'h>(deque: &HeapReadMut<'h, Deque>, args: InsertArgs, vm: &mut VM<'h>)
 
 /// `deque.remove(x)` — removes the first item equal to `x`.
 #[py_signature("remove(self, value, /)", owner = "deque")]
-fn remove<'h>(deque: &HeapReadMut<'h, Deque>, args: &DequeRemoveArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+fn remove<'h>(deque: &HeapReadMut<'h, Deque>, params: &DequeRemoveArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let (len, start_state) = {
         let this = deque.get(vm.heap);
         (this.len(), this.state())
@@ -919,7 +919,7 @@ fn remove<'h>(deque: &HeapReadMut<'h, Deque>, args: &DequeRemoveArgs, vm: &mut V
     for i in 0..len {
         let item = deque.get(vm.heap).items[i].clone_with_heap(vm.heap);
         defer_drop!(item, vm);
-        let eq = item.py_eq(&args.value, vm)?;
+        let eq = item.py_eq(&params.value, vm)?;
         // CPython checks for mutation by the user `__eq__` before acting on the
         // comparison — even a matching one — and quirkily raises IndexError here.
         if deque.get(vm.heap).state() != start_state {
@@ -940,13 +940,13 @@ fn remove<'h>(deque: &HeapReadMut<'h, Deque>, args: &DequeRemoveArgs, vm: &mut V
 
 /// `deque.index(x[, start[, stop]])` — index of the first item equal to `x`.
 #[py_signature("index(value, start=..., stop=..., /)")]
-fn index<'h>(deque: &HeapRead<'h, Deque>, args: &IndexArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+fn index<'h>(deque: &HeapRead<'h, Deque>, params: &IndexArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     // Both bounds are coerced before the length is read, because coercion can run a
     // user `__index__` that mutates this deque. Reading the length first would
     // resolve a negative bound against a stale size and let the walk below index
     // past the end of a shortened deque, which panics.
-    let start_arg = coerce_bound(args.start.as_ref(), vm)?;
-    let stop_arg = coerce_bound(args.stop.as_ref(), vm)?;
+    let start_arg = coerce_bound(params.start.as_ref(), vm)?;
+    let stop_arg = coerce_bound(params.stop.as_ref(), vm)?;
 
     let len = deque.get(vm.heap).len();
     let start = start_arg.map_or(0, |i| normalize_sequence_index(i, len));
@@ -956,7 +956,7 @@ fn index<'h>(deque: &HeapRead<'h, Deque>, args: &IndexArgs, vm: &mut VM<'h>) -> 
     for i in start..stop {
         let item = deque.get(vm.heap).items[i].clone_with_heap(vm.heap);
         defer_drop!(item, vm);
-        if item.py_eq(&args.value, vm)? {
+        if item.py_eq(&params.value, vm)? {
             return Ok(Value::Int(i64::try_from(i).expect("index fits in i64")));
         }
         // A user `__eq__` mutating the deque invalidates the walk; CPython
@@ -970,7 +970,7 @@ fn index<'h>(deque: &HeapRead<'h, Deque>, args: &IndexArgs, vm: &mut VM<'h>) -> 
 
 /// `deque.count(x)` — number of items equal to `x`.
 #[py_signature("count(self, value, /)", owner = "deque")]
-fn count<'h>(deque: &HeapRead<'h, Deque>, args: &DequeCountArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+fn count<'h>(deque: &HeapRead<'h, Deque>, params: &DequeCountArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let (len, start_state) = {
         let this = deque.get(vm.heap);
         (this.len(), this.state())
@@ -979,7 +979,7 @@ fn count<'h>(deque: &HeapRead<'h, Deque>, args: &DequeCountArgs, vm: &mut VM<'h>
     for i in 0..len {
         let item = deque.get(vm.heap).items[i].clone_with_heap(vm.heap);
         defer_drop!(item, vm);
-        if item.py_eq(&args.value, vm)? {
+        if item.py_eq(&params.value, vm)? {
             total += 1;
         }
         // A user `__eq__` mutating the deque invalidates the walk; CPython

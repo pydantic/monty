@@ -29,17 +29,21 @@ use crate::{
 /// hasattr(42, 'nonexistent')    # False - int has no such attribute
 /// ```
 #[py_signature("hasattr(object, name, /)")]
-pub fn builtin_hasattr(vm: &mut VM<'_>, args: &HasattrArgs) -> RunResult<CallResult> {
-    let Some(name) = args.name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
+pub fn builtin_hasattr(vm: &mut VM<'_>, params: &HasattrArgs) -> RunResult<CallResult> {
+    let Some(name) = params
+        .name
+        .as_either_str(vm.heap)
+        .map(|s| s.resolve_interned(vm.interns))
+    else {
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
-            format!("attribute name must be string, not '{}'", args.name.py_type_name(vm)),
+            format!("attribute name must be string, not '{}'", params.name.py_type_name(vm)),
         )
         .into());
     };
 
     // important: we must own the returned value if py_get_attr succeeds to drop it
-    let has_attr = match args.object.py_getattr(&name, vm) {
+    let has_attr = match params.object.py_getattr(&name, vm) {
         Ok(CallResult::Value(value)) => {
             value.drop_with(vm);
             true

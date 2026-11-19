@@ -11,8 +11,8 @@ use crate::{
 
 /// Returns the character at an `__index__`-compatible Unicode code point.
 #[py_signature("chr(i, /)")]
-pub fn builtin_chr(vm: &mut VM<'_>, args: &ChrArgs) -> RunResult<Value> {
-    let index = args.i.saturating_index(vm)?;
+pub fn builtin_chr(vm: &mut VM<'_>, params: &ChrArgs) -> RunResult<Value> {
+    let index = params.i.saturating_index(vm)?;
     if let Some(c) = u32::try_from(index).ok().and_then(char::from_u32) {
         Ok(allocate_char(c))
     } else {

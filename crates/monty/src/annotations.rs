@@ -198,12 +198,17 @@ pub(crate) fn class_namespace_copy(class_id: HeapId, vm: &mut VM<'_>) -> RunResu
 /// Frozen helper: calls `annotate(format)` under `classdict` for `owner`, with
 /// unresolved names handled per `fake` (see [`missing_names`]).
 #[py_signature("call_annotate(annotate, classdict, format, fake, owner, is_class, /)")]
-pub(crate) fn call_annotate_helper(args: &CallAnnotateArgs, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    let Value::Int(format) = args.format else {
+pub(crate) fn call_annotate_helper(params: &CallAnnotateArgs, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    let Value::Int(format) = params.format else {
         unreachable!("frozen code passes the format as an int")
     };
-    let missing = missing_names(&args.fake, &args.owner, matches!(&args.is_class, Value::Bool(true)), vm);
-    vm.call_annotate(&args.annotate, format, args.classdict.ref_id(), missing)
+    let missing = missing_names(
+        &params.fake,
+        &params.owner,
+        matches!(&params.is_class, Value::Bool(true)),
+        vm,
+    );
+    vm.call_annotate(&params.annotate, format, params.classdict.ref_id(), missing)
 }
 
 /// What an unresolved name loads as while an `__annotate__` function runs, from
@@ -228,12 +233,12 @@ fn missing_names(fake: &Value, owner: &Value, is_class: bool, vm: &VM<'_>) -> Mi
 /// Frozen helper: caches a class's evaluated annotations under
 /// `__annotations_cache__`, rejecting a non-dict as CPython's `type.__annotations__` does.
 #[py_signature("cache(cls, annotations, /)")]
-pub(crate) fn cache_class_annotations_helper(args: &CacheArgs, vm: &mut VM<'_>) -> RunResult<Value> {
-    let Value::Ref(class_id) = &args.cls else {
+pub(crate) fn cache_class_annotations_helper(params: &CacheArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let Value::Ref(class_id) = &params.cls else {
         unreachable!("frozen code passes the class")
     };
-    if !matches!(&args.annotations, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_))) {
-        let type_name = args.annotations.py_type_name(vm);
+    if !matches!(&params.annotations, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_))) {
+        let type_name = params.annotations.py_type_name(vm);
         return Err(ExcType::type_error(format!(
             "__annotate__ returned non-dict of type '{type_name}'"
         )));
@@ -241,7 +246,7 @@ pub(crate) fn cache_class_annotations_helper(args: &CacheArgs, vm: &mut VM<'_>) 
     set_class_attr(
         *class_id,
         StaticStrings::DunderAnnotationsCache,
-        args.annotations.clone_with_heap(vm),
+        params.annotations.clone_with_heap(vm),
         vm,
     )?;
     Ok(Value::None)

@@ -32,8 +32,8 @@ use crate::{
 /// filter(None, [0, 1, False, True, ''])   # [1, True]
 /// ```
 #[py_signature("filter(function, iterable, /)")]
-pub fn builtin_filter(vm: &mut VM<'_>, args: &FilterArgs) -> RunResult<Value> {
-    let iter = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
+pub fn builtin_filter(vm: &mut VM<'_>, params: &FilterArgs) -> RunResult<Value> {
+    let iter = params.iterable.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 
@@ -44,11 +44,11 @@ pub fn builtin_filter(vm: &mut VM<'_>, args: &FilterArgs) -> RunResult<Value> {
     while let Some(item) = iter.py_next(vm)? {
         let mut item_guard = DropGuard::new(item, vm);
         let (item, vm) = item_guard.as_parts_mut();
-        let should_include = if matches!(args.function, Value::None) {
+        let should_include = if matches!(params.function, Value::None) {
             // No predicate - use truthiness of element
             item.py_bool(vm)?
         } else {
-            call_predicate(&args.function, item, vm)?
+            call_predicate(&params.function, item, vm)?
         };
 
         if should_include {

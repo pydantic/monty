@@ -590,8 +590,8 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     /// operations. The buffer holds the full file content; further reads
     /// slice it in pure Monty.
     #[py_signature("read(self, size=..., /)")]
-    fn read(&mut self, vm: &mut VM<'h>, args: &ReadArgs) -> RunResult<CallResult> {
-        let spec = parse_read_size_arg(args.size.as_ref(), vm)?;
+    fn read(&mut self, vm: &mut VM<'h>, params: &ReadArgs) -> RunResult<CallResult> {
+        let spec = parse_read_size_arg(params.size.as_ref(), vm)?;
         if matches!(spec, ReadSpec::Size(0)) {
             // `read(0)`: empty result without any OS call, position unchanged.
             // Open/readable checks still happen to match CPython's error order.
@@ -777,9 +777,9 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     /// As with [`Self::read`], the first OS-call argument is the file object
     /// itself, delivered to the host as a `MontyNode::FileHandle`.
     #[py_signature("write(self, data, /)")]
-    fn write(&mut self, vm: &mut VM<'h>, args: &WriteArgs) -> RunResult<CallResult> {
+    fn write(&mut self, vm: &mut VM<'h>, params: &WriteArgs) -> RunResult<CallResult> {
         let binary = self.get(vm.heap).mode.is_binary();
-        validate_write_data(&args.data, binary, vm)?;
+        validate_write_data(&params.data, binary, vm)?;
         self.check_writable(vm)?;
         // Extract the data payload into an owned `String` / `Vec<u8>` so the
         // OS-call args struct can own it across the snapshot/resume boundary.
@@ -787,10 +787,10 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         // bytes vs str.
         let payload = if binary {
             let bytes =
-                extract_bytes_payload(&args.data, vm).expect("validate_write_data accepted a bytes-shaped value");
+                extract_bytes_payload(&params.data, vm).expect("validate_write_data accepted a bytes-shaped value");
             WritePayload::Bytes(bytes)
         } else {
-            let text = extract_str_payload(&args.data, vm).expect("validate_write_data accepted a str-shaped value");
+            let text = extract_str_payload(&params.data, vm).expect("validate_write_data accepted a str-shaped value");
             WritePayload::Text(text)
         };
         self.dispatch_write(vm, payload, false)
@@ -1740,9 +1740,9 @@ fn populate_buffer_meta<'h>(file: &HeapReadMut<'h, OpenFile>, vm: &mut VM<'h>) -
 /// `whence` outside `{0, 1, 2}` is deferred to `compute_slice` so the error
 /// matches CPython's `invalid whence` message.
 #[py_signature("seek(offset, whence=..., /)")]
-fn parse_seek_args(args: &SeekArgs, vm: &mut VM<'_>) -> RunResult<(i64, i64)> {
-    let offset_int = args.offset.as_int(vm)?;
-    let whence_int = match &args.whence {
+fn parse_seek_args(params: &SeekArgs, vm: &mut VM<'_>) -> RunResult<(i64, i64)> {
+    let offset_int = params.offset.as_int(vm)?;
+    let whence_int = match &params.whence {
         Some(w) => w.as_int(vm)?,
         None => 0,
     };

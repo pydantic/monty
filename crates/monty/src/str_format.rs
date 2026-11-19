@@ -20,8 +20,8 @@ const MAX_FORMAT_RECURSION: u8 = 2;
 
 /// Renders a runtime format string with positional and keyword arguments.
 #[py_signature("format(*positional, **keywords)", bind = owned)]
-pub(crate) fn str_format(template: &str, args: FormatCallArgs, vm: &mut VM<'_>) -> RunResult<Value> {
-    let FormatCallArgs { positional, keywords } = args;
+pub(crate) fn str_format(template: &str, params: FormatCallArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let FormatCallArgs { positional, keywords } = params;
     let keywords = match keywords {
         KwargsValues::Pairs(keywords) => keywords,
         other => other.into_iter().collect(),

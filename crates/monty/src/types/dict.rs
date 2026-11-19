@@ -1770,8 +1770,8 @@ fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> Run
 }
 
 #[py_signature("get(key, default=None, /)", kwarg_error_name = "dict.get", bind = owned)]
-fn dict_get_method<'h>(dict: &HeapObjectRead<'h, Dict>, args: GetArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let GetArgs { key, default } = args;
+fn dict_get_method<'h>(dict: &HeapObjectRead<'h, Dict>, params: GetArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let GetArgs { key, default } = params;
     let mut pending = DropGuard::new((key, default), vm);
     let ((key, _), vm) = pending.as_parts();
     if let Some(value) = dict.dict_get(key, vm)? {
@@ -1784,25 +1784,25 @@ fn dict_get_method<'h>(dict: &HeapObjectRead<'h, Dict>, args: GetArgs, vm: &mut 
 }
 
 #[py_signature("pop(key, default=..., /)", kwarg_error_name = "dict.pop", bind = mut)]
-fn dict_pop<'h>(dict: &HeapObjectRead<'h, Dict>, args: &mut PopArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+fn dict_pop<'h>(dict: &HeapObjectRead<'h, Dict>, params: &mut PopArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     // CPython skips hashing the key when the dictionary is empty.
     if !dict.get(vm.heap).is_empty()
-        && let Some((old_key, value)) = dict.pop(&args.key, vm)?
+        && let Some((old_key, value)) = dict.pop(&params.key, vm)?
     {
         old_key.drop_with(vm);
         Ok(value)
     } else {
-        args.default.take().ok_or_else(|| ExcType::key_error(&args.key, vm))
+        params.default.take().ok_or_else(|| ExcType::key_error(&params.key, vm))
     }
 }
 
 #[py_signature("update(self, other=..., /, **kwargs) -> None", bind = mut)]
-fn dict_update<'h>(dict: &HeapReadMut<'h, Dict>, args: &mut UpdateArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    if let Some(other) = args.other.take() {
+fn dict_update<'h>(dict: &HeapReadMut<'h, Dict>, params: &mut UpdateArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    if let Some(other) = params.other.take() {
         dict.merge_from_value(other, vm)?;
     }
-    if !matches!(args.kwargs, KwargsValues::Empty) {
-        dict.merge_from_kwargs(mem::replace(&mut args.kwargs, KwargsValues::Empty), vm)?;
+    if !matches!(params.kwargs, KwargsValues::Empty) {
+        dict.merge_from_kwargs(mem::replace(&mut params.kwargs, KwargsValues::Empty), vm)?;
     }
     Ok(Value::None)
 }
@@ -1943,8 +1943,8 @@ fn dict_merge_from_kwargs(dict: &mut Dict, kwargs: KwargsValues, vm: &mut VM<'_>
 /// If key is in the dict, return its value.
 /// If not, insert key with a value of default (or None) and return default.
 #[py_signature("setdefault(key, default=None, /)", kwarg_error_name = "dict.setdefault", bind = owned)]
-fn dict_setdefault<'h>(dict: &HeapReadMut<'h, Dict>, args: SetdefaultArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let SetdefaultArgs { key, default } = args;
+fn dict_setdefault<'h>(dict: &HeapReadMut<'h, Dict>, params: SetdefaultArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let SetdefaultArgs { key, default } = params;
     // Hashing/equality can raise before either argument is stored.
     let mut pending = DropGuard::new((key, default), vm);
     let ((key, _), vm) = pending.as_parts();
@@ -2041,8 +2041,8 @@ pub(crate) fn dict_class_method(
 /// dict.fromkeys(['a', 'b'], 0)    # {'a': 0, 'b': 0}
 /// ```
 #[py_signature("fromkeys(iterable, value=..., /)")]
-pub fn dict_fromkeys(args: &FromkeysArgs, kind: DictKind, vm: &mut VM<'_>) -> RunResult<Value> {
-    let iter = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
+pub fn dict_fromkeys(params: &FromkeysArgs, kind: DictKind, vm: &mut VM<'_>) -> RunResult<Value> {
+    let iter = params.iterable.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 
@@ -2053,7 +2053,7 @@ pub fn dict_fromkeys(args: &FromkeysArgs, kind: DictKind, vm: &mut VM<'_>) -> Ru
         let (dict, vm) = dict_guard.as_parts_mut();
 
         while let Some(key) = iter.py_next(vm)? {
-            let value = args
+            let value = params
                 .value
                 .as_ref()
                 .map_or(Value::None, |value| value.clone_with_heap(vm));

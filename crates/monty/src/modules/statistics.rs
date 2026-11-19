@@ -128,8 +128,8 @@ data_args!(MeanArgs, "mean");
 
 /// `fmean(data, weights=None)`: the mean as a float, through `math.fsum` / `math.sumprod` as CPython computes it.
 #[py_signature("fmean(data, weights=None)", bind = owned)]
-fn fmean(vm: &mut VM<'_>, args: FmeanArgs) -> RunResult<Value> {
-    let FmeanArgs { data, weights } = args;
+fn fmean(vm: &mut VM<'_>, params: FmeanArgs) -> RunResult<Value> {
+    let FmeanArgs { data, weights } = params;
     if matches!(weights, Value::None) {
         // CPython divides `fsum(data)` by `len(data)` when there is one, and otherwise counts the items.
         let (data, n) = if let Some(n) = data.py_len(vm) {
@@ -411,13 +411,18 @@ fn sorted_items(data: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
 /// Follows CPython's order: `n < 1` is an ordinary comparison, a single datum is `data * (n - 1)`, and `method`
 /// is checked before `n` bounds the loop, so each bad argument raises what CPython raises.
 #[py_signature("quantiles(data, *, n=4, method=...)")]
-fn quantiles(vm: &mut VM<'_>, args: &QuantilesArgs) -> RunResult<Value> {
-    if py_lt(&args.n, &Value::Int(1), vm)? {
+fn quantiles(vm: &mut VM<'_>, params: &QuantilesArgs) -> RunResult<Value> {
+    if py_lt(&params.n, &Value::Int(1), vm)? {
         return Err(ExcType::statistics_error("n must be at least 1"));
     }
-    let items = sorted_items(&args.data, vm)?;
+    let items = sorted_items(&params.data, vm)?;
     defer_drop!(items, vm);
-    quantile_values(items, &args.n, args.method.as_ref().unwrap_or(&Value::Undefined), vm)
+    quantile_values(
+        items,
+        &params.n,
+        params.method.as_ref().unwrap_or(&Value::Undefined),
+        vm,
+    )
 }
 
 /// The cut points of sorted `items`, once `n` has passed the `n < 1` check.

@@ -415,8 +415,8 @@ impl HeapItem for ReMatch {
 /// - `m.group(n)` → returns the nth group (integer or named string)
 /// - `m.group(n1, n2, ...)` → returns a tuple of groups
 #[py_signature("group(self, /, *groups)", owner = "re.Match")]
-fn call_group<'h>(m: &HeapRead<'h, ReMatch>, args: &GroupArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    match args.groups.as_slice() {
+fn call_group<'h>(m: &HeapRead<'h, ReMatch>, params: &GroupArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    match params.groups.as_slice() {
         [] => m.get(vm.heap).get_group(0, vm.heap),
         [value] => resolve_group_arg(m.get(vm.heap), value, vm),
         groups => {

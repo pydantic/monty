@@ -102,10 +102,10 @@ pub(crate) fn write_method(target: &Value, vm: &mut VM<'_>) -> RunResult<Option<
 #[py_signature("writerow(self, row, /)", owner = "writer")]
 pub(super) fn writerow<'h>(
     obj: &HeapRead<'h, CsvObject>,
-    args: &WriterWriterowArgs,
+    params: &WriterWriterowArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
-    let items = row_items(&args.row, vm)?;
+    let items = row_items(&params.row, vm)?;
     defer_drop!(items, vm);
     write_fields(obj, items, vm)
 }
@@ -132,7 +132,7 @@ pub(super) fn write_fields<'h>(
 #[py_signature("writerows(self, rows, /)", owner = "writer")]
 pub(super) fn writerows<'h>(
     obj: &HeapRead<'h, CsvObject>,
-    args: &WriterWriterowsArgs,
+    params: &WriterWriterowsArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
     let (target, write, dialect) = parts(obj, vm);
@@ -140,7 +140,7 @@ pub(super) fn writerows<'h>(
     defer_drop!(write, vm);
     let terminator_chars = terminator_chars(&dialect.lineterminator);
     if is_file(target, vm) {
-        let rows: Vec<Value> = collect_owned_iterable(args.rows.clone_with_heap(vm.heap), vm)?;
+        let rows: Vec<Value> = collect_owned_iterable(params.rows.clone_with_heap(vm.heap), vm)?;
         defer_drop!(rows, vm);
         let mut lines = String::new();
         for row in rows {
@@ -155,7 +155,7 @@ pub(super) fn writerows<'h>(
             write_line(target, write, lines, vm).map(discard_write_result)
         }
     } else {
-        let iterator = args.rows.py_iter(vm)?.require_synchronous(vm)?;
+        let iterator = params.rows.py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iterator, vm);
         // One line buffer serves every row, so each costs a single exact-size allocation.
         let mut line = String::new();

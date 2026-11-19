@@ -168,8 +168,8 @@ fn decimal_at<'a>(vm: &'a VM<'_>, id: HeapId) -> &'a Decimal {
 /// `decimal.Decimal(value='0', context=None)`: an exact conversion. The context only
 /// decides whether a malformed string or an `float` raises.
 #[py_signature("Decimal(value=..., context=None)", bind = owned)]
-pub(crate) fn init(vm: &mut VM<'_>, args: DecimalArgs) -> RunResult<Value> {
-    let DecimalArgs { value, context } = args;
+pub(crate) fn init(vm: &mut VM<'_>, params: DecimalArgs) -> RunResult<Value> {
+    let DecimalArgs { value, context } = params;
     defer_drop!(context, vm);
     let ctx_id = context_arg(context, vm);
     let ctx_id = match ctx_id {
@@ -306,8 +306,8 @@ pub(crate) fn class_method(
 
 /// `Decimal.from_float(f)`: exact; an `int` is accepted too.
 #[py_signature("from_float(f, /)", error_name = "Decimal.from_float")]
-pub(crate) fn class_from_float(vm: &mut VM<'_>, args: &FromFloatArgs) -> RunResult<Value> {
-    let decimal = from_float_arg(&args.f, vm)?;
+pub(crate) fn class_from_float(vm: &mut VM<'_>, params: &FromFloatArgs) -> RunResult<Value> {
+    let decimal = from_float_arg(&params.f, vm)?;
     Ok(decimal_value(decimal, vm))
 }
 
@@ -323,8 +323,8 @@ fn from_float_arg(value: &Value, vm: &VM<'_>) -> RunResult<Decimal> {
 
 /// `Decimal.from_number(number)`: an `int`, `float` or `Decimal`, exactly.
 #[py_signature("from_number(number, /)", error_name = "Decimal.from_number", bind = owned)]
-pub(crate) fn class_from_number(vm: &mut VM<'_>, args: DecimalFromNumberArgs) -> RunResult<Value> {
-    let DecimalFromNumberArgs { number: value } = args;
+pub(crate) fn class_from_number(vm: &mut VM<'_>, params: DecimalFromNumberArgs) -> RunResult<Value> {
+    let DecimalFromNumberArgs { number: value } = params;
     if as_decimal(&value, vm).is_some() {
         return Ok(value);
     }

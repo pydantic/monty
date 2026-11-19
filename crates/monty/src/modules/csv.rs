@@ -228,8 +228,8 @@ fn call_writer(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `csv.get_dialect(name)`: one of the built-in dialects.
 #[py_signature("get_dialect(name)")]
-fn call_get_dialect(vm: &mut VM<'_>, args: &GetDialectArgs) -> RunResult<Value> {
-    let dialect = args.name.as_str(vm).and_then(Dialect::by_name);
+fn call_get_dialect(vm: &mut VM<'_>, params: &GetDialectArgs) -> RunResult<Value> {
+    let dialect = params.name.as_str(vm).and_then(Dialect::by_name);
     dialect
         .map(|dialect| CsvObject::Dialect(dialect).allocate(vm))
         .ok_or_else(ExcType::csv_unknown_dialect)
@@ -247,8 +247,8 @@ fn call_list_dialects(vm: &mut VM<'_>) -> RunResult<Value> {
 
 /// `csv.field_size_limit([new_limit])`: reports CPython's default; the limit cannot change.
 #[py_signature("field_size_limit(new_limit=...)")]
-fn call_field_size_limit(vm: &mut VM<'_>, args: &FieldSizeLimitArgs) -> RunResult<Value> {
-    match &args.new_limit {
+fn call_field_size_limit(vm: &mut VM<'_>, params: &FieldSizeLimitArgs) -> RunResult<Value> {
+    match &params.new_limit {
         None => Ok(Value::Int(
             i64::try_from(FIELD_SIZE_LIMIT).expect("the limit fits an int"),
         )),
@@ -261,7 +261,7 @@ fn call_field_size_limit(vm: &mut VM<'_>, args: &FieldSizeLimitArgs) -> RunResul
 
 /// `_csv.Dialect(dialect=None, **fmtparams)`: a resolved dialect object.
 #[py_signature("Dialect(dialect=..., *, delimiter=..., doublequote=..., escapechar=..., lineterminator=..., quotechar=..., quoting=..., skipinitialspace=..., strict=...)", bind = owned)]
-pub(crate) fn dialect_init(vm: &mut VM<'_>, args: DialectArgs) -> RunResult<Value> {
+pub(crate) fn dialect_init(vm: &mut VM<'_>, params: DialectArgs) -> RunResult<Value> {
     let DialectArgs {
         dialect,
         delimiter,
@@ -272,9 +272,9 @@ pub(crate) fn dialect_init(vm: &mut VM<'_>, args: DialectArgs) -> RunResult<Valu
         quoting,
         skipinitialspace,
         strict,
-    } = args;
+    } = params;
     defer_drop!(dialect, vm);
-    let params = FmtParams {
+    let format = FmtParams {
         delimiter,
         doublequote,
         escapechar,
@@ -284,13 +284,13 @@ pub(crate) fn dialect_init(vm: &mut VM<'_>, args: DialectArgs) -> RunResult<Valu
         skipinitialspace,
         strict,
     };
-    let dialect = Dialect::resolve(dialect.as_ref(), params, vm)?;
+    let dialect = Dialect::resolve(dialect.as_ref(), format, vm)?;
     Ok(CsvObject::Dialect(dialect).allocate(vm))
 }
 
 /// Builds a `csv.DictReader`; the wrapped `_csv.reader` gets `f`, `dialect` and the extras.
 #[py_signature("__init__(f, fieldnames=None, restkey=None, restval=None, dialect=..., *args, **kwds)", error_name = "DictReader.__init__", bind = owned)]
-pub(crate) fn dict_reader_init(vm: &mut VM<'_>, args: DictReaderArgs) -> RunResult<Value> {
+pub(crate) fn dict_reader_init(vm: &mut VM<'_>, params: DictReaderArgs) -> RunResult<Value> {
     let DictReaderArgs {
         f,
         fieldnames,
@@ -299,7 +299,7 @@ pub(crate) fn dict_reader_init(vm: &mut VM<'_>, args: DictReaderArgs) -> RunResu
         dialect,
         args,
         kwds,
-    } = args;
+    } = params;
     let dialect = dialect.unwrap_or_else(|| excel_name(vm));
     // Everything is guarded before the first fallible step, so any rejection releases it all.
     let dialect_arg = dialect.clone_with_heap(vm.heap);
@@ -332,7 +332,7 @@ fn forwarded_args(f: Value, dialect: Value, args: Vec<Value>, kwds: KwargsValues
 
 /// Builds a `csv.DictWriter`; the wrapped `_csv.writer` gets `f`, `dialect` and the extras.
 #[py_signature("__init__(f, fieldnames, restval=..., extrasaction=..., dialect=..., *args, **kwds)", error_name = "DictWriter.__init__", bind = owned)]
-pub(crate) fn dict_writer_init(vm: &mut VM<'_>, args: DictWriterArgs) -> RunResult<Value> {
+pub(crate) fn dict_writer_init(vm: &mut VM<'_>, params: DictWriterArgs) -> RunResult<Value> {
     let DictWriterArgs {
         f,
         fieldnames,
@@ -341,7 +341,7 @@ pub(crate) fn dict_writer_init(vm: &mut VM<'_>, args: DictWriterArgs) -> RunResu
         dialect,
         args,
         kwds,
-    } = args;
+    } = params;
     let restval = restval.unwrap_or_else(|| static_str(StaticStrings::EmptyString, vm));
     let extrasaction = extrasaction.unwrap_or_else(|| static_str(StaticStrings::Raise, vm));
     let dialect = dialect.unwrap_or_else(|| excel_name(vm));

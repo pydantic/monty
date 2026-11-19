@@ -249,14 +249,14 @@ pub(crate) fn allocate_micros(total_microseconds: i128, heap: &Heap) -> Value {
 
 /// Creates a `timedelta` from constructor arguments.
 #[py_signature("timedelta(days=0, seconds=0, microseconds=0, milliseconds=0, minutes=0, hours=0, weeks=0)", convert(days = DeltaComponent, seconds = DeltaComponent, microseconds = DeltaComponent, milliseconds = DeltaComponent, minutes = DeltaComponent, hours = DeltaComponent, weeks = DeltaComponent))]
-pub(crate) fn init(vm: &mut VM<'_>, args: &TimedeltaArgs) -> RunResult<Value> {
-    let total_microseconds = checked_component(args.weeks.0, 7 * DAY_MICROSECONDS)?
-        + checked_component(args.days.0, DAY_MICROSECONDS)?
-        + checked_component(args.hours.0, HOUR_MICROSECONDS)?
-        + checked_component(args.minutes.0, MINUTE_MICROSECONDS)?
-        + checked_component(args.seconds.0, MICROSECONDS_PER_SECOND)?
-        + checked_component(args.milliseconds.0, MILLISECONDS_PER_SECOND)?
-        + args.microseconds.0;
+pub(crate) fn init(vm: &mut VM<'_>, params: &TimedeltaArgs) -> RunResult<Value> {
+    let total_microseconds = checked_component(params.weeks.0, 7 * DAY_MICROSECONDS)?
+        + checked_component(params.days.0, DAY_MICROSECONDS)?
+        + checked_component(params.hours.0, HOUR_MICROSECONDS)?
+        + checked_component(params.minutes.0, MINUTE_MICROSECONDS)?
+        + checked_component(params.seconds.0, MICROSECONDS_PER_SECOND)?
+        + checked_component(params.milliseconds.0, MILLISECONDS_PER_SECOND)?
+        + params.microseconds.0;
 
     let delta = from_total_microseconds(total_microseconds)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))))

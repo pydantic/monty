@@ -20,17 +20,21 @@ use crate::{
 /// setattr(obj, 'name', 'foo') # Set obj.name = 'foo'
 /// ```
 #[py_signature("setattr(object, name, value, /)")]
-pub fn builtin_setattr(vm: &mut VM<'_>, args: &SetattrArgs) -> RunResult<Value> {
-    let Some(name) = args.name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
+pub fn builtin_setattr(vm: &mut VM<'_>, params: &SetattrArgs) -> RunResult<Value> {
+    let Some(name) = params
+        .name
+        .as_either_str(vm.heap)
+        .map(|s| s.resolve_interned(vm.interns))
+    else {
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
-            format!("attribute name must be string, not '{}'", args.name.py_type_name(vm)),
+            format!("attribute name must be string, not '{}'", params.name.py_type_name(vm)),
         )
         .into());
     };
 
     // note: py_set_attr takes ownership of the inc-ref'd value and drops it on error
-    args.object.py_set_attr(&name, args.value.clone_with_heap(vm), vm)?;
+    params.object.py_set_attr(&name, params.value.clone_with_heap(vm), vm)?;
 
     Ok(Value::None)
 }

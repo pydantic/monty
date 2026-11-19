@@ -15,16 +15,16 @@ use crate::{
 /// Returns a list with elements in reverse order.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
 #[py_signature("reversed(sequence, /)")]
-pub fn builtin_reversed(vm: &mut VM<'_>, args: &ReversedArgs) -> RunResult<Value> {
+pub fn builtin_reversed(vm: &mut VM<'_>, params: &ReversedArgs) -> RunResult<Value> {
     // Being iterable is not enough: CPython needs `__reversed__`, or
     // `__len__` + `__getitem__`. Check before iterating so unordered and
     // one-shot iterables are rejected rather than silently reversed.
-    if !is_reversible(&args.sequence, vm) {
-        return Err(ExcType::type_error_not_reversible(&args.sequence.py_type_name(vm)));
+    if !is_reversible(&params.sequence, vm) {
+        return Err(ExcType::type_error_not_reversible(&params.sequence.py_type_name(vm)));
     }
 
     // Collect all items
-    let mut items = collect_iterable(&args.sequence, vm)?;
+    let mut items = collect_iterable(&params.sequence, vm)?;
 
     // Reverse in place
     items.reverse();

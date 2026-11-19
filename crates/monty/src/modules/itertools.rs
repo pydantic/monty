@@ -147,8 +147,8 @@ pub(crate) fn construct(type_: Type, vm: &mut VM<'_>, args: ArgValues) -> RunRes
 ///
 /// Argument shape for `count(start=0, step=1)`.
 #[py_signature("count(start=0, step=1)", bind = owned)]
-fn call_count(vm: &mut VM<'_>, args: CountArgs) -> RunResult<Value> {
-    let CountArgs { start, step } = args;
+fn call_count(vm: &mut VM<'_>, params: CountArgs) -> RunResult<Value> {
+    let CountArgs { start, step } = params;
     // CPython's `count_new` runs one `PyNumber_Check` over both arguments after
     // parsing, so a bad `start` and a bad `step` give the same single message.
     // Rejecting here means `py_next` can add without a defined-ness check.
@@ -166,8 +166,8 @@ fn call_count(vm: &mut VM<'_>, args: CountArgs) -> RunResult<Value> {
 ///
 /// Argument shape for `repeat(object, times=?)`.
 #[py_signature("repeat(object, times: i64=...)", bind = owned)]
-fn call_repeat(vm: &mut VM<'_>, args: RepeatArgs) -> RunResult<Value> {
-    let RepeatArgs { object, times } = args;
+fn call_repeat(vm: &mut VM<'_>, params: RepeatArgs) -> RunResult<Value> {
+    let RepeatArgs { object, times } = params;
     let remaining = times.map(|n| usize::try_from(n.max(0)).unwrap_or(usize::MAX));
     let iter = ItertoolsIter::Repeat(Repeat::new(object, remaining));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
@@ -201,10 +201,10 @@ fn normalize_bool(value: Value) -> Value {
 /// Argument shape for `pairwise(iterable)`.
 ///
 #[py_signature("pairwise(iterable, /)")]
-fn call_pairwise(vm: &mut VM<'_>, args: &PairwiseArgs) -> RunResult<Value> {
+fn call_pairwise(vm: &mut VM<'_>, params: &PairwiseArgs) -> RunResult<Value> {
     // Resolve to an iterator up front, as CPython does: a non-iterable raises
     // here rather than on the first `next()`.
-    let source = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
+    let source = params.iterable.py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Pairwise(Pairwise::new(source));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -217,12 +217,12 @@ fn call_pairwise(vm: &mut VM<'_>, args: &PairwiseArgs) -> RunResult<Value> {
 /// are also accepted by keyword and arity counts positionals + keywords
 /// together: `compress([1], [1], data=[1])` reports three arguments.
 #[py_signature("compress(data, selectors)")]
-fn call_compress(vm: &mut VM<'_>, args: &CompressArgs) -> RunResult<Value> {
-    let data = args.data.py_iter(vm)?.require_synchronous(vm)?;
+fn call_compress(vm: &mut VM<'_>, params: &CompressArgs) -> RunResult<Value> {
+    let data = params.data.py_iter(vm)?.require_synchronous(vm)?;
     let mut data_guard = DropGuard::new(data, vm);
     let selectors = {
         let vm = data_guard.ctx();
-        args.selectors.py_iter(vm)?.require_synchronous(vm)?
+        params.selectors.py_iter(vm)?.require_synchronous(vm)?
     };
     let (data, vm) = data_guard.into_parts();
     let iter = ItertoolsIter::Compress(Compress::new(data, selectors));
@@ -235,9 +235,9 @@ fn call_compress(vm: &mut VM<'_>, args: &CompressArgs) -> RunResult<Value> {
 ///
 /// [`islice_bounds`] interprets the trailing positional arguments according to how many were supplied.
 #[py_signature("islice(iterable, first, second=..., third=..., /)")]
-fn call_islice(vm: &mut VM<'_>, args: &IsliceArgs) -> RunResult<Value> {
-    let (start, stop, step) = islice_bounds(&args.first, args.second.as_ref(), args.third.as_ref(), vm)?;
-    let source = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
+fn call_islice(vm: &mut VM<'_>, params: &IsliceArgs) -> RunResult<Value> {
+    let (start, stop, step) = islice_bounds(&params.first, params.second.as_ref(), params.third.as_ref(), vm)?;
+    let source = params.iterable.py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Islice(Islice::new(source, start, stop, step));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -313,8 +313,8 @@ fn islice_index(value: &Value, vm: &mut VM<'_>) -> RunResult<IsliceBound> {
 
 /// `itertools.chain(*iterables)` — each argument's items, back to back.
 #[py_signature("chain(*iterables)", bind = owned)]
-fn call_chain(vm: &mut VM<'_>, args: ChainArgs) -> RunResult<Value> {
-    let ChainArgs { iterables } = args;
+fn call_chain(vm: &mut VM<'_>, params: ChainArgs) -> RunResult<Value> {
+    let ChainArgs { iterables } = params;
     let iterables = iterables.collect();
     // Arguments are NOT resolved here: CPython calls `iter()` on each only as it
     // reaches it, so `chain([1], 5)` constructs and raises mid-consumption.
@@ -327,9 +327,9 @@ fn call_chain(vm: &mut VM<'_>, args: ChainArgs) -> RunResult<Value> {
 /// Argument shape for `cycle(iterable)`.
 ///
 #[py_signature("cycle(iterable, /)")]
-fn call_cycle(vm: &mut VM<'_>, args: &CycleArgs) -> RunResult<Value> {
+fn call_cycle(vm: &mut VM<'_>, params: &CycleArgs) -> RunResult<Value> {
     // Unlike `chain`, CPython resolves eagerly here, so `cycle(5)` raises now.
-    let source = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
+    let source = params.iterable.py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Cycle(Cycle::new(source));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -383,12 +383,12 @@ fn call_starmap(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// The combining function is called only when a second item arrives.
 #[py_signature("accumulate(iterable, func=None, *, initial=None)", bind = owned)]
-fn call_accumulate(vm: &mut VM<'_>, args: AccumulateArgs) -> RunResult<Value> {
+fn call_accumulate(vm: &mut VM<'_>, params: AccumulateArgs) -> RunResult<Value> {
     let AccumulateArgs {
         iterable,
         func,
         initial,
-    } = args;
+    } = params;
     // `func` is held across the resolve so a non-iterable releases it too.
     let (func, source) = match resolve_source(func, iterable, vm) {
         Ok(resolved) => resolved,
@@ -411,10 +411,10 @@ fn call_accumulate(vm: &mut VM<'_>, args: AccumulateArgs) -> RunResult<Value> {
 ///
 /// The body converts `n` and checks that the batch size is positive.
 #[py_signature("batched(iterable, n, *, strict: bool=False)")]
-fn call_batched(vm: &mut VM<'_>, args: &BatchedArgs) -> RunResult<Value> {
-    let size = batched_n(&args.n, vm)?;
-    let source = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
-    let iter = ItertoolsIter::Batched(Batched::new(source, size, args.strict.bool()));
+fn call_batched(vm: &mut VM<'_>, params: &BatchedArgs) -> RunResult<Value> {
+    let size = batched_n(&params.n, vm)?;
+    let source = params.iterable.py_iter(vm)?.require_synchronous(vm)?;
+    let iter = ItertoolsIter::Batched(Batched::new(source, size, params.strict.bool()));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
@@ -445,13 +445,13 @@ fn ssize_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<isize> {
 }
 
 #[py_signature("zip_longest(*iterables, fillvalue=None)", bind = mut)]
-fn call_zip_longest(vm: &mut VM<'_>, args: &mut ZipLongestArgs) -> RunResult<Value> {
-    for slot in &mut args.iterables {
+fn call_zip_longest(vm: &mut VM<'_>, params: &mut ZipLongestArgs) -> RunResult<Value> {
+    for slot in &mut params.iterables {
         let iterable = mem::replace(slot, Value::None);
         *slot = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     }
-    let sources = mem::take(&mut args.iterables);
-    let fillvalue = mem::replace(&mut args.fillvalue, Value::None);
+    let sources = mem::take(&mut params.iterables);
+    let fillvalue = mem::replace(&mut params.fillvalue, Value::None);
     let iter = ItertoolsIter::ZipLongest(ZipLongest::new(sources, fillvalue));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -526,11 +526,11 @@ fn build_combinations(iterable: Value, r: Value, replacement: bool, vm: &mut VM<
 /// Clinic and keyword-capable like [`CombinationsArgs`]. `r` is an `object`
 /// to clinic, so the body inspects it — and only once the pool exists.
 #[py_signature("permutations(iterable, r=None)")]
-fn call_permutations(vm: &mut VM<'_>, args: &PermutationsArgs) -> RunResult<Value> {
-    let pool = collect_iterable(&args.iterable, vm)?;
+fn call_permutations(vm: &mut VM<'_>, params: &PermutationsArgs) -> RunResult<Value> {
+    let pool = collect_iterable(&params.iterable, vm)?;
     let mut pool_guard = DropGuard::new(pool, vm);
     let (pool, vm) = pool_guard.as_parts_mut();
-    let r = permutations_r(&args.r, pool.len(), vm)?;
+    let r = permutations_r(&params.r, pool.len(), vm)?;
     let (pool, vm) = pool_guard.into_parts();
     let iter = ItertoolsIter::Permutations(Box::new(Permutations::new(pool, r)));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
@@ -562,13 +562,13 @@ fn permutations_r(r: &Value, n: usize, vm: &mut VM<'_>) -> RunResult<usize> {
 /// wording for a bad name. `repeat` stays a raw `Value` for the `Py_ssize_t`
 /// conversion in the body.
 #[py_signature("product(*iterables, repeat=1)")]
-fn call_product(vm: &mut VM<'_>, args: &ProductArgs) -> RunResult<Value> {
-    let repeat = usize::try_from(ssize_arg(&args.repeat, vm)?).map_err(|_| ExcType::product_negative_repeat())?;
-    let width = if repeat == 0 { 0 } else { args.iterables.len() };
+fn call_product(vm: &mut VM<'_>, params: &ProductArgs) -> RunResult<Value> {
+    let repeat = usize::try_from(ssize_arg(&params.repeat, vm)?).map_err(|_| ExcType::product_negative_repeat())?;
+    let width = if repeat == 0 { 0 } else { params.iterables.len() };
     let slots = product_slots(width, repeat)?;
 
     let mut pools_guard = DropGuard::new(Vec::with_capacity(width), vm);
-    for iterable in args.iterables.iter().take(width) {
+    for iterable in params.iterables.iter().take(width) {
         let (pools, vm) = pools_guard.as_parts_mut();
         let pool = collect_iterable(iterable, vm)?;
         pools.push(pool);
@@ -617,8 +617,8 @@ fn index_bytes(slots: usize) -> Option<usize> {
 /// type-checked, as CPython discovers a non-callable only when the first
 /// item is keyed.
 #[py_signature("groupby(iterable, key=None)", bind = owned)]
-fn call_groupby(vm: &mut VM<'_>, args: GroupbyArgs) -> RunResult<Value> {
-    let GroupbyArgs { iterable, key } = args;
+fn call_groupby(vm: &mut VM<'_>, params: GroupbyArgs) -> RunResult<Value> {
+    let GroupbyArgs { iterable, key } = params;
     let (key, source) = resolve_source(key, iterable, vm)?;
     let iter = ItertoolsIter::GroupBy(Box::new(GroupBy::new(source, key)));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
@@ -630,19 +630,19 @@ fn call_groupby(vm: &mut VM<'_>, args: GroupbyArgs) -> RunResult<Value> {
 /// `METH_O` in CPython, so keywords are rejected wholesale and the arity
 /// wording is `takes exactly one argument (N given)`.
 #[py_signature("from_iterable(iterable, /)", error_name = "chain.from_iterable", reject_keywords)]
-fn call_chain_from_iterable(vm: &mut VM<'_>, args: &ChainFromIterableArgs) -> RunResult<Value> {
+fn call_chain_from_iterable(vm: &mut VM<'_>, params: &ChainFromIterableArgs) -> RunResult<Value> {
     // The outer iterable is resolved now — `chain.from_iterable(5)` raises
     // here — while its items are resolved one at a time, as `chain`'s
     // arguments are.
-    let outer = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
+    let outer = params.iterable.py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Chain(Chain::from_iterable(outer));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
 /// `itertools.tee(iterable, n=2)` — `n` iterators over one source.
 #[py_signature("tee(iterable, n=..., /)", kwarg_error_name = "itertools.tee")]
-fn call_tee(vm: &mut VM<'_>, args: &TeeArgs) -> RunResult<Value> {
-    let consumers = match &args.n {
+fn call_tee(vm: &mut VM<'_>, params: &TeeArgs) -> RunResult<Value> {
+    let consumers = match &params.n {
         None => 2,
         Some(n) => tee_n(n, vm)?,
     };
@@ -656,7 +656,7 @@ fn call_tee(vm: &mut VM<'_>, args: &TeeArgs) -> RunResult<Value> {
     // Resolved first, then tested: CPython calls `iter()` before it reaches for
     // `__copy__`, so an object whose `__iter__` hands back an existing `_tee`
     // is copied too rather than being drained into a second buffer.
-    let source = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
+    let source = params.iterable.py_iter(vm)?.require_synchronous(vm)?;
     // An existing `_tee` is copied rather than drained, so the copies replay
     // from where it stands — CPython reaches for `__copy__` for the same
     // reason. Anything else becomes the source of a fresh group.

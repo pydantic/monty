@@ -169,8 +169,8 @@ pub(crate) fn getcontext(vm: &mut VM<'_>) -> RunResult<Value> {
 
 /// `decimal.setcontext(context)`.
 #[py_signature("setcontext(context, /)", error_name = "_decimal.setcontext")]
-pub(crate) fn setcontext(vm: &mut VM<'_>, args: &SetcontextArgs) -> RunResult<Value> {
-    let id = as_context(&args.context, vm).ok_or_else(|| ExcType::type_error("argument must be a context"))?;
+pub(crate) fn setcontext(vm: &mut VM<'_>, params: &SetcontextArgs) -> RunResult<Value> {
+    let id = as_context(&params.context, vm).ok_or_else(|| ExcType::type_error("argument must be a context"))?;
     set_current(vm, id);
     Ok(Value::None)
 }
@@ -181,21 +181,21 @@ pub(crate) fn setcontext(vm: &mut VM<'_>, args: &SetcontextArgs) -> RunResult<Va
 #[py_signature(
     "localcontext(ctx=None, *, prec=None, rounding=None, Emin=None, Emax=None, capitals=None, clamp=None, flags=None, traps=None)"
 )]
-pub(crate) fn localcontext(vm: &mut VM<'_>, args: &LocalContextArgs) -> RunResult<Value> {
+pub(crate) fn localcontext(vm: &mut VM<'_>, params: &LocalContextArgs) -> RunResult<Value> {
     let fields = [
-        &args.prec,
-        &args.rounding,
-        &args.Emin,
-        &args.Emax,
-        &args.capitals,
-        &args.clamp,
-        &args.flags,
-        &args.traps,
+        &params.prec,
+        &params.rounding,
+        &params.Emin,
+        &params.Emax,
+        &params.capitals,
+        &params.clamp,
+        &params.flags,
+        &params.traps,
     ];
-    let source = if matches!(args.ctx, Value::None) {
+    let source = if matches!(params.ctx, Value::None) {
         current_context(vm)
     } else {
-        as_context(&args.ctx, vm).ok_or_else(|| ExcType::type_error("optional argument must be a context"))?
+        as_context(&params.ctx, vm).ok_or_else(|| ExcType::type_error("optional argument must be a context"))?
     };
     let mut settings = settings_of(vm, source);
     apply_fields(&mut settings, fields, vm)?;
@@ -209,16 +209,16 @@ pub(crate) fn localcontext(vm: &mut VM<'_>, args: &LocalContextArgs) -> RunResul
 #[py_signature(
     "Context(prec=None, rounding=None, Emin=None, Emax=None, capitals=None, clamp=None, flags=None, traps=None)"
 )]
-pub(crate) fn init(vm: &mut VM<'_>, args: &ContextArgs) -> RunResult<Value> {
+pub(crate) fn init(vm: &mut VM<'_>, params: &ContextArgs) -> RunResult<Value> {
     let fields = [
-        &args.prec,
-        &args.rounding,
-        &args.Emin,
-        &args.Emax,
-        &args.capitals,
-        &args.clamp,
-        &args.flags,
-        &args.traps,
+        &params.prec,
+        &params.rounding,
+        &params.Emin,
+        &params.Emax,
+        &params.capitals,
+        &params.clamp,
+        &params.flags,
+        &params.traps,
     ];
     let default = template_id(vm, Template::Default);
     let mut settings = settings_of(vm, default);
@@ -229,8 +229,8 @@ pub(crate) fn init(vm: &mut VM<'_>, args: &ContextArgs) -> RunResult<Value> {
 
 /// `decimal.IEEEContext(bits)`: the context of an IEEE 754 decimal interchange format.
 #[py_signature("IEEEContext(bits, /)")]
-pub(crate) fn ieee_context(vm: &mut VM<'_>, args: &IeeeContextArgs) -> RunResult<Value> {
-    let bits = match &args.bits {
+pub(crate) fn ieee_context(vm: &mut VM<'_>, params: &IeeeContextArgs) -> RunResult<Value> {
+    let bits = match &params.bits {
         Value::Int(n) => *n,
         Value::Bool(b) => i64::from(*b),
         _ => return Err(ExcType::type_error_integer_required()),

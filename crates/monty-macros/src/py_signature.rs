@@ -143,7 +143,7 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
     let binding = declaration.bind.unwrap_or_default();
     let bound = function.sig.inputs.iter_mut().find_map(|input| {
         let FnArg::Typed(arg) = input else { return None };
-        matches!(arg.pat.as_ref(), Pat::Ident(p) if p.ident == "args").then_some(arg)
+        matches!(arg.pat.as_ref(), Pat::Ident(p) if p.ident == "params").then_some(arg)
     });
     let Some(bound) = bound else {
         if let Some(name) = zero_arg_name(declaration, &def)
@@ -166,7 +166,7 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
                 .insert(0, parse_quote!(__py_args.check_zero_args(#name, vm.heap)?;));
             return Ok(quote!(#function));
         }
-        return Err(error("expected a parameter named args with the bound argument type"));
+        return Err(error("expected `params` to name the bound argument struct"));
     };
     let Pat::Ident(pat) = &*bound.pat else {
         unreachable!("checked the argument pattern")
@@ -201,9 +201,13 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
 }
 
 /// An owned binder has no guard. Require each field to move into a named binding.
-fn validate_owned_arguments(body: &syn::Block, ty: &Ident, args: &Ident) -> syn::Result<()> {
-    let binding = owned_argument_pattern(body, args)
-        .ok_or_else(|| syn::Error::new(args.span(), "destructure the owned arguments at the start of the body"))?;
+fn validate_owned_arguments(body: &syn::Block, ty: &Ident, params: &Ident) -> syn::Result<()> {
+    let binding = owned_argument_pattern(body, params).ok_or_else(|| {
+        syn::Error::new(
+            params.span(),
+            "destructure the owned arguments at the start of the body",
+        )
+    })?;
     if !binding.path.is_ident(ty) {
         return Err(syn::Error::new_spanned(
             &binding.path,

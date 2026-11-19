@@ -12,6 +12,6 @@ use crate::{bytecode::VM, exception_private::RunResult, value::Value};
 /// The binder reports missing parameter names and the maximum positional count.
 /// Keyword calls raise `NotImplementedError` pending support for `mod=`.
 #[py_signature("pow(base, exp, modulus=None)", kwargs_not_supported_yet)]
-pub fn builtin_pow(vm: &mut VM<'_>, args: &PowArgs) -> RunResult<Value> {
-    args.base.py_pow(&args.exp, Some(&args.modulus), vm)
+pub fn builtin_pow(vm: &mut VM<'_>, params: &PowArgs) -> RunResult<Value> {
+    params.base.py_pow(&params.exp, Some(&params.modulus), vm)
 }

@@ -6,9 +6,9 @@ use crate::{bytecode::VM, exception_private::RunResult, types::str::allocate_str
 
 /// Converts an integer or `__index__` result to a hexadecimal string prefixed with `0x`.
 #[py_signature("hex(number: SupportsIndex, /)")]
-pub fn builtin_hex(vm: &mut VM<'_>, args: &HexArgs) -> RunResult<Value> {
+pub fn builtin_hex(vm: &mut VM<'_>, params: &HexArgs) -> RunResult<Value> {
     Ok(allocate_string_no_interning(
-        args.number.view(vm).radix_repr(16, vm),
+        params.number.view(vm).radix_repr(16, vm),
         vm.heap,
     ))
 }

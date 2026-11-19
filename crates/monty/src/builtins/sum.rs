@@ -20,8 +20,8 @@ use crate::{
 /// The default start value is 0. Str and bytes start values are explicitly
 /// rejected, pointing at `''.join(seq)` / `b''.join(seq)` instead.
 #[py_signature("sum(iterable, /, start=0)", bind = owned)]
-pub fn builtin_sum(vm: &mut VM<'_>, args: SumArgs) -> RunResult<Value> {
-    let SumArgs { iterable, start } = args;
+pub fn builtin_sum(vm: &mut VM<'_>, params: SumArgs) -> RunResult<Value> {
+    let SumArgs { iterable, start } = params;
     defer_drop_mut!(start, vm);
 
     let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;

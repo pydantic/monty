@@ -93,11 +93,11 @@ pub(super) fn call(vm: &mut VM<'_>, function: TomllibFunctions, args: ArgValues)
 ///
 /// `parse_float` is currently unsupported.
 #[py_signature("loads(s, /)")]
-fn call_loads(vm: &mut VM<'_>, args: &TomlLoadsArgs) -> RunResult<Value> {
-    let source = args
+fn call_loads(vm: &mut VM<'_>, params: &TomlLoadsArgs) -> RunResult<Value> {
+    let source = params
         .s
         .as_str(vm)
-        .ok_or_else(|| ExcType::toml_loads_type_error(&args.s.py_type_name(vm)))?;
+        .ok_or_else(|| ExcType::toml_loads_type_error(&params.s.py_type_name(vm)))?;
     let table = parse_document(source, &vm.heap.tracker)?;
     value::table_into_value(table, vm)
 }
@@ -112,12 +112,12 @@ fn call_loads(vm: &mut VM<'_>, args: &TomlLoadsArgs) -> RunResult<Value> {
 /// Argument shape for `tomllib.load(fp, /, *, parse_float=float)`; see
 /// [`TomlLoadsArgs`] for why `parse_float` is absent.
 #[py_signature("load(fp, /)")]
-fn call_load(vm: &mut VM<'_>, args: &TomlLoadArgs) -> RunResult<CallResult> {
-    let Value::Ref(file_id) = &args.fp else {
-        return Err(ExcType::attribute_error(args.fp.py_type_name(vm), "read"));
+fn call_load(vm: &mut VM<'_>, params: &TomlLoadArgs) -> RunResult<CallResult> {
+    let Value::Ref(file_id) = &params.fp else {
+        return Err(ExcType::attribute_error(params.fp.py_type_name(vm), "read"));
     };
     let HeapReadOutput::OpenFile(mut file) = vm.heap.read(*file_id) else {
-        return Err(ExcType::attribute_error(args.fp.py_type_name(vm), "read"));
+        return Err(ExcType::attribute_error(params.fp.py_type_name(vm), "read"));
     };
     file.check_readable(vm)?;
     if !file.is_binary(vm) {
@@ -127,7 +127,7 @@ fn call_load(vm: &mut VM<'_>, args: &TomlLoadArgs) -> RunResult<CallResult> {
         let effect = PostConversionEffect::LoadThenCall {
             file_id: *file_id,
             callable: Value::ModuleFunction(ModuleFunctions::Tomllib(TomllibFunctions::Load)),
-            args: ArgValues::One(args.fp.clone_with_heap(vm.heap)),
+            args: ArgValues::One(params.fp.clone_with_heap(vm.heap)),
         };
         Ok(file.buffer_load_call(vm, effect))
     } else {

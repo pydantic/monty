@@ -9,8 +9,8 @@ use crate::{bytecode::VM, defer_drop, exception_private::RunResult, types::PyTra
 /// Returns True if all elements of the iterable are true (or if the iterable is empty).
 /// Short-circuits on the first falsy value.
 #[py_signature("all(iterable, /)")]
-pub fn builtin_all(vm: &mut VM<'_>, args: &AllArgs) -> RunResult<Value> {
-    let iter = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
+pub fn builtin_all(vm: &mut VM<'_>, params: &AllArgs) -> RunResult<Value> {
+    let iter = params.iterable.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 

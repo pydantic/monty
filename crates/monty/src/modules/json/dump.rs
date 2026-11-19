@@ -157,10 +157,10 @@ impl EncoderChecks {
     "dumps(obj, *, skipkeys=False, ensure_ascii=True, allow_nan=True, indent=None, separators=None, default=None, sort_keys=False)",
     kwarg_error_name = "JSONEncoder.__init__"
 )]
-pub(super) fn call_dumps(vm: &mut VM<'_>, args: &DumpsArgs) -> RunResult<Value> {
+pub(super) fn call_dumps(vm: &mut VM<'_>, params: &DumpsArgs) -> RunResult<Value> {
     impl_encoder_config!(DumpsArgs);
-    let config = args.encoder_config(EncoderChecks::for_call(&args.obj, false, vm), vm)?;
-    let output = encode(&args.obj, &config, &args.default, vm)?;
+    let config = params.encoder_config(EncoderChecks::for_call(&params.obj, false, vm), vm)?;
+    let output = encode(&params.obj, &config, &params.default, vm)?;
     Ok(allocate_string(output, vm.heap))
 }
 
@@ -177,22 +177,22 @@ pub(super) fn call_dumps(vm: &mut VM<'_>, args: &DumpsArgs) -> RunResult<Value> 
     "dump(obj, fp, *, skipkeys=False, ensure_ascii=True, allow_nan=True, indent=None, separators=None, default=None, sort_keys=False)",
     kwarg_error_name = "JSONEncoder.__init__"
 )]
-pub(super) fn call_dump(vm: &mut VM<'_>, args: &DumpArgs) -> RunResult<CallResult> {
+pub(super) fn call_dump(vm: &mut VM<'_>, params: &DumpArgs) -> RunResult<CallResult> {
     impl_encoder_config!(DumpArgs);
-    let config = args.encoder_config(EncoderChecks::for_call(&args.obj, true, vm), vm)?;
+    let config = params.encoder_config(EncoderChecks::for_call(&params.obj, true, vm), vm)?;
 
-    let early_target = if is_container(&args.obj, vm) {
-        Some(FileTarget::writer(&args.fp, vm)?)
+    let early_target = if is_container(&params.obj, vm) {
+        Some(FileTarget::writer(&params.fp, vm)?)
     } else {
         None
     };
     // Released if encoding fails, otherwise taken back to write to.
     let mut early_target = DropGuard::new(early_target, vm);
-    let output = encode(&args.obj, &config, &args.default, early_target.ctx())?;
+    let output = encode(&params.obj, &config, &params.default, early_target.ctx())?;
     let (early_target, vm) = early_target.into_parts();
     let target = match early_target {
         Some(target) => target,
-        None => FileTarget::writer(&args.fp, vm)?,
+        None => FileTarget::writer(&params.fp, vm)?,
     };
     target.write(output, vm)
 }

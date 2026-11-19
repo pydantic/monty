@@ -81,8 +81,8 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
 /// `asyncio.sleep(delay, result=None)` — a pure-Python `def` in CPython, so
 /// both parameters bind by keyword and neither is type-checked while binding.
 #[py_signature("sleep(delay, result=None)", bind = owned)]
-fn sleep(vm: &mut VM<'_>, args: SleepArgs) -> RunResult<CallResult> {
-    let SleepArgs { delay, result } = args;
+fn sleep(vm: &mut VM<'_>, params: SleepArgs) -> RunResult<CallResult> {
+    let SleepArgs { delay, result } = params;
     // `result` outlives `delay`: it moves into the awaitable once the delay is valid.
     let mut result_guard = DropGuard::new(result, vm);
     let delay = {
@@ -133,8 +133,8 @@ fn delay_seconds(delay: &Value, vm: &VM<'_>) -> RunResult<f64> {
 /// Returns `CallResult::AwaitValue` so the VM executes `exec_get_awaitable` on
 /// the value, which handles validation that it's actually a coroutine/awaitable.
 #[py_signature("run(main, /)", error_name = "asyncio.run", bind = owned)]
-fn run(vm: &mut VM<'_>, args: AsyncioRunArgs) -> RunResult<CallResult> {
-    let AsyncioRunArgs { main: coroutine } = args;
+fn run(vm: &mut VM<'_>, params: AsyncioRunArgs) -> RunResult<CallResult> {
+    let AsyncioRunArgs { main: coroutine } = params;
     Ok(CallResult::AwaitValue(coroutine))
 }
 

@@ -29,8 +29,8 @@ use crate::{
 /// value" — that distinction matters because `default=` is only valid with a
 /// single iterable argument.
 #[py_signature("min(*args, key=None, default=...)", bind = owned)]
-pub fn builtin_min(vm: &mut VM<'_>, args: MinArgs) -> RunResult<Value> {
-    let MinArgs { args, key, default } = args;
+pub fn builtin_min(vm: &mut VM<'_>, params: MinArgs) -> RunResult<Value> {
+    let MinArgs { args, key, default } = params;
     run_min_max(vm, args, key, default, true)
 }
 
@@ -46,8 +46,8 @@ pub fn builtin_min(vm: &mut VM<'_>, args: MinArgs) -> RunResult<Value> {
 /// See [`MinArgs`] for field semantics; the only difference is the function
 /// name used in error messages.
 #[py_signature("max(*args, key=None, default=...)", bind = owned)]
-pub fn builtin_max(vm: &mut VM<'_>, args: MaxArgs) -> RunResult<Value> {
-    let MaxArgs { args, key, default } = args;
+pub fn builtin_max(vm: &mut VM<'_>, params: MaxArgs) -> RunResult<Value> {
+    let MaxArgs { args, key, default } = params;
     run_min_max(vm, args, key, default, false)
 }
 

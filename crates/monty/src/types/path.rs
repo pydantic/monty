@@ -260,8 +260,8 @@ impl Path {
     /// - `Path('a', 'b', 'c')` returns `Path('a/b/c')`
     /// - If an absolute path appears, it replaces everything before it.
     #[py_signature("Path(*pathsegments)")]
-    pub fn init(vm: &mut VM<'_>, args: &PathArgs) -> RunResult<Value> {
-        let path = match args.pathsegments.as_slice() {
+    pub fn init(vm: &mut VM<'_>, params: &PathArgs) -> RunResult<Value> {
+        let path = match params.pathsegments.as_slice() {
             [] => {
                 // No arguments, return Path('.')
                 Self::new(".".to_owned())
@@ -309,8 +309,8 @@ fn split_suffix(name: &str) -> (&str, &str) {
 /// A pure-Python classmethod in CPython, so its arity errors count `cls`:
 /// one stray positional is `takes 1 positional argument but 2 were given`.
 #[py_signature("cwd(self, /)", owner = "Path")]
-pub(crate) fn class_cwd(vm: &mut VM<'_>, args: &CwdArgs) -> RunResult<Value> {
-    let _ = args;
+pub(crate) fn class_cwd(vm: &mut VM<'_>, params: &CwdArgs) -> RunResult<Value> {
+    let _ = params;
     let path = Path::new(vm.env.cwd.to_string());
     Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
 }

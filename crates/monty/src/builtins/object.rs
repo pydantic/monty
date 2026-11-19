@@ -35,9 +35,9 @@ pub(crate) fn object_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Val
 /// `__new__`, CPython's `object_new` rule. Native classes have their own
 /// `__new__`, and `object()` itself cannot be built (see `limitations/classes.md`).
 #[py_signature("__new__(cls=..., /, *args, **kwargs)", error_name = "object.__new__")]
-pub(crate) fn builtin_object_new(vm: &mut VM<'_>, args: &ObjectNewArgs) -> RunResult<Value> {
-    let excess = !args.args.is_empty() || !args.kwargs.is_empty();
-    let Some(cls) = &args.cls else {
+pub(crate) fn builtin_object_new(vm: &mut VM<'_>, params: &ObjectNewArgs) -> RunResult<Value> {
+    let excess = !params.args.is_empty() || !params.kwargs.is_empty();
+    let Some(cls) = &params.cls else {
         return Err(ExcType::type_error("object.__new__(): not enough arguments"));
     };
     let class_id = match TypeRef::from_value(cls, vm.heap) {
@@ -87,9 +87,9 @@ pub(crate) fn builtin_object_new(vm: &mut VM<'_>, args: &ObjectNewArgs) -> RunRe
 /// arguments unless the class overrides `__new__` and not `__init__`, CPython's
 /// `object_init` rule.
 #[py_signature("__init__(instance=..., /, *args, **kwargs)", error_name = "object.__init__")]
-pub(crate) fn builtin_object_init(vm: &mut VM<'_>, args: &ObjectInitArgs) -> RunResult<Value> {
-    let excess = !args.args.is_empty() || !args.kwargs.is_empty();
-    let Some(instance) = &args.instance else {
+pub(crate) fn builtin_object_init(vm: &mut VM<'_>, params: &ObjectInitArgs) -> RunResult<Value> {
+    let excess = !params.args.is_empty() || !params.kwargs.is_empty();
+    let Some(instance) = &params.instance else {
         return Err(ExcType::type_error(
             "descriptor '__init__' of 'object' object needs an argument",
         ));
@@ -142,10 +142,10 @@ fn native_overrides_init(ty: Type) -> bool {
     "__init_subclass__(cls=..., /, *args, **kwargs)",
     error_name = "object.__init_subclass__"
 )]
-pub(crate) fn builtin_object_init_subclass(vm: &mut VM<'_>, args: &ObjectInitSubclassArgs) -> RunResult<Value> {
-    let given = args.args.len();
-    let has_kwargs = !args.kwargs.is_empty();
-    let name = match &args.cls {
+pub(crate) fn builtin_object_init_subclass(vm: &mut VM<'_>, params: &ObjectInitSubclassArgs) -> RunResult<Value> {
+    let given = params.args.len();
+    let has_kwargs = !params.kwargs.is_empty();
+    let name = match &params.cls {
         Some(cls) => match TypeRef::from_value(cls, vm.heap) {
             Some(ty) => ty.dunder_name(vm.heap, vm.interns).into_owned(),
             None => "object".to_owned(),

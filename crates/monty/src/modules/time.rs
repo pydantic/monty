@@ -281,9 +281,9 @@ fn process_time(vm: &mut VM<'_>, args: ArgValues, function: TimeFunctions, nanos
 /// [`PostConversionEffect::DiscardResult`] makes the call return `None`
 /// regardless of the host's answer; `Zero` skips the wait.
 #[py_signature("sleep(seconds, /)", error_name = "time.sleep", reject_keywords)]
-fn sleep(vm: &mut VM<'_>, args: &TimeSleepArgs) -> RunResult<CallResult> {
+fn sleep(vm: &mut VM<'_>, params: &TimeSleepArgs) -> RunResult<CallResult> {
     // METH_O in CPython: keywords are refused wholesale, before arity.
-    let duration = sleep_seconds(&args.seconds, vm).and_then(|secs| {
+    let duration = sleep_seconds(&params.seconds, vm).and_then(|secs| {
         sleep_duration(secs).map_err(|err| match err {
             SleepError::NotANumber => ExcType::invalid_nan(),
             SleepError::Negative => ExcType::value_error("sleep length must be non-negative"),
@@ -355,10 +355,10 @@ fn sleep_seconds(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
 /// `time.mktime(t)`: the inverse of `localtime`, reading `t` as wall time in the
 /// session zone. `METH_O` in CPython, hence the module-qualified arity message.
 #[py_signature("mktime(t, /)", error_name = "time.mktime", reject_keywords)]
-fn mktime(vm: &mut VM<'_>, args: &TimeMktimeArgs) -> RunResult<CallResult> {
+fn mktime(vm: &mut VM<'_>, params: &TimeMktimeArgs) -> RunResult<CallResult> {
     // Only the wall clock matters, and CPython does not range-check the
     // weekday or year day here as `asctime`/`strftime` do.
-    let wall = time_tuple_parts(&args.t, "mktime", vm).and_then(|(items, _)| naive_from_time_tuple(&items));
+    let wall = time_tuple_parts(&params.t, "mktime", vm).and_then(|(items, _)| naive_from_time_tuple(&items));
     let utc = vm
         .env
         .os_policy
@@ -370,8 +370,8 @@ fn mktime(vm: &mut VM<'_>, args: &TimeMktimeArgs) -> RunResult<CallResult> {
 
 /// `time.asctime(t=None)`: the fixed 24-character form, from `t` or the clock.
 #[py_signature("asctime(t=..., /)", reject_keywords)]
-fn asctime(vm: &mut VM<'_>, args: &AsctimeArgs) -> RunResult<CallResult> {
-    let Some(value) = &args.t else {
+fn asctime(vm: &mut VM<'_>, params: &AsctimeArgs) -> RunResult<CallResult> {
+    let Some(value) = &params.t else {
         return suspend_or_apply(vm, TimeCaller::Asctime, ClockReading::Ctime);
     };
     let fields = time_fields(value, "asctime", vm)?;
@@ -380,8 +380,8 @@ fn asctime(vm: &mut VM<'_>, args: &AsctimeArgs) -> RunResult<CallResult> {
 
 /// `time.strftime(format, t=None)`, formatting `t` or the clock.
 #[py_signature("strftime(format, t=None, /)")]
-fn strftime(vm: &mut VM<'_>, args: &StrftimeArgs) -> RunResult<CallResult> {
-    strftime_result(&args.format, &args.t, vm)
+fn strftime(vm: &mut VM<'_>, params: &StrftimeArgs) -> RunResult<CallResult> {
+    strftime_result(&params.format, &params.t, vm)
 }
 
 /// [`strftime`] without the argument cleanup, so every exit releases both.
@@ -400,8 +400,8 @@ fn strftime_result(format: &Value, t: &Value, vm: &mut VM<'_>) -> RunResult<Call
 /// CPython's is the pure-Python `_strptime_time`, which is why the binding
 /// errors name that function rather than `strptime`.
 #[py_signature("_strptime_time(data_string, format=None)")]
-fn strptime(vm: &mut VM<'_>, args: &StrptimeArgs) -> RunResult<CallResult> {
-    strptime_result(&args.data_string, &args.format, vm).map(CallResult::Value)
+fn strptime(vm: &mut VM<'_>, params: &StrptimeArgs) -> RunResult<CallResult> {
+    strptime_result(&params.data_string, &params.format, vm).map(CallResult::Value)
 }
 
 /// [`strptime`] without the argument cleanup.

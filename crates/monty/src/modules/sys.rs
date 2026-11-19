@@ -360,8 +360,8 @@ pub(super) fn call(vm: &mut VM<'_>, function: SysFunctions, args: ArgValues) -> 
 /// pointing at the current cap.
 #[cfg(feature = "test-hooks")]
 #[py_signature("setrecursionlimit(limit, /)", error_name = "sys.setrecursionlimit")]
-fn setrecursionlimit(vm: &mut VM<'_>, args: &SysSetrecursionlimitArgs) -> RunResult<Value> {
-    let Value::Int(limit) = args.limit else {
+fn setrecursionlimit(vm: &mut VM<'_>, params: &SysSetrecursionlimitArgs) -> RunResult<Value> {
+    let Value::Int(limit) = params.limit else {
         return Err(ExcType::type_error("sys.setrecursionlimit() argument must be int"));
     };
     let Ok(new_limit) = usize::try_from(limit) else {

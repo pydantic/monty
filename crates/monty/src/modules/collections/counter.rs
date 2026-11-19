@@ -305,11 +305,11 @@ fn counter_kwarg_deltas(kwargs: KwargsValues) -> Vec<(Value, Value)> {
 #[py_signature("update(self, iterable=None, /, **kwds)", owner = "Counter", bind = mut)]
 pub(crate) fn counter_update_method<'h>(
     counter: &mut HeapObjectRead<'h, Dict>,
-    args: &mut UpdateArgs,
+    params: &mut UpdateArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let source = mem::replace(&mut args.iterable, Value::None);
-    let kwargs = mem::replace(&mut args.kwds, KwargsValues::Empty);
+    let source = mem::replace(&mut params.iterable, Value::None);
+    let kwargs = mem::replace(&mut params.kwds, KwargsValues::Empty);
     counter_update(counter, Some(source), kwargs, false, vm)?;
     Ok(Value::None)
 }
@@ -317,11 +317,11 @@ pub(crate) fn counter_update_method<'h>(
 #[py_signature("subtract(self, iterable=None, /, **kwds)", owner = "Counter", bind = mut)]
 pub(crate) fn counter_subtract_method<'h>(
     counter: &mut HeapObjectRead<'h, Dict>,
-    args: &mut SubtractArgs,
+    params: &mut SubtractArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let source = mem::replace(&mut args.iterable, Value::None);
-    let kwargs = mem::replace(&mut args.kwds, KwargsValues::Empty);
+    let source = mem::replace(&mut params.iterable, Value::None);
+    let kwargs = mem::replace(&mut params.kwds, KwargsValues::Empty);
     counter_update(counter, Some(source), kwargs, true, vm)?;
     Ok(Value::None)
 }
@@ -376,11 +376,11 @@ fn sort_counts(counts: &[Value], vm: &mut VM<'_>) -> RunResult<Vec<usize>> {
 #[py_signature("most_common(self, n=..., /)")]
 pub(crate) fn counter_most_common<'h>(
     counter: &HeapObjectRead<'h, Dict>,
-    args: &MostCommonArgs,
+    params: &MostCommonArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
     // Huge positive limits return every item; negative limits return none.
-    let limit = match args.n.as_ref().map(|value| value.py_value(vm)) {
+    let limit = match params.n.as_ref().map(|value| value.py_value(vm)) {
         None | Some(PyValue::None) => None,
         Some(PyValue::Int(integer)) => Some(integer.collection_limit(vm)),
         Some(PyValue::Bool(value)) => Some(usize::from(value)),

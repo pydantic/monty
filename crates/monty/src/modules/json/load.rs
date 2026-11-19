@@ -72,12 +72,12 @@ const JSON_RECURSION_LIMIT: usize = 200;
     "loads(s, *, parse_float=None, parse_int=None)",
     kwarg_error_name = "JSONDecoder.__init__"
 )]
-pub(super) fn call_loads(vm: &mut VM<'_>, args: &JsonLoadsArgs) -> RunResult<Value> {
+pub(super) fn call_loads(vm: &mut VM<'_>, params: &JsonLoadsArgs) -> RunResult<Value> {
     let hooks = NumberHooks {
-        parse_float: (!matches!(args.parse_float, Value::None)).then_some(&args.parse_float),
-        parse_int: (!matches!(args.parse_int, Value::None)).then_some(&args.parse_int),
+        parse_float: (!matches!(params.parse_float, Value::None)).then_some(&params.parse_float),
+        parse_int: (!matches!(params.parse_int, Value::None)).then_some(&params.parse_int),
     };
-    parse_json_input(&args.s, &hooks, vm)
+    parse_json_input(&params.s, &hooks, vm)
 }
 
 /// The `parse_float` / `parse_int` callables `json.loads` converts number tokens with,
@@ -98,8 +98,8 @@ struct NumberHooks<'a> {
 /// Argument shape for `json.load(fp)`, a pure-Python `def` like [`JsonLoadsArgs`]
 /// with the same keyword policy.
 #[py_signature("load(fp)", kwarg_error_name = "JSONDecoder.__init__")]
-pub(super) fn call_load(vm: &mut VM<'_>, args: &JsonLoadArgs) -> RunResult<CallResult> {
-    match FileTarget::reader(&args.fp, vm)? {
+pub(super) fn call_load(vm: &mut VM<'_>, params: &JsonLoadArgs) -> RunResult<CallResult> {
+    match FileTarget::reader(&params.fp, vm)? {
         FileTarget::OpenFile(file_id) => {
             let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
                 unreachable!("FileTarget::OpenFile points to an OpenFile")

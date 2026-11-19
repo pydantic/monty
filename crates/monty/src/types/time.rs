@@ -155,15 +155,15 @@ impl Time {
 #[py_signature(
     "time(hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)"
 )]
-pub(crate) fn init(vm: &mut VM<'_>, args: &TimeInitArgs) -> RunResult<Value> {
+pub(crate) fn init(vm: &mut VM<'_>, params: &TimeInitArgs) -> RunResult<Value> {
     allocate(
         vm,
-        args.hour,
-        args.minute,
-        args.second,
-        args.microsecond,
-        args.fold,
-        &args.tzinfo,
+        params.hour,
+        params.minute,
+        params.second,
+        params.microsecond,
+        params.fold,
+        &params.tzinfo,
     )
 }
 
@@ -236,8 +236,8 @@ pub(crate) fn class_method(
 /// so the accepted grammar (and the rejection message) stays consistent across
 /// the three classes.
 #[py_signature("fromisoformat(time_string, /)", error_name = "time.fromisoformat", reject_keywords)]
-pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: &TimeFromisoformatArgs) -> RunResult<Value> {
-    let s = date::extract_str_arg(&args.time_string, "fromisoformat", vm.heap, vm.interns)?;
+pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, params: &TimeFromisoformatArgs) -> RunResult<Value> {
+    let s = date::extract_str_arg(&params.time_string, "fromisoformat", vm.heap, vm.interns)?;
 
     let parsed = speedate::Time::parse_str(&s)
         .map_err(|_| SimpleException::new_msg(ExcType::ValueError, format!("Invalid isoformat string: '{s}'")))?;

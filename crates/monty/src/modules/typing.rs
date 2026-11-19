@@ -135,16 +135,16 @@ pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) 
 
 /// `typing.cast()`: returns `val`; `typ` is any object, a string forward reference included.
 #[py_signature("cast(typ, val)", bind = owned)]
-fn cast(vm: &mut VM<'_>, args: CastArgs) -> RunResult<CallResult> {
-    let CastArgs { typ, val } = args;
+fn cast(vm: &mut VM<'_>, params: CastArgs) -> RunResult<CallResult> {
+    let CastArgs { typ, val } = params;
     defer_drop!(typ, vm);
     Ok(CallResult::Value(val))
 }
 
 /// `typing.assert_type()`: returns `val`; only a static type checker looks at `typ`.
 #[py_signature("assert_type(val, typ, /)", bind = owned)]
-fn assert_type(vm: &mut VM<'_>, args: AssertTypeArgs) -> RunResult<CallResult> {
-    let AssertTypeArgs { val, typ } = args;
+fn assert_type(vm: &mut VM<'_>, params: AssertTypeArgs) -> RunResult<CallResult> {
+    let AssertTypeArgs { val, typ } = params;
     defer_drop!(typ, vm);
     Ok(CallResult::Value(val))
 }
@@ -183,11 +183,11 @@ impl fmt::Write for CappedRepr {
 
 /// `typing.assert_never()`: always raises `AssertionError` quoting a bounded `repr(arg)`.
 #[py_signature("assert_never(arg, /)")]
-fn assert_never(vm: &mut VM<'_>, args: &AssertNeverArgs) -> RunResult<CallResult> {
+fn assert_never(vm: &mut VM<'_>, params: &AssertNeverArgs) -> RunResult<CallResult> {
     // The repr is written into a capped buffer that refuses text past the limit, so a huge or
     // deeply nested value never has its whole repr built in host memory.
     let mut capped = CappedRepr::default();
-    let result = args.arg.py_repr_fmt(&mut capped, vm, &mut LazyHeapSet::default());
+    let result = params.arg.py_repr_fmt(&mut capped, vm, &mut LazyHeapSet::default());
     if !capped.truncated {
         result?;
     }
@@ -388,19 +388,19 @@ def __monty_get_annotations(owner, annotate, stored, classdict, scopes, format_,
 
 /// `typing.get_type_hints()`: see [`collect_hints`].
 #[py_signature("get_type_hints(obj, globalns=None, localns=None, include_extras=False, *, format=None)")]
-fn get_type_hints(vm: &mut VM<'_>, args: &GetTypeHintsArgs) -> RunResult<CallResult> {
+fn get_type_hints(vm: &mut VM<'_>, params: &GetTypeHintsArgs) -> RunResult<CallResult> {
     // CPython reads `__no_type_check__` before it looks at anything else.
-    if let HintSource::Class(class_id) = hint_source(&args.obj, vm)
+    if let HintSource::Class(class_id) = hint_source(&params.obj, vm)
         && class_attr_is_true(class_id, "__no_type_check__", vm)?
     {
         return Ok(CallResult::Value(empty_dict(vm)));
     }
-    let format = HintFormat::parse(&args.format, true, vm)?;
-    let globalns = namespace_dict(&args.globalns, "get_type_hints", "globalns", vm)?;
-    let localns = namespace_dict(&args.localns, "get_type_hints", "localns", vm)?;
-    let include_extras = args.include_extras.py_bool(vm)?;
+    let format = HintFormat::parse(&params.format, true, vm)?;
+    let globalns = namespace_dict(&params.globalns, "get_type_hints", "globalns", vm)?;
+    let localns = namespace_dict(&params.localns, "get_type_hints", "localns", vm)?;
+    let include_extras = params.include_extras.py_bool(vm)?;
     collect_hints(
-        &args.obj,
+        &params.obj,
         &HintsRequest {
             format,
             globalns,
@@ -673,9 +673,9 @@ fn resolve_hints(
 /// Frozen helper: CPython's `annotationlib.type_repr`, a type by its name and
 /// anything else by its repr, for `STRING` format.
 #[py_signature("type_repr(obj, /)")]
-pub(crate) fn call_type_repr(args: &TypeReprArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+pub(crate) fn call_type_repr(params: &TypeReprArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let mut text = String::new();
-    repr_type_arg(&args.obj, &mut text, vm, &mut LazyHeapSet::default())?;
+    repr_type_arg(&params.obj, &mut text, vm, &mut LazyHeapSet::default())?;
     Ok(allocate_string(text, vm.heap))
 }
 
@@ -792,22 +792,22 @@ pub(crate) fn namespace_dict(value: &Value, function: &str, param: &str, vm: &VM
 /// Frozen helper: evaluates one annotation string; the namespaces are dicts or
 /// `None`, built by [`collect_hints`] and never seen by user code.
 #[py_signature("eval_hint(source, globals, locals, globals_first, forward_ref, missing, owner, is_class, /)")]
-pub(crate) fn call_eval_hint(args: &EvalHintArgs, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    let globals_first = matches!(&args.globals_first, Value::Bool(true));
-    let forward_ref = matches!(&args.forward_ref, Value::Bool(true));
-    let missing = match args.missing {
+pub(crate) fn call_eval_hint(params: &EvalHintArgs, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    let globals_first = matches!(&params.globals_first, Value::Bool(true));
+    let forward_ref = matches!(&params.forward_ref, Value::Bool(true));
+    let missing = match params.missing {
         Value::Int(0) => MissingNames::Raise,
         Value::Int(every_name) => MissingNames::ForwardRef {
-            owner: args.owner.clone_with_heap(vm),
-            is_class: matches!(&args.is_class, Value::Bool(true)),
+            owner: params.owner.clone_with_heap(vm),
+            is_class: matches!(&params.is_class, Value::Bool(true)),
             every_name: every_name == 2,
         },
         _ => unreachable!("frozen code passes the name mode as an int"),
     };
     eval_exec::eval_hint(
-        &args.source,
-        args.globals.ref_id(),
-        args.locals.ref_id(),
+        &params.source,
+        params.globals.ref_id(),
+        params.locals.ref_id(),
         globals_first,
         forward_ref,
         missing,

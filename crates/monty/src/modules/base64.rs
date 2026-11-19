@@ -266,17 +266,17 @@ fn call_b32encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Argument shape for `b32decode(s, casefold=False, map01=None)` — see
 /// [`B64DecodeArgs`] for why the flags are raw `Value`s.
 #[py_signature("b32decode(s, casefold=False, map01=None)")]
-fn call_b32decode(vm: &mut VM<'_>, args: &B32DecodeArgs) -> RunResult<Value> {
-    let mut data = decode_input(&args.s, vm)?.into_owned();
+fn call_b32decode(vm: &mut VM<'_>, params: &B32DecodeArgs) -> RunResult<Value> {
+    let mut data = decode_input(&params.s, vm)?.into_owned();
     if !data.len().is_multiple_of(8) {
         return Err(incorrect_padding());
     }
-    if !matches!(&args.map01, Value::None) {
-        let map = decode_input(&args.map01, vm)?.into_owned();
+    if !matches!(&params.map01, Value::None) {
+        let map = decode_input(&params.map01, vm)?.into_owned();
         assert_len_bytes(&map, 1)?;
         translate(&mut data, b"01", &[b'O', map[0]]);
     }
-    let decoded = b32_decode(&data, B32_ALPHABET, args.casefold.py_bool(vm)?)?;
+    let decoded = b32_decode(&data, B32_ALPHABET, params.casefold.py_bool(vm)?)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -291,12 +291,12 @@ fn call_b32hexencode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `base64.b32hexdecode(s, casefold=False)` — no `map01`, since `0` and `1`
 /// are themselves digits in the extended-hex alphabet.
 #[py_signature("b32hexdecode(s, casefold=False)")]
-fn call_b32hexdecode(vm: &mut VM<'_>, args: &B32HexDecodeArgs) -> RunResult<Value> {
-    let data = decode_input(&args.s, vm)?.into_owned();
+fn call_b32hexdecode(vm: &mut VM<'_>, params: &B32HexDecodeArgs) -> RunResult<Value> {
+    let data = decode_input(&params.s, vm)?.into_owned();
     if !data.len().is_multiple_of(8) {
         return Err(incorrect_padding());
     }
-    let decoded = b32_decode(&data, B32HEX_ALPHABET, args.casefold.py_bool(vm)?)?;
+    let decoded = b32_decode(&data, B32HEX_ALPHABET, params.casefold.py_bool(vm)?)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -311,9 +311,9 @@ fn call_b16encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `base64.b16decode(s, casefold=False)` — rejects lowercase hex unless
 /// `casefold` is set, as CPython does.
 #[py_signature("b16decode(s, casefold=False)")]
-fn call_b16decode(vm: &mut VM<'_>, args: &B16DecodeArgs) -> RunResult<Value> {
-    let data = decode_input(&args.s, vm)?.into_owned();
-    let decoded = b16_decode(&data, args.casefold.py_bool(vm)?)?;
+fn call_b16decode(vm: &mut VM<'_>, params: &B16DecodeArgs) -> RunResult<Value> {
+    let data = decode_input(&params.s, vm)?.into_owned();
+    let decoded = b16_decode(&data, params.casefold.py_bool(vm)?)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -357,10 +357,10 @@ fn call_decodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Argument shape for `b85encode(b, pad=False)` — note the parameter is `b`,
 /// not the `s` the rest of the module uses, which signature errors report.
 #[py_signature("b85encode(b, pad=False)")]
-fn call_b85encode(vm: &mut VM<'_>, args: &B85EncodeArgs) -> RunResult<Value> {
-    let pad = args.pad.py_bool(vm)?;
+fn call_b85encode(vm: &mut VM<'_>, params: &B85EncodeArgs) -> RunResult<Value> {
+    let pad = params.pad.py_bool(vm)?;
     let encoded = b85_encode(
-        memoryview_input(&args.b, vm)?.as_ref(),
+        memoryview_input(&params.b, vm)?.as_ref(),
         B85_ALPHABET,
         pad,
         &vm.heap.tracker,
@@ -370,8 +370,8 @@ fn call_b85encode(vm: &mut VM<'_>, args: &B85EncodeArgs) -> RunResult<Value> {
 
 /// `base64.b85decode(b)` — the inverse of [`call_b85encode`].
 #[py_signature("b85decode(b)")]
-fn call_b85decode(vm: &mut VM<'_>, args: &B85DecodeArgs) -> RunResult<Value> {
-    let decoded = b85_decode(decode_input(&args.b, vm)?.as_ref(), B85_ALPHABET, "base85")?;
+fn call_b85decode(vm: &mut VM<'_>, params: &B85DecodeArgs) -> RunResult<Value> {
+    let decoded = b85_decode(decode_input(&params.b, vm)?.as_ref(), B85_ALPHABET, "base85")?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -402,16 +402,16 @@ fn call_z85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Argument shape for
 /// `a85encode(b, *, foldspaces=False, wrapcol=0, pad=False, adobe=False)`.
 #[py_signature("a85encode(b, *, foldspaces=False, wrapcol=0, pad=False, adobe=False)")]
-fn call_a85encode(vm: &mut VM<'_>, args: &A85EncodeArgs) -> RunResult<Value> {
+fn call_a85encode(vm: &mut VM<'_>, params: &A85EncodeArgs) -> RunResult<Value> {
     // CPython coerces the input before any flag and reaches `pad` only when the
     // length needs padding. Which flag raises first is unobservable while
     // `__bool__` goes undispatched (`limitations/classes.md`), but this order
     // holds once it lands. Owned as `tobytes()` is: a dispatched `__bool__`
     // re-enters the interpreter and could mutate a `bytearray`.
-    let data = memoryview_input(&args.b, vm)?.into_owned();
-    let fold = args.foldspaces.py_bool(vm)?;
-    let keep_padding = data.len() % 4 != 0 && args.pad.py_bool(vm)?;
-    let adobe = args.adobe.py_bool(vm)?;
+    let data = memoryview_input(&params.b, vm)?.into_owned();
+    let fold = params.foldspaces.py_bool(vm)?;
+    let keep_padding = data.len() % 4 != 0 && params.pad.py_bool(vm)?;
+    let adobe = params.adobe.py_bool(vm)?;
     let framing = if adobe {
         A85_ADOBE_START.len() + A85_ADOBE_END.len()
     } else {
@@ -424,8 +424,8 @@ fn call_a85encode(vm: &mut VM<'_>, args: &A85EncodeArgs) -> RunResult<Value> {
     }
     // CPython only consults the width when it is truthy, and wraps the framed
     // result — so the opening marker counts towards the first line.
-    if args.wrapcol.py_bool(vm)? {
-        let width = a85_wrapcol(&args.wrapcol, if adobe { 2 } else { 1 }, vm)?;
+    if params.wrapcol.py_bool(vm)? {
+        let width = a85_wrapcol(&params.wrapcol, if adobe { 2 } else { 1 }, vm)?;
         encoded = a85_wrap(&encoded, width, adobe, &vm.heap.tracker)?;
     }
     if adobe {
@@ -447,13 +447,13 @@ fn call_a85encode(vm: &mut VM<'_>, args: &A85EncodeArgs) -> RunResult<Value> {
 /// whatever object was passed, so an explicit argument takes a different path
 /// from the built-in set — see [`IgnoreChars`].
 #[py_signature("a85decode(b, *, foldspaces=False, adobe=False, ignorechars=...)")]
-fn call_a85decode(vm: &mut VM<'_>, args: &A85DecodeArgs) -> RunResult<Value> {
+fn call_a85decode(vm: &mut VM<'_>, params: &A85DecodeArgs) -> RunResult<Value> {
     // Owned so the decode loop can re-enter the interpreter for a caller-given
     // `ignorechars`, which the borrowed input would rule out.
-    let data = decode_input(&args.b, vm)?.into_owned();
-    let framed = a85_strip_adobe(&data, args.adobe.py_bool(vm)?)?;
-    let fold = args.foldspaces.py_bool(vm)?;
-    let ignore = match args.ignorechars.as_ref() {
+    let data = decode_input(&params.b, vm)?.into_owned();
+    let framed = a85_strip_adobe(&data, params.adobe.py_bool(vm)?)?;
+    let fold = params.foldspaces.py_bool(vm)?;
+    let ignore = match params.ignorechars.as_ref() {
         Some(value) => IgnoreChars::Given(value),
         None => IgnoreChars::Default,
     };

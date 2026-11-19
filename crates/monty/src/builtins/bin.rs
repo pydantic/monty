@@ -6,9 +6,9 @@ use crate::{bytecode::VM, exception_private::RunResult, types::str::allocate_str
 
 /// Converts an integer or `__index__` result to a binary string prefixed with `0b`.
 #[py_signature("bin(number: SupportsIndex, /)")]
-pub fn builtin_bin(vm: &mut VM<'_>, args: &BinArgs) -> RunResult<Value> {
+pub fn builtin_bin(vm: &mut VM<'_>, params: &BinArgs) -> RunResult<Value> {
     Ok(allocate_string_no_interning(
-        args.number.view(vm).radix_repr(2, vm),
+        params.number.view(vm).radix_repr(2, vm),
         vm.heap,
     ))
 }
