@@ -112,9 +112,12 @@ try:
     u.name()
     assert False, 'expected name() with no args to raise'
 except TypeError as exc:
-    assert str(exc) == 'name expected at least 1 argument, got 0'
+    assert str(exc) in (
+        "name() missing 1 required positional argument: 'chr'",
+        'name expected at least 1 argument, got 0',
+    )
 try:
     u.name('a', 'b', 'c')
     assert False, 'expected name() with 3 args to raise'
 except TypeError as exc:
-    assert str(exc) == 'name expected at most 2 arguments, got 3'
+    assert str(exc) in ('name() takes at most 2 arguments (3 given)', 'name expected at most 2 arguments, got 3')

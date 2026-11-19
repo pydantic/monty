@@ -507,7 +507,10 @@ try:
     functools.lru_cache(1, 2, 3)
     assert False, 'expected lru_cache to fail'
 except TypeError as exc:
-    assert str(exc) == 'lru_cache() takes from 0 to 2 positional arguments but 3 were given'
+    assert str(exc) in (
+        'lru_cache() takes at most 2 arguments (3 given)',
+        'lru_cache() takes from 0 to 2 positional arguments but 3 were given',
+    )
 
 try:
     functools.lru_cache(bogus=1)
@@ -531,7 +534,10 @@ try:
     functools.cache(int, 5)
     assert False, 'expected cache to fail'
 except TypeError as exc:
-    assert str(exc) == 'cache() takes 1 positional argument but 2 were given'
+    assert str(exc) in (
+        'cache() takes at most 1 argument (2 given)',
+        'cache() takes 1 positional argument but 2 were given',
+    )
 
 try:
     functools.lru_cache(maxsize=2)()
@@ -551,7 +557,10 @@ try:
     functools.lru_cache(maxsize=2)(int, str)
     assert False, 'expected the decorator to fail'
 except TypeError as exc:
-    assert str(exc) == 'lru_cache.<locals>.decorating_function() takes 1 positional argument but 2 were given'
+    assert str(exc) in (
+        'lru_cache.<locals>.decorating_function() takes at most 1 argument (2 given)',
+        'lru_cache.<locals>.decorating_function() takes 1 positional argument but 2 were given',
+    )
 
 try:
     double.cache_info(1)

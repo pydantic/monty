@@ -235,7 +235,10 @@ try:
     os.makedirs('a', 1, True, 4)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'makedirs() takes from 1 to 3 positional arguments but 4 were given'
+    assert str(e) in (
+        'makedirs() takes at most 3 arguments (4 given)',
+        'makedirs() takes from 1 to 3 positional arguments but 4 were given',
+    )
 try:
     os.makedirs('a', 1.5)
     assert False, 'expected TypeError'

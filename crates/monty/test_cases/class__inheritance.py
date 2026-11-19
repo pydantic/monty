@@ -915,7 +915,7 @@ def check_error(call, expected):
     try:
         call()
     except TypeError as error:
-        assert str(error) == expected, str(error)
+        assert str(error) in (expected if isinstance(expected, tuple) else (expected,)), str(error)
     else:
         assert False, 'expected TypeError'
 
@@ -932,10 +932,28 @@ check_error(
 check_error(lambda: issubclass(int, list[int]), 'issubclass() argument 2 cannot be a parameterized generic')
 check_error(lambda: issubclass(int, str | list[int]), 'issubclass() argument 2 cannot be a parameterized generic')
 assert issubclass(int, int | list[int])
-check_error(lambda: issubclass(), 'issubclass expected 2 arguments, got 0')
-check_error(lambda: issubclass(int), 'issubclass expected 2 arguments, got 1')
-check_error(lambda: issubclass(int, str, object), 'issubclass expected 2 arguments, got 3')
-check_error(lambda: issubclass(int, classinfo=int), 'issubclass() takes no keyword arguments')
+check_error(
+    lambda: issubclass(),
+    (
+        "issubclass() missing 2 required positional arguments: 'cls' and 'classinfo'",
+        'issubclass expected 2 arguments, got 0',
+    ),
+)
+check_error(
+    lambda: issubclass(int),
+    ("issubclass() missing 1 required positional argument: 'classinfo'", 'issubclass expected 2 arguments, got 1'),
+)
+check_error(
+    lambda: issubclass(int, str, object),
+    ('issubclass() takes at most 2 arguments (3 given)', 'issubclass expected 2 arguments, got 3'),
+)
+check_error(
+    lambda: issubclass(int, classinfo=int),
+    (
+        "issubclass() got some positional-only arguments passed as keyword arguments: 'classinfo'",
+        'issubclass() takes no keyword arguments',
+    ),
+)
 
 # === Stage 1.3: inherited __init_subclass__, __mro__ write guard, dynamic __annotations__, frozen dataclass ===
 hook_log = []

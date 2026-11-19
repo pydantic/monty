@@ -529,7 +529,7 @@ fn math_expm1(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 ///
 /// With one argument, returns the natural logarithm (base e).
 /// With two arguments, returns `log(x) / log(base)`.
-#[py_signature("log(x, base=..., /)", style = unpack)]
+#[py_signature("log(x, base=..., /)")]
 fn math_log(vm: &mut VM<'_>, args: &LogArgs) -> RunResult<Value> {
     let LogArgs {
         x: x_val,
@@ -1049,7 +1049,7 @@ fn falling_product(n: &BigInt, k: u64, binomial: bool, tracker: &ResourceTracker
 ///
 /// Both arguments must be non-negative integers. When `k` is omitted, defaults to `n`
 /// (i.e., `perm(n)` returns `n!`), matching CPython behavior.
-#[py_signature("perm(n, k=..., /)", style = unpack)]
+#[py_signature("perm(n, k=..., /)")]
 fn math_perm(vm: &mut VM<'_>, args: &PermArgs) -> RunResult<Value> {
     let PermArgs { n: n_val, k: k_val } = args;
 

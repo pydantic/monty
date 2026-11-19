@@ -36,11 +36,7 @@ def __monty_next_default(iterator, default, next_, stop_iteration):
 ///
 /// A file nobody has read yet first loads its buffer from the host: the call
 /// yields the read with a `FileNext` effect, which answers it on resume.
-///
-/// Argument shape for `next(iterator, default=...)` — positional-only in
-/// CPython, so `style = unpack` gives the `PyArg_UnpackTuple` arity wording
-/// and the blanket `next() takes no keyword arguments` rejection.
-#[py_signature("next(iterator, default=..., /)", style = unpack, bind = owned)]
+#[py_signature("next(iterator, default=..., /)", bind = owned)]
 pub fn builtin_next(vm: &mut VM<'_>, args: NextArgs) -> RunResult<CallResult> {
     let NextArgs { iterator, default } = args;
     defer_drop!(iterator, vm);

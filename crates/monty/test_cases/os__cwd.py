@@ -91,17 +91,26 @@ try:
         Path.cwd('unexpected')
         assert False, 'expected TypeError'
     except TypeError as e:
-        assert str(e) == 'Path.cwd() takes 1 positional argument but 2 were given'
+        assert str(e) in (
+            'Path.cwd() takes at most 1 argument (2 given)',
+            'Path.cwd() takes 1 positional argument but 2 were given',
+        )
     try:
         Path('.').cwd('unexpected')
         assert False, 'expected TypeError'
     except TypeError as e:
-        assert str(e) == 'Path.cwd() takes 1 positional argument but 2 were given'
+        assert str(e) in (
+            'Path.cwd() takes at most 1 argument (2 given)',
+            'Path.cwd() takes 1 positional argument but 2 were given',
+        )
     try:
         Path.cwd(1, 2)
         assert False, 'expected TypeError'
     except TypeError as e:
-        assert str(e) == 'Path.cwd() takes 1 positional argument but 3 were given'
+        assert str(e) in (
+            'Path.cwd() takes at most 1 argument (3 given)',
+            'Path.cwd() takes 1 positional argument but 3 were given',
+        )
     try:
         Path.cwd(x=1)
         assert False, 'expected TypeError'

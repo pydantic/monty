@@ -16,7 +16,6 @@ use crate::from_args::{Signature, parse_field_attrs};
 
 pub(super) struct Declaration {
     signature: LitStr,
-    style: Option<Ident>,
     bind: Option<Binding>,
     owner: Option<LitStr>,
     kwarg_error_name: Option<LitStr>,
@@ -30,7 +29,6 @@ impl Parse for Declaration {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut declaration = Self {
             signature: input.parse()?,
-            style: None,
             bind: None,
             owner: None,
             kwarg_error_name: None,
@@ -42,9 +40,7 @@ impl Parse for Declaration {
         if !input.is_empty() {
             input.parse::<Token![,]>()?;
             parser(|meta| {
-                if meta.path.is_ident("style") {
-                    parse_option(&meta, &mut declaration.style)
-                } else if meta.path.is_ident("bind") {
+                if meta.path.is_ident("bind") {
                     parse_option(&meta, &mut declaration.bind)
                 } else if meta.path.is_ident("owner") {
                     parse_option(&meta, &mut declaration.owner)
@@ -149,26 +145,14 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
     if let Some(adapter) = positional_iterator(declaration, &def, &mut function)? {
         return Ok(adapter);
     }
-    let explicit_one = declaration.style.as_ref().is_some_and(|s| s == "one_arg");
-    if explicit_one || infer_single_argument(declaration, &def, &function) {
+    if let Some(param) = infer_single_argument(declaration, &def, &function) {
         if declaration.bind.is_some() {
             return Err(error("bind requires an argument struct or iterator"));
-        }
-        let param = single_required_positional(&def)
-            .ok_or_else(|| error("`style = one_arg` requires one positional-only parameter without a default"))?;
-        if !declaration.modifiers.is_empty() || declaration.reject_keywords {
-            return Err(error("a direct positional argument cannot use parser modifiers"));
-        }
-        if declaration.owner.is_some() || declaration.kwarg_error_name.is_some() {
-            return Err(error("`style = one_arg` uses the callable name for errors"));
         }
         return single_positional_adapter(function, declaration, param, &callable_name(declaration, name));
     }
-    if declaration.style.as_ref().is_some_and(|s| s == "two_args") {
-        if declaration.bind.is_some() {
-            return Err(error("bind requires an argument struct or iterator"));
-        }
-        return two_positional_adapter(declaration, &def, function);
+    if let Some(adapter) = two_positional_adapter(declaration, &def, &mut function)? {
+        return Ok(adapter);
     }
     let bound = function.sig.inputs.iter_mut().find_map(|input| {
         let FnArg::Typed(arg) = input else { return None };
@@ -317,8 +301,7 @@ fn parse_function(declaration: &Declaration) -> syn::Result<StmtFunctionDef> {
 /// The raw helpers return owned Python values and represent an omitted argument with `None`.
 fn raw_positional(declaration: &Declaration, def: &StmtFunctionDef) -> bool {
     let params = &def.parameters;
-    declaration.style.is_none()
-        && declaration.modifiers.is_empty()
+    declaration.modifiers.is_empty()
         && declaration.converters.is_empty()
         && declaration.kwarg_error_name.is_none()
         && params.args.is_empty()
@@ -449,13 +432,12 @@ fn arguments(
     }
     let qualified_name = callable_name(declaration, name);
     let modifiers = &declaration.modifiers;
-    let style = declaration.style.as_ref().map(|style| quote!(, style = #style));
     let kwarg_error = declaration
         .kwarg_error_name
         .as_ref()
         .map(|name| quote!(, kwarg_error_name = #name));
     let input: DeriveInput = syn::parse2(quote! {
-        #[from_args(name = #qualified_name #style #kwarg_error #(, #modifiers)*)]
+        #[from_args(name = #qualified_name #kwarg_error #(, #modifiers)*)]
         struct #bound_name { #(#fields,)* }
     })?;
     let signature = Signature::parse(&input)?;
@@ -509,11 +491,7 @@ fn arguments(
 }
 
 fn zero_arg_name(declaration: &Declaration, def: &StmtFunctionDef) -> Option<String> {
-    if declaration.style.is_some()
-        || !declaration.modifiers.is_empty()
-        || declaration.kwarg_error_name.is_some()
-        || declaration.reject_keywords
-    {
+    if !declaration.modifiers.is_empty() || declaration.kwarg_error_name.is_some() || declaration.reject_keywords {
         return None;
     }
     let params = &def.parameters;
@@ -543,88 +521,84 @@ fn single_required_positional(def: &StmtFunctionDef) -> Option<&ParameterWithDef
 
 /// A Rust parameter matching the Python name opts into direct binding. A named args
 /// struct still uses the general binder for the same Python signature.
-fn infer_single_argument(declaration: &Declaration, def: &StmtFunctionDef, function: &ItemFn) -> bool {
-    if declaration.style.is_some()
-        || declaration.reject_keywords
+fn infer_single_argument<'a>(
+    declaration: &Declaration,
+    def: &'a StmtFunctionDef,
+    function: &ItemFn,
+) -> Option<&'a ParameterWithDefault> {
+    if declaration.reject_keywords
         || declaration.owner.is_some()
         || declaration.kwarg_error_name.is_some()
         || !declaration.modifiers.is_empty()
     {
-        return false;
+        return None;
     }
-    let Some(param) = single_required_positional(def) else {
-        return false;
-    };
+    let param = single_required_positional(def)?;
     let mut inputs =
         function.sig.inputs.iter().filter(
             |input| !matches!(input, FnArg::Typed(arg) if matches!(&*arg.pat, Pat::Ident(p) if p.ident == "vm")),
         );
     let (Some(FnArg::Typed(arg)), None) = (inputs.next(), inputs.next()) else {
-        return false;
+        return None;
     };
     let name = param.name().as_str();
-    matches!(&*arg.pat, Pat::Ident(p) if p.ident == name)
+    (matches!(&*arg.pat, Pat::Ident(p) if p.ident == name)
         && name != "self"
-        && (name != "args" || *arg.ty == parse_quote!(&Value))
+        && (name != "args" || *arg.ty == parse_quote!(&Value)))
+    .then_some(param)
 }
 
+/// Bind a pair of required positional-only parameters directly from inline storage.
 fn two_positional_adapter(
     declaration: &Declaration,
     def: &StmtFunctionDef,
-    mut function: ItemFn,
-) -> syn::Result<TokenStream> {
+    function: &mut ItemFn,
+) -> syn::Result<Option<TokenStream>> {
+    let pair: Type = parse_quote!((&Value, &Value));
+    let Some(arg) = function.sig.inputs.iter_mut().find_map(|input| {
+        let FnArg::Typed(arg) = input else { return None };
+        (*arg.ty == pair).then_some(arg)
+    }) else {
+        return Ok(None);
+    };
     let literal = &declaration.signature;
-    let error = |message: &str| syn::Error::new(literal.span(), message);
-    if declaration.reject_keywords || !declaration.modifiers.is_empty() || !declaration.converters.is_empty() {
-        return Err(error(
-            "fixed-arity helpers do not accept parser modifiers or custom converters",
-        ));
-    }
-    let name = def.name.as_str();
+    let error = |message| syn::Error::new(literal.span(), message);
     let params = &def.parameters;
     let [first, second] = params.posonlyargs.as_slice() else {
-        return Err(error("`style = two_args` requires two positional-only parameters"));
+        return Err(error("a direct pair requires two positional-only parameters"));
     };
-    if params.iter().count() != 2
-        || params.iter().any(|p| p.annotation().is_some() || p.default().is_some())
+    if !raw_positional(declaration, def)
+        || declaration.reject_keywords
+        || params.vararg.is_some()
+        || first.default().is_some()
+        || second.default().is_some()
+        || first.name().as_str() == "self"
+        || declaration.bind.is_some()
         || declaration.owner.is_some()
-        || declaration.error_name.is_some()
-        || declaration.kwarg_error_name.is_some()
     {
-        return Err(error(
-            "`style = two_args` requires two raw values and uses the callable name for errors",
-        ));
+        return Err(error("a direct pair requires two raw positional-only arguments"));
     }
     let first = field_name(&first.parameter, literal)?;
     let second = field_name(&second.parameter, literal)?;
-    let wanted_pat: Pat = parse_quote!((#first, #second));
-    let wanted_ty: Type = parse_quote!((&Value, &Value));
-    let arg = function
-        .sig
-        .inputs
-        .iter_mut()
-        .find_map(|input| match input {
-            FnArg::Typed(arg)
-                if *arg.ty == wanted_ty
-                    && (*arg.pat == wanted_pat || matches!(&*arg.pat, Pat::Ident(p) if p.ident == "args")) =>
-            {
-                Some(arg)
-            }
-            _ => None,
-        })
-        .ok_or_else(|| error("expected a pair of &Value parameters in signature order"))?;
-    let named_pair = matches!(&*arg.pat, Pat::Ident(_)).then(|| quote!(let args = (#first, #second);));
+    let ordered: Pat = parse_quote!((#first, #second));
+    let named =
+        matches!(arg.pat.as_ref(), Pat::Ident(p) if p.ident == "args" && p.by_ref.is_none() && p.subpat.is_none());
+    if *arg.pat != ordered && !named {
+        return Err(error("expected args or a pair in signature order"));
+    }
+    let binding = &arg.pat;
+    let name = callable_name(declaration, def.name.as_str());
+    let body = &function.block;
+    *function.block = parse_quote!({
+        let (__first, __second) = __py_args.get_two_positional_args(#name, vm.heap)?;
+        crate::defer_drop!(__first, vm);
+        crate::defer_drop!(__second, vm);
+        let #binding = (__first, __second);
+        #body
+    });
     arg.pat = parse_quote!(__py_args);
     arg.ty = parse_quote!(crate::args::ArgValues);
-    let body = function.block;
-    function.block = Box::new(parse_quote!({
-        let (#first, #second) = __py_args.unpack_two_args(#name, vm.heap)?;
-        crate::defer_drop!(#first, vm);
-        crate::defer_drop!(#second, vm);
-        #named_pair
-        #body
-    }));
-    Ok(quote!(#function))
+    Ok(Some(quote!(#function)))
 }
 
 /// Bind the object with the same arity check and drop guard as a handwritten one-argument builtin.

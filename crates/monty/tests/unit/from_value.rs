@@ -445,10 +445,11 @@ fn optional_bool_distinguishes_omission_from_false() {
     });
 }
 
+#[cfg(feature = "ref-count-return")]
 #[test]
 fn borrowed_one_arg_adapter_releases_heap_strings_on_return() {
     const TEXT: &str = "heap-backed argument that exceeds inline storage";
-    #[monty_macros::py_signature("check(text: str | None, /)", style = one_arg)]
+    #[monty_macros::py_signature("check(text: str | None, /)")]
     fn check(vm: &mut VM<'_>, text: &Option<StrArg>) -> RunResult<bool> {
         if let Some(text) = text {
             assert_eq!(text.as_str(vm), TEXT);

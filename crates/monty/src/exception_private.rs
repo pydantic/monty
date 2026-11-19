@@ -423,6 +423,18 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Reports the maximum positional count for a native call.
+    #[must_use]
+    fn type_error_takes_at_most(name: &str, max: usize, actual: usize, qualify_positional: bool) -> RunError {
+        let qualifier = if qualify_positional { "positional " } else { "" };
+        let plural = if max == 1 { "" } else { "s" };
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{name}() takes at most {max} {qualifier}argument{plural} ({actual} given)"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for a `startswith`/`endswith` affix argument that is
     /// neither the expected string type nor a tuple.
     ///

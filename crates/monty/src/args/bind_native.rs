@@ -10,7 +10,7 @@ use crate::{
     args::{ArgPosIter, ArgValues, KwargsValues, KwargsValuesIter},
     bytecode::VM,
     defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropWithContext},
     intern::{Interns, StaticStrings},
     value::{EitherStr, Value},
@@ -106,16 +106,6 @@ fn bind_slow<const N: usize>(
     }
 
     let n_pos = state.pos.len();
-    if spec.unpack {
-        if state.kwargs.len() > 0 && !spec.varkwargs {
-            let name = spec.kwarg_error_name.unwrap_or(spec.func_name);
-            return Err(ExcType::type_error_no_kwargs(name));
-        }
-        if let Some(err) = unpack_arity_error(spec, n_pos) {
-            return Err(err);
-        }
-    }
-
     let positional_overflow = n_pos > spec.n_positional && !spec.varargs;
     for slot in bound.slots.iter_mut().take(n_pos.min(spec.n_positional)) {
         *slot = state.pos.next();
@@ -165,14 +155,12 @@ fn bind_slow<const N: usize>(
     }
 
     if positional_overflow {
-        let kwonly_given = bound.slots[spec.n_positional..].iter().filter(|s| s.is_some()).count();
         let receiver = usize::from(spec.bound_receiver);
-        return Err(ExcType::type_error_too_many_positional_range(
+        return Err(ExcType::type_error_takes_at_most(
             spec.func_name,
-            spec.n_required_positional + receiver,
             spec.n_positional + receiver,
             n_pos + receiver,
-            kwonly_given,
+            spec.varkwargs || spec.n_positional < spec.params.len(),
         ));
     }
 
@@ -202,8 +190,6 @@ fn bind_slow<const N: usize>(
 pub(crate) struct ParamSpec {
     /// Function name embedded in error messages (the `{name}()` prefix).
     pub func_name: &'static str,
-    /// Use positional range errors before keyword dispatch.
-    pub unpack: bool,
     /// Include the bound receiver in positional overflow diagnostics.
     pub bound_receiver: bool,
     /// Named params in declaration order — `[pos_only..][pos_or_kw..][kw_only..]`.
@@ -333,21 +319,6 @@ fn find_param<'s>(spec: &'s ParamSpec, key: &EitherStr, interns: &Interns) -> Op
             keyword.is_some() && param.keyword_name == keyword
         }
     })
-}
-
-/// Check the positional range of an unpack adapter.
-#[cold]
-fn unpack_arity_error(spec: &ParamSpec, n_pos: usize) -> Option<RunError> {
-    let (min, max) = (spec.n_required_positional, spec.n_positional);
-    if (min..=max).contains(&n_pos) {
-        None
-    } else if min == max {
-        Some(ExcType::type_error_expected_exact(spec.func_name, min, n_pos))
-    } else if n_pos < min {
-        Some(ExcType::type_error_at_least(spec.func_name, min, n_pos))
-    } else {
-        Some(ExcType::type_error_at_most(spec.func_name, max, n_pos))
-    }
 }
 
 /// Collect the names of required-but-unfilled params in `start..end` (the

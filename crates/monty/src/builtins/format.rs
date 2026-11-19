@@ -10,13 +10,8 @@ use crate::{bytecode::VM, exception_private::RunResult, types::str::allocate_str
 /// path f-strings and `str.format()` use, so every spec and error behaves the
 /// same across all three entry points.
 ///
-/// Argument shape for `format(value, format_spec='', /)`.
-///
-/// CPython parses it with `PyArg_ParseTuple`, so `style = unpack` gives the
-/// `format expected at most 2 arguments` arity wording and the blanket
-/// `format() takes no keyword arguments` rejection; `bad_arg` supplies
-/// `format() argument 2 must be str, not int`.
-#[py_signature("format(value, format_spec: str=..., /)", style = unpack, bad_arg)]
+/// The converter reports the expected type and position for an invalid format spec.
+#[py_signature("format(value, format_spec: str=..., /)", bad_arg)]
 pub fn builtin_format(vm: &mut VM<'_>, args: &FormatArgs) -> RunResult<Value> {
     let FormatArgs { value, format_spec } = args;
     // The spec borrows `vm`, which the formatter needs mutably; it is already

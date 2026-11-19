@@ -28,7 +28,6 @@ pub(super) struct Signature {
     struct_ident: Ident,
     /// Function name embedded in error messages (the `{name}()` prefix).
     func_name: String,
-    unpack: bool,
     /// Fields in declaration order — also the positional dispatch order.
     fields: Vec<Field>,
     varargs_idx: Option<usize>,
@@ -139,7 +138,6 @@ impl Signature {
 
         let StructAttrs {
             name: func_name,
-            unpack,
             kwarg_error_name,
             bad_arg,
             kwargs_not_supported_yet,
@@ -168,7 +166,6 @@ impl Signature {
         let signature = Self {
             struct_ident: struct_ident.clone(),
             func_name,
-            unpack,
             fields,
             varargs_idx,
             varkwargs_idx,
@@ -180,22 +177,9 @@ impl Signature {
         Ok(signature)
     }
 
-    /// Style/modifier/field compatibility checks — the single place invalid
-    /// combinations are rejected. Grouped per style, then the orthogonal
-    /// modifiers, so each rule reads as one line of the compatibility table.
+    /// Checks that the signature modifiers and field roles can be used together.
     fn validate(&self) -> syn::Result<()> {
         let err = |msg: &str| Err(syn::Error::new(self.struct_ident.span(), msg));
-
-        if self.unpack {
-            if self.fields.iter().any(|f| matches!(f.kind, FieldKind::PosOrKeyword)) {
-                return err(
-                    "`style = unpack` models a positional-only signature — every positional field must be `pos_only`",
-                );
-            }
-            if self.varargs_idx.is_some() {
-                return err("`style = unpack` requires a fixed positional range");
-            }
-        }
 
         if self.kwargs_not_supported_yet {
             if self.varkwargs_idx.is_some() {
@@ -527,7 +511,6 @@ impl Signature {
         // are all rejected up front), so no field needs a matchable id — this
         // also spares the `StaticStrings` variants those names would require.
         let params = named.iter().map(|f| f.render_param(self.kwargs_not_supported_yet));
-        let unpack = self.unpack;
         let n_positional = named
             .iter()
             .filter(|f| matches!(f.kind, FieldKind::PosOnly | FieldKind::PosOrKeyword))
@@ -547,7 +530,6 @@ impl Signature {
         quote! {
             crate::args::ParamSpec {
                 func_name: #func_name,
-                unpack: #unpack,
                 bound_receiver: #bound_receiver,
                 params: &[#(#params),*],
                 n_positional: #n_positional,
@@ -802,7 +784,6 @@ fn is_vec_of_value(ty: &Type) -> bool {
 /// Parsed `#[from_args(...)]` set on the struct itself.
 struct StructAttrs {
     name: String,
-    unpack: bool,
     kwarg_error_name: Option<String>,
     bad_arg: Option<BadArgStyle>,
     kwargs_not_supported_yet: bool,
@@ -811,7 +792,6 @@ struct StructAttrs {
 /// Parse the `#[from_args(...)]` attributes attached to the struct itself.
 fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
     let mut name: Option<String> = None;
-    let mut unpack = false;
     let mut kwarg_error_name: Option<String> = None;
     let mut bad_arg: Option<BadArgStyle> = None;
     let mut kwargs_not_supported_yet = false;
@@ -823,16 +803,6 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
             if meta.path.is_ident("name") {
                 let value: LitStr = meta.value()?.parse()?;
                 name = Some(value.value());
-                Ok(())
-            } else if meta.path.is_ident("style") {
-                if unpack {
-                    return Err(meta.error("duplicate `style` attribute"));
-                }
-                let value: Ident = meta.value()?.parse()?;
-                if value != "unpack" {
-                    return Err(syn::Error::new(value.span(), "expected `style = unpack`"));
-                }
-                unpack = true;
                 Ok(())
             } else if meta.path.is_ident("kwarg_error_name") {
                 let value: LitStr = meta.value()?.parse()?;
@@ -855,7 +825,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 Ok(())
             } else {
                 Err(meta.error(
-                    "unknown struct attribute; expected `name = \"...\"`, `style = unpack`, \
+                    "unknown struct attribute; expected `name = \"...\"`, \
                      `kwarg_error_name = \"...\"`, `bad_arg`, `bad_arg_named`, \
                      or `kwargs_not_supported_yet`",
                 ))
@@ -870,7 +840,6 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
     })?;
     Ok(StructAttrs {
         name,
-        unpack,
         kwarg_error_name,
         bad_arg,
         kwargs_not_supported_yet,
@@ -998,8 +967,8 @@ mod tests {
             }
         });
         expand_ok(&parse_quote! {
-            #[from_args(name = "unicodedata.name", style = unpack)]
-            struct Unpack {
+            #[from_args(name = "unicodedata.name")]
+            struct PositionalOnly {
                 #[from_args(pos_only)]
                 chr: Value,
                 #[from_args(pos_only, default)]
@@ -1024,24 +993,6 @@ mod tests {
                 kwargs: KwargsValues,
             }
         });
-    }
-
-    #[test]
-    fn unknown_style() {
-        let err = expand_err(&parse_quote! {
-            #[from_args(name = "f", style = fancy)]
-            struct S { a: Value }
-        });
-        assert_snapshot!(err, @"expected `style = unpack`");
-    }
-
-    #[test]
-    fn unpack_rejects_pos_or_keyword() {
-        let err = expand_err(&parse_quote! {
-            #[from_args(name = "f", style = unpack)]
-            struct S { a: Value }
-        });
-        assert_snapshot!(err, @"`style = unpack` models a positional-only signature — every positional field must be `pos_only`");
     }
 
     #[test]
@@ -1167,8 +1118,6 @@ mod tests {
 
     #[test]
     fn old_flag_spellings_are_rejected() {
-        // The pre-`style` boolean flags were removed in one clean break; make
-        // sure they fail loudly rather than being silently ignored.
         for old_flag in [
             "py_def",
             "c_error",

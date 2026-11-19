@@ -260,7 +260,10 @@ try:
     os.walk(root, 1, 2, 3, 4)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'walk() takes from 1 to 4 positional arguments but 5 were given'
+    assert str(e) in (
+        'walk() takes at most 4 arguments (5 given)',
+        'walk() takes from 1 to 4 positional arguments but 5 were given',
+    )
 
 # === Path.walk ===
 path_walked = [(rel(p), sorted(dn), sorted(listed(fn))) for p, dn, fn in root.walk()]

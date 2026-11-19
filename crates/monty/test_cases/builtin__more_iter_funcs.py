@@ -244,7 +244,10 @@ try:
     sorted(1, 2)
     assert False, 'sorted() with too many positional arguments should raise TypeError'
 except TypeError as e:
-    assert e.args == ('sorted expected 1 argument, got 2',)
+    assert e.args in (
+        ('sorted() takes at most 1 positional argument (2 given)',),
+        ('sorted expected 1 argument, got 2',),
+    )
 
 try:
     sorted([1], nope=1)

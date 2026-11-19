@@ -201,10 +201,7 @@ fn normalize_bool(value: Value) -> Value {
 ///
 /// Argument shape for `pairwise(iterable)`.
 ///
-/// CPython parses this with `PyArg_UnpackTuple`, so arity errors read
-/// `pairwise expected 1 argument, got 2` and any keyword is rejected wholesale
-/// with `pairwise() takes no keyword arguments`.
-#[py_signature("pairwise(iterable, /)", style = unpack, bind = owned)]
+#[py_signature("pairwise(iterable, /)", bind = owned)]
 fn call_pairwise(vm: &mut VM<'_>, args: PairwiseArgs) -> RunResult<Value> {
     let PairwiseArgs { iterable } = args;
     // Resolve to an iterator up front, as CPython does: a non-iterable raises
@@ -240,10 +237,8 @@ fn call_compress(vm: &mut VM<'_>, args: CompressArgs) -> RunResult<Value> {
 ///
 /// Argument shape for `islice(iterable, [start,] stop[, step])`.
 ///
-/// CPython uses `PyArg_UnpackTuple` with a 2..4 arity, so the trailing three
-/// slots are read positionally and their *meaning* depends on how many were
-/// given — resolved in the body by [`islice_bounds`], not by the binder.
-#[py_signature("islice(iterable, first, second=..., third=..., /)", style = unpack, bind = owned)]
+/// [`islice_bounds`] interprets the trailing positional arguments according to how many were supplied.
+#[py_signature("islice(iterable, first, second=..., third=..., /)", bind = owned)]
 fn call_islice(vm: &mut VM<'_>, args: IsliceArgs) -> RunResult<Value> {
     let IsliceArgs {
         iterable,
@@ -350,9 +345,7 @@ fn call_chain(vm: &mut VM<'_>, iterables: ArgPosIter) -> RunResult<Value> {
 ///
 /// Argument shape for `cycle(iterable)`.
 ///
-/// `PyArg_UnpackTuple` like `pairwise`, so arity reads `cycle expected 1
-/// argument, got 2` and keywords are rejected wholesale.
-#[py_signature("cycle(iterable, /)", style = unpack, bind = owned)]
+#[py_signature("cycle(iterable, /)", bind = owned)]
 fn call_cycle(vm: &mut VM<'_>, args: CycleArgs) -> RunResult<Value> {
     let CycleArgs { iterable } = args;
     // Unlike `chain`, CPython resolves eagerly here, so `cycle(5)` raises now.
@@ -361,16 +354,10 @@ fn call_cycle(vm: &mut VM<'_>, args: CycleArgs) -> RunResult<Value> {
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
-/// Argument shape shared by `takewhile`, `dropwhile`, `filterfalse` and
-/// `starmap`.
-///
-/// All four are `PyArg_UnpackTuple(args, name, 2, 2, ...)` in CPython, so both
-/// slots are positional-only, arity reads `takewhile expected 2 arguments, got
-/// 1`, and keywords are rejected wholesale. The macro embeds the name, hence
-/// one struct per callable rather than one shared struct.
+/// Generates the shared signature with each callable's name for diagnostics.
 macro_rules! callable_and_iterable_args {
     ($struct_name:ident, $py_name:literal) => {
-        #[py_signature("(callable, iterable, /)", style = unpack, error_name = $py_name)]
+        #[py_signature("(callable, iterable, /)", error_name = $py_name)]
         struct $struct_name;
     };
 }
@@ -718,15 +705,7 @@ fn call_chain_from_iterable(vm: &mut VM<'_>, args: ChainFromIterableArgs) -> Run
 }
 
 /// `itertools.tee(iterable, n=2)` — `n` iterators over one source.
-///
-/// Argument shape for `tee(iterable, n=2)`.
-///
-/// `PyArg_UnpackTuple` with a 1..2 arity, so arity errors read `tee expected at
-/// most 2 arguments, got 3`. The blanket keyword rejection is the one in this
-/// module that names the function with its module (`itertools.tee()`), hence
-/// the `kwarg_error_name`. `n` stays a raw `Value` for the `Py_ssize_t`
-/// conversion in the body, as `batched`'s does.
-#[py_signature("tee(iterable, n=..., /)", style = unpack, kwarg_error_name = "itertools.tee", bind = owned)]
+#[py_signature("tee(iterable, n=..., /)", kwarg_error_name = "itertools.tee", bind = owned)]
 fn call_tee(vm: &mut VM<'_>, args: TeeArgs) -> RunResult<Value> {
     let TeeArgs { iterable, n } = args;
     let consumers = match n {

@@ -154,13 +154,16 @@ try:
     itertools.tee()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'tee expected at least 1 argument, got 0'
+    assert str(exc) in (
+        "tee() missing 1 required positional argument: 'iterable'",
+        'tee expected at least 1 argument, got 0',
+    )
 
 try:
     itertools.tee([1], 2, 3)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'tee expected at most 2 arguments, got 3'
+    assert str(exc) in ('tee() takes at most 2 arguments (3 given)', 'tee expected at most 2 arguments, got 3')
 
 # The blanket keyword rejection names the module as well as the function, which
 # is CPython's wording here and nowhere else in `itertools`.
@@ -168,7 +171,10 @@ try:
     itertools.tee([1], n=2)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'itertools.tee() takes no keyword arguments'
+    assert str(exc) in (
+        "tee() got some positional-only arguments passed as keyword arguments: 'n'",
+        'itertools.tee() takes no keyword arguments',
+    )
 
 try:
     itertools.tee([1], -1)

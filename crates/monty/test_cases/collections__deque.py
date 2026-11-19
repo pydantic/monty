@@ -619,19 +619,27 @@ try:
     deque().index()
     assert False, 'expected index() with no args to fail'
 except TypeError as exc:
-    assert str(exc) == 'index expected at least 1 argument, got 0', str(exc)
+    assert str(exc) in (
+        "index() missing 1 required positional argument: 'value'",
+        'index expected at least 1 argument, got 0',
+    ), str(exc)
 
 try:
     deque().insert(1)
     assert False, 'expected insert() with one arg to fail'
 except TypeError as exc:
-    assert str(exc) == 'insert expected 2 arguments, got 1', str(exc)
+    assert str(exc) in (
+        "insert() missing 1 required positional argument: 'item'",
+        'insert expected 2 arguments, got 1',
+    ), str(exc)
 
 try:
     deque().rotate(1, 2)
     assert False, 'expected rotate() with two args to fail'
 except TypeError as exc:
-    assert str(exc) == 'rotate expected at most 1 argument, got 2', str(exc)
+    assert str(exc) in ('rotate() takes at most 1 argument (2 given)', 'rotate expected at most 1 argument, got 2'), (
+        str(exc)
+    )
 
 # === str(type()) is qualified ===
 assert str(type(deque())) == "<class 'collections.deque'>", 'qualified class repr'

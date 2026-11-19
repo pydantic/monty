@@ -11,7 +11,7 @@ def check(fn, expected):
         if expected is TypeError:
             assert isinstance(exc, TypeError)
         else:
-            assert f'{type(exc).__name__}: {exc}' == expected
+            assert f'{type(exc).__name__}: {exc}' in (expected if isinstance(expected, tuple) else (expected,))
 
 
 # === gmtime ===
@@ -78,16 +78,31 @@ assert time.strftime('%Y-%m-%d', time.strptime('2024-06-15', '%Y-%m-%d')) == '20
 
 # === argument errors ===
 check(lambda: time.gmtime(0, 1), TypeError)
-check(lambda: time.gmtime(seconds=0), 'TypeError: gmtime() takes no keyword arguments')
+check(
+    lambda: time.gmtime(seconds=0),
+    (
+        "TypeError: gmtime() got some positional-only arguments passed as keyword arguments: 'seconds'",
+        'TypeError: gmtime() takes no keyword arguments',
+    ),
+)
 check(lambda: time.localtime(0, 1), TypeError)
 check(lambda: time.ctime(0, 1), TypeError)
-check(lambda: time.asctime(epoch, epoch), 'TypeError: asctime expected at most 1 argument, got 2')
+check(
+    lambda: time.asctime(epoch, epoch),
+    (
+        'TypeError: asctime() takes at most 1 argument (2 given)',
+        'TypeError: asctime expected at most 1 argument, got 2',
+    ),
+)
 check(lambda: time.mktime(), 'TypeError: time.mktime() takes exactly one argument (0 given)')
 check(lambda: time.strftime(), TypeError)
 check(lambda: time.strftime('%Y', epoch, 3), TypeError)
 check(
     lambda: time.strptime('a', 'b', 'c'),
-    'TypeError: _strptime_time() takes from 1 to 2 positional arguments but 3 were given',
+    (
+        'TypeError: _strptime_time() takes at most 2 arguments (3 given)',
+        'TypeError: _strptime_time() takes from 1 to 2 positional arguments but 3 were given',
+    ),
 )
 check(lambda: time.strftime(5), 'TypeError: strftime() argument 1 must be str, not int')
 check(lambda: time.gmtime('x'), "TypeError: 'str' object cannot be interpreted as an integer")

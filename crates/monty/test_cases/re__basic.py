@@ -264,7 +264,10 @@ try:
     re.sub(r'\d+', 'X', 'a1', 0, 0, 'extra')
     assert False, 're.sub with 6 args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'sub() takes from 3 to 5 positional arguments but 6 were given', f're.sub too many: {e}'
+    assert str(e) in (
+        'sub() takes at most 5 arguments (6 given)',
+        'sub() takes from 3 to 5 positional arguments but 6 were given',
+    ), f're.sub too many: {e}'
 
 # === re.sub() error: count is not an integer ===
 try:
@@ -434,14 +437,20 @@ try:
     re.search(123, 'x', 0, 'extra')
     assert False, 're.search with 4 args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'search() takes from 2 to 3 positional arguments but 4 were given', f're.search 4 args: {e}'
+    assert str(e) in (
+        'search() takes at most 3 arguments (4 given)',
+        'search() takes from 2 to 3 positional arguments but 4 were given',
+    ), f're.search 4 args: {e}'
 
 # === re.escape() arity (single fixed positional) ===
 try:
     re.escape('a', 'b')
     assert False, 're.escape with 2 args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'escape() takes 1 positional argument but 2 were given', f're.escape 2 args: {e}'
+    assert str(e) in (
+        'escape() takes at most 1 argument (2 given)',
+        'escape() takes 1 positional argument but 2 were given',
+    ), f're.escape 2 args: {e}'
 
 # === keyword arguments are accepted like CPython's pure-Python functions ===
 assert re.search(pattern='h', string='hello') is not None

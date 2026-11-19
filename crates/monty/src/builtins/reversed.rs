@@ -14,12 +14,7 @@ use crate::{
 ///
 /// Returns a list with elements in reverse order.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
-///
-/// Argument shape for `reversed(sequence, /)` — positional-only, so
-/// `style = unpack` gives CPython's exact-arity wording
-/// (`reversed expected 1 argument, got 2`) and the blanket
-/// `reversed() takes no keyword arguments` rejection.
-#[py_signature("reversed(sequence, /)", style = unpack, bind = owned)]
+#[py_signature("reversed(sequence, /)", bind = owned)]
 pub fn builtin_reversed(vm: &mut VM<'_>, args: ReversedArgs) -> RunResult<Value> {
     let ReversedArgs { sequence } = args;
     // Being iterable is not enough: CPython needs `__reversed__`, or

@@ -176,17 +176,17 @@ fn convert_clock(vm: &mut VM<'_>, args: ArgValues, caller: TimeCaller, reading: 
     }
 }
 
-/// `time.gmtime(secs=None)`; `PyArg_ParseTuple` in CPython, hence `parse_tuple`.
+/// `time.gmtime(secs=None)`.
 /// [`LocaltimeArgs`] and [`CtimeArgs`] are the same shape under their own names.
-#[py_signature("gmtime(seconds=None, /)", style = unpack)]
+#[py_signature("gmtime(seconds=None, /)")]
 struct GmtimeArgs;
 
 /// `time.localtime(secs=None)`; see [`GmtimeArgs`].
-#[py_signature("localtime(seconds=None, /)", style = unpack)]
+#[py_signature("localtime(seconds=None, /)")]
 struct LocaltimeArgs;
 
 /// `time.ctime(secs=None)`; see [`GmtimeArgs`].
-#[py_signature("ctime(seconds=None, /)", style = unpack)]
+#[py_signature("ctime(seconds=None, /)")]
 struct CtimeArgs;
 
 /// Suspends with the shared `time.time` call, carrying the work still to do on
@@ -374,7 +374,6 @@ fn mktime(vm: &mut VM<'_>, args: TimeMktimeArgs) -> RunResult<CallResult> {
 }
 
 /// `time.asctime(t=None)`: the fixed 24-character form, from `t` or the clock.
-/// `PyArg_UnpackTuple` in CPython, unlike its `gmtime` neighbours.
 #[py_signature("asctime(t=..., /)", reject_keywords, bind = owned)]
 fn asctime(vm: &mut VM<'_>, args: AsctimeArgs) -> RunResult<CallResult> {
     let AsctimeArgs { t } = args;
@@ -387,7 +386,7 @@ fn asctime(vm: &mut VM<'_>, args: AsctimeArgs) -> RunResult<CallResult> {
 }
 
 /// `time.strftime(format, t=None)`, formatting `t` or the clock.
-#[py_signature("strftime(format, t=None, /)", style = unpack, bind = owned)]
+#[py_signature("strftime(format, t=None, /)", bind = owned)]
 fn strftime(vm: &mut VM<'_>, args: StrftimeArgs) -> RunResult<CallResult> {
     let StrftimeArgs { format, t } = args;
     let result = strftime_result(&format, &t, vm);

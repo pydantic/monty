@@ -6,15 +6,7 @@
 //! (`b2a_uu`/`a2b_uu`), the quoted-printable pair (`b2a_qp`/`a2b_qp`) and the
 //! two checksums `crc32` and `crc_hqx`.
 //!
-//! These are C functions in CPython, not the pure Python of [`super::base64`],
-//! so each argument struct names the parser family CPython's own definition
-//! uses: `hexlify` is `PyArg_ParseTupleAndKeywords`, the base64 and uuencode
-//! pairs are Argument Clinic with keyword-only flags, `crc32` and `crc_hqx`
-//! are `PyArg_UnpackTuple`, and `unhexlify` and `a2b_uu` are `METH_O`, which
-//! [`ArgValues::get_one_arg`] already words correctly.
-//!
-//! The byte-level codecs live in [`super::base64`], where they were written
-//! first; `binascii` re-exposes them under the names CPython puts them at.
+//! The byte-level codecs are shared with [`super::base64`].
 
 use monty_macros::py_signature;
 use monty_types::ResourceTracker;
@@ -204,7 +196,7 @@ fn call_a2b_base64(vm: &mut VM<'_>, args: &A2bBase64Args) -> RunResult<Value> {
 ///
 /// Argument shape for `crc32(data, crc=0)` — positional-only, so keywords are
 /// rejected outright with the module-qualified name.
-#[py_signature("crc32(data, crc=..., /)", style = unpack, kwarg_error_name = "binascii.crc32")]
+#[py_signature("crc32(data, crc=..., /)", kwarg_error_name = "binascii.crc32")]
 fn call_crc32(vm: &mut VM<'_>, args: &Crc32Args) -> RunResult<Value> {
     let Crc32Args { data, crc } = args;
     // CPython converts `crc` with the `I` format, which takes any int modulo
@@ -222,7 +214,7 @@ fn call_crc32(vm: &mut VM<'_>, args: &Crc32Args) -> RunResult<Value> {
 ///
 /// Argument shape for `crc_hqx(data, crc)` — like `crc32`, but with `crc`
 /// required rather than defaulted.
-#[py_signature("crc_hqx(data, crc, /)", style = unpack, kwarg_error_name = "binascii.crc_hqx")]
+#[py_signature("crc_hqx(data, crc, /)", kwarg_error_name = "binascii.crc_hqx")]
 fn call_crc_hqx(vm: &mut VM<'_>, args: &CrcHqxArgs) -> RunResult<Value> {
     let CrcHqxArgs { data, crc } = args;
     // The `I` format takes the seed modulo 2**32, then the body narrows it to

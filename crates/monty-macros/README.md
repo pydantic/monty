@@ -29,8 +29,9 @@ The adapter releases it when the body returns.
 Leave parameters unannotated when their operation runs in the body,
 as with the iterable passed to `enumerate`.
 
-For two required positional values, `#[py_signature("divmod(x, y, /)", style = two_args)]`
-binds the Rust parameter `args: (&Value, &Value)`. Destructure it with `let (x, y) = args;`.
+For two required positional values, `#[py_signature("divmod(x, y, /)")]`
+with the Rust parameter `args: (&Value, &Value)` uses the direct two-argument adapter.
+Destructure it with `let (x, y) = args;`.
 Keywords take precedence over arity errors.
 
 For `f()` or a bound method such as `#[py_signature("keys(self, /)", owner = "dict")]`, the Rust
@@ -77,12 +78,10 @@ Generated adapters evaluate calls in three steps.
 3. Call the Rust handler for checks on the converted values.
 
 The default binder reports keyword conflicts and unknown keywords before positional overflow and missing arguments.
+Positional overflow reports the maximum allowed count and the count supplied.
 Once binding succeeds, the adapter stops at the first failed conversion. Protocol methods such as `__index__`
 can run at this step.
 
-For a fixed positional range, `style = unpack` uses `f expected …, got …`.
-It rejects keywords up front for positional APIs such as `next` and checks arity before forwarding keywords for adapters
-such as `sorted`.
 See [native call diagnostics](../../docs/limitations/builtins.md#native-call-diagnostics) for the compatibility policy.
 
 - `bad_arg` and `bad_arg_named` add the argument position or name to a conversion error.

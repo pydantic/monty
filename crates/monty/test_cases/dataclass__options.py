@@ -351,7 +351,10 @@ try:
     frozen(First, Second)
     assert False, 'expected a second positional argument to raise'
 except TypeError as e:
-    assert str(e) == 'dataclass.<locals>.wrap() takes 1 positional argument but 2 were given'
+    assert str(e) in (
+        'dataclass.<locals>.wrap() takes at most 1 argument (2 given)',
+        'dataclass.<locals>.wrap() takes 1 positional argument but 2 were given',
+    )
 
 try:
     frozen(cls=First, nope=1)

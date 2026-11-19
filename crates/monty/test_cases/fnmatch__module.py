@@ -142,11 +142,14 @@ for _call, _msg in [
     (lambda: fnmatch.translate(1), "object of type 'int' has no len()"),
     (lambda: fnmatch.translate(b'*'), 'decoding to str: need a bytes-like object, int found'),
     (lambda: fnmatch.fnmatch('a'), "fnmatch() missing 1 required positional argument: 'pat'"),
-    (lambda: fnmatch.fnmatch('a', '*', 1), 'fnmatch() takes 2 positional arguments but 3 were given'),
+    (
+        lambda: fnmatch.fnmatch('a', '*', 1),
+        ('fnmatch() takes at most 2 arguments (3 given)', 'fnmatch() takes 2 positional arguments but 3 were given'),
+    ),
     (lambda: fnmatch.fnmatch('x', foo='*'), "fnmatch() got an unexpected keyword argument 'foo'"),
 ]:
     try:
         _call()
         assert False, 'expected TypeError'
     except TypeError as e:
-        assert str(e) == _msg
+        assert str(e) in (_msg if isinstance(_msg, tuple) else (_msg,))

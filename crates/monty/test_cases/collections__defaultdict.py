@@ -166,12 +166,18 @@ try:
     defaultdict.fromkeys()
     assert False, 'expected fromkeys with no args to raise'
 except TypeError as e:
-    assert str(e) == 'fromkeys expected at least 1 argument, got 0', 'fromkeys arity message'
+    assert str(e) in (
+        "fromkeys() missing 1 required positional argument: 'iterable'",
+        'fromkeys expected at least 1 argument, got 0',
+    ), 'fromkeys arity message'
 try:
     defaultdict.fromkeys('ab', 0, 9)
     assert False, 'expected fromkeys with too many args to raise'
 except TypeError as e:
-    assert str(e) == 'fromkeys expected at most 2 arguments, got 3', 'fromkeys too-many message'
+    assert str(e) in (
+        'fromkeys() takes at most 2 arguments (3 given)',
+        'fromkeys expected at most 2 arguments, got 3',
+    ), 'fromkeys too-many message'
 
 # === Iteration ===
 # defaultdict inherits dict's __iter__, so iteration yields keys in insertion

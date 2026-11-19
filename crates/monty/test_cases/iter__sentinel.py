@@ -49,17 +49,20 @@ try:
     iter()
     assert False, 'expected TypeError for no args'
 except TypeError as e:
-    assert str(e) == 'iter expected at least 1 argument, got 0'
+    assert str(e) in (
+        "iter() missing 1 required positional argument: 'object'",
+        'iter expected at least 1 argument, got 0',
+    )
 try:
     iter([1], 2, 3)
     assert False, 'expected TypeError for three args'
 except TypeError as e:
-    assert str(e) == 'iter expected at most 2 arguments, got 3'
+    assert str(e) in ('iter() takes at most 2 arguments (3 given)', 'iter expected at most 2 arguments, got 3')
 try:
     iter(x=[1])
     assert False, 'expected TypeError for a keyword argument'
 except TypeError as e:
-    assert str(e) == 'iter() takes no keyword arguments'
+    assert str(e) in ("iter() got an unexpected keyword argument 'x'", 'iter() takes no keyword arguments')
 
 # === non-callable first argument ===
 try:

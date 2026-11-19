@@ -53,7 +53,7 @@ pub fn py_signature(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// required fields preceding optional ones in each region.
 ///
 /// `#[from_args(name = "...")]` is required on the struct. The remaining
-/// attributes select CPython error-wording style or field roles; see the
+/// attributes control diagnostics and field roles. See the
 /// crate `README.md` and the source docstrings.
 #[proc_macro_derive(FromArgs, attributes(from_args))]
 pub fn derive_from_args(input: TokenStream) -> TokenStream {

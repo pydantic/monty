@@ -129,8 +129,8 @@ impl ArgValues {
         }
     }
 
-    /// Two positional arguments with PyArg_UnpackTuple's keyword and arity errors.
-    pub(crate) fn unpack_two_args(self, name: &str, heap: &mut Heap) -> RunResult<(Value, Value)> {
+    /// Bind a direct pair, rejecting keywords before checking arity.
+    pub(crate) fn get_two_positional_args(self, name: &str, heap: &mut Heap) -> RunResult<(Value, Value)> {
         match self {
             Self::Two(a, b) => Ok((a, b)),
             other => {

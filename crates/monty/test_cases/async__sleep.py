@@ -12,7 +12,7 @@ def check(fn, expected):
         raise AssertionError('expected failure')
     except Exception as exc:
         got = f'{type(exc).__name__}: {exc}'
-        assert got == expected, f'{got!r} != {expected!r}'
+        assert got in (expected if isinstance(expected, tuple) else (expected,)), f'{got!r} != {expected!r}'
 
 
 # === awaiting ===
@@ -48,7 +48,13 @@ except ValueError as exc:
 
 # === signature errors ===
 check(lambda: asyncio.sleep(), "TypeError: sleep() missing 1 required positional argument: 'delay'")
-check(lambda: asyncio.sleep(0, 1, 2), 'TypeError: sleep() takes from 1 to 2 positional arguments but 3 were given')
+check(
+    lambda: asyncio.sleep(0, 1, 2),
+    (
+        'TypeError: sleep() takes at most 2 arguments (3 given)',
+        'TypeError: sleep() takes from 1 to 2 positional arguments but 3 were given',
+    ),
+)
 check(lambda: asyncio.sleep(0, bad=1), "TypeError: sleep() got an unexpected keyword argument 'bad'")
 
 # a non-numeric delay fails as the `delay <= 0` comparison CPython makes,

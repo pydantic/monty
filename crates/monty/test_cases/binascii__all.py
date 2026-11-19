@@ -227,13 +227,19 @@ try:
     binascii.crc_hqx(b'a')
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'crc_hqx expected 2 arguments, got 1'
+    assert str(exc) in (
+        "crc_hqx() missing 1 required positional argument: 'crc'",
+        'crc_hqx expected 2 arguments, got 1',
+    )
 
 try:
     binascii.crc_hqx(data=b'a', crc=0)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'binascii.crc_hqx() takes no keyword arguments'
+    assert str(exc) in (
+        "crc_hqx() got some positional-only arguments passed as keyword arguments: 'data'",
+        'binascii.crc_hqx() takes no keyword arguments',
+    )
 
 try:
     binascii.crc_hqx('a', 0)

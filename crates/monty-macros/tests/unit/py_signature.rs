@@ -11,7 +11,6 @@ fn adapter() -> ItemFn {
 #[test]
 fn rejects_invalid_options() {
     for options in [
-        "style = unpack, style = one_arg",
         "bind = shared, bind = owned",
         "bad_arg, bad_arg",
         "reject_keywords, reject_keywords",
@@ -24,9 +23,9 @@ fn rejects_invalid_options() {
             "duplicate py_signature option"
         );
     }
-    let result = syn::parse_str::<Declaration>(r#""f()", unknown = def"#);
+    let result = syn::parse_str::<Declaration>(r#""f()", style = unpack"#);
     assert_eq!(
-        result.err().expect("unknown option").to_string(),
+        result.err().expect("removed style option").to_string(),
         "unknown py_signature option"
     );
 }
@@ -114,30 +113,14 @@ fn generates_bound_fields_in_declaration_order() {
 }
 
 #[test]
-fn one_arg_requires_one_positional_only_argument() {
-    for signature in ["f()", "f(x)", "f(x=1.0, /)", "f(x, y, /)", "f(x, /, **kwargs)"] {
-        let declaration = parse_quote!(#signature, style = one_arg);
-        let error = expand(&declaration, adapter()).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "`style = one_arg` requires one positional-only parameter without a default"
-        );
-    }
-}
-
-#[test]
 fn one_arg_checks_the_rust_argument() {
-    let declaration = parse_quote!("f(x, /)", style = one_arg);
+    let declaration = parse_quote!("f(x, /)");
     let function = parse_quote!(
         fn f(x: Value) {}
     );
     assert_eq!(
         expand(&declaration, function).unwrap_err().to_string(),
         "expected &Value for a single positional argument"
-    );
-    assert_eq!(
-        expand(&declaration, adapter()).unwrap_err().to_string(),
-        "expected a parameter named `x` of type &Value"
     );
 }
 
@@ -150,7 +133,7 @@ fn one_arg_requires_a_borrow_for_conversions_that_retain_heap_references() {
         ("SupportsIndex", "IntArg"),
     ] {
         let signature = format!("f(x: {annotation}, /)");
-        let declaration = parse_quote!(#signature, style = one_arg);
+        let declaration = parse_quote!(#signature);
         let function = syn::parse_str(&format!("fn f(x: {rust_type}) {{}}")).unwrap();
         assert_eq!(
             expand(&declaration, function).unwrap_err().to_string(),
@@ -161,13 +144,12 @@ fn one_arg_requires_a_borrow_for_conversions_that_retain_heap_references() {
 
 #[test]
 fn one_arg_uses_the_declared_name_for_errors() {
-    for options in [r#"owner = "T""#, r#"kwarg_error_name = "g""#] {
-        let declaration = syn::parse_str::<Declaration>(&format!(r#""f(x, /)", style = one_arg, {options}"#)).unwrap();
-        assert_eq!(
-            expand(&declaration, adapter()).unwrap_err().to_string(),
-            "`style = one_arg` uses the callable name for errors"
-        );
-    }
+    let declaration = parse_quote!("f(x, /)", error_name = "module.f");
+    let function = parse_quote!(
+        fn f(vm: &mut VM<'_>, x: &Value) {}
+    );
+    let output = expand(&declaration, function).unwrap().to_string();
+    assert!(output.contains(r#"get_one_arg ("module.f""#));
 }
 
 #[test]
@@ -190,17 +172,14 @@ fn one_arg_uses_the_existing_positional_fast_path() {
 }
 
 #[test]
-fn implicit_direct_binding_preserves_explicit_styles_and_struct_binders() {
-    let direct: ItemFn = parse_quote!(
+fn direct_binding_leaves_named_struct_binders_in_place() {
+    let signature = "f(x: float, /)";
+    let function = parse_quote!(
         fn f(x: f64) {}
     );
-    let signature = "f(x: float, /)";
-    assert_eq!(
-        expand(&parse_quote!(#signature), direct.clone()).unwrap().to_string(),
-        expand(&parse_quote!(#signature, style = one_arg), direct)
-            .unwrap()
-            .to_string(),
-    );
+    let direct = expand(&parse_quote!(#signature), function).unwrap().to_string();
+    assert!(direct.contains("get_one_arg"));
+
     for (declaration, function) in [
         (parse_quote!(#signature), adapter()),
         (parse_quote!("f(args, /)"), adapter()),
@@ -216,7 +195,6 @@ fn implicit_direct_binding_preserves_explicit_styles_and_struct_binders() {
                 fn f(x: State, args: &FArgs, vm: &mut VM<'_>) {}
             ),
         ),
-        (parse_quote!("f(x, /)", style = unpack), adapter()),
     ] {
         let output: ItemFn = syn::parse2(expand(&declaration, function).unwrap()).unwrap();
         assert!(
@@ -330,11 +308,6 @@ fn rejects_invalid_named_binders_and_converters() {
         );
     }
     for (options, expected) in [
-        (
-            r#""f(*items)", style = unpack"#,
-            "`style = unpack` requires a fixed positional range",
-        ),
-        (r#""f(x)", style = c_named"#, "expected `style = unpack`"),
         (r#""(x)""#, "a parameter list requires error_name"),
         (
             r#""f(self, /)", owner = "T", error_name = "g""#,
@@ -343,10 +316,6 @@ fn rejects_invalid_named_binders_and_converters() {
         (r#""f(x)", convert(other = T)"#, "unknown converter parameter"),
         (r#""f(x=None)", convert(x = T)"#, "unsupported custom converter default"),
         (r#""f(x: c_int=2147483648)""#, "expected a C int literal"),
-        (
-            r#""f(x, /)", style = one_arg, bad_arg"#,
-            "a direct positional argument cannot use parser modifiers",
-        ),
         (
             r#""f()", owner = "T""#,
             "owner requires a positional-only self parameter",
@@ -420,28 +389,38 @@ fn named_owned_args_require_a_full_destructure_before_any_return() {
 }
 
 #[test]
+fn infers_a_direct_pair() {
+    let declaration = parse_quote!("divmod(x, y, /)");
+    let function = parse_quote!(
+        fn divmod(vm: &mut VM<'_>, args: (&Value, &Value)) {}
+    );
+    let output = expand(&declaration, function).unwrap().to_string();
+    assert!(output.contains(r#"get_two_positional_args ("divmod""#));
+    assert_eq!(output.matches("defer_drop !").count(), 2);
+}
+
+#[test]
 fn two_args_requires_an_ordered_pair_of_raw_values() {
     let function: ItemFn = parse_quote!(
         fn divmod((x, y): (&Value, &Value)) {}
     );
-    for (sig, expected) in [
-        (
-            "divmod(x, y)",
-            "`style = two_args` requires two positional-only parameters",
-        ),
+    for (signature, expected) in [
+        ("divmod(x, y)", "a direct pair requires two positional-only parameters"),
         (
             "divmod(x, y=0, /)",
-            "`style = two_args` requires two raw values and uses the callable name for errors",
+            "a direct pair requires two raw positional-only arguments",
         ),
         (
-            "divmod(y, x, /)",
-            "expected a pair of &Value parameters in signature order",
+            "divmod(x, y: int, /)",
+            "a direct pair requires two raw positional-only arguments",
         ),
+        ("divmod(y, x, /)", "expected args or a pair in signature order"),
     ] {
-        let declaration = parse_quote!(#sig, style = two_args);
         assert_eq!(
-            expand(&declaration, function.clone()).unwrap_err().to_string(),
-            expected
+            expand(&parse_quote!(#signature), function.clone())
+                .unwrap_err()
+                .to_string(),
+            expected,
         );
     }
 }

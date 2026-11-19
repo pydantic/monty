@@ -63,7 +63,7 @@ pub(crate) fn type_of_ref(vm: &mut VM<'_>, value: &Value) -> Value {
 /// the dict omits it, and `__hash__ = None` when it defines `__eq__` without
 /// `__hash__`, as CPython's `type_new` does. Keyword arguments go to the
 /// parent's `__init_subclass__`.
-#[py_signature("type(name, bases, namespace, /, **kwargs)", style = unpack, bind = owned)]
+#[py_signature("type(name, bases, namespace, /, **kwargs)", bind = owned)]
 fn create_class(vm: &mut VM<'_>, args: TypeNewArgs) -> RunResult<Value> {
     let TypeNewArgs {
         name,

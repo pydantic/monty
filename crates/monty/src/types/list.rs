@@ -879,7 +879,7 @@ fn call_list_method<'h>(
 }
 
 /// Implements Python's `list.insert(index, item)` method.
-#[py_signature("insert(self, index, object, /)", style = unpack, bind = owned)]
+#[py_signature("insert(self, index, object, /)", bind = owned)]
 fn list_insert<'h>(list: &HeapReadMut<'h, List>, args: InsertArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let InsertArgs {
         index: index_obj,
@@ -911,7 +911,7 @@ fn list_insert<'h>(list: &HeapReadMut<'h, List>, args: InsertArgs, vm: &mut VM<'
 ///
 /// Removes the item at the given index (default: -1) and returns it.
 /// Raises IndexError if the list is empty or the index is out of range.
-#[py_signature("pop(index: i64=-1, /)", style = unpack, kwarg_error_name = "list.pop")]
+#[py_signature("pop(index: i64=-1, /)", kwarg_error_name = "list.pop")]
 fn list_pop<'h>(list: &HeapReadMut<'h, List>, args: &PopArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let index_i64 = args.index;
     if list.get(vm.heap).items.is_empty() {

@@ -37,7 +37,7 @@ pub(super) fn hypot(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// Collects both points before checking dimensions and converting coordinates.
-#[py_signature("dist(p, q, /)", style = unpack, kwarg_error_name = "math.dist")]
+#[py_signature("dist(p, q, /)", kwarg_error_name = "math.dist")]
 pub(super) fn dist(vm: &mut VM<'_>, args: &DistArgs) -> RunResult<Value> {
     let DistArgs { p, q } = args;
     let p = collect_iterable(p, vm)?;
@@ -256,7 +256,7 @@ impl Triple {
 }
 
 /// Uses exact integer arithmetic and compensated float products before generic arithmetic.
-#[py_signature("sumprod(p, q, /)", style = unpack, kwarg_error_name = "math.sumprod")]
+#[py_signature("sumprod(p, q, /)", kwarg_error_name = "math.sumprod")]
 pub(crate) fn sumprod(vm: &mut VM<'_>, args: &SumprodArgs) -> RunResult<Value> {
     let SumprodArgs { p, q } = args;
     let p = p.py_iter(vm)?.require_synchronous(vm)?;
@@ -350,7 +350,7 @@ fn add(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 }
 
 /// Performs one rounding and raises CPython's errors for invalid operations and overflow.
-#[py_signature("fma(x, y, z, /)", style = unpack, kwarg_error_name = "math.fma")]
+#[py_signature("fma(x, y, z, /)", kwarg_error_name = "math.fma")]
 pub(super) fn fma(vm: &mut VM<'_>, args: &FmaArgs) -> RunResult<Value> {
     let FmaArgs { x, y, z } = args;
     let x = value_to_float(x, vm)?;

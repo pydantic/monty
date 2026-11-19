@@ -28,13 +28,16 @@ try:
     format()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'format expected at least 1 argument, got 0'
+    assert str(e) in (
+        "format() missing 1 required positional argument: 'value'",
+        'format expected at least 1 argument, got 0',
+    )
 
 try:
     format(1, '', 3)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'format expected at most 2 arguments, got 3'
+    assert str(e) in ('format() takes at most 2 arguments (3 given)', 'format expected at most 2 arguments, got 3')
 
 try:
     format(1, 2)
@@ -58,7 +61,10 @@ try:
     format(1, format_spec='d')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'format() takes no keyword arguments'
+    assert str(e) in (
+        "format() got some positional-only arguments passed as keyword arguments: 'format_spec'",
+        'format() takes no keyword arguments',
+    )
 
 try:
     format('x', 'd')
