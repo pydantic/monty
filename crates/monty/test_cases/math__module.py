@@ -669,6 +669,13 @@ except TypeError:
     threw = True
 assert threw
 
+for function, name in [(math.gcd, 'gcd'), (math.lcm, 'lcm')]:
+    try:
+        function(1, value=2)
+        assert False, 'expected variadic math function to reject keywords'
+    except TypeError as e:
+        assert str(e) == f'math.{name}() takes no keyword arguments'
+
 # === math.comb() ===
 assert math.comb(5, 2) == 10
 assert math.comb(10, 0) == 1

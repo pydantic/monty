@@ -188,6 +188,16 @@ assert 'hello'.find('x') == -1
 assert 'hello'.find('') == 0
 assert 'hello'.find('l', 3) == 3
 assert 'hello'.find('l', 0, 3) == 2
+find_name = 'str.find' if sys.platform == 'monty' else 'find'
+for args, expected in [
+    ((), f'{find_name} expected at least 1 argument, got 0'),
+    (('l' * 200, 0, 3, 4), f'{find_name} expected at most 3 arguments, got 4'),
+]:
+    try:
+        'hello'.find(*args)
+        assert False, 'expected invalid find arity to raise TypeError'
+    except TypeError as e:
+        assert str(e) == expected
 
 # find()/startswith() with i64::MIN start/end — regression: `-index` on i64::MIN used to panic
 _I64_MIN = -(2**63)

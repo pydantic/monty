@@ -991,6 +991,8 @@ assert result == ['a', 'b', 'c']
 
 result = p.split('a,b;c', maxsplit=1)
 assert result == ['a', 'b;c']
+assert p.split('a,b;c', maxsplit=True) == ['a', 'b;c']
+assert p.split('a,b;c', maxsplit=False) == ['a', 'b', 'c']
 
 # === re.finditer() ===
 matches = list(re.finditer(r'\d+', 'a1 b22 c333'))

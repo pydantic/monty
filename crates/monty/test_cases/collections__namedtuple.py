@@ -268,6 +268,12 @@ assert Pair(5, 9).count(9) == 1, 'count() of a single match'
 assert Pair(5, 9).count(0) == 0, 'count() of an absent value is 0'
 assert pt.index(22) == 1, 'index() finds a value'
 assert pt.index(11) == 0, 'index() of the first field'
+assert Pair(5, 5).index(5, 1, 2) == 1
+try:
+    Pair(5, 9).index(9, 0, 1)
+    assert False, 'index() must exclude the stop position'
+except ValueError as e:
+    assert str(e) == 'tuple.index(x): x not in tuple'
 try:
     pt.index(999)
     assert False, 'expected index() of a missing value to raise'

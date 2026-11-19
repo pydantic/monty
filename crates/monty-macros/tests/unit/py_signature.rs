@@ -28,6 +28,8 @@ fn rejects_invalid_options() {
         result.err().expect("removed style option").to_string(),
         "unknown py_signature option"
     );
+    let result = syn::parse_str::<Declaration>(r#""f(x)", bind = borrowed"#);
+    assert_eq!(result.err().unwrap().to_string(), "expected shared, mut or owned");
 }
 
 #[test]
@@ -81,6 +83,14 @@ fn rejects_incompatible_rust_adapters() {
     assert_eq!(
         expand(&declaration, adapter()).unwrap_err().to_string(),
         "owner requires a positional-only self parameter"
+    );
+    let declaration = parse_quote!("f(x, /)");
+    let function = parse_quote!(
+        fn f(params: &(Value,)) {}
+    );
+    assert_eq!(
+        expand(&declaration, function).unwrap_err().to_string(),
+        "expected the name of the bound argument type"
     );
 }
 
@@ -182,6 +192,19 @@ fn infers_no_arguments_for_a_free_function() {
 }
 
 #[test]
+fn zero_argument_handler_cannot_choose_a_binding_mode_without_a_struct() {
+    let function = parse_quote!(
+        fn f(vm: &mut VM<'_>) {}
+    );
+    assert_eq!(
+        expand(&parse_quote!("f()", bind = owned), function)
+            .unwrap_err()
+            .to_string(),
+        "bind requires an argument struct"
+    );
+}
+
+#[test]
 fn empty_named_binder_has_an_inline_fast_path() {
     let binder = super::expand_struct(
         &parse_quote!("f()"),
@@ -268,6 +291,17 @@ fn rejects_invalid_named_binders_and_converters() {
     }
     let duplicate = syn::parse_str::<Declaration>(r#""f(x)", convert(x = T, x = U)"#);
     assert_eq!(duplicate.err().unwrap().to_string(), "duplicate converter");
+    assert_eq!(
+        super::expand_struct(
+            &parse_quote!("f(x)", bind = mut),
+            parse_quote!(
+                struct F;
+            )
+        )
+        .unwrap_err()
+        .to_string(),
+        "bind is only used on handlers"
+    );
 }
 
 #[test]
@@ -401,6 +435,36 @@ fn variadic_signatures_with_other_parameters_use_the_general_binder() {
         assert!(
             !output.contains("into_pos_only"),
             "{signature}: used the inline iterator"
+        );
+    }
+}
+
+#[test]
+fn reject_keywords_selects_the_positional_helper() {
+    for (signature, helper) in [
+        ("f()", "check_zero_args"),
+        ("f(x=..., /)", "get_zero_one_arg"),
+        ("f(x, /)", "get_one_arg"),
+        ("f(x, y=..., /)", "get_one_two_args"),
+        ("f(x, y, /)", "get_two_args"),
+    ] {
+        let declaration = parse_quote!(#signature, error_name = "module.f", reject_keywords);
+        let output = expand(&declaration, adapter()).unwrap().to_string();
+        assert!(
+            output.contains(r#"let args = args . reject_kwargs ("module.f" , vm . heap) ? ; let "#),
+            "{signature}: {output}"
+        );
+        assert!(
+            output.contains(&format!(r#"args . {helper} ("module.f" , vm . heap)"#)),
+            "{signature}: {output}"
+        );
+    }
+    for signature in ["f(x: float, /)", "f(*items)", "f(x, y, z, /)"] {
+        let declaration = parse_quote!(#signature, reject_keywords);
+        assert_eq!(
+            expand(&declaration, adapter()).unwrap_err().to_string(),
+            "reject_keywords requires a fixed raw positional signature",
+            "{signature}"
         );
     }
 }
