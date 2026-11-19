@@ -112,19 +112,26 @@ pub struct ModuleStub {
 }
 
 impl ModuleStub {
-    /// Validates each dotted component as an identifier and rejects top-level names reserved
-    /// by [`validate_module_name`] or [`CHECKER_MODULE_NAMES`].
-    pub fn new(module: impl Into<String>, source: impl Into<String>) -> Result<Self, ModuleStubError> {
-        let module = module.into();
+    /// Validates a dotted module path without copying any source string, so a caller can
+    /// check an answer before expanding shared strings into owned stubs.
+    pub fn validate(module: &str) -> Result<(), ModuleStubError> {
         let mut parts = module.split('.');
         let top = parts.next().unwrap_or_default();
-        validate_module_name(top).map_err(|_| invalid_path(&module, top))?;
+        validate_module_name(top).map_err(|_| invalid_path(module, top))?;
         if CHECKER_MODULE_NAMES.contains(&top) {
             return Err(ModuleStubError::ReservedName(top.to_owned()));
         }
         if let Some(part) = parts.find(|part| !is_identifier(part)) {
-            return Err(invalid_path(&module, part));
+            return Err(invalid_path(module, part));
         }
+        Ok(())
+    }
+
+    /// Validates each dotted component as an identifier and rejects top-level names reserved
+    /// by [`validate_module_name`] or [`CHECKER_MODULE_NAMES`].
+    pub fn new(module: impl Into<String>, source: impl Into<String>) -> Result<Self, ModuleStubError> {
+        let module = module.into();
+        Self::validate(&module)?;
         Ok(Self {
             module,
             source: source.into(),
