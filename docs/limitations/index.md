@@ -10,6 +10,7 @@ The other pages in this section are the exhaustive record, one per builtin, modu
 They list every known divergence, including the ones that feel obvious, so a behaviour missing from them can be
 assumed to match CPython 3.14.
 They exist for development and for agents debugging code that runs on Monty; most users need only this page.
+For compilation and runtime limits, see [resource limits](resource_limits.md).
 
 !!! tip
 
@@ -33,18 +34,22 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`
 - `with` statements, for files and for classes implementing `__enter__` / `__exit__`
+- Binary write/update files (`open(path, 'w+b')`); other update modes remain unsupported.
+    See [open.md](open.md) for file buffering and method limitations.
 - `match` statements with every PEP 634 pattern kind and guards, see [match.md](match.md)
 - f-strings (including the `=` debug form), `str.format()` and `format()`, with `!r` / `!s` / `!a` conversions,
     format specs and nested replacement fields
 - `async` / `await`, and `asyncio.run` / `asyncio.gather` / `asyncio.sleep`
-- `import x`, `import x.y`, `from x import y, z as w`; a module the sandbox does not have is requested from the host,
-    see [modules.md](modules.md#host-modules)
+- `import x`, `import x.y`, `from x import y, z as w`, `from x import *` (see
+    [modules.md](modules.md#star-imports)); a module the sandbox does not have is requested from the host,
+    see [modules.md](modules.md#host-modules), which may answer with the module's `.py` file from the working
+    directory instead, see [modules from files](modules.md#modules-from-files)
 - Starred unpacking everywhere CPython allows it
 - Runtime generic aliases (`list[int]`) and `|` unions (`int | None`), see [typing.md](typing.md)
 
 **Rejected at parse time**, with `NotImplementedError` before any code runs:
 
-- Class inheritance and metaclasses (`class Foo(Bar):`)
+- Metaclasses (`class Foo(metaclass=M):`)
 - Decorators on methods — so no `@classmethod`, `@staticmethod`, `@property`
 - `yield` / `yield from` — there are no generator functions.
     Generator *expressions* parse, but currently materialise to a `list`
@@ -52,17 +57,16 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `try*` / `except*` exception groups
 - PEP 695 `type` aliases
 - `async with`, `async for` and async comprehensions
-- Wildcard imports (`from m import *`)
 - t-strings
 
 **Missing in other ways:**
 
-- User-defined exception classes.
-    The built-in exception types are a fixed set, and without inheritance you cannot add to it.
+- User-defined exception classes, and subclasses of other native types.
+    Classes inherit only from classes defined in Python and `object`, so the built-in exception types are a fixed set.
 - Function attributes.
     `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so
     `functools.wraps`-style metadata copying and registries keyed on `fn.__name__` have no equivalent.
-- `compile`, `globals`, `__import__` and `super` — all raise `NameError`.
+- `compile`, `globals` and `__import__` — all raise `NameError`.
     `eval` and `exec` exist (source text only), and so does `locals()`; see [eval_exec.md](eval_exec.md).
 - Third-party packages.
     There is no `sys.path` and no site-packages.
@@ -71,37 +75,41 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 The following modules are present:
 
-| Module        | Divergences                      |
-| ------------- | -------------------------------- |
-| `asyncio`     | [asyncio.md](asyncio.md)         |
-| `base64`      | [base64.md](base64.md)           |
-| `binascii`    | [base64.md](base64.md)           |
-| `bisect`      | [bisect.md](bisect.md)           |
-| `collections` | [collections.md](collections.md) |
-| `copy`        | [copy.md](copy.md)               |
-| `csv`         | [csv.md](csv.md)                 |
-| `dataclasses` | [dataclasses.md](dataclasses.md) |
-| `datetime`    | [datetime.md](datetime.md)       |
-| `functools`   | [functools.md](functools.md)     |
-| `hashlib`     | [hashlib.md](hashlib.md)         |
-| `itertools`   | [itertools.md](itertools.md)     |
-| `json`        | [json.md](json.md)               |
-| `math`        | [math.md](math.md)               |
-| `os`          | [os.md](os.md)                   |
-| `os.path`     | [os.md](os.md)                   |
-| `pathlib`     | [pathlib.md](pathlib.md)         |
-| `posixpath`   | [os.md](os.md)                   |
-| `random`      | [random.md](random.md)           |
-| `re`          | [re.md](re.md)                   |
-| `sys`         | [sys.md](sys.md)                 |
-| `time`        | [time.md](time.md)               |
-| `tomllib`     | [tomllib.md](tomllib.md)         |
-| `typing`      | [typing.md](typing.md)           |
-| `unicodedata` | [unicodedata.md](unicodedata.md) |
+| Module          | Divergences                          |
+| --------------- | ------------------------------------ |
+| `annotationlib` | [annotationlib.md](annotationlib.md) |
+| `asyncio`       | [asyncio.md](asyncio.md)             |
+| `base64`        | [base64.md](base64.md)               |
+| `binascii`      | [base64.md](base64.md)               |
+| `bisect`        | [bisect.md](bisect.md)               |
+| `collections`   | [collections.md](collections.md)     |
+| `copy`          | [copy.md](copy.md)                   |
+| `csv`           | [csv.md](csv.md)                     |
+| `dataclasses`   | [dataclasses.md](dataclasses.md)     |
+| `datetime`      | [datetime.md](datetime.md)           |
+| `decimal`       | [decimal.md](decimal.md)             |
+| `fnmatch`       | [fnmatch.md](fnmatch.md)             |
+| `functools`     | [functools.md](functools.md)         |
+| `hashlib`       | [hashlib.md](hashlib.md)             |
+| `itertools`     | [itertools.md](itertools.md)         |
+| `json`          | [json.md](json.md)                   |
+| `math`          | [math.md](math.md)                   |
+| `os`            | [os.md](os.md)                       |
+| `os.path`       | [os.md](os.md)                       |
+| `pathlib`       | [pathlib.md](pathlib.md)             |
+| `posixpath`     | [os.md](os.md)                       |
+| `random`        | [random.md](random.md)               |
+| `re`            | [re.md](re.md)                       |
+| `statistics`    | [statistics.md](statistics.md)       |
+| `sys`           | [sys.md](sys.md)                     |
+| `time`          | [time.md](time.md)                   |
+| `tomllib`       | [tomllib.md](tomllib.md)             |
+| `typing`        | [typing.md](typing.md)               |
+| `unicodedata`   | [unicodedata.md](unicodedata.md)     |
 
 Each covers only part of its CPython surface — often a small part. `itertools`,
-`hashlib` and `tomllib` are the exceptions: `itertools` implements every name it exports, `hashlib` every guaranteed
-algorithm, and `tomllib` its whole three-name surface.
+`hashlib`, `tomllib` and `fnmatch` are the exceptions: `itertools` implements every name it exports, `hashlib` every
+guaranteed algorithm, and `tomllib` and `fnmatch` their whole three- and four-name surfaces.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 
@@ -124,7 +132,7 @@ Each links to the page that owns it, which is where the full account lives:
 - **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager**, not lazy.
     So `map(f, itertools.count())` runs until a resource limit trips
     ([builtins.md](builtins.md)).
-- **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `VERBOSE` flag, and some
+- **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `re.VERBOSE` constant, and some
     error messages differ ([re.md](re.md)).
 - **Only the class dunders listed above are dispatched.** `__len__` raises
     `TypeError` as if undefined, while in-place arithmetic dunders are skipped in favor of binary arithmetic

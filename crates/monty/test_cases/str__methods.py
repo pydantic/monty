@@ -225,6 +225,48 @@ assert 'hello'.endswith('he') == False
 assert 'hello'.endswith('') == True
 assert 'hello'.endswith('ell', 0, 4) == True
 
+# A start past the end, or past `end`, finds nothing, not even ''
+assert 'hello'.find('', 5) == 5
+assert 'hello'.find('', 6) == -1
+assert 'hello'.find('', 3, 2) == -1
+assert 'hello'.find('', 2**63) == -1
+assert 'hello'.rfind('', 6) == -1
+assert 'hello'.count('', 5) == 1
+assert 'hello'.count('', 6) == 0
+assert 'hello'.count('', -1, -2) == 0
+assert 'hello'.startswith('', 6) == False
+assert 'hello'.endswith('', 3, 2) == False
+assert 'hello'.endswith(('x', ''), 3, 2) == False
+for search in (lambda: 'hello'.index('', 6), lambda: 'hello'.rindex('', 3, 2)):
+    try:
+        search()
+        assert False, 'expected ValueError'
+    except ValueError as e:
+        assert str(e) == 'substring not found'
+# The affix is still checked
+try:
+    'hello'.startswith(1, 6)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'startswith first arg must be str or a tuple of str, not int'
+try:
+    'hello'.endswith(('', 1), 3, 2)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'tuple for endswith must only contain str, not int'
+# A bad start or end raises before anything is searched
+for search in (
+    lambda: 'hello'.rfind('l', 'x'),
+    lambda: 'hello'.index('l', None, 'x'),
+    lambda: 'hello'.rindex('l', 0, 'x'),
+    lambda: 'hello'.count('l', 'x'),
+):
+    try:
+        search()
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == 'slice indices must be integers or None or have an __index__ method'
+
 # === Phase 4: Strip/trim methods ===
 
 # strip()
@@ -282,6 +324,28 @@ assert 'a\nb\nc'.splitlines() == ['a', 'b', 'c']
 assert 'a\nb\nc'.splitlines(True) == ['a\n', 'b\n', 'c']
 assert 'a\r\nb'.splitlines() == ['a', 'b']
 assert ''.splitlines() == []
+
+# All Python line boundaries, including multi-byte Unicode separators.
+for boundary in ['\n', '\r', '\r\n', '\v', '\f', '\x1c', '\x1d', '\x1e', '\x85', '\u2028', '\u2029']:
+    for first, last in [('a', 'b'), ('é', '🐍')]:
+        text = first + boundary + last
+        assert text.splitlines() == [first, last]
+        assert text.splitlines(keepends=True) == [first + boundary, last]
+    assert boundary.splitlines() == ['']
+    assert boundary.splitlines(True) == [boundary]
+    assert (boundary * 2).splitlines() == ['', '']
+    assert (boundary * 2).splitlines(True) == [boundary, boundary]
+    assert ('a' + boundary).splitlines() == ['a']
+    assert ('a' + boundary).splitlines(True) == ['a' + boundary]
+
+mixed_lines = 'a\r\n\u2028b\x85c\vd\fe\x1cf\x1dg\x1eh\u2029'
+assert mixed_lines.splitlines() == ['a', '', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+assert mixed_lines.splitlines(True) == ['a\r\n', '\u2028', 'b\x85', 'c\v', 'd\f', 'e\x1c', 'f\x1d', 'g\x1e', 'h\u2029']
+# Whitespace and UTF-8 bytes resembling separators are not themselves line boundaries.
+assert 'a\t b\x1fc\xa0d\u2003e\u200bf\u0084g\u0086h\u2027i\u202aj'.splitlines() == [
+    'a\t b\x1fc\xa0d\u2003e\u200bf\u0084g\u0086h\u2027i\u202aj'
+]
+assert 'ą測'.splitlines() == ['ą測']
 
 # partition()
 assert 'hello world'.partition(' ') == ('hello', ' ', 'world')

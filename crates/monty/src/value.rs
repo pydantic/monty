@@ -3,7 +3,7 @@ use std::{
     cmp::Ordering,
     fmt::{self, Write},
     mem,
-    str::FromStr,
+    str::{self, FromStr},
 };
 
 use num_bigint::{BigInt, Sign};
@@ -12,33 +12,31 @@ use serde::de::Error as _;
 use smallvec::smallvec;
 
 use crate::{
+    annotations,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     comparison::{Number, RichCompareOp, compare_bytes, compare_str},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    hash::{HashValue, hash_f64, hash_named, hash_one, identity_hash},
+    hash::{HashValue, hash_f64, hash_named, hash_one},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
     py_value::PyValue,
     types::{
-        BytesIterator, Complex, LazyHeapSet, Property, PyTrait, StringIterator, Type,
+        BytesIterator, Complex, LazyHeapSet, Property, PyTrait, Type, TypeRef,
         bytes::PyBytes,
-        host_class_type,
-        instance::{class_defines, instance_getattr, instance_str},
+        instance::{class_defines, instance_getattr, instance_str, subclass_overrides},
         long_int::{PyInt, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64},
-        str::{PyStr, allocate_string},
+        str::{InlineStr, PyStr, allocate_string},
         tuple::allocate_tuple,
     },
 };
 
 /// Primary value type representing Python objects at runtime.
 ///
-/// This enum uses a hybrid design: small immediate values (Int, Bool, None) are stored
-/// inline, while heap-allocated values (List, Str, Dict, etc.) are stored in the arena
-/// and referenced via `Ref(HeapId)`.
+/// Stores immediate values directly and arena objects through `Ref(HeapId)`.
 ///
 /// NOTE: `Clone` is intentionally NOT derived. Use `clone_with_heap()`. Direct cloning via `.clone()` would
 /// bypass reference counting and cause memory leaks.
@@ -65,6 +63,9 @@ pub(crate) enum Value {
     /// To get the actual string content, use `interns.get(string_id)`.
     #[serde(rename = "T")]
     InternString(StringId),
+    /// A short UTF-8 string stored directly in the value slot.
+    #[serde(rename = "S")]
+    InlineString(InlineStr),
     /// An interned bytes literal. The BytesId references the bytes in the Interns table.
     /// To get the actual bytes content, use `interns.get_bytes(bytes_id)`.
     #[serde(rename = "R")]
@@ -111,7 +112,7 @@ pub(crate) enum ValueRead<'h, 'v> {
     Immediate(&'v Value),
     /// Heap values retain the typed heap object handle.
     Heap {
-        value: HeapReadOutput<'h>,
+        value: PyValue<'h>,
         /// `py_next` calls made through this view, keying its amortized
         /// time check.
         steps: usize,
@@ -143,47 +144,47 @@ impl<'h> ValueRead<'h, '_> {
     pub(crate) fn iter_size_hint(&self, vm: &VM<'h>) -> usize {
         match self {
             Self::Heap {
-                value: HeapReadOutput::ListIterator(iter),
+                value: PyValue::ListIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(vm.heap),
             Self::Heap {
-                value: HeapReadOutput::DequeIterator(iter),
+                value: PyValue::DequeIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(vm.heap),
             Self::Heap {
-                value: HeapReadOutput::TupleIterator(iter),
+                value: PyValue::TupleIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(vm.heap),
             Self::Heap {
-                value: HeapReadOutput::StringIterator(iter),
+                value: PyValue::StringIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(vm),
             Self::Heap {
-                value: HeapReadOutput::BytesIterator(iter),
+                value: PyValue::BytesIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(vm),
             Self::Heap {
-                value: HeapReadOutput::RangeIterator(iter),
+                value: PyValue::RangeIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(),
             Self::Heap {
-                value: HeapReadOutput::DictKeyIterator(iter),
+                value: PyValue::DictKeyIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(),
             Self::Heap {
-                value: HeapReadOutput::DictItemIterator(iter),
+                value: PyValue::DictItemIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(),
             Self::Heap {
-                value: HeapReadOutput::DictValueIterator(iter),
+                value: PyValue::DictValueIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(),
             Self::Heap {
-                value: HeapReadOutput::SetIterator(iter),
+                value: PyValue::SetIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(),
             Self::Heap {
-                value: HeapReadOutput::Itertools(iter),
+                value: PyValue::Itertools(iter),
                 ..
             } => iter.get(vm.heap).size_hint(),
             _ => 0,
@@ -242,23 +243,24 @@ impl<'h> PyTrait<'h> for Value {
         Self::py_type_name(self, vm)
     }
 
-    fn py_type(&self, vm: &VM<'_>) -> Type {
+    fn py_type(&self, vm: &VM<'_>) -> TypeRef {
         match self {
             Self::Undefined => panic!("Cannot get type of undefined value"),
-            Self::Ellipsis => Type::Ellipsis,
-            Self::NotImplemented => Type::NotImplementedType,
-            Self::None => Type::NoneType,
-            Self::Bool(_) => Type::Bool,
-            Self::Int(_) | Self::InternLongInt(_) => Type::Int,
-            Self::Float(_) => Type::Float,
-            Self::InternString(_) => Type::Str,
-            Self::InternBytes(_) => Type::Bytes,
-            Self::Builtin(c) => c.py_type(),
-            Self::ModuleFunction(_) => Type::BuiltinFunction,
-            Self::DefFunction(_) => Type::Function,
-            Self::Marker(m) => m.py_type(),
-            Self::Property(_) => Type::Property,
-            Self::Ref(id) => vm.heap.read(*id).py_type(vm),
+            Self::Ellipsis => Type::Ellipsis.into(),
+            Self::NotImplemented => Type::NotImplementedType.into(),
+            Self::None => Type::NoneType.into(),
+            Self::Bool(_) => Type::Bool.into(),
+            Self::Int(_) | Self::InternLongInt(_) => Type::Int.into(),
+            Self::Float(_) => Type::Float.into(),
+            Self::InternString(_) => Type::Str.into(),
+            Self::InlineString(_) => Type::Str.into(),
+            Self::InternBytes(_) => Type::Bytes.into(),
+            Self::Builtin(c) => c.py_type().into(),
+            Self::ModuleFunction(_) => Type::BuiltinFunction.into(),
+            Self::DefFunction(_) => Type::Function.into(),
+            Self::Marker(m) => m.py_type().into(),
+            Self::Property(_) => Type::Property.into(),
+            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_type(vm),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
@@ -285,6 +287,7 @@ impl<'h> PyTrait<'h> for Value {
                 Self::InternString(o) => Some(id == o),
                 _ => eq_str(vm.interns.get_str(*id), other, vm),
             }),
+            Self::InlineString(text) => Ok(text.eq_value(other, vm)),
             Self::InternBytes(id) => Ok(match other {
                 // Fast path for the same interned bytes; otherwise compare content
                 // (interned bytes are not deduplicated, unlike strings).
@@ -311,7 +314,7 @@ impl<'h> PyTrait<'h> for Value {
                 Self::Property(o) => Some(p == o),
                 _ => None,
             }),
-            Self::Ref(id) => vm.heap.read(*id).py_eq_impl(other, vm),
+            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_eq_impl(other, vm),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
@@ -324,8 +327,9 @@ impl<'h> PyTrait<'h> for Value {
             Self::Float(f) => Ok(Number::Float(*f).richcompare(other, op, vm)),
             Self::InternLongInt(id) => Ok(Number::BigInt(vm.interns.get_long_int(*id)).richcompare(other, op, vm)),
             Self::InternString(id) => Ok(compare_str(vm.interns.get_str(*id), other, op, vm)),
+            Self::InlineString(text) => Ok(compare_str(text.as_str(), other, op, vm)),
             Self::InternBytes(id) => Ok(compare_bytes(vm.interns.get_bytes(*id), other, op, vm)),
-            Self::Ref(id) => vm.heap.read(*id).py_richcompare_impl(other, op, vm),
+            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_richcompare_impl(other, op, vm),
             _ if op.is_equality() => Ok(op.equality_result(self.py_eq_impl(other, vm)?)),
             _ => Ok(Self::NotImplemented),
         }
@@ -380,17 +384,71 @@ impl<'h> PyTrait<'h> for Value {
             // same value back (inc-ref'd for the heap case) instead of cloning
             // the bytes into a fresh allocation.
             Self::InternString(string_id) => Ok(Self::InternString(*string_id)),
+            Self::InlineString(text) => Ok(Self::InlineString(*text)),
             Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Str(_)) => Ok(self.clone_with_heap(vm.heap)),
             // Instances dispatch to a user `__str__`/`__repr__` (needs the heap id).
             Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_)) => instance_str(*id, vm),
-            Self::Ref(id) => PyValue::from(vm.heap.read(*id)).py_str(vm),
+            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_str(vm),
             _ => self.py_repr(vm),
         }
     }
 
+    /// For lists/deques, tries user `__radd__` before native extension from an iterable.
+    /// A reflected result replaces the value; native extension preserves the container's identity.
     fn py_iadd_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        // CPython tries numeric addition, including the RHS's `__radd__`, before
+        // sequence in-place concatenation. A user operand can therefore replace
+        // the assigned value even if it is iterable; aliases keep the original container.
+        // Only an absent or declined `__radd__` permits native extension; errors propagate.
+        let sequence = matches!(self.py_type_heap(vm.heap).native(), Some(Type::List | Type::Deque));
+        if sequence
+            && other.is_instance(vm.heap)
+            && let Some(result) = other.py_radd_impl(self, vm)?
+        {
+            let old = mem::replace(self, result);
+            old.drop_with(vm);
+            return Ok(true);
+        }
+
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_iadd_impl(other, vm)
+            PyValue::from_heap(*id, vm.heap).py_iadd_impl(other, vm)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// For lists/deques, tries user `__rmul__` before native repetition through `__index__`.
+    /// A reflected result replaces the value; native repetition preserves the container's identity.
+    fn py_imul_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        // CPython tries numeric multiplication, including the RHS's `__rmul__`, before
+        // sequence in-place repetition. A user operand can therefore replace
+        // the assigned value even if it implements `__index__`; aliases keep the original container.
+        // Only an absent or declined `__rmul__` permits native repetition; errors propagate.
+        let sequence = matches!(self.py_type_heap(vm.heap).native(), Some(Type::List | Type::Deque));
+        if sequence
+            && other.is_instance(vm.heap)
+            && let Some(result) = other.py_rmul_impl(self, vm)?
+        {
+            let old = mem::replace(self, result);
+            old.drop_with(vm);
+            return Ok(true);
+        }
+
+        if let Self::Ref(id) = self {
+            let handled = PyValue::from_heap(*id, vm.heap).py_imul_impl(other, vm)?;
+            if !handled && sequence && other.is_instance(vm.heap) {
+                // `__rmul__` already declined; binary dispatch would call it a second time.
+                return Err(ExcType::type_error_sequence_repeat(other.py_type_name(vm)));
+            }
+            Ok(handled)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn py_ixor_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        if let Self::Ref(id) = self {
+            PyValue::from_heap(*id, vm.heap).py_ixor_impl(other, vm)
         } else {
             Ok(false)
         }
@@ -398,7 +456,7 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_isub_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_isub_impl(other, vm)
+            PyValue::from_heap(*id, vm.heap).py_isub_impl(other, vm)
         } else {
             Ok(false)
         }
@@ -406,7 +464,7 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_iand_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_iand_impl(other, vm)
+            PyValue::from_heap(*id, vm.heap).py_iand_impl(other, vm)
         } else {
             Ok(false)
         }
@@ -414,7 +472,7 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_ior_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_ior_impl(other, vm)
+            PyValue::from_heap(*id, vm.heap).py_ior_impl(other, vm)
         } else {
             Ok(false)
         }
@@ -597,7 +655,7 @@ impl<'h> PyTrait<'h> for Value {
     /// One-sided implementation of matrix multiplication.
     fn py_matmul_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_matmul_impl(other, vm)
+            PyValue::from_heap(*id, vm.heap).py_matmul_impl(other, vm)
         } else {
             Ok(None)
         }
@@ -606,7 +664,7 @@ impl<'h> PyTrait<'h> for Value {
     /// Reflected implementation of matrix multiplication.
     fn py_rmatmul_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_rmatmul_impl(other, vm)
+            PyValue::from_heap(*id, vm.heap).py_rmatmul_impl(other, vm)
         } else {
             Ok(None)
         }
@@ -618,7 +676,7 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_setitem(&mut self, key: Self, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_setitem(key, value, vm)
+            PyValue::from_heap(*id, vm.heap).py_setitem(key, value, vm)
         } else {
             key.drop_with(vm);
             value.drop_with(vm);
@@ -630,7 +688,7 @@ impl<'h> PyTrait<'h> for Value {
         // No immediate value is an iterator; interned `str`/`bytes` are iterable
         // but, as in CPython, are not their own iterators.
         match self {
-            Self::Ref(id) => vm.heap.read(*id).py_is_iterator(vm),
+            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_is_iterator(vm),
             _ => false,
         }
     }
@@ -638,19 +696,20 @@ impl<'h> PyTrait<'h> for Value {
     fn py_is_iterable(&self, vm: &VM<'_>) -> bool {
         match self {
             // Interned string and bytes literals iterate without ever reaching
-            // the heap, so they answer here rather than in `HeapReadOutput`.
-            Self::InternString(_) | Self::InternBytes(_) => true,
-            Self::Ref(id) => vm.heap.read(*id).py_is_iterable(vm),
+            // the heap, so they answer here rather than through a heap-backed `PyValue`.
+            Self::InternString(_) | Self::InlineString(_) | Self::InternBytes(_) => true,
+            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_is_iterable(vm),
             _ => false,
         }
     }
 
     fn py_iter(&self, vm: &mut VM<'_>) -> RunResult<CallResult> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_iter(vm)
+            PyValue::from_heap(*id, vm.heap).py_iter(vm)
         } else {
             match self {
-                Self::InternString(id) => Ok(CallResult::Value(StringIterator::from_intern(*id, vm))),
+                Self::InternString(id) => PyStr::Interned(*id).py_iter(vm),
+                Self::InlineString(text) => PyStr::Inline(*text).py_iter(vm),
                 Self::InternBytes(id) => Ok(CallResult::Value(BytesIterator::from_intern(*id, vm))),
                 _ => Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))),
             }
@@ -659,7 +718,7 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_next(&mut self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_next(vm)
+            PyValue::from_heap(*id, vm.heap).py_next(vm)
         } else {
             Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
         }
@@ -684,10 +743,11 @@ impl Value {
     pub(crate) fn py_value<'h>(&self, vm: &VM<'h>) -> PyValue<'h> {
         match self {
             Self::InternString(id) => PyValue::Str(PyStr::Interned(*id)),
+            Self::InlineString(text) => PyValue::Str(PyStr::Inline(*text)),
             Self::InternBytes(id) => PyValue::Bytes(PyBytes::Interned(*id)),
             Self::Int(value) => PyValue::Int(PyInt::Small(*value)),
             Self::InternLongInt(id) => PyValue::Int(PyInt::Interned(*id)),
-            Self::Ref(id) => vm.heap.read(*id).into(),
+            Self::Ref(id) => PyValue::from_heap(*id, vm.heap),
             Self::Undefined => PyValue::Undefined,
             Self::Ellipsis => PyValue::Ellipsis,
             Self::NotImplemented => PyValue::NotImplemented,
@@ -704,6 +764,36 @@ impl Value {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn inline_str(&self) -> Option<&str> {
+        let Self::InlineString(text) = self else {
+            return None;
+        };
+        Some(text.as_str())
+    }
+
+    /// The class `type(self)` returns: [`py_type`](PyTrait::py_type), except
+    /// that a factory-made named tuple, which dispatches as the native
+    /// `namedtuple` type, belongs to its class object.
+    #[must_use]
+    pub(crate) fn py_class(&self, vm: &VM<'_>) -> TypeRef {
+        match self {
+            Self::Ref(id)
+                if let HeapData::NamedTuple(nt) = vm.heap.get(*id)
+                    && let Some(class_id) = nt.class_id() =>
+            {
+                TypeRef::Class(class_id)
+            }
+            _ => self.py_type(vm),
+        }
+    }
+
+    /// Whether this is an instance of a user-defined class (`HeapData::Instance`).
+    #[must_use]
+    pub(crate) fn is_instance(&self, heap: &Heap) -> bool {
+        matches!(self, Self::Ref(id) if matches!(heap.get(*id), HeapData::Instance(_)))
+    }
+
     /// Returns the Python `Type` for this value using only `&Heap` (no full VM borrow).
     ///
     /// Wraps [`py_type_shallow`](Self::py_type_shallow) for immediate values and
@@ -712,10 +802,10 @@ impl Value {
     /// errors) but don't have a `&VM` handy — notably the macro-generated
     /// `from_args` bodies, which are passed `heap` + `interns` rather than a VM.
     #[must_use]
-    pub(crate) fn py_type_heap(&self, heap: &Heap) -> Type {
+    pub(crate) fn py_type_heap(&self, heap: &Heap) -> TypeRef {
         match self {
             Self::Ref(id) => heap.get(*id).py_type(),
-            _ => self.py_type_shallow(),
+            _ => self.py_type_shallow().into(),
         }
     }
 
@@ -740,16 +830,15 @@ impl Value {
             .unwrap_or_else(|| self.py_type_heap(heap).name(heap, interns))
     }
 
-    /// Class name to use in error messages when [`Type`] does not carry it:
-    /// a named tuple, a host class instance, or a `random.Random`.
+    /// Class name to use in error messages when the [`TypeRef`] does not carry
+    /// it: a named tuple or a `random.Random`.
     ///
-    /// Named tuples and host classes keep their class name in the heap entry
-    /// (unlike `Type::Instance`, whose payload is the refcounted class
-    /// object), so messages name the class (`'P'`, `'Point'`) rather than
-    /// the generic `'namedtuple'` / `'HostClass'`, matching CPython. That
-    /// includes structseqs, whose stored name is already the qualified
-    /// `sys.version_info`. `Random` is the reverse case: its `Type` name is
-    /// the qualified `random.Random`, but messages use the bare class name.
+    /// Named tuples report the native `namedtuple` type but keep their class
+    /// name in the heap entry, so messages name the class (`'P'`) rather than
+    /// the generic `'namedtuple'`, matching CPython. That includes structseqs,
+    /// whose stored name is already the qualified `sys.version_info`. `Random`
+    /// is the reverse case: its `Type` name is the qualified `random.Random`,
+    /// but messages use the bare class name.
     #[must_use]
     fn dynamic_class_name<'i>(&self, heap: &Heap, interns: &'i Interns) -> Option<Cow<'i, str>> {
         let Self::Ref(heap_id) = self else {
@@ -757,7 +846,6 @@ impl Value {
         };
         let name = match heap.get(*heap_id) {
             HeapData::NamedTuple(nt) => nt.name_either(),
-            HeapData::HostClass(hc) => host_class_type(heap, hc.class_id()).name_either(),
             // A Python class in CPython, so messages carry the bare name and
             // only `repr(type(x))` the module-qualified one.
             HeapData::Random(_) => return Some(Cow::Borrowed("Random")),
@@ -781,6 +869,7 @@ impl Value {
             Self::Int(_) | Self::InternLongInt(_) => Type::Int,
             Self::Float(_) => Type::Float,
             Self::InternString(_) => Type::Str,
+            Self::InlineString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(_) => Type::BuiltinFunction,
             Self::ModuleFunction(_) | Self::DefFunction(_) => Type::Function,
@@ -872,7 +961,7 @@ impl Value {
     pub(crate) fn read<'h, 'v>(&'v self, vm: &VM<'h>) -> ValueRead<'h, 'v> {
         match self {
             Self::Ref(id) => ValueRead::Heap {
-                value: vm.heap.read(*id),
+                value: PyValue::from_heap(*id, vm.heap),
                 steps: 0,
             },
             _ => ValueRead::Immediate(self),
@@ -904,7 +993,8 @@ impl Value {
         // The hot arms (int/str/ref) return precomputed or cached hashes; only the
         // cold arms construct a hasher, via `hash_one`.
         match self {
-            Self::InternString(string_id) => Ok(Some(vm.interns.str_hash(*string_id))),
+            Self::InternString(string_id) => PyStr::Interned(*string_id).py_hash(vm),
+            Self::InlineString(text) => PyStr::Inline(*text).py_hash(vm),
             Self::InternBytes(bytes_id) => Ok(Some(vm.interns.bytes_hash(*bytes_id))),
             Self::InternLongInt(long_int_id) => Ok(Some(vm.interns.long_int_hash(*long_int_id))),
             // Bool and int hash directly as their value, and are equivalent
@@ -915,7 +1005,7 @@ impl Value {
             // impl. Types that benefit from caching (Str/Bytes/Tuple/
             // NamedTuple/FrozenSet/Path) carry an inline `cached_hash`;
             // cheap-to-hash types recompute each call.
-            Self::Ref(id) => vm.heap.read(*id).py_hash(vm),
+            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_hash(vm),
             // Values with no heap identity hash by name, never by discriminant:
             // dict and set entries persist their hash, so a hash tied to an
             // enum's declaration order would break lookups in older dumps.
@@ -924,10 +1014,10 @@ impl Value {
             Self::NotImplemented => Ok(Some(hash_named("singleton", "NotImplemented"))),
             Self::None => Ok(Some(hash_named("singleton", "None"))),
             Self::Builtin(Builtins::Function(function)) => Ok(Some(hash_named("builtin", (*function).into()))),
-            Self::Builtin(Builtins::ExcType(exc_type)) => Ok(Some(hash_named("type", (*exc_type).into()))),
-            // an instance's class is a heap object, hashed by identity like its instances
-            Self::Builtin(Builtins::Type(Type::Instance(class_id))) => Ok(Some(identity_hash(*class_id))),
-            Self::Builtin(Builtins::Type(ty)) => Ok(Some(hash_named("type", &ty.name(vm.heap, vm.interns)))),
+            // `type` was a builtin function before it joined the type table;
+            // keeping that hash keeps stored dicts keyed by `type` valid.
+            Self::Builtin(Builtins::Type(Type::Type)) => Ok(Some(hash_named("builtin", "type"))),
+            Self::Builtin(Builtins::Type(ty)) => Ok(Some(hash_named("type", ty.name()))),
             // the `Debug` form carries the module too, so `time.sleep` and `asyncio.sleep` differ
             Self::ModuleFunction(function) => Ok(Some(hash_named("module_function", &format!("{function:?}")))),
             // Hash functions based on function ID
@@ -990,13 +1080,13 @@ impl Value {
                 return instance_getattr(*heap_id, attr, vm);
             }
             Self::Ref(heap_id) => {
-                if let Some(call_result) = vm.heap.read(*heap_id).py_getattr(attr, vm)? {
+                if let Some(call_result) = PyValue::from_heap(*heap_id, vm.heap).py_getattr(attr, vm)? {
                     return Ok(call_result);
                 }
                 // CPython names the module, not its type, for a missing module attribute.
                 if let HeapData::Module(module) = vm.heap.get(*heap_id) {
                     return Err(ExcType::attribute_error_module(
-                        module.name_str(vm.interns),
+                        module.error_name(vm).ok(),
                         attr.as_str(vm.interns),
                     ));
                 }
@@ -1010,6 +1100,12 @@ impl Value {
                     None => Err(t.attribute_error(attr, vm)),
                 };
             }
+            // A plain `def` has its PEP 649 attributes and nothing else.
+            Self::DefFunction(func_id) => {
+                if let Some(result) = annotations::function_getattr(*func_id, None, attr.as_str(vm.interns), vm) {
+                    return result;
+                }
+            }
             _ => {}
         }
         let type_name = self.py_type_name(vm);
@@ -1019,7 +1115,7 @@ impl Value {
     /// Sets an attribute, consuming `value` on both success and error.
     pub fn py_set_attr(&self, name: &EitherStr, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
         if let Self::Ref(heap_id) = self {
-            vm.heap.read(*heap_id).py_set_attr(name, value, vm)
+            PyValue::from_heap(*heap_id, vm.heap).py_set_attr(name, value, vm)
         } else {
             value.drop_with(vm);
             let type_name = self.py_type_name(vm);
@@ -1230,6 +1326,7 @@ impl Value {
             vm,
             |vm| self.py_add_impl(other, vm),
             |vm| other.py_radd_impl(self, vm),
+            "__radd__",
         )
     }
 
@@ -1240,17 +1337,35 @@ impl Value {
             vm,
             |vm| self.py_sub_impl(other, vm),
             |vm| other.py_rsub_impl(self, vm),
+            "__rsub__",
             "-",
         )
     }
 
-    /// Performs Python `*` with reflected-operation fallback.
+    /// Performs Python `*`, trying the left implementation then the right reflected implementation.
+    /// Same-class user instances skip the reflected retry. For a builtin sequence on the left
+    /// and a user instance on the right, `__rmul__` precedes `__index__`-based repetition.
+    /// Absent or declined methods allow fallback; exceptions propagate immediately.
     pub(crate) fn py_mul(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+        if matches!(other, Self::Ref(_))
+            && other.is_instance(vm.heap)
+            && self.py_type_heap(vm.heap).has_sequence_repeat()
+        {
+            // Numeric reflected multiplication precedes the sequence's `__index__` conversion.
+            if let Some(result) = other.py_rmul_impl(self, vm)? {
+                return Ok(result);
+            }
+            return self
+                .py_mul_impl(other, vm)?
+                .ok_or_else(|| ExcType::type_error_sequence_repeat(other.py_type_name(vm)));
+        }
+
         self.binary_op(
             other,
             vm,
             |vm| self.py_mul_impl(other, vm),
             |vm| other.py_rmul_impl(self, vm),
+            "__rmul__",
             "*",
         )
     }
@@ -1262,6 +1377,7 @@ impl Value {
             vm,
             |vm| self.py_matmul_impl(other, vm),
             |vm| other.py_rmatmul_impl(self, vm),
+            "__rmatmul__",
             "@",
         )
     }
@@ -1273,6 +1389,7 @@ impl Value {
             vm,
             |vm| self.py_truediv_impl(other, vm),
             |vm| other.py_rtruediv_impl(self, vm),
+            "__rtruediv__",
             "/",
         )
     }
@@ -1284,6 +1401,7 @@ impl Value {
             vm,
             |vm| self.py_floordiv_impl(other, vm),
             |vm| other.py_rfloordiv_impl(self, vm),
+            "__rfloordiv__",
             "//",
         )
     }
@@ -1295,6 +1413,7 @@ impl Value {
             vm,
             |vm| self.py_mod_impl(other, vm),
             |vm| other.py_rmod_impl(self, vm),
+            "__rmod__",
             "%",
         )
     }
@@ -1309,6 +1428,7 @@ impl Value {
             vm,
             |vm| self.py_divmod_impl(other, vm),
             |vm| other.py_rdivmod_impl(self, vm),
+            "__rdivmod__",
             "divmod()",
         )
     }
@@ -1321,6 +1441,7 @@ impl Value {
             vm,
             |vm| self.py_pow_impl(other, modulus, vm),
             |vm| other.py_rpow_impl(self, modulus, vm),
+            "__rpow__",
         )?;
         if let Some(result) = result {
             Ok(result)
@@ -1330,9 +1451,12 @@ impl Value {
             if matches!(modulus, Self::Float(_)) {
                 Err(ExcType::type_error_pow_modulo())
             } else if modulus.py_type(vm) == Type::Complex
-                && [self, other]
-                    .iter()
-                    .all(|value| matches!(value.py_type(vm), Type::Int | Type::Bool | Type::Float | Type::Complex))
+                && [self, other].iter().all(|value| {
+                    matches!(
+                        value.py_type(vm).native(),
+                        Some(Type::Int | Type::Bool | Type::Float | Type::Complex)
+                    )
+                })
             {
                 Err(ExcType::value_error_complex_modulo())
             } else {
@@ -1359,6 +1483,7 @@ impl Value {
             vm,
             |vm| self.py_and_impl(other, vm),
             |vm| other.py_rand_impl(self, vm),
+            "__rand__",
             "&",
         )
     }
@@ -1370,6 +1495,7 @@ impl Value {
             vm,
             |vm| self.py_or_impl(other, vm),
             |vm| other.py_ror_impl(self, vm),
+            "__ror__",
             "|",
         )
     }
@@ -1381,6 +1507,7 @@ impl Value {
             vm,
             |vm| self.py_xor_impl(other, vm),
             |vm| other.py_rxor_impl(self, vm),
+            "__rxor__",
             "^",
         )
     }
@@ -1392,6 +1519,7 @@ impl Value {
             vm,
             |vm| self.py_lshift_impl(other, vm),
             |vm| other.py_rlshift_impl(self, vm),
+            "__rlshift__",
             "<<",
         )
     }
@@ -1403,6 +1531,7 @@ impl Value {
             vm,
             |vm| self.py_rshift_impl(other, vm),
             |vm| other.py_rrshift_impl(self, vm),
+            "__rrshift__",
             ">>",
         )
     }
@@ -1414,9 +1543,10 @@ impl Value {
         vm: &mut VM<'_>,
         direct: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
         reflected: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
+        reflected_dunder: &'static str,
         operator: &'static str,
     ) -> RunResult<Self> {
-        if let Some(result) = self.binary_op_result(other, vm, direct, reflected)? {
+        if let Some(result) = self.binary_op_result(other, vm, direct, reflected, reflected_dunder)? {
             Ok(result)
         } else {
             let lhs_type = self.py_type(vm);
@@ -1436,7 +1566,9 @@ impl Value {
         }
     }
 
-    /// Tries numeric slots, suppressing reflected dispatch between instances of the same class.
+    /// Tries numeric slots, suppressing reflected dispatch between instances of
+    /// the same class, and trying the reflected slot first when the right
+    /// operand's class is a subclass overriding it, as CPython does.
     /// Builtin representations still need both sides: an immediate `int` can
     /// delegate to a heap `LongInt` even though both have Python type `int`.
     fn binary_op_result(
@@ -1445,10 +1577,16 @@ impl Value {
         vm: &mut VM<'_>,
         direct: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
         reflected: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
+        reflected_dunder: &'static str,
     ) -> RunResult<Option<Self>> {
-        if let Some(result) = direct(vm)? {
+        if subclass_overrides(self, other, Some(reflected_dunder), vm) {
+            match reflected(vm)? {
+                Some(result) => Ok(Some(result)),
+                None => direct(vm),
+            }
+        } else if let Some(result) = direct(vm)? {
             Ok(Some(result))
-        } else if matches!(self.py_type(vm), Type::Instance(_)) && self.py_type(vm) == other.py_type(vm) {
+        } else if self.is_instance(vm.heap) && self.py_type(vm) == other.py_type(vm) {
             Ok(None)
         } else {
             reflected(vm)
@@ -1503,6 +1641,7 @@ impl Value {
             Self::ModuleFunction(mf) => Self::ModuleFunction(*mf),
             Self::DefFunction(f) => Self::DefFunction(*f),
             Self::InternString(s) => Self::InternString(*s),
+            Self::InlineString(text) => Self::InlineString(*text),
             Self::InternBytes(b) => Self::InternBytes(*b),
             Self::InternLongInt(bi) => Self::InternLongInt(*bi),
             Self::Marker(m) => Self::Marker(*m),
@@ -1570,13 +1709,12 @@ impl Value {
         }
     }
 
-    /// Converts the value into a keyword string representation if possible.
-    ///
-    /// Returns `Some(KeywordStr)` for `InternString` values or heap `str`
-    /// objects, otherwise returns `None`.
+    /// Returns a string name that can outlive a heap borrow.
+    /// Copies heap-backed text; returns `None` for non-string values.
     pub fn as_either_str(&self, heap: &Heap) -> Option<EitherStr> {
         match self {
             Self::InternString(id) => Some(EitherStr::Interned(*id)),
+            Self::InlineString(text) => Some(EitherStr::Inline(*text)),
             Self::Ref(heap_id) => match heap.get(*heap_id) {
                 HeapData::Str(s) => Some(EitherStr::Heap(s.as_str().to_owned())),
                 _ => None,
@@ -1585,42 +1723,46 @@ impl Value {
         }
     }
 
-    /// Borrows the value as a `&str` if it is a string (interned or heap `str`).
-    ///
-    /// Unlike [`as_either_str`](Self::as_either_str) this never allocates — both
-    /// interned and heap strings are returned by borrow — and it errors rather
-    /// than returning `None` for non-strings, with CPython's generic `expected
-    /// string, not <type>` message. Use it wherever a function reads a `str`
-    /// argument it does not need to own; the borrow keeps `self` and the heap
-    /// pinned, so drop/allocate only once it ends.
-    pub(crate) fn to_str<'a>(&'a self, vm: &'a VM<'_>) -> RunResult<&'a str> {
-        self.to_str_heap(vm.heap, vm.interns)
+    /// Borrows string contents without allocating, or returns `None` for non-strings.
+    pub(crate) fn as_str<'a>(&'a self, vm: &'a VM<'_>) -> Option<&'a str> {
+        self.as_str_heap(vm.heap, vm.interns)
     }
 
-    /// [`to_str`](Self::to_str) for contexts without a `&VM` — takes `heap` and
+    /// [`as_str`](Self::as_str) for contexts without a `&VM`.
+    pub(crate) fn as_str_heap<'a>(&'a self, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
+        match self {
+            Self::InternString(string_id) => Some(interns.get_str(*string_id)),
+            Self::InlineString(text) => Some(text.as_str()),
+            Self::Ref(heap_id) => match heap.get(*heap_id) {
+                HeapData::Str(s) => Some(s.as_str()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Borrows string contents, or raises `TypeError` with `expected string, not <type>`.
+    pub(crate) fn try_to_str<'a>(&'a self, vm: &'a VM<'_>) -> RunResult<&'a str> {
+        self.try_to_str_heap(vm.heap, vm.interns)
+    }
+
+    /// [`try_to_str`](Self::try_to_str) for contexts without a `&VM` — takes `heap` and
     /// `interns` separately so callers can keep a disjoint `&mut` borrow of
     /// another `VM` field alive (e.g. resolving a `str` `Value` produced by
     /// `py_str` while writing it to `vm.print_writer`).
-    pub(crate) fn to_str_heap<'a>(&'a self, heap: &'a Heap, interns: &'a Interns) -> RunResult<&'a str> {
-        match self {
-            Self::InternString(string_id) => return Ok(interns.get_str(*string_id)),
-            Self::Ref(heap_id) => {
-                if let HeapData::Str(s) = heap.get(*heap_id) {
-                    return Ok(s.as_str());
-                }
-            }
-            _ => {}
-        }
-        Err(ExcType::type_error(format!(
-            "expected string, not {}",
-            self.py_type_name_heap(heap, interns)
-        )))
+    pub(crate) fn try_to_str_heap<'a>(&'a self, heap: &'a Heap, interns: &'a Interns) -> RunResult<&'a str> {
+        self.as_str_heap(heap, interns).ok_or_else(|| {
+            ExcType::type_error(format!(
+                "expected string, not {}",
+                self.py_type_name_heap(heap, interns)
+            ))
+        })
     }
 
     /// check if the value is a string.
     pub fn is_str(&self, heap: &Heap) -> bool {
         match self {
-            Self::InternString(_) => true,
+            Self::InternString(_) | Self::InlineString(_) => true,
             Self::Ref(heap_id) => matches!(heap.get(*heap_id), HeapData::Str(_)),
             _ => false,
         }
@@ -1651,7 +1793,7 @@ impl Value {
 // representation as needed. They return `None` (NotImplemented) when `other`
 // is not a compatible Python type, so the reflected comparison can run. These
 // are shared by `Value::py_eq_impl` (inline operands) and
-// `HeapReadOutput::py_eq_impl` (heap operands) so the interned-vs-heap and
+// `PyValue::py_eq_impl` (heap operands) so the interned-vs-heap and
 // numeric-tower logic lives once.
 // ---------------------------------------------------------------------------
 
@@ -1693,10 +1835,11 @@ pub(crate) fn eq_bigint(b: &BigInt, other: &Value, vm: &VM<'_>) -> Option<bool> 
     }
 }
 
-/// `s == other`, resolving the other operand from an interned or heap string.
+/// `s == other`, returning `None` for non-string operands.
 pub(crate) fn eq_str(s: &str, other: &Value, vm: &VM<'_>) -> Option<bool> {
     match other {
         Value::InternString(id) => Some(s == vm.interns.get_str(*id)),
+        Value::InlineString(text) => Some(s.as_bytes() == text.as_bytes()),
         Value::Ref(id) if let HeapData::Str(o) = vm.heap.get(*id) => Some(s == o.as_str()),
         _ => None,
     }
@@ -1711,14 +1854,13 @@ pub(crate) fn eq_bytes(b: &[u8], other: &Value, vm: &VM<'_>) -> Option<bool> {
     }
 }
 
-/// Interned or heap-owned string identifier.
-///
-/// Used when a string value can come from either the intern table (for known
-/// static strings and keywords) or from a heap-allocated Python string object.
+/// A string name that can outlive a heap borrow.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum EitherStr {
     /// Interned string identifier (cheap comparisons and no allocation).
     Interned(StringId),
+    /// Short UTF-8 string stored without a heap allocation.
+    Inline(InlineStr),
     /// Heap-owned string extracted from a `str` object.
     Heap(String),
 }
@@ -1737,37 +1879,47 @@ impl From<String> for EitherStr {
 }
 
 impl EitherStr {
-    /// Returns the keyword as a str slice for error messages or comparisons.
+    /// Returns an owned string value, preserving interned names.
+    pub(crate) fn as_value(&self, heap: &Heap) -> Value {
+        match self {
+            Self::Interned(id) => Value::InternString(*id),
+            Self::Inline(text) => Value::InlineString(*text),
+            Self::Heap(text) => allocate_string(text.as_str(), heap),
+        }
+    }
+
+    /// Returns the keyword text for error messages or comparisons.
     pub fn as_str<'a>(&'a self, interns: &'a Interns) -> &'a str {
         match self {
             Self::Interned(id) => interns.get_str(*id),
+            Self::Inline(text) => text.as_str(),
             Self::Heap(s) => s.as_str(),
         }
     }
 
-    /// The text as a `Cow` borrowing only `interns`, so it outlives heap
-    /// borrows — error messages format the name after `drop_with` cleanup.
+    /// The text as a `Cow` that outlives heap borrows, for error messages
+    /// formatted after `drop_with` cleanup.
     pub fn to_cow<'i>(&self, interns: &'i Interns) -> Cow<'i, str> {
         match self {
             Self::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
+            Self::Inline(text) => Cow::Owned(text.as_str().to_owned()),
             Self::Heap(s) => Cow::Owned(s.clone()),
         }
     }
 
-    /// Re-resolves a heap string to its interned id when the interner already
-    /// knows the text.
+    /// Re-resolves a runtime string to its interned id when the interner knows it.
     ///
-    /// Builtin attribute dispatch matches on `StringId`, so a name computed at
-    /// runtime (`getattr(x, 'up' + 'per')`) arrives as [`Heap`](Self::Heap) and
-    /// misses every builtin attribute — while still resolving on instances and
-    /// modules, which compare by text. Interning is a lookup, never an insert,
-    /// so sandboxed code cannot grow the interner by guessing names.
+    /// Looks up existing IDs for builtin attribute dispatch without growing the interner.
     #[must_use]
     pub fn resolve_interned(self, interns: &Interns) -> Self {
         match self {
             Self::Heap(s) => match interns.get_string_id_by_name(&s) {
                 Some(id) => Self::Interned(id),
                 None => Self::Heap(s),
+            },
+            Self::Inline(text) => match interns.get_string_id_by_name(text.as_str()) {
+                Some(id) => Self::Interned(id),
+                None => self,
             },
             already @ Self::Interned(_) => already,
         }
@@ -1777,6 +1929,7 @@ impl EitherStr {
     pub fn matches(&self, target: StringId, interns: &Interns) -> bool {
         match self {
             Self::Interned(id) => *id == target,
+            Self::Inline(text) => text.as_bytes() == interns.get_str(target).as_bytes(),
             Self::Heap(s) => s == interns.get_str(target),
         }
     }
@@ -1786,7 +1939,7 @@ impl EitherStr {
     pub fn string_id(&self) -> Option<StringId> {
         match self {
             Self::Interned(id) => Some(*id),
-            Self::Heap(_) => None,
+            Self::Inline(_) | Self::Heap(_) => None,
         }
     }
 
@@ -1795,17 +1948,16 @@ impl EitherStr {
     pub fn static_string(&self, interns: &Interns) -> Option<StaticStrings> {
         match self {
             Self::Interned(id) => interns.static_string(*id),
+            Self::Inline(text) => StaticStrings::from_str(text.as_str()).ok(),
             Self::Heap(value) => StaticStrings::from_str(value).ok(),
         }
     }
 
-    /// Converts this `EitherStr` into an owned `String`.
-    ///
-    /// For interned strings, looks up and clones the string content.
-    /// For heap strings, returns the owned string directly.
+    /// Returns owned text, reusing an existing `String` when possible.
     pub fn into_string(self, interns: &Interns) -> String {
         match self {
             Self::Interned(id) => interns.get_str(id).to_owned(),
+            Self::Inline(text) => text.as_str().to_owned(),
             Self::Heap(s) => s,
         }
     }
@@ -1850,6 +2002,31 @@ impl Marker {
             StaticStrings::Missing => Type::MissingType,
             _ => Type::SpecialForm,
         }
+    }
+
+    /// Whether this `typing` form is subscriptable (`List[int]`, `ClassVar[int]`),
+    /// building a [`GenericAlias`](crate::types::GenericAlias); `Optional[X]`
+    /// builds a union instead, and `Any`, `TypeVar` and the rest are not generic.
+    pub(crate) fn is_generic_form(self) -> bool {
+        matches!(
+            self.0,
+            StaticStrings::ListType
+                | StaticStrings::DictType
+                | StaticStrings::TupleType
+                | StaticStrings::SetType
+                | StaticStrings::FrozenSet
+                | StaticStrings::Callable
+                | StaticStrings::Type
+                | StaticStrings::Sequence
+                | StaticStrings::Mapping
+                | StaticStrings::Iterable
+                | StaticStrings::IteratorType
+                | StaticStrings::Generator
+                | StaticStrings::ClassVar
+                | StaticStrings::FinalType
+                | StaticStrings::Literal
+                | StaticStrings::Annotated
+        )
     }
 
     /// Writes the Python repr for this marker.
@@ -2017,8 +2194,52 @@ mod tests {
     use crate::{
         heap::HeapReader,
         run::{Program, SessionTables},
-        types::LongInt,
+        types::{
+            LongInt,
+            str::{allocate_string_no_interning, allocate_string_on_heap},
+        },
     };
+
+    #[test]
+    fn value_size_is_16_bytes() {
+        assert_eq!(mem::size_of::<Value>(), 16);
+    }
+
+    #[test]
+    fn inline_string_capacity_is_fifteen_utf8_bytes() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        for text in ["123456789012345", "ééééééabc"] {
+            for value in [
+                allocate_string(text.to_owned(), &heap),
+                allocate_string_no_interning(text.to_owned(), &heap),
+            ] {
+                assert!(matches!(value, Value::InlineString(_)));
+                assert_eq!(value.inline_str(), Some(text));
+                value.drop_with(&mut heap);
+            }
+        }
+        for text in ["1234567890123456", "ééééééabcd"] {
+            for value in [
+                allocate_string(text.to_owned(), &heap),
+                allocate_string_no_interning(text.to_owned(), &heap),
+            ] {
+                assert!(matches!(value, Value::Ref(_)));
+                value.drop_with(&mut heap);
+            }
+        }
+    }
+
+    #[test]
+    fn inline_string_dump_roundtrip_preserves_every_length() {
+        for length in 0..=15 {
+            let text = "a".repeat(length);
+            let value = Value::InlineString(InlineStr::new(&text).unwrap());
+            let dumped = minicbor_serde::to_vec(&value).unwrap();
+            let restored: Value = minicbor_serde::from_slice(&dumped).unwrap();
+            assert_eq!(restored.inline_str(), Some("a".repeat(length).as_str()));
+        }
+        assert_eq!(Value::None.inline_str(), None);
+    }
 
     /// Creates a heap and directly allocates a LongInt with the given BigInt value.
     ///
@@ -2029,6 +2250,48 @@ mod tests {
         let long_int = LongInt::new(value);
         let heap_id = heap.allocate(HeapData::LongInt(long_int));
         (heap, heap_id)
+    }
+
+    #[test]
+    fn as_either_str_keeps_inline_text_inline() {
+        let heap = Heap::new(16, ResourceTracker::default());
+        let value = allocate_string("abcdefghijklmno".to_owned(), &heap);
+
+        let name = value.as_either_str(&heap).unwrap();
+        assert!(matches!(name, EitherStr::Inline(_)));
+        assert_eq!(name.as_str(&Interns::default()), "abcdefghijklmno");
+    }
+
+    #[test]
+    fn inline_attribute_names_resolve_without_inserting() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let interns = Interns::default();
+        let start = interns.intern_static(StaticStrings::Start);
+        let value = allocate_string("start".to_owned(), &heap);
+        let name = value.as_either_str(&heap).unwrap();
+        assert!(name.matches(start, &interns));
+        assert_eq!(name.string_id(), None);
+        assert_eq!(name.static_string(&interns), interns.static_string(start));
+        assert!(matches!(name.to_cow(&interns), Cow::Owned(text) if text == "start"));
+        assert!(matches!(name.resolve_interned(&interns), EitherStr::Interned(id) if id == start));
+        value.drop_with(&mut heap);
+
+        let value = allocate_string("zzq".to_owned(), &heap);
+        let name = value.as_either_str(&heap).unwrap().resolve_interned(&interns);
+        assert!(matches!(name, EitherStr::Inline(_)));
+        assert!(!name.matches(start, &interns));
+        assert_eq!(name.static_string(&interns), None);
+        assert_eq!(name.into_string(&interns), "zzq");
+        assert!(interns.get_string_id_by_name("zzq").is_none());
+        value.drop_with(&mut heap);
+
+        for text in ["start", "a_name_longer_than_inline"] {
+            let value = allocate_string_on_heap(text, &heap);
+            let name = value.as_either_str(&heap).unwrap().resolve_interned(&interns);
+            assert_eq!(name.as_str(&interns), text);
+            assert_eq!(name.string_id(), (text == "start").then_some(start));
+            value.drop_with(&mut heap);
+        }
     }
 
     /// Tests that `as_index()` correctly handles a LongInt containing an i64-fitting value.

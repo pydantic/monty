@@ -7,7 +7,7 @@ from the notes below.
 
 ## Implemented
 
-`reader`, `writer`, `DictReader`, `DictWriter`, `Error`, the six `QUOTE_*` constants, `get_dialect`,
+`reader`, `writer`, `DictReader`, `DictWriter`, `Error`, `__version__`, the six `QUOTE_*` constants, `get_dialect`,
 `list_dialects`, `field_size_limit` (read-only, see below) and the three built-in dialects `excel`,
 `excel_tab` and `unix_dialect`.
 
@@ -18,7 +18,6 @@ from the notes below.
     dialect registry; pass format parameters or a dialect object instead.
 - `csv.field_size_limit(new_limit)` raises `NotImplementedError: field_size_limit(): changing the limit is not supported`.
     The limit is fixed at CPython's default, 131072 characters, and `field_size_limit()` reports it.
-- `__version__` is missing.
 
 ## Behavioural divergences
 

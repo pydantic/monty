@@ -21,7 +21,7 @@ use crate::{
     intern::StaticStrings,
     py_value::PyValue,
     types::{
-        LazyHeapSet, PyTrait, Type,
+        LazyHeapSet, PyTrait, Type, TypeRef,
         str::{StringRepr, allocate_string},
         r#type::strip_underscores,
     },
@@ -380,6 +380,8 @@ fn init_single(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(value, vm);
     let parsed = match value.as_either_str(vm.heap) {
         Some(text) => Some(parse(text.as_str(vm.interns))?),
+        // `Decimal.__complex__`; Decimals take no part in complex arithmetic.
+        None if let PyValue::Decimal(d) = value.py_value(vm) => Some(Complex::new(d.get(vm.heap).to_f64()?, 0.0)),
         None => operand(value, vm)?.map(widen),
     };
     match parsed {
@@ -423,14 +425,43 @@ impl FromValue for Part {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("a real number");
 
     fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
-        let result = match operand(&value, vm) {
-            Ok(Some(Operand::Real(r))) => Ok(Self::Real(r)),
-            Ok(Some(Operand::Complex(c))) => Ok(Self::Complex(c)),
-            Ok(None) => Err(FromValueFail::WrongType),
-            Err(err) => Err(FromValueFail::Raise(err)),
+        let decimal_res = match value.py_value(vm) {
+            PyValue::Decimal(d) => Some(d.get(vm.heap).to_f64().map(Self::Real).map_err(FromValueFail::Raise)),
+            _ => None,
         };
-        value.drop_with(vm);
-        result
+        if let Some(res) = decimal_res {
+            value.drop_with(vm);
+            res
+        } else {
+            match operand(&value, vm) {
+                Ok(Some(Operand::Real(r))) => {
+                    value.drop_with(vm);
+                    Ok(Self::Real(r))
+                }
+                Ok(Some(Operand::Complex(c))) => {
+                    value.drop_with(vm);
+                    Ok(Self::Complex(c))
+                }
+                Ok(None) => Err(FromValueFail::WrongType(value)),
+                Err(err) => {
+                    value.drop_with(vm);
+                    Err(FromValueFail::Raise(err))
+                }
+            }
+        }
+    }
+}
+
+/// `complex.from_number(...)`.
+pub(crate) fn class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    if attr.static_string(vm.interns) == Some(StaticStrings::FromNumber) {
+        Ok(class_from_number(vm, args).map(CallResult::Value))
+    } else {
+        Err(args)
     }
 }
 
@@ -560,8 +591,8 @@ impl HeapItem for Complex {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Complex
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Complex.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

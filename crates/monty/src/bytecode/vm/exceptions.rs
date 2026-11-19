@@ -2,15 +2,17 @@
 
 use std::fmt::{self, Write};
 
+use monty_types::ResourceError;
+
 use super::VM;
 use crate::{
     builtins::Builtins,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::{StaticStrings, StringId},
-    types::{LazyHeapSet, PyTrait, Type},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef},
     value::Value,
 };
 
@@ -124,7 +126,9 @@ impl VM<'_> {
             }
             // Exception type (e.g., `raise ValueError` instead of `raise ValueError()`)
             // Instantiate with no message
-            Value::Builtin(Builtins::ExcType(exc_type)) => SimpleException::new_none(*exc_type),
+            Value::Builtin(Builtins::Type(ty)) if let Some(exc_type) = ty.exc_type() => {
+                SimpleException::new_none(exc_type)
+            }
             // Invalid exception value
             _ => SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException"),
         };
@@ -143,6 +147,129 @@ impl VM<'_> {
             snippet_frame: None,
             hide_caret: false,
         })
+    }
+
+    /// Runs `raise exc from cause`.
+    ///
+    /// `exc` is checked first, as in CPython, then `cause` must be `None`, an
+    /// exception or an exception class (instantiated without a message). The
+    /// raised object records the cause and suppresses its context; a bare class
+    /// is instantiated here so there is an object to record it on.
+    pub(super) fn raise_with_cause(&mut self, exc: Value, cause: Value) -> Option<RunError> {
+        let error = self.make_exception(&exc, true);
+        let raised = match self.exception_object(exc) {
+            Ok(raised) => raised,
+            Err(other) => {
+                // `error` is the `exceptions must derive from BaseException` TypeError.
+                other.drop_with(self);
+                cause.drop_with(self);
+                return self.handle_exception_with_value(error, None);
+            }
+        };
+        let cause = match cause {
+            Value::None => None,
+            other => match self.exception_object(other) {
+                Ok(cause) => cause.into_ref_id(),
+                Err(other) => {
+                    other.drop_with(self);
+                    raised.drop_with(self);
+                    let error = ExcType::type_error("exception causes must derive from BaseException");
+                    return self.handle_exception_with_value(error, None);
+                }
+            },
+        };
+        let Value::Ref(raised_id) = &raised else {
+            unreachable!("exceptions are heap values")
+        };
+        self.set_exception_cause(*raised_id, cause);
+        self.handle_exception_with_value(error, Some(raised))
+    }
+
+    /// The exception object `value` denotes: itself for an exception, a fresh
+    /// instance for an exception class. Anything else comes back as `Err` for the
+    /// caller to release and report.
+    fn exception_object(&mut self, value: Value) -> Result<Value, Value> {
+        match value {
+            Value::Ref(id) if matches!(self.heap.get(id), HeapData::Exception(_)) => Ok(value),
+            Value::Builtin(Builtins::Type(ty)) if let Some(exc_type) = ty.exc_type() => {
+                Ok(self.allocate_exception(exc_type))
+            }
+            other => Err(other),
+        }
+    }
+
+    /// Allocates `exc_type()` with no message, for `raise ExcType from ...` and its cause.
+    fn allocate_exception(&mut self, exc_type: ExcType) -> Value {
+        Value::Ref(
+            self.heap
+                .allocate(HeapData::Exception(SimpleException::new_none(exc_type))),
+        )
+    }
+
+    /// Stores `cause` (an owned reference) as `__cause__` of the exception `id`,
+    /// releasing any previous cause, and sets `__suppress_context__`.
+    fn set_exception_cause(&mut self, id: HeapId, cause: Option<HeapId>) {
+        let previous = match self.heap.read(id) {
+            HeapReadOutput::Exception(exc) => exc.get_mut(self.heap).set_cause(cause),
+            _ => unreachable!("set_exception_cause is only called on exceptions"),
+        };
+        previous.map(Value::Ref).drop_with(self);
+    }
+
+    /// Records the exception being handled as `__context__` of the newly raised
+    /// `raised`, as CPython's `_PyErr_SetObject` does: a bare `raise` of the handled
+    /// exception itself gets none, and a link that would make the chain circular is
+    /// cut first. An internal (frozen) handler's exception is skipped, since the
+    /// equivalent CPython code is C and leaves the user's handled exception in place.
+    fn attach_context(&mut self, raised: &Value) -> Result<(), ResourceError> {
+        let handled = self.exception_stack.iter().rev().find_map(|caught| match caught {
+            CaughtException::Value(Value::Ref(id)) => Some(*id),
+            _ => None,
+        });
+        let Some(handled_id) = handled else {
+            return Ok(());
+        };
+        let Value::Ref(raised_id) = raised else {
+            return Ok(());
+        };
+        if *raised_id == handled_id {
+            return Ok(());
+        }
+        // Each re-raise inside a handler adds a link, so an unchecked scan of a
+        // chain grown by a loop would be quadratic: poll the clock.
+        let mut cursor = handled_id;
+        for step in 0usize.. {
+            let Some(next) = self.exception_context(cursor) else {
+                break;
+            };
+            if next == *raised_id {
+                self.set_exception_context(cursor, None);
+                break;
+            }
+            self.heap.tracker.check_time_every(step)?;
+            cursor = next;
+        }
+        self.heap.inc_ref(handled_id);
+        self.set_exception_context(*raised_id, Some(handled_id));
+        Ok(())
+    }
+
+    /// The `__context__` of the exception `id`, borrowed.
+    fn exception_context(&self, id: HeapId) -> Option<HeapId> {
+        match self.heap.get(id) {
+            HeapData::Exception(exc) => exc.context(),
+            _ => None,
+        }
+    }
+
+    /// Stores `context` (an owned reference) as `__context__` of the exception
+    /// `id`, releasing any previous context.
+    fn set_exception_context(&mut self, id: HeapId, context: Option<HeapId>) {
+        let previous = match self.heap.read(id) {
+            HeapReadOutput::Exception(exc) => exc.get_mut(self.heap).set_context(context),
+            _ => unreachable!("set_exception_context is only called on exceptions"),
+        };
+        previous.map(Value::Ref).drop_with(self);
     }
 
     /// Re-raises the active exception without replacing a user traceback with an internal handler.
@@ -341,6 +468,10 @@ impl VM<'_> {
             };
             self.create_exception_value(exc)
         };
+        if let Err(error) = self.attach_context(&exc_value) {
+            exc_value.drop_with(self);
+            return ExceptionHandlingResult::Unhandled(self.unwind_for_traceback(error.into()));
+        }
 
         // Use DropGuard because exc_value is conditionally consumed (pushed onto
         // exception_stack when handler found) or dropped (when no handler found)
@@ -433,9 +564,13 @@ impl VM<'_> {
             // This is where the caller invoked the function that's failing.
             let call_offset = this.current_frame().call_offset;
 
+            // A raising module body must not stay cached; checked before the pop.
+            let is_initializer = this.current_frame().is_initializer;
             // Synchronous evaluation stops unwinding here, but its caller still
             // belongs in the traceback when the error crosses that boundary.
             let should_return = this.pop_frame();
+            // CPython shows no carets under the `import` a module body's error unwinds through.
+            let from_module_body = is_initializer && this.forget_failed_module();
 
             // Add caller frame info to traceback (if we have a call site).
             // Resolve the offset now — against the caller, which is the current
@@ -446,8 +581,8 @@ impl VM<'_> {
                 let pos = this.resolve_offset(off);
                 let frame_name = this.current_frame_name();
                 match &mut error {
-                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name),
-                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name),
+                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
+                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
                     RunError::Internal(_) => {}
                 }
             }
@@ -457,18 +592,18 @@ impl VM<'_> {
         }
     }
 
-    /// Unwinds the call stack to collect all frames for a traceback.
-    ///
-    /// Used for terminal resource errors that can't be handled
-    /// but still need a complete traceback showing all active call frames.
+    /// Collects terminal-error traceback frames up to the next synchronous boundary.
+    /// Native callers must release their borrows before their Python frames are unwound.
     fn unwind_for_traceback(&mut self, mut error: RunError) -> RunError {
         // Pop frames and add caller frame info to the traceback
         while !self.suspended_frames.is_empty() {
             // Get the caller's call-site offset before popping frame
             let call_offset = self.current_frame().call_offset;
 
-            // Pop this frame (cleans up namespace, etc.)
-            self.pop_frame();
+            let is_initializer = self.current_frame().is_initializer;
+            let should_return = self.pop_frame();
+            // CPython shows no carets under the `import` a module body's error unwinds through.
+            let from_module_body = is_initializer && self.forget_failed_module();
 
             // Add caller frame info to traceback. Resolve the offset against the
             // caller, which is the current frame after the pop above.
@@ -478,10 +613,13 @@ impl VM<'_> {
                 let pos = self.resolve_offset(off);
                 let frame_name = self.current_frame_name();
                 match &mut error {
-                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name),
-                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name),
+                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
+                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
                     RunError::Internal(_) => {}
                 }
+            }
+            if should_return {
+                break;
             }
         }
         error
@@ -519,49 +657,43 @@ impl VM<'_> {
     /// earlier element already matched (e.g. `except (TypeError, (ValueError,))`
     /// raising `TypeError` still raises the `TypeError` about catching classes).
     pub(super) fn check_exc_match(&self, exception: &Value, exc_type: &Value) -> Result<bool, RunError> {
-        let exc_type_enum = exception.py_type(self);
-        match exc_type {
-            // Single exception class.
-            Value::Builtin(Builtins::ExcType(handler_type)) => {
-                Ok(Self::exc_matches_handler(exc_type_enum, *handler_type))
-            }
-            // Flat tuple of exception classes. CPython does not descend into
-            // nested tuples in this position, so neither do we.
-            Value::Ref(id) => {
-                if let HeapData::Tuple(tuple) = self.heap.get(*id) {
-                    let mut matched = false;
-                    for v in tuple.as_slice() {
-                        match v {
-                            Value::Builtin(Builtins::ExcType(handler_type)) => {
-                                if !matched && Self::exc_matches_handler(exc_type_enum, *handler_type) {
-                                    matched = true;
-                                }
-                            }
-                            // A nested tuple or any non-exception value is
-                            // rejected exactly as CPython rejects it, even if a
-                            // previous element already matched.
-                            _ => return Err(ExcType::except_invalid_type_error()),
-                        }
-                    }
-                    Ok(matched)
-                } else {
-                    // A non-tuple heap value (e.g. an exception instance) is not
-                    // a valid exception type for an `except` clause.
-                    Err(ExcType::except_invalid_type_error())
-                }
-            }
-            // Any other value is invalid for an `except` clause.
-            _ => Err(ExcType::except_invalid_type_error()),
+        let raised = exception.py_type(self);
+        if let Some(handler) = self.exception_class(exc_type) {
+            return Ok(raised.is_subclass_of(handler, self.heap));
         }
+        // Flat tuple of exception classes. CPython does not descend into
+        // nested tuples in this position, so neither do we.
+        let Value::Ref(id) = exc_type else {
+            return Err(ExcType::except_invalid_type_error());
+        };
+        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
+            // A non-tuple heap value (e.g. an exception instance) is not a
+            // valid exception type for an `except` clause.
+            return Err(ExcType::except_invalid_type_error());
+        };
+        let mut matched = false;
+        for value in tuple.as_slice() {
+            // A nested tuple or any non-exception value is rejected exactly as
+            // CPython rejects it, even if a previous element already matched.
+            let handler = self
+                .exception_class(value)
+                .ok_or_else(ExcType::except_invalid_type_error)?;
+            matched = matched || raised.is_subclass_of(handler, self.heap);
+        }
+        Ok(matched)
     }
 
-    /// Returns whether a raised exception's type is caught by `handler_type`.
+    /// The type `value` denotes if it is an exception class, for an `except` clause.
     ///
-    /// Helper shared by the single-class and flat-tuple arms of
-    /// [`check_exc_match`]; the raised value only matches when its type is an
-    /// exception that is a subclass of the handler's class.
-    fn exc_matches_handler(exc_type_enum: Type, handler_type: ExcType) -> bool {
-        matches!(exc_type_enum, Type::Exception(et) if et.is_subclass_of(handler_type))
+    /// Every native exception class carries an `ExcType`, so only a user class
+    /// needs its MRO walked.
+    fn exception_class(&self, value: &Value) -> Option<TypeRef> {
+        match TypeRef::from_value(value, self.heap)? {
+            native @ TypeRef::Native(ty) => ty.exc_type().is_some().then_some(native),
+            class => class
+                .is_subclass_of(TypeRef::Native(Type::BaseException), self.heap)
+                .then_some(class),
+        }
     }
 }
 
@@ -584,7 +716,7 @@ fn assert_operand_repr(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
 fn assert_msg_str(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
     let str_value = value.py_str(vm)?;
     defer_drop!(str_value, vm);
-    Ok(str_value.to_str(vm)?.to_owned())
+    Ok(str_value.as_str(vm).expect("py_str returns str").to_owned())
 }
 
 /// Byte-capped sink that stops repr formatting on a character boundary.

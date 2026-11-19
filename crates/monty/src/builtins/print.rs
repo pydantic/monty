@@ -54,8 +54,10 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         defer_drop!(s, vm);
         // Resolve the `str` `Value` against the heap/interns tables directly so
         // the `&str` borrow stays disjoint from the `&mut vm.print_writer` write.
-        vm.print_writer
-            .write(stream, s.to_str_heap(vm.heap, vm.interns)?.into())?;
+        vm.print_writer.write(
+            stream,
+            s.as_str_heap(vm.heap, vm.interns).expect("py_str returns str").into(),
+        )?;
     }
 
     if let Some(end) = end_str {

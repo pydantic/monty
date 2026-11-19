@@ -16,12 +16,15 @@ use super::{
     RESERVED_MODULE_DUNDERS,
     builder::{CodeBuilder, JumpLabel, JumpTarget, Offset},
     code::{Code, HandlerKind},
-    op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode, assert_flags},
+    op::{
+        FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, IMPORT_STAR_BIND, IMPORT_STAR_LOAD, IMPORT_STAR_NAMES,
+        NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode, assert_flags,
+    },
 };
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     builtins::{Builtins, BuiltinsFunctions},
-    exception_private::{ExcType, RunError, SimpleException},
+    exception_private::{ExcType, ExceptionRaise, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CaptureSource, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier,
         ImportName, Literal, NameScope, Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, Submodule,
@@ -29,7 +32,7 @@ use crate::{
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
-    intern::{CompileInterns, StringId},
+    intern::{CompileInterns, FunctionId, StaticStrings, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, Try, syntax_error_in_snippet},
@@ -294,6 +297,10 @@ pub struct Compiler<'a, 'i> {
 
 /// Compiler settings inherited by nested scopes, with await restrictions reset for functions.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent switches copied into nested scopes"
+)]
 struct ScopeFlags {
     /// Whether to compile pytest-style assert failure annotations.
     assert_message_annotations: bool,
@@ -304,6 +311,9 @@ struct ScopeFlags {
     /// Rejects `await` at snippet top level and in its class bodies.
     /// Nested function bodies reset this restriction.
     forbid_await: bool,
+    /// Whether the compile unit runs under `from __future__ import annotations`,
+    /// stamped on every `Code` it produces.
+    future_annotations: bool,
 }
 
 /// Jump targets needed to compile `break` and `continue`.
@@ -536,8 +546,9 @@ impl<'a, 'i> Compiler<'a, 'i> {
         interns: &mut CompileInterns<'_>,
         globals: &NameMap,
         options: CompileOptions,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, globals, options, None)
+        Self::compile_module_inner(nodes, interns, globals, options, None, future_annotations)
     }
 
     /// Compiles a prepared `eval()` / `exec()` snippet, rejecting top-level await.
@@ -549,8 +560,16 @@ impl<'a, 'i> Compiler<'a, 'i> {
         globals: &NameMap,
         options: CompileOptions,
         globals_by_name: bool,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, globals, options, Some(globals_by_name))
+        Self::compile_module_inner(
+            nodes,
+            interns,
+            globals,
+            options,
+            Some(globals_by_name),
+            future_annotations,
+        )
     }
 
     /// Shared module compiler; `snippet` is `Some(globals_by_name)` for eval/exec.
@@ -560,6 +579,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         globals: &NameMap,
         options: CompileOptions,
         snippet: Option<bool>,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
         check_namespace_size_u16(globals.len(), "module")?;
         // Module frames have `locals_count = 0` at runtime (globals live in
@@ -569,6 +589,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             assert_message_annotations: options.assert_message_annotations.enabled(),
             globals_by_name: snippet.unwrap_or(false),
             forbid_await: snippet.is_some(),
+            future_annotations,
         };
         let mut compiler = Compiler::new(interns, true, 0, flags);
 
@@ -581,7 +602,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
+    }
+
+    /// Builds the compiled `Code`, stamped with the unit's `__future__` state.
+    fn finish(self) -> Code {
+        self.code.build().with_future_annotations(self.flags.future_annotations)
     }
 
     /// Compiles a function body to bytecode, appending any nested functions to `interns`.
@@ -622,7 +648,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
     }
 
     /// Compiles statements, retaining `finally` bodies for inline cleanup.
@@ -767,22 +793,29 @@ impl<'a, 'i> Compiler<'a, 'i> {
             } => self.compile_for(target, iter, body, or_else)?,
             Node::While { test, body, or_else } => self.compile_while(test, body, or_else)?,
             Node::Assert { test, msg } => self.compile_assert(test, msg.as_ref())?,
-            Node::Raise(expr) => {
-                if let Some(exc) = expr {
+            Node::Raise { exc, cause } => match (exc, cause) {
+                (Some(exc), Some(cause)) => {
+                    self.compile_expr(exc)?;
+                    self.compile_expr(cause)?;
+                    self.code.emit(Opcode::RaiseFrom)?;
+                }
+                (Some(exc), None) => {
                     self.compile_expr(exc)?;
                     self.code.emit(Opcode::Raise)?;
-                } else {
-                    self.code.emit(Opcode::Reraise)?;
                 }
-            }
+                // The parser rejects `raise from cause` without an exception.
+                (None, _) => self.code.emit(Opcode::Reraise)?,
+            },
             Node::FunctionDef { def, decorators } => self.compile_function_def(def, decorators)?,
             Node::ClassDef {
                 name,
+                bases,
+                keywords,
                 body,
                 members,
                 decorators,
                 position,
-            } => self.compile_class_def(name, body, members, decorators, *position)?,
+            } => self.compile_class_def(name, bases, keywords, body, members, decorators, *position)?,
             Node::Try(try_block) => self.compile_try(try_block)?,
             Node::Match {
                 subject,
@@ -803,6 +836,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 names,
                 position,
             } => self.compile_import_from(*module_name, submodules, names, *position)?,
+            Node::ImportStar {
+                module_name,
+                submodules,
+                position,
+                ..
+            } => self.compile_import_star(*module_name, submodules, *position)?,
             Node::Break { position } => self.compile_break(*position)?,
             Node::Continue { position } => self.compile_continue(*position)?,
             // These are handled during the prepare phase and produce no bytecode
@@ -896,7 +935,13 @@ impl<'a, 'i> Compiler<'a, 'i> {
         let defaults_count = check_call_args_u8(func_def.default_exprs.len(), "default parameter values", func_pos)?;
         let cell_count = check_call_args_u8(func_def.free_var_enclosing_slots.len(), "closure variables", func_pos)?;
 
-        // 1. Compile the body recursively.
+        // 1. Compile the `__annotate__` function (PEP 649) and the body
+        //    recursively; nested functions are pushed first, so they get lower ids.
+        let annotate = func_def
+            .annotate
+            .as_deref()
+            .map(|annotate| self.compile_annotate(annotate))
+            .transpose()?;
         let namespace_size = check_namespace_size_u16(func_def.namespace_size, what)?;
         let body_code = compile_body(self.interns, namespace_size)?;
 
@@ -914,7 +959,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             })
             .collect();
         let function = Function::new(
-            func_def.name,
+            self.function_name(func_def),
             func_def.signature.clone(),
             func_def.namespace_size,
             enclosing_slot_metadata,
@@ -924,7 +969,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
             func_def.default_exprs.len(),
             func_def.is_async,
             body_code,
-        );
+        )
+        .with_annotate(annotate);
         let func_id = self.interns.push_function(function);
 
         // 3. Compile and push default values (evaluated at definition time)
@@ -960,17 +1006,61 @@ impl<'a, 'i> Compiler<'a, 'i> {
         Ok(())
     }
 
+    /// Compiles a `def`'s `__annotate__(format)` body and interns it, returning
+    /// its id for the owning [`Function`]. No `MakeFunction` is emitted: the
+    /// function value is built on `f.__annotate__` access from the owner's
+    /// globals, since it has no defaults or captured cells of its own.
+    fn compile_annotate(&mut self, annotate: &PreparedFunctionDef) -> Result<FunctionId, CompileError> {
+        debug_assert!(
+            annotate.free_var_enclosing_slots.is_empty() && annotate.default_exprs.is_empty(),
+            "an annotate function captures nothing and has no defaults"
+        );
+        let namespace_size = check_namespace_size_u16(annotate.namespace_size, "annotate function")?;
+        let code = Self::compile_function_body(annotate, self.interns, namespace_size, self.flags)?;
+        let function = Function::new(
+            self.function_name(annotate),
+            annotate.signature.clone(),
+            annotate.namespace_size,
+            Vec::new(),
+            annotate.free_var_slots.clone(),
+            annotate.cell_var_slots.clone(),
+            annotate.cell_param_indices.clone(),
+            0,
+            false,
+            code,
+        );
+        let func_id = self.interns.push_function(function);
+        Ok(FunctionId::from_index(check_function_count_u16(
+            func_id,
+            annotate.name.position,
+        )?))
+    }
+
+    /// The name a function reports in tracebacks: a synthesized `__annotate__` is
+    /// called that, as in CPython, whatever a class body binds it as.
+    fn function_name(&mut self, func_def: &PreparedFunctionDef) -> Identifier {
+        let mut name = func_def.name;
+        if func_def.is_annotate {
+            name.name_id = self.interns.intern_static(StaticStrings::DunderAnnotate);
+        }
+        name
+    }
+
     /// Compiles a `class Foo: ...` definition.
     ///
     /// Modelled on CPython's class-body code object: the class body is compiled
     /// to a synthetic zero-arg function (via
     /// [`emit_make_class_body`](Self::emit_make_class_body)) that runs the class
-    /// statements in its own scope and returns the assembled `Class`. We emit
-    /// that function value, call it with zero args, and bind the result to the
-    /// class name.
+    /// statements in its own scope and returns the namespace `Dict`. We evaluate
+    /// decorator expressions, evaluate kwargs and bases, call the class body
+    /// function, build the `Class` object, invoke `__init_subclass__`, apply
+    /// decorators, and bind the result to the class name.
+    #[expect(clippy::too_many_arguments)]
     fn compile_class_def(
         &mut self,
         name: &Identifier,
+        bases: &[SequenceItem],
+        keywords: &[Kwarg],
         body: &PreparedFunctionDef,
         members: &[Identifier],
         decorators: &[ExprLoc],
@@ -981,14 +1071,57 @@ impl<'a, 'i> Compiler<'a, 'i> {
         for decorator in decorators {
             self.compile_expr(decorator)?;
         }
-        // Build the class-body function/closure value on the stack...
-        self.emit_make_class_body(body, members, name, position)?;
-        // ...call it with zero args — it runs the body and returns the `Class`.
-        // Record the class statement as the call site so a traceback from inside
-        // the class body attributes this frame to the `class` statement (like
-        // CPython) rather than falling back to `CodeRange::default()`.
-        self.code.set_location(position, None);
-        self.code.emit_u8(Opcode::CallFunction, 0)?;
+
+        if keywords.is_empty() {
+            // Fast path: Arguments for type(name, bases, dict):
+            let class_name_const = self.code.add_const(Value::InternString(name.name_id))?;
+            self.code.emit_u16(Opcode::LoadConst, class_name_const)?;
+
+            // Evaluate bases in the enclosing scope in source order
+            self.compile_tuple_sequence(bases, position)?;
+
+            // Build the class-body function/closure value on the stack...
+            self.emit_make_class_body(body, members, position)?;
+            // ...call it with zero args — it runs the body and returns the namespace Dict.
+            // Record the class statement as the call site so a traceback from inside
+            // the class body attributes this frame to the `class` statement (like
+            // CPython) rather than falling back to `CodeRange::default()`.
+            self.code.set_location(position, None);
+            self.code.emit_u8(Opcode::CallFunction, 0)?;
+
+            // Call the 3-arg type() builtin, which constructs the Class object.
+            self.code.set_location(position, None);
+            self.code.emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
+        } else {
+            // Stack layout for CallFunctionKw: [callable, pos_0, pos_1, pos_2, kw_val_0, kw_val_1, ...]
+            let type_const = self.code.add_const(Value::Builtin(Builtins::Type(Type::Type)))?;
+            self.code.emit_u16(Opcode::LoadConst, type_const)?;
+
+            let class_name_const = self.code.add_const(Value::InternString(name.name_id))?;
+            self.code.emit_u16(Opcode::LoadConst, class_name_const)?;
+
+            self.compile_tuple_sequence(bases, position)?;
+
+            // Evaluate keyword arguments in the enclosing scope in source order before class body
+            let mut kwname_ids = Vec::with_capacity(keywords.len());
+            for kw in keywords {
+                self.compile_expr(&kw.value)?;
+                kwname_ids.push(check_name_index_u16(kw.key.name_id, position)?);
+            }
+
+            self.emit_make_class_body(body, members, position)?;
+            self.code.set_location(position, None);
+            self.code.emit_u8(Opcode::CallFunction, 0)?;
+
+            // Move the class namespace dict beneath the keyword arguments on the stack
+            let kw_count = u8::try_from(keywords.len())
+                .map_err(|_| CompileError::new("too many keyword arguments in class definition", position))?;
+            self.code.emit_u8(Opcode::SinkTop, kw_count)?;
+
+            self.code.set_location(position, None);
+            self.code.emit_call_function_kw(3, &kwname_ids)?;
+        }
+
         // Each call consumes the callable below the current value: `deco(value)`.
         // Reversed so the bottom-most (last pushed) applies first, and located at
         // its own decorator so a traceback pins the one that raised, like CPython.
@@ -1007,20 +1140,24 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Sibling of [`emit_make_function`](Self::emit_make_function): identical
     /// closure/cell handling, but compiles the body with
     /// [`compile_class_body`](Self::compile_class_body) so the emitted code ends
-    /// by assembling the namespace and returning the `Class`.
+    /// by assembling and returning the namespace `Dict`.
     fn emit_make_class_body(
         &mut self,
         body: &PreparedFunctionDef,
         members: &[Identifier],
-        class_name: &Identifier,
         position: CodeRange,
     ) -> Result<(), CompileError> {
         let flags = self.flags;
+        debug_assert!(
+            body.cell_var_slots.len() <= 1,
+            "class body owns at most the implicit __class__ cell"
+        );
+        let class_cell_slot = body.cell_var_slots.first().copied();
         self.emit_make_callable(body, "class body", |interns, namespace_size| {
             Self::compile_class_body(
                 &body.body,
                 members,
-                class_name,
+                class_cell_slot,
                 position,
                 interns,
                 namespace_size,
@@ -1029,13 +1166,44 @@ impl<'a, 'i> Compiler<'a, 'i> {
         })
     }
 
+    /// Compiles a sequence of elements into a tuple on top of the stack,
+    /// supporting `*unpack` elements via PEP 448 list conversion.
+    fn compile_tuple_sequence(&mut self, elements: &[SequenceItem], position: CodeRange) -> Result<(), CompileError> {
+        if has_unpack_seq(elements) {
+            // Generalized path: build via list then convert for PEP 448 *unpacks
+            self.code.emit_u16(Opcode::BuildList, 0)?;
+            for item in elements {
+                match item {
+                    SequenceItem::Value(e) => {
+                        self.compile_expr(e)?;
+                        self.code.emit_u8(Opcode::ListAppend, 0)?;
+                    }
+                    SequenceItem::Unpack(e) => {
+                        self.compile_expr(e)?;
+                        self.code.emit(Opcode::ListExtend)?;
+                    }
+                }
+            }
+            self.code.emit(Opcode::ListToTuple)?;
+        } else {
+            // Fast path: all values, single BuildTuple.
+            for item in elements {
+                if let SequenceItem::Value(e) = item {
+                    self.compile_expr(e)?;
+                }
+            }
+            let count = check_collection_size_u16(elements.len(), position)?;
+            self.code.emit_u16(Opcode::BuildTuple, count)?;
+        }
+        Ok(())
+    }
+
     /// Compiles a class body, mirroring
     /// [`compile_function_body`](Self::compile_function_body) but replacing the
-    /// implicit `LoadNone; ReturnValue` tail with a `type(name, (), {...})`
-    /// call: push the class name and an empty bases tuple, then for each
-    /// member (in source order) push `LoadConst <name>` and the member's value
-    /// from its class-body slot, build the namespace dict, and call the 3-arg
-    /// `type()` builtin (which builds the `Class`), then `ReturnValue`.
+    /// implicit `LoadNone; ReturnValue` tail with code that builds the namespace
+    /// `Dict` and returns it: for each member (in source order) push
+    /// `LoadConst <name>` and the member's value from its class-body slot, build
+    /// the namespace dict, then `ReturnValue`.
     ///
     /// Members are plain locals (the prepare phase forces class-body locals to
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
@@ -1044,7 +1212,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     fn compile_class_body(
         body: &[PreparedNode],
         members: &[Identifier],
-        class_name: &Identifier,
+        class_cell_slot: Option<NamespaceId>,
         position: CodeRange,
         interns: &mut CompileInterns<'_>,
         num_locals: u16,
@@ -1057,27 +1225,24 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // should point at the class statement, not the last member's line.
         compiler.code.set_location(position, None);
 
-        // type(name, (), {members...}): push the name and empty bases tuple...
-        let class_name_const = compiler.code.add_const(Value::InternString(class_name.name_id))?;
-        compiler.code.emit_u16(Opcode::LoadConst, class_name_const)?;
-        compiler.code.emit_u16(Opcode::BuildTuple, 0)?;
-
-        // ...then the namespace dict: (name, value) for each member in order.
+        // Build the namespace dict: (name, value) for each member in order.
         for member in members {
             let name_const = compiler.code.add_const(Value::InternString(member.name_id))?;
             compiler.code.emit_u16(Opcode::LoadConst, name_const)?;
             compiler.compile_name(member)?;
         }
-        let member_count = check_collection_size_u16(members.len(), position)?;
+        if let Some(cell_slot) = class_cell_slot {
+            let classcell_id = compiler.interns.intern_static(StaticStrings::DunderClasscell);
+            let name_const = compiler.code.add_const(Value::InternString(classcell_id))?;
+            compiler.code.emit_u16(Opcode::LoadConst, name_const)?;
+            compiler.code.emit_load_local(cell_slot.as_u16())?;
+        }
+        let dict_len = members.len() + usize::from(class_cell_slot.is_some());
+        let member_count = check_collection_size_u16(dict_len, position)?;
         compiler.code.emit_u16(Opcode::BuildDict, member_count)?;
-
-        // ...and call the 3-arg type() builtin, which builds the class object.
-        compiler
-            .code
-            .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
     }
 
     /// Compiles an import, resolving the module only when execution reaches it.
@@ -1130,6 +1295,42 @@ impl<'a, 'i> Compiler<'a, 'i> {
             self.code.emit_u16(Opcode::LoadAttrImport, name_idx)?;
             self.compile_store(binding)?;
         }
+        Ok(())
+    }
+
+    /// Compiles `from m import *` as a loop over the names the module exports,
+    /// binding each by name since none is known at compile time:
+    ///
+    /// ```text
+    /// LoadModule m (+ LoadSubmodule ...)   [m]
+    /// ImportStar NAMES; GetIter            [m, iter]
+    /// loop: ForIter end                    [m, iter, name]
+    /// ImportStar LOAD                      [m, iter, name, value]  (may suspend)
+    /// ImportStar BIND; Jump loop           [m, iter]
+    /// end: Pop                             []
+    /// ```
+    ///
+    /// `LOAD` is separate from `BIND` so a property such as `os.environ` can
+    /// suspend for the host and resume with its value on the stack.
+    fn compile_import_star(
+        &mut self,
+        module_name: StringId,
+        submodules: &[Submodule],
+        position: CodeRange,
+    ) -> Result<(), CompileError> {
+        self.code.set_location(position, None);
+        let module_idx = check_name_index_u16(module_name, position)?;
+        self.code.emit_u16(Opcode::LoadModule, module_idx)?;
+        self.compile_submodules(submodules, position)?;
+        self.code.emit_u8(Opcode::ImportStar, IMPORT_STAR_NAMES)?;
+        self.code.emit(Opcode::GetIter)?;
+        let loop_start = self.code.current_jump_target();
+        let end_jump = self.code.emit_jump(Opcode::ForIter)?;
+        self.code.emit_u8(Opcode::ImportStar, IMPORT_STAR_LOAD)?;
+        self.code.emit_u8(Opcode::ImportStar, IMPORT_STAR_BIND)?;
+        self.code.emit_jump_to(Opcode::Jump, loop_start)?;
+        self.code.patch_jump(end_jump)?;
+        self.code.emit(Opcode::Pop)?;
         Ok(())
     }
 
@@ -1227,34 +1428,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             }
 
             Expr::Tuple(elements) => {
-                if has_unpack_seq(elements) {
-                    // Generalized path: build via list then convert for PEP 448 *unpacks
-                    self.code.emit_u16(Opcode::BuildList, 0)?;
-                    for item in elements {
-                        match item {
-                            SequenceItem::Value(e) => {
-                                self.compile_expr(e)?;
-                                self.code.emit_u8(Opcode::ListAppend, 0)?;
-                            }
-                            SequenceItem::Unpack(e) => {
-                                self.compile_expr(e)?;
-                                self.code.emit(Opcode::ListExtend)?;
-                            }
-                        }
-                    }
-                    self.code.emit(Opcode::ListToTuple)?;
-                } else {
-                    // Fast path: all values, single BuildTuple.
-                    // SAFETY: has_unpack_seq(elements) is false, so every item is Value.
-                    for item in elements {
-                        let SequenceItem::Value(e) = item else {
-                            unreachable!("tuple fast path: only Value items")
-                        };
-                        self.compile_expr(e)?;
-                    }
-                    let count = check_collection_size_u16(elements.len(), expr_loc.position)?;
-                    self.code.emit_u16(Opcode::BuildTuple, count)?;
-                }
+                self.compile_tuple_sequence(elements, expr_loc.position)?;
             }
 
             Expr::Dict(dict_items) => {
@@ -2289,11 +2463,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 let name: &'static str = function.into();
                 self.interns.get_string_id_by_name(name)?
             }
-            Builtins::ExcType(exc_type) => self.interns.get_string_id_by_name(&exc_type.to_string())?,
-            Builtins::Type(type_) => {
-                let name = type_.builtin_name()?;
-                self.interns.get_string_id_by_name(name)?
-            }
+            Builtins::Type(type_) => self.interns.get_string_id_by_name(type_.builtin_name()?)?,
         };
 
         u16::try_from(name_id.index()).ok()
@@ -3460,7 +3630,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // Raise AssertionError
         let exc_idx = self
             .code
-            .add_const(Value::Builtin(Builtins::ExcType(ExcType::AssertionError)))?;
+            .add_const(Value::Builtin(Builtins::Type(Type::AssertionError)))?;
         self.code.emit_u16(Opcode::LoadConst, exc_idx)?;
 
         if let Some(msg_expr) = msg {
@@ -4000,11 +4170,28 @@ impl CompileError {
         }
     }
 
+    /// Converts an imported file's compile error; see `ParseError::into_file_run_error`.
+    pub(crate) fn into_file_run_error(self, path: &str, source: &str) -> RunError {
+        let (exc_type, msg, frame) = self.into_parts(path, source);
+        RunError::Exc(ExceptionRaise {
+            exc: SimpleException::new_msg(exc_type, msg),
+            frame: None,
+            snippet_frame: Some(Box::new(frame)),
+            hide_caret: true,
+        })
+    }
+
     /// Converts this compile error into a Python exception.
     ///
     /// Syntax errors omit the frame name; unsupported constructs report a
     /// runtime-style location with the stored exception type and message.
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
+        let (exc_type, msg, frame) = self.into_parts(filename, source);
+        MontyException::with_traceback(exc_type, Some(msg), vec![frame])
+    }
+
+    /// The exception type, message and the frame locating the error in `filename`.
+    fn into_parts(self, filename: &str, source: &str) -> (ExcType, String, StackFrame) {
         let mut source_map = SourceMap::new(source);
         let mut frame = if self.exc_type == ExcType::SyntaxError {
             // SyntaxError uses different format: no `, in <module>`
@@ -4016,7 +4203,7 @@ impl CompileError {
         if self.exc_type == ExcType::ModuleNotFoundError {
             frame.hide_caret = true;
         }
-        MontyException::with_traceback(self.exc_type, Some(self.message.into_owned()), vec![frame])
+        (self.exc_type, self.message.into_owned(), frame)
     }
 }
 

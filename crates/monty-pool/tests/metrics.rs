@@ -7,27 +7,28 @@
 
 #![cfg(feature = "telemetry")]
 
+mod binary;
+mod common;
+
 use std::{
     collections::HashMap,
-    env,
+    env, fs,
     future::ready,
-    path::{Path, PathBuf},
-    process::Command,
-    sync::{Arc, Mutex, Once, PoisonError},
+    sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
 
 use logfire::{Logfire, config::MetricsOptions};
 use monty_pool::{
-    Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
-    telemetry::{Metrics, TelemetryAdapter, configure_telemetry_adapter},
+    CheckoutOptions, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    telemetry::{Metrics, TelemetryAdapter, TelemetryContext, configure_telemetry_adapter},
     telemetry_adapter,
 };
 use monty_proto::pb;
 use monty_types::{ExcType, MontyException, MontyObject, PrintStream};
 use opentelemetry::{
     KeyValue,
-    trace::{SpanId, TraceId},
+    trace::{SpanContext, SpanId, TraceFlags, TraceId, TraceState},
 };
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_sdk::{
@@ -36,9 +37,15 @@ use opentelemetry_sdk::{
         InMemoryMetricExporter, PeriodicReader,
         data::{AggregatedMetrics, MetricData},
     },
-    trace::SpanData,
+    trace::{InMemorySpanExporter, SimpleSpanProcessor, SpanData},
 };
 use prost::Message;
+use tokio::time::{Instant, sleep};
+
+use crate::{
+    binary::monty_binary,
+    common::{kill_pid, wait_for_idle},
+};
 
 /// A cumulative aggregate exported from a test Logfire provider.
 struct Capture {
@@ -299,7 +306,7 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
 
     capture.last("monty.run.duration", "outcome", "complete");
     capture.last("monty.pool.session.duration", "outcome", "ok");
-    capture.last("monty.turn.duration", "turn", "configure");
+    // the feed carried the `Configure`, so only the `Reset` is a turn of its own
     capture.last("monty.turn.duration", "turn", "reset");
     assert!(capture.has("monty.run.execution_time"));
     // `print` writes 3 bytes including its newline
@@ -321,6 +328,48 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
     assert_eq!(capture.total("monty.pool.workers.idle"), 0);
 }
 
+/// A checkout finished before its first request never configures its worker,
+/// so the worker's next, untraced checkout must not open a span under its trace.
+#[tokio::test]
+async fn an_unconfigured_checkout_leaves_no_trace_parent_behind() {
+    let spans = InMemorySpanExporter::default();
+    let logfire = logfire::configure()
+        .local()
+        .send_to_logfire(false)
+        .with_additional_span_processor(SimpleSpanProcessor::new(spans.clone()))
+        .finish()
+        .expect("logfire");
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.min_processes = 1;
+    config.max_processes = 1;
+    let pool = Pool::new(config).await.expect("pool");
+
+    let parent = SpanContext::new(
+        TraceId::from(7_u128),
+        SpanId::from(7_u64),
+        TraceFlags::SAMPLED,
+        true,
+        TraceState::default(),
+    );
+    let traced = CheckoutOptions::default()
+        .with_telemetry(Some(TelemetryContext::for_logfire(logfire.clone()).with_parent(parent)));
+    let checkout = pool
+        .checkout_with(&ReplConfig::default(), traced)
+        .await
+        .expect("checkout");
+    checkout.finish().await.expect("finish");
+
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    checkout.finish().await.expect("finish");
+    pool.close().await;
+    // read while `logfire` lives: its provider's shutdown clears the exporter
+    assert_eq!(spans.get_finished_spans().unwrap().len(), 0);
+}
+
 /// A checkout that cannot be served, and a session abandoned rather than
 /// finished — the two failure shapes a host alerts on.
 #[tokio::test]
@@ -336,13 +385,112 @@ async fn saturation_and_abandonment_are_recorded() {
     assert!(matches!(blocked, Some(PoolError::Exhausted)), "{blocked:?}");
     capture.last("monty.pool.checkout.wait", "outcome", "exhausted");
 
-    // dropping without `finish` kills the worker: the session ended, and the
-    // worker left the pool
+    // dropping without `finish` kills the worker: the session ended, the
+    // worker left the pool, and a refill replaced it
     drop(held);
     capture.last("monty.pool.session.duration", "outcome", "abandoned");
     capture.last("monty.pool.worker.terminated", "reason", "abandoned");
-    assert_eq!(capture.total("monty.pool.workers.live"), 0);
+    wait_for_idle(&pool, 1).await;
+    assert_eq!(capture.total("monty.pool.workers.live"), 1);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 1);
+}
+
+/// A worker recycled after its checkout is replaced in the background, so the
+/// next checkout is served warm rather than spawning on its path.
+#[tokio::test]
+async fn checkout_after_recycle_is_warm() {
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.min_processes = 1;
+    config.max_checkouts_per_worker = Some(1);
+    let (pool, capture) = pool_with_metrics(config).await;
+
+    pool.checkout(&ReplConfig::default())
+        .await
+        .expect("checkout")
+        .finish()
+        .await
+        .expect("finish");
+    capture.last("monty.pool.worker.terminated", "reason", "recycled");
+    wait_for_idle(&pool, 1).await;
+
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let spawned = capture
+        .named("monty.pool.checkout.wait")
+        .into_iter()
+        .any(|recorded| recorded.attributes.get("outcome").is_some_and(|o| o == "spawned"));
+    assert!(!spawned, "no checkout should have spawned its worker");
+    assert_eq!(capture.total("monty.pool.workers.live"), 1);
     assert_eq!(capture.total("monty.pool.workers.idle"), 0);
+    drop(checkout);
+}
+
+/// A refill that cannot spawn backs off rather than retrying in a tight loop,
+/// while a checkout still surfaces the spawn error, and refilling resumes once
+/// the binary is back. Unix-only: Windows cannot delete a running executable.
+#[cfg(unix)]
+#[tokio::test]
+async fn failed_refills_back_off() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let binary = dir.path().join(format!("monty{}", env::consts::EXE_SUFFIX));
+    fs::copy(monty_binary(), &binary).expect("copy monty");
+    let mut config = PoolConfig::subprocess(&binary);
+    config.min_processes = 1;
+    config.max_checkouts_per_worker = Some(1);
+    let (pool, capture) = pool_with_metrics(config).await;
+
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    fs::remove_file(&binary).expect("remove monty");
+    checkout.finish().await.expect("finish");
+    wait_until("two failed refills", || terminations(&capture, "refill_failed") >= 2).await;
+    // the next delays are at least 200 ms and 400 ms, so a second allows two more
+    sleep(Duration::from_secs(1)).await;
+    let failures = terminations(&capture, "refill_failed");
+    assert!(failures <= 5, "expected backed-off refills, got {failures}");
+    let err = pool.checkout(&ReplConfig::default()).await.err();
+    assert!(matches!(err, Some(PoolError::Spawn(_))), "{err:?}");
+
+    fs::copy(monty_binary(), &binary).expect("restore monty");
+    wait_for_idle(&pool, 1).await;
+}
+
+/// The refill a recycle starts is killed by `close`, whether it lands before or after it.
+#[tokio::test]
+async fn close_stops_refilling() {
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.min_processes = 1;
+    config.max_checkouts_per_worker = Some(1);
+    let (pool, capture) = pool_with_metrics(config).await;
+
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    checkout.finish().await.expect("finish");
+    pool.close().await;
+    // the termination is counted just before the live gauge drops
+    wait_until("the refill to be closed", || {
+        terminations(&capture, "closed") == 1 && capture.total("monty.pool.workers.live") == 0
+    })
+    .await;
+    assert_eq!(pool.idle_workers(), 0);
+}
+
+/// How many workers have terminated with `reason`.
+fn terminations(capture: &Capture, reason: &str) -> u64 {
+    capture
+        .named("monty.pool.worker.terminated")
+        .into_iter()
+        .rfind(|recorded| recorded.attributes.get("reason").is_some_and(|found| found == reason))
+        .map_or(0, |recorded| match recorded.value {
+            Value::U64(count) => count,
+            other => panic!("expected a counter, got {other:?}"),
+        })
+}
+
+/// Polls `done` until it holds, panicking after a few seconds: background refills land asynchronously.
+async fn wait_until(what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// A worker that dies during a turn: the teardown path counts its termination
@@ -355,16 +503,11 @@ async fn a_crashed_worker_is_counted_as_it_is_torn_down() {
     config.max_processes = 1;
     let (pool, capture) = pool_with_metrics(config).await;
 
-    // an expression deep enough to overflow the child's stack, which aborts it
-    // mid-turn (the same trick `pool_test.rs` uses, and portable unlike a kill)
-    let mut code = String::with_capacity(300_002);
-    code.push('a');
-    for _ in 0..150_000 {
-        code.push_str(".x");
-    }
+    // the turn finds its worker already killed, as `pool_test.rs` does
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    kill_pid(checkout.pid().expect("a subprocess worker has a pid"));
     let err = checkout
-        .feed(&code, vec![], vec![], false, &mut no_print)
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
         .expect_err("the worker should have died");
     assert!(matches!(err, PoolError::Crashed { .. }), "{err}");
@@ -376,8 +519,9 @@ async fn a_crashed_worker_is_counted_as_it_is_torn_down() {
     capture.last("monty.pool.worker.terminated", "reason", "crash");
     assert_eq!(capture.named("monty.pool.session.duration").len(), 1);
     capture.last("monty.pool.session.duration", "outcome", "error");
-    assert_eq!(capture.total("monty.pool.workers.live"), 0);
-    assert_eq!(capture.total("monty.pool.workers.idle"), 0);
+    wait_for_idle(&pool, 1).await;
+    assert_eq!(capture.total("monty.pool.workers.live"), 1);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 1);
 }
 
 /// A pool dropped without `close` — a supported shutdown — still counts its
@@ -441,20 +585,22 @@ async fn raw_turns_are_instrumented_like_typed_ones() {
     let (pool, capture) = pool_with_metrics(config).await;
 
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
-    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
-    let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+    let mut on_event = |_: &pb::WorkerEvent| Box::pin(ready(())) as PrintFuture;
+    let feed = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed {
             code: "print('hi')\n6 * 7".to_owned(),
             inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         })),
-        ..pb::ParentRequest::default()
+        ..pb::ClientRequest::default()
     };
     let event = checkout.turn_raw(&feed, &mut on_event).await.expect("raw feed");
     assert!(
-        matches!(event.kind, Some(pb::child_event::Kind::Complete(_))),
+        matches!(event.kind, Some(pb::worker_event::Kind::Complete(_))),
         "{event:?}"
     );
     checkout.finish().await.expect("finish");
@@ -535,30 +681,4 @@ async fn eager_coroutine_metrics_match_sync_outcomes() {
 /// A discard-everything print callback, coercible to `OnPrint` at each callsite.
 fn no_print(_: PrintStream, _: &str) -> PrintFuture {
     Box::pin(ready(()))
-}
-
-/// Locates (building once if needed) the `monty` CLI binary for tests.
-fn monty_binary() -> PathBuf {
-    static BUILD: Once = Once::new();
-    if let Ok(path) = env::var("MONTY_TEST_BIN") {
-        return PathBuf::from(path);
-    }
-    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("workspace root")
-        .to_owned();
-    let target = env::var_os("CARGO_TARGET_DIR").map_or_else(|| workspace.join("target"), PathBuf::from);
-    let path = target.join("debug").join(format!("monty{}", env::consts::EXE_SUFFIX));
-    BUILD.call_once(|| {
-        if !path.exists() {
-            let status = Command::new(env!("CARGO"))
-                .args(["build", "-p", "monty-runtime"])
-                .status()
-                .expect("failed to run cargo build -p monty-runtime");
-            assert!(status.success(), "building the monty binary failed");
-        }
-    });
-    assert!(path.exists(), "monty binary missing at {}", path.display());
-    path
 }

@@ -36,6 +36,7 @@ ALLOWED_FUNCTIONS = {
     'min',
     'next',
     'oct',
+    'open',
     'ord',
     'pow',
     'print',
@@ -93,6 +94,11 @@ ALLOWED_CLASSES = {
     'NameError',
     'SyntaxError',
     'OSError',
+    'FileExistsError',
+    'FileNotFoundError',
+    'IsADirectoryError',
+    'NotADirectoryError',
+    'PermissionError',
     'TimeoutError',
     'TypeError',
     'ValueError',
@@ -144,6 +150,9 @@ COPY_FILES = [
     'datetime.pyi',
     # Monty implements every `itertools` callable
     'itertools.pyi',
+    # the file classes `open()` returns; `io` re-exports them from `_io`
+    'io.pyi',
+    '_io.pyi',
     # narrowed to Monty's surface by custom/random.pyi
     'random.pyi',
     # `os.path` is always `posixpath` (custom/os/path.pyi), which re-exports
@@ -159,8 +168,10 @@ VERSIONS = """\
 # which monty's minimimal typeshed includes
 
 _collections_abc: 3.3-
+_io: 3.0-  # not importable at runtime, only for type checking
 _typeshed: 3.0-  # not present at runtime, only for type checking
 abc: 3.0-  # not importable at runtime, only for type checking
+annotationlib: 3.14-  # narrowed to Monty's surface by custom/annotationlib.pyi
 asyncio: 3.4-
 base64: 3.0-
 binascii: 3.0-
@@ -171,9 +182,12 @@ copy: 3.0-
 csv: 3.0-
 dataclasses: 3.7-
 datetime: 3.0-
+decimal: 3.0-
+fnmatch: 3.0-
 functools: 3.0-
 genericpath: 3.0-  # not importable at runtime, only for type checking (posixpath re-exports from it)
 hashlib: 3.0-
+io: 3.0-  # not importable at runtime, only for type checking
 itertools: 3.0-
 json: 3.0-
 math: 3.0-
@@ -184,6 +198,7 @@ pathlib.types: 3.14-
 posixpath: 3.0-
 random: 3.0-
 re: 3.0-
+statistics: 3.4-
 sys: 3.0-
 time: 3.0-
 tomllib: 3.11-

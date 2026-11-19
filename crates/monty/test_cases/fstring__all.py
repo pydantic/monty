@@ -734,3 +734,19 @@ try:
     assert False, 'expected #s on int to fail'
 except ValueError as _e:
     assert str(_e) == "Unknown format code 's' for object of type 'int'", f'#s int: {_e}'
+
+# === Float f/% results around the 64-byte stack buffer ===
+# short results format on the stack; longer ones, `#`, nan and inf take the String path
+assert f'{1e50:.20f}' == '100000000000000007629769841091887003294964970946560.00000000000000000000'
+assert f'{-1e50:,.20f}' == '-100,000,000,000,000,007,629,769,841,091,887,003,294,964,970,946,560.00000000000000000000'
+assert f'{1e40:.2%}' == '1000000000000000044885712678075916785549312.00%'
+assert f'{1.5:.62f}' == '1.50000000000000000000000000000000000000000000000000000000000000'
+assert f'{1.5:.63f}' == '1.500000000000000000000000000000000000000000000000000000000000000'
+assert f'{0.5:.60%}' == '50.000000000000000000000000000000000000000000000000000000000000%'
+assert f'{0.5:.61%}' == '50.0000000000000000000000000000000000000000000000000000000000000%'
+assert f'{12.5:>20.2f}' == '               12.50'
+assert f'{-2.5:=+10.1%}' == '-   250.0%'
+assert f'{float("nan"):08.2f}' == '00000nan'
+assert f'{float("-inf"):.1%}' == '-inf%'
+assert f'{float("-inf"):.100f}' == '-inf'
+assert len(f'{1e308:.2f}') == 312

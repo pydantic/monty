@@ -91,9 +91,15 @@ impl Value {
     /// Python rich comparison, preserving arbitrary results and honoring reflected dispatch.
     /// Identity is only the final equality fallback after both operands decline.
     pub(crate) fn py_richcompare(&self, other: &Self, op: RichCompareOp, vm: &mut VM<'_>) -> RunResult<Self> {
+        if let (Self::Int(a), Self::Int(b)) = (self, other) {
+            return Ok(op.apply(Some(a.cmp(b))));
+        }
+        if let (Self::Bool(a), Self::Bool(b)) = (self, other) {
+            return Ok(op.apply(Some(a.cmp(b))));
+        }
         let left_type = self.py_type(vm);
         let right_type = other.py_type(vm);
-        let right_first = left_type != right_type && right_type.is_instance_of(left_type);
+        let right_first = left_type != right_type && right_type.is_subclass_of(left_type, vm.heap);
         if right_first {
             let result = other.py_richcompare_impl(self, op.reflected(), vm)?;
             if !result.is_not_implemented() {
@@ -194,6 +200,7 @@ impl Number<'_> {
 pub(crate) fn compare_str(s: &str, other: &Value, op: RichCompareOp, vm: &VM<'_>) -> Value {
     match other {
         Value::InternString(id) => op.apply(Some(s.cmp(vm.interns.get_str(*id)))),
+        Value::InlineString(text) => op.apply(Some(s.cmp(text.as_str()))),
         Value::Ref(id) if let HeapData::Str(other) = vm.heap.get(*id) => op.apply(Some(s.cmp(other.as_str()))),
         _ => Value::NotImplemented,
     }

@@ -264,8 +264,8 @@ whether they are the same thing. Consistency beats variety.
 **Noun clusters: three words at most.** Longer stacks make the reader guess
 which noun modifies which.
 
-- ✗ "parent-side mount table memory usage limit"
-- ✓ "the memory limit for a parent-side mount table"
+- ✗ "client-side mount table memory usage limit"
+- ✓ "the memory limit for a client-side mount table"
 
 **Active voice and simple tenses.** Use the passive only when the actor is
 unknown or irrelevant. Do not drop articles or verbs to save space, except in

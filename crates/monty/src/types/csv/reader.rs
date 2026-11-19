@@ -123,7 +123,9 @@ pub(super) fn next_fields<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut VM<'h>)
         }
         // The parser only allocates, so the line is read in place rather than copied.
         let heap: &Heap = vm.heap;
-        let mut rest = line.to_str_heap(heap, vm.interns)?;
+        let mut rest = line
+            .as_str_heap(heap, vm.interns)
+            .expect("reader line type checked above");
         while !rest.is_empty() {
             heap.tracker.check_time_every(polls)?;
             polls += 1;

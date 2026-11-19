@@ -6,7 +6,10 @@
 
 use std::fs;
 
-use monty_fs::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
+use monty_fs::{
+    DEFAULT_MEMORY_USAGE_LIMIT, DIRECTORY_WRITE_BYTES, Mount, MountCallOutcome, MountError, MountMode, MountTable,
+    OverlayState,
+};
 use monty_types::{
     ExcType, MkdirCallArgs, MontyException, MontyObject, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
     RenameCallArgs, UnicodeErrorData, UnicodeErrorObject,
@@ -2200,6 +2203,114 @@ fn no_limit_allows_large_writes() {
     call(&mut mt, &write_text("/mnt/big.txt", "x".repeat(100_000)))
         .unwrap()
         .unwrap();
+}
+
+/// The writable mount modes, fresh for each use.
+fn writable_modes() -> [MountMode; 2] {
+    [MountMode::ReadWrite, MountMode::OverlayMemory(OverlayState::new())]
+}
+
+/// `DIRECTORY_WRITE_BYTES` times `n`, as a write limit.
+fn dir_budget(n: usize) -> u64 {
+    u64::try_from(DIRECTORY_WRITE_BYTES * n).unwrap()
+}
+
+#[test]
+fn mkdir_loop_stops_at_write_limit() {
+    for mode in writable_modes() {
+        let dir = create_test_dir();
+        let mut mt = mount_at_mnt_with_limit(&dir, mode, dir_budget(3));
+        for i in 0..3 {
+            call_ok(&mut mt, &mkdir(&format!("/mnt/d{i}"), false, false));
+        }
+        let exc = call_err(&mut mt, &mkdir("/mnt/d3", false, false));
+        assert_exc(&exc, ExcType::OSError, "disk write limit of 12.3 KB exceeded");
+        assert_eq!(
+            call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/d3".into())),
+            MontyObject::bool(false)
+        );
+        // a write is refused the same way once directories used the budget
+        let exc = call_err(&mut mt, &write_text("/mnt/a.txt", "x"));
+        assert_exc(&exc, ExcType::OSError, "disk write limit of 12.3 KB exceeded");
+    }
+}
+
+#[test]
+fn mkdir_parents_charges_each_created_directory() {
+    for mode in writable_modes() {
+        let dir = create_test_dir();
+        fs::create_dir(dir.path().join("real")).unwrap();
+        let mut mt = mount_at_mnt_with_limit(&dir, mode, dir_budget(2));
+        // three directories to create: refused before any is made
+        let exc = call_err(&mut mt, &mkdir("/mnt/a/b/c", true, false));
+        assert_exc(&exc, ExcType::OSError, "disk write limit of 8.2 KB exceeded");
+        assert_eq!(
+            call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/a".into())),
+            MontyObject::bool(false)
+        );
+        // an existing parent is free: only `real/x` and `real/x/y` are created
+        call_ok(&mut mt, &mkdir("/mnt/real/x/y", true, false));
+        let exc = call_err(&mut mt, &mkdir("/mnt/real/x/y/z", true, false));
+        assert_exc(&exc, ExcType::OSError, "disk write limit of 8.2 KB exceeded");
+    }
+}
+
+#[test]
+fn mkdir_of_existing_directory_is_free() {
+    for mode in writable_modes() {
+        let dir = create_test_dir();
+        fs::create_dir(dir.path().join("real")).unwrap();
+        let mut mt = mount_at_mnt_with_limit(&dir, mode, 0);
+        for _ in 0..3 {
+            call_ok(&mut mt, &mkdir("/mnt/real", false, true));
+            call_ok(&mut mt, &mkdir("/mnt/real", true, true));
+        }
+        let exc = call_err(&mut mt, &mkdir("/mnt/real", false, false));
+        assert_exc(&exc, ExcType::FileExistsError, "[Errno 17] File exists: '/mnt/real'");
+    }
+}
+
+#[test]
+fn rw_mkdir_over_dangling_symlink_reports_file_exists() {
+    if !symlinks_supported() {
+        return;
+    }
+    let dir = create_test_dir();
+    symlink_file(dir.path().join("missing"), dir.path().join("dangling"));
+    // the symlink exists, so it is not charged as a new directory
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::ReadWrite, 0);
+    let exc = call_err(&mut mt, &mkdir("/mnt/dangling", false, false));
+    assert_exc(
+        &exc,
+        ExcType::FileExistsError,
+        "[Errno 17] File exists: '/mnt/dangling'",
+    );
+}
+
+#[test]
+fn overlay_mkdir_parents_memory_limit_records_nothing() {
+    let dir = create_test_dir();
+    // room for the entries of `a` and `a/b`, not `a/b/c` as well
+    let mount = Mount::new(
+        "/mnt",
+        dir.path(),
+        MountMode::OverlayMemory(OverlayState::new()),
+        Some(dir_budget(10)),
+    )
+    .unwrap()
+    .with_memory_usage_limit(600);
+    let mut mt = MountTable::new();
+    mt.push_mount(mount).unwrap();
+    let exc = call_err(&mut mt, &mkdir("/mnt/a/b/c", true, false));
+    assert_exc(
+        &exc,
+        ExcType::MemoryError,
+        "mount memory usage limit of 600 bytes exceeded",
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/a".into())),
+        MontyObject::bool(false)
+    );
 }
 
 // =============================================================================

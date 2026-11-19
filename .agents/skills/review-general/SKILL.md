@@ -23,11 +23,17 @@ Read the changed files in full — a hunk is rarely enough to judge correctness.
     amplifying `String` build without `StringBuilder`), unbounded loops, recursion without
     a depth guard.
 - **Performance** — regressions the branch introduces, and improvements you spot.
-- **Verbose comments** — docstrings and comments should be concise as per `CLAUDE.md`.
-- **Cleanups** — duplication, misplaced logic, functions grown too complex.
+- **Verbose comments** — docstrings and comments should be concise as per `AGENTS.md`.
+- **Cleanups** — misplaced logic, functions grown too complex.
+- **Duplicated code** — repeated logic that belongs in a shared helper or method.
+- **Early returns instead of a tail expression** — a function that `return`s from several
+    branches, where one `if`/`match` expression ending in a tail expression would be cleaner.
+    Guard clauses at the top of a function are fine (see `AGENTS.md` "Code style").
+- **Newspaper order** — public and primary functions at the top of a file, with private
+    helpers and sub-functions below the function that uses them (see `AGENTS.md` "NOTES").
 - **`./limitations/`** — a new divergence with no entry is a finding.
 - **Docs parity** — a user-visible change reflected in only one of `README.md`, `docs/`,
-    `limitations/` and the crate READMEs is a finding. `CLAUDE.md` "Documentation surfaces
+    `limitations/` and the crate READMEs is a finding. `AGENTS.md` "Documentation surfaces
     that must stay in sync" has the obligation table. For a full pass, delegate to the
     `docs-parity-reviewer` subagent.
 

@@ -1,0 +1,269 @@
+//! `typing.get_type_hints()` over host functions and classes, and hints surviving dump/restore.
+//!
+//! `test_cases/typing__get_type_hints*.py` compare against CPython, the `_external` ones through
+//! the datatest harness's host; these cases check the raw OS call, unresolved text hints and dumps.
+
+use insta::assert_snapshot;
+use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
+use monty_types::{
+    CompileOptions, GET_TYPE_HINTS_CALL, MontyObject, MontyType, MontyUuid, OsFunctionCall, PrintWriter,
+    ResourceTracker, TypeHintsTarget,
+};
+
+/// The id of the host class in [`host_class`].
+const CLASS_ID: MontyUuid = MontyUuid::from_u128(0x1234);
+
+/// A host class with no eager attrs.
+fn host_class() -> MontyObject {
+    MontyObject::class_type("Point", CLASS_ID, true, false, [])
+}
+
+/// Hints a host might answer with: a builtin type, unresolved text and `NoneType`.
+fn host_hints() -> MontyObject {
+    MontyObject::dict([
+        (MontyObject::string("url"), MontyObject::type_object(MontyType::Str)),
+        (MontyObject::string("retries"), MontyObject::string("int | None")),
+        (
+            MontyObject::string("return"),
+            MontyObject::type_object(MontyType::NoneType),
+        ),
+    ])
+}
+
+/// Starts `code` with `f` bound to `input`.
+fn start(code: &str, input: MontyObject) -> RunProgress {
+    MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["f".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap()
+    .start(vec![input], ResourceTracker::default(), PrintWriter::Stdout)
+    .unwrap()
+}
+
+/// Asserts `progress` is the `get_type_hints` OS call for `target`, then answers it with `hints`.
+fn answer_hints(progress: RunProgress, target: &TypeHintsTarget, hints: MontyObject) -> RunProgress {
+    let call = progress.into_os_call().expect("expected the get_type_hints OS call");
+    assert_eq!(call.function_call.name(), GET_TYPE_HINTS_CALL);
+    let OsFunctionCall::GetTypeHints(asked) = &call.function_call else {
+        panic!("expected GetTypeHints, got {:?}", call.function_call);
+    };
+    assert_eq!(asked, target);
+    call.resume(hints, PrintWriter::Stdout).unwrap()
+}
+
+/// A host function's hints are requested by its name and returned as the host answers them.
+#[test]
+fn host_function_hints_come_from_the_host() {
+    let progress = start(
+        "from typing import get_type_hints\nget_type_hints(f)",
+        MontyObject::function("fetch", None),
+    );
+    let target = TypeHintsTarget::Function("fetch".to_owned());
+    let result = answer_hints(progress, &target, host_hints()).into_complete().unwrap();
+    assert_eq!(result, host_hints());
+}
+
+/// A host class's hints are requested by its class id.
+#[test]
+fn host_class_hints_come_from_the_host() {
+    let progress = start("from typing import get_type_hints\nget_type_hints(f)", host_class());
+    let target = TypeHintsTarget::Class(CLASS_ID);
+    let result = answer_hints(progress, &target, host_hints()).into_complete().unwrap();
+    assert_eq!(result, host_hints());
+}
+
+/// Without a host to ask, a host function has no hints.
+#[test]
+fn unserved_host_hints_are_empty() {
+    let mut runner = MontyRun::new(
+        "from typing import get_type_hints\nget_type_hints(f)".to_owned(),
+        "test.py",
+        vec!["f".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let result = runner
+        .run_no_limits(vec![MontyObject::function("fetch", None)])
+        .unwrap();
+    assert_eq!(result, MontyObject::dict([]));
+}
+
+/// The `get_type_hints` call crosses to a host as `(kind, name or id)` args and reads back.
+#[test]
+fn type_hints_target_call_args_round_trip() {
+    for target in [
+        TypeHintsTarget::Function("fetch".to_owned()),
+        TypeHintsTarget::Class(CLASS_ID),
+    ] {
+        let args = OsFunctionCall::GetTypeHints(target.clone()).to_args();
+        assert_eq!(TypeHintsTarget::from_call_args(&args), Some(target));
+    }
+}
+
+/// A session dumped while asking the host for hints restores and resumes,
+/// and still evaluates sandbox hints (rebuilding the compiled-hint cache).
+#[test]
+fn hints_survive_dump_and_restore() {
+    let code = "\
+from typing import get_type_hints
+class Foo:
+    pass
+def g(a: int, b: 'Foo') -> list['Foo']:
+    pass
+before = get_type_hints(g)
+host = get_type_hints(f)
+(before == get_type_hints(g), get_type_hints(g)['b'] is Foo, host)";
+    let progress = start(code, MontyObject::function("fetch", None));
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+    let Session::Running(loaded) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped a running session")
+    };
+    let target = TypeHintsTarget::Function("fetch".to_owned());
+    // Both sessions run to completion, so their heaps are released properly.
+    for progress in [progress, *loaded] {
+        assert_eq!(
+            answer_hints(progress, &target, host_hints()).into_complete().unwrap(),
+            MontyObject::tuple([MontyObject::bool(true), MontyObject::bool(true), host_hints()]),
+        );
+    }
+}
+
+/// Without namespaces, a class's plain annotations see the class namespace
+/// first and its forward references the module globals first, as in CPython.
+/// The CPython side of the datatest harness cannot reach module globals from a
+/// class, so this lives here; the expected values are CPython 3.14's.
+#[test]
+fn class_forward_refs_search_module_globals_first() {
+    let code = "\
+from typing import get_type_hints
+X = int
+class A:
+    X = str
+    Y = bytes
+    a: 'X'
+    b: 'Y'
+    c: list['X']
+    d: X
+h = get_type_hints(A)
+(h['a'] is int, h['b'] is bytes, h['c'] == list[int], h['d'] is str)";
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(
+        runner.run_no_limits(vec![]).unwrap(),
+        MontyObject::tuple((0..4).map(|_| MontyObject::bool(true))),
+    );
+}
+
+/// `FORWARDREF` still asks the host, which evaluates its own hints.
+#[test]
+fn host_hints_in_forwardref_format_come_from_the_host() {
+    let progress = start(
+        "from annotationlib import Format\nfrom typing import get_type_hints\nget_type_hints(f, format=Format.FORWARDREF)",
+        MontyObject::function("fetch", None),
+    );
+    let target = TypeHintsTarget::Function("fetch".to_owned());
+    let result = answer_hints(progress, &target, host_hints()).into_complete().unwrap();
+    assert_eq!(result, host_hints());
+}
+
+/// The host never sends annotation text, so `STRING` has nothing to answer with.
+#[test]
+fn host_hints_in_string_format_are_unsupported() {
+    let mut runner = MontyRun::new(
+        "from annotationlib import Format\nfrom typing import get_type_hints\nget_type_hints(f, format=Format.STRING)"
+            .to_owned(),
+        "test.py",
+        vec!["f".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let error = runner
+        .run_no_limits(vec![MontyObject::function("fetch", None)])
+        .unwrap_err();
+    assert_snapshot!(error.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 3, in <module>
+        get_type_hints(f, format=Format.STRING)
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    NotImplementedError: get_type_hints() format=Format.STRING is not supported for host functions and classes
+    "#);
+}
+
+/// A `FORWARDREF` evaluation suspended on a host call dumps and restores with its
+/// stringifier state, so the unresolved name still composes with the host's value.
+#[test]
+fn forward_ref_evaluation_survives_dump_and_restore() {
+    let code = "\
+from annotationlib import Format
+from typing import get_type_hints
+def g(a: Later | f(), b: list[Later]):
+    pass
+hints = get_type_hints(g, format=Format.FORWARDREF)
+(hints['a'].__forward_arg__, hints['a'].__owner__ is g, hints['b'].__args__[0].__forward_arg__)";
+    let progress = start(code, MontyObject::function("fetch", None));
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+    let Session::Running(loaded) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped a running session")
+    };
+    for progress in [progress, *loaded] {
+        let call = progress.into_function_call().expect("expected the fetch() call");
+        assert_eq!(call.function_name, "fetch");
+        let result = call
+            .resume(MontyObject::int(1), PrintWriter::Stdout)
+            .unwrap()
+            .into_complete()
+            .unwrap();
+        assert_eq!(
+            result,
+            MontyObject::tuple([
+                MontyObject::string("Later | 1"),
+                MontyObject::bool(true),
+                MontyObject::string("Later"),
+            ]),
+        );
+    }
+}
+
+/// `ForwardRef.evaluate()` takes dict namespaces only, where CPython accepts some
+/// non-dicts and fails later on others; `module='__main__'` reads the session globals.
+#[test]
+fn forward_ref_evaluate_namespaces() {
+    let code = "\
+from annotationlib import ForwardRef
+pi = 'session pi'
+results = [ForwardRef('pi', module='__main__').evaluate()]
+for kwargs in [{'globals': []}, {'globals': 1}, {'locals': []}]:
+    try:
+        ForwardRef('int').evaluate(**kwargs)
+    except TypeError as exc:
+        results.append(str(exc))
+results";
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let result = runner.run_no_limits(vec![]).unwrap();
+    assert_eq!(
+        result,
+        MontyObject::list([
+            MontyObject::string("session pi"),
+            MontyObject::string("ForwardRef.evaluate() globals must be a dict, not list"),
+            MontyObject::string("ForwardRef.evaluate() globals must be a dict, not int"),
+            MontyObject::string("ForwardRef.evaluate() locals must be a dict, not list"),
+        ]),
+    );
+}
+
+/// A method call on a `typing` alias of a host class reaches the host, as the
+/// call on the class itself would.
+#[test]
+fn method_call_on_an_alias_of_a_host_class_reaches_the_host() {
+    let progress = start(
+        "from typing import Annotated\nAnnotated[f, 'meta'].missing()",
+        host_class(),
+    );
+    let call = progress.into_function_call().expect("expected the host method call");
+    assert_eq!(call.function_name, "missing");
+    assert_eq!(call.object_id, Some(CLASS_ID));
+    let result = call.resume(MontyObject::int(1), PrintWriter::Stdout).unwrap();
+    assert_eq!(result.into_complete(), Some(MontyObject::int(1)));
+}

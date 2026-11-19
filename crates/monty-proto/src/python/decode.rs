@@ -1,7 +1,11 @@
 //! Sandbox values flowing OUT to the host: [`DecodedArena`] turns one
 //! message's node arena into Python objects.
 
-use std::collections::HashMap;
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    mem,
+    sync::{Arc, OnceLock},
+};
 
 use monty_types::{
     BuiltinsFunctions, MontyException, MontyObject,
@@ -9,14 +13,15 @@ use monty_types::{
 };
 use pyo3::{
     prelude::*,
+    sync::PyOnceLock,
     types::{PyBool, PyBytes, PyComplex, PyDate, PyDelta, PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple},
 };
 
 use super::{
     class_instance::{ClassHeader, InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy},
     convert::{
-        PyMontyFileHandle, get_namedtuple, get_pure_posix_path, host_type_object, import_builtins,
-        monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py,
+        PyMontyFileHandle, get_decimal_type, get_monty_namedtuple, get_pure_posix_path, host_type_object,
+        import_builtins, monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py,
     },
     exceptions::exc_monty_to_py,
     external_module::PyExternalModule,
@@ -50,11 +55,16 @@ impl DecodedArena {
             graph,
             store,
             built: Vec::with_capacity(graph.len()),
-            namedtuple_types: HashMap::new(),
+            namedtuple_headers: HashMap::new(),
+            classes: HashMap::new(),
+            host_objects: Vec::with_capacity(graph.len()),
+            from_store: false,
         };
         for node in graph.nodes() {
             let obj = decoder.decode(node)?;
             decoder.built.push(obj);
+            let holds = decoder.holds_host_objects(node);
+            decoder.host_objects.push(holds);
         }
         Ok(Self { built: decoder.built })
     }
@@ -73,13 +83,25 @@ struct Decoder<'a, 'py> {
     store: &'a InstanceStore,
     /// Objects built so far, one per node decoded.
     built: Vec<Py<PyAny>>,
-    /// Namedtuple types built for this arena, by `(type_name, field_names)`.
-    namedtuple_types: HashMap<(String, Vec<String>), Py<PyAny>>,
+    /// The type name and field names as Python objects, built once per distinct
+    /// pair so every instance of a type in this arena shares them.
+    namedtuple_headers: HashMap<(&'a str, &'a [String]), NamedTupleHeader>,
+    /// Each class node's header and eager attrs, built once and shared by
+    /// its proxies so their cost does not scale with the instance count.
+    classes: HashMap<NodeId, (Arc<ClassHeader>, Py<PyDict>)>,
+    /// Whether each decoded node reaches a host object; see
+    /// [`holds_host_objects`](Self::holds_host_objects).
+    host_objects: Vec<bool>,
+    /// Set by `decode` when the node resolved to a registered host object.
+    from_store: bool,
 }
 
-impl Decoder<'_, '_> {
+/// A namedtuple's type name and field names, as passed to `MontyNamedTuple`.
+type NamedTupleHeader = (Py<PyString>, Py<PyTuple>);
+
+impl<'a> Decoder<'a, '_> {
     /// Converts one node; every child id is lower, so already built.
-    fn decode(&mut self, node: &MontyNode) -> PyResult<Py<PyAny>> {
+    fn decode(&mut self, node: &'a MontyNode) -> PyResult<Py<PyAny>> {
         let py = self.py;
         match node {
             MontyNode::None => Ok(py.None()),
@@ -99,10 +121,12 @@ impl Decoder<'_, '_> {
                 field_names,
                 values,
             } => {
-                let nt_type = self.namedtuple_type(type_name, field_names)?;
-                // `_make` is a public documented method despite the leading underscore
-                let instance = nt_type.bind(py).call_method1("_make", (self.children(values),))?;
-                Ok(instance.into_any().unbind())
+                // one shared `MontyNamedTuple` class rather than a class per
+                // type, so the sandbox cannot make the host build classes
+                let (type_name, field_names) = self.namedtuple_header(type_name, field_names)?;
+                let values = PyTuple::new(py, self.children(values))?;
+                let instance = get_monty_namedtuple(py)?.call1((type_name, field_names, values))?;
+                Ok(instance.unbind())
             }
             MontyNode::Dict(pairs) => {
                 let dict = PyDict::new(py);
@@ -146,12 +170,13 @@ impl Decoder<'_, '_> {
             // anything else to a read-only `MontyClassTypeProxy`
             MontyNode::ClassType(class) => {
                 if let Some(class) = self.store.get_class(py, &class.id)? {
+                    self.from_store = true;
                     Ok(class)
                 } else {
-                    let proxy = PyMontyClassTypeProxy {
-                        class_type: class_header(class),
-                        attributes: self.attrs_dict(&class.attrs)?,
-                    };
+                    // this node's id: nodes decode in order
+                    let id = NodeId(u32::try_from(self.built.len()).expect("arena node ids fit in u32"));
+                    let (class_type, attributes) = self.class_parts(id)?;
+                    let proxy = PyMontyClassTypeProxy { class_type, attributes };
                     Ok(Py::new(py, proxy)?.into_any())
                 }
             }
@@ -163,16 +188,17 @@ impl Decoder<'_, '_> {
                 attrs,
             } => {
                 if let Some(wrapper) = self.store.get(py, instance_id)? {
+                    self.from_store = true;
                     wrapper.bind(py).getattr("value").map(Bound::unbind)
                 } else {
-                    let MontyNode::ClassType(class) = self.graph.node(*class_type) else {
-                        unreachable!("the arena's validation makes class_type a ClassType node")
-                    };
+                    let (class_type, class_attributes) = self.class_parts(*class_type)?;
                     let proxy = PyMontyClassProxy {
-                        class_type: class_header(class),
+                        class_type,
                         instance_id: *instance_id,
                         attributes: self.attrs_dict(attrs)?,
-                        class_attributes: self.attrs_dict(&class.attrs)?,
+                        class_attributes,
+                        hash: OnceLock::new(),
+                        holds_host_objects: attrs.iter().any(|(_, value)| self.host_objects[value.index()]),
                     };
                     Ok(Py::new(py, proxy)?.into_any())
                 }
@@ -184,6 +210,9 @@ impl Decoder<'_, '_> {
                 Ok(Py::new(py, module)?.into_any())
             }
             MontyNode::Path(p) => Ok(get_pure_posix_path(py)?.call1((p,))?.into_any().unbind()),
+            // The worker's text is untrusted; a malformed one raises from the
+            // host's own `Decimal()` rather than panicking here.
+            MontyNode::Decimal(d) => Ok(get_decimal_type(py)?.call1((d,))?.into_any().unbind()),
             // a sandbox file is not an OS file, so it decodes to a
             // `MontyFileHandle` exposing `path`, `mode` and `position`
             MontyNode::FileHandle(handle) => Ok(Py::new(py, PyMontyFileHandle::from_inner(handle.clone()))?.into_any()),
@@ -193,6 +222,18 @@ impl Decoder<'_, '_> {
             // an output value decodes to its name
             MontyNode::Function { name, .. } => Ok(PyString::new(py, name).into_any().unbind()),
         }
+    }
+
+    /// Whether the node just decoded reaches a registered host object, whose
+    /// `__eq__` and `__hash__` are host code. Containers inherit it from their
+    /// children; class proxies stop it, since they compare by id when holding one.
+    fn holds_host_objects(&mut self, node: &MontyNode) -> bool {
+        let from_store = mem::take(&mut self.from_store);
+        let mut holds = from_store;
+        if !from_store && !matches!(node, MontyNode::ClassInstance { .. } | MontyNode::ClassType(_)) {
+            node.for_each_child(|id| holds |= self.host_objects[id.index()]);
+        }
+        holds
     }
 
     /// The object built for a child node.
@@ -218,32 +259,33 @@ impl Decoder<'_, '_> {
         Ok(dict.unbind())
     }
 
-    /// A real Python namedtuple type via `collections.namedtuple`, one per
-    /// `(name, fields)` for the arena, with `module=` set so it round-trips
-    /// back through the encoder.
-    fn namedtuple_type(&mut self, type_name: &str, field_names: &[String]) -> PyResult<Py<PyAny>> {
+    /// The shared header and eager attrs of class node `id`, built on first use.
+    fn class_parts(&mut self, id: NodeId) -> PyResult<(Arc<ClassHeader>, Py<PyDict>)> {
         let py = self.py;
-        let key = (type_name.to_owned(), field_names.to_vec());
-        if let Some(nt_type) = self.namedtuple_types.get(&key) {
-            return Ok(nt_type.clone_ref(py));
+        if let Some((header, attrs)) = self.classes.get(&id) {
+            return Ok((Arc::clone(header), attrs.clone_ref(py)));
         }
-        // split the full type_name (e.g. "os.stat_result") into module + name
-        let (module, simple_name) = match type_name.rfind('.') {
-            Some(idx) => (&type_name[..idx], &type_name[idx + 1..]),
-            None => ("", type_name),
+        let MontyNode::ClassType(class) = self.graph.node(id) else {
+            unreachable!("the arena's validation makes class_type a ClassType node")
         };
-        let namedtuple_fn = get_namedtuple(py)?;
-        let py_field_names = PyList::new(py, field_names)?;
-        let nt_type = if module.is_empty() {
-            namedtuple_fn.call1((simple_name, py_field_names))?
-        } else {
-            let kwargs = PyDict::new(py);
-            kwargs.set_item("module", module)?;
-            namedtuple_fn.call((simple_name, py_field_names), Some(&kwargs))?
-        }
-        .unbind();
-        self.namedtuple_types.insert(key, nt_type.clone_ref(py));
-        Ok(nt_type)
+        let header = Arc::new(class_header(class));
+        let attrs = self.attrs_dict(&class.attrs)?;
+        self.classes.insert(id, (Arc::clone(&header), attrs.clone_ref(py)));
+        Ok((header, attrs))
+    }
+
+    /// The type name and field names of a namedtuple as Python objects, shared
+    /// by every instance with the same pair in this arena.
+    fn namedtuple_header(&mut self, type_name: &'a str, field_names: &'a [String]) -> PyResult<NamedTupleHeader> {
+        let py = self.py;
+        let (name, fields) = match self.namedtuple_headers.entry((type_name, field_names)) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert((
+                PyString::new(py, type_name).unbind(),
+                PyTuple::new(py, field_names)?.unbind(),
+            )),
+        };
+        Ok((name.clone_ref(py), fields.clone_ref(py)))
     }
 }
 
@@ -260,5 +302,8 @@ fn class_header(class: &ClassTypeNode) -> ClassHeader {
         id: class.id,
         host_defined: class.host_defined,
         is_dataclass: class.is_dataclass,
+        eq: class.eq.clone(),
+        hash: class.hash.clone(),
+        unhashable_message: PyOnceLock::new(),
     }
 }

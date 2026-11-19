@@ -36,15 +36,15 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::{check_mult_size, check_product_size},
-    types::{LongInt, Module, PyTrait, allocate_tuple, long_int::bigint_to_f64_checked},
+    types::{LongInt, Module, PyTrait, allocate_tuple, decimal, long_int::bigint_to_f64_checked},
     value::Value,
 };
 
 mod aggregate;
+pub(crate) use aggregate::{fsum, sumprod};
 
 // ==========================
 // Shared constants and error helpers
@@ -110,85 +110,86 @@ fn check_gamma_pole(f: f64) -> RunResult<()> {
 }
 
 /// Math module functions — each variant corresponds to a Python-visible function.
+#[monty_macros::explicit_discriminants(checksum = 0x0fdd_acb7_255d_bb02)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum MathFunctions {
     // Rounding
-    Floor,
-    Ceil,
-    Trunc,
+    Floor = 0,
+    Ceil = 1,
+    Trunc = 2,
     // Roots & powers
-    Sqrt,
-    Isqrt,
-    Cbrt,
-    Pow,
-    Exp,
-    Exp2,
-    Expm1,
+    Sqrt = 3,
+    Isqrt = 4,
+    Cbrt = 5,
+    Pow = 6,
+    Exp = 7,
+    Exp2 = 8,
+    Expm1 = 9,
     // Logarithms
-    Log,
-    Log1p,
-    Log2,
-    Log10,
+    Log = 10,
+    Log1p = 11,
+    Log2 = 12,
+    Log10 = 13,
     // Float properties
-    Fabs,
-    Isnan,
-    Isinf,
-    Isfinite,
-    Copysign,
-    Isclose,
-    Nextafter,
-    Ulp,
+    Fabs = 14,
+    Isnan = 15,
+    Isinf = 16,
+    Isfinite = 17,
+    Copysign = 18,
+    Isclose = 19,
+    Nextafter = 20,
+    Ulp = 21,
     // Trigonometric
-    Sin,
-    Cos,
-    Tan,
-    Asin,
-    Acos,
-    Atan,
-    Atan2,
+    Sin = 22,
+    Cos = 23,
+    Tan = 24,
+    Asin = 25,
+    Acos = 26,
+    Atan = 27,
+    Atan2 = 28,
     // Hyperbolic
-    Sinh,
-    Cosh,
-    Tanh,
-    Asinh,
-    Acosh,
-    Atanh,
+    Sinh = 29,
+    Cosh = 30,
+    Tanh = 31,
+    Asinh = 32,
+    Acosh = 33,
+    Atanh = 34,
     // Angular conversion
-    Degrees,
-    Radians,
+    Degrees = 35,
+    Radians = 36,
     // Integer math
-    Factorial,
-    Gcd,
-    Lcm,
-    Comb,
-    Perm,
+    Factorial = 37,
+    Gcd = 38,
+    Lcm = 39,
+    Comb = 40,
+    Perm = 41,
     // Modular / decomposition
-    Fmod,
-    Remainder,
-    Modf,
-    Frexp,
-    Ldexp,
+    Fmod = 42,
+    Remainder = 43,
+    Modf = 44,
+    Frexp = 45,
+    Ldexp = 46,
     // Special functions
-    Gamma,
-    Lgamma,
-    Erf,
-    Erfc,
-    // Summation and products (append to preserve serialized variant indices).
-    Hypot,
-    Dist,
-    Fsum,
-    Prod,
-    Sumprod,
-    Fma,
+    Gamma = 47,
+    Lgamma = 48,
+    Erf = 49,
+    Erfc = 50,
+    // Summation and products
+    Hypot = 51,
+    Dist = 52,
+    Fsum = 53,
+    Prod = 54,
+    Sumprod = 55,
+    Fma = 56,
 }
 
-/// Creates the `math` module and allocates it on the heap.
+/// Creates the `math` module.
 ///
 /// Registers all math functions and constants (`pi`, `e`, `tau`, `inf`, `nan`)
 /// matching CPython's `math` module. Functions are registered as
 /// `ModuleFunctions::Math` variants.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Math, vm.interns);
 
     // Register all math functions
@@ -203,7 +204,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     module.set_attr(StaticStrings::MathInf, Value::Float(f64::INFINITY), vm);
     module.set_attr(StaticStrings::MathNan, Value::Float(f64::NAN), vm);
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Static mapping of attribute names to math functions for module creation.
@@ -438,7 +439,7 @@ fn math_isqrt(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let n = value_to_bigint(value, vm)?;
     if n.is_negative() {
-        Err(SimpleException::new_msg(ExcType::ValueError, "isqrt() argument must be nonnegative").into())
+        Err(ExcType::isqrt_negative_error())
     } else if let Some(n) = n.to_i64() {
         Ok(Value::Int(isqrt_i64(n)))
     } else {
@@ -1041,7 +1042,7 @@ fn factorial(n: &BigInt, tracker: &ResourceTracker) -> RunResult<BigInt> {
     };
     let n = n.unsigned_abs();
     // `n!` has fewer than `n * bits(n)` bits.
-    check_product_size(n.saturating_mul(u64::from(u64::BITS - n.leading_zeros())), tracker)?;
+    check_product_size(n.saturating_mul(u64::from(n.bit_width())), tracker)?;
     product_range(2, n, &mut 0, tracker)
 }
 
@@ -1385,9 +1386,9 @@ fn math_erfc(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// Converts a `Value` to `f64`, raising `TypeError` if the value is not numeric.
 ///
-/// Accepts `Float`, `Int`, `Bool` and long ints, which convert like `float()` and so
-/// raise `OverflowError` beyond the float range. Other types raise a `TypeError`
-/// with a message matching CPython's format: "must be real number, not <type>".
+/// Accepts `Float`, `Int`, `Bool`, long ints and `Decimal`, which convert like `float()`,
+/// so long ints raise `OverflowError` beyond the float range. Other types raise a
+/// `TypeError` with a message matching CPython's format: "must be real number, not <type>".
 #[expect(
     clippy::cast_precision_loss,
     reason = "i64-to-f64 can lose precision for large integers (beyond 2^53), but this matches CPython's conversion semantics"
@@ -1399,7 +1400,11 @@ fn value_to_float(value: &Value, vm: &VM<'_>) -> RunResult<f64> {
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         _ => match value.as_long_int(vm) {
             Some(n) => bigint_to_f64_checked(n),
-            None => Err(ExcType::type_error_not_real_number(&value.py_type_name(vm))),
+            // `Decimal.__float__`, as `PyFloat_AsDouble` calls it.
+            None => match decimal::py::as_decimal(value, vm) {
+                Some(d) => d.to_f64(),
+                None => Err(ExcType::type_error_not_real_number(&value.py_type_name(vm))),
+            },
         },
     }
 }

@@ -10,10 +10,10 @@ use monty_types::{FileMode, MontyObject, normalize_virtual_path, scan::EntryInfo
 
 use super::{
     common::{
-        MemoryBudget, MountContext, PathInfo, check_write_limit, commit_write_bytes, host_append_bytes,
-        host_append_text, host_is_dir, host_is_file, host_iterdir, host_list_visible_dir_entries, host_mkdir,
-        host_read_bytes, host_read_text, host_rmdir, host_stat, host_unlink, host_write_bytes, host_write_text, map_io,
-        reject_non_regular,
+        DIRECTORY_WRITE_BYTES, MemoryBudget, MountContext, PathInfo, check_write_limit, commit_write_bytes,
+        host_append_bytes, host_append_text, host_create_exclusive, host_is_dir, host_is_file, host_iterdir,
+        host_list_visible_dir_entries, host_mkdir, host_read_bytes, host_read_text, host_rmdir, host_stat, host_unlink,
+        host_write_bytes, host_write_bytes_at, host_write_text, map_io, open_for_write, reject_non_regular,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -54,6 +54,10 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
         FsRequest::WriteBytes { path, data } => write_bytes(&path, &data, ctx),
         FsRequest::AppendText { path, data } => append_text(&path, &data, ctx),
         FsRequest::AppendBytes { path, data } => append_bytes(&path, &data, ctx),
+        FsRequest::WriteBytesAt { path, offset, data } => {
+            let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
+            host_write_bytes_at(ctx, target.for_dir_op(), offset, &data, &path)
+        }
         FsRequest::Mkdir {
             path,
             parents,
@@ -84,6 +88,16 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
         FsRequest::Rename { src, dst } => rename(&src, &dst, ctx),
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
             Ok(MontyObject::path(normalize_virtual_path(&path).into_owned()))
+        }
+        FsRequest::CreateExclusive {
+            path,
+            mode,
+            permissions,
+        } => {
+            let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
+            check_write_limit(0, ctx)?;
+            host_create_exclusive(ctx.mount_dir, target.for_dir_op(), permissions, &path)?;
+            Ok(file_handle_result(&path, mode))
         }
         FsRequest::Open { path, mode } => open(&path, mode, ctx),
     }
@@ -126,7 +140,8 @@ fn open(path: &str, mode: FileMode, ctx: &mut MountContext<'_>) -> Result<MontyO
         }
         FileMode::Write(_) | FileMode::WriteUpdate(_) => {
             check_write_limit(0, ctx)?;
-            host_write_text(ctx.mount_dir, rel, "", path)?;
+            let file = open_for_write(ctx.mount_dir, rel, mode.readable(), path)?;
+            drop(file);
             commit_write_bytes(0, ctx);
         }
         FileMode::Append(_) | FileMode::AppendUpdate(_) => {
@@ -188,9 +203,38 @@ fn append_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<M
 }
 
 /// Creates a directory, using `create_dir_all` only when `parents` is set.
-fn mkdir(path: &str, parents: bool, exist_ok: bool, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
+///
+/// Each directory it will create, parents included, costs [`DIRECTORY_WRITE_BYTES`]:
+/// the total is checked before anything is created and charged once it succeeds.
+fn mkdir(path: &str, parents: bool, exist_ok: bool, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
-    host_mkdir(ctx.mount_dir, target.for_dir_op(), parents, exist_ok, path)
+    let rel = target.for_dir_op();
+    let charge = if ctx.write_bytes_limit.is_some() {
+        missing_dirs(ctx.mount_dir, rel, parents).saturating_mul(DIRECTORY_WRITE_BYTES)
+    } else {
+        0
+    };
+    check_write_limit(charge, ctx)?;
+    let result = host_mkdir(ctx.mount_dir, rel, parents, exist_ok, path)?;
+    commit_write_bytes(charge, ctx);
+    Ok(result)
+}
+
+/// How many directories `mkdir` would create at `rel`: with `parents`, every
+/// component from the shortest absent prefix on; without, the target if absent.
+///
+/// The last component is not followed, so a dangling symlink counts as present
+/// and `mkdir` reports `FileExistsError` rather than charging for it.
+fn missing_dirs(dir: &Dir, rel: &str, parents: bool) -> usize {
+    let absent = |prefix: &str| dir.symlink_metadata(prefix).is_err();
+    if parents {
+        let components: Vec<&str> = rel.split('/').collect();
+        (1..=components.len())
+            .find(|&n| absent(&components[..n].join("/")))
+            .map_or(0, |n| components.len() + 1 - n)
+    } else {
+        usize::from(absent(rel))
+    }
 }
 
 /// Renames an entry within the same mount.

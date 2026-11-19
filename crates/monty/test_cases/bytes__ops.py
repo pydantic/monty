@@ -39,6 +39,21 @@ for left in [b'\x00\x80\xff', b''.join([b'\x00', b'\x80\xff'])]:
         repeated *= count
         assert repeated == expected
     try:
+        left * 2**62
+        assert False, 'expected left * 2**62 to raise'
+    except OverflowError as exc:
+        assert str(exc) == 'repeated bytes are too long'
+    try:
+        left * 2**63
+        assert False, 'expected left * 2**63 to raise'
+    except OverflowError as exc:
+        assert str(exc) == "cannot fit 'int' into an index-sized integer"
+    try:
+        left * -(2**70)
+        assert False, 'expected left * -(2**70) to raise'
+    except OverflowError as exc:
+        assert str(exc) == "cannot fit 'int' into an index-sized integer"
+    try:
         'a' in left
         assert False, 'expected a string probe to raise'
     except TypeError as exc:

@@ -17,7 +17,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData},
     heap_traits::DropGuard,
     intern::StaticStrings,
     modules::{
@@ -30,19 +30,20 @@ use crate::{
 };
 
 /// Async Functions.
+#[monty_macros::explicit_discriminants(checksum = 0xcc80_eb0a_37e8_3f25)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum AsyncioFunctions {
-    Gather,
-    Run,
-    Sleep,
+    Gather = 0,
+    Run = 1,
+    Sleep = 2,
 }
 
-/// Creates the `asyncio` module and allocates it on the heap.
+/// Creates the `asyncio` module.
 ///
 /// The module contains only the `run`, `gather` and `sleep` functions. Other asyncio
 /// functions are not implemented as they would require additional VM/scheduler features.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Asyncio, vm.interns);
 
     module.set_attr(
@@ -61,7 +62,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues) -> RunResult<CallResult> {
     match functions {

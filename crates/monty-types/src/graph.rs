@@ -86,6 +86,11 @@ pub enum MontyNode {
     TimeDelta(MontyTimeDelta),
     /// Python `datetime.timezone`.
     TimeZone(MontyTimeZone),
+    /// Python `decimal.Decimal`, as its canonical string (`str(d)`: `"1.20"`,
+    /// `"1E+5"`, `"-NaN12"`, `"Infinity"`), which round-trips exactly.
+    ///
+    /// The sandbox validates the text on import; a malformed one is rejected there.
+    Decimal(String),
     /// A Python exception value with type and optional message.
     Exception {
         /// The exception type.
@@ -107,6 +112,10 @@ pub enum MontyNode {
         name: String,
         /// Optional docstring.
         docstring: Option<String>,
+        /// Calls start without waiting for the host and return an awaitable;
+        /// see [`MontyObject::async_function`](crate::MontyObject::async_function).
+        #[serde(default)]
+        is_async: bool,
     },
     /// Output-only fallback: the `repr()` of a value with no other representation.
     Repr(String),
@@ -255,14 +264,14 @@ impl MontyNode {
         let pairs = |pairs: &[(NodeId, NodeId)]| pairs.len().saturating_mul(2 * size_of::<NodeId>());
 
         let payload = match self {
-            Self::String(s) | Self::Path(s) | Self::Repr(s) | Self::Cycle(s) => s.len(),
+            Self::String(s) | Self::Path(s) | Self::Repr(s) | Self::Cycle(s) | Self::Decimal(s) => s.len(),
             Self::Bytes(b) => b.len(),
             // Saturate rather than truncate on a 32-bit `usize`: an over-large
             // estimate only trips a budget sooner, which is the safe direction.
             Self::BigInt(bi) => usize::try_from(bi.bits().div_ceil(8)).unwrap_or(usize::MAX),
             Self::Exception { arg, .. } => name_len(arg),
             Self::FileHandle(fh) => fh.path.len(),
-            Self::Function { name, docstring } => name.len().saturating_add(name_len(docstring)),
+            Self::Function { name, docstring, .. } => name.len().saturating_add(name_len(docstring)),
             Self::DateTime(dt) => name_len(&dt.timezone_name),
             Self::Time(t) => name_len(&t.timezone_name),
             Self::TimeZone(tz) => name_len(&tz.name),
@@ -277,9 +286,16 @@ impl MontyNode {
             }
             Self::Dict(entries) => pairs(entries),
             // The boxed payload is outside `size_of::<Self>()`, so charge it too.
-            Self::ClassType(class) => size_of::<ClassTypeNode>()
-                .saturating_add(class.name.len())
-                .saturating_add(pairs(&class.attrs)),
+            Self::ClassType(class) => {
+                let names: usize = (class.eq.field_names().iter())
+                    .chain(class.hash.field_names())
+                    .map(|name| Self::metadata_string_size(name))
+                    .sum();
+                size_of::<ClassTypeNode>()
+                    .saturating_add(class.name.len())
+                    .saturating_add(pairs(&class.attrs))
+                    .saturating_add(names)
+            }
             Self::ClassInstance { attrs, .. } => pairs(attrs),
             Self::Module { name, attrs, .. } => name.len().saturating_add(pairs(attrs)),
             _ => 0,
@@ -302,6 +318,69 @@ pub struct ClassTypeNode {
     pub is_dataclass: bool,
     /// Eagerly-sent class attributes as `(name, value)` id pairs.
     pub attrs: Vec<(NodeId, NodeId)>,
+    /// How the sandbox compares instances with `==`, so a host proxy can
+    /// follow it. Only sandbox classes report anything but identity.
+    #[serde(default)]
+    pub eq: ClassEq,
+    /// How the sandbox hashes instances; see [`eq`](Self::eq).
+    #[serde(default)]
+    pub hash: ClassHash,
+}
+
+/// How a class's instances compare with `==` in the sandbox.
+///
+/// A host cannot run sandbox code, so only rules it can replay exactly carry
+/// detail; anything else is [`Custom`](Self::Custom).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ClassEq {
+    /// No `__eq__`: equal only to the same object.
+    #[default]
+    Identity,
+    /// A `@dataclass`-generated `__eq__`: equal to an instance of the same
+    /// class whose named fields, in order, are all `==`.
+    Fields(Vec<String>),
+    /// A user-defined `__eq__`, or a rule this peer does not know. Replaying it
+    /// would mean running sandbox code, so a host compares by identity instead.
+    Custom,
+}
+
+/// How a class's instances hash in the sandbox.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ClassHash {
+    /// No `__hash__` and no `__eq__`: hashed by identity.
+    #[default]
+    Identity,
+    /// A `@dataclass`-generated `__hash__`: the hash of the named fields' values
+    /// as a tuple.
+    Fields(Vec<String>),
+    /// `__hash__ = None`, explicit or implied by defining `__eq__`.
+    Unhashable,
+    /// A user-defined `__hash__`, or a rule this peer does not know. A host
+    /// cannot run it, so it hashes by identity, or by the fields a
+    /// [`ClassEq::Fields`] rule compares, keeping equal proxies' hashes equal.
+    Custom,
+}
+
+impl ClassEq {
+    /// The field names this rule reads, empty unless [`Fields`](Self::Fields).
+    #[must_use]
+    pub fn field_names(&self) -> &[String] {
+        match self {
+            Self::Fields(names) => names,
+            Self::Identity | Self::Custom => &[],
+        }
+    }
+}
+
+impl ClassHash {
+    /// The field names this rule reads, empty unless [`Fields`](Self::Fields).
+    #[must_use]
+    pub fn field_names(&self) -> &[String] {
+        match self {
+            Self::Fields(names) => names,
+            Self::Identity | Self::Unhashable | Self::Custom => &[],
+        }
+    }
 }
 
 impl PartialEq for MontyNode {
@@ -320,7 +399,8 @@ impl PartialEq for MontyNode {
             (Self::String(a), Self::String(b))
             | (Self::Path(a), Self::Path(b))
             | (Self::Repr(a), Self::Repr(b))
-            | (Self::Cycle(a), Self::Cycle(b)) => a == b,
+            | (Self::Cycle(a), Self::Cycle(b))
+            | (Self::Decimal(a), Self::Decimal(b)) => a == b,
             (Self::Bytes(a), Self::Bytes(b)) => a == b,
             (Self::Date(a), Self::Date(b)) => a == b,
             (Self::DateTime(a), Self::DateTime(b)) => a == b,
@@ -346,12 +426,14 @@ impl PartialEq for MontyNode {
                 Self::Function {
                     name: a_name,
                     docstring: a_doc,
+                    is_async: a_async,
                 },
                 Self::Function {
                     name: b_name,
                     docstring: b_doc,
+                    is_async: b_async,
                 },
-            ) => a_name == b_name && a_doc == b_doc,
+            ) => a_name == b_name && a_doc == b_doc && a_async == b_async,
             (Self::List(a), Self::List(b))
             | (Self::Tuple(a), Self::Tuple(b))
             | (Self::Set(a), Self::Set(b))
@@ -553,6 +635,7 @@ impl MontyGraph {
             MontyNode::Time(_) => "time",
             MontyNode::TimeDelta(_) => "timedelta",
             MontyNode::TimeZone(_) => "timezone",
+            MontyNode::Decimal(_) => "Decimal",
             MontyNode::Exception { .. } => "Exception",
             MontyNode::Path(_) => "PosixPath",
             MontyNode::FileHandle(handle) => handle.mode.type_name(),

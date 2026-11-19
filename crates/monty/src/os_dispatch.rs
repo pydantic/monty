@@ -30,7 +30,7 @@ use monty_types::{
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
-    bytecode::{CallResult, VM},
+    bytecode::{CallResult, PendingImport, VM},
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
@@ -77,6 +77,8 @@ pub(crate) enum PendingEffect {
     /// Builds a walk, scandir or glob result from a `Path.scan` reply — or
     /// from the `OSError` it answered with (see [`ScanEffect::absorbs`]).
     Scan(ScanEffect),
+    /// Resolves an `import` call's answer: a module, a file to run, or a miss.
+    Import(PendingImport),
 }
 
 impl PendingEffect {
@@ -87,6 +89,7 @@ impl PendingEffect {
         match self {
             Self::Pre(effect) => Some(effect.operation_name()),
             Self::Scan(effect) => Some(effect.operation_name()),
+            Self::Import(_) => Some("import"),
             Self::Post(PostConversionEffect::OpenName { .. }) => Some("open"),
             // The parse answers the `json.load` call; a future would hand Python the text.
             Self::Post(PostConversionEffect::JsonLoad { .. }) => Some("json.load"),
@@ -104,6 +107,7 @@ impl PendingEffect {
             }
             // The replayed call expects its argument loaded; a future would stand in for the call's result.
             Self::Post(PostConversionEffect::LoadThenCall { .. }) => Some("file loading"),
+            Self::Post(PostConversionEffect::FileSeekEnd { .. }) => Some("file.seek"),
             // A future strands these instead: the awaited value is the raw host reply.
             Self::Post(PostConversionEffect::BufferStore { .. } | PostConversionEffect::WritePosition { .. }) => None,
             // `asyncio.sleep` wants the future: `resume_with_result` moves the
@@ -116,7 +120,7 @@ impl PendingEffect {
     /// held across the host yield (see [`PostConversionEffect::release`]).
     pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
         match self {
-            Self::Pre(_) => {}
+            Self::Pre(_) | Self::Import(_) => {}
             Self::Post(effect) => effect.release(heap),
             Self::Scan(effect) => effect.release(heap),
         }
@@ -335,6 +339,8 @@ pub(crate) enum PostConversionEffect {
     /// `next(file, default)`: the first line, `default` at EOF, or
     /// `StopIteration`. Owns `default`'s reference across the yield.
     FileNext { file_id: HeapId, default: Option<Value> },
+    /// Refresh a write-only file's unknown length before seeking from EOF.
+    FileSeekEnd { file_id: HeapId, offset: i64 },
     /// Advance the file's logical position by the successful write result.
     WritePosition {
         /// File whose position is updated.
@@ -344,6 +350,9 @@ pub(crate) enum PostConversionEffect {
         previous_position: u64,
         /// Known file length before dispatch, restored on host exception.
         previous_length: u64,
+        /// Bound for a binary write reply; absent on older pending writes.
+        #[serde(default)]
+        payload_length: Option<u64>,
         /// Length of the text as passed to `write()` when newline translation
         /// lengthened the payload: CPython reports that, not what reached the file.
         #[serde(default)]
@@ -399,6 +408,7 @@ impl PostConversionEffect {
             Self::BufferStore { file_id }
             | Self::JsonLoad { file_id }
             | Self::BufferLoad { file_id }
+            | Self::FileSeekEnd { file_id, .. }
             | Self::WritePosition { file_id, .. } => {
                 heap.heap_mut().dec_ref(file_id);
             }
@@ -438,14 +448,31 @@ pub(crate) fn release_pending_effect(effect: Option<PendingEffect>, heap: &mut i
     }
 }
 
+/// The error CPython raises for `call`'s paths as the user wrote them, before any I/O:
+/// `ValueError` for a NUL byte, else `FileNotFoundError` for `''`.
+///
+/// Must run before [`resolve_call_paths`], which would turn `''` into the working directory.
+pub(crate) fn check_raw_call_paths(call: &OsFunctionCall) -> RunResult<()> {
+    if let Err(message) = call.check_path_null_bytes() {
+        Err(ExcType::value_error(message))
+    } else if call.has_empty_path() {
+        Err(match (call.fs_primary_path(), call.rename_destination()) {
+            (Some(src), Some(dst)) => ExcType::file_not_found_error_pair(src, dst),
+            (path, _) => ExcType::file_not_found_error(path.unwrap_or_default()),
+        })
+    } else {
+        Ok(())
+    }
+}
+
 /// Resolves every relative path in `call` against `cwd` (see [`posix_join`]).
 ///
-/// Runs at the VM's single OS-call exit, so builtins and `Path` methods can
-/// hand over paths exactly as the user wrote them. Absolute and empty paths
-/// are left untouched, not copied.
+/// Runs at the VM's single OS-call exit, after [`check_raw_call_paths`] has
+/// rejected `''`, so builtins and `Path` methods can hand over paths exactly as
+/// the user wrote them. Absolute paths are left untouched, not copied.
 pub(crate) fn resolve_call_paths(call: &mut OsFunctionCall, cwd: &str) {
     for path in call.fs_paths_mut() {
-        if !path.is_empty() && !path.starts_with('/') {
+        if !path.starts_with('/') {
             *path = MontyPath::new(posix_join(cwd, path));
         }
     }
@@ -697,7 +724,7 @@ fn extract_str_data(
 ) -> RunResult<PathStringDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
     // Only `str`: a path-like is not text, so CPython refuses `Path` and `DirEntry` here.
-    let data_str = data.to_str_heap(heap, interns).ok().map(str::to_owned);
+    let data_str = data.try_to_str_heap(heap, interns).ok().map(str::to_owned);
 
     // CPython names the type by its `__name__`: no module (`DirEntry`, not
     // `posix.DirEntry`), but a class's own name (`Point` for a named tuple).
@@ -868,11 +895,13 @@ pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Intern
 
 /// The text of a `str`, `Path` or `DirEntry` `value`, borrowed, else `None`:
 /// what [`value_to_owned_string`] copies, for sizing the copy first.
-pub(crate) fn value_as_path_str<'a>(value: &Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
+pub(crate) fn value_as_path_str<'a>(value: &'a Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
+    if let Some(text) = value.as_str_heap(heap, interns) {
+        return Some(text);
+    }
+
     match value {
-        Value::InternString(id) => Some(interns.get_str(*id)),
         Value::Ref(id) => match heap.get(*id) {
-            HeapData::Str(s) => Some(s.as_str()),
             HeapData::Path(p) => Some(p.as_str()),
             HeapData::DirScan(scan) => scan.fspath(),
             _ => None,
@@ -883,10 +912,15 @@ pub(crate) fn value_as_path_str<'a>(value: &Value, heap: &'a Heap, interns: &'a 
 
 /// Owned `Vec<u8>` if `value` is a `bytes` (interned or heap), else `None`.
 pub(crate) fn value_to_owned_bytes(value: &Value, heap: &Heap, interns: &Interns) -> Option<Vec<u8>> {
+    value_as_bytes(value, heap, interns).map(<[u8]>::to_vec)
+}
+
+/// The bytes of a `bytes` `value` (interned or heap), borrowed, else `None`.
+pub(crate) fn value_as_bytes<'a>(value: &Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a [u8]> {
     match value {
-        Value::InternBytes(id) => Some(interns.get_bytes(*id).to_owned()),
+        Value::InternBytes(id) => Some(interns.get_bytes(*id)),
         Value::Ref(id) => match heap.get(*id) {
-            HeapData::Bytes(b) => Some(b.as_slice().to_owned()),
+            HeapData::Bytes(b) => Some(b.as_slice()),
             _ => None,
         },
         _ => None,

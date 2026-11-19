@@ -5,9 +5,12 @@ use std::{
     mem,
 };
 
-use monty_types::{MontyUuid, unstable::ClassTypeNode};
+use monty_types::{
+    MontyUuid,
+    unstable::{ClassEq, ClassHash, ClassTypeNode},
+};
 
-use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value, str::allocate_string};
+use super::{Dict, LazyHeapSet, PyTrait, list::repr_should_truncate, str::allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -20,7 +23,7 @@ use crate::{
         heap_read_ref_as_field_mut,
     },
     intern::Interns,
-    types::{Type, Union},
+    types::{Type, TypeRef, Union},
     value::{EitherStr, Value},
 };
 
@@ -132,8 +135,8 @@ impl<'h> HeapRead<'h, HostClass> {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::HostClass
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        TypeRef::Class(self.get(vm.heap).class_id())
     }
 
     /// The real class name (`'Point'`), not the `Type::HostClass` placeholder.
@@ -150,7 +153,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut value_guard = DropGuard::new(value, vm);
-        let name = attribute_name_value(name, value_guard.ctx());
+        let name = name.as_value(value_guard.ctx().heap);
         let (value, vm) = value_guard.into_parts();
         let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);
@@ -193,12 +196,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
             defer_drop!(key, vm);
             // Keys are strings in practice; render a non-string key (possible
             // in host-built attrs) via repr rather than fail.
-            let key_str = if let Ok(s) = key.to_str(vm) {
+            let key_str = if let Some(s) = key.as_str(vm) {
                 s.to_owned()
             } else {
                 let repr = key.py_repr(vm)?;
                 defer_drop!(repr, vm);
-                repr.to_str(vm)?.to_owned()
+                repr.as_str(vm).expect("py_repr returns str").to_owned()
             };
             // The value is cloned only after the fallible key formatting, so a
             // formatting error cannot strand an unguarded clone; re-reading at
@@ -314,7 +317,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
 ///
 /// Each caller supplies its own field list via `field`, mapping an index to that
 /// field's name and a cloned value (dropped here). A cycle renders `...`, a
-/// `None` value `<?>`, and exhausting a time limit truncates `...[timeout]`.
+/// `None` value `<?>`, and exhausting a time limit truncates `...[timeout]`
+/// (a memory limit raises instead, see [`repr_should_truncate`]).
 ///
 /// `field` is resolved immediately before that field is written, never all up
 /// front, so a `__repr__` that mutates a later field is observed — matching the
@@ -337,7 +341,7 @@ pub(crate) fn write_dataclass_repr<'h>(
         if i > 0 {
             // Same between-item checkpoint as sequence repr, so a wide instance
             // cannot outrun its time limit.
-            if vm.heap.tracker.check_memory_time_every(i).is_err() {
+            if repr_should_truncate(i, vm)? {
                 f.write_str(", ...[timeout]")?;
                 break;
             }
@@ -440,6 +444,10 @@ impl HostClassType {
             host_defined: true,
             is_dataclass: self.is_dataclass,
             attrs: Vec::new(),
+            // A host proxy of a host class compares by identity: the sandbox
+            // never learns how the host's class compares.
+            eq: ClassEq::Identity,
+            hash: ClassHash::Identity,
         }
     }
 }
@@ -482,8 +490,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
         })
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Type
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Type.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

@@ -4,7 +4,7 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     types::PyTrait,
     value::Value,
 };
@@ -21,6 +21,6 @@ pub fn builtin_len(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         ))
     } else {
         let type_name = value.py_type_name(vm);
-        Err(SimpleException::new_msg(ExcType::TypeError, format!("object of type '{type_name}' has no len()")).into())
+        Err(ExcType::type_error_no_len(&type_name))
     }
 }

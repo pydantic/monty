@@ -17,6 +17,9 @@ give `PosixPath` / `<class 'PosixPath'>`, and `pathlib.Path.nonexistent` raises
 `Path(*segments)` works. Each segment may be a `str` or another `Path`.
 Bytes paths are rejected with `TypeError`.
 
+A backslash is read as a separator, so `Path('a\\b')` is `a/b` and `Path('a').with_name('b\\c')` is `b/c`.
+On POSIX, CPython keeps the backslash as part of the name.
+
 `Path.cwd()`, on the class or any instance, returns the sandbox's virtual working directory without a host
 round-trip; the host sets it per feed and relative paths are resolved against
 it before any I/O method reaches the host (see [os.md](os.md)). `Path.home()`
@@ -27,6 +30,11 @@ is **not** implemented: the sandbox has no home directory.
 Implemented: `name`, `parent`, `stem`, `suffix`, `suffixes`, `parts`,
 `is_absolute()`, `joinpath(*other)`, `with_name(name)`, `with_stem(stem)`,
 `with_suffix(suffix)`, `as_posix()`, `__fspath__()`.
+
+`with_name`, `with_stem` and `with_suffix` take only a `str`.
+Any other argument raises `TypeError: expected string, not <type>`, where CPython's error depends on the method:
+`argument of type 'int' is not a container or iterable` from `with_name`, for example, or an `AttributeError` about
+`startswith` from `with_suffix`.
 
 The `/` operator works in both directions (`Path("a") / "b"`,
 `Path("a") / Path("b")`, `"a" / Path("b")`).

@@ -9,7 +9,8 @@ use crate::{
     frozen::FrozenFunction,
     heap::{DropGuard, HeapReadOutput},
     os_dispatch::PostConversionEffect,
-    types::PyTrait,
+    py_value::PyValue,
+    types::{PyTrait, Type},
     value::Value,
 };
 
@@ -58,7 +59,7 @@ pub fn builtin_next(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
                         iterator.clone_with_heap(vm.heap),
                         default,
                         Value::Builtin(Builtins::Function(BuiltinsFunctions::Next)),
-                        Value::Builtin(Builtins::ExcType(ExcType::StopIteration)),
+                        Value::Builtin(Builtins::Type(Type::StopIteration)),
                     ],
                 )
             } else {
@@ -83,7 +84,7 @@ fn next_native(iterator: &Value, default: Option<Value>, vm: &mut VM<'_>) -> Run
     let Value::Ref(id) = iterator else {
         return Err(ExcType::type_error_not_iterator(&iterator.py_type_name(vm)));
     };
-    match vm.heap.read(*id).py_next(vm)? {
+    match PyValue::from_heap(*id, vm.heap).py_next(vm)? {
         Some(item) => Ok(item),
         None => match default_guard.into_inner() {
             Some(default) => Ok(default),

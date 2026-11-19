@@ -73,8 +73,37 @@ assert 3 * [1, 2] == [1, 2, 1, 2, 1, 2]
 assert [1] * 0 == []
 assert [1] * -1 == []
 assert [] * 5 == []
+assert [] * 2**40 == []
 assert [1, 2] * 1 == [1, 2]
 assert [[1]] * 2 == [[1], [1]]
+
+# Counts past `Py_ssize_t`, and results past it in bytes, raise rather than panic
+try:
+    [1, 2] * 2**62
+    assert False, 'expected [1, 2] * 2**62 to raise'
+except MemoryError as exc:
+    assert str(exc) == ''
+try:
+    [1] * 2**60
+    assert False, 'expected [1] * 2**60 to raise'
+except MemoryError as exc:
+    assert str(exc) == ''
+try:
+    [1, 2] * 2**63
+    assert False, 'expected [1, 2] * 2**63 to raise'
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
+try:
+    [1] * -(2**70)
+    assert False, 'expected [1] * -(2**70) to raise'
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
+# the count is checked before the empty operand short-circuits
+try:
+    [] * 2**63
+    assert False, 'expected [] * 2**63 to raise'
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
 
 # === List repetition augmented assignment (*=) ===
 lst = [1, 2]
@@ -357,6 +386,132 @@ try:
 except ValueError as exc:
     assert str(exc) == 'list modified during sort'
 assert xs2 == [1, 2, 3]
+
+# === sort with comparisons that are not a total order ===
+# Monty runs CPython's timsort, so NaN, partially ordered sets and failed
+# comparisons leave elements in exactly the order CPython does.
+nan = float('nan')
+sort_letters = {0.5: 'a', 1.0: 'b', 2.0: 'c', 3.0: 'd'}
+
+
+def sort_code(xs):
+    return ''.join(sort_letters.get(x, 'n') for x in xs)
+
+
+# a NaN inside a descending run of floats
+xs = [float(21 - i) if i != 1 else nan for i in range(21)]
+assert (
+    repr(sorted(xs))
+    == '[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 21.0, nan, 19.0]'
+)
+
+# a pseudo-random mix of NaN and floats, long enough to need merges
+lcg_state = [7]
+
+
+def lcg(n):
+    lcg_state[0] = (lcg_state[0] * 1103515245 + 12345) % 2147483648
+    return (lcg_state[0] >> 8) % n
+
+
+pool = [nan, 1.0, 2.0, 0.5, nan, 3.0]
+xs = [pool[lcg(6)] for _ in range(90)]
+assert sort_code(xs) == 'dandccnnnancabcnddndbbnacbacndbdacnaddbnbbabcnncanddcnnbdnabdabdadbabcnndnndnadnnadbnbbdda'
+assert (
+    sort_code(sorted(xs))
+    == 'accnnnanaabbcanaaabbbbbcccddnddnbbdncncddnddncnnbanddnnaabcdnaaaabbbcdddnndnnbdndnnabbdndd'
+)
+assert (
+    sort_code(sorted(xs, reverse=True))
+    == 'dndnnnnnddndnnddcccbnddccccbbbbancbbbbaaaaaaannnddnndndddccbbanndnndandbnndnddcbbbbbaaaaaa'
+)
+assert (
+    sort_code(sorted(xs, key=lambda x: -x))
+    == 'danddccnnndcbanddddccccbbanndbncbbbaananbandbdnddddcbanncbanddcnnddbbaaannnnnddbbbbaannana'
+)
+ys = list(xs)
+ys.sort(reverse=True)
+assert sort_code(ys) == 'dndnnnnnddndnnddcccbnddccccbbbbancbbbbaaaaaaannnddnndndddccbbanndnndandbnndnddcbbbbbaaaaaa'
+
+# sets are ordered by `<` (proper subset), a partial order
+sets = [set(lcg(5) for _ in range(lcg(4))) for _ in range(30)]
+assert [sorted(s) for s in sorted(sets)] == [
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [1],
+    [1],
+    [1, 4],
+    [3],
+    [1, 3],
+    [0],
+    [2],
+    [1, 3],
+    [0],
+    [0, 4],
+    [1, 4],
+    [3, 4],
+    [1],
+    [1, 3, 4],
+    [0],
+    [2],
+    [1, 2],
+    [0, 3],
+    [2],
+    [0],
+    [2, 3, 4],
+    [1, 2, 3],
+]
+
+# a failed comparison stops the sort, leaving the list as far as it got
+xs = [3, 1, 2, 'x']
+try:
+    xs.sort()
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'<' not supported between instances of 'str' and 'int'"
+assert xs == [1, 2, 3, 'x']
+xs = ['x', 3, 1, 2]
+try:
+    xs.sort(reverse=True)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'<' not supported between instances of 'str' and 'int'"
+assert xs == ['x', 3, 2, 1]
+
+# === sort of plain numbers and strings ===
+# equal elements keep their order, forwards and reversed
+nums = [1, True, 1.0, 0, False, -0.0, 0.0, 2, 0.5, -1]
+assert repr(sorted(nums)) == '[-1, 0, False, -0.0, 0.0, 0.5, 1, True, 1.0, 2]'
+assert repr(sorted(nums, reverse=True)) == '[2, 1, True, 1.0, 0.5, 0, False, -0.0, 0.0, -1]'
+assert sorted(range(len(nums)), key=lambda i: nums[i]) == [9, 3, 4, 5, 6, 8, 0, 1, 2, 7]
+assert sorted(range(len(nums)), key=lambda i: nums[i], reverse=True) == [7, 0, 1, 2, 8, 3, 4, 5, 6, 9]
+# ints and floats compare exactly, even where the float cannot hold the int
+big = 2**53
+assert (
+    repr(sorted([big + 1, float(big), big, -big]))
+    == '[-9007199254740992, 9007199254740992.0, 9007199254740992, 9007199254740993]'
+)
+assert sorted([float('inf'), 9223372036854775807, -float('inf'), 0]) == [
+    -float('inf'),
+    0,
+    9223372036854775807,
+    float('inf'),
+]
+# interned literals and computed strings sort together, by code point
+computed = ''.join(['b', 'a'])
+words = ['ba', computed, 'B', 'é', '', 'a', '\U0001f600', 'ab']
+assert sorted(words) == ['', 'B', 'a', 'ab', 'ba', 'ba', 'é', '\U0001f600']
+assert sorted(range(len(words)), key=lambda i: words[i], reverse=True) == [6, 3, 0, 1, 7, 5, 2, 4]
+# long lists, so the sort is not the short in-place one
+xs = [(i * 7919) % 1000 - 500 for i in range(1000)]
+assert sorted(xs) == list(range(-500, 500))
+assert sorted([x / 4 for x in xs], reverse=True) == [x / 4 for x in range(499, -501, -1)]
 
 
 # === List assignment (setitem) ===

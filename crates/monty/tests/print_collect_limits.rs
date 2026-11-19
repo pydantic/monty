@@ -29,6 +29,19 @@ fn monty_run(code: impl Into<String>) -> MontyRun {
 }
 
 #[test]
+fn inline_print_separators_and_endings_are_preserved() {
+    let mut output = String::new();
+    monty_run("print('a', 'b', sep='--!'[:-1], end='END!'[:-1])")
+        .run(
+            vec![],
+            ResourceTracker::default(),
+            PrintWriter::CollectString(&mut output, None),
+        )
+        .unwrap();
+    assert_eq!(output, "a--bEND");
+}
+
+#[test]
 fn collect_string_respects_max_bytes() {
     let mut ex = monty_run(print_loop_code());
     let mut output = String::new();
