@@ -383,6 +383,18 @@ impl FromValue for bool {
 /// (the macro's error paths use [`FromValue::drop_extracted`]).
 pub(crate) struct StrArg(Value);
 
+pub(crate) fn extract_nullable_str(value: Value, vm: &mut VM<'_>) -> RunResult<Option<StrArg>> {
+    if matches!(value, Value::None) {
+        Ok(None)
+    } else if value.is_str(vm.heap) {
+        Ok(Some(StrArg(value)))
+    } else {
+        let err = ExcType::type_error(format!("must be str or None, not {}", value.py_type_name(vm)));
+        value.drop_with(vm);
+        Err(err)
+    }
+}
+
 impl FromValue for StrArg {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("str");
 

@@ -27,7 +27,8 @@ use crate::{
         collections::{
             counter::{
                 CounterCmp, CounterOp, counter_binary_op, counter_compare, counter_elements, counter_inplace_op,
-                counter_most_common, counter_order, counter_total, counter_unary_op, counter_update_method,
+                counter_most_common, counter_order, counter_subtract_method, counter_total, counter_unary_op,
+                counter_update_method,
             },
             defaultdict::defaultdict_missing,
         },
@@ -1543,9 +1544,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
                 args.check_zero_args("total", vm.heap)?;
                 counter_total(self, vm)
             }
-            StaticStrings::Subtract if self.get(vm.heap).is_counter() => counter_update_method(self, args, true, vm),
+            StaticStrings::Subtract if self.get(vm.heap).is_counter() => counter_subtract_method(self, args, vm),
             // Counter overrides `update` to add counts, and disables `fromkeys`.
-            StaticStrings::Update if self.get(vm.heap).is_counter() => counter_update_method(self, args, false, vm),
+            StaticStrings::Update if self.get(vm.heap).is_counter() => counter_update_method(self, args, vm),
             StaticStrings::Fromkeys if self.get(vm.heap).is_counter() => {
                 args.drop_with(vm);
                 return Err(ExcType::not_implemented(

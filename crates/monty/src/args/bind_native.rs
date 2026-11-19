@@ -161,7 +161,7 @@ fn bind_slow<const N: usize>(
     // unexpected-kwarg and multiple-values errors beat too-many-positional —
     // so for `Def` the check is deferred to after the kwarg loop below.
     let positional_overflow = n_pos > spec.n_positional && !spec.varargs;
-    if positional_overflow && !matches!(spec.family, ErrorFamily::Def) {
+    if positional_overflow && !matches!(spec.family, ErrorFamily::Def { .. }) {
         return Err(positional_overflow_error(spec, n_pos, n_kw));
     }
     for slot in bound.slots.iter_mut().take(n_pos.min(spec.n_positional)) {
@@ -242,11 +242,12 @@ fn bind_slow<const N: usize>(
     // `too_many_positional` scans localsplus before defaults are applied).
     if positional_overflow {
         let kwonly_given = bound.slots[spec.n_positional..].iter().filter(|s| s.is_some()).count();
+        let receiver = usize::from(matches!(spec.family, ErrorFamily::Def { bound_receiver: true }));
         return Err(ExcType::type_error_too_many_positional_range(
             spec.func_name,
-            spec.n_required_positional,
-            spec.n_positional,
-            n_pos,
+            spec.n_required_positional + receiver,
+            spec.n_positional + receiver,
+            n_pos + receiver,
             kwonly_given,
         ));
     }
@@ -321,7 +322,7 @@ impl ParamSpec {
     /// required pos-only params (e.g. `json.loads(s, /)`); `unpack` has its
     /// own range pre-check.
     fn uses_c_method_arity(&self) -> bool {
-        self.n_required_pos_only > 0 && !matches!(self.family, ErrorFamily::Def | ErrorFamily::Unpack)
+        self.n_required_pos_only > 0 && !matches!(self.family, ErrorFamily::Def { .. } | ErrorFamily::Unpack)
     }
 
     /// True when `_PyArg_UnpackKeywords` words arity as `takes exactly N
@@ -363,7 +364,7 @@ pub(crate) enum ErrorFamily {
     /// argument(s))` suffix; all binding errors fire before the function body
     /// (i.e. before any conversion) — unknown kwargs immediately, missing
     /// names aggregated.
-    Def,
+    Def { bound_receiver: bool },
     /// Argument Clinic `_PyArg_UnpackKeywords` (the default style). Binding
     /// errors fire before converters run: unknown kwargs and positional/keyword
     /// conflicts (`argument for {name}() given by name and position`)
@@ -612,7 +613,7 @@ fn duplicate_error(spec: &ParamSpec, idx: usize, param: &Param) -> DuplicateOutc
         ErrorFamily::CNamed { .. } => DuplicateOutcome::Defer(named_conflict()),
         ErrorFamily::Clinic => DuplicateOutcome::Raise(named_conflict()),
         // `Unpack`/`ParseTuple` accept no keywords, so they never get here.
-        ErrorFamily::Def | ErrorFamily::Unpack | ErrorFamily::ParseTuple => {
+        ErrorFamily::Def { .. } | ErrorFamily::Unpack | ErrorFamily::ParseTuple => {
             DuplicateOutcome::Raise(ExcType::type_error_duplicate_arg(spec.func_name, param.name))
         }
     }
@@ -670,7 +671,7 @@ fn positional_overflow_error(spec: &ParamSpec, n_pos: usize, n_kw: usize) -> Run
         // Unreachable: `def` defers, and the positional-only pre-check already
         // covered both directions. Match their wording anyway rather than panicking.
         ErrorFamily::ParseTuple => ExcType::type_error_method_at_most(spec.func_name, max, n_pos, false),
-        ErrorFamily::Def | ErrorFamily::Unpack => ExcType::type_error_at_most(spec.func_name, max, n_pos),
+        ErrorFamily::Def { .. } | ErrorFamily::Unpack => ExcType::type_error_at_most(spec.func_name, max, n_pos),
         // The exact form again outranks the generic C-method wording for
         // required positional-only slots; the total-count fallback below still
         // applies once the overflow exceeds every slot.

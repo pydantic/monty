@@ -132,6 +132,11 @@ except TypeError as e:
         'subtract arity message'
     )
 
+counts = Counter()
+counts.update(iterable=3, self=2)
+counts.subtract(None, iterable=1, self=1)
+assert dict(counts) == {'iterable': 2, 'self': 1}
+
 # === Arithmetic operators (results keep only positive counts) ===
 assert Counter(a=3, b=1) + Counter(a=1, c=2) == {'a': 4, 'b': 1, 'c': 2}, 'addition sums counts'
 assert Counter(a=3, b=1) - Counter(a=1, b=2) == {'a': 2}, 'subtraction drops non-positive results'

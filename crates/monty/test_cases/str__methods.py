@@ -472,6 +472,19 @@ assert 'a,b,c'.split(sep=',', maxsplit=1) == ['a', 'b,c']
 assert 'a,b,c'.rsplit(sep=',') == ['a', 'b', 'c']
 assert 'a,b,c'.rsplit(',', maxsplit=1) == ['a,b', 'c']
 assert 'a,b,c'.rsplit(sep=',', maxsplit=1) == ['a,b', 'c']
+for split_method in (lambda sep, n=-1: 'a b'.split(sep, n), lambda sep, n=-1: 'a b'.rsplit(sep, n)):
+    assert split_method(None) == ['a', 'b']
+    try:
+        split_method(1)
+        assert False, 'expected an invalid separator to fail'
+    except TypeError as exc:
+        assert str(exc) == 'must be str or None, not int'
+    try:
+        split_method(1, 'bad')
+        assert False, 'expected maxsplit conversion to fail first'
+    except TypeError as exc:
+        assert str(exc) == "'str' object cannot be interpreted as an integer"
+
 
 # splitlines with keyword args
 assert 'a\nb\nc'.splitlines(keepends=True) == ['a\n', 'b\n', 'c']

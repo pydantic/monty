@@ -7,9 +7,11 @@
 
 use std::fmt::Write;
 
+use monty_macros::py_signature;
+
 use super::fp::FileTarget;
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, ContainsVM, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -77,42 +79,49 @@ impl JsonDumpsConfig {
     fn skipkeys(&self) -> bool {
         self.flags & Self::SKIPKEYS != 0
     }
-
-    /// Builds the encoder config from the bound keyword arguments.
-    ///
-    /// The `FromArgs` structs already bound the arguments and rejected unknown
-    /// keywords. This translates the raw values into encoder options, raising in
-    /// CPython's order: `separators` is unpacked by `JSONEncoder.__init__`, then
-    /// `' ' * indent` and the separator types are checked as the encoder is built;
-    /// `checks` says how much of that a call reaches.
-    fn from_kwargs(kwargs: &EncoderKwargs, checks: EncoderChecks, vm: &mut VM<'_>) -> RunResult<Self> {
-        let mut config = Self::default();
-
-        let separators_were_set = check_separators_shape(&kwargs.separators, vm)?;
-        if checks != EncoderChecks::Unpack {
-            config.indent = parse_indent_value(&kwargs.indent, vm)?;
-        }
-        // `separators=None` means the indent-aware defaults below.
-        if checks == EncoderChecks::All
-            && let Some((item, key)) = parse_separators_value(&kwargs.separators, vm)?
-        {
-            config.item_separator = item;
-            config.key_separator = key;
-        }
-
-        config.flags = apply_bool_flag(config.flags, Self::SORT_KEYS, &kwargs.sort_keys, vm)?;
-        config.flags = apply_bool_flag(config.flags, Self::ENSURE_ASCII, &kwargs.ensure_ascii, vm)?;
-        config.flags = apply_bool_flag(config.flags, Self::ALLOW_NAN, &kwargs.allow_nan, vm)?;
-        config.flags = apply_bool_flag(config.flags, Self::SKIPKEYS, &kwargs.skipkeys, vm)?;
-
-        if config.indent.is_some() && !separators_were_set {
-            ",".clone_into(&mut config.item_separator);
-            ": ".clone_into(&mut config.key_separator);
-        }
-
-        Ok(config)
-    }
 }
+
+macro_rules! impl_encoder_config {
+    ($args:ty) => {
+        impl $args {
+            fn encoder_config(&self, checks: EncoderChecks, vm: &mut VM<'_>) -> RunResult<JsonDumpsConfig> {
+                let mut config = JsonDumpsConfig::default();
+
+                let separators_were_set = check_separators_shape(&self.separators, vm)?;
+                if checks != EncoderChecks::Unpack {
+                    config.indent = parse_indent_value(&self.indent, vm)?;
+                }
+                // `separators=None` means the indent-aware defaults below.
+                if checks == EncoderChecks::All
+                    && let Some((item, key)) = parse_separators_value(&self.separators, vm)?
+                {
+                    config.item_separator = item;
+                    config.key_separator = key;
+                }
+
+                config.flags = apply_bool_flag(config.flags, JsonDumpsConfig::SORT_KEYS, &self.sort_keys, vm)?;
+                config.flags = apply_bool_flag(
+                    config.flags,
+                    JsonDumpsConfig::ENSURE_ASCII,
+                    &self.ensure_ascii,
+                    vm,
+                )?;
+                config.flags = apply_bool_flag(config.flags, JsonDumpsConfig::ALLOW_NAN, &self.allow_nan, vm)?;
+                config.flags = apply_bool_flag(config.flags, JsonDumpsConfig::SKIPKEYS, &self.skipkeys, vm)?;
+
+                if config.indent.is_some() && !separators_were_set {
+                    ",".clone_into(&mut config.item_separator);
+                    ": ".clone_into(&mut config.key_separator);
+                }
+
+                Ok(config)
+            }
+        }
+    };
+}
+
+impl_encoder_config!(DumpsArgs);
+impl_encoder_config!(DumpArgs);
 
 /// How far a call gets through CPython's encoder setup before encoding, which
 /// decides the keyword errors it can raise.
@@ -138,32 +147,6 @@ impl EncoderChecks {
     }
 }
 
-/// The encoder keyword arguments as bound by [`JsonDumpsArgs`] / [`JsonDumpArgs`],
-/// before [`JsonDumpsConfig::from_kwargs`] coerces them. Callers hold it under
-/// `defer_drop!` so a coercion error part-way through releases every field.
-struct EncoderKwargs {
-    indent: Value,
-    sort_keys: Value,
-    ensure_ascii: Value,
-    allow_nan: Value,
-    separators: Value,
-    skipkeys: Value,
-    /// The `default` callable, or `None`; it is called, never validated, as in CPython.
-    default_fn: Value,
-}
-
-impl<C: ContainsHeap> DropWithContext<C> for EncoderKwargs {
-    fn drop_with(self, ctx: &mut C) {
-        self.indent.drop_with(ctx);
-        self.sort_keys.drop_with(ctx);
-        self.ensure_ascii.drop_with(ctx);
-        self.allow_nan.drop_with(ctx);
-        self.separators.drop_with(ctx);
-        self.skipkeys.drop_with(ctx);
-        self.default_fn.drop_with(ctx);
-    }
-}
-
 /// Implements `json.dumps(obj, **kwargs)`.
 ///
 /// Only the first argument may be positional. Supported keyword arguments mirror
@@ -172,31 +155,10 @@ impl<C: ContainsHeap> DropWithContext<C> for EncoderKwargs {
 ///
 /// CPython kwargs `cls` and `check_circular` are intentionally unsupported and
 /// will raise `TypeError` if passed.
-pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let JsonDumpsArgs {
-        obj,
-        indent,
-        sort_keys,
-        ensure_ascii,
-        allow_nan,
-        separators,
-        skipkeys,
-        default_fn,
-    } = JsonDumpsArgs::from_args(args, vm)?;
-    // `obj` outlives kwarg processing: an early error below must not leak it.
-    defer_drop!(obj, vm);
-    let kwargs = EncoderKwargs {
-        indent,
-        sort_keys,
-        ensure_ascii,
-        allow_nan,
-        separators,
-        skipkeys,
-        default_fn,
-    };
-    defer_drop!(kwargs, vm);
-    let config = JsonDumpsConfig::from_kwargs(kwargs, EncoderChecks::for_call(obj, false, vm), vm)?;
-    let output = encode(obj, &config, &kwargs.default_fn, vm)?;
+#[py_signature("dumps(obj, *, skipkeys=False, ensure_ascii=True, allow_nan=True, indent=None, separators=None, default=None, sort_keys=False)", style = def, kwarg_error_name = "JSONEncoder.__init__")]
+pub(super) fn call_dumps(vm: &mut VM<'_>, args: &DumpsArgs) -> RunResult<Value> {
+    let config = args.encoder_config(EncoderChecks::for_call(&args.obj, false, vm), vm)?;
+    let output = encode(&args.obj, &config, &args.default, vm)?;
     Ok(allocate_string(output, vm.heap))
 }
 
@@ -209,44 +171,22 @@ pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// synchronously. CPython streams chunks instead, so it reaches `fp.write`
 /// before a bad element deep in a container raises, but after a scalar that
 /// cannot be encoded; the file object is checked first or last to match.
-pub(super) fn call_dump(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let JsonDumpArgs {
-        obj,
-        fp,
-        indent,
-        sort_keys,
-        ensure_ascii,
-        allow_nan,
-        separators,
-        skipkeys,
-        default_fn,
-    } = JsonDumpArgs::from_args(args, vm)?;
-    defer_drop!(obj, vm);
-    defer_drop!(fp, vm);
-    let kwargs = EncoderKwargs {
-        indent,
-        sort_keys,
-        ensure_ascii,
-        allow_nan,
-        separators,
-        skipkeys,
-        default_fn,
-    };
-    defer_drop!(kwargs, vm);
-    let config = JsonDumpsConfig::from_kwargs(kwargs, EncoderChecks::for_call(obj, true, vm), vm)?;
+#[py_signature("dump(obj, fp, *, skipkeys=False, ensure_ascii=True, allow_nan=True, indent=None, separators=None, default=None, sort_keys=False)", style = def, kwarg_error_name = "JSONEncoder.__init__")]
+pub(super) fn call_dump(vm: &mut VM<'_>, args: &DumpArgs) -> RunResult<CallResult> {
+    let config = args.encoder_config(EncoderChecks::for_call(&args.obj, true, vm), vm)?;
 
-    let early_target = if is_container(obj, vm) {
-        Some(FileTarget::writer(fp, vm)?)
+    let early_target = if is_container(&args.obj, vm) {
+        Some(FileTarget::writer(&args.fp, vm)?)
     } else {
         None
     };
     // Released if encoding fails, otherwise taken back to write to.
     let mut early_target = DropGuard::new(early_target, vm);
-    let output = encode(obj, &config, &kwargs.default_fn, early_target.ctx())?;
+    let output = encode(&args.obj, &config, &args.default, early_target.ctx())?;
     let (early_target, vm) = early_target.into_parts();
     let target = match early_target {
         Some(target) => target,
-        None => FileTarget::writer(fp, vm)?,
+        None => FileTarget::writer(&args.fp, vm)?,
     };
     target.write(output, vm)
 }
@@ -277,61 +217,6 @@ fn is_container(value: &Value, vm: &VM<'_>) -> bool {
         ),
         _ => false,
     }
-}
-
-/// Argument shape for `json.dumps(obj, *, indent=None, sort_keys=False,
-/// ensure_ascii=True, allow_nan=True, separators=None, skipkeys=False, default=None)`.
-///
-/// Arity and missing-arg errors use the `dumps()` descriptor with `style =
-/// def` wording (CPython's `json.dumps` is a pure-Python `def`), but the
-/// unknown-kwarg error uses `JSONEncoder.__init__()` — CPython's `json.dumps`
-/// forwards unknown kwargs straight to the encoder constructor, which is what
-/// surfaces in the error. `kwarg_error_name` overrides the function name used
-/// in the unexpected-keyword message without affecting other error paths.
-/// Every field is a raw `Value` so the encoder can apply its own truth-test
-/// (`py_bool`) or shape coercion (`parse_indent_value` /
-/// `parse_separators_value`) on the way through.
-#[derive(FromArgs)]
-#[from_args(name = "dumps", style = def, kwarg_error_name = "JSONEncoder.__init__")]
-struct JsonDumpsArgs {
-    obj: Value,
-    #[from_args(kw_only, default = Value::None)]
-    indent: Value,
-    #[from_args(kw_only, default = Value::Bool(false))]
-    sort_keys: Value,
-    #[from_args(kw_only, default = Value::Bool(true))]
-    ensure_ascii: Value,
-    #[from_args(kw_only, default = Value::Bool(true))]
-    allow_nan: Value,
-    #[from_args(kw_only, default = Value::None)]
-    separators: Value,
-    #[from_args(kw_only, default = Value::Bool(false))]
-    skipkeys: Value,
-    #[from_args(kw_only, static_string = "Default", default = Value::None)]
-    default_fn: Value,
-}
-
-/// Argument shape for `json.dump(obj, fp, *, …)`: [`JsonDumpsArgs`] with the
-/// file object as second positional, under the `dump()` descriptor.
-#[derive(FromArgs)]
-#[from_args(name = "dump", style = def, kwarg_error_name = "JSONEncoder.__init__")]
-struct JsonDumpArgs {
-    obj: Value,
-    fp: Value,
-    #[from_args(kw_only, default = Value::None)]
-    indent: Value,
-    #[from_args(kw_only, default = Value::Bool(false))]
-    sort_keys: Value,
-    #[from_args(kw_only, default = Value::Bool(true))]
-    ensure_ascii: Value,
-    #[from_args(kw_only, default = Value::Bool(true))]
-    allow_nan: Value,
-    #[from_args(kw_only, default = Value::None)]
-    separators: Value,
-    #[from_args(kw_only, default = Value::Bool(false))]
-    skipkeys: Value,
-    #[from_args(kw_only, static_string = "Default", default = Value::None)]
-    default_fn: Value,
 }
 
 /// Sets `bit` in `flags` when `value` is truthy, clearing it otherwise. Used by the json.dumps kwarg pipeline so each

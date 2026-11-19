@@ -26,7 +26,7 @@ use syn::{Data, DataStruct, DeriveInput, Expr, Fields, Ident, LitStr, Token, Typ
 
 pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let signature = Signature::parse(input)?;
-    Ok(signature.render(None))
+    Ok(signature.render(None, None))
 }
 
 /// Parsed, validated signature for a single struct deriving `FromArgs`.
@@ -364,7 +364,19 @@ impl Signature {
         Ok(())
     }
 
-    pub(super) fn render(&self, shared_spec: Option<TokenStream>) -> TokenStream {
+    pub(super) fn render_native(&self, spec: TokenStream, check_last: Option<&Ident>) -> syn::Result<TokenStream> {
+        if let Some(name) = check_last
+            && (self.style != Style::Clinic || !self.named_fields().any(|field| field.ident == *name))
+        {
+            return Err(syn::Error::new(
+                name.span(),
+                "check_last requires a named parameter and clinic binding",
+            ));
+        }
+        Ok(self.render(Some(spec), check_last))
+    }
+
+    fn render(&self, shared_spec: Option<TokenStream>, check_last: Option<&Ident>) -> TokenStream {
         let struct_ident = &self.struct_ident;
         // Dedicated owning-slots struct: holds the raw `Bound` returned by the
         // runtime binder plus one typed `Option` per named field. A `DropGuard`
@@ -372,18 +384,21 @@ impl Signature {
         // so every conversion site is a plain `?`.
         let slots_struct_ident = format_ident!("__{}Slots", struct_ident);
 
-        let named: Vec<&Field> = self.named_fields().collect();
+        let mut named: Vec<&Field> = self.named_fields().collect();
         let n_slots = named.len();
         let slot_idents: Vec<&Ident> = named.iter().map(|f| &f.ident).collect();
         let slot_tys: Vec<&Type> = named.iter().map(|f| &f.ty).collect();
 
         let spec = shared_spec.map_or_else(
             || {
-                let binding = self.binding_spec();
+                let binding = self.binding_spec(false);
                 quote! { static __SPEC: crate::args::ParamSpec = #binding; let __spec = &__SPEC; }
             },
             |spec| quote! { let __spec = #spec; },
         );
+        if let Some(last) = check_last {
+            named.sort_by_key(|field| field.ident == *last);
+        }
         let conversions = named.iter().map(|f| self.render_conversion(f));
         let build_fields = self.fields.iter().map(render_build_field);
         let collectors = [self.varargs_idx, self.varkwargs_idx]
@@ -425,7 +440,7 @@ impl Signature {
             impl crate::args::FromArgs for #struct_ident {
                 /// Extract arguments into `Self`. Binding (dispatch, arity,
                 /// kwargs, cleanup) happens in `crate::args::bind`; this body
-                /// only converts each raw slot in declaration order. On any
+                /// only converts the raw slots and applies defaults. On any
                 /// error path every remaining value is dropped via the slots
                 /// struct's `DropWithContext` impl (driven by a `DropGuard`).
                 fn from_args(
@@ -460,14 +475,14 @@ impl Signature {
     }
 
     /// The `static __SPEC: ParamSpec` literal interpreted by the runtime binder.
-    pub(super) fn binding_spec(&self) -> TokenStream {
+    pub(super) fn binding_spec(&self, bound_receiver: bool) -> TokenStream {
         let named: Vec<_> = self.named_fields().collect();
         let func_name = self.func_name.as_str();
         // Under `kwargs_not_supported_yet` no kwarg is ever dispatched (they
         // are all rejected up front), so no field needs a matchable id — this
         // also spares the `StaticStrings` variants those names would require.
         let params = named.iter().map(|f| f.render_param(self.kwargs_not_supported_yet));
-        let family = self.render_family(&named);
+        let family = self.render_family(&named, bound_receiver);
         let n_positional = named
             .iter()
             .filter(|f| matches!(f.kind, FieldKind::PosOnly | FieldKind::PosOrKeyword))
@@ -513,10 +528,10 @@ impl Signature {
     /// `vgetargskeywords` / `_PyArg_UnpackKeywords` switch to
     /// `… positional argument(s) …` exactly when the function has
     /// keyword-only parameters.
-    fn render_family(&self, named: &[&Field]) -> TokenStream {
+    fn render_family(&self, named: &[&Field], bound_receiver: bool) -> TokenStream {
         let pivot = named.iter().any(|f| matches!(f.kind, FieldKind::KwOnly));
         match self.style {
-            Style::Def => quote! { crate::args::ErrorFamily::Def },
+            Style::Def => quote! { crate::args::ErrorFamily::Def { bound_receiver: #bound_receiver } },
             Style::Clinic => quote! { crate::args::ErrorFamily::Clinic },
             Style::C => quote! { crate::args::ErrorFamily::C { positional_pivot: #pivot } },
             Style::CNamed => quote! { crate::args::ErrorFamily::CNamed { positional_pivot: #pivot } },
