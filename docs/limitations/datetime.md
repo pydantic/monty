@@ -105,6 +105,13 @@ Class methods supported: `now(tz=None)`, `fromtimestamp(timestamp, tz=None)`, `s
     host's `time.tzname`.
     A named session zone with a `'call_host'` clock has no year to obtain its abbreviations from, so only UTC and GMT
     are accepted in that configuration.
+- `strptime()` matches whitespace in the format as zero or more characters and `%Y` as one to four digits, where
+    CPython requires at least one whitespace character and exactly four digits:
+    `strptime('2024', ' %Y')` and `strptime('99', '%Y')` succeed in Monty.
+- `strptime()`'s `%O` locale forms (`%Od`, `%OH`, ...) never match, raising `does not match format`;
+    CPython matches them against the locale's alternative digits, which the C locale leaves empty.
+- `time.strptime()` derives `tm_wday` from the parsed date, ignoring a parsed `%a` or `%A`; CPython keeps the parsed
+    weekday.
 - Repeated clock or zone directives in `strptime()` are not rejected when compiling the format.
     For example, `'%H%H'` can parse successfully, whereas CPython raises `re.PatternError` for a duplicate group name.
 - `strptime()`'s `%z` takes a sign, hours and minutes with an optional colon, optional seconds, or a bare `Z`,

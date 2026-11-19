@@ -372,3 +372,53 @@ try:
     assert False, 'expected ValueError'
 except ValueError as exc:
     assert str(exc) == "':' is a bad directive in format '%Y-%m-%d %:z'"
+
+# === strptime rejects directives outside CPython's table ===
+for _format, _bad in [
+    ('%s', 's'),
+    ('%F', 'F'),
+    ('%D', 'D'),
+    ('%C', 'C'),
+    ('%h', 'h'),
+    ('%Q', 'Q'),
+    ('%q', 'q'),
+    ('%N', 'N'),
+    ('%.f', '.'),
+    ('%E', 'E'),
+    ('%Ez', 'Ez'),
+    ('%Oz', 'Oz'),
+    ('%-s', 's'),
+    ('%é', 'é'),
+]:
+    try:
+        datetime.datetime.strptime('2024', _format)
+        assert False, 'expected ValueError'
+    except ValueError as exc:
+        assert str(exc) == f"'{_bad}' is a bad directive in format '{_format}'"
+# a % with nothing, or only whitespace, after it is stray
+for _format in ['%', '%Y%', '% ', "%Y'%"]:
+    try:
+        datetime.datetime.strptime('2024', _format)
+        assert False, 'expected ValueError'
+    except ValueError as exc:
+        assert str(exc) == "stray % in format '" + _format + "'"
+# flags are skipped before the lookup
+assert datetime.datetime.strptime('5', '%-d') == datetime.datetime(1900, 1, 5)
+
+# === strptime %f takes at most six digits ===
+for _text, _remaining in [('1234567', '7'), ('123456789', '789')]:
+    try:
+        datetime.datetime.strptime('10:30:45.' + _text, '%H:%M:%S.%f')
+        assert False, 'expected ValueError'
+    except ValueError as exc:
+        assert str(exc) == 'unconverted data remains: ' + _remaining
+assert datetime.datetime.strptime('000001', '%f').microsecond == 1
+assert datetime.datetime.strptime('45.5Z', '%S.%f%z') == datetime.datetime(
+    1900, 1, 1, 0, 0, 45, 500000, tzinfo=datetime.timezone.utc
+)
+
+# === strptime %j wins over month and day, and runs on past the year ===
+assert datetime.datetime.strptime('2024-03-01 060', '%Y-%m-%d %j') == datetime.datetime(2024, 2, 29)
+assert datetime.datetime.strptime('2023 366', '%Y %j') == datetime.datetime(2024, 1, 1)
+assert datetime.datetime.strptime('2024 366', '%Y %j') == datetime.datetime(2024, 12, 31)
+assert datetime.datetime.strptime('2023 W01 1 010', '%Y W%W %w %j') == datetime.datetime(2023, 1, 10)

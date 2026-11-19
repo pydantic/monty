@@ -1181,6 +1181,27 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "mktime argument out of range").into()
     }
 
+    /// `strptime()`'s `ValueError` for a directive missing from its table, quoted
+    /// with bare `'` as CPython does: `'{directive}' is a bad directive in format '{format}'`.
+    #[must_use]
+    fn strptime_bad_directive(directive: &str, format: &str) -> RunError {
+        Self::value_error(format_args!("'{directive}' is a bad directive in format '{format}'"))
+    }
+
+    /// `strptime()`'s `ValueError` for a `%` with nothing, or only whitespace,
+    /// after it: `stray % in format '{format}'`.
+    #[must_use]
+    fn strptime_stray_percent(format: &str) -> RunError {
+        Self::value_error(format_args!("stray % in format '{format}'"))
+    }
+
+    /// The `ValueError` the `time` conversion functions raise for a time tuple
+    /// field outside its range: `{field} out of range`.
+    #[must_use]
+    fn time_field_out_of_range(field: &str) -> RunError {
+        Self::value_error(format_args!("{field} out of range"))
+    }
+
     /// The `TypeError` the `time` conversion functions raise for a time tuple of
     /// the wrong length: `{name}(): illegal time tuple argument`.
     #[must_use]

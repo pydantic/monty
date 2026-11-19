@@ -161,3 +161,20 @@ check(
     lambda: time.strptime('2024-06-15 +0100 extra', '%Y-%m-%d %z'),
     'ValueError: unconverted data remains:  extra',
 )
+
+# === strptime %j rolls into the next year ===
+assert time.strptime('2023 366', '%Y %j')[:3] == (2024, 1, 1)
+
+# === strftime and asctime beyond year 9999 ===
+# Windows CPython limits strftime to years 1..9999, and has no `%-S`
+if sys.platform != 'win32':
+    wide = (10000, 1, 1, 0, 0, 0, 5, 1, 0)
+    assert time.strftime('%Y|%C|%y|%G|%g|%V|%U|%W|%F|%x', wide) == '10000|100|00|9999|99|52|00|00|10000-01-01|01/01/00'
+    assert time.strftime('%c', wide) == 'Sat Jan  1 00:00:00 10000'
+    assert time.strftime('%G|%F', (10000, 12, 31, 0, 0, 0, 6, 366, 0)) == '10000|10000-12-31'
+    assert time.strftime('%Y|%C|%F', (12345, 6, 7, 0, 0, 0, 2, 158, 0)) == '12345|123|12345-06-07'
+    assert time.strftime('%Y|%F', (-10000, 1, 1, 0, 0, 0, 5, 1, 0)) == '-10000|-10000-01-01'
+    # flagged forms of a leap second keep the 60
+    assert time.strftime('%-S|%_S|%0S|%S', (2024, 1, 1, 23, 59, 60, 0, 1, 0)) == '60|60|60|60'
+    assert time.strftime('%-S|%-M', (2024, 1, 1, 23, 5, 7, 0, 1, 0)) == '7|5'
+assert time.asctime((10000, 1, 1, 0, 0, 0, 5, 1, 0)) == 'Sat Jan  1 00:00:00 10000'

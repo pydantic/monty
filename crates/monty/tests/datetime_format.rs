@@ -51,6 +51,17 @@ fn unknown_directive_passes_through_verbatim() {
     ), @"%+ 2024 %+|%+ 2024 %+|%+ 2024 %+|%+ 1900 %+|%+ 1900 %+");
 }
 
+/// A directive ends at its first non-flag character, so `% ` cannot swallow the
+/// next directive, and Jiff's own extensions stay literal as glibc's unknowns do.
+#[test]
+fn non_glibc_directives_pass_through_verbatim() {
+    assert_snapshot!(run_str(
+        "from datetime import datetime\n\
+         d = datetime(2024, 6, 5, 7, 3, 4, 120)\n\
+         '|'.join(d.strftime(f) for f in ['50% %Y', '% 年 %Y', '%q', '%.f', '%.3f', '%3f', '%-q', '%::z', '%-'])"
+    ), @"50% 2024|% 年 2024|%q|%.f|%.3f|%3f|%-q|%::z|%-");
+}
+
 /// The f-string path (a dynamic spec carries the strftime string to runtime)
 /// shares the same lenient formatter.
 #[test]
@@ -138,6 +149,21 @@ fn hostile_time_tuple_fields_raise_instead_of_panicking() {
         )),
         "Mon 00"
     );
+}
+
+/// `mktime()` cannot place a wall clock past year 9999, where 64-bit CPython
+/// returns a timestamp. See limitations/time.md.
+#[test]
+fn mktime_beyond_year_9999_overflows() {
+    for tuple in [
+        "(10000, 1, 1, 0, 0, 0, 5, 1, -1)",
+        "(9999, 12, 31, 23, 59, 60, 4, 365, -1)",
+    ] {
+        assert_eq!(
+            run_err(&format!("import time\ntime.mktime({tuple})")).lines().last(),
+            Some("OverflowError: mktime argument out of range")
+        );
+    }
 }
 
 /// `gmtime()` names its zone `UTC`, as macOS CPython does; glibc CPython says

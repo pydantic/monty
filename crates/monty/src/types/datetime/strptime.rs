@@ -2,6 +2,7 @@
 
 use ahash::AHashSet;
 use jiff::{
+    Span,
     civil::{Date as CivilDate, DateTime as CivilDateTime, Time as CivilTime},
     fmt::strtime::BrokenDownTime,
 };
@@ -23,7 +24,7 @@ pub(crate) struct ParsedTime {
 /// Parses with Python's defaults, zone names and trailing-input diagnostics.
 pub(crate) fn parse(input: &str, format: &str, policy: &OsPolicy) -> RunResult<ParsedTime> {
     let mismatch = || format_mismatch(input, format);
-    let expanded = expand_format(input, format)?;
+    let expanded = expand_format(format)?;
     let zones = if expanded.contains("%Z") {
         policy
             .timezone
@@ -55,7 +56,7 @@ pub(crate) fn parse(input: &str, format: &str, policy: &OsPolicy) -> RunResult<P
         hour,
         parsed.minute().unwrap_or(0),
         second.min(59),
-        parsed.subsec_nanosecond().unwrap_or(0),
+        matched.nanosecond.or(parsed.subsec_nanosecond()).unwrap_or(0),
     )
     .expect("parser validates clock components");
     Ok(ParsedTime {
@@ -74,6 +75,8 @@ struct MatchedFields<'a> {
     hour: Option<ClockHour>,
     pm: bool,
     second: Option<i8>,
+    /// `%f`, matched here because Jiff's fraction accepts nine digits to CPython's six.
+    nanosecond: Option<i32>,
     offset_seconds: Option<i32>,
     inconsistent_offset: Option<&'a str>,
 }
@@ -165,6 +168,10 @@ fn field_lengths(input: &str, field: char, zones: Option<&[String; 2]>) -> Optio
             }
             2
         }
+        'f' => match input.bytes().take(6).take_while(u8::is_ascii_digit).count() {
+            0 => return None,
+            digits => digits,
+        },
         'Z' => zone_length(input, zones)?,
         'z' => {
             let token = offset_at(input)?;
@@ -199,6 +206,12 @@ fn collect_fields<'a>(
                 }
             }
             'p' => matched.pm = token.eq_ignore_ascii_case("pm"),
+            // Scale the one to six fraction digits to nanoseconds.
+            'f' => {
+                let digits: i32 = token.parse().ok()?;
+                let scale = 10_i32.pow(u32::try_from(9 - token.len()).ok()?);
+                matched.nanosecond = Some(digits * scale);
+            }
             'Z' => {}
             'z' => {
                 let offset = offset_at(token)?;
@@ -224,7 +237,7 @@ fn split_field(format: &str) -> Option<(&str, char, &str)> {
     while let Some((at, c)) = chars.next() {
         if c == '%' {
             let (_, field) = chars.next()?;
-            if matches!(field, 'H' | 'I' | 'S' | 'p' | 'z' | 'Z') {
+            if matches!(field, 'H' | 'I' | 'S' | 'f' | 'p' | 'z' | 'Z') {
                 return Some((&format[..at], field, &format[at + 2..]));
             }
         }
@@ -277,37 +290,55 @@ fn zone_length(input: &str, zones: Option<&[String; 2]>) -> Option<usize> {
 }
 
 /// Expands clock aliases so their seconds and meridiem also use Python semantics.
-fn expand_format(input: &str, format: &str) -> RunResult<String> {
+/// Rejects directives outside CPython's `_strptime` table, which Jiff would otherwise parse.
+fn expand_format(format: &str) -> RunResult<String> {
     let mut out = String::with_capacity(format.len());
-    let mut chars = format.chars();
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            out.push_str(match chars.next() {
-                Some('c') => "%a %b %e %H:%M:%S %Y",
-                Some('x') => "%m/%d/%y",
-                Some('X' | 'T') => "%H:%M:%S",
-                Some('r') => "%I:%M:%S %p",
-                Some('R') => "%H:%M",
-                Some('f') => "%6f",
-                Some('Q' | 'N') => return Err(format_mismatch(input, format)),
-                Some(':') => {
-                    return Err(ExcType::value_error(format_args!(
-                        "':' is a bad directive in format {}",
-                        StringRepr(format)
-                    )));
-                }
-                Some(other) => {
-                    out.push('%');
-                    out.push(other);
-                    continue;
-                }
-                None => "%",
-            });
-        } else {
-            out.push(c);
-        }
+    let mut rest = format;
+    while let Some(at) = rest.find('%') {
+        let (literal, directive) = rest.split_at(at);
+        out.push_str(literal);
+        let (end, key) = strptime_directive(directive);
+        let bare = end == 1 + key.len();
+        out.push_str(match key {
+            "" => return Err(ExcType::strptime_stray_percent(format)),
+            "c" if bare => "%a %b %e %H:%M:%S %Y",
+            "x" if bare => "%m/%d/%y",
+            "X" | "T" if bare => "%H:%M:%S",
+            "r" if bare => "%I:%M:%S %p",
+            "R" if bare => "%H:%M",
+            _ if is_strptime_directive(key) => &directive[..end],
+            _ => return Err(ExcType::strptime_bad_directive(key, format)),
+        });
+        rest = &directive[end..];
     }
+    out.push_str(rest);
     Ok(out)
+}
+
+/// Splits a `%` directive per CPython's `%[-_0^#]*[0-9]*([OE]?.?)`, returning its byte
+/// length and the `[OE]?.?` key CPython looks up; a whitespace conversion is left out.
+fn strptime_directive(directive: &str) -> (usize, &str) {
+    let flags = directive[1..]
+        .find(|c: char| !matches!(c, '-' | '_' | '0' | '^' | '#') && !c.is_ascii_digit())
+        .map_or(directive.len(), |at| 1 + at);
+    let key = &directive[flags..];
+    let modifier = usize::from(key.starts_with(['O', 'E']));
+    let conversion = key[modifier..]
+        .chars()
+        .next()
+        .filter(|c| !c.is_whitespace())
+        .map_or(0, char::len_utf8);
+    (flags + modifier + conversion, &key[..modifier + conversion])
+}
+
+/// Whether CPython 3.14's `_strptime` table has `key`, including its `O` locale forms.
+fn is_strptime_directive(key: &str) -> bool {
+    let mut chars = key.chars();
+    match (chars.next(), chars.next(), chars.next()) {
+        (Some(c), None, _) => "%ABGHIMPRSTUVWXYZabcdefjklmpruwxyz".contains(c),
+        (Some('O'), Some(c), None) => "CHIMSdempwy".contains(c),
+        _ => false,
+    }
 }
 
 /// Python's generic error for an input whose format did not match.
@@ -320,12 +351,16 @@ fn format_mismatch(input: &str, format: &str) -> RunError {
 }
 
 /// Supplies missing date fields without masking ordinal or week dates.
+/// As in CPython, `%j` wins over month and day and counts on past the year's end.
 fn parsed_date(mut parsed: BrokenDownTime) -> Option<RunResult<CivilDate>> {
     let year = parsed.year().unwrap_or(1900);
     let has_week_date = parsed.iso_week_year().is_some()
         || (parsed.weekday().is_some()
             && (parsed.sunday_based_week().is_some() || parsed.monday_based_week().is_some()));
-    if parsed.day_of_year().is_some() || has_week_date {
+    if let Some(day) = parsed.day_of_year() {
+        let first = CivilDate::new(year, 1, 1).ok()?;
+        Some(Ok(first.checked_add(Span::new().days(day - 1)).ok()?))
+    } else if has_week_date {
         parsed.set_year(Some(year)).ok()?;
         Some(Ok(parsed.to_date().ok()?))
     } else {

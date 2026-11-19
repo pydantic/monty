@@ -494,84 +494,67 @@ pub(crate) fn rewrite_zone_directives<'f>(
     out.finish_raw().map(Cow::Owned)
 }
 
-/// Rewrites CPython's fixed six-digit `%f` to Jiff's `%6f`.
-/// Escaped percents remain literal.
-pub(crate) fn rewrite_microsecond_directive(format: &str) -> Cow<'_, str> {
-    if !format.contains("%f") {
-        return Cow::Borrowed(format);
-    }
-    let mut out = String::with_capacity(format.len() + 1);
-    let mut rest = format;
-    while let Some(percent) = rest.find('%') {
-        let (before, from_percent) = rest.split_at(percent);
-        out.push_str(before);
-        // Take the directive whole, so `%%f` consumes `%%` and leaves `f` as text.
-        let mut chars = from_percent.char_indices().skip(1);
-        match chars.next() {
-            Some((_, 'f')) => {
-                out.push_str("%6f");
-                rest = &from_percent[2..];
-            }
-            Some((_, c)) => {
-                out.push('%');
-                out.push(c);
-                rest = &from_percent[1 + c.len_utf8()..];
-            }
-            None => {
-                out.push('%');
-                rest = "";
-            }
-        }
-    }
-    out.push_str(rest);
-    Cow::Owned(out)
-}
-
 /// Formats civil components without panicking on unsupported directives.
 /// POSIX locale names and literal unknown directives preserve sandbox behavior.
 pub(crate) fn render_strftime(datetime: civil::DateTime, format: &str, tracker: &ResourceTracker) -> RunResult<String> {
-    let format = rewrite_microsecond_directive(format);
     let mut out = StringBuilder::new(tracker);
     let broken = BrokenDownTime::from(datetime);
     let config = Config::new().custom(PosixCustom::new()).lenient(true);
-    let mut rest = format.as_ref();
+    let mut rest = format;
     while let Some(at) = rest.find('%') {
         let (literal, directive) = rest.split_at(at);
         out.push_str(literal)?;
-        let mut chars = directive[1..].chars();
-        let first = chars.next();
         if directive.starts_with("%#z") {
             return Err(invalid_strftime_error());
         }
-        // Keep literal directives independent of Jiff's extended grammar.
-        let consumed = if matches!(first, Some('Q' | 'N' | '+')) {
-            out.push('%')?;
-            out.push(first.expect("matched directive"))?;
-            2
-        } else if first == Some('s') {
-            let seconds = datetime::epoch_duration(datetime).as_nanos().div_euclid(1_000_000_000);
-            out.push_str(&seconds.to_string())?;
-            2
-        } else {
-            let mut end = 1;
-            for c in directive[1..].chars() {
-                end += c.len_utf8();
-                if c.is_ascii_alphabetic() || c == '%' {
-                    break;
-                }
+        let (end, conversion) = strftime_directive(directive);
+        let spec = &directive[..end];
+        // Only glibc's conversions reach Jiff, so its extensions (`%q`, `%.f`, `%N`) stay literal.
+        let jiff_spec = match conversion {
+            Some('s') => {
+                let seconds = datetime::epoch_duration(datetime).as_nanos().div_euclid(1_000_000_000);
+                out.push_str(&seconds.to_string())?;
+                None
             }
-            let result = broken.format_with_config(&config, &directive[..end], &mut StdFmtWrite(&mut out));
-            if result.is_err() {
-                // A resource error is retained by the builder and takes precedence.
-                out.finish_raw()?;
-                return Err(invalid_strftime_error());
+            // CPython substitutes only a bare `%f`, always six digits.
+            Some('f') if end == 2 => Some("%6f"),
+            Some(c) if GLIBC_CONVERSIONS.contains(c) => Some(spec),
+            _ => {
+                out.push_str(spec)?;
+                None
             }
-            end
         };
-        rest = &directive[consumed..];
+        if let Some(jiff_spec) = jiff_spec
+            && broken
+                .format_with_config(&config, jiff_spec, &mut StdFmtWrite(&mut out))
+                .is_err()
+        {
+            // A resource error is retained by the builder and takes precedence.
+            out.finish_raw()?;
+            return Err(invalid_strftime_error());
+        }
+        rest = &directive[end..];
     }
     out.push_str(rest)?;
     out.finish_raw()
+}
+
+/// glibc's `strftime` conversions; any other directive is copied through verbatim.
+const GLIBC_CONVERSIONS: &str = "%ACDFGHIMPRSTUVWXYZabcdeghjklmnprstuwxyz";
+
+/// Splits a `%` directive into its byte length and conversion, after glibc's flags and width.
+/// `%:z` keeps its colon; `None` means the format ended mid-directive.
+fn strftime_directive(directive: &str) -> (usize, Option<char>) {
+    let mut start = directive[1..]
+        .find(|c: char| !matches!(c, '-' | '_' | '0' | '^' | '#') && !c.is_ascii_digit())
+        .map_or(directive.len(), |at| 1 + at);
+    if directive[start..].starts_with(":z") {
+        start += 1;
+    }
+    match directive[start..].chars().next() {
+        Some(c) => (start + c.len_utf8(), Some(c)),
+        None => (start, None),
+    }
 }
 
 /// The `ValueError` for unsupported offset-dependent directives (`%#z`).

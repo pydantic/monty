@@ -81,6 +81,8 @@ host's zone.
 `mktime()` inverts `localtime()` in the same zone.
 Its `tm_isdst` argument is ignored: an ambiguous or skipped wall time takes CPython's `fold=0` reading, where CPython
 lets `tm_isdst=0` or `1` choose the half and guesses only for `-1`.
+A wall clock past year 9999, including a leap second carried over from 9999-12-31 23:59, raises
+`OverflowError: mktime argument out of range`, where 64-bit CPython returns a timestamp.
 
 Without an argument `gmtime()`, `localtime()` and `ctime()` read the clock, and so suspend under `'call_host'`,
 naming themselves as the caller.
