@@ -27,6 +27,9 @@ default = ["type-checking"]
 # Type checking links ty, over half the module's code; a size-sensitive host
 # such as Cloudflare Workers builds with `--no-default-features`.
 type-checking = ["monty-proto/type-checking"]
+# Serves type-checked sessions without ty, delegating each check to the host
+# (see monty-proto's feature of the same name); built with `--no-default-features`.
+host-type-checking = ["monty-proto/host-type-checking"]
 
 [lints]
 workspace = true

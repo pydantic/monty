@@ -27,14 +27,16 @@ use monty::{
     CheckedSource, Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump,
     type_check_nesting_exception,
 };
+#[cfg(any(feature = "type-checking", feature = "host-type-checking"))]
+use monty_type_checking::scan_imports;
 #[cfg(feature = "type-checking")]
-use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker, scan_imports};
+use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker};
 use monty_types::{
     AssertMessageAnnotations, CompileOptions, ExcType, ExecutionClock, ExtFunctionResult, IMPORT_STUBS_CALL_ID,
     ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream, PrintWriter,
     PrintWriterCallback, ResourceLimits, ResourceTracker, SOURCE_SCAN_THRESHOLD, TypeCheckState, TypeCheckingConfig,
 };
-#[cfg(feature = "type-checking")]
+#[cfg(any(feature = "type-checking", feature = "host-type-checking"))]
 use monty_types::{CHECKER_MODULE_NAMES, SANDBOX_MODULE_NAMES, SourceRange};
 
 use super::{
@@ -206,18 +208,25 @@ enum SessionState {
     Suspended(Box<ReplProgress>),
     /// A feed awaiting host stubs before type checking.
     #[cfg_attr(
-        not(feature = "type-checking"),
+        not(any(feature = "type-checking", feature = "host-type-checking")),
         expect(dead_code, reason = "only a type-checked feed asks for stubs")
     )]
     AwaitingStubs(Box<PendingFeed>),
+    /// A feed whose type check was handed to the host (`WorkerEvent.host_type_check`),
+    /// awaiting `ClientRequest.host_type_check_result`.
+    #[cfg_attr(
+        not(all(feature = "host-type-checking", not(feature = "type-checking"))),
+        expect(dead_code, reason = "only a worker without ty delegates its checks")
+    )]
+    AwaitingTypeCheck(Box<PendingFeed>),
 }
 
-/// A feed held until the client answers `import_stubs`.
+/// A feed held until the client answers `import_stubs`, or the host answers its type check.
 struct PendingFeed {
     repl: Box<MontyRepl>,
     code: String,
     inputs: NamedValues,
-    /// Requested modules, in source order.
+    /// Requested modules, in source order; empty for a feed awaiting its type check.
     asked: Vec<String>,
 }
 
@@ -341,6 +350,7 @@ impl Worker {
             // a liveness answer meant for a serving relay; it opens no turn,
             // so it gets no reply
             pb::client_request::Kind::Pong(_) => return Ok(HandleOutcome::Continue),
+            pb::client_request::Kind::HostTypeCheckResult(result) => self.handle_host_type_check_result(result, sink),
         };
         self.stamp_session_budget(&mut event);
         let sent = sink.send(&event);
@@ -416,7 +426,9 @@ impl Worker {
             SessionState::Configured(None) => SessionBudget::default(),
             SessionState::Ready(repl) => self.tracker_budget(repl.tracker()),
             SessionState::Suspended(progress) => self.tracker_budget(progress.tracker()),
-            SessionState::AwaitingStubs(pending) => self.tracker_budget(pending.repl.tracker()),
+            SessionState::AwaitingStubs(pending) | SessionState::AwaitingTypeCheck(pending) => {
+                self.tracker_budget(pending.repl.tracker())
+            }
         }
     }
 
@@ -464,6 +476,7 @@ impl Worker {
                     | pb::worker_event::Kind::OsCall(_)
                     | pb::worker_event::Kind::NameLookup(_)
                     | pb::worker_event::Kind::ResolveFutures(_)
+                    | pb::worker_event::Kind::HostTypeCheck(_)
             )
         );
         match err {
@@ -490,13 +503,13 @@ impl Worker {
         ) {
             event.feed_suspended = Some(matches!(
                 self.state,
-                SessionState::Suspended(_) | SessionState::AwaitingStubs(_)
+                SessionState::Suspended(_) | SessionState::AwaitingStubs(_) | SessionState::AwaitingTypeCheck(_)
             ));
         }
         let tracker = match &self.state {
             SessionState::Ready(repl) => repl.tracker(),
             SessionState::Suspended(progress) => progress.tracker(),
-            SessionState::AwaitingStubs(pending) => pending.repl.tracker(),
+            SessionState::AwaitingStubs(pending) | SessionState::AwaitingTypeCheck(pending) => pending.repl.tracker(),
             // no repl materialized yet → no tracker to report
             SessionState::Configured(_) => return,
         };
@@ -532,7 +545,7 @@ impl Worker {
                 Some(Ok(os_policy)) => os_policy,
                 Some(Err(err)) => return session_refused(&format!("invalid os_policy: {err}")),
             };
-            #[cfg(not(feature = "type-checking"))]
+            #[cfg(not(any(feature = "type-checking", feature = "host-type-checking")))]
             if configure.type_check {
                 return session_refused(TYPE_CHECKING_UNAVAILABLE);
             }
@@ -585,7 +598,10 @@ impl Worker {
         let config = match &mut self.state {
             SessionState::Configured(config) => config.take(),
             // already materialized (or mid-feed) — nothing to do here
-            SessionState::Ready(_) | SessionState::Suspended(_) | SessionState::AwaitingStubs(_) => return Ok(()),
+            SessionState::Ready(_)
+            | SessionState::Suspended(_)
+            | SessionState::AwaitingStubs(_)
+            | SessionState::AwaitingTypeCheck(_) => return Ok(()),
         };
         let Some(config) = config else {
             return Err(Box::new(protocol_violation("session has not been configured")));
@@ -695,7 +711,7 @@ impl Worker {
             self.state = SessionState::Ready(repl);
             return error_event_from(&error);
         }
-        #[cfg(feature = "type-checking")]
+        #[cfg(any(feature = "type-checking", feature = "host-type-checking"))]
         if type_checked && let Some(state) = &mut self.type_check {
             let imports = scan_imports(&code);
             state.pending_snippet = Some(code.clone());
@@ -739,24 +755,54 @@ impl Worker {
     }
 
     /// Optionally type-checks, injects inputs and executes to the turn-ending event.
+    ///
+    /// A worker that delegates its checks parks the feed instead and asks the host.
     fn start_feed(
         &mut self,
         repl: Box<MontyRepl>,
         checked: CheckedSource<'_>,
         inputs: NamedValues,
         #[cfg_attr(
-            not(feature = "type-checking"),
+            not(any(feature = "type-checking", feature = "host-type-checking")),
             expect(unused_variables, reason = "always false without the type checker")
         )]
         type_checked: bool,
         sink: &mut dyn EventSink,
     ) -> pb::WorkerEvent {
-        #[cfg(feature = "type-checking")]
-        if type_checked && let Some(event) = self.type_check_feed(checked.code()) {
-            self.state = SessionState::Ready(repl);
-            self.discard_pending_snippet();
-            return event;
+        #[cfg(any(feature = "type-checking", feature = "host-type-checking"))]
+        if type_checked {
+            match self.type_check_feed(checked.code()) {
+                CheckOutcome::Clean => {}
+                #[cfg(feature = "type-checking")]
+                CheckOutcome::Rejected(event) => {
+                    self.state = SessionState::Ready(repl);
+                    self.discard_pending_snippet();
+                    return *event;
+                }
+                #[cfg(not(feature = "type-checking"))]
+                CheckOutcome::Host(request) => {
+                    let code = checked.code().to_owned();
+                    self.state = SessionState::AwaitingTypeCheck(Box::new(PendingFeed {
+                        repl,
+                        code,
+                        inputs,
+                        asked: Vec::new(),
+                    }));
+                    return event(pb::worker_event::Kind::HostTypeCheck(*request));
+                }
+            }
         }
+        self.run_feed(repl, checked, inputs, sink)
+    }
+
+    /// Injects inputs and executes a feed that has passed (or skipped) its type check.
+    fn run_feed(
+        &mut self,
+        repl: Box<MontyRepl>,
+        checked: CheckedSource<'_>,
+        inputs: NamedValues,
+        sink: &mut dyn EventSink,
+    ) -> pb::WorkerEvent {
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let result = repl.feed_start_checked(checked, inputs, PrintWriter::Callback(&mut print));
         let event = self.drive(result, &mut print);
@@ -835,6 +881,48 @@ impl Worker {
             }
         };
         self.start_feed(repl, checked, inputs, true, sink)
+    }
+
+    /// Applies the host's answer to a delegated type check: a clean snippet runs, a
+    /// rejected or unchecked one ends the turn without running.
+    fn handle_host_type_check_result(
+        &mut self,
+        result: pb::HostTypeCheckResult,
+        sink: &mut dyn EventSink,
+    ) -> pb::WorkerEvent {
+        if !matches!(self.state, SessionState::AwaitingTypeCheck(_)) {
+            return protocol_violation("HostTypeCheckResult without a feed awaiting its type check");
+        }
+        let Some(outcome) = result.outcome else {
+            return protocol_violation("HostTypeCheckResult has no outcome");
+        };
+        let SessionState::AwaitingTypeCheck(pending) = mem::replace(&mut self.state, SessionState::Configured(None))
+        else {
+            unreachable!("checked above");
+        };
+        let PendingFeed { repl, code, inputs, .. } = *pending;
+        let rejection = match outcome {
+            pb::host_type_check_result::Outcome::Clean(_) => {
+                // already found within the bound on arrival, so this cannot fail
+                return match repl.check_source(&code) {
+                    Ok(checked) => self.run_feed(repl, checked, inputs, sink),
+                    Err(error) => {
+                        self.state = SessionState::Ready(repl);
+                        self.discard_pending_snippet();
+                        error_event_from(&error)
+                    }
+                };
+            }
+            pb::host_type_check_result::Outcome::Diagnostics(diagnostics) => {
+                event(pb::worker_event::Kind::TypingError(pb::TypingError { diagnostics }))
+            }
+            pb::host_type_check_result::Outcome::Error(err) => {
+                protocol_violation(&format!("type checker failed: {err}"))
+            }
+        };
+        self.state = SessionState::Ready(repl);
+        self.discard_pending_snippet();
+        rejection
     }
 
     /// Returns the exception and readies the session after a feed fails before execution.
@@ -942,7 +1030,12 @@ impl Worker {
         // Guard against a corrupt `Complete` state instead of crashing.
         let suspended = matches!(&self.state, SessionState::Suspended(progress)
             if !matches!(progress.as_ref(), ReplProgress::Complete { .. }));
-        if !suspended && !matches!(self.state, SessionState::AwaitingStubs(_)) {
+        if !suspended
+            && !matches!(
+                self.state,
+                SessionState::AwaitingStubs(_) | SessionState::AwaitingTypeCheck(_)
+            )
+        {
             return protocol_violation("AbortFeed without a suspended feed");
         }
         let Some(exception) = abort.exception else {
@@ -955,7 +1048,9 @@ impl Worker {
         let progress = match mem::replace(&mut self.state, SessionState::Configured(None)) {
             SessionState::Suspended(progress) => progress,
             // a feed held for its stubs never started, so there is nothing to unwind
-            SessionState::AwaitingStubs(pending) => return self.fail_pending_feed(*pending, &exc),
+            SessionState::AwaitingStubs(pending) | SessionState::AwaitingTypeCheck(pending) => {
+                return self.fail_pending_feed(*pending, &exc);
+            }
             _ => unreachable!("checked above"),
         };
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
@@ -1033,6 +1128,9 @@ impl Worker {
                     "cannot dump while a feed awaits its module stubs",
                 );
             }
+            SessionState::AwaitingTypeCheck(_) => {
+                return error_event(ExcType::RuntimeError, "cannot dump while a feed awaits its type check");
+            }
             SessionState::Configured(_) => unreachable!("ensure_repl materialized the repl or errored"),
         };
         match dump(&self.script_name, self.type_check.as_ref(), &self.module_stubs, session) {
@@ -1074,7 +1172,7 @@ impl Worker {
             module_stubs,
             mut state,
         } = restored;
-        #[cfg(not(feature = "type-checking"))]
+        #[cfg(not(any(feature = "type-checking", feature = "host-type-checking")))]
         if type_check.is_some() {
             return protocol_violation(TYPE_CHECKING_UNAVAILABLE);
         }
@@ -1265,8 +1363,10 @@ impl Worker {
 
     /// Checks against accumulated stubs and imports, returning an event on failure.
     #[cfg(feature = "type-checking")]
-    fn type_check_feed(&mut self, code: &str) -> Option<pb::WorkerEvent> {
-        let state = self.type_check.as_ref()?;
+    fn type_check_feed(&mut self, code: &str) -> CheckOutcome {
+        let Some(state) = self.type_check.as_ref() else {
+            return CheckOutcome::Clean;
+        };
         let stubs =
             (!state.committed_stubs.is_empty()).then(|| SourceFile::new(&state.committed_stubs, "repl_type_stubs.pyi"));
         let context = TypeCheckContext {
@@ -1275,13 +1375,38 @@ impl Worker {
             prelude: &state.committed_imports,
         };
         let type_checker = self.type_checker.get_or_insert_with(TypeChecker::default);
-        match type_checker.run_with(&SourceFile::new(code, &self.script_name), &context, state.config) {
-            Ok(None) => None,
-            Ok(Some(diagnostics)) => Some(event(pb::worker_event::Kind::TypingError(pb::TypingError {
+        let rejection = match type_checker.run_with(&SourceFile::new(code, &self.script_name), &context, state.config) {
+            Ok(None) => return CheckOutcome::Clean,
+            Ok(Some(diagnostics)) => event(pb::worker_event::Kind::TypingError(pb::TypingError {
                 diagnostics: diagnostics.to_string(),
-            }))),
-            Err(err) => Some(protocol_violation(&format!("type checker failed: {err}"))),
-        }
+            })),
+            Err(err) => protocol_violation(&format!("type checker failed: {err}")),
+        };
+        CheckOutcome::Rejected(Box::new(rejection))
+    }
+
+    /// Builds the host's check request from the same context the local checker would use.
+    #[cfg(all(feature = "host-type-checking", not(feature = "type-checking")))]
+    fn type_check_feed(&mut self, code: &str) -> CheckOutcome {
+        let Some(state) = self.type_check.as_ref() else {
+            return CheckOutcome::Clean;
+        };
+        CheckOutcome::Host(Box::new(pb::HostTypeCheck {
+            code: code.to_owned(),
+            script_name: self.script_name.clone(),
+            stubs: (!state.committed_stubs.is_empty()).then(|| state.committed_stubs.clone()),
+            prelude: state.committed_imports.clone(),
+            module_stubs: self
+                .module_stubs
+                .iter()
+                .map(|stub| pb::host_type_check::ModuleStub {
+                    module: stub.module().to_owned(),
+                    source: stub.source().to_owned(),
+                })
+                .collect(),
+            format: pb::TypeCheckFormat::from(state.config.format) as i32,
+            color: state.config.color,
+        }))
     }
 
     /// Drops all session state, returning to the unconfigured state ready for
@@ -1343,8 +1468,21 @@ pub fn protocol_violation(message: &str) -> pb::WorkerEvent {
     }))
 }
 
-/// Why a worker built without the `type-checking` feature refuses a type-checked session.
-#[cfg(not(feature = "type-checking"))]
+/// What a type check decided, or that the host must decide it.
+#[cfg(any(feature = "type-checking", feature = "host-type-checking"))]
+enum CheckOutcome {
+    /// The snippet may run.
+    Clean,
+    /// The turn-ending event that rejects the snippet.
+    #[cfg(feature = "type-checking")]
+    Rejected(Box<pb::WorkerEvent>),
+    /// The request to hand the host, which runs ty elsewhere.
+    #[cfg(not(feature = "type-checking"))]
+    Host(Box<pb::HostTypeCheck>),
+}
+
+/// Why a worker built without a type checker refuses a type-checked session.
+#[cfg(not(any(feature = "type-checking", feature = "host-type-checking")))]
 const TYPE_CHECKING_UNAVAILABLE: &str = "type checking is not available in this worker";
 
 /// Builds the turn-ending refusal of a `Configure` whose settings are invalid:

@@ -179,6 +179,10 @@ subprocesses:
     (enabled by `monty-runtime`/`monty-wasm-runtime`) pulls in the full `monty`
     interpreter for the `worker` state machine, and `type-checking` adds ty (over half the wasm module's code).
     Without it the worker refuses type-checked sessions; `monty-wasm-runtime --no-default-features` builds that way.
+    `host-type-checking` instead hands each check to the host (`WorkerEvent.host_type_check`, answered by
+    `ClientRequest.host_type_check_result`, both host-internal), so a host can run ty elsewhere; its tests are
+    `cargo test -p monty-proto --features host-type-checking --test host_type_checking`. `monty-type-checking`'s
+    default `checker` feature is ty; without it the crate is only `scan_imports`.
     The remote transport is gRPC for `http(s)://` URLs and WebSocket for `ws(s)://` ones (`monty-pool`'s
     `remote/{grpc,websocket}.rs`, sharing `RemoteWorker`); the WebSocket refusal and close-code contract is in the
     `monty-proto` README, with each `monty_proto::Cause` pinned to a close code. `Cause` is ungated, shared by

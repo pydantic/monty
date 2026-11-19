@@ -193,6 +193,7 @@ miri-test-cases: ## Run library inline tests under miri (particularly relevant f
 .PHONY: test-type-checking
 test-type-checking: ## Run rust tests on monty-type-checking
 	cargo test -p monty-type-checking -p monty-typeshed
+	cargo test -p monty-proto --features host-type-checking --test host_type_checking
 
 .PHONY: test-subprocess
 test-subprocess: ## Run subprocess protocol, worker-mode, and worker-pool tests
@@ -250,6 +251,7 @@ testcov: ## Run Rust tests with coverage, print table, and generate HTML report
 	cargo llvm-cov run --no-report -p monty-datatest --features ref-count-return
 	echo "coverage for `make test-type-checking`"
 	cargo llvm-cov --no-report -p monty-type-checking -p monty-typeshed
+	cargo llvm-cov --no-report -p monty-proto --features host-type-checking --test host_type_checking
 	echo "Generating reports:"
 	cargo llvm-cov report --ignore-filename-regex '(tests/|test_cases/|/tests\.rs$$)'
 	cargo llvm-cov report --html --ignore-filename-regex '(tests/|test_cases/|/tests\.rs$$)'
