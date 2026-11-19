@@ -23,7 +23,10 @@ use monty_types::{
     DEFAULT_MAX_SUSPENSIONS, MontyUuid, SourceRange, bytes_repr,
     unstable::{MontyNode, NodeId},
 };
-use opentelemetry::Value as OtelValue;
+use opentelemetry::{
+    Context, Value as OtelValue,
+    trace::{SpanContext, TraceContextExt as _},
+};
 use tracing::{Span, field::Empty};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -76,7 +79,7 @@ pub(crate) struct Recorder {
     /// the feed suspended and resumable, so it closes only the dump span.
     dump_turn: bool,
     /// One-shot host context consumed when `Configure` starts the root span.
-    adapter_context: Option<TelemetryContext>,
+    adapter_parent: Option<SpanContext>,
     /// Scoped dispatcher installed only while this recorder emits telemetry.
     logfire: Option<Logfire>,
 }
@@ -95,15 +98,15 @@ impl Recorder {
             feed: None,
             session: None,
             dump_turn: false,
-            adapter_context: None,
+            adapter_parent: None,
             logfire: None,
         }
     }
 
     /// Assigns the one-shot host context before checkout sends `Configure`.
     pub(crate) fn set_adapter_context(&mut self, context: TelemetryContext) {
-        self.logfire = Some(context.logfire());
-        self.adapter_context = Some(context);
+        self.logfire = context.scoped_logfire;
+        self.adapter_parent = context.parent;
     }
 
     /// Marks the open session span as one resumed on this worker after its
@@ -118,7 +121,6 @@ impl Recorder {
     /// alone or carried by its first request.
     pub(crate) fn begin_session(&mut self, c: &pb::Configure) {
         let _logfire = self.logfire.clone().map(set_local_logfire);
-        let adapter_parent = self.adapter_context.take().and_then(TelemetryContext::into_parent);
         // a stale session (impossible via the checkout state machine, but
         // cheap to be safe against) is closed by the overwrite
         self.pending = None;
@@ -149,8 +151,8 @@ impl Recorder {
             worker_pid = self.worker_pid.map(i64::from),
         );
         let span = {
-            if let Some(parent) = adapter_parent {
-                let _ = span.set_parent(parent);
+            if let Some(parent) = self.adapter_parent.take() {
+                let _ = span.set_parent(Context::new().with_remote_span_context(parent));
             }
             start_span(span)
         };
@@ -1234,6 +1236,10 @@ fn print_stream(stream: i32) -> &'static str {
     }
 }
 
+#[cfg(test)]
+#[path = "../../tests/telemetry/ambient.rs"]
+mod ambient;
+
 // tests live here rather than in `tests/` because `Recorder` is crate-private:
 // recording is a side effect of the worker, not part of the pool's public API
 #[cfg(test)]
@@ -1276,7 +1282,7 @@ mod tests {
     static INSTALLED: Mutex<Vec<Logfire>> = Mutex::new(Vec::new());
 
     /// A local logfire capturing spans and logs in memory instead of exporting.
-    fn test_logfire() -> (Logfire, InMemorySpanExporter, InMemoryLogExporter) {
+    pub(super) fn test_logfire() -> (Logfire, InMemorySpanExporter, InMemoryLogExporter) {
         let spans = InMemorySpanExporter::default();
         let logs = InMemoryLogExporter::default();
         let logfire = logfire::configure()
@@ -1336,14 +1342,14 @@ mod tests {
         assert_eq!(session.parent_span_id, ambient_context.span().span_context().span_id());
     }
 
-    fn request(kind: pb::client_request::Kind) -> pb::ClientRequest {
+    pub(super) fn request(kind: pb::client_request::Kind) -> pb::ClientRequest {
         pb::ClientRequest {
             kind: Some(kind),
             trace_parent: None,
         }
     }
 
-    fn event(kind: pb::worker_event::Kind) -> pb::WorkerEvent {
+    pub(super) fn event(kind: pb::worker_event::Kind) -> pb::WorkerEvent {
         pb::WorkerEvent {
             kind: Some(kind),
             total_execution_micros: 42,

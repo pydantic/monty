@@ -236,6 +236,12 @@ the way the Python logfire SDK encodes attributes, capped at 64KB per value — 
 `Load`/`Dump` snapshot blobs are recorded by size only. Supplying an SDK is therefore an
 explicit opt-in to recording potentially sensitive values.
 
+Rust hosts can pass `TelemetryContext::ambient()` in the checkout options to record through the
+current dispatcher. This uses the process default on an ordinary worker thread and respects a
+thread-local override. Use `TelemetryContext::for_logfire(handle)` to select a specific pipeline
+on every turn. Both modes accept an explicit trace parent with `with_parent`.
+Omitting the telemetry context disables checkout recording.
+
 The adapter configures a process-global Rust pipeline and returns a handle that creates each
 checkout's serialized parent context. Span and log records are emitted through
 `TelemetryAdapter`. A binding can either receive standard OTLP protobuf batches aggregated by

@@ -428,6 +428,13 @@ assert_eq!(result, MontyObject::int(42));
     identify the host receiver for routed calls and lookups, including class construction via `__call__`.
     Plain calls and lookups carry `None`.
 
+## Pool telemetry
+
+With the `monty-pool` `telemetry` feature, a host that owns the process-wide Logfire pipeline can pass
+`TelemetryContext::ambient()` in its checkout options. Use `TelemetryContext::for_logfire(handle)`
+when the checkout must record to a specific pipeline even if the thread has another dispatcher.
+Both accept a caller span context through `with_parent`.
+
 ## Remote disconnects
 
 `PoolError::Disconnected` retains optional `remote` details with the gRPC status that ended the stream (code and message, plus the server's `RemoteCause` when it sent one), or the transport error.

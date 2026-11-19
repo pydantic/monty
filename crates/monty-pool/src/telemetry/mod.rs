@@ -57,7 +57,7 @@ pub struct TelemetryAdapterHandle {
 #[derive(Clone)]
 pub struct TelemetryContext {
     parent: Option<SpanContext>,
-    logfire: Logfire,
+    scoped_logfire: Option<Logfire>,
 }
 
 impl TelemetryAdapterHandle {
@@ -107,7 +107,7 @@ impl TelemetryAdapterHandle {
                 is_remote,
                 trace_state,
             )),
-            logfire: self.logfire.clone(),
+            scoped_logfire: Some(self.logfire.clone()),
         })
     }
 
@@ -116,7 +116,7 @@ impl TelemetryAdapterHandle {
     pub fn unparented_context(&self) -> TelemetryContext {
         TelemetryContext {
             parent: None,
-            logfire: self.logfire.clone(),
+            scoped_logfire: Some(self.logfire.clone()),
         }
     }
 
@@ -148,7 +148,22 @@ impl TelemetryContext {
     /// in-process ambient span attaches through `tracing`, not W3C fields.
     #[must_use]
     pub fn for_logfire(logfire: Logfire) -> Self {
-        Self { parent: None, logfire }
+        Self {
+            parent: None,
+            scoped_logfire: Some(logfire),
+        }
+    }
+
+    /// Uses the tracing dispatcher and Logfire tracer active on the thread handling each protocol turn.
+    /// A host using the process default can avoid installing a per-turn dispatcher.
+    /// Thread-local overrides apply. Use [`Self::for_logfire`]
+    /// when the checkout must always use a specific pipeline.
+    #[must_use]
+    pub const fn ambient() -> Self {
+        Self {
+            parent: None,
+            scoped_logfire: None,
+        }
     }
 
     /// Parents this checkout's session to `parent` while retaining its recorder.
@@ -161,11 +176,6 @@ impl TelemetryContext {
 }
 
 impl TelemetryContext {
-    /// Returns the configured recorder used while processing this checkout.
-    pub(crate) fn logfire(&self) -> Logfire {
-        self.logfire.clone()
-    }
-
     /// W3C `traceparent` (and `tracestate`, when non-empty) headers naming the
     /// propagated span, as a remote worker's stream metadata; empty
     /// when the host captured no span.
@@ -185,12 +195,6 @@ impl TelemetryContext {
             headers.push(("tracestate".to_owned(), tracestate));
         }
         headers
-    }
-
-    /// Converts the propagated span into its OTel parent context.
-    pub(crate) fn into_parent(self) -> Option<Context> {
-        self.parent
-            .map(|parent| Context::new().with_remote_span_context(parent))
     }
 }
 
