@@ -13,7 +13,7 @@ use smallvec::smallvec;
 
 use crate::{
     annotations,
-    builtins::Builtins,
+    builtins::{Builtins, BuiltinsFunctionsExt},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -1325,6 +1325,11 @@ impl Value {
                     Some(value) => Ok(CallResult::Value(value)),
                     None => Err(t.attribute_error(attr, vm)),
                 };
+            }
+            Self::Builtin(Builtins::Function(func)) if attr.as_str(vm.interns) == "__text_signature__" => {
+                if let Some(signature) = func.signature() {
+                    return Ok(CallResult::Value(allocate_string(signature.text_signature, vm.heap)));
+                }
             }
             // A plain `def` has its PEP 649 attributes and nothing else.
             Self::DefFunction(func_id) => {

@@ -6,7 +6,9 @@ use std::{mem, slice, vec::IntoIter};
 
 pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
 pub(crate) use bind_python::Signature;
-pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg, is_long_int, long_int};
+pub(crate) use from_value::{
+    ArgErrCtx, DefaultedStringArg, FromValue, FromValueFail, IndexArg, LaxBool, StrArg, is_long_int, long_int,
+};
 pub(crate) use monty_macros::FromArgs;
 use monty_types::{
     CallArgs,
@@ -24,6 +26,12 @@ use crate::{
     types::{Dict, dict::DictIntoIter},
     value::{EitherStr, Value},
 };
+
+/// Shared by the native call adapter and callable attribute lookup.
+pub(crate) struct NativeSignature {
+    pub binding: ParamSpec,
+    pub text_signature: &'static str,
+}
 
 /// A native Python signature whose extracted fields own their heap references.
 pub(crate) trait FromArgs: Sized + for<'h> DropWithContext<VM<'h>> {

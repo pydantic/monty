@@ -582,7 +582,7 @@ fn call_str_method_impl<'h>(
         StaticStrings::Partition => str_partition(s, args, vm),
         StaticStrings::Rpartition => str_rpartition(s, args, vm),
         // Replace/modify methods
-        StaticStrings::Replace => str_replace(s, args, vm),
+        StaticStrings::Replace => str_replace(s, vm, args),
         StaticStrings::Center => str_center(s, args, vm),
         StaticStrings::Ljust => str_ljust(s, args, vm),
         StaticStrings::Rjust => str_rjust(s, args, vm),
@@ -1591,54 +1591,24 @@ fn str_rpartition<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunRes
 ///
 /// Returns a copy with all occurrences of substring old replaced by new.
 /// If count is given, only the first count occurrences are replaced.
-fn str_replace<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let (old, new, count) = parse_replace_args("str.replace", args, vm)?;
+#[monty_macros::native_signature(typeshed = "str.replace")]
+fn str_replace<'h>(s: &PyStr<'h>, vm: &mut VM<'h>, args: &ReplaceArgs) -> RunResult<Value> {
+    let old = args.old.as_str(vm);
+    let new = args.new.as_str(vm);
+    let count = args.count.0;
     let s = s.as_str(vm);
 
     check_replace_size(s.len(), old.len(), new.len(), count, &vm.heap.tracker)?;
 
     let result = if count < 0 {
-        s.replace(&old, &new)
+        s.replace(old, new)
     } else {
         // Safe cast: we've checked count >= 0
         let n = usize::try_from(count).unwrap_or(usize::MAX);
-        s.replacen(&old, &new, n)
+        s.replacen(old, new, n)
     };
 
     Ok(allocate_string(result, vm.heap))
-}
-
-/// Parses arguments for the replace method.
-///
-/// Supports both positional and keyword arguments for count (Python 3.13+).
-fn parse_replace_args(_method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<(String, String, i64)> {
-    let ReplaceArgs { old, new, count } = ReplaceArgs::from_args(args, vm)?;
-    defer_drop!(old, vm);
-    defer_drop!(new, vm);
-    defer_drop!(count, vm);
-
-    let old_s = extract_string_arg(old, vm)?;
-    let new_s = extract_string_arg(new, vm)?;
-    let count_i = extract_int_arg(count, vm)?;
-    Ok((old_s, new_s, count_i))
-}
-
-/// Argument shape for `str.replace(old, new, count=-1)`.
-///
-/// `old` and `new` are positional-only at the C level — passing them as
-/// kwargs produces CPython's "takes at least 2 positional arguments"
-/// error, which the macro derives from the required pos-only count.
-/// Python 3.13 promoted `count` from positional-only to
-/// positional-or-keyword, hence the un-annotated default.
-#[derive(FromArgs)]
-#[from_args(name = "replace")]
-struct ReplaceArgs {
-    #[from_args(pos_only)]
-    old: Value,
-    #[from_args(pos_only)]
-    new: Value,
-    #[from_args(default = Value::Int(-1))]
-    count: Value,
 }
 
 /// Implements Python's `str.center(width, fillchar?)` method.

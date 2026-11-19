@@ -2585,8 +2585,12 @@ name = "monty-macros"
 version = "1.6.0"
 dependencies = [
  "insta",
+ "monty-typeshed",
  "proc-macro2",
  "quote",
+ "ruff_python_ast",
+ "ruff_python_parser",
+ "ruff_text_size",
  "syn 3.0.9",
 ]
 

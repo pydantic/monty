@@ -1,6 +1,9 @@
 # Tests keyword arguments for print()
 import sys
 
+printer = print
+assert printer.__text_signature__ == r"($module, /, *args, sep=' ', end='\n', file=None, flush=False)"
+
 # === Dynamic sep via **kwargs ===
 dynamic_sep = 's' + 'e' + 'p'
 result = print('left', 'right', **{dynamic_sep: '-'})

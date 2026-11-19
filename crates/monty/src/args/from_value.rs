@@ -223,6 +223,35 @@ impl FromValue for i32 {
     }
 }
 
+/// Preserves whether the caller supplied a value when binding a string default.
+pub(crate) enum DefaultedStringArg {
+    Omitted(&'static str),
+    Supplied(Value),
+}
+
+impl FromValue for DefaultedStringArg {
+    fn from_value(value: Value, _vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        Ok(Self::Supplied(value))
+    }
+
+    fn drop_extracted(self, heap: &mut impl ContainsHeap) {
+        if let Self::Supplied(value) = self {
+            value.drop_with(heap);
+        }
+    }
+}
+
+/// A Python index narrowed to the interpreter's signed size for sequence operations.
+pub(crate) struct IndexArg(pub i64);
+
+impl FromValue for IndexArg {
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        let result = value.as_int(vm);
+        value.drop_with(vm);
+        result.map(Self).map_err(FromValueFail::Raise)
+    }
+}
+
 impl FromValue for i64 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 

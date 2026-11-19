@@ -26,11 +26,11 @@ use syn::{Data, DataStruct, DeriveInput, Expr, Fields, Ident, LitStr, Token, Typ
 
 pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let signature = Signature::parse(input)?;
-    Ok(signature.render())
+    Ok(signature.render(None))
 }
 
 /// Parsed, validated signature for a single struct deriving `FromArgs`.
-struct Signature {
+pub(super) struct Signature {
     struct_ident: Ident,
     /// Function name embedded in error messages (the `{name}()` prefix).
     func_name: String,
@@ -145,7 +145,7 @@ pub(crate) enum DefaultExpr {
 }
 
 impl Signature {
-    fn parse(input: &DeriveInput) -> syn::Result<Self> {
+    pub(super) fn parse(input: &DeriveInput) -> syn::Result<Self> {
         let DeriveInput {
             ident: struct_ident,
             data,
@@ -362,7 +362,7 @@ impl Signature {
         Ok(())
     }
 
-    fn render(&self) -> TokenStream {
+    pub(super) fn render(&self, shared_spec: Option<TokenStream>) -> TokenStream {
         let struct_ident = &self.struct_ident;
         // Dedicated owning-slots struct: holds the raw `Bound` returned by the
         // runtime binder plus one typed `Option` per named field. A `DropGuard`
@@ -375,7 +375,13 @@ impl Signature {
         let slot_idents: Vec<&Ident> = named.iter().map(|f| &f.ident).collect();
         let slot_tys: Vec<&Type> = named.iter().map(|f| &f.ty).collect();
 
-        let spec = self.render_spec(&named);
+        let spec = shared_spec.map_or_else(
+            || {
+                let binding = self.binding_spec();
+                quote! { static __SPEC: crate::args::ParamSpec = #binding; let __spec = &__SPEC; }
+            },
+            |spec| quote! { let __spec = #spec; },
+        );
         let conversions = named.iter().map(|f| self.render_conversion(f));
         let build_fields = self.fields.iter().map(render_build_field);
         let collectors = [self.varargs_idx, self.varkwargs_idx]
@@ -432,13 +438,13 @@ impl Signature {
                     // so the guard's drop at scope exit is a cheap no-op.
                     let mut __guard = crate::heap::DropGuard::new(
                         #slots_struct_ident {
-                            raw: crate::args::Bound::new(&__SPEC),
+                            raw: crate::args::Bound::new(__spec),
                             #(#slot_idents: ::std::option::Option::None,)*
                         },
                         vm,
                     );
                     let (__slots, vm) = __guard.as_parts_mut();
-                    crate::args::bind::<#n_slots>(&__SPEC, &mut __slots.raw, args, vm)?;
+                    crate::args::bind::<#n_slots>(__spec, &mut __slots.raw, args, vm)?;
 
                     #(#conversions)*
                     __slots.raw.finish()?;
@@ -452,13 +458,14 @@ impl Signature {
     }
 
     /// The `static __SPEC: ParamSpec` literal interpreted by the runtime binder.
-    fn render_spec(&self, named: &[&Field]) -> TokenStream {
+    pub(super) fn binding_spec(&self) -> TokenStream {
+        let named: Vec<_> = self.named_fields().collect();
         let func_name = self.func_name.as_str();
         // Under `kwargs_not_supported_yet` no kwarg is ever dispatched (they
         // are all rejected up front), so no field needs a matchable id — this
         // also spares the `StaticStrings` variants those names would require.
         let params = named.iter().map(|f| f.render_param(self.kwargs_not_supported_yet));
-        let family = self.render_family(named);
+        let family = self.render_family(&named);
         let n_positional = named
             .iter()
             .filter(|f| matches!(f.kind, FieldKind::PosOnly | FieldKind::PosOrKeyword))
@@ -482,7 +489,7 @@ impl Signature {
             quote! { ::std::option::Option::None }
         };
         quote! {
-            static __SPEC: crate::args::ParamSpec = crate::args::ParamSpec {
+            crate::args::ParamSpec {
                 func_name: #func_name,
                 family: #family,
                 params: &[#(#params),*],
@@ -495,7 +502,7 @@ impl Signature {
                 vectorcall: #vectorcall,
                 kwargs_not_supported_yet: #kwargs_not_supported_yet,
                 kwarg_error_name: #kwarg_error_name,
-            };
+            }
         }
     }
 

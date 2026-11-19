@@ -11,7 +11,20 @@
 use proc_macro::TokenStream;
 
 mod from_args;
+#[cfg(feature = "native-signatures")]
+mod native_signature;
 mod to_args;
+
+/// Generates a native call adapter and its runtime signature from a Python declaration.
+#[cfg(feature = "native-signatures")]
+#[proc_macro_attribute]
+pub fn native_signature(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let declaration = syn::parse_macro_input!(attr as native_signature::Declaration);
+    let function = syn::parse_macro_input!(item as syn::ItemFn);
+    native_signature::expand(&declaration, function)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
 
 /// Derive `FromArgs::from_args`. Each struct field becomes a Python
 /// parameter; the generated body parses an `ArgValues` and populates the
