@@ -166,6 +166,23 @@ fn mktime_beyond_year_9999_overflows() {
     }
 }
 
+/// `strftime()` and `asctime()` refuse a year past ±9999, which Jiff cannot hold;
+/// glibc and macOS CPython format it. See limitations/time.md.
+#[test]
+fn strftime_beyond_year_9999_raises() {
+    for expr in [
+        "time.strftime('%Y', (10000, 1, 1, 0, 0, 0, 5, 1, 0))",
+        "time.strftime('%Y', (-10000, 1, 1, 0, 0, 0, 5, 1, 0))",
+        "time.asctime((10000, 1, 1, 0, 0, 0, 5, 1, 0))",
+    ] {
+        assert_eq!(
+            run_err(&format!("import time\n{expr}")).lines().last(),
+            Some("ValueError: year out of range"),
+            "{expr}"
+        );
+    }
+}
+
 /// `gmtime()` names its zone `UTC`, as macOS CPython does; glibc CPython says
 /// `GMT`, so the name cannot be asserted in a dual-run fixture. See
 /// limitations/time.md.

@@ -497,10 +497,7 @@ fn string_arg(value: &Value, name: &str, position: usize, vm: &VM<'_>) -> RunRes
 /// formats them as given: `strftime('%a', (…, tm_wday=0, …))` prints `Mon`
 /// even when the date is a Saturday.
 struct TimeFields {
-    /// For a year beyond Jiff's ±9999, its 400-year cycle twin, whose calendar is identical.
     wall: DateTime,
-    /// The real year, which differs from `wall`'s only for such a twin.
-    year: i64,
     /// Kept separately because `struct_time` permits leap seconds, unlike Jiff.
     second: i64,
     weekday: i64,
@@ -517,7 +514,6 @@ impl TimeFields {
     fn zoned(wall: DateTime, zone: MontyTimeZone, isdst: i64) -> Self {
         Self {
             wall,
-            year: i64::from(wall.year()),
             second: i64::from(wall.second()),
             weekday: i64::from(wall.weekday().to_monday_zero_offset()),
             yearday: i64::from(wall.day_of_year()),
@@ -536,7 +532,6 @@ impl TimeFields {
     fn naive(wall: DateTime) -> Self {
         Self {
             wall,
-            year: i64::from(wall.year()),
             second: i64::from(wall.second()),
             weekday: i64::from(wall.weekday().to_monday_zero_offset()),
             yearday: i64::from(wall.day_of_year()),
@@ -560,7 +555,7 @@ impl TimeFields {
             self.wall.hour(),
             self.wall.minute(),
             self.second,
-            self.year
+            self.wall.year()
         )
     }
 
@@ -579,7 +574,7 @@ impl TimeFields {
     }
 
     /// Substitutes stored weekday, year-day and second fields, including leap
-    /// seconds and wide years that Jiff cannot represent. Clock aliases use the same fields.
+    /// seconds that Jiff cannot represent. Clock aliases use the same fields.
     fn rewrite_tuple_directives<'f>(&self, format: &'f str, tracker: &ResourceTracker) -> RunResult<Cow<'f, str>> {
         const DAYS: [(&str, &str); 7] = [
             ("Mon", "Monday"),
@@ -590,16 +585,12 @@ impl TimeFields {
             ("Sat", "Saturday"),
             ("Sun", "Sunday"),
         ];
-        // The years a twin `wall` gets wrong; `%y` and `%g` agree across the cycle.
-        let year = self.year;
-        let year_shift = year - i64::from(self.wall.year());
         let may_have_fields = format.as_bytes().windows(2).any(|pair| {
             pair[0] == b'%'
                 && (matches!(
                     pair[1],
                     b'a' | b'A' | b'j' | b'w' | b'u' | b'U' | b'W' | b'S' | b'c' | b'r' | b'T' | b'X'
-                ) || (year_shift != 0 && matches!(pair[1], b'Y' | b'C' | b'G' | b'F'))
-                    || ((self.second > 59 || year_shift != 0) && matches!(pair[1], b'-' | b'_' | b'0' | b'^' | b'#')))
+                ) || (self.second > 59 && matches!(pair[1], b's' | b'-' | b'_' | b'0' | b'^' | b'#')))
         });
         if !may_have_fields {
             return Ok(Cow::Borrowed(format));
@@ -617,12 +608,9 @@ impl TimeFields {
         while let Some(percent) = rest.find('%') {
             let (before, from_percent) = rest.split_at(percent);
             out.push_str(before)?;
-            // Flags (`%-S`, `%-Y`) cannot pad a leap second or a wide year, so they
-            // take the bare substitution rather than Jiff's clamped second or twin year.
+            // A flagged leap second (`%-S`) takes the bare substitution, not Jiff's clamped 59.
             let (flags, directive) = flagged_conversion(&from_percent[1..])
-                .filter(|&(_, c)| {
-                    (c == 'S' && self.second > 59) || (year_shift != 0 && matches!(c, 'Y' | 'C' | 'G' | 'F'))
-                })
+                .filter(|&(_, c)| c == 'S' && self.second > 59)
                 .map_or((0, from_percent[1..].chars().next()), |(flags, c)| (flags, Some(c)));
             let substitute = match directive {
                 Some('a') => Some(short.to_owned()),
@@ -635,14 +623,11 @@ impl TimeFields {
                 Some('S') => Some(format!("{:02}", self.second)),
                 Some('T' | 'X') => Some(format!("%H:%M:{:02}", self.second)),
                 Some('r') => Some(format!("%I:%M:{:02} %p", self.second)),
-                Some('c') if year_shift != 0 => Some(format!("{short} %b %e %H:%M:{:02} {year}", self.second)),
                 Some('c') => Some(format!("{short} %b %e %H:%M:{:02} %Y", self.second)),
-                Some('Y') if year_shift != 0 => Some(year.to_string()),
-                Some('C') if year_shift != 0 => Some(format!("{:02}", year.div_euclid(100))),
-                Some('G') if year_shift != 0 => {
-                    Some((i64::from(self.wall.date().iso_week_date().year()) + year_shift).to_string())
+                // A leap second runs on into the next minute, as `mktime` counts it.
+                Some('s') if self.second > 59 => {
+                    Some((datetime_type::epoch_duration(self.wall).as_secs() + self.second - 59).to_string())
                 }
-                Some('F') if year_shift != 0 => Some(format!("{year}-%m-%d")),
                 _ => None,
             };
             let consumed = match (substitute, directive) {
@@ -669,7 +654,7 @@ impl TimeFields {
 }
 
 /// The flag length and conversion of a directive with glibc flags but no width
-/// (`-S`, `_Y`), after its `%`.
+/// (`-S`, `_S`), after its `%`.
 fn flagged_conversion(directive: &str) -> Option<(usize, char)> {
     let flags = directive
         .find(|c| !matches!(c, '-' | '_' | '0' | '^' | '#'))
@@ -772,11 +757,10 @@ fn time_fields(value: &Value, name: &str, vm: &mut VM<'_>) -> RunResult<TimeFiel
     if (60..=61).contains(&civil_items[5]) {
         civil_items[5] = 59;
     }
-    // The Gregorian calendar repeats every 400 years, so a year Jiff cannot hold
-    // formats from its twin, with the year directives substituted back.
-    let year = civil_items[0];
-    if !(-9999..=9999).contains(&year) && i32::try_from(year).is_ok() {
-        civil_items[0] = 2000 + year.rem_euclid(400);
+    // Jiff holds years to ±9999, where CPython's platform formatting goes further
+    // (see limitations/time.md); a year outside a C `int` keeps CPython's overflow.
+    if !(-9999..=9999).contains(&items[0]) && i32::try_from(items[0]).is_ok() {
+        return Err(ExcType::time_field_out_of_range("year"));
     }
     let wall = naive_from_time_tuple(&civil_items)?;
     // CPython's `checktm`, which `mktime` skips: a weekday below -1 goes
@@ -793,7 +777,6 @@ fn time_fields(value: &Value, name: &str, vm: &mut VM<'_>) -> RunResult<TimeFiel
     let zone = own_zone.or_else(|| tuple_zone(i32::from(wall.year()), isdst, vm));
     Ok(TimeFields {
         wall,
-        year,
         second: items[5],
         weekday: items[6],
         yearday: items[7].max(1),
@@ -843,7 +826,7 @@ fn time_tuple_parts(value: &Value, name: &str, vm: &VM<'_>) -> RunResult<([i64; 
 
 /// The wall clock a time tuple's first six fields denote, with CPython's
 /// per-field `ValueError` for one out of range. A wall clock past Jiff's ±9999
-/// raises `mktime`'s `OverflowError`; `time_fields` keeps formatting from reaching it.
+/// raises `mktime`'s `OverflowError`; `time_fields` rejects such a year first.
 fn naive_from_time_tuple(items: &[i64; 9]) -> RunResult<DateTime> {
     const RANGES: [(&str, i64, i64); 5] = [
         ("month", 1, 12),
