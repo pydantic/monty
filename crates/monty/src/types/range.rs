@@ -13,7 +13,6 @@ use monty_macros::py_signature;
 use num_integer::div_ceil;
 
 use crate::{
-    args::ArgPosIter,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
@@ -117,27 +116,22 @@ impl Range {
     /// - `range(start, stop)` - range from start to stop
     /// - `range(start, stop, step)` - range with custom step
     #[py_signature("range(start, stop=..., step=..., /)")]
-    pub fn init(vm: &mut VM<'_>, pos_args: &ArgPosIter) -> RunResult<Value> {
-        let range = match pos_args.as_slice() {
-            [first_arg] => {
-                let stop = first_arg.as_int(vm)?;
-                Self::from_stop(stop)
-            }
-            [first_arg, second_arg] => {
-                let start = first_arg.as_int(vm)?;
-                let stop = second_arg.as_int(vm)?;
-                Self::from_start_stop(start, stop)
-            }
-            [first_arg, second_arg, third_arg] => {
-                let start = first_arg.as_int(vm)?;
-                let stop = second_arg.as_int(vm)?;
-                let step = third_arg.as_int(vm)?;
+    pub fn init(vm: &mut VM<'_>, args: &RangeArgs) -> RunResult<Value> {
+        let RangeArgs { start, stop, step } = args;
+        let first = start.as_int(vm)?;
+        let range = if let Some(stop) = stop {
+            let stop = stop.as_int(vm)?;
+            if let Some(step) = step {
+                let step = step.as_int(vm)?;
                 if step == 0 {
                     return Err(ExcType::value_error_range_step_zero());
                 }
-                Self::new(start, stop, step)
+                Self::new(first, stop, step)
+            } else {
+                Self::from_start_stop(first, stop)
             }
-            _ => unreachable!("arity checked by signature"),
+        } else {
+            Self::from_stop(first)
         };
 
         Ok(Value::Ref(vm.heap.allocate(HeapData::Range(range))))

@@ -11,7 +11,6 @@ use smallvec::SmallVec;
 
 use super::value_to_float;
 use crate::{
-    args::ArgValues,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
@@ -20,16 +19,12 @@ use crate::{
     value::Value,
 };
 
-/// Coordinates remain owned until all conversions have succeeded.
-#[py_signature("hypot(*coordinates)")]
-struct HypotArgs;
-
 /// Computes a norm without overflowing intermediate squares.
-pub(super) fn hypot(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let args = args.reject_kwargs("math.hypot", vm.heap)?;
-    let HypotArgs { coordinates } = HypotArgs::from_args(args, vm)?;
-    defer_drop!(coordinates, vm);
+#[py_signature("hypot(*coordinates)", error_name = "math.hypot")]
+pub(super) fn hypot(vm: &mut VM<'_>, args: &HypotArgs) -> RunResult<Value> {
+    let HypotArgs { coordinates } = args;
     let mut values = coordinates
+        .as_slice()
         .iter()
         .map(|value| value_to_float(value, vm).map(f64::abs))
         .collect::<RunResult<SmallVec<[f64; 16]>>>()?;

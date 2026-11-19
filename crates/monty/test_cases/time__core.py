@@ -76,7 +76,7 @@ for _args, _kwargs, _msg in [
         _t.isoformat(*_args, **_kwargs)
         assert False, 'expected TypeError'
     except TypeError as e:
-        assert 'argument' in str(e)
+        assert str(e) == _msg
 
 # === equality ===
 assert time(12, 30) == time(12, 30, 0, 0)
@@ -185,25 +185,37 @@ try:
     time(1, 2, 3, 4, None, 5)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        'time() takes at most 5 positional arguments (6 given)',
+        'function takes at most 5 positional arguments (6 given)',
+    )
 
 try:
     time(1, 2, 3, 4, None, 5, 6)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        'time() takes at most 5 positional arguments (7 given)',
+        'function takes at most 6 arguments (7 given)',
+    )
 
 try:
     time(1, hour=2)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'hour'" in str(e)
+    assert str(e) in (
+        "time() got multiple values for argument 'hour'",
+        "argument for function given by name ('hour') and position (1)",
+    )
 
 try:
     time(0, foo=1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'foo'" in str(e)
+    assert str(e) in (
+        "time() got an unexpected keyword argument 'foo'",
+        "this function got an unexpected keyword argument 'foo'",
+    )
 
 try:
     time(1.5)
@@ -277,13 +289,16 @@ try:
     time(1).strftime()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'format'" in str(e)
+    assert str(e) in (
+        "strftime() missing 1 required positional argument: 'format'",
+        "strftime() missing required argument 'format' (pos 1)",
+    )
 
 try:
     time(1).strftime('%H', '%M')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) == 'strftime() takes at most 1 argument (2 given)'
 
 try:
     time(1).strftime(5)

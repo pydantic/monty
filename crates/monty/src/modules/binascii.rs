@@ -6,7 +6,7 @@
 //! (`b2a_uu`/`a2b_uu`), the quoted-printable pair (`b2a_qp`/`a2b_qp`) and the
 //! two checksums `crc32` and `crc_hqx`.
 //!
-//! The byte-level codecs are shared with [`super::base64`].
+//! The base64 codec and byte-input helpers are shared with [`super::base64`].
 
 use monty_macros::py_signature;
 use monty_types::ResourceTracker;

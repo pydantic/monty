@@ -68,12 +68,15 @@ try:
     D(1).quantize()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'exp'" in str(e)
+    assert str(e) in (
+        "function() missing 1 required positional argument: 'exp'",
+        "function missing required argument 'exp' (pos 1)",
+    )
 try:
     D(1).quantize(D(1), None, None, None)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in ('function() takes at most 3 arguments (4 given)', 'function takes at most 3 arguments (4 given)')
 try:
     D(1).quantize(D(1), context=5)
     assert False, 'expected TypeError'
@@ -304,7 +307,10 @@ try:
     D(1).compare()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'other'" in str(e)
+    assert str(e) in (
+        "function() missing 1 required positional argument: 'other'",
+        "function missing required argument 'other' (pos 1)",
+    )
 try:
     D(1).sqrt(1)
     assert False, 'expected TypeError'
@@ -394,7 +400,7 @@ try:
     D(1, 2, 3)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in ('Decimal() takes at most 2 arguments (3 given)', 'function takes at most 2 arguments (3 given)')
 try:
     D('1', 5)
     assert False, 'expected TypeError'

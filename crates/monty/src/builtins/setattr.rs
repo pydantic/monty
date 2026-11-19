@@ -4,7 +4,6 @@ use monty_macros::py_signature;
 use monty_types::ExcType;
 
 use crate::{
-    args::ArgPosIter,
     bytecode::VM,
     exception_private::{RunResult, SimpleException},
     value::Value,
@@ -21,10 +20,8 @@ use crate::{
 /// setattr(obj, 'name', 'foo') # Set obj.name = 'foo'
 /// ```
 #[py_signature("setattr(object, name, value, /)")]
-pub fn builtin_setattr(vm: &mut VM<'_>, positional: &ArgPosIter) -> RunResult<Value> {
-    let [object, name, value] = positional.as_slice() else {
-        unreachable!("arity checked by signature")
-    };
+pub fn builtin_setattr(vm: &mut VM<'_>, args: &SetattrArgs) -> RunResult<Value> {
+    let SetattrArgs { object, name, value } = args;
 
     let Some(name) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
         return Err(SimpleException::new_msg(

@@ -169,7 +169,8 @@ pub(crate) fn getcontext(vm: &mut VM<'_>) -> RunResult<Value> {
 
 /// `decimal.setcontext(context)`.
 #[py_signature("setcontext(context, /)", error_name = "_decimal.setcontext")]
-pub(crate) fn setcontext(vm: &mut VM<'_>, context: &Value) -> RunResult<Value> {
+pub(crate) fn setcontext(vm: &mut VM<'_>, args: &SetcontextArgs) -> RunResult<Value> {
+    let SetcontextArgs { context } = args;
     let id = as_context(context, vm).ok_or_else(|| ExcType::type_error("argument must be a context"))?;
     set_current(vm, id);
     Ok(Value::None)
@@ -231,7 +232,8 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ContextArgs) -> RunResult<Value> {
 
 /// `decimal.IEEEContext(bits)`: the context of an IEEE 754 decimal interchange format.
 #[py_signature("IEEEContext(bits, /)")]
-pub(crate) fn ieee_context(vm: &mut VM<'_>, bits: &Value) -> RunResult<Value> {
+pub(crate) fn ieee_context(vm: &mut VM<'_>, args: &IeeeContextArgs) -> RunResult<Value> {
+    let IeeeContextArgs { bits } = args;
     let bits = match bits {
         Value::Int(n) => *n,
         Value::Bool(b) => i64::from(*b),

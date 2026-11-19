@@ -64,14 +64,16 @@ try:
     itertools.count(1, 2, 3)
     assert False, 'expected TypeError for too many count arguments'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) == 'count() takes at most 2 arguments (3 given)'
 
-# arity is counted over positionals AND keywords together
 try:
     itertools.count(1, 2, step=3)
     assert False, 'expected TypeError for count arity over the total'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) in (
+        "count() got multiple values for argument 'step'",
+        'count() takes at most 2 arguments (3 given)',
+    )
 
 try:
     itertools.count(bad=1)
@@ -141,23 +143,31 @@ try:
     itertools.repeat()
     assert False, 'expected TypeError for missing repeat object'
 except TypeError as exc:
-    assert "'object'" in str(exc)
+    assert str(exc) in (
+        "repeat() missing 1 required positional argument: 'object'",
+        "repeat() missing required argument 'object' (pos 1)",
+    )
 
-# a missing required argument is reported before an unexpected keyword
 try:
     itertools.repeat(bad=1)
-    assert False, 'expected TypeError for missing repeat object'
+    assert False, 'expected TypeError for invalid repeat keyword'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) in (
+        "repeat() got an unexpected keyword argument 'bad'",
+        "repeat() missing required argument 'object' (pos 1)",
+    )
 
 try:
     itertools.repeat(1, 2, 3)
     assert False, 'expected TypeError for too many repeat arguments'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) == 'repeat() takes at most 2 arguments (3 given)'
 
 try:
     itertools.repeat(9, 'z', times=1)
     assert False, 'expected TypeError for repeat arity over the total'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) in (
+        "repeat() got multiple values for argument 'times'",
+        'repeat() takes at most 2 arguments (3 given)',
+    )

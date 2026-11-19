@@ -218,12 +218,15 @@ try:
     os.path.splitroot()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'p'" in str(e)
+    assert str(e) in (
+        "_path_splitroot_ex() missing 1 required positional argument: 'p'",
+        "_path_splitroot_ex() missing required argument 'p' (pos 1)",
+    )
 try:
     os.path.splitroot('a', 'b')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) == '_path_splitroot_ex() takes at most 1 argument (2 given)'
 
 # === isabs / normcase ===
 assert os.path.isabs('') == False
@@ -289,17 +292,23 @@ try:
     os.path.normpath()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'path'" in str(e)
+    assert str(e) in (
+        "_path_normpath() missing 1 required positional argument: 'path'",
+        "_path_normpath() missing required argument 'path' (pos 1)",
+    )
 try:
     os.path.normpath('a', 'b')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) == '_path_normpath() takes at most 1 argument (2 given)'
 try:
     os.path.normpath(path='a', x='b')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        "_path_normpath() got an unexpected keyword argument 'x'",
+        '_path_normpath() takes at most 1 keyword argument (2 given)',
+    )
 
 # === abspath ===
 # relative inputs resolve against the working directory on both engines

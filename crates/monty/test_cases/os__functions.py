@@ -42,18 +42,24 @@ try:
     os.fspath()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'path'" in str(e)
+    assert str(e) in (
+        "fspath() missing 1 required positional argument: 'path'",
+        "fspath() missing required argument 'path' (pos 1)",
+    )
 try:
     os.fspath('a', 'b')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) == 'fspath() takes at most 1 argument (2 given)'
 try:
     # no positionals at all pivots the wording to "keyword argument"
     os.fspath(path='a', foo=1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        "fspath() got an unexpected keyword argument 'foo'",
+        'fspath() takes at most 1 keyword argument (2 given)',
+    )
 
 # === listdir argument errors ===
 try:
@@ -83,12 +89,15 @@ try:
     os.listdir('.', '.')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) == 'listdir() takes at most 1 argument (2 given)'
 try:
     os.listdir('.', foo=1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        "listdir() got an unexpected keyword argument 'foo'",
+        'listdir() takes at most 1 argument (2 given)',
+    )
 try:
     os.listdir(foo=1)
     assert False, 'expected TypeError'
@@ -98,14 +107,20 @@ try:
     os.listdir(path='.', foo=1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        "listdir() got an unexpected keyword argument 'foo'",
+        'listdir() takes at most 1 keyword argument (2 given)',
+    )
 
 # === stat argument errors ===
 try:
     os.stat()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'path'" in str(e)
+    assert str(e) in (
+        "stat() missing 1 required positional argument: 'path'",
+        "stat() missing required argument 'path' (pos 1)",
+    )
 try:
     os.stat(1.5)
     assert False, 'expected TypeError'
@@ -144,18 +159,27 @@ try:
     os.stat(foo=1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        "stat() got an unexpected keyword argument 'foo'",
+        "stat() missing required argument 'path' (pos 1)",
+    )
 try:
     os.stat('.', True)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        'stat() takes at most 1 positional argument (2 given)',
+        'stat() takes exactly 1 positional argument (2 given)',
+    )
 try:
     # the "(N given)" figure counts positionals only, not keywords
     os.stat('.', 1, dir_fd=None)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        'stat() takes at most 1 positional argument (2 given)',
+        'stat() takes exactly 1 positional argument (2 given)',
+    )
 try:
     os.stat('.', dir_fd=2**100)
     assert False, 'expected OverflowError'
@@ -170,19 +194,28 @@ try:
     os.stat('.', 1, 2, 3)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        'stat() takes at most 1 positional argument (4 given)',
+        'stat() takes at most 3 arguments (4 given)',
+    )
 try:
     os.stat('.', path='.')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'path'" in str(e)
+    assert str(e) in (
+        "stat() got multiple values for argument 'path'",
+        "argument for stat() given by name ('path') and position (1)",
+    )
 
 # === mkdir argument errors ===
 try:
     os.mkdir()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'path'" in str(e)
+    assert str(e) in (
+        "mkdir() missing 1 required positional argument: 'path'",
+        "mkdir() missing required argument 'path' (pos 1)",
+    )
 try:
     os.mkdir(1.5)
     assert False, 'expected TypeError'
@@ -208,12 +241,15 @@ try:
     os.mkdir('a', 1, 2)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) == 'mkdir() takes at most 2 positional arguments (3 given)'
 try:
     os.mkdir('a', 1, 2, 3)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        'mkdir() takes at most 2 positional arguments (4 given)',
+        'mkdir() takes at most 3 arguments (4 given)',
+    )
 try:
     os.mkdir(1.5, foo=1)
     assert False, 'expected TypeError'
@@ -260,7 +296,10 @@ try:
     os.remove()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'path'" in str(e)
+    assert str(e) in (
+        "remove() missing 1 required positional argument: 'path'",
+        "remove() missing required argument 'path' (pos 1)",
+    )
 try:
     os.remove(1.5)
     assert False, 'expected TypeError'
@@ -270,7 +309,10 @@ try:
     os.remove('a', 'b')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        'remove() takes at most 1 positional argument (2 given)',
+        'remove() takes exactly 1 positional argument (2 given)',
+    )
 try:
     os.unlink(1.5)
     assert False, 'expected TypeError'
@@ -280,7 +322,10 @@ try:
     os.unlink('a', 'b')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        'unlink() takes at most 1 positional argument (2 given)',
+        'unlink() takes exactly 1 positional argument (2 given)',
+    )
 try:
     os.rmdir(1.5)
     assert False, 'expected TypeError'
@@ -290,19 +335,28 @@ try:
     os.rmdir('a', 'b')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        'rmdir() takes at most 1 positional argument (2 given)',
+        'rmdir() takes exactly 1 positional argument (2 given)',
+    )
 
 # === rename / replace argument errors ===
 try:
     os.rename()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'src'" in str(e)
+    assert str(e) in (
+        "rename() missing 2 required positional arguments: 'src' and 'dst'",
+        "rename() missing required argument 'src' (pos 1)",
+    )
 try:
     os.rename('a')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'dst'" in str(e)
+    assert str(e) in (
+        "rename() missing 1 required positional argument: 'dst'",
+        "rename() missing required argument 'dst' (pos 2)",
+    )
 try:
     os.rename(1.5, 'b')
     assert False, 'expected TypeError'
@@ -317,12 +371,18 @@ try:
     os.rename('a', 'b', 'c')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        'rename() takes at most 2 positional arguments (3 given)',
+        'rename() takes exactly 2 positional arguments (3 given)',
+    )
 try:
     os.rename('a', 'b', 'c', src_dir_fd=None)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        'rename() takes at most 2 positional arguments (3 given)',
+        'rename() takes exactly 2 positional arguments (3 given)',
+    )
 try:
     os.rename('/no-a', '/no-b', src_dir_fd=2**100)
     assert False, 'expected OverflowError'
@@ -332,17 +392,26 @@ try:
     os.rename('a', 'b', dst='c')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'dst'" in str(e)
+    assert str(e) in (
+        "rename() got multiple values for argument 'dst'",
+        "argument for rename() given by name ('dst') and position (2)",
+    )
 try:
     os.replace()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'src'" in str(e)
+    assert str(e) in (
+        "replace() missing 2 required positional arguments: 'src' and 'dst'",
+        "replace() missing required argument 'src' (pos 1)",
+    )
 try:
     os.replace('a')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'dst'" in str(e)
+    assert str(e) in (
+        "replace() missing 1 required positional argument: 'dst'",
+        "replace() missing required argument 'dst' (pos 2)",
+    )
 try:
     os.replace(1.5, 'b')
     assert False, 'expected TypeError'
@@ -352,7 +421,10 @@ try:
     os.replace('a', 'b', 'c')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        'replace() takes at most 2 positional arguments (3 given)',
+        'replace() takes exactly 2 positional arguments (3 given)',
+    )
 
 # === urandom argument errors raise before any host call ===
 try:

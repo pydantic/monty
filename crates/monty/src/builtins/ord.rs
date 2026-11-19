@@ -13,7 +13,8 @@ use crate::{
 
 /// Returns the code point of a single character, or the value of a single byte.
 #[py_signature("ord(c: str | bytes, /) -> int", convert(c = Ordinal))]
-pub fn builtin_ord(vm: &mut VM<'_>, c: &Ordinal) -> RunResult<Value> {
+pub fn builtin_ord(vm: &mut VM<'_>, args: &OrdArgs) -> RunResult<Value> {
+    let OrdArgs { c } = args;
     Ok(Value::Int(i64::from(c.0)))
 }
 

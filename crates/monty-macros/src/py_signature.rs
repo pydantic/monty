@@ -12,7 +12,7 @@ use syn::{
     parse_quote,
 };
 
-use crate::from_args::{Signature, parse_field_attrs};
+use crate::from_args::Signature;
 
 pub(super) struct Declaration {
     signature: LitStr,
@@ -139,21 +139,8 @@ impl Binding {
 
 pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Result<TokenStream> {
     let def = parse_function(declaration)?;
-    let name = def.name.as_str();
     let error = |message: &str| syn::Error::new(declaration.signature.span(), message);
     let binding = declaration.bind.unwrap_or_default();
-    if let Some(adapter) = positional_iterator(declaration, &def, &mut function)? {
-        return Ok(adapter);
-    }
-    if let Some(param) = infer_single_argument(declaration, &def, &function) {
-        if declaration.bind.is_some() {
-            return Err(error("bind requires an argument struct or iterator"));
-        }
-        return single_positional_adapter(function, declaration, param, &callable_name(declaration, name));
-    }
-    if let Some(adapter) = two_positional_adapter(declaration, &def, &mut function)? {
-        return Ok(adapter);
-    }
     let bound = function.sig.inputs.iter_mut().find_map(|input| {
         let FnArg::Typed(arg) = input else { return None };
         matches!(arg.pat.as_ref(), Pat::Ident(p) if p.ident == "args").then_some(arg)
@@ -165,7 +152,7 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
             )
         {
             if declaration.bind.is_some() {
-                return Err(error("bind requires an argument struct or iterator"));
+                return Err(error("bind requires an argument struct"));
             }
             // Validate the signature's options before choosing the no-argument adapter.
             arguments(declaration, &def, None)?;
@@ -199,15 +186,15 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
     }
     let (bound_struct, implementation) = arguments(declaration, &def, Some(&bound_name))?;
     let guard = binding.guard();
-    let body = function.block.stmts;
-    function.block = Box::new(parse_quote!({
+    let body = &function.block.stmts;
+    *function.block = parse_quote!({
         #bound_struct
         #implementation
         let __bound = #bound_name::from_args(__py_args, vm)?;
         #guard
         let #pat: #ty = __bound;
         #(#body)*
-    }));
+    });
     bound.pat = parse_quote!(__py_args);
     bound.ty = parse_quote!(crate::args::ArgValues);
     Ok(quote!(#function))
@@ -314,61 +301,6 @@ fn raw_positional(declaration: &Declaration, def: &StmtFunctionDef) -> bool {
             .all(|p| matches!(p.default(), None | Some(Expr::EllipsisLiteral(_))))
 }
 
-/// Positional iterators retain the inline storage when a handler needs the whole slice.
-fn positional_iterator(
-    declaration: &Declaration,
-    def: &StmtFunctionDef,
-    function: &mut ItemFn,
-) -> syn::Result<Option<TokenStream>> {
-    let Some(arg) = function.sig.inputs.iter_mut().find_map(|input| {
-        let FnArg::Typed(arg) = input else { return None };
-        let ty = match arg.ty.as_ref() {
-            Type::Reference(r) => r.elem.as_ref(),
-            ty => ty,
-        };
-        matches!(ty, Type::Path(p) if p.path.is_ident("ArgPosIter")).then_some(arg)
-    }) else {
-        return Ok(None);
-    };
-    let params = &def.parameters;
-    let receiver = params.posonlyargs.first().is_some_and(|p| p.name().as_str() == "self");
-    let positional = &params.posonlyargs[usize::from(receiver)..];
-    if !raw_positional(declaration, def)
-        || declaration.reject_keywords
-        || (declaration.owner.is_some() && (!receiver || declaration.error_name.is_some()))
-        || (receiver && params.posonlyargs[0].default().is_some())
-        || (params.vararg.is_some() && !positional.is_empty())
-    {
-        return Err(syn::Error::new(
-            declaration.signature.span(),
-            "an argument iterator requires raw positional-only parameters or a single *args",
-        ));
-    }
-    let name = callable_name(declaration, def.name.as_str());
-    let bind = if params.vararg.is_some() {
-        quote!(__py_args.into_pos_only(#name, vm.heap)?)
-    } else {
-        let min = positional.iter().take_while(|p| p.default().is_none()).count();
-        let max = positional.len();
-        quote!(__py_args.bind_positional_range(#name, #min, #max, vm.heap)?)
-    };
-    let binding = &arg.pat;
-    let ty = &arg.ty;
-    let mode = declaration.bind.unwrap_or_default();
-    mode.argument_type(ty)?;
-    let guard = mode.guard();
-    let body = &function.block;
-    *function.block = parse_quote!({
-        let __bound = #bind;
-        #guard
-        let #binding: #ty = __bound;
-        #body
-    });
-    arg.ty = parse_quote!(crate::args::ArgValues);
-    arg.pat = parse_quote!(__py_args);
-    Ok(Some(quote!(#function)))
-}
-
 fn arguments(
     declaration: &Declaration,
     def: &StmtFunctionDef,
@@ -396,6 +328,47 @@ fn arguments(
         return Err(error("a bound receiver cannot have an annotation or a default"));
     }
     let receiver = receiver.is_some();
+    let bound_name = named
+        .cloned()
+        .unwrap_or_else(|| format_ident!("{}Args", snake_to_pascal(name)));
+    if declaration.owner.is_some() && declaration.error_name.is_some() {
+        return Err(error("choose either owner or error_name"));
+    }
+    if declaration.owner.is_some() && !receiver {
+        return Err(error("owner requires a positional-only self parameter"));
+    }
+    let qualified_name = callable_name(declaration, name);
+    if let Some(rest) = &params.vararg
+        && params.posonlyargs.len() == usize::from(receiver)
+        && raw_positional(declaration, def)
+        && !declaration.reject_keywords
+    {
+        if rest.annotation.is_some() {
+            return Err(error("typed variadic parameters are unsupported"));
+        }
+        let field = field_name(rest, literal)?;
+        let input = parse_quote! {
+            struct #bound_name {
+                #field: crate::args::ArgPosIter,
+            }
+        };
+        let implementation = quote! {
+            impl #bound_name {
+                #[inline]
+                pub(crate) fn from_args(args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'_>)
+                    -> crate::exception_private::RunResult<Self> {
+                    Ok(Self { #field: args.into_pos_only(#qualified_name, vm.heap)? })
+                }
+            }
+
+            impl<C: crate::heap::ContainsHeap> crate::heap::DropWithContext<C> for #bound_name {
+                fn drop_with(self, heap: &mut C) {
+                    crate::heap::DropWithContext::drop_with(self.#field, heap);
+                }
+            }
+        };
+        return Ok((input, implementation));
+    }
     let mut fields = Vec::new();
     for param in params.posonlyargs.iter().skip(usize::from(receiver)) {
         fields.push(named_field(param, &quote!(pos_only,), declaration)?);
@@ -421,16 +394,6 @@ fn arguments(
         fields.push(quote!(#[from_args(varkwargs)] #ident: crate::args::KwargsValues));
     }
 
-    let bound_name = named
-        .cloned()
-        .unwrap_or_else(|| format_ident!("{}Args", snake_to_pascal(name)));
-    if declaration.owner.is_some() && declaration.error_name.is_some() {
-        return Err(error("choose either owner or error_name"));
-    }
-    if declaration.owner.is_some() && !receiver {
-        return Err(error("owner requires a positional-only self parameter"));
-    }
-    let qualified_name = callable_name(declaration, name);
     let modifiers = &declaration.modifiers;
     let kwarg_error = declaration
         .kwarg_error_name
@@ -509,164 +472,6 @@ fn callable_name(declaration: &Declaration, name: &str) -> String {
             .as_ref()
             .map_or_else(|| name.to_owned(), LitStr::value)
     }
-}
-
-fn single_required_positional(def: &StmtFunctionDef) -> Option<&ParameterWithDefault> {
-    let params = &def.parameters;
-    let [param] = params.posonlyargs.as_slice() else {
-        return None;
-    };
-    (params.iter().count() == 1 && param.default().is_none()).then_some(param)
-}
-
-/// A Rust parameter matching the Python name opts into direct binding. A named args
-/// struct still uses the general binder for the same Python signature.
-fn infer_single_argument<'a>(
-    declaration: &Declaration,
-    def: &'a StmtFunctionDef,
-    function: &ItemFn,
-) -> Option<&'a ParameterWithDefault> {
-    if declaration.reject_keywords
-        || declaration.owner.is_some()
-        || declaration.kwarg_error_name.is_some()
-        || !declaration.modifiers.is_empty()
-    {
-        return None;
-    }
-    let param = single_required_positional(def)?;
-    let mut inputs =
-        function.sig.inputs.iter().filter(
-            |input| !matches!(input, FnArg::Typed(arg) if matches!(&*arg.pat, Pat::Ident(p) if p.ident == "vm")),
-        );
-    let (Some(FnArg::Typed(arg)), None) = (inputs.next(), inputs.next()) else {
-        return None;
-    };
-    let name = param.name().as_str();
-    (matches!(&*arg.pat, Pat::Ident(p) if p.ident == name)
-        && name != "self"
-        && (name != "args" || *arg.ty == parse_quote!(&Value)))
-    .then_some(param)
-}
-
-/// Bind a pair of required positional-only parameters directly from inline storage.
-fn two_positional_adapter(
-    declaration: &Declaration,
-    def: &StmtFunctionDef,
-    function: &mut ItemFn,
-) -> syn::Result<Option<TokenStream>> {
-    let pair: Type = parse_quote!((&Value, &Value));
-    let Some(arg) = function.sig.inputs.iter_mut().find_map(|input| {
-        let FnArg::Typed(arg) = input else { return None };
-        (*arg.ty == pair).then_some(arg)
-    }) else {
-        return Ok(None);
-    };
-    let literal = &declaration.signature;
-    let error = |message| syn::Error::new(literal.span(), message);
-    let params = &def.parameters;
-    let [first, second] = params.posonlyargs.as_slice() else {
-        return Err(error("a direct pair requires two positional-only parameters"));
-    };
-    if !raw_positional(declaration, def)
-        || declaration.reject_keywords
-        || params.vararg.is_some()
-        || first.default().is_some()
-        || second.default().is_some()
-        || first.name().as_str() == "self"
-        || declaration.bind.is_some()
-        || declaration.owner.is_some()
-    {
-        return Err(error("a direct pair requires two raw positional-only arguments"));
-    }
-    let first = field_name(&first.parameter, literal)?;
-    let second = field_name(&second.parameter, literal)?;
-    let ordered: Pat = parse_quote!((#first, #second));
-    let named =
-        matches!(arg.pat.as_ref(), Pat::Ident(p) if p.ident == "args" && p.by_ref.is_none() && p.subpat.is_none());
-    if *arg.pat != ordered && !named {
-        return Err(error("expected args or a pair in signature order"));
-    }
-    let binding = &arg.pat;
-    let name = callable_name(declaration, def.name.as_str());
-    let body = &function.block;
-    *function.block = parse_quote!({
-        let (__first, __second) = __py_args.get_two_positional_args(#name, vm.heap)?;
-        crate::defer_drop!(__first, vm);
-        crate::defer_drop!(__second, vm);
-        let #binding = (__first, __second);
-        #body
-    });
-    arg.pat = parse_quote!(__py_args);
-    arg.ty = parse_quote!(crate::args::ArgValues);
-    Ok(Some(quote!(#function)))
-}
-
-/// Bind the object with the same arity check and drop guard as a handwritten one-argument builtin.
-fn single_positional_adapter(
-    mut function: ItemFn,
-    declaration: &Declaration,
-    param: &ParameterWithDefault,
-    name: &str,
-) -> syn::Result<TokenStream> {
-    let field = field_name(&param.parameter, &declaration.signature)?;
-    let arg = function
-        .sig
-        .inputs
-        .iter_mut()
-        .find_map(|input| {
-            let FnArg::Typed(arg) = input else { return None };
-            matches!(arg.pat.as_ref(), Pat::Ident(pattern) if pattern.ident == field).then_some(arg)
-        })
-        .ok_or_else(|| {
-            syn::Error::new(
-                field.span(),
-                format!("expected a parameter named `{field}` of type &Value"),
-            )
-        })?;
-    if let Some((unknown, _)) = declaration.converters.iter().find(|(name, _)| name != &field) {
-        return Err(syn::Error::new(unknown.span(), "unknown converter parameter"));
-    }
-    let custom = !declaration.converters.is_empty();
-    let bind = if custom || param.annotation().is_some() {
-        let typed = syn::Field::parse_named.parse2(named_field(param, &quote!(pos_only,), declaration)?)?;
-        let expected = &arg.ty;
-        let ty = &typed.ty;
-        let convert = if let Some(extract) = parse_field_attrs(&typed.attrs)?.extract_with {
-            quote!(#extract(#field, vm, crate::args::ArgErrCtx::Plain)?)
-        } else {
-            quote!(<#ty as crate::args::FromValue>::extract(#field, vm, crate::args::ArgErrCtx::Plain)?)
-        };
-        let scalar = matches!(param.annotation(), Some(Expr::Name(name)) if matches!(name.id.as_str(), "bool" | "c_int" | "i64" | "float"));
-        let guard = match &**expected {
-            Type::Reference(reference) if reference.mutability.is_none() => quote!(crate::defer_drop!(#field, vm);),
-            _ if scalar && !custom => quote!(),
-            _ => {
-                return Err(syn::Error::new_spanned(
-                    expected,
-                    "borrow the converted argument so the binder can release its heap references",
-                ));
-            }
-        };
-        quote!(let #field: #ty = #convert; #guard let #field: #expected = #field;)
-    } else {
-        if !matches!(arg.ty.as_ref(), Type::Reference(reference) if reference.mutability.is_none()
-            && matches!(reference.elem.as_ref(), Type::Path(path) if path.path.is_ident("Value")))
-        {
-            return Err(syn::Error::new_spanned(
-                &arg.ty,
-                "expected &Value for a single positional argument",
-            ));
-        }
-        quote!(crate::defer_drop!(#field, vm);)
-    };
-    *arg.ty = parse_quote!(crate::args::ArgValues);
-    let body = function.block;
-    function.block = Box::new(parse_quote!({
-        let #field = #field.get_one_arg(#name, vm.heap)?;
-        #bind
-        #body
-    }));
-    Ok(quote!(#function))
 }
 
 fn snake_to_pascal(s: &str) -> String {

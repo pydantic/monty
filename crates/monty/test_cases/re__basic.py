@@ -345,14 +345,20 @@ try:
     pattern.sub()
     assert False, 'Pattern.sub() with no args should raise TypeError'
 except TypeError as e:
-    assert "'repl'" in str(e)
+    assert str(e) in (
+        "sub() missing 2 required positional arguments: 'repl' and 'string'",
+        "sub() missing required argument 'repl' (pos 1)",
+    )
 
 # === Pattern.sub() error: missing string ===
 try:
     pattern.sub('X')
     assert False, 'Pattern.sub(repl) should raise TypeError'
 except TypeError as e:
-    assert "'string'" in str(e)
+    assert str(e) in (
+        "sub() missing 1 required positional argument: 'string'",
+        "sub() missing required argument 'string' (pos 2)",
+    )
 
 # === re.sub() with count=0 (replace all) ===
 result = re.sub(r'\d', 'X', '1a2b3c', 0)
@@ -673,13 +679,13 @@ try:
     p.sub('X', 'a1b2', 0, 'extra')
     assert False, 'Pattern.sub with 4 args should raise TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) == 'sub() takes at most 3 arguments (4 given)'
 
 try:
     p.sub('X', 'a1b2', 0, count=1)
     assert False, 'Pattern.sub with positional and keyword count should raise TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in ("sub() got multiple values for argument 'count'", 'sub() takes at most 3 arguments (4 given)')
 
 try:
     p.sub('X', 'a1b2', bogus=1)

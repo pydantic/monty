@@ -263,14 +263,20 @@ try:
     'abc'.replace('a')
     assert False, 'str.replace() missing arg should raise'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        "replace() missing 1 required positional argument: 'new'",
+        'replace() takes at least 2 positional arguments (1 given)',
+    )
 
 # === Positional overflow ===
 try:
     {}.update({1: 2}, {3: 4})
     assert False, 'dict.update too many should raise'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        'update() takes at most 2 positional arguments (3 given)',
+        'update expected at most 1 argument, got 2',
+    )
 
 # === Python: duplicate kw_only via ** unpacking ===
 # When both kwarg sources name the same key, Python's call machinery
@@ -463,19 +469,47 @@ except TypeError as e:
 # === Built-in signatures ===
 # =====================================================================
 
+for call, monty_error, cpython_error in [
+    (
+        lambda: any(iterable=[]),
+        "any() got some positional-only arguments passed as keyword arguments: 'iterable'",
+        'any() takes no keyword arguments',
+    ),
+    (
+        lambda: filter(function=None, iterable=[]),
+        "filter() got some positional-only arguments passed as keyword arguments: 'function'",
+        'filter() takes no keyword arguments',
+    ),
+    (
+        lambda: b'abc'.strip(bytes=b'a'),
+        "bytes.strip() got some positional-only arguments passed as keyword arguments: 'bytes'",
+        'bytes.strip() takes no keyword arguments',
+    ),
+]:
+    try:
+        call()
+    except TypeError as e:
+        assert str(e) == (monty_error if is_monty else cpython_error)
+    else:
+        assert False, 'expected a positional-only argument error'
+
+
 # === sum: positional-only iterable cannot be passed by keyword ===
 try:
     sum(iterable=[1])
     assert False, 'sum(iterable=...) should raise'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        "sum() got some positional-only arguments passed as keyword arguments: 'iterable'",
+        'sum() takes at least 1 positional argument (0 given)',
+    )
 
 # === sum: positional overflow ===
 try:
     sum([1], 1, 1)
     assert False, 'sum with 3 args should raise'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) == 'sum() takes at most 2 arguments (3 given)'
 
 # === sum: unknown kwarg ===
 try:
@@ -489,20 +523,26 @@ try:
     round()
     assert False, 'round() should raise'
 except TypeError as e:
-    assert "'number'" in str(e)
+    assert str(e) in (
+        "round() missing 1 required positional argument: 'number'",
+        "round() missing required argument 'number' (pos 1)",
+    )
 
 try:
     round(ndigits=1)
     assert False, 'round(ndigits=1) should raise'
 except TypeError as e:
-    assert "'number'" in str(e)
+    assert str(e) in (
+        "round() missing 1 required positional argument: 'number'",
+        "round() missing required argument 'number' (pos 1)",
+    )
 
 # === round: positional overflow ===
 try:
     round(1, 2, 3)
     assert False, 'round with 3 args should raise'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) == 'round() takes at most 2 arguments (3 given)'
 
 # === round: unknown kwarg ===
 try:
@@ -522,11 +562,11 @@ for positional, keywords, monty_error, cpython_error in [
     (
         ([1],),
         {'iterable': [2]},
-        "argument for enumerate() given by name ('iterable') and position (1)",
+        "enumerate() got multiple values for argument 'iterable'",
         "'iterable' is an invalid keyword argument for enumerate()",
     ),
     (([1],), {'bogus': 1}, monty_unknown, invalid),
-    ((), {'start': 1, 'bogus': 1, 'iterable': [1]}, 'enumerate() takes at most 2 keyword arguments (3 given)', missing),
+    ((), {'start': 1, 'bogus': 1, 'iterable': [1]}, monty_unknown, missing),
     ((), {'bogus': 1}, monty_unknown, invalid),
     ((), {'start': 1, 'bogus': 2}, monty_unknown, invalid),
     ((), {'bogus': 2, 'start': 1}, monty_unknown, invalid),
@@ -535,7 +575,7 @@ for positional, keywords, monty_error, cpython_error in [
     try:
         enumerate(*positional, **keywords)
     except TypeError as e:
-        assert 'argument' in str(e)
+        assert str(e) == (monty_error if is_monty else cpython_error)
     else:
         assert False, (positional, keywords)
 
@@ -549,7 +589,10 @@ try:
     enumerate([1], bogus=1, worse=2)
     assert False, 'enumerate 1-pos 2-kwarg should raise'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        "enumerate() got an unexpected keyword argument 'bogus'",
+        'enumerate() takes at most 2 arguments (3 given)',
+    )
 
 for index in (1 << 100, -(1 << 100)):
     for call in (lambda i: [0].pop(i), lambda i: itertools.repeat('x', i)):
@@ -758,20 +801,52 @@ for f, name in [
     (bisect.insort_right, 'insort_right'),
 ]:
     cases = [
-        ((), {}, TypeError, name + "() missing required argument 'a' (pos 1)"),
-        (([],), {}, TypeError, name + "() missing required argument 'x' (pos 2)"),
+        (
+            (),
+            {},
+            TypeError,
+            (
+                f"{name}() missing 2 required positional arguments: 'a' and 'x'",
+                f"{name}() missing required argument 'a' (pos 1)",
+            ),
+        ),
+        (
+            ([],),
+            {},
+            TypeError,
+            (
+                f"{name}() missing 1 required positional argument: 'x'",
+                f"{name}() missing required argument 'x' (pos 2)",
+            ),
+        ),
         (([], 1, 0, None, None), {}, TypeError, name + '() takes at most 4 positional arguments (5 given)'),
         (([], 1), {'unknown': 1}, TypeError, name + "() got an unexpected keyword argument 'unknown'"),
-        (([], 1), {'a': []}, TypeError, 'argument for ' + name + "() given by name ('a') and position (1)"),
+        (
+            ([], 1),
+            {'a': []},
+            TypeError,
+            (
+                f"{name}() got multiple values for argument 'a'",
+                f"argument for {name}() given by name ('a') and position (1)",
+            ),
+        ),
         (([], 1), {'lo': 0.5, 'oops': 1}, TypeError, name + "() got an unexpected keyword argument 'oops'"),
-        (([], 1, 0.5), {'lo': 2}, TypeError, 'argument for ' + name + "() given by name ('lo') and position (3)"),
+        (
+            ([], 1, 0.5),
+            {'lo': 2},
+            TypeError,
+            (
+                f"{name}() got multiple values for argument 'lo'",
+                f"argument for {name}() given by name ('lo') and position (3)",
+            ),
+        ),
     ]
     for args, kwargs, error, message in cases:
         try:
             f(*args, **kwargs)
             assert False, 'expected failure'
         except error as exc:
-            assert 'argument' in str(exc)
+            assert str(exc) in (message if isinstance(message, tuple) else (message,))
 
 # === 2-arg fast path error cleanup (refcount safety for heap-allocated objects) ===
 # 1. Error on arg 1 while arg 2 is a freshly allocated heap object:
@@ -793,13 +868,19 @@ try:
     'hello'.replace()
     assert False, 'replace() with 0 args should raise TypeError'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) in (
+        "replace() missing 2 required positional arguments: 'old' and 'new'",
+        'replace() takes at least 2 positional arguments (0 given)',
+    )
 
 try:
     'hello'.replace('a')
     assert False, 'replace() with 1 arg should raise TypeError'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) in (
+        "replace() missing 1 required positional argument: 'new'",
+        'replace() takes at least 2 positional arguments (1 given)',
+    )
 
 # 4. Overflow check for ssize_t count:
 try:

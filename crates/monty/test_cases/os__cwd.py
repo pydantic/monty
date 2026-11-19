@@ -76,16 +76,31 @@ try:
 
     # === chdir errors ===
     for args, kwargs, message in [
-        ((), {}, "chdir() missing required argument 'path' (pos 1)"),
+        (
+            (),
+            {},
+            (
+                "chdir() missing 1 required positional argument: 'path'",
+                "chdir() missing required argument 'path' (pos 1)",
+            ),
+        ),
         (('.', '.'), {}, 'chdir() takes at most 1 argument (2 given)'),
-        (('.',), {'path': '.'}, 'chdir() takes at most 1 argument (2 given)'),
-        ((), {'other': '.'}, "chdir() missing required argument 'path' (pos 1)"),
+        (
+            ('.',),
+            {'path': '.'},
+            ("chdir() got multiple values for argument 'path'", 'chdir() takes at most 1 argument (2 given)'),
+        ),
+        (
+            (),
+            {'other': '.'},
+            ("chdir() got an unexpected keyword argument 'other'", "chdir() missing required argument 'path' (pos 1)"),
+        ),
     ]:
         try:
             os.chdir(*args, **kwargs)
             assert False, 'expected TypeError'
         except TypeError as e:
-            assert 'argument' in str(e)
+            assert str(e) in (message if isinstance(message, tuple) else (message,))
 
     try:
         Path.cwd('unexpected')

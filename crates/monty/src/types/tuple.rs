@@ -28,7 +28,7 @@ use smallvec::SmallVec;
 
 use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
 use crate::{
-    args::{ArgPosIter, ArgValues},
+    args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -559,21 +559,13 @@ impl HeapItem for Tuple {
 /// Returns the index of the first occurrence of value.
 /// Raises ValueError if the value is not found.
 #[py_signature("index(self, value, start=..., stop=..., /)", owner = "tuple")]
-fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, pos_args: &ArgPosIter, vm: &mut VM<'h>) -> RunResult<Value> {
+fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, args: &IndexArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = tuple.get(vm.heap).as_slice().len();
-    let (value, start, end) = match pos_args.as_slice() {
-        [value] => (value, 0, len),
-        [value, start_arg] => {
-            let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
-            (value, start, len)
-        }
-        [value, start_arg, end_arg] => {
-            let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
-            let end = normalize_sequence_index(value_to_i64_bound(end_arg, vm)?, len).max(start);
-            (value, start, end)
-        }
-        _ => unreachable!("arity checked by signature"),
-    };
+    let IndexArgs { value, start, stop } = args;
+    let start_arg = start.as_ref().map(|start| value_to_i64_bound(start, vm)).transpose()?;
+    let end_arg = stop.as_ref().map(|stop| value_to_i64_bound(stop, vm)).transpose()?;
+    let start = start_arg.map_or(0, |start| normalize_sequence_index(start, len));
+    let end = end_arg.map_or(len, |end| normalize_sequence_index(end, len)).max(start);
 
     // Nested short offset searches may never reach an iterator checkpoint.
     vm.heap.tracker.check_time()?;

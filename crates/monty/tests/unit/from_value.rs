@@ -450,7 +450,8 @@ fn optional_bool_distinguishes_omission_from_false() {
 fn borrowed_one_arg_adapter_releases_heap_strings_on_return() {
     const TEXT: &str = "heap-backed argument that exceeds inline storage";
     #[monty_macros::py_signature("check(text: str | None, /)")]
-    fn check(vm: &mut VM<'_>, text: &Option<StrArg>) -> RunResult<bool> {
+    fn check(vm: &mut VM<'_>, args: &CheckArgs) -> RunResult<bool> {
+        let CheckArgs { text } = args;
         if let Some(text) = text {
             assert_eq!(text.as_str(vm), TEXT);
             return Err(ExcType::type_error("body failed"));

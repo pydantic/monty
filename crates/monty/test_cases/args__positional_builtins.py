@@ -18,9 +18,19 @@ assert len(range(3)) == 3
 check_type_error(lambda: len(42), "object of type 'int' has no len()")
 
 assert divmod(-7, 3) == (-3, 2)
-check_type_error(lambda: divmod(1), 'divmod expected 2 arguments, got 1')
-check_type_error(lambda: divmod(1, 2, 3), 'divmod expected 2 arguments, got 3')
-check_type_error(lambda: divmod(1, 2, x=[]), 'divmod() takes no keyword arguments')
+check_type_error(
+    lambda: divmod(1), ("divmod() missing 1 required positional argument: 'y'", 'divmod expected 2 arguments, got 1')
+)
+check_type_error(
+    lambda: divmod(1, 2, 3), ('divmod() takes at most 2 arguments (3 given)', 'divmod expected 2 arguments, got 3')
+)
+check_type_error(
+    lambda: divmod(1, 2, x=[]),
+    (
+        "divmod() got some positional-only arguments passed as keyword arguments: 'x'",
+        'divmod() takes no keyword arguments',
+    ),
+)
 
 items = [10, 20]
 assert items.pop() == 20

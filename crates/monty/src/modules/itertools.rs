@@ -10,7 +10,7 @@ use std::mem;
 use monty_macros::py_signature;
 
 use crate::{
-    args::{ArgPosIter, ArgValues},
+    args::ArgValues,
     builtins::Builtins,
     bytecode::VM,
     defer_drop, defer_drop_mut,
@@ -333,8 +333,9 @@ fn islice_index(value: &Value, vm: &mut VM<'_>) -> RunResult<IsliceBound> {
 
 /// `itertools.chain(*iterables)` — each argument's items, back to back.
 #[py_signature("chain(*iterables)", bind = owned)]
-fn call_chain(vm: &mut VM<'_>, iterables: ArgPosIter) -> RunResult<Value> {
-    let iterables: Vec<Value> = iterables.collect();
+fn call_chain(vm: &mut VM<'_>, args: ChainArgs) -> RunResult<Value> {
+    let ChainArgs { iterables } = args;
+    let iterables = iterables.collect();
     // Arguments are NOT resolved here: CPython calls `iter()` on each only as it
     // reaches it, so `chain([1], 5)` constructs and raises mid-consumption.
     let iter = ItertoolsIter::Chain(Chain::new(iterables));
@@ -401,15 +402,7 @@ fn call_starmap(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `itertools.accumulate(iterable, func=None, *, initial=None)` — running totals.
 ///
-/// Argument shape for `accumulate(iterable, func=None, *, initial=None)`.
-///
-/// Argument Clinic, so both leading slots accept keywords
-/// (`accumulate(iterable=[1])` works). Clinic shares `_PyArg_UnpackKeywords`
-/// with the named C family, so `c_named` — not the default style, which is the
-/// `_PyArg_CheckPositional` wording — gives the `takes at most 2 positional
-/// arguments (3 given)` form, pivoting to a total count once kwargs push the
-/// overflow past every slot. `func` is never type-checked here: CPython only
-/// discovers a non-callable when the second item arrives.
+/// The combining function is called only when a second item arrives.
 #[py_signature("accumulate(iterable, func=None, *, initial=None)", bind = owned)]
 fn call_accumulate(vm: &mut VM<'_>, args: AccumulateArgs) -> RunResult<Value> {
     let AccumulateArgs {
@@ -437,15 +430,7 @@ fn call_accumulate(vm: &mut VM<'_>, args: AccumulateArgs) -> RunResult<Value> {
 
 /// `itertools.batched(iterable, n, *, strict=False)` — consecutive n-tuples.
 ///
-/// Argument shape for `batched(iterable, n, *, strict=False)`.
-///
-/// Argument Clinic, so `n` accepts a keyword and a missing one reports
-/// `missing required argument 'n' (pos 2)` — see [`AccumulateArgs`] for why
-/// that means `c_named`. Both positionals are required, so the overflow says
-/// "exactly" where `accumulate`'s says "at most". `n` stays a raw `Value` because it
-/// needs `as_int`'s message rather than the binder's, as `repeat`'s `times`
-/// does; `strict` is a [`LaxBool`](crate::args::LaxBool) so CPython's `bool()`-style truth test
-/// happens in the binder, which releases the value on both paths.
+/// The body converts `n` and checks that the batch size is positive.
 #[py_signature("batched(iterable, n, *, strict: bool=False)", bind = owned)]
 fn call_batched(vm: &mut VM<'_>, args: BatchedArgs) -> RunResult<Value> {
     let BatchedArgs { iterable, n, strict } = args;

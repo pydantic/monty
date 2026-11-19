@@ -65,12 +65,9 @@ const JSON_RECURSION_LIMIT: usize = 200;
 /// (there is no `parse_constant` parameter).
 ///
 /// `parse_float` and `parse_int` are called with each number's source text, as in
-/// CPython (`json.loads(s, parse_float=Decimal)`). The kwargs `cls`, `object_hook`,
-/// `parse_constant`, and `object_pairs_hook` are unsupported and raise `TypeError`.
-///
-/// Argument shape for `json.loads(s)`.
-///
-/// Unsupported decoder options are reported as errors from `JSONDecoder.__init__`.
+/// CPython (`json.loads(s, parse_float=Decimal)`). CPython also accepts `cls`,
+/// `object_hook`, `parse_constant` and `object_pairs_hook`. Monty rejects these
+/// options with `TypeError` and names `JSONDecoder.__init__` in unknown-keyword errors.
 #[py_signature("loads(s, *, parse_float=None, parse_int=None)", kwarg_error_name = "JSONDecoder.__init__", bind = owned)]
 pub(super) fn call_loads(vm: &mut VM<'_>, args: JsonLoadsArgs) -> RunResult<Value> {
     let JsonLoadsArgs {

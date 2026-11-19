@@ -14,7 +14,7 @@ use super::{
     recursion::RunReentryGuard,
 };
 use crate::{
-    args::{ArgPosIter, ArgValues, KwargsValues},
+    args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
     builtins::{BuiltinsFunctions, BuiltinsFunctionsExt, object::takes_no_arguments},
     bytecode::FrameExit,
@@ -1408,12 +1408,8 @@ fn dispatch_dunder(
 /// type from `val` and Monty has no traceback objects (see
 /// `limitations/with.md`).
 #[py_signature("__exit__(exc_type, exc_value, traceback, /)")]
-fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, positional: &ArgPosIter) -> Result<CallResult, RunError> {
-    let [typ, val, tb] = positional.as_slice() else {
-        unreachable!("arity checked by signature");
-    };
-    let _ = (typ, tb);
-    let exc = match val {
+fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: &ExitArgs) -> Result<CallResult, RunError> {
+    let exc = match &args.exc_value {
         Value::Ref(id) => Some(*id),
         _ => None,
     };

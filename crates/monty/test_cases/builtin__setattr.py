@@ -32,25 +32,34 @@ try:
     setattr()
     assert False, 'setattr() with no args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'setattr expected 3 arguments, got 0', str(e)
+    assert str(e) in (
+        "setattr() missing 3 required positional arguments: 'object', 'name', and 'value'",
+        'setattr expected 3 arguments, got 0',
+    ), str(e)
 
 try:
     setattr(mut_point)
     assert False, 'setattr() with 1 arg should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'setattr expected 3 arguments, got 1', str(e)
+    assert str(e) in (
+        "setattr() missing 2 required positional arguments: 'name' and 'value'",
+        'setattr expected 3 arguments, got 1',
+    ), str(e)
 
 try:
     setattr(mut_point, 'x')
     assert False, 'setattr() with 2 args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'setattr expected 3 arguments, got 2', str(e)
+    assert str(e) in (
+        "setattr() missing 1 required positional argument: 'value'",
+        'setattr expected 3 arguments, got 2',
+    ), str(e)
 
 try:
     setattr(mut_point, 'x', 10, 'extra')
     assert False, 'setattr() with 4 args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'setattr expected 3 arguments, got 4', str(e)
+    assert str(e) in ('setattr() takes at most 3 arguments (4 given)', 'setattr expected 3 arguments, got 4'), str(e)
 
 try:
     setattr(mut_point, 123, 'value')

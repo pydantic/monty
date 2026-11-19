@@ -31,7 +31,7 @@ use smallvec::{SmallVec, smallvec};
 
 use super::{CmpOrder, PyTrait, tuple::TupleIterator};
 use crate::{
-    args::{ArgPosIter, ArgValues, KwargsValues},
+    args::{ArgValues, KwargsValues},
     builtins::{Builtins, BuiltinsFunctions, type_::builtin_type_mro},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
@@ -719,21 +719,13 @@ impl<'h> HeapRead<'h, NamedTuple> {
     /// `p.index(x[, start[, stop]])` — index of the first item equal to `x`,
     /// inherited from `tuple`.
     #[py_signature("index(self, value, start=..., stop=..., /)", owner = "tuple")]
-    fn method_index(&self, vm: &mut VM<'h>, pos_args: &ArgPosIter) -> RunResult<Value> {
+    fn method_index(&self, vm: &mut VM<'h>, args: &IndexArgs) -> RunResult<Value> {
         let len = self.get(vm.heap).len();
-        let (value, start, end) = match pos_args.as_slice() {
-            [value] => (value, 0, len),
-            [value, start_arg] => {
-                let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
-                (value, start, len)
-            }
-            [value, start_arg, end_arg] => {
-                let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
-                let end = normalize_sequence_index(value_to_i64_bound(end_arg, vm)?, len).max(start);
-                (value, start, end)
-            }
-            _ => unreachable!("arity checked by signature"),
-        };
+        let IndexArgs { value, start, stop } = args;
+        let start_arg = start.as_ref().map(|start| value_to_i64_bound(start, vm)).transpose()?;
+        let end_arg = stop.as_ref().map(|stop| value_to_i64_bound(stop, vm)).transpose()?;
+        let start = start_arg.map_or(0, |start| normalize_sequence_index(start, len));
+        let end = end_arg.map_or(len, |end| normalize_sequence_index(end, len)).max(start);
 
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);

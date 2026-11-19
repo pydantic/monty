@@ -23,19 +23,25 @@ try:
     hasattr()
     assert False, 'hasattr() with no args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'hasattr expected 2 arguments, got 0', str(e)
+    assert str(e) in (
+        "hasattr() missing 2 required positional arguments: 'object' and 'name'",
+        'hasattr expected 2 arguments, got 0',
+    ), str(e)
 
 try:
     hasattr(s)
     assert False, 'hasattr() with 1 arg should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'hasattr expected 2 arguments, got 1', str(e)
+    assert str(e) in (
+        "hasattr() missing 1 required positional argument: 'name'",
+        'hasattr expected 2 arguments, got 1',
+    ), str(e)
 
 try:
     hasattr(s, 'start', 'extra')
     assert False, 'hasattr() with 3 args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'hasattr expected 2 arguments, got 3', str(e)
+    assert str(e) in ('hasattr() takes at most 2 arguments (3 given)', 'hasattr expected 2 arguments, got 3'), str(e)
 
 try:
     hasattr(s, 123)

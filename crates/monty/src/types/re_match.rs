@@ -15,7 +15,7 @@ use monty_macros::py_signature;
 use smallvec::smallvec;
 
 use crate::{
-    args::{ArgPosIter, ArgValues},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
@@ -415,8 +415,8 @@ impl HeapItem for ReMatch {
 /// - `m.group(n)` → returns the nth group (integer or named string)
 /// - `m.group(n1, n2, ...)` → returns a tuple of groups
 #[py_signature("group(self, /, *groups)", owner = "re.Match")]
-fn call_group<'h>(m: &HeapRead<'h, ReMatch>, pos: &ArgPosIter, vm: &mut VM<'h>) -> RunResult<Value> {
-    match pos.as_slice() {
+fn call_group<'h>(m: &HeapRead<'h, ReMatch>, args: &GroupArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    match args.groups.as_slice() {
         [] => m.get(vm.heap).get_group(0, vm.heap),
         [value] => resolve_group_arg(m.get(vm.heap), value, vm),
         groups => {

@@ -182,22 +182,26 @@ try:
     itertools.groupby()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert "'iterable'" in str(exc)
+    assert str(exc) in (
+        "groupby() missing 1 required positional argument: 'iterable'",
+        "groupby() missing required argument 'iterable' (pos 1)",
+    )
 
 try:
     itertools.groupby([1], None, 1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) == 'groupby() takes at most 2 arguments (3 given)'
 
-# Arity counts positionals and keywords together...
 try:
     itertools.groupby([1, 2], key=None, x=1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) in (
+        "groupby() got an unexpected keyword argument 'x'",
+        'groupby() takes at most 2 arguments (3 given)',
+    )
 
-# ...and only within it is a keyword checked by name.
 try:
     itertools.groupby([1], keyfunc=None)
     assert False, 'expected TypeError'

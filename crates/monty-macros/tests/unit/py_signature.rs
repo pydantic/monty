@@ -113,73 +113,15 @@ fn generates_bound_fields_in_declaration_order() {
 }
 
 #[test]
-fn one_arg_checks_the_rust_argument() {
-    let declaration = parse_quote!("f(x, /)");
-    let function = parse_quote!(
-        fn f(x: Value) {}
-    );
-    assert_eq!(
-        expand(&declaration, function).unwrap_err().to_string(),
-        "expected &Value for a single positional argument"
-    );
-}
-
-#[test]
-fn one_arg_requires_a_borrow_for_conversions_that_retain_heap_references() {
-    for (annotation, rust_type) in [
-        ("str", "StrArg"),
-        ("str | None", "Option<StrArg>"),
-        ("int", "IntArg"),
-        ("SupportsIndex", "IntArg"),
-    ] {
-        let signature = format!("f(x: {annotation}, /)");
-        let declaration = parse_quote!(#signature);
-        let function = syn::parse_str(&format!("fn f(x: {rust_type}) {{}}")).unwrap();
-        assert_eq!(
-            expand(&declaration, function).unwrap_err().to_string(),
-            "borrow the converted argument so the binder can release its heap references"
-        );
-    }
-}
-
-#[test]
 fn one_arg_uses_the_declared_name_for_errors() {
     let declaration = parse_quote!("f(x, /)", error_name = "module.f");
-    let function = parse_quote!(
-        fn f(vm: &mut VM<'_>, x: &Value) {}
-    );
-    let output = expand(&declaration, function).unwrap().to_string();
-    assert!(output.contains(r#"get_one_arg ("module.f""#));
+    let output = expand(&declaration, adapter()).unwrap().to_string();
+    assert!(output.contains(r#"func_name : "module.f""#));
 }
 
 #[test]
-fn one_arg_uses_the_existing_positional_fast_path() {
-    let declaration = parse_quote!("len(obj, /)");
-    let function = parse_quote!(
-        fn builtin_len(vm: &mut VM<'_>, obj: &Value) {
-            obj.py_len(vm)
-        }
-    );
-    let expanded: ItemFn = syn::parse2(expand(&declaration, function).unwrap()).unwrap();
-    let expected: ItemFn = parse_quote! {
-        fn builtin_len(vm: &mut VM<'_>, obj: crate::args::ArgValues) {
-            let obj = obj.get_one_arg("len", vm.heap)?;
-            crate::defer_drop!(obj, vm);
-            { obj.py_len(vm) }
-        }
-    };
-    assert_eq!(expanded, expected);
-}
-
-#[test]
-fn direct_binding_leaves_named_struct_binders_in_place() {
+fn named_struct_binders_allow_rust_parameters_alongside_args() {
     let signature = "f(x: float, /)";
-    let function = parse_quote!(
-        fn f(x: f64) {}
-    );
-    let direct = expand(&parse_quote!(#signature), function).unwrap().to_string();
-    assert!(direct.contains("get_one_arg"));
-
     for (declaration, function) in [
         (parse_quote!(#signature), adapter()),
         (parse_quote!("f(args, /)"), adapter()),
@@ -389,39 +331,33 @@ fn named_owned_args_require_a_full_destructure_before_any_return() {
 }
 
 #[test]
-fn infers_a_direct_pair() {
+fn two_args_use_the_inline_storage() {
     let declaration = parse_quote!("divmod(x, y, /)");
     let function = parse_quote!(
-        fn divmod(vm: &mut VM<'_>, args: (&Value, &Value)) {}
+        fn divmod(vm: &mut VM<'_>, args: &DivmodArgs) {}
     );
     let output = expand(&declaration, function).unwrap().to_string();
-    assert!(output.contains(r#"get_two_positional_args ("divmod""#));
-    assert_eq!(output.matches("defer_drop !").count(), 2);
+    assert!(output.contains("ArgValues :: Two"));
+    assert!(output.contains("defer_drop !"));
 }
 
 #[test]
-fn two_args_requires_an_ordered_pair_of_raw_values() {
-    let function: ItemFn = parse_quote!(
-        fn divmod((x, y): (&Value, &Value)) {}
-    );
-    for (signature, expected) in [
-        ("divmod(x, y)", "a direct pair requires two positional-only parameters"),
-        (
-            "divmod(x, y=0, /)",
-            "a direct pair requires two raw positional-only arguments",
+fn rejects_direct_arguments() {
+    for function in [
+        parse_quote!(
+            fn f(x: &Value) {}
         ),
-        (
-            "divmod(x, y: int, /)",
-            "a direct pair requires two raw positional-only arguments",
+        parse_quote!(
+            fn f(x: f64) {}
         ),
-        ("divmod(y, x, /)", "expected args or a pair in signature order"),
+        parse_quote!(
+            fn f(args: (&Value, &Value)) {}
+        ),
+        parse_quote!(
+            fn f(positional: &ArgPosIter) {}
+        ),
     ] {
-        assert_eq!(
-            expand(&parse_quote!(#signature), function.clone())
-                .unwrap_err()
-                .to_string(),
-            expected,
-        );
+        assert!(expand(&parse_quote!("f(x, /)"), function).is_err());
     }
 }
 
@@ -440,23 +376,11 @@ fn full_width_integer_defaults_preserve_magnitude_and_sign() {
 }
 
 #[test]
-fn positional_iterators_reject_signatures_that_need_conversion_or_keywords() {
-    let function: ItemFn = parse_quote!(
-        fn f(values: &ArgPosIter) {}
-    );
-    for signature in [
-        "f(x)",
-        "f(x: int, /)",
-        "f(x=1, /)",
-        "f(x, /, *rest)",
-        "f(*, x)",
-        "f(**kw)",
-    ] {
-        assert!(
-            expand(&parse_quote!(#signature), function.clone()).is_err(),
-            "{signature}"
-        );
-    }
+fn bare_variadic_arguments_preserve_inline_storage() {
+    let declaration = parse_quote!("group(self, /, *groups)", owner = "re.Match");
+    let output = expand(&declaration, adapter()).unwrap().to_string();
+    assert!(output.contains("groups : crate :: args :: ArgPosIter"));
+    assert!(output.contains(r#"into_pos_only ("re.Match.group""#));
 }
 
 #[test]

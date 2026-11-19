@@ -10,7 +10,7 @@ use super::{
     iter::{collect_owned_iterable, collect_python_iterator},
 };
 use crate::{
-    args::{ArgPosIter, ArgValues},
+    args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -1010,21 +1010,14 @@ fn list_extend<'h>(list: &HeapReadMut<'h, List>, args: ListExtendArgs, vm: &mut 
 /// Returns the index of the first occurrence of value.
 /// Raises ValueError if the value is not found.
 #[py_signature("index(self, value, start=..., stop=..., /)", owner = "list")]
-fn list_index<'h>(list: &HeapRead<'h, List>, pos_args: &ArgPosIter, vm: &mut VM<'h>) -> RunResult<Value> {
+fn list_index<'h>(list: &HeapRead<'h, List>, args: &IndexArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     // Bounds are coerced before the length is read: the coercion may dispatch a
     // user `__index__` that mutates this list, and CPython normalizes against the
     // length *after* argument parsing. Reading it first would resolve a negative
     // bound against a stale length and search the wrong window.
-    let (value, start_arg, end_arg) = match pos_args.as_slice() {
-        [value] => (value, None, None),
-        [value, start_arg] => (value, Some(value_to_i64_bound(start_arg, vm)?), None),
-        [value, start_arg, end_arg] => (
-            value,
-            Some(value_to_i64_bound(start_arg, vm)?),
-            Some(value_to_i64_bound(end_arg, vm)?),
-        ),
-        _ => unreachable!("arity checked by signature"),
-    };
+    let IndexArgs { value, start, stop } = args;
+    let start_arg = start.as_ref().map(|start| value_to_i64_bound(start, vm)).transpose()?;
+    let end_arg = stop.as_ref().map(|stop| value_to_i64_bound(stop, vm)).transpose()?;
 
     let len = list.get(vm.heap).items.len();
     let start = start_arg.map_or(0, |i| normalize_sequence_index(i, len));

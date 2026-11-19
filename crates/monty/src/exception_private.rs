@@ -476,24 +476,6 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::TypeError, "map() must have at least two arguments.".to_owned()).into()
     }
 
-    /// Creates a TypeError for exact-arity functions reporting too many *or* too few.
-    ///
-    /// Matches CPython's `PyArg_UnpackTuple` wording for fixed-arity callables
-    /// (e.g. `sorted`):
-    /// `{name} expected {exact} argument, got {actual}` (singular when exact=1)
-    /// `{name} expected {exact} arguments, got {actual}` (plural otherwise)
-    ///
-    /// Use this for the macro's `expected_exact` attribute.
-    #[must_use]
-    fn type_error_expected_exact(name: &str, exact: usize, actual: usize) -> RunError {
-        let plural = if exact == 1 { "" } else { "s" };
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("{name} expected {exact} argument{plural}, got {actual}"),
-        )
-        .into()
-    }
-
     /// Creates a TypeError for missing positional arguments.
     ///
     /// Matches CPython's format: `{name}() missing {count} required positional argument(s): 'a' and 'b'`

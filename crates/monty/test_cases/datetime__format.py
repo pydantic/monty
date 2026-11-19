@@ -14,19 +14,25 @@ try:
     datetime.date(2024, 6, 15).strftime()
     assert False, 'expected strftime() with no args to fail'
 except TypeError as exc:
-    assert "'format'" in str(exc)
+    assert str(exc) in (
+        "strftime() missing 1 required positional argument: 'format'",
+        "strftime() missing required argument 'format' (pos 1)",
+    )
 
 try:
     datetime.date(2024, 6, 15).strftime('%Y', '%m')
     assert False, 'expected strftime() with extra positional to fail'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) == 'strftime() takes at most 1 argument (2 given)'
 
 try:
     datetime.date(2024, 6, 15).strftime('%Y', extra='nope')
     assert False, 'expected strftime() with unexpected kwarg to fail'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) in (
+        "strftime() got an unexpected keyword argument 'extra'",
+        'strftime() takes at most 1 argument (2 given)',
+    )
 
 # Wrong-type `format` matches CPython's `_PyArg_BadArgument` wording, including
 # the special "not None" case (vs. the type name "NoneType").

@@ -47,16 +47,34 @@ except AttributeError as exc:
     assert str(exc) == "'_csv.Dialect' object has no attribute 'nope'"
 assert csv.get_dialect(name='unix').quoting == csv.QUOTE_ALL
 for args, kwargs, message in (
-    ((), {}, "get_dialect() missing required argument 'name' (pos 1)"),
+    (
+        (),
+        {},
+        (
+            "get_dialect() missing 1 required positional argument: 'name'",
+            "get_dialect() missing required argument 'name' (pos 1)",
+        ),
+    ),
     ((1, 2), {}, 'get_dialect() takes at most 1 argument (2 given)'),
-    ((), {'nope': 1}, "get_dialect() missing required argument 'name' (pos 1)"),
-    (('excel',), {'name': 'excel'}, 'get_dialect() takes at most 1 argument (2 given)'),
+    (
+        (),
+        {'nope': 1},
+        (
+            "get_dialect() got an unexpected keyword argument 'nope'",
+            "get_dialect() missing required argument 'name' (pos 1)",
+        ),
+    ),
+    (
+        ('excel',),
+        {'name': 'excel'},
+        ("get_dialect() got multiple values for argument 'name'", 'get_dialect() takes at most 1 argument (2 given)'),
+    ),
 ):
     try:
         csv.get_dialect(*args, **kwargs)
         assert False, 'expected TypeError'
     except TypeError as exc:
-        assert 'argument' in str(exc)
+        assert str(exc) in (message if isinstance(message, tuple) else (message,))
 for name in ('nope', 5):
     try:
         csv.get_dialect(name)
@@ -109,7 +127,7 @@ for args, kwargs, message in (
         csv.field_size_limit(*args, **kwargs)
         assert False, 'expected TypeError'
     except TypeError as exc:
-        assert 'argument' in str(exc)
+        assert str(exc) == message
 if is_monty:
     for args, kwargs in (((10,), {}), ((), {'new_limit': 10})):
         try:

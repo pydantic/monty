@@ -253,12 +253,18 @@ try:
     writer.writerow()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) in (
+        "writer.writerow() missing 1 required positional argument: 'row'",
+        'writer.writerow() takes exactly one argument (0 given)',
+    )
 try:
     writer.writerow([], [])
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) in (
+        'writer.writerow() takes at most 2 arguments (3 given)',
+        'writer.writerow() takes exactly one argument (2 given)',
+    )
 
 
 # === A write attribute can be a callable user instance ===
@@ -324,7 +330,10 @@ try:
     csv.writer(sink, nope=1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert "'nope'" in str(exc)
+    assert str(exc) in (
+        "reader() got an unexpected keyword argument 'nope'",
+        "this function got an unexpected keyword argument 'nope'",
+    )
 try:
     csv.writer(sink, delimiter='ab')
     assert False, 'expected TypeError'

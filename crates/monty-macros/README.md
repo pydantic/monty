@@ -19,20 +19,10 @@ Declare the receiver as an unannotated positional-only `self` parameter without 
 Use `owner = "Counter"` to qualify a bound method's name in binding errors.
 `kwarg_error_name` overrides the callable name in unexpected-keyword errors, as in `json.dump`.
 
-For a single required positional-only argument, declare the Rust parameter directly, as in
-`#[py_signature("len(obj, /)")]` with `obj: &Value`.
-The macro emits the existing helper call and guards the returned value for the function body.
-This preserves the helper’s arity errors, including its positional-count error for keyword calls.
-A typed parameter such as `sqrt(x: float, /)` runs the converter after the same arity check.
-Use a shared reference for conversions that retain a Python object, such as `number: &IntArg` or `text: &StrArg`.
-The adapter releases it when the body returns.
-Leave parameters unannotated when their operation runs in the body,
-as with the iterable passed to `enumerate`.
-
-For two required positional values, `#[py_signature("divmod(x, y, /)")]`
-with the Rust parameter `args: (&Value, &Value)` uses the direct two-argument adapter.
-Destructure it with `let (x, y) = args;`.
-Keywords take precedence over arity errors.
+For a single argument, use the same handler shape as for several arguments.
+For `#[py_signature("abs(x, /)")]`, declare `args: &AbsArgs` and read the argument through `args.x`.
+The macro infers inline binding for small positional calls from the signature.
+Leave parameters unannotated when their operation runs in the body, as with the iterable passed to `enumerate`.
 
 For `f()` or a bound method such as `#[py_signature("keys(self, /)", owner = "dict")]`, the Rust
 body can omit the argument struct. The macro adds a trailing `ArgValues` parameter and calls
@@ -51,11 +41,12 @@ For a required `Value`, use `mem::replace(&mut args.iterable, Value::None)` to m
 For callers that bind after method lookup, put `#[py_signature]` on a unit struct and call
 `Name::from_args(args, vm)?`. Generated fields have the struct's visibility.
 
-For a raw positional signature with at most two arguments, the generated struct takes its
-fields from the inline argument storage. Use `reject_keywords` when keyword errors take
-precedence over arity. A handler that needs a slice or iterator can take `&ArgPosIter`,
-`&mut ArgPosIter` with `bind = mut`, or `ArgPosIter` with `bind = owned`. The adapter checks the positional count
-and preserves inline storage for small calls.
+Use `reject_keywords` when keyword errors take precedence over arity on a small raw positional signature.
+When `*args` is the only parameter apart from `self`, the binder stores it in an `ArgPosIter` if there are no diagnostic modifiers.
+It preserves inline storage for small calls and exposes a slice through `as_slice()`.
+Signatures with other parameters collect `*args` into a `Vec<Value>`.
+With `bind = owned`, consume the iterator or release the remaining values with `drop_with` before returning.
+Use `bind = mut` when the handler can stop early and the guard should release the remaining values.
 
 An unannotated parameter carries a Python value. A default of `...` distinguishes omission
 from a supplied value, including `None`.
@@ -84,13 +75,12 @@ can run at this step.
 
 See [native call diagnostics](../../docs/limitations/builtins.md#native-call-diagnostics) for the compatibility policy.
 
-- `bad_arg` and `bad_arg_named` add the argument position or name to a conversion error.
+- `bad_arg` and `bad_arg_named` add the argument position or name when a conversion reports a wrong type.
 - `reject_keywords` checks for keywords before arity on a small raw positional signature.
 - `kwargs_not_supported_yet` raises `NotImplementedError` when pending keyword support prevents binding.
 
 Use Python's `/`, `*`, `*args` and `**kwargs` markers for parameter roles.
-Keyword-only parameters currently require defaults. The generated binder exposes
-`*args` as `Vec<Value>` and `**kwargs` as `KwargsValues`.
+Keyword-only parameters currently require defaults. The generated binder exposes `**kwargs` as `KwargsValues`.
 
 ## `#[derive(ToArgs)]`
 

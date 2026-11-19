@@ -121,12 +121,15 @@ try:
     eval()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        "eval() missing 1 required positional argument: 'source'",
+        'eval() takes at least 1 positional argument (0 given)',
+    )
 try:
     eval('1', {}, {}, {})
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) == 'eval() takes at most 3 arguments (4 given)'
 
 # === syntax errors ===
 try:

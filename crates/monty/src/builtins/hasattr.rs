@@ -4,7 +4,6 @@ use monty_macros::py_signature;
 use monty_types::ExcType;
 
 use crate::{
-    args::ArgPosIter,
     bytecode::{CallResult, PendingLookupEffect, VM},
     exception_private::{RunError, RunResult, SimpleException},
     heap::DropWithContext,
@@ -30,10 +29,8 @@ use crate::{
 /// hasattr(42, 'nonexistent')    # False - int has no such attribute
 /// ```
 #[py_signature("hasattr(object, name, /)")]
-pub fn builtin_hasattr(vm: &mut VM<'_>, positional: &ArgPosIter) -> RunResult<CallResult> {
-    let [object, name] = positional.as_slice() else {
-        unreachable!("arity checked by signature")
-    };
+pub fn builtin_hasattr(vm: &mut VM<'_>, args: &HasattrArgs) -> RunResult<CallResult> {
+    let HasattrArgs { object, name } = args;
 
     let Some(name) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
         return Err(SimpleException::new_msg(

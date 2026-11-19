@@ -6,7 +6,8 @@ Native call diagnostics may differ in wording or in which error is reported firs
 ## Declare parameters with `#[py_signature]`
 
 Declare the Python parameter list on the Rust function.
-Use the `ArgValues` helpers for methods implemented inside a dispatch arm and a named signature struct for shared binders.
+When a shared dispatcher binds inside a selected arm, use a named signature struct and `Args::from_args(args, vm)?`.
+The `ArgValues` helpers are for trivial fixed-arity positional calls.
 The [macro reference](../../../monty-macros/README.md) covers defaults, converters and ownership.
 
 Annotate arguments the binder converts. Leave arguments unannotated when the operation itself must convert them.

@@ -607,7 +607,10 @@ try:
     deque().count()
     assert False, 'expected count() with no args to fail'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) in (
+        "deque.count() missing 1 required positional argument: 'value'",
+        'deque.count() takes exactly one argument (0 given)',
+    )
 
 try:
     deque().copy(1)

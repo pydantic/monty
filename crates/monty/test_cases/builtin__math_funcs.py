@@ -419,10 +419,20 @@ for compute, message in [
     except TypeError as e:
         assert str(e) == message
 
-for args in [(2,), (), (2, 3, 4, 5)]:
+for args, message in [
+    ((2,), ("pow() missing 1 required positional argument: 'exp'", "pow() missing required argument 'exp' (pos 2)")),
+    (
+        (),
+        (
+            "pow() missing 2 required positional arguments: 'base' and 'exp'",
+            "pow() missing required argument 'base' (pos 1)",
+        ),
+    ),
+    ((2, 3, 4, 5), 'pow() takes at most 3 arguments (4 given)'),
+]:
     try:
         pow(*args)
-    except TypeError:
-        pass
+    except TypeError as exc:
+        assert str(exc) in (message if isinstance(message, tuple) else (message,))
     else:
         assert False, 'expected invalid pow arity to raise TypeError'

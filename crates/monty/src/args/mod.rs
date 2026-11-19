@@ -129,22 +129,6 @@ impl ArgValues {
         }
     }
 
-    /// Bind a direct pair, rejecting keywords before checking arity.
-    pub(crate) fn get_two_positional_args(self, name: &str, heap: &mut Heap) -> RunResult<(Value, Value)> {
-        match self {
-            Self::Two(a, b) => Ok((a, b)),
-            other => {
-                let error = if other.has_kwargs() {
-                    ExcType::type_error_no_kwargs(name)
-                } else {
-                    ExcType::type_error_expected_exact(name, 2, other.count())
-                };
-                other.drop_with(heap);
-                Err(error)
-            }
-        }
-    }
-
     /// Checks that one or two arguments were passed, returning them as a tuple.
     ///
     /// On error, properly drops all contained values to maintain reference counts.

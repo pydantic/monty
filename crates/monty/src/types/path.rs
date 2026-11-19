@@ -16,7 +16,7 @@ use monty_types::MontyPath;
 use smallvec::SmallVec;
 
 use crate::{
-    args::{ArgPosIter, ArgValues},
+    args::ArgValues,
     builtins::open::builtin_open,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -260,8 +260,8 @@ impl Path {
     /// - `Path('a', 'b', 'c')` returns `Path('a/b/c')`
     /// - If an absolute path appears, it replaces everything before it.
     #[py_signature("Path(*pathsegments)")]
-    pub fn init(vm: &mut VM<'_>, pos_args: &ArgPosIter) -> RunResult<Value> {
-        let path = match pos_args.as_slice() {
+    pub fn init(vm: &mut VM<'_>, args: &PathArgs) -> RunResult<Value> {
+        let path = match args.pathsegments.as_slice() {
             [] => {
                 // No arguments, return Path('.')
                 Self::new(".".to_owned())

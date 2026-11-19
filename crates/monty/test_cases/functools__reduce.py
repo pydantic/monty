@@ -151,13 +151,16 @@ try:
     functools.reduce(lambda a, b: a)
     assert False, 'expected reduce to fail'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) in (
+        "reduce() missing 1 required positional argument: 'iterable'",
+        'reduce() takes at least 2 positional arguments (1 given)',
+    )
 
 try:
     functools.reduce(lambda a, b: a, [1], 2, 3)
     assert False, 'expected reduce to fail'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) == 'reduce() takes at most 3 arguments (4 given)'
 
 try:
     functools.reduce(lambda a, b: a, [1], bogus=1)
@@ -170,4 +173,7 @@ try:
     functools.reduce(function=lambda a, b: a, iterable=[1])
     assert False, 'expected reduce to fail'
 except TypeError as exc:
-    assert 'argument' in str(exc)
+    assert str(exc) in (
+        "reduce() got some positional-only arguments passed as keyword arguments: 'function'",
+        'reduce() takes at least 2 positional arguments (0 given)',
+    )

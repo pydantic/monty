@@ -15,7 +15,7 @@ use smallvec::smallvec;
 
 use super::{LazyHeapSet, allocate_tuple};
 use crate::{
-    args::{ArgPosIter, ArgValues},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -60,24 +60,19 @@ impl Slice {
     ///
     /// Each argument can be None to indicate "use default".
     #[py_signature("slice(start, stop=..., step=..., /)")]
-    pub fn init(vm: &mut VM<'_>, pos_args: &ArgPosIter) -> RunResult<Value> {
-        let slice = match pos_args.as_slice() {
-            [first_arg] => {
-                let stop = value_to_option_i64(first_arg, vm)?;
-                Self::new(None, stop, None)
-            }
-            [first_arg, second_arg] => {
-                let start = value_to_option_i64(first_arg, vm)?;
-                let stop = value_to_option_i64(second_arg, vm)?;
-                Self::new(start, stop, None)
-            }
-            [first_arg, second_arg, third_arg] => {
-                let start = value_to_option_i64(first_arg, vm)?;
-                let stop = value_to_option_i64(second_arg, vm)?;
-                let step = value_to_option_i64(third_arg, vm)?;
-                Self::new(start, stop, step)
-            }
-            _ => unreachable!("arity checked by signature"),
+    pub fn init(vm: &mut VM<'_>, args: &SliceArgs) -> RunResult<Value> {
+        let SliceArgs { start, stop, step } = args;
+        let first = value_to_option_i64(start, vm)?;
+        let slice = if let Some(stop) = stop {
+            let stop = value_to_option_i64(stop, vm)?;
+            let step = step
+                .as_ref()
+                .map(|step| value_to_option_i64(step, vm))
+                .transpose()?
+                .flatten();
+            Self::new(first, stop, step)
+        } else {
+            Self::new(None, first, None)
         };
 
         Ok(Value::Ref(vm.heap.allocate(HeapData::Slice(slice))))

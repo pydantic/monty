@@ -216,7 +216,10 @@ try:
     int(x='5')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert "'x'" in str(e)
+    assert str(e) in (
+        "int() got some positional-only arguments passed as keyword arguments: 'x'",
+        "int() got an unexpected keyword argument 'x'",
+    )
 
 try:
     int(base=16)
@@ -242,14 +245,14 @@ try:
     int('5', 10, 3)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in ('int() takes at most 2 arguments (3 given)', 'int expected at most 2 arguments, got 3')
 
 # with kwargs: the clinic parser's parenthesised total-count wording
 try:
     int('5', 10, base=16)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in ("int() got multiple values for argument 'base'", 'int() takes at most 2 arguments (3 given)')
 
 # === digit limit applies only to non-power-of-two bases ===
 assert int('1' * 5000, 16) > 0

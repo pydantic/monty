@@ -754,13 +754,16 @@ try:
     'hello'.expandtabs(4, tabsize=8)
     assert False, 'expandtabs pos + kwarg should raise'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        "expandtabs() got multiple values for argument 'tabsize'",
+        'expandtabs() takes at most 1 argument (2 given)',
+    )
 
 try:
     'hello'.expandtabs(4, 5)
     assert False, 'expandtabs too many args should raise'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) == 'expandtabs() takes at most 1 argument (2 given)'
 
 # splitlines() error cases
 try:
@@ -773,7 +776,10 @@ try:
     'hello'.splitlines(True, keepends=False)
     assert False, 'splitlines pos + kwarg should raise'
 except TypeError as e:
-    assert 'argument' in str(e)
+    assert str(e) in (
+        "splitlines() got multiple values for argument 'keepends'",
+        'splitlines() takes at most 1 argument (2 given)',
+    )
 
 
 for split in (lambda: 'a'.split([]), lambda: 'a'.rsplit([])):

@@ -4,7 +4,6 @@ use monty_macros::py_signature;
 use monty_types::ExcType;
 
 use crate::{
-    args::ArgPosIter,
     bytecode::{CallResult, PendingLookupEffect, VM},
     exception_private::{RunError, RunResult, SimpleException},
     heap::DropWithContext,
@@ -31,11 +30,9 @@ use crate::{
 /// getattr(module, 'function')   # Get module.function
 /// ```
 #[py_signature("getattr(object, name, default=..., /)")]
-pub fn builtin_getattr(vm: &mut VM<'_>, positional: &ArgPosIter) -> RunResult<CallResult> {
-    let [object, name, rest @ ..] = positional.as_slice() else {
-        unreachable!("arity checked by signature")
-    };
-    let default = rest.first();
+pub fn builtin_getattr(vm: &mut VM<'_>, args: &GetattrArgs) -> RunResult<CallResult> {
+    let GetattrArgs { object, name, default } = args;
+    let default = default.as_ref();
 
     let Some(attr) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
         let ty = name.py_type_name(vm);
