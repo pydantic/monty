@@ -1,4 +1,22 @@
 # === ord() ===
+
+assert ord(b'\x00') == 0
+assert ord(b'\xff') == 255
+assert ord(bytes([128])) == 128
+for value in ('', '🥕🍎x', b'', b'ab', bytes([1, 2, 3])):
+    try:
+        ord(value)
+    except TypeError as exc:
+        assert str(exc) == f'ord() expected a character, but string of length {len(value)} found'
+    else:
+        assert False
+try:
+    ord(1)
+except TypeError as exc:
+    assert str(exc) == 'ord() expected string of length 1, but int found'
+else:
+    assert False
+
 # Basic ord operations
 assert ord('a') == 97
 assert ord('A') == 65

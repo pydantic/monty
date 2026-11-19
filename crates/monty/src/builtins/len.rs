@@ -13,7 +13,7 @@ use crate::{
 /// Implementation of the len() builtin function.
 ///
 /// Returns the length of an object (number of items in a container).
-#[py_signature("len(obj, /)", style = one_arg)]
+#[py_signature("len(obj, /)")]
 pub fn builtin_len(vm: &mut VM<'_>, obj: &Value) -> RunResult<Value> {
     let len = match obj {
         Value::InternString(id) => Some(vm.interns.str_char_len(*id)),

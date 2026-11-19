@@ -22,8 +22,8 @@ method name.
 Leave the bound `self` parameter unannotated and omit its default.
 `kwarg_error_name` overrides the callable name in unexpected-keyword errors, as in `json.dump`.
 
-For a builtin that uses Monty’s `ArgValues::get_one_arg` calling convention, use
-`#[py_signature("len(obj, /)", style = one_arg)]` and declare the Rust parameter as `obj: &Value`.
+For a single required positional-only argument, declare the Rust parameter directly, as in
+`#[py_signature("len(obj, /)")]` with `obj: &Value`.
 The macro emits the existing helper call and guards the returned value for the function body.
 This preserves the helper’s arity errors, including its positional-count error for keyword calls.
 A typed parameter such as `sqrt(x: float, /)` runs the converter after the same arity check.
@@ -65,6 +65,7 @@ Use `c_int` for a C `int` argument and `i64` for a signed 64-bit index.
 `float` extracts an `f64` through `__float__`, falling back to `__index__`.
 `bool` truth-tests the argument. Use `str` for borrowed text or `str | None` for nullable text.
 Use `convert(real = Part)` to select a Rust type implementing `FromValue`.
+When a custom converter accompanies an annotation, the converter checks the annotated input types.
 `error_name` overrides the name reported in binding errors. In a `macro_rules!` template,
 `#[py_signature("(iterable, r)", error_name = $name)]` uses the supplied Python identifier as the function name.
 

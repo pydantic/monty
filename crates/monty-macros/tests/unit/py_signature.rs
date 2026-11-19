@@ -191,7 +191,7 @@ fn one_arg_uses_the_declared_name_for_errors() {
 
 #[test]
 fn one_arg_uses_the_existing_positional_fast_path() {
-    let declaration = parse_quote!("len(obj, /)", style = one_arg);
+    let declaration = parse_quote!("len(obj, /)");
     let function = parse_quote!(
         fn builtin_len(vm: &mut VM<'_>, obj: &Value) {
             obj.py_len(vm)
@@ -206,6 +206,40 @@ fn one_arg_uses_the_existing_positional_fast_path() {
         }
     };
     assert_eq!(expanded, expected);
+}
+
+#[test]
+fn implicit_direct_binding_preserves_explicit_styles_and_struct_binders() {
+    let direct: ItemFn = parse_quote!(
+        fn f(x: f64) {}
+    );
+    let signature = "f(x: float, /)";
+    assert_eq!(
+        expand(&parse_quote!(#signature), direct.clone()).unwrap().to_string(),
+        expand(&parse_quote!(#signature, style = one_arg), direct)
+            .unwrap()
+            .to_string(),
+    );
+    for (declaration, function) in [
+        (parse_quote!(#signature), adapter()),
+        (parse_quote!("f(args, /)"), adapter()),
+        (
+            parse_quote!("f(vm, /)"),
+            parse_quote!(
+                fn f(vm: &mut VM<'_>, args: &FArgs) {}
+            ),
+        ),
+        (
+            parse_quote!("f(x, /)"),
+            parse_quote!(
+                fn f(x: State, args: &FArgs, vm: &mut VM<'_>) {}
+            ),
+        ),
+        (parse_quote!("f(x, /)", style = def), adapter()),
+    ] {
+        let output: File = syn::parse2(expand(&declaration, function).unwrap()).unwrap();
+        assert!(output.items.iter().any(|item| matches!(item, Item::Struct(_))));
+    }
 }
 
 #[test]
@@ -331,15 +365,11 @@ fn rejects_invalid_named_binders_and_converters() {
             "choose either owner or error_name",
         ),
         (r#""f(x)", convert(other = T)"#, "unknown converter parameter"),
-        (
-            r#""f(x: int)", convert(x = T)"#,
-            "a custom converter supplies the parameter type",
-        ),
         (r#""f(x=None)", convert(x = T)"#, "unsupported custom converter default"),
         (r#""f(x: c_int=2147483648)""#, "expected a C int literal"),
         (
             r#""f(x, /)", style = one_arg, bad_arg"#,
-            "fixed-arity helpers do not accept parser modifiers or custom converters",
+            "a direct positional argument cannot use parser modifiers",
         ),
         (
             r#""f()", owner = "T""#,

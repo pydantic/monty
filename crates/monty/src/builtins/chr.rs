@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// Returns the character at an `__index__`-compatible Unicode code point.
-#[py_signature("chr(i, /)", style = one_arg)]
+#[py_signature("chr(i, /)")]
 pub fn builtin_chr(vm: &mut VM<'_>, i: &Value) -> RunResult<Value> {
     let index = i.saturating_index(vm)?;
     if let Some(c) = u32::try_from(index).ok().and_then(char::from_u32) {

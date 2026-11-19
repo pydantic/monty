@@ -104,7 +104,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: UnicodedataFunctions, args: ArgVal
 ///
 /// Returns e.g. `"Lu"` (uppercase letter), `"Nd"` (decimal digit), or `"Cn"`
 /// for unassigned code points.
-#[py_signature("category(chr, /)", style = one_arg)]
+#[py_signature("category(chr, /)")]
 fn uni_category(vm: &mut VM<'_>, chr: &Value) -> RunResult<Value> {
     let c = single_char(chr, "category", None, vm)?;
     Ok(allocate_string(category_abbrev(get_general_category(c)), vm.heap))
@@ -147,7 +147,7 @@ fn uni_name(vm: &mut VM<'_>, args: NameArgs) -> RunResult<Value> {
 ///
 /// Raises `KeyError("undefined character name '<name>'")` when no character has
 /// that name. Unlike CPython, named sequences are not resolved.
-#[py_signature("lookup(name, /)", style = one_arg)]
+#[py_signature("lookup(name, /)")]
 fn uni_lookup(vm: &mut VM<'_>, name: &Value) -> RunResult<Value> {
     let name = name.try_to_str(vm)?;
     match unicode_names2::character(name) {
@@ -159,7 +159,7 @@ fn uni_lookup(vm: &mut VM<'_>, name: &Value) -> RunResult<Value> {
 /// `unicodedata.combining(chr)` — the canonical combining class as an int.
 ///
 /// Returns `0` for characters with no combining class (the common case).
-#[py_signature("combining(chr, /)", style = one_arg)]
+#[py_signature("combining(chr, /)")]
 fn uni_combining(vm: &mut VM<'_>, chr: &Value) -> RunResult<Value> {
     let c = single_char(chr, "combining", None, vm)?;
     Ok(Value::Int(i64::from(canonical_combining_class(c))))

@@ -305,7 +305,7 @@ pub(crate) fn class_method(
 }
 
 /// `Decimal.from_float(f)`: exact; an `int` is accepted too.
-#[py_signature("from_float(f, /)", style = one_arg, error_name = "Decimal.from_float")]
+#[py_signature("from_float(f, /)", error_name = "Decimal.from_float")]
 pub(crate) fn class_from_float(vm: &mut VM<'_>, f: &Value) -> RunResult<Value> {
     let decimal = from_float_arg(f, vm)?;
     Ok(decimal_value(decimal, vm))

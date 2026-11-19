@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// Converts an integer or `__index__` result to an octal string prefixed with `0o`.
-#[py_signature("oct(number: SupportsIndex, /)", style = one_arg)]
+#[py_signature("oct(number: SupportsIndex, /)")]
 pub fn builtin_oct(vm: &mut VM<'_>, number: &IntArg) -> RunResult<Value> {
     Ok(allocate_string_no_interning(number.view(vm).radix_repr(8, vm), vm.heap))
 }

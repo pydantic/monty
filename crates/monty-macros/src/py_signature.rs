@@ -90,12 +90,22 @@ fn parse_option<T: Parse>(meta: &ParseNestedMeta<'_>, slot: &mut Option<T>) -> s
 
 pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Result<TokenStream> {
     let def = parse_function(declaration)?;
-    if declaration
-        .style
-        .as_ref()
-        .is_some_and(|s| s == "one_arg" || s == "two_args")
-    {
-        return positional_adapter(declaration, &def, function);
+    let name = def.name.as_str();
+    let explicit_one = declaration.style.as_ref().is_some_and(|s| s == "one_arg");
+    if explicit_one || infer_single_argument(declaration, &def, &function) {
+        let error = |message| syn::Error::new(declaration.signature.span(), message);
+        let param = single_required_positional(&def)
+            .ok_or_else(|| error("`style = one_arg` requires one positional-only parameter without a default"))?;
+        if !declaration.modifiers.is_empty() {
+            return Err(error("a direct positional argument cannot use parser modifiers"));
+        }
+        if declaration.owner.is_some() || declaration.kwarg_error_name.is_some() {
+            return Err(error("`style = one_arg` uses the callable name for errors"));
+        }
+        return single_positional_adapter(function, declaration, param, &callable_name(declaration, name));
+    }
+    if declaration.style.as_ref().is_some_and(|s| s == "two_args") {
+        return two_positional_adapter(declaration, &def, function);
     }
     let default_name = format_ident!("{}Args", snake_to_pascal(def.name.as_str()));
     let bound = function.sig.inputs.iter_mut().find_map(|input| {
@@ -373,7 +383,41 @@ fn callable_name(declaration: &Declaration, name: &str) -> String {
     }
 }
 
-fn positional_adapter(
+fn single_required_positional(def: &StmtFunctionDef) -> Option<&ParameterWithDefault> {
+    let params = &def.parameters;
+    let [param] = params.posonlyargs.as_slice() else {
+        return None;
+    };
+    (params.iter().count() == 1 && param.default().is_none()).then_some(param)
+}
+
+/// A Rust parameter matching the Python name opts into direct binding. A named args
+/// struct still uses the general binder for the same Python signature.
+fn infer_single_argument(declaration: &Declaration, def: &StmtFunctionDef, function: &ItemFn) -> bool {
+    if declaration.style.is_some()
+        || declaration.owner.is_some()
+        || declaration.kwarg_error_name.is_some()
+        || !declaration.modifiers.is_empty()
+    {
+        return false;
+    }
+    let Some(param) = single_required_positional(def) else {
+        return false;
+    };
+    let mut inputs =
+        function.sig.inputs.iter().filter(
+            |input| !matches!(input, FnArg::Typed(arg) if matches!(&*arg.pat, Pat::Ident(p) if p.ident == "vm")),
+        );
+    let (Some(FnArg::Typed(arg)), None) = (inputs.next(), inputs.next()) else {
+        return false;
+    };
+    let name = param.name().as_str();
+    matches!(&*arg.pat, Pat::Ident(p) if p.ident == name)
+        && name != "self"
+        && (name != "args" || *arg.ty == parse_quote!(&Value))
+}
+
+fn two_positional_adapter(
     declaration: &Declaration,
     def: &StmtFunctionDef,
     mut function: ItemFn,
@@ -387,21 +431,6 @@ fn positional_adapter(
     }
     let name = def.name.as_str();
     let params = &def.parameters;
-    if declaration.style.as_ref().is_some_and(|style| style == "one_arg") {
-        let Some(param) = params
-            .posonlyargs
-            .first()
-            .filter(|p| params.iter().count() == 1 && p.default().is_none())
-        else {
-            return Err(error(
-                "`style = one_arg` requires one positional-only parameter without a default",
-            ));
-        };
-        if declaration.owner.is_some() || declaration.kwarg_error_name.is_some() {
-            return Err(error("`style = one_arg` uses the callable name for errors"));
-        }
-        return single_positional_adapter(function, declaration, param, &callable_name(declaration, name));
-    }
     let [first, second] = params.posonlyargs.as_slice() else {
         return Err(error("`style = two_args` requires two positional-only parameters"));
     };
@@ -469,7 +498,11 @@ fn single_positional_adapter(
                 format!("expected a parameter named `{field}` of type &Value"),
             )
         })?;
-    let bind = if let Some(annotation) = param.annotation() {
+    if let Some((unknown, _)) = declaration.converters.iter().find(|(name, _)| name != &field) {
+        return Err(syn::Error::new(unknown.span(), "unknown converter parameter"));
+    }
+    let custom = !declaration.converters.is_empty();
+    let bind = if custom || param.annotation().is_some() {
         let typed = syn::Field::parse_named.parse2(named_field(param, &quote!(pos_only,), declaration)?)?;
         let expected = &arg.ty;
         let ty = &typed.ty;
@@ -478,11 +511,10 @@ fn single_positional_adapter(
         } else {
             quote!(<#ty as crate::args::FromValue>::extract(#field, vm, crate::args::ArgErrCtx::Plain)?)
         };
-        let scalar =
-            matches!(annotation, Expr::Name(name) if matches!(name.id.as_str(), "bool" | "c_int" | "i64" | "float"));
+        let scalar = matches!(param.annotation(), Some(Expr::Name(name)) if matches!(name.id.as_str(), "bool" | "c_int" | "i64" | "float"));
         let guard = match &**expected {
             Type::Reference(reference) if reference.mutability.is_none() => quote!(crate::defer_drop!(#field, vm);),
-            _ if scalar => quote!(),
+            _ if scalar && !custom => quote!(),
             _ => {
                 return Err(syn::Error::new_spanned(
                     expected,
@@ -541,6 +573,20 @@ fn named_field(
     let literal = &declaration.signature;
     let error = |message: &str| syn::Error::new(literal.span(), message);
     let ident = field_name(&param.parameter, literal)?;
+    let converter = declaration
+        .converters
+        .iter()
+        .find(|(field, _)| field == &ident)
+        .map(|(_, ty)| ty);
+    if let Some(ty) = converter {
+        let (ty, default) = match param.default() {
+            None => (quote!(#ty), quote!()),
+            Some(Expr::EllipsisLiteral(_)) => (quote!(Option<#ty>), quote!(default)),
+            Some(expr) if let Some(n) = integer_default(expr) => (quote!(#ty), quote!(default = <#ty>::from(#n))),
+            _ => return Err(error("unsupported custom converter default")),
+        };
+        return Ok(quote!(#[from_args(#role #default)] #ident: #ty));
+    }
     let annotation = match param.annotation() {
         None => None,
         Some(Expr::Name(name)) => Some(name.id.as_str()),
@@ -555,23 +601,6 @@ fn named_field(
         }
         _ => return Err(error("unsupported native parameter annotation")),
     };
-    let converter = declaration
-        .converters
-        .iter()
-        .find(|(field, _)| field == &ident)
-        .map(|(_, ty)| ty);
-    if let Some(ty) = converter {
-        if annotation.is_some() {
-            return Err(error("a custom converter supplies the parameter type"));
-        }
-        let (ty, default) = match param.default() {
-            None => (quote!(#ty), quote!()),
-            Some(Expr::EllipsisLiteral(_)) => (quote!(Option<#ty>), quote!(default)),
-            Some(expr) if let Some(n) = integer_default(expr) => (quote!(#ty), quote!(default = <#ty>::from(#n))),
-            _ => return Err(error("unsupported custom converter default")),
-        };
-        return Ok(quote!(#[from_args(#role #default)] #ident: #ty));
-    }
     let ty = match annotation {
         None if matches!(param.default(), Some(Expr::EllipsisLiteral(_))) => quote!(Option<crate::value::Value>),
         None if matches!(param.default(), Some(Expr::StringLiteral(_))) => quote!(crate::args::DefaultedStringArg),

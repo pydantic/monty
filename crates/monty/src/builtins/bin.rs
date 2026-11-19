@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// Converts an integer or `__index__` result to a binary string prefixed with `0b`.
-#[py_signature("bin(number: SupportsIndex, /)", style = one_arg)]
+#[py_signature("bin(number: SupportsIndex, /)")]
 pub fn builtin_bin(vm: &mut VM<'_>, number: &IntArg) -> RunResult<Value> {
     Ok(allocate_string_no_interning(number.view(vm).radix_repr(2, vm), vm.heap))
 }

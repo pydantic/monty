@@ -363,7 +363,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: MathFunctions, args: ArgValues) ->
 ///
 /// Uses `__floor__`, falling back to numeric float conversion.
 /// Raises `OverflowError` for infinity, `ValueError` for NaN.
-#[py_signature("floor(x, /)", style = one_arg, error_name = "math.floor")]
+#[py_signature("floor(x, /)", error_name = "math.floor")]
 fn math_floor(vm: &mut VM<'_>, x: &Value) -> RunResult<Value> {
     if let Some(result) = x.py_floor_impl(vm)? {
         Ok(result)
@@ -377,7 +377,7 @@ fn math_floor(vm: &mut VM<'_>, x: &Value) -> RunResult<Value> {
 ///
 /// Uses `__ceil__`, falling back to numeric float conversion.
 /// Raises `OverflowError` for infinity, `ValueError` for NaN.
-#[py_signature("ceil(x, /)", style = one_arg, error_name = "math.ceil")]
+#[py_signature("ceil(x, /)", error_name = "math.ceil")]
 fn math_ceil(vm: &mut VM<'_>, x: &Value) -> RunResult<Value> {
     if let Some(result) = x.py_ceil_impl(vm)? {
         Ok(result)
@@ -390,7 +390,7 @@ fn math_ceil(vm: &mut VM<'_>, x: &Value) -> RunResult<Value> {
 /// `math.trunc(x)` — truncates x to the nearest integer toward zero.
 ///
 /// Uses `__trunc__` without falling back to integer or float conversion.
-#[py_signature("trunc(x, /)", style = one_arg, error_name = "math.trunc")]
+#[py_signature("trunc(x, /)", error_name = "math.trunc")]
 fn math_trunc(vm: &mut VM<'_>, x: &Value) -> RunResult<Value> {
     x.py_trunc_impl(vm)?
         .ok_or_else(|| ExcType::type_error_missing_numeric_dunder(&x.py_type_name(vm), "__trunc__"))
@@ -411,7 +411,7 @@ fn rounding_float(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
 ///
 /// Always returns a float. Raises `ValueError` for negative inputs with a
 /// descriptive message matching CPython 3.14: "expected a nonnegative input, got <x>".
-#[py_signature("sqrt(x: float, /)", style = one_arg, error_name = "math.sqrt")]
+#[py_signature("sqrt(x: float, /)", error_name = "math.sqrt")]
 fn math_sqrt(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     if x < 0.0 {
         Err(SimpleException::new_msg(ExcType::ValueError, format!("expected a nonnegative input, got {x:?}")).into())
@@ -424,7 +424,7 @@ fn math_sqrt(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 ///
 /// Returns the largest integer `r` such that `r * r <= n`.
 /// Only accepts non-negative integers (and bools).
-#[py_signature("isqrt(n: int, /)", style = one_arg, error_name = "math.isqrt")]
+#[py_signature("isqrt(n: int, /)", error_name = "math.isqrt")]
 fn math_isqrt(vm: &mut VM<'_>, n: &IntArg) -> RunResult<Value> {
     n.view(vm)
         .with_value(
@@ -464,7 +464,7 @@ fn isqrt_i64(n: i64) -> i64 {
 /// `math.cbrt(x)` — returns the cube root of x.
 ///
 /// Always returns a float. Unlike `sqrt`, works for negative inputs.
-#[py_signature("cbrt(x: float, /)", style = one_arg, error_name = "math.cbrt")]
+#[py_signature("cbrt(x: float, /)", error_name = "math.cbrt")]
 fn math_cbrt(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     Ok(Value::Float(x.cbrt()))
 }
@@ -497,7 +497,7 @@ fn math_pow(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `math.exp(x)` — returns e raised to the power x.
-#[py_signature("exp(x: float, /)", style = one_arg, error_name = "math.exp")]
+#[py_signature("exp(x: float, /)", error_name = "math.exp")]
 fn math_exp(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     let result = x.exp();
     check_range_error(result, x)?;
@@ -505,7 +505,7 @@ fn math_exp(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 }
 
 /// `math.exp2(x)` — returns 2 raised to the power x.
-#[py_signature("exp2(x: float, /)", style = one_arg, error_name = "math.exp2")]
+#[py_signature("exp2(x: float, /)", error_name = "math.exp2")]
 fn math_exp2(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     let result = x.exp2();
     check_range_error(result, x)?;
@@ -515,7 +515,7 @@ fn math_exp2(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 /// `math.expm1(x)` — returns e**x - 1.
 ///
 /// More accurate than `exp(x) - 1` for small values of x.
-#[py_signature("expm1(x: float, /)", style = one_arg, error_name = "math.expm1")]
+#[py_signature("expm1(x: float, /)", error_name = "math.expm1")]
 fn math_expm1(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     let result = x.exp_m1();
     check_range_error(result, x)?;
@@ -618,7 +618,7 @@ fn bigint_frexp(n: &BigInt) -> (f64, i64) {
 ///
 /// More accurate than `log(1 + x)` for small values of x.
 /// CPython 3.14 raises ValueError with "expected argument value > -1, got <x>".
-#[py_signature("log1p(x: float, /)", style = one_arg, error_name = "math.log1p")]
+#[py_signature("log1p(x: float, /)", error_name = "math.log1p")]
 fn math_log1p(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     if x <= -1.0 {
         return Err(
@@ -632,7 +632,7 @@ fn math_log1p(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 ///
 /// Returns `inf` for positive infinity, `nan` for NaN.
 /// Raises `ValueError` for non-positive finite inputs.
-#[py_signature("log2(x, /)", style = one_arg, error_name = "math.log2")]
+#[py_signature("log2(x, /)", error_name = "math.log2")]
 fn math_log2(vm: &mut VM<'_>, x: &Value) -> RunResult<Value> {
     Ok(Value::Float(log_arg(x, f64::log2, vm)?))
 }
@@ -641,7 +641,7 @@ fn math_log2(vm: &mut VM<'_>, x: &Value) -> RunResult<Value> {
 ///
 /// Returns `inf` for positive infinity, `nan` for NaN.
 /// Raises `ValueError` for non-positive finite inputs.
-#[py_signature("log10(x, /)", style = one_arg, error_name = "math.log10")]
+#[py_signature("log10(x, /)", error_name = "math.log10")]
 fn math_log10(vm: &mut VM<'_>, x: &Value) -> RunResult<Value> {
     Ok(Value::Float(log_arg(x, f64::log10, vm)?))
 }
@@ -653,25 +653,25 @@ fn math_log10(vm: &mut VM<'_>, x: &Value) -> RunResult<Value> {
 /// `math.fabs(x)` — returns the absolute value as a float.
 ///
 /// Unlike the builtin `abs()`, always returns a float.
-#[py_signature("fabs(x: float, /)", style = one_arg, error_name = "math.fabs")]
+#[py_signature("fabs(x: float, /)", error_name = "math.fabs")]
 fn math_fabs(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     Ok(Value::Float(x.abs()))
 }
 
 /// `math.isnan(x)` — returns True if x is NaN.
-#[py_signature("isnan(x: float, /)", style = one_arg, error_name = "math.isnan")]
+#[py_signature("isnan(x: float, /)", error_name = "math.isnan")]
 fn math_isnan(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     Ok(Value::Bool(x.is_nan()))
 }
 
 /// `math.isinf(x)` — returns True if x is positive or negative infinity.
-#[py_signature("isinf(x: float, /)", style = one_arg, error_name = "math.isinf")]
+#[py_signature("isinf(x: float, /)", error_name = "math.isinf")]
 fn math_isinf(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     Ok(Value::Bool(x.is_infinite()))
 }
 
 /// `math.isfinite(x)` — returns True if x is neither infinity nor NaN.
-#[py_signature("isfinite(x: float, /)", style = one_arg, error_name = "math.isfinite")]
+#[py_signature("isfinite(x: float, /)", error_name = "math.isfinite")]
 fn math_isfinite(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     Ok(Value::Bool(x.is_finite()))
 }
@@ -735,7 +735,7 @@ fn math_nextafter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// For finite non-zero x, returns the smallest float `u` such that `x + u != x`.
 /// Special cases: `ulp(nan)` returns nan, `ulp(inf)` returns inf.
-#[py_signature("ulp(x: float, /)", style = one_arg, error_name = "math.ulp")]
+#[py_signature("ulp(x: float, /)", error_name = "math.ulp")]
 fn math_ulp(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     if x.is_nan() {
         return Ok(Value::Float(f64::NAN));
@@ -760,21 +760,21 @@ fn math_ulp(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 /// `math.sin(x)` — returns the sine of x (in radians).
 ///
 /// CPython 3.14 raises ValueError for infinity: "expected a finite input, got inf".
-#[py_signature("sin(x: float, /)", style = one_arg, error_name = "math.sin")]
+#[py_signature("sin(x: float, /)", error_name = "math.sin")]
 fn math_sin(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     require_finite(x)?;
     Ok(Value::Float(x.sin()))
 }
 
 /// `math.cos(x)` — returns the cosine of x (in radians).
-#[py_signature("cos(x: float, /)", style = one_arg, error_name = "math.cos")]
+#[py_signature("cos(x: float, /)", error_name = "math.cos")]
 fn math_cos(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     require_finite(x)?;
     Ok(Value::Float(x.cos()))
 }
 
 /// `math.tan(x)` — returns the tangent of x (in radians).
-#[py_signature("tan(x: float, /)", style = one_arg, error_name = "math.tan")]
+#[py_signature("tan(x: float, /)", error_name = "math.tan")]
 fn math_tan(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     require_finite(x)?;
     Ok(Value::Float(x.tan()))
@@ -783,7 +783,7 @@ fn math_tan(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 /// `math.asin(x)` — returns the arc sine of x (in radians).
 ///
 /// CPython 3.14: "expected a number in range from -1 up to 1, got <x>".
-#[py_signature("asin(x: float, /)", style = one_arg, error_name = "math.asin")]
+#[py_signature("asin(x: float, /)", error_name = "math.asin")]
 fn math_asin(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     require_unit_range(x)?;
     Ok(Value::Float(x.asin()))
@@ -792,14 +792,14 @@ fn math_asin(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 /// `math.acos(x)` — returns the arc cosine of x (in radians).
 ///
 /// CPython 3.14: "expected a number in range from -1 up to 1, got <x>".
-#[py_signature("acos(x: float, /)", style = one_arg, error_name = "math.acos")]
+#[py_signature("acos(x: float, /)", error_name = "math.acos")]
 fn math_acos(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     require_unit_range(x)?;
     Ok(Value::Float(x.acos()))
 }
 
 /// `math.atan(x)` — returns the arc tangent of x (in radians).
-#[py_signature("atan(x: float, /)", style = one_arg, error_name = "math.atan")]
+#[py_signature("atan(x: float, /)", error_name = "math.atan")]
 fn math_atan(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     Ok(Value::Float(x.atan()))
 }
@@ -821,7 +821,7 @@ fn math_atan2(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 // ==========================
 
 /// `math.sinh(x)` — returns the hyperbolic sine of x.
-#[py_signature("sinh(x: float, /)", style = one_arg, error_name = "math.sinh")]
+#[py_signature("sinh(x: float, /)", error_name = "math.sinh")]
 fn math_sinh(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     let result = x.sinh();
     check_range_error(result, x)?;
@@ -829,7 +829,7 @@ fn math_sinh(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 }
 
 /// `math.cosh(x)` — returns the hyperbolic cosine of x.
-#[py_signature("cosh(x: float, /)", style = one_arg, error_name = "math.cosh")]
+#[py_signature("cosh(x: float, /)", error_name = "math.cosh")]
 fn math_cosh(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     let result = x.cosh();
     check_range_error(result, x)?;
@@ -837,13 +837,13 @@ fn math_cosh(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 }
 
 /// `math.tanh(x)` — returns the hyperbolic tangent of x.
-#[py_signature("tanh(x: float, /)", style = one_arg, error_name = "math.tanh")]
+#[py_signature("tanh(x: float, /)", error_name = "math.tanh")]
 fn math_tanh(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     Ok(Value::Float(x.tanh()))
 }
 
 /// `math.asinh(x)` — returns the inverse hyperbolic sine of x.
-#[py_signature("asinh(x: float, /)", style = one_arg, error_name = "math.asinh")]
+#[py_signature("asinh(x: float, /)", error_name = "math.asinh")]
 fn math_asinh(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     Ok(Value::Float(x.asinh()))
 }
@@ -851,7 +851,7 @@ fn math_asinh(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 /// `math.acosh(x)` — returns the inverse hyperbolic cosine of x.
 ///
 /// CPython 3.14: "expected argument value not less than 1, got <x>".
-#[py_signature("acosh(x: float, /)", style = one_arg, error_name = "math.acosh")]
+#[py_signature("acosh(x: float, /)", error_name = "math.acosh")]
 fn math_acosh(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     if x < 1.0 {
         return Err(SimpleException::new_msg(
@@ -866,7 +866,7 @@ fn math_acosh(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 /// `math.atanh(x)` — returns the inverse hyperbolic tangent of x.
 ///
 /// CPython 3.14: "expected a number between -1 and 1, got <x>".
-#[py_signature("atanh(x: float, /)", style = one_arg, error_name = "math.atanh")]
+#[py_signature("atanh(x: float, /)", error_name = "math.atanh")]
 fn math_atanh(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     if x <= -1.0 || x >= 1.0 {
         return Err(SimpleException::new_msg(
@@ -883,13 +883,13 @@ fn math_atanh(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 // ==========================
 
 /// `math.degrees(x)` — converts angle x from radians to degrees.
-#[py_signature("degrees(x: float, /)", style = one_arg, error_name = "math.degrees")]
+#[py_signature("degrees(x: float, /)", error_name = "math.degrees")]
 fn math_degrees(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     Ok(Value::Float(x.to_degrees()))
 }
 
 /// `math.radians(x)` — converts angle x from degrees to radians.
-#[py_signature("radians(x: float, /)", style = one_arg, error_name = "math.radians")]
+#[py_signature("radians(x: float, /)", error_name = "math.radians")]
 fn math_radians(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     Ok(Value::Float(x.to_radians()))
 }
@@ -902,7 +902,7 @@ fn math_radians(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 ///
 /// Only accepts non-negative integers (and bools). Raises `ValueError` for
 /// negative values, `TypeError` for non-integer types.
-#[py_signature("factorial(n: int, /)", style = one_arg, error_name = "math.factorial")]
+#[py_signature("factorial(n: int, /)", error_name = "math.factorial")]
 fn math_factorial(vm: &mut VM<'_>, n: &IntArg) -> RunResult<Value> {
     let tracker = &vm.heap.tracker;
     let result = n
@@ -1142,7 +1142,7 @@ fn math_remainder(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `math.modf(x)` — returns the fractional and integer parts of x as a tuple.
 ///
 /// Both values carry the sign of x. Returns `(fractional, integer)`.
-#[py_signature("modf(x: float, /)", style = one_arg, error_name = "math.modf")]
+#[py_signature("modf(x: float, /)", error_name = "math.modf")]
 fn math_modf(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     let (fractional, integer) = libm::modf(x);
     let tuple = allocate_tuple(smallvec![Value::Float(fractional), Value::Float(integer)], vm.heap);
@@ -1153,7 +1153,7 @@ fn math_modf(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 ///
 /// The mantissa is always in the range [0.5, 1.0) or zero.
 /// Returns a tuple `(float, int)`.
-#[py_signature("frexp(x: float, /)", style = one_arg, error_name = "math.frexp")]
+#[py_signature("frexp(x: float, /)", error_name = "math.frexp")]
 fn math_frexp(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     let (m, exp) = libm::frexp(x);
     let tuple = allocate_tuple(smallvec![Value::Float(m), Value::Int(i64::from(exp))], vm.heap);
@@ -1206,7 +1206,7 @@ fn math_ldexp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// CPython 3.14 raises ValueError for non-positive integers:
 /// "expected a noninteger or positive integer, got <x>".
-#[py_signature("gamma(x: float, /)", style = one_arg, error_name = "math.gamma")]
+#[py_signature("gamma(x: float, /)", error_name = "math.gamma")]
 fn math_gamma(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     // CPython also rejects -inf for gamma (but not lgamma, where lgamma(-inf) = inf)
     if x == f64::NEG_INFINITY {
@@ -1224,7 +1224,7 @@ fn math_gamma(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 }
 
 /// `math.lgamma(x)` — returns the natural log of the absolute value of Gamma(x).
-#[py_signature("lgamma(x: float, /)", style = one_arg, error_name = "math.lgamma")]
+#[py_signature("lgamma(x: float, /)", error_name = "math.lgamma")]
 fn math_lgamma(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     check_gamma_pole(x)?;
 
@@ -1234,7 +1234,7 @@ fn math_lgamma(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 }
 
 /// `math.erf(x)` — returns the error function at x.
-#[py_signature("erf(x: float, /)", style = one_arg, error_name = "math.erf")]
+#[py_signature("erf(x: float, /)", error_name = "math.erf")]
 fn math_erf(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     Ok(Value::Float(libm::erf(x)))
 }
@@ -1242,7 +1242,7 @@ fn math_erf(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 /// `math.erfc(x)` — returns the complementary error function at x (1 - erf(x)).
 ///
 /// More accurate than `1 - erf(x)` for large x.
-#[py_signature("erfc(x: float, /)", style = one_arg, error_name = "math.erfc")]
+#[py_signature("erfc(x: float, /)", error_name = "math.erfc")]
 fn math_erfc(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
     Ok(Value::Float(libm::erfc(x)))
 }
