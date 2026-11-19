@@ -140,6 +140,8 @@ fn retry_field<'f>(
     while let Some(mut field) = fields.pop() {
         if let Some(shorter) = field.shorter.take() {
             field.len = shorter;
+            // Only `%f` has more than one shorter length.
+            field.shorter = (field.field == 'f' && shorter > 1).then(|| shorter - 1);
             let next = (field.field_start + shorter, field.after);
             fields.push(field);
             return Some(next);
@@ -149,7 +151,7 @@ fn retry_field<'f>(
     None
 }
 
-/// Returns the greedy token length and any shorter numeric alternative.
+/// Returns the greedy token length and the first shorter numeric alternative.
 fn field_lengths(input: &str, field: char, zones: Option<&[String; 2]>) -> Option<(usize, Option<usize>)> {
     let len = match field {
         'H' | 'I' | 'S' => {
@@ -168,10 +170,11 @@ fn field_lengths(input: &str, field: char, zones: Option<&[String; 2]>) -> Optio
             }
             2
         }
-        'f' => match input.bytes().take(6).take_while(u8::is_ascii_digit).count() {
-            0 => return None,
-            digits => digits,
-        },
+        // Up to six digits, retried one shorter at a time like CPython's regex.
+        'f' => {
+            let digits = input.bytes().take(6).take_while(u8::is_ascii_digit).count();
+            return (digits > 0).then(|| (digits, (digits > 1).then(|| digits - 1)));
+        }
         'Z' => zone_length(input, zones)?,
         'z' => {
             let token = offset_at(input)?;
@@ -290,7 +293,8 @@ fn zone_length(input: &str, zones: Option<&[String; 2]>) -> Option<usize> {
 }
 
 /// Expands clock aliases so their seconds and meridiem also use Python semantics.
-/// Rejects directives outside CPython's `_strptime` table, which Jiff would otherwise parse.
+/// Rejects directives outside CPython's `_strptime` table, which Jiff would otherwise parse,
+/// and drops flags and widths, which CPython ignores (`%-f` is `%f`).
 fn expand_format(format: &str) -> RunResult<String> {
     let mut out = String::with_capacity(format.len());
     let mut rest = format;
@@ -298,17 +302,19 @@ fn expand_format(format: &str) -> RunResult<String> {
         let (literal, directive) = rest.split_at(at);
         out.push_str(literal);
         let (end, key) = strptime_directive(directive);
-        let bare = end == 1 + key.len();
-        out.push_str(match key {
+        match key {
             "" => return Err(ExcType::strptime_stray_percent(format)),
-            "c" if bare => "%a %b %e %H:%M:%S %Y",
-            "x" if bare => "%m/%d/%y",
-            "X" | "T" if bare => "%H:%M:%S",
-            "r" if bare => "%I:%M:%S %p",
-            "R" if bare => "%H:%M",
-            _ if is_strptime_directive(key) => &directive[..end],
+            "c" => out.push_str("%a %b %e %H:%M:%S %Y"),
+            "x" => out.push_str("%m/%d/%y"),
+            "X" | "T" => out.push_str("%H:%M:%S"),
+            "r" => out.push_str("%I:%M:%S %p"),
+            "R" => out.push_str("%H:%M"),
+            _ if is_strptime_directive(key) => {
+                out.push('%');
+                out.push_str(key);
+            }
             _ => return Err(ExcType::strptime_bad_directive(key, format)),
-        });
+        }
         rest = &directive[end..];
     }
     out.push_str(rest);

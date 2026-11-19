@@ -599,7 +599,7 @@ impl TimeFields {
                     pair[1],
                     b'a' | b'A' | b'j' | b'w' | b'u' | b'U' | b'W' | b'S' | b'c' | b'r' | b'T' | b'X'
                 ) || (year_shift != 0 && matches!(pair[1], b'Y' | b'C' | b'G' | b'F'))
-                    || (self.second > 59 && matches!(pair[1], b'-' | b'_' | b'0' | b'^' | b'#')))
+                    || ((self.second > 59 || year_shift != 0) && matches!(pair[1], b'-' | b'_' | b'0' | b'^' | b'#')))
         });
         if !may_have_fields {
             return Ok(Cow::Borrowed(format));
@@ -617,15 +617,13 @@ impl TimeFields {
         while let Some(percent) = rest.find('%') {
             let (before, from_percent) = rest.split_at(percent);
             out.push_str(before)?;
-            // A flagged leap second (`%-S`); Jiff would render the clamped 59.
-            if self.second > 59
-                && let Some(len) = flagged_second_len(&from_percent[1..])
-            {
-                out.push_str(&self.second.to_string())?;
-                rest = &from_percent[1 + len..];
-                continue;
-            }
-            let directive = from_percent[1..].chars().next();
+            // Flags (`%-S`, `%-Y`) cannot pad a leap second or a wide year, so they
+            // take the bare substitution rather than Jiff's clamped second or twin year.
+            let (flags, directive) = flagged_conversion(&from_percent[1..])
+                .filter(|&(_, c)| {
+                    (c == 'S' && self.second > 59) || (year_shift != 0 && matches!(c, 'Y' | 'C' | 'G' | 'F'))
+                })
+                .map_or((0, from_percent[1..].chars().next()), |(flags, c)| (flags, Some(c)));
             let substitute = match directive {
                 Some('a') => Some(short.to_owned()),
                 Some('A') => Some(long.to_owned()),
@@ -650,7 +648,7 @@ impl TimeFields {
             let consumed = match (substitute, directive) {
                 (Some(text), Some(c)) => {
                     out.push_str(&text)?;
-                    1 + c.len_utf8()
+                    1 + flags + c.len_utf8()
                 }
                 // Copy the directive whole, so `%%a` consumes `%%` and leaves `a` as text.
                 (None, Some(c)) => {
@@ -670,12 +668,13 @@ impl TimeFields {
     }
 }
 
-/// The length of a `%S` directive with glibc flags but no width (`-S`, `_S`), after its `%`.
-fn flagged_second_len(directive: &str) -> Option<usize> {
+/// The flag length and conversion of a directive with glibc flags but no width
+/// (`-S`, `_Y`), after its `%`.
+fn flagged_conversion(directive: &str) -> Option<(usize, char)> {
     let flags = directive
         .find(|c| !matches!(c, '-' | '_' | '0' | '^' | '#'))
         .filter(|&flags| flags > 0)?;
-    directive[flags..].starts_with('S').then_some(flags + 1)
+    directive[flags..].chars().next().map(|c| (flags, c))
 }
 
 /// `time.gmtime(secs)`: the instant broken down in UTC.
@@ -861,7 +860,8 @@ fn naive_from_time_tuple(items: &[i64; 9]) -> RunResult<DateTime> {
             .ok_or_else(|| ExcType::time_field_out_of_range(field))?;
     }
     let [month, day, hour, minute, second] = checked;
-    let year = i32::try_from(items[0]).map_err(|_| ExcType::time_field_out_of_range("year"))?;
+    // CPython reads the year as a C `int`.
+    let year = i32::try_from(items[0]).map_err(|_| ExcType::overflow_signed_c_int(items[0]))?;
     // CPython accepts leap seconds here and folds them into the next minute.
     let (second, extra) = if second > 59 {
         (59, i64::from(second) - 59)

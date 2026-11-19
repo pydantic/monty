@@ -98,6 +98,9 @@ Two divergences from CPython's platform `strftime`:
 - `%f` renders `000000`, since the shared formatter treats it as microseconds and a `struct_time` has none; glibc
     CPython emits `%f` verbatim.
 - Unknown directives pass through verbatim, matching glibc CPython rather than macOS (`%Q` is `'%Q'`, not `'Q'`).
+- For a year past ±9999, a year directive with a width (`%7Y`, `%06C`, `%8G`) renders a
+    year 400·n years away; glibc CPython pads the real year (`'0010000'`), macOS emits `7Y`.
+    Flags alone (`%-Y`, `%_Y`) render the real year.
 
 Without a time argument it reads the clock, suspending under `'call_host'` with `time.strftime` as the caller.
 

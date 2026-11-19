@@ -540,7 +540,7 @@ pub(crate) fn render_strftime(datetime: civil::DateTime, format: &str, tracker: 
 }
 
 /// glibc's `strftime` conversions; any other directive is copied through verbatim.
-const GLIBC_CONVERSIONS: &str = "%ACDFGHIMPRSTUVWXYZabcdeghjklmnprstuwxyz";
+const GLIBC_CONVERSIONS: &str = "%ABCDFGHIMPRSTUVWXYZabcdeghjklmnprstuwxyz";
 
 /// Splits a `%` directive into its byte length and conversion, after glibc's flags and width.
 /// `%:z` keeps its colon; `None` means the format ended mid-directive.

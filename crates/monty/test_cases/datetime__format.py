@@ -6,6 +6,7 @@ assert datetime.datetime(2024, 6, 15, 10, 30, 45).strftime('%Y-%m-%d') == '2024-
 assert datetime.datetime(2024, 6, 15, 10, 30, 45).strftime('%H:%M:%S') == '10:30:45'
 assert datetime.date(2024, 6, 15).strftime('%Y/%m/%d') == '2024/06/15'
 assert datetime.date(2024, 6, 15).strftime(format='%Y/%m/%d') == '2024/06/15'
+assert datetime.date(2024, 6, 5).strftime('%B|%b|%A|%a') == 'June|Jun|Wednesday|Wed'
 assert datetime.datetime.strptime('2024-06-15 10:30:45.1', '%Y-%m-%d %H:%M:%S.%f') == datetime.datetime(
     2024, 6, 15, 10, 30, 45, 100000
 )
@@ -402,8 +403,15 @@ for _format in ['%', '%Y%', '% ', "%Y'%"]:
         assert False, 'expected ValueError'
     except ValueError as exc:
         assert str(exc) == "stray % in format '" + _format + "'"
-# flags are skipped before the lookup
+# flags and widths are ignored, so `%-f` keeps its six-digit limit and `%-c` still expands
 assert datetime.datetime.strptime('5', '%-d') == datetime.datetime(1900, 1, 5)
+assert datetime.datetime.strptime('7', '%-H') == datetime.datetime(1900, 1, 1, 7)
+assert datetime.datetime.strptime('Mon Jun  3 07:03:04 2024', '%-c') == datetime.datetime(2024, 6, 3, 7, 3, 4)
+try:
+    datetime.datetime.strptime('1234567', '%-f')
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'unconverted data remains: 7'
 
 # === strptime %f takes at most six digits ===
 for _text, _remaining in [('1234567', '7'), ('123456789', '789')]:
@@ -413,6 +421,9 @@ for _text, _remaining in [('1234567', '7'), ('123456789', '789')]:
     except ValueError as exc:
         assert str(exc) == 'unconverted data remains: ' + _remaining
 assert datetime.datetime.strptime('000001', '%f').microsecond == 1
+# %f gives digits back to a following numeric field
+assert datetime.datetime.strptime('123', '%f%S') == datetime.datetime(1900, 1, 1, 0, 0, 3, 120000)
+assert datetime.datetime.strptime('12345', '%f%H') == datetime.datetime(1900, 1, 1, 5, 0, 0, 123400)
 assert datetime.datetime.strptime('45.5Z', '%S.%f%z') == datetime.datetime(
     1900, 1, 1, 0, 0, 45, 500000, tzinfo=datetime.timezone.utc
 )

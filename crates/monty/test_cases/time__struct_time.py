@@ -177,4 +177,13 @@ if sys.platform != 'win32':
     # flagged forms of a leap second keep the 60
     assert time.strftime('%-S|%_S|%0S|%S', (2024, 1, 1, 23, 59, 60, 0, 1, 0)) == '60|60|60|60'
     assert time.strftime('%-S|%-M', (2024, 1, 1, 23, 5, 7, 0, 1, 0)) == '7|5'
+    # and flagged year directives keep the wide year
+    assert time.strftime('%-Y|%_Y|%0Y|%-C|%-G|%-F', wide) == '10000|10000|10000|100|9999|10000-01-01'
 assert time.asctime((10000, 1, 1, 0, 0, 0, 5, 1, 0)) == 'Sat Jan  1 00:00:00 10000'
+
+# === a time tuple's year is a C int ===
+for _year, _message in [(2**31, 'greater than maximum'), (-(2**31) - 1, 'less than minimum')]:
+    _tuple = (_year, 1, 1, 0, 0, 0, 0, 1, -1)
+    check(lambda: time.mktime(_tuple), 'OverflowError: signed integer is ' + _message)
+    check(lambda: time.asctime(_tuple), 'OverflowError: signed integer is ' + _message)
+    check(lambda: time.strftime('%Y', _tuple), 'OverflowError: signed integer is ' + _message)

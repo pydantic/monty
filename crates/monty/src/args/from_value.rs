@@ -205,14 +205,7 @@ impl FromValue for i32 {
             // Overflow is a *value* failure: the argument is a genuine int,
             // so a bad-arg rewrite ("must be int, not int") would be wrong.
             // CPython's `i` format range-checks with sign-aware wording.
-            Value::Int(i) => Self::try_from(i).map_err(|_| {
-                let msg = if i < 0 {
-                    "signed integer is less than minimum"
-                } else {
-                    "signed integer is greater than maximum"
-                };
-                FromValueFail::Raise(SimpleException::new_msg(ExcType::OverflowError, msg).into())
-            }),
+            Value::Int(i) => Self::try_from(i).map_err(|_| FromValueFail::Raise(ExcType::overflow_signed_c_int(i))),
             _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_long())),
             _ => Err(FromValueFail::WrongType),
         };

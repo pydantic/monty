@@ -2065,6 +2065,18 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "Python int too large to convert to C long").into()
     }
 
+    /// CPython's `i` format for an `i64` outside a C `int`:
+    /// `signed integer is less than minimum` / `signed integer is greater than maximum`.
+    #[must_use]
+    fn overflow_signed_c_int(value: i64) -> RunError {
+        let msg = if value < 0 {
+            "signed integer is less than minimum"
+        } else {
+            "signed integer is greater than maximum"
+        };
+        SimpleException::new_msg(ExcType::OverflowError, msg).into()
+    }
+
     /// `OverflowError: Python int too large for C unsigned long`, from Argument
     /// Clinic's `unsigned_long` converter on an int beyond `u64`.
     #[must_use]
