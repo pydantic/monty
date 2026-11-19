@@ -87,7 +87,7 @@ raising `AttributeError` at runtime; see each module's page for the specifics.
 
 ## Modules the type checker resolves but the runtime does not
 
-`abc`, `enum`, `io`, `_io`, `_stat`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed` support the
+`abc`, `enum`, `io`, `_io`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed` support the
 vendored stubs, so their imports pass type checking.
 `io` and `_io` declare the file objects `open()` returns.
 At runtime, the host must provide them or the import raises `ModuleNotFoundError`.
@@ -114,8 +114,11 @@ Monty patches `keyword.iskeyword` and `keyword.issoftkeyword` to be Python funct
 A wrong argument count raises `TypeError: iskeyword() missing 1 required positional argument: 's'` (CPython:
 `frozenset.__contains__() takes exactly one argument (0 given)`), and their `repr()` differs.
 
-`stat` tries to import the optional `_stat` accelerator, which Monty does not bundle.
-Unless the host provides `_stat`, `stat` uses the pure-Python definitions:
+`stat` always uses the pure-Python definitions.
+The type checker resolves `_stat` for the `stat` stub, but the runtime reserves the name: `import _stat` raises
+`ModuleNotFoundError` without consulting the host.
+The `stat` stub retains CPython's positional-only signatures, so the checker rejects keyword arguments that the
+pure-Python functions accept.
 
 - Its functions are Python functions with Python's argument errors.
 - A non-`int` mode raises `TypeError: unsupported operand type(s) for &: 'str' and 'int'`

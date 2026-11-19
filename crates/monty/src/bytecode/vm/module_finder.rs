@@ -12,7 +12,9 @@
 
 use std::sync::Arc;
 
-use monty_types::{ExcType, ExtFunctionResult, ImportArgs, MAX_SEARCH_DIRS, ModuleFile, OsFunctionCall};
+use monty_types::{
+    ExcType, ExtFunctionResult, ImportArgs, MAX_SEARCH_DIRS, ModuleFile, OsFunctionCall, SANDBOX_MODULE_NAMES,
+};
 
 use super::{
     FrameExit, FrameNamespace, VM,
@@ -149,9 +151,8 @@ impl VM<'_> {
         })
     }
 
-    /// The module `name`: cached, else vendored (its body's frame is pushed),
-    /// else the host's `import` call searching the directories `search_path`
-    /// returns. `None` from `search_path` means only vendored modules can match.
+    /// Looks up a cached or vendored module before asking the host.
+    /// Reserved names and a `None` search path never reach the host.
     fn find_module(
         &mut self,
         name: String,
@@ -164,7 +165,9 @@ impl VM<'_> {
             // TODO(#1275): compile vendored modules once rather than in every session.
             self.run_file_module(name, &vendored.path(), &Arc::from(vendored.source()))?;
             Ok(CallResult::FramePushed)
-        } else if let Some(dirs) = search_path(self) {
+        } else if !SANDBOX_MODULE_NAMES.contains(&name.as_str())
+            && let Some(dirs) = search_path(self)
+        {
             Ok(PendingImport { name, on_miss }.suspend(dirs))
         } else {
             Err(missed_import(&name, on_miss))

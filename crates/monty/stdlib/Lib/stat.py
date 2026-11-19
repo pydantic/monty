@@ -203,10 +203,3 @@ FILE_ATTRIBUTE_SPARSE_FILE = 512
 FILE_ATTRIBUTE_SYSTEM = 4
 FILE_ATTRIBUTE_TEMPORARY = 256
 FILE_ATTRIBUTE_VIRTUAL = 65536
-
-
-# If available, use C implementation
-try:
-    from _stat import *
-except ImportError:
-    pass
