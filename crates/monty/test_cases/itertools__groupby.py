@@ -1,5 +1,7 @@
 # `itertools.groupby`: runs of equal keys, each yielded as `(key, group)` where
 # the group is a sub-iterator sharing the parent's position in the source.
+import sys
+
 import itertools
 
 # === Basics ===
@@ -182,10 +184,10 @@ try:
     itertools.groupby()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) in (
-        "groupby() missing 1 required positional argument: 'iterable'",
-        "groupby() missing required argument 'iterable' (pos 1)",
-    )
+    if sys.platform == 'monty':
+        assert str(exc) == "groupby() missing 1 required positional argument: 'iterable'"
+    else:
+        assert str(exc) == "groupby() missing required argument 'iterable' (pos 1)"
 
 try:
     itertools.groupby([1], None, 1)
@@ -197,10 +199,10 @@ try:
     itertools.groupby([1, 2], key=None, x=1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) in (
-        "groupby() got an unexpected keyword argument 'x'",
-        'groupby() takes at most 2 arguments (3 given)',
-    )
+    if sys.platform == 'monty':
+        assert str(exc) == "groupby() got an unexpected keyword argument 'x'"
+    else:
+        assert str(exc) == 'groupby() takes at most 2 arguments (3 given)'
 
 try:
     itertools.groupby([1], keyfunc=None)

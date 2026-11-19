@@ -5,6 +5,13 @@ import os
 import sys
 from pathlib import Path
 
+is_monty = sys.platform == 'monty'
+
+
+def expected_error(*, monty, cpython):
+    return monty if is_monty else cpython
+
+
 is_windows = sys.platform == 'win32'
 
 # root is injected by the test runner:
@@ -79,53 +86,59 @@ try:
         (
             (),
             {},
-            (
-                "chdir() missing 1 required positional argument: 'path'",
-                "chdir() missing required argument 'path' (pos 1)",
+            expected_error(
+                monty="chdir() missing 1 required positional argument: 'path'",
+                cpython="chdir() missing required argument 'path' (pos 1)",
             ),
         ),
         (('.', '.'), {}, 'chdir() takes at most 1 argument (2 given)'),
         (
             ('.',),
             {'path': '.'},
-            ("chdir() got multiple values for argument 'path'", 'chdir() takes at most 1 argument (2 given)'),
+            expected_error(
+                monty="chdir() got multiple values for argument 'path'",
+                cpython='chdir() takes at most 1 argument (2 given)',
+            ),
         ),
         (
             (),
             {'other': '.'},
-            ("chdir() got an unexpected keyword argument 'other'", "chdir() missing required argument 'path' (pos 1)"),
+            expected_error(
+                monty="chdir() got an unexpected keyword argument 'other'",
+                cpython="chdir() missing required argument 'path' (pos 1)",
+            ),
         ),
     ]:
         try:
             os.chdir(*args, **kwargs)
             assert False, 'expected TypeError'
         except TypeError as e:
-            assert str(e) in (message if isinstance(message, tuple) else (message,))
+            assert str(e) == message
 
     try:
         Path.cwd('unexpected')
         assert False, 'expected TypeError'
     except TypeError as e:
-        assert str(e) in (
-            'Path.cwd() takes at most 1 argument (2 given)',
-            'Path.cwd() takes 1 positional argument but 2 were given',
-        )
+        if is_monty:
+            assert str(e) == 'Path.cwd() takes at most 1 argument (2 given)'
+        else:
+            assert str(e) == 'Path.cwd() takes 1 positional argument but 2 were given'
     try:
         Path('.').cwd('unexpected')
         assert False, 'expected TypeError'
     except TypeError as e:
-        assert str(e) in (
-            'Path.cwd() takes at most 1 argument (2 given)',
-            'Path.cwd() takes 1 positional argument but 2 were given',
-        )
+        if is_monty:
+            assert str(e) == 'Path.cwd() takes at most 1 argument (2 given)'
+        else:
+            assert str(e) == 'Path.cwd() takes 1 positional argument but 2 were given'
     try:
         Path.cwd(1, 2)
         assert False, 'expected TypeError'
     except TypeError as e:
-        assert str(e) in (
-            'Path.cwd() takes at most 1 argument (3 given)',
-            'Path.cwd() takes 1 positional argument but 3 were given',
-        )
+        if is_monty:
+            assert str(e) == 'Path.cwd() takes at most 1 argument (3 given)'
+        else:
+            assert str(e) == 'Path.cwd() takes 1 positional argument but 3 were given'
     try:
         Path.cwd(x=1)
         assert False, 'expected TypeError'

@@ -1,4 +1,11 @@
 # Test deep inheritance
+import sys
+
+
+def expected_error(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 class Grandparent:
     x = 1
 
@@ -915,7 +922,7 @@ def check_error(call, expected):
     try:
         call()
     except TypeError as error:
-        assert str(error) in (expected if isinstance(expected, tuple) else (expected,)), str(error)
+        assert str(error) == expected, str(error)
     else:
         assert False, 'expected TypeError'
 
@@ -934,24 +941,30 @@ check_error(lambda: issubclass(int, str | list[int]), 'issubclass() argument 2 c
 assert issubclass(int, int | list[int])
 check_error(
     lambda: issubclass(),
-    (
-        "issubclass() missing 2 required positional arguments: 'cls' and 'classinfo'",
-        'issubclass expected 2 arguments, got 0',
+    expected_error(
+        monty="issubclass() missing 2 required positional arguments: 'cls' and 'classinfo'",
+        cpython='issubclass expected 2 arguments, got 0',
     ),
 )
 check_error(
     lambda: issubclass(int),
-    ("issubclass() missing 1 required positional argument: 'classinfo'", 'issubclass expected 2 arguments, got 1'),
+    expected_error(
+        monty="issubclass() missing 1 required positional argument: 'classinfo'",
+        cpython='issubclass expected 2 arguments, got 1',
+    ),
 )
 check_error(
     lambda: issubclass(int, str, object),
-    ('issubclass() takes at most 2 arguments (3 given)', 'issubclass expected 2 arguments, got 3'),
+    expected_error(
+        monty='issubclass() takes at most 2 arguments (3 given)',
+        cpython='issubclass expected 2 arguments, got 3',
+    ),
 )
 check_error(
     lambda: issubclass(int, classinfo=int),
-    (
-        "issubclass() got some positional-only arguments passed as keyword arguments: 'classinfo'",
-        'issubclass() takes no keyword arguments',
+    expected_error(
+        monty="issubclass() got some positional-only arguments passed as keyword arguments: 'classinfo'",
+        cpython='issubclass() takes no keyword arguments',
     ),
 )
 

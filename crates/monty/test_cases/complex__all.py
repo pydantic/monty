@@ -1,4 +1,6 @@
 # === Literals and construction ===
+import sys
+
 assert 1j == complex(0, 1)
 assert 2.5j == complex(0, 2.5)
 assert 1 + 2j == complex(1, 2)
@@ -121,10 +123,10 @@ try:
     complex.from_number(1, 2)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) in (
-        'complex.from_number() takes at most 1 argument (2 given)',
-        'complex.from_number() takes exactly one argument (2 given)',
-    )
+    if sys.platform == 'monty':
+        assert str(exc) == 'complex.from_number() takes at most 1 argument (2 given)'
+    else:
+        assert str(exc) == 'complex.from_number() takes exactly one argument (2 given)'
 
 # === repr and str ===
 inf, nan = float('inf'), float('nan')

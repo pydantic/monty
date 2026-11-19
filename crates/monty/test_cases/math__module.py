@@ -1,4 +1,10 @@
 import math
+import sys
+
+
+def expected_error(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === Constants ===
 assert math.pi == 3.141592653589793
@@ -1538,26 +1544,38 @@ assert math.log10(3**700) == 333.9848783037637
 for compute, message in [
     (
         lambda: math.log(),
-        ("log() missing 1 required positional argument: 'x'", 'log expected at least 1 argument, got 0'),
+        expected_error(
+            monty="log() missing 1 required positional argument: 'x'",
+            cpython='log expected at least 1 argument, got 0',
+        ),
     ),
     (
         lambda: math.log(2, 10, 3),
-        ('log() takes at most 2 arguments (3 given)', 'log expected at most 2 arguments, got 3'),
+        expected_error(
+            monty='log() takes at most 2 arguments (3 given)',
+            cpython='log expected at most 2 arguments, got 3',
+        ),
     ),
     (
         lambda: math.perm(),
-        ("perm() missing 1 required positional argument: 'n'", 'perm expected at least 1 argument, got 0'),
+        expected_error(
+            monty="perm() missing 1 required positional argument: 'n'",
+            cpython='perm expected at least 1 argument, got 0',
+        ),
     ),
     (
         lambda: math.perm(1, 2, 3),
-        ('perm() takes at most 2 arguments (3 given)', 'perm expected at most 2 arguments, got 3'),
+        expected_error(
+            monty='perm() takes at most 2 arguments (3 given)',
+            cpython='perm expected at most 2 arguments, got 3',
+        ),
     ),
 ]:
     try:
         compute()
         assert False, 'expected TypeError'
     except TypeError as e:
-        assert str(e) in (message if isinstance(message, tuple) else (message,))
+        assert str(e) == message
 for compute in [lambda: math.log(huge, 1), lambda: math.log(huge, True)]:
     try:
         compute()

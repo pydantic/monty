@@ -1,3 +1,5 @@
+import sys
+
 import copy
 import decimal
 from decimal import (
@@ -36,6 +38,11 @@ from decimal import (
     localcontext,
     setcontext,
 )
+
+
+def expected_error(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # CPython runs cases on shared threads, so start from a fresh default context.
 setcontext(Context())
@@ -139,10 +146,10 @@ try:
     setcontext()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) in (
-        "_decimal.setcontext() missing 1 required positional argument: 'context'",
-        '_decimal.setcontext() takes exactly one argument (0 given)',
-    )
+    if sys.platform == 'monty':
+        assert str(e) == "_decimal.setcontext() missing 1 required positional argument: 'context'"
+    else:
+        assert str(e) == '_decimal.setcontext() takes exactly one argument (0 given)'
 try:
     setcontext(5)
     assert False, 'expected TypeError'
@@ -177,7 +184,10 @@ try:
     Context(1, 2, 3, 4, 5, 6, 7, 8, 9)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) in ('Context() takes at most 8 arguments (9 given)', 'function takes at most 8 arguments (9 given)')
+    if sys.platform == 'monty':
+        assert str(e) == 'Context() takes at most 8 arguments (9 given)'
+    else:
+        assert str(e) == 'function takes at most 8 arguments (9 given)'
 try:
     Context(rounding='x')
     assert False, 'expected TypeError'
@@ -530,7 +540,10 @@ for call, kind, message in [
     (
         lambda: c.power(1),
         TypeError,
-        ("function() missing 1 required positional argument: 'b'", "function missing required argument 'b' (pos 2)"),
+        expected_error(
+            monty="function() missing 1 required positional argument: 'b'",
+            cpython="function missing required argument 'b' (pos 2)",
+        ),
     ),
     (lambda: c.add('1', 2), TypeError, 'conversion from str to Decimal is not supported'),
     (lambda: c.add(1.5, 2), TypeError, 'conversion from float to Decimal is not supported'),
@@ -545,7 +558,7 @@ for call, kind, message in [
         call()
         assert False, f'expected {kind.__name__}: {message}'
     except kind as e:
-        assert str(e) in (message if isinstance(message, tuple) else (message,))
+        assert str(e) == message
 
 # === copying contexts ===
 c = Context(prec=12)

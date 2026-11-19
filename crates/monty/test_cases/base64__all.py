@@ -1,3 +1,5 @@
+import sys
+
 import base64
 import binascii
 
@@ -496,10 +498,10 @@ try:
     base64.a85encode(b'x', True)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) in (
-        'a85encode() takes at most 1 positional argument (2 given)',
-        'a85encode() takes 1 positional argument but 2 were given',
-    )
+    if sys.platform == 'monty':
+        assert str(exc) == 'a85encode() takes at most 1 positional argument (2 given)'
+    else:
+        assert str(exc) == 'a85encode() takes 1 positional argument but 2 were given'
 
 try:
     base64.a85decode(b'x', nope=1)

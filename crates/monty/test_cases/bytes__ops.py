@@ -1,4 +1,8 @@
 # === Interned and computed operands ===
+import sys
+
+
+is_monty = sys.platform == 'monty'
 for left in [b'\x00\x80\xff', b''.join([b'\x00', b'\x80\xff'])]:
     for right in [b'ab', b''.join([b'a', b'b'])]:
         assert left + right == b'\x00\x80\xffab'
@@ -202,10 +206,10 @@ try:
     bytes(3, source=3)
     assert False, 'bytes pos + kwarg should raise'
 except TypeError as e:
-    assert str(e) in (
-        "bytes() got multiple values for argument 'source'",
-        "argument for bytes() given by name ('source') and position (1)",
-    )
+    if is_monty:
+        assert str(e) == "bytes() got multiple values for argument 'source'"
+    else:
+        assert str(e) == "argument for bytes() given by name ('source') and position (1)"
 
 # === bytes() encoding a str source ===
 assert bytes('x', 'utf-8') == b'x'
@@ -301,19 +305,19 @@ try:
     bytes('x', 'utf-8', 'strict', bogus=1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) in (
-        "bytes() got an unexpected keyword argument 'bogus'",
-        'bytes() takes at most 3 arguments (4 given)',
-    )
+    if is_monty:
+        assert str(e) == "bytes() got an unexpected keyword argument 'bogus'"
+    else:
+        assert str(e) == 'bytes() takes at most 3 arguments (4 given)'
 
 try:
     bytes('x', 'utf-8', encoding='q')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) in (
-        "bytes() got multiple values for argument 'encoding'",
-        "argument for bytes() given by name ('encoding') and position (2)",
-    )
+    if is_monty:
+        assert str(e) == "bytes() got multiple values for argument 'encoding'"
+    else:
+        assert str(e) == "argument for bytes() given by name ('encoding') and position (2)"
 
 # === `in` / `not in` ===
 # A bytes-like probe is a substring test; the empty probe is always present.

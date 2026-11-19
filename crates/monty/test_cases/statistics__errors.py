@@ -1,5 +1,10 @@
 import statistics
 from statistics import StatisticsError
+import sys
+
+
+def expected_error(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
 
 
 def check(exc_type, message, fn, *args, **kwargs):
@@ -7,7 +12,7 @@ def check(exc_type, message, fn, *args, **kwargs):
         fn(*args, **kwargs)
     except exc_type as e:
         assert str(type(e)) == str(exc_type)
-        assert str(e) in (message if isinstance(message, tuple) else (message,))
+        assert str(e) == message
     else:
         assert False, 'did not raise'
 
@@ -68,9 +73,9 @@ check(ValueError, 'Unknown method: None', statistics.quantiles, [1, 2, 3], metho
 check(ValueError, "Unknown method: 'Inclusive'", statistics.quantiles, [1, 2, 3], method='Inclusive')
 check(
     TypeError,
-    (
-        'quantiles() takes at most 1 positional argument (2 given)',
-        'quantiles() takes 1 positional argument but 2 were given',
+    expected_error(
+        monty='quantiles() takes at most 1 positional argument (2 given)',
+        cpython='quantiles() takes 1 positional argument but 2 were given',
     ),
     statistics.quantiles,
     [1, 2],
@@ -100,7 +105,10 @@ check(TypeError, "'<' not supported between instances of 'str' and 'int'", stati
 check(TypeError, "mean() missing 1 required positional argument: 'data'", statistics.mean)
 check(
     TypeError,
-    ('mean() takes at most 1 argument (2 given)', 'mean() takes 1 positional argument but 2 were given'),
+    expected_error(
+        monty='mean() takes at most 1 argument (2 given)',
+        cpython='mean() takes 1 positional argument but 2 were given',
+    ),
     statistics.mean,
     [1],
     [2],

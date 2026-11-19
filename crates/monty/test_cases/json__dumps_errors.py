@@ -1,3 +1,5 @@
+import sys
+
 import json
 
 # === allow_nan=False errors ===
@@ -103,20 +105,23 @@ try:
     json.dumps(1, 2)
     assert False, 'json.dumps with too many positional args should raise TypeError'
 except TypeError as exc:
-    assert str(exc) in (
-        'dumps() takes at most 1 positional argument (2 given)',
-        'dumps() takes 1 positional argument but 2 were given',
-    ), f'dumps-arity: {exc}'
+    if sys.platform == 'monty':
+        assert str(exc) == 'dumps() takes at most 1 positional argument (2 given)', f'dumps-arity: {exc}'
+    else:
+        assert str(exc) == 'dumps() takes 1 positional argument but 2 were given', f'dumps-arity: {exc}'
 
 # the keyword-only suffix composes into the arity message like CPython
 try:
     json.dumps(1, 2, skipkeys=True)
     assert False, 'json.dumps with extra positional + kwonly should raise TypeError'
 except TypeError as exc:
-    assert str(exc) in (
-        'dumps() takes at most 1 positional argument (2 given)',
-        'dumps() takes 1 positional argument but 2 positional arguments (and 1 keyword-only argument) were given',
-    ), f'dumps-kwonly-arity: {exc}'
+    if sys.platform == 'monty':
+        assert str(exc) == 'dumps() takes at most 1 positional argument (2 given)', f'dumps-kwonly-arity: {exc}'
+    else:
+        assert (
+            str(exc)
+            == 'dumps() takes 1 positional argument but 2 positional arguments (and 1 keyword-only argument) were given'
+        ), f'dumps-kwonly-arity: {exc}'
 
 # === circular reference errors ===
 circular_list = []

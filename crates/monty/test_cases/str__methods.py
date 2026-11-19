@@ -1,6 +1,8 @@
 # === Phase 1: Simple transformations ===
 
 # lower()
+import sys
+
 assert 'HELLO'.lower() == 'hello'
 assert 'Hello World'.lower() == 'hello world'
 assert 'hello'.lower() == 'hello'
@@ -754,10 +756,10 @@ try:
     'hello'.expandtabs(4, tabsize=8)
     assert False, 'expandtabs pos + kwarg should raise'
 except TypeError as e:
-    assert str(e) in (
-        "expandtabs() got multiple values for argument 'tabsize'",
-        'expandtabs() takes at most 1 argument (2 given)',
-    )
+    if sys.platform == 'monty':
+        assert str(e) == "expandtabs() got multiple values for argument 'tabsize'"
+    else:
+        assert str(e) == 'expandtabs() takes at most 1 argument (2 given)'
 
 try:
     'hello'.expandtabs(4, 5)
@@ -776,10 +778,10 @@ try:
     'hello'.splitlines(True, keepends=False)
     assert False, 'splitlines pos + kwarg should raise'
 except TypeError as e:
-    assert str(e) in (
-        "splitlines() got multiple values for argument 'keepends'",
-        'splitlines() takes at most 1 argument (2 given)',
-    )
+    if sys.platform == 'monty':
+        assert str(e) == "splitlines() got multiple values for argument 'keepends'"
+    else:
+        assert str(e) == 'splitlines() takes at most 1 argument (2 given)'
 
 
 for split in (lambda: 'a'.split([]), lambda: 'a'.rsplit([])):

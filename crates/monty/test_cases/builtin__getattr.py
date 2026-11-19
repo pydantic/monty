@@ -1,5 +1,9 @@
 # Test getattr() builtin function
 
+import sys
+
+
+is_monty = sys.platform == 'monty'
 s = slice(1, 10, 2)
 assert getattr(s, 'start') == 1
 assert getattr(s, 'stop') == 10
@@ -21,35 +25,37 @@ try:
     getattr()
     assert False, 'getattr() with no args should raise TypeError'
 except TypeError as e:
-    assert str(e) in (
-        "getattr() missing 2 required positional arguments: 'object' and 'name'",
-        'getattr expected at least 2 arguments, got 0',
-    ), str(e)
+    if is_monty:
+        assert str(e) == "getattr() missing 2 required positional arguments: 'object' and 'name'", str(e)
+    else:
+        assert str(e) == 'getattr expected at least 2 arguments, got 0', str(e)
 
 try:
     getattr(kwarg=1)
     assert False, 'getattr() with keyword arg should raise TypeError'
 except TypeError as e:
-    assert str(e) in ("getattr() got an unexpected keyword argument 'kwarg'", 'getattr() takes no keyword arguments'), (
-        str(e)
-    )
+    if is_monty:
+        assert str(e) == "getattr() got an unexpected keyword argument 'kwarg'", str(e)
+    else:
+        assert str(e) == 'getattr() takes no keyword arguments', str(e)
 
 try:
     getattr(s)
     assert False, 'getattr() with 1 arg should raise TypeError'
 except TypeError as e:
-    assert str(e) in (
-        "getattr() missing 1 required positional argument: 'name'",
-        'getattr expected at least 2 arguments, got 1',
-    ), str(e)
+    if is_monty:
+        assert str(e) == "getattr() missing 1 required positional argument: 'name'", str(e)
+    else:
+        assert str(e) == 'getattr expected at least 2 arguments, got 1', str(e)
 
 try:
     getattr(s, 'start', 'default', 'extra')
     assert False, 'getattr() with 4 args should raise TypeError'
 except TypeError as e:
-    assert str(e) in ('getattr() takes at most 3 arguments (4 given)', 'getattr expected at most 3 arguments, got 4'), (
-        str(e)
-    )
+    if is_monty:
+        assert str(e) == 'getattr() takes at most 3 arguments (4 given)', str(e)
+    else:
+        assert str(e) == 'getattr expected at most 3 arguments, got 4', str(e)
 
 try:
     getattr(s, 123)

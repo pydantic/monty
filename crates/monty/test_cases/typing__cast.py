@@ -1,4 +1,8 @@
+import sys
+
 from typing import assert_never, assert_type, cast
+
+is_monty = sys.platform == 'monty'
 
 # === cast returns its value untouched, whatever the type argument is ===
 assert cast(int, 'x') == 'x'
@@ -31,10 +35,10 @@ try:
     cast(int, 1, 2)
     assert False, 'cast(int, 1, 2) should fail'
 except TypeError as e:
-    assert str(e) in (
-        'cast() takes at most 2 arguments (3 given)',
-        'cast() takes 2 positional arguments but 3 were given',
-    )
+    if is_monty:
+        assert str(e) == 'cast() takes at most 2 arguments (3 given)'
+    else:
+        assert str(e) == 'cast() takes 2 positional arguments but 3 were given'
 
 try:
     assert_type(1)
@@ -46,10 +50,10 @@ try:
     assert_type(1, int, 3)
     assert False, 'assert_type three args should fail'
 except TypeError as e:
-    assert str(e) in (
-        'assert_type() takes at most 2 arguments (3 given)',
-        'assert_type() takes 2 positional arguments but 3 were given',
-    )
+    if is_monty:
+        assert str(e) == 'assert_type() takes at most 2 arguments (3 given)'
+    else:
+        assert str(e) == 'assert_type() takes 2 positional arguments but 3 were given'
 
 # === assert_never always raises, quoting a bounded repr ===
 try:
@@ -74,10 +78,10 @@ try:
     assert_never(1, 2, 3)
     assert False, 'assert_never three args should fail'
 except TypeError as e:
-    assert str(e) in (
-        'assert_never() takes at most 1 argument (3 given)',
-        'assert_never() takes 1 positional argument but 3 were given',
-    )
+    if is_monty:
+        assert str(e) == 'assert_never() takes at most 1 argument (3 given)'
+    else:
+        assert str(e) == 'assert_never() takes 1 positional argument but 3 were given'
 
 # === assert_type and assert_never take their arguments by position only ===
 try:

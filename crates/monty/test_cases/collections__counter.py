@@ -7,6 +7,8 @@
 # - `del c[key]` (the `del` statement is unimplemented Monty-wide).
 # - `elements()` returns a list rather than a lazy iterator.
 
+import sys
+
 from collections import Counter, defaultdict
 
 # === Construction ===
@@ -123,18 +125,22 @@ try:
     Counter().update(1, 2)
     assert False, 'expected update with two positionals to raise'
 except TypeError as e:
-    assert str(e) in (
-        'Counter.update() takes at most 2 positional arguments (3 given)',
-        'Counter.update() takes from 1 to 2 positional arguments but 3 were given',
-    ), 'update arity message'
+    if sys.platform == 'monty':
+        assert str(e) == 'Counter.update() takes at most 2 positional arguments (3 given)', 'update arity message'
+    else:
+        assert str(e) == 'Counter.update() takes from 1 to 2 positional arguments but 3 were given', (
+            'update arity message'
+        )
 try:
     Counter().subtract(1, 2)
     assert False, 'expected subtract with two positionals to raise'
 except TypeError as e:
-    assert str(e) in (
-        'Counter.subtract() takes at most 2 positional arguments (3 given)',
-        'Counter.subtract() takes from 1 to 2 positional arguments but 3 were given',
-    ), 'subtract arity message'
+    if sys.platform == 'monty':
+        assert str(e) == 'Counter.subtract() takes at most 2 positional arguments (3 given)', 'subtract arity message'
+    else:
+        assert str(e) == 'Counter.subtract() takes from 1 to 2 positional arguments but 3 were given', (
+            'subtract arity message'
+        )
 
 counts = Counter()
 counts.update(iterable=3, self=2)

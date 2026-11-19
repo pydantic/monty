@@ -2,6 +2,8 @@
 # mount-fs = true
 # skip-cpython-windows = true
 # ///
+import sys
+
 import os
 from collections import namedtuple
 from pathlib import Path
@@ -260,10 +262,10 @@ try:
     os.walk(root, 1, 2, 3, 4)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) in (
-        'walk() takes at most 4 arguments (5 given)',
-        'walk() takes from 1 to 4 positional arguments but 5 were given',
-    )
+    if sys.platform == 'monty':
+        assert str(e) == 'walk() takes at most 4 arguments (5 given)'
+    else:
+        assert str(e) == 'walk() takes from 1 to 4 positional arguments but 5 were given'
 
 # === Path.walk ===
 path_walked = [(rel(p), sorted(dn), sorted(listed(fn))) for p, dn, fn in root.walk()]
@@ -361,10 +363,10 @@ try:
     hello.is_dir(True)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) in (
-        'is_dir() takes at most 0 positional arguments (1 given)',
-        'is_dir() takes no positional arguments',
-    )
+    if sys.platform == 'monty':
+        assert str(e) == 'is_dir() takes at most 0 positional arguments (1 given)'
+    else:
+        assert str(e) == 'is_dir() takes no positional arguments'
 try:
     hello.is_dir(x=1)
     assert False, 'expected TypeError'

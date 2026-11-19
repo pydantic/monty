@@ -1,6 +1,10 @@
 # `itertools.tee`: independent iterators over one source, which each read every
 # item exactly once between them and buffer what the others have not reached.
+import sys
+
 import itertools
+
+is_monty = sys.platform == 'monty'
 
 # === Basics ===
 assert [list(x) for x in itertools.tee([1, 2, 3])] == [[1, 2, 3], [1, 2, 3]]
@@ -154,16 +158,19 @@ try:
     itertools.tee()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) in (
-        "tee() missing 1 required positional argument: 'iterable'",
-        'tee expected at least 1 argument, got 0',
-    )
+    if is_monty:
+        assert str(exc) == "tee() missing 1 required positional argument: 'iterable'"
+    else:
+        assert str(exc) == 'tee expected at least 1 argument, got 0'
 
 try:
     itertools.tee([1], 2, 3)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) in ('tee() takes at most 2 arguments (3 given)', 'tee expected at most 2 arguments, got 3')
+    if is_monty:
+        assert str(exc) == 'tee() takes at most 2 arguments (3 given)'
+    else:
+        assert str(exc) == 'tee expected at most 2 arguments, got 3'
 
 # The blanket keyword rejection names the module as well as the function, which
 # is CPython's wording here and nowhere else in `itertools`.
@@ -171,10 +178,10 @@ try:
     itertools.tee([1], n=2)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) in (
-        "tee() got some positional-only arguments passed as keyword arguments: 'n'",
-        'itertools.tee() takes no keyword arguments',
-    )
+    if is_monty:
+        assert str(exc) == "tee() got some positional-only arguments passed as keyword arguments: 'n'"
+    else:
+        assert str(exc) == 'itertools.tee() takes no keyword arguments'
 
 try:
     itertools.tee([1], -1)

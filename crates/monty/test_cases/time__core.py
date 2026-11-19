@@ -1,4 +1,8 @@
+import sys
+
 from datetime import date, datetime, time, timedelta, timezone
+
+is_monty = sys.platform == 'monty'
 
 # === construction / defaults ===
 assert isinstance(time(), time), 'time() builds a time'
@@ -185,37 +189,37 @@ try:
     time(1, 2, 3, 4, None, 5)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) in (
-        'time() takes at most 5 positional arguments (6 given)',
-        'function takes at most 5 positional arguments (6 given)',
-    )
+    if is_monty:
+        assert str(e) == 'time() takes at most 5 positional arguments (6 given)'
+    else:
+        assert str(e) == 'function takes at most 5 positional arguments (6 given)'
 
 try:
     time(1, 2, 3, 4, None, 5, 6)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) in (
-        'time() takes at most 5 positional arguments (7 given)',
-        'function takes at most 6 arguments (7 given)',
-    )
+    if is_monty:
+        assert str(e) == 'time() takes at most 5 positional arguments (7 given)'
+    else:
+        assert str(e) == 'function takes at most 6 arguments (7 given)'
 
 try:
     time(1, hour=2)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) in (
-        "time() got multiple values for argument 'hour'",
-        "argument for function given by name ('hour') and position (1)",
-    )
+    if is_monty:
+        assert str(e) == "time() got multiple values for argument 'hour'"
+    else:
+        assert str(e) == "argument for function given by name ('hour') and position (1)"
 
 try:
     time(0, foo=1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) in (
-        "time() got an unexpected keyword argument 'foo'",
-        "this function got an unexpected keyword argument 'foo'",
-    )
+    if is_monty:
+        assert str(e) == "time() got an unexpected keyword argument 'foo'"
+    else:
+        assert str(e) == "this function got an unexpected keyword argument 'foo'"
 
 try:
     time(1.5)
@@ -289,10 +293,10 @@ try:
     time(1).strftime()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) in (
-        "strftime() missing 1 required positional argument: 'format'",
-        "strftime() missing required argument 'format' (pos 1)",
-    )
+    if is_monty:
+        assert str(e) == "strftime() missing 1 required positional argument: 'format'"
+    else:
+        assert str(e) == "strftime() missing required argument 'format' (pos 1)"
 
 try:
     time(1).strftime('%H', '%M')

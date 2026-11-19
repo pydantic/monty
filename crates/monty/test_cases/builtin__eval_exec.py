@@ -1,4 +1,6 @@
 # === eval of expressions ===
+import sys
+
 x = 10
 assert eval('x + 1') == 11
 assert eval('  \t 2 + 2') == 4
@@ -121,10 +123,10 @@ try:
     eval()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) in (
-        "eval() missing 1 required positional argument: 'source'",
-        'eval() takes at least 1 positional argument (0 given)',
-    )
+    if sys.platform == 'monty':
+        assert str(e) == "eval() missing 1 required positional argument: 'source'"
+    else:
+        assert str(e) == 'eval() takes at least 1 positional argument (0 given)'
 try:
     eval('1', {}, {}, {})
     assert False, 'expected TypeError'

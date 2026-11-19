@@ -2,6 +2,11 @@ import sys
 
 is_monty = sys.platform == 'monty'
 
+
+def expected_error(*, monty, cpython):
+    return monty if is_monty else cpython
+
+
 # === abs() ===
 # Basic abs operations
 assert abs(5) == 5
@@ -420,12 +425,18 @@ for compute, message in [
         assert str(e) == message
 
 for args, message in [
-    ((2,), ("pow() missing 1 required positional argument: 'exp'", "pow() missing required argument 'exp' (pos 2)")),
+    (
+        (2,),
+        expected_error(
+            monty="pow() missing 1 required positional argument: 'exp'",
+            cpython="pow() missing required argument 'exp' (pos 2)",
+        ),
+    ),
     (
         (),
-        (
-            "pow() missing 2 required positional arguments: 'base' and 'exp'",
-            "pow() missing required argument 'base' (pos 1)",
+        expected_error(
+            monty="pow() missing 2 required positional arguments: 'base' and 'exp'",
+            cpython="pow() missing required argument 'base' (pos 1)",
         ),
     ),
     ((2, 3, 4, 5), 'pow() takes at most 3 arguments (4 given)'),
@@ -433,6 +444,6 @@ for args, message in [
     try:
         pow(*args)
     except TypeError as exc:
-        assert str(exc) in (message if isinstance(message, tuple) else (message,))
+        assert str(exc) == message
     else:
         assert False, 'expected invalid pow arity to raise TypeError'

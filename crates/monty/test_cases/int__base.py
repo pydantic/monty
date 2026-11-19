@@ -1,4 +1,8 @@
 # === int() with explicit base ===
+import sys
+
+
+is_monty = sys.platform == 'monty'
 assert int('ff', 16) == 255
 assert int('ff', base=16) == 255
 assert int('0xff', 16) == 255
@@ -216,10 +220,10 @@ try:
     int(x='5')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) in (
-        "int() got some positional-only arguments passed as keyword arguments: 'x'",
-        "int() got an unexpected keyword argument 'x'",
-    )
+    if is_monty:
+        assert str(e) == "int() got some positional-only arguments passed as keyword arguments: 'x'"
+    else:
+        assert str(e) == "int() got an unexpected keyword argument 'x'"
 
 try:
     int(base=16)
@@ -245,14 +249,20 @@ try:
     int('5', 10, 3)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) in ('int() takes at most 2 arguments (3 given)', 'int expected at most 2 arguments, got 3')
+    if is_monty:
+        assert str(e) == 'int() takes at most 2 arguments (3 given)'
+    else:
+        assert str(e) == 'int expected at most 2 arguments, got 3'
 
 # with kwargs: the clinic parser's parenthesised total-count wording
 try:
     int('5', 10, base=16)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) in ("int() got multiple values for argument 'base'", 'int() takes at most 2 arguments (3 given)')
+    if is_monty:
+        assert str(e) == "int() got multiple values for argument 'base'"
+    else:
+        assert str(e) == 'int() takes at most 2 arguments (3 given)'
 
 # === digit limit applies only to non-power-of-two bases ===
 assert int('1' * 5000, 16) > 0

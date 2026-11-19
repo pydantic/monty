@@ -1,5 +1,6 @@
 # Error paths of `hashlib`, with CPython 3.14's messages.
 import hashlib
+import sys
 
 DATA_STRING = (
     "'data' and 'string' are mutually exclusive and support for 'string' keyword parameter "
@@ -7,11 +8,13 @@ DATA_STRING = (
 )
 
 
-def raises(exc_type, func, message, *alternatives):
+def raises(exc_type, func, monty, *platform_messages, cpython=None):
+    expected = monty if sys.platform == 'monty' or cpython is None else cpython
     try:
         func()
     except exc_type as exc:
-        assert str(exc) in (message, *alternatives)
+        actual = str(exc)
+        assert actual == expected or actual in platform_messages
     else:
         assert False, 'expected ' + exc_type.__name__
 
@@ -45,22 +48,22 @@ raises(
 raises(
     TypeError,
     lambda: hashlib.sha256(b'a', b'b', foo=1),
-    "openssl_sha256() got an unexpected keyword argument 'foo'",
-    'openssl_sha256() takes at most 1 positional argument (2 given)',
+    monty="openssl_sha256() got an unexpected keyword argument 'foo'",
+    cpython='openssl_sha256() takes at most 1 positional argument (2 given)',
 )
 raises(TypeError, lambda: hashlib.sha256(foo=1), "openssl_sha256() got an unexpected keyword argument 'foo'")
 raises(TypeError, lambda: hashlib.sha256(b'a', foo=1), "openssl_sha256() got an unexpected keyword argument 'foo'")
 raises(
     TypeError,
     lambda: hashlib.sha256(b'a', usedforsecurity=1, string=b'x', foo=1),
-    "openssl_sha256() got an unexpected keyword argument 'foo'",
-    'openssl_sha256() takes at most 3 arguments (4 given)',
+    monty="openssl_sha256() got an unexpected keyword argument 'foo'",
+    cpython='openssl_sha256() takes at most 3 arguments (4 given)',
 )
 raises(
     TypeError,
     lambda: hashlib.sha256(usedforsecurity=1, string=b'x', foo=1, bar=2),
-    "openssl_sha256() got an unexpected keyword argument 'foo'",
-    'openssl_sha256() takes at most 3 keyword arguments (4 given)',
+    monty="openssl_sha256() got an unexpected keyword argument 'foo'",
+    cpython='openssl_sha256() takes at most 3 keyword arguments (4 given)',
 )
 raises(TypeError, lambda: hashlib.md5(b'a', b'b'), 'openssl_md5() takes at most 1 positional argument (2 given)')
 raises(
@@ -77,8 +80,8 @@ raises(TypeError, lambda: hashlib.blake2b(b'a', b'b', b'c'), 'blake2b() takes at
 raises(
     TypeError,
     lambda: hashlib.blake2b(b'a', b'b', foo=1),
-    "blake2b() got an unexpected keyword argument 'foo'",
-    'blake2b() takes at most 1 positional argument (2 given)',
+    monty="blake2b() got an unexpected keyword argument 'foo'",
+    cpython='blake2b() takes at most 1 positional argument (2 given)',
 )
 raises(TypeError, lambda: hashlib.blake2b(foo=1), "blake2b() got an unexpected keyword argument 'foo'")
 raises(TypeError, lambda: hashlib.blake2s(b'a', 1), 'blake2s() takes at most 1 positional argument (2 given)')
@@ -109,33 +112,33 @@ raises(TypeError, lambda: hashlib.blake2s().copy(1), 'blake2s.copy() takes no ar
 raises(
     TypeError,
     lambda: hashlib.shake_128().digest(),
-    "digest() missing 1 required positional argument: 'length'",
-    "digest() missing required argument 'length' (pos 1)",
+    monty="digest() missing 1 required positional argument: 'length'",
+    cpython="digest() missing required argument 'length' (pos 1)",
 )
 raises(
     TypeError,
     lambda: hashlib.shake_128().digest(foo=1),
-    "digest() got an unexpected keyword argument 'foo'",
-    "digest() missing required argument 'length' (pos 1)",
+    monty="digest() got an unexpected keyword argument 'foo'",
+    cpython="digest() missing required argument 'length' (pos 1)",
 )
 raises(
     TypeError,
     lambda: hashlib.shake_128().hexdigest(),
-    "hexdigest() missing 1 required positional argument: 'length'",
-    "hexdigest() missing required argument 'length' (pos 1)",
+    monty="hexdigest() missing 1 required positional argument: 'length'",
+    cpython="hexdigest() missing required argument 'length' (pos 1)",
 )
 raises(TypeError, lambda: hashlib.shake_128().digest(3, 4), 'digest() takes at most 1 argument (2 given)')
 raises(
     TypeError,
     lambda: hashlib.shake_128().digest(3, foo=1),
-    "digest() got an unexpected keyword argument 'foo'",
-    'digest() takes at most 1 argument (2 given)',
+    monty="digest() got an unexpected keyword argument 'foo'",
+    cpython='digest() takes at most 1 argument (2 given)',
 )
 raises(
     TypeError,
     lambda: hashlib.shake_128().digest(length=3, foo=1),
-    "digest() got an unexpected keyword argument 'foo'",
-    'digest() takes at most 1 keyword argument (2 given)',
+    monty="digest() got an unexpected keyword argument 'foo'",
+    cpython='digest() takes at most 1 keyword argument (2 given)',
 )
 raises(TypeError, lambda: hashlib.shake_128().digest('a'), "'str' object cannot be interpreted as an integer")
 raises(TypeError, lambda: hashlib.shake_128().hexdigest(1.5), "'float' object cannot be interpreted as an integer")
@@ -198,8 +201,8 @@ raises(TypeError, lambda: hashlib.new('nope', b'a', b'b'), 'new() takes at most 
 raises(
     TypeError,
     lambda: hashlib.new('sha256', b'a', b'b', foo=1),
-    "new() got an unexpected keyword argument 'foo'",
-    'new() takes at most 2 positional arguments (3 given)',
+    monty="new() got an unexpected keyword argument 'foo'",
+    cpython='new() takes at most 2 positional arguments (3 given)',
 )
 raises(TypeError, lambda: hashlib.new('sha256', b'a', foo=1), "new() got an unexpected keyword argument 'foo'")
 raises(TypeError, lambda: hashlib.new('nope', foo=1), "new() got an unexpected keyword argument 'foo'")
@@ -213,8 +216,8 @@ raises(TypeError, lambda: hashlib.new('sha256', b'a', string=None), DATA_STRING)
 raises(
     TypeError,
     lambda: hashlib.new('sha256', b'a', usedforsecurity=1, string=b'x', foo=1),
-    "new() got an unexpected keyword argument 'foo'",
-    'new() takes at most 4 arguments (5 given)',
+    monty="new() got an unexpected keyword argument 'foo'",
+    cpython='new() takes at most 4 arguments (5 given)',
 )
 raises(TypeError, lambda: hashlib.new('blake2b', foo=1), "blake2b() got an unexpected keyword argument 'foo'")
 raises(TypeError, lambda: hashlib.new('blake2b', b'a', b'b'), 'blake2b() takes at most 1 positional argument (2 given)')
@@ -339,8 +342,8 @@ raises(
             'foo': 1,
         },
     ),
-    "blake2b() got an unexpected keyword argument 'foo'",
-    'blake2b() takes at most 14 arguments (15 given)',
+    monty="blake2b() got an unexpected keyword argument 'foo'",
+    cpython='blake2b() takes at most 14 arguments (15 given)',
 )
 
 # === pbkdf2_hmac ===
@@ -405,20 +408,20 @@ raises(TypeError, lambda: hashlib.pbkdf2_hmac(1, 1, 1, 1), "pbkdf2_hmac() argume
 raises(
     TypeError,
     lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt'),
-    "pbkdf2_hmac() missing 1 required positional argument: 'iterations'",
-    "pbkdf2_hmac() missing required argument 'iterations' (pos 4)",
+    monty="pbkdf2_hmac() missing 1 required positional argument: 'iterations'",
+    cpython="pbkdf2_hmac() missing required argument 'iterations' (pos 4)",
 )
 raises(
     TypeError,
     lambda: hashlib.pbkdf2_hmac('sha256', b'pw'),
-    "pbkdf2_hmac() missing 2 required positional arguments: 'salt' and 'iterations'",
-    "pbkdf2_hmac() missing required argument 'salt' (pos 3)",
+    monty="pbkdf2_hmac() missing 2 required positional arguments: 'salt' and 'iterations'",
+    cpython="pbkdf2_hmac() missing required argument 'salt' (pos 3)",
 )
 raises(
     TypeError,
     lambda: hashlib.pbkdf2_hmac(),
-    "pbkdf2_hmac() missing 4 required positional arguments: 'hash_name', 'password', 'salt', and 'iterations'",
-    "pbkdf2_hmac() missing required argument 'hash_name' (pos 1)",
+    monty="pbkdf2_hmac() missing 4 required positional arguments: 'hash_name', 'password', 'salt', and 'iterations'",
+    cpython="pbkdf2_hmac() missing required argument 'hash_name' (pos 1)",
 )
 raises(
     TypeError,
@@ -428,8 +431,8 @@ raises(
 raises(
     TypeError,
     lambda: hashlib.pbkdf2_hmac('sha256', b'pw', b'salt', 1, 4, foo=1),
-    "pbkdf2_hmac() got an unexpected keyword argument 'foo'",
-    'pbkdf2_hmac() takes at most 5 arguments (6 given)',
+    monty="pbkdf2_hmac() got an unexpected keyword argument 'foo'",
+    cpython='pbkdf2_hmac() takes at most 5 arguments (6 given)',
 )
 raises(
     TypeError,
@@ -439,8 +442,8 @@ raises(
 raises(
     TypeError,
     lambda: hashlib.pbkdf2_hmac(hash_name='sha256', password=b'pw', salt=b'salt', iterations=1, dklen=4, foo=1),
-    "pbkdf2_hmac() got an unexpected keyword argument 'foo'",
-    'pbkdf2_hmac() takes at most 5 keyword arguments (6 given)',
+    monty="pbkdf2_hmac() got an unexpected keyword argument 'foo'",
+    cpython='pbkdf2_hmac() takes at most 5 keyword arguments (6 given)',
 )
 # conversions in signature order, then the ordered checks
 raises(TypeError, lambda: hashlib.pbkdf2_hmac('nope', 'pw', b'salt', 1), "a bytes-like object is required, not 'str'")
