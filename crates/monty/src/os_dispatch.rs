@@ -22,6 +22,7 @@
 use std::{borrow::Cow, mem};
 
 use ahash::AHashSet;
+use monty_macros::py_signature;
 use monty_types::{
     ExcType, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
     RenameCallArgs, ResourceTracker, UrandomArgs, normalize_virtual_path,
@@ -29,7 +30,7 @@ use monty_types::{
 };
 
 use crate::{
-    args::{ArgValues, FromArgs, LaxBool},
+    args::ArgValues,
     bytecode::{CallResult, PendingImport, VM},
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
@@ -44,7 +45,7 @@ use crate::{
         random::RandomRetry,
         time::ClockReading,
     },
-    types::{Path, Type, dir_scan::ScanEffect, file::FileName, random::RandomTarget},
+    types::{Path, PyTrait, Type, dir_scan::ScanEffect, file::FileName, random::RandomTarget},
     value::Value,
     virtual_path::posix_join,
 };
@@ -663,7 +664,8 @@ pub(crate) fn build_path_os_call(
                 follow_symlinks,
             } = PathStatArgs::from_args(args.prepend(Value::None), vm)?;
             receiver.drop_with(vm);
-            if !follow_symlinks.bool() {
+            defer_drop!(follow_symlinks, vm);
+            if !follow_symlinks.py_bool(vm)? {
                 return Err(ExcType::not_implemented_os_arg(Some("stat"), "follow_symlinks"));
             }
             OsFunctionCall::Stat(path)
@@ -769,18 +771,8 @@ fn extract_bytes_data(
 }
 
 /// Path.mkdir binds a receiver slot so arity errors include self.
-#[derive(FromArgs)]
-#[from_args(name = "Path.mkdir", style = def)]
-struct PathMkdirArgs {
-    #[from_args(pos_only)]
-    receiver: Value,
-    #[from_args(default = Value::Int(0o777))]
-    mode: Value,
-    #[from_args(default = LaxBool::new(false))]
-    parents: LaxBool,
-    #[from_args(default = LaxBool::new(false))]
-    exist_ok: LaxBool,
-}
+#[py_signature("mkdir(receiver, /, mode=0o777, parents=False, exist_ok=False)", style = def, error_name = "Path.mkdir")]
+struct PathMkdirArgs;
 
 /// Extracts `mode`/`parents`/`exist_ok` for `mkdir`, rejecting unknown or
 /// excessive arguments before the host sees the OS call.
@@ -793,39 +785,27 @@ fn extract_mkdir_args(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunR
     } = PathMkdirArgs::from_args(args.prepend(Value::None), vm)?;
     receiver.drop_with(vm);
     defer_drop!(mode, vm);
+    defer_drop!(parents, vm);
+    defer_drop!(exist_ok, vm);
+    let parents = parents.py_bool(vm)?;
+    let exist_ok = exist_ok.py_bool(vm)?;
     check_mode(mode, vm)?;
     Ok(MkdirCallArgs {
         path,
-        parents: parents.bool(),
-        exist_ok: exist_ok.bool(),
+        parents,
+        exist_ok,
     })
 }
 
 /// Keyword-only options shared with os.stat.
-#[derive(FromArgs)]
-#[from_args(name = "Path.stat", style = def)]
-struct PathStatArgs {
-    #[from_args(pos_only)]
-    receiver: Value,
-    #[from_args(kw_only, default = LaxBool::new(true))]
-    follow_symlinks: LaxBool,
-}
+#[py_signature("stat(receiver, /, *, follow_symlinks=True)", style = def, error_name = "Path.stat")]
+struct PathStatArgs;
 
-#[derive(FromArgs)]
-#[from_args(name = "Path.rename", style = def)]
-struct PathRenameArgs {
-    #[from_args(pos_only)]
-    receiver: Value,
-    target: Value,
-}
+#[py_signature("rename(receiver, /, target)", style = def, error_name = "Path.rename")]
+struct PathRenameArgs;
 
-#[derive(FromArgs)]
-#[from_args(name = "Path.replace", style = def)]
-struct PathReplaceArgs {
-    #[from_args(pos_only)]
-    receiver: Value,
-    target: Value,
-}
+#[py_signature("replace(receiver, /, target)", style = def, error_name = "Path.replace")]
+struct PathReplaceArgs;
 
 fn extract_rename_args(src: MontyPath, args: ArgValues, replace: bool, vm: &mut VM<'_>) -> RunResult<RenameCallArgs> {
     let (receiver, target) = if replace {
@@ -858,22 +838,17 @@ fn extract_rename_args(src: MontyPath, args: ArgValues, replace: bool, vm: &mut 
     }
 }
 
-#[derive(FromArgs)]
-#[from_args(name = "Path.unlink", style = def)]
-struct PathUnlinkArgs {
-    #[from_args(pos_only)]
-    receiver: Value,
-    #[from_args(default = LaxBool::new(false))]
-    missing_ok: LaxBool,
-}
+#[py_signature("unlink(receiver, /, missing_ok=False)", style = def, error_name = "Path.unlink")]
+struct PathUnlinkArgs;
 
 fn build_path_unlink(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let PathUnlinkArgs { receiver, missing_ok } = PathUnlinkArgs::from_args(args.prepend(Value::None), vm)?;
     receiver.drop_with(vm);
+    defer_drop!(missing_ok, vm);
     Ok(CallResult::OsCallWithEffect {
         call: OsFunctionCall::Unlink(path),
         effect: PreConversionEffect::Unlink {
-            missing_ok: missing_ok.bool(),
+            missing_ok: missing_ok.py_bool(vm)?,
         }
         .into(),
     })

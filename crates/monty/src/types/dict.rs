@@ -13,7 +13,7 @@ use super::{
     DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple, list::repr_should_truncate,
 };
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues},
+    args::{ArgValues, KwargsValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -850,14 +850,8 @@ impl Dict {
 /// `source` is an optional positional (mapping or iterable of pairs).
 /// `extras` collects every additional keyword argument so they can be merged
 /// into the dict after the source.
-#[derive(FromArgs)]
-#[from_args(name = "dict")]
-struct DictInitArgs {
-    #[from_args(pos_only, default)]
-    source: Option<Value>,
-    #[from_args(varkwargs)]
-    extras: KwargsValues,
-}
+#[py_signature("dict(source=..., /, **extras)")]
+struct DictInitArgs;
 
 /// Heap-only equality for probe candidates, mirroring `py_eq` for pairs whose
 /// comparison can never re-enter the VM.
@@ -1552,25 +1546,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
                 )
                 .into());
             }
-            StaticStrings::Get => {
-                let (key, default) = args.get_one_two_args("get", vm.heap)?;
-                // Release both arguments if hashing or equality raises.
-                let mut pending = DropGuard::new((key, default), vm);
-                let ((key, _), vm) = pending.as_parts();
-                if let Some(value) = self.dict_get(key, vm)? {
-                    Ok(value)
-                } else {
-                    let ((key, default), vm) = pending.into_parts();
-                    key.drop_with(vm);
-                    Ok(default.unwrap_or(Value::None))
-                }
-            }
-            StaticStrings::Keys => {
-                args.check_zero_args("dict.keys", vm.heap)?;
-                let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(self.id())));
-                vm.heap.inc_ref(self.id());
-                Ok(Value::Ref(view_id))
-            }
+            StaticStrings::Get => dict_get_method(self, args, vm),
+            StaticStrings::Keys => self.keys(vm, args),
             StaticStrings::Values => {
                 args.check_zero_args("dict.values", vm.heap)?;
                 let view_id = vm
@@ -1654,6 +1631,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
 }
 
 impl<'h> HeapObjectRead<'h, Dict> {
+    #[py_signature("keys(self, /)", style = no_args, owner = "dict")]
+    fn keys(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(self.id())));
+        vm.heap.inc_ref(self.id());
+        Ok(Value::Ref(view_id))
+    }
+
     /// Runs a binary `Counter` operator (`+ - & |`), which needs *both* operands
     /// to be Counters.
     ///
@@ -1804,6 +1788,23 @@ fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> Run
     };
     merged.set_kind(kind);
     Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Dict(merged)))))
+}
+
+#[py_signature("get(key, default=None, /)", style = unpack, kwarg_error_name = "dict.get")]
+fn dict_get_method<'h>(
+    dict: &HeapObjectRead<'h, Dict>,
+    GetArgs { key, default }: GetArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    let mut pending = DropGuard::new((key, default), vm);
+    let ((key, _), vm) = pending.as_parts();
+    if let Some(value) = dict.dict_get(key, vm)? {
+        Ok(value)
+    } else {
+        let ((key, default), vm) = pending.into_parts();
+        key.drop_with(vm);
+        Ok(default)
+    }
 }
 
 #[py_signature("update(self, other=..., /, **kwargs) -> None")]

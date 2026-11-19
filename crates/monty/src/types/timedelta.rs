@@ -12,10 +12,11 @@ use std::{
 };
 
 use chrono::TimeDelta as ChronoTimeDelta;
+use monty_macros::py_signature;
 use smallvec::smallvec;
 
 use crate::{
-    args::{ArgValues, FromArgs, FromValue, FromValueFail, is_long_int},
+    args::{ArgValues, FromValue, FromValueFail, is_long_int},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
@@ -250,8 +251,15 @@ pub(crate) fn allocate_micros(total_microseconds: i128, heap: &Heap) -> Value {
 ///
 /// Supports positional `(days, seconds, microseconds)` and keyword arguments
 /// `days`, `seconds`, `microseconds`, `milliseconds`, `minutes`, `hours`, `weeks`.
-pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let TimedeltaArgs {
+///
+/// Argument shape for `timedelta(days=0, seconds=0, microseconds=0, *, milliseconds=0, minutes=0, hours=0, weeks=0)`.
+///
+/// CPython accepts the first three as positional-or-keyword and the rest as
+/// keyword-only. All default to 0 so an empty `timedelta()` is legal.
+#[py_signature("timedelta(days=0, seconds=0, microseconds=0, *, milliseconds=0, minutes=0, hours=0, weeks=0)", convert(days = DeltaComponent, seconds = DeltaComponent, microseconds = DeltaComponent, milliseconds = DeltaComponent, minutes = DeltaComponent, hours = DeltaComponent, weeks = DeltaComponent))]
+pub(crate) fn init(
+    vm: &mut VM<'_>,
+    TimedeltaArgs {
         days,
         seconds,
         microseconds,
@@ -259,8 +267,8 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         minutes,
         hours,
         weeks,
-    } = TimedeltaArgs::from_args(args, vm)?;
-
+    }: TimedeltaArgs,
+) -> RunResult<Value> {
     let total_microseconds = checked_component(weeks, 7 * DAY_MICROSECONDS)?
         + checked_component(days, DAY_MICROSECONDS)?
         + checked_component(hours, HOUR_MICROSECONDS)?
@@ -273,29 +281,6 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))))
 }
 
-/// Argument shape for `timedelta(days=0, seconds=0, microseconds=0, *, milliseconds=0, minutes=0, hours=0, weeks=0)`.
-///
-/// CPython accepts the first three as positional-or-keyword and the rest as
-/// keyword-only. All default to 0 so an empty `timedelta()` is legal.
-#[derive(FromArgs)]
-#[from_args(name = "timedelta")]
-struct TimedeltaArgs {
-    #[from_args(default)]
-    days: DeltaComponent,
-    #[from_args(default)]
-    seconds: DeltaComponent,
-    #[from_args(default)]
-    microseconds: DeltaComponent,
-    #[from_args(kw_only, default)]
-    milliseconds: DeltaComponent,
-    #[from_args(kw_only, default)]
-    minutes: DeltaComponent,
-    #[from_args(kw_only, default)]
-    hours: DeltaComponent,
-    #[from_args(kw_only, default)]
-    weeks: DeltaComponent,
-}
-
 /// One `timedelta(...)` constructor component, held as `i128` so the
 /// microsecond-normalisation arithmetic in [`init`] cannot wrap.
 ///
@@ -306,6 +291,12 @@ struct TimedeltaArgs {
 /// even though they would fit in i128.
 #[derive(Clone, Copy, Default)]
 struct DeltaComponent(i128);
+
+impl From<i64> for DeltaComponent {
+    fn from(value: i64) -> Self {
+        Self(i128::from(value))
+    }
+}
 
 impl FromValue for DeltaComponent {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");

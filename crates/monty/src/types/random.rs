@@ -9,13 +9,14 @@
 
 use std::{borrow::Cow, fmt::Write, mem};
 
+use monty_macros::py_signature;
 use monty_types::{RandomSeed, RandomStart, ResourceTracker};
 use num_bigint::{BigInt, BigUint};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -153,12 +154,8 @@ impl Random {
 }
 
 /// `Random(x=None)` — `random.Random.__init__` is a plain Python `def`.
-#[derive(FromArgs)]
-#[from_args(name = "Random", style = def)]
-struct RandomInitArgs {
-    #[from_args(default = Value::None)]
-    x: Value,
-}
+#[py_signature("Random(x=None)", style = def)]
+struct RandomInitArgs;
 
 /// The `version` `seed()` uses when none is given.
 pub(crate) const SEED_VERSION_DEFAULT: i64 = 2;

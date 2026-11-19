@@ -6,8 +6,10 @@
 //! - `get_annotations()`: an object's annotations evaluated as written, which
 //!   `typing.get_type_hints()` builds on
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -78,31 +80,19 @@ fn format_class(vm: &mut VM<'_>) -> Value {
     Value::Ref(vm.heap.allocate(HeapData::Class(Box::new(Class::new(name, namespace)))))
 }
 
-/// Arguments of `get_annotations(obj, *, globals=None, locals=None, eval_str=False, format=Format.VALUE)`.
-#[derive(FromArgs)]
-#[from_args(name = "get_annotations", style = def)]
-struct GetAnnotationsArgs {
-    obj: Value,
-    #[from_args(kw_only, default = Value::None)]
-    globals: Value,
-    #[from_args(kw_only, default = Value::None)]
-    locals: Value,
-    #[from_args(kw_only, default = Value::Bool(false))]
-    eval_str: Value,
-    #[from_args(kw_only, default = Value::Int(1))]
-    format: Value,
-}
-
 /// `annotationlib.get_annotations()`: `obj`'s annotations evaluated where they were
 /// written (or as stored, in `STRING` format), without resolving forward references.
-fn get_annotations(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let GetAnnotationsArgs {
+#[py_signature("get_annotations(obj, *, globals=None, locals=None, eval_str=False, format=1)", style = def)]
+fn get_annotations(
+    vm: &mut VM<'_>,
+    GetAnnotationsArgs {
         obj,
         globals,
         locals,
         eval_str,
         format,
-    } = GetAnnotationsArgs::from_args(args, vm)?;
+    }: GetAnnotationsArgs,
+) -> RunResult<CallResult> {
     defer_drop!(obj, vm);
     defer_drop!(globals, vm);
     defer_drop!(locals, vm);

@@ -10,6 +10,7 @@
 
 use std::{fmt::Write, iter};
 
+use monty_macros::py_signature;
 use smallvec::smallvec;
 
 use super::{
@@ -17,7 +18,7 @@ use super::{
     py::{self, ContextMethod},
 };
 use crate::{
-    args::{ArgValues, FromArgs, is_long_int},
+    args::{ArgValues, is_long_int},
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -175,45 +176,24 @@ pub(crate) fn setcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::None)
 }
 
-/// Arguments of `decimal.localcontext(ctx=None, **kwargs)`.
-#[derive(FromArgs)]
-#[from_args(name = "localcontext", style = c)]
-struct LocalContextArgs {
-    #[from_args(default = Value::None)]
-    ctx: Value,
-    #[from_args(kw_only, default = Value::None)]
-    prec: Value,
-    #[from_args(kw_only, default = Value::None)]
-    rounding: Value,
-    #[from_args(kw_only, default = Value::None, static_string = "Emin")]
-    emin: Value,
-    #[from_args(kw_only, default = Value::None, static_string = "Emax")]
-    emax: Value,
-    #[from_args(kw_only, default = Value::None)]
-    capitals: Value,
-    #[from_args(kw_only, default = Value::None)]
-    clamp: Value,
-    #[from_args(kw_only, default = Value::None)]
-    flags: Value,
-    #[from_args(kw_only, default = Value::None)]
-    traps: Value,
-}
-
 /// `decimal.localcontext(ctx=None, **kwargs)`: a manager that installs a copy of
 /// `ctx` (or of the current context), with the given attributes changed, for the
 /// duration of a `with` block.
-pub(crate) fn localcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let LocalContextArgs {
+#[py_signature("localcontext(ctx=None, *, prec=None, rounding=None, Emin=None, Emax=None, capitals=None, clamp=None, flags=None, traps=None)", style = c)]
+pub(crate) fn localcontext(
+    vm: &mut VM<'_>,
+    LocalContextArgs {
         ctx,
         prec,
         rounding,
-        emin,
-        emax,
+        Emin: emin,
+        Emax: emax,
         capitals,
         clamp,
         flags,
         traps,
-    } = LocalContextArgs::from_args(args, vm)?;
+    }: LocalContextArgs,
+) -> RunResult<Value> {
     let fields = [prec, rounding, emin, emax, capitals, clamp, flags, traps];
     defer_drop!(fields, vm);
     defer_drop!(ctx, vm);
@@ -229,41 +209,22 @@ pub(crate) fn localcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
     Ok(Value::Ref(vm.heap.allocate(HeapData::DecimalContextManager(manager))))
 }
 
-/// Arguments of `decimal.Context(...)`.
-#[derive(FromArgs)]
-#[from_args(name = "Context", style = c)]
-struct ContextArgs {
-    #[from_args(default = Value::None)]
-    prec: Value,
-    #[from_args(default = Value::None)]
-    rounding: Value,
-    #[from_args(default = Value::None, static_string = "Emin")]
-    emin: Value,
-    #[from_args(default = Value::None, static_string = "Emax")]
-    emax: Value,
-    #[from_args(default = Value::None)]
-    capitals: Value,
-    #[from_args(default = Value::None)]
-    clamp: Value,
-    #[from_args(default = Value::None)]
-    flags: Value,
-    #[from_args(default = Value::None)]
-    traps: Value,
-}
-
 /// `decimal.Context(prec=None, rounding=None, Emin=None, Emax=None, capitals=None,
 /// clamp=None, flags=None, traps=None)`: a new context starting from `DefaultContext`.
-pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ContextArgs {
+#[py_signature("Context(prec=None, rounding=None, Emin=None, Emax=None, capitals=None, clamp=None, flags=None, traps=None)", style = c)]
+pub(crate) fn init(
+    vm: &mut VM<'_>,
+    ContextArgs {
         prec,
         rounding,
-        emin,
-        emax,
+        Emin: emin,
+        Emax: emax,
         capitals,
         clamp,
         flags,
         traps,
-    } = ContextArgs::from_args(args, vm)?;
+    }: ContextArgs,
+) -> RunResult<Value> {
     let fields = [prec, rounding, emin, emax, capitals, clamp, flags, traps];
     defer_drop!(fields, vm);
     let default = template_id(vm, Template::Default);

@@ -8,10 +8,11 @@
 
 use std::{cell::Cell, fmt::Write, mem::take};
 
+use monty_macros::py_signature;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues},
+    args::ArgValues,
     builtins::type_of_ref,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
@@ -172,29 +173,23 @@ pub(crate) fn call(cache_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunRes
 }
 
 /// Captures arbitrary call arguments without interpreting the wrapped signature.
-#[derive(FromArgs)]
-#[from_args(name = "_lru_cache_wrapper")]
-struct CallArgs {
-    #[from_args(varargs)]
-    positional: Vec<Value>,
-    #[from_args(varkwargs)]
-    keywords: KwargsValues,
-}
+#[py_signature("_lru_cache_wrapper(*positional, **keywords)")]
+struct CallArgs;
 
+/// Applies the settings this decorator captured to the function it is given.
+///
 /// Argument shape for the decorator `lru_cache(maxsize=…, typed=…)` returns.
 ///
 /// CPython's decorator is a closure over the two settings taking just the
 /// function, so this shape is what its arity errors describe; Monty keeps the
 /// settings on a function-less wrapper instead.
-#[derive(FromArgs)]
-#[from_args(name = "lru_cache.<locals>.decorating_function", style = def)]
-struct DecoratingFunctionArgs {
-    user_function: Value,
-}
-
-/// Applies the settings this decorator captured to the function it is given.
-fn decorate(maxsize: Option<u64>, typed: bool, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let DecoratingFunctionArgs { user_function } = DecoratingFunctionArgs::from_args(args, vm)?;
+#[py_signature("decorating_function(user_function)", style = def, error_name = "lru_cache.<locals>.decorating_function")]
+fn decorate(
+    maxsize: Option<u64>,
+    typed: bool,
+    DecoratingFunctionArgs { user_function }: DecoratingFunctionArgs,
+    vm: &mut VM<'_>,
+) -> RunResult<Value> {
     allocate(Some(user_function), maxsize, typed, vm)
 }
 
@@ -218,24 +213,12 @@ pub(crate) fn bad_maxsize_error() -> RunError {
 }
 
 /// Private native entry for storing a successful frozen call's result.
-pub(crate) fn call_store(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let StoreArgs { cache, key, value } = StoreArgs::from_args(args, vm)?;
+#[py_signature("store(cache, key, value, /)")]
+pub(crate) fn call_store(StoreArgs { cache, key, value }: StoreArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(cache, vm);
     defer_drop!(value, vm);
     store_result(cache, key, value, vm)?;
     Ok(Value::None)
-}
-
-/// Arguments to the private cache insertion primitive.
-#[derive(FromArgs)]
-#[from_args(name = "store")]
-struct StoreArgs {
-    #[from_args(pos_only)]
-    cache: Value,
-    #[from_args(pos_only)]
-    key: Value,
-    #[from_args(pos_only)]
-    value: Value,
 }
 
 /// Hashes a cache key before entering the mutation-aware table probe.

@@ -20,7 +20,7 @@ use super::{
     unicode_type_data::TypeRecord,
 };
 use crate::{
-    args::{ArgValues, FromArgs, StrArg},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     codecs::Codec,
     defer_drop,
@@ -295,16 +295,8 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
 /// NoneType`), not `_PyArg_BadArgument`'s `None` special case, so the macro's
 /// `bad_arg_named` wording can't be used. `vectorcall` + `at_most_total`
 /// model `unicode_vectorcall`'s dual arity wording.
-#[derive(FromArgs)]
-#[from_args(name = "str", at_most_total, vectorcall)]
-struct StrInitArgs {
-    #[from_args(default)]
-    object: Option<Value>,
-    #[from_args(default)]
-    encoding: Option<Value>,
-    #[from_args(default)]
-    errors: Option<Value>,
-}
+#[py_signature("str(object=..., encoding=..., errors=...)", at_most_total, vectorcall)]
+struct StrInitArgs;
 
 /// Rejects a non-str `encoding`/`errors` argument to `str()` with CPython's
 /// `str() argument '{name}' must be str, not {tp_name}` wording.
@@ -1493,21 +1485,15 @@ fn str_splitlines<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunRes
 /// Parses arguments for splitlines method.
 ///
 /// Supports both positional and keyword arguments for keepends.
-fn parse_splitlines_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<bool> {
-    let SplitlinesArgs { keepends } = SplitlinesArgs::from_args(args, vm)?;
-    let result = keepends.as_ref().is_some_and(value_is_truthy);
-    keepends.drop_with(vm.heap);
-    Ok(result)
-}
-
+///
 /// Argument shape for `str.splitlines(keepends=False)`. CPython evaluates
 /// `keepends` for truthiness rather than strict-typing, so the field stays as
 /// a raw `Value` for `value_is_truthy` to inspect.
-#[derive(FromArgs)]
-#[from_args(name = "splitlines", at_most_total)]
-struct SplitlinesArgs {
-    #[from_args(default)]
-    keepends: Option<Value>,
+#[py_signature("splitlines(keepends=...)", at_most_total)]
+fn parse_splitlines_args(SplitlinesArgs { keepends }: SplitlinesArgs, vm: &mut VM<'_>) -> RunResult<bool> {
+    let result = keepends.as_ref().is_some_and(value_is_truthy);
+    keepends.drop_with(vm.heap);
+    Ok(result)
 }
 
 /// Checks if a value is truthy for bool conversion.
@@ -1767,9 +1753,12 @@ fn str_zfill<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
 ///
 /// Returns a copy of the string where all tab characters are replaced by one or
 /// more spaces, depending on the current column and the given tab size.
-fn str_expandtabs<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let ExpandtabsArgs { tabsize } = ExpandtabsArgs::from_args(args, vm)?;
-
+///
+/// Argument shape for `str.expandtabs(tabsize=8)`. `tabsize` is `Option<Value>`
+/// so callers can distinguish "absent" (default 8) from any explicit value
+/// without forcing the macro into a type-checked default.
+#[py_signature("expandtabs(tabsize=...)", at_most_total)]
+fn str_expandtabs<'h>(s: &PyStr<'h>, ExpandtabsArgs { tabsize }: ExpandtabsArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let tabsize = match tabsize {
         None => 8,
         Some(val) => {
@@ -1813,16 +1802,6 @@ fn str_expandtabs<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunRes
     builder.finish(vm.heap)
 }
 
-/// Argument shape for `str.expandtabs(tabsize=8)`. `tabsize` is `Option<Value>`
-/// so callers can distinguish "absent" (default 8) from any explicit value
-/// without forcing the macro into a type-checked default.
-#[derive(FromArgs)]
-#[from_args(name = "expandtabs", at_most_total)]
-struct ExpandtabsArgs {
-    #[from_args(default)]
-    tabsize: Option<Value>,
-}
-
 /// Implements Python's `str.encode(encoding='utf-8', errors='strict')` method.
 ///
 /// Returns an encoded version of the string as a bytes object. Encoding-name
@@ -1831,19 +1810,7 @@ struct ExpandtabsArgs {
 /// is only looked up (and validated) when an actual encoding error occurs —
 /// `'hello'.encode('ascii', 'bogus')` succeeds because there's nothing for
 /// the handler to do.
-fn str_encode<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let EncodeArgs { encoding, errors } = EncodeArgs::from_args(args, vm)?;
-    defer_drop!(encoding, vm);
-    defer_drop!(errors, vm);
-    let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
-    let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
-
-    let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
-    let bytes = codec.encode(s.as_str(vm), errors, &vm.heap.tracker)?;
-    let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)));
-    Ok(Value::Ref(heap_id))
-}
-
+///
 /// Argument shape for `str.encode(encoding='utf-8', errors='strict')`.
 ///
 /// `bad_arg_named` opts in to CPython's `_PyArg_BadArgument` named wording
@@ -1853,13 +1820,15 @@ fn str_encode<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<
 /// CPython rejects explicit `None` here with the bad-arg error, which falls
 /// out naturally because `Option<StrArg>::from_value` delegates to
 /// `StrArg::from_value` and rejects `Value::None`.
-#[derive(FromArgs)]
-#[from_args(name = "encode", at_most_total, bad_arg_named)]
-struct EncodeArgs {
-    #[from_args(default)]
-    encoding: Option<StrArg>,
-    #[from_args(default)]
-    errors: Option<StrArg>,
+#[py_signature("encode(encoding: str=..., errors: str=...)", at_most_total, bad_arg_named)]
+fn str_encode<'h>(s: &PyStr<'h>, EncodeArgs { encoding, errors }: &EncodeArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
+    let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
+
+    let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
+    let bytes = codec.encode(s.as_str(vm), errors, &vm.heap.tracker)?;
+    let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)));
+    Ok(Value::Ref(heap_id))
 }
 
 /// Implements Python's `str.isidentifier()` predicate: `XID_Start` or `_`, then `XID_Continue`

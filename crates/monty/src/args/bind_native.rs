@@ -144,7 +144,7 @@ fn bind_slow<const N: usize>(
     // `_PyArg_UnpackKeywords` for C methods whose required positional-only
     // params cannot be filled by keyword.
     if matches!(spec.family, ErrorFamily::Unpack | ErrorFamily::ParseTuple) {
-        if n_kw > 0 {
+        if n_kw > 0 && !spec.varkwargs {
             let name = spec.kwarg_error_name.unwrap_or(spec.func_name);
             return Err(ExcType::type_error_no_kwargs(name));
         }
@@ -593,11 +593,15 @@ impl<C: ContainsHeap> DropWithContext<C> for IterState {
 ///
 /// Plain positional-only parameters have no keyword identity and do not match.
 fn find_param<'s>(spec: &'s ParamSpec, key: &EitherStr, interns: &Interns) -> Option<(usize, &'s Param)> {
-    let name = key.static_string(interns)?;
-    spec.params
-        .iter()
-        .enumerate()
-        .find(|(_, param)| param.keyword_name == Some(name))
+    let keyword = key.static_string(interns);
+    spec.params.iter().enumerate().find(|(_, param)| {
+        if matches!(param.kind, ParamKind::PosOnly) {
+            // A Python function can capture a positional-only name in **kwargs.
+            matches!(spec.family, ErrorFamily::Def { .. }) && !spec.varkwargs && param.name == key.as_str(interns)
+        } else {
+            keyword.is_some() && param.keyword_name == keyword
+        }
+    })
 }
 
 /// How a duplicate (slot already filled) kwarg should be reported.

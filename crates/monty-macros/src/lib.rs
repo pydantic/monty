@@ -33,10 +33,14 @@ pub fn explicit_discriminants(args: TokenStream, input: TokenStream) -> TokenStr
 #[proc_macro_attribute]
 pub fn py_signature(attr: TokenStream, item: TokenStream) -> TokenStream {
     let declaration = syn::parse_macro_input!(attr as py_signature::Declaration);
-    let function = syn::parse_macro_input!(item as syn::ItemFn);
-    py_signature::expand(&declaration, function)
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
+    let item = syn::parse_macro_input!(item as syn::Item);
+    match item {
+        syn::Item::Fn(function) => py_signature::expand(&declaration, function),
+        syn::Item::Struct(item) => py_signature::expand_struct(&declaration, item),
+        item => Err(syn::Error::new_spanned(item, "expected a function or a unit struct")),
+    }
+    .unwrap_or_else(syn::Error::into_compile_error)
+    .into()
 }
 
 /// Derive `FromArgs::from_args`. Each struct field becomes a Python

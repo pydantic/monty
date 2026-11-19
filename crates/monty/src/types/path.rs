@@ -11,11 +11,12 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+use monty_macros::py_signature;
 use monty_types::MontyPath;
 use smallvec::SmallVec;
 
 use crate::{
-    args::{ArgValues, FromArgs, LaxBool},
+    args::ArgValues,
     builtins::open::builtin_open,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -309,61 +310,23 @@ fn split_suffix(name: &str) -> (&str, &str) {
 ///
 /// A pure-Python classmethod in CPython, so its arity errors count `cls`:
 /// one stray positional is `takes 1 positional argument but 2 were given`.
-pub(crate) fn class_cwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    if !matches!(args, ArgValues::Empty) {
-        let (pos, kwargs) = args.into_parts();
-        let given = pos.len();
-        let first_kwarg = kwargs.first_key(vm.heap, vm.interns);
-        pos.drop_with(vm);
-        kwargs.drop_with(vm);
-        // CPython reports a stray keyword before the positional count.
-        return Err(match first_kwarg? {
-            Some(key) => ExcType::type_error_unexpected_keyword("Path.cwd", &key),
-            None => ExcType::type_error(format!(
-                "Path.cwd() takes 1 positional argument but {} were given",
-                given + 1
-            )),
-        });
-    }
+#[py_signature("cwd(self, /)", style = def, owner = "Path")]
+pub(crate) fn class_cwd(vm: &mut VM<'_>, CwdArgs {}: CwdArgs) -> RunResult<Value> {
     let path = Path::new(vm.env.cwd.to_string());
     Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
 }
 
 /// `Path.glob(pattern, *, case_sensitive=None, recurse_symlinks=False)`.
-#[derive(FromArgs)]
-#[from_args(name = "Path.glob", style = def)]
-struct PathGlobArgs {
-    #[from_args(static_string = "PatternAttr")]
-    pattern: Value,
-    #[from_args(kw_only, default = Value::None)]
-    case_sensitive: Value,
-    #[from_args(kw_only, default = LaxBool::new(false))]
-    recurse_symlinks: LaxBool,
-}
+#[py_signature("glob(pattern, *, case_sensitive=None, recurse_symlinks=False)", style = def, error_name = "Path.glob")]
+struct PathGlobArgs;
 
 /// `Path.rglob(pattern, *, case_sensitive=None, recurse_symlinks=False)`.
-#[derive(FromArgs)]
-#[from_args(name = "Path.rglob", style = def)]
-struct PathRglobArgs {
-    #[from_args(static_string = "PatternAttr")]
-    pattern: Value,
-    #[from_args(kw_only, default = Value::None)]
-    case_sensitive: Value,
-    #[from_args(kw_only, default = LaxBool::new(false))]
-    recurse_symlinks: LaxBool,
-}
+#[py_signature("rglob(pattern, *, case_sensitive=None, recurse_symlinks=False)", style = def, error_name = "Path.rglob")]
+struct PathRglobArgs;
 
 /// `Path.walk(top_down=True, on_error=None, follow_symlinks=False)`.
-#[derive(FromArgs)]
-#[from_args(name = "Path.walk", style = def)]
-struct PathWalkArgs {
-    #[from_args(default = LaxBool::new(true))]
-    top_down: LaxBool,
-    #[from_args(default = Value::None)]
-    on_error: Value,
-    #[from_args(default = LaxBool::new(false))]
-    follow_symlinks: LaxBool,
-}
+#[py_signature("walk(top_down=True, on_error=None, follow_symlinks=False)", style = def, error_name = "Path.walk")]
+struct PathWalkArgs;
 
 /// `Path.glob()` / `Path.rglob()` on the receiver `base`: validates the
 /// pattern as `pathlib` does, then hands it to [`glob_call`].
@@ -375,11 +338,13 @@ fn path_glob(
     pattern: Value,
     recursive: bool,
     case_sensitive: Value,
-    recurse_symlinks: LaxBool,
+    recurse_symlinks: Value,
     vm: &mut VM<'_>,
 ) -> RunResult<CallResult> {
     defer_drop!(pattern, vm);
     defer_drop!(case_sensitive, vm);
+    defer_drop!(recurse_symlinks, vm);
+    let recurse_symlinks = recurse_symlinks.py_bool(vm)?;
     let pattern_text = match value_as_path_str(pattern, vm.heap, vm.interns) {
         Some(text) => text.to_owned(),
         // CPython's `bytes` handling trips over its own `str` separator.
@@ -402,7 +367,7 @@ fn path_glob(
     } else {
         pattern_text
     };
-    glob_call(base, &pattern_text, case_sensitive, recurse_symlinks.bool())
+    glob_call(base, &pattern_text, case_sensitive, recurse_symlinks)
 }
 
 /// Extracts a string from a Value for use as a path.
@@ -621,7 +586,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
                     follow_symlinks,
                 } = PathWalkArgs::from_args(args, vm)?;
                 let top = self.get(vm.heap).as_str().to_owned();
-                return walk_call(top, true, top_down.bool(), on_error, follow_symlinks.bool(), vm);
+                defer_drop!(top_down, vm);
+                defer_drop!(follow_symlinks, vm);
+                let mut guard = crate::heap::DropGuard::new(on_error, vm);
+                let (_, vm) = guard.as_parts_mut();
+                let top_down = top_down.py_bool(vm)?;
+                let follow_symlinks = follow_symlinks.py_bool(vm)?;
+                let (on_error, vm) = guard.into_parts();
+                return walk_call(top, true, top_down, on_error, follow_symlinks, vm);
             }
             StaticStrings::IsAbsolute => {
                 args.check_zero_args("is_absolute", vm.heap)?;

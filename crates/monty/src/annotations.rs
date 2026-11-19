@@ -6,8 +6,10 @@
 //! computed and cached `__annotations__`, and the private helpers frozen code
 //! uses to call an annotate function in each `annotationlib.Format`.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, MissingNames, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -195,15 +197,18 @@ pub(crate) fn class_namespace_copy(class_id: HeapId, vm: &mut VM<'_>) -> RunResu
 
 /// Frozen helper: calls `annotate(format)` under `classdict` for `owner`, with
 /// unresolved names handled per `fake` (see [`missing_names`]).
-pub(crate) fn call_annotate_helper(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    let CallAnnotateArgs {
+#[py_signature("call_annotate(annotate, classdict, format, fake, owner, is_class, /)")]
+pub(crate) fn call_annotate_helper(
+    CallAnnotateArgs {
         annotate,
         classdict,
         format,
         fake,
         owner,
         is_class,
-    } = CallAnnotateArgs::from_args(args, vm)?;
+    }: CallAnnotateArgs,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
     defer_drop!(annotate, vm);
     defer_drop!(classdict, vm);
     defer_drop!(owner, vm);
@@ -231,24 +236,6 @@ fn missing_names(fake: &Value, owner: &Value, is_class: bool, vm: &VM<'_>) -> Mi
         Value::Int(3) => MissingNames::NameError,
         _ => unreachable!("frozen code passes the fake-globals mode as an int"),
     }
-}
-
-/// Arguments of the private `call_annotate` helper.
-#[derive(FromArgs)]
-#[from_args(name = "call_annotate")]
-struct CallAnnotateArgs {
-    #[from_args(pos_only)]
-    annotate: Value,
-    #[from_args(pos_only)]
-    classdict: Value,
-    #[from_args(pos_only)]
-    format: Value,
-    #[from_args(pos_only)]
-    fake: Value,
-    #[from_args(pos_only)]
-    owner: Value,
-    #[from_args(pos_only)]
-    is_class: Value,
 }
 
 /// Frozen helper: caches a class's evaluated annotations under

@@ -5,8 +5,9 @@
 
 use std::fmt::Write;
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -144,8 +145,13 @@ impl<C: ContainsHeap> DropWithContext<C> for DataclassField {
 ///
 /// Legal outside a class body too (`f = field(default=1)`), which is why it is
 /// a value rather than a decoration-time form.
-pub(super) fn field(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let FieldArgs {
+///
+/// `field()` arguments, mirroring CPython's all-keyword-only signature.
+/// `MISSING` is the "not given" sentinel, since `None` is a legitimate default.
+#[py_signature("field(*, default=..., default_factory=..., init=True, repr=True, hash=None, compare=True, metadata=None, kw_only=..., doc=None)", style = def)]
+pub(super) fn field(
+    vm: &mut VM<'_>,
+    FieldArgs {
         default,
         default_factory,
         init,
@@ -155,11 +161,13 @@ pub(super) fn field(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         metadata,
         kw_only,
         doc,
-    } = FieldArgs::from_args(args, vm)?;
+    }: FieldArgs,
+) -> RunResult<Value> {
     // `MISSING` means "not given", since `None` is a legitimate default.
+    let kw_only = kw_only.unwrap_or(Value::Marker(Marker(StaticStrings::Missing)));
     let spec = DataclassField::new_spec(
-        (!is_missing(&default)).then_some(default),
-        (!is_missing(&default_factory)).then_some(default_factory),
+        default.filter(|value| !is_missing(value)),
+        default_factory.filter(|value| !is_missing(value)),
     );
     // Guarded together, because the spec owns the captured default and factory
     // before anything below has run and reading a flag's truthiness can raise
@@ -201,33 +209,6 @@ pub(super) fn field(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Whether an argument was left at the `MISSING` sentinel `field()` defaults to.
 fn is_missing(value: &Value) -> bool {
     matches!(value, Value::Marker(Marker(StaticStrings::Missing)))
-}
-
-/// `field()` arguments, mirroring CPython's all-keyword-only signature.
-/// `MISSING` is the "not given" sentinel, since `None` is a legitimate default.
-#[derive(FromArgs)]
-#[from_args(name = "field", style = def)]
-struct FieldArgs {
-    #[from_args(kw_only, default = Value::Marker(Marker(StaticStrings::Missing)))]
-    default: Value,
-    #[from_args(kw_only, default = Value::Marker(Marker(StaticStrings::Missing)))]
-    default_factory: Value,
-    #[from_args(kw_only, default = Value::Bool(true))]
-    init: Value,
-    #[from_args(kw_only, default = Value::Bool(true))]
-    repr: Value,
-    #[from_args(kw_only, default = Value::None)]
-    hash: Value,
-    #[from_args(kw_only, default = Value::Bool(true))]
-    compare: Value,
-    #[from_args(kw_only, default = Value::None)]
-    metadata: Value,
-    #[from_args(kw_only, default = Value::Marker(Marker(StaticStrings::Missing)))]
-    kw_only: Value,
-    /// CPython's optional per-field docstring. Monty stores none, so anything
-    /// but the `None` default is refused rather than silently dropped.
-    #[from_args(kw_only, default = Value::None)]
-    doc: Value,
 }
 
 /// The `Field` a heap id points at, if it is one.

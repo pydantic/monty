@@ -1,8 +1,10 @@
 use std::{cmp::Ordering, collections::VecDeque, fmt::Write, mem};
 
+use monty_macros::py_signature;
+
 use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -26,52 +28,8 @@ use crate::{
 
 /// `deque([iterable[, maxlen]])` — both positional-or-keyword, both defaulted.
 /// See [`Deque::init`] for why the over-arity case is pre-checked instead.
-#[derive(FromArgs)]
-#[from_args(name = "deque")]
-struct DequeArgs {
-    // `Option` rather than a `Value::None` default: an explicit `None` iterable is
-    // a `TypeError` in CPython (`'NoneType' object is not iterable`), so "omitted"
-    // has to be distinguishable from a real `None`.
-    #[from_args(static_string = "IterableArg", default)]
-    iterable: Option<Value>,
-    #[from_args(default = Value::None)]
-    maxlen: Value,
-}
-
-/// `deque.rotate([n])` — `PyArg_UnpackTuple`, so the arity error is
-/// `rotate expected at most 1 argument, got 2` (no type name).
-#[derive(FromArgs)]
-#[from_args(name = "rotate", style = unpack)]
-struct RotateArgs {
-    #[from_args(pos_only, default = Value::Int(1))]
-    n: Value,
-}
-
-/// `deque.insert(i, x)` — `PyArg_UnpackTuple` with a fixed arity, so the error is
-/// `insert expected 2 arguments, got 1`.
-#[derive(FromArgs)]
-#[from_args(name = "insert", style = unpack)]
-struct InsertArgs {
-    #[from_args(pos_only)]
-    index: Value,
-    #[from_args(pos_only)]
-    item: Value,
-}
-
-/// `deque.index(x[, start[, stop]])` — `PyArg_UnpackTuple` with `min < max`, so a
-/// missing `x` reports `index expected at least 1 argument, got 0`.
-#[derive(FromArgs)]
-#[from_args(name = "index", style = unpack)]
-struct IndexArgs {
-    #[from_args(pos_only)]
-    value: Value,
-    // `Option` rather than a `Value::None` default: an explicit `None` bound is an
-    // error in CPython, so "omitted" has to be distinguishable from a real `None`.
-    #[from_args(pos_only, default)]
-    start: Option<Value>,
-    #[from_args(pos_only, default)]
-    stop: Option<Value>,
-}
+#[py_signature("deque(iterable=..., maxlen=None)")]
+struct DequeArgs;
 
 /// Python's `collections.deque`: a double-ended queue backed by a [`VecDeque`].
 ///
@@ -888,9 +846,11 @@ fn call_deque_method<'h>(
 }
 
 /// `deque.rotate([n=1])` — rotates right by `n` (left if negative), wrapping.
-fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let RotateArgs { n } = RotateArgs::from_args(args, vm)?;
-    defer_drop!(n, vm);
+///
+/// `deque.rotate([n])` — `PyArg_UnpackTuple`, so the arity error is
+/// `rotate expected at most 1 argument, got 2` (no type name).
+#[py_signature("rotate(n=1, /)", style = unpack)]
+fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, RotateArgs { n }: &RotateArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     // A big int is a valid rotation count; only one out of `i64` range is an
     // `OverflowError`, matching CPython's `PyNumber_AsSsize_t`.
     let n = match read_ssize(n, vm, ExcType::overflow_c_ssize_t) {
@@ -914,11 +874,18 @@ fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) 
 }
 
 /// `deque.insert(i, x)` — raises if the deque is already at `maxlen`.
-fn insert<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let InsertArgs {
+///
+/// `deque.insert(i, x)` — `PyArg_UnpackTuple` with a fixed arity, so the error is
+/// `insert expected 2 arguments, got 1`.
+#[py_signature("insert(index, item, /)", style = unpack)]
+fn insert<'h>(
+    deque: &HeapReadMut<'h, Deque>,
+    InsertArgs {
         index: index_value,
         item,
-    } = InsertArgs::from_args(args, vm)?;
+    }: InsertArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
     defer_drop!(index_value, vm);
     // Every failing branch below releases `item` through the guard. The insert
     // at the end takes it back out.
@@ -988,12 +955,19 @@ fn remove<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) 
 }
 
 /// `deque.index(x[, start[, stop]])` — index of the first item equal to `x`.
-fn index<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let IndexArgs {
+///
+/// `deque.index(x[, start[, stop]])` — `PyArg_UnpackTuple` with `min < max`, so a
+/// missing `x` reports `index expected at least 1 argument, got 0`.
+#[py_signature("index(value, start=..., stop=..., /)", style = unpack)]
+fn index<'h>(
+    deque: &HeapRead<'h, Deque>,
+    IndexArgs {
         value: target,
         start,
         stop,
-    } = IndexArgs::from_args(args, vm)?;
+    }: IndexArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
     defer_drop!(target, vm);
     defer_drop!(start, vm);
     defer_drop!(stop, vm);

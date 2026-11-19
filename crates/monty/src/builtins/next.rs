@@ -1,7 +1,8 @@
 //! Implementation of the next() builtin function.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
@@ -23,18 +24,6 @@ def __monty_next_default(iterator, default, next_, stop_iteration):
         return default
 ";
 
-/// Argument shape for `next(iterator, default=...)` — positional-only in
-/// CPython, so `style = unpack` gives the `PyArg_UnpackTuple` arity wording
-/// and the blanket `next() takes no keyword arguments` rejection.
-#[derive(FromArgs)]
-#[from_args(name = "next", style = unpack)]
-struct NextArgs {
-    #[from_args(pos_only)]
-    iterator: Value,
-    #[from_args(pos_only, default)]
-    default: Option<Value>,
-}
-
 /// Implementation of the next() builtin function.
 ///
 /// Retrieves the next item from an iterator.
@@ -47,8 +36,12 @@ struct NextArgs {
 ///
 /// A file nobody has read yet first loads its buffer from the host: the call
 /// yields the read with a `FileNext` effect, which answers it on resume.
-pub fn builtin_next(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let NextArgs { iterator, default } = NextArgs::from_args(args, vm)?;
+///
+/// Argument shape for `next(iterator, default=...)` — positional-only in
+/// CPython, so `style = unpack` gives the `PyArg_UnpackTuple` arity wording
+/// and the blanket `next() takes no keyword arguments` rejection.
+#[py_signature("next(iterator, default=..., /)", style = unpack)]
+pub fn builtin_next(vm: &mut VM<'_>, NextArgs { iterator, default }: NextArgs) -> RunResult<CallResult> {
     defer_drop!(iterator, vm);
     match iterator.read_heap(vm) {
         Some(HeapReadOutput::Instance(instance)) => {

@@ -21,6 +21,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
+use monty_macros::py_signature;
 use monty_types::ResourceTracker;
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +32,7 @@ use self::{
     rustcrypto::{Sha1, Sha224, Sha256, Sha384, Sha512},
 };
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -412,18 +413,12 @@ pub(crate) fn hex_string(data: &[u8]) -> String {
 }
 
 /// `digest(length)` of a `_hashlib.HASHXOF`.
-#[derive(FromArgs)]
-#[from_args(name = "digest", style = c_named, at_most_total)]
-struct XofDigestArgs {
-    length: u64,
-}
+#[py_signature("digest(length)", style = c_named, at_most_total, convert(length = u64))]
+struct XofDigestArgs;
 
 /// `hexdigest(length)` of a `_hashlib.HASHXOF`.
-#[derive(FromArgs)]
-#[from_args(name = "hexdigest", style = c_named, at_most_total)]
-struct XofHexdigestArgs {
-    length: u64,
-}
+#[py_signature("hexdigest(length)", style = c_named, at_most_total, convert(length = u64))]
+struct XofHexdigestArgs;
 
 // ============================================================================
 // Heap object glue

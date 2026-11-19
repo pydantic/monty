@@ -12,6 +12,7 @@ fn adapter() -> ItemFn {
 fn rejects_invalid_options() {
     for options in [
         "style = def, style = clinic",
+        "bad_arg, bad_arg",
         r#"owner = "Counter", owner = "dict""#,
         r#"kwarg_error_name = "first", kwarg_error_name = "second""#,
     ] {
@@ -120,4 +121,227 @@ fn generates_bound_fields_in_declaration_order() {
         }
     };
     assert!(expanded.items.contains(&Item::Struct(expected)));
+}
+
+#[test]
+fn one_arg_requires_one_positional_only_argument() {
+    for signature in [
+        "f()",
+        "f(x)",
+        "f(x=1.0, /)",
+        "f(x: str, /)",
+        "f(x, y, /)",
+        "f(x, /, **kwargs)",
+    ] {
+        let declaration = parse_quote!(#signature, style = one_arg);
+        let error = expand(&declaration, adapter()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "`style = one_arg` requires one unannotated positional-only parameter without a default"
+        );
+    }
+}
+
+#[test]
+fn one_arg_checks_the_rust_argument() {
+    let declaration = parse_quote!("f(x, /)", style = one_arg);
+    let function = parse_quote!(
+        fn f(x: Value) {}
+    );
+    assert_eq!(
+        expand(&declaration, function).unwrap_err().to_string(),
+        "expected &Value for a single positional argument"
+    );
+    assert_eq!(
+        expand(&declaration, adapter()).unwrap_err().to_string(),
+        "expected a parameter named `x` of type &Value"
+    );
+}
+
+#[test]
+fn one_arg_uses_the_declared_name_for_errors() {
+    for options in [r#"owner = "T""#, r#"kwarg_error_name = "g""#] {
+        let declaration = syn::parse_str::<Declaration>(&format!(r#""f(x, /)", style = one_arg, {options}"#)).unwrap();
+        assert_eq!(
+            expand(&declaration, adapter()).unwrap_err().to_string(),
+            "`style = one_arg` uses the callable name for errors"
+        );
+    }
+}
+
+#[test]
+fn one_arg_uses_the_existing_positional_fast_path() {
+    let declaration = parse_quote!("len(obj, /)", style = one_arg);
+    let function = parse_quote!(
+        fn builtin_len(vm: &mut VM<'_>, obj: &Value) {
+            obj.py_len(vm)
+        }
+    );
+    let expanded: ItemFn = syn::parse2(expand(&declaration, function).unwrap()).unwrap();
+    let expected: ItemFn = parse_quote! {
+        fn builtin_len(vm: &mut VM<'_>, obj: crate::args::ArgValues) {
+            let obj = obj.get_one_arg("len", vm.heap)?;
+            crate::defer_drop!(obj, vm);
+            { obj.py_len(vm) }
+        }
+    };
+    assert_eq!(expanded, expected);
+}
+
+#[test]
+fn no_args_checks_before_running_the_method() {
+    let declaration = parse_quote!("keys(self, /)", style = no_args, owner = "dict");
+    let function = parse_quote!(
+        fn keys(&self, vm: &mut VM<'_>) {
+            self.make_view(vm)
+        }
+    );
+    let expanded: ItemFn = syn::parse2(expand(&declaration, function).unwrap()).unwrap();
+    let expected: ItemFn = parse_quote! {
+        fn keys(&self, vm: &mut VM<'_>, __py_args: crate::args::ArgValues) {
+            __py_args.check_zero_args("dict.keys", vm.heap)?;
+            self.make_view(vm)
+        }
+    };
+    assert_eq!(expanded, expected);
+}
+
+#[test]
+fn no_args_rejects_python_arguments() {
+    for signature in [
+        "f(x, /)",
+        "f(self)",
+        "f(self=None, /)",
+        "f(self: str, /)",
+        "f(*items)",
+        "f(self, /, **kw)",
+    ] {
+        let declaration = parse_quote!(#signature, style = no_args);
+        assert_eq!(
+            expand(&declaration, adapter()).unwrap_err().to_string(),
+            "`style = no_args` accepts only an optional positional-only self parameter"
+        );
+    }
+    let declaration = parse_quote!("f()", style = no_args, kwarg_error_name = "g");
+    assert_eq!(
+        expand(&declaration, adapter()).unwrap_err().to_string(),
+        "`style = no_args` uses the callable name for keyword errors"
+    );
+}
+
+#[test]
+fn named_binder_preserves_visibility_and_defaults() {
+    let declaration = parse_quote!(
+        "(x: int = -1, y=..., *, truth: bool=False)",
+        error_name = "sample",
+        convert(y = Part)
+    );
+    let generated = super::expand_struct(
+        &declaration,
+        parse_quote!(
+            pub(crate) struct Sample;
+        ),
+    )
+    .unwrap();
+    let expanded: File = syn::parse2(generated).unwrap();
+    let expected: ItemStruct = parse_quote! {
+        pub(crate) struct Sample {
+            pub(crate) x: i32,
+            pub(crate) y: Option<Part>,
+            pub(crate) truth: crate::args::LaxBool,
+        }
+    };
+    assert!(expanded.items.contains(&Item::Struct(expected)));
+}
+
+#[test]
+fn rejects_invalid_named_binders_and_converters() {
+    let declaration = parse_quote!("f()");
+    for item in [
+        parse_quote!(
+            struct F(u32);
+        ),
+        parse_quote!(
+            struct F<T>;
+        ),
+    ] {
+        assert_eq!(
+            super::expand_struct(&declaration, item).unwrap_err().to_string(),
+            "expected a unit struct without generics"
+        );
+    }
+    for (options, expected) in [
+        (
+            r#""f(*items)", style = unpack"#,
+            "`style = unpack` requires a fixed positional range",
+        ),
+        (
+            r#""f(**extras)", style = parse_tuple"#,
+            "`style = parse_tuple` rejects all keyword arguments",
+        ),
+        (r#""(x)""#, "a parameter list requires error_name"),
+        (
+            r#""f(self, /)", owner = "T", error_name = "g""#,
+            "choose either owner or error_name",
+        ),
+        (r#""f(x)", convert(other = T)"#, "unknown converter parameter"),
+        (
+            r#""f(x: int)", convert(x = T)"#,
+            "a custom converter supplies the parameter type",
+        ),
+        (r#""f(x=None)", convert(x = T)"#, "unsupported custom converter default"),
+        (r#""f(x: int=2147483648)""#, "expected a C int literal"),
+        (
+            r#""f(x, /)", style = one_arg, bad_arg"#,
+            "fixed-arity helpers do not accept parser modifiers or custom converters",
+        ),
+        (
+            r#""f()", style = no_args, owner = "T""#,
+            "owner requires a positional-only self parameter",
+        ),
+    ] {
+        let declaration = syn::parse_str::<Declaration>(options).unwrap();
+        assert_eq!(expand(&declaration, adapter()).unwrap_err().to_string(), expected);
+    }
+    let duplicate = syn::parse_str::<Declaration>(r#""f(x)", convert(x = T, x = U)"#);
+    assert_eq!(duplicate.err().unwrap().to_string(), "duplicate converter");
+}
+
+#[test]
+fn destructured_adapter_checks_the_argument_type() {
+    let declaration = parse_quote!("f(x)");
+    let function = parse_quote!(
+        fn f(FArgs { x }: &GArgs) {}
+    );
+    assert_eq!(
+        expand(&declaration, function).unwrap_err().to_string(),
+        "expected the destructured argument type"
+    );
+}
+
+#[test]
+fn two_args_requires_an_ordered_pair_of_raw_values() {
+    let function: ItemFn = parse_quote!(
+        fn divmod((x, y): (&Value, &Value)) {}
+    );
+    for (sig, expected) in [
+        (
+            "divmod(x, y)",
+            "`style = two_args` requires two positional-only parameters",
+        ),
+        (
+            "divmod(x, y=0, /)",
+            "`style = two_args` requires two raw values and uses the callable name for errors",
+        ),
+        (
+            "divmod(y, x, /)",
+            "expected a pair of &Value parameters in signature order",
+        ),
+    ] {
+        let declaration = parse_quote!(#sig, style = two_args);
+        assert_eq!(
+            expand(&declaration, function.clone()).unwrap_err().to_string(),
+            expected
+        );
+    }
 }

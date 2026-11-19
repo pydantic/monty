@@ -10,10 +10,10 @@
 
 use std::str;
 
+use monty_macros::py_signature;
 use monty_types::{MontyPath, OpenCallArgs, OsFunctionCall};
 
 use crate::{
-    args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -31,8 +31,28 @@ use crate::{
 /// The host performs open-time validation and creation, then returns a file handle.
 /// The resume effect preserves the supplied filename for `.name` and `repr()`;
 /// subsequent I/O uses the handle's path, independent of later directory changes.
-pub(crate) fn builtin_open(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let OpenArgs {
+///
+/// Argument shape for `open(file, mode='r', buffering=-1, encoding=None,
+/// errors=None, newline=None, closefd=True, opener=None)`.
+///
+/// `mode` is a zero-copy [`StrArg`] (absent → `"r"`) so wrong-type errors
+/// flow through the macro's `bad_arg_named` path and match CPython's
+/// `open() argument 'mode' must be str, not …` wording verbatim, without
+/// copying the mode string. The other kwargs stay as raw `Value`
+/// because they have monty-specific validation (`validate_ignored_open_kwarg`)
+/// that the macro doesn't model — Monty rejects any *non-default* value to
+/// avoid silently dropping semantics it doesn't honour (e.g. `buffering=0`,
+/// `opener=my_opener`); `newline` is honoured and extracted by
+/// `newline_argument`. `file` is also raw because `open()`'s file-path
+/// error wording (`expected str, bytes or os.PathLike object, not …`) doesn't
+/// follow the `_PyArg_BadArgument` shape that `bad_arg_named` emits.
+#[py_signature(
+    "open(file, mode: str=..., buffering=-1, encoding=None, errors=None, newline=None, closefd=True, opener=None)",
+    bad_arg_named
+)]
+pub(crate) fn builtin_open(
+    vm: &mut VM<'_>,
+    OpenArgs {
         file,
         mode,
         buffering,
@@ -41,8 +61,8 @@ pub(crate) fn builtin_open(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRe
         newline,
         closefd,
         opener,
-    } = OpenArgs::from_args(args, vm)?;
-
+    }: OpenArgs,
+) -> RunResult<CallResult> {
     // `file` and the unsupported kwargs are raw `Value`s; `mode` holds a
     // borrowed str — all need cleanup on every path.
     defer_drop!(file, vm);
@@ -92,40 +112,6 @@ pub(crate) fn builtin_open(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRe
         }),
         effect: PostConversionEffect::OpenName { name, newline }.into(),
     })
-}
-
-/// Argument shape for `open(file, mode='r', buffering=-1, encoding=None,
-/// errors=None, newline=None, closefd=True, opener=None)`.
-///
-/// `mode` is a zero-copy [`StrArg`] (absent → `"r"`) so wrong-type errors
-/// flow through the macro's `bad_arg_named` path and match CPython's
-/// `open() argument 'mode' must be str, not …` wording verbatim, without
-/// copying the mode string. The other kwargs stay as raw `Value`
-/// because they have monty-specific validation (`validate_ignored_open_kwarg`)
-/// that the macro doesn't model — Monty rejects any *non-default* value to
-/// avoid silently dropping semantics it doesn't honour (e.g. `buffering=0`,
-/// `opener=my_opener`); `newline` is honoured and extracted by
-/// `newline_argument`. `file` is also raw because `open()`'s file-path
-/// error wording (`expected str, bytes or os.PathLike object, not …`) doesn't
-/// follow the `_PyArg_BadArgument` shape that `bad_arg_named` emits.
-#[derive(FromArgs)]
-#[from_args(name = "open", bad_arg_named)]
-struct OpenArgs {
-    file: Value,
-    #[from_args(default)]
-    mode: Option<StrArg>,
-    #[from_args(default = Value::Int(-1))]
-    buffering: Value,
-    #[from_args(default = Value::None)]
-    encoding: Value,
-    #[from_args(default = Value::None)]
-    errors: Value,
-    #[from_args(default = Value::None)]
-    newline: Value,
-    #[from_args(default = Value::Bool(true))]
-    closefd: Value,
-    #[from_args(default = Value::None)]
-    opener: Value,
 }
 
 /// Extracts a path string accepted by `open()`.

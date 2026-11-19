@@ -8,12 +8,13 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+use monty_macros::py_signature;
 // The bounds live in `monty-types` so the wire decoder shares them; re-exported
 // here because this is where the sandbox-side constructor enforces them.
 pub(crate) use monty_types::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS};
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -105,16 +106,8 @@ impl TimeZone {
 /// Both `offset` and `name` are held as `Value` so the inner code can do its
 /// own custom validation (`offset` must be a `timedelta`; `name` must be a
 /// `str`). The macro only handles arg-count/keyword dispatch.
-#[derive(FromArgs)]
-#[from_args(name = "timezone", style = c_named, at_most_total)]
-struct TimezoneInitArgs {
-    offset: Value,
-    // `Option<Value>` (with `default`) preserves the distinction between
-    // omitted (`None`) and explicitly passed `None` (`Some(Value::None)`),
-    // which `extract_name` needs to reject the latter.
-    #[from_args(default)]
-    name: Option<Value>,
-}
+#[py_signature("timezone(offset, name=...)", style = c_named, at_most_total)]
+struct TimezoneInitArgs;
 
 impl PartialEq for TimeZone {
     fn eq(&self, other: &Self) -> bool {

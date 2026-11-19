@@ -253,11 +253,11 @@ impl Signature {
                          — every positional field must be `pos_only`"
                     ));
                 }
-                if self.varargs_idx.is_some() || self.varkwargs_idx.is_some() {
-                    return err(&format!(
-                        "`style = {style}` cannot be combined with `varargs` or `varkwargs` \
-                         — it models a fixed positional min..max range"
-                    ));
+                if self.varargs_idx.is_some() {
+                    return err(&format!("`style = {style}` requires a fixed positional range"));
+                }
+                if self.style == Style::ParseTuple && self.varkwargs_idx.is_some() {
+                    return err("`style = parse_tuple` rejects all keyword arguments");
                 }
             }
             Style::Clinic | Style::C | Style::CNamed => {}

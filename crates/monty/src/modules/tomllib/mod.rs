@@ -16,12 +16,13 @@ mod value;
 use std::borrow::Cow;
 
 use memchr::{memchr_iter, memrchr};
+use monty_macros::py_signature;
 use monty_types::ResourceTracker;
 use parser::{TomlError, TomlTable};
 
 use super::ModuleFunctions;
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     codecs::Codec,
@@ -83,39 +84,23 @@ pub(super) fn call(vm: &mut VM<'_>, function: TomllibFunctions, args: ArgValues)
     }
 }
 
+/// Implements `tomllib.loads(s)`.
+///
+/// Only `str` input is accepted; anything else raises CPython's
+/// `Expected str object, not '{type}'` `TypeError`.
+///
 /// Argument shape for `tomllib.loads(s, /, *, parse_float=float)`.
 ///
 /// CPython's `loads` is a pure-Python `def`, so signature errors use
 /// `style = def` wording. `parse_float` is not implemented: leaving it off the
 /// struct makes the macro reject it as an unexpected keyword.
-#[derive(FromArgs)]
-#[from_args(name = "loads", style = def)]
-struct TomlLoadsArgs {
-    #[from_args(pos_only)]
-    s: Value,
-}
-
-/// Implements `tomllib.loads(s)`.
-///
-/// Only `str` input is accepted; anything else raises CPython's
-/// `Expected str object, not '{type}'` `TypeError`.
-fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let TomlLoadsArgs { s } = TomlLoadsArgs::from_args(args, vm)?;
-    defer_drop!(s, vm);
+#[py_signature("loads(s, /)", style = def)]
+fn call_loads(vm: &mut VM<'_>, TomlLoadsArgs { s }: &TomlLoadsArgs) -> RunResult<Value> {
     let source = s
         .as_str(vm)
         .ok_or_else(|| ExcType::toml_loads_type_error(&s.py_type_name(vm)))?;
     let table = parse_document(source, &vm.heap.tracker)?;
     value::table_into_value(table, vm)
-}
-
-/// Argument shape for `tomllib.load(fp, /, *, parse_float=float)`; see
-/// [`TomlLoadsArgs`] for why `parse_float` is absent.
-#[derive(FromArgs)]
-#[from_args(name = "load", style = def)]
-struct TomlLoadArgs {
-    #[from_args(pos_only)]
-    fp: Value,
 }
 
 /// Implements `tomllib.load(fp)` for file objects returned by `open()`.
@@ -124,9 +109,11 @@ struct TomlLoadArgs {
 /// with a [`PostConversionEffect::LoadThenCall`] that replays this call, which
 /// then finds the buffer in place. Anything that is not a file object raises
 /// the `AttributeError` CPython's `fp.read()` would.
-fn call_load(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let TomlLoadArgs { fp } = TomlLoadArgs::from_args(args, vm)?;
-    defer_drop!(fp, vm);
+///
+/// Argument shape for `tomllib.load(fp, /, *, parse_float=float)`; see
+/// [`TomlLoadsArgs`] for why `parse_float` is absent.
+#[py_signature("load(fp, /)", style = def)]
+fn call_load(vm: &mut VM<'_>, TomlLoadArgs { fp }: &TomlLoadArgs) -> RunResult<CallResult> {
     let Value::Ref(file_id) = fp else {
         return Err(ExcType::attribute_error(fp.py_type_name(vm), "read"));
     };

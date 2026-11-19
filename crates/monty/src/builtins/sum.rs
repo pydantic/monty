@@ -2,8 +2,9 @@
 
 use std::mem;
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -13,26 +14,18 @@ use crate::{
     value::Value,
 };
 
-/// Argument shape for `sum(iterable, /, start=0)` — Argument Clinic in
-/// CPython, so `start` is keyword-capable while `iterable` is positional-only.
-/// `at_most_total` reproduces `_PyArg_UnpackKeywords`' total pre-count
-/// (`sum() takes at most 2 arguments (3 given)`).
-#[derive(FromArgs)]
-#[from_args(name = "sum", at_most_total)]
-struct SumArgs {
-    #[from_args(pos_only)]
-    iterable: Value,
-    #[from_args(default = Value::Int(0))]
-    start: Value,
-}
-
 /// Implementation of the sum() builtin function.
 ///
 /// Sums the items of an iterable from left to right with an optional start value.
 /// The default start value is 0. Str and bytes start values are explicitly
 /// rejected, pointing at `''.join(seq)` / `b''.join(seq)` instead.
-pub fn builtin_sum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let SumArgs { iterable, start } = SumArgs::from_args(args, vm)?;
+///
+/// Argument shape for `sum(iterable, /, start=0)` — Argument Clinic in
+/// CPython, so `start` is keyword-capable while `iterable` is positional-only.
+/// `at_most_total` reproduces `_PyArg_UnpackKeywords`' total pre-count
+/// (`sum() takes at most 2 arguments (3 given)`).
+#[py_signature("sum(iterable, /, start=0)", at_most_total)]
+pub fn builtin_sum(vm: &mut VM<'_>, SumArgs { iterable, start }: SumArgs) -> RunResult<Value> {
     defer_drop_mut!(start, vm);
 
     let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;

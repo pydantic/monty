@@ -6,10 +6,11 @@
 
 use std::{str, sync::Arc};
 
+use monty_macros::py_signature;
 use ruff_text_size::TextSize;
 
 use crate::{
-    args::{ArgValues, FromArgs, Signature},
+    args::Signature,
     bytecode::{CallResult, Compiler, FrameGlobals, FrameNamespace, MissingNames, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -27,42 +28,19 @@ use crate::{
     value::Value,
 };
 
-/// Arguments of `eval(source, /, globals=None, locals=None)`.
-#[derive(FromArgs)]
-#[from_args(name = "eval", at_most_total)]
-struct EvalArgs {
-    #[from_args(pos_only)]
-    source: Value,
-    #[from_args(default = Value::None)]
-    globals: Value,
-    #[from_args(default = Value::None)]
-    locals: Value,
-}
-
-/// Arguments of `exec(source, /, globals=None, locals=None, *, closure=None)`.
-#[derive(FromArgs)]
-#[from_args(name = "exec")]
-struct ExecArgs {
-    #[from_args(pos_only)]
-    source: Value,
-    #[from_args(default = Value::None)]
-    globals: Value,
-    #[from_args(default = Value::None)]
-    locals: Value,
-    #[from_args(kw_only, default = Value::None)]
-    closure: Value,
-}
-
 /// Implementation of the `eval()` builtin function.
 ///
 /// Parses `source` as one expression and runs it in the given (or the
 /// caller's) namespace; the expression's value is the call's result.
-pub fn builtin_eval(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let EvalArgs {
+#[py_signature("eval(source, /, globals=None, locals=None)", at_most_total)]
+pub fn builtin_eval(
+    vm: &mut VM<'_>,
+    EvalArgs {
         source,
         globals,
         locals,
-    } = EvalArgs::from_args(args, vm)?;
+    }: EvalArgs,
+) -> RunResult<CallResult> {
     defer_drop!(source, vm);
     defer_drop!(globals, vm);
     defer_drop!(locals, vm);
@@ -77,13 +55,16 @@ pub fn builtin_eval(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 ///
 /// Compiles `source` as a module and runs it in the given (or the caller's)
 /// namespace; the call's result is `None`.
-pub fn builtin_exec(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let ExecArgs {
+#[py_signature("exec(source, /, globals=None, locals=None, *, closure=None)")]
+pub fn builtin_exec(
+    vm: &mut VM<'_>,
+    ExecArgs {
         source,
         globals,
         locals,
         closure,
-    } = ExecArgs::from_args(args, vm)?;
+    }: ExecArgs,
+) -> RunResult<CallResult> {
     defer_drop!(source, vm);
     defer_drop!(globals, vm);
     defer_drop!(locals, vm);

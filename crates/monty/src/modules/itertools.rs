@@ -10,7 +10,7 @@ use std::mem;
 use monty_macros::py_signature;
 
 use crate::{
-    args::{ArgValues, FromArgs, LaxBool},
+    args::ArgValues,
     builtins::Builtins,
     bytecode::VM,
     defer_drop, defer_drop_mut,
@@ -144,23 +144,15 @@ pub(crate) fn construct(type_: Type, vm: &mut VM<'_>, args: ArgValues) -> RunRes
     }
 }
 
+/// `itertools.count(start=0, step=1)` — an infinite arithmetic progression.
+///
 /// Argument shape for `count(start=0, step=1)`.
 ///
 /// CPython parses this with `"|OO:count"`, so errors carry the function name
 /// (`style = c_named`) and arity counts positionals + keywords together
 /// (`at_most_total`): `count(1, 2, step=3)` reports three arguments.
-#[derive(FromArgs)]
-#[from_args(name = "count", style = c_named, at_most_total)]
-struct CountArgs {
-    #[from_args(default = Value::Int(0))]
-    start: Value,
-    #[from_args(default = Value::Int(1))]
-    step: Value,
-}
-
-/// `itertools.count(start=0, step=1)` — an infinite arithmetic progression.
-fn call_count(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let CountArgs { start, step } = CountArgs::from_args(args, vm)?;
+#[py_signature("count(start=0, step=1)", style = c_named, at_most_total)]
+fn call_count(vm: &mut VM<'_>, CountArgs { start, step }: CountArgs) -> RunResult<Value> {
     // CPython's `count_new` runs one `PyNumber_Check` over both arguments after
     // parsing, so a bad `start` and a bad `step` give the same single message.
     // Rejecting here means `py_next` can add without a defined-ness check.
@@ -174,22 +166,15 @@ fn call_count(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
 }
 
+/// `itertools.repeat(object, times=?)` — `object` forever, or `times` times.
+///
 /// Argument shape for `repeat(object, times=?)`.
 ///
 /// CPython parses this with `"O|n:repeat"` — see [`CountArgs`] for why that
 /// means `c_named` + `at_most_total`. `times` stays a raw `Value` so the
 /// `__index__` coercion (and its `OverflowError`) happens in the body.
-#[derive(FromArgs)]
-#[from_args(name = "repeat", style = c_named, at_most_total)]
-struct RepeatArgs {
-    object: Value,
-    #[from_args(default)]
-    times: Option<Value>,
-}
-
-/// `itertools.repeat(object, times=?)` — `object` forever, or `times` times.
-fn call_repeat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let RepeatArgs { object, times } = RepeatArgs::from_args(args, vm)?;
+#[py_signature("repeat(object, times=...)", style = c_named, at_most_total)]
+fn call_repeat(vm: &mut VM<'_>, RepeatArgs { object, times }: RepeatArgs) -> RunResult<Value> {
     let remaining = match times {
         None => None,
         Some(times) => {
@@ -246,21 +231,15 @@ fn repeat_times(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
     Ok(usize::try_from(count.max(0)).unwrap_or(usize::MAX))
 }
 
+/// `itertools.pairwise(iterable)` — successive overlapping pairs.
+///
 /// Argument shape for `pairwise(iterable)`.
 ///
 /// CPython parses this with `PyArg_UnpackTuple`, so arity errors read
 /// `pairwise expected 1 argument, got 2` and any keyword is rejected wholesale
 /// with `pairwise() takes no keyword arguments`.
-#[derive(FromArgs)]
-#[from_args(name = "pairwise", style = unpack)]
-struct PairwiseArgs {
-    #[from_args(pos_only)]
-    iterable: Value,
-}
-
-/// `itertools.pairwise(iterable)` — successive overlapping pairs.
-fn call_pairwise(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let PairwiseArgs { iterable } = PairwiseArgs::from_args(args, vm)?;
+#[py_signature("pairwise(iterable, /)", style = unpack)]
+fn call_pairwise(vm: &mut VM<'_>, PairwiseArgs { iterable }: PairwiseArgs) -> RunResult<Value> {
     // Resolve to an iterator up front, as CPython does: a non-iterable raises
     // here rather than on the first `next()`.
     let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
@@ -268,21 +247,15 @@ fn call_pairwise(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
+/// `itertools.compress(data, selectors)` — data items with a truthy selector.
+///
 /// Argument shape for `compress(data, selectors)`.
 ///
 /// CPython parses this with `PyArg_ParseTupleAndKeywords`, so both parameters
 /// are also accepted by keyword and arity counts positionals + keywords
 /// together: `compress([1], [1], data=[1])` reports three arguments.
-#[derive(FromArgs)]
-#[from_args(name = "compress", style = c_named, at_most_total)]
-struct CompressArgs {
-    data: Value,
-    selectors: Value,
-}
-
-/// `itertools.compress(data, selectors)` — data items with a truthy selector.
-fn call_compress(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let CompressArgs { data, selectors } = CompressArgs::from_args(args, vm)?;
+#[py_signature("compress(data, selectors)", style = c_named, at_most_total)]
+fn call_compress(vm: &mut VM<'_>, CompressArgs { data, selectors }: CompressArgs) -> RunResult<Value> {
     // `into_py_iter` consumes its receiver, so each conversion guards the other
     // argument: whichever is not being converted is released if this one raises.
     let mut guard = DropGuard::new(selectors, vm);
@@ -295,33 +268,23 @@ fn call_compress(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
+/// `itertools.islice(iterable, [start,] stop[, step])` — a slice of an iterator.
+///
 /// Argument shape for `islice(iterable, [start,] stop[, step])`.
 ///
 /// CPython uses `PyArg_UnpackTuple` with a 2..4 arity, so the trailing three
 /// slots are read positionally and their *meaning* depends on how many were
 /// given — resolved in the body by [`islice_bounds`], not by the binder.
-#[derive(FromArgs)]
-#[from_args(name = "islice", style = unpack)]
-struct IsliceArgs {
-    #[from_args(pos_only)]
-    iterable: Value,
-    #[from_args(pos_only)]
-    first: Value,
-    #[from_args(pos_only, default)]
-    second: Option<Value>,
-    #[from_args(pos_only, default)]
-    third: Option<Value>,
-}
-
-/// `itertools.islice(iterable, [start,] stop[, step])` — a slice of an iterator.
-fn call_islice(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let IsliceArgs {
+#[py_signature("islice(iterable, first, second=..., third=..., /)", style = unpack)]
+fn call_islice(
+    vm: &mut VM<'_>,
+    IsliceArgs {
         iterable,
         first,
         second,
         third,
-    } = IsliceArgs::from_args(args, vm)?;
-
+    }: IsliceArgs,
+) -> RunResult<Value> {
     // `iterable` is guarded across the bounds check so an invalid slot raises
     // only after the three overloaded arguments have been released.
     let mut guard = DropGuard::new(iterable, vm);
@@ -420,20 +383,14 @@ fn call_chain(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
+/// `itertools.cycle(iterable)` — the source's items, repeating forever.
+///
 /// Argument shape for `cycle(iterable)`.
 ///
 /// `PyArg_UnpackTuple` like `pairwise`, so arity reads `cycle expected 1
 /// argument, got 2` and keywords are rejected wholesale.
-#[derive(FromArgs)]
-#[from_args(name = "cycle", style = unpack)]
-struct CycleArgs {
-    #[from_args(pos_only)]
-    iterable: Value,
-}
-
-/// `itertools.cycle(iterable)` — the source's items, repeating forever.
-fn call_cycle(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let CycleArgs { iterable } = CycleArgs::from_args(args, vm)?;
+#[py_signature("cycle(iterable, /)", style = unpack)]
+fn call_cycle(vm: &mut VM<'_>, CycleArgs { iterable }: CycleArgs) -> RunResult<Value> {
     // Unlike `chain`, CPython resolves eagerly here, so `cycle(5)` raises now.
     let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Cycle(Cycle::new(source));
@@ -449,14 +406,8 @@ fn call_cycle(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// one struct per callable rather than one shared struct.
 macro_rules! callable_and_iterable_args {
     ($struct_name:ident, $py_name:literal) => {
-        #[derive(FromArgs)]
-        #[from_args(name = $py_name, style = unpack)]
-        struct $struct_name {
-            #[from_args(pos_only)]
-            callable: Value,
-            #[from_args(pos_only)]
-            iterable: Value,
-        }
+        #[py_signature("(callable, iterable, /)", style = unpack, error_name = $py_name)]
+        struct $struct_name;
     };
 }
 
@@ -497,6 +448,8 @@ fn call_starmap(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
+/// `itertools.accumulate(iterable, func=None, *, initial=None)` — running totals.
+///
 /// Argument shape for `accumulate(iterable, func=None, *, initial=None)`.
 ///
 /// Argument Clinic, so both leading slots accept keywords
@@ -506,24 +459,15 @@ fn call_starmap(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// arguments (3 given)` form, pivoting to a total count once kwargs push the
 /// overflow past every slot. `func` is never type-checked here: CPython only
 /// discovers a non-callable when the second item arrives.
-#[derive(FromArgs)]
-#[from_args(name = "accumulate", style = c_named)]
-struct AccumulateArgs {
-    #[from_args(static_string = "IterableArg")]
-    iterable: Value,
-    #[from_args(default = Value::None)]
-    func: Value,
-    #[from_args(kw_only, default = Value::None)]
-    initial: Value,
-}
-
-/// `itertools.accumulate(iterable, func=None, *, initial=None)` — running totals.
-fn call_accumulate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let AccumulateArgs {
+#[py_signature("accumulate(iterable, func=None, *, initial=None)", style = c_named)]
+fn call_accumulate(
+    vm: &mut VM<'_>,
+    AccumulateArgs {
         iterable,
         func,
         initial,
-    } = AccumulateArgs::from_args(args, vm)?;
+    }: AccumulateArgs,
+) -> RunResult<Value> {
     // `func` is held across the resolve so a non-iterable releases it too.
     let (func, source) = match resolve_source(func, iterable, vm) {
         Ok(resolved) => resolved,
@@ -542,6 +486,8 @@ fn call_accumulate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
+/// `itertools.batched(iterable, n, *, strict=False)` — consecutive n-tuples.
+///
 /// Argument shape for `batched(iterable, n, *, strict=False)`.
 ///
 /// Argument Clinic, so `n` accepts a keyword and a missing one reports
@@ -549,21 +495,10 @@ fn call_accumulate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// that means `c_named`. Both positionals are required, so the overflow says
 /// "exactly" where `accumulate`'s says "at most". `n` stays a raw `Value` because it
 /// needs `as_int`'s message rather than the binder's, as `repeat`'s `times`
-/// does; `strict` is a [`LaxBool`] so CPython's `bool()`-style truth test
+/// does; `strict` is a [`LaxBool`](crate::args::LaxBool) so CPython's `bool()`-style truth test
 /// happens in the binder, which releases the value on both paths.
-#[derive(FromArgs)]
-#[from_args(name = "batched", style = c_named)]
-struct BatchedArgs {
-    #[from_args(static_string = "IterableArg")]
-    iterable: Value,
-    n: Value,
-    #[from_args(kw_only, default = LaxBool::new(false))]
-    strict: LaxBool,
-}
-
-/// `itertools.batched(iterable, n, *, strict=False)` — consecutive n-tuples.
-fn call_batched(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let BatchedArgs { iterable, n, strict } = BatchedArgs::from_args(args, vm)?;
+#[py_signature("batched(iterable, n, *, strict: bool=False)", style = c_named)]
+fn call_batched(vm: &mut VM<'_>, BatchedArgs { iterable, n, strict }: BatchedArgs) -> RunResult<Value> {
     let strict = strict.bool();
     // `n` is validated before the iterable is resolved, matching CPython's
     // clinic converter, which runs over every argument before the body.
@@ -630,13 +565,8 @@ fn call_zip_longest(vm: &mut VM<'_>, args: &mut ZipLongestArgs) -> RunResult<Val
 /// and before the sign check, as the clinic converter and body order them.
 macro_rules! iterable_and_r_args {
     ($struct_name:ident, $py_name:literal) => {
-        #[derive(FromArgs)]
-        #[from_args(name = $py_name, style = c_named, at_most_total)]
-        struct $struct_name {
-            #[from_args(static_string = "IterableArg")]
-            iterable: Value,
-            r: Value,
-        }
+        #[py_signature("(iterable, r)", style = c_named, at_most_total, error_name = $py_name)]
+        struct $struct_name;
     };
 }
 
@@ -690,22 +620,14 @@ fn build_combinations(iterable: Value, r: Value, replacement: bool, vm: &mut VM<
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
+/// `itertools.permutations(iterable, r=None)` — `r`-length orderings.
+///
 /// Argument shape for `permutations(iterable, r=None)`.
 ///
 /// Clinic and keyword-capable like [`CombinationsArgs`]. `r` is an `object`
 /// to clinic, so the body inspects it — and only once the pool exists.
-#[derive(FromArgs)]
-#[from_args(name = "permutations", style = c_named, at_most_total)]
-struct PermutationsArgs {
-    #[from_args(static_string = "IterableArg")]
-    iterable: Value,
-    #[from_args(default = Value::None)]
-    r: Value,
-}
-
-/// `itertools.permutations(iterable, r=None)` — `r`-length orderings.
-fn call_permutations(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let PermutationsArgs { iterable, r } = PermutationsArgs::from_args(args, vm)?;
+#[py_signature("permutations(iterable, r=None)", style = c_named, at_most_total)]
+fn call_permutations(vm: &mut VM<'_>, PermutationsArgs { iterable, r }: PermutationsArgs) -> RunResult<Value> {
     let mut r_guard = DropGuard::new(r, vm);
     let pool: Vec<Value> = collect_owned_iterable(iterable, r_guard.ctx())?;
     let (r, vm) = r_guard.into_parts();
@@ -734,6 +656,8 @@ fn permutations_r(r: Value, n: usize, vm: &mut VM<'_>) -> RunResult<usize> {
     }
 }
 
+/// `itertools.product(*iterables, repeat=1)` — the cartesian product.
+///
 /// Argument shape for `product(*iterables, repeat=1)`.
 ///
 /// CPython hand-parses this: the positionals are taken as they come, and the
@@ -741,18 +665,8 @@ fn permutations_r(r: Value, n: usize, vm: &mut VM<'_>) -> RunResult<usize> {
 /// `kwlist` gives the derive's `got an unexpected keyword argument 'x'`
 /// wording for a bad name. `repeat` stays a raw `Value` for the `Py_ssize_t`
 /// conversion in the body.
-#[derive(FromArgs)]
-#[from_args(name = "product")]
-struct ProductArgs {
-    #[from_args(varargs)]
-    iterables: Vec<Value>,
-    #[from_args(kw_only, default = Value::Int(1))]
-    repeat: Value,
-}
-
-/// `itertools.product(*iterables, repeat=1)` — the cartesian product.
-fn call_product(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ProductArgs { iterables, repeat } = ProductArgs::from_args(args, vm)?;
+#[py_signature("product(*iterables, repeat=1)")]
+fn call_product(vm: &mut VM<'_>, ProductArgs { iterables, repeat }: ProductArgs) -> RunResult<Value> {
     // Each argument is moved out of the vec as it is collected; the ones a
     // `repeat` of zero never reaches stay in it and are released by the guard,
     // as `zip_longest` does — see there for why not `drain`.
@@ -809,23 +723,15 @@ fn index_bytes(slots: usize) -> Option<usize> {
         .filter(|bytes| *bytes <= isize::MAX.cast_unsigned())
 }
 
+/// `itertools.groupby(iterable, key=None)` — `(key, group)` per run of equal keys.
+///
 /// Argument shape for `groupby(iterable, key=None)`.
 ///
 /// Clinic and keyword-capable like [`CombinationsArgs`]; `key` is never
 /// type-checked, as CPython discovers a non-callable only when the first
 /// item is keyed.
-#[derive(FromArgs)]
-#[from_args(name = "groupby", style = c_named, at_most_total)]
-struct GroupbyArgs {
-    #[from_args(static_string = "IterableArg")]
-    iterable: Value,
-    #[from_args(default = Value::None)]
-    key: Value,
-}
-
-/// `itertools.groupby(iterable, key=None)` — `(key, group)` per run of equal keys.
-fn call_groupby(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let GroupbyArgs { iterable, key } = GroupbyArgs::from_args(args, vm)?;
+#[py_signature("groupby(iterable, key=None)", style = c_named, at_most_total)]
+fn call_groupby(vm: &mut VM<'_>, GroupbyArgs { iterable, key }: GroupbyArgs) -> RunResult<Value> {
     let (key, source) = resolve_source(key, iterable, vm)?;
     let iter = ItertoolsIter::GroupBy(Box::new(GroupBy::new(source, key)));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
@@ -852,6 +758,8 @@ fn call_chain_from_iterable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
+/// `itertools.tee(iterable, n=2)` — `n` iterators over one source.
+///
 /// Argument shape for `tee(iterable, n=2)`.
 ///
 /// `PyArg_UnpackTuple` with a 1..2 arity, so arity errors read `tee expected at
@@ -859,18 +767,8 @@ fn call_chain_from_iterable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value
 /// module that names the function with its module (`itertools.tee()`), hence
 /// the `kwarg_error_name`. `n` stays a raw `Value` for the `Py_ssize_t`
 /// conversion in the body, as `batched`'s does.
-#[derive(FromArgs)]
-#[from_args(name = "tee", style = unpack, kwarg_error_name = "itertools.tee")]
-struct TeeArgs {
-    #[from_args(pos_only)]
-    iterable: Value,
-    #[from_args(pos_only, default)]
-    n: Option<Value>,
-}
-
-/// `itertools.tee(iterable, n=2)` — `n` iterators over one source.
-fn call_tee(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let TeeArgs { iterable, n } = TeeArgs::from_args(args, vm)?;
+#[py_signature("tee(iterable, n=..., /)", style = unpack, kwarg_error_name = "itertools.tee")]
+fn call_tee(vm: &mut VM<'_>, TeeArgs { iterable, n }: TeeArgs) -> RunResult<Value> {
     let consumers = match n {
         None => Ok(2),
         Some(n) => {

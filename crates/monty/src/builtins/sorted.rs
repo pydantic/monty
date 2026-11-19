@@ -5,7 +5,7 @@ use monty_types::ResourceTracker;
 use crate::{
     args::ArgValues,
     bytecode::VM,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    exception_private::{RunError, RunResult},
     heap::{DropGuard, DropWithContext, Heap, HeapData},
     resource_checks::check_estimated_size,
     sorting::parse_and_sort,
@@ -42,16 +42,8 @@ fn clone_slice_with_checks(
 /// to [`parse_and_sort`] — the same entry point `list.sort` uses — so
 /// unknown-kwarg errors uniformly read `sort() got an unexpected keyword
 /// argument 'X'` without any wording overrides.
-pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (mut pos_iter, kwargs) = args.into_parts();
-    let pos_count = pos_iter.len();
-    if pos_count != 1 {
-        pos_iter.drop_with(vm);
-        kwargs.drop_with(vm);
-        return Err(ExcType::type_error_expected_exact("sorted", 1, pos_count));
-    }
-    let iterable = pos_iter.next().expect("checked pos_count == 1");
-
+#[monty_macros::py_signature("sorted(iterable, /, **kwargs)", style = unpack)]
+pub fn builtin_sorted(vm: &mut VM<'_>, SortedArgs { iterable, kwargs }: SortedArgs) -> RunResult<Value> {
     let items = if let Value::Ref(id) = &iterable
         && let slice = match vm.heap.get(*id) {
             HeapData::List(list) => Some(list.as_slice()),

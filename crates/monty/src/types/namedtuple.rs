@@ -770,6 +770,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
     /// Unknown field names raise `ValueError: Got unexpected field names: [...]`,
     /// matching CPython's list-repr wording.
     fn method_replace(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<Value> {
+        let ReplaceArgs { kwargs } = ReplaceArgs::from_args(args, vm)?;
         let name = self.get(vm.heap).name.clone();
         let field_names = self.get(vm.heap).field_names.clone();
         let class_id = self.get(vm.heap).class_id;
@@ -777,18 +778,6 @@ impl<'h> HeapRead<'h, NamedTuple> {
         let mut items: Vec<Value> = (0..n)
             .map(|i| self.get(vm.heap).items[i].clone_with_heap(vm.heap))
             .collect();
-
-        let (pos, kwargs) = args.into_parts();
-        let n_pos = pos.len();
-        if n_pos > 0 {
-            pos.drop_with(vm);
-            kwargs.drop_with(vm);
-            items.drop_with(vm);
-            return Err(ExcType::type_error(format!(
-                "_replace() takes 1 positional argument but {} were given",
-                n_pos + 1
-            )));
-        }
 
         let mut unexpected: Vec<String> = Vec::new();
         for (key, val) in normalize_kwargs(kwargs, vm) {
@@ -1320,6 +1309,9 @@ fn fields_tuple_from(names: &[EitherStr], vm: &mut VM<'_>) -> Value {
     let items: Vec<Value> = names.iter().map(|name| name.as_value(vm.heap)).collect();
     allocate_tuple(SmallVec::from_vec(items), vm.heap)
 }
+
+#[monty_macros::py_signature("_replace(self, /, **kwargs)", style = def)]
+struct ReplaceArgs;
 
 /// Normalizes call kwargs into `(name, value)` pairs, dropping non-interned
 /// keys' heap references. Non-string keys (only reachable via `**` unpacking)

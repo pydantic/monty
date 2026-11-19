@@ -1,7 +1,8 @@
 //! Implementation of the zip() builtin function.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
@@ -16,8 +17,13 @@ use crate::{
 /// from each of the argument iterables. Stops when the shortest iterable is exhausted.
 /// When `strict=True`, raises `ValueError` if any iterable has a different length.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ZipArgs { iterables, strict } = ZipArgs::from_args(args, vm)?;
+///
+/// Argument shape for `zip(*iterables, strict=False)`.
+///
+/// `strict` is held as a `Value` because CPython evaluates it via truthiness
+/// (`py_bool`), not strict-type equality, so accepting any value is correct.
+#[py_signature("zip(*iterables, strict=False)")]
+pub fn builtin_zip(vm: &mut VM<'_>, ZipArgs { iterables, strict }: ZipArgs) -> RunResult<Value> {
     defer_drop_mut!(iterables, vm);
     // CPython's `strict` is truthy-checked (not strict typed), so test the raw
     // value rather than asking the macro to coerce to a strict `bool`.
@@ -84,19 +90,6 @@ pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (result, vm) = result_guard.into_parts();
     let heap_id = vm.heap.allocate(HeapData::List(List::new(result)));
     Ok(Value::Ref(heap_id))
-}
-
-/// Argument shape for `zip(*iterables, strict=False)`.
-///
-/// `strict` is held as a `Value` because CPython evaluates it via truthiness
-/// (`py_bool`), not strict-type equality, so accepting any value is correct.
-#[derive(FromArgs)]
-#[from_args(name = "zip")]
-struct ZipArgs {
-    #[from_args(varargs)]
-    iterables: Vec<Value>,
-    #[from_args(default = Value::Bool(false))]
-    strict: Value,
 }
 
 /// Builds the `ValueError` for `zip(strict=True)` when iterables have different lengths.

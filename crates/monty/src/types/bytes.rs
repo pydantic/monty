@@ -68,13 +68,14 @@ use std::{cell::Cell, ffi::c_int, fmt::Write, ops, str};
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
 use memchr::memmem::{Finder, FinderRev};
+use monty_macros::py_signature;
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{bytes_repr, bytes_repr_fmt};
 use smallvec::smallvec;
 
 use super::{CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef};
 use crate::{
-    args::{ArgValues, FromArgs, StrArg},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     codecs::Codec,
     defer_drop,
@@ -301,16 +302,12 @@ fn collect_bytes_from_iterator(iterator: Value, vm: &mut VM<'_>) -> RunResult<Ve
 /// pos-or-keyword. Unlike `str()`, CPython's `bytes_new` reports wrong-typed
 /// `encoding`/`errors` with `_PyArg_BadArgument`'s wording (`must be str, not
 /// None` for `None`), which is exactly the macro's `bad_arg_named` form.
-#[derive(FromArgs)]
-#[from_args(name = "bytes", at_most_total, bad_arg_named)]
-struct BytesInitArgs {
-    #[from_args(default)]
-    source: Option<Value>,
-    #[from_args(default)]
-    encoding: Option<StrArg>,
-    #[from_args(default)]
-    errors: Option<StrArg>,
-}
+#[py_signature(
+    "bytes(source=..., encoding: str=..., errors: str=...)",
+    at_most_total,
+    bad_arg_named
+)]
+struct BytesInitArgs;
 
 /// Concatenates two byte strings into a tracked heap value.
 pub(crate) fn concat_bytes(lhs: &[u8], rhs: &[u8], heap: &Heap) -> Result<Value, ResourceError> {
@@ -713,18 +710,7 @@ fn call_bytes_method_impl<'h>(
 /// (and validated) when a byte actually needs handling — see
 /// `limitations/encoding.md` for the handful of decode divergences (the
 /// surrogate-producing handlers raise `NotImplementedError`).
-fn bytes_decode<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let BytesDecodeArgs { encoding, errors } = BytesDecodeArgs::from_args(args, vm)?;
-    defer_drop!(errors, vm);
-    defer_drop!(encoding, vm);
-    let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
-    let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
-
-    let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
-    let s = codec.decode(bytes.get(vm.heap), errors)?;
-    Ok(super::str::allocate_string(s, vm.heap))
-}
-
+///
 /// Argument shape for `bytes.decode(encoding='utf-8', errors='strict')`.
 ///
 /// `bad_arg_named` opts in to CPython's `_PyArg_BadArgument` named wording
@@ -733,13 +719,18 @@ fn bytes_decode<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut V
 /// CPython rejects explicit `None` here with the bad-arg error, which falls
 /// out naturally because `Option<StrArg>::from_value` delegates to
 /// `StrArg::from_value` and rejects `Value::None`.
-#[derive(FromArgs)]
-#[from_args(name = "decode", at_most_total, bad_arg_named)]
-struct BytesDecodeArgs {
-    #[from_args(default)]
-    encoding: Option<StrArg>,
-    #[from_args(default)]
-    errors: Option<StrArg>,
+#[py_signature("decode(encoding: str=..., errors: str=...)", at_most_total, bad_arg_named)]
+fn bytes_decode<'h>(
+    bytes: &impl HeapView<'h, [u8]>,
+    BytesDecodeArgs { encoding, errors }: &BytesDecodeArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
+    let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
+
+    let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
+    let s = codec.decode(bytes.get(vm.heap), errors)?;
+    Ok(super::str::allocate_string(s, vm.heap))
 }
 
 // =============================================================================
@@ -1469,8 +1460,12 @@ fn bytes_removesuffix<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: 
 /// Implements Python's `bytes.split([sep[, maxsplit]])` method.
 ///
 /// Returns a list of the bytes split by the separator.
-fn bytes_split<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let BytesSplitArgs { sep, maxsplit } = BytesSplitArgs::from_args(args, vm)?;
+#[py_signature("split(sep=None, maxsplit=-1)")]
+fn bytes_split<'h>(
+    bytes: &impl HeapView<'h, [u8]>,
+    BytesSplitArgs { sep, maxsplit }: BytesSplitArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
     let (sep, maxsplit) = coerce_bytes_split_args(sep, maxsplit, vm)?;
 
     // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
@@ -1518,8 +1513,12 @@ fn bytes_split<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
 /// Implements Python's `bytes.rsplit([sep[, maxsplit]])` method.
 ///
 /// Returns a list of the bytes split by the separator, splitting from the right.
-fn bytes_rsplit<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let BytesRsplitArgs { sep, maxsplit } = BytesRsplitArgs::from_args(args, vm)?;
+#[py_signature("rsplit(sep=None, maxsplit=-1)")]
+fn bytes_rsplit<'h>(
+    bytes: &impl HeapView<'h, [u8]>,
+    BytesRsplitArgs { sep, maxsplit }: BytesRsplitArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
     let (sep, maxsplit) = coerce_bytes_split_args(sep, maxsplit, vm)?;
 
     // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
@@ -1583,26 +1582,6 @@ fn coerce_bytes_split_args(sep: Value, maxsplit: Value, vm: &mut VM<'_>) -> RunR
         _ => Some(extract_bytes_only(sep, vm)?.to_owned()),
     };
     Ok((sep, maxsplit_int))
-}
-
-/// Argument shape for `bytes.split(sep=None, maxsplit=-1)`.
-#[derive(FromArgs)]
-#[from_args(name = "split")]
-struct BytesSplitArgs {
-    #[from_args(default = Value::None)]
-    sep: Value,
-    #[from_args(default = Value::Int(-1))]
-    maxsplit: Value,
-}
-
-/// Argument shape for `bytes.rsplit(sep=None, maxsplit=-1)`.
-#[derive(FromArgs)]
-#[from_args(name = "rsplit")]
-struct BytesRsplitArgs {
-    #[from_args(default = Value::None)]
-    sep: Value,
-    #[from_args(default = Value::Int(-1))]
-    maxsplit: Value,
 }
 
 /// Splits bytes by a separator sequence.
@@ -1833,8 +1812,15 @@ fn bytes_splitlines<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &m
 }
 
 /// Parses arguments for bytes.splitlines method.
-fn parse_bytes_splitlines_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<bool> {
-    let BytesSplitlinesArgs { keepends } = BytesSplitlinesArgs::from_args(args, vm)?;
+///
+/// Argument shape for `bytes.splitlines(keepends=False)`. CPython evaluates
+/// `keepends` for truthiness rather than strict-typing, so the field stays as
+/// a raw `Value` for `py_bool` to inspect.
+#[py_signature("splitlines(keepends=...)")]
+fn parse_bytes_splitlines_args(
+    BytesSplitlinesArgs { keepends }: BytesSplitlinesArgs,
+    vm: &mut VM<'_>,
+) -> RunResult<bool> {
     let result = match keepends {
         None => false,
         Some(v) => {
@@ -1844,16 +1830,6 @@ fn parse_bytes_splitlines_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<bo
         }
     };
     Ok(result)
-}
-
-/// Argument shape for `bytes.splitlines(keepends=False)`. CPython evaluates
-/// `keepends` for truthiness rather than strict-typing, so the field stays as
-/// a raw `Value` for `py_bool` to inspect.
-#[derive(FromArgs)]
-#[from_args(name = "splitlines")]
-struct BytesSplitlinesArgs {
-    #[from_args(default)]
-    keepends: Option<Value>,
 }
 
 /// Implements Python's `bytes.partition(sep)` method.
@@ -1937,26 +1913,16 @@ fn bytes_replace<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut 
 }
 
 /// Parses arguments for bytes.replace method.
-fn parse_bytes_replace_args(_method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Vec<u8>, Vec<u8>, i64)> {
-    let BytesReplaceArgs { old, new, count } = BytesReplaceArgs::from_args(args, vm)?;
-    defer_drop!(old, vm);
-    defer_drop!(new, vm);
-    defer_drop!(count, vm);
-
+#[py_signature("replace(old, new, count=-1)")]
+fn parse_bytes_replace_args(
+    _method: &str,
+    BytesReplaceArgs { old, new, count }: &BytesReplaceArgs,
+    vm: &mut VM<'_>,
+) -> RunResult<(Vec<u8>, Vec<u8>, i64)> {
     let old_b = extract_bytes_only(old, vm)?.to_owned();
     let new_b = extract_bytes_only(new, vm)?.to_owned();
     let count_i = count.as_int(vm)?;
     Ok((old_b, new_b, count_i))
-}
-
-/// Argument shape for `bytes.replace(old, new, count=-1)`.
-#[derive(FromArgs)]
-#[from_args(name = "replace")]
-struct BytesReplaceArgs {
-    old: Value,
-    new: Value,
-    #[from_args(default = Value::Int(-1))]
-    count: Value,
 }
 
 /// Replaces all occurrences of `old` with `new` in bytes.
@@ -2346,11 +2312,24 @@ fn bytes_hex<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'
 }
 
 /// Parses arguments for bytes.hex method.
-fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Option<char>, i64)> {
-    let BytesHexArgs { sep, bytes_per_sep } = BytesHexArgs::from_args(args, vm)?;
-    defer_drop!(sep, vm);
-    defer_drop!(bytes_per_sep, vm);
-
+///
+/// `bytes.hex([sep[, bytes_per_sep]])` — CPython accepts `sep` and
+/// `bytes_per_sep` as positional-or-keyword, but Monty has not threaded
+/// kwarg dispatch through to the type-checking body yet.
+/// `kwargs_not_supported_yet` rejects any kwarg with
+/// `NotImplementedError: bytes.hex() does not yet support keyword
+/// arguments` (replacing the previous `TypeError: bytes.hex() takes no
+/// keyword arguments` from `into_pos_only`) while the macro takes over
+/// arity validation, upgrading the too-many-args wording from
+/// `bytes.hex expected at most 2 arguments, got N` to CPython's
+/// `bytes.hex() takes at most 2 arguments (N given)`. Fields become real
+/// kwargs and the flag goes away when the kwarg dispatch is plumbed
+/// through.
+#[py_signature("hex(sep=None, bytes_per_sep=None)", style = c_named, at_most_total, kwargs_not_supported_yet, error_name = "bytes.hex")]
+fn parse_bytes_hex_args(
+    BytesHexArgs { sep, bytes_per_sep }: &BytesHexArgs,
+    vm: &mut VM<'_>,
+) -> RunResult<(Option<char>, i64)> {
     let Some(sep_value) = (match &sep {
         Value::None => None,
         v => Some(v),
@@ -2390,27 +2369,6 @@ fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Option<c
     };
 
     Ok((Some(sep_char), bytes_per_sep))
-}
-
-/// `bytes.hex([sep[, bytes_per_sep]])` — CPython accepts `sep` and
-/// `bytes_per_sep` as positional-or-keyword, but Monty has not threaded
-/// kwarg dispatch through to the type-checking body yet.
-/// `kwargs_not_supported_yet` rejects any kwarg with
-/// `NotImplementedError: bytes.hex() does not yet support keyword
-/// arguments` (replacing the previous `TypeError: bytes.hex() takes no
-/// keyword arguments` from `into_pos_only`) while the macro takes over
-/// arity validation, upgrading the too-many-args wording from
-/// `bytes.hex expected at most 2 arguments, got N` to CPython's
-/// `bytes.hex() takes at most 2 arguments (N given)`. Fields become real
-/// kwargs and the flag goes away when the kwarg dispatch is plumbed
-/// through.
-#[derive(FromArgs)]
-#[from_args(name = "bytes.hex", style = c_named, at_most_total, kwargs_not_supported_yet)]
-struct BytesHexArgs {
-    #[from_args(default = Value::None)]
-    sep: Value,
-    #[from_args(default = Value::None)]
-    bytes_per_sep: Value,
 }
 
 // =============================================================================
