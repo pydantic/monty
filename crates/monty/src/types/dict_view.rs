@@ -1,6 +1,5 @@
 use std::{fmt::Write, mem};
 
-use monty_macros::bind_positional;
 use smallvec::smallvec;
 
 use crate::{
@@ -233,7 +232,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictKeysView> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         match attr.static_string(vm.interns) {
             Some(StaticStrings::Isdisjoint) => {
-                let other = bind_positional!(args, vm.heap, "dict_keys.isdisjoint(other, /)")?;
+                let other = args.get_one_arg("dict_keys.isdisjoint", vm.heap)?;
                 defer_drop!(other, vm);
                 let disjoint = view_isdisjoint(self.set_like(vm), self.id(), other, vm)?;
                 Ok(CallResult::Value(Value::Bool(disjoint)))
@@ -428,7 +427,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictItemsView> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         match attr.static_string(vm.interns) {
             Some(StaticStrings::Isdisjoint) => {
-                let other = bind_positional!(args, vm.heap, "dict_items.isdisjoint(other, /)")?;
+                let other = args.get_one_arg("dict_items.isdisjoint", vm.heap)?;
                 defer_drop!(other, vm);
                 let disjoint = view_isdisjoint(self.set_like(vm), self.id(), other, vm)?;
                 Ok(CallResult::Value(Value::Bool(disjoint)))

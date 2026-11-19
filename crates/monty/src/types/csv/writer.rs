@@ -7,7 +7,7 @@
 
 use std::{fmt::Write, mem, sync::Arc};
 
-use monty_macros::bind_positional;
+use monty_macros::py_signature;
 use monty_types::ResourceTracker;
 use serde::{Deserialize, Serialize};
 
@@ -99,9 +99,13 @@ pub(crate) fn write_method(target: &Value, vm: &mut VM<'_>) -> RunResult<Option<
 }
 
 /// `writer.writerow(row)`: formats `row` and returns whatever the target's `write()` returns.
-pub(super) fn writerow<'h>(obj: &HeapRead<'h, CsvObject>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-    let row = bind_positional!(args, vm.heap, "writer.writerow(row, /)")?;
-    defer_drop!(row, vm);
+#[py_signature("writerow(self, row, /)", owner = "writer")]
+pub(super) fn writerow<'h>(
+    obj: &HeapRead<'h, CsvObject>,
+    args: &WriterWriterowArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    let WriterWriterowArgs { row } = args;
     let items = row_items(row, vm)?;
     defer_drop!(items, vm);
     write_fields(obj, items, vm)
@@ -126,9 +130,13 @@ pub(super) fn write_fields<'h>(
 ///
 /// A file target receives all the lines in one host write, since a Rust loop cannot suspend
 /// once per row; any other target's `write()` is called synchronously as each row arrives.
-pub(super) fn writerows<'h>(obj: &HeapRead<'h, CsvObject>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-    let rows = bind_positional!(args, vm.heap, "writer.writerows(rows, /)")?;
-    defer_drop!(rows, vm);
+#[py_signature("writerows(self, rows, /)", owner = "writer")]
+pub(super) fn writerows<'h>(
+    obj: &HeapRead<'h, CsvObject>,
+    args: &WriterWriterowsArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    let WriterWriterowsArgs { rows } = args;
     let (target, write, dialect) = parts(obj, vm);
     defer_drop!(target, vm);
     defer_drop!(write, vm);

@@ -78,7 +78,7 @@ use std::{
     mem,
 };
 
-use monty_macros::bind_positional;
+use monty_macros::py_signature;
 use monty_types::{
     MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, WriteBytesAtArgs,
     unstable::MontyNode,
@@ -589,8 +589,10 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     /// caller mixes bare `read()`, sized `read(N)`, or line-oriented
     /// operations. The buffer holds the full file content; further reads
     /// slice it in pure Monty.
-    fn read(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        let spec = parse_read_size_arg(bind_positional!(args, vm.heap, "read(size=..., /)")?, vm)?;
+    #[py_signature("read(self, size=..., /)")]
+    fn read(&mut self, vm: &mut VM<'h>, args: &ReadArgs) -> RunResult<CallResult> {
+        let ReadArgs { size } = args;
+        let spec = parse_read_size_arg(size.as_ref(), vm)?;
         if matches!(spec, ReadSpec::Size(0)) {
             // `read(0)`: empty result without any OS call, position unchanged.
             // Open/readable checks still happen to match CPython's error order.
@@ -611,15 +613,15 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     /// Implements `file.readline()` — yields up to and including the next
     /// `\n`, or the rest of the buffer if the final line has no newline. At
     /// EOF returns `''`/`b''`.
-    fn readline(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        bind_positional!(args, vm.heap, "readline()")?;
+    #[py_signature("readline(self, /)")]
+    fn readline(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         self.read_with_spec(vm, ReadSpec::Line)
     }
 
     /// Implements `file.readlines()` — returns a `list[str]` (or `list[bytes]`
     /// for binary mode) of every remaining line.
-    fn readlines(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        bind_positional!(args, vm.heap, "readlines()")?;
+    #[py_signature("readlines(self, /)")]
+    fn readlines(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         self.read_with_spec(vm, ReadSpec::Lines)
     }
 
@@ -628,8 +630,8 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     /// In text mode the value is a char index into the buffer (a documented
     /// divergence from CPython, which returns an opaque byte cookie); in
     /// binary mode it is a byte offset, which matches CPython.
-    fn tell(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        bind_positional!(args, vm.heap, "tell()")?;
+    #[py_signature("tell(self, /)")]
+    fn tell(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let file = self.get(vm.heap);
         file.ensure_open()?;
         // Positions never exceed the buffer length, and the buffer is bounded
@@ -775,9 +777,9 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     ///
     /// As with [`Self::read`], the first OS-call argument is the file object
     /// itself, delivered to the host as a `MontyNode::FileHandle`.
-    fn write(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        let data = bind_positional!(args, vm.heap, "write(data, /)")?;
-        defer_drop!(data, vm);
+    #[py_signature("write(self, data, /)")]
+    fn write(&mut self, vm: &mut VM<'h>, args: &WriteArgs) -> RunResult<CallResult> {
+        let WriteArgs { data } = args;
         let binary = self.get(vm.heap).mode.is_binary();
         validate_write_data(data, binary, vm)?;
         self.check_writable(vm)?;
@@ -937,8 +939,8 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     /// Other holders (e.g. a `data = f.read()` reference) keep the entry
     /// alive via their own refcounts, so this release is safe — it only
     /// frees the buffer if nothing else points at it.
-    fn close(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        bind_positional!(args, vm.heap, "close()")?;
+    #[py_signature("close(self, /)")]
+    fn close(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let buffer_id = {
             let file = self.get_mut(vm.heap);
             file.closed = true;
@@ -955,23 +957,23 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     }
 
     /// Implements `flush()` as a no-op because writes are committed immediately.
-    fn flush(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        bind_positional!(args, vm.heap, "flush()")?;
+    #[py_signature("flush(self, /)")]
+    fn flush(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         self.get(vm.heap).ensure_open()?;
         Ok(CallResult::Value(Value::None))
     }
 
     /// Returns whether this file object supports `read()`.
-    fn readable(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        bind_positional!(args, vm.heap, "readable()")?;
+    #[py_signature("readable(self, /)")]
+    fn readable(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let file = self.get(vm.heap);
         file.ensure_open()?;
         Ok(CallResult::Value(Value::Bool(file.mode.readable())))
     }
 
     /// Returns whether this file object supports `write()`.
-    fn writable(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        bind_positional!(args, vm.heap, "writable()")?;
+    #[py_signature("writable(self, /)")]
+    fn writable(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let file = self.get(vm.heap);
         file.ensure_open()?;
         Ok(CallResult::Value(Value::Bool(file.mode.writable())))
@@ -980,8 +982,8 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
     /// Returns `True`: Monty file wrappers are modelled as regular files and
     /// support logical `seek()` / `tell()` state even though actual host I/O is
     /// still performed as one-shot calls.
-    fn seekable(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
-        bind_positional!(args, vm.heap, "seekable()")?;
+    #[py_signature("seekable(self, /)")]
+    fn seekable(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         self.get(vm.heap).ensure_open()?;
         Ok(CallResult::Value(Value::Bool(true)))
     }
@@ -1738,8 +1740,12 @@ fn populate_buffer_meta<'h>(file: &HeapReadMut<'h, OpenFile>, vm: &mut VM<'h>) -
 /// CPython's argument validation: missing `offset` raises `TypeError`,
 /// `whence` outside `{0, 1, 2}` is deferred to `compute_slice` so the error
 /// matches CPython's `invalid whence` message.
-fn parse_seek_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(i64, i64)> {
-    let (offset, maybe_whence) = bind_positional!(args, vm.heap, "seek(offset, whence=..., /)")?;
+#[py_signature("seek(offset, whence=..., /)")]
+fn parse_seek_args(args: &SeekArgs, vm: &mut VM<'_>) -> RunResult<(i64, i64)> {
+    let SeekArgs {
+        offset,
+        whence: maybe_whence,
+    } = args;
     let offset_int = offset.as_int(vm)?;
     let whence_int = match maybe_whence {
         Some(w) => w.as_int(vm)?,
@@ -1751,13 +1757,12 @@ fn parse_seek_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(i64, i64)> {
 /// Parses the optional `size` argument to `read()`.
 ///
 /// CPython accepts `None` as "read all" and treats `bool` as an integer for
-/// this argument. Heap-backed integer arguments are explicitly dropped after
-/// conversion because `get_zero_one_arg` transfers ownership to the caller.
-fn parse_read_size_arg(size_arg: Option<Value>, vm: &mut VM<'_>) -> RunResult<ReadSpec> {
+/// this argument.
+fn parse_read_size_arg(size_arg: Option<&Value>, vm: &mut VM<'_>) -> RunResult<ReadSpec> {
     let Some(size) = size_arg else {
         return Ok(ReadSpec::All);
     };
-    let spec = match &size {
+    match size {
         Value::None => Ok(ReadSpec::All),
         Value::Bool(false) => Ok(ReadSpec::Size(0)),
         Value::Bool(true) => Ok(ReadSpec::Size(1)),
@@ -1768,9 +1773,7 @@ fn parse_read_size_arg(size_arg: Option<Value>, vm: &mut VM<'_>) -> RunResult<Re
                 .map_err(|_| ExcType::overflow_c_ssize_t()),
             Err(err) => Err(err),
         },
-    };
-    size.drop_with(vm);
-    spec
+    }
 }
 
 /// Returns the empty `str` / `bytes` short-circuit result.

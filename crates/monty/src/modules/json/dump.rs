@@ -121,9 +121,6 @@ macro_rules! impl_encoder_config {
     };
 }
 
-impl_encoder_config!(DumpsArgs);
-impl_encoder_config!(DumpArgs);
-
 /// How far a call gets through CPython's encoder setup before encoding, which
 /// decides the keyword errors it can raise.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -158,6 +155,7 @@ impl EncoderChecks {
 /// will raise `TypeError` if passed.
 #[py_signature("dumps(obj, *, skipkeys=False, ensure_ascii=True, allow_nan=True, indent=None, separators=None, default=None, sort_keys=False)", style = def, kwarg_error_name = "JSONEncoder.__init__")]
 pub(super) fn call_dumps(vm: &mut VM<'_>, args: &DumpsArgs) -> RunResult<Value> {
+    impl_encoder_config!(DumpsArgs);
     let config = args.encoder_config(EncoderChecks::for_call(&args.obj, false, vm), vm)?;
     let output = encode(&args.obj, &config, &args.default, vm)?;
     Ok(allocate_string(output, vm.heap))
@@ -174,6 +172,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_>, args: &DumpsArgs) -> RunResult<Value> 
 /// cannot be encoded; the file object is checked first or last to match.
 #[py_signature("dump(obj, fp, *, skipkeys=False, ensure_ascii=True, allow_nan=True, indent=None, separators=None, default=None, sort_keys=False)", style = def, kwarg_error_name = "JSONEncoder.__init__")]
 pub(super) fn call_dump(vm: &mut VM<'_>, args: &DumpArgs) -> RunResult<CallResult> {
+    impl_encoder_config!(DumpArgs);
     let config = args.encoder_config(EncoderChecks::for_call(&args.obj, true, vm), vm)?;
 
     let early_target = if is_container(&args.obj, vm) {

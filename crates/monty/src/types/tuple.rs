@@ -7,7 +7,7 @@ use std::{
     mem,
 };
 
-use monty_macros::bind_positional;
+use monty_macros::py_signature;
 /// Python tuple type using `SmallVec` for inline storage of small tuples.
 ///
 /// This type provides Python tuple semantics. Tuples are immutable sequences
@@ -28,7 +28,7 @@ use smallvec::SmallVec;
 
 use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
 use crate::{
-    args::ArgValues,
+    args::{ArgPosIter, ArgValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -123,8 +123,9 @@ impl Tuple {
     ///
     /// - `tuple()` with no args returns an empty tuple (singleton)
     /// - `tuple(iterable)` creates a tuple from any iterable (list, tuple, range, str, bytes, dict)
-    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        let value = bind_positional!(args, vm.heap, "tuple(iterable=..., /)")?;
+    #[py_signature("tuple(iterable=..., /)")]
+    pub fn init(vm: &mut VM<'_>, args: TupleArgs) -> RunResult<Value> {
+        let TupleArgs { iterable: value } = args;
         match value {
             None => {
                 // Use empty tuple singleton
@@ -557,10 +558,8 @@ impl HeapItem for Tuple {
 ///
 /// Returns the index of the first occurrence of value.
 /// Raises ValueError if the value is not found.
-fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let pos_args = bind_positional!(args, vm.heap, "tuple.index(value, start=..., stop=..., /)", iter)?;
-    defer_drop!(pos_args, vm);
-
+#[py_signature("index(self, value, start=..., stop=..., /)", owner = "tuple")]
+fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, pos_args: &ArgPosIter, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = tuple.get(vm.heap).as_slice().len();
     let (value, start, end) = match pos_args.as_slice() {
         [value] => (value, 0, len),
@@ -600,9 +599,9 @@ fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>
 /// Implements Python's `tuple.count(value)` method.
 ///
 /// Returns the number of occurrences of value in the tuple.
-fn tuple_count<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let value = bind_positional!(args, vm.heap, "tuple.count(value, /)")?;
-    defer_drop!(value, vm);
+#[py_signature("count(self, value, /)", owner = "tuple")]
+fn tuple_count<'h>(tuple: &HeapRead<'h, Tuple>, args: &TupleCountArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let TupleCountArgs { value } = args;
 
     let mut count = 0usize;
     let iter = tuple.iter(vm)?;

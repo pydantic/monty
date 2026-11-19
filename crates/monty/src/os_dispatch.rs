@@ -22,7 +22,7 @@
 use std::{borrow::Cow, mem};
 
 use ahash::AHashSet;
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use monty_types::{
     ExcType, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
     RenameCallArgs, ResourceTracker, UrandomArgs, normalize_virtual_path,
@@ -646,7 +646,7 @@ pub(crate) fn build_path_os_call(
     // 12 near-identical case lines.
     macro_rules! path_only {
         ($name:literal, $variant:ident) => {{
-            bind_positional!(args, vm.heap, "()", name = $name)?;
+            args.check_zero_args($name, vm.heap)?;
             OsFunctionCall::$variant(path)
         }};
     }
@@ -671,7 +671,7 @@ pub(crate) fn build_path_os_call(
             OsFunctionCall::Stat(path)
         }
         StaticStrings::Iterdir => {
-            bind_positional!(args, vm.heap, "iterdir()")?;
+            args.check_zero_args("iterdir", vm.heap)?;
             return Ok(CallResult::OsCallWithEffect {
                 effect: PreConversionEffect::IterdirPaths {
                     path: path.as_str().to_owned(),
@@ -862,7 +862,7 @@ fn arg_or_missing_data(method: &'static str, args: ArgValues, heap: &mut Heap) -
             "Path.{method}() missing 1 required positional argument: 'data'"
         )));
     }
-    bind_positional!(args, heap, "(data, /)", name = method)
+    args.get_one_arg(method, heap)
 }
 
 /// Owned `String` if `value` is a `str`, `Path` or `DirEntry`, else `None`. Caller drops

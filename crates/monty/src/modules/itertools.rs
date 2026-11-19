@@ -7,10 +7,10 @@
 
 use std::mem;
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgPosIter, ArgValues},
     builtins::Builtins,
     bytecode::VM,
     defer_drop, defer_drop_mut,
@@ -344,8 +344,9 @@ fn islice_index(value: &Value, vm: &mut VM<'_>) -> RunResult<IsliceBound> {
 }
 
 /// `itertools.chain(*iterables)` — each argument's items, back to back.
-fn call_chain(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let iterables: Vec<Value> = bind_positional!(args, vm.heap, "chain(*iterables)")?.collect();
+#[py_signature("chain(*iterables)")]
+fn call_chain(vm: &mut VM<'_>, iterables: ArgPosIter) -> RunResult<Value> {
+    let iterables: Vec<Value> = iterables.collect();
     // Arguments are NOT resolved here: CPython calls `iter()` on each only as it
     // reaches it, so `chain([1], 5)` constructs and raises mid-consumption.
     let iter = ItertoolsIter::Chain(Chain::new(iterables));
@@ -714,8 +715,9 @@ fn call_groupby(vm: &mut VM<'_>, args: GroupbyArgs) -> RunResult<Value> {
 ///
 /// `METH_O` in CPython, so keywords are rejected wholesale and the arity
 /// wording is `takes exactly one argument (N given)`.
-fn call_chain_from_iterable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let iterable = bind_positional!(args, vm.heap, "chain.from_iterable(iterable, /)", reject_keywords)?;
+#[py_signature("from_iterable(iterable, /)", error_name = "chain.from_iterable", reject_keywords)]
+fn call_chain_from_iterable(vm: &mut VM<'_>, args: ChainFromIterableArgs) -> RunResult<Value> {
+    let ChainFromIterableArgs { iterable } = args;
     // The outer iterable is resolved now — `chain.from_iterable(5)` raises
     // here — while its items are resolved one at a time, as `chain`'s
     // arguments are.

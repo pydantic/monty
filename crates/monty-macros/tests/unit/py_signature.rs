@@ -13,6 +13,7 @@ fn rejects_invalid_options() {
     for options in [
         "style = def, style = clinic",
         "bad_arg, bad_arg",
+        "reject_keywords, reject_keywords",
         r#"owner = "Counter", owner = "dict""#,
         r#"kwarg_error_name = "first", kwarg_error_name = "second""#,
     ] {
@@ -113,7 +114,7 @@ fn generates_bound_fields_in_declaration_order() {
     let function = parse_quote!(
         fn sample(args: &mut SampleFnArgs) {}
     );
-    let expanded: File = syn::parse2(expand(&declaration, function).unwrap()).unwrap();
+    let expanded: ItemFn = syn::parse2(expand(&declaration, function).unwrap()).unwrap();
     let expected: ItemStruct = parse_quote! {
         struct SampleFnArgs {
             label: crate::args::StrArg,
@@ -129,7 +130,7 @@ fn generates_bound_fields_in_declaration_order() {
             extras: crate::args::KwargsValues,
         }
     };
-    assert!(expanded.items.contains(&Item::Struct(expected)));
+    assert!(expanded.block.stmts.contains(&syn::Stmt::Item(Item::Struct(expected))));
 }
 
 #[test]
@@ -237,8 +238,14 @@ fn implicit_direct_binding_preserves_explicit_styles_and_struct_binders() {
         ),
         (parse_quote!("f(x, /)", style = def), adapter()),
     ] {
-        let output: File = syn::parse2(expand(&declaration, function).unwrap()).unwrap();
-        assert!(output.items.iter().any(|item| matches!(item, Item::Struct(_))));
+        let output: ItemFn = syn::parse2(expand(&declaration, function).unwrap()).unwrap();
+        assert!(
+            output
+                .block
+                .stmts
+                .iter()
+                .any(|stmt| matches!(stmt, syn::Stmt::Item(Item::Struct(_))))
+        );
     }
 }
 
@@ -488,5 +495,46 @@ fn full_width_integer_defaults_preserve_magnitude_and_sign() {
         let expanded = expand(&declaration, adapter()).unwrap().to_string();
         assert!(expanded.contains(decimal), "{expanded}");
         assert!(expanded.contains("Option < crate :: args :: IntArg >"), "{expanded}");
+    }
+}
+
+#[test]
+fn positional_iterators_reject_signatures_that_need_conversion_or_keywords() {
+    let function: ItemFn = parse_quote!(
+        fn f(values: &ArgPosIter) {}
+    );
+    for signature in [
+        "f(x)",
+        "f(x: int, /)",
+        "f(x=1, /)",
+        "f(x, /, *rest)",
+        "f(*, x)",
+        "f(**kw)",
+    ] {
+        assert!(
+            expand(&parse_quote!(#signature), function.clone()).is_err(),
+            "{signature}"
+        );
+    }
+}
+
+#[test]
+fn owned_and_borrowed_structs_share_the_one_argument_fast_path() {
+    let declaration = parse_quote!("f(x, /)");
+    let owned = parse_quote!(
+        fn f(args: FArgs) {
+            let FArgs { x } = args;
+            consume(x);
+        }
+    );
+    let borrowed = parse_quote!(
+        fn f(args: &FArgs) {
+            inspect(&args.x);
+        }
+    );
+    for (function, guarded) in [(owned, false), (borrowed, true)] {
+        let output = expand(&declaration, function).unwrap().to_string();
+        assert!(output.contains("get_one_arg"));
+        assert_eq!(output.contains("defer_drop !"), guarded);
     }
 }

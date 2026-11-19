@@ -11,13 +11,12 @@
 
 use std::{cell::OnceCell, cmp::Ordering, fmt::Write};
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use smallvec::smallvec;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgPosIter, ArgValues},
     bytecode::{CallResult, VM},
-    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
@@ -358,7 +357,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
         let result = match attr.static_string(vm.interns) {
             Some(StaticStrings::Group) => call_group(self, args, vm)?,
             Some(StaticStrings::Groups) => {
-                bind_positional!(args, vm.heap, "re.Match.groups()")?;
+                args.check_zero_args("re.Match.groups", vm.heap)?;
                 self.get(vm.heap).get_groups(vm.heap)
             }
             Some(StaticStrings::Groupdict) => {
@@ -415,9 +414,8 @@ impl HeapItem for ReMatch {
 /// - `m.group()` → equivalent to `m.group(0)`, returns full match string
 /// - `m.group(n)` → returns the nth group (integer or named string)
 /// - `m.group(n1, n2, ...)` → returns a tuple of groups
-fn call_group<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let pos = bind_positional!(args, vm.heap, "re.Match.group(*groups)")?;
-    defer_drop!(pos, vm);
+#[py_signature("group(self, /, *groups)", owner = "re.Match")]
+fn call_group<'h>(m: &HeapRead<'h, ReMatch>, pos: &ArgPosIter, vm: &mut VM<'h>) -> RunResult<Value> {
     match pos.as_slice() {
         [] => m.get(vm.heap).get_group(0, vm.heap),
         [value] => resolve_group_arg(m.get(vm.heap), value, vm),
@@ -451,7 +449,7 @@ fn resolve_group_arg(m: &ReMatch, val: &Value, vm: &VM<'_>) -> RunResult<Value> 
 /// This helper extracts the argument, validates it is an integer (or string for
 /// named groups), and returns the group number.
 fn extract_optional_group_arg(args: ArgValues, name: &str, default: i64, heap: &mut Heap) -> RunResult<i64> {
-    let opt = bind_positional!(args, heap, "(group=..., /)", name = name)?;
+    let opt = args.get_zero_one_arg(name, heap)?;
     match opt {
         None => Ok(default),
         Some(Value::Int(n)) => Ok(n),

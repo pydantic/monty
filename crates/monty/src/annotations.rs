@@ -6,7 +6,7 @@
 //! computed and cached `__annotations__`, and the private helpers frozen code
 //! uses to call an annotate function in each `annotationlib.Format`.
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 
 use crate::{
     args::ArgValues,
@@ -238,10 +238,9 @@ fn missing_names(fake: &Value, owner: &Value, is_class: bool, vm: &VM<'_>) -> Mi
 
 /// Frozen helper: caches a class's evaluated annotations under
 /// `__annotations_cache__`, rejecting a non-dict as CPython's `type.__annotations__` does.
-pub(crate) fn cache_class_annotations_helper(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let (cls, annotations) = bind_positional!(args, vm.heap, "cache(cls, annotations, /)")?;
-    defer_drop!(cls, vm);
-    defer_drop!(annotations, vm);
+#[py_signature("cache(cls, annotations, /)")]
+pub(crate) fn cache_class_annotations_helper(args: &CacheArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let CacheArgs { cls, annotations } = args;
     let Value::Ref(class_id) = cls else {
         unreachable!("frozen code passes the class")
     };

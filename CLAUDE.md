@@ -624,8 +624,8 @@ When writing exception messages, always check `crates/monty/src/exception_privat
 
 Declare native Python functions, methods and constructors with `#[py_signature]`.
 The binder handles positional and keyword dispatch, defaults, error ordering and cleanup.
-In a shared dispatcher, use `bind_positional!` to bind positional arguments inside the selected arm.
-Both macros use the inline argument storage for fixed-arity calls such as `len` and `dict.keys`.
+Methods implemented inside a shared dispatcher use the `ArgValues` helpers in the selected arm.
+Move the signature onto the handler when extracting the method into its own Rust function.
 
 Choose the parser style by checking CPython's error wording and precedence.
 For Python `def` signatures, convert values in the body. For C parsers, annotations or

@@ -15,7 +15,7 @@
 
 use std::fmt;
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use monty_types::{OsFunctionCall, TypeHintsTarget};
 use smallvec::SmallVec;
 
@@ -686,9 +686,9 @@ fn resolve_hints(
 
 /// Frozen helper: CPython's `annotationlib.type_repr`, a type by its name and
 /// anything else by its repr, for `STRING` format.
-pub(crate) fn call_type_repr(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let value = bind_positional!(args, vm.heap, "type_repr(obj, /)")?;
-    defer_drop!(value, vm);
+#[py_signature("type_repr(obj, /)")]
+pub(crate) fn call_type_repr(args: &TypeReprArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let TypeReprArgs { obj: value } = args;
     let mut text = String::new();
     repr_type_arg(value, &mut text, vm, &mut LazyHeapSet::default())?;
     Ok(allocate_string(text, vm.heap))

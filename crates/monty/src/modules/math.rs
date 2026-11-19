@@ -25,7 +25,7 @@
 
 use std::f64::consts;
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -33,9 +33,9 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use smallvec::smallvec;
 
 use crate::{
-    args::{ArgValues, IntArg},
+    args::{ArgPosIter, ArgValues, IntArg},
     bytecode::VM,
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     intern::StaticStrings,
     modules::ModuleFunctions,
@@ -474,10 +474,9 @@ fn math_cbrt(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 /// Always returns a float. Unlike the builtin `pow()`, does not support
 /// three-argument modular exponentiation. Raises `ValueError` for
 /// negative base with non-integer exponent.
-fn math_pow(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (x_val, y_val) = bind_positional!(args, vm.heap, "math.pow(x, y, /)")?;
-    defer_drop!(x_val, vm);
-    defer_drop!(y_val, vm);
+#[py_signature("pow(x, y, /)", error_name = "math.pow")]
+fn math_pow(vm: &mut VM<'_>, args: &MathPowArgs) -> RunResult<Value> {
+    let MathPowArgs { x: x_val, y: y_val } = args;
 
     let x = value_to_float(x_val, vm)?;
     let y = value_to_float(y_val, vm)?;
@@ -530,11 +529,13 @@ fn math_expm1(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 ///
 /// With one argument, returns the natural logarithm (base e).
 /// With two arguments, returns `log(x) / log(base)`.
-fn math_log(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+#[py_signature("log(x, base=..., /)")]
+fn math_log(vm: &mut VM<'_>, args: &LogArgs) -> RunResult<Value> {
+    let LogArgs {
+        x: x_val,
+        base: base_val,
+    } = args;
     // CPython's arity errors name the bare function: `log expected at most 2 arguments, got 3`.
-    let (x_val, base_val) = bind_positional!(args, vm.heap, "log(x, base=..., /)")?;
-    defer_drop!(x_val, vm);
-    defer_drop!(base_val, vm);
 
     let numerator = log_arg(x_val, f64::ln, vm)?;
     match base_val {
@@ -679,10 +680,9 @@ fn math_isfinite(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 /// `math.copysign(x, y)` — returns x with the sign of y.
 ///
 /// Always returns a float.
-fn math_copysign(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (x_val, y_val) = bind_positional!(args, vm.heap, "math.copysign(x, y, /)")?;
-    defer_drop!(x_val, vm);
-    defer_drop!(y_val, vm);
+#[py_signature("copysign(x, y, /)", error_name = "math.copysign")]
+fn math_copysign(vm: &mut VM<'_>, args: &MathCopysignArgs) -> RunResult<Value> {
+    let MathCopysignArgs { x: x_val, y: y_val } = args;
 
     let x = value_to_float(x_val, vm)?;
     let y = value_to_float(y_val, vm)?;
@@ -720,10 +720,9 @@ fn math_isclose(vm: &mut VM<'_>, args: &IscloseArgs) -> RunResult<Value> {
 }
 
 /// `math.nextafter(x, y)` — returns the next float after x towards y.
-fn math_nextafter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (x_val, y_val) = bind_positional!(args, vm.heap, "math.nextafter(x, y, /)")?;
-    defer_drop!(x_val, vm);
-    defer_drop!(y_val, vm);
+#[py_signature("nextafter(x, y, /)", error_name = "math.nextafter")]
+fn math_nextafter(vm: &mut VM<'_>, args: &MathNextafterArgs) -> RunResult<Value> {
+    let MathNextafterArgs { x: x_val, y: y_val } = args;
 
     let x = value_to_float(x_val, vm)?;
     let y = value_to_float(y_val, vm)?;
@@ -806,10 +805,9 @@ fn math_atan(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 
 /// `math.atan2(y, x)` — returns atan(y/x) in radians, using the signs of both
 /// to determine the correct quadrant.
-fn math_atan2(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (y_val, x_val) = bind_positional!(args, vm.heap, "math.atan2(y, x, /)")?;
-    defer_drop!(y_val, vm);
-    defer_drop!(x_val, vm);
+#[py_signature("atan2(y, x, /)", error_name = "math.atan2")]
+fn math_atan2(vm: &mut VM<'_>, args: &MathAtan2Args) -> RunResult<Value> {
+    let MathAtan2Args { y: y_val, x: x_val } = args;
 
     let y = value_to_float(y_val, vm)?;
     let x = value_to_float(x_val, vm)?;
@@ -958,10 +956,8 @@ fn product_range(lo: u64, hi: u64, polls: &mut usize, tracker: &ResourceTracker)
 /// Supports 0 or more arguments, matching CPython 3.9+. `gcd()` returns 0,
 /// `gcd(n)` returns `abs(n)`, and for multiple args reduces pairwise.
 /// The result is always non-negative.
-fn math_gcd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let positional = bind_positional!(args, vm.heap, "math.gcd(*integers)")?;
-    defer_drop_mut!(positional, vm);
-
+#[py_signature("gcd(*integers)", error_name = "math.gcd")]
+fn math_gcd(vm: &mut VM<'_>, positional: &mut ArgPosIter) -> RunResult<Value> {
     let mut result = BigInt::ZERO;
     for arg in positional.by_ref() {
         defer_drop!(arg, vm);
@@ -975,10 +971,8 @@ fn math_gcd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Supports 0 or more arguments, matching CPython 3.9+. `lcm()` returns 1,
 /// `lcm(n)` returns `abs(n)`, and for multiple args reduces pairwise.
 /// The result is always non-negative. Returns 0 if any argument is 0.
-fn math_lcm(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let positional = bind_positional!(args, vm.heap, "math.lcm(*integers)")?;
-    defer_drop_mut!(positional, vm);
-
+#[py_signature("lcm(*integers)", error_name = "math.lcm")]
+fn math_lcm(vm: &mut VM<'_>, positional: &mut ArgPosIter) -> RunResult<Value> {
     let mut result = BigInt::one();
     for arg in positional.by_ref() {
         defer_drop!(arg, vm);
@@ -999,10 +993,9 @@ fn math_lcm(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `math.comb(n, k)` — returns the number of ways to choose k items from n.
 ///
 /// Both arguments must be non-negative integers.
-fn math_comb(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (n_val, k_val) = bind_positional!(args, vm.heap, "math.comb(n, k, /)")?;
-    defer_drop!(n_val, vm);
-    defer_drop!(k_val, vm);
+#[py_signature("comb(n, k, /)", error_name = "math.comb")]
+fn math_comb(vm: &mut VM<'_>, args: &MathCombArgs) -> RunResult<Value> {
+    let MathCombArgs { n: n_val, k: k_val } = args;
 
     let n = value_to_bigint(n_val, vm)?;
     let k = value_to_bigint(k_val, vm)?;
@@ -1056,17 +1049,15 @@ fn falling_product(n: &BigInt, k: u64, binomial: bool, tracker: &ResourceTracker
 ///
 /// Both arguments must be non-negative integers. When `k` is omitted, defaults to `n`
 /// (i.e., `perm(n)` returns `n!`), matching CPython behavior.
-fn math_perm(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    // CPython's arity errors name the bare function: `perm expected at most 2 arguments, got 3`.
-    let (n_val, k_val) = bind_positional!(args, vm.heap, "perm(n, k=..., /)")?;
-    defer_drop!(n_val, vm);
+#[py_signature("perm(n, k=..., /)")]
+fn math_perm(vm: &mut VM<'_>, args: &PermArgs) -> RunResult<Value> {
+    let PermArgs { n: n_val, k: k_val } = args;
 
     let n = value_to_bigint(n_val, vm)?;
     // `perm(n)` is `n!`, argument errors included.
     let Some(k_val) = k_val else {
         return Ok(LongInt::new(factorial(&n, &vm.heap.tracker)?).into_value(vm.heap));
     };
-    defer_drop!(k_val, vm);
     let k = value_to_bigint(k_val, vm)?;
 
     if n.is_negative() {
@@ -1093,10 +1084,9 @@ fn math_perm(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// Unlike `x % y`, the result has the same sign as x. Raises `ValueError`
 /// when y is zero (CPython: "math domain error").
-fn math_fmod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (x_val, y_val) = bind_positional!(args, vm.heap, "math.fmod(x, y, /)")?;
-    defer_drop!(x_val, vm);
-    defer_drop!(y_val, vm);
+#[py_signature("fmod(x, y, /)", error_name = "math.fmod")]
+fn math_fmod(vm: &mut VM<'_>, args: &MathFmodArgs) -> RunResult<Value> {
+    let MathFmodArgs { x: x_val, y: y_val } = args;
 
     let x = value_to_float(x_val, vm)?;
     let y = value_to_float(y_val, vm)?;
@@ -1114,10 +1104,9 @@ fn math_fmod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `math.remainder(x, y)` — IEEE 754 remainder of x with respect to y.
 ///
 /// The result is `x - n*y` where n is the closest integer to `x/y`.
-fn math_remainder(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (x_val, y_val) = bind_positional!(args, vm.heap, "math.remainder(x, y, /)")?;
-    defer_drop!(x_val, vm);
-    defer_drop!(y_val, vm);
+#[py_signature("remainder(x, y, /)", error_name = "math.remainder")]
+fn math_remainder(vm: &mut VM<'_>, args: &MathRemainderArgs) -> RunResult<Value> {
+    let MathRemainderArgs { x: x_val, y: y_val } = args;
 
     let x = value_to_float(x_val, vm)?;
     let y = value_to_float(y_val, vm)?;
@@ -1165,10 +1154,9 @@ fn math_frexp(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 /// Clamps the exponent to `i32` range before calling `libm::ldexp`, which is safe
 /// because IEEE 754 double exponents only span -1074 to +1023 — any `i64` outside
 /// `i32` range would trivially overflow or underflow anyway.
-fn math_ldexp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (x_val, i_val) = bind_positional!(args, vm.heap, "math.ldexp(x, i, /)")?;
-    defer_drop!(x_val, vm);
-    defer_drop!(i_val, vm);
+#[py_signature("ldexp(x, i, /)", error_name = "math.ldexp")]
+fn math_ldexp(vm: &mut VM<'_>, args: &MathLdexpArgs) -> RunResult<Value> {
+    let MathLdexpArgs { x: x_val, i: i_val } = args;
 
     let x = value_to_float(x_val, vm)?;
     // An exponent beyond `i64` saturates: the result overflows or underflows either way.

@@ -9,7 +9,7 @@ use std::{
     mem,
 };
 
-use monty_macros::bind_positional;
+use monty_macros::py_signature;
 /// Python named tuple type, combining tuple-like indexing with named attribute access.
 ///
 /// Named tuples are like regular tuples but with field names, providing two ways
@@ -31,7 +31,7 @@ use smallvec::{SmallVec, smallvec};
 
 use super::{CmpOrder, PyTrait, tuple::TupleIterator};
 use crate::{
-    args::{ArgValues, KwargsValues},
+    args::{ArgPosIter, ArgValues, KwargsValues},
     builtins::{Builtins, BuiltinsFunctions, type_::builtin_type_mro},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
@@ -624,7 +624,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
             Some(StaticStrings::Count) => return self.method_count(vm, args).map(CallResult::Value),
             Some(StaticStrings::Index) => return self.method_index(vm, args).map(CallResult::Value),
             Some(StaticStrings::DunderGetnewargs) => {
-                return self.method_getnewargs(vm, args, from_factory).map(CallResult::Value);
+                return self.method_getnewargs(vm, from_factory, args).map(CallResult::Value);
             }
             _ => {}
         }
@@ -685,8 +685,8 @@ impl<'h> HeapRead<'h, NamedTuple> {
     /// takes one argument per field), whereas a *structseq* returns
     /// `(tuple(self),)` because its `__new__` takes a single sequence. So
     /// `sys.version_info.__getnewargs__()` is `((3, 14, ...),)`, one level deeper.
-    fn method_getnewargs(&self, vm: &mut VM<'h>, args: ArgValues, from_factory: bool) -> RunResult<Value> {
-        bind_positional!(args, vm.heap, "__getnewargs__()")?;
+    #[py_signature("__getnewargs__(self, /)")]
+    fn method_getnewargs(&self, vm: &mut VM<'h>, from_factory: bool) -> RunResult<Value> {
         let items: TupleVec = self.cloned_items(vm)?.into_iter().collect();
         let values = allocate_tuple(items, vm.heap);
         if from_factory {
@@ -701,9 +701,9 @@ impl<'h> HeapRead<'h, NamedTuple> {
     }
 
     /// `p.count(x)` — how many items equal `x`, inherited from `tuple`.
-    fn method_count(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<Value> {
-        let value = bind_positional!(args, vm.heap, "tuple.count(value, /)")?;
-        defer_drop!(value, vm);
+    #[py_signature("count(self, value, /)", owner = "tuple")]
+    fn method_count(&self, vm: &mut VM<'h>, args: &TupleCountArgs) -> RunResult<Value> {
+        let TupleCountArgs { value } = args;
 
         let mut count = 0usize;
         let iter = self.iter(vm)?;
@@ -718,10 +718,8 @@ impl<'h> HeapRead<'h, NamedTuple> {
 
     /// `p.index(x[, start[, stop]])` — index of the first item equal to `x`,
     /// inherited from `tuple`.
-    fn method_index(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<Value> {
-        let pos_args = bind_positional!(args, vm.heap, "tuple.index(value, start=..., stop=..., /)", iter)?;
-        defer_drop!(pos_args, vm);
-
+    #[py_signature("index(self, value, start=..., stop=..., /)", owner = "tuple")]
+    fn method_index(&self, vm: &mut VM<'h>, pos_args: &ArgPosIter) -> RunResult<Value> {
         let len = self.get(vm.heap).len();
         let (value, start, end) = match pos_args.as_slice() {
             [value] => (value, 0, len),
@@ -752,8 +750,8 @@ impl<'h> HeapRead<'h, NamedTuple> {
     }
 
     /// `p._asdict()` — a new `dict` mapping each field name to its value.
-    fn method_asdict(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<Value> {
-        bind_positional!(args, vm.heap, "_asdict()")?;
+    #[py_signature("_asdict(self, /)")]
+    fn method_asdict(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let names = self.get(vm.heap).field_names.clone();
         let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(names.len());
         for (i, name) in names.iter().enumerate() {
@@ -1268,15 +1266,16 @@ fn make_namedtuple(class_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> RunRes
 
 /// Shared `_make` body: collect the iterable, length-check it against the
 /// fields, and build the instance.
+#[py_signature("_make(iterable, /)")]
 fn make_from_iterable(
     name: EitherStr,
     field_names: Vec<EitherStr>,
     class_id: Option<HeapId>,
     vm: &mut VM<'_>,
-    args: ArgValues,
+    args: MakeArgs,
 ) -> RunResult<Value> {
+    let MakeArgs { iterable } = args;
     let n = field_names.len();
-    let iterable = bind_positional!(args, vm.heap, "_make(iterable, /)")?;
     let items = collect_owned_iterable::<Vec<Value>>(iterable, vm)?;
     if items.len() != n {
         let got = items.len();

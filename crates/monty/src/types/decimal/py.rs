@@ -9,7 +9,7 @@
 
 use std::{borrow::Cow, cmp::Ordering, fmt::Write, mem};
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{Pow, ToPrimitive, Zero};
@@ -322,8 +322,9 @@ fn from_float_arg(value: &Value, vm: &VM<'_>) -> RunResult<Decimal> {
 }
 
 /// `Decimal.from_number(number)`: an `int`, `float` or `Decimal`, exactly.
-pub(crate) fn class_from_number(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = bind_positional!(args, vm.heap, "Decimal.from_number(number, /)")?;
+#[py_signature("from_number(number, /)", error_name = "Decimal.from_number")]
+pub(crate) fn class_from_number(vm: &mut VM<'_>, args: DecimalFromNumberArgs) -> RunResult<Value> {
+    let DecimalFromNumberArgs { number: value } = args;
     if as_decimal(&value, vm).is_some() {
         return Ok(value);
     }
@@ -806,7 +807,7 @@ impl<'h> HeapObjectRead<'h, Decimal> {
         let qualname = |method: DecimalMethod| format!("Decimal.{}", <&'static str>::from(method));
         match method.shape() {
             MethodShape::NoArgs => {
-                bind_positional!(args, vm.heap, "()", name = &qualname(method))?;
+                args.check_zero_args(&qualname(method), vm.heap)?;
                 self.no_arg_method(method, vm)
             }
             MethodShape::Context => {
@@ -944,13 +945,14 @@ impl<'h> HeapObjectRead<'h, Decimal> {
                 self.format(&spec, vm)
             }
             DecimalMethod::DunderRound => {
-                let n = bind_positional!(args, vm.heap, "function(ndigits=..., /)")
+                let n = args
+                    .get_zero_one_arg("function", vm.heap)
                     .map_err(|_| ExcType::type_error("function takes at most 1 argument (2 given)"))?;
                 defer_drop!(n, vm);
                 self.round(n.as_ref(), vm)
             }
             DecimalMethod::DunderDeepcopy => {
-                let memo = bind_positional!(args, vm.heap, "Decimal.__deepcopy__(memo, /)")?;
+                let memo = args.get_one_arg("Decimal.__deepcopy__", vm.heap)?;
                 memo.drop_with(vm);
                 Ok(self.clone_value(vm.heap))
             }
@@ -979,7 +981,7 @@ fn format_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Value, Option<Val
                     "function takes at most 2 arguments ({count} given)"
                 )))
             } else {
-                bind_positional!(other, vm.heap, "__format__(format_spec, override=..., /)")
+                other.get_one_two_args("__format__", vm.heap)
             }
         }
     }
@@ -1410,7 +1412,9 @@ pub(crate) fn call_context_method(
         ContextMethod::Unary(op) => {
             let name: &'static str = op.into();
             let qualname = format!("Context.{name}");
-            let a = bind_positional!(args, vm.heap, "(a, /)", name = &qualname, reject_keywords)?;
+            let a = args
+                .reject_kwargs(&qualname, vm.heap)?
+                .get_one_arg(&qualname, vm.heap)?;
             defer_drop!(a, vm);
             if op == UnaryOp::Canonical && as_decimal(a, vm).is_none() {
                 return Err(ExcType::type_error("argument must be a Decimal"));
@@ -1422,7 +1426,8 @@ pub(crate) fn call_context_method(
             let name: &'static str = op.into();
             let args = args.reject_kwargs(name, vm.heap)?;
             let count = args.count();
-            let (a, b) = bind_positional!(args, vm.heap, "(a, b, /)", name = name)
+            let (a, b) = args
+                .get_two_args(name, vm.heap)
                 .map_err(|_| ExcType::type_error_function_exact(2, count))?;
             let operands = [a, b];
             defer_drop!(operands, vm);
@@ -1435,7 +1440,8 @@ pub(crate) fn call_context_method(
         ContextMethod::Fma => {
             let args = args.reject_kwargs("fma", vm.heap)?;
             let count = args.count();
-            let operands = bind_positional!(args, vm.heap, "fma(a, b, c, /)", iter)
+            let operands = args
+                .bind_positional_range("fma", 3, 3, vm.heap)
                 .map_err(|_| ExcType::type_error_function_exact(3, count))?;
             defer_drop!(operands, vm);
             let [a, b, c] = operands.as_slice() else {
@@ -1463,7 +1469,8 @@ pub(crate) fn call_context_method(
         }
         ContextMethod::CreateDecimal => {
             let args = args.reject_kwargs("create_decimal", vm.heap)?;
-            let num = bind_positional!(args, vm.heap, "create_decimal(num=..., /)")
+            let num = args
+                .get_zero_one_arg("create_decimal", vm.heap)
                 .map_err(|_| ExcType::type_error("function takes at most 1 argument (2 given)"))?;
             defer_drop!(num, vm);
             let exact = match num {
@@ -1485,19 +1492,16 @@ pub(crate) fn call_context_method(
             Ok(decimal_value(result, vm))
         }
         ContextMethod::CreateDecimalFromFloat => {
-            let f = bind_positional!(
-                args,
-                vm.heap,
-                "Context.create_decimal_from_float(f, /)",
-                reject_keywords
-            )?;
+            let f = args
+                .reject_kwargs("Context.create_decimal_from_float", vm.heap)?
+                .get_one_arg("Context.create_decimal_from_float", vm.heap)?;
             defer_drop!(f, vm);
             let exact = from_float_arg(f, vm)?;
             let result = with_ctx(vm, ctx_id, |ctx, _| create_fix(&exact, ctx))?;
             Ok(decimal_value(result, vm))
         }
         ContextMethod::Radix => {
-            bind_positional!(args, vm.heap, "Context.radix()")?;
+            args.check_zero_args("Context.radix", vm.heap)?;
             Ok(decimal_value(Decimal::from_i64(10), vm))
         }
     }

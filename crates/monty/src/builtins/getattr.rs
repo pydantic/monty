@@ -1,12 +1,11 @@
 //! Implementation of the getattr() builtin function.
 
-use monty_macros::bind_positional;
+use monty_macros::py_signature;
 use monty_types::ExcType;
 
 use crate::{
-    args::ArgValues,
+    args::ArgPosIter,
     bytecode::{CallResult, PendingLookupEffect, VM},
-    defer_drop,
     exception_private::{RunError, RunResult, SimpleException},
     heap::DropWithContext,
 };
@@ -31,10 +30,8 @@ use crate::{
 /// getattr(obj, 'y', None)       # Get obj.y or None if not found
 /// getattr(module, 'function')   # Get module.function
 /// ```
-pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let positional = bind_positional!(args, vm.heap, "getattr(object, name, default=..., /)", iter)?;
-    defer_drop!(positional, vm);
-
+#[py_signature("getattr(object, name, default=..., /)")]
+pub fn builtin_getattr(vm: &mut VM<'_>, positional: &ArgPosIter) -> RunResult<CallResult> {
     let [object, name, rest @ ..] = positional.as_slice() else {
         unreachable!("arity checked by signature")
     };

@@ -8,7 +8,7 @@
 //! Other asyncio functions (`create_task`, `wait`, etc.) are not implemented.
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use monty_types::{OsFunctionCall, sleep_duration_saturating};
 use num_traits::ToPrimitive;
 
@@ -18,7 +18,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{Heap, HeapData},
+    heap::HeapData,
     heap_traits::DropGuard,
     intern::StaticStrings,
     modules::{
@@ -68,7 +68,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
 pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues) -> RunResult<CallResult> {
     match functions {
         AsyncioFunctions::Gather => gather(vm, args).map(CallResult::Value),
-        AsyncioFunctions::Run => run(vm.heap, args),
+        AsyncioFunctions::Run => run(vm, args),
         AsyncioFunctions::Sleep => sleep(vm, args),
     }
 }
@@ -132,8 +132,9 @@ fn delay_seconds(delay: &Value, vm: &VM<'_>) -> RunResult<f64> {
 ///
 /// Returns `CallResult::AwaitValue` so the VM executes `exec_get_awaitable` on
 /// the value, which handles validation that it's actually a coroutine/awaitable.
-fn run(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
-    let coroutine = bind_positional!(args, heap, "asyncio.run(main, /)")?;
+#[py_signature("run(main, /)", error_name = "asyncio.run")]
+fn run(vm: &mut VM<'_>, args: AsyncioRunArgs) -> RunResult<CallResult> {
+    let AsyncioRunArgs { main: coroutine } = args;
     Ok(CallResult::AwaitValue(coroutine))
 }
 

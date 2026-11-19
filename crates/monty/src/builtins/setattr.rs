@@ -1,12 +1,11 @@
 //! Implementation of the setattr() builtin function.
 
-use monty_macros::bind_positional;
+use monty_macros::py_signature;
 use monty_types::ExcType;
 
 use crate::{
-    args::ArgValues,
+    args::ArgPosIter,
     bytecode::VM,
-    defer_drop,
     exception_private::{RunResult, SimpleException},
     value::Value,
 };
@@ -21,10 +20,8 @@ use crate::{
 /// setattr(obj, 'x', 42)      # Set obj.x = 42
 /// setattr(obj, 'name', 'foo') # Set obj.name = 'foo'
 /// ```
-pub fn builtin_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let positional = bind_positional!(args, vm.heap, "setattr(object, name, value, /)", iter)?;
-    defer_drop!(positional, vm);
-
+#[py_signature("setattr(object, name, value, /)")]
+pub fn builtin_setattr(vm: &mut VM<'_>, positional: &ArgPosIter) -> RunResult<Value> {
     let [object, name, value] = positional.as_slice() else {
         unreachable!("arity checked by signature")
     };

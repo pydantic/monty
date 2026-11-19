@@ -7,7 +7,7 @@
 
 use std::fmt;
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use num_bigint::BigInt;
 
 use super::native::Constructor;
@@ -104,7 +104,7 @@ impl Type {
             // `list.__class_getitem__(int)` is `list[int]`; the error names the
             // bare type as CPython does (`deque.__class_getitem__()`).
             let name = format!("{}.__class_getitem__", self.dunder_name());
-            let key = bind_positional!(args, vm.heap, "(key, /)", name = &name)?;
+            let key = args.get_one_arg(&name, vm.heap)?;
             Ok(CallResult::Value(GenericAlias::subscript(self, key, vm)))
         } else if let Some(value) = self.class_getattr(attr, vm) {
             defer_drop!(value, vm);
@@ -206,11 +206,12 @@ const CALLABLE_TYPES: [Type; 15] = [
 ];
 
 /// `float(x=0.0, /)`: numeric coercion, then str/bytes parsing.
-pub(crate) fn float_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let Some(v) = bind_positional!(args, vm.heap, "float(x=..., /)")? else {
+#[py_signature("float(x=..., /)")]
+pub(crate) fn float_init(vm: &mut VM<'_>, args: &FloatArgs) -> RunResult<Value> {
+    let FloatArgs { x } = args;
+    let Some(v) = x else {
         return Ok(Value::Float(0.0));
     };
-    defer_drop!(v, vm);
     if let Some(value) = v.py_float(vm)? {
         Ok(Value::Float(value))
     } else {
@@ -223,11 +224,12 @@ pub(crate) fn float_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `bool(x=False, /)`: the truth value of `x`.
-pub(crate) fn bool_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let Some(v) = bind_positional!(args, vm.heap, "bool(object=..., /)")? else {
+#[py_signature("bool(object=..., /)")]
+pub(crate) fn bool_init(vm: &mut VM<'_>, args: &BoolArgs) -> RunResult<Value> {
+    let BoolArgs { object } = args;
+    let Some(v) = object else {
         return Ok(Value::Bool(false));
     };
-    defer_drop!(v, vm);
     Ok(Value::Bool(v.py_bool(vm)?))
 }
 

@@ -9,13 +9,12 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use monty_macros::bind_positional;
+use monty_macros::py_signature;
 use num_integer::div_ceil;
 
 use crate::{
-    args::ArgValues,
+    args::ArgPosIter,
     bytecode::{CallResult, VM},
-    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
@@ -117,10 +116,8 @@ impl Range {
     /// - `range(stop)` - range from 0 to stop
     /// - `range(start, stop)` - range from start to stop
     /// - `range(start, stop, step)` - range with custom step
-    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        let pos_args = bind_positional!(args, vm.heap, "range(start, stop=..., step=..., /)", iter)?;
-        defer_drop!(pos_args, vm);
-
+    #[py_signature("range(start, stop=..., step=..., /)")]
+    pub fn init(vm: &mut VM<'_>, pos_args: &ArgPosIter) -> RunResult<Value> {
         let range = match pos_args.as_slice() {
             [first_arg] => {
                 let stop = first_arg.as_int(vm)?;

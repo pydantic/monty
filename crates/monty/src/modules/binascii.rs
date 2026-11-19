@@ -16,7 +16,7 @@
 //! The byte-level codecs live in [`super::base64`], where they were written
 //! first; `binascii` re-exposes them under the names CPython puts them at.
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use monty_types::ResourceTracker;
 
 use crate::{
@@ -164,7 +164,7 @@ fn call_hexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value
 /// keywords are rejected wholesale before the arity is even counted, both
 /// under the module-qualified `name`.
 fn call_unhexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value> {
-    let hexstr = bind_positional!(args, vm.heap, "(hexstr, /)", name = name, reject_keywords)?;
+    let hexstr = args.reject_kwargs(name, vm.heap)?.get_one_arg(name, vm.heap)?;
     defer_drop!(hexstr, vm);
 
     let decoded = hex_decode(decode_input_described(hexstr, vm, "bytes, buffer or ASCII string")?.as_ref())?;
@@ -244,9 +244,9 @@ fn call_b2a_uu(vm: &mut VM<'_>, args: &B2aUuArgs) -> RunResult<Value> {
 
 /// `binascii.a2b_uu(data)` — the inverse, tolerant of either padding
 /// convention and of a line truncated before its length byte promised.
-fn call_a2b_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let data = bind_positional!(args, vm.heap, "binascii.a2b_uu(data, /)", reject_keywords)?;
-    defer_drop!(data, vm);
+#[py_signature("a2b_uu(data, /)", error_name = "binascii.a2b_uu", reject_keywords)]
+fn call_a2b_uu(vm: &mut VM<'_>, args: &BinasciiA2bUuArgs) -> RunResult<Value> {
+    let BinasciiA2bUuArgs { data } = args;
 
     let decoded = uu_decode(decode_input_described(data, vm, "bytes, buffer or ASCII string")?.as_ref())?;
     Ok(allocate_bytes(decoded, vm.heap))

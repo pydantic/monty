@@ -11,7 +11,7 @@
 
 use std::{borrow::Cow, fmt::Write};
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use monty_types::{
     MontyObject, MontyPath, OsFunctionCall, ResourceError, ResourceTracker, ScanArgs, StringRepr,
     scan::{
@@ -302,7 +302,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
                 entry_method(method, info, path, args, vm)
             }
             (DirScan::Scandir(_), Some(StaticStrings::Close)) => {
-                bind_positional!(args, vm.heap, "ScandirIterator.close()")?;
+                args.check_zero_args("ScandirIterator.close", vm.heap)?;
                 if let DirScan::Scandir(iter) = self.get_mut(vm.heap) {
                     iter.position = iter.entries.len();
                 }
@@ -353,11 +353,11 @@ fn entry_method(
             Value::Bool(info.is_file && (follow_symlinks.bool() || !info.is_symlink))
         }
         StaticStrings::IsSymlink => {
-            bind_positional!(args, vm.heap, "is_symlink()")?;
+            args.check_zero_args("is_symlink", vm.heap)?;
             Value::Bool(info.is_symlink)
         }
         StaticStrings::IsJunction => {
-            bind_positional!(args, vm.heap, "is_junction()")?;
+            args.check_zero_args("is_junction", vm.heap)?;
             Value::Bool(false)
         }
         StaticStrings::StatMethod => {
@@ -370,7 +370,7 @@ fn entry_method(
             };
         }
         _ => {
-            bind_positional!(args, vm.heap, "__fspath__()")?;
+            args.check_zero_args("__fspath__", vm.heap)?;
             allocate_string(path, vm.heap)
         }
     };

@@ -68,7 +68,7 @@ use std::{cell::Cell, ffi::c_int, fmt::Write, ops, str};
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
 use memchr::memmem::{Finder, FinderRev};
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{bytes_repr, bytes_repr_fmt};
 use smallvec::smallvec;
@@ -608,56 +608,56 @@ fn call_bytes_method_impl<'h>(
         StaticStrings::Decode => bytes_decode(bytes, args, vm),
         // Simple transformations (no arguments)
         StaticStrings::Lower => {
-            bind_positional!(args, vm.heap, "bytes.lower()")?;
+            args.check_zero_args("bytes.lower", vm.heap)?;
             Ok(bytes_lower(bytes, vm))
         }
         StaticStrings::Upper => {
-            bind_positional!(args, vm.heap, "bytes.upper()")?;
+            args.check_zero_args("bytes.upper", vm.heap)?;
             Ok(bytes_upper(bytes, vm))
         }
         StaticStrings::Capitalize => {
-            bind_positional!(args, vm.heap, "bytes.capitalize()")?;
+            args.check_zero_args("bytes.capitalize", vm.heap)?;
             Ok(bytes_capitalize(bytes, vm))
         }
         StaticStrings::Title => {
-            bind_positional!(args, vm.heap, "bytes.title()")?;
+            args.check_zero_args("bytes.title", vm.heap)?;
             Ok(bytes_title(bytes, vm))
         }
         StaticStrings::Swapcase => {
-            bind_positional!(args, vm.heap, "bytes.swapcase()")?;
+            args.check_zero_args("bytes.swapcase", vm.heap)?;
             Ok(bytes_swapcase(bytes, vm))
         }
         // Predicate methods (no arguments, return bool)
         StaticStrings::Isalpha => {
-            bind_positional!(args, vm.heap, "bytes.isalpha()")?;
+            args.check_zero_args("bytes.isalpha", vm.heap)?;
             Ok(Value::Bool(bytes_isalpha(bytes.get(vm.heap))))
         }
         StaticStrings::Isdigit => {
-            bind_positional!(args, vm.heap, "bytes.isdigit()")?;
+            args.check_zero_args("bytes.isdigit", vm.heap)?;
             Ok(Value::Bool(bytes_isdigit(bytes.get(vm.heap))))
         }
         StaticStrings::Isalnum => {
-            bind_positional!(args, vm.heap, "bytes.isalnum()")?;
+            args.check_zero_args("bytes.isalnum", vm.heap)?;
             Ok(Value::Bool(bytes_isalnum(bytes.get(vm.heap))))
         }
         StaticStrings::Isspace => {
-            bind_positional!(args, vm.heap, "bytes.isspace()")?;
+            args.check_zero_args("bytes.isspace", vm.heap)?;
             Ok(Value::Bool(bytes_isspace(bytes.get(vm.heap))))
         }
         StaticStrings::Islower => {
-            bind_positional!(args, vm.heap, "bytes.islower()")?;
+            args.check_zero_args("bytes.islower", vm.heap)?;
             Ok(Value::Bool(bytes_islower(bytes.get(vm.heap))))
         }
         StaticStrings::Isupper => {
-            bind_positional!(args, vm.heap, "bytes.isupper()")?;
+            args.check_zero_args("bytes.isupper", vm.heap)?;
             Ok(Value::Bool(bytes_isupper(bytes.get(vm.heap))))
         }
         StaticStrings::Isascii => {
-            bind_positional!(args, vm.heap, "bytes.isascii()")?;
+            args.check_zero_args("bytes.isascii", vm.heap)?;
             Ok(Value::Bool(bytes.get(vm.heap).iter().all(|&b| b <= 127)))
         }
         StaticStrings::Istitle => {
-            bind_positional!(args, vm.heap, "bytes.istitle()")?;
+            args.check_zero_args("bytes.istitle", vm.heap)?;
             Ok(Value::Bool(bytes_istitle(bytes.get(vm.heap))))
         }
         // Search methods
@@ -688,7 +688,7 @@ fn call_bytes_method_impl<'h>(
         StaticStrings::Zfill => bytes_zfill(bytes, args, vm),
         // Join method
         StaticStrings::Join => {
-            let iterable = bind_positional!(args, vm.heap, "bytes.join(iterable_of_bytes, /)")?;
+            let iterable = args.get_one_arg("bytes.join", vm.heap)?;
             bytes_join(bytes, iterable, vm)
         }
         // Hex method
@@ -985,7 +985,7 @@ fn parse_bytes_prefix_suffix_args(
     args: ArgValues,
     vm: &mut VM<'_>,
 ) -> RunResult<(PrefixSuffixArg, SearchRange)> {
-    let pos = bind_positional!(args, vm.heap, "(affix, start=..., end=..., /)", name = method, iter)?;
+    let pos = args.bind_positional_range(method, 1, 3, vm.heap)?;
     defer_drop!(pos, vm);
 
     let [prefix_value, bounds @ ..] = pos.as_slice() else {
@@ -1071,7 +1071,7 @@ fn parse_bytes_sub_args(
     args: ArgValues,
     vm: &mut VM<'_>,
 ) -> RunResult<(Vec<u8>, SearchRange)> {
-    let pos = bind_positional!(args, vm.heap, "(sub, start=..., end=..., /)", name = method, iter)?;
+    let pos = args.bind_positional_range(method, 1, 3, vm.heap)?;
     defer_drop!(pos, vm);
 
     // The bounds convert before `sub` is inspected, as in CPython, whose parser
@@ -1325,9 +1325,9 @@ fn bytes_rindex<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut V
 ///
 /// Returns a copy of the bytes with leading and trailing bytes removed.
 /// If chars is not specified, ASCII whitespace bytes are removed.
-fn bytes_strip<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let value = bind_positional!(args, vm.heap, "bytes.strip(bytes=..., /)")?;
-    defer_drop!(value, vm);
+#[py_signature("strip(self, bytes=..., /)", owner = "bytes")]
+fn bytes_strip<'h>(bytes: &impl HeapView<'h, [u8]>, args: &BytesStripArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let BytesStripArgs { bytes: value } = args;
     let result = match value {
         None | Some(Value::None) => bytes_strip_whitespace_both(bytes.get(vm.heap)),
         Some(v) => bytes_strip_both(bytes.get(vm.heap), extract_bytes_only(v, vm)?),
@@ -1338,9 +1338,9 @@ fn bytes_strip<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
 /// Implements Python's `bytes.lstrip([chars])` method.
 ///
 /// Returns a copy of the bytes with leading bytes removed.
-fn bytes_lstrip<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let value = bind_positional!(args, vm.heap, "bytes.lstrip(bytes=..., /)")?;
-    defer_drop!(value, vm);
+#[py_signature("lstrip(self, bytes=..., /)", owner = "bytes")]
+fn bytes_lstrip<'h>(bytes: &impl HeapView<'h, [u8]>, args: &BytesLstripArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let BytesLstripArgs { bytes: value } = args;
     let result = match value {
         None | Some(Value::None) => bytes_strip_whitespace_start(bytes.get(vm.heap)),
         Some(v) => bytes_strip_start(bytes.get(vm.heap), extract_bytes_only(v, vm)?),
@@ -1351,9 +1351,9 @@ fn bytes_lstrip<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut V
 /// Implements Python's `bytes.rstrip([chars])` method.
 ///
 /// Returns a copy of the bytes with trailing bytes removed.
-fn bytes_rstrip<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let value = bind_positional!(args, vm.heap, "bytes.rstrip(bytes=..., /)")?;
-    defer_drop!(value, vm);
+#[py_signature("rstrip(self, bytes=..., /)", owner = "bytes")]
+fn bytes_rstrip<'h>(bytes: &impl HeapView<'h, [u8]>, args: &BytesRstripArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let BytesRstripArgs { bytes: value } = args;
     let result = match value {
         None | Some(Value::None) => bytes_strip_whitespace_end(bytes.get(vm.heap)),
         Some(v) => bytes_strip_end(bytes.get(vm.heap), extract_bytes_only(v, vm)?),
@@ -1412,9 +1412,13 @@ fn bytes_strip_whitespace_end(bytes: &[u8]) -> &[u8] {
 ///
 /// If the bytes start with the prefix, return bytes[len(prefix):].
 /// Otherwise, return a copy of the original bytes.
-fn bytes_removeprefix<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let prefix_value = bind_positional!(args, vm.heap, "bytes.removeprefix(prefix, /)")?;
-    defer_drop!(prefix_value, vm);
+#[py_signature("removeprefix(self, prefix, /)", owner = "bytes")]
+fn bytes_removeprefix<'h>(
+    bytes: &impl HeapView<'h, [u8]>,
+    args: &BytesRemoveprefixArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    let BytesRemoveprefixArgs { prefix: prefix_value } = args;
     let prefix = extract_bytes_only(prefix_value, vm)?;
 
     let bytes = bytes.get(vm.heap);
@@ -1430,9 +1434,13 @@ fn bytes_removeprefix<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: 
 ///
 /// If the bytes end with the suffix, return bytes[:-len(suffix)].
 /// Otherwise, return a copy of the original bytes.
-fn bytes_removesuffix<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let suffix_value = bind_positional!(args, vm.heap, "bytes.removesuffix(suffix, /)")?;
-    defer_drop!(suffix_value, vm);
+#[py_signature("removesuffix(self, suffix, /)", owner = "bytes")]
+fn bytes_removesuffix<'h>(
+    bytes: &impl HeapView<'h, [u8]>,
+    args: &BytesRemovesuffixArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    let BytesRemovesuffixArgs { suffix: suffix_value } = args;
     let suffix = extract_bytes_only(suffix_value, vm)?;
 
     let bytes = bytes.get(vm.heap);
@@ -1807,9 +1815,13 @@ fn parse_bytes_splitlines_args(args: BytesSplitlinesArgs, vm: &mut VM<'_>) -> Ru
 /// Implements Python's `bytes.partition(sep)` method.
 ///
 /// Splits the bytes at the first occurrence of sep, and returns a 3-tuple.
-fn bytes_partition<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let sep_value = bind_positional!(args, vm.heap, "bytes.partition(sep, /)")?;
-    defer_drop!(sep_value, vm);
+#[py_signature("partition(self, sep, /)", owner = "bytes")]
+fn bytes_partition<'h>(
+    bytes: &impl HeapView<'h, [u8]>,
+    args: &BytesPartitionArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    let BytesPartitionArgs { sep: sep_value } = args;
     let sep = extract_bytes_only(sep_value, vm)?;
 
     if sep.is_empty() {
@@ -1835,9 +1847,13 @@ fn bytes_partition<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mu
 /// Implements Python's `bytes.rpartition(sep)` method.
 ///
 /// Splits the bytes at the last occurrence of sep, and returns a 3-tuple.
-fn bytes_rpartition<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let sep_value = bind_positional!(args, vm.heap, "bytes.rpartition(sep, /)")?;
-    defer_drop!(sep_value, vm);
+#[py_signature("rpartition(self, sep, /)", owner = "bytes")]
+fn bytes_rpartition<'h>(
+    bytes: &impl HeapView<'h, [u8]>,
+    args: &BytesRpartitionArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    let BytesRpartitionArgs { sep: sep_value } = args;
     let sep = extract_bytes_only(sep_value, vm)?;
 
     if sep.is_empty() {
@@ -2072,7 +2088,7 @@ fn bytes_rjust<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
 
 /// Parses arguments for bytes justify methods (center, ljust, rjust).
 fn parse_bytes_justify_args(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<(usize, u8)> {
-    let pos = bind_positional!(args, vm.heap, "(width, fillchar=..., /)", name = method, iter)?;
+    let pos = args.bind_positional_range(method, 1, 2, vm.heap)?;
     defer_drop!(pos, vm);
 
     // Free functions rather than closures: `extract_width` needs `&mut VM` for a
@@ -2115,9 +2131,9 @@ fn extract_justify_fill(method: &str, value: &Value, vm: &VM<'_>) -> RunResult<u
 /// Implements Python's `bytes.zfill(width)` method.
 ///
 /// Returns a copy of the bytes left filled with ASCII '0' digits.
-fn bytes_zfill<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let width_value = bind_positional!(args, vm.heap, "bytes.zfill(width, /)")?;
-    defer_drop!(width_value, vm);
+#[py_signature("zfill(self, width, /)", owner = "bytes")]
+fn bytes_zfill<'h>(bytes: &impl HeapView<'h, [u8]>, args: &BytesZfillArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let BytesZfillArgs { width: width_value } = args;
     let width_i64 = width_value.as_int(vm)?;
 
     let width = if width_i64 < 0 {
@@ -2362,9 +2378,9 @@ pub(crate) fn bytes_class_method(
 ///
 /// Creates bytes from a hexadecimal string. Whitespace is allowed between byte pairs,
 /// but not between the two digits of a byte.
-pub fn bytes_fromhex(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let hex_value = bind_positional!(args, vm.heap, "bytes.fromhex(string, /)")?;
-    defer_drop!(hex_value, vm);
+#[py_signature("fromhex(string, /)", error_name = "bytes.fromhex")]
+pub fn bytes_fromhex(args: &BytesFromhexArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let BytesFromhexArgs { string: hex_value } = args;
 
     let hex_value_py = hex_value.py_value(vm);
     let hex_str = match &hex_value_py {

@@ -1,6 +1,6 @@
 use std::{cell::Cell, fmt::Write, mem};
 
-use monty_macros::bind_positional;
+use monty_macros::py_signature;
 use monty_types::{ResourceError, ResourceTracker};
 
 use super::{PyTrait, iter::checked_preallocation_hint};
@@ -807,8 +807,9 @@ impl Set {
     ///
     /// - `set()` with no args returns an empty set
     /// - `set(iterable)` creates a set from any iterable (list, tuple, set, dict, range, str, bytes)
-    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        let value = bind_positional!(args, vm.heap, "set(iterable=..., /)")?;
+    #[py_signature("set(iterable=..., /)")]
+    pub fn init(vm: &mut VM<'_>, args: SetArgs) -> RunResult<Value> {
+        let SetArgs { iterable: value } = args;
         let set = match value {
             None => Self::new(),
             Some(v) => Self::from_iterable(v, vm)?,
@@ -1156,23 +1157,23 @@ impl<'h> HeapRead<'h, FrozenSet> {
     ) -> RunResult<CallResult> {
         let value = match method {
             Some(StaticStrings::Union) => {
-                let other = bind_positional!(args, vm.heap, "frozenset.union(other, /)")?;
+                let other = args.get_one_arg("frozenset.union", vm.heap)?;
                 self.set_algebra(other, SetAlgebra::Union, vm)
             }
             Some(StaticStrings::Intersection) => {
-                let other = bind_positional!(args, vm.heap, "frozenset.intersection(other, /)")?;
+                let other = args.get_one_arg("frozenset.intersection", vm.heap)?;
                 self.set_algebra(other, SetAlgebra::Intersection, vm)
             }
             Some(StaticStrings::Difference) => {
-                let other = bind_positional!(args, vm.heap, "frozenset.difference(other, /)")?;
+                let other = args.get_one_arg("frozenset.difference", vm.heap)?;
                 self.set_algebra(other, SetAlgebra::Difference, vm)
             }
             Some(StaticStrings::SymmetricDifference) => {
-                let other = bind_positional!(args, vm.heap, "frozenset.symmetric_difference(other, /)")?;
+                let other = args.get_one_arg("frozenset.symmetric_difference", vm.heap)?;
                 self.set_algebra(other, SetAlgebra::SymmetricDifference, vm)
             }
             Some(StaticStrings::Issubset) => {
-                let other = bind_positional!(args, vm.heap, "frozenset.issubset(other, /)")?;
+                let other = args.get_one_arg("frozenset.issubset", vm.heap)?;
                 defer_drop!(other, vm);
                 Ok(Value::Bool(self.storage().comparison_op(
                     other,
@@ -1181,7 +1182,7 @@ impl<'h> HeapRead<'h, FrozenSet> {
                 )?))
             }
             Some(StaticStrings::Issuperset) => {
-                let other = bind_positional!(args, vm.heap, "frozenset.issuperset(other, /)")?;
+                let other = args.get_one_arg("frozenset.issuperset", vm.heap)?;
                 defer_drop!(other, vm);
                 Ok(Value::Bool(self.storage().comparison_op(
                     other,
@@ -1190,7 +1191,7 @@ impl<'h> HeapRead<'h, FrozenSet> {
                 )?))
             }
             Some(StaticStrings::Isdisjoint) => {
-                let other = bind_positional!(args, vm.heap, "frozenset.isdisjoint(other, /)")?;
+                let other = args.get_one_arg("frozenset.isdisjoint", vm.heap)?;
                 defer_drop!(other, vm);
                 Ok(Value::Bool(self.storage().comparison_op(
                     other,
@@ -1316,60 +1317,60 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let value = match attr.static_string(vm.interns) {
             Some(StaticStrings::Add) => {
-                let value = bind_positional!(args, vm.heap, "set.add(element, /)")?;
+                let value = args.get_one_arg("set.add", vm.heap)?;
                 self.add(value, vm)?;
                 Ok(Value::None)
             }
             Some(StaticStrings::Remove) => {
-                let value = bind_positional!(args, vm.heap, "set.remove(element, /)")?;
+                let value = args.get_one_arg("set.remove", vm.heap)?;
                 defer_drop!(value, vm);
                 self.remove(value, vm)?;
                 Ok(Value::None)
             }
             Some(StaticStrings::Discard) => {
-                let value = bind_positional!(args, vm.heap, "set.discard(element, /)")?;
+                let value = args.get_one_arg("set.discard", vm.heap)?;
                 defer_drop!(value, vm);
                 self.discard(value, vm)?;
                 Ok(Value::None)
             }
             Some(StaticStrings::Pop) => {
-                bind_positional!(args, vm.heap, "set.pop()")?;
+                args.check_zero_args("set.pop", vm.heap)?;
                 self.pop(vm)
             }
             Some(StaticStrings::Clear) => {
-                bind_positional!(args, vm.heap, "set.clear()")?;
+                args.check_zero_args("set.clear", vm.heap)?;
                 self.clear(vm);
                 Ok(Value::None)
             }
             Some(StaticStrings::Copy) => {
-                bind_positional!(args, vm.heap, "set.copy()")?;
+                args.check_zero_args("set.copy", vm.heap)?;
                 let copy = self.copy(vm)?;
                 let heap_id = vm.heap.allocate(HeapData::Set(copy));
                 Ok(Value::Ref(heap_id))
             }
             Some(StaticStrings::Update) => {
-                let other = bind_positional!(args, vm.heap, "set.update(other, /)")?;
+                let other = args.get_one_arg("set.update", vm.heap)?;
                 self.hr_update(other, vm)?;
                 Ok(Value::None)
             }
             Some(StaticStrings::Union) => {
-                let other = bind_positional!(args, vm.heap, "set.union(other, /)")?;
+                let other = args.get_one_arg("set.union", vm.heap)?;
                 self.set_algebra(other, SetAlgebra::Union, vm)
             }
             Some(StaticStrings::Intersection) => {
-                let other = bind_positional!(args, vm.heap, "set.intersection(other, /)")?;
+                let other = args.get_one_arg("set.intersection", vm.heap)?;
                 self.set_algebra(other, SetAlgebra::Intersection, vm)
             }
             Some(StaticStrings::Difference) => {
-                let other = bind_positional!(args, vm.heap, "set.difference(other, /)")?;
+                let other = args.get_one_arg("set.difference", vm.heap)?;
                 self.set_algebra(other, SetAlgebra::Difference, vm)
             }
             Some(StaticStrings::SymmetricDifference) => {
-                let other = bind_positional!(args, vm.heap, "set.symmetric_difference(other, /)")?;
+                let other = args.get_one_arg("set.symmetric_difference", vm.heap)?;
                 self.set_algebra(other, SetAlgebra::SymmetricDifference, vm)
             }
             Some(StaticStrings::Issubset) => {
-                let other = bind_positional!(args, vm.heap, "set.issubset(other, /)")?;
+                let other = args.get_one_arg("set.issubset", vm.heap)?;
                 defer_drop!(other, vm);
                 Ok(Value::Bool(self.storage().comparison_op(
                     other,
@@ -1378,7 +1379,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
                 )?))
             }
             Some(StaticStrings::Issuperset) => {
-                let other = bind_positional!(args, vm.heap, "set.issuperset(other, /)")?;
+                let other = args.get_one_arg("set.issuperset", vm.heap)?;
                 defer_drop!(other, vm);
                 Ok(Value::Bool(self.storage().comparison_op(
                     other,
@@ -1387,7 +1388,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
                 )?))
             }
             Some(StaticStrings::Isdisjoint) => {
-                let other = bind_positional!(args, vm.heap, "set.isdisjoint(other, /)")?;
+                let other = args.get_one_arg("set.isdisjoint", vm.heap)?;
                 defer_drop!(other, vm);
                 Ok(Value::Bool(self.storage().comparison_op(
                     other,
@@ -1508,8 +1509,9 @@ impl FrozenSet {
     ///
     /// - `frozenset()` with no args returns an empty frozenset
     /// - `frozenset(iterable)` creates a frozenset from any iterable (list, tuple, set, dict, range, str, bytes)
-    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        let value = bind_positional!(args, vm.heap, "frozenset(iterable=..., /)")?;
+    #[py_signature("frozenset(iterable=..., /)")]
+    pub fn init(vm: &mut VM<'_>, args: FrozensetArgs) -> RunResult<Value> {
+        let FrozensetArgs { iterable: value } = args;
         match value {
             // An exact frozenset already has the required immutable storage.
             Some(v @ Value::Ref(id)) if matches!(vm.heap.get(id), HeapData::FrozenSet(_)) => Ok(v),
@@ -1630,7 +1632,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let method = attr.static_string(vm.interns);
         if matches!(method, Some(StaticStrings::Copy)) {
-            bind_positional!(args, vm.heap, "frozenset.copy()")?;
+            args.check_zero_args("frozenset.copy", vm.heap)?;
             // Identity copies preserve the cached hash and need no storage-method dispatch.
             return Ok(CallResult::Value(self.clone_value(vm.heap)));
         }

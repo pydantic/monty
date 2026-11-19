@@ -9,7 +9,7 @@
 
 use std::fmt::Write;
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use monty_types::FormatComplex;
 
 use crate::{
@@ -344,8 +344,7 @@ fn widen(operand: Operand) -> Complex {
 /// complex (returned as is); otherwise `real` and `imag` are each a number or
 /// a complex, combined as `real + imag*1j`.
 pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    if matches!(args, ArgValues::One(_)) {
-        let value = bind_positional!(args, vm.heap, "complex(real, /)")?;
+    if let ArgValues::One(value) = args {
         return init_single(value, vm);
     }
     let ComplexArgs { real, imag } = ComplexArgs::from_args(args, vm)?;
@@ -462,8 +461,9 @@ pub(crate) fn class_method(
 }
 
 /// `complex.from_number(x)`: a number or complex, never a string.
-pub(crate) fn class_from_number(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = bind_positional!(args, vm.heap, "complex.from_number(number, /)")?;
+#[py_signature("from_number(number, /)", error_name = "complex.from_number")]
+pub(crate) fn class_from_number(vm: &mut VM<'_>, args: ComplexFromNumberArgs) -> RunResult<Value> {
+    let ComplexFromNumberArgs { number: value } = args;
     if let Value::Ref(id) = &value
         && matches!(vm.heap.get(*id), HeapData::Complex(_))
     {
@@ -760,7 +760,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         if attr.static_string(vm.interns) == Some(StaticStrings::Conjugate) {
             let c = *self.get(vm.heap);
-            bind_positional!(args, vm.heap, "complex.conjugate()")?;
+            args.check_zero_args("complex.conjugate", vm.heap)?;
             return Ok(CallResult::Value(c.conjugate().into_value(vm.heap)));
         }
         Err(ExcType::attribute_error_method(Type::Complex, attr, args, vm))

@@ -5,7 +5,7 @@ use std::{
     mem, ptr, vec,
 };
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use serde::ser::SerializeStruct;
 use smallvec::smallvec;
 
@@ -1531,9 +1531,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
         let value = match method {
             // Counter-only methods (a plain dict falls through to AttributeError).
             StaticStrings::MostCommon if self.get(vm.heap).is_counter() => counter_most_common(self, args, vm),
-            StaticStrings::Elements if self.get(vm.heap).is_counter() => counter_elements(self, args, vm),
+            StaticStrings::Elements if self.get(vm.heap).is_counter() => counter_elements(self, vm, args),
             StaticStrings::Total if self.get(vm.heap).is_counter() => {
-                bind_positional!(args, vm.heap, "total()")?;
+                args.check_zero_args("total", vm.heap)?;
                 counter_total(self, vm)
             }
             StaticStrings::Subtract if self.get(vm.heap).is_counter() => counter_subtract_method(self, args, vm),
@@ -1552,18 +1552,18 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
             StaticStrings::Items => self.items_view(vm, args),
             StaticStrings::Pop => dict_pop(self, args, vm),
             StaticStrings::Clear => {
-                bind_positional!(args, vm.heap, "dict.clear()")?;
+                args.check_zero_args("dict.clear", vm.heap)?;
                 dict_clear(self, vm);
                 Ok(Value::None)
             }
             StaticStrings::Copy => {
-                bind_positional!(args, vm.heap, "dict.copy()")?;
+                args.check_zero_args("dict.copy", vm.heap)?;
                 dict_copy(self, vm)
             }
             StaticStrings::Update => dict_update(self, args, vm),
             StaticStrings::Setdefault => dict_setdefault(self, args, vm),
             StaticStrings::Popitem => {
-                bind_positional!(args, vm.heap, "dict.popitem()")?;
+                args.check_zero_args("dict.popitem", vm.heap)?;
                 dict_popitem(self, vm)
             }
             // fromkeys is a classmethod but also accessible on instances. CPython
@@ -1579,7 +1579,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
             }
             // `defaultdict.__missing__(key)` — plain dicts have no such method.
             StaticStrings::DunderMissing if self.get(vm.heap).is_defaultdict() => {
-                let key = bind_positional!(args, vm.heap, "__missing__(key, /)")?;
+                let key = args.get_one_arg("__missing__", vm.heap)?;
                 defer_drop!(key, vm);
                 defaultdict_missing(self, key, vm)
             }
@@ -2040,10 +2040,14 @@ pub(crate) fn dict_class_method(
 /// dict.fromkeys(['a', 'b', 'c'])  # {'a': None, 'b': None, 'c': None}
 /// dict.fromkeys(['a', 'b'], 0)    # {'a': 0, 'b': 0}
 /// ```
-pub fn dict_fromkeys(args: ArgValues, kind: DictKind, vm: &mut VM<'_>) -> RunResult<Value> {
+#[py_signature("fromkeys(iterable, value=..., /)")]
+pub fn dict_fromkeys(args: FromkeysArgs, kind: DictKind, vm: &mut VM<'_>) -> RunResult<Value> {
+    let FromkeysArgs {
+        iterable,
+        value: default,
+    } = args;
     // CPython names the bare method (`fromkeys expected …`), not `dict.fromkeys`,
     // for both `dict` and the inherited `defaultdict.fromkeys`.
-    let (iterable, default) = bind_positional!(args, vm.heap, "fromkeys(iterable, value=..., /)")?;
     let default = default.unwrap_or(Value::None);
     defer_drop!(default, vm);
 

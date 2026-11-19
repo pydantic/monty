@@ -15,7 +15,7 @@
 use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str};
 
 use fancy_regex::{CompileError, Error as RegexError, Regex, RegexBuilder};
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use smallvec::SmallVec;
 
@@ -572,25 +572,25 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let result = match attr.static_string(vm.interns) {
             Some(StaticStrings::Search) => {
-                let arg = bind_positional!(args, vm.heap, "Pattern.search(string, /)")?;
+                let arg = args.get_one_arg("Pattern.search", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = arg.try_to_str(vm)?;
                 self.get(vm.heap).search(arg, text, vm.heap)
             }
             Some(StaticStrings::Match) => {
-                let arg = bind_positional!(args, vm.heap, "Pattern.match(string, /)")?;
+                let arg = args.get_one_arg("Pattern.match", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = arg.try_to_str(vm)?;
                 self.get(vm.heap).match_start(arg, text, vm.heap)
             }
             Some(StaticStrings::Fullmatch) => {
-                let arg = bind_positional!(args, vm.heap, "Pattern.fullmatch(string, /)")?;
+                let arg = args.get_one_arg("Pattern.fullmatch", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = arg.try_to_str(vm)?;
                 self.get(vm.heap).fullmatch(arg, text, vm.heap)
             }
             Some(StaticStrings::Findall) => {
-                let arg = bind_positional!(args, vm.heap, "Pattern.findall(string, /)")?;
+                let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = arg.try_to_str(vm)?;
                 self.get(vm.heap).findall(text, vm.heap)
@@ -598,7 +598,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
             Some(StaticStrings::Sub) => call_pattern_sub(self, args, vm),
             Some(StaticStrings::Split) => call_pattern_split(self, args, vm),
             Some(StaticStrings::Finditer) => {
-                let arg = bind_positional!(args, vm.heap, "Pattern.finditer(string, /)")?;
+                let arg = args.get_one_arg("Pattern.finditer", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = arg.try_to_str(vm)?;
                 self.get(vm.heap).finditer(arg, text, vm.heap)

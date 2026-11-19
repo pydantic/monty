@@ -18,7 +18,6 @@ use std::{
     sync::OnceLock,
 };
 
-use monty_macros::bind_positional;
 use monty_types::ResourceTracker;
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
@@ -478,11 +477,11 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         match attr.static_string(vm.interns) {
             Some(StaticStrings::BitLength) => {
-                bind_positional!(args, vm.heap, "int.bit_length()")?;
+                args.check_zero_args("int.bit_length", vm.heap)?;
                 Ok(CallResult::Value(self.bit_length(vm)))
             }
             Some(StaticStrings::BitCount) => {
-                bind_positional!(args, vm.heap, "int.bit_count()")?;
+                args.check_zero_args("int.bit_count", vm.heap)?;
                 Ok(CallResult::Value(self.bit_count(vm)))
             }
             _ => {
@@ -1046,7 +1045,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         match attr.static_string(vm.interns) {
             Some(StaticStrings::BitLength) => {
-                bind_positional!(args, vm.heap, "int.bit_length()")?;
+                args.check_zero_args("int.bit_length", vm.heap)?;
                 let bits = self.get(vm.heap).bits();
                 let result = match i64::try_from(bits) {
                     Ok(small) => Value::Int(small),
@@ -1055,7 +1054,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
                 Ok(CallResult::Value(result))
             }
             Some(StaticStrings::BitCount) => {
-                bind_positional!(args, vm.heap, "int.bit_count()")?;
+                args.check_zero_args("int.bit_count", vm.heap)?;
                 let ones = self.get(vm.heap).bit_count();
                 let result = match i64::try_from(ones) {
                     Ok(small) => Value::Int(small),

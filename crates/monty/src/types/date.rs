@@ -11,7 +11,7 @@ use std::{
 };
 
 use chrono::{Datelike, NaiveDate, NaiveTime, format::StrftimeItems};
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use monty_types::{OsFunctionCall, ResourceTracker};
 
 use crate::{
@@ -161,7 +161,7 @@ pub(crate) fn class_method(
 ) -> Result<RunResult<CallResult>, ArgValues> {
     Ok(match attr.static_string(vm.interns) {
         Some(StaticStrings::Today) => class_today(vm, args),
-        Some(StaticStrings::Fromisoformat) => class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value),
+        Some(StaticStrings::Fromisoformat) => class_fromisoformat(vm, args).map(CallResult::Value),
         Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
         _ => return Err(args),
     })
@@ -182,9 +182,9 @@ pub(crate) fn class_today(vm: &mut VM<'_>) -> RunResult<CallResult> {
 
 /// Classmethod `date.fromtimestamp(timestamp)`: the session-local date of a Unix
 /// timestamp, read in the session zone as CPython reads it in the host's.
-pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = bind_positional!(args, vm.heap, "date.fromtimestamp(timestamp, /)", reject_keywords)?;
-    defer_drop!(value, vm);
+#[py_signature("fromtimestamp(timestamp, /)", error_name = "date.fromtimestamp", reject_keywords)]
+pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: &DateFromtimestampArgs) -> RunResult<Value> {
+    let DateFromtimestampArgs { timestamp: value } = args;
     // `date` floors to whole seconds and uses `__index__`-style wording, where
     // `datetime` rounds to microseconds and names both numeric types.
     let utc = datetime::timestamp_to_utc(value, datetime::TimestampRounding::Floor, vm)?
@@ -198,15 +198,14 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult
 ///
 /// Parses ISO 8601 date strings in the formats `YYYY-MM-DD` and `YYYYMMDD`,
 /// matching CPython 3.11+ behavior.
-pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let value = bind_positional!(args, heap, "date.fromisoformat(date_string, /)", reject_keywords)?;
-    let s = extract_str_arg(&value, "fromisoformat", heap, interns);
-    value.drop_with(heap);
-    let s = s?;
+#[py_signature("fromisoformat(date_string, /)", error_name = "date.fromisoformat", reject_keywords)]
+pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: &DateFromisoformatArgs) -> RunResult<Value> {
+    let DateFromisoformatArgs { date_string: value } = args;
+    let s = extract_str_arg(value, "fromisoformat", vm.heap, vm.interns)?;
 
     let date = parse_iso_date(&s)
         .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("Invalid isoformat string: '{s}'")))?;
-    Ok(Value::Ref(heap.allocate(HeapData::Date(date))))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Date(date))))
 }
 
 /// Parses an ISO 8601 date string into a `Date`.
@@ -303,7 +302,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
         let date = *self.get(vm.heap);
         match attr.static_string(vm.interns) {
             Some(StaticStrings::Isoformat) => {
-                bind_positional!(args, vm.heap, "date.isoformat()")?;
+                args.check_zero_args("date.isoformat", vm.heap)?;
                 let (year, month, day) = to_ymd(date);
                 Ok(CallResult::Value(allocate_string_no_interning(
                     format!("{year:04}-{month:02}-{day:02}"),
@@ -333,13 +332,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
                 )))
             }
             Some(StaticStrings::Weekday) => {
-                bind_positional!(args, vm.heap, "date.weekday()")?;
+                args.check_zero_args("date.weekday", vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     date.0.weekday().num_days_from_monday(),
                 ))))
             }
             Some(StaticStrings::Isoweekday) => {
-                bind_positional!(args, vm.heap, "date.isoweekday()")?;
+                args.check_zero_args("date.isoweekday", vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     date.0.weekday().number_from_monday(),
                 ))))

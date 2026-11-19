@@ -27,7 +27,8 @@ pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Val
     // name the wrapper and count `obj` as the receiver rather than an argument.
     let args = args.reject_kwargs("wrapper __setattr__", vm.heap)?;
     let given = args.count();
-    let positional = monty_macros::bind_positional!(args, vm.heap, "object.__setattr__(object, name, value, /)", iter)
+    let positional = args
+        .bind_positional_range("object.__setattr__", 3, 3, vm.heap)
         .map_err(|_| match given {
             0 => ExcType::type_error("descriptor '__setattr__' of 'object' object needs an argument"),
             n => ExcType::type_error_arg_count("__setattr__", 2, n - 1),

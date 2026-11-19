@@ -19,6 +19,7 @@ pub(super) struct Declaration {
     owner: Option<LitStr>,
     kwarg_error_name: Option<LitStr>,
     error_name: Option<LitStr>,
+    reject_keywords: bool,
     modifiers: Vec<Ident>,
     converters: Vec<(Ident, Type)>,
 }
@@ -31,6 +32,7 @@ impl Parse for Declaration {
             owner: None,
             kwarg_error_name: None,
             error_name: None,
+            reject_keywords: false,
             modifiers: Vec::new(),
             converters: Vec::new(),
         };
@@ -43,6 +45,12 @@ impl Parse for Declaration {
                     parse_option(&meta, &mut declaration.owner)
                 } else if meta.path.is_ident("error_name") {
                     parse_option(&meta, &mut declaration.error_name)
+                } else if meta.path.is_ident("reject_keywords") {
+                    if declaration.reject_keywords {
+                        return Err(meta.error("duplicate py_signature option"));
+                    }
+                    declaration.reject_keywords = true;
+                    Ok(())
                 } else if meta.path.is_ident("convert") {
                     meta.parse_nested_meta(|field| {
                         let name = field.path.require_ident()?.clone();
@@ -91,12 +99,15 @@ fn parse_option<T: Parse>(meta: &ParseNestedMeta<'_>, slot: &mut Option<T>) -> s
 pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Result<TokenStream> {
     let def = parse_function(declaration)?;
     let name = def.name.as_str();
+    if let Some(adapter) = positional_iterator(declaration, &def, &mut function)? {
+        return Ok(adapter);
+    }
     let explicit_one = declaration.style.as_ref().is_some_and(|s| s == "one_arg");
     if explicit_one || infer_single_argument(declaration, &def, &function) {
         let error = |message| syn::Error::new(declaration.signature.span(), message);
         let param = single_required_positional(&def)
             .ok_or_else(|| error("`style = one_arg` requires one positional-only parameter without a default"))?;
-        if !declaration.modifiers.is_empty() {
+        if !declaration.modifiers.is_empty() || declaration.reject_keywords {
             return Err(error("a direct positional argument cannot use parser modifiers"));
         }
         if declaration.owner.is_some() || declaration.kwarg_error_name.is_some() {
@@ -180,21 +191,27 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
             }
         }
     }
-    let guard = match &*bound.ty {
-        Type::Reference(reference) if reference.mutability.is_some() => quote!(crate::defer_drop_mut!(__bound, vm);),
-        Type::Reference(_) => quote!(crate::defer_drop!(__bound, vm);),
-        _ => quote!(),
-    };
-    let body = function.block;
+    let guard = borrow_guard(&bound.ty);
+    let body = function.block.stmts;
     function.block = Box::new(parse_quote!({
+        #bound_struct
+        #implementation
         let __bound = #bound_name::from_args(__py_args, vm)?;
         #guard
         let #binding = __bound;
-        #body
+        #(#body)*
     }));
     bound.pat = parse_quote!(__py_args);
     bound.ty = parse_quote!(crate::args::ArgValues);
-    Ok(quote!(#bound_struct #implementation #function))
+    Ok(quote!(#function))
+}
+
+fn borrow_guard(ty: &Type) -> TokenStream {
+    match ty {
+        Type::Reference(reference) if reference.mutability.is_some() => quote!(crate::defer_drop_mut!(__bound, vm);),
+        Type::Reference(_) => quote!(crate::defer_drop!(__bound, vm);),
+        _ => quote!(),
+    }
 }
 
 /// An owned binder has no guard. Require each field to move into a named binding.
@@ -242,12 +259,7 @@ fn parse_function(declaration: &Declaration) -> syn::Result<StmtFunctionDef> {
     } else {
         format!("def {signature}: pass")
     };
-    parse_signature_source(literal, &source)
-}
-
-pub(super) fn parse_signature_source(literal: &LitStr, source: &str) -> syn::Result<StmtFunctionDef> {
-    let error = |message: &str| syn::Error::new(literal.span(), message);
-    let parsed = parse_module(source).map_err(|e| error(&e.to_string()))?;
+    let parsed = parse_module(&source).map_err(|e| error(&e.to_string()))?;
     let mut body = parsed.into_syntax().body.into_iter();
     let (Some(Stmt::FunctionDef(def)), None) = (body.next(), body.next()) else {
         return Err(error("expected one Python function signature"));
@@ -256,6 +268,76 @@ pub(super) fn parse_signature_source(literal: &LitStr, source: &str) -> syn::Res
         return Err(error("expected a Python function signature without a body"));
     }
     Ok(def)
+}
+
+/// The raw helpers return owned Python values and represent an omitted argument with `None`.
+fn raw_positional(declaration: &Declaration, def: &StmtFunctionDef) -> bool {
+    let params = &def.parameters;
+    declaration.style.is_none()
+        && declaration.modifiers.is_empty()
+        && declaration.converters.is_empty()
+        && declaration.kwarg_error_name.is_none()
+        && params.args.is_empty()
+        && params.kwonlyargs.is_empty()
+        && params.kwarg.is_none()
+        && params.iter().all(|p| p.annotation().is_none())
+        && params
+            .posonlyargs
+            .iter()
+            .all(|p| matches!(p.default(), None | Some(Expr::EllipsisLiteral(_))))
+}
+
+/// Positional iterators retain the inline storage when a handler needs the whole slice.
+fn positional_iterator(
+    declaration: &Declaration,
+    def: &StmtFunctionDef,
+    function: &mut ItemFn,
+) -> syn::Result<Option<TokenStream>> {
+    let Some(arg) = function.sig.inputs.iter_mut().find_map(|input| {
+        let FnArg::Typed(arg) = input else { return None };
+        let ty = match arg.ty.as_ref() {
+            Type::Reference(r) => r.elem.as_ref(),
+            ty => ty,
+        };
+        matches!(ty, Type::Path(p) if p.path.is_ident("ArgPosIter")).then_some(arg)
+    }) else {
+        return Ok(None);
+    };
+    let params = &def.parameters;
+    let receiver = params.posonlyargs.first().is_some_and(|p| p.name().as_str() == "self");
+    let positional = &params.posonlyargs[usize::from(receiver)..];
+    if !raw_positional(declaration, def)
+        || declaration.reject_keywords
+        || (declaration.owner.is_some() && (!receiver || declaration.error_name.is_some()))
+        || (receiver && params.posonlyargs[0].default().is_some())
+        || (params.vararg.is_some() && !positional.is_empty())
+    {
+        return Err(syn::Error::new(
+            declaration.signature.span(),
+            "an argument iterator requires raw positional-only parameters or a single *args",
+        ));
+    }
+    let name = callable_name(declaration, def.name.as_str());
+    let bind = if params.vararg.is_some() {
+        quote!(__py_args.into_pos_only(#name, vm.heap)?)
+    } else {
+        let min = positional.iter().take_while(|p| p.default().is_none()).count();
+        let max = positional.len();
+        quote!(__py_args.bind_positional_range(#name, #min, #max, vm.heap)?)
+    };
+    let binding = &arg.pat;
+    let ty = &arg.ty;
+    let guard = borrow_guard(ty);
+    let body = &function.block;
+    *function.block = parse_quote!({
+        let __bound = #bind;
+        #guard
+        let #binding: #ty = __bound;
+        #body
+    });
+    arg.ty = parse_quote!(crate::args::ArgValues);
+    arg.pat = parse_quote!(__py_args);
+    Ok(Some(quote!(#function)))
 }
 
 fn arguments(
@@ -338,16 +420,45 @@ fn arguments(
     })?;
     let signature = Signature::parse(&input)?;
     let drop_args = signature.drop_bound_args();
-    let from_args = if let Some(name) = zero_arg_name(declaration, def) {
+    let positional = &params.posonlyargs[usize::from(receiver)..];
+    let inline = if params.vararg.is_none() && raw_positional(declaration, def) {
+        let required = positional.iter().take_while(|p| p.default().is_none()).count();
+        match (required, positional.len()) {
+            (0, 0) => Some(quote!(check_zero_args)),
+            (0, 1) => Some(quote!(get_zero_one_arg)),
+            (1, 1) => Some(quote!(get_one_arg)),
+            (1, 2) => Some(quote!(get_one_two_args)),
+            (2, 2) => Some(quote!(get_two_args)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let from_args = if let Some(helper) = inline {
+        let names = positional
+            .iter()
+            .map(|p| field_name(&p.parameter, literal))
+            .collect::<syn::Result<Vec<_>>>()?;
+        let binding = if let [one] = names.as_slice() {
+            quote!(#one)
+        } else {
+            quote!((#(#names),*))
+        };
+        let reject = declaration
+            .reject_keywords
+            .then(|| quote!(let args = args.reject_kwargs(#qualified_name, vm.heap)?;));
         quote! {
             impl #bound_name {
                 pub(crate) fn from_args(args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'_>)
                     -> crate::exception_private::RunResult<Self> {
-                    args.check_zero_args(#name, vm.heap)?;
-                    Ok(Self {})
+                    #reject
+                    let #binding = args.#helper(#qualified_name, vm.heap)?;
+                    Ok(Self { #(#names),* })
                 }
             }
         }
+    } else if declaration.reject_keywords {
+        return Err(error("reject_keywords requires a fixed raw positional signature"));
     } else {
         signature.render(receiver)
     };
@@ -363,7 +474,11 @@ fn arguments(
 }
 
 fn zero_arg_name(declaration: &Declaration, def: &StmtFunctionDef) -> Option<String> {
-    if declaration.style.is_some() || !declaration.modifiers.is_empty() || declaration.kwarg_error_name.is_some() {
+    if declaration.style.is_some()
+        || !declaration.modifiers.is_empty()
+        || declaration.kwarg_error_name.is_some()
+        || declaration.reject_keywords
+    {
         return None;
     }
     let params = &def.parameters;
@@ -395,6 +510,7 @@ fn single_required_positional(def: &StmtFunctionDef) -> Option<&ParameterWithDef
 /// struct still uses the general binder for the same Python signature.
 fn infer_single_argument(declaration: &Declaration, def: &StmtFunctionDef, function: &ItemFn) -> bool {
     if declaration.style.is_some()
+        || declaration.reject_keywords
         || declaration.owner.is_some()
         || declaration.kwarg_error_name.is_some()
         || !declaration.modifiers.is_empty()
@@ -424,7 +540,7 @@ fn two_positional_adapter(
 ) -> syn::Result<TokenStream> {
     let literal = &declaration.signature;
     let error = |message: &str| syn::Error::new(literal.span(), message);
-    if !declaration.modifiers.is_empty() || !declaration.converters.is_empty() {
+    if declaration.reject_keywords || !declaration.modifiers.is_empty() || !declaration.converters.is_empty() {
         return Err(error(
             "fixed-arity helpers do not accept parser modifiers or custom converters",
         ));

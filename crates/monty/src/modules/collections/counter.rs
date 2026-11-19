@@ -10,11 +10,11 @@
 
 use std::{cmp::Ordering, mem};
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use smallvec::smallvec;
 
 use crate::{
-    args::{ArgValues, KwargsValues},
+    args::KwargsValues,
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -373,14 +373,15 @@ fn sort_counts(counts: &[Value], vm: &mut VM<'_>) -> RunResult<Vec<usize>> {
 /// `Counter.most_common([n])` — a list of `(element, count)` tuples ordered by
 /// count descending (ties in insertion order). `n` omitted/`None` returns all;
 /// a non-positive `n` returns an empty list.
+#[py_signature("most_common(self, n=..., /)")]
 pub(crate) fn counter_most_common<'h>(
     counter: &HeapObjectRead<'h, Dict>,
-    args: ArgValues,
+    args: MostCommonArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
+    let MostCommonArgs { n: n_arg } = args;
     // Huge positive limits return every item; negative limits return none.
     let limit = {
-        let n_arg = bind_positional!(args, vm.heap, "most_common(n=..., /)")?;
         defer_drop!(n_arg, vm);
         match n_arg.as_ref().map(|value| value.py_value(vm)) {
             None | Some(PyValue::None) => None,
@@ -554,13 +555,8 @@ fn sift_down(heap: &mut [HeapEntry], start: usize, mut pos: usize, counts: &[Val
 /// `Counter.elements()` — a list repeating each element by its count, skipping
 /// zero and negative counts (Monty's eager iterator convention returns a list
 /// rather than CPython's lazy iterator).
-pub(crate) fn counter_elements<'h>(
-    counter: &HeapObjectRead<'h, Dict>,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
-    bind_positional!(args, vm.heap, "elements()")?;
-
+#[py_signature("elements(self, /)")]
+pub(crate) fn counter_elements<'h>(counter: &HeapObjectRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value> {
     // Resolve every repetition length up front: a count that `itertools.repeat`
     // rejects — non-integer (TypeError) or outside `ssize_t` (OverflowError) —
     // must raise before anything is built. No user code runs here or below, so

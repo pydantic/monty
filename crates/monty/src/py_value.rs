@@ -7,7 +7,6 @@ use std::{
     fmt::{self, Write},
 };
 
-use monty_macros::bind_positional;
 use num_bigint::BigInt;
 
 use crate::{
@@ -786,11 +785,11 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Bool(value) => {
                 match attr.static_string(vm.interns) {
                     Some(StaticStrings::BitLength) => {
-                        bind_positional!(args, vm.heap, "int.bit_length()")?;
+                        args.check_zero_args("int.bit_length", vm.heap)?;
                         Ok(CallResult::Value(Value::Int(i64::from(*value))))
                     }
                     Some(StaticStrings::BitCount) => {
-                        bind_positional!(args, vm.heap, "int.bit_count()")?;
+                        args.check_zero_args("int.bit_count", vm.heap)?;
                         Ok(CallResult::Value(Value::Int(i64::from(*value))))
                     }
                     _ => {

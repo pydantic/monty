@@ -2,7 +2,7 @@
 
 use std::mem;
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 
 use super::object::builtin_object_init_subclass;
 use crate::{
@@ -24,7 +24,7 @@ use crate::{
 pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     match args.count() {
         1 => {
-            let obj = bind_positional!(args, vm.heap, "type(obj, /)", reject_keywords)?;
+            let obj = args.reject_kwargs("type", vm.heap)?.get_one_arg("type", vm.heap)?;
             Ok(type_of(vm, obj))
         }
         3 => create_class(vm, args),

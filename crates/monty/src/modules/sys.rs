@@ -16,7 +16,7 @@
 //!   *lowering* the host-configured ceiling — see [`SysFunctions`].
 
 #[cfg(feature = "test-hooks")]
-use monty_macros::bind_positional;
+use monty_macros::py_signature;
 use smallvec::SmallVec;
 
 #[cfg(feature = "test-hooks")]
@@ -359,8 +359,9 @@ pub(super) fn call(vm: &mut VM<'_>, function: SysFunctions, args: ArgValues) -> 
 /// dump, etc.). Attempts to raise raise `ValueError` with a message
 /// pointing at the current cap.
 #[cfg(feature = "test-hooks")]
-fn setrecursionlimit(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let arg = bind_positional!(args, vm.heap, "sys.setrecursionlimit(limit, /)")?;
+#[py_signature("setrecursionlimit(limit, /)", error_name = "sys.setrecursionlimit")]
+fn setrecursionlimit(vm: &mut VM<'_>, args: SysSetrecursionlimitArgs) -> RunResult<Value> {
+    let SysSetrecursionlimitArgs { limit: arg } = args;
     let Value::Int(limit) = arg else {
         arg.drop_with(vm);
         return Err(ExcType::type_error("sys.setrecursionlimit() argument must be int"));

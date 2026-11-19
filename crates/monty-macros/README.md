@@ -46,16 +46,17 @@ Take the generated struct as `args: &SplitArgs` and use its fields directly or d
 For example, `let SplitArgs { sep, maxsplit } = args;` borrows both fields.
 When the body takes ownership, declare `args: SortedArgs` and begin with `let SortedArgs { iterable, kwargs } = args;`.
 Bind every owned field by name and release it on every return path.
+For mixed ownership, take `args: &mut PopArgs`. In `dict.pop`, the lookup borrows `&args.key`
+and a miss moves the optional default out with `args.default.take()`. The guard releases the remaining fields.
+For a required `Value`, use `mem::replace(&mut args.iterable, Value::None)` to move it out.
 For callers that bind after method lookup, put `#[py_signature]` on a unit struct and call
 `Name::from_args(args, vm)?`. Generated fields have the struct's visibility.
 
-Inside a method dispatch arm, `bind_positional!(args, vm.heap, "list.append(object, /)")?` returns
-the owned argument. The parameter list selects the fixed-arity helper. An optional parameter
-(`=...`) returns an `Option<Value>`. Use `reject_keywords` for methods that report keyword errors
-before counting positional arguments. For several methods with the same parameters, pass the name
-separately, as in `bind_positional!(args, vm.heap, "(chars=..., /)", name = method)?`.
-`*args` returns an owning iterator. For a bounded positional signature, `iter` checks the count and
-returns the same iterator, so a caller can borrow its slice without allocating.
+For a raw positional signature with at most two arguments, the generated struct takes its
+fields from the inline argument storage. Use `reject_keywords` when keyword errors take
+precedence over arity. A handler that needs a slice or iterator can take `&ArgPosIter`,
+`&mut ArgPosIter`, or an owned `ArgPosIter`. The adapter checks the positional count
+and preserves inline storage for small calls.
 
 An unannotated parameter carries a Python value. A default of `...` distinguishes omission
 from a supplied value, including `None`.

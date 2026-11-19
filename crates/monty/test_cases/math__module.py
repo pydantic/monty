@@ -674,7 +674,7 @@ assert threw
 
 threw = False
 try:
-    math.perm(5.0, 2)
+    math.perm(5.0, 2**100)
 except TypeError:
     threw = True
 assert threw

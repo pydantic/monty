@@ -19,7 +19,7 @@
 //! where CPython accepts an fd as the path is a closed fd here, so it fails
 //! as one would there (see [`PathArgError`]).
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs};
 
 use crate::{
@@ -283,8 +283,12 @@ fn chdir(vm: &mut VM<'_>, args: &ChdirArgs) -> RunResult<CallResult> {
 /// `TypeError("str expected, not <type>")`. That wording is bespoke to
 /// `os._Environ` in the CPython stdlib, so it lives inline here rather
 /// than as a shared helper.
-fn getenv(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let (key_value, default_value) = bind_positional!(args, vm.heap, "os.getenv(key, default=..., /)")?;
+#[py_signature("getenv(key, default=..., /)", error_name = "os.getenv")]
+fn getenv(vm: &mut VM<'_>, args: OsGetenvArgs) -> RunResult<CallResult> {
+    let OsGetenvArgs {
+        key: key_value,
+        default: default_value,
+    } = args;
     if let Some(key) = key_value.as_either_str(vm.heap) {
         key_value.drop_with(vm.heap);
         Ok(CallResult::OsCall(OsFunctionCall::Getenv(GetenvArgs {

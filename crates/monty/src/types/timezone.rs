@@ -8,7 +8,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 // The bounds live in `monty-types` so the wire decoder shares them; re-exported
 // here because this is where the sandbox-side constructor enforces them.
 pub(crate) use monty_types::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS};
@@ -369,7 +369,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
 /// argument`) but names the bare method in the type error, so the qualified
 /// name is split apart here rather than passed as two literals per call site.
 fn take_dt_arg(qualified_name: &'static str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<()> {
-    let dt = bind_positional!(args, vm.heap, "(dt, /)", name = qualified_name)?;
+    let dt = args.get_one_arg(qualified_name, vm.heap)?;
     defer_drop!(dt, vm);
     let (_, method) = qualified_name
         .split_once('.')

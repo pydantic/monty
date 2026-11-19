@@ -2742,8 +2742,7 @@ impl ExcTypeExt for ExcType {
     /// Currently supports zero or one string argument.
     fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let unsupported = || RunError::internal("exceptions can only be called with zero or one string argument");
-        let message = monty_macros::bind_positional!(args, vm.heap, "(message=..., /)", name = self.into())
-            .map_err(|_| unsupported())?;
+        let message = args.get_zero_one_arg(self.into(), vm.heap).map_err(|_| unsupported())?;
         defer_drop!(message, vm);
         let exc = match message {
             None => Ok(SimpleException::new_none(self)),

@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, fmt::Write, mem};
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use monty_types::ResourceError;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -10,7 +10,7 @@ use super::{
     iter::{collect_owned_iterable, collect_python_iterator},
 };
 use crate::{
-    args::ArgValues,
+    args::{ArgPosIter, ArgValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -283,8 +283,9 @@ impl List {
     ///
     /// - `list()` with no args returns an empty list
     /// - `list(iterable)` creates a list from any iterable (list, tuple, range, str, bytes, dict)
-    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        let value = bind_positional!(args, vm.heap, "list(iterable=..., /)")?;
+    #[py_signature("list(iterable=..., /)")]
+    pub fn init(vm: &mut VM<'_>, args: ListArgs) -> RunResult<Value> {
+        let ListArgs { iterable: value } = args;
         match value {
             None => {
                 let heap_id = vm.heap.allocate(HeapData::List(Self::new(Vec::new())));
@@ -845,7 +846,7 @@ fn call_list_method<'h>(
     let heap = &mut *vm.heap;
     match method {
         StaticStrings::Append => {
-            let item = bind_positional!(args, heap, "list.append(object, /)")?;
+            let item = args.get_one_arg("list.append", heap)?;
             list.append(vm, item)?;
             Ok(Value::None)
         }
@@ -853,19 +854,19 @@ fn call_list_method<'h>(
         StaticStrings::Pop => list_pop(list, args, vm),
         StaticStrings::Remove => list_remove(list, args, vm),
         StaticStrings::Clear => {
-            bind_positional!(args, heap, "list.clear()")?;
+            args.check_zero_args("list.clear", heap)?;
             list_clear(list, vm);
             Ok(Value::None)
         }
         StaticStrings::Copy => {
-            bind_positional!(args, heap, "list.copy()")?;
+            args.check_zero_args("list.copy", heap)?;
             list_copy(list.get(heap), heap)
         }
         StaticStrings::Extend => list_extend(list, args, vm),
         StaticStrings::Index => list_index(list, args, vm),
         StaticStrings::Count => list_count(list, args, vm),
         StaticStrings::Reverse => {
-            bind_positional!(args, heap, "list.reverse()")?;
+            args.check_zero_args("list.reverse", heap)?;
             list.get_mut(vm.heap).items.reverse();
             Ok(Value::None)
         }
@@ -878,8 +879,12 @@ fn call_list_method<'h>(
 }
 
 /// Implements Python's `list.insert(index, item)` method.
-fn list_insert<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let (index_obj, item) = bind_positional!(args, vm.heap, "insert(index, object, /)")?;
+#[py_signature("insert(self, index, object, /)")]
+fn list_insert<'h>(list: &HeapReadMut<'h, List>, args: InsertArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let InsertArgs {
+        index: index_obj,
+        object: item,
+    } = args;
     defer_drop!(index_obj, vm);
     let mut item_guard = DropGuard::new(item, vm);
     let vm = item_guard.ctx();
@@ -931,9 +936,9 @@ fn list_pop<'h>(list: &HeapReadMut<'h, List>, args: &PopArgs, vm: &mut VM<'h>) -
 /// Implements Python's `list.remove(value)` method.
 ///
 /// Removes the first occurrence of value. Raises ValueError if not found.
-fn list_remove<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let value = bind_positional!(args, vm.heap, "list.remove(value, /)")?;
-    defer_drop!(value, vm);
+#[py_signature("remove(self, value, /)", owner = "list")]
+fn list_remove<'h>(list: &HeapReadMut<'h, List>, args: &ListRemoveArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let ListRemoveArgs { value } = args;
 
     let mut found_idx = None;
     {
@@ -986,8 +991,9 @@ fn list_copy(list: &List, heap: &Heap) -> RunResult<Value> {
 /// Implements Python's `list.extend(iterable)` method.
 ///
 /// Extends the list by appending all items from the iterable.
-fn list_extend<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let iterable = bind_positional!(args, vm.heap, "list.extend(iterable, /)")?;
+#[py_signature("extend(self, iterable, /)", owner = "list")]
+fn list_extend<'h>(list: &HeapReadMut<'h, List>, args: ListExtendArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let ListExtendArgs { iterable } = args;
     let items: SmallVec<[_; 2]> = collect_owned_iterable(iterable, vm)?;
 
     let has_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
@@ -1003,10 +1009,8 @@ fn list_extend<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h
 ///
 /// Returns the index of the first occurrence of value.
 /// Raises ValueError if the value is not found.
-fn list_index<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let pos_args = bind_positional!(args, vm.heap, "list.index(value, start=..., stop=..., /)", iter)?;
-    defer_drop!(pos_args, vm);
-
+#[py_signature("index(self, value, start=..., stop=..., /)", owner = "list")]
+fn list_index<'h>(list: &HeapRead<'h, List>, pos_args: &ArgPosIter, vm: &mut VM<'h>) -> RunResult<Value> {
     // Bounds are coerced before the length is read: the coercion may dispatch a
     // user `__index__` that mutates this list, and CPython normalizes against the
     // length *after* argument parsing. Reading it first would resolve a negative
@@ -1049,9 +1053,9 @@ fn list_index<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -
 /// Implements Python's `list.count(value)` method.
 ///
 /// Returns the number of occurrences of value in the list.
-fn list_count<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let value = bind_positional!(args, vm.heap, "list.count(value, /)")?;
-    defer_drop!(value, vm);
+#[py_signature("count(self, value, /)", owner = "list")]
+fn list_count<'h>(list: &HeapRead<'h, List>, args: &ListCountArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let ListCountArgs { value } = args;
 
     let mut count: usize = 0;
     let iter = list.iter(vm)?;

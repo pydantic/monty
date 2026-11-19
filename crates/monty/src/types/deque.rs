@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, collections::VecDeque, fmt::Write, mem};
 
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 
 use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
 use crate::{
@@ -766,17 +766,17 @@ fn call_deque_method<'h>(
 ) -> RunResult<Value> {
     match method {
         StaticStrings::Append => {
-            let item = bind_positional!(args, vm.heap, "deque.append(x, /)")?;
+            let item = args.get_one_arg("deque.append", vm.heap)?;
             deque.append(vm, item)?;
             Ok(Value::None)
         }
         StaticStrings::Appendleft => {
-            let item = bind_positional!(args, vm.heap, "deque.appendleft(x, /)")?;
+            let item = args.get_one_arg("deque.appendleft", vm.heap)?;
             deque.appendleft(vm, item)?;
             Ok(Value::None)
         }
         StaticStrings::Pop => {
-            bind_positional!(args, vm.heap, "deque.pop()")?;
+            args.check_zero_args("deque.pop", vm.heap)?;
             let this = deque.get_mut(vm.heap);
             // An empty pop raises without mutating, so it must not bump the state.
             let item = this
@@ -787,7 +787,7 @@ fn call_deque_method<'h>(
             Ok(item)
         }
         StaticStrings::Popleft => {
-            bind_positional!(args, vm.heap, "deque.popleft()")?;
+            args.check_zero_args("deque.popleft", vm.heap)?;
             let this = deque.get_mut(vm.heap);
             let item = this
                 .items
@@ -797,7 +797,7 @@ fn call_deque_method<'h>(
             Ok(item)
         }
         StaticStrings::Clear => {
-            bind_positional!(args, vm.heap, "deque.clear()")?;
+            args.check_zero_args("deque.clear", vm.heap)?;
             let this = deque.get_mut(vm.heap);
             // CPython returns early for an already-empty deque, leaving state alone.
             if this.items.is_empty() {
@@ -809,7 +809,7 @@ fn call_deque_method<'h>(
             Ok(Value::None)
         }
         StaticStrings::Copy => {
-            bind_positional!(args, vm.heap, "deque.copy()")?;
+            args.check_zero_args("deque.copy", vm.heap)?;
             let maxlen = deque.get(vm.heap).maxlen();
             let items = deque.clone_all_items(vm)?;
             let (new_deque, evicted) = Deque::new(items, maxlen);
@@ -818,17 +818,17 @@ fn call_deque_method<'h>(
             Ok(Value::Ref(id))
         }
         StaticStrings::Reverse => {
-            bind_positional!(args, vm.heap, "deque.reverse()")?;
+            args.check_zero_args("deque.reverse", vm.heap)?;
             deque.get_mut(vm.heap).items.make_contiguous().reverse();
             Ok(Value::None)
         }
         StaticStrings::Extend => {
-            let iterable = bind_positional!(args, vm.heap, "deque.extend(iterable, /)")?;
+            let iterable = args.get_one_arg("deque.extend", vm.heap)?;
             deque_extend(deque, iterable, ExtendEnd::Right, vm)?;
             Ok(Value::None)
         }
         StaticStrings::Extendleft => {
-            let iterable = bind_positional!(args, vm.heap, "deque.extendleft(iterable, /)")?;
+            let iterable = args.get_one_arg("deque.extendleft", vm.heap)?;
             // extendleft REVERSES the input: each item is pushed to the front in turn.
             deque_extend(deque, iterable, ExtendEnd::Left, vm)?;
             Ok(Value::None)
@@ -922,9 +922,9 @@ fn insert<'h>(deque: &HeapReadMut<'h, Deque>, args: InsertArgs, vm: &mut VM<'h>)
 }
 
 /// `deque.remove(x)` — removes the first item equal to `x`.
-fn remove<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let target = bind_positional!(args, vm.heap, "deque.remove(value, /)")?;
-    defer_drop!(target, vm);
+#[py_signature("remove(self, value, /)", owner = "deque")]
+fn remove<'h>(deque: &HeapReadMut<'h, Deque>, args: &DequeRemoveArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let DequeRemoveArgs { value: target } = args;
 
     let (len, start_state) = {
         let this = deque.get(vm.heap);
@@ -995,9 +995,9 @@ fn index<'h>(deque: &HeapRead<'h, Deque>, args: IndexArgs, vm: &mut VM<'h>) -> R
 }
 
 /// `deque.count(x)` — number of items equal to `x`.
-fn count<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let target = bind_positional!(args, vm.heap, "deque.count(value, /)")?;
-    defer_drop!(target, vm);
+#[py_signature("count(self, value, /)", owner = "deque")]
+fn count<'h>(deque: &HeapRead<'h, Deque>, args: &DequeCountArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let DequeCountArgs { value: target } = args;
 
     let (len, start_state) = {
         let this = deque.get(vm.heap);

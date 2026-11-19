@@ -239,7 +239,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
             (Kind::Writer, Some(StaticStrings::Writerows)) => writer::writerows(self, args, vm),
             (Kind::DictWriter, Some(StaticStrings::Writerow)) => dict::writer_writerow(self, args, vm),
             (Kind::DictWriter, Some(StaticStrings::Writerows)) => dict::writer_writerows(self, args, vm),
-            (Kind::DictWriter, Some(StaticStrings::Writeheader)) => dict::writer_writeheader(self, args, vm),
+            (Kind::DictWriter, Some(StaticStrings::Writeheader)) => dict::writer_writeheader(self, vm, args),
             _ => {
                 let type_name = self.py_type_name(vm);
                 Err(ExcType::attribute_error_method(type_name, attr, args, vm))

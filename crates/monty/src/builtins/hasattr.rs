@@ -1,12 +1,11 @@
 //! Implementation of the hasattr() builtin function.
 
-use monty_macros::bind_positional;
+use monty_macros::py_signature;
 use monty_types::ExcType;
 
 use crate::{
-    args::ArgValues,
+    args::ArgPosIter,
     bytecode::{CallResult, PendingLookupEffect, VM},
-    defer_drop,
     exception_private::{RunError, RunResult, SimpleException},
     heap::DropWithContext,
     value::Value,
@@ -30,10 +29,8 @@ use crate::{
 /// hasattr(slice(1, 10), 'start') # True - slice has start attribute
 /// hasattr(42, 'nonexistent')    # False - int has no such attribute
 /// ```
-pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let positional = bind_positional!(args, vm.heap, "hasattr(object, name, /)", iter)?;
-    defer_drop!(positional, vm);
-
+#[py_signature("hasattr(object, name, /)")]
+pub fn builtin_hasattr(vm: &mut VM<'_>, positional: &ArgPosIter) -> RunResult<CallResult> {
     let [object, name] = positional.as_slice() else {
         unreachable!("arity checked by signature")
     };

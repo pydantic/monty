@@ -13,7 +13,7 @@ use chrono::{
     Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike,
     format::{Parsed, StrftimeItems, parse as chrono_parse, parse_and_remainder},
 };
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use monty_types::{
     DateTimeSource, MontyDateTime, MontyTimeZone, OsFunctionCall, ResourceTracker, SandboxTimeZone, local_wall_clock,
 };
@@ -299,8 +299,8 @@ pub(crate) fn class_method(
     Ok(match attr.static_string(vm.interns) {
         Some(StaticStrings::Now) => class_now(vm, args),
         Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
-        Some(StaticStrings::Strptime) => class_strptime(vm.heap, args, vm.interns).map(CallResult::Value),
-        Some(StaticStrings::Fromisoformat) => class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value),
+        Some(StaticStrings::Strptime) => class_strptime(vm, args).map(CallResult::Value),
+        Some(StaticStrings::Fromisoformat) => class_fromisoformat(vm, args).map(CallResult::Value),
         Some(StaticStrings::Combine) => class_combine(vm, args).map(CallResult::Value),
         _ => return Err(args),
     })
@@ -578,15 +578,15 @@ fn date_out_of_range() -> RunError {
 /// Parses a date/time string using the given format. Delegates to chrono's
 /// `NaiveDateTime::parse_from_str`, expanding Python `%f` directives into the
 /// chrono widths needed to accept 1 through 6 fractional digits.
-pub(crate) fn class_strptime(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let (date_string_val, format_val) = bind_positional!(args, heap, "datetime.strptime(date_string, format, /)")?;
+#[py_signature("strptime(date_string, format, /)", error_name = "datetime.strptime")]
+pub(crate) fn class_strptime(vm: &mut VM<'_>, args: &DatetimeStrptimeArgs) -> RunResult<Value> {
+    let DatetimeStrptimeArgs {
+        date_string: date_string_val,
+        format: format_val,
+    } = args;
 
-    let date_string = date::extract_str_arg(&date_string_val, "strptime", heap, interns);
-    let fmt = date::extract_str_arg(&format_val, "strptime", heap, interns);
-    date_string_val.drop_with(heap);
-    format_val.drop_with(heap);
-    let date_string = date_string?;
-    let fmt = fmt?;
+    let date_string = date::extract_str_arg(date_string_val, "strptime", vm.heap, vm.interns)?;
+    let fmt = date::extract_str_arg(format_val, "strptime", vm.heap, vm.interns)?;
 
     reject_bad_strptime_directive(&fmt)?;
 
@@ -615,7 +615,7 @@ pub(crate) fn class_strptime(heap: &mut Heap, args: ArgValues, interns: &Interns
         timezone_name: None,
         tzinfo_ref: None,
     };
-    Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))))
 }
 
 /// CPython's `strptime` has no `%:z`, so the `:` reads as a directive of its own.
@@ -646,16 +646,19 @@ fn reject_bad_strptime_directive(fmt: &str) -> RunResult<()> {
 /// - `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD HH:MM:SS`
 /// - `YYYY-MM-DDTHH:MM:SS.ffffff`
 /// - Any of the above with `+HH:MM` or `+HH:MM:SS` timezone suffix
-pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let value = bind_positional!(args, heap, "datetime.fromisoformat(date_string, /)", reject_keywords)?;
-    let s = date::extract_str_arg(&value, "fromisoformat", heap, interns);
-    value.drop_with(heap);
-    let s = s?;
+#[py_signature(
+    "fromisoformat(date_string, /)",
+    error_name = "datetime.fromisoformat",
+    reject_keywords
+)]
+pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: &DatetimeFromisoformatArgs) -> RunResult<Value> {
+    let DatetimeFromisoformatArgs { date_string: value } = args;
+    let s = date::extract_str_arg(value, "fromisoformat", vm.heap, vm.interns)?;
 
-    let dt = parse_iso_datetime(&s, heap)
+    let dt = parse_iso_datetime(&s, vm.heap)
         .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("Invalid isoformat string: '{s}'")))?;
 
-    Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))))
 }
 
 /// `datetime.combine(date, time, tzinfo=self.tzinfo)`.
@@ -1479,19 +1482,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
             }
             Some(StaticStrings::Replace) => Ok(CallResult::Value(self.replace(vm, args)?)),
             Some(StaticStrings::Weekday) => {
-                bind_positional!(args, vm.heap, "datetime.weekday()")?;
+                args.check_zero_args("datetime.weekday", vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     dt.naive.date().weekday().num_days_from_monday(),
                 ))))
             }
             Some(StaticStrings::Isoweekday) => {
-                bind_positional!(args, vm.heap, "datetime.isoweekday()")?;
+                args.check_zero_args("datetime.isoweekday", vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     dt.naive.date().weekday().number_from_monday(),
                 ))))
             }
             Some(StaticStrings::Date) => {
-                bind_positional!(args, vm.heap, "datetime.date()")?;
+                args.check_zero_args("datetime.date", vm.heap)?;
                 let d = date::from_ymd(
                     dt.naive.date().year(),
                     i32::try_from(dt.naive.date().month()).expect("month in 1..12"),
@@ -1503,12 +1506,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
                 // `time()` drops the timezone, `timetz()` keeps it — the only
                 // difference between the two in CPython.
                 let keep_tz = method == StaticStrings::Timetz;
-                bind_positional!(
-                    args,
-                    vm.heap,
-                    "()",
-                    name = if keep_tz { "datetime.timetz" } else { "datetime.time" }
-                )?;
+                args.check_zero_args(if keep_tz { "datetime.timetz" } else { "datetime.time" }, vm.heap)?;
                 // Owned, so it must be released whether or not the time attaches it.
                 let tzinfo = if keep_tz { self.tzinfo_value(vm) } else { Value::None };
                 defer_drop!(tzinfo, vm);
@@ -1527,7 +1525,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
                 )?))
             }
             Some(StaticStrings::Timestamp) => {
-                bind_positional!(args, vm.heap, "datetime.timestamp()")?;
+                args.check_zero_args("datetime.timestamp", vm.heap)?;
                 let ts = compute_timestamp(&dt, &vm.env.os_policy.timezone)?;
                 Ok(CallResult::Value(Value::Float(ts)))
             }
@@ -1535,11 +1533,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
             // A classmethod, so CPython also reaches it through an instance.
             Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
             Some(StaticStrings::Utcoffset) => {
-                bind_positional!(args, vm.heap, "datetime.utcoffset()")?;
+                args.check_zero_args("datetime.utcoffset", vm.heap)?;
                 Ok(CallResult::Value(timezone::utcoffset_value(dt.offset_seconds, vm.heap)))
             }
             Some(StaticStrings::Tzname) => {
-                bind_positional!(args, vm.heap, "datetime.tzname()")?;
+                args.check_zero_args("datetime.tzname", vm.heap)?;
                 let Some(offset_seconds) = dt.offset_seconds else {
                     return Ok(CallResult::Value(Value::None));
                 };
@@ -1547,7 +1545,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
                 Ok(CallResult::Value(allocate_string(name, vm.heap)))
             }
             Some(StaticStrings::Dst) => {
-                bind_positional!(args, vm.heap, "datetime.dst()")?;
+                args.check_zero_args("datetime.dst", vm.heap)?;
                 // Only fixed-offset zones exist, and none of them observes DST.
                 Ok(CallResult::Value(Value::None))
             }

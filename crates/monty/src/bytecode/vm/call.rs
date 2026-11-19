@@ -6,7 +6,7 @@
 
 use std::mem;
 
-use monty_macros::bind_positional;
+use monty_macros::py_signature;
 use monty_types::{MontyUuid, OsFunctionCall};
 
 use super::{
@@ -14,7 +14,7 @@ use super::{
     recursion::RunReentryGuard,
 };
 use crate::{
-    args::{ArgValues, KwargsValues},
+    args::{ArgPosIter, ArgValues, KwargsValues},
     asyncio::Coroutine,
     builtins::{BuiltinsFunctions, BuiltinsFunctionsExt, object::takes_no_arguments},
     bytecode::FrameExit,
@@ -1377,7 +1377,7 @@ fn dispatch_dunder(
     Some(match static_str {
         StaticStrings::Enter => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");
-            bind_positional!(args, vm.heap, "__enter__()")
+            args.check_zero_args("__enter__", vm.heap)
                 .and_then(|()| PyValue::from_heap(heap_id, vm.heap).py_enter(vm))
         }
         StaticStrings::Exit => {
@@ -1407,9 +1407,8 @@ fn dispatch_dunder(
 /// `typ` and `tb` are discarded: every implementation we have re-derives the
 /// type from `val` and Monty has no traceback objects (see
 /// `limitations/with.md`).
-fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<CallResult, RunError> {
-    let positional = bind_positional!(args, vm.heap, "__exit__(exc_type, exc_value, traceback, /)", iter)?;
-    defer_drop!(positional, vm);
+#[py_signature("__exit__(exc_type, exc_value, traceback, /)")]
+fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, positional: &ArgPosIter) -> Result<CallResult, RunError> {
     let [typ, val, tb] = positional.as_slice() else {
         unreachable!("arity checked by signature");
     };

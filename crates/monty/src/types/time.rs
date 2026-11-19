@@ -19,7 +19,7 @@ use std::{
 };
 
 use chrono::{NaiveDate, NaiveTime, format::StrftimeItems};
-use monty_macros::{bind_positional, py_signature};
+use monty_macros::py_signature;
 use monty_types::ResourceTracker;
 
 use crate::{
@@ -243,11 +243,10 @@ pub(crate) fn class_method(
 /// Parsing is delegated to `speedate`, the same parser `date`/`datetime` use,
 /// so the accepted grammar (and the rejection message) stays consistent across
 /// the three classes.
-pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = bind_positional!(args, vm.heap, "time.fromisoformat(time_string, /)", reject_keywords)?;
-    let s = date::extract_str_arg(&value, "fromisoformat", vm.heap, vm.interns);
-    value.drop_with(vm.heap);
-    let s = s?;
+#[py_signature("fromisoformat(time_string, /)", error_name = "time.fromisoformat", reject_keywords)]
+pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: &TimeFromisoformatArgs) -> RunResult<Value> {
+    let TimeFromisoformatArgs { time_string: value } = args;
+    let s = date::extract_str_arg(value, "fromisoformat", vm.heap, vm.interns)?;
 
     let parsed = speedate::Time::parse_str(&s)
         .map_err(|_| SimpleException::new_msg(ExcType::ValueError, format!("Invalid isoformat string: '{s}'")))?;
@@ -585,12 +584,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
             }
             Some(StaticStrings::Replace) => self.replace(vm, args).map(CallResult::Value),
             Some(StaticStrings::Utcoffset) => {
-                bind_positional!(args, vm.heap, "time.utcoffset()")?;
+                args.check_zero_args("time.utcoffset", vm.heap)?;
                 let offset_seconds = attached_offset(self.get(vm.heap), vm.heap);
                 Ok(CallResult::Value(timezone::utcoffset_value(offset_seconds, vm.heap)))
             }
             Some(StaticStrings::Tzname) => {
-                bind_positional!(args, vm.heap, "time.tzname()")?;
+                args.check_zero_args("time.tzname", vm.heap)?;
                 let Some(tz) = attached_timezone(self.get(vm.heap), vm.heap) else {
                     return Ok(CallResult::Value(Value::None));
                 };
@@ -598,7 +597,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
                 Ok(CallResult::Value(allocate_string(name, vm.heap)))
             }
             Some(StaticStrings::Dst) => {
-                bind_positional!(args, vm.heap, "time.dst()")?;
+                args.check_zero_args("time.dst", vm.heap)?;
                 // Only fixed-offset zones exist, and none of them observes DST.
                 Ok(CallResult::Value(Value::None))
             }
