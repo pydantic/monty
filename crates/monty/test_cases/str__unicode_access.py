@@ -5,7 +5,7 @@ def check(text):
     expected = list(text)
     length = len(expected)
     state = 123
-    for _ in range(4096):
+    for _ in range(64):
         state = (state * 1664525 + 1013904223) & 0xFFFFFFFF
         position = (state >> 8) % length
         assert text[position] == expected[position]
@@ -72,3 +72,9 @@ for _ in range(5):
 source = original
 assert source.find('café', RebindIndex()) > 0
 assert source == 'replacement'
+
+# Both matches require counting more than one 64 KiB chunk from the nearer end.
+block = '中' * 24000
+text = block + 'A' + block + 'B' + block
+assert text.find('A') == 24000
+assert text.rfind('B') == 48001

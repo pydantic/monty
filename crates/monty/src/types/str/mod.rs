@@ -134,17 +134,26 @@ impl<'h> PyStr<'h> {
         }
     }
 
+    fn checked_char_len(&self, vm: &VM<'h>) -> RunResult<usize> {
+        match self {
+            Self::Heap(value) => Ok(value.get(vm.heap).checked_char_len(|| vm.heap.tracker.check_time())?),
+            _ => Ok(self.char_len(vm)),
+        }
+    }
+
     /// Reads a signed Python code-point index after the caller has completed `__index__` coercion.
     /// ASCII, stack-inline strings (at most 15 UTF-8 bytes), and 0/-1 reads use direct access.
     /// Other Unicode reads scan from the nearer endpoint and poll deadlines on long scans.
     /// Out-of-range indices return `None`; execution-limit errors propagate to the caller.
     fn character_at(&self, index: i64, vm: &VM<'h>) -> RunResult<Option<char>> {
         let text = self.as_str(vm);
-        let ascii = self.is_ascii(vm);
-        if ascii || matches!(index, 0 | -1) || matches!(self, Self::Inline(_)) {
-            return Ok(get_char_at_index(text, ascii, index));
+        if index == 0 {
+            return Ok(text.chars().next());
         }
-        let characters = self.char_len(vm);
+        if index == -1 {
+            return Ok(text.chars().next_back());
+        }
+        let characters = self.checked_char_len(vm)?;
         // Unsigned magnitude also handles i64::MIN, including on narrower usize targets.
         let index = if index < 0 {
             usize::try_from(index.unsigned_abs())
@@ -156,7 +165,13 @@ impl<'h> PyStr<'h> {
         let Some(index) = index else {
             return Ok(None);
         };
-        let byte = self.byte_offset_of(index, vm)?;
+        if characters == text.len() {
+            return Ok(Some(char::from(text.as_bytes()[index])));
+        }
+        if matches!(self, Self::Inline(_)) {
+            return Ok(text.chars().nth(index));
+        }
+        let byte = fast_offsets::byte_offset(text, characters, None, index, || vm.heap.tracker.check_time())?;
         Ok(text[byte..].chars().next())
     }
 
@@ -172,10 +187,10 @@ impl<'h> PyStr<'h> {
         if char_index == usize::MAX {
             return Ok(text.len());
         }
-        if self.is_ascii(vm) {
+        let characters = self.checked_char_len(vm)?;
+        if characters == text.len() {
             return Ok(char_index.min(text.len()));
         }
-        let characters = self.char_len(vm);
         if char_index >= characters {
             return Ok(text.len());
         }
@@ -192,16 +207,17 @@ impl<'h> PyStr<'h> {
         if byte_offset == 0 {
             return Ok(0);
         }
-        if self.is_ascii(vm) {
+        let text = self.as_str(vm);
+        if self.known_char_len(vm) == Some(text.len()) {
             return Ok(byte_offset);
         }
-        let text = self.as_str(vm);
         if byte_offset <= text.len() - byte_offset {
             Ok(fast_offsets::count_chars(&text[..byte_offset], || {
                 vm.heap.tracker.check_time()
             })?)
         } else {
-            Ok(self.char_len(vm) - fast_offsets::count_chars(&text[byte_offset..], || vm.heap.tracker.check_time())?)
+            Ok(self.checked_char_len(vm)?
+                - fast_offsets::count_chars(&text[byte_offset..], || vm.heap.tracker.check_time())?)
         }
     }
 
@@ -450,32 +466,6 @@ fn concat_allocate_str(a: &str, b: &str, ascii: bool, heap: &Heap) -> Result<Val
     Ok(allocate_string_with_ascii(concat, Some(ascii), heap))
 }
 
-/// Gets the character at a given index in a string, handling negative indices.
-///
-/// Returns `None` if the index is out of bounds. `ascii` must say whether `s` is
-/// ASCII: then the index is a byte offset, otherwise the text is scanned.
-///
-/// Negative indices count from the end: -1 is the last character.
-pub fn get_char_at_index(s: &str, ascii: bool, index: i64) -> Option<char> {
-    if ascii {
-        let offset = if index < 0 {
-            s.len().checked_sub(usize::try_from(index.unsigned_abs()).ok()?)?
-        } else {
-            usize::try_from(index).ok()?
-        };
-        s.as_bytes().get(offset).copied().map(char::from)
-    } else if index == -1 {
-        s.chars().next_back()
-    } else if index < 0 {
-        // Forward skipping is faster than reverse traversal for distant offsets.
-        let length = bytecount::num_chars(s.as_bytes());
-        let offset = usize::try_from(index.unsigned_abs()).ok()?;
-        s.chars().nth(length.checked_sub(offset)?)
-    } else {
-        s.chars().nth(usize::try_from(index).ok()?)
-    }
-}
-
 /// Concatenation shared by logical string views and concrete heap dispatch.
 fn str_add(s: &str, ascii: bool, other: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
     match PyStr::from_value(other, vm) {
@@ -491,13 +481,13 @@ fn str_add(s: &str, ascii: bool, other: &Value, vm: &VM<'_>) -> RunResult<Option
 /// Indexes protected text, allowing `__index__` to execute before borrowing it.
 ///
 fn str_getitem<'h>(s: &PyStr<'h>, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
-    let ascii = s.is_ascii(vm);
     if let Value::Ref(id) = key
         && let HeapData::Slice(slice) = vm.heap.get(*id)
     {
         let text = s.as_str(vm);
+        let length = s.checked_char_len(vm)?;
+        let ascii = length == text.len();
         if slice.step.unwrap_or(1) == 1 {
-            let length = s.char_len(vm);
             let (start, stop, _) = slice.indices(length)?;
             if start >= stop {
                 return Ok(allocate_string("", vm.heap));
@@ -1011,7 +1001,7 @@ fn str_count<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
     let count = if sub.is_empty() {
         // Empty needles match at every character boundary, including the end.
         if end == usize::MAX {
-            s.char_len(vm) + 1
+            s.checked_char_len(vm)? + 1
         } else {
             end - start + 1
         }
@@ -1148,7 +1138,7 @@ fn string_search_range<'h>(s: &PyStr<'h>, bounds: &[Value], vm: &mut VM<'h>) -> 
     if bounds.iter().all(|bound| matches!(bound, Value::None)) {
         return Ok(Some((0, usize::MAX)));
     }
-    let length = s.char_len(vm);
+    let length = s.checked_char_len(vm)?;
     search_range(bounds.first(), bounds.get(1), length, vm)
 }
 
@@ -2142,6 +2132,25 @@ mod tests {
                 defer_drop!(unsupported, vm);
                 assert!(unsupported.is_none());
             }
+        });
+    }
+
+    #[test]
+    fn indexing_an_uncounted_heap_string_polls_the_deadline() {
+        let limits = monty_types::ResourceLimits::default().max_feed_duration(std::time::Duration::ZERO);
+        let mut heap = Heap::new(16, ResourceTracker::new(limits));
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        heap.tracker.on_execution_start();
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            let value = allocate_string_on_heap("é".repeat(65_536), vm.heap);
+            defer_drop!(value, vm);
+            let text = PyStr::from_value(value, vm).unwrap();
+            assert_eq!(text.character_at(0, vm).unwrap(), Some('é'));
+            assert_eq!(text.character_at(-1, vm).unwrap(), Some('é'));
+            assert!(text.character_at(1, vm).is_err());
+            assert_eq!(text.known_char_len(vm), None);
         });
     }
 

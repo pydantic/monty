@@ -126,9 +126,6 @@ fn forward<E>(
         while !text.is_char_boundary(end) {
             end -= 1;
         }
-        if end == byte {
-            break;
-        }
         remaining -= count_bytes(&text.as_bytes()[byte..end]);
         byte = end;
         // Boundary rounding can trim three bytes from a full 64 KiB chunk.
@@ -165,9 +162,6 @@ fn backward<E>(
         while !text.is_char_boundary(start) {
             start += 1;
         }
-        if start == end {
-            break;
-        }
         remaining -= count_bytes(&text.as_bytes()[start..end]);
         end = start;
         if checked - end >= 65_532 {
@@ -180,9 +174,6 @@ fn backward<E>(
 
 /// Consumes preceding code points while leaving the requested boundary at the remaining suffix.
 fn chars_nth(text: &str, target: usize) -> usize {
-    if target == 0 {
-        return 0;
-    }
     let mut chars = text.chars();
     chars.nth(target - 1);
     text.len() - chars.as_str().len()
@@ -225,9 +216,6 @@ fn wide16(text: &str, mut remaining: usize) -> usize {
 
 /// Consumes code points from the end and returns the removed byte count.
 fn chars_nth_back(text: &str, target: usize) -> usize {
-    if target == 0 {
-        return 0;
-    }
     let mut chars = text.chars();
     chars.nth_back(target - 1);
     text.len() - chars.as_str().len()
@@ -261,15 +249,13 @@ fn wide16_back(text: &str, mut remaining: usize) -> usize {
         end = start;
     }
     // A SIMD block may split a character; scan bytes until its leading byte is reached.
-    for byte in (0..end).rev() {
-        if bytes[byte] & 0xc0 != 0x80 {
+    while remaining > 0 {
+        end -= 1;
+        if bytes[end] & 0xc0 != 0x80 {
             remaining -= 1;
-            if remaining == 0 {
-                return bytes.len() - byte;
-            }
         }
     }
-    bytes.len()
+    bytes.len() - end
 }
 
 #[cfg(test)]
@@ -284,7 +270,7 @@ mod tests {
 
     #[test]
     fn every_small_boundary_in_both_directions() {
-        for text in ["", "ascii\0text", "aé中🐍e\u{301}\0\u{10ffff}"] {
+        for text in ["", "ascii\0text", "aé中🐍e\u{301}\0\u{10ffff}", "ééééééabc"] {
             let offsets = boundaries(text);
             let characters = offsets.len() - 1;
 
@@ -355,6 +341,10 @@ mod tests {
             );
         }
         for target in [characters / 2, characters / 2 + 1] {
+            assert_eq!(
+                byte_offset(&text, characters, None, target, || Ok::<(), Infallible>(())),
+                Ok(offsets[target])
+            );
             assert_eq!(
                 byte_offset(&text, characters, None, target, || Err("deadline")),
                 Err("deadline")

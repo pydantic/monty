@@ -97,6 +97,16 @@ impl HeapStr {
         }
     }
 
+    /// Polls during a first offset lookup. An interrupted count leaves the cache untouched.
+    pub(super) fn checked_char_len<E>(&self, check_time: impl Fn() -> Result<(), E>) -> Result<usize, E> {
+        if let Some(count) = self.known_char_len() {
+            return Ok(count);
+        }
+        let count = super::fast_offsets::count_chars(self.as_str(), check_time)?;
+        self.cache_char_len(count);
+        Ok(count)
+    }
+
     /// Returns a reference to the inner string.
     #[must_use]
     pub fn as_str(&self) -> &str {
