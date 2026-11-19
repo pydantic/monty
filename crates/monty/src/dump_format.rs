@@ -12,17 +12,22 @@
 //! Numeric identities retain their explicit legacy codes independently of the dump encoding.
 //! See the tests in `types/native.rs` and the legacy serialization fixture.
 //!
-//! # Naming contract
+//! # Compatibility contract
 //!
-//! The payload is self-describing: structs are maps keyed by field name and
-//! enums are keyed by variant name, so serde's derive evolves the schema on
-//! its own. A dumped type may gain a field with `#[serde(default)]`, lose a
-//! field, or have variants inserted anywhere, and older dumps still load.
-//! Tuple structs and tuple variants are positional, so their fields may only
-//! be appended.
-//! The names themselves are the contract: renaming a serialized field or
-//! variant needs `#[serde(alias = "old")]` (or a [`DUMP_VERSION`] bump), and
-//! `#[serde(deny_unknown_fields)]` must never be added to a dumped type.
+//! Published releases with the same dump version must read and resume each
+//! other's dumps. This guarantee does not extend to unreleased Git revisions.
+//!
+//! By default, Serde encodes named structs as maps keyed by field name and
+//! externally tagged enums by variant name. Untagged enums, transparent newtypes
+//! and custom serializers can use other layouts.
+//! Adding a named field is compatible if newer readers accept its absence (e.g.
+//! with `#[serde(default)]`) and older readers ignore it when present.
+//! Removing a field requires older readers to tolerate its absence.
+//! Writing a new variant can break older readers. An alias lets newer readers
+//! accept an older name; it does not make older readers accept a new name.
+//! Tuple structs and tuple variants are positional, so appending fields also
+//! requires compatibility in both directions. `#[serde(deny_unknown_fields)]`
+//! must never be added to a dumped type.
 
 use std::{convert::Infallible, error::Error, fmt, mem::size_of};
 
@@ -46,21 +51,21 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 
 /// Version of the dump schema.
 ///
-/// The payload names its fields and variants, so adding a field with a default,
-/// removing one or reordering them does not need a bump (see the module docs).
-/// Bump for every release where
-/// the *meaning* of serialized data changes: opcodes or their operand shapes,
-/// `BuiltinsFunctions` discriminants (bytecode operands), `CmpOperator` values,
+/// Bump for the first incompatible change since the last published release, even
+/// for a patch release. Further bumps before the next release are allowed but
+/// not required. Check both directions: reading older dumps does not make a new
+/// encoding readable by older releases.
+///
+/// Changes to the *meaning* of serialized data can also break compatibility:
+/// opcodes or their operand shapes, `BuiltinsFunctions` discriminants (bytecode
+/// operands), `CmpOperator` values,
 /// the compiler's constant layout, numeric identities, how a dict or set key
 /// hashes (entries persist their hash), or a semantic change to a stored value.
 /// Frozen code is persisted too: incompatible changes to its Rust entry arguments or
 /// private native helper contracts need compatibility handling or a bump. Compatible
 /// source-body changes do not require one; restored sessions retain their captured code.
-/// Older builds then reject the new dumps instead of misexecuting them, and this
-/// build rejects dumps below [`MIN_SUPPORTED_DUMP_VERSION`].
-///
-/// Before bumping, check there's already been a bump since the last release - multiple bumps
-/// between releases is unnecessary and can lead to confusion.
+/// Older releases reject dumps with newer versions, and this build rejects dumps
+/// below [`MIN_SUPPORTED_DUMP_VERSION`].
 pub const DUMP_VERSION: u16 = 16;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
@@ -361,11 +366,9 @@ mod tests {
     use super::DUMP_VERSION;
     use crate::{bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, types::Type};
 
-    /// If a component changes incompatibly, bump `DUMP_VERSION` before updating its
-    /// expected fingerprint. Compatible changes only require a fingerprint update.
-    ///
-    /// NB this test is not exhaustive of all possible compatibility issues, it just helps
-    /// catch the obvious ones!
+    /// Flags changes to persisted components for review. Before updating a fingerprint,
+    /// check compatibility in both directions and bump the dump version if required
+    /// by the policy on `DUMP_VERSION`.
     #[test]
     fn serialized_components_match_dump_version() {
         assert_eq!(
@@ -432,10 +435,8 @@ mod tests {
 
     /// FNV-1a over variant names in sorted order.
     ///
-    /// `Type` and `MontyType` are encoded by variant name inside a `Dump`, so
-    /// order is free but a rename or removal breaks older dumps: fix it with
-    /// `#[serde(alias)]` or bump `DUMP_VERSION`. Adding a variant only needs
-    /// the expected hash updated.
+    /// `Type` and `MontyType` are encoded by variant name, so reordering is compatible.
+    /// An older reader may reject a new variant; check both directions before updating the hash.
     fn variant_name_fingerprint(names: &[String]) -> u64 {
         let mut sorted = names.to_vec();
         sorted.sort_unstable();
@@ -489,10 +490,8 @@ mod tests {
         String::from_utf8(text[start..start + len].to_vec()).unwrap()
     }
 
-    /// `TypeCheckingFormat` reaches the dump schema through
-    /// `monty_types::TypeCheckState` and serializes by variant name, so the
-    /// names are compared in sorted order: renaming one needs `#[serde(alias)]`
-    /// or a `DUMP_VERSION` bump, adding one only needs this list updated.
+    /// Pins the serialized names of `TypeCheckingFormat` in `monty_types::TypeCheckState`.
+    /// An older reader may reject a new variant; check both directions before updating the list.
     #[test]
     fn type_checking_format_variants_match_dump_version() {
         let mut variants = serde_variant_names::<TypeCheckingFormat>(TypeCheckingFormat::VARIANTS, &[]);

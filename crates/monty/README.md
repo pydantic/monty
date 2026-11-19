@@ -95,6 +95,9 @@ assert_eq!(result, MontyObject::int(42));
 
 Serialize a REPL session with `dump()` and restore it with `Dump::load()` to continue in another process or machine.
 The dump includes the interpreter state and the supplied script name, type-check state and module stubs.
+Published releases with the same dump version can read and resume each other's dumps.
+This guarantee does not extend to unreleased Git revisions.
+A release that breaks compatibility in either direction uses a new dump version, even if it is a patch release.
 Loading checks the dump version:
 
 ```rust
