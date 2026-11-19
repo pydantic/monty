@@ -54,6 +54,7 @@ use monty_types::{
     AssertMessageAnnotations, CallArgs, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
     NamedValues, OsPolicy, PrintStream, TypeCheckingConfig, TypeCheckingFormat,
 };
+use opentelemetry::trace::FutureExt as _;
 use pyo3::{
     Borrowed,
     exceptions::{PyDeprecationWarning, PyRuntimeError, PyTimeoutError, PyTypeError, PyValueError},
@@ -92,7 +93,7 @@ use crate::{
     os_policy::OsPolicyArg,
     print_target::PrintTarget,
     snapshot::{DriveContext, build_snapshot, feed_start_async, feed_start_sync},
-    telemetry::{capture_otel_context, capture_telemetry_context, pool_metrics},
+    telemetry::{capture_otel_context, capture_telemetry_context, pool_metrics, snapshot_operation_context},
 };
 
 /// The pool handle shared between a pool object and its sessions. `None`
@@ -464,9 +465,8 @@ impl PyMontySession {
     /// Serializes the worker's session state (idle or suspended) into opaque
     /// bytes via monty's existing dump format. The session stays usable.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let state = py
-            .detach(|| block_on_sync(dump_checkout(&self.checkout)))?
-            .map_err(|e| pool_err_to_py(py, e))?;
+        let dump = dump_checkout(&self.checkout).with_context(snapshot_operation_context(py));
+        let state = py.detach(|| block_on_sync(dump))?.map_err(|e| pool_err_to_py(py, e))?;
         Ok(PyBytes::new(py, &state))
     }
 
@@ -515,7 +515,8 @@ impl PyMontySession {
             return Err(session_used_err());
         }
         let checkout = Arc::clone(&self.checkout);
-        let result = py.detach(|| block_on_sync(restore_turn(&checkout, state, mounts)))?;
+        let restore = restore_turn(&checkout, state, mounts).with_context(snapshot_operation_context(py));
+        let result = py.detach(|| block_on_sync(restore))?;
         result.map_err(|e| pool_err_to_py(py, e))
     }
 }
@@ -1027,9 +1028,10 @@ impl PyAsyncMontySession {
         }
         let checkout = Arc::clone(&self.checkout);
         let session_id = Arc::clone(&self.session_id);
+        let parent = snapshot_operation_context(py);
         future_into_py(py, async move {
             // an idle session has no snapshot, so the restored name is unused
-            let restored = restore_turn(&checkout, state, Vec::new()).await;
+            let restored = restore_turn(&checkout, state, Vec::new()).with_context(parent).await;
             refresh_session_id(&checkout, &session_id).await;
             let restored = restored.map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             if restored.0.is_some() {
@@ -1072,8 +1074,9 @@ impl PyAsyncMontySession {
         let config_script_name = self.repl_config.script_name.clone();
         let trace_context = capture_otel_context(py);
         let session_id = Arc::clone(&self.session_id);
+        let parent = snapshot_operation_context(py);
         future_into_py(py, async move {
-            let restored = restore_turn(&checkout, state, mounts).await;
+            let restored = restore_turn(&checkout, state, mounts).with_context(parent).await;
             refresh_session_id(&checkout, &session_id).await;
             let (event, restored_script_name) = restored.map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             let Some(event) = event else {
@@ -1096,8 +1099,10 @@ impl PyAsyncMontySession {
     /// bytes via monty's existing dump format. The session stays usable.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let checkout = Arc::clone(&self.checkout);
+        let parent = snapshot_operation_context(py);
         future_into_py(py, async move {
             let state = dump_checkout(&checkout)
+                .with_context(parent)
                 .await
                 .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             Ok(Python::attach(|py| PyBytes::new(py, &state).unbind()))

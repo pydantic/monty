@@ -153,6 +153,13 @@ pub(crate) fn capture_otel_context(py: Python<'_>) -> Option<Py<PyAny>> {
         .map(Bound::unbind)
 }
 
+/// Captures the app's span before a snapshot operation moves to the Rust runtime.
+pub(crate) fn snapshot_operation_context(py: Python<'_>) -> Context {
+    capture_telemetry_context(py)
+        .and_then(TelemetryContext::into_parent)
+        .unwrap_or_else(Context::current)
+}
+
 /// Returns a suspension's span in its captured host context without activating it.
 pub(crate) fn snapshot_trace_context(
     py: Python<'_>,

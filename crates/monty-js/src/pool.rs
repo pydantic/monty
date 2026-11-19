@@ -53,7 +53,10 @@ use napi::{
     Env, Error, Result,
 };
 use napi_derive::napi;
-use opentelemetry::{trace::TraceContextExt, Context};
+use opentelemetry::{
+    trace::{FutureExt, TraceContextExt},
+    Context,
+};
 use tokio::sync::{watch, Mutex as AsyncMutex};
 
 use crate::{
@@ -494,6 +497,14 @@ impl NativeTelemetryContext {
             })
             .unwrap_or_else(|| adapter.unparented_context())
     }
+
+    /// Resolves the context captured on the JS thread for a snapshot call.
+    fn snapshot_context(context: Option<Self>) -> Context {
+        context
+            .and_then(|context| configured_tracing_adapter().map(|adapter| context.parse(adapter)))
+            .and_then(TelemetryContext::into_parent)
+            .unwrap_or_else(Context::current)
+    }
 }
 
 /// One worker process dedicated to one REPL session. Wrapped by the
@@ -896,16 +907,18 @@ impl NativeSession {
         state: Buffer,
         mounts: Vec<ClassInstance<'env, NativeMountDir>>,
         on_print: PrintCallback<'env>,
+        telemetry_context: Option<NativeTelemetryContext>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let mounts = mount_specs(&mounts)?;
         let state = state.to_vec();
+        let parent = NativeTelemetryContext::snapshot_context(telemetry_context);
         self.run_outcome(
             env,
             on_print,
             outcome_fn(move |checkout, on_print| {
                 Box::pin(async move {
                     // JS snapshots expose no script name, so the restored name is unused
-                    match checkout.restore(state, mounts, on_print).await {
+                    match checkout.restore(state, mounts, on_print).with_context(parent).await {
                         Ok((Some(event), _)) => TurnOutcome::Event(event),
                         Ok((None, _)) => TurnOutcome::LoadedIdle,
                         Err(err) => TurnOutcome::from(Err(err)),
@@ -921,13 +934,19 @@ impl NativeSession {
     /// Resolves to `{kind:'dumped', state}` or a failure turn object; takes
     /// `on_print` to share the turn machinery, never invoking it.
     #[napi]
-    pub fn dump<'env>(&self, env: &'env Env, on_print: PrintCallback<'env>) -> Result<PromiseRaw<'env, Object<'env>>> {
+    pub fn dump<'env>(
+        &self,
+        env: &'env Env,
+        on_print: PrintCallback<'env>,
+        telemetry_context: Option<NativeTelemetryContext>,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        let parent = NativeTelemetryContext::snapshot_context(telemetry_context);
         self.run_outcome(
             env,
             on_print,
-            outcome_fn(|checkout, _on_print| {
+            outcome_fn(move |checkout, _on_print| {
                 Box::pin(async move {
-                    match checkout.dump().await {
+                    match checkout.dump().with_context(parent).await {
                         Ok(state) => TurnOutcome::Dumped(state),
                         Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
                     }
