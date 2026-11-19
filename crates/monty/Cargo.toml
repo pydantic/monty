@@ -70,6 +70,7 @@ memory-model-checks = []
 test-hooks = ["monty-types/test-hooks"]
 
 [dev-dependencies]
+ciborium = "0.2"
 monty-types = { workspace = true, features = ["tzdb"] }
 insta = { workspace = true }
 serde_json = { workspace = true }
