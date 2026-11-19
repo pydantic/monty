@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url'
 import { componentNew, preview1AdapterReactorPath, transpile } from '@bytecodealliance/jco'
 import { format, resolveConfig } from 'prettier'
 
+import { componentAssetSources } from './component-assets.ts'
+
 const pkg = dirname(dirname(fileURLToPath(import.meta.url)))
 const workspace = dirname(dirname(pkg))
 const targetDir = process.env.CARGO_TARGET_DIR ?? join(workspace, 'target')
@@ -21,15 +23,10 @@ const { files } = await transpile(component, {
   name: 'monty.component',
   instantiation: 'async',
 })
-const requiredFiles = [
-  'monty.component.js',
-  'monty.component.core.wasm',
-  'monty.component.core2.wasm',
-  'monty.component.core3.wasm',
-  'monty.component.core4.wasm',
-  'monty.component.core5.wasm',
-  'interfaces/pydantic-monty-worker.d.ts',
-]
+const coreModules = Object.keys(files)
+  .filter((name) => name.endsWith('.wasm'))
+  .sort()
+const requiredFiles = ['monty.component.js', 'interfaces/pydantic-monty-worker.d.ts']
 const missingFiles = requiredFiles.filter((name) => !(name in files))
 if (missingFiles.length > 0) throw new Error(`Jco output is missing: ${missingFiles.join(', ')}`)
 
@@ -73,6 +70,10 @@ await Promise.all([
   writeArtifact(join(outputDir, facadeTypesPath), formattedFacadeTypes),
   writeGeneratedType(facadeTypesPath, formattedFacadeTypes),
   writeGeneratedType(workerTypesPath, formattedWorkerTypes),
+  ...Object.entries(componentAssetSources(coreModules)).map(async ([name, contents]) => {
+    const destination = join(pkg, 'ts', 'worker', name)
+    await writeArtifact(destination, await format(contents, { ...prettierConfig, filepath: destination }))
+  }),
 ])
 console.log(`built WASI 0.2 component bindings -> ${outputDir}`)
 

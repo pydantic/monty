@@ -20,7 +20,7 @@ use monty_types::{DEFAULT_GC_INTERVAL, MontyUuid, ResourceTracker};
 use serde::{de::Error as _, ser::SerializeStruct};
 
 #[cfg(feature = "ref-count-return")]
-use crate::types::Type;
+use crate::types::TypeRef;
 use crate::{
     asyncio::{Awaiter, ExternalFutureState, GatherState},
     types::{ExtFunction, HostClassType, TimeZone, Tuple, decimal::py_context::DecimalSlot},
@@ -503,7 +503,7 @@ impl<'a, T: ?Sized> HeapReadMut<'a, T> {
 
 /// Read-only payload access, including projections that must re-resolve their storage.
 ///
-/// A vector or box may be replaced between accesses through another capability;
+/// A vector may be replaced between accesses through another capability;
 /// its projection must borrow the current allocation rather than cache a pointer.
 pub(crate) trait HeapView<'a, T: ?Sized> {
     /// Borrows the current payload for the joint lifetime of the view and reader.
@@ -531,24 +531,6 @@ pub struct HeapSliceRead<'source, 'a, T> {
 impl<'a, T> HeapView<'a, [T]> for HeapSliceRead<'_, 'a, T> {
     fn get<'r>(&'r self, reader: &'r HeapReader<'a>) -> &'r [T] {
         self.source.get(reader).as_slice()
-    }
-}
-
-impl<'a, T: ?Sized> HeapRead<'a, Box<T>> {
-    /// Projects the current box allocation without retaining its address.
-    pub fn as_box_value(&self) -> HeapBoxRead<'_, 'a, T> {
-        HeapBoxRead { source: self }
-    }
-}
-
-/// A box projection that observes replacement between reader borrows.
-pub struct HeapBoxRead<'source, 'a, T: ?Sized> {
-    source: &'source HeapRead<'a, Box<T>>,
-}
-
-impl<'a, T: ?Sized> HeapView<'a, T> for HeapBoxRead<'_, 'a, T> {
-    fn get<'r>(&'r self, reader: &'r HeapReader<'a>) -> &'r T {
-        self.source.get(reader).as_ref()
     }
 }
 
@@ -1829,7 +1811,7 @@ impl HeapReader<'_> {
     ///
     /// Unlike the cycle collector's [`mark_gray`](Self::mark_gray) this touches
     /// no colors or refcounts, so it cannot perturb the state under test.
-    pub(crate) fn unreachable_entries(&self, roots: impl IntoIterator<Item = HeapId>) -> Vec<(HeapId, Type)> {
+    pub(crate) fn unreachable_entries(&self, roots: impl IntoIterator<Item = HeapId>) -> Vec<(HeapId, TypeRef)> {
         let mut seen: HashSet<HeapId> = HashSet::new();
         let mut work_stack: Vec<HeapId> = Vec::new();
         // The heap owns the session's decimal contexts, so they are live without a name.
@@ -2057,6 +2039,12 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::Class(class) => {
+            // Base classes the class owns; must match `Class::py_dec_ref_ids`.
+            for base in class.bases() {
+                if let Some(id) = base.class_id() {
+                    on_child(id);
+                }
+            }
             // The class namespace holds method/class-variable values.
             for (k, v) in class.namespace() {
                 if let Value::Ref(id) = k {

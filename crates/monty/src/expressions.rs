@@ -2,7 +2,7 @@
 use strum::IntoEnumIterator;
 
 use crate::{
-    args::{ArgExprs, Signature},
+    args::{ArgExprs, Kwarg, Signature},
     builtins::Builtins,
     fstring::FStringPart,
     intern::{BytesId, LongIntId, StringId},
@@ -821,13 +821,18 @@ pub enum Node<F> {
     /// executes the class statements top-to-bottom into its own scope, then
     /// assembles the namespace and returns a `Class`. Methods are ordinary
     /// `FunctionDef`s in that body (with `self` as the first parameter); class
-    /// variables are `Assign`s. Class decorators are supported (see
-    /// [`decorators`](Self::ClassDef::decorators)); inheritance, metaclasses and
-    /// decorators on a `def` — including `classmethod`/`staticmethod`/`property`
-    /// — are rejected at parse time. See `limitations/classes.md`.
+    /// variables are `Assign`s. Class decorators and single/multiple inheritance
+    /// are supported (see [`bases`](Self::ClassDef::bases) and
+    /// [`decorators`](Self::ClassDef::decorators)); metaclasses and decorators on
+    /// methods — including `classmethod`/`staticmethod`/`property` — are
+    /// rejected at parse time. See `limitations/classes.md`.
     ClassDef {
         /// The class name identifier (resolved to an enclosing-scope slot at prepare time).
         name: Identifier,
+        /// The base classes to inherit from (may include `*unpack` items).
+        bases: Vec<SequenceItem>,
+        /// Keyword arguments passed to the class definition (e.g. `class Sub(Base, extra="val"):`).
+        keywords: Vec<Kwarg>,
         /// The synthetic class-body function: its body is the class statements
         /// in source order. Prepared and compiled exactly like a function; its
         /// emitted code ends by building the namespace `Dict` and returning the
@@ -921,6 +926,22 @@ pub enum Node<F> {
         names: Vec<(StringId, Identifier)>,
         /// Source position for error reporting.
         position: CodeRange,
+    },
+    /// Wildcard import (`from m import *`), binding the names in `m.__all__`,
+    /// or every public name of `m` when it has none.
+    ///
+    /// The names are only known at runtime, so the compiler emits a loop that
+    /// binds each one by name; see `Opcode::ImportStar`. Only allowed at module
+    /// level: preparation rejects it in a function or class body.
+    ImportStar {
+        /// The top-level module to load (`a` for `from a.b import *`).
+        module_name: StringId,
+        /// The further components of a dotted module name, in order.
+        submodules: Vec<Submodule>,
+        /// Source position of the whole statement, for runtime errors.
+        position: CodeRange,
+        /// Position of the `*`, where CPython anchors the module-level `SyntaxError`.
+        star_position: CodeRange,
     },
 }
 
@@ -1084,7 +1105,7 @@ impl CmpOperator {
     }
 }
 
-/// Computes an FNV-1a hash over comparison-operator identities and serialization.
+/// Computes an FNV-1a hash over comparison-operator identities and legacy variant indices.
 #[cfg(test)]
 pub(crate) fn comparison_operators_fingerprint() -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -1111,10 +1132,8 @@ pub(crate) fn comparison_operators_fingerprint() -> u64 {
         update(&mut hash, &[operator as u8]);
         update(&mut hash, format!("{operator:?}").as_bytes());
         update(&mut hash, operator.as_str().as_bytes());
-        update(
-            &mut hash,
-            &postcard::to_allocvec(&operator).expect("CmpOperator serialization cannot fail"),
-        );
+        // Retain the former serialized-index field in the version fingerprint.
+        update(&mut hash, &[operator as u8]);
     }
     hash
 }

@@ -30,11 +30,11 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
     types::{
-        CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type,
+        CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type, TypeRef,
         date::{self, StrftimeArgs},
         datetime::{allocate_tzinfo_ref, tzinfo_from_value},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
-        timezone,
+        timedelta, timezone,
     },
     value::{EitherStr, Value},
 };
@@ -205,13 +205,38 @@ fn allocate_with_tz(vm: &mut VM<'_>, mut time: Time, tz_ref: Option<HeapId>) -> 
     Value::Ref(vm.heap.allocate(HeapData::Time(time)))
 }
 
+/// `time.min`, `time.max` and `time.resolution`.
+pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+    Some(match attr.static_string(vm.interns)? {
+        StaticStrings::Min => allocate_naive(0, 0, 0, 0, vm.heap),
+        StaticStrings::Max => allocate_naive(23, 59, 59, 999_999, vm.heap),
+        StaticStrings::Resolution => timedelta::allocate_micros(1, vm.heap),
+        _ => return None,
+    })
+}
+
+/// `time.fromisoformat()`.
+pub(crate) fn class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    if attr.static_string(vm.interns) == Some(StaticStrings::Fromisoformat) {
+        Ok(class_fromisoformat(vm, args).map(CallResult::Value))
+    } else {
+        Err(args)
+    }
+}
+
 /// `time.fromisoformat(s)` — the inverse of `isoformat()`.
 ///
 /// Parsing is delegated to `speedate`, the same parser `date`/`datetime` use,
 /// so the accepted grammar (and the rejection message) stays consistent across
 /// the three classes.
 pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("time.fromisoformat", vm.heap)?;
+    let value = args
+        .reject_kwargs("time.fromisoformat", vm.heap)?
+        .get_one_arg("time.fromisoformat", vm.heap)?;
     let s = date::extract_str_arg(&value, "fromisoformat", vm.heap, vm.interns);
     value.drop_with(vm.heap);
     let s = s?;
@@ -472,8 +497,8 @@ fn naive_time(time: &Time) -> NaiveTime {
 /// `HeapRead`-based dispatch for `Time`, letting `HeapReadOutput` delegate
 /// `PyTrait` calls to heap-resident times.
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Time
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Time.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

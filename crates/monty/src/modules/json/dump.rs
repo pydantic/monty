@@ -16,7 +16,8 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead},
     py_value::PyValue,
     sorting::{apply_permutation, sort_indices},
-    types::{Dict, PyTrait, Type, str::allocate_string},
+    string_builder::StringBuilder,
+    types::{Dict, PyTrait, TypeRef, str::allocate_string},
     value::Value,
 };
 
@@ -352,9 +353,9 @@ fn apply_bool_flag(flags: u8, bit: u8, value: &Value, vm: &mut VM<'_>) -> RunRes
 fn parse_indent_value(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<String>> {
     match value.py_value(vm) {
         PyValue::None => Ok(None),
-        PyValue::Bool(value) => spaces_from_indent_count(i64::from(value)),
+        PyValue::Bool(value) => spaces_from_indent_count(i64::from(value), vm),
         PyValue::Int(integer) => {
-            spaces_from_indent_count(integer.to_i64(vm).ok_or_else(ExcType::overflow_index_sized_int)?)
+            spaces_from_indent_count(integer.to_i64(vm).ok_or_else(ExcType::overflow_index_sized_int)?, vm)
         }
         PyValue::Str(value) => Ok(Some(value.as_str(vm).to_owned())),
         _ => Err(ExcType::type_error_sequence_repeat(value.py_type_name(vm))),
@@ -362,14 +363,16 @@ fn parse_indent_value(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<String
 }
 
 /// Builds the `' ' * count` indent string.
-fn spaces_from_indent_count(count: i64) -> RunResult<Option<String>> {
+fn spaces_from_indent_count(count: i64, vm: &VM<'_>) -> RunResult<Option<String>> {
     // CPython repeats a negative count to the empty string.
     let count = if count < 0 {
         0
     } else {
         usize::try_from(count).map_err(|_| ExcType::overflow_index_sized_int())?
     };
-    Ok(Some(" ".repeat(count)))
+    let mut builder = StringBuilder::with_capacity(count, &vm.heap.tracker)?;
+    builder.push_repeated(' ', count)?;
+    Ok(Some(builder.finish_raw()?))
 }
 
 /// Raises the unpacking errors `JSONEncoder.__init__` gives `separators`,
@@ -731,7 +734,7 @@ impl<'h> Encoder<'_, 'h> {
 /// `__name__` already, dots and all.
 fn not_serializable(value: &Value, vm: &VM<'_>) -> RunError {
     let type_name = value.py_type_name(vm);
-    let bare = if matches!(value.py_type(vm), Type::Instance(_)) {
+    let bare = if matches!(value.py_type(vm), TypeRef::Class(_)) {
         &*type_name
     } else {
         type_name.rsplit_once('.').map_or(&*type_name, |(_, bare)| bare)

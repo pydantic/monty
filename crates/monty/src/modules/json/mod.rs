@@ -23,10 +23,9 @@ use crate::{
     args::ArgValues,
     builtins::Builtins,
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, RunResult},
-    heap::{HeapData, HeapId},
+    exception_private::RunResult,
     intern::StaticStrings,
-    types::Module,
+    types::{Module, Type},
     value::Value,
 };
 
@@ -35,26 +34,27 @@ use crate::{
 /// Each variant corresponds to a module-level callable stored in the module's
 /// attribute dictionary. The display form matches the Python-visible function
 /// name so reprs look like normal builtins.
+#[monty_macros::explicit_discriminants(checksum = 0xe42d_b90d_ee47_8363)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum JsonFunctions {
     /// `json.loads()` parses JSON text into Monty values.
-    Loads,
+    Loads = 0,
     /// `json.dumps()` serializes Monty values into JSON text.
-    Dumps,
+    Dumps = 1,
     /// `json.load()` parses the rest of a file object as JSON.
-    Load,
+    Load = 2,
     /// `json.dump()` serializes a Monty value into a file object.
-    Dump,
+    Dump = 3,
 }
 
-/// Creates the `json` module and allocates it on the heap.
+/// Creates the `json` module.
 ///
 /// The module exposes `loads`, `dumps`, `load`, `dump` and `JSONDecodeError`.
 /// These are the most widely used parts of CPython's `json` module and are
 /// sufficient for common data interchange and round-tripping use cases inside
 /// the sandbox.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Json, vm.interns);
     for (name, function) in [
         (StaticStrings::Loads, JsonFunctions::Loads),
@@ -66,10 +66,10 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     }
     module.set_attr(
         StaticStrings::JsonDecodeError,
-        Value::Builtin(Builtins::ExcType(ExcType::JsonDecodeError)),
+        Value::Builtin(Builtins::Type(Type::JsonDecodeError)),
         vm,
     );
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a `json` module function call.

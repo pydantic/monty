@@ -21,7 +21,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     types::{
-        LazyHeapSet, PyTrait, Type,
+        LazyHeapSet, PyTrait, Type, TypeRef,
         str::{StringRepr, allocate_string},
         timedelta,
         timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE},
@@ -229,6 +229,16 @@ pub(crate) fn utcoffset_value(offset_seconds: Option<i32>, heap: &Heap) -> Value
     }
 }
 
+/// `timezone.utc`, `timezone.min` and `timezone.max`.
+pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+    Some(match attr.static_string(vm.interns)? {
+        StaticStrings::Utc => vm.heap.get_timezone_utc(),
+        StaticStrings::Min => allocate_offset(-MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
+        StaticStrings::Max => allocate_offset(MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
+        _ => return None,
+    })
+}
+
 /// Allocates an unnamed `timezone` for an offset known to be in range.
 ///
 /// For the `timezone.min` / `timezone.max` class constants; anything derived
@@ -286,8 +296,8 @@ impl HeapItem for TimeZone {
 /// `HeapRead`-based dispatch for `TimeZone`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident timezone objects.
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::TimeZone
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::TimeZone.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

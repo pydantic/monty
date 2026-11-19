@@ -597,7 +597,7 @@ impl<'h> VM<'h> {
     /// The globals and locals the current frame resolves names through.
     ///
     /// A frame with no namespace resolves like compiled module code.
-    fn frame_namespace(&self) -> (FrameGlobals, Option<HeapId>) {
+    pub(super) fn frame_namespace(&self) -> (FrameGlobals, Option<HeapId>) {
         match self.current_frame.namespace.as_deref() {
             None => (FrameGlobals::Slots, None),
             Some(FrameNamespace::Function { globals }) => (FrameGlobals::Dict(*globals), None),

@@ -368,8 +368,7 @@ export class MontySession {
     this.claimFresh()
     const printTarget = new PrintTarget(undefined)
     const turn = (await this.native.restore(bytesForNative(state), [], printTarget.write.bind(printTarget))) as
-      | NativeTurn
-      | LoadedTurn
+      NativeTurn | LoadedTurn
     switch (turn.kind) {
       case 'loaded':
         return
@@ -406,8 +405,7 @@ export class MontySession {
     this.claimFresh()
     const driver = this.newDriver(options)
     const turn = (await this.native.restore(bytesForNative(state), mountsToNative(options.mount), driver.onPrint)) as
-      | NativeTurn
-      | LoadedTurn
+      NativeTurn | LoadedTurn
     if (turn.kind === 'loaded') {
       throw await this.failedLoad(new Error('this dump is an idle session — use loadSession() to restore it'))
     }
@@ -487,8 +485,7 @@ export class MontySession {
     this.driven = true
     const printTarget = new PrintTarget(undefined)
     const turn = (await this.native.installDependencies(requirements, printTarget.write.bind(printTarget))) as
-      | NativeTurn
-      | OkTurn
+      NativeTurn | OkTurn
     switch (turn.kind) {
       case 'ok':
         return

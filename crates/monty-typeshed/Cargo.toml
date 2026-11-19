@@ -21,12 +21,12 @@ path = "src/lib.rs"
 ruff_db = { workspace = true }
 
 [dev-dependencies]
-zip = { version = "0.6.6", default-features = false }
+zip = { version = "9.5.1", default-features = false }
 
 [build-dependencies]
 path-slash = "0.2.1"
 walkdir = "2.3.2"
-zip = { version = "0.6.6", features = ["zstd", "deflate"] }
+zip = { version = "9.5.1", default-features = false, features = ["zstd", "deflate"] }
 
 [features]
 zstd = ["zip/zstd"]

@@ -27,10 +27,10 @@ use crate::{
     codecs::Codec,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{HeapData, HeapId, HeapReadOutput},
+    heap::{HeapData, HeapReadOutput},
     intern::StaticStrings,
     os_dispatch::PostConversionEffect,
-    types::Module,
+    types::{Module, Type},
     value::Value,
 };
 
@@ -38,20 +38,21 @@ use crate::{
 ///
 /// The display form matches the Python-visible function name so reprs look
 /// like normal builtins.
+#[monty_macros::explicit_discriminants(checksum = 0x3352_6042_0d7d_3205)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum TomllibFunctions {
     /// `tomllib.loads(s)` parses TOML text into a dict.
-    Loads,
+    Loads = 0,
     /// `tomllib.load(fp)` parses a binary file object into a dict.
-    Load,
+    Load = 1,
 }
 
-/// Creates the `tomllib` module and allocates it on the heap.
+/// Creates the `tomllib` module.
 ///
 /// The module exposes everything CPython's does: `loads`, `load` and
 /// `TOMLDecodeError`.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Tomllib, vm.interns);
     module.set_attr(
         StaticStrings::Loads,
@@ -65,10 +66,10 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     );
     module.set_attr(
         StaticStrings::TomlDecodeError,
-        Value::Builtin(Builtins::ExcType(ExcType::TomlDecodeError)),
+        Value::Builtin(Builtins::Type(Type::TomlDecodeError)),
         vm,
     );
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a `tomllib` module function call.

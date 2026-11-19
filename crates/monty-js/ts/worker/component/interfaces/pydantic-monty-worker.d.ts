@@ -372,15 +372,7 @@ export interface OsPolicy {
  * ## `"github"`
  */
 export type TypeCheckFormat =
-  | 'full'
-  | 'concise'
-  | 'azure'
-  | 'json'
-  | 'json-lines'
-  | 'rdjson'
-  | 'pylint'
-  | 'gitlab'
-  | 'github'
+  'full' | 'concise' | 'azure' | 'json' | 'json-lines' | 'rdjson' | 'pylint' | 'gitlab' | 'github'
 export interface ConfigureRequest {
   scriptName: string
   limits?: ResourceLimits

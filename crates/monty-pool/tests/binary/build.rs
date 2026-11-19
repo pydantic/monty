@@ -1,8 +1,10 @@
-use std::{env, path::PathBuf, process::Command};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
-/// Builds binary target `name` with the running test's Cargo profile and returns its path.
-///
-/// `args` selects the package (e.g. `["-p", "monty-runtime"]`).
+/// Builds a binary with the same cargo profile as the running test and returns its path.
 pub fn binary(args: &[&str], name: &str) -> PathBuf {
     let profile = test_profile();
     let output = Command::new(env!("CARGO"))
@@ -33,20 +35,24 @@ pub fn binary(args: &[&str], name: &str) -> PathBuf {
     path
 }
 
-/// Returns the Cargo profile the running test binary was built with.
+/// The cargo profile the running test was built with, read from its executable's location.
 ///
-/// The profile directory is the parent of `deps` (`<profile>/deps/<exe>`, Cargo before 1.100)
-/// or of `build` (`<profile>/build/<pkg>/<hash>/out/<exe>`, Cargo 1.100's build-dir layout).
+/// Test executables live in `<profile-dir>/deps/` before Cargo 1.100 and in
+/// `<profile-dir>/build/<pkg>/<hash>/out/` from it, and a fresh 1.100 target has no `deps`
+/// directory, so the profile directory is the parent of the outermost `deps` or `build` ancestor.
 fn test_profile() -> String {
     let executable = env::current_exe().unwrap();
-    let profile = executable
+    let target_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).parent().unwrap();
+    let profile_dir = executable
         .ancestors()
-        .find(|dir| dir.file_name().is_some_and(|name| name == "deps" || name == "build"))
-        .and_then(|dir| dir.parent()?.file_name()?.to_str())
+        .filter(|dir| {
+            dir.starts_with(target_dir) && matches!(dir.file_name().and_then(|n| n.to_str()), Some("deps" | "build"))
+        })
+        .last()
+        .and_then(Path::parent)
         .unwrap_or_else(|| panic!("no profile directory above {}", executable.display()));
-    if profile == "debug" {
-        "dev".to_owned()
-    } else {
-        profile.to_owned()
+    match profile_dir.file_name().unwrap().to_str().unwrap() {
+        "debug" => "dev".to_owned(),
+        profile => profile.to_owned(),
     }
 }

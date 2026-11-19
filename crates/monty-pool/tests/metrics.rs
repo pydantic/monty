@@ -42,7 +42,10 @@ use opentelemetry_sdk::{
 use prost::Message;
 use tokio::time::{Instant, sleep};
 
-use crate::{binary::monty_binary, common::wait_for_idle};
+use crate::{
+    binary::monty_binary,
+    common::{kill_pid, wait_for_idle},
+};
 
 /// A cumulative aggregate exported from a test Logfire provider.
 struct Capture {
@@ -500,16 +503,11 @@ async fn a_crashed_worker_is_counted_as_it_is_torn_down() {
     config.max_processes = 1;
     let (pool, capture) = pool_with_metrics(config).await;
 
-    // an expression deep enough to overflow the worker's stack, which aborts it
-    // mid-turn (the same trick `pool_test.rs` uses, and portable unlike a kill)
-    let mut code = String::with_capacity(300_002);
-    code.push('a');
-    for _ in 0..150_000 {
-        code.push_str(".x");
-    }
+    // the turn finds its worker already killed, as `pool_test.rs` does
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    kill_pid(checkout.pid().expect("a subprocess worker has a pid"));
     let err = checkout
-        .feed(&code, vec![], vec![], false, &mut no_print)
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
         .expect_err("the worker should have died");
     assert!(matches!(err, PoolError::Crashed { .. }), "{err}");
