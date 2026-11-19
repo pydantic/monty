@@ -1945,8 +1945,12 @@ fn dict_merge_from_kwargs(dict: &mut Dict, kwargs: KwargsValues, vm: &mut VM<'_>
 ///
 /// If key is in the dict, return its value.
 /// If not, insert key with a value of default (or None) and return default.
-fn dict_setdefault<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let (key, default) = args.get_one_two_args("setdefault", vm.heap)?;
+#[py_signature("setdefault(key, default=None, /)", style = unpack, kwarg_error_name = "dict.setdefault")]
+fn dict_setdefault<'h>(
+    dict: &HeapReadMut<'h, Dict>,
+    SetdefaultArgs { key, default }: SetdefaultArgs,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
     // Hashing/equality can raise before either argument is stored.
     let mut pending = DropGuard::new((key, default), vm);
     let ((key, _), vm) = pending.as_parts();
@@ -1957,7 +1961,6 @@ fn dict_setdefault<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut V
         // No Python code runs after the probe, so insertion can reuse its hash without another lookup.
         dict.get(vm.heap).table.check_growth(&vm.heap.tracker)?;
         let ((key, default), vm) = pending.into_parts();
-        let default = default.unwrap_or(Value::None);
         let result = default.clone_with_heap(vm.heap);
         let dict = dict.get_mut(vm.heap);
         dict.contains_refs |= matches!(key, Value::Ref(_)) || matches!(default, Value::Ref(_));

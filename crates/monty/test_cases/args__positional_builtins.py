@@ -70,3 +70,13 @@ check_type_error(lambda: target.pop(), 'pop expected at least 1 argument, got 0'
 check_type_error(lambda: target.pop(1, 2, 3), 'pop expected at most 2 arguments, got 3')
 check_type_error(lambda: target.pop(1, 2, 3, key=[]), 'dict.pop() takes no keyword arguments')
 assert target == {'key': 1}
+
+defaults = {}
+check_type_error(lambda: defaults.setdefault(), 'setdefault expected at least 1 argument, got 0')
+check_type_error(lambda: defaults.setdefault(1, 2, 3), 'setdefault expected at most 2 arguments, got 3')
+check_type_error(lambda: defaults.setdefault(key=1), 'dict.setdefault() takes no keyword arguments')
+check_type_error(lambda: defaults.setdefault(1, 2, 3, default=[]), 'dict.setdefault() takes no keyword arguments')
+assert defaults == {}
+assert defaults.setdefault('omitted') is None
+assert defaults.setdefault('explicit', None) is None
+assert defaults == {'omitted': None, 'explicit': None}
