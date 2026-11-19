@@ -9,8 +9,7 @@ use crate::{
     builtins::Builtins,
     defer_drop,
     exception_private::{
-        ExcType, ExcTypeExt, ExceptionArgs, ExceptionRaise, PyException, RawStackFrame, RunError, RunResult,
-        SimpleException,
+        ExcType, ExcTypeExt, ExceptionRaise, PyException, RawStackFrame, RunError, RunResult, SimpleException,
     },
     expressions::CmpOperator,
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
@@ -95,7 +94,7 @@ impl VM<'_> {
                     let mut frame = self.make_stack_frame();
                     // Use the hide_caret flag from the error (set by error creators)
                     frame.hide_caret = exc.hide_caret;
-                    exc.frame = Some(Box::new(frame));
+                    exc.frame = Some(frame);
                 }
                 RunError::Exc(exc)
             }
@@ -103,12 +102,21 @@ impl VM<'_> {
                 if exc.frame.is_none() && !self.current_frame_is_frozen() {
                     let mut frame = self.make_stack_frame();
                     frame.hide_caret = exc.hide_caret;
-                    exc.frame = Some(Box::new(frame));
+                    exc.frame = Some(frame);
                 }
                 RunError::UncatchableExc(exc)
             }
             RunError::Internal(_) => error,
         }
+    }
+
+    /// Converts an exception instance on the heap to a `SimpleException`.
+    pub(crate) fn exception_to_simple_exception(&mut self, id: HeapId) -> Option<SimpleException> {
+        let (exc_type, args, data) = match self.heap.get(id) {
+            HeapData::Exception(e) => (e.exc_type, e.args.clone_with_heap(self.heap), e.data.clone()),
+            _ => return None,
+        };
+        Some(PyException::to_simple_exception_from_parts(exc_type, args, data, self))
     }
 
     /// Creates a RunError from a Value that should be an exception.
@@ -120,8 +128,8 @@ impl VM<'_> {
         let simple_exc = match exc_value {
             // Exception instance on heap
             Value::Ref(heap_id) => {
-                if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
-                    exc.to_simple_exception()
+                if let Some(simple) = self.exception_to_simple_exception(*heap_id) {
+                    simple
                 } else {
                     // Not an exception type
                     SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
@@ -137,11 +145,11 @@ impl VM<'_> {
         };
 
         let frame = (!self.current_frame_is_frozen()).then(|| {
-            Box::new(if is_raise {
+            if is_raise {
                 RawStackFrame::from_raise(self.current_position(), self.current_frame_name())
             } else {
                 self.make_stack_frame()
-            })
+            }
         });
 
         RunError::Exc(ExceptionRaise {
@@ -416,12 +424,8 @@ impl VM<'_> {
 
     /// Creates an `AssertionError` raised at the current source position.
     fn assertion_error(&self, msg: Option<String>) -> RunError {
-        let frame = (!self.current_frame_is_frozen()).then(|| {
-            Box::new(RawStackFrame::from_raise(
-                self.current_position(),
-                self.current_frame_name(),
-            ))
-        });
+        let frame = (!self.current_frame_is_frozen())
+            .then(|| RawStackFrame::from_raise(self.current_position(), self.current_frame_name()));
         RunError::Exc(ExceptionRaise {
             exc: SimpleException::new(ExcType::AssertionError, msg),
             instance: None,
@@ -467,6 +471,11 @@ impl VM<'_> {
     fn handle_exception_step(&mut self, mut error: RunError, raised: Option<Value>) -> ExceptionHandlingResult {
         // Reclaim an instance that crossed a synchronous boundary before anything
         // else, so every exit path below owns exactly one reference.
+        let from_sync_boundary = raised.is_none()
+            && match &error {
+                RunError::Exc(exc) | RunError::UncatchableExc(exc) => exc.instance.is_some(),
+                RunError::Internal(_) => false,
+            };
         let carried = match &mut error {
             RunError::Exc(exc) | RunError::UncatchableExc(exc) => exc.take_instance(),
             RunError::Internal(_) => None,
@@ -501,7 +510,7 @@ impl VM<'_> {
             };
             self.create_exception_value(exc)
         };
-        if let Err(error) = self.attach_context(&exc_value) {
+        if !from_sync_boundary && let Err(error) = self.attach_context(&exc_value) {
             exc_value.drop_with(self);
             return ExceptionHandlingResult::Unhandled(self.unwind_for_traceback(error.into()));
         }
@@ -581,20 +590,30 @@ impl VM<'_> {
                     let (exc_val, vm_ref) = exc_guard.as_parts_mut();
                     let args_opt = match exc_val {
                         Value::Ref(id) => match vm_ref.heap.get(*id) {
-                            HeapData::Exception(e) => match &e.args {
-                                ExceptionArgs::Empty => Some(ExceptionArgs::Empty),
-                                ExceptionArgs::OneStr(s) => Some(ExceptionArgs::OneStr(s.clone())),
-                                ExceptionArgs::OneValue(v) => {
-                                    Some(ExceptionArgs::OneValue(v.clone_with_heap(vm_ref.heap)))
-                                }
-                                ExceptionArgs::Tuple(tuple_id) => Some(ExceptionArgs::Tuple(*tuple_id)),
-                            },
+                            HeapData::Exception(e) => {
+                                let exc_type = e.exc_type;
+                                let args = e.args.clone_with_heap(vm_ref.heap);
+                                Some((exc_type, args))
+                            }
                             _ => None,
                         },
                         _ => None,
                     };
-                    if let Some(mut args) = args_opt {
-                        exc_raise.exc.arg = args.format_arg(vm_ref);
+                    if let Some((exc_type, args)) = args_opt {
+                        match args.format_arg(vm_ref, exc_type) {
+                            Ok(formatted) => {
+                                exc_raise.exc.arg = formatted;
+                            }
+                            Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => {
+                                args.drop_with(vm_ref);
+                                drop(exc_guard);
+                                return ExceptionHandlingResult::Unhandled(err);
+                            }
+                            Err(RunError::Exc(exc)) => {
+                                exc.drop_with(vm_ref);
+                                exc_raise.exc.arg = Some("<exception str() failed>".to_owned());
+                            }
+                        }
                         args.drop_with(vm_ref);
                     }
                 }
@@ -645,7 +664,12 @@ impl VM<'_> {
             if should_return {
                 let (exc_value, this) = exc_guard.into_parts();
                 if let RunError::Exc(exc) = &mut error {
-                    exc.instance = Some(exc_value);
+                    if let Value::Ref(id) = exc_value
+                        && let Some(simple) = this.exception_to_simple_exception(id)
+                    {
+                        exc.exc = simple;
+                    }
+                    exc.set_instance(exc_value);
                 } else {
                     exc_value.drop_with(this);
                 }

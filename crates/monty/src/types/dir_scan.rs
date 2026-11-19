@@ -445,10 +445,13 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
                     let RunError::Exc(raise) = error else {
                         return Err(error);
                     };
-                    let exc = raise.instance.unwrap_or_else(|| {
-                        let py_exc = PyException::from_simple_exception(&raise.exc);
-                        Value::Ref(vm.heap.allocate(HeapData::Exception(Box::new(py_exc))))
-                    });
+                    let exc = raise.instance.map_or_else(
+                        || {
+                            let py_exc = PyException::from_simple_exception(&raise.exc);
+                            Value::Ref(vm.heap.allocate(HeapData::Exception(Box::new(py_exc))))
+                        },
+                        |b| *b,
+                    );
                     let result = vm.evaluate_function(onerror, ArgValues::One(exc))?;
                     result.drop_with(vm);
                 }

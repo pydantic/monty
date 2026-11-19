@@ -8,17 +8,21 @@ use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErr
 use smallvec::smallvec;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
+    builtins::{Builtins, BuiltinsFunctions, base_exception::init_exception_instance},
     bytecode::{CallResult, VM},
     defer_drop,
     fstring::{FormatError, ascii_escape},
-    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapRead, HeapReadMut},
+    heap::{
+        ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadOutput,
+    },
     intern::{Interns, StaticStrings, StringId},
+    modules::copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
     parse::CodeRange,
-    py_value::PyValue,
     source_map::{SourceMap, StackFrameExt},
     types::{
-        Dict, OwnedTypeRef, PyTrait, Type, TypeRef, allocate_tuple,
+        BoundMethod, Dict, LazyHeapSet, OwnedTypeRef, PyTrait, TupleVec, Type, TypeRef, allocate_tuple,
+        hash_table::TableCursor,
         iter::collect_owned_iterable,
         long_int::INT_MAX_STR_DIGITS,
         str::{StringRepr, allocate_string, string_repr_fmt},
@@ -38,11 +42,6 @@ pub use monty_types::{ExcType, unicode_decode_error_msg};
 /// stay in `monty` as a `pub(crate)` extension trait with default bodies.
 /// Import the trait to call them as `ExcType::type_error(...)`.
 pub(crate) trait ExcTypeExt: Sized {
-    /// Creates an exception instance from an exception type and arguments,
-    /// handling constructor calls like `ValueError('message')`.
-    #[expect(dead_code, reason = "convenience wrapper for exc_new")]
-    fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>;
-
     /// Creates an AttributeError for when an attribute is not found (GET operation).
     ///
     /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
@@ -331,7 +330,10 @@ pub(crate) trait ExcTypeExt: Sized {
                 SimpleException::new_msg(ExcType::KeyError, key_str).into()
             }
             Err(err @ RunError::UncatchableExc(_)) => err,
-            Err(_) => SimpleException::new_msg(ExcType::KeyError, format!("<{}>", key.py_type_name(vm))).into(),
+            Err(err) => {
+                err.drop_with(vm);
+                SimpleException::new_msg(ExcType::KeyError, format!("<{}>", key.py_type_name(vm))).into()
+            }
         }
     }
 
@@ -2807,165 +2809,34 @@ pub(crate) trait ExcTypeExt: Sized {
     }
 }
 
-#[derive(FromArgs)]
-#[from_args(name = "AttributeError")]
-struct AttributeErrorArgs {
-    #[from_args(varargs)]
-    args: Vec<Value>,
-    #[from_args(kw_only, default)]
-    name: Option<Value>,
-    #[from_args(kw_only, default)]
-    obj: Option<Value>,
-}
-
-#[derive(FromArgs)]
-#[from_args(name = "NameError")]
-struct NameErrorArgs {
-    #[from_args(varargs)]
-    args: Vec<Value>,
-    #[from_args(kw_only, default)]
-    name: Option<Value>,
-}
-
-#[derive(FromArgs)]
-#[from_args(name = "ImportError")]
-struct ImportErrorArgs {
-    #[from_args(varargs)]
-    args: Vec<Value>,
-    #[from_args(kw_only, default)]
-    name: Option<Value>,
-    #[from_args(kw_only, default)]
-    path: Option<Value>,
-}
+impl ExcTypeExt for ExcType {}
 
 /// The constructor of every native exception class, for the native type table.
 pub(crate) fn exc_new(ty: Type, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let exc_type = ty.exc_type().expect("exception types carry their ExcType");
-    let (exc_args, attrs) = match ty {
-        Type::AttributeError => {
-            let AttributeErrorArgs { args, name, obj } = AttributeErrorArgs::from_args(args, vm)?;
-            let exc_args = ExceptionArgs::from_values(args, vm);
-            let mut attrs = None;
-            if let Some(name_val) = name {
-                let key = allocate_string("name", vm.heap);
-                let dict = attrs.get_or_insert_with(Dict::new);
-                let old = dict.set(key, name_val, vm)?;
-                if let Some(old) = old {
-                    old.drop_with(vm);
-                }
-            }
-            if let Some(obj_val) = obj {
-                let key = allocate_string("obj", vm.heap);
-                let dict = attrs.get_or_insert_with(Dict::new);
-                let old = dict.set(key, obj_val, vm)?;
-                if let Some(old) = old {
-                    old.drop_with(vm);
-                }
-            }
-            (exc_args, attrs)
-        }
-        Type::NameError => {
-            let NameErrorArgs { args, name } = NameErrorArgs::from_args(args, vm)?;
-            let exc_args = ExceptionArgs::from_values(args, vm);
-            let mut attrs = None;
-            if let Some(name_val) = name {
-                let key = allocate_string("name", vm.heap);
-                let dict = attrs.get_or_insert_with(Dict::new);
-                let old = dict.set(key, name_val, vm)?;
-                if let Some(old) = old {
-                    old.drop_with(vm);
-                }
-            }
-            (exc_args, attrs)
-        }
-        Type::ImportError => {
-            let ImportErrorArgs { args, name, path } = ImportErrorArgs::from_args(args, vm)?;
-            let exc_args = ExceptionArgs::from_values(args, vm);
-            let mut attrs = None;
-            if let Some(name_val) = name {
-                let key = allocate_string("name", vm.heap);
-                let dict = attrs.get_or_insert_with(Dict::new);
-                let old = dict.set(key, name_val, vm)?;
-                if let Some(old) = old {
-                    old.drop_with(vm);
-                }
-            }
-            if let Some(path_val) = path {
-                let key = allocate_string("path", vm.heap);
-                let dict = attrs.get_or_insert_with(Dict::new);
-                let old = dict.set(key, path_val, vm)?;
-                if let Some(old) = old {
-                    old.drop_with(vm);
-                }
-            }
-            (exc_args, attrs)
-        }
-        _ => {
-            let pos_iter = args.into_pos_only(ty.name(), vm.heap)?;
-            let pos_vec: Vec<Value> = pos_iter.collect();
-            let mut attrs = None;
-            if ty == Type::StopIteration {
-                if let Some(first) = pos_vec.first() {
-                    let val = first.clone_with_heap(vm.heap);
-                    let key = allocate_string("value", vm.heap);
-                    let dict = attrs.get_or_insert_with(Dict::new);
-                    let old = dict.set(key, val, vm)?;
-                    if let Some(old) = old {
-                        old.drop_with(vm);
-                    }
-                }
-            } else if ty == Type::SystemExit {
-                match pos_vec.len() {
-                    0 => {}
-                    1 => {
-                        let code = pos_vec[0].clone_with_heap(vm.heap);
-                        let key = allocate_string("code", vm.heap);
-                        let dict = attrs.get_or_insert_with(Dict::new);
-                        let old = dict.set(key, code, vm)?;
-                        if let Some(old) = old {
-                            old.drop_with(vm);
-                        }
-                    }
-                    _ => {
-                        let items: smallvec::SmallVec<[Value; 2]> =
-                            pos_vec.iter().map(|v| v.clone_with_heap(vm.heap)).collect();
-                        let tuple_val = allocate_tuple(items, vm.heap);
-                        let key = allocate_string("code", vm.heap);
-                        let dict = attrs.get_or_insert_with(Dict::new);
-                        let old = dict.set(key, tuple_val, vm)?;
-                        if let Some(old) = old {
-                            old.drop_with(vm);
-                        }
-                    }
-                }
-            }
-            let exc_args = ExceptionArgs::from_values(pos_vec, vm);
-            (exc_args, attrs)
-        }
-    };
     let exc = PyException {
         class: OwnedTypeRef::Native(ty),
         exc_type,
-        args: exc_args,
+        args: ExceptionArgs::Empty,
         data: ExcData::None,
         chain: None,
-        attrs,
+        attrs: None,
     };
     let heap_id = vm.heap.allocate(HeapData::Exception(Box::new(exc)));
-    Ok(Value::Ref(heap_id))
-}
-
-impl ExcTypeExt for ExcType {
-    fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        exc_new(Type::from(self), vm, args)
+    let (pos_iter, kwargs) = args.into_parts();
+    let pos_vec: Vec<Value> = pos_iter.collect();
+    if let Err(err) = init_exception_instance(heap_id, pos_vec, kwargs, vm) {
+        vm.heap.dec_ref(heap_id);
+        return Err(err);
     }
+    Ok(Value::Ref(heap_id))
 }
 
 /// Simple lightweight representation of an exception.
 ///
 /// This is used for performance reasons for common exception patterns.
 /// Exception messages use `String` for owned storage.
-#[derive(Debug, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SimpleException {
     pub(crate) exc_type: ExcType,
     pub(crate) arg: Option<String>,
@@ -2973,25 +2844,6 @@ pub(crate) struct SimpleException {
     /// through catch/re-raise so it reaches the public `MontyException` when
     /// the exception escapes the sandbox.
     data: ExcData,
-    /// The chained exceptions; only the heap-resident object owns them. Boxed
-    /// because most exceptions have none and `HeapData` has a size ceiling.
-    #[serde(default)]
-    chain: Option<Box<ExceptionChain>>,
-}
-
-/// `Clone` rebuilds the copy without its [`ExceptionChain`]: a raw `HeapId` copied
-/// out of the heap object would be a second, uncounted owner. The chain lives on the
-/// raised heap object, which `raise` reuses, so it is only lost where an exception is
-/// rebuilt from a copy, such as after a nested synchronous call.
-impl Clone for SimpleException {
-    fn clone(&self) -> Self {
-        Self {
-            exc_type: self.exc_type,
-            arg: self.arg.clone(),
-            data: self.data.clone(),
-            chain: None,
-        }
-    }
 }
 
 /// An exception's `__cause__`, `__context__` and `__suppress_context__`.
@@ -3008,6 +2860,22 @@ pub(crate) struct ExceptionChain {
     pub(crate) suppress_context: bool,
 }
 
+impl ExceptionChain {
+    pub(crate) fn clone_with_heap(&self, heap: &Heap) -> Self {
+        if let Some(c) = self.cause {
+            heap.inc_ref(c);
+        }
+        if let Some(c) = self.context {
+            heap.inc_ref(c);
+        }
+        Self {
+            cause: self.cause,
+            context: self.context,
+            suppress_context: self.suppress_context,
+        }
+    }
+}
+
 impl fmt::Display for SimpleException {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.py_repr_fmt(f)
@@ -3019,7 +2887,6 @@ impl From<MontyException> for SimpleException {
             exc_type: exc.exc_type(),
             data: exc.take_data(),
             arg: exc.into_message(),
-            chain: None,
         }
     }
 }
@@ -3032,7 +2899,6 @@ impl SimpleException {
             exc_type,
             arg,
             data: ExcData::None,
-            chain: None,
         }
     }
 
@@ -3043,7 +2909,6 @@ impl SimpleException {
             exc_type,
             arg: Some(arg.to_string()),
             data: ExcData::None,
-            chain: None,
         }
     }
 
@@ -3054,7 +2919,6 @@ impl SimpleException {
             exc_type,
             arg: None,
             data: ExcData::None,
-            chain: None,
         }
     }
 
@@ -3068,12 +2932,6 @@ impl SimpleException {
     #[must_use]
     pub fn exc_type(&self) -> ExcType {
         self.exc_type
-    }
-
-    #[must_use]
-    #[expect(dead_code, reason = "part of SimpleException API")]
-    pub fn arg(&self) -> Option<&String> {
-        self.arg.as_ref()
     }
 
     /// str() for an exception
@@ -3131,61 +2989,73 @@ pub(crate) enum ExceptionArgs {
 }
 
 impl ExceptionArgs {
-    pub(crate) fn from_values(values: Vec<Value>, vm: &mut VM<'_>) -> Self {
+    /// Constructs `ExceptionArgs` from a list of argument values.
+    pub(crate) fn from_values(mut values: Vec<Value>, vm: &mut VM<'_>) -> Self {
         match values.len() {
             0 => Self::Empty,
-            1 => {
-                let v = values.into_iter().next().unwrap();
-                let maybe_str = match v.py_value(vm) {
-                    PyValue::Str(s) => Some(s.as_str(vm).to_owned()),
-                    _ => None,
-                };
-                if let Some(st) = maybe_str {
-                    v.drop_with(vm);
-                    Self::OneStr(st)
-                } else {
-                    Self::OneValue(v)
-                }
-            }
+            1 => Self::OneValue(values.remove(0)),
             _ => {
-                let tuple_val = allocate_tuple(values.into(), vm.heap);
+                let items: TupleVec = values.into_iter().collect();
+                let tuple_val = allocate_tuple(items, vm.heap);
                 let tuple_id = tuple_val.into_ref_id().expect("tuple is a heap reference");
                 Self::Tuple(tuple_id)
             }
         }
     }
 
-    pub(crate) fn drop_with(&mut self, vm: &mut VM<'_>) {
-        match mem::take(self) {
-            Self::Empty | Self::OneStr(_) => {}
-            Self::OneValue(v) => v.drop_with(vm),
-            Self::Tuple(id) => vm.heap.dec_ref(id),
+    /// Clones the exception args, incrementing heap refcounts if needed.
+    pub(crate) fn clone_with_heap(&self, heap: &Heap) -> Self {
+        match self {
+            Self::Empty => Self::Empty,
+            Self::OneStr(s) => Self::OneStr(s.clone()),
+            Self::OneValue(v) => Self::OneValue(v.clone_with_heap(heap)),
+            Self::Tuple(id) => {
+                heap.inc_ref(*id);
+                Self::Tuple(*id)
+            }
         }
     }
 
-    /// Formats the exception's argument for boundary export and unhandled tracebacks.
-    ///
-    /// For single string arguments, returns the raw unquoted string (even for `KeyError`).
-    /// For other single values, stringifies them via `str()`. For multiple arguments,
-    /// formats them as a tuple.
-    pub(crate) fn format_arg(&self, vm: &mut VM<'_>) -> Option<String> {
+    /// Formats the exception arguments into a message string.
+    pub(crate) fn format_arg(&self, vm: &mut VM<'_>, exc_type: ExcType) -> RunResult<Option<String>> {
         match self {
-            Self::Empty => None,
-            Self::OneStr(s) => Some(s.clone()),
+            Self::Empty => Ok(None),
+            Self::OneStr(s) => {
+                if exc_type == ExcType::KeyError {
+                    Ok(Some(StringRepr(s).to_string()))
+                } else {
+                    Ok(Some(s.clone()))
+                }
+            }
             Self::OneValue(v) => {
-                if let Some(s) = v.as_str(vm) {
-                    Some(s.to_owned())
+                if exc_type == ExcType::KeyError {
+                    let v_clone = v.clone_with_heap(vm.heap);
+                    defer_drop!(v_clone, vm);
+                    match v_clone.py_repr(vm) {
+                        Ok(repr_val) => {
+                            defer_drop!(repr_val, vm);
+                            Ok(repr_val.as_str(vm).map(ToOwned::to_owned))
+                        }
+                        Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => Err(err),
+                        Err(RunError::Exc(exc)) => {
+                            exc.drop_with(vm);
+                            Ok(Some("<exception str() failed>".to_owned()))
+                        }
+                    }
+                } else if let Some(s) = v.as_str(vm) {
+                    Ok(Some(s.to_owned()))
                 } else {
                     let v_clone = v.clone_with_heap(vm.heap);
                     defer_drop!(v_clone, vm);
                     match v_clone.py_str(vm) {
                         Ok(s_val) => {
                             defer_drop!(s_val, vm);
-                            s_val.as_str(vm).map(ToOwned::to_owned)
+                            Ok(s_val.as_str(vm).map(ToOwned::to_owned))
                         }
-                        Err(e) => {
-                            e.drop_with(vm);
-                            Some("<exception str() failed>".to_owned())
+                        Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => Err(err),
+                        Err(RunError::Exc(exc)) => {
+                            exc.drop_with(vm);
+                            Ok(Some("<exception str() failed>".to_owned()))
                         }
                     }
                 }
@@ -3197,24 +3067,37 @@ impl ExceptionArgs {
                     _ => 0,
                 };
                 match slice_len {
-                    0 => None,
+                    0 => Ok(None),
                     1 => {
                         let item = match vm.heap.get(tuple_id) {
                             HeapData::Tuple(t) => t.as_slice()[0].clone_with_heap(vm.heap),
                             _ => unreachable!(),
                         };
                         defer_drop!(item, vm);
-                        if let Some(s) = item.as_str(vm) {
-                            Some(s.to_owned())
+                        if exc_type == ExcType::KeyError {
+                            match item.py_repr(vm) {
+                                Ok(repr_val) => {
+                                    defer_drop!(repr_val, vm);
+                                    Ok(repr_val.as_str(vm).map(ToOwned::to_owned))
+                                }
+                                Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => Err(err),
+                                Err(RunError::Exc(exc)) => {
+                                    exc.drop_with(vm);
+                                    Ok(Some("<exception str() failed>".to_owned()))
+                                }
+                            }
+                        } else if let Some(s) = item.as_str(vm) {
+                            Ok(Some(s.to_owned()))
                         } else {
                             match item.py_str(vm) {
                                 Ok(s_val) => {
                                     defer_drop!(s_val, vm);
-                                    s_val.as_str(vm).map(ToOwned::to_owned)
+                                    Ok(s_val.as_str(vm).map(ToOwned::to_owned))
                                 }
-                                Err(e) => {
-                                    e.drop_with(vm);
-                                    Some("<exception str() failed>".to_owned())
+                                Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => Err(err),
+                                Err(RunError::Exc(exc)) => {
+                                    exc.drop_with(vm);
+                                    Ok(Some("<exception str() failed>".to_owned()))
                                 }
                             }
                         }
@@ -3226,16 +3109,27 @@ impl ExceptionArgs {
                         match tuple_val.py_str(vm) {
                             Ok(s_val) => {
                                 defer_drop!(s_val, vm);
-                                s_val.as_str(vm).map(ToOwned::to_owned)
+                                Ok(s_val.as_str(vm).map(ToOwned::to_owned))
                             }
-                            Err(e) => {
-                                e.drop_with(vm);
-                                Some("<exception str() failed>".to_owned())
+                            Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => Err(err),
+                            Err(RunError::Exc(exc)) => {
+                                exc.drop_with(vm);
+                                Ok(Some("<exception str() failed>".to_owned()))
                             }
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for ExceptionArgs {
+    fn drop_with(self, context: &mut C) {
+        match self {
+            Self::Empty | Self::OneStr(_) => {}
+            Self::OneValue(v) => v.drop_with(context),
+            Self::Tuple(id) => context.heap_mut().dec_ref(id),
         }
     }
 }
@@ -3262,73 +3156,45 @@ pub(crate) struct PyException {
 }
 
 #[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum DumpedPyException {
-    Current {
-        #[serde(rename = "C")]
-        class: OwnedTypeRef,
-        #[serde(rename = "T")]
-        exc_type: ExcType,
-        #[serde(rename = "A", default)]
-        args: ExceptionArgs,
-        #[serde(rename = "D", default)]
-        data: ExcData,
-        #[serde(rename = "H", default)]
-        chain: Option<Box<ExceptionChain>>,
-        #[serde(rename = "I", default)]
-        attrs: Option<Dict>,
-    },
-    Legacy {
-        #[serde(alias = "T")]
-        exc_type: ExcType,
-        #[serde(default, alias = "A")]
-        arg: Option<String>,
-        #[serde(default, alias = "D")]
-        data: ExcData,
-        #[serde(default, alias = "chain")]
-        chain: Option<Box<ExceptionChain>>,
-    },
+struct DumpedPyException {
+    #[serde(rename = "C", default)]
+    class: Option<OwnedTypeRef>,
+    #[serde(rename = "T", alias = "exc_type")]
+    exc_type: ExcType,
+    #[serde(rename = "A", default)]
+    args: Option<ExceptionArgs>,
+    #[serde(rename = "D", alias = "data", default)]
+    data: ExcData,
+    #[serde(rename = "H", alias = "chain", default)]
+    chain: Option<Box<ExceptionChain>>,
+    #[serde(rename = "I", default)]
+    attrs: Option<Dict>,
+    #[serde(default, alias = "arg")]
+    arg: Option<String>,
 }
 
 impl From<DumpedPyException> for PyException {
     fn from(dumped: DumpedPyException) -> Self {
-        match dumped {
-            DumpedPyException::Current {
-                class,
-                exc_type,
-                args,
-                data,
-                chain,
-                attrs,
-            } => Self {
-                class,
-                exc_type,
-                args,
-                data,
-                chain,
-                attrs,
-            },
-            DumpedPyException::Legacy {
-                exc_type,
-                arg,
-                data,
-                chain,
-            } => Self {
-                class: OwnedTypeRef::Native(Type::from(exc_type)),
-                exc_type,
-                args: match arg {
-                    Some(s) => ExceptionArgs::OneStr(s),
-                    None => ExceptionArgs::Empty,
-                },
-                data,
-                chain,
-                attrs: None,
-            },
+        let class = dumped
+            .class
+            .unwrap_or_else(|| OwnedTypeRef::Native(Type::from(dumped.exc_type)));
+        let args = dumped.args.unwrap_or(match dumped.arg {
+            Some(s) => ExceptionArgs::OneStr(s),
+            None => ExceptionArgs::Empty,
+        });
+        Self {
+            class,
+            exc_type: dumped.exc_type,
+            args,
+            data: dumped.data,
+            chain: dumped.chain,
+            attrs: dumped.attrs,
         }
     }
 }
 
 impl PyException {
+    /// Creates a new exception with an optional message string.
     #[must_use]
     pub(crate) fn new(exc_type: ExcType, arg: Option<String>) -> Self {
         Self {
@@ -3344,6 +3210,7 @@ impl PyException {
         }
     }
 
+    /// Constructs an exception from constituent parts.
     #[must_use]
     pub(crate) fn from_parts(class: OwnedTypeRef, exc_type: ExcType, args: ExceptionArgs) -> Self {
         Self {
@@ -3356,6 +3223,7 @@ impl PyException {
         }
     }
 
+    /// Constructs an exception from a `SimpleException`.
     #[must_use]
     pub(crate) fn from_simple_exception(exc: &SimpleException) -> Self {
         Self {
@@ -3366,22 +3234,40 @@ impl PyException {
                 None => ExceptionArgs::Empty,
             },
             data: exc.data.clone(),
-            chain: exc.chain.clone(),
+            chain: None,
             attrs: None,
         }
     }
 
+    /// Converts exception parts to a `SimpleException` for synchronous boundaries.
     #[must_use]
-    pub(crate) fn to_simple_exception(&self) -> SimpleException {
-        let arg = match &self.args {
-            ExceptionArgs::OneStr(s) => Some(s.clone()),
-            _ => None,
+    pub(crate) fn to_simple_exception_from_parts(
+        exc_type: ExcType,
+        args: ExceptionArgs,
+        data: ExcData,
+        vm: &mut VM<'_>,
+    ) -> SimpleException {
+        let arg = match args.format_arg(vm, exc_type) {
+            Ok(s) => s,
+            Err(RunError::Exc(exc)) => {
+                exc.drop_with(vm);
+                Some("<exception str() failed>".to_owned())
+            }
+            Err(_) => None,
         };
-        SimpleException {
+        args.drop_with(vm);
+        SimpleException { exc_type, arg, data }
+    }
+
+    /// Clones this exception, incrementing refcounts for all nested heap references.
+    pub(crate) fn clone_with_heap(&self, heap: &Heap) -> Self {
+        Self {
+            class: self.class,
             exc_type: self.exc_type,
-            arg,
+            args: self.args.clone_with_heap(heap),
             data: self.data.clone(),
-            chain: None,
+            chain: self.chain.as_ref().map(|c| Box::new(c.clone_with_heap(heap))),
+            attrs: self.attrs.as_ref().map(|d| d.clone_with_heap(heap)),
         }
     }
 
@@ -3396,48 +3282,39 @@ impl PyException {
     }
 
     #[must_use]
-    #[expect(dead_code, reason = "accessor for single-string exception argument")]
-    pub(crate) fn arg(&self) -> Option<&String> {
-        match &self.args {
-            ExceptionArgs::OneStr(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    #[expect(dead_code, reason = "used in subsequent commits")]
-    pub(crate) fn data(&self) -> &ExcData {
-        &self.data
-    }
-
-    #[must_use]
-    #[expect(dead_code, reason = "used in subsequent commits")]
-    pub(crate) fn chain(&self) -> Option<&ExceptionChain> {
-        self.chain.as_deref()
-    }
-
+    /// The exception's cause (`__cause__`), if any.
     pub(crate) fn cause(&self) -> Option<HeapId> {
         self.chain.as_ref().and_then(|chain| chain.cause)
     }
 
+    /// The exception's context (`__context__`), if any.
     pub(crate) fn context(&self) -> Option<HeapId> {
         self.chain.as_ref().and_then(|chain| chain.context)
     }
 
+    /// Whether context is suppressed (`__suppress_context__`).
     pub(crate) fn suppress_context(&self) -> bool {
         self.chain.as_ref().is_some_and(|chain| chain.suppress_context)
     }
 
+    /// Sets the exception's cause (`__cause__`).
     pub(crate) fn set_cause(&mut self, cause: Option<HeapId>) -> Option<HeapId> {
         let chain = self.chain.get_or_insert_default();
         chain.suppress_context = true;
         mem::replace(&mut chain.cause, cause)
     }
 
+    /// Sets the exception's context (`__context__`).
     pub(crate) fn set_context(&mut self, context: Option<HeapId>) -> Option<HeapId> {
         mem::replace(&mut self.chain.get_or_insert_default().context, context)
     }
 
+    /// Sets whether context is suppressed (`__suppress_context__`).
+    pub(crate) fn set_suppress_context(&mut self, suppress: bool) {
+        self.chain.get_or_insert_default().suppress_context = suppress;
+    }
+
+    /// Yields all heap references owned directly by this exception.
     pub(crate) fn child_ids(&self) -> impl Iterator<Item = HeapId> + '_ {
         let class_id = match self.class {
             OwnedTypeRef::Class(id) => Some(id),
@@ -3469,34 +3346,21 @@ impl PyException {
         class_id.into_iter().chain(arg_id).chain(chain_ids).chain(attr_ids)
     }
 
+    /// Yields references that this exception owns in its chain.
     pub(crate) fn owned_chain_ids(&self) -> impl Iterator<Item = HeapId> + '_ {
         self.child_ids()
     }
 
+    /// Whether this exception needs to be tracked by cycle detection.
     pub(crate) fn is_gc_tracked(&self) -> bool {
-        !(matches!(self.args, ExceptionArgs::Empty | ExceptionArgs::OneStr(_))
-            && self.attrs.is_none()
-            && matches!(self.class, OwnedTypeRef::Native(_)))
-    }
-}
-
-impl fmt::Display for PyException {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let type_str: &'static str = self.exc_type.into();
-        write!(f, "{type_str}(")?;
-        match &self.args {
-            ExceptionArgs::Empty => {}
-            ExceptionArgs::OneStr(arg) => {
-                string_repr_fmt(arg, f)?;
-            }
-            ExceptionArgs::OneValue(val) => {
-                write!(f, "{val:?}")?;
-            }
-            ExceptionArgs::Tuple(_) => {
-                write!(f, "...")?;
-            }
+        if self.attrs.is_some() || self.chain.is_some() || !matches!(self.class, OwnedTypeRef::Native(_)) {
+            return true;
         }
-        f.write_char(')')
+        match &self.args {
+            ExceptionArgs::Empty | ExceptionArgs::OneStr(_) => false,
+            ExceptionArgs::OneValue(v) => matches!(v, Value::Ref(_)),
+            ExceptionArgs::Tuple(_) => true,
+        }
     }
 }
 
@@ -3506,48 +3370,49 @@ impl<'h> HeapRead<'h, PyException> {
     }
 }
 
-impl<'h> HeapReadMut<'h, PyException> {
+impl<'h> HeapObjectRead<'h, PyException> {
+    /// Computes `str(exc)`.
     pub fn py_str(&self, vm: &mut VM<'h>) -> RunResult<String> {
+        let mut guard = vm.recursion_guard()?;
+        let vm = &mut *guard;
         let (exc_type, args_copy) = {
             let exc = self.get(vm.heap);
-            let args_copy = match &exc.args {
-                ExceptionArgs::Empty => ExceptionArgs::Empty,
-                ExceptionArgs::OneStr(s) => ExceptionArgs::OneStr(s.clone()),
-                ExceptionArgs::OneValue(v) => ExceptionArgs::OneValue(v.clone_with_heap(vm.heap)),
-                ExceptionArgs::Tuple(id) => ExceptionArgs::Tuple(*id),
-            };
-            (exc.exc_type, args_copy)
+            (exc.exc_type, exc.args.clone_with_heap(vm.heap))
         };
+        defer_drop!(args_copy, vm);
         match args_copy {
             ExceptionArgs::Empty => Ok(String::new()),
             ExceptionArgs::OneStr(s) => {
                 if exc_type == ExcType::KeyError {
-                    Ok(StringRepr(&s).to_string())
+                    Ok(StringRepr(s).to_string())
                 } else {
-                    Ok(s)
+                    Ok(s.clone())
                 }
             }
             ExceptionArgs::OneValue(v) => {
-                defer_drop!(v, vm);
                 if exc_type == ExcType::KeyError {
-                    let repr_val = v.py_repr(vm)?;
+                    let v_clone = v.clone_with_heap(vm.heap);
+                    defer_drop!(v_clone, vm);
+                    let repr_val = v_clone.py_repr(vm)?;
                     defer_drop!(repr_val, vm);
                     Ok(repr_val.as_str(vm).unwrap_or("").to_owned())
                 } else {
-                    let str_val = v.py_str(vm)?;
+                    let v_clone = v.clone_with_heap(vm.heap);
+                    defer_drop!(v_clone, vm);
+                    let str_val = v_clone.py_str(vm)?;
                     defer_drop!(str_val, vm);
                     Ok(str_val.as_str(vm).unwrap_or("").to_owned())
                 }
             }
             ExceptionArgs::Tuple(id) => {
-                let slice_len = match vm.heap.get(id) {
+                let slice_len = match vm.heap.get(*id) {
                     HeapData::Tuple(t) => t.as_slice().len(),
                     _ => 0,
                 };
                 match slice_len {
                     0 => Ok(String::new()),
                     1 => {
-                        let item = match vm.heap.get(id) {
+                        let item = match vm.heap.get(*id) {
                             HeapData::Tuple(t) => t.as_slice()[0].clone_with_heap(vm.heap),
                             _ => unreachable!(),
                         };
@@ -3563,8 +3428,8 @@ impl<'h> HeapReadMut<'h, PyException> {
                         }
                     }
                     _ => {
-                        vm.heap.inc_ref(id);
-                        let tuple_val = Value::Ref(id);
+                        vm.heap.inc_ref(*id);
+                        let tuple_val = Value::Ref(*id);
                         defer_drop!(tuple_val, vm);
                         let str_val = tuple_val.py_str(vm)?;
                         defer_drop!(str_val, vm);
@@ -3575,7 +3440,10 @@ impl<'h> HeapReadMut<'h, PyException> {
         }
     }
 
-    pub fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>) -> RunResult<()> {
+    /// Formats `repr(exc)` into a writer.
+    pub fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+        let mut guard = vm.recursion_guard()?;
+        let vm = &mut *guard;
         let (type_name, args_copy) = {
             let exc = self.get(vm.heap);
             let name = match exc.class {
@@ -3585,43 +3453,29 @@ impl<'h> HeapReadMut<'h, PyException> {
                     _ => "Exception".to_owned(),
                 },
             };
-            let args_copy = match &exc.args {
-                ExceptionArgs::Empty => ExceptionArgs::Empty,
-                ExceptionArgs::OneStr(s) => ExceptionArgs::OneStr(s.clone()),
-                ExceptionArgs::OneValue(v) => ExceptionArgs::OneValue(v.clone_with_heap(vm.heap)),
-                ExceptionArgs::Tuple(id) => ExceptionArgs::Tuple(*id),
-            };
-            (name, args_copy)
+            (name, exc.args.clone_with_heap(vm.heap))
         };
+        defer_drop!(args_copy, vm);
         write!(f, "{type_name}(")?;
         match args_copy {
             ExceptionArgs::Empty => {}
-            ExceptionArgs::OneStr(s) => {
-                string_repr_fmt(&s, f)?;
-            }
-            ExceptionArgs::OneValue(v) => {
-                defer_drop!(v, vm);
-                let repr_val = v.py_repr(vm)?;
-                defer_drop!(repr_val, vm);
-                if let Some(s) = repr_val.as_str(vm) {
-                    f.write_str(s)?;
-                }
-            }
+            ExceptionArgs::OneStr(s) => string_repr_fmt(s, f)?,
+            ExceptionArgs::OneValue(v) => v.py_repr_fmt(f, vm, heap_ids)?,
             ExceptionArgs::Tuple(id) => {
-                let items: Vec<Value> = match vm.heap.get(id) {
-                    HeapData::Tuple(t) => t.as_slice().iter().map(|item| item.clone_with_heap(vm.heap)).collect(),
-                    _ => Vec::new(),
+                let len = match vm.heap.get(*id) {
+                    HeapData::Tuple(t) => t.as_slice().len(),
+                    _ => 0,
                 };
-                for (i, item) in items.into_iter().enumerate() {
-                    defer_drop!(item, vm);
+                for i in 0..len {
                     if i > 0 {
                         f.write_str(", ")?;
                     }
-                    let repr_val = item.py_repr(vm)?;
-                    defer_drop!(repr_val, vm);
-                    if let Some(s) = repr_val.as_str(vm) {
-                        f.write_str(s)?;
-                    }
+                    let item = match vm.heap.get(*id) {
+                        HeapData::Tuple(t) => t.as_slice()[i].clone_with_heap(vm.heap),
+                        _ => unreachable!(),
+                    };
+                    defer_drop!(item, vm);
+                    item.py_repr_fmt(f, vm, heap_ids)?;
                 }
             }
         }
@@ -3629,9 +3483,7 @@ impl<'h> HeapReadMut<'h, PyException> {
         Ok(())
     }
 
-    /// Gets an attribute from this exception: `args` (a tuple of the message, if
-    /// any), `__cause__`, `__context__` and `__suppress_context__`. Returns `None`
-    /// for all other attributes.
+    /// Gets an attribute from this exception.
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
         let name = attr.static_string(vm.interns);
         let name_str = attr.as_str(vm.interns);
@@ -3645,6 +3497,11 @@ impl<'h> HeapReadMut<'h, PyException> {
             }
             Some(StaticStrings::Args) => {}
             _ if name_str == "args" => {}
+            _ if name_str == "__init__" => {
+                let member = Value::Builtin(Builtins::Function(BuiltinsFunctions::BaseExceptionInit));
+                let self_val = self.clone_value(vm.heap);
+                return Some(CallResult::Value(BoundMethod::allocate(self_val, member, vm.heap)));
+            }
             _ => {
                 if let Some(val) = exc
                     .attrs
@@ -3654,28 +3511,36 @@ impl<'h> HeapReadMut<'h, PyException> {
                     let val = val.clone_with_heap(vm.heap);
                     return Some(CallResult::Value(val));
                 }
-                if exc_type == ExcType::StopIteration && name_str == "value" {
+                if name_str == "value" && Type::from(exc_type).is_subclass_of(Type::StopIteration) {
                     return Some(CallResult::Value(Value::None));
                 }
-                if exc_type == ExcType::SystemExit && name_str == "code" {
+                if name_str == "code" && Type::from(exc_type).is_subclass_of(Type::SystemExit) {
                     return Some(CallResult::Value(Value::None));
                 }
-                if exc_type == ExcType::AttributeError && (name_str == "name" || name_str == "obj") {
+                if (name_str == "name" || name_str == "obj")
+                    && Type::from(exc_type).is_subclass_of(Type::AttributeError)
+                {
                     return Some(CallResult::Value(Value::None));
                 }
-                if exc_type == ExcType::NameError && name_str == "name" {
+                if name_str == "name" && Type::from(exc_type).is_subclass_of(Type::NameError) {
                     return Some(CallResult::Value(Value::None));
                 }
-                if exc_type == ExcType::ImportError && (name_str == "name" || name_str == "path") {
+                if (name_str == "name" || name_str == "path") && Type::from(exc_type).is_subclass_of(Type::ImportError)
+                {
                     return Some(CallResult::Value(Value::None));
                 }
                 return None;
             }
         }
 
-        let tuple_val = match &self.get(vm.heap).args {
+        let old_args = {
+            let exc = self.get_mut(vm.heap);
+            mem::replace(&mut exc.args, ExceptionArgs::Empty)
+        };
+        let tuple_val = match old_args {
             ExceptionArgs::Tuple(id) => {
-                let id = *id;
+                let exc = self.get_mut(vm.heap);
+                exc.args = ExceptionArgs::Tuple(id);
                 vm.heap.inc_ref(id);
                 Value::Ref(id)
             }
@@ -3699,15 +3564,10 @@ impl<'h> HeapReadMut<'h, PyException> {
                 t
             }
             ExceptionArgs::OneValue(val) => {
-                let v = val.clone_with_heap(vm.heap);
-                let t = allocate_tuple(smallvec![v], vm.heap);
+                let t = allocate_tuple(smallvec![val], vm.heap);
                 if let Value::Ref(id) = t {
-                    let old_args = {
-                        let exc = self.get_mut(vm.heap);
-                        mem::replace(&mut exc.args, ExceptionArgs::Tuple(id))
-                    };
-                    let mut old_args = old_args;
-                    old_args.drop_with(vm);
+                    let exc = self.get_mut(vm.heap);
+                    exc.args = ExceptionArgs::Tuple(id);
                     vm.heap.inc_ref(id);
                 }
                 t
@@ -3716,26 +3576,90 @@ impl<'h> HeapReadMut<'h, PyException> {
         Some(CallResult::Value(tuple_val))
     }
 
+    /// Sets an attribute on this exception.
     pub fn set_attr(&self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let name_str = name.as_str(vm.interns);
         if name_str == "args" {
-            let items: smallvec::SmallVec<[Value; 2]> = collect_owned_iterable(value, vm)?;
+            let items: TupleVec = collect_owned_iterable(value, vm)?;
             let tuple_val = allocate_tuple(items, vm.heap);
             let tuple_id = tuple_val.into_ref_id().expect("tuple is a heap reference");
             let old_args = {
                 let exc = self.get_mut(vm.heap);
                 mem::replace(&mut exc.args, ExceptionArgs::Tuple(tuple_id))
             };
-            let mut old_args = old_args;
             old_args.drop_with(vm);
             Ok(())
+        } else if name_str == "__cause__" {
+            let cause_id = match value {
+                Value::None => None,
+                Value::Ref(id) if matches!(vm.heap.get(id), HeapData::Exception(_)) => value.into_ref_id(),
+                other => {
+                    other.drop_with(vm);
+                    return Err(ExcType::type_error(
+                        "exception cause must be None or derive from BaseException",
+                    ));
+                }
+            };
+            let old_cause = {
+                let exc = self.get_mut(vm.heap);
+                exc.set_suppress_context(true);
+                exc.set_cause(cause_id)
+            };
+            if let Some(old_id) = old_cause {
+                vm.heap.dec_ref(old_id);
+            }
+            Ok(())
+        } else if name_str == "__context__" {
+            let context_id = match value {
+                Value::None => None,
+                Value::Ref(id) if matches!(vm.heap.get(id), HeapData::Exception(_)) => value.into_ref_id(),
+                other => {
+                    other.drop_with(vm);
+                    return Err(ExcType::type_error(
+                        "exception context must be None or derive from BaseException",
+                    ));
+                }
+            };
+            let old_context = {
+                let exc = self.get_mut(vm.heap);
+                exc.set_context(context_id)
+            };
+            if let Some(old_id) = old_context {
+                vm.heap.dec_ref(old_id);
+            }
+            Ok(())
+        } else if name_str == "__suppress_context__" {
+            let suppress = match value {
+                Value::Bool(b) => b,
+                other => {
+                    other.drop_with(vm);
+                    return Err(ExcType::type_error("attribute value type must be bool"));
+                }
+            };
+            {
+                let exc = self.get_mut(vm.heap);
+                exc.set_suppress_context(suppress);
+            }
+            Ok(())
+        } else if name_str == "__class__" {
+            value.drop_with(vm);
+            Err(ExcType::type_error(
+                "__class__ assignment only supported for mutable types or ModuleType subclasses",
+            ))
         } else {
             let key = name.as_value(vm.heap);
             let mut attrs = {
                 let exc = self.get_mut(vm.heap);
                 exc.attrs.take().unwrap_or_default()
             };
-            let old_val = attrs.set(key, value, vm)?;
+            let old_val = match attrs.set(key, value, vm) {
+                Ok(old) => old,
+                Err(err) => {
+                    let exc = self.get_mut(vm.heap);
+                    exc.attrs = Some(attrs);
+                    return Err(err);
+                }
+            };
             {
                 let exc = self.get_mut(vm.heap);
                 exc.attrs = Some(attrs);
@@ -3745,6 +3669,148 @@ impl<'h> HeapReadMut<'h, PyException> {
             }
             Ok(())
         }
+    }
+}
+
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, PyException> {
+    fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        let (class, exc_type, args_to_copy, data, chain_cause, chain_context, suppress_context, attrs_len) = {
+            let exc_ref = self.get(vm.heap);
+            let args_to_copy = exc_ref.args.clone_with_heap(vm.heap);
+            let (chain_cause, chain_context, suppress_context) = exc_ref
+                .chain
+                .as_ref()
+                .map_or((None, None, false), |c| (c.cause, c.context, c.suppress_context));
+            let attrs_len = exc_ref.attrs.as_ref().map(Dict::len);
+            (
+                exc_ref.class,
+                exc_ref.exc_type,
+                args_to_copy,
+                exc_ref.data.clone(),
+                chain_cause,
+                chain_context,
+                suppress_context,
+                attrs_len,
+            )
+        };
+        defer_drop!(args_to_copy, vm);
+
+        let shell = PyException::from_parts(class, exc_type, ExceptionArgs::Empty);
+        let copy_id = vm.heap.allocate(HeapData::Exception(Box::new(shell)));
+        let mut guard = DropGuard::new(Value::Ref(copy_id), vm);
+        let (copy, vm) = guard.as_parts_mut();
+        memo.insert(source, copy, vm)?;
+
+        // 1. Deep-copy args
+        let copied_args = match args_to_copy {
+            ExceptionArgs::Empty => ExceptionArgs::Empty,
+            ExceptionArgs::OneStr(s) => ExceptionArgs::OneStr(s.clone()),
+            ExceptionArgs::OneValue(v) => {
+                let v_copy = deep_copy(v, memo, vm)?;
+                ExceptionArgs::OneValue(v_copy)
+            }
+            ExceptionArgs::Tuple(tuple_id) => {
+                let tuple_val = Value::Ref(*tuple_id);
+                let res = deep_copy(&tuple_val, memo, vm);
+                tuple_val.into_ref_id();
+                let copied_val = res?;
+                let copied_id = copied_val.into_ref_id().expect("tuple is a heap reference");
+                ExceptionArgs::Tuple(copied_id)
+            }
+        };
+
+        // Attach args & data early so they are freed on error
+        {
+            let HeapReadOutput::Exception(copy_exc) = vm.heap.read(copy_id) else {
+                unreachable!("allocated an exception");
+            };
+            let exc_mut = copy_exc.get_mut(vm.heap);
+            exc_mut.args = copied_args;
+            exc_mut.data = data;
+        }
+
+        // 2. Deep-copy attrs if any
+        if let Some(expected_len) = attrs_len {
+            {
+                let HeapReadOutput::Exception(copy_exc) = vm.heap.read(copy_id) else {
+                    unreachable!("allocated an exception");
+                };
+                copy_exc.get_mut(vm.heap).attrs = Some(Dict::new());
+            }
+            if expected_len > 0 {
+                let mut cursor = TableCursor::new(expected_len);
+                for index in 0.. {
+                    vm.heap.tracker.check_time_every(index)?;
+                    let opt_pair = {
+                        let exc_ref = self.get(vm.heap);
+                        exc_ref
+                            .attrs
+                            .as_ref()
+                            .and_then(|d| d.clone_next_pair(&mut cursor, vm.heap).transpose())
+                    };
+                    let Some(pair_res) = opt_pair else {
+                        break;
+                    };
+                    let (key, value) = pair_res?;
+                    let (key_copy, value_copy) = deep_copy_pair(key, value, memo, vm)?;
+                    let mut attrs = {
+                        let HeapReadOutput::Exception(copy_exc) = vm.heap.read(copy_id) else {
+                            unreachable!("allocated an exception");
+                        };
+                        copy_exc.get_mut(vm.heap).attrs.take().unwrap()
+                    };
+                    let set_res = attrs.set(key_copy, value_copy, vm);
+                    {
+                        let HeapReadOutput::Exception(copy_exc) = vm.heap.read(copy_id) else {
+                            unreachable!("allocated an exception");
+                        };
+                        copy_exc.get_mut(vm.heap).attrs = Some(attrs);
+                    }
+                    if let Some(replaced) = set_res? {
+                        replaced.drop_with(vm);
+                    }
+                }
+            }
+        }
+
+        // 3. Deep-copy chain if any
+        if chain_cause.is_some() || chain_context.is_some() || suppress_context {
+            {
+                let HeapReadOutput::Exception(copy_exc) = vm.heap.read(copy_id) else {
+                    unreachable!("allocated an exception");
+                };
+                copy_exc.get_mut(vm.heap).chain = Some(Box::new(ExceptionChain {
+                    cause: None,
+                    context: None,
+                    suppress_context,
+                }));
+            }
+            if let Some(cause_id) = chain_cause {
+                let val = Value::Ref(cause_id);
+                let res = deep_copy(&val, memo, vm);
+                val.into_ref_id();
+                let copied = res?;
+                let copied_id = copied.into_ref_id();
+                let HeapReadOutput::Exception(copy_exc) = vm.heap.read(copy_id) else {
+                    unreachable!("allocated an exception");
+                };
+                copy_exc.get_mut(vm.heap).chain.as_mut().unwrap().cause = copied_id;
+            }
+            if let Some(context_id) = chain_context {
+                let val = Value::Ref(context_id);
+                let res = deep_copy(&val, memo, vm);
+                val.into_ref_id();
+                let copied = res?;
+                let copied_id = copied.into_ref_id();
+                let HeapReadOutput::Exception(copy_exc) = vm.heap.read(copy_id) else {
+                    unreachable!("allocated an exception");
+                };
+                copy_exc.get_mut(vm.heap).chain.as_mut().unwrap().context = copied_id;
+            }
+        }
+
+        let (copy, _) = guard.into_parts();
+        Ok(copy)
     }
 }
 
@@ -3771,9 +3837,9 @@ pub struct ExceptionRaise {
     pub exc: SimpleException,
     /// Owned reference to the live exception object, released with `drop_with`.
     #[serde(skip)]
-    pub(crate) instance: Option<Value>,
+    pub(crate) instance: Option<Box<Value>>,
     /// Innermost executed frame, with callers linked as parents.
-    pub frame: Option<Box<RawStackFrame>>,
+    pub frame: Option<RawStackFrame>,
     /// Resolved innermost location of a rejected snippet, independent of its discarded intern IDs.
     pub snippet_frame: Option<Box<StackFrame>>,
     /// Whether to hide the caret marker when creating the stack frame.
@@ -3810,8 +3876,13 @@ impl From<MontyException> for ExceptionRaise {
 
 impl ExceptionRaise {
     pub(crate) fn take_instance(&mut self) -> Option<Value> {
-        self.instance.take()
+        self.instance.take().map(|boxed| *boxed)
     }
+
+    pub(crate) fn set_instance(&mut self, instance: Value) {
+        self.instance = Some(Box::new(instance));
+    }
+
     /// Adds a caller's frame as the outermost frame in the traceback chain.
     ///
     /// This is used when an exception propagates up through call frames.
@@ -3823,7 +3894,7 @@ impl ExceptionRaise {
     pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: StringId, hide_caret: bool) {
         if let Some(ref mut frame) = self.frame {
             // Find the outermost frame (the one with no parent) and add the new frame as its parent
-            let mut current = frame.as_mut();
+            let mut current = frame;
             while current.parent.is_some() {
                 current = current.parent.as_mut().unwrap();
             }
@@ -3834,7 +3905,7 @@ impl ExceptionRaise {
             // No frame yet - create one
             let mut new_frame = RawStackFrame::new(position, name, None);
             new_frame.hide_caret = hide_caret;
-            self.frame = Some(Box::new(new_frame));
+            self.frame = Some(new_frame);
         }
     }
 
@@ -3867,7 +3938,7 @@ impl ExceptionRaise {
         let mut cache: Vec<(StringId, SourceMap<'s>)> = Vec::new();
         let mut traceback = self.frame.map_or_default(|frame| {
             let mut frames = Vec::new();
-            let mut current = Some(frame.as_ref());
+            let mut current = Some(&frame);
             while let Some(f) = current {
                 let fname_id = f.position.filename;
                 // An `eval()` / `exec()` snippet resolves against its own
@@ -3961,8 +4032,10 @@ impl Clone for ExceptionRaise {
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for ExceptionRaise {
-    fn drop_with(self, ctx: &mut C) {
-        self.instance.drop_with(ctx);
+    fn drop_with(mut self, ctx: &mut C) {
+        if let Some(val) = self.instance.take() {
+            val.drop_with(ctx);
+        }
     }
 }
 

@@ -236,6 +236,14 @@ impl Dict {
         }
     }
 
+    pub(crate) fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
+        Self {
+            table: self.table.clone_with_heap(heap),
+            contains_refs: self.contains_refs,
+            kind: self.cloned_kind(heap),
+        }
+    }
+
     /// The live entries, in insertion order.
     #[inline]
     fn live(&self) -> Live<'_, DictEntry> {

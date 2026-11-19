@@ -12,9 +12,9 @@ use num_bigint::BigInt;
 use crate::{
     annotations,
     args::ArgValues,
-    builtins::Builtins,
+    builtins::{Builtins, base_exception::init_exception_instance},
     bytecode::{CallResult, VM},
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     expressions::CmpOperator,
     fstring::FormatFloat,
@@ -279,7 +279,7 @@ impl<'h> PyValue<'h> {
             Self::Marker(value) => Ok(value.py_repr_fmt(f)?),
             Self::Property(value) => Ok(write!(f, "<property {value:?}>")?),
             Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type_name(vm))?),
-            Self::Exception(e) => e.py_repr_fmt(f, vm),
+            Self::Exception(e) => e.py_repr_fmt(f, vm, heap_ids),
             Self::Module(m) => Ok(f.write_str(&m.get(vm.heap).repr(vm.interns))?),
             Self::Coroutine(coro) => {
                 let func = vm.interns.get_function(coro.get(vm.heap).func_id);
@@ -501,8 +501,9 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                     Self::Dict(_) => "{...}",
                     _ => "...",
                 })?)
-            } else if matches!(self, Self::Instance(_)) {
-                // Dataclass reprs track cycles; user __repr__ recurses until the VM's guard raises.
+            } else if matches!(self, Self::Instance(_) | Self::Exception(_)) {
+                // Dataclass/Exception reprs recurse until the VM's guard raises RecursionError,
+                // while container cycles (e.g. list containing exc) are caught by heap_ids.
                 self.repr_inner(f, vm, heap_ids)
             } else {
                 heap_ids.insert(id);
@@ -780,6 +781,26 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
+            Self::Exception(value) => {
+                if attr.as_str(vm.interns) == "__init__" {
+                    let (pos_iter, kwargs) = args.into_parts();
+                    let pos_vec: Vec<Value> = pos_iter.collect();
+                    init_exception_instance(value.id(), pos_vec, kwargs, vm)?;
+                    Ok(CallResult::Value(Value::None))
+                } else if let Some(callable) = value
+                    .get(vm.heap)
+                    .attrs
+                    .as_ref()
+                    .and_then(|attrs| attrs.get_by_str(attr.as_str(vm.interns), vm.heap, vm.interns))
+                {
+                    let callable = callable.clone_with_heap(vm.heap);
+                    defer_drop_mut!(callable, vm);
+                    callable.py_call(args, vm)
+                } else {
+                    args.drop_with(vm);
+                    Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
+                }
+            }
             Self::Module(value) => value.py_call_attr(vm, attr, args),
             Self::Builtin(Builtins::Type(ty)) => ty.call_class_method(attr, args, vm),
             Self::DefFunction(func_id) => {

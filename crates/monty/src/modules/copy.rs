@@ -164,6 +164,10 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
                 let settings = *context.get(vm.heap);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::DecimalContext(settings))))
             }
+            HeapReadOutput::Exception(exc) => {
+                let new_exc = exc.get(vm.heap).clone_with_heap(vm.heap);
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Exception(Box::new(new_exc)))))
+            }
             _ => unreachable!("`classify` said this type is rebuilt, so `shallow_copy` must rebuild it"),
         },
     }
@@ -236,6 +240,7 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
             HeapReadOutput::BoundMethod(bound) => bound.py_deep_copy(source, memo, vm),
             HeapReadOutput::Partial(partial) => partial.py_deep_copy(source, memo, vm),
             HeapReadOutput::Random(random) => random.py_deep_copy(source, memo, vm),
+            HeapReadOutput::Exception(exc) => exc.py_deep_copy(source, memo, vm),
             // A context holds no references, so its deep copy is its shallow one.
             HeapReadOutput::DecimalContext(context) => {
                 let settings = *context.get(vm.heap);
@@ -293,7 +298,8 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::BoundMethod(_)
         | HeapReadOutput::Partial(_)
         | HeapReadOutput::Random(_)
-        | HeapReadOutput::DecimalContext(_) => Copyability::Rebuilt,
+        | HeapReadOutput::DecimalContext(_)
+        | HeapReadOutput::Exception(_) => Copyability::Rebuilt,
         // A shallow copy of an immutable container holds the same items, so
         // CPython hands back the original; only `deepcopy` rebuilds these.
         HeapReadOutput::Tuple(_) | HeapReadOutput::FrozenSet(_) => {
@@ -312,7 +318,6 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::Slice(_)
         | HeapReadOutput::RePattern(_)
         | HeapReadOutput::ReMatch(_)
-        | HeapReadOutput::Exception(_)
         | HeapReadOutput::Date(_)
         | HeapReadOutput::Time(_)
         | HeapReadOutput::DateTime(_)

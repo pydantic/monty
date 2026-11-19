@@ -20,7 +20,7 @@ use crate::{
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExceptionArgs, PyException, RunError, RunResult, SimpleException},
+    exception_private::{PyException, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     modules::dataclasses,
     types::{
@@ -403,16 +403,25 @@ impl GraphExporter {
             HeapReadOutput::Exception(exc) => {
                 let (exc_type, args_copy) = {
                     let exc_ref = exc.get(vm.heap);
-                    let args = match &exc_ref.args {
-                        ExceptionArgs::Empty => ExceptionArgs::Empty,
-                        ExceptionArgs::OneStr(s) => ExceptionArgs::OneStr(s.clone()),
-                        ExceptionArgs::OneValue(v) => ExceptionArgs::OneValue(v.clone_with_heap(vm.heap)),
-                        ExceptionArgs::Tuple(id) => ExceptionArgs::Tuple(*id),
-                    };
+                    let args = exc_ref.args.clone_with_heap(vm.heap);
                     (exc_ref.exc_type(), args)
                 };
-                let mut args = args_copy;
-                let arg = args.format_arg(vm);
+                let args = args_copy;
+                let arg = if self.error.is_some() {
+                    None
+                } else {
+                    match args.format_arg(vm, exc_type) {
+                        Ok(s) => s,
+                        Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => {
+                            self.error = Some(err);
+                            None
+                        }
+                        Err(RunError::Exc(exc)) => {
+                            exc.drop_with(vm);
+                            Some("<exception str() failed>".to_owned())
+                        }
+                    }
+                };
                 args.drop_with(vm);
                 MontyNode::Exception { exc_type, arg }
             }
