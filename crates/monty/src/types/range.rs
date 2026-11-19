@@ -117,11 +117,10 @@ impl Range {
     /// - `range(start, stop, step)` - range with custom step
     #[py_signature("range(start, stop=..., step=..., /)")]
     pub fn init(vm: &mut VM<'_>, args: &RangeArgs) -> RunResult<Value> {
-        let RangeArgs { start, stop, step } = args;
-        let first = start.as_int(vm)?;
-        let range = if let Some(stop) = stop {
+        let first = args.start.as_int(vm)?;
+        let range = if let Some(stop) = &args.stop {
             let stop = stop.as_int(vm)?;
-            if let Some(step) = step {
+            if let Some(step) = &args.step {
                 let step = step.as_int(vm)?;
                 if step == 0 {
                     return Err(ExcType::value_error_range_step_zero());

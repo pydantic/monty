@@ -13,10 +13,9 @@ use crate::{bytecode::VM, exception_private::RunResult, types::str::allocate_str
 /// The converter reports the expected type and position for an invalid format spec.
 #[py_signature("format(value, format_spec: str=..., /)", bad_arg)]
 pub fn builtin_format(vm: &mut VM<'_>, args: &FormatArgs) -> RunResult<Value> {
-    let FormatArgs { value, format_spec } = args;
     // The spec borrows `vm`, which the formatter needs mutably; it is already
     // tracked so copying it out is bounded.
-    let spec = format_spec.as_ref().map(|spec| spec.as_str(vm).to_owned());
-    let formatted = vm.format_runtime_value(value, 0, spec.as_deref())?;
+    let spec = args.format_spec.as_ref().map(|spec| spec.as_str(vm).to_owned());
+    let formatted = vm.format_runtime_value(&args.value, 0, spec.as_deref())?;
     Ok(allocate_string(formatted, vm.heap))
 }

@@ -4,7 +4,7 @@ use monty_macros::py_signature;
 
 use crate::{
     bytecode::VM,
-    defer_drop, defer_drop_mut,
+    defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{DropGuard, HeapData},
     types::{List, PyTrait, allocate_tuple, tuple::TupleVec},
@@ -22,26 +22,23 @@ use crate::{
 ///
 /// `strict` is held as a `Value` because CPython evaluates it via truthiness
 /// (`py_bool`), not strict-type equality, so accepting any value is correct.
-#[py_signature("zip(*iterables, strict=False)", bind = owned)]
-pub fn builtin_zip(vm: &mut VM<'_>, args: ZipArgs) -> RunResult<Value> {
-    let ZipArgs { iterables, strict } = args;
-    defer_drop_mut!(iterables, vm);
+#[py_signature("zip(*iterables, strict=False)")]
+pub fn builtin_zip(vm: &mut VM<'_>, args: &ZipArgs) -> RunResult<Value> {
     // CPython's `strict` is truthy-checked (not strict typed), so test the raw
     // value rather than asking the macro to coerce to a strict `bool`.
-    defer_drop!(strict, vm);
-    let strict = strict.py_bool(vm)?;
+    let strict = args.strict.py_bool(vm)?;
 
-    if iterables.is_empty() {
+    if args.iterables.is_empty() {
         // zip() with no arguments returns empty list
         let heap_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
         return Ok(Value::Ref(heap_id));
     }
 
     // Create iterators for each iterable
-    let iterators: Vec<Value> = Vec::with_capacity(iterables.len());
+    let iterators: Vec<Value> = Vec::with_capacity(args.iterables.len());
     defer_drop_mut!(iterators, vm);
-    for iterable in iterables.drain(..) {
-        iterators.push(iterable.into_py_iter(vm)?.require_synchronous(vm)?);
+    for iterable in &args.iterables {
+        iterators.push(iterable.py_iter(vm)?.require_synchronous(vm)?);
     }
     let mut iterators = iterators.iter().map(|iter| iter.read(vm)).collect::<Vec<_>>();
 

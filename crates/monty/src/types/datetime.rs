@@ -240,32 +240,30 @@ pub(crate) fn to_monty_datetime(datetime: &DateTime) -> Option<MontyDateTime> {
 ///
 /// `fold` itself is accepted for CPython parity but currently has no effect
 /// on the stored datetime — Monty does not track DST-fold disambiguation.
-#[py_signature("datetime(year: c_int, month: c_int, day: c_int, hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)", bind = owned)]
-pub(crate) fn init(vm: &mut VM<'_>, args: DatetimeInitArgs) -> RunResult<Value> {
-    let DatetimeInitArgs {
-        year,
-        month,
-        day,
-        hour,
-        minute,
-        second,
-        microsecond,
-        tzinfo,
-        fold,
-    } = args;
-    // `tzinfo` owns the input ref; keep it alive across `tzinfo_from_value` and
-    // `from_components` so the heap-allocated TimeZone (if any) is not freed
-    // before `attach_or_allocate_tzinfo_ref` takes its own reference.
-    defer_drop_mut!(tzinfo, vm);
-
-    if fold != 0 && fold != 1 {
-        return Err(
-            SimpleException::new_msg(ExcType::ValueError, format!("fold must be either 0 or 1, not {fold}")).into(),
-        );
+#[py_signature(
+    "datetime(year: c_int, month: c_int, day: c_int, hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)"
+)]
+pub(crate) fn init(vm: &mut VM<'_>, args: &DatetimeInitArgs) -> RunResult<Value> {
+    if args.fold != 0 && args.fold != 1 {
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("fold must be either 0 or 1, not {}", args.fold),
+        )
+        .into());
     }
-
-    let (tz, tz_ref) = tzinfo_from_value(tzinfo, vm.heap, vm.interns)?;
-    let dt = from_components(year, month, day, hour, minute, second, microsecond, tz, tz_ref, vm.heap)?;
+    let (tz, tz_ref) = tzinfo_from_value(&args.tzinfo, vm.heap, vm.interns)?;
+    let dt = from_components(
+        args.year,
+        args.month,
+        args.day,
+        args.hour,
+        args.minute,
+        args.second,
+        args.microsecond,
+        tz,
+        tz_ref,
+        vm.heap,
+    )?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))))
 }
 
@@ -300,8 +298,7 @@ pub(crate) fn class_method(
 /// with a validated [`Option<MontyTimeZone>`] for the host to answer.
 #[py_signature("now(tz=None)")]
 pub(crate) fn class_now(vm: &mut VM<'_>, args: &NowArgs) -> RunResult<CallResult> {
-    let NowArgs { tz } = args;
-    let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
+    let (tz, tz_ref) = tzinfo_from_value(&args.tz, vm.heap, vm.interns)?;
     // Invalid fixed instants raise; only CallHost falls back to the host's clock.
     let Some(utc) = sandbox_instant(vm)? else {
         let tz = tz.map(|tz| MontyTimeZone {
@@ -324,10 +321,9 @@ pub(crate) fn class_now(vm: &mut VM<'_>, args: &NowArgs) -> RunResult<CallResult
 /// `tz` is `None` (CPython reads the host's zone there).
 #[py_signature("fromtimestamp(timestamp, tz=None)")]
 pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: &FromtimestampArgs) -> RunResult<Value> {
-    let FromtimestampArgs { timestamp, tz } = args;
-    let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
-    let utc = timestamp_to_utc(timestamp, TimestampRounding::HalfEven, vm)?
-        .ok_or_else(|| timestamp_not_a_number(timestamp, vm))?;
+    let (tz, tz_ref) = tzinfo_from_value(&args.tz, vm.heap, vm.interns)?;
+    let utc = timestamp_to_utc(&args.timestamp, TimestampRounding::HalfEven, vm)?
+        .ok_or_else(|| timestamp_not_a_number(&args.timestamp, vm))?;
     let mut dt = if let Some(tz) = tz {
         // CPython builds the UTC value first, so its year error comes first, and a
         // shifted result that leaves the range is `fromutc()`'s overflow.
@@ -485,8 +481,7 @@ fn timestamp_not_a_number(value: &Value, vm: &VM<'_>) -> RunError {
 /// wall time, as CPython reads it in the host's zone.
 #[py_signature("astimezone(tz=None)")]
 fn astimezone(dt: &DateTime, vm: &mut VM<'_>, args: &AstimezoneArgs) -> RunResult<CallResult> {
-    let AstimezoneArgs { tz } = args;
-    let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
+    let (tz, tz_ref) = tzinfo_from_value(&args.tz, vm.heap, vm.interns)?;
     let zone = &vm.env.os_policy.timezone;
     // CPython forms `self - utcoffset()` as a datetime, so the UTC intermediate
     // must be in range as well as the result.
@@ -555,13 +550,8 @@ fn date_out_of_range() -> RunError {
 /// chrono widths needed to accept 1 through 6 fractional digits.
 #[py_signature("strptime(date_string, format, /)", error_name = "datetime.strptime")]
 pub(crate) fn class_strptime(vm: &mut VM<'_>, args: &DatetimeStrptimeArgs) -> RunResult<Value> {
-    let DatetimeStrptimeArgs {
-        date_string: date_string_val,
-        format: format_val,
-    } = args;
-
-    let date_string = date::extract_str_arg(date_string_val, "strptime", vm.heap, vm.interns)?;
-    let fmt = date::extract_str_arg(format_val, "strptime", vm.heap, vm.interns)?;
+    let date_string = date::extract_str_arg(&args.date_string, "strptime", vm.heap, vm.interns)?;
+    let fmt = date::extract_str_arg(&args.format, "strptime", vm.heap, vm.interns)?;
 
     reject_bad_strptime_directive(&fmt)?;
 
@@ -627,8 +617,7 @@ fn reject_bad_strptime_directive(fmt: &str) -> RunResult<()> {
     reject_keywords
 )]
 pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: &DatetimeFromisoformatArgs) -> RunResult<Value> {
-    let DatetimeFromisoformatArgs { date_string: value } = args;
-    let s = date::extract_str_arg(value, "fromisoformat", vm.heap, vm.interns)?;
+    let s = date::extract_str_arg(&args.date_string, "fromisoformat", vm.heap, vm.interns)?;
 
     let dt = parse_iso_datetime(&s, vm.heap)
         .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("Invalid isoformat string: '{s}'")))?;
@@ -648,22 +637,18 @@ pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: &DatetimeFromisoformatA
 /// Every field stays a raw [`Value`] so the type checks run in the body with
 /// CPython's own wording (`combine() argument 1 must be datetime.date, not
 /// str`, and the shared `tzinfo argument must be ...` message).
-#[py_signature("combine(date, time, tzinfo=...)", bind = owned)]
-pub(crate) fn class_combine(vm: &mut VM<'_>, args: CombineArgs) -> RunResult<Value> {
-    let CombineArgs { date, time, tzinfo } = args;
-    defer_drop!(date, vm);
-    defer_drop!(time, vm);
+#[py_signature("combine(date, time, tzinfo=...)")]
+pub(crate) fn class_combine(vm: &mut VM<'_>, args: &CombineArgs) -> RunResult<Value> {
     // Guarded before the two type checks below, since both can fail while
     // holding the caller's `tzinfo` reference.
-    defer_drop!(tzinfo, vm);
 
-    let date_part = combine_date_part(date, vm)?;
-    let time_part = combine_time_part(time, vm)?;
+    let date_part = combine_date_part(&args.date, vm)?;
+    let time_part = combine_time_part(&args.time, vm)?;
 
     // Absent keeps the time's zone; present (including `None`) replaces it.
     // Either way the zone is borrowed, so the guard above has to outlive
     // `combine_allocate` — which takes its own ref via `from_components`.
-    match tzinfo.as_ref() {
+    match args.tzinfo.as_ref() {
         None => {
             let tz = (time::attached_timezone(&time_part, vm.heap), time_part.tzinfo_ref());
             combine_allocate(vm, date_part, &time_part, tz)

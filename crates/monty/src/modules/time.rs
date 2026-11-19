@@ -22,7 +22,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapData, HeapReadOutput},
+    heap::{HeapData, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
@@ -280,19 +280,16 @@ fn process_time(vm: &mut VM<'_>, args: ArgValues, function: TimeFunctions, nanos
 /// Validates the delay in every mode, then applies [`host_sleep`].
 /// [`PostConversionEffect::DiscardResult`] makes the call return `None`
 /// regardless of the host's answer; `Zero` skips the wait.
-#[py_signature("sleep(seconds, /)", error_name = "time.sleep", reject_keywords, bind = owned)]
-fn sleep(vm: &mut VM<'_>, args: TimeSleepArgs) -> RunResult<CallResult> {
-    let TimeSleepArgs { seconds } = args;
+#[py_signature("sleep(seconds, /)", error_name = "time.sleep", reject_keywords)]
+fn sleep(vm: &mut VM<'_>, args: &TimeSleepArgs) -> RunResult<CallResult> {
     // METH_O in CPython: keywords are refused wholesale, before arity.
-    let result = sleep_seconds(&seconds, vm).and_then(|secs| {
+    let duration = sleep_seconds(&args.seconds, vm).and_then(|secs| {
         sleep_duration(secs).map_err(|err| match err {
             SleepError::NotANumber => ExcType::invalid_nan(),
             SleepError::Negative => ExcType::value_error("sleep length must be non-negative"),
             SleepError::TooLarge => ExcType::sleep_too_long(),
         })
-    });
-    seconds.drop_with(vm.heap);
-    let duration = result?;
+    })?;
     let call = match host_sleep(vm, duration) {
         Some(HostSleep::System(delay)) => OsFunctionCall::SystemSleep(delay),
         Some(HostSleep::CallHost(delay)) => OsFunctionCall::Sleep(delay),
@@ -357,13 +354,11 @@ fn sleep_seconds(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
 
 /// `time.mktime(t)`: the inverse of `localtime`, reading `t` as wall time in the
 /// session zone. `METH_O` in CPython, hence the module-qualified arity message.
-#[py_signature("mktime(t, /)", error_name = "time.mktime", reject_keywords, bind = owned)]
-fn mktime(vm: &mut VM<'_>, args: TimeMktimeArgs) -> RunResult<CallResult> {
-    let TimeMktimeArgs { t: value } = args;
+#[py_signature("mktime(t, /)", error_name = "time.mktime", reject_keywords)]
+fn mktime(vm: &mut VM<'_>, args: &TimeMktimeArgs) -> RunResult<CallResult> {
     // Only the wall clock matters, and CPython does not range-check the
     // weekday or year day here as `asctime`/`strftime` do.
-    let wall = time_tuple_parts(&value, "mktime", vm).and_then(|(items, _)| naive_from_time_tuple(&items));
-    value.drop_with(vm.heap);
+    let wall = time_tuple_parts(&args.t, "mktime", vm).and_then(|(items, _)| naive_from_time_tuple(&items));
     let utc = vm
         .env
         .os_policy
@@ -374,24 +369,19 @@ fn mktime(vm: &mut VM<'_>, args: TimeMktimeArgs) -> RunResult<CallResult> {
 }
 
 /// `time.asctime(t=None)`: the fixed 24-character form, from `t` or the clock.
-#[py_signature("asctime(t=..., /)", reject_keywords, bind = owned)]
-fn asctime(vm: &mut VM<'_>, args: AsctimeArgs) -> RunResult<CallResult> {
-    let AsctimeArgs { t } = args;
-    let Some(value) = t else {
+#[py_signature("asctime(t=..., /)", reject_keywords)]
+fn asctime(vm: &mut VM<'_>, args: &AsctimeArgs) -> RunResult<CallResult> {
+    let Some(value) = &args.t else {
         return suspend_or_apply(vm, TimeCaller::Asctime, ClockReading::Ctime);
     };
-    let fields = time_fields(&value, "asctime", vm);
-    value.drop_with(vm.heap);
-    Ok(CallResult::Value(allocate_string(fields?.asctime(), vm.heap)))
+    let fields = time_fields(value, "asctime", vm)?;
+    Ok(CallResult::Value(allocate_string(fields.asctime(), vm.heap)))
 }
 
 /// `time.strftime(format, t=None)`, formatting `t` or the clock.
-#[py_signature("strftime(format, t=None, /)", bind = owned)]
-fn strftime(vm: &mut VM<'_>, args: StrftimeArgs) -> RunResult<CallResult> {
-    let StrftimeArgs { format, t } = args;
-    let result = strftime_result(&format, &t, vm);
-    (format, t).drop_with(vm.heap);
-    result
+#[py_signature("strftime(format, t=None, /)")]
+fn strftime(vm: &mut VM<'_>, args: &StrftimeArgs) -> RunResult<CallResult> {
+    strftime_result(&args.format, &args.t, vm)
 }
 
 /// [`strftime`] without the argument cleanup, so every exit releases both.
@@ -409,12 +399,9 @@ fn strftime_result(format: &Value, t: &Value, vm: &mut VM<'_>) -> RunResult<Call
 ///
 /// CPython's is the pure-Python `_strptime_time`, which is why the binding
 /// errors name that function rather than `strptime`.
-#[py_signature("_strptime_time(data_string, format=None)", bind = owned)]
-fn strptime(vm: &mut VM<'_>, args: StrptimeArgs) -> RunResult<CallResult> {
-    let StrptimeArgs { data_string, format } = args;
-    let result = strptime_result(&data_string, &format, vm);
-    (data_string, format).drop_with(vm.heap);
-    result.map(CallResult::Value)
+#[py_signature("_strptime_time(data_string, format=None)")]
+fn strptime(vm: &mut VM<'_>, args: &StrptimeArgs) -> RunResult<CallResult> {
+    strptime_result(&args.data_string, &args.format, vm).map(CallResult::Value)
 }
 
 /// [`strptime`] without the argument cleanup.

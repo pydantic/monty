@@ -44,7 +44,7 @@ use crate::{
     types::{
         Dict, Type, TypeRef, Union, allocate_tuple,
         instance::BoundMethod,
-        iter::collect_owned_iterable,
+        iter::collect_iterable,
         key_hash::hash_or_culprit,
         py_trait::LazyHeapSet,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
@@ -703,13 +703,11 @@ impl<'h> HeapRead<'h, NamedTuple> {
     /// `p.count(x)` — how many items equal `x`, inherited from `tuple`.
     #[py_signature("count(self, value, /)", owner = "tuple")]
     fn method_count(&self, vm: &mut VM<'h>, args: &TupleCountArgs) -> RunResult<Value> {
-        let TupleCountArgs { value } = args;
-
         let mut count = 0usize;
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some(item) = iter.next(vm)? {
-            if value.py_eq(item, vm)? {
+            if args.value.py_eq(item, vm)? {
                 count += 1;
             }
         }
@@ -721,9 +719,16 @@ impl<'h> HeapRead<'h, NamedTuple> {
     #[py_signature("index(self, value, start=..., stop=..., /)", owner = "tuple")]
     fn method_index(&self, vm: &mut VM<'h>, args: &IndexArgs) -> RunResult<Value> {
         let len = self.get(vm.heap).len();
-        let IndexArgs { value, start, stop } = args;
-        let start_arg = start.as_ref().map(|start| value_to_i64_bound(start, vm)).transpose()?;
-        let end_arg = stop.as_ref().map(|stop| value_to_i64_bound(stop, vm)).transpose()?;
+        let start_arg = args
+            .start
+            .as_ref()
+            .map(|start| value_to_i64_bound(start, vm))
+            .transpose()?;
+        let end_arg = args
+            .stop
+            .as_ref()
+            .map(|stop| value_to_i64_bound(stop, vm))
+            .transpose()?;
         let start = start_arg.map_or(0, |start| normalize_sequence_index(start, len));
         let end = end_arg.map_or(len, |end| normalize_sequence_index(end, len)).max(start);
 
@@ -734,7 +739,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
                 // No further matches possible inside [start, end).
                 break;
             }
-            if idx >= start && value.py_eq(item, vm)? {
+            if idx >= start && args.value.py_eq(item, vm)? {
                 return Ok(Value::Int(i64::try_from(idx).expect("index exceeds i64::MAX")));
             }
         }
@@ -1258,17 +1263,16 @@ fn make_namedtuple(class_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> RunRes
 
 /// Shared `_make` body: collect the iterable, length-check it against the
 /// fields, and build the instance.
-#[py_signature("_make(iterable, /)", bind = owned)]
+#[py_signature("_make(iterable, /)")]
 fn make_from_iterable(
     name: EitherStr,
     field_names: Vec<EitherStr>,
     class_id: Option<HeapId>,
     vm: &mut VM<'_>,
-    args: MakeArgs,
+    args: &MakeArgs,
 ) -> RunResult<Value> {
-    let MakeArgs { iterable } = args;
     let n = field_names.len();
-    let items = collect_owned_iterable::<Vec<Value>>(iterable, vm)?;
+    let items = collect_iterable(&args.iterable, vm)?;
     if items.len() != n {
         let got = items.len();
         items.drop_with(vm);

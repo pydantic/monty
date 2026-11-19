@@ -248,24 +248,15 @@ pub(crate) fn allocate_micros(total_microseconds: i128, heap: &Heap) -> Value {
 }
 
 /// Creates a `timedelta` from constructor arguments.
-#[py_signature("timedelta(days=0, seconds=0, microseconds=0, milliseconds=0, minutes=0, hours=0, weeks=0)", convert(days = DeltaComponent, seconds = DeltaComponent, microseconds = DeltaComponent, milliseconds = DeltaComponent, minutes = DeltaComponent, hours = DeltaComponent, weeks = DeltaComponent), bind = owned)]
-pub(crate) fn init(vm: &mut VM<'_>, args: TimedeltaArgs) -> RunResult<Value> {
-    let TimedeltaArgs {
-        days,
-        seconds,
-        microseconds,
-        milliseconds,
-        minutes,
-        hours,
-        weeks,
-    } = args;
-    let total_microseconds = checked_component(weeks, 7 * DAY_MICROSECONDS)?
-        + checked_component(days, DAY_MICROSECONDS)?
-        + checked_component(hours, HOUR_MICROSECONDS)?
-        + checked_component(minutes, MINUTE_MICROSECONDS)?
-        + checked_component(seconds, MICROSECONDS_PER_SECOND)?
-        + checked_component(milliseconds, MILLISECONDS_PER_SECOND)?
-        + microseconds.0;
+#[py_signature("timedelta(days=0, seconds=0, microseconds=0, milliseconds=0, minutes=0, hours=0, weeks=0)", convert(days = DeltaComponent, seconds = DeltaComponent, microseconds = DeltaComponent, milliseconds = DeltaComponent, minutes = DeltaComponent, hours = DeltaComponent, weeks = DeltaComponent))]
+pub(crate) fn init(vm: &mut VM<'_>, args: &TimedeltaArgs) -> RunResult<Value> {
+    let total_microseconds = checked_component(args.weeks.0, 7 * DAY_MICROSECONDS)?
+        + checked_component(args.days.0, DAY_MICROSECONDS)?
+        + checked_component(args.hours.0, HOUR_MICROSECONDS)?
+        + checked_component(args.minutes.0, MINUTE_MICROSECONDS)?
+        + checked_component(args.seconds.0, MICROSECONDS_PER_SECOND)?
+        + checked_component(args.milliseconds.0, MILLISECONDS_PER_SECOND)?
+        + args.microseconds.0;
 
     let delta = from_total_microseconds(total_microseconds)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))))
@@ -308,8 +299,8 @@ impl FromValue for DeltaComponent {
     }
 }
 
-fn checked_component(value: DeltaComponent, unit_microseconds: i128) -> RunResult<i128> {
-    value.0.checked_mul(unit_microseconds).ok_or_else(|| {
+fn checked_component(value: i128, unit_microseconds: i128) -> RunResult<i128> {
+    value.checked_mul(unit_microseconds).ok_or_else(|| {
         SimpleException::new_msg(ExcType::OverflowError, "timedelta argument overflow while normalizing").into()
     })
 }

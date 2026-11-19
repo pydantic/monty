@@ -10,7 +10,6 @@ use crate::{bytecode::VM, exception_private::RunResult, types::key_hash::plain_h
 /// Raises TypeError for unhashable types like lists and dicts.
 #[py_signature("hash(obj, /)")]
 pub fn builtin_hash(vm: &mut VM<'_>, args: &HashArgs) -> RunResult<Value> {
-    let HashArgs { obj } = args;
     // Python's hash() returns a signed integer; reinterpret bits for large values
-    Ok(Value::Int(plain_hash(obj, vm)?.raw().cast_signed()))
+    Ok(Value::Int(plain_hash(&args.obj, vm)?.raw().cast_signed()))
 }

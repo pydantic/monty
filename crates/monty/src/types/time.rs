@@ -25,7 +25,7 @@ use monty_types::ResourceTracker;
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
@@ -152,21 +152,19 @@ impl Time {
 /// Constructor for `time(hour=0, minute=0, second=0, microsecond=0, tzinfo=None, *, fold=0)`.
 ///
 /// The body validates the raw `tzinfo` value after converting the numeric fields.
-#[py_signature("time(hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)", bind = owned)]
-pub(crate) fn init(vm: &mut VM<'_>, args: TimeInitArgs) -> RunResult<Value> {
-    let TimeInitArgs {
-        hour,
-        minute,
-        second,
-        microsecond,
-        tzinfo,
-        fold,
-    } = args;
-    // `tzinfo` owns the input ref; hold it until `attach_tzinfo` has taken its
-    // own reference, or the TimeZone could be freed out from under us.
-    defer_drop_mut!(tzinfo, vm);
-
-    allocate(vm, hour, minute, second, microsecond, fold, tzinfo)
+#[py_signature(
+    "time(hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)"
+)]
+pub(crate) fn init(vm: &mut VM<'_>, args: &TimeInitArgs) -> RunResult<Value> {
+    allocate(
+        vm,
+        args.hour,
+        args.minute,
+        args.second,
+        args.microsecond,
+        args.fold,
+        &args.tzinfo,
+    )
 }
 
 /// Validates the components and allocates the `time`, taking a reference to
@@ -239,8 +237,7 @@ pub(crate) fn class_method(
 /// the three classes.
 #[py_signature("fromisoformat(time_string, /)", error_name = "time.fromisoformat", reject_keywords)]
 pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: &TimeFromisoformatArgs) -> RunResult<Value> {
-    let TimeFromisoformatArgs { time_string: value } = args;
-    let s = date::extract_str_arg(value, "fromisoformat", vm.heap, vm.interns)?;
+    let s = date::extract_str_arg(&args.time_string, "fromisoformat", vm.heap, vm.interns)?;
 
     let parsed = speedate::Time::parse_str(&s)
         .map_err(|_| SimpleException::new_msg(ExcType::ValueError, format!("Invalid isoformat string: '{s}'")))?;

@@ -133,17 +133,16 @@ fn call_cache(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Returns a configured decorator, or wraps a callable passed as the first argument.
 #[py_signature("lru_cache(maxsize=128, typed=False)")]
 fn call_lru_cache_factory(vm: &mut VM<'_>, args: &LruCacheArgs) -> RunResult<Value> {
-    let LruCacheArgs { maxsize, typed } = args;
-    let typed_flag = typed.py_bool(vm)?;
-    match maxsize {
+    let typed_flag = args.typed.py_bool(vm)?;
+    match &args.maxsize {
         Value::Int(size) => {
             let size = u64::try_from(*size).unwrap_or(0);
             lru_cache::allocate(None, Some(size), typed_flag, vm)
         }
         Value::Bool(flag) => lru_cache::allocate(None, Some(u64::from(*flag)), typed_flag, vm),
         Value::None => lru_cache::allocate(None, None, typed_flag, vm),
-        _ if maxsize.is_callable(vm) => {
-            lru_cache::allocate(Some(maxsize.clone_with_heap(vm)), Some(128), typed_flag, vm)
+        _ if args.maxsize.is_callable(vm) => {
+            lru_cache::allocate(Some(args.maxsize.clone_with_heap(vm)), Some(128), typed_flag, vm)
         }
         _ => Err(lru_cache::bad_maxsize_error()),
     }

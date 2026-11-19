@@ -106,8 +106,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: UnicodedataFunctions, args: ArgVal
 /// for unassigned code points.
 #[py_signature("category(chr, /)")]
 fn uni_category(vm: &mut VM<'_>, args: &CategoryArgs) -> RunResult<Value> {
-    let CategoryArgs { chr } = args;
-    let c = single_char(chr, "category", None, vm)?;
+    let c = single_char(&args.chr, "category", None, vm)?;
     Ok(allocate_string(category_abbrev(get_general_category(c)), vm.heap))
 }
 
@@ -149,8 +148,7 @@ fn uni_name(vm: &mut VM<'_>, args: NameArgs) -> RunResult<Value> {
 /// that name. Unlike CPython, named sequences are not resolved.
 #[py_signature("lookup(name, /)")]
 fn uni_lookup(vm: &mut VM<'_>, args: &LookupArgs) -> RunResult<Value> {
-    let LookupArgs { name } = args;
-    let name = name.try_to_str(vm)?;
+    let name = args.name.try_to_str(vm)?;
     match unicode_names2::character(name) {
         Some(c) => Ok(allocate_string(c.to_string(), vm.heap)),
         None => Err(SimpleException::new_msg(ExcType::KeyError, format!("undefined character name '{name}'")).into()),
@@ -162,8 +160,7 @@ fn uni_lookup(vm: &mut VM<'_>, args: &LookupArgs) -> RunResult<Value> {
 /// Returns `0` for characters with no combining class (the common case).
 #[py_signature("combining(chr, /)")]
 fn uni_combining(vm: &mut VM<'_>, args: &CombiningArgs) -> RunResult<Value> {
-    let CombiningArgs { chr } = args;
-    let c = single_char(chr, "combining", None, vm)?;
+    let c = single_char(&args.chr, "combining", None, vm)?;
     Ok(Value::Int(i64::from(canonical_combining_class(c))))
 }
 
@@ -183,9 +180,8 @@ fn uni_combining(vm: &mut VM<'_>, args: &CombiningArgs) -> RunResult<Value> {
     kwarg_error_name = "unicodedata.normalize"
 )]
 fn uni_normalize(vm: &mut VM<'_>, args: &NormalizeArgs) -> RunResult<Value> {
-    let NormalizeArgs { form, unistr } = args;
-    let form = NormForm::parse(form.as_str(vm))?;
-    normalize_with(form, unistr.as_str(vm), vm.heap)
+    let form = NormForm::parse(args.form.as_str(vm))?;
+    normalize_with(form, args.unistr.as_str(vm), vm.heap)
 }
 
 /// `unicodedata.is_normalized(form, unistr)` — whether a string is already normalized.
@@ -195,12 +191,11 @@ fn uni_normalize(vm: &mut VM<'_>, args: &NormalizeArgs) -> RunResult<Value> {
     kwarg_error_name = "unicodedata.is_normalized"
 )]
 fn uni_is_normalized(vm: &mut VM<'_>, args: &IsNormalizedArgs) -> RunResult<Value> {
-    let IsNormalizedArgs { form, unistr } = args;
-    let normalized = match NormForm::parse(form.as_str(vm))? {
-        NormForm::Nfc => unicode_normalization::is_nfc(unistr.as_str(vm)),
-        NormForm::Nfd => unicode_normalization::is_nfd(unistr.as_str(vm)),
-        NormForm::Nfkc => unicode_normalization::is_nfkc(unistr.as_str(vm)),
-        NormForm::Nfkd => unicode_normalization::is_nfkd(unistr.as_str(vm)),
+    let normalized = match NormForm::parse(args.form.as_str(vm))? {
+        NormForm::Nfc => unicode_normalization::is_nfc(args.unistr.as_str(vm)),
+        NormForm::Nfd => unicode_normalization::is_nfd(args.unistr.as_str(vm)),
+        NormForm::Nfkc => unicode_normalization::is_nfkc(args.unistr.as_str(vm)),
+        NormForm::Nfkd => unicode_normalization::is_nfkd(args.unistr.as_str(vm)),
     };
     Ok(Value::Bool(normalized))
 }

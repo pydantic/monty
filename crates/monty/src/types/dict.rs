@@ -2040,18 +2040,9 @@ pub(crate) fn dict_class_method(
 /// dict.fromkeys(['a', 'b', 'c'])  # {'a': None, 'b': None, 'c': None}
 /// dict.fromkeys(['a', 'b'], 0)    # {'a': 0, 'b': 0}
 /// ```
-#[py_signature("fromkeys(iterable, value=..., /)", bind = owned)]
-pub fn dict_fromkeys(args: FromkeysArgs, kind: DictKind, vm: &mut VM<'_>) -> RunResult<Value> {
-    let FromkeysArgs {
-        iterable,
-        value: default,
-    } = args;
-    // CPython names the bare method (`fromkeys expected …`), not `dict.fromkeys`,
-    // for both `dict` and the inherited `defaultdict.fromkeys`.
-    let default = default.unwrap_or(Value::None);
-    defer_drop!(default, vm);
-
-    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
+#[py_signature("fromkeys(iterable, value=..., /)")]
+pub fn dict_fromkeys(args: &FromkeysArgs, kind: DictKind, vm: &mut VM<'_>) -> RunResult<Value> {
+    let iter = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 
@@ -2062,7 +2053,11 @@ pub fn dict_fromkeys(args: FromkeysArgs, kind: DictKind, vm: &mut VM<'_>) -> Run
         let (dict, vm) = dict_guard.as_parts_mut();
 
         while let Some(key) = iter.py_next(vm)? {
-            let old_value = dict.set(key, default.clone_with_heap(vm), vm)?;
+            let value = args
+                .value
+                .as_ref()
+                .map_or(Value::None, |value| value.clone_with_heap(vm));
+            let old_value = dict.set(key, value, vm)?;
             old_value.drop_with(vm);
         }
     }

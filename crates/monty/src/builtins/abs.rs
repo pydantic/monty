@@ -12,7 +12,7 @@ use crate::{
 /// Returns the absolute value through the operand's `__abs__` implementation.
 #[py_signature("abs(x, /)")]
 pub fn builtin_abs(vm: &mut VM<'_>, args: &AbsArgs) -> RunResult<Value> {
-    let AbsArgs { x } = args;
-    x.py_abs_impl(vm)?
-        .ok_or_else(|| ExcType::type_error(format!("bad operand type for abs(): '{}'", x.py_type_name(vm))))
+    args.x
+        .py_abs_impl(vm)?
+        .ok_or_else(|| ExcType::type_error(format!("bad operand type for abs(): '{}'", args.x.py_type_name(vm))))
 }

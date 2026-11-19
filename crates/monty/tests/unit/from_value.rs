@@ -369,8 +369,7 @@ fn from_args_vm_field_and_block_default() {
 
 #[monty_macros::py_signature("f(*, _replace=None)")]
 fn underscored_keyword(vm: &mut VM<'_>, args: &FArgs) -> RunResult<i64> {
-    let FArgs { _replace: value } = args;
-    value.as_int(vm)
+    args._replace.as_int(vm)
 }
 
 #[test]
@@ -451,8 +450,7 @@ fn borrowed_one_arg_adapter_releases_heap_strings_on_return() {
     const TEXT: &str = "heap-backed argument that exceeds inline storage";
     #[monty_macros::py_signature("check(text: str | None, /)")]
     fn check(vm: &mut VM<'_>, args: &CheckArgs) -> RunResult<bool> {
-        let CheckArgs { text } = args;
-        if let Some(text) = text {
+        if let Some(text) = &args.text {
             assert_eq!(text.as_str(vm), TEXT);
             return Err(ExcType::type_error("body failed"));
         }

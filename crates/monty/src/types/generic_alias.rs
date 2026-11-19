@@ -812,29 +812,22 @@ fn abstract_class_error(name: &str, methods: &str) -> String {
 /// Frozen helper for `typing.get_type_hints`: `alias_with(alias, args, include_extras)`
 /// rebuilds `alias` around the resolved `args` tuple (the alias itself when they
 /// are unchanged), and strips `Annotated[T, ...]` to `T` unless `include_extras`.
-#[py_signature("alias_with(alias, resolved, include_extras, /)", bind = owned)]
-pub(crate) fn call_alias_with(args: AliasWithArgs, vm: &mut VM<'_>) -> RunResult<Value> {
-    let AliasWithArgs {
-        alias,
-        resolved,
-        include_extras,
-    } = args;
-    defer_drop!(alias, vm);
-    defer_drop!(resolved, vm);
-    let Some(HeapReadOutput::GenericAlias(generic)) = alias.read_heap(vm) else {
+#[py_signature("alias_with(alias, resolved, include_extras, /)")]
+pub(crate) fn call_alias_with(args: &AliasWithArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let Some(HeapReadOutput::GenericAlias(generic)) = args.alias.read_heap(vm) else {
         unreachable!("frozen code passes a generic alias")
     };
-    let (origin, args) = generic.parts(vm);
-    defer_drop!(args, vm);
+    let (origin, stored_args) = generic.parts(vm);
+    defer_drop!(stored_args, vm);
     if generic.get(vm.heap).is_annotated() {
-        let Some(HeapReadOutput::Tuple(resolved_items)) = resolved.read_heap(vm) else {
+        let Some(HeapReadOutput::Tuple(resolved_items)) = args.resolved.read_heap(vm) else {
             unreachable!("frozen code passes the resolved args as a tuple")
         };
         let inner = resolved_items.clone_item(0, vm);
-        if !matches!(include_extras, Value::Bool(true)) {
+        if !matches!(&args.include_extras, Value::Bool(true)) {
             return Ok(inner);
         }
-        let Some(HeapReadOutput::Tuple(stored)) = args.read_heap(vm) else {
+        let Some(HeapReadOutput::Tuple(stored)) = stored_args.read_heap(vm) else {
             unreachable!("GenericAlias::args is always a tuple")
         };
         defer_drop!(inner, vm);
@@ -847,10 +840,10 @@ pub(crate) fn call_alias_with(args: AliasWithArgs, vm: &mut VM<'_>) -> RunResult
         let key = allocate_tuple(items, vm.heap);
         return Ok(GenericAlias::allocate(origin, key, vm));
     }
-    if resolved.py_eq(args, vm)? {
-        Ok(alias.clone_with_heap(vm))
+    if args.resolved.py_eq(stored_args, vm)? {
+        Ok(args.alias.clone_with_heap(vm))
     } else {
-        Ok(GenericAlias::allocate(origin, resolved.clone_with_heap(vm), vm))
+        Ok(GenericAlias::allocate(origin, args.resolved.clone_with_heap(vm), vm))
     }
 }
 

@@ -12,7 +12,6 @@ use crate::{
     args::ArgValues,
     builtins::Builtins,
     bytecode::{CallResult, VM},
-    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::HeapData,
     intern::StaticStrings,
@@ -82,32 +81,19 @@ fn format_class(vm: &mut VM<'_>) -> Value {
 
 /// `annotationlib.get_annotations()`: `obj`'s annotations evaluated where they were
 /// written (or as stored, in `STRING` format), without resolving forward references.
-#[py_signature("get_annotations(obj, *, globals=None, locals=None, eval_str=False, format=1)", bind = owned)]
-fn get_annotations(vm: &mut VM<'_>, args: GetAnnotationsArgs) -> RunResult<CallResult> {
-    let GetAnnotationsArgs {
-        obj,
-        globals,
-        locals,
-        eval_str,
-        format,
-    } = args;
-    defer_drop!(obj, vm);
-    defer_drop!(globals, vm);
-    defer_drop!(locals, vm);
-    defer_drop!(eval_str, vm);
-    defer_drop!(format, vm);
-
-    let eval_str = eval_str.py_bool(vm)?;
-    if eval_str && format_code(format) != Some(1) {
+#[py_signature("get_annotations(obj, *, globals=None, locals=None, eval_str=False, format=1)")]
+fn get_annotations(vm: &mut VM<'_>, args: &GetAnnotationsArgs) -> RunResult<CallResult> {
+    let eval_str = args.eval_str.py_bool(vm)?;
+    if eval_str && format_code(&args.format) != Some(1) {
         return Err(ExcType::value_error(
             "eval_str=True is only supported with format=Format.VALUE",
         ));
     }
-    let format = HintFormat::parse(format, false, vm)?;
-    let globalns = namespace_dict(globals, "get_annotations", "globals", vm)?;
-    let localns = namespace_dict(locals, "get_annotations", "locals", vm)?;
+    let format = HintFormat::parse(&args.format, false, vm)?;
+    let globalns = namespace_dict(&args.globals, "get_annotations", "globals", vm)?;
+    let localns = namespace_dict(&args.locals, "get_annotations", "locals", vm)?;
     collect_hints(
-        obj,
+        &args.obj,
         &HintsRequest {
             format,
             globalns,

@@ -1202,8 +1202,7 @@ fn parse_strip_arg(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
 /// Otherwise, return a copy of the original string.
 #[py_signature("removeprefix(self, prefix, /)", owner = "str")]
 fn str_removeprefix<'h>(s: &PyStr<'h>, args: &StrRemoveprefixArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let StrRemoveprefixArgs { prefix: prefix_value } = args;
-    let prefix = extract_string_arg(prefix_value, vm)?;
+    let prefix = extract_string_arg(&args.prefix, vm)?;
 
     let s = s.as_str(vm);
     let result = s.strip_prefix(&prefix).unwrap_or(s).to_owned();
@@ -1216,8 +1215,7 @@ fn str_removeprefix<'h>(s: &PyStr<'h>, args: &StrRemoveprefixArgs, vm: &mut VM<'
 /// Otherwise, return a copy of the original string.
 #[py_signature("removesuffix(self, suffix, /)", owner = "str")]
 fn str_removesuffix<'h>(s: &PyStr<'h>, args: &StrRemovesuffixArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let StrRemovesuffixArgs { suffix: suffix_value } = args;
-    let suffix = extract_string_arg(suffix_value, vm)?;
+    let suffix = extract_string_arg(&args.suffix, vm)?;
 
     let s = s.as_str(vm);
     let result = s.strip_suffix(&suffix).unwrap_or(s).to_owned();
@@ -1233,7 +1231,6 @@ fn str_removesuffix<'h>(s: &PyStr<'h>, args: &StrRemovesuffixArgs, vm: &mut VM<'
 /// Returns a list of the words in the string, using sep as the delimiter string.
 #[py_signature("split(self, /, sep: str | None = None, maxsplit: i64 = -1) -> list")]
 fn str_split<'h>(s: &PyStr<'h>, args: &SplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let maxsplit = args.maxsplit;
     // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
     let mut items_guard = DropGuard::new(Vec::new(), vm);
     let (list_items, vm) = items_guard.as_parts_mut();
@@ -1245,21 +1242,21 @@ fn str_split<'h>(s: &PyStr<'h>, args: &SplitArgs, vm: &mut VM<'h>) -> RunResult<
             if sep.is_empty() {
                 return Err(ExcType::value_error_empty_separator());
             }
-            if maxsplit < 0 {
+            if args.maxsplit < 0 {
                 collect_checked(s.split(sep), &vm.heap.tracker)?
             } else {
                 // Safe cast: we've checked maxsplit >= 0
-                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                let max = usize::try_from(args.maxsplit).unwrap_or(usize::MAX);
                 collect_checked(s.splitn(max.saturating_add(1), sep), &vm.heap.tracker)?
             }
         }
         None => {
             // Split on whitespace, filtering empty strings
-            if maxsplit < 0 {
+            if args.maxsplit < 0 {
                 collect_checked(s.split(is_space).filter(|part| !part.is_empty()), &vm.heap.tracker)?
             } else {
                 // Safe cast: we've checked maxsplit >= 0
-                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                let max = usize::try_from(args.maxsplit).unwrap_or(usize::MAX);
                 split_whitespace_n(s, max, &vm.heap.tracker)?
             }
         }
@@ -1288,7 +1285,6 @@ fn str_split<'h>(s: &PyStr<'h>, args: &SplitArgs, vm: &mut VM<'h>) -> RunResult<
 /// splitting from the right.
 #[py_signature("rsplit(self, /, sep: str | None = None, maxsplit: i64 = -1) -> list")]
 fn str_rsplit<'h>(s: &PyStr<'h>, args: &RsplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let maxsplit = args.maxsplit;
     // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
     let mut items_guard = DropGuard::new(Vec::new(), vm);
     let (list_items, vm) = items_guard.as_parts_mut();
@@ -1300,13 +1296,13 @@ fn str_rsplit<'h>(s: &PyStr<'h>, args: &RsplitArgs, vm: &mut VM<'h>) -> RunResul
             if sep.is_empty() {
                 return Err(ExcType::value_error_empty_separator());
             }
-            if maxsplit < 0 {
+            if args.maxsplit < 0 {
                 let mut parts = collect_checked(s.rsplit(sep), &vm.heap.tracker)?;
                 parts.reverse();
                 parts
             } else {
                 // Safe cast: we've checked maxsplit >= 0
-                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                let max = usize::try_from(args.maxsplit).unwrap_or(usize::MAX);
                 let mut parts = collect_checked(s.rsplitn(max.saturating_add(1), sep), &vm.heap.tracker)?;
                 parts.reverse();
                 parts
@@ -1314,11 +1310,11 @@ fn str_rsplit<'h>(s: &PyStr<'h>, args: &RsplitArgs, vm: &mut VM<'h>) -> RunResul
         }
         None => {
             // Split on whitespace from right
-            if maxsplit < 0 {
+            if args.maxsplit < 0 {
                 collect_checked(s.split(is_space).filter(|part| !part.is_empty()), &vm.heap.tracker)?
             } else {
                 // Safe cast: we've checked maxsplit >= 0
-                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                let max = usize::try_from(args.maxsplit).unwrap_or(usize::MAX);
                 rsplit_whitespace_n(s, max, &vm.heap.tracker)?
             }
         }
@@ -1482,12 +1478,9 @@ fn str_splitlines<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunRes
 /// Argument shape for `str.splitlines(keepends=False)`. CPython evaluates
 /// `keepends` for truthiness rather than strict-typing, so the field stays as
 /// a raw `Value` for `value_is_truthy` to inspect.
-#[py_signature("splitlines(keepends=...)", bind = owned)]
-fn parse_splitlines_args(args: SplitlinesArgs, vm: &mut VM<'_>) -> RunResult<bool> {
-    let SplitlinesArgs { keepends } = args;
-    let result = keepends.as_ref().is_some_and(value_is_truthy);
-    keepends.drop_with(vm.heap);
-    Ok(result)
+#[py_signature("splitlines(keepends=...)")]
+fn parse_splitlines_args(args: &SplitlinesArgs, vm: &mut VM<'_>) -> RunResult<bool> {
+    Ok(args.keepends.as_ref().is_some_and(value_is_truthy))
 }
 
 /// Checks if a value is truthy for bool conversion.
@@ -1506,8 +1499,7 @@ fn value_is_truthy(v: &Value) -> bool {
 /// containing the part before the separator, the separator itself, and the part after.
 #[py_signature("partition(self, sep, /)", owner = "str")]
 fn str_partition<'h>(s: &PyStr<'h>, args: &StrPartitionArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let StrPartitionArgs { sep: sep_value } = args;
-    let sep = extract_string_arg(sep_value, vm)?;
+    let sep = extract_string_arg(&args.sep, vm)?;
 
     if sep.is_empty() {
         return Err(ExcType::value_error_empty_separator());
@@ -1535,8 +1527,7 @@ fn str_partition<'h>(s: &PyStr<'h>, args: &StrPartitionArgs, vm: &mut VM<'h>) ->
 /// containing the part before the separator, the separator itself, and the part after.
 #[py_signature("rpartition(self, sep, /)", owner = "str")]
 fn str_rpartition<'h>(s: &PyStr<'h>, args: &StrRpartitionArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let StrRpartitionArgs { sep: sep_value } = args;
-    let sep = extract_string_arg(sep_value, vm)?;
+    let sep = extract_string_arg(&args.sep, vm)?;
 
     if sep.is_empty() {
         return Err(ExcType::value_error_empty_separator());
@@ -1570,16 +1561,15 @@ fn str_rpartition<'h>(s: &PyStr<'h>, args: &StrRpartitionArgs, vm: &mut VM<'h>) 
 fn str_replace<'h>(s: &PyStr<'h>, args: &ReplaceArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let old = args.old.as_str(vm);
     let new = args.new.as_str(vm);
-    let count = args.count;
     let s = s.as_str(vm);
 
-    check_replace_size(s.len(), old.len(), new.len(), count, &vm.heap.tracker)?;
+    check_replace_size(s.len(), old.len(), new.len(), args.count, &vm.heap.tracker)?;
 
-    let result = if count < 0 {
+    let result = if args.count < 0 {
         s.replace(old, new)
     } else {
         // Safe cast: we've checked count >= 0
-        let n = usize::try_from(count).unwrap_or(usize::MAX);
+        let n = usize::try_from(args.count).unwrap_or(usize::MAX);
         s.replacen(old, new, n)
     };
 
@@ -1700,8 +1690,7 @@ fn parse_justify_args(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResu
 /// string of length width. A sign prefix is handled correctly.
 #[py_signature("zfill(self, width, /)", owner = "str")]
 fn str_zfill<'h>(s: &PyStr<'h>, args: &StrZfillArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let StrZfillArgs { width: width_value } = args;
-    let width_i64 = extract_int_arg(width_value, vm)?;
+    let width_i64 = extract_int_arg(&args.width, vm)?;
 
     // Safe cast: treat negative as 0, saturate large positive values
     let width = if width_i64 < 0 {
@@ -1750,19 +1739,12 @@ fn str_zfill<'h>(s: &PyStr<'h>, args: &StrZfillArgs, vm: &mut VM<'h>) -> RunResu
 /// Argument shape for `str.expandtabs(tabsize=8)`. `tabsize` is `Option<Value>`
 /// so callers can distinguish "absent" (default 8) from any explicit value
 /// without forcing the macro into a type-checked default.
-#[py_signature("expandtabs(tabsize=...)", bind = owned)]
-fn str_expandtabs<'h>(s: &PyStr<'h>, args: ExpandtabsArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let ExpandtabsArgs { tabsize } = args;
-    let tabsize = match tabsize {
+#[py_signature("expandtabs(tabsize=...)")]
+fn str_expandtabs<'h>(s: &PyStr<'h>, args: &ExpandtabsArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let tabsize = match &args.tabsize {
         None => 8,
-        Some(val) => {
-            // `defer_drop!` rather than a trailing `drop_with`: the conversion
-            // raises for anything outside C `int`, and that `?` would otherwise
-            // leave `val`'s reference behind.
-            defer_drop!(val, vm);
-            // A negative tabsize expands to nothing, as CPython's `<= 0` test does.
-            usize::try_from(extract_c_int_arg(val, vm)?).unwrap_or(0)
-        }
+        // A negative tabsize expands to nothing.
+        Some(value) => usize::try_from(extract_c_int_arg(value, vm)?).unwrap_or(0),
     };
 
     let s = s.as_str(vm);
@@ -1816,9 +1798,8 @@ fn str_expandtabs<'h>(s: &PyStr<'h>, args: ExpandtabsArgs, vm: &mut VM<'h>) -> R
 /// `StrArg::from_value` and rejects `Value::None`.
 #[py_signature("encode(encoding: str=..., errors: str=...)", bad_arg_named)]
 fn str_encode<'h>(s: &PyStr<'h>, args: &EncodeArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let EncodeArgs { encoding, errors } = args;
-    let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
-    let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
+    let encoding = args.encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
+    let errors = args.errors.as_ref().map_or("strict", |e| e.as_str(vm));
 
     let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
     let bytes = codec.encode(s.as_str(vm), errors, &vm.heap.tracker)?;

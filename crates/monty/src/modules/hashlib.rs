@@ -617,36 +617,24 @@ fn overflow_error(msg: impl Display) -> RunError {
 /// `pbkdf2_hmac(hash_name, password, salt, iterations, dklen=None)`, a clinic
 /// function whose `password`, `salt` and `iterations` convert in the body so
 /// their errors come out in signature order.
-#[py_signature("pbkdf2_hmac(hash_name: str, password, salt, iterations, dklen=None)", bad_arg_named, bind = owned)]
-fn call_pbkdf2_hmac(vm: &mut VM<'_>, args: Pbkdf2HmacArgs) -> RunResult<Value> {
-    let Pbkdf2HmacArgs {
-        hash_name,
-        password,
-        salt,
-        iterations,
-        dklen,
-    } = args;
-    defer_drop!(hash_name, vm);
-    defer_drop!(password, vm);
-    defer_drop!(salt, vm);
-    defer_drop!(iterations, vm);
-    defer_drop!(dklen, vm);
-    let password = buffer(password, vm)?;
-    let salt = buffer(salt, vm)?;
-    let iterations = c_long(iterations, vm)?;
-    let name = hash_name.as_str(vm);
+#[py_signature("pbkdf2_hmac(hash_name: str, password, salt, iterations, dklen=None)", bad_arg_named)]
+fn call_pbkdf2_hmac(vm: &mut VM<'_>, args: &Pbkdf2HmacArgs) -> RunResult<Value> {
+    let password = buffer(&args.password, vm)?;
+    let salt = buffer(&args.salt, vm)?;
+    let iterations = c_long(&args.iterations, vm)?;
+    let name = args.hash_name.as_str(vm);
     let algorithm = HashAlgorithm::from_name(name).ok_or_else(|| unsupported_hash_type(name))?;
     if iterations < 1 {
         return Err(ExcType::value_error("iteration value must be greater than 0."));
     }
     // OpenSSL takes both as C ints.
     let iterations = i32::try_from(iterations).map_err(|_| overflow_error("iteration value is too great."))?;
-    let dklen = if matches!(dklen, Value::None) {
+    let dklen = if matches!(&args.dklen, Value::None) {
         // A SHAKE's digest size is zero, which fails the same check an
         // explicit zero does.
         algorithm.digest_size()
     } else {
-        let dklen = c_long(dklen, vm)?;
+        let dklen = c_long(&args.dklen, vm)?;
         let dklen = i32::try_from(dklen.max(0)).map_err(|_| overflow_error("key length is too great."))?;
         usize::try_from(dklen).expect("non-negative")
     };

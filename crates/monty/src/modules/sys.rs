@@ -359,11 +359,9 @@ pub(super) fn call(vm: &mut VM<'_>, function: SysFunctions, args: ArgValues) -> 
 /// dump, etc.). Attempts to raise raise `ValueError` with a message
 /// pointing at the current cap.
 #[cfg(feature = "test-hooks")]
-#[py_signature("setrecursionlimit(limit, /)", error_name = "sys.setrecursionlimit", bind = owned)]
-fn setrecursionlimit(vm: &mut VM<'_>, args: SysSetrecursionlimitArgs) -> RunResult<Value> {
-    let SysSetrecursionlimitArgs { limit: arg } = args;
-    let Value::Int(limit) = arg else {
-        arg.drop_with(vm);
+#[py_signature("setrecursionlimit(limit, /)", error_name = "sys.setrecursionlimit")]
+fn setrecursionlimit(vm: &mut VM<'_>, args: &SysSetrecursionlimitArgs) -> RunResult<Value> {
+    let Value::Int(limit) = args.limit else {
         return Err(ExcType::type_error("sys.setrecursionlimit() argument must be int"));
     };
     let Ok(new_limit) = usize::try_from(limit) else {

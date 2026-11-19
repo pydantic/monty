@@ -13,6 +13,5 @@ use crate::{bytecode::VM, exception_private::RunResult, value::Value};
 /// Keyword calls raise `NotImplementedError` pending support for `mod=`.
 #[py_signature("pow(base, exp, modulus=None)", kwargs_not_supported_yet)]
 pub fn builtin_pow(vm: &mut VM<'_>, args: &PowArgs) -> RunResult<Value> {
-    let PowArgs { base, exp, modulus } = args;
-    base.py_pow(exp, Some(modulus), vm)
+    args.base.py_pow(&args.exp, Some(&args.modulus), vm)
 }

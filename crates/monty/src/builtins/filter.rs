@@ -31,12 +31,9 @@ use crate::{
 /// filter(lambda x: x > 0, [-1, 0, 1, 2])  # [1, 2]
 /// filter(None, [0, 1, False, True, ''])   # [1, True]
 /// ```
-#[py_signature("filter(function, iterable, /)", bind = owned)]
-pub fn builtin_filter(vm: &mut VM<'_>, args: FilterArgs) -> RunResult<Value> {
-    let FilterArgs { function, iterable } = args;
-    defer_drop!(function, vm);
-
-    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
+#[py_signature("filter(function, iterable, /)")]
+pub fn builtin_filter(vm: &mut VM<'_>, args: &FilterArgs) -> RunResult<Value> {
+    let iter = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 
@@ -47,11 +44,11 @@ pub fn builtin_filter(vm: &mut VM<'_>, args: FilterArgs) -> RunResult<Value> {
     while let Some(item) = iter.py_next(vm)? {
         let mut item_guard = DropGuard::new(item, vm);
         let (item, vm) = item_guard.as_parts_mut();
-        let should_include = if let Value::None = function {
+        let should_include = if matches!(args.function, Value::None) {
             // No predicate - use truthiness of element
             item.py_bool(vm)?
         } else {
-            call_predicate(function, item, vm)?
+            call_predicate(&args.function, item, vm)?
         };
 
         if should_include {

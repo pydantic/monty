@@ -16,12 +16,7 @@ use crate::{
 /// Checks if an object is an instance of a class or a tuple of classes.
 #[py_signature("isinstance(obj, class_or_tuple, /)")]
 pub fn builtin_isinstance(vm: &mut VM<'_>, args: &IsinstanceArgs) -> RunResult<Value> {
-    let IsinstanceArgs {
-        obj,
-        class_or_tuple: classinfo,
-    } = args;
-
-    isinstance_check(obj, classinfo, vm).map(Value::Bool)
+    isinstance_check(&args.obj, &args.class_or_tuple, vm).map(Value::Bool)
 }
 
 /// Checks if `obj` matches a single classinfo entry.

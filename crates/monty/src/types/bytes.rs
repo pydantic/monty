@@ -717,9 +717,8 @@ fn call_bytes_method_impl<'h>(
 /// `StrArg::from_value` and rejects `Value::None`.
 #[py_signature("decode(encoding: str=..., errors: str=...)", bad_arg_named)]
 fn bytes_decode<'h>(bytes: &impl HeapView<'h, [u8]>, args: &BytesDecodeArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let BytesDecodeArgs { encoding, errors } = args;
-    let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
-    let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
+    let encoding = args.encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
+    let errors = args.errors.as_ref().map_or("strict", |e| e.as_str(vm));
 
     let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
     let s = codec.decode(bytes.get(vm.heap), errors)?;
@@ -1323,8 +1322,7 @@ fn bytes_rindex<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut V
 /// If chars is not specified, ASCII whitespace bytes are removed.
 #[py_signature("strip(self, bytes=..., /)", owner = "bytes")]
 fn bytes_strip<'h>(bytes: &impl HeapView<'h, [u8]>, args: &BytesStripArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let BytesStripArgs { bytes: value } = args;
-    let result = match value {
+    let result = match &args.bytes {
         None | Some(Value::None) => bytes_strip_whitespace_both(bytes.get(vm.heap)),
         Some(v) => bytes_strip_both(bytes.get(vm.heap), extract_bytes_only(v, vm)?),
     };
@@ -1336,8 +1334,7 @@ fn bytes_strip<'h>(bytes: &impl HeapView<'h, [u8]>, args: &BytesStripArgs, vm: &
 /// Returns a copy of the bytes with leading bytes removed.
 #[py_signature("lstrip(self, bytes=..., /)", owner = "bytes")]
 fn bytes_lstrip<'h>(bytes: &impl HeapView<'h, [u8]>, args: &BytesLstripArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let BytesLstripArgs { bytes: value } = args;
-    let result = match value {
+    let result = match &args.bytes {
         None | Some(Value::None) => bytes_strip_whitespace_start(bytes.get(vm.heap)),
         Some(v) => bytes_strip_start(bytes.get(vm.heap), extract_bytes_only(v, vm)?),
     };
@@ -1349,8 +1346,7 @@ fn bytes_lstrip<'h>(bytes: &impl HeapView<'h, [u8]>, args: &BytesLstripArgs, vm:
 /// Returns a copy of the bytes with trailing bytes removed.
 #[py_signature("rstrip(self, bytes=..., /)", owner = "bytes")]
 fn bytes_rstrip<'h>(bytes: &impl HeapView<'h, [u8]>, args: &BytesRstripArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let BytesRstripArgs { bytes: value } = args;
-    let result = match value {
+    let result = match &args.bytes {
         None | Some(Value::None) => bytes_strip_whitespace_end(bytes.get(vm.heap)),
         Some(v) => bytes_strip_end(bytes.get(vm.heap), extract_bytes_only(v, vm)?),
     };
@@ -1414,8 +1410,7 @@ fn bytes_removeprefix<'h>(
     args: &BytesRemoveprefixArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let BytesRemoveprefixArgs { prefix: prefix_value } = args;
-    let prefix = extract_bytes_only(prefix_value, vm)?;
+    let prefix = extract_bytes_only(&args.prefix, vm)?;
 
     let bytes = bytes.get(vm.heap);
     let result = if bytes.starts_with(prefix) {
@@ -1436,8 +1431,7 @@ fn bytes_removesuffix<'h>(
     args: &BytesRemovesuffixArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let BytesRemovesuffixArgs { suffix: suffix_value } = args;
-    let suffix = extract_bytes_only(suffix_value, vm)?;
+    let suffix = extract_bytes_only(&args.suffix, vm)?;
 
     let bytes = bytes.get(vm.heap);
     let result = if bytes.ends_with(suffix) && !suffix.is_empty() {
@@ -1455,10 +1449,9 @@ fn bytes_removesuffix<'h>(
 /// Implements Python's `bytes.split([sep[, maxsplit]])` method.
 ///
 /// Returns a list of the bytes split by the separator.
-#[py_signature("split(sep=None, maxsplit: i64=-1)", bind = owned)]
-fn bytes_split<'h>(bytes: &impl HeapView<'h, [u8]>, args: BytesSplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let BytesSplitArgs { sep, maxsplit } = args;
-    let sep = bytes_separator(sep, vm)?;
+#[py_signature("split(sep=None, maxsplit: i64=-1)")]
+fn bytes_split<'h>(bytes: &impl HeapView<'h, [u8]>, args: &BytesSplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let sep = bytes_separator(&args.sep, vm)?;
 
     // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
     let mut items_guard = DropGuard::new(Vec::new(), vm);
@@ -1469,18 +1462,18 @@ fn bytes_split<'h>(bytes: &impl HeapView<'h, [u8]>, args: BytesSplitArgs, vm: &m
             if sep.is_empty() {
                 return Err(ExcType::value_error_empty_separator());
             }
-            if maxsplit < 0 {
+            if args.maxsplit < 0 {
                 bytes_split_by_seq(bytes, sep, vm.heap)?
             } else {
-                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                let max = usize::try_from(args.maxsplit).unwrap_or(usize::MAX);
                 bytes_splitn_by_seq(bytes, sep, max + 1, vm.heap)?
             }
         }
         None => {
-            if maxsplit < 0 {
+            if args.maxsplit < 0 {
                 bytes_split_whitespace(bytes, &vm.heap.tracker)?
             } else {
-                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                let max = usize::try_from(args.maxsplit).unwrap_or(usize::MAX);
                 bytes_splitn_whitespace(bytes, max, &vm.heap.tracker)?
             }
         }
@@ -1505,10 +1498,9 @@ fn bytes_split<'h>(bytes: &impl HeapView<'h, [u8]>, args: BytesSplitArgs, vm: &m
 /// Implements Python's `bytes.rsplit([sep[, maxsplit]])` method.
 ///
 /// Returns a list of the bytes split by the separator, splitting from the right.
-#[py_signature("rsplit(sep=None, maxsplit: i64=-1)", bind = owned)]
-fn bytes_rsplit<'h>(bytes: &impl HeapView<'h, [u8]>, args: BytesRsplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let BytesRsplitArgs { sep, maxsplit } = args;
-    let sep = bytes_separator(sep, vm)?;
+#[py_signature("rsplit(sep=None, maxsplit: i64=-1)")]
+fn bytes_rsplit<'h>(bytes: &impl HeapView<'h, [u8]>, args: &BytesRsplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let sep = bytes_separator(&args.sep, vm)?;
 
     // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
     let mut items_guard = DropGuard::new(Vec::new(), vm);
@@ -1519,19 +1511,19 @@ fn bytes_rsplit<'h>(bytes: &impl HeapView<'h, [u8]>, args: BytesRsplitArgs, vm: 
             if sep.is_empty() {
                 return Err(ExcType::value_error_empty_separator());
             }
-            if maxsplit < 0 {
+            if args.maxsplit < 0 {
                 // From the right even when unlimited: overlapping matches pair up differently.
                 bytes_rsplitn_by_seq(bytes, sep, usize::MAX, vm.heap)?
             } else {
-                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                let max = usize::try_from(args.maxsplit).unwrap_or(usize::MAX);
                 bytes_rsplitn_by_seq(bytes, sep, max + 1, vm.heap)?
             }
         }
         None => {
-            if maxsplit < 0 {
+            if args.maxsplit < 0 {
                 bytes_split_whitespace(bytes, &vm.heap.tracker)?
             } else {
-                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
+                let max = usize::try_from(args.maxsplit).unwrap_or(usize::MAX);
                 bytes_rsplitn_whitespace(bytes, max, &vm.heap.tracker)?
             }
         }
@@ -1554,8 +1546,7 @@ fn bytes_rsplit<'h>(bytes: &impl HeapView<'h, [u8]>, args: BytesRsplitArgs, vm: 
 }
 
 /// A missing separator selects whitespace splitting.
-fn bytes_separator(sep: Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<u8>>> {
-    defer_drop!(sep, vm);
+fn bytes_separator(sep: &Value, vm: &VM<'_>) -> RunResult<Option<Vec<u8>>> {
     match sep {
         Value::None => Ok(None),
         _ => Ok(Some(extract_bytes_only(sep, vm)?.to_owned())),
@@ -1794,18 +1785,12 @@ fn bytes_splitlines<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &m
 /// Argument shape for `bytes.splitlines(keepends=False)`. CPython evaluates
 /// `keepends` for truthiness rather than strict-typing, so the field stays as
 /// a raw `Value` for `py_bool` to inspect.
-#[py_signature("splitlines(keepends=...)", bind = owned)]
-fn parse_bytes_splitlines_args(args: BytesSplitlinesArgs, vm: &mut VM<'_>) -> RunResult<bool> {
-    let BytesSplitlinesArgs { keepends } = args;
-    let result = match keepends {
-        None => false,
-        Some(v) => {
-            let result = v.py_bool(vm);
-            v.drop_with(vm.heap);
-            result?
-        }
-    };
-    Ok(result)
+#[py_signature("splitlines(keepends=...)")]
+fn parse_bytes_splitlines_args(args: &BytesSplitlinesArgs, vm: &mut VM<'_>) -> RunResult<bool> {
+    match &args.keepends {
+        None => Ok(false),
+        Some(value) => value.py_bool(vm),
+    }
 }
 
 /// Implements Python's `bytes.partition(sep)` method.
@@ -1817,8 +1802,7 @@ fn bytes_partition<'h>(
     args: &BytesPartitionArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let BytesPartitionArgs { sep: sep_value } = args;
-    let sep = extract_bytes_only(sep_value, vm)?;
+    let sep = extract_bytes_only(&args.sep, vm)?;
 
     if sep.is_empty() {
         return Err(ExcType::value_error_empty_separator());
@@ -1849,8 +1833,7 @@ fn bytes_rpartition<'h>(
     args: &BytesRpartitionArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let BytesRpartitionArgs { sep: sep_value } = args;
-    let sep = extract_bytes_only(sep_value, vm)?;
+    let sep = extract_bytes_only(&args.sep, vm)?;
 
     if sep.is_empty() {
         return Err(ExcType::value_error_empty_separator());
@@ -1903,10 +1886,9 @@ fn parse_bytes_replace_args(
     args: &BytesReplaceArgs,
     vm: &mut VM<'_>,
 ) -> RunResult<(Vec<u8>, Vec<u8>, i64)> {
-    let BytesReplaceArgs { old, new, count } = args;
-    let old_b = extract_bytes_only(old, vm)?.to_owned();
-    let new_b = extract_bytes_only(new, vm)?.to_owned();
-    let count_i = count.as_int(vm)?;
+    let old_b = extract_bytes_only(&args.old, vm)?.to_owned();
+    let new_b = extract_bytes_only(&args.new, vm)?.to_owned();
+    let count_i = args.count.as_int(vm)?;
     Ok((old_b, new_b, count_i))
 }
 
@@ -2129,8 +2111,7 @@ fn extract_justify_fill(method: &str, value: &Value, vm: &VM<'_>) -> RunResult<u
 /// Returns a copy of the bytes left filled with ASCII '0' digits.
 #[py_signature("zfill(self, width, /)", owner = "bytes")]
 fn bytes_zfill<'h>(bytes: &impl HeapView<'h, [u8]>, args: &BytesZfillArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let BytesZfillArgs { width: width_value } = args;
-    let width_i64 = width_value.as_int(vm)?;
+    let width_i64 = args.width.as_int(vm)?;
 
     let width = if width_i64 < 0 {
         0
@@ -2315,8 +2296,7 @@ fn bytes_hex<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'
     error_name = "bytes.hex"
 )]
 fn parse_bytes_hex_args(args: &BytesHexArgs, vm: &mut VM<'_>) -> RunResult<(Option<char>, i64)> {
-    let BytesHexArgs { sep, bytes_per_sep } = args;
-    let Some(sep_value) = (match &sep {
+    let Some(sep_value) = (match &args.sep {
         Value::None => None,
         v => Some(v),
     }) else {
@@ -2344,7 +2324,7 @@ fn parse_bytes_hex_args(args: &BytesHexArgs, vm: &mut VM<'_>) -> RunResult<(Opti
         _ => return Err(ExcType::type_error("sep must be str or bytes")),
     };
 
-    let bytes_per_sep = match bytes_per_sep {
+    let bytes_per_sep = match &args.bytes_per_sep {
         Value::None => 1,
         bps_value => {
             // CPython parses `bytes_per_sep` with the `i` format (C int), so values outside
@@ -2380,16 +2360,14 @@ pub(crate) fn bytes_class_method(
 /// but not between the two digits of a byte.
 #[py_signature("fromhex(string, /)", error_name = "bytes.fromhex")]
 pub fn bytes_fromhex(args: &BytesFromhexArgs, vm: &mut VM<'_>) -> RunResult<Value> {
-    let BytesFromhexArgs { string: hex_value } = args;
-
-    let hex_value_py = hex_value.py_value(vm);
+    let hex_value_py = args.string.py_value(vm);
     let hex_str = match &hex_value_py {
         PyValue::Str(value) => value.as_str(vm),
         PyValue::Bytes(_) => {
             return Err(ExcType::type_error("fromhex() argument must be str, not bytes"));
         }
         _ => {
-            let t = hex_value.py_type_name(vm);
+            let t = args.string.py_type_name(vm);
             return Err(ExcType::type_error(format!("fromhex() argument must be str, not {t}")));
         }
     };

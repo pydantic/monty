@@ -253,7 +253,10 @@ impl<'h> HeapRead<'h, SetStorage> {
 
     /// Method forms accept any iterable, whose owned snapshot must survive comparison callbacks.
     fn algebra_from_value(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<SetStorage> {
-        let Set(other_storage) = Set::from_iterable_as(other, op.hash_role(), vm)?;
+        let Set(other_storage) = {
+            defer_drop!(other, vm);
+            Set::from_iterable_as(other, op.hash_role(), vm)?
+        };
         defer_drop!(other_storage, vm);
         let other_storage = vm.heap.protect(other_storage);
         self.algebra(&other_storage, op, vm)
@@ -264,7 +267,7 @@ impl<'h> HeapRead<'h, SetStorage> {
         let other_storage = if let Some(storage) = copy_storage_from_set(other, vm)? {
             storage
         } else {
-            Set::from_iterable_as(other.clone_with_heap(vm), op.hash_role(), vm)?.0
+            Set::from_iterable_as(other, op.hash_role(), vm)?.0
         };
         defer_drop!(other_storage, vm);
 
@@ -807,10 +810,9 @@ impl Set {
     ///
     /// - `set()` with no args returns an empty set
     /// - `set(iterable)` creates a set from any iterable (list, tuple, set, dict, range, str, bytes)
-    #[py_signature("set(iterable=..., /)", bind = owned)]
-    pub fn init(vm: &mut VM<'_>, args: SetArgs) -> RunResult<Value> {
-        let SetArgs { iterable: value } = args;
-        let set = match value {
+    #[py_signature("set(iterable=..., /)")]
+    pub fn init(vm: &mut VM<'_>, args: &SetArgs) -> RunResult<Value> {
+        let set = match &args.iterable {
             None => Self::new(),
             Some(v) => Self::from_iterable(v, vm)?,
         };
@@ -825,23 +827,17 @@ impl Set {
     /// `set_update_internal` shortcut. That copy runs whole between two
     /// checkpoints, so it is preflighted: otherwise only the allocator's hard
     /// ceiling would stop `set(huge)`, killing the worker.
-    fn from_iterable(iterable: Value, vm: &mut VM<'_>) -> RunResult<Self> {
+    fn from_iterable(iterable: &Value, vm: &mut VM<'_>) -> RunResult<Self> {
         Self::from_iterable_as(iterable, HashRole::SetElement, vm)
     }
 
     /// [`Self::from_iterable`], reporting a hashing error as `role` does.
-    fn from_iterable_as(iterable: Value, role: HashRole, vm: &mut VM<'_>) -> RunResult<Self> {
-        // The preflight can refuse the copy, so the argument rides in a guard;
-        // only the iterator path below takes it back.
-        let mut guard = DropGuard::new(iterable, vm);
-        let (iterable, vm) = guard.as_parts();
-        let storage = copy_storage_from_set(iterable, vm)?;
-        if let Some(storage) = storage {
+    fn from_iterable_as(iterable: &Value, role: HashRole, vm: &mut VM<'_>) -> RunResult<Self> {
+        if let Some(storage) = copy_storage_from_set(iterable, vm)? {
             return Ok(Self(storage));
         }
 
-        let (iterable, vm) = guard.into_parts();
-        let iterator = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
+        let iterator = iterable.py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iterator, vm);
         let mut iterator = iterator.read(vm);
         let hint = iterator.iter_size_hint(vm);
@@ -1001,7 +997,10 @@ impl<'h> HeapReadMut<'h, Set> {
         }
 
         // Arbitrary iterables must finish collecting before the destination is mutated.
-        let mut temp_set = Set::from_iterable(other, vm)?;
+        let mut temp_set = {
+            defer_drop!(other, vm);
+            Set::from_iterable(other, vm)?
+        };
         self.extend_from_entries(temp_set.0.table.take_entries(), vm)
     }
 
@@ -1518,7 +1517,10 @@ impl FrozenSet {
             value => {
                 let frozenset = match value {
                     None => Self::new(),
-                    Some(v) => Self::from_set(Set::from_iterable(v, vm)?),
+                    Some(value) => {
+                        defer_drop!(value, vm);
+                        Self::from_set(Set::from_iterable(value, vm)?)
+                    }
                 };
                 let heap_id = vm.heap.allocate(HeapData::FrozenSet(frozenset));
                 Ok(Value::Ref(heap_id))

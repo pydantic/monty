@@ -30,7 +30,7 @@ use crate::{
     sorting::{py_lt, sort_values},
     types::{
         List, Module, PyTrait, Type,
-        iter::collect_owned_iterable,
+        iter::{collect_iterable, collect_owned_iterable},
         long_int::{LongInt, bigint_true_divide},
     },
     value::{VALUE_SIZE, Value},
@@ -374,6 +374,7 @@ fn median(vm: &mut VM<'_>, args: ArgValues, kind: Median) -> RunResult<Value> {
         Median::Low => MedianLowArgs::from_args(args, vm)?.data,
         Median::High => MedianHighArgs::from_args(args, vm)?.data,
     };
+    defer_drop!(data, vm);
     let items = sorted_items(data, vm)?;
     defer_drop!(items, vm);
     let n = items.len();
@@ -397,8 +398,8 @@ data_args!(MedianHighArgs, "median_high");
 
 /// `sorted(data)`: the data collected and sorted with Python's ordering, as the median and quantile functions
 /// start by doing.
-fn sorted_items(data: Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
-    let items: Vec<Value> = collect_owned_iterable(data, vm)?;
+fn sorted_items(data: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
+    let items = collect_iterable(data, vm)?;
     let mut items = DropGuard::new(items, vm);
     let (values, vm) = items.as_parts_mut();
     sort_values(values, None, false, vm)?;
@@ -409,21 +410,14 @@ fn sorted_items(data: Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
 ///
 /// Follows CPython's order: `n < 1` is an ordinary comparison, a single datum is `data * (n - 1)`, and `method`
 /// is checked before `n` bounds the loop, so each bad argument raises what CPython raises.
-#[py_signature("quantiles(data, *, n=4, method=...)", bind = owned)]
-fn quantiles(vm: &mut VM<'_>, args: QuantilesArgs) -> RunResult<Value> {
-    let QuantilesArgs { data, n, method } = args;
-    defer_drop!(n, vm);
-    defer_drop!(method, vm);
-    let mut data_guard = DropGuard::new(data, vm);
-    let (_, vm) = data_guard.as_parts_mut();
-    if py_lt(n, &Value::Int(1), vm)? {
-        Err(ExcType::statistics_error("n must be at least 1"))
-    } else {
-        let (data, vm) = data_guard.into_parts();
-        let items = sorted_items(data, vm)?;
-        defer_drop!(items, vm);
-        quantile_values(items, n, method.as_ref().unwrap_or(&Value::Undefined), vm)
+#[py_signature("quantiles(data, *, n=4, method=...)")]
+fn quantiles(vm: &mut VM<'_>, args: &QuantilesArgs) -> RunResult<Value> {
+    if py_lt(&args.n, &Value::Int(1), vm)? {
+        return Err(ExcType::statistics_error("n must be at least 1"));
     }
+    let items = sorted_items(&args.data, vm)?;
+    defer_drop!(items, vm);
+    quantile_values(items, &args.n, args.method.as_ref().unwrap_or(&Value::Undefined), vm)
 }
 
 /// The cut points of sorted `items`, once `n` has passed the `n < 1` check.

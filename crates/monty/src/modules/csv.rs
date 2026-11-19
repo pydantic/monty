@@ -229,8 +229,7 @@ fn call_writer(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `csv.get_dialect(name)`: one of the built-in dialects.
 #[py_signature("get_dialect(name)")]
 fn call_get_dialect(vm: &mut VM<'_>, args: &GetDialectArgs) -> RunResult<Value> {
-    let GetDialectArgs { name } = args;
-    let dialect = name.as_str(vm).and_then(Dialect::by_name);
+    let dialect = args.name.as_str(vm).and_then(Dialect::by_name);
     dialect
         .map(|dialect| CsvObject::Dialect(dialect).allocate(vm))
         .ok_or_else(ExcType::csv_unknown_dialect)
@@ -247,11 +246,9 @@ fn call_list_dialects(vm: &mut VM<'_>) -> RunResult<Value> {
 }
 
 /// `csv.field_size_limit([new_limit])`: reports CPython's default; the limit cannot change.
-#[py_signature("field_size_limit(new_limit=...)", bind = owned)]
-fn call_field_size_limit(vm: &mut VM<'_>, args: FieldSizeLimitArgs) -> RunResult<Value> {
-    let FieldSizeLimitArgs { new_limit: limit } = args;
-    defer_drop!(limit, vm);
-    match limit {
+#[py_signature("field_size_limit(new_limit=...)")]
+fn call_field_size_limit(vm: &mut VM<'_>, args: &FieldSizeLimitArgs) -> RunResult<Value> {
+    match &args.new_limit {
         None => Ok(Value::Int(
             i64::try_from(FIELD_SIZE_LIMIT).expect("the limit fits an int"),
         )),

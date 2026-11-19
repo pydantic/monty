@@ -824,8 +824,7 @@ pub(crate) fn is_dataclass_class(class_id: HeapId, vm: &VM<'_>) -> bool {
 /// **instance** of one (matching CPython, which accepts both).
 #[py_signature("is_dataclass(obj)")]
 fn is_dataclass(vm: &mut VM<'_>, args: &IsDataclassArgs) -> RunResult<Value> {
-    let IsDataclassArgs { obj } = args;
-    let result = match obj {
+    let result = match &args.obj {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Class(_) => is_dataclass_class(*id, vm),
             HeapData::Instance(instance) => is_dataclass_class(instance.class(), vm),

@@ -35,53 +35,44 @@ use crate::{
     bad_arg_named
 )]
 pub(crate) fn builtin_open(vm: &mut VM<'_>, args: &OpenArgs) -> RunResult<CallResult> {
-    let OpenArgs {
-        file,
-        mode,
-        buffering,
-        encoding,
-        errors,
-        newline,
-        closefd,
-        opener,
-    } = args;
-    if !matches!(buffering, Value::Int(-1)) {
+    if !matches!(&args.buffering, Value::Int(-1)) {
         return Err(unsupported_kwarg("buffering"));
     }
-    if let Some(encoding) = encoding {
+    if let Some(encoding) = &args.encoding {
         let text = encoding.as_str(vm);
         if !text.eq_ignore_ascii_case("utf-8") && !text.eq_ignore_ascii_case("utf8") {
             return Err(unsupported_kwarg("encoding"));
         }
     }
-    if errors.is_some() {
+    if args.errors.is_some() {
         return Err(unsupported_kwarg("errors"));
     }
-    if !matches!(closefd, Value::Bool(true)) {
+    if !matches!(&args.closefd, Value::Bool(true)) {
         return Err(unsupported_kwarg("closefd"));
     }
-    if !matches!(opener, Value::None) {
+    if !matches!(&args.opener, Value::None) {
         return Err(unsupported_kwarg("opener"));
     }
 
-    let path = extract_path_string(file, vm)?;
+    let path = extract_path_string(&args.file, vm)?;
     // Parse here purely to reject malformed modes before the OS round-trip;
     // the file wrapper itself is built from the host's returned FileHandle.
-    let file_mode = mode
+    let file_mode = args
+        .mode
         .as_ref()
         .map_or("r", |m| m.as_str(vm))
         .parse::<FileMode>()
         .map_err(|e| RunError::from(SimpleException::new_msg(ExcType::ValueError, e)))?;
     // CPython rejects this pairing before opening; the value itself it checks
     // only after (see `apply_open_name`).
-    if file_mode.is_binary() && newline.is_some() {
+    if file_mode.is_binary() && args.newline.is_some() {
         return Err(ExcType::value_error("binary mode doesn't take a newline argument"));
     }
     if vm.env.legacy_binary_writes && matches!(file_mode, FileMode::WriteUpdate(true)) {
         return Err(ExcType::not_implemented("binary update mode requires positional filesystem writes").into());
     }
 
-    let name = if file.py_type(vm) == Type::Bytes {
+    let name = if args.file.py_type(vm) == Type::Bytes {
         FileName::Bytes(path.as_bytes().to_vec())
     } else {
         FileName::Str(path.clone())
@@ -93,7 +84,7 @@ pub(crate) fn builtin_open(vm: &mut VM<'_>, args: &OpenArgs) -> RunResult<CallRe
         }),
         effect: PostConversionEffect::OpenName {
             name,
-            newline: newline.as_ref().map(|s| s.as_str(vm).to_owned()),
+            newline: args.newline.as_ref().map(|s| s.as_str(vm).to_owned()),
         }
         .into(),
     })

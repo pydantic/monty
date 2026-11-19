@@ -21,7 +21,7 @@ use timsort::{SortAborted, sort_short, timsort};
 use crate::{
     args::ArgValues,
     bytecode::VM,
-    defer_drop, defer_drop_mut,
+    defer_drop_mut,
     exception_private::{RunError, RunResult},
     expressions::CmpOperator,
     heap::HeapData,
@@ -41,18 +41,10 @@ use crate::{
 /// held as a raw `Option<Value>` so callers can normalise `key=None` to
 /// "no key"; `reverse` uses [`LaxBool`](crate::args::LaxBool) to match CPython's `bool()`-style
 /// truth test (so `reverse=[]` is `False`, not a `TypeError`).
-#[py_signature("sort(*, key=..., reverse: bool=False)", bind = owned)]
-pub fn parse_and_sort(items: &mut [Value], args: ListSortArgs, vm: &mut VM<'_>) -> RunResult<()> {
-    let ListSortArgs { key, reverse } = args;
-    let key_fn = match key {
-        Some(v) if matches!(v, Value::None) => {
-            v.drop_with(vm);
-            None
-        }
-        other => other,
-    };
-    defer_drop!(key_fn, vm);
-    sort_values(items, key_fn.as_ref(), reverse.bool(), vm)
+#[py_signature("sort(*, key=..., reverse: bool=False)")]
+pub fn parse_and_sort(items: &mut [Value], args: &ListSortArgs, vm: &mut VM<'_>) -> RunResult<()> {
+    let key = args.key.as_ref().filter(|key| !matches!(key, Value::None));
+    sort_values(items, key, args.reverse.bool(), vm)
 }
 
 /// Sorts `values` in place, ordering by `key_fn(value)` when given, else by the values themselves.

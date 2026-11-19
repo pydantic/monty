@@ -206,43 +206,30 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: DefaultdictArgs) -> RunRes
 ///
 /// CPython's `namedtuple` is a pure-Python `def`, so fields stay raw `Value`
 /// (`def` binding never type-checks) and coercion happens in the body.
-#[py_signature("namedtuple(typename, field_names, *, rename=False, defaults=None, module=None)", bind = owned)]
-fn namedtuple(vm: &mut VM<'_>, args: NamedtupleArgs) -> RunResult<Value> {
-    let NamedtupleArgs {
-        typename,
-        field_names,
-        rename,
-        defaults,
-        module,
-    } = args;
-    defer_drop!(typename, vm);
-    defer_drop!(field_names, vm);
-    defer_drop!(rename, vm);
-    defer_drop!(defaults, vm);
-    defer_drop!(module, vm);
-
+#[py_signature("namedtuple(typename, field_names, *, rename=False, defaults=None, module=None)")]
+fn namedtuple(vm: &mut VM<'_>, args: &NamedtupleArgs) -> RunResult<Value> {
     // CPython applies `str(typename)` before validating, so any object whose
     // `__str__` yields a valid identifier is accepted. `validate_names` below
     // then rejects the non-identifier cases with CPython's own message.
-    let type_name = if let Some(name) = typename.as_either_str(vm.heap) {
+    let type_name = if let Some(name) = args.typename.as_either_str(vm.heap) {
         name
     } else {
-        let as_str = typename.py_str(vm)?;
+        let as_str = args.typename.py_str(vm)?;
         let owned = as_str.try_to_str(vm).map(str::to_owned);
         as_str.drop_with(vm);
         EitherStr::from(owned?)
     };
 
     // CPython tests `if rename:`, so any truthy value enables it — not just `True`.
-    let rename = rename.py_bool(vm)?;
-    let mut names = parse_field_names(field_names, vm)?;
+    let rename = args.rename.py_bool(vm)?;
+    let mut names = parse_field_names(&args.field_names, vm)?;
     if rename {
         apply_rename(&mut names);
     }
     validate_names(type_name.as_str(vm.interns), &names, rename)?;
 
     // Collect defaults (rightmost fields), then validate the count.
-    let default_values = collect_defaults(defaults, vm)?;
+    let default_values = collect_defaults(&args.defaults, vm)?;
     if default_values.len() > names.len() {
         default_values.drop_with(vm);
         return Err(ExcType::type_error("Got more default values than field names"));
@@ -250,7 +237,7 @@ fn namedtuple(vm: &mut VM<'_>, args: NamedtupleArgs) -> RunResult<Value> {
 
     // CPython substitutes the calling module's `__name__` for a `None` module, and
     // otherwise stores the argument unvalidated (it need not be a string).
-    let module = match module {
+    let module = match &args.module {
         Value::None => Value::InternString(vm.interns.intern_static(StaticStrings::DunderMain)),
         other => other.clone_with_heap(vm.heap),
     };

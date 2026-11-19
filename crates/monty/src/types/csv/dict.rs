@@ -273,10 +273,9 @@ pub(super) fn writer_writerow<'h>(
     args: &DictwriterWriterowArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
-    let DictwriterWriterowArgs { rowdict } = args;
     let spec: Option<RowSpec> = None;
     defer_drop_mut!(spec, vm);
-    let items = dict_to_list(obj, spec, rowdict, vm)?;
+    let items = dict_to_list(obj, spec, &args.rowdict, vm)?;
     defer_drop!(items, vm);
     write_items(obj, items, vm)
 }
@@ -317,7 +316,6 @@ pub(super) fn writer_writerows<'h>(
     args: &DictwriterWriterowsArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
-    let DictwriterWriterowsArgs { rowdicts } = args;
     let writer = dict_writer_part(obj, vm, |writer| writer.writer.clone_with_heap(vm.heap));
     defer_drop!(writer, vm);
     let Some((targets_file, write, dialect)) = writer_parts(writer, vm) else {
@@ -328,7 +326,7 @@ pub(super) fn writer_writerows<'h>(
     let spec: Option<RowSpec> = None;
     defer_drop_mut!(spec, vm);
     if targets_file {
-        let rows = collect_iterable(rowdicts, vm)?;
+        let rows = collect_iterable(&args.rowdicts, vm)?;
         defer_drop!(rows, vm);
         let mut lists_guard = DropGuard::new(Vec::with_capacity(rows.len()), vm);
         let (flattened, vm) = lists_guard.as_parts_mut();
@@ -344,7 +342,7 @@ pub(super) fn writer_writerows<'h>(
             super::writer::writerows(writer_obj, ArgValues::One(rows), vm)
         })
     } else {
-        let iterator = rowdicts.py_iter(vm)?.require_synchronous(vm)?;
+        let iterator = args.rowdicts.py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iterator, vm);
         let terminator_chars = terminator_chars(&dialect.lineterminator);
         let mut line = String::new();

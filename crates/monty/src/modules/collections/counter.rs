@@ -373,22 +373,18 @@ fn sort_counts(counts: &[Value], vm: &mut VM<'_>) -> RunResult<Vec<usize>> {
 /// `Counter.most_common([n])` — a list of `(element, count)` tuples ordered by
 /// count descending (ties in insertion order). `n` omitted/`None` returns all;
 /// a non-positive `n` returns an empty list.
-#[py_signature("most_common(self, n=..., /)", bind = owned)]
+#[py_signature("most_common(self, n=..., /)")]
 pub(crate) fn counter_most_common<'h>(
     counter: &HeapObjectRead<'h, Dict>,
-    args: MostCommonArgs,
+    args: &MostCommonArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let MostCommonArgs { n: n_arg } = args;
     // Huge positive limits return every item; negative limits return none.
-    let limit = {
-        defer_drop!(n_arg, vm);
-        match n_arg.as_ref().map(|value| value.py_value(vm)) {
-            None | Some(PyValue::None) => None,
-            Some(PyValue::Int(integer)) => Some(integer.collection_limit(vm)),
-            Some(PyValue::Bool(value)) => Some(usize::from(value)),
-            Some(other) => return Err(ExcType::type_error_not_integer(&other.py_type_name(vm))),
-        }
+    let limit = match args.n.as_ref().map(|value| value.py_value(vm)) {
+        None | Some(PyValue::None) => None,
+        Some(PyValue::Int(integer)) => Some(integer.collection_limit(vm)),
+        Some(PyValue::Bool(value)) => Some(usize::from(value)),
+        Some(other) => return Err(ExcType::type_error_not_integer(&other.py_type_name(vm))),
     };
 
     // CPython's `heapq.nlargest(0, ...)` returns before comparing anything.

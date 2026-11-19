@@ -38,7 +38,7 @@ use crate::{
     args::ArgValues,
     builtins::Builtins,
     bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData},
     intern::StaticStrings,
@@ -281,11 +281,11 @@ fn call_sub(vm: &mut VM<'_>, args: ReSubArgs) -> RunResult<Value> {
     defer_drop!(repl, vm);
     // `count` must outlive `resolve_pattern`'s `?` (pattern errors win over a
     // bad count, so it cannot be extracted yet) — guard it, then `take` it out.
-    defer_drop_mut!(count, vm);
+    defer_drop!(count, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
 
-    let count = extract_count(count.take(), vm)?;
+    let count = extract_count(count.as_ref(), vm)?;
 
     // CPython parses the replacement template before its match loop, so a bad
     // replacement raises even when a negative count skips matching.
@@ -325,11 +325,11 @@ fn call_split(vm: &mut VM<'_>, args: ReSplitArgs) -> RunResult<Value> {
     defer_drop!(string, vm);
     // As in `call_sub`: `maxsplit` must survive a pattern/flags error, so
     // guard it before `resolve_pattern` and `take` it out afterwards.
-    defer_drop_mut!(maxsplit, vm);
+    defer_drop!(maxsplit, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
 
-    let maxsplit = extract_maxsplit(maxsplit.take(), vm)?;
+    let maxsplit = extract_maxsplit(maxsplit.as_ref(), vm)?;
     resolved.get(vm.heap).split(subject_str(string, vm)?, maxsplit, vm.heap)
 }
 
@@ -635,11 +635,10 @@ fn call_finditer(vm: &mut VM<'_>, args: ReFinditerArgs) -> RunResult<Value> {
 /// pattern wording [`PatternArg`] produces.
 #[py_signature("escape(pattern)")]
 fn call_escape(vm: &mut VM<'_>, args: &ReEscapeArgs) -> RunResult<Value> {
-    let ReEscapeArgs { pattern } = args;
-    let Some(text) = pattern.as_str(vm) else {
+    let Some(text) = args.pattern.as_str(vm) else {
         // CPython's escape() falls back to `str(pattern, 'latin1')` for
         // non-str input, so this is the (incidental) message it raises.
-        let t = pattern.py_type_name(vm);
+        let t = args.pattern.py_type_name(vm);
         return Err(ExcType::type_error(format!(
             "decoding to str: need a bytes-like object, {t} found"
         )));

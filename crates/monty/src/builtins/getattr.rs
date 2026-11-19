@@ -31,17 +31,16 @@ use crate::{
 /// ```
 #[py_signature("getattr(object, name, default=..., /)")]
 pub fn builtin_getattr(vm: &mut VM<'_>, args: &GetattrArgs) -> RunResult<CallResult> {
-    let GetattrArgs { object, name, default } = args;
-    let default = default.as_ref();
+    let default = args.default.as_ref();
 
-    let Some(attr) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
-        let ty = name.py_type_name(vm);
+    let Some(attr) = args.name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
+        let ty = args.name.py_type_name(vm);
         return Err(
             SimpleException::new_msg(ExcType::TypeError, format!("attribute name must be string, not '{ty}'")).into(),
         );
     };
 
-    match object.py_getattr(&attr, vm) {
+    match args.object.py_getattr(&attr, vm) {
         Ok(CallResult::Value(value)) => Ok(CallResult::Value(value)),
         // A frame computes the attribute (`__annotations__`). Without a default
         // its result is the value; with one the frame runs here, so an

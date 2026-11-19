@@ -9,9 +9,8 @@ use monty_macros::py_signature;
 use crate::{
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::VM,
-    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropWithContext, HeapData, HeapId},
+    heap::{HeapData, HeapId},
     types::{Dict, Instance, PyTrait, Type, TypeRef, instance::class_defines},
     value::{EitherStr, Value},
 };
@@ -35,16 +34,12 @@ pub(crate) fn object_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Val
 /// Extra arguments are an error unless the class overrides `__init__` and not
 /// `__new__`, CPython's `object_new` rule. Native classes have their own
 /// `__new__`, and `object()` itself cannot be built (see `limitations/classes.md`).
-#[py_signature("__new__(cls=..., /, *args, **kwargs)", error_name = "object.__new__", bind = owned)]
-pub(crate) fn builtin_object_new(vm: &mut VM<'_>, args: ObjectNewArgs) -> RunResult<Value> {
-    let ObjectNewArgs { cls, args, kwargs } = args;
-    let excess = !args.is_empty() || !kwargs.is_empty();
-    args.drop_with(vm);
-    kwargs.drop_with(vm);
-    let Some(cls) = cls else {
+#[py_signature("__new__(cls=..., /, *args, **kwargs)", error_name = "object.__new__")]
+pub(crate) fn builtin_object_new(vm: &mut VM<'_>, args: &ObjectNewArgs) -> RunResult<Value> {
+    let excess = !args.args.is_empty() || !args.kwargs.is_empty();
+    let Some(cls) = &args.cls else {
         return Err(ExcType::type_error("object.__new__(): not enough arguments"));
     };
-    defer_drop!(cls, vm);
     let class_id = match TypeRef::from_value(cls, vm.heap) {
         Some(TypeRef::Class(id)) if matches!(vm.heap.get(id), HeapData::Class(_)) => id,
         Some(TypeRef::Native(Type::Object)) => {
@@ -91,18 +86,14 @@ pub(crate) fn builtin_object_new(vm: &mut VM<'_>, args: ObjectNewArgs) -> RunRes
 /// `object.__init__(self, *args, **kwargs)`: does nothing, but rejects extra
 /// arguments unless the class overrides `__new__` and not `__init__`, CPython's
 /// `object_init` rule.
-#[py_signature("__init__(instance=..., /, *args, **kwargs)", error_name = "object.__init__", bind = owned)]
-pub(crate) fn builtin_object_init(vm: &mut VM<'_>, args: ObjectInitArgs) -> RunResult<Value> {
-    let ObjectInitArgs { instance, args, kwargs } = args;
-    let excess = !args.is_empty() || !kwargs.is_empty();
-    args.drop_with(vm);
-    kwargs.drop_with(vm);
-    let Some(instance) = instance else {
+#[py_signature("__init__(instance=..., /, *args, **kwargs)", error_name = "object.__init__")]
+pub(crate) fn builtin_object_init(vm: &mut VM<'_>, args: &ObjectInitArgs) -> RunResult<Value> {
+    let excess = !args.args.is_empty() || !args.kwargs.is_empty();
+    let Some(instance) = &args.instance else {
         return Err(ExcType::type_error(
             "descriptor '__init__' of 'object' object needs an argument",
         ));
     };
-    defer_drop!(instance, vm);
     if !excess {
         return Ok(Value::None);
     }
@@ -149,23 +140,16 @@ fn native_overrides_init(ty: Type) -> bool {
 /// which does nothing but reject arguments the statement passed.
 #[py_signature(
     "__init_subclass__(cls=..., /, *args, **kwargs)",
-    error_name = "object.__init_subclass__",
-    bind = owned,
+    error_name = "object.__init_subclass__"
 )]
-pub(crate) fn builtin_object_init_subclass(vm: &mut VM<'_>, args: ObjectInitSubclassArgs) -> RunResult<Value> {
-    let ObjectInitSubclassArgs { cls, args, kwargs } = args;
-    let given = args.len();
-    let has_kwargs = !kwargs.is_empty();
-    args.drop_with(vm);
-    kwargs.drop_with(vm);
-    let name = match cls {
-        Some(cls) => {
-            defer_drop!(cls, vm);
-            match TypeRef::from_value(cls, vm.heap) {
-                Some(ty) => ty.dunder_name(vm.heap, vm.interns).into_owned(),
-                None => "object".to_owned(),
-            }
-        }
+pub(crate) fn builtin_object_init_subclass(vm: &mut VM<'_>, args: &ObjectInitSubclassArgs) -> RunResult<Value> {
+    let given = args.args.len();
+    let has_kwargs = !args.kwargs.is_empty();
+    let name = match &args.cls {
+        Some(cls) => match TypeRef::from_value(cls, vm.heap) {
+            Some(ty) => ty.dunder_name(vm.heap, vm.interns).into_owned(),
+            None => "object".to_owned(),
+        },
         None => "object".to_owned(),
     };
     if given > 0 {

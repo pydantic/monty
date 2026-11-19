@@ -9,6 +9,5 @@ use crate::{bytecode::VM, exception_private::RunResult, value::Value};
 /// Returns the identity of an object (unique integer for the object's lifetime).
 #[py_signature("id(obj, /)")]
 pub fn builtin_id(vm: &mut VM<'_>, args: &IdArgs) -> RunResult<Value> {
-    let IdArgs { obj } = args;
-    Ok(obj.id().into_value(vm.heap))
+    Ok(args.obj.id().into_value(vm.heap))
 }

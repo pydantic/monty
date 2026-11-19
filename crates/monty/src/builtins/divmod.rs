@@ -11,6 +11,5 @@ use crate::{bytecode::VM, exception_private::RunResult, value::Value};
 /// `__divmod__` / `__rdivmod__` like every other numeric operation.
 #[py_signature("divmod(x, y, /)")]
 pub fn builtin_divmod(vm: &mut VM<'_>, args: &DivmodArgs) -> RunResult<Value> {
-    let DivmodArgs { x, y } = args;
-    x.py_divmod(y, vm)
+    args.x.py_divmod(&args.y, vm)
 }

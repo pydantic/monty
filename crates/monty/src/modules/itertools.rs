@@ -13,7 +13,6 @@ use crate::{
     args::ArgValues,
     builtins::Builtins,
     bytecode::VM,
-    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HEAP_ENTRY_SIZE, HeapData},
     intern::StaticStrings,
@@ -21,7 +20,7 @@ use crate::{
     resource_checks::check_estimated_size,
     types::{
         ItertoolsIter, Module, TupleVec, Type, allocate_tuple,
-        iter::collect_owned_iterable,
+        iter::{collect_iterable, collect_owned_iterable},
         itertools::{
             Accumulate, Batched, Chain, Combinations, Compress, Count, Cycle, DropWhile, FilterFalse, GroupBy, Islice,
             Pairwise, Permutations, Product, Repeat, StarMap, TakeWhile, ZipLongest, tee,
@@ -201,12 +200,11 @@ fn normalize_bool(value: Value) -> Value {
 ///
 /// Argument shape for `pairwise(iterable)`.
 ///
-#[py_signature("pairwise(iterable, /)", bind = owned)]
-fn call_pairwise(vm: &mut VM<'_>, args: PairwiseArgs) -> RunResult<Value> {
-    let PairwiseArgs { iterable } = args;
+#[py_signature("pairwise(iterable, /)")]
+fn call_pairwise(vm: &mut VM<'_>, args: &PairwiseArgs) -> RunResult<Value> {
     // Resolve to an iterator up front, as CPython does: a non-iterable raises
     // here rather than on the first `next()`.
-    let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
+    let source = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Pairwise(Pairwise::new(source));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -218,17 +216,15 @@ fn call_pairwise(vm: &mut VM<'_>, args: PairwiseArgs) -> RunResult<Value> {
 /// CPython parses this with `PyArg_ParseTupleAndKeywords`, so both parameters
 /// are also accepted by keyword and arity counts positionals + keywords
 /// together: `compress([1], [1], data=[1])` reports three arguments.
-#[py_signature("compress(data, selectors)", bind = owned)]
-fn call_compress(vm: &mut VM<'_>, args: CompressArgs) -> RunResult<Value> {
-    let CompressArgs { data, selectors } = args;
-    // `into_py_iter` consumes its receiver, so each conversion guards the other
-    // argument: whichever is not being converted is released if this one raises.
-    let mut guard = DropGuard::new(selectors, vm);
-    let data = data.into_py_iter(guard.ctx())?.require_synchronous(guard.ctx())?;
-    let (selectors, vm) = guard.into_parts();
-    let mut guard = DropGuard::new(data, vm);
-    let selectors = selectors.into_py_iter(guard.ctx())?.require_synchronous(guard.ctx())?;
-    let (data, vm) = guard.into_parts();
+#[py_signature("compress(data, selectors)")]
+fn call_compress(vm: &mut VM<'_>, args: &CompressArgs) -> RunResult<Value> {
+    let data = args.data.py_iter(vm)?.require_synchronous(vm)?;
+    let mut data_guard = DropGuard::new(data, vm);
+    let selectors = {
+        let vm = data_guard.ctx();
+        args.selectors.py_iter(vm)?.require_synchronous(vm)?
+    };
+    let (data, vm) = data_guard.into_parts();
     let iter = ItertoolsIter::Compress(Compress::new(data, selectors));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -238,26 +234,10 @@ fn call_compress(vm: &mut VM<'_>, args: CompressArgs) -> RunResult<Value> {
 /// Argument shape for `islice(iterable, [start,] stop[, step])`.
 ///
 /// [`islice_bounds`] interprets the trailing positional arguments according to how many were supplied.
-#[py_signature("islice(iterable, first, second=..., third=..., /)", bind = owned)]
-fn call_islice(vm: &mut VM<'_>, args: IsliceArgs) -> RunResult<Value> {
-    let IsliceArgs {
-        iterable,
-        first,
-        second,
-        third,
-    } = args;
-    // `iterable` is guarded across the bounds check so an invalid slot raises
-    // only after the three overloaded arguments have been released.
-    let mut guard = DropGuard::new(iterable, vm);
-    let vm = guard.ctx();
-    let bounds = islice_bounds(&first, second.as_ref(), third.as_ref(), vm);
-    first.drop_with(vm);
-    second.drop_with(vm);
-    third.drop_with(vm);
-    let (start, stop, step) = bounds?;
-    let (iterable, vm) = guard.into_parts();
-
-    let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
+#[py_signature("islice(iterable, first, second=..., third=..., /)")]
+fn call_islice(vm: &mut VM<'_>, args: &IsliceArgs) -> RunResult<Value> {
+    let (start, stop, step) = islice_bounds(&args.first, args.second.as_ref(), args.third.as_ref(), vm)?;
+    let source = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Islice(Islice::new(source, start, stop, step));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -346,11 +326,10 @@ fn call_chain(vm: &mut VM<'_>, args: ChainArgs) -> RunResult<Value> {
 ///
 /// Argument shape for `cycle(iterable)`.
 ///
-#[py_signature("cycle(iterable, /)", bind = owned)]
-fn call_cycle(vm: &mut VM<'_>, args: CycleArgs) -> RunResult<Value> {
-    let CycleArgs { iterable } = args;
+#[py_signature("cycle(iterable, /)")]
+fn call_cycle(vm: &mut VM<'_>, args: &CycleArgs) -> RunResult<Value> {
     // Unlike `chain`, CPython resolves eagerly here, so `cycle(5)` raises now.
-    let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
+    let source = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Cycle(Cycle::new(source));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -431,24 +410,11 @@ fn call_accumulate(vm: &mut VM<'_>, args: AccumulateArgs) -> RunResult<Value> {
 /// `itertools.batched(iterable, n, *, strict=False)` — consecutive n-tuples.
 ///
 /// The body converts `n` and checks that the batch size is positive.
-#[py_signature("batched(iterable, n, *, strict: bool=False)", bind = owned)]
-fn call_batched(vm: &mut VM<'_>, args: BatchedArgs) -> RunResult<Value> {
-    let BatchedArgs { iterable, n, strict } = args;
-    let strict = strict.bool();
-    // `n` is validated before the iterable is resolved, matching CPython's
-    // clinic converter, which runs over every argument before the body.
-    let size = batched_n(&n, vm);
-    n.drop_with(vm);
-    let size = match size {
-        Ok(size) => size,
-        Err(error) => {
-            iterable.drop_with(vm);
-            return Err(error);
-        }
-    };
-
-    let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
-    let iter = ItertoolsIter::Batched(Batched::new(source, size, strict));
+#[py_signature("batched(iterable, n, *, strict: bool=False)")]
+fn call_batched(vm: &mut VM<'_>, args: &BatchedArgs) -> RunResult<Value> {
+    let size = batched_n(&args.n, vm)?;
+    let source = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
+    let iter = ItertoolsIter::Batched(Batched::new(source, size, args.strict.bool()));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
@@ -559,15 +525,12 @@ fn build_combinations(iterable: Value, r: Value, replacement: bool, vm: &mut VM<
 ///
 /// Clinic and keyword-capable like [`CombinationsArgs`]. `r` is an `object`
 /// to clinic, so the body inspects it — and only once the pool exists.
-#[py_signature("permutations(iterable, r=None)", bind = owned)]
-fn call_permutations(vm: &mut VM<'_>, args: PermutationsArgs) -> RunResult<Value> {
-    let PermutationsArgs { iterable, r } = args;
-    let mut r_guard = DropGuard::new(r, vm);
-    let pool: Vec<Value> = collect_owned_iterable(iterable, r_guard.ctx())?;
-    let (r, vm) = r_guard.into_parts();
+#[py_signature("permutations(iterable, r=None)")]
+fn call_permutations(vm: &mut VM<'_>, args: &PermutationsArgs) -> RunResult<Value> {
+    let pool = collect_iterable(&args.iterable, vm)?;
     let mut pool_guard = DropGuard::new(pool, vm);
     let (pool, vm) = pool_guard.as_parts_mut();
-    let r = permutations_r(r, pool.len(), vm)?;
+    let r = permutations_r(&args.r, pool.len(), vm)?;
     let (pool, vm) = pool_guard.into_parts();
     let iter = ItertoolsIter::Permutations(Box::new(Permutations::new(pool, r)));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
@@ -579,8 +542,7 @@ fn call_permutations(vm: &mut VM<'_>, args: PermutationsArgs) -> RunResult<Value
 /// CPython checks the type rather than calling `__index__`, so `1.0` and an
 /// `__index__` object are both `Expected int as r`; a `bool` passes as an
 /// `int` subclass.
-fn permutations_r(r: Value, n: usize, vm: &mut VM<'_>) -> RunResult<usize> {
-    defer_drop!(r, vm);
+fn permutations_r(r: &Value, n: usize, vm: &mut VM<'_>) -> RunResult<usize> {
     if matches!(r, Value::None) {
         Ok(n)
     } else if matches!(r.py_type_heap(vm.heap).native(), Some(Type::Int | Type::Bool)) {
@@ -599,27 +561,16 @@ fn permutations_r(r: Value, n: usize, vm: &mut VM<'_>) -> RunResult<usize> {
 /// `kwlist` gives the derive's `got an unexpected keyword argument 'x'`
 /// wording for a bad name. `repeat` stays a raw `Value` for the `Py_ssize_t`
 /// conversion in the body.
-#[py_signature("product(*iterables, repeat=1)", bind = owned)]
-fn call_product(vm: &mut VM<'_>, args: ProductArgs) -> RunResult<Value> {
-    let ProductArgs { iterables, repeat } = args;
-    // Each argument is moved out of the vec as it is collected; the ones a
-    // `repeat` of zero never reaches stay in it and are released by the guard,
-    // as `zip_longest` does — see there for why not `drain`.
-    defer_drop_mut!(iterables, vm);
-    let converted = ssize_arg(&repeat, vm);
-    repeat.drop_with(vm);
-    let repeat = usize::try_from(converted?).map_err(|_| ExcType::product_negative_repeat())?;
-
-    // `repeat=0` never touches the arguments: CPython skips collecting them,
-    // so `product(5, repeat=0)` is the single empty tuple, not a `TypeError`.
-    let width = if repeat == 0 { 0 } else { iterables.len() };
+#[py_signature("product(*iterables, repeat=1)")]
+fn call_product(vm: &mut VM<'_>, args: &ProductArgs) -> RunResult<Value> {
+    let repeat = usize::try_from(ssize_arg(&args.repeat, vm)?).map_err(|_| ExcType::product_negative_repeat())?;
+    let width = if repeat == 0 { 0 } else { args.iterables.len() };
     let slots = product_slots(width, repeat)?;
 
     let mut pools_guard = DropGuard::new(Vec::with_capacity(width), vm);
-    for slot in iterables.iter_mut().take(width) {
-        let iterable = mem::replace(slot, Value::None);
+    for iterable in args.iterables.iter().take(width) {
         let (pools, vm) = pools_guard.as_parts_mut();
-        let pool: Vec<Value> = collect_owned_iterable(iterable, vm)?;
+        let pool = collect_iterable(iterable, vm)?;
         pools.push(pool);
     }
     // The index vector and every result tuple scale with `repeat` alone, so
@@ -678,48 +629,34 @@ fn call_groupby(vm: &mut VM<'_>, args: GroupbyArgs) -> RunResult<Value> {
 ///
 /// `METH_O` in CPython, so keywords are rejected wholesale and the arity
 /// wording is `takes exactly one argument (N given)`.
-#[py_signature("from_iterable(iterable, /)", error_name = "chain.from_iterable", reject_keywords, bind = owned)]
-fn call_chain_from_iterable(vm: &mut VM<'_>, args: ChainFromIterableArgs) -> RunResult<Value> {
-    let ChainFromIterableArgs { iterable } = args;
+#[py_signature("from_iterable(iterable, /)", error_name = "chain.from_iterable", reject_keywords)]
+fn call_chain_from_iterable(vm: &mut VM<'_>, args: &ChainFromIterableArgs) -> RunResult<Value> {
     // The outer iterable is resolved now — `chain.from_iterable(5)` raises
     // here — while its items are resolved one at a time, as `chain`'s
     // arguments are.
-    let outer = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
+    let outer = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Chain(Chain::from_iterable(outer));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
 /// `itertools.tee(iterable, n=2)` — `n` iterators over one source.
-#[py_signature("tee(iterable, n=..., /)", kwarg_error_name = "itertools.tee", bind = owned)]
-fn call_tee(vm: &mut VM<'_>, args: TeeArgs) -> RunResult<Value> {
-    let TeeArgs { iterable, n } = args;
-    let consumers = match n {
-        None => Ok(2),
-        Some(n) => {
-            let converted = tee_n(&n, vm);
-            n.drop_with(vm);
-            converted
-        }
-    };
-    let consumers = match consumers {
-        Ok(consumers) => consumers,
-        Err(error) => {
-            iterable.drop_with(vm);
-            return Err(error);
-        }
+#[py_signature("tee(iterable, n=..., /)", kwarg_error_name = "itertools.tee")]
+fn call_tee(vm: &mut VM<'_>, args: &TeeArgs) -> RunResult<Value> {
+    let consumers = match &args.n {
+        None => 2,
+        Some(n) => tee_n(n, vm)?,
     };
 
     // No consumers means nothing to read from, and CPython never looks at the
     // iterable in that case: `tee(5, 0)` is the empty tuple, not a `TypeError`.
     if consumers == 0 {
-        iterable.drop_with(vm);
         return Ok(allocate_tuple(TupleVec::new(), vm.heap));
     }
 
     // Resolved first, then tested: CPython calls `iter()` before it reaches for
     // `__copy__`, so an object whose `__iter__` hands back an existing `_tee`
     // is copied too rather than being drained into a second buffer.
-    let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
+    let source = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
     // An existing `_tee` is copied rather than drained, so the copies replay
     // from where it stands — CPython reaches for `__copy__` for the same
     // reason. Anything else becomes the source of a fresh group.

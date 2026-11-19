@@ -208,8 +208,7 @@ const CALLABLE_TYPES: [Type; 15] = [
 /// `float(x=0.0, /)`: numeric coercion, then str/bytes parsing.
 #[py_signature("float(x=..., /)")]
 pub(crate) fn float_init(vm: &mut VM<'_>, args: &FloatArgs) -> RunResult<Value> {
-    let FloatArgs { x } = args;
-    let Some(v) = x else {
+    let Some(v) = &args.x else {
         return Ok(Value::Float(0.0));
     };
     if let Some(value) = v.py_float(vm)? {
@@ -226,8 +225,7 @@ pub(crate) fn float_init(vm: &mut VM<'_>, args: &FloatArgs) -> RunResult<Value> 
 /// `bool(x=False, /)`: the truth value of `x`.
 #[py_signature("bool(object=..., /)")]
 pub(crate) fn bool_init(vm: &mut VM<'_>, args: &BoolArgs) -> RunResult<Value> {
-    let BoolArgs { object } = args;
-    let Some(v) = object else {
+    let Some(v) = &args.object else {
         return Ok(Value::Bool(false));
     };
     Ok(Value::Bool(v.py_bool(vm)?))
@@ -315,22 +313,15 @@ fn value_error_could_not_convert_string_to_float(value: impl fmt::Display) -> Ru
 /// Implements the `int()` constructor: numeric coercion, and str/bytes
 /// parsing with an optional base (auto-detected when `base=0`).
 ///
-#[py_signature("int(x=..., /, base=...)", bind = owned)]
-pub(crate) fn int_init(vm: &mut VM<'_>, args: IntArgs) -> RunResult<Value> {
-    let IntArgs { x, base } = args;
-    let Some(x) = x else {
-        // `int()` → 0; `int(base=N)` complains about the missing value even
-        // before validating the base, matching `long_new_impl`'s ordering.
-        return match base {
+#[py_signature("int(x=..., /, base=...)")]
+pub(crate) fn int_init(vm: &mut VM<'_>, args: &IntArgs) -> RunResult<Value> {
+    let Some(x) = &args.x else {
+        return match args.base {
             None => Ok(Value::Int(0)),
-            Some(base) => {
-                base.drop_with(vm);
-                Err(ExcType::type_error_int_missing_string_argument())
-            }
+            Some(_) => Err(ExcType::type_error_int_missing_string_argument()),
         };
     };
-    defer_drop!(x, vm);
-    match base {
+    match &args.base {
         None => int_convert(x, vm),
         Some(base) => {
             let base = int_base(base, vm)?;
@@ -364,8 +355,7 @@ fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 /// which *clamps* out-of-i64 ints instead of raising — so a `LongInt` base
 /// lands in the range error, not `OverflowError`; non-integers raise
 /// `TypeError` before the range is checked.
-fn int_base(base: Value, vm: &mut VM<'_>) -> RunResult<u32> {
-    defer_drop!(base, vm);
+fn int_base(base: &Value, vm: &mut VM<'_>) -> RunResult<u32> {
     let n = base.saturating_index(vm)?;
     match u32::try_from(n) {
         Ok(0) => Ok(0),

@@ -30,10 +30,11 @@ body can omit the argument struct. The macro adds a trailing `ArgValues` paramet
 
 ### Ownership and conversion
 
-Shared borrowing is the default. Take the generated struct as `args: &SplitArgs` and use its fields directly or
-destructure it in the body. You can also spell out `bind = shared`.
-For example, `let SplitArgs { sep, maxsplit } = args;` borrows both fields.
-For ownership, set `bind = owned`, declare `args: SortedArgs`, and begin with `let SortedArgs { iterable, kwargs } = args;`.
+Shared borrowing is the default. Take the generated struct as `args: &SplitArgs` and access fields as `args.sep`
+and `args.maxsplit`. You can also spell out `bind = shared`.
+Borrow inputs that the handler reads, converts or uses to create an iterator.
+To transfer bound values into a result, runtime state or a consuming API, use `bind = owned`.
+Declare `args: SortedArgs` and begin with `let SortedArgs { iterable, kwargs } = args;`.
 Bind every owned field by name and release it on every return path.
 For mixed ownership, set `bind = mut` and take `args: &mut PopArgs`. In `dict.pop`, the lookup borrows `&args.key`
 and a miss moves the optional default out with `args.default.take()`. The guard releases the remaining fields.

@@ -105,8 +105,7 @@ pub(super) fn writerow<'h>(
     args: &WriterWriterowArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
-    let WriterWriterowArgs { row } = args;
-    let items = row_items(row, vm)?;
+    let items = row_items(&args.row, vm)?;
     defer_drop!(items, vm);
     write_fields(obj, items, vm)
 }
@@ -136,13 +135,12 @@ pub(super) fn writerows<'h>(
     args: &WriterWriterowsArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
-    let WriterWriterowsArgs { rows } = args;
     let (target, write, dialect) = parts(obj, vm);
     defer_drop!(target, vm);
     defer_drop!(write, vm);
     let terminator_chars = terminator_chars(&dialect.lineterminator);
     if is_file(target, vm) {
-        let rows: Vec<Value> = collect_owned_iterable(rows.clone_with_heap(vm.heap), vm)?;
+        let rows: Vec<Value> = collect_owned_iterable(args.rows.clone_with_heap(vm.heap), vm)?;
         defer_drop!(rows, vm);
         let mut lines = String::new();
         for row in rows {
@@ -157,7 +155,7 @@ pub(super) fn writerows<'h>(
             write_line(target, write, lines, vm).map(discard_write_result)
         }
     } else {
-        let iterator = rows.py_iter(vm)?.require_synchronous(vm)?;
+        let iterator = args.rows.py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iterator, vm);
         // One line buffer serves every row, so each costs a single exact-size allocation.
         let mut line = String::new();

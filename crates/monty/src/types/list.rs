@@ -7,7 +7,7 @@ use smallvec::SmallVec;
 
 use super::{
     CmpOrder, PyTrait,
-    iter::{collect_owned_iterable, collect_python_iterator},
+    iter::{collect_iterable, collect_python_iterator},
 };
 use crate::{
     args::ArgValues,
@@ -283,16 +283,15 @@ impl List {
     ///
     /// - `list()` with no args returns an empty list
     /// - `list(iterable)` creates a list from any iterable (list, tuple, range, str, bytes, dict)
-    #[py_signature("list(iterable=..., /)", bind = owned)]
-    pub fn init(vm: &mut VM<'_>, args: ListArgs) -> RunResult<Value> {
-        let ListArgs { iterable: value } = args;
-        match value {
+    #[py_signature("list(iterable=..., /)")]
+    pub fn init(vm: &mut VM<'_>, args: &ListArgs) -> RunResult<Value> {
+        match &args.iterable {
             None => {
                 let heap_id = vm.heap.allocate(HeapData::List(Self::new(Vec::new())));
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
-                let items = collect_owned_iterable(v, vm)?;
+                let items = collect_iterable(v, vm)?;
                 let heap_id = vm.heap.allocate(HeapData::List(Self::new(items)));
                 Ok(Value::Ref(heap_id))
             }
@@ -938,14 +937,12 @@ fn list_pop<'h>(list: &HeapReadMut<'h, List>, args: &PopArgs, vm: &mut VM<'h>) -
 /// Removes the first occurrence of value. Raises ValueError if not found.
 #[py_signature("remove(self, value, /)", owner = "list")]
 fn list_remove<'h>(list: &HeapReadMut<'h, List>, args: &ListRemoveArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let ListRemoveArgs { value } = args;
-
     let mut found_idx = None;
     {
         let iter = list.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some((i, item)) = iter.next_with_index(vm)? {
-            if value.py_eq(item, vm)? {
+            if args.value.py_eq(item, vm)? {
                 found_idx = Some(i);
                 break;
             }
@@ -991,10 +988,10 @@ fn list_copy(list: &List, heap: &Heap) -> RunResult<Value> {
 /// Implements Python's `list.extend(iterable)` method.
 ///
 /// Extends the list by appending all items from the iterable.
-#[py_signature("extend(self, iterable, /)", owner = "list", bind = owned)]
-fn list_extend<'h>(list: &HeapReadMut<'h, List>, args: ListExtendArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let ListExtendArgs { iterable } = args;
-    let items: SmallVec<[_; 2]> = collect_owned_iterable(iterable, vm)?;
+#[py_signature("extend(self, iterable, /)", owner = "list")]
+fn list_extend<'h>(list: &HeapReadMut<'h, List>, args: &ListExtendArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    let iterator = args.iterable.py_iter(vm)?.require_synchronous(vm)?;
+    let items: SmallVec<[_; 2]> = collect_python_iterator(iterator, vm)?;
 
     let has_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
     if has_refs {
@@ -1015,9 +1012,16 @@ fn list_index<'h>(list: &HeapRead<'h, List>, args: &IndexArgs, vm: &mut VM<'h>) 
     // user `__index__` that mutates this list, and CPython normalizes against the
     // length *after* argument parsing. Reading it first would resolve a negative
     // bound against a stale length and search the wrong window.
-    let IndexArgs { value, start, stop } = args;
-    let start_arg = start.as_ref().map(|start| value_to_i64_bound(start, vm)).transpose()?;
-    let end_arg = stop.as_ref().map(|stop| value_to_i64_bound(stop, vm)).transpose()?;
+    let start_arg = args
+        .start
+        .as_ref()
+        .map(|start| value_to_i64_bound(start, vm))
+        .transpose()?;
+    let end_arg = args
+        .stop
+        .as_ref()
+        .map(|stop| value_to_i64_bound(stop, vm))
+        .transpose()?;
 
     let len = list.get(vm.heap).items.len();
     let start = start_arg.map_or(0, |i| normalize_sequence_index(i, len));
@@ -1035,7 +1039,7 @@ fn list_index<'h>(list: &HeapRead<'h, List>, args: &IndexArgs, vm: &mut VM<'h>) 
             // No further matches possible inside [start, end).
             break;
         }
-        if idx >= start && value.py_eq(item, vm)? {
+        if idx >= start && args.value.py_eq(item, vm)? {
             let i64_idx = i64::try_from(idx).expect("index exceeds i64::MAX");
             return Ok(Value::Int(i64_idx));
         }
@@ -1048,13 +1052,11 @@ fn list_index<'h>(list: &HeapRead<'h, List>, args: &IndexArgs, vm: &mut VM<'h>) 
 /// Returns the number of occurrences of value in the list.
 #[py_signature("count(self, value, /)", owner = "list")]
 fn list_count<'h>(list: &HeapRead<'h, List>, args: &ListCountArgs, vm: &mut VM<'h>) -> RunResult<Value> {
-    let ListCountArgs { value } = args;
-
     let mut count: usize = 0;
     let iter = list.iter(vm)?;
     defer_drop_mut!(iter, vm);
     while let Some(item) = iter.next(vm)? {
-        if value.py_eq(item, vm)? {
+        if args.value.py_eq(item, vm)? {
             count += 1;
         }
     }

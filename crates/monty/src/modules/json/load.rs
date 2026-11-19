@@ -13,7 +13,7 @@ use super::{JsonStringCache, fp::FileTarget};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, HeapData, HeapId, HeapReadOutput, HeapReader},
     os_dispatch::PostConversionEffect,
@@ -68,22 +68,16 @@ const JSON_RECURSION_LIMIT: usize = 200;
 /// CPython (`json.loads(s, parse_float=Decimal)`). CPython also accepts `cls`,
 /// `object_hook`, `parse_constant` and `object_pairs_hook`. Monty rejects these
 /// options with `TypeError` and names `JSONDecoder.__init__` in unknown-keyword errors.
-#[py_signature("loads(s, *, parse_float=None, parse_int=None)", kwarg_error_name = "JSONDecoder.__init__", bind = owned)]
-pub(super) fn call_loads(vm: &mut VM<'_>, args: JsonLoadsArgs) -> RunResult<Value> {
-    let JsonLoadsArgs {
-        s,
-        parse_float,
-        parse_int,
-    } = args;
-    let hooks = [parse_float, parse_int];
-    defer_drop!(hooks, vm);
-    defer_drop_mut!(s, vm);
-    let [parse_float, parse_int] = hooks;
+#[py_signature(
+    "loads(s, *, parse_float=None, parse_int=None)",
+    kwarg_error_name = "JSONDecoder.__init__"
+)]
+pub(super) fn call_loads(vm: &mut VM<'_>, args: &JsonLoadsArgs) -> RunResult<Value> {
     let hooks = NumberHooks {
-        parse_float: (!matches!(parse_float, Value::None)).then_some(parse_float),
-        parse_int: (!matches!(parse_int, Value::None)).then_some(parse_int),
+        parse_float: (!matches!(args.parse_float, Value::None)).then_some(&args.parse_float),
+        parse_int: (!matches!(args.parse_int, Value::None)).then_some(&args.parse_int),
     };
-    parse_json_input(s, &hooks, vm)
+    parse_json_input(&args.s, &hooks, vm)
 }
 
 /// The `parse_float` / `parse_int` callables `json.loads` converts number tokens with,
@@ -105,8 +99,7 @@ struct NumberHooks<'a> {
 /// with the same keyword policy.
 #[py_signature("load(fp)", kwarg_error_name = "JSONDecoder.__init__")]
 pub(super) fn call_load(vm: &mut VM<'_>, args: &JsonLoadArgs) -> RunResult<CallResult> {
-    let JsonLoadArgs { fp } = args;
-    match FileTarget::reader(fp, vm)? {
+    match FileTarget::reader(&args.fp, vm)? {
         FileTarget::OpenFile(file_id) => {
             let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
                 unreachable!("FileTarget::OpenFile points to an OpenFile")

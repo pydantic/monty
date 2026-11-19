@@ -58,8 +58,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: CopyFunctions, args: ArgValues) ->
 /// `copy.copy(x)`: a new object holding the *same* items as `x`.
 #[py_signature("copy(x)")]
 fn call_copy(vm: &mut VM<'_>, args: &CopyArgs) -> RunResult<Value> {
-    let CopyArgs { x } = args;
-    shallow_copy(x, vm)
+    shallow_copy(&args.x, vm)
 }
 
 /// `copy.deepcopy(x, memo=None)`: rebuilds `x` and everything it holds.

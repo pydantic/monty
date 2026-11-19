@@ -17,8 +17,7 @@ use crate::{
 /// union of classes.
 #[py_signature("issubclass(cls, classinfo, /)")]
 pub fn builtin_issubclass(vm: &mut VM<'_>, args: &IssubclassArgs) -> RunResult<Value> {
-    let IssubclassArgs { cls, classinfo } = args;
-    issubclass_check(cls, classinfo, vm).map(Value::Bool)
+    issubclass_check(&args.cls, &args.classinfo, vm).map(Value::Bool)
 }
 
 /// Whether `cls` is `classinfo`, a subclass of it, or of any member of a tuple
