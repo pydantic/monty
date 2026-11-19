@@ -121,7 +121,7 @@ fn generates_bound_fields_in_declaration_order() {
             scale: crate::value::Value,
             items: Vec<crate::value::Value>,
             sep: Option<crate::args::StrArg>,
-            limit: crate::types::LongInt,
+            limit: crate::args::IntArg,
             ratio: f64,
             end: crate::args::DefaultedStringArg,
             flag: crate::value::Value,
@@ -412,6 +412,6 @@ fn full_width_integer_defaults_preserve_magnitude_and_sign() {
         let declaration = parse_quote!(#signature);
         let expanded = expand(&declaration, adapter()).unwrap().to_string();
         assert!(expanded.contains(decimal), "{expanded}");
-        assert!(expanded.contains("Option < crate :: types :: LongInt >"), "{expanded}");
+        assert!(expanded.contains("Option < crate :: args :: IntArg >"), "{expanded}");
     }
 }

@@ -27,7 +27,8 @@ For a builtin that uses Monty’s `ArgValues::get_one_arg` calling convention, u
 The macro emits the existing helper call and guards the returned value for the function body.
 This preserves the helper’s arity errors, including its positional-count error for keyword calls.
 A typed parameter such as `sqrt(x: float, /)` runs the converter after the same arity check.
-The body owns the extracted value. Leave parameters unannotated when their operation runs in the body,
+A reference parameter such as `number: &IntArg` borrows the converted value for the duration of the call.
+Leave parameters unannotated when their operation runs in the body,
 as with the iterable passed to `enumerate`.
 
 For two required positional values, `#[py_signature("divmod(x, y, /)", style = two_args)]`
@@ -55,7 +56,8 @@ separately, as in `bind_positional!(args, vm.heap, "(chars=..., /)", name = meth
 returns the same iterator, so a caller can borrow its slice without allocating.
 
 An unannotated parameter carries a Python value. A default of `...` distinguishes omission
-from a supplied value, including `None`. `int` binds a full-width Python integer.
+from a supplied value, including `None`.
+`int` binds an `IntArg`, keeping small integers inline and retaining the original storage for large integers.
 `SupportsIndex` also accepts objects with `__index__`, preserving the result's full width.
 Use `c_int` for a C `int` argument and `i64` for a signed 64-bit index.
 `float` extracts an `f64` through `__float__`, falling back to `__index__`.

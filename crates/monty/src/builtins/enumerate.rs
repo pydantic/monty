@@ -1,7 +1,9 @@
 //! Implementation of the enumerate() builtin function.
 
+use std::mem;
+
 use monty_macros::py_signature;
-use num_traits::ToPrimitive;
+use num_bigint::BigInt;
 use smallvec::smallvec;
 
 use crate::{
@@ -20,21 +22,27 @@ use crate::{
 /// Invalid calls raise `TypeError`. CPython’s custom parser can report a different
 /// argument first, for example in `enumerate(start=1)`.
 #[py_signature("enumerate(iterable, start: SupportsIndex=0)", at_most_total)]
-pub fn builtin_enumerate(vm: &mut VM<'_>, EnumerateArgs { iterable, start }: EnumerateArgs) -> RunResult<Value> {
+pub fn builtin_enumerate(vm: &mut VM<'_>, args: &mut EnumerateArgs) -> RunResult<Value> {
+    let iterable = mem::replace(&mut args.iterable, Value::None);
     let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 
-    let small_start = start.inner().to_i64();
+    let small_start = args.start.view(vm).to_i64(vm);
     let result: Vec<Value> = Vec::new();
     let mut result_guard = DropGuard::new(result, vm);
     let (result, vm) = result_guard.as_parts_mut();
 
     while let Some(item) = iter.py_next(vm)? {
         let offset = result.len();
-        let index = match small_start.and_then(|n| n.checked_add_unsigned(offset as u64)) {
-            Some(n) => Value::Int(n),
-            None => LongInt::new(start.inner() + offset).into_value(vm.heap),
+        let index = if let Some(n) = small_start.and_then(|n| n.checked_add_unsigned(offset as u64)) {
+            Value::Int(n)
+        } else {
+            let index = args
+                .start
+                .view(vm)
+                .with_value(vm, |n| BigInt::from(n) + offset, |n| n + offset);
+            LongInt::new(index).into_value(vm.heap)
         };
         let tuple_val = allocate_tuple(smallvec![index, item], vm.heap);
         result.push(tuple_val);

@@ -7,7 +7,7 @@ use std::{mem, slice, vec::IntoIter};
 pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
 pub(crate) use bind_python::Signature;
 pub(crate) use from_value::{
-    ArgErrCtx, DefaultedStringArg, FromValue, FromValueFail, LaxBool, StrArg, extract_i64_index, extract_index,
+    ArgErrCtx, DefaultedStringArg, FromValue, FromValueFail, IntArg, LaxBool, StrArg, extract_i64_index, extract_index,
     extract_nullable_str, is_long_int, long_int,
 };
 #[cfg(test)]

@@ -22,7 +22,8 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapData},
-    types::{LongInt, PyTrait},
+    py_value::PyValue,
+    types::{PyTrait, long_int::PyInt},
     value::Value,
 };
 
@@ -258,35 +259,73 @@ impl FromValue for DefaultedStringArg {
     }
 }
 
-/// Copies a Python integer into a Rust-owned arbitrary-precision argument.
-impl FromValue for LongInt {
+/// An owned Python integer in its original inline, interned or heap storage.
+#[derive(Debug)]
+pub(crate) struct IntArg(Value);
+
+impl IntArg {
+    #[inline]
+    fn from_integer(value: Value, vm: &VM<'_>) -> Result<Self, Value> {
+        match value {
+            Value::Int(_) | Value::InternLongInt(_) => Ok(Self(value)),
+            Value::Bool(b) => Ok(Self::from(i64::from(b))),
+            Value::Ref(id) if matches!(vm.heap.get(id), HeapData::LongInt(_)) => Ok(Self(value)),
+            other => Err(other),
+        }
+    }
+
+    pub(crate) fn view<'h>(&self, vm: &VM<'h>) -> PyInt<'h> {
+        let PyValue::Int(integer) = self.0.py_value(vm) else {
+            unreachable!("IntArg holds a normalized integer");
+        };
+        integer
+    }
+
+    /// Takes ownership of the integer produced by a literal or the index protocol.
+    pub(crate) fn from_index(value: Value, vm: &VM<'_>) -> Self {
+        Self::from_integer(value, vm).expect("expected a Python integer")
+    }
+}
+
+impl From<i64> for IntArg {
+    fn from(n: i64) -> Self {
+        Self(Value::Int(n))
+    }
+}
+
+impl FromValue for IntArg {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
+    #[inline]
     fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
-        match value {
-            Value::Int(n) => Ok(Self::from(n)),
-            Value::Bool(b) => Ok(Self::from(i64::from(b))),
-            other => {
-                let Some(n) = other.as_long_int(vm) else {
-                    return Err(FromValueFail::WrongType(other));
-                };
-                let result = Self::new(n.clone());
-                other.drop_with(vm);
-                Ok(result)
-            }
-        }
+        Self::from_integer(value, vm).map_err(FromValueFail::WrongType)
     }
 
     fn type_error(got: &str) -> RunError {
         ExcType::type_error_not_integer(got)
     }
+
+    fn drop_extracted(self, heap: &mut impl ContainsHeap) {
+        self.drop_with(heap);
+    }
 }
 
-/// Native signatures use `Option<LongInt>` for an omittable index.
-pub(crate) fn extract_index<T: From<LongInt>>(value: Value, vm: &mut VM<'_>) -> RunResult<T> {
-    let index = value.py_index(vm);
-    value.drop_with(vm);
-    LongInt::extract(index?, vm, ArgErrCtx::Plain).map(T::from)
+impl<C: ContainsHeap> DropWithContext<C> for IntArg {
+    fn drop_with(self, ctx: &mut C) {
+        self.0.drop_with(ctx);
+    }
+}
+
+pub(crate) fn extract_index<T: From<IntArg>>(value: Value, vm: &mut VM<'_>) -> RunResult<T> {
+    let index = match IntArg::from_integer(value, vm) {
+        Ok(integer) => integer,
+        Err(other) => {
+            let result = other.py_index(vm);
+            other.drop_with(vm);
+            IntArg::from_index(result?, vm)
+        }
+    };
+    Ok(T::from(index))
 }
 
 pub(crate) fn extract_i64_index<T: From<i64>>(value: Value, vm: &mut VM<'_>) -> RunResult<T> {

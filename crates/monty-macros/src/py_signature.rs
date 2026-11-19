@@ -475,7 +475,8 @@ fn single_positional_adapter(
         } else {
             quote!(<#ty as crate::args::FromValue>::extract(#field, vm, crate::args::ArgErrCtx::Plain)?)
         };
-        quote!(let #field: #ty = #convert; let #field: #expected = #field;)
+        let guard = matches!(&**expected, Type::Reference(_)).then(|| quote!(crate::defer_drop!(#field, vm);));
+        quote!(let #field: #ty = #convert; #guard let #field: #expected = #field;)
     } else {
         if !matches!(arg.ty.as_ref(), Type::Reference(reference) if reference.mutability.is_none()
             && matches!(reference.elem.as_ref(), Type::Path(path) if path.path.is_ident("Value")))
@@ -568,7 +569,7 @@ fn named_field(
         Some("str | None") => quote!(Option<crate::args::StrArg>),
         Some("float") => quote!(f64),
         Some("i64") => quote!(i64),
-        Some("int" | "SupportsIndex") => quote!(crate::types::LongInt),
+        Some("int" | "SupportsIndex") => quote!(crate::args::IntArg),
         Some(_) => return Err(error("unsupported native parameter annotation")),
     };
     let ty = if annotation.is_some() && matches!(param.default(), Some(Expr::EllipsisLiteral(_))) {
@@ -635,13 +636,16 @@ fn named_field(
 
 fn full_width_default(expr: &Expr) -> Option<TokenStream> {
     if let Some(n) = integer_default(expr) {
-        return Some(quote!(crate::types::LongInt::from(#n)));
+        return Some(quote!(crate::args::IntArg::from(#n)));
     }
     let (integer, negative) = integer_literal(expr)?;
     let literal = syn::parse_str::<syn::LitInt>(&integer.to_string().to_ascii_lowercase()).ok()?;
     let sign = if negative { "-" } else { "" };
     let decimal = format!("{sign}{}", literal.base10_digits());
-    Some(quote!(crate::types::LongInt::new(#decimal.parse().expect("validated integer literal"))))
+    Some(quote!({
+        let integer = crate::types::LongInt::new(#decimal.parse().expect("validated integer literal"));
+        crate::args::IntArg::from_index(integer.into_value(vm.heap), vm)
+    }))
 }
 
 fn integer_default(expr: &Expr) -> Option<i64> {

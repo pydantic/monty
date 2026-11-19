@@ -413,13 +413,18 @@ fn full_width_signature_defaults_and_omissions() {
     with_test_vm(|vm| {
         let wide = -(BigInt::from(1) << 64_u8);
         let defaults = WideArgs::from_args(ArgValues::Empty, vm).unwrap();
-        assert_eq!(defaults.x.inner(), &wide);
+        assert_eq!(defaults.x.0.as_long_int(vm), Some(&wide));
         assert!(defaults.index.is_none());
 
-        let input = LongInt::new(wide.clone()).into_value(vm.heap);
+        defaults.drop_with(vm);
+        let input = LongInt::new(wide).into_value(vm.heap);
+        let Value::Ref(id) = input else {
+            panic!("expected heap integer")
+        };
         let supplied = WideArgs::from_args(ArgValues::Two(Value::Bool(true), input), vm).unwrap();
-        assert_eq!(supplied.x.inner(), &BigInt::from(1));
-        assert_eq!(supplied.index.unwrap().inner(), &wide);
+        assert!(matches!(supplied.x.0, Value::Int(1)));
+        assert!(matches!(supplied.index.as_ref().unwrap().0, Value::Ref(actual) if actual == id));
+        supplied.drop_with(vm);
     });
 }
 

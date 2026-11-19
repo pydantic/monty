@@ -33,7 +33,7 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use smallvec::smallvec;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, IntArg},
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -425,15 +425,14 @@ fn math_sqrt(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 /// Returns the largest integer `r` such that `r * r <= n`.
 /// Only accepts non-negative integers (and bools).
 #[py_signature("isqrt(n: int, /)", style = one_arg, error_name = "math.isqrt")]
-fn math_isqrt(vm: &mut VM<'_>, n: LongInt) -> RunResult<Value> {
-    let n = n.inner();
-    if n.is_negative() {
-        Err(ExcType::isqrt_negative_error())
-    } else if let Some(n) = n.to_i64() {
-        Ok(Value::Int(isqrt_i64(n)))
-    } else {
-        Ok(LongInt::new(BigInt::from(n.magnitude().sqrt())).into_value(vm.heap))
-    }
+fn math_isqrt(vm: &mut VM<'_>, n: &IntArg) -> RunResult<Value> {
+    n.view(vm)
+        .with_value(
+            vm,
+            |n| (n >= 0).then(|| Value::Int(isqrt_i64(n))),
+            |n| (!n.is_negative()).then(|| LongInt::new(BigInt::from(n.magnitude().sqrt())).into_value(vm.heap)),
+        )
+        .ok_or_else(ExcType::isqrt_negative_error)
 }
 
 /// Integer square root of a non-negative machine integer.
@@ -904,13 +903,16 @@ fn math_radians(vm: &mut VM<'_>, x: f64) -> RunResult<Value> {
 /// Only accepts non-negative integers (and bools). Raises `ValueError` for
 /// negative values, `TypeError` for non-integer types.
 #[py_signature("factorial(n: int, /)", style = one_arg, error_name = "math.factorial")]
-fn math_factorial(vm: &mut VM<'_>, n: LongInt) -> RunResult<Value> {
-    let n = n.inner();
-    Ok(LongInt::new(factorial(n, &vm.heap.tracker)?).into_value(vm.heap))
+fn math_factorial(vm: &mut VM<'_>, n: &IntArg) -> RunResult<Value> {
+    let tracker = &vm.heap.tracker;
+    let result = n
+        .view(vm)
+        .with_value(vm, |n| factorial(&n, tracker), |n| factorial(n, tracker))?;
+    Ok(LongInt::new(result).into_value(vm.heap))
 }
 
 /// `n!` with CPython's argument errors, shared by `factorial` and one-argument `perm`.
-fn factorial(n: &BigInt, tracker: &ResourceTracker) -> RunResult<BigInt> {
+fn factorial(n: &(impl Signed + ToPrimitive), tracker: &ResourceTracker) -> RunResult<BigInt> {
     if n.is_negative() {
         return Err(
             SimpleException::new_msg(ExcType::ValueError, "factorial() not defined for negative values").into(),
