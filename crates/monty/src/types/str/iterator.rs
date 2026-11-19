@@ -6,7 +6,7 @@ use crate::{
     exception_private::RunResult,
     heap::{HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StringId,
-    types::{PyTrait, Type},
+    types::{PyTrait, Type, TypeRef},
     value::Value,
 };
 
@@ -111,8 +111,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIterator> {
         true
     }
 
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).py_type()
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        self.get(vm.heap).py_type().into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {

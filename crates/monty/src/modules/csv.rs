@@ -23,7 +23,7 @@ use crate::{
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
     types::{
-        BuiltinType, CsvObject, List, Module, PyTrait, Type,
+        CsvObject, List, Module, PyTrait, Type,
         csv::{
             DIALECT_NAMES, Dialect, DictReader, DictWriter, FIELD_SIZE_LIMIT, FmtParams, Quoting, Reader, Writer,
             write_method,
@@ -35,19 +35,20 @@ use crate::{
 };
 
 /// Module-level `csv` functions; `DictReader` and `DictWriter` are types.
+#[monty_macros::explicit_discriminants(checksum = 0x761e_5c0a_a9b7_9c94)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum CsvFunctions {
     /// `csv.reader(csvfile, dialect='excel', **fmtparams)`.
-    Reader,
+    Reader = 0,
     /// `csv.writer(csvfile, dialect='excel', **fmtparams)`.
-    Writer,
+    Writer = 1,
     /// `csv.get_dialect(name)`.
-    GetDialect,
+    GetDialect = 2,
     /// `csv.list_dialects()`.
-    ListDialects,
+    ListDialects = 3,
     /// `csv.field_size_limit([new_limit])`.
-    FieldSizeLimit,
+    FieldSizeLimit = 4,
 }
 
 /// Creates the `csv` module.
@@ -64,9 +65,9 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
         module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Csv(function)), vm);
     }
     for (name, type_) in [
-        (StaticStrings::DictReader, BuiltinType::CsvDictReader),
-        (StaticStrings::DictWriter, BuiltinType::CsvDictWriter),
-        (StaticStrings::DialectClass, BuiltinType::CsvDialect),
+        (StaticStrings::DictReader, Type::CsvDictReader),
+        (StaticStrings::DictWriter, Type::CsvDictWriter),
+        (StaticStrings::DialectClass, Type::CsvDialect),
     ] {
         module.set_attr(name, Value::Builtin(Builtins::Type(type_)), vm);
     }
@@ -82,7 +83,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
     }
     module.set_attr(
         StaticStrings::ErrorClass,
-        Value::Builtin(Builtins::ExcType(ExcType::CsvError)),
+        Value::Builtin(Builtins::Type(Type::CsvError)),
         vm,
     );
     module.set_attr(StaticStrings::DunderVersion, allocate_string("1.0", vm.heap), vm);
@@ -120,7 +121,7 @@ fn call_reader(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `csv.DictReader(f, ...)` as called from Python, loading an unread file first.
 pub(crate) fn dict_reader_call(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let callable = Value::Builtin(Builtins::Type(BuiltinType::CsvDictReader));
+    let callable = Value::Builtin(Builtins::Type(Type::CsvDictReader));
     match load_then_call(callable, args, Some("f"), vm) {
         Ok(load) => Ok(load),
         Err(args) => dict_reader_init(vm, args).map(CallResult::Value),

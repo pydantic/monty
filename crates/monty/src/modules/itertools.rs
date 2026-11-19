@@ -18,12 +18,13 @@ use crate::{
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
     types::{
-        BuiltinType, ItertoolsIter, Module, TupleVec, Type, allocate_tuple,
+        ItertoolsIter, Module, TupleVec, Type, allocate_tuple,
         iter::collect_owned_iterable,
         itertools::{
             Accumulate, Batched, Chain, Combinations, Compress, Count, Cycle, DropWhile, FilterFalse, GroupBy, Islice,
             Pairwise, Permutations, Product, Repeat, StarMap, TakeWhile, ZipLongest, tee,
         },
+        str::PyStr,
     },
     value::{VALUE_SIZE, Value},
 };
@@ -34,43 +35,44 @@ use crate::{
 /// Monty — `itertools.count` IS `Type::ItertoolsCount`, constructed through
 /// [`construct`]. Only `tee` is a plain function there, and `from_iterable` is
 /// reached through the `chain` type rather than the module.
+#[monty_macros::explicit_discriminants(checksum = 0xd321_9a55_cf78_bc1f)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum ItertoolsFunctions {
-    Tee,
+    Tee = 0,
     /// `chain.from_iterable`, an attribute of the `chain` type rather than a
     /// name in the module — resolved by `Value::py_getattr`.
     #[strum(serialize = "from_iterable")]
-    ChainFromIterable,
+    ChainFromIterable = 1,
 }
 
 /// The module's type objects, by the name each is bound to.
-const ITERTOOLS_TYPES: &[(StaticStrings, BuiltinType)] = &[
-    (StaticStrings::Count, BuiltinType::ItertoolsCount),
-    (StaticStrings::Repeat, BuiltinType::ItertoolsRepeat),
-    (StaticStrings::Pairwise, BuiltinType::ItertoolsPairwise),
-    (StaticStrings::Compress, BuiltinType::ItertoolsCompress),
-    (StaticStrings::Islice, BuiltinType::ItertoolsIslice),
-    (StaticStrings::Chain, BuiltinType::ItertoolsChain),
-    (StaticStrings::Cycle, BuiltinType::ItertoolsCycle),
-    (StaticStrings::Takewhile, BuiltinType::ItertoolsTakeWhile),
-    (StaticStrings::Dropwhile, BuiltinType::ItertoolsDropWhile),
-    (StaticStrings::Filterfalse, BuiltinType::ItertoolsFilterFalse),
-    (StaticStrings::Starmap, BuiltinType::ItertoolsStarMap),
-    (StaticStrings::Accumulate, BuiltinType::ItertoolsAccumulate),
-    (StaticStrings::Batched, BuiltinType::ItertoolsBatched),
-    (StaticStrings::ZipLongest, BuiltinType::ItertoolsZipLongest),
-    (StaticStrings::Combinations, BuiltinType::ItertoolsCombinations),
+const ITERTOOLS_TYPES: &[(StaticStrings, Type)] = &[
+    (StaticStrings::Count, Type::ItertoolsCount),
+    (StaticStrings::Repeat, Type::ItertoolsRepeat),
+    (StaticStrings::Pairwise, Type::ItertoolsPairwise),
+    (StaticStrings::Compress, Type::ItertoolsCompress),
+    (StaticStrings::Islice, Type::ItertoolsIslice),
+    (StaticStrings::Chain, Type::ItertoolsChain),
+    (StaticStrings::Cycle, Type::ItertoolsCycle),
+    (StaticStrings::Takewhile, Type::ItertoolsTakeWhile),
+    (StaticStrings::Dropwhile, Type::ItertoolsDropWhile),
+    (StaticStrings::Filterfalse, Type::ItertoolsFilterFalse),
+    (StaticStrings::Starmap, Type::ItertoolsStarMap),
+    (StaticStrings::Accumulate, Type::ItertoolsAccumulate),
+    (StaticStrings::Batched, Type::ItertoolsBatched),
+    (StaticStrings::ZipLongest, Type::ItertoolsZipLongest),
+    (StaticStrings::Combinations, Type::ItertoolsCombinations),
     (
         StaticStrings::CombinationsWithReplacement,
-        BuiltinType::ItertoolsCombinationsWithReplacement,
+        Type::ItertoolsCombinationsWithReplacement,
     ),
-    (StaticStrings::Permutations, BuiltinType::ItertoolsPermutations),
-    (StaticStrings::Product, BuiltinType::ItertoolsProduct),
-    (StaticStrings::Groupby, BuiltinType::ItertoolsGroupBy),
-    (StaticStrings::Grouper, BuiltinType::ItertoolsGrouper),
-    (StaticStrings::TeeType, BuiltinType::ItertoolsTee),
-    (StaticStrings::TeeDataObject, BuiltinType::ItertoolsTeeDataObject),
+    (StaticStrings::Permutations, Type::ItertoolsPermutations),
+    (StaticStrings::Product, Type::ItertoolsProduct),
+    (StaticStrings::Groupby, Type::ItertoolsGroupBy),
+    (StaticStrings::Grouper, Type::ItertoolsGrouper),
+    (StaticStrings::TeeType, Type::ItertoolsTee),
+    (StaticStrings::TeeDataObject, Type::ItertoolsTeeDataObject),
 ];
 
 /// Creates the `itertools` module.
@@ -95,6 +97,14 @@ pub(crate) fn call(vm: &mut VM<'_>, function: ItertoolsFunctions, args: ArgValue
         ItertoolsFunctions::Tee => call_tee(vm, args),
         ItertoolsFunctions::ChainFromIterable => call_chain_from_iterable(vm, args),
     }
+}
+
+/// `chain.from_iterable`, the one attribute an `itertools` type carries. Handed
+/// out as a value so it can be bound and called later, not only called in place.
+pub(crate) fn chain_class_attr<'h>(attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<Value> {
+    (attr.static_string(vm) == Some(StaticStrings::FromIterable)).then_some(Value::ModuleFunction(
+        ModuleFunctions::Itertools(ItertoolsFunctions::ChainFromIterable),
+    ))
 }
 
 /// Constructs one of the module's iterators, reached through [`Type::call`].
@@ -127,7 +137,7 @@ pub(crate) fn construct(type_: Type, vm: &mut VM<'_>, args: ArgValues) -> RunRes
         // arguments its internals use. See `limitations/itertools.md`.
         Type::ItertoolsGrouper | Type::ItertoolsTee | Type::ItertoolsTeeDataObject => {
             args.drop_with(vm);
-            Err(ExcType::type_error_not_callable(&type_.name(vm.heap, vm.interns)))
+            Err(ExcType::type_error_not_callable(type_.name()))
         }
         other => unreachable!("{other} is not an itertools type"),
     }
@@ -203,8 +213,8 @@ fn call_repeat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `LongInt` — all reported as [`Type::Int`]), `float`, `complex` and `bool`.
 fn is_number(value: &Value, vm: &VM<'_>) -> bool {
     matches!(
-        value.py_type_heap(vm.heap),
-        Type::Int | Type::Float | Type::Complex | Type::Bool
+        value.py_type_heap(vm.heap).native(),
+        Some(Type::Int | Type::Float | Type::Complex | Type::Bool)
     )
 }
 
@@ -744,7 +754,7 @@ fn permutations_r(r: Value, n: usize, vm: &mut VM<'_>) -> RunResult<usize> {
     defer_drop!(r, vm);
     if matches!(r, Value::None) {
         Ok(n)
-    } else if matches!(r.py_type_heap(vm.heap), Type::Int | Type::Bool) {
+    } else if matches!(r.py_type_heap(vm.heap).native(), Some(Type::Int | Type::Bool)) {
         usize::try_from(ssize_arg(r, vm)?).map_err(|_| ExcType::combinatoric_negative_r())
     } else {
         Err(ExcType::permutations_bad_r())

@@ -19,7 +19,7 @@ use super::{
     unicode_type_data::TypeRecord,
 };
 use crate::{
-    args::{ArgValues, FromArgs, StrArg},
+    args::{ArgValues, FromArgs, FromValue, FromValueFail, StrArg},
     bytecode::{CallResult, VM},
     codecs::Codec,
     defer_drop,
@@ -33,7 +33,7 @@ use crate::{
     str_format::str_format,
     string_builder::StringBuilder,
     types::{
-        LazyHeapSet, Type,
+        LazyHeapSet, Type, TypeRef,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
@@ -256,8 +256,8 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
         }
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Str
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Str.into()
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
@@ -1627,35 +1627,42 @@ fn str_rpartition<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunRes
 /// Returns a copy with all occurrences of substring old replaced by new.
 /// If count is given, only the first count occurrences are replaced.
 fn str_replace<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let (old, new, count) = parse_replace_args("str.replace", args, vm)?;
+    let ReplaceArgs { old, new, count } = ReplaceArgs::from_args(args, vm)?;
+    defer_drop!(old, vm);
+    defer_drop!(new, vm);
+    let old = old.as_str(vm);
+    let new = new.as_str(vm);
     let s = s.as_str(vm);
+    let count = count.0;
 
     check_replace_size(s.len(), old.len(), new.len(), count, &vm.heap.tracker)?;
 
     let result = if count < 0 {
-        s.replace(&old, &new)
+        s.replace(old, new)
     } else {
         // Safe cast: we've checked count >= 0
         let n = usize::try_from(count).unwrap_or(usize::MAX);
-        s.replacen(&old, &new, n)
+        s.replacen(old, new, n)
     };
 
     Ok(allocate_string(result, vm.heap))
 }
 
-/// Parses arguments for the replace method.
-///
-/// Supports both positional and keyword arguments for count (Python 3.13+).
-fn parse_replace_args(_method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<(String, String, i64)> {
-    let ReplaceArgs { old, new, count } = ReplaceArgs::from_args(args, vm)?;
-    defer_drop!(old, vm);
-    defer_drop!(new, vm);
-    defer_drop!(count, vm);
+/// Wrapper for `count` in `str.replace`: converts an index integer without
+/// `_PyArg_BadArgument` wording (`EXPECTED_TYPE_NAME = None`), preserving
+/// CPython's `'str' object cannot be interpreted as an integer`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReplaceCount(i64);
 
-    let old_s = extract_string_arg(old, vm)?;
-    let new_s = extract_string_arg(new, vm)?;
-    let count_i = extract_int_arg(count, vm)?;
-    Ok((old_s, new_s, count_i))
+impl FromValue for ReplaceCount {
+    const EXPECTED_TYPE_NAME: Option<&'static str> = None;
+
+    #[inline]
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        let result = value.as_int(vm);
+        value.drop_with(vm);
+        result.map(Self).map_err(FromValueFail::Raise)
+    }
 }
 
 /// Argument shape for `str.replace(old, new, count=-1)`.
@@ -1666,14 +1673,14 @@ fn parse_replace_args(_method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunRes
 /// Python 3.13 promoted `count` from positional-only to
 /// positional-or-keyword, hence the un-annotated default.
 #[derive(FromArgs)]
-#[from_args(name = "replace")]
+#[from_args(name = "replace", bad_arg)]
 struct ReplaceArgs {
     #[from_args(pos_only)]
-    old: Value,
+    old: StrArg,
     #[from_args(pos_only)]
-    new: Value,
-    #[from_args(default = Value::Int(-1))]
-    count: Value,
+    new: StrArg,
+    #[from_args(default = ReplaceCount(-1))]
+    count: ReplaceCount,
 }
 
 /// Implements Python's `str.center(width, fillchar?)` method.

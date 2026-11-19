@@ -30,12 +30,13 @@ use crate::{
 };
 
 /// Async Functions.
+#[monty_macros::explicit_discriminants(checksum = 0xcc80_eb0a_37e8_3f25)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum AsyncioFunctions {
-    Gather,
-    Run,
-    Sleep,
+    Gather = 0,
+    Run = 1,
+    Sleep = 2,
 }
 
 /// Creates the `asyncio` module.

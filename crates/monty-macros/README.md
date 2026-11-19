@@ -125,9 +125,25 @@ unit tests for every attribute-validation error.
 Projects a struct into the `CallArgs` a host callback takes, reusing the `#[from_args(...)]` field attributes.
 `varargs` fields contribute one positional argument per element.
 
+## `#[explicit_discriminants(checksum = ...)]`
+
+Requires an explicit integer literal on every enum variant used as a numeric identity code,
+and a matching `checksum` argument.
+The checksum is FNV-1a over sorted, NUL-terminated `name:code` pairs, with codes normalized to decimal.
+Declaration order, integer-literal spelling and variant payloads do not affect it.
+Existing codes must never change or be reused, including after a variant is removed.
+New variants take unused codes.
+
+To initialize the checksum, compile with `#[monty_macros::explicit_discriminants]`: the error reports the current checksum as a copyable attribute.
+A mismatch reports both values and the replacement attribute; review the mappings before updating it.
+Place the attribute before any derives so it checks every declared variant, including inactive `cfg` and `cfg_attr` variants.
+One checksum covers every configuration.
+The macro returns the enum unchanged, preserving its attributes and representation.
+The macro rejects duplicate numeric codes even between mutually exclusive variants.
+
 ## Not a standalone crate
 
-Generated code emits `crate::...` paths: `FromArgs` compiles inside `monty`, and `ToArgs` inside `monty-types`.
+Argument-conversion code emits `crate::...` paths: `FromArgs` compiles inside `monty`, and `ToArgs` inside `monty-types`.
 Cross-crate use would need `proc-macro-crate` and paths to the appropriate crate.
 
 ## Monty crates
@@ -140,4 +156,4 @@ Cross-crate use would need `proc-macro-crate` and paths to the appropriate crate
 - [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between clients and workers.
 - [`monty-type-checking`](https://crates.io/crates/monty-type-checking) — type checking of sandboxed code, powered by [ty](https://docs.astral.sh/ty/).
 - [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
-- [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing. **this crate**
+- [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing and identity-code checks. **this crate**

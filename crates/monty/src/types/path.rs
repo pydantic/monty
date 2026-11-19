@@ -25,7 +25,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     os_dispatch::{build_path_os_call, is_path_os_method, value_as_path_str},
     types::{
-        LazyHeapSet, List, PyTrait, Type, allocate_tuple,
+        LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_tuple,
         dir_scan::{glob_call, walk_call},
         str::{PyStr, StringRepr, allocate_string},
     },
@@ -280,6 +280,19 @@ impl Path {
     }
 }
 
+/// `Path.cwd()`.
+pub(crate) fn class_method<'h>(
+    attr: &PyStr<'h>,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    if attr.static_string(vm) == Some(StaticStrings::Cwd) {
+        Ok(class_cwd(vm, args).map(CallResult::Value))
+    } else {
+        Err(args)
+    }
+}
+
 /// Splits a final component into `(stem, suffix)` as `posixpath.splitext` does.
 ///
 /// The last `.` starts the suffix only if a non-dot character precedes it, so
@@ -514,8 +527,8 @@ impl Path {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Path
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Path.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

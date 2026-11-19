@@ -28,7 +28,6 @@ ahash = { workspace = true }
 indexmap = { workspace = true }
 itoa = { workspace = true }
 serde = { workspace = true }
-postcard = { workspace = true }
 minicbor-serde = { workspace = true }
 serde_bytes = { workspace = true }
 strum = { workspace = true }
@@ -55,7 +54,7 @@ sha1 = { version = "0.11", default-features = false }
 sha2 = { workspace = true }
 chrono = { workspace = true }
 speedate = "0.18.0"
-jiter = { version = "0.17.0", features = ["num-bigint"] }
+jiter = { version = "0.19.0", features = ["num-bigint"] }
 
 [features]
 # ref-count-return changes behavior to return information on reference counts to check they're correct
@@ -72,7 +71,6 @@ test-hooks = ["monty-types/test-hooks"]
 
 [dev-dependencies]
 monty-types = { workspace = true, features = ["tzdb"] }
-tempfile = "3"
 insta = { workspace = true }
 serde_json = { workspace = true }
 

@@ -20,7 +20,7 @@ use monty_types::{DEFAULT_GC_INTERVAL, MontyUuid, ResourceTracker};
 use serde::{de::Error as _, ser::SerializeStruct};
 
 #[cfg(feature = "ref-count-return")]
-use crate::types::Type;
+use crate::types::TypeRef;
 use crate::{
     asyncio::{Awaiter, ExternalFutureState, GatherState},
     types::{ExtFunction, HostClassType, TimeZone, Tuple, decimal::py_context::DecimalSlot},
@@ -1811,7 +1811,7 @@ impl HeapReader<'_> {
     ///
     /// Unlike the cycle collector's [`mark_gray`](Self::mark_gray) this touches
     /// no colors or refcounts, so it cannot perturb the state under test.
-    pub(crate) fn unreachable_entries(&self, roots: impl IntoIterator<Item = HeapId>) -> Vec<(HeapId, Type)> {
+    pub(crate) fn unreachable_entries(&self, roots: impl IntoIterator<Item = HeapId>) -> Vec<(HeapId, TypeRef)> {
         let mut seen: HashSet<HeapId> = HashSet::new();
         let mut work_stack: Vec<HeapId> = Vec::new();
         // The heap owns the session's decimal contexts, so they are live without a name.
@@ -2054,6 +2054,12 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::Class(class) => {
             if let Some(id) = class.name().heap_id() {
                 on_child(id);
+            }
+            // Base classes the class owns; must match `Class::py_dec_ref_ids`.
+            for base in class.bases() {
+                if let Some(id) = base.class_id() {
+                    on_child(id);
+                }
             }
             // The class namespace holds method/class-variable values.
             for (k, v) in class.namespace() {

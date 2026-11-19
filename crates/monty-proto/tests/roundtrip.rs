@@ -455,6 +455,28 @@ fn exception_without_traceback_round_trips() {
     assert_eq!(back, exc);
 }
 
+/// A raised exception whose type a newer peer added decodes as `Exception`, its message led by the name.
+#[test]
+fn unknown_raised_exception_falls_back_to_exception() {
+    let back = MontyException::try_from(raised("statistics.FutureError", Some("boom"))).unwrap();
+    assert_eq!(back.exc_type(), ExcType::Exception);
+    assert_eq!(back.message(), Some("statistics.FutureError: boom"));
+
+    let back = MontyException::try_from(raised("statistics.FutureError", None)).unwrap();
+    assert_eq!(back.exc_type(), ExcType::Exception);
+    assert_eq!(back.message(), Some("statistics.FutureError"));
+}
+
+/// A wire exception with no traceback or payload.
+fn raised(exc_type: &str, message: Option<&str>) -> pb::RaisedException {
+    pb::RaisedException {
+        exc_type: exc_type.to_owned(),
+        message: message.map(ToOwned::to_owned),
+        traceback: vec![].into(),
+        data: None,
+    }
+}
+
 /// Builds a wire `UnicodeDecodeError` whose payload fields a byzantine worker
 /// controls, for probing the receive-side sanitizer.
 fn unicode_exception(encoding: String, object: Vec<u8>, start: u64, end: u64, reason: String) -> pb::RaisedException {
@@ -842,20 +864,16 @@ fn name_lookup_results_convert() {
     };
     assert_eq!(exc.exc_type(), ExcType::KeyError);
     assert_eq!(exc.message(), Some("boom"));
-    // an error arm is validated like any exception crossing the wire
-    let bogus = pb::ResumeNameLookup {
+    // an error arm resolves its name like any exception crossing the wire
+    let unknown = pb::ResumeNameLookup {
         values: None,
-        kind: Some(pb::resume_name_lookup::Kind::Error(pb::RaisedException {
-            exc_type: "NotARealError".to_owned(),
-            message: None,
-            traceback: vec![].into(),
-            data: None,
-        })),
+        kind: Some(pb::resume_name_lookup::Kind::Error(raised("NotARealError", None))),
     };
-    assert!(matches!(
-        NameLookupResult::try_from(bogus),
-        Err(ProtoConvertError::UnknownExcType(_))
-    ));
+    let NameLookupResult::Error(exc) = NameLookupResult::try_from(unknown).unwrap() else {
+        panic!("expected Error");
+    };
+    assert_eq!(exc.exc_type(), ExcType::Exception);
+    assert_eq!(exc.message(), Some("NotARealError"));
 }
 
 /// The arena is flat, so nesting is not bounded by prost's recursion limit:

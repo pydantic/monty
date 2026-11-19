@@ -14,13 +14,14 @@ use crate::{
 };
 
 /// The aliases share the same callable value as their canonical function.
+#[monty_macros::explicit_discriminants(checksum = 0xf2cb_3563_78c3_d9db)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum BisectFunctions {
-    BisectLeft,
-    BisectRight,
-    InsortLeft,
-    InsortRight,
+    BisectLeft = 0,
+    BisectRight = 1,
+    InsortLeft = 2,
+    InsortRight = 3,
 }
 
 /// Creates the module and its two aliases.
@@ -198,8 +199,12 @@ fn search(vm: &mut VM<'_>, a: &Value, x: &Value, bounds: (i64, i64), key: &Value
 /// shortcuts (including NaNs) and reports errors on the offending elements.
 fn less_than(vm: &mut VM<'_>, a: &Value, b: &Value) -> RunResult<bool> {
     if !matches!(
-        (a.py_type(vm), b.py_type(vm)),
-        (Type::List, Type::List) | (Type::Tuple | Type::NamedTuple, Type::Tuple | Type::NamedTuple)
+        (a.py_type(vm).native(), b.py_type(vm).native()),
+        (Some(Type::List), Some(Type::List))
+            | (
+                Some(Type::Tuple | Type::NamedTuple),
+                Some(Type::Tuple | Type::NamedTuple)
+            )
     ) {
         return vm.cmp_values(CmpOperator::Lt, a, b);
     }
