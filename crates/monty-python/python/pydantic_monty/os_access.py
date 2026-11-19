@@ -18,6 +18,7 @@ from typing import (
     Literal,
     NamedTuple,
     Protocol,
+    Self,
     Sequence,
     TypeAlias,
     TypeGuard,
@@ -26,9 +27,6 @@ from typing import (
 from ._monty import NOT_HANDLED, MontyFileHandle
 
 if TYPE_CHECKING:
-    # Self is 3.11+, hence this
-    from typing import Self
-
     # only an annotation here; importing at runtime would be circular
     from . import TimeCaller
 

@@ -24,7 +24,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, HeapData, HeapId},
+    heap::{DropWithContext, HeapData},
     intern::StaticStrings,
     modules::{
         ModuleFunctions,
@@ -34,7 +34,7 @@ use crate::{
     },
     py_value::PyValue,
     resource_checks::check_estimated_size,
-    types::{Module, PyTrait},
+    types::{Module, PyTrait, Type},
     value::Value,
 };
 
@@ -42,32 +42,33 @@ use crate::{
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 /// `binascii` module functions, one variant per Python-visible function.
+#[monty_macros::explicit_discriminants(checksum = 0x7ea4_5f35_3381_27f4)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 pub(crate) enum BinasciiFunctions {
     #[strum(serialize = "hexlify")]
-    Hexlify,
+    Hexlify = 0,
     #[strum(serialize = "unhexlify")]
-    Unhexlify,
+    Unhexlify = 1,
     #[strum(serialize = "b2a_hex")]
-    B2aHex,
+    B2aHex = 2,
     #[strum(serialize = "a2b_hex")]
-    A2bHex,
+    A2bHex = 3,
     #[strum(serialize = "b2a_base64")]
-    B2aBase64,
+    B2aBase64 = 4,
     #[strum(serialize = "a2b_base64")]
-    A2bBase64,
+    A2bBase64 = 5,
     #[strum(serialize = "crc32")]
-    Crc32,
+    Crc32 = 6,
     #[strum(serialize = "crc_hqx")]
-    CrcHqx,
+    CrcHqx = 7,
     #[strum(serialize = "b2a_uu")]
-    B2aUu,
+    B2aUu = 8,
     #[strum(serialize = "a2b_uu")]
-    A2bUu,
+    A2bUu = 9,
     #[strum(serialize = "b2a_qp")]
-    B2aQp,
+    B2aQp = 10,
     #[strum(serialize = "a2b_qp")]
-    A2bQp,
+    A2bQp = 11,
 }
 
 /// Static mapping of attribute names to functions for module creation.
@@ -86,25 +87,25 @@ const BINASCII_FUNCTIONS: &[(StaticStrings, BinasciiFunctions)] = &[
     (StaticStrings::A2bQp, BinasciiFunctions::A2bQp),
 ];
 
-/// Creates the `binascii` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `binascii` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Binascii, vm.interns);
 
     module.set_attr(
         StaticStrings::ErrorClass,
-        Value::Builtin(Builtins::ExcType(ExcType::BinasciiError)),
+        Value::Builtin(Builtins::Type(Type::BinasciiError)),
         vm,
     );
     module.set_attr(
         StaticStrings::IncompleteClass,
-        Value::Builtin(Builtins::ExcType(ExcType::BinasciiIncomplete)),
+        Value::Builtin(Builtins::Type(Type::BinasciiIncomplete)),
         vm,
     );
     for (name, func) in BINASCII_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Binascii(*func)), vm);
     }
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `binascii` module function.

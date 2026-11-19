@@ -8,7 +8,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{HeapId, HeapItem, HeapObjectRead},
-    types::{LazyHeapSet, PyTrait, Type},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
 };
 
@@ -58,14 +58,14 @@ impl DataclassParams {
     /// The options the class was decorated with, which `legacy` rebuilds the
     /// generated methods from.
     #[must_use]
-    pub(super) fn options(&self) -> DataclassOptions {
+    pub(crate) fn options(&self) -> DataclassOptions {
         self.options
     }
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassParams> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::DataclassParams
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::DataclassParams.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

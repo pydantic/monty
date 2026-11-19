@@ -28,29 +28,26 @@ use self::counter::counter_update;
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::Builtins,
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
     types::{
-        BuiltinType, Dict, Module, NamedTupleClass, PyTrait,
+        Dict, Module, NamedTupleClass, PyTrait, Type,
+        dict::{DictKind, dict_fromkeys},
         iter::collect_owned_iterable,
         str::{StringRepr, str_isidentifier},
     },
     value::{EitherStr, Value},
 };
 
-/// Creates the `collections` module and allocates it on the heap.
+/// Creates the `collections` module.
 ///
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Collections, vm.interns);
 
-    module.set_attr(
-        StaticStrings::Deque,
-        Value::Builtin(Builtins::Type(BuiltinType::Deque)),
-        vm,
-    );
+    module.set_attr(StaticStrings::Deque, Value::Builtin(Builtins::Type(Type::Deque)), vm);
     module.set_attr(
         StaticStrings::Namedtuple,
         Value::ModuleFunction(super::ModuleFunctions::Collections(CollectionsFunctions::Namedtuple)),
@@ -60,29 +57,61 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     // functions, so `type(d) is defaultdict` and `isinstance(c, Counter)` hold.
     module.set_attr(
         StaticStrings::Defaultdict,
-        Value::Builtin(Builtins::Type(BuiltinType::DefaultDict)),
+        Value::Builtin(Builtins::Type(Type::DefaultDict)),
         vm,
     );
     module.set_attr(
         StaticStrings::Counter,
-        Value::Builtin(Builtins::Type(BuiltinType::Counter)),
+        Value::Builtin(Builtins::Type(Type::Counter)),
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// The callable functions exposed by the `collections` module.
+#[monty_macros::explicit_discriminants(checksum = 0xdcd1_da27_4c85_d54e)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum CollectionsFunctions {
-    Namedtuple,
+    Namedtuple = 0,
 }
 
 /// Dispatches a `collections` module function call.
 pub(super) fn call(vm: &mut VM<'_>, function: CollectionsFunctions, args: ArgValues) -> RunResult<Value> {
     match function {
         CollectionsFunctions::Namedtuple => namedtuple(vm, args),
+    }
+}
+
+/// `Counter.fromkeys`, which CPython deliberately disables.
+pub(crate) fn counter_class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
+        args.drop_with(vm);
+        Ok(Err(ExcType::not_implemented(
+            "Counter.fromkeys() is undefined.  Use Counter(iterable) instead.",
+        )
+        .into()))
+    } else {
+        Err(args)
+    }
+}
+
+/// `defaultdict.fromkeys(...)` builds `cls()`, a defaultdict with no factory,
+/// matching CPython's inherited `dict.fromkeys` classmethod.
+pub(crate) fn defaultdict_class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
+        Ok(dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value))
+    } else {
+        Err(args)
     }
 }
 

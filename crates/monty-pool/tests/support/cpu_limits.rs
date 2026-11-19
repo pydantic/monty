@@ -712,6 +712,7 @@ async fn typed_dump_errors_do_not_refund_cumulative_cpu() {
     pool.close().await;
 }
 
+/// Invalid aborts preserve the suspension; known and unknown exception names both end the feed.
 #[tokio::test]
 async fn explicit_raw_abort_validates_the_exception_and_ends_the_feed() {
     let pool = Pool::new(supervised(monty_binary())).await.unwrap();
@@ -725,48 +726,59 @@ async fn explicit_raw_abort_validates_the_exception_and_ends_the_feed() {
         ..pb::ClientRequest::default()
     };
     let mut on_event = |_: &pb::WorkerEvent| -> PrintFuture { Box::pin(ready(())) };
-    let event = checkout
-        .feed("missing", vec![], vec![], false, &mut no_print)
-        .await
-        .unwrap();
-    assert!(matches!(event, TurnEvent::NameLookup { .. }));
-    let exception = MontyException::new(ExcType::RuntimeError, Some("aborted by host".to_owned()));
-    let valid = pb::RaisedException::from(&exception);
-    let mut unknown_type = valid.clone();
-    unknown_type.exc_type = "UnknownException".to_owned();
-    let mut invalid_traceback = valid.clone();
-    invalid_traceback.traceback = vec![pb::StackFrame::default()].into();
-    for exception in [None, Some(unknown_type), Some(invalid_traceback)] {
+    for (name, expected_type, expected_message) in [
+        ("RuntimeError", ExcType::RuntimeError, "aborted by host"),
+        (
+            "UnknownException",
+            ExcType::Exception,
+            "UnknownException: aborted by host",
+        ),
+    ] {
+        let event = checkout
+            .feed("missing", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert!(matches!(event, TurnEvent::NameLookup { .. }));
+        let valid = pb::RaisedException {
+            exc_type: name.to_owned(),
+            message: Some("aborted by host".to_owned()),
+            ..pb::RaisedException::default()
+        };
+        let mut invalid_traceback = valid.clone();
+        invalid_traceback.traceback = vec![pb::StackFrame::default()].into();
+        for exception in [None, Some(invalid_traceback)] {
+            let abort = pb::ClientRequest {
+                kind: Some(pb::client_request::Kind::AbortFeed(pb::AbortFeed { exception })),
+                ..pb::ClientRequest::default()
+            };
+            assert!(matches!(checkout.turn_raw(&abort, &mut on_event).await,
+                    Err(PoolError::Protocol(ref message)) if message == "AbortFeed requires a valid exception"));
+            assert!(matches!(
+                checkout.turn_raw(&feed, &mut on_event).await,
+                Err(PoolError::Protocol(_))
+            ));
+        }
         let abort = pb::ClientRequest {
-            kind: Some(pb::client_request::Kind::AbortFeed(pb::AbortFeed { exception })),
+            kind: Some(pb::client_request::Kind::AbortFeed(pb::AbortFeed {
+                exception: Some(valid),
+            })),
             ..pb::ClientRequest::default()
         };
-        assert!(matches!(checkout.turn_raw(&abort, &mut on_event).await,
-                Err(PoolError::Protocol(ref message)) if message == "AbortFeed requires a valid exception"));
-        assert!(matches!(
-            checkout.turn_raw(&feed, &mut on_event).await,
-            Err(PoolError::Protocol(_))
-        ));
+        let event = checkout.turn_raw(&abort, &mut on_event).await.unwrap();
+        let Some(pb::worker_event::Kind::Error(error)) = event.kind else {
+            panic!("{event:?}")
+        };
+        let exception = MontyException::try_from(error.exception.unwrap()).unwrap();
+        assert_eq!(
+            (exception.exc_type(), exception.message()),
+            (expected_type, Some(expected_message))
+        );
+        let event = checkout
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert_eq!(expect_complete(event), MontyObject::int(2));
     }
-    let abort = pb::ClientRequest {
-        kind: Some(pb::client_request::Kind::AbortFeed(pb::AbortFeed {
-            exception: Some(valid),
-        })),
-        ..pb::ClientRequest::default()
-    };
-    let event = checkout.turn_raw(&abort, &mut on_event).await.unwrap();
-    let Some(pb::worker_event::Kind::Error(error)) = event.kind else {
-        panic!("{event:?}")
-    };
-    assert_eq!(
-        MontyException::try_from(error.exception.unwrap()).unwrap().message(),
-        Some("aborted by host")
-    );
-    let event = checkout
-        .feed("1 + 1", vec![], vec![], false, &mut no_print)
-        .await
-        .unwrap();
-    assert_eq!(expect_complete(event), MontyObject::int(2));
     checkout.finish().await.unwrap();
     pool.close().await;
 }

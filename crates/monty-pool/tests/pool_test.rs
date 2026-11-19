@@ -3078,11 +3078,11 @@ async fn type_check_state_is_scrubbed_between_checkouts_on_the_same_worker() {
     };
     assert_eq!(
         probe("from a import SECRET").await,
-        "b.py:1:6: error[unresolved-import] Cannot resolve imported module `a`\n"
+        "b.py:1:6: error[import-not-found] Cannot resolve imported module `a`\n"
     );
     assert_eq!(
         probe("from repl_type_stubs import STUB_SECRET").await,
-        "b.py:1:6: error[unresolved-import] Cannot resolve imported module `repl_type_stubs`\n"
+        "b.py:1:6: error[import-not-found] Cannot resolve imported module `repl_type_stubs`\n"
     );
     assert_eq!(
         probe("x = STUB_SECRET").await,
@@ -3927,7 +3927,7 @@ async fn module_stubs_do_not_outlive_their_session_on_a_reused_worker() {
     let PoolError::Typing(diagnostics) = err else {
         panic!("expected Typing, got {err:?}");
     };
-    assert_snapshot!(diagnostics, @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`");
+    assert_snapshot!(diagnostics, @"main.py:1:8: error[import-not-found] Cannot resolve imported module `tools`");
     session.finish().await.unwrap();
 }
 

@@ -26,7 +26,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData},
     intern::{StaticStrings, StringId},
     modules::{
         ModuleFunctions,
@@ -36,7 +36,7 @@ use crate::{
         PreConversionEffect, Reshaped, bool_reply, invalid_reply, stat_result_field, value_to_owned_bytes,
         value_to_owned_string,
     },
-    types::{Bytes, Module, PyTrait, Slice, Type, allocate_tuple, collect_iterable, str::allocate_string},
+    types::{Bytes, Module, PyTrait, Slice, Type, TypeRef, allocate_tuple, collect_iterable, str::allocate_string},
     value::Value,
     virtual_path::posix_join,
 };
@@ -44,46 +44,47 @@ use crate::{
 pub(crate) mod posix;
 
 /// `os.path` module functions.
+#[monty_macros::explicit_discriminants(checksum = 0x5cce_0efe_d771_be47)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum OsPathFunctions {
-    Abspath,
-    Basename,
-    Commonpath,
-    Commonprefix,
-    Dirname,
-    Exists,
-    Expanduser,
-    Expandvars,
-    Getatime,
-    Getctime,
-    Getmtime,
-    Getsize,
-    Isabs,
-    Isdevdrive,
-    Isdir,
-    Isfile,
-    Isjunction,
-    Islink,
-    Ismount,
-    Join,
-    Lexists,
-    Normcase,
-    Normpath,
-    Realpath,
-    Relpath,
-    Samefile,
-    Samestat,
-    Split,
-    Splitdrive,
-    Splitext,
-    Splitroot,
+    Abspath = 0,
+    Basename = 1,
+    Commonpath = 2,
+    Commonprefix = 3,
+    Dirname = 4,
+    Exists = 5,
+    Expanduser = 6,
+    Expandvars = 7,
+    Getatime = 8,
+    Getctime = 9,
+    Getmtime = 10,
+    Getsize = 11,
+    Isabs = 12,
+    Isdevdrive = 13,
+    Isdir = 14,
+    Isfile = 15,
+    Isjunction = 16,
+    Islink = 17,
+    Ismount = 18,
+    Join = 19,
+    Lexists = 20,
+    Normcase = 21,
+    Normpath = 22,
+    Realpath = 23,
+    Relpath = 24,
+    Samefile = 25,
+    Samestat = 26,
+    Split = 27,
+    Splitdrive = 28,
+    Splitext = 29,
+    Splitroot = 30,
 }
 
-/// Creates the `os.path` module (named `posixpath`, as CPython's is) and
-/// allocates it on the heap. `os.create_module` hangs one off `os.path`;
-/// `import os.path` / `import posixpath` build their own.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `os.path` module (named `posixpath`, as CPython's is).
+/// `os.create_module` hangs one off `os.path`; `import os.path` /
+/// `import posixpath` build their own.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     /// Shorthand for the function-attribute entries in the table below.
     fn function(f: OsPathFunctions) -> Value {
         Value::ModuleFunction(ModuleFunctions::OsPath(f))
@@ -147,7 +148,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     for (attr, value) in attrs {
         module.set_attr(attr, value, vm);
     }
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to an `os.path` function.
@@ -215,7 +216,7 @@ fn join(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         match PathText::fspath(part, vm) {
             Ok(text) if text.is_bytes == parts[0].is_bytes => parts.push(text),
             _ => {
-                let kinds = iter::once(parts[0].py_type()).chain(p.iter().map(|arg| arg.py_type_heap(vm.heap)));
+                let kinds = iter::once(parts[0].py_type().into()).chain(p.iter().map(|arg| arg.py_type_heap(vm.heap)));
                 return Err(check_arg_types("join", kinds, vm));
             }
         }
@@ -478,7 +479,7 @@ fn commonprefix(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     let first = m.py_getitem(&Value::Int(0), vm)?;
     defer_drop!(first, vm);
-    let nested = matches!(first.py_type_heap(vm.heap), Type::List | Type::Tuple);
+    let nested = matches!(first.py_type_heap(vm.heap).native(), Some(Type::List | Type::Tuple));
     let raw_items = collect_iterable(m, vm)?;
     defer_drop!(raw_items, vm);
     // Guarded before conversion so a later `os.fspath` failure releases the
@@ -515,8 +516,8 @@ fn extreme<'a>(items: &'a [Value], is_min: bool, vm: &mut VM<'_>) -> RunResult<&
 /// anything else is iterated and indexed like CPython does it (so a dict's
 /// int keys raise `TypeError`), with `==` on the elements.
 fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    match (s1.py_type_heap(vm.heap), s2.py_type_heap(vm.heap)) {
-        (Type::Str, Type::Str) => {
+    match (s1.py_type_heap(vm.heap).native(), s2.py_type_heap(vm.heap).native()) {
+        (Some(Type::Str), Some(Type::Str)) => {
             let a = value_to_owned_string(s1, vm.heap, vm.interns).expect("checked str");
             let b = value_to_owned_string(s2, vm.heap, vm.interns).expect("checked str");
             let mismatch = a.char_indices().zip(b.chars()).find(|((_, x), y)| x != y);
@@ -525,7 +526,7 @@ fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Va
                 None => s1.clone_with_heap(vm),
             })
         }
-        (Type::Bytes, Type::Bytes) => {
+        (Some(Type::Bytes), Some(Type::Bytes)) => {
             let a = value_to_owned_bytes(s1, vm.heap, vm.interns).expect("checked bytes");
             let b = value_to_owned_bytes(s2, vm.heap, vm.interns).expect("checked bytes");
             Ok(match a.iter().zip(&b).position(|(x, y)| x != y) {
@@ -1235,10 +1236,10 @@ fn allocate_text(bytes: Vec<u8>, is_bytes: bool, heap: &Heap) -> Value {
 /// `str` nor `bytes` is named, else the arguments mixed `str` and `bytes`.
 /// Callers pass the type `os.fspath` produced for the arguments CPython
 /// rebinds before the check, and the raw type (a `Path` included) otherwise.
-fn check_arg_types(func: &str, kinds: impl IntoIterator<Item = Type>, vm: &VM<'_>) -> RunError {
+fn check_arg_types(func: &str, kinds: impl IntoIterator<Item = TypeRef>, vm: &VM<'_>) -> RunError {
     for kind in kinds {
         match kind {
-            Type::Str | Type::Bytes => {}
+            TypeRef::Native(Type::Str | Type::Bytes) => {}
             other => return ExcType::type_error_path_argument(func, &other.dunder_name(vm.heap, vm.interns)),
         }
     }

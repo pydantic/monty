@@ -7,10 +7,10 @@
 //! and [`Dump::load`]; whether the session was idle or suspended is the
 //! [`Session`] discriminant, not a separate tag.
 //!
-//! Inline builtin types serialize through `Type`, preserving the names and payloads
-//! written before `BuiltinType` was split out. Its own enum order is not the wire
-//! order: postcard encoding for builtin `id()` retains `Type::Instance`'s slot.
-//! See `builtin_type_tests` in `types/builtin_type.rs` and the legacy serialization fixture.
+//! Inline builtin types serialize as `Type` variant names; `Builtins` reads the
+//! shapes written before exception classes and `type` joined the native type table.
+//! Numeric identities retain their explicit legacy codes independently of the dump encoding.
+//! See the tests in `types/native.rs` and the legacy serialization fixture.
 //!
 //! # Naming contract
 //!
@@ -55,8 +55,8 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// does not excuse writing a new encoding that older readers cannot read.
 /// Bump for every release that breaks this contract through layout changes or
 /// changes to the *meaning* of serialized data: opcodes or their operand shapes,
-/// `BuiltinsFunctions` order (its discriminants are bytecode operands),
-/// `CmpOperator` values, the compiler's constant layout, how a dict or set key
+/// `BuiltinsFunctions` discriminants (bytecode operands), `CmpOperator` values,
+/// the compiler's constant layout, numeric identities, how a dict or set key
 /// hashes (entries persist their hash), or a semantic change to a stored value.
 /// Frozen code is persisted too: incompatible changes to its Rust entry arguments or
 /// private native helper contracts need compatibility handling or a bump. Compatible
@@ -66,7 +66,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 ///
 /// Before bumping, check there's already been a bump since the last release - multiple bumps
 /// between releases is unnecessary and can lead to confusion.
-pub const DUMP_VERSION: u16 = 15;
+pub const DUMP_VERSION: u16 = 16;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.
@@ -364,9 +364,7 @@ mod tests {
     use strum::VariantNames;
 
     use super::DUMP_VERSION;
-    use crate::{
-        bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, heap::HeapId, types::Type,
-    };
+    use crate::{bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, types::Type};
 
     /// If a component changes incompatibly, bump `DUMP_VERSION` before updating its
     /// expected fingerprint. Compatible changes only require a fingerprint update.
@@ -377,7 +375,7 @@ mod tests {
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0x47f4_8e5e_55da_518f,
+            0x4f1f_0e65_ba57_1672,
             "opcodes changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(opcode_fingerprint())
         );
@@ -387,23 +385,15 @@ mod tests {
             "comparison operators changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(comparison_operators_fingerprint())
         );
-        // `VariantNames` keeps the `#[strum(disabled)]` variants that `EnumString`
-        // drops, so the counts below cover every serialized variant once the
-        // disabled ones are supplied by hand. Asserted rather than assumed, so a
-        // strum upgrade that changed it says so instead of quietly narrowing the guard.
-        assert!(Type::VARIANTS.contains(&"instance"));
         assert!(MontyType::VARIANTS.contains(&"exception"));
 
-        let type_names = serde_variant_names(
-            Type::VARIANTS,
-            &[
-                Type::Instance(HeapId::from_index(0)),
-                Type::Exception(ExcType::ValueError),
-            ],
-        );
+        let type_names: Vec<String> = Type::ALL
+            .iter()
+            .map(|ty| encoded_variant_name(&minicbor_serde::to_vec(ty).unwrap()))
+            .collect();
         assert_eq!(
             variant_name_fingerprint(&type_names),
-            0x4db8_c44f_dbcb_fb2a,
+            0x8644_05e4_90d7_b768,
             "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&type_names))
         );
@@ -414,13 +404,12 @@ mod tests {
             "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&monty_type_names))
         );
-        // Builtin discriminants are `CallBuiltinFunction` operands, so the enum
-        // is append-only: a new builtin goes after the last variant.
+        // Explicit builtin codes are `CallBuiltinFunction` operands; declaration order is free.
         assert_eq!(
-            variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
-            0xcdd8_09b1_2adc_3852,
-            "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}, actual: {}",
-            grouped_hex(variant_order_fingerprint(BuiltinsFunctions::VARIANTS))
+            builtin_functions_fingerprint(),
+            0x23ab_4f4f_417a_b85c,
+            "BuiltinsFunctions codes changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(builtin_functions_fingerprint())
         );
     }
 
@@ -433,14 +422,17 @@ mod tests {
         format!("0x{s}")
     }
 
-    /// FNV-1a over variant names in declaration order.
-    ///
-    /// `BuiltinsFunctions` discriminants are bytecode operands, so inserting a
-    /// variant rewrites what older dumps execute rather than failing the version
-    /// check. Appending leaves this unchanged for every existing variant;
-    /// inserting or reordering does not.
-    fn variant_order_fingerprint(variants: &[&str]) -> u64 {
-        fnv1a(variants)
+    /// Pins builtin names to their bytecode operands without constraining declaration order.
+    fn builtin_functions_fingerprint() -> u64 {
+        let mut codes = BuiltinsFunctions::VARIANTS
+            .iter()
+            .map(|name| {
+                let function: BuiltinsFunctions = name.parse().unwrap();
+                format!("{name}:{}", function as u8)
+            })
+            .collect::<Vec<_>>();
+        codes.sort_unstable();
+        fnv1a(&codes)
     }
 
     /// FNV-1a over variant names in sorted order.

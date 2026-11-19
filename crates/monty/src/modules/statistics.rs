@@ -22,7 +22,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, HeapData, HeapId, HeapReadOutput},
+    heap::{DropGuard, HeapData, HeapReadOutput},
     intern::StaticStrings,
     modules::{ModuleFunctions, collections::counter_init, math},
     resource_checks::try_vec_with_capacity,
@@ -36,25 +36,26 @@ use crate::{
 };
 
 /// The functions of the `statistics` module.
+#[monty_macros::explicit_discriminants(checksum = 0xfb2d_44e2_bb70_c85c)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum StatisticsFunctions {
-    Mean,
-    Fmean,
-    Median,
-    MedianLow,
-    MedianHigh,
-    Mode,
-    Multimode,
-    Pstdev,
-    Pvariance,
-    Stdev,
-    Variance,
-    Quantiles,
+    Mean = 0,
+    Fmean = 1,
+    Median = 2,
+    MedianLow = 3,
+    MedianHigh = 4,
+    Mode = 5,
+    Multimode = 6,
+    Pstdev = 7,
+    Pvariance = 8,
+    Stdev = 9,
+    Variance = 10,
+    Quantiles = 11,
 }
 
 /// Creates the module and its `StatisticsError` exception type.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Statistics, vm.interns);
     for (name, function) in [
         (StaticStrings::Mean, StatisticsFunctions::Mean),
@@ -74,10 +75,10 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     }
     module.set_attr(
         StaticStrings::StatisticsError,
-        Value::Builtin(Builtins::ExcType(ExcType::StatisticsError)),
+        Value::Builtin(Builtins::Type(Type::StatisticsError)),
         vm,
     );
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `statistics` function.
@@ -166,7 +167,7 @@ struct FmeanArgs {
 fn weighted_fmean(data: Value, weights: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     let mut data_guard = DropGuard::new(data, vm);
     let (_, vm) = data_guard.as_parts_mut();
-    let weights = if matches!(weights.py_type(vm), Type::List | Type::Tuple) {
+    let weights = if matches!(weights.py_type(vm).native(), Some(Type::List | Type::Tuple)) {
         weights
     } else {
         let weights: Vec<Value> = collect_owned_iterable(weights, vm)?;
@@ -177,7 +178,7 @@ fn weighted_fmean(data: Value, weights: Value, vm: &mut VM<'_>) -> RunResult<Val
     let weights_for_sum = weights.clone_with_heap(vm.heap);
     let num = math::sumprod(vm, ArgValues::Two(data, weights_for_sum)).map_err(|err| match err {
         // CPython turns any `ValueError` from `sumprod` into this message, not only the length check.
-        RunError::Exc(raise) if raise.exc.exc_type().is_subclass_of(ExcType::ValueError) => {
+        RunError::Exc(raise) if Type::from(raise.exc.exc_type()).is_subclass_of(Type::ValueError) => {
             ExcType::statistics_error("data and weights must be the same length")
         }
         err => err,

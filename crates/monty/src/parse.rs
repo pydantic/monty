@@ -1050,17 +1050,21 @@ impl<'a, 'i> Parser<'a, 'i> {
                         ));
                     }
                 };
+                // The grammar only allows `*` as the sole imported name.
+                if let [alias] = names.as_slice()
+                    && alias.name.as_str() == "*"
+                {
+                    return Ok(Node::ImportStar {
+                        module_name,
+                        submodules,
+                        position,
+                        star_position: self.convert_range(alias.range),
+                    });
+                }
                 // Parse the imported names
                 let names = names
                     .iter()
                     .map(|alias| {
-                        // Check for star import which is not supported
-                        if alias.name.as_str() == "*" {
-                            return Err(ParseError::not_supported(
-                                "Wildcard imports (`from ... import *`) are not supported",
-                                position,
-                            ));
-                        }
                         let name = self.interner.intern(&alias.name);
                         // The binding name is the alias if provided, otherwise the import name
                         let binding_name = alias.asname.as_ref().map_or(name, |n| self.interner.intern(&n.id));
@@ -1317,28 +1321,44 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// The class body is modelled as a synthetic zero-argument function (like
     /// CPython's class-body code object): the class statements are collected in
     /// source order into a [`RawFunctionDef`] that, when prepared and compiled,
-    /// runs in its own scope and returns the assembled `Class`. Methods become
-    /// nested `FunctionDef`s; class variables become `Assign`s with arbitrary
+    /// runs in its own scope and returns the namespace `Dict` that
+    /// `type(name, bases, dict, **kw)` turns into the class. Methods become nested `FunctionDef`s; class variables become `Assign`s with arbitrary
     /// expressions (`name = <expr>` / `name: T = <expr>`). Every member name is
     /// recorded in `members`, in source order, for namespace assembly.
     ///
     /// `pass` and `...` are ignored; a leading docstring becomes a `__doc__`
     /// member, and annotated names the class's `__annotate__` function. Class
-    /// decorators are supported (enclosing scope, applied bottom-up);
-    /// inheritance, function/method decorators, and anything else in the body
-    /// are rejected as not-implemented, reserving the syntax for later.
+    /// decorators and base classes are supported (enclosing scope, applied bottom-up);
+    /// metaclasses and anything else in the body are rejected as not-implemented.
     fn parse_class_def(&mut self, class: ast::StmtClassDef) -> Result<ParseNode, ParseError> {
         let position = self.class_keyword_range(&class);
         let decorators = self.parse_decorators(class.decorator_list)?;
-        // `class.arguments` carries base classes and metaclass keywords.
+        let mut bases = Vec::new();
+        let mut keywords = Vec::new();
+        // `class.arguments` carries base classes and kwargs.
         if let Some(arguments) = &class.arguments {
             // CPython rejects the repeat before it would consider the metaclass.
             self.check_repeated_keywords(&arguments.keywords)?;
-            if !arguments.args.is_empty() || !arguments.keywords.is_empty() {
-                return Err(ParseError::not_implemented(
-                    "class inheritance and metaclasses",
-                    position,
-                ));
+            for keyword in &arguments.keywords {
+                let Some(arg) = &keyword.arg else {
+                    return Err(ParseError::not_implemented(
+                        "**kwargs unpacking in class definition",
+                        self.convert_range(keyword.range),
+                    ));
+                };
+                if arg.as_str() == "metaclass" {
+                    return Err(ParseError::not_implemented(
+                        "metaclasses",
+                        self.convert_range(keyword.range),
+                    ));
+                }
+                let key = self.identifier(&arg.id, arg.range);
+                let value = self.parse_expression(keyword.value.clone())?;
+                keywords.push(Kwarg { key, value });
+            }
+
+            for base_expr in &arguments.args {
+                bases.push(self.parse_sequence_item(base_expr.clone())?);
             }
         }
 
@@ -1361,6 +1381,9 @@ impl<'a, 'i> Parser<'a, 'i> {
         // `__doc__ = ...` later in the body overwrites it, as in CPython.
         let doc_target = Identifier::new(self.interner.intern("__doc__"), self.convert_range(class.name.range));
         let mut doc_value = ExprLoc::new(self.convert_range(class.name.range), Expr::Literal(Literal::None));
+        // Pre-intern "__class__" so Prepare (which holds &CompileInterns) can look up
+        // StaticStrings::DunderClass even if no method body explicitly mentions the identifier.
+        self.interner.intern("__class__");
 
         for (i, stmt) in class.body.into_iter().enumerate() {
             match stmt {
@@ -1454,6 +1477,19 @@ impl<'a, 'i> Parser<'a, 'i> {
                         doc_value = self.parse_expression(*value)?;
                     }
                 }
+                // CPython's own error comes before Monty's class-body restriction.
+                Stmt::ImportFrom(ast::StmtImportFrom { names, .. })
+                    if names.iter().any(|alias| alias.name.as_str() == "*") =>
+                {
+                    let star = names
+                        .iter()
+                        .find(|alias| alias.name.as_str() == "*")
+                        .expect("checked above");
+                    return Err(ParseError::syntax(
+                        "import * only allowed at module level",
+                        self.convert_range(star.range),
+                    ));
+                }
                 other => {
                     return Err(ParseError::not_implemented(
                         "class bodies containing anything other than methods and simple class variables",
@@ -1523,6 +1559,8 @@ impl<'a, 'i> Parser<'a, 'i> {
 
         Ok(Node::ClassDef {
             name,
+            bases,
+            keywords,
             body,
             members,
             decorators,
@@ -3051,11 +3089,6 @@ pub enum ParseError {
         msg: Cow<'static, str>,
         position: CodeRange,
     },
-    /// Missing feature with a custom full message (no prefix added).
-    NotSupported {
-        msg: Cow<'static, str>,
-        position: CodeRange,
-    },
     /// Import error (e.g., relative imports without a package).
     Import {
         msg: Cow<'static, str>,
@@ -3066,13 +3099,6 @@ pub enum ParseError {
 impl ParseError {
     pub(crate) fn not_implemented(msg: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
         Self::NotImplemented {
-            msg: msg.into(),
-            position,
-        }
-    }
-
-    fn not_supported(msg: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
-        Self::NotSupported {
             msg: msg.into(),
             position,
         }
@@ -3113,9 +3139,6 @@ impl ParseError {
                     .with_snippet_position(position, source)
                     .into()
             }
-            Self::NotSupported { msg, position } => ExcType::not_implemented(msg)
-                .with_snippet_position(position, source)
-                .into(),
             Self::Import { msg, position } => SimpleException::new_msg(ExcType::ImportError, msg)
                 .with_snippet_position(position, source)
                 .into(),
@@ -3151,11 +3174,6 @@ impl ParseError {
             Self::NotImplemented { msg, position } => (
                 ExcType::NotImplementedError,
                 format!("The monty syntax parser does not yet support {msg}"),
-                StackFrame::from_position(position, filename, &mut source_map),
-            ),
-            Self::NotSupported { msg, position } => (
-                ExcType::NotImplementedError,
-                msg.into_owned(),
                 StackFrame::from_position(position, filename, &mut source_map),
             ),
             Self::Import { msg, position } => (
