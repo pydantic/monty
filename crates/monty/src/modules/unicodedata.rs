@@ -123,7 +123,7 @@ fn uni_category(vm: &mut VM<'_>, chr: &Value) -> RunResult<Value> {
 /// `FromArgs` equivalent); `default` is any object returned verbatim when the
 /// character has no name. `style = unpack` gives the `PyArg_UnpackTuple` arity
 /// wording CPython uses here (`name expected at most 2 arguments, got 3`).
-#[py_signature("name(chr, default=..., /)", style = unpack, kwarg_error_name = "unicodedata.name")]
+#[py_signature("name(chr, default=..., /)", style = unpack, kwarg_error_name = "unicodedata.name", bind = owned)]
 fn uni_name(vm: &mut VM<'_>, args: NameArgs) -> RunResult<Value> {
     let NameArgs {
         chr: chr_val,

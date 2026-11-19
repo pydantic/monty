@@ -123,7 +123,7 @@ pub(super) fn call(vm: &mut VM<'_>, func: DataclassesFunctions, args: ArgValues)
 ///
 /// Raw `Value` fields because CPython's `def` type-checks nothing; the body
 /// takes each option's truthiness instead.
-#[py_signature("dataclass(cls=None, /, *, init=True, repr=True, eq=True, order=False, unsafe_hash=False, frozen=False, match_args=True, kw_only=False, slots=False, weakref_slot=False)", style = def)]
+#[py_signature("dataclass(cls=None, /, *, init=True, repr=True, eq=True, order=False, unsafe_hash=False, frozen=False, match_args=True, kw_only=False, slots=False, weakref_slot=False)", style = def, bind = owned)]
 fn dataclass_decorator(vm: &mut VM<'_>, args: DataclassArgs) -> RunResult<Value> {
     let DataclassArgs {
         cls,

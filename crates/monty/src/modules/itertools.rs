@@ -151,7 +151,7 @@ pub(crate) fn construct(type_: Type, vm: &mut VM<'_>, args: ArgValues) -> RunRes
 /// CPython parses this with `"|OO:count"`, so errors carry the function name
 /// (`style = c_named`) and arity counts positionals + keywords together
 /// (`at_most_total`): `count(1, 2, step=3)` reports three arguments.
-#[py_signature("count(start=0, step=1)", style = c_named, at_most_total)]
+#[py_signature("count(start=0, step=1)", style = c_named, at_most_total, bind = owned)]
 fn call_count(vm: &mut VM<'_>, args: CountArgs) -> RunResult<Value> {
     let CountArgs { start, step } = args;
     // CPython's `count_new` runs one `PyNumber_Check` over both arguments after
@@ -173,7 +173,7 @@ fn call_count(vm: &mut VM<'_>, args: CountArgs) -> RunResult<Value> {
 ///
 /// CPython parses this with `"O|n:repeat"` — see [`CountArgs`] for why that
 /// means `c_named` + `at_most_total`.
-#[py_signature("repeat(object, times: i64=...)", style = c_named, at_most_total)]
+#[py_signature("repeat(object, times: i64=...)", style = c_named, at_most_total, bind = owned)]
 fn call_repeat(vm: &mut VM<'_>, args: RepeatArgs) -> RunResult<Value> {
     let RepeatArgs { object, times } = args;
     let remaining = times.map(|n| usize::try_from(n.max(0)).unwrap_or(usize::MAX));
@@ -211,7 +211,7 @@ fn normalize_bool(value: Value) -> Value {
 /// CPython parses this with `PyArg_UnpackTuple`, so arity errors read
 /// `pairwise expected 1 argument, got 2` and any keyword is rejected wholesale
 /// with `pairwise() takes no keyword arguments`.
-#[py_signature("pairwise(iterable, /)", style = unpack)]
+#[py_signature("pairwise(iterable, /)", style = unpack, bind = owned)]
 fn call_pairwise(vm: &mut VM<'_>, args: PairwiseArgs) -> RunResult<Value> {
     let PairwiseArgs { iterable } = args;
     // Resolve to an iterator up front, as CPython does: a non-iterable raises
@@ -228,7 +228,7 @@ fn call_pairwise(vm: &mut VM<'_>, args: PairwiseArgs) -> RunResult<Value> {
 /// CPython parses this with `PyArg_ParseTupleAndKeywords`, so both parameters
 /// are also accepted by keyword and arity counts positionals + keywords
 /// together: `compress([1], [1], data=[1])` reports three arguments.
-#[py_signature("compress(data, selectors)", style = c_named, at_most_total)]
+#[py_signature("compress(data, selectors)", style = c_named, at_most_total, bind = owned)]
 fn call_compress(vm: &mut VM<'_>, args: CompressArgs) -> RunResult<Value> {
     let CompressArgs { data, selectors } = args;
     // `into_py_iter` consumes its receiver, so each conversion guards the other
@@ -250,7 +250,7 @@ fn call_compress(vm: &mut VM<'_>, args: CompressArgs) -> RunResult<Value> {
 /// CPython uses `PyArg_UnpackTuple` with a 2..4 arity, so the trailing three
 /// slots are read positionally and their *meaning* depends on how many were
 /// given — resolved in the body by [`islice_bounds`], not by the binder.
-#[py_signature("islice(iterable, first, second=..., third=..., /)", style = unpack)]
+#[py_signature("islice(iterable, first, second=..., third=..., /)", style = unpack, bind = owned)]
 fn call_islice(vm: &mut VM<'_>, args: IsliceArgs) -> RunResult<Value> {
     let IsliceArgs {
         iterable,
@@ -344,7 +344,7 @@ fn islice_index(value: &Value, vm: &mut VM<'_>) -> RunResult<IsliceBound> {
 }
 
 /// `itertools.chain(*iterables)` — each argument's items, back to back.
-#[py_signature("chain(*iterables)")]
+#[py_signature("chain(*iterables)", bind = owned)]
 fn call_chain(vm: &mut VM<'_>, iterables: ArgPosIter) -> RunResult<Value> {
     let iterables: Vec<Value> = iterables.collect();
     // Arguments are NOT resolved here: CPython calls `iter()` on each only as it
@@ -359,7 +359,7 @@ fn call_chain(vm: &mut VM<'_>, iterables: ArgPosIter) -> RunResult<Value> {
 ///
 /// `PyArg_UnpackTuple` like `pairwise`, so arity reads `cycle expected 1
 /// argument, got 2` and keywords are rejected wholesale.
-#[py_signature("cycle(iterable, /)", style = unpack)]
+#[py_signature("cycle(iterable, /)", style = unpack, bind = owned)]
 fn call_cycle(vm: &mut VM<'_>, args: CycleArgs) -> RunResult<Value> {
     let CycleArgs { iterable } = args;
     // Unlike `chain`, CPython resolves eagerly here, so `cycle(5)` raises now.
@@ -430,7 +430,7 @@ fn call_starmap(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// arguments (3 given)` form, pivoting to a total count once kwargs push the
 /// overflow past every slot. `func` is never type-checked here: CPython only
 /// discovers a non-callable when the second item arrives.
-#[py_signature("accumulate(iterable, func=None, *, initial=None)", style = c_named)]
+#[py_signature("accumulate(iterable, func=None, *, initial=None)", style = c_named, bind = owned)]
 fn call_accumulate(vm: &mut VM<'_>, args: AccumulateArgs) -> RunResult<Value> {
     let AccumulateArgs {
         iterable,
@@ -466,7 +466,7 @@ fn call_accumulate(vm: &mut VM<'_>, args: AccumulateArgs) -> RunResult<Value> {
 /// needs `as_int`'s message rather than the binder's, as `repeat`'s `times`
 /// does; `strict` is a [`LaxBool`](crate::args::LaxBool) so CPython's `bool()`-style truth test
 /// happens in the binder, which releases the value on both paths.
-#[py_signature("batched(iterable, n, *, strict: bool=False)", style = c_named)]
+#[py_signature("batched(iterable, n, *, strict: bool=False)", style = c_named, bind = owned)]
 fn call_batched(vm: &mut VM<'_>, args: BatchedArgs) -> RunResult<Value> {
     let BatchedArgs { iterable, n, strict } = args;
     let strict = strict.bool();
@@ -513,7 +513,7 @@ fn ssize_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<isize> {
     isize::try_from(n).map_err(|_| ExcType::overflow_c_ssize_t())
 }
 
-#[py_signature("zip_longest(*iterables, fillvalue=None)")]
+#[py_signature("zip_longest(*iterables, fillvalue=None)", bind = mut)]
 fn call_zip_longest(vm: &mut VM<'_>, args: &mut ZipLongestArgs) -> RunResult<Value> {
     for slot in &mut args.iterables {
         let iterable = mem::replace(slot, Value::None);
@@ -596,7 +596,7 @@ fn build_combinations(iterable: Value, r: Value, replacement: bool, vm: &mut VM<
 ///
 /// Clinic and keyword-capable like [`CombinationsArgs`]. `r` is an `object`
 /// to clinic, so the body inspects it — and only once the pool exists.
-#[py_signature("permutations(iterable, r=None)", style = c_named, at_most_total)]
+#[py_signature("permutations(iterable, r=None)", style = c_named, at_most_total, bind = owned)]
 fn call_permutations(vm: &mut VM<'_>, args: PermutationsArgs) -> RunResult<Value> {
     let PermutationsArgs { iterable, r } = args;
     let mut r_guard = DropGuard::new(r, vm);
@@ -636,7 +636,7 @@ fn permutations_r(r: Value, n: usize, vm: &mut VM<'_>) -> RunResult<usize> {
 /// `kwlist` gives the derive's `got an unexpected keyword argument 'x'`
 /// wording for a bad name. `repeat` stays a raw `Value` for the `Py_ssize_t`
 /// conversion in the body.
-#[py_signature("product(*iterables, repeat=1)")]
+#[py_signature("product(*iterables, repeat=1)", bind = owned)]
 fn call_product(vm: &mut VM<'_>, args: ProductArgs) -> RunResult<Value> {
     let ProductArgs { iterables, repeat } = args;
     // Each argument is moved out of the vec as it is collected; the ones a
@@ -702,7 +702,7 @@ fn index_bytes(slots: usize) -> Option<usize> {
 /// Clinic and keyword-capable like [`CombinationsArgs`]; `key` is never
 /// type-checked, as CPython discovers a non-callable only when the first
 /// item is keyed.
-#[py_signature("groupby(iterable, key=None)", style = c_named, at_most_total)]
+#[py_signature("groupby(iterable, key=None)", style = c_named, at_most_total, bind = owned)]
 fn call_groupby(vm: &mut VM<'_>, args: GroupbyArgs) -> RunResult<Value> {
     let GroupbyArgs { iterable, key } = args;
     let (key, source) = resolve_source(key, iterable, vm)?;
@@ -715,7 +715,7 @@ fn call_groupby(vm: &mut VM<'_>, args: GroupbyArgs) -> RunResult<Value> {
 ///
 /// `METH_O` in CPython, so keywords are rejected wholesale and the arity
 /// wording is `takes exactly one argument (N given)`.
-#[py_signature("from_iterable(iterable, /)", error_name = "chain.from_iterable", reject_keywords)]
+#[py_signature("from_iterable(iterable, /)", error_name = "chain.from_iterable", reject_keywords, bind = owned)]
 fn call_chain_from_iterable(vm: &mut VM<'_>, args: ChainFromIterableArgs) -> RunResult<Value> {
     let ChainFromIterableArgs { iterable } = args;
     // The outer iterable is resolved now — `chain.from_iterable(5)` raises
@@ -735,7 +735,7 @@ fn call_chain_from_iterable(vm: &mut VM<'_>, args: ChainFromIterableArgs) -> Run
 /// module that names the function with its module (`itertools.tee()`), hence
 /// the `kwarg_error_name`. `n` stays a raw `Value` for the `Py_ssize_t`
 /// conversion in the body, as `batched`'s does.
-#[py_signature("tee(iterable, n=..., /)", style = unpack, kwarg_error_name = "itertools.tee")]
+#[py_signature("tee(iterable, n=..., /)", style = unpack, kwarg_error_name = "itertools.tee", bind = owned)]
 fn call_tee(vm: &mut VM<'_>, args: TeeArgs) -> RunResult<Value> {
     let TeeArgs { iterable, n } = args;
     let consumers = match n {

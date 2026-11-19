@@ -1483,7 +1483,7 @@ fn str_splitlines<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunRes
 /// Argument shape for `str.splitlines(keepends=False)`. CPython evaluates
 /// `keepends` for truthiness rather than strict-typing, so the field stays as
 /// a raw `Value` for `value_is_truthy` to inspect.
-#[py_signature("splitlines(keepends=...)", at_most_total)]
+#[py_signature("splitlines(keepends=...)", at_most_total, bind = owned)]
 fn parse_splitlines_args(args: SplitlinesArgs, vm: &mut VM<'_>) -> RunResult<bool> {
     let SplitlinesArgs { keepends } = args;
     let result = keepends.as_ref().is_some_and(value_is_truthy);
@@ -1751,7 +1751,7 @@ fn str_zfill<'h>(s: &PyStr<'h>, args: &StrZfillArgs, vm: &mut VM<'h>) -> RunResu
 /// Argument shape for `str.expandtabs(tabsize=8)`. `tabsize` is `Option<Value>`
 /// so callers can distinguish "absent" (default 8) from any explicit value
 /// without forcing the macro into a type-checked default.
-#[py_signature("expandtabs(tabsize=...)", at_most_total)]
+#[py_signature("expandtabs(tabsize=...)", at_most_total, bind = owned)]
 fn str_expandtabs<'h>(s: &PyStr<'h>, args: ExpandtabsArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let ExpandtabsArgs { tabsize } = args;
     let tabsize = match tabsize {

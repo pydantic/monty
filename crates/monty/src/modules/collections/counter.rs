@@ -302,7 +302,7 @@ fn counter_kwarg_deltas(kwargs: KwargsValues) -> Vec<(Value, Value)> {
     }
 }
 
-#[py_signature("update(self, iterable=None, /, **kwds)", style = def, owner = "Counter")]
+#[py_signature("update(self, iterable=None, /, **kwds)", style = def, owner = "Counter", bind = mut)]
 pub(crate) fn counter_update_method<'h>(
     counter: &mut HeapObjectRead<'h, Dict>,
     args: &mut UpdateArgs,
@@ -314,7 +314,7 @@ pub(crate) fn counter_update_method<'h>(
     Ok(Value::None)
 }
 
-#[py_signature("subtract(self, iterable=None, /, **kwds)", style = def, owner = "Counter")]
+#[py_signature("subtract(self, iterable=None, /, **kwds)", style = def, owner = "Counter", bind = mut)]
 pub(crate) fn counter_subtract_method<'h>(
     counter: &mut HeapObjectRead<'h, Dict>,
     args: &mut SubtractArgs,
@@ -373,7 +373,7 @@ fn sort_counts(counts: &[Value], vm: &mut VM<'_>) -> RunResult<Vec<usize>> {
 /// `Counter.most_common([n])` — a list of `(element, count)` tuples ordered by
 /// count descending (ties in insertion order). `n` omitted/`None` returns all;
 /// a non-positive `n` returns an empty list.
-#[py_signature("most_common(self, n=..., /)")]
+#[py_signature("most_common(self, n=..., /)", bind = owned)]
 pub(crate) fn counter_most_common<'h>(
     counter: &HeapObjectRead<'h, Dict>,
     args: MostCommonArgs,

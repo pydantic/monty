@@ -404,7 +404,7 @@ fn call_z85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// Argument shape for
 /// `a85encode(b, *, foldspaces=False, wrapcol=0, pad=False, adobe=False)`.
-#[py_signature("a85encode(b, *, foldspaces=False, wrapcol=0, pad=False, adobe=False)", style = def)]
+#[py_signature("a85encode(b, *, foldspaces=False, wrapcol=0, pad=False, adobe=False)", style = def, bind = owned)]
 fn call_a85encode(vm: &mut VM<'_>, args: A85EncodeArgs) -> RunResult<Value> {
     let A85EncodeArgs {
         b,
@@ -462,7 +462,7 @@ fn call_a85encode(vm: &mut VM<'_>, args: A85EncodeArgs) -> RunResult<Value> {
 /// `ignorechars` is absent rather than defaulted: CPython tests membership in
 /// whatever object was passed, so an explicit argument takes a different path
 /// from the built-in set — see [`IgnoreChars`].
-#[py_signature("a85decode(b, *, foldspaces=False, adobe=False, ignorechars=...)", style = def)]
+#[py_signature("a85decode(b, *, foldspaces=False, adobe=False, ignorechars=...)", style = def, bind = owned)]
 fn call_a85decode(vm: &mut VM<'_>, args: A85DecodeArgs) -> RunResult<Value> {
     let A85DecodeArgs {
         b,

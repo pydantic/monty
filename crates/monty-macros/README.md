@@ -13,8 +13,7 @@ fn str_split<'h>(s: &PyStr<'h>, args: &SplitArgs, vm: &mut VM<'h>) -> RunResult<
 }
 ```
 
-The adapter binds the arguments, then uses Monty’s existing `defer_drop!` or `defer_drop_mut!` guard for the function body.
-Use `&mut` when the implementation needs to move a field out.
+The adapter binds the arguments and keeps them in a cleanup guard for shared or mutable access.
 Each keyword parameter needs an entry with its exact Python spelling in `StaticStrings`.
 With `style = def`, leave parameters unannotated and convert values in the function body.
 For a Python method, `style = def, owner = "Counter"` includes the receiver in positional arity errors and qualifies the
@@ -42,11 +41,12 @@ body can omit the argument struct. The macro adds a trailing `ArgValues` paramet
 
 ### Ownership and conversion
 
-Take the generated struct as `args: &SplitArgs` and use its fields directly or destructure it in the body.
+Shared borrowing is the default. Take the generated struct as `args: &SplitArgs` and use its fields directly or
+destructure it in the body. You can also spell out `bind = shared`.
 For example, `let SplitArgs { sep, maxsplit } = args;` borrows both fields.
-When the body takes ownership, declare `args: SortedArgs` and begin with `let SortedArgs { iterable, kwargs } = args;`.
+For ownership, set `bind = owned`, declare `args: SortedArgs`, and begin with `let SortedArgs { iterable, kwargs } = args;`.
 Bind every owned field by name and release it on every return path.
-For mixed ownership, take `args: &mut PopArgs`. In `dict.pop`, the lookup borrows `&args.key`
+For mixed ownership, set `bind = mut` and take `args: &mut PopArgs`. In `dict.pop`, the lookup borrows `&args.key`
 and a miss moves the optional default out with `args.default.take()`. The guard releases the remaining fields.
 For a required `Value`, use `mem::replace(&mut args.iterable, Value::None)` to move it out.
 For callers that bind after method lookup, put `#[py_signature]` on a unit struct and call
@@ -55,7 +55,7 @@ For callers that bind after method lookup, put `#[py_signature]` on a unit struc
 For a raw positional signature with at most two arguments, the generated struct takes its
 fields from the inline argument storage. Use `reject_keywords` when keyword errors take
 precedence over arity. A handler that needs a slice or iterator can take `&ArgPosIter`,
-`&mut ArgPosIter`, or an owned `ArgPosIter`. The adapter checks the positional count
+`&mut ArgPosIter` with `bind = mut`, or `ArgPosIter` with `bind = owned`. The adapter checks the positional count
 and preserves inline storage for small calls.
 
 An unannotated parameter carries a Python value. A default of `...` distinguishes omission

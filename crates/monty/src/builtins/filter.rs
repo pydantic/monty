@@ -31,7 +31,7 @@ use crate::{
 /// filter(lambda x: x > 0, [-1, 0, 1, 2])  # [1, 2]
 /// filter(None, [0, 1, False, True, ''])   # [1, True]
 /// ```
-#[py_signature("filter(function, iterable, /)")]
+#[py_signature("filter(function, iterable, /)", bind = owned)]
 pub fn builtin_filter(vm: &mut VM<'_>, args: FilterArgs) -> RunResult<Value> {
     let FilterArgs { function, iterable } = args;
     defer_drop!(function, vm);

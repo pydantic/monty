@@ -245,7 +245,7 @@ fn call_list_dialects(vm: &mut VM<'_>) -> RunResult<Value> {
 }
 
 /// `csv.field_size_limit([new_limit])`: reports CPython's default; the limit cannot change.
-#[py_signature("field_size_limit(new_limit=...)", style = c_named, at_most_total)]
+#[py_signature("field_size_limit(new_limit=...)", style = c_named, at_most_total, bind = owned)]
 fn call_field_size_limit(vm: &mut VM<'_>, args: FieldSizeLimitArgs) -> RunResult<Value> {
     let FieldSizeLimitArgs { new_limit: limit } = args;
     defer_drop!(limit, vm);
@@ -261,7 +261,7 @@ fn call_field_size_limit(vm: &mut VM<'_>, args: FieldSizeLimitArgs) -> RunResult
 }
 
 /// `_csv.Dialect(dialect=None, **fmtparams)`: a resolved dialect object.
-#[py_signature("Dialect(dialect=..., *, delimiter=..., doublequote=..., escapechar=..., lineterminator=..., quotechar=..., quoting=..., skipinitialspace=..., strict=...)", style = c)]
+#[py_signature("Dialect(dialect=..., *, delimiter=..., doublequote=..., escapechar=..., lineterminator=..., quotechar=..., quoting=..., skipinitialspace=..., strict=...)", style = c, bind = owned)]
 pub(crate) fn dialect_init(vm: &mut VM<'_>, args: DialectArgs) -> RunResult<Value> {
     let DialectArgs {
         dialect,
@@ -290,7 +290,7 @@ pub(crate) fn dialect_init(vm: &mut VM<'_>, args: DialectArgs) -> RunResult<Valu
 }
 
 /// Builds a `csv.DictReader`; the wrapped `_csv.reader` gets `f`, `dialect` and the extras.
-#[py_signature("__init__(f, fieldnames=None, restkey=None, restval=None, dialect=..., *args, **kwds)", style = def, error_name = "DictReader.__init__")]
+#[py_signature("__init__(f, fieldnames=None, restkey=None, restval=None, dialect=..., *args, **kwds)", style = def, error_name = "DictReader.__init__", bind = owned)]
 pub(crate) fn dict_reader_init(vm: &mut VM<'_>, args: DictReaderArgs) -> RunResult<Value> {
     let DictReaderArgs {
         f,
@@ -332,7 +332,7 @@ fn forwarded_args(f: Value, dialect: Value, args: Vec<Value>, kwds: KwargsValues
 }
 
 /// Builds a `csv.DictWriter`; the wrapped `_csv.writer` gets `f`, `dialect` and the extras.
-#[py_signature("__init__(f, fieldnames, restval=..., extrasaction=..., dialect=..., *args, **kwds)", style = def, error_name = "DictWriter.__init__")]
+#[py_signature("__init__(f, fieldnames, restval=..., extrasaction=..., dialect=..., *args, **kwds)", style = def, error_name = "DictWriter.__init__", bind = owned)]
 pub(crate) fn dict_writer_init(vm: &mut VM<'_>, args: DictWriterArgs) -> RunResult<Value> {
     let DictWriterArgs {
         f,

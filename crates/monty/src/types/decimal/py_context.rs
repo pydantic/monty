@@ -178,7 +178,7 @@ pub(crate) fn setcontext(vm: &mut VM<'_>, context: &Value) -> RunResult<Value> {
 /// `decimal.localcontext(ctx=None, **kwargs)`: a manager that installs a copy of
 /// `ctx` (or of the current context), with the given attributes changed, for the
 /// duration of a `with` block.
-#[py_signature("localcontext(ctx=None, *, prec=None, rounding=None, Emin=None, Emax=None, capitals=None, clamp=None, flags=None, traps=None)", style = c)]
+#[py_signature("localcontext(ctx=None, *, prec=None, rounding=None, Emin=None, Emax=None, capitals=None, clamp=None, flags=None, traps=None)", style = c, bind = owned)]
 pub(crate) fn localcontext(vm: &mut VM<'_>, args: LocalContextArgs) -> RunResult<Value> {
     let LocalContextArgs {
         ctx,
@@ -208,7 +208,7 @@ pub(crate) fn localcontext(vm: &mut VM<'_>, args: LocalContextArgs) -> RunResult
 
 /// `decimal.Context(prec=None, rounding=None, Emin=None, Emax=None, capitals=None,
 /// clamp=None, flags=None, traps=None)`: a new context starting from `DefaultContext`.
-#[py_signature("Context(prec=None, rounding=None, Emin=None, Emax=None, capitals=None, clamp=None, flags=None, traps=None)", style = c)]
+#[py_signature("Context(prec=None, rounding=None, Emin=None, Emax=None, capitals=None, clamp=None, flags=None, traps=None)", style = c, bind = owned)]
 pub(crate) fn init(vm: &mut VM<'_>, args: ContextArgs) -> RunResult<Value> {
     let ContextArgs {
         prec,

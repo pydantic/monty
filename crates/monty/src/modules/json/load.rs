@@ -76,7 +76,7 @@ const JSON_RECURSION_LIMIT: usize = 200;
 /// …) are intentionally not implemented; leaving them off this struct means
 /// the macro emits the "unexpected keyword" error for them, naming
 /// `JSONDecoder.__init__` as CPython does for a keyword the decoder rejects.
-#[py_signature("loads(s, *, parse_float=None, parse_int=None)", style = def, kwarg_error_name = "JSONDecoder.__init__")]
+#[py_signature("loads(s, *, parse_float=None, parse_int=None)", style = def, kwarg_error_name = "JSONDecoder.__init__", bind = owned)]
 pub(super) fn call_loads(vm: &mut VM<'_>, args: JsonLoadsArgs) -> RunResult<Value> {
     let JsonLoadsArgs {
         s,

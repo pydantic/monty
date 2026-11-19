@@ -283,7 +283,7 @@ impl List {
     ///
     /// - `list()` with no args returns an empty list
     /// - `list(iterable)` creates a list from any iterable (list, tuple, range, str, bytes, dict)
-    #[py_signature("list(iterable=..., /)")]
+    #[py_signature("list(iterable=..., /)", bind = owned)]
     pub fn init(vm: &mut VM<'_>, args: ListArgs) -> RunResult<Value> {
         let ListArgs { iterable: value } = args;
         match value {
@@ -879,7 +879,7 @@ fn call_list_method<'h>(
 }
 
 /// Implements Python's `list.insert(index, item)` method.
-#[py_signature("insert(self, index, object, /)")]
+#[py_signature("insert(self, index, object, /)", bind = owned)]
 fn list_insert<'h>(list: &HeapReadMut<'h, List>, args: InsertArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let InsertArgs {
         index: index_obj,
@@ -991,7 +991,7 @@ fn list_copy(list: &List, heap: &Heap) -> RunResult<Value> {
 /// Implements Python's `list.extend(iterable)` method.
 ///
 /// Extends the list by appending all items from the iterable.
-#[py_signature("extend(self, iterable, /)", owner = "list")]
+#[py_signature("extend(self, iterable, /)", owner = "list", bind = owned)]
 fn list_extend<'h>(list: &HeapReadMut<'h, List>, args: ListExtendArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let ListExtendArgs { iterable } = args;
     let items: SmallVec<[_; 2]> = collect_owned_iterable(iterable, vm)?;

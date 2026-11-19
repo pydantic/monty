@@ -359,7 +359,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: SysFunctions, args: ArgValues) -> 
 /// dump, etc.). Attempts to raise raise `ValueError` with a message
 /// pointing at the current cap.
 #[cfg(feature = "test-hooks")]
-#[py_signature("setrecursionlimit(limit, /)", error_name = "sys.setrecursionlimit")]
+#[py_signature("setrecursionlimit(limit, /)", error_name = "sys.setrecursionlimit", bind = owned)]
 fn setrecursionlimit(vm: &mut VM<'_>, args: SysSetrecursionlimitArgs) -> RunResult<Value> {
     let SysSetrecursionlimitArgs { limit: arg } = args;
     let Value::Int(limit) = arg else {

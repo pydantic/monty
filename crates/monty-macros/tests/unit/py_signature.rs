@@ -12,6 +12,7 @@ fn adapter() -> ItemFn {
 fn rejects_invalid_options() {
     for options in [
         "style = def, style = clinic",
+        "bind = shared, bind = owned",
         "bad_arg, bad_arg",
         "reject_keywords, reject_keywords",
         r#"owner = "Counter", owner = "dict""#,
@@ -82,22 +83,13 @@ fn rejects_invalid_signatures() {
 #[test]
 fn rejects_incompatible_rust_adapters() {
     let declaration = parse_quote!("f()");
-    for (function, expected) in [
-        (
-            parse_quote!(
-                fn f(n: usize, items: &[Value]) {}
-            ),
-            "expected a parameter of type &FArgs",
-        ),
-        (
-            parse_quote!(
-                fn f(_: &FArgs) {}
-            ),
-            "expected a name for the bound arguments",
-        ),
-    ] {
-        assert_eq!(expand(&declaration, function).unwrap_err().to_string(), expected);
-    }
+    let function = parse_quote!(
+        fn f(items: &FArgs) {}
+    );
+    assert_eq!(
+        expand(&declaration, function).unwrap_err().to_string(),
+        "expected a parameter named args with the bound argument type",
+    );
     let declaration = parse_quote!("f()", owner = "Counter");
     assert_eq!(
         expand(&declaration, adapter()).unwrap_err().to_string(),
@@ -109,7 +101,7 @@ fn rejects_incompatible_rust_adapters() {
 fn generates_bound_fields_in_declaration_order() {
     let declaration = parse_quote!(
         "sample_fn(self, label: str, omitted=..., /, scale=1.5, *items, sep: None | str=None, limit: SupportsIndex=-1, ratio: float=0.5, end=' ', flag=False, other=None, **extras)",
-        owner = "Example"
+        owner = "Example", bind = mut
     );
     let function = parse_quote!(
         fn sample(args: &mut SampleFnArgs) {}
@@ -310,7 +302,7 @@ fn a_callable_with_parameters_still_needs_a_binder() {
         );
         assert_eq!(
             expand(&declaration, function).unwrap_err().to_string(),
-            "expected a parameter of type &FArgs",
+            "expected a parameter named args with the bound argument type",
             "{signature}"
         );
     }
@@ -391,50 +383,43 @@ fn rejects_invalid_named_binders_and_converters() {
 }
 
 #[test]
-fn destructured_adapter_checks_the_argument_type() {
-    let declaration = parse_quote!("f(x)");
-    let function = parse_quote!(
-        fn f(FArgs { x }: &GArgs) {}
-    );
-    assert_eq!(
-        expand(&declaration, function).unwrap_err().to_string(),
-        "expected the destructured argument type"
-    );
-}
-
-#[test]
-fn only_borrowed_patterns_may_ignore_fields() {
-    let declaration = parse_quote!("f(x, y)");
-    for (pattern, message) in [
+fn explicit_binding_must_match_the_rust_type() {
+    for (declaration, function, expected) in [
         (
-            "FArgs { x, .. }",
-            "bind every owned argument or borrow the argument struct",
+            parse_quote!("f(x)"),
+            parse_quote!(
+                fn f(args: FArgs) {}
+            ),
+            "shared binding requires &Args",
         ),
-        ("FArgs { x, y: _ }", "bind each owned argument by name"),
+        (
+            parse_quote!("f(x)"),
+            parse_quote!(
+                fn f(args: &mut FArgs) {}
+            ),
+            "shared binding requires &Args",
+        ),
+        (
+            parse_quote!("f(x)", bind = mut),
+            adapter(),
+            "bind = mut requires &mut Args",
+        ),
+        (
+            parse_quote!("f(x)", bind = owned),
+            adapter(),
+            "bind = owned requires Args by value",
+        ),
     ] {
-        let owned = syn::parse_str(&format!("fn f({pattern}: FArgs) {{}}")).unwrap();
-        assert_eq!(expand(&declaration, owned).unwrap_err().to_string(), message);
-        let borrowed = syn::parse_str(&format!("fn f({pattern}: &FArgs) {{}}")).unwrap();
-        assert!(expand(&declaration, borrowed).is_ok());
+        assert_eq!(expand(&declaration, function).unwrap_err().to_string(), expected);
     }
-    let by_ref = parse_quote!(
-        fn f(FArgs { x, ref y }: FArgs) {}
-    );
-    assert_eq!(
-        expand(&declaration, by_ref).unwrap_err().to_string(),
-        "bind each owned argument by name"
-    );
-    let renamed = parse_quote!(
-        fn f(FArgs { x, y: mut other }: FArgs) {}
-    );
-    assert!(expand(&declaration, renamed).is_ok());
 }
 
 #[test]
 fn named_owned_args_require_a_full_destructure_before_any_return() {
-    let declaration = parse_quote!("f(x, y)");
+    let declaration = parse_quote!("f(x, y)", bind = owned);
     for body in [
         "return;",
+        "let OtherArgs { x, y } = args;",
         "let CustomArgs { x, y } = other;",
         "let CustomArgs { x, .. } = args;",
         "let CustomArgs { x, y: _ } = args;",
@@ -519,22 +504,35 @@ fn positional_iterators_reject_signatures_that_need_conversion_or_keywords() {
 }
 
 #[test]
-fn owned_and_borrowed_structs_share_the_one_argument_fast_path() {
-    let declaration = parse_quote!("f(x, /)");
+fn ownership_modes_share_the_one_argument_fast_path() {
+    let shared = expand(&parse_quote!("f(x, /)"), adapter()).unwrap().to_string();
+    assert_eq!(
+        shared,
+        expand(&parse_quote!("f(x, /)", bind = shared), adapter())
+            .unwrap()
+            .to_string(),
+    );
+    assert!(shared.contains("get_one_arg"));
+    assert!(shared.contains("defer_drop !"));
+
+    let mutable = parse_quote!(
+        fn f(args: &mut FArgs) {}
+    );
+    let output = expand(&parse_quote!("f(x, /)", bind = mut), mutable)
+        .unwrap()
+        .to_string();
+    assert!(output.contains("get_one_arg"));
+    assert!(output.contains("defer_drop_mut !"));
+
     let owned = parse_quote!(
         fn f(args: FArgs) {
             let FArgs { x } = args;
             consume(x);
         }
     );
-    let borrowed = parse_quote!(
-        fn f(args: &FArgs) {
-            inspect(&args.x);
-        }
-    );
-    for (function, guarded) in [(owned, false), (borrowed, true)] {
-        let output = expand(&declaration, function).unwrap().to_string();
-        assert!(output.contains("get_one_arg"));
-        assert_eq!(output.contains("defer_drop !"), guarded);
-    }
+    let output = expand(&parse_quote!("f(x, /)", bind = owned), owned)
+        .unwrap()
+        .to_string();
+    assert!(output.contains("get_one_arg"));
+    assert!(!output.contains("defer_drop"));
 }

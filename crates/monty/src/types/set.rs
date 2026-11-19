@@ -807,7 +807,7 @@ impl Set {
     ///
     /// - `set()` with no args returns an empty set
     /// - `set(iterable)` creates a set from any iterable (list, tuple, set, dict, range, str, bytes)
-    #[py_signature("set(iterable=..., /)")]
+    #[py_signature("set(iterable=..., /)", bind = owned)]
     pub fn init(vm: &mut VM<'_>, args: SetArgs) -> RunResult<Value> {
         let SetArgs { iterable: value } = args;
         let set = match value {
@@ -1509,7 +1509,7 @@ impl FrozenSet {
     ///
     /// - `frozenset()` with no args returns an empty frozenset
     /// - `frozenset(iterable)` creates a frozenset from any iterable (list, tuple, set, dict, range, str, bytes)
-    #[py_signature("frozenset(iterable=..., /)")]
+    #[py_signature("frozenset(iterable=..., /)", bind = owned)]
     pub fn init(vm: &mut VM<'_>, args: FrozensetArgs) -> RunResult<Value> {
         let FrozensetArgs { iterable: value } = args;
         match value {

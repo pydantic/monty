@@ -6,6 +6,7 @@ use ruff_python_ast::{Expr, Number, Operator, Parameter, ParameterWithDefault, S
 use ruff_python_parser::parse_module;
 use syn::{
     DeriveInput, FnArg, Ident, ItemFn, ItemStruct, LitStr, Pat, Token, Type,
+    ext::IdentExt,
     meta::{ParseNestedMeta, parser},
     parse::{Parse, ParseStream, Parser},
     parse_quote,
@@ -16,6 +17,7 @@ use crate::from_args::{Signature, parse_field_attrs};
 pub(super) struct Declaration {
     signature: LitStr,
     style: Option<Ident>,
+    bind: Option<Binding>,
     owner: Option<LitStr>,
     kwarg_error_name: Option<LitStr>,
     error_name: Option<LitStr>,
@@ -29,6 +31,7 @@ impl Parse for Declaration {
         let mut declaration = Self {
             signature: input.parse()?,
             style: None,
+            bind: None,
             owner: None,
             kwarg_error_name: None,
             error_name: None,
@@ -41,6 +44,8 @@ impl Parse for Declaration {
             parser(|meta| {
                 if meta.path.is_ident("style") {
                     parse_option(&meta, &mut declaration.style)
+                } else if meta.path.is_ident("bind") {
+                    parse_option(&meta, &mut declaration.bind)
                 } else if meta.path.is_ident("owner") {
                     parse_option(&meta, &mut declaration.owner)
                 } else if meta.path.is_ident("error_name") {
@@ -96,15 +101,65 @@ fn parse_option<T: Parse>(meta: &ParseNestedMeta<'_>, slot: &mut Option<T>) -> s
     Ok(())
 }
 
+#[derive(Clone, Copy, Default)]
+enum Binding {
+    #[default]
+    Shared,
+    Mutable,
+    Owned,
+}
+
+impl Parse for Binding {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let ident = input.call(Ident::parse_any)?;
+        match ident.to_string().as_str() {
+            "shared" => Ok(Self::Shared),
+            "mut" => Ok(Self::Mutable),
+            "owned" => Ok(Self::Owned),
+            _ => Err(syn::Error::new(ident.span(), "expected shared, mut or owned")),
+        }
+    }
+}
+
+impl Binding {
+    fn argument_type(self, ty: &Type) -> syn::Result<&Type> {
+        match (self, ty) {
+            (Self::Shared, Type::Reference(r)) if r.mutability.is_none() => Ok(&r.elem),
+            (Self::Mutable, Type::Reference(r)) if r.mutability.is_some() => Ok(&r.elem),
+            (Self::Owned, ty) if !matches!(ty, Type::Reference(_)) => Ok(ty),
+            _ => Err(syn::Error::new_spanned(
+                ty,
+                match self {
+                    Self::Shared => "shared binding requires &Args",
+                    Self::Mutable => "bind = mut requires &mut Args",
+                    Self::Owned => "bind = owned requires Args by value",
+                },
+            )),
+        }
+    }
+
+    fn guard(self) -> TokenStream {
+        match self {
+            Self::Shared => quote!(crate::defer_drop!(__bound, vm);),
+            Self::Mutable => quote!(crate::defer_drop_mut!(__bound, vm);),
+            Self::Owned => quote!(),
+        }
+    }
+}
+
 pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Result<TokenStream> {
     let def = parse_function(declaration)?;
     let name = def.name.as_str();
+    let error = |message: &str| syn::Error::new(declaration.signature.span(), message);
+    let binding = declaration.bind.unwrap_or_default();
     if let Some(adapter) = positional_iterator(declaration, &def, &mut function)? {
         return Ok(adapter);
     }
     let explicit_one = declaration.style.as_ref().is_some_and(|s| s == "one_arg");
     if explicit_one || infer_single_argument(declaration, &def, &function) {
-        let error = |message| syn::Error::new(declaration.signature.span(), message);
+        if declaration.bind.is_some() {
+            return Err(error("bind requires an argument struct or iterator"));
+        }
         let param = single_required_positional(&def)
             .ok_or_else(|| error("`style = one_arg` requires one positional-only parameter without a default"))?;
         if !declaration.modifiers.is_empty() || declaration.reject_keywords {
@@ -116,29 +171,26 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
         return single_positional_adapter(function, declaration, param, &callable_name(declaration, name));
     }
     if declaration.style.as_ref().is_some_and(|s| s == "two_args") {
+        if declaration.bind.is_some() {
+            return Err(error("bind requires an argument struct or iterator"));
+        }
         return two_positional_adapter(declaration, &def, function);
     }
-    let default_name = format_ident!("{}Args", snake_to_pascal(def.name.as_str()));
     let bound = function.sig.inputs.iter_mut().find_map(|input| {
         let FnArg::Typed(arg) = input else { return None };
-        let ty = match &*arg.ty {
-            Type::Reference(reference) => &*reference.elem,
-            ty => ty,
-        };
-        let Type::Path(path) = ty else { return None };
-        let name = path.path.get_ident()?.clone();
-        let named_args = matches!(&*arg.pat, Pat::Ident(p) if p.ident == "args");
-        (named_args || name == default_name || matches!(&*arg.pat, Pat::Struct(_))).then_some((arg, name))
+        matches!(arg.pat.as_ref(), Pat::Ident(p) if p.ident == "args").then_some(arg)
     });
-    let (bound_struct, implementation) = arguments(declaration, &def, bound.as_ref().map(|(_, name)| name))?;
-    let bound_name = &bound_struct.ident;
-    let error = |message: &str| syn::Error::new(declaration.signature.span(), message);
-    let Some((bound, _)) = bound else {
+    let Some(bound) = bound else {
         if let Some(name) = zero_arg_name(declaration, &def)
             && function.sig.inputs.iter().any(
                 |arg| matches!(arg, FnArg::Typed(arg) if matches!(arg.pat.as_ref(), Pat::Ident(p) if p.ident == "vm")),
             )
         {
+            if declaration.bind.is_some() {
+                return Err(error("bind requires an argument struct or iterator"));
+            }
+            // Validate the signature's options before choosing the no-argument adapter.
+            arguments(declaration, &def, None)?;
             function
                 .sig
                 .inputs
@@ -149,56 +201,33 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
                 .insert(0, parse_quote!(__py_args.check_zero_args(#name, vm.heap)?;));
             return Ok(quote!(#function));
         }
-        return Err(error(&format!("expected a parameter of type &{bound_name}")));
+        return Err(error("expected a parameter named args with the bound argument type"));
     };
-    let binding = &*bound.pat;
-    let owned = !matches!(*bound.ty, Type::Reference(_));
-    if matches!(binding, Pat::Ident(p) if p.by_ref.is_some() || p.subpat.is_some()) {
+    let Pat::Ident(pat) = &*bound.pat else {
+        unreachable!("checked the argument pattern")
+    };
+    if pat.by_ref.is_some() || pat.subpat.is_some() {
         return Err(error("expected a name for the bound arguments"));
     }
-    let pattern = match binding {
-        Pat::Struct(pattern) => Some(pattern),
-        Pat::Ident(name) if owned => {
-            let Some(pattern) = owned_argument_pattern(&function.block, &name.ident) else {
-                return Err(syn::Error::new_spanned(
-                    binding,
-                    "destructure the owned arguments at the start of the body",
-                ));
-            };
-            Some(pattern)
-        }
-        Pat::Ident(_) => None,
-        _ => return Err(error("expected a name for the bound arguments")),
-    };
-    if let Some(pattern) = pattern {
-        if !pattern.path.is_ident(bound_name) {
-            return Err(syn::Error::new_spanned(
-                &bound.ty,
-                "expected the destructured argument type",
-            ));
-        }
-        if owned {
-            if let Some(rest) = &pattern.rest {
-                return Err(syn::Error::new_spanned(
-                    rest,
-                    "bind every owned argument or borrow the argument struct",
-                ));
-            }
-            for field in &pattern.fields {
-                if !matches!(&*field.pat, Pat::Ident(ident) if ident.by_ref.is_none() && ident.subpat.is_none()) {
-                    return Err(syn::Error::new_spanned(&field.pat, "bind each owned argument by name"));
-                }
-            }
-        }
+    let ty = &bound.ty;
+    let bound_name = match binding.argument_type(ty)? {
+        Type::Path(path) => path.path.get_ident(),
+        _ => None,
     }
-    let guard = borrow_guard(&bound.ty);
+    .cloned()
+    .ok_or_else(|| syn::Error::new_spanned(ty, "expected the name of the bound argument type"))?;
+    if matches!(binding, Binding::Owned) {
+        validate_owned_arguments(&function.block, &bound_name, &pat.ident)?;
+    }
+    let (bound_struct, implementation) = arguments(declaration, &def, Some(&bound_name))?;
+    let guard = binding.guard();
     let body = function.block.stmts;
     function.block = Box::new(parse_quote!({
         #bound_struct
         #implementation
         let __bound = #bound_name::from_args(__py_args, vm)?;
         #guard
-        let #binding = __bound;
+        let #pat: #ty = __bound;
         #(#body)*
     }));
     bound.pat = parse_quote!(__py_args);
@@ -206,15 +235,30 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
     Ok(quote!(#function))
 }
 
-fn borrow_guard(ty: &Type) -> TokenStream {
-    match ty {
-        Type::Reference(reference) if reference.mutability.is_some() => quote!(crate::defer_drop_mut!(__bound, vm);),
-        Type::Reference(_) => quote!(crate::defer_drop!(__bound, vm);),
-        _ => quote!(),
+/// An owned binder has no guard. Require each field to move into a named binding.
+fn validate_owned_arguments(body: &syn::Block, ty: &Ident, args: &Ident) -> syn::Result<()> {
+    let binding = owned_argument_pattern(body, args)
+        .ok_or_else(|| syn::Error::new(args.span(), "destructure the owned arguments at the start of the body"))?;
+    if !binding.path.is_ident(ty) {
+        return Err(syn::Error::new_spanned(
+            &binding.path,
+            "expected the destructured argument type",
+        ));
     }
+    if let Some(rest) = &binding.rest {
+        return Err(syn::Error::new_spanned(
+            rest,
+            "bind every owned argument or borrow the argument struct",
+        ));
+    }
+    for field in &binding.fields {
+        if !matches!(&*field.pat, Pat::Ident(ident) if ident.by_ref.is_none() && ident.subpat.is_none()) {
+            return Err(syn::Error::new_spanned(&field.pat, "bind each owned argument by name"));
+        }
+    }
+    Ok(())
 }
 
-/// An owned binder has no guard. Require each field to move into a named binding.
 fn owned_argument_pattern<'a>(body: &'a syn::Block, name: &Ident) -> Option<&'a syn::PatStruct> {
     let syn::Stmt::Local(local) = body.stmts.first()? else {
         return None;
@@ -229,6 +273,12 @@ fn owned_argument_pattern<'a>(body: &'a syn::Block, name: &Ident) -> Option<&'a 
 
 /// A named binder lets dispatchers bind after method lookup or transfer owned fields to the VM.
 pub(super) fn expand_struct(declaration: &Declaration, item: ItemStruct) -> syn::Result<TokenStream> {
+    if declaration.bind.is_some() {
+        return Err(syn::Error::new(
+            declaration.signature.span(),
+            "bind is only used on handlers",
+        ));
+    }
     if !matches!(item.fields, syn::Fields::Unit)
         || !item.generics.params.is_empty()
         || item.generics.where_clause.is_some()
@@ -327,7 +377,9 @@ fn positional_iterator(
     };
     let binding = &arg.pat;
     let ty = &arg.ty;
-    let guard = borrow_guard(ty);
+    let mode = declaration.bind.unwrap_or_default();
+    mode.argument_type(ty)?;
+    let guard = mode.guard();
     let body = &function.block;
     *function.block = parse_quote!({
         let __bound = #bind;

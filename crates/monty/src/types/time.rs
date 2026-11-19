@@ -158,7 +158,7 @@ impl Time {
 /// blames the positional limit (the overflow could still have filled keyword-only
 /// `fold`), a seventh the total. `tzinfo` stays a raw [`Value`] so the
 /// None-or-timezone check runs in the body with CPython's wording.
-#[py_signature("time(hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)", style = c, error_name = "function")]
+#[py_signature("time(hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)", style = c, error_name = "function", bind = owned)]
 pub(crate) fn init(vm: &mut VM<'_>, args: TimeInitArgs) -> RunResult<Value> {
     let TimeInitArgs {
         hour,

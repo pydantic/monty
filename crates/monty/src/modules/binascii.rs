@@ -257,7 +257,7 @@ fn call_a2b_uu(vm: &mut VM<'_>, args: &BinasciiA2bUuArgs) -> RunResult<Value> {
 ///
 /// Argument shape for `b2a_qp(data, quotetabs=False, istext=True, header=False)`,
 /// whose three flags are all positional-or-keyword.
-#[py_signature("b2a_qp(data, quotetabs=False, istext=True, header=False)", style = c_named, at_most_total)]
+#[py_signature("b2a_qp(data, quotetabs=False, istext=True, header=False)", style = c_named, at_most_total, bind = owned)]
 fn call_b2a_qp(vm: &mut VM<'_>, args: B2aQpArgs) -> RunResult<Value> {
     let B2aQpArgs {
         data,

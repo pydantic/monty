@@ -33,7 +33,7 @@ pub(crate) fn call_get_iter(args: &GetIterArgs, vm: &mut VM<'_>) -> RunResult<Ca
 }
 
 /// Returns an owned iterator unchanged, rejecting invalid user `__iter__` results.
-#[py_signature("validate_iterator(iterator, /)")]
+#[py_signature("validate_iterator(iterator, /)", bind = owned)]
 pub(crate) fn call_validate_iterator(args: ValidateIteratorArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let ValidateIteratorArgs { iterator } = args;
     if iterator.py_is_iterator(vm) {

@@ -136,7 +136,7 @@ pub(crate) fn to_ymd(date: Date) -> (i32, u32, u32) {
 /// required argument 'X' (pos N)", etc. Unlike `datetime()` it has no
 /// keyword-only fields, so the derive keeps the plain (non-"positional")
 /// at-most wording automatically.
-#[py_signature("date(year: c_int, month: c_int, day: c_int)", style = c, at_most_total, error_name = "function")]
+#[py_signature("date(year: c_int, month: c_int, day: c_int)", style = c, at_most_total, error_name = "function", bind = owned)]
 pub(crate) fn init(vm: &mut VM<'_>, args: DateInitArgs) -> RunResult<Value> {
     let DateInitArgs { year, month, day } = args;
     let date = from_ymd(year, month, day)?;

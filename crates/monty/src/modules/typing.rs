@@ -134,7 +134,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) 
 }
 
 /// `typing.cast()`: returns `val`; `typ` is any object, a string forward reference included.
-#[py_signature("cast(typ, val)", style = def)]
+#[py_signature("cast(typ, val)", style = def, bind = owned)]
 fn cast(vm: &mut VM<'_>, args: CastArgs) -> RunResult<CallResult> {
     let CastArgs { typ, val } = args;
     defer_drop!(typ, vm);
@@ -142,7 +142,7 @@ fn cast(vm: &mut VM<'_>, args: CastArgs) -> RunResult<CallResult> {
 }
 
 /// `typing.assert_type()`: returns `val`; only a static type checker looks at `typ`.
-#[py_signature("assert_type(val, typ, /)", style = def)]
+#[py_signature("assert_type(val, typ, /)", style = def, bind = owned)]
 fn assert_type(vm: &mut VM<'_>, args: AssertTypeArgs) -> RunResult<CallResult> {
     let AssertTypeArgs { val, typ } = args;
     defer_drop!(typ, vm);
@@ -388,7 +388,7 @@ def __monty_get_annotations(owner, annotate, stored, classdict, scopes, format_,
 ";
 
 /// `typing.get_type_hints()`: see [`collect_hints`].
-#[py_signature("get_type_hints(obj, globalns=None, localns=None, include_extras=False, *, format=None)", style = def)]
+#[py_signature("get_type_hints(obj, globalns=None, localns=None, include_extras=False, *, format=None)", style = def, bind = owned)]
 fn get_type_hints(vm: &mut VM<'_>, args: GetTypeHintsArgs) -> RunResult<CallResult> {
     let GetTypeHintsArgs {
         obj,
@@ -806,7 +806,7 @@ pub(crate) fn namespace_dict(value: &Value, function: &str, param: &str, vm: &VM
 
 /// Frozen helper: evaluates one annotation string; the namespaces are dicts or
 /// `None`, built by [`collect_hints`] and never seen by user code.
-#[py_signature("eval_hint(source, globals, locals, globals_first, forward_ref, missing, owner, is_class, /)")]
+#[py_signature("eval_hint(source, globals, locals, globals_first, forward_ref, missing, owner, is_class, /)", bind = owned)]
 pub(crate) fn call_eval_hint(args: EvalHintArgs, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let EvalHintArgs {
         source,

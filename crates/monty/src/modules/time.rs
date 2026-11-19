@@ -280,7 +280,7 @@ fn process_time(vm: &mut VM<'_>, args: ArgValues, function: TimeFunctions, nanos
 /// Validates the delay in every mode, then applies [`host_sleep`].
 /// [`PostConversionEffect::DiscardResult`] makes the call return `None`
 /// regardless of the host's answer; `Zero` skips the wait.
-#[py_signature("sleep(seconds, /)", error_name = "time.sleep", reject_keywords)]
+#[py_signature("sleep(seconds, /)", error_name = "time.sleep", reject_keywords, bind = owned)]
 fn sleep(vm: &mut VM<'_>, args: TimeSleepArgs) -> RunResult<CallResult> {
     let TimeSleepArgs { seconds } = args;
     // METH_O in CPython: keywords are refused wholesale, before arity.
@@ -357,7 +357,7 @@ fn sleep_seconds(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
 
 /// `time.mktime(t)`: the inverse of `localtime`, reading `t` as wall time in the
 /// session zone. `METH_O` in CPython, hence the module-qualified arity message.
-#[py_signature("mktime(t, /)", error_name = "time.mktime", reject_keywords)]
+#[py_signature("mktime(t, /)", error_name = "time.mktime", reject_keywords, bind = owned)]
 fn mktime(vm: &mut VM<'_>, args: TimeMktimeArgs) -> RunResult<CallResult> {
     let TimeMktimeArgs { t: value } = args;
     // Only the wall clock matters, and CPython does not range-check the
@@ -375,7 +375,7 @@ fn mktime(vm: &mut VM<'_>, args: TimeMktimeArgs) -> RunResult<CallResult> {
 
 /// `time.asctime(t=None)`: the fixed 24-character form, from `t` or the clock.
 /// `PyArg_UnpackTuple` in CPython, unlike its `gmtime` neighbours.
-#[py_signature("asctime(t=..., /)", reject_keywords)]
+#[py_signature("asctime(t=..., /)", reject_keywords, bind = owned)]
 fn asctime(vm: &mut VM<'_>, args: AsctimeArgs) -> RunResult<CallResult> {
     let AsctimeArgs { t } = args;
     let Some(value) = t else {
@@ -387,7 +387,7 @@ fn asctime(vm: &mut VM<'_>, args: AsctimeArgs) -> RunResult<CallResult> {
 }
 
 /// `time.strftime(format, t=None)`, formatting `t` or the clock.
-#[py_signature("strftime(format, t=None, /)", style = parse_tuple)]
+#[py_signature("strftime(format, t=None, /)", style = parse_tuple, bind = owned)]
 fn strftime(vm: &mut VM<'_>, args: StrftimeArgs) -> RunResult<CallResult> {
     let StrftimeArgs { format, t } = args;
     let result = strftime_result(&format, &t, vm);
@@ -410,7 +410,7 @@ fn strftime_result(format: &Value, t: &Value, vm: &mut VM<'_>) -> RunResult<Call
 ///
 /// CPython's is the pure-Python `_strptime_time`, which is why the binding
 /// errors name that function rather than `strptime`.
-#[py_signature("_strptime_time(data_string, format=None)", style = def)]
+#[py_signature("_strptime_time(data_string, format=None)", style = def, bind = owned)]
 fn strptime(vm: &mut VM<'_>, args: StrptimeArgs) -> RunResult<CallResult> {
     let StrptimeArgs { data_string, format } = args;
     let result = strptime_result(&data_string, &format, vm);

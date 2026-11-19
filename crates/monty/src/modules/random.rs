@@ -692,7 +692,7 @@ fn choice(target: RandomTarget, args: &ChoiceArgs, vm: &mut VM<'_>) -> RunResult
 /// Lists are swapped directly. Anything else goes through `x[i], x[j] = x[j],
 /// x[i]` per swap, as `random.py` does, so a tuple, `str`, set or dict fails
 /// (or, for a dict keyed `0..n`, succeeds) exactly where CPython does.
-#[py_signature("shuffle(x)", style = def, error_name = "Random.shuffle")]
+#[py_signature("shuffle(x)", style = def, error_name = "Random.shuffle", bind = owned)]
 fn shuffle(target: RandomTarget, args: ShuffleArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let ShuffleArgs { x } = args;
     defer_drop_mut!(x, vm);
@@ -860,7 +860,7 @@ fn cumulative_counts(counts: &Value, vm: &mut VM<'_>) -> RunResult<Vec<i128>> {
 
 /// `choices(population, weights=None, *, cum_weights=None, k=1)`: `k` picks
 /// with replacement, uniform or by (cumulative) weight.
-#[py_signature("choices(population, weights=None, *, cum_weights=None, k=1)", style = def, error_name = "Random.choices")]
+#[py_signature("choices(population, weights=None, *, cum_weights=None, k=1)", style = def, error_name = "Random.choices", bind = owned)]
 fn choices(target: RandomTarget, args: ChoicesArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let ChoicesArgs {
         population,

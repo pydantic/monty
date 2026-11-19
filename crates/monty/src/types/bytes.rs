@@ -1459,7 +1459,7 @@ fn bytes_removesuffix<'h>(
 /// Implements Python's `bytes.split([sep[, maxsplit]])` method.
 ///
 /// Returns a list of the bytes split by the separator.
-#[py_signature("split(sep=None, maxsplit: i64=-1)")]
+#[py_signature("split(sep=None, maxsplit: i64=-1)", bind = owned)]
 fn bytes_split<'h>(bytes: &impl HeapView<'h, [u8]>, args: BytesSplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let BytesSplitArgs { sep, maxsplit } = args;
     let sep = bytes_separator(sep, vm)?;
@@ -1509,7 +1509,7 @@ fn bytes_split<'h>(bytes: &impl HeapView<'h, [u8]>, args: BytesSplitArgs, vm: &m
 /// Implements Python's `bytes.rsplit([sep[, maxsplit]])` method.
 ///
 /// Returns a list of the bytes split by the separator, splitting from the right.
-#[py_signature("rsplit(sep=None, maxsplit: i64=-1)")]
+#[py_signature("rsplit(sep=None, maxsplit: i64=-1)", bind = owned)]
 fn bytes_rsplit<'h>(bytes: &impl HeapView<'h, [u8]>, args: BytesRsplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let BytesRsplitArgs { sep, maxsplit } = args;
     let sep = bytes_separator(sep, vm)?;
@@ -1798,7 +1798,7 @@ fn bytes_splitlines<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &m
 /// Argument shape for `bytes.splitlines(keepends=False)`. CPython evaluates
 /// `keepends` for truthiness rather than strict-typing, so the field stays as
 /// a raw `Value` for `py_bool` to inspect.
-#[py_signature("splitlines(keepends=...)")]
+#[py_signature("splitlines(keepends=...)", bind = owned)]
 fn parse_bytes_splitlines_args(args: BytesSplitlinesArgs, vm: &mut VM<'_>) -> RunResult<bool> {
     let BytesSplitlinesArgs { keepends } = args;
     let result = match keepends {

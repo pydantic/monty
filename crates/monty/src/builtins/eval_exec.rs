@@ -32,7 +32,7 @@ use crate::{
 ///
 /// Parses `source` as one expression and runs it in the given (or the
 /// caller's) namespace; the expression's value is the call's result.
-#[py_signature("eval(source, /, globals=None, locals=None)", at_most_total)]
+#[py_signature("eval(source, /, globals=None, locals=None)", at_most_total, bind = owned)]
 pub fn builtin_eval(vm: &mut VM<'_>, args: EvalArgs) -> RunResult<CallResult> {
     let EvalArgs {
         source,
@@ -53,7 +53,7 @@ pub fn builtin_eval(vm: &mut VM<'_>, args: EvalArgs) -> RunResult<CallResult> {
 ///
 /// Compiles `source` as a module and runs it in the given (or the caller's)
 /// namespace; the call's result is `None`.
-#[py_signature("exec(source, /, globals=None, locals=None, *, closure=None)")]
+#[py_signature("exec(source, /, globals=None, locals=None, *, closure=None)", bind = owned)]
 pub fn builtin_exec(vm: &mut VM<'_>, args: ExecArgs) -> RunResult<CallResult> {
     let ExecArgs {
         source,

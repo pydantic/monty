@@ -812,7 +812,7 @@ fn abstract_class_error(name: &str, methods: &str) -> String {
 /// Frozen helper for `typing.get_type_hints`: `alias_with(alias, args, include_extras)`
 /// rebuilds `alias` around the resolved `args` tuple (the alias itself when they
 /// are unchanged), and strips `Annotated[T, ...]` to `T` unless `include_extras`.
-#[py_signature("alias_with(alias, resolved, include_extras, /)")]
+#[py_signature("alias_with(alias, resolved, include_extras, /)", bind = owned)]
 pub(crate) fn call_alias_with(args: AliasWithArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let AliasWithArgs {
         alias,

@@ -66,7 +66,7 @@ fn call_copy(vm: &mut VM<'_>, args: &CopyArgs) -> RunResult<Value> {
 ///
 /// CPython's signature. `_nil` is its private "missing from `memo`" sentinel,
 /// accepted for arity parity and never read.
-#[py_signature("deepcopy(x, memo=None, _nil=None)", style = def)]
+#[py_signature("deepcopy(x, memo=None, _nil=None)", style = def, bind = owned)]
 fn call_deepcopy(vm: &mut VM<'_>, args: DeepcopyArgs) -> RunResult<Value> {
     let DeepcopyArgs { x, memo, _nil: nil } = args;
     defer_drop!(x, vm);

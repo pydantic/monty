@@ -82,7 +82,7 @@ fn format_class(vm: &mut VM<'_>) -> Value {
 
 /// `annotationlib.get_annotations()`: `obj`'s annotations evaluated where they were
 /// written (or as stored, in `STRING` format), without resolving forward references.
-#[py_signature("get_annotations(obj, *, globals=None, locals=None, eval_str=False, format=1)", style = def)]
+#[py_signature("get_annotations(obj, *, globals=None, locals=None, eval_str=False, format=1)", style = def, bind = owned)]
 fn get_annotations(vm: &mut VM<'_>, args: GetAnnotationsArgs) -> RunResult<CallResult> {
     let GetAnnotationsArgs {
         obj,

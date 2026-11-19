@@ -8,7 +8,7 @@ use crate::{bytecode::VM, defer_drop, exception_private::RunResult, types::PyTra
 ///
 /// Returns True if any element of the iterable is true.
 /// Returns False for an empty iterable. Short-circuits on the first truthy value.
-#[py_signature("any(iterable, /)")]
+#[py_signature("any(iterable, /)", bind = owned)]
 pub fn builtin_any(vm: &mut VM<'_>, args: AnyArgs) -> RunResult<Value> {
     let AnyArgs { iterable } = args;
     let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;

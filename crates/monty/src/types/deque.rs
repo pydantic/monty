@@ -878,7 +878,7 @@ fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, args: &RotateArgs, vm: &mut VM<'h>
 ///
 /// `deque.insert(i, x)` — `PyArg_UnpackTuple` with a fixed arity, so the error is
 /// `insert expected 2 arguments, got 1`.
-#[py_signature("insert(index, item, /)", style = unpack)]
+#[py_signature("insert(index, item, /)", style = unpack, bind = owned)]
 fn insert<'h>(deque: &HeapReadMut<'h, Deque>, args: InsertArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let InsertArgs {
         index: index_value,
@@ -956,7 +956,7 @@ fn remove<'h>(deque: &HeapReadMut<'h, Deque>, args: &DequeRemoveArgs, vm: &mut V
 ///
 /// `deque.index(x[, start[, stop]])` — `PyArg_UnpackTuple` with `min < max`, so a
 /// missing `x` reports `index expected at least 1 argument, got 0`.
-#[py_signature("index(value, start=..., stop=..., /)", style = unpack)]
+#[py_signature("index(value, start=..., stop=..., /)", style = unpack, bind = owned)]
 fn index<'h>(deque: &HeapRead<'h, Deque>, args: IndexArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let IndexArgs {
         value: target,

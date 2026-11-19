@@ -22,7 +22,7 @@ use crate::{
 ///
 /// `strict` is held as a `Value` because CPython evaluates it via truthiness
 /// (`py_bool`), not strict-type equality, so accepting any value is correct.
-#[py_signature("zip(*iterables, strict=False)")]
+#[py_signature("zip(*iterables, strict=False)", bind = owned)]
 pub fn builtin_zip(vm: &mut VM<'_>, args: ZipArgs) -> RunResult<Value> {
     let ZipArgs { iterables, strict } = args;
     defer_drop_mut!(iterables, vm);

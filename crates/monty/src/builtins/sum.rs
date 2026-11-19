@@ -24,7 +24,7 @@ use crate::{
 /// CPython, so `start` is keyword-capable while `iterable` is positional-only.
 /// `at_most_total` reproduces `_PyArg_UnpackKeywords`' total pre-count
 /// (`sum() takes at most 2 arguments (3 given)`).
-#[py_signature("sum(iterable, /, start=0)", at_most_total)]
+#[py_signature("sum(iterable, /, start=0)", at_most_total, bind = owned)]
 pub fn builtin_sum(vm: &mut VM<'_>, args: SumArgs) -> RunResult<Value> {
     let SumArgs { iterable, start } = args;
     defer_drop_mut!(start, vm);

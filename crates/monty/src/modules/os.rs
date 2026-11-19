@@ -187,7 +187,7 @@ fn scandir(vm: &mut VM<'_>, args: &ScandirArgs) -> RunResult<CallResult> {
 ///
 /// `os.walk(top, topdown=True, onerror=None, followlinks=False)` argument
 /// shape — a pure-Python generator in CPython, hence `style = def`.
-#[py_signature("walk(top, topdown=True, onerror=None, followlinks=False)", style = def)]
+#[py_signature("walk(top, topdown=True, onerror=None, followlinks=False)", style = def, bind = owned)]
 fn walk(vm: &mut VM<'_>, args: WalkArgs) -> RunResult<CallResult> {
     let WalkArgs {
         top,
@@ -283,7 +283,7 @@ fn chdir(vm: &mut VM<'_>, args: &ChdirArgs) -> RunResult<CallResult> {
 /// `TypeError("str expected, not <type>")`. That wording is bespoke to
 /// `os._Environ` in the CPython stdlib, so it lives inline here rather
 /// than as a shared helper.
-#[py_signature("getenv(key, default=..., /)", error_name = "os.getenv")]
+#[py_signature("getenv(key, default=..., /)", error_name = "os.getenv", bind = owned)]
 fn getenv(vm: &mut VM<'_>, args: OsGetenvArgs) -> RunResult<CallResult> {
     let OsGetenvArgs {
         key: key_value,
@@ -335,7 +335,7 @@ fn listdir(vm: &mut VM<'_>, args: &ListdirArgs) -> RunResult<CallResult> {
 /// `os.stat(path, *, dir_fd=None, follow_symlinks=True)` argument shape.
 /// `follow_symlinks` uses [`LaxBool`](crate::args::LaxBool) — CPython truth-tests it, so any value
 /// is accepted.
-#[py_signature("stat(path, *, dir_fd=None, follow_symlinks: bool=True)", style = c_named)]
+#[py_signature("stat(path, *, dir_fd=None, follow_symlinks: bool=True)", style = c_named, bind = owned)]
 fn stat(vm: &mut VM<'_>, args: StatArgs) -> RunResult<CallResult> {
     let StatArgs {
         path,
@@ -388,7 +388,7 @@ fn makedirs(vm: &mut VM<'_>, args: &MakedirsArgs) -> RunResult<CallResult> {
 
 /// Implementation of `os.remove(path)` — yields the same `Unlink` OS call as
 /// `Path.unlink()`.
-#[py_signature("remove(path, *, dir_fd=None)", style = c_named)]
+#[py_signature("remove(path, *, dir_fd=None)", style = c_named, bind = owned)]
 fn remove(vm: &mut VM<'_>, args: RemoveArgs) -> RunResult<CallResult> {
     let RemoveArgs { path, dir_fd } = args;
     single_path_call(path, dir_fd, "remove", OsFunctionCall::Unlink, vm)
@@ -396,7 +396,7 @@ fn remove(vm: &mut VM<'_>, args: RemoveArgs) -> RunResult<CallResult> {
 
 /// Implementation of `os.unlink(path)` — alias of [`remove`] with its own
 /// name in error messages.
-#[py_signature("unlink(path, *, dir_fd=None)", style = c_named)]
+#[py_signature("unlink(path, *, dir_fd=None)", style = c_named, bind = owned)]
 fn unlink(vm: &mut VM<'_>, args: UnlinkArgs) -> RunResult<CallResult> {
     let UnlinkArgs { path, dir_fd } = args;
     single_path_call(path, dir_fd, "unlink", OsFunctionCall::Unlink, vm)
@@ -420,14 +420,14 @@ fn single_path_call(
 
 /// Implementation of `os.rmdir(path)` — yields the same `Rmdir` OS call as
 /// `Path.rmdir()`.
-#[py_signature("rmdir(path, *, dir_fd=None)", style = c_named)]
+#[py_signature("rmdir(path, *, dir_fd=None)", style = c_named, bind = owned)]
 fn rmdir(vm: &mut VM<'_>, args: RmdirArgs) -> RunResult<CallResult> {
     let RmdirArgs { path, dir_fd } = args;
     single_path_call(path, dir_fd, "rmdir", OsFunctionCall::Rmdir, vm)
 }
 
 /// Implementation of `os.rename(src, dst)`.
-#[py_signature("rename(src, dst, *, src_dir_fd=None, dst_dir_fd=None)", style = c_named)]
+#[py_signature("rename(src, dst, *, src_dir_fd=None, dst_dir_fd=None)", style = c_named, bind = owned)]
 fn rename(vm: &mut VM<'_>, args: RenameArgs) -> RunResult<CallResult> {
     let RenameArgs {
         src,
@@ -440,7 +440,7 @@ fn rename(vm: &mut VM<'_>, args: RenameArgs) -> RunResult<CallResult> {
 
 /// Implementation of `os.replace(src, dst)` — same `Rename` OS call as
 /// [`rename`]; overwrite behavior is whatever the host backend does.
-#[py_signature("replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None)", style = c_named)]
+#[py_signature("replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None)", style = c_named, bind = owned)]
 fn replace(vm: &mut VM<'_>, args: ReplaceArgs) -> RunResult<CallResult> {
     let ReplaceArgs {
         src,
@@ -483,7 +483,7 @@ fn rename_like(
 ///
 /// `os.fspath(path)` argument shape — clinic-parsed with the `at_most_total`
 /// pre-count (`fspath() takes at most 1 argument (2 given)`).
-#[py_signature("fspath(path)", style = c_named, at_most_total)]
+#[py_signature("fspath(path)", style = c_named, at_most_total, bind = owned)]
 fn fspath(vm: &mut VM<'_>, args: FspathArgs) -> RunResult<CallResult> {
     let FspathArgs { path } = args;
     match path.py_type_heap(vm.heap).native() {

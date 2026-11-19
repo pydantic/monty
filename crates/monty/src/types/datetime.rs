@@ -251,7 +251,7 @@ pub(crate) fn to_monty_datetime(datetime: &DateTime) -> Option<MontyDateTime> {
 ///
 /// `fold` itself is accepted for CPython parity but currently has no effect
 /// on the stored datetime — Monty does not track DST-fold disambiguation.
-#[py_signature("function(year: c_int, month: c_int, day: c_int, hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)", style = c)]
+#[py_signature("function(year: c_int, month: c_int, day: c_int, hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)", style = c, bind = owned)]
 pub(crate) fn init(vm: &mut VM<'_>, args: DatetimeInitArgs) -> RunResult<Value> {
     let DatetimeInitArgs {
         year,
@@ -673,7 +673,7 @@ pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: &DatetimeFromisoformatA
 /// Every field stays a raw [`Value`] so the type checks run in the body with
 /// CPython's own wording (`combine() argument 1 must be datetime.date, not
 /// str`, and the shared `tzinfo argument must be ...` message).
-#[py_signature("combine(date, time, tzinfo=...)", style = c_named, at_most_total)]
+#[py_signature("combine(date, time, tzinfo=...)", style = c_named, at_most_total, bind = owned)]
 pub(crate) fn class_combine(vm: &mut VM<'_>, args: CombineArgs) -> RunResult<Value> {
     let CombineArgs { date, time, tzinfo } = args;
     defer_drop!(date, vm);

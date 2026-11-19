@@ -122,7 +122,7 @@ fn two_product(a: f64, b: f64) -> (f64, f64) {
 }
 
 /// Sums non-overlapping partials, preserving cancellation and half-even rounding.
-#[py_signature("fsum(seq, /)", error_name = "math.fsum", reject_keywords)]
+#[py_signature("fsum(seq, /)", error_name = "math.fsum", reject_keywords, bind = owned)]
 pub(crate) fn fsum(vm: &mut VM<'_>, args: MathFsumArgs) -> RunResult<Value> {
     let MathFsumArgs { seq: iterable } = args;
     let iterator = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
@@ -205,7 +205,7 @@ fn round_partials(partials: &mut SmallVec<[f64; 32]>) -> f64 {
 }
 
 /// Multiplies through Python's numeric protocol, retaining arbitrary-size integer results.
-#[py_signature("prod(iterable, /, *, start=1)", style = c_named, at_most_total)]
+#[py_signature("prod(iterable, /, *, start=1)", style = c_named, at_most_total, bind = owned)]
 pub(super) fn prod(vm: &mut VM<'_>, args: ProdArgs) -> RunResult<Value> {
     let ProdArgs { iterable, start } = args;
     let mut result = DropGuard::new(start, vm);

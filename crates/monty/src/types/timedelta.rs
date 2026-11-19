@@ -248,7 +248,7 @@ pub(crate) fn allocate_micros(total_microseconds: i128, heap: &Heap) -> Value {
 }
 
 /// Creates a `timedelta` from constructor arguments.
-#[py_signature("timedelta(days=0, seconds=0, microseconds=0, milliseconds=0, minutes=0, hours=0, weeks=0)", convert(days = DeltaComponent, seconds = DeltaComponent, microseconds = DeltaComponent, milliseconds = DeltaComponent, minutes = DeltaComponent, hours = DeltaComponent, weeks = DeltaComponent))]
+#[py_signature("timedelta(days=0, seconds=0, microseconds=0, milliseconds=0, minutes=0, hours=0, weeks=0)", convert(days = DeltaComponent, seconds = DeltaComponent, microseconds = DeltaComponent, milliseconds = DeltaComponent, minutes = DeltaComponent, hours = DeltaComponent, weeks = DeltaComponent), bind = owned)]
 pub(crate) fn init(vm: &mut VM<'_>, args: TimedeltaArgs) -> RunResult<Value> {
     let TimedeltaArgs {
         days,

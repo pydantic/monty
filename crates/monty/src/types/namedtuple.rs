@@ -1266,7 +1266,7 @@ fn make_namedtuple(class_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> RunRes
 
 /// Shared `_make` body: collect the iterable, length-check it against the
 /// fields, and build the instance.
-#[py_signature("_make(iterable, /)")]
+#[py_signature("_make(iterable, /)", bind = owned)]
 fn make_from_iterable(
     name: EitherStr,
     field_names: Vec<EitherStr>,

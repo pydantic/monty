@@ -101,7 +101,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: FunctoolsFunctions, args: ArgValue
 /// while `initial` is also accepted by keyword, and counts positionals plus
 /// keywords together for the maximum (`at_most_total`): `reduce(f, x, 0,
 /// initial=1)` reports four arguments.
-#[py_signature("reduce(function, iterable, /, initial=...)", at_most_total)]
+#[py_signature("reduce(function, iterable, /, initial=...)", at_most_total, bind = owned)]
 fn call_reduce(vm: &mut VM<'_>, args: ReduceArgs) -> RunResult<CallResult> {
     let ReduceArgs {
         function,

@@ -42,7 +42,7 @@ fn clone_slice_with_checks(
 /// to [`parse_and_sort`] — the same entry point `list.sort` uses — so
 /// unknown-kwarg errors uniformly read `sort() got an unexpected keyword
 /// argument 'X'` without any wording overrides.
-#[monty_macros::py_signature("sorted(iterable, /, **kwargs)", style = unpack)]
+#[monty_macros::py_signature("sorted(iterable, /, **kwargs)", style = unpack, bind = owned)]
 pub fn builtin_sorted(vm: &mut VM<'_>, args: SortedArgs) -> RunResult<Value> {
     let SortedArgs { iterable, kwargs } = args;
     let items = if let Value::Ref(id) = &iterable

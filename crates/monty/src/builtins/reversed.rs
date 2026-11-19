@@ -19,7 +19,7 @@ use crate::{
 /// `style = unpack` gives CPython's exact-arity wording
 /// (`reversed expected 1 argument, got 2`) and the blanket
 /// `reversed() takes no keyword arguments` rejection.
-#[py_signature("reversed(sequence, /)", style = unpack)]
+#[py_signature("reversed(sequence, /)", style = unpack, bind = owned)]
 pub fn builtin_reversed(vm: &mut VM<'_>, args: ReversedArgs) -> RunResult<Value> {
     let ReversedArgs { sequence } = args;
     // Being iterable is not enough: CPython needs `__reversed__`, or

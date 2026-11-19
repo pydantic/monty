@@ -122,7 +122,7 @@ pub(crate) fn defaultdict_class_method(
 ///
 /// Reached via [`Type::call`](crate::types::Type::call) — `collections.Counter`
 /// is exposed as the type object, so `type(c) is Counter` holds.
-#[py_signature("__init__(self, iterable=..., /, **kwargs)", style = def, owner = "Counter")]
+#[py_signature("__init__(self, iterable=..., /, **kwargs)", style = def, owner = "Counter", bind = owned)]
 pub(crate) fn counter_init(vm: &mut VM<'_>, args: CounterInitArgs) -> RunResult<Value> {
     let CounterInitArgs {
         iterable: source,
@@ -154,7 +154,7 @@ pub(crate) fn counter_init(vm: &mut VM<'_>, args: CounterInitArgs) -> RunResult<
 ///
 /// Reached via [`Type::call`](crate::types::Type::call) — `collections.defaultdict`
 /// is exposed as the type object, so `type(d) is defaultdict` holds.
-#[py_signature("defaultdict(default_factory=..., /, *args, **kwargs)")]
+#[py_signature("defaultdict(default_factory=..., /, *args, **kwargs)", bind = owned)]
 pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: DefaultdictArgs) -> RunResult<Value> {
     let DefaultdictArgs {
         default_factory: factory_arg,
@@ -206,7 +206,7 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: DefaultdictArgs) -> RunRes
 ///
 /// CPython's `namedtuple` is a pure-Python `def`, so fields stay raw `Value`
 /// (`def` binding never type-checks) and coercion happens in the body.
-#[py_signature("namedtuple(typename, field_names, *, rename=False, defaults=None, module=None)", style = def)]
+#[py_signature("namedtuple(typename, field_names, *, rename=False, defaults=None, module=None)", style = def, bind = owned)]
 fn namedtuple(vm: &mut VM<'_>, args: NamedtupleArgs) -> RunResult<Value> {
     let NamedtupleArgs {
         typename,

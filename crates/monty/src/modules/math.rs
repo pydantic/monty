@@ -956,7 +956,7 @@ fn product_range(lo: u64, hi: u64, polls: &mut usize, tracker: &ResourceTracker)
 /// Supports 0 or more arguments, matching CPython 3.9+. `gcd()` returns 0,
 /// `gcd(n)` returns `abs(n)`, and for multiple args reduces pairwise.
 /// The result is always non-negative.
-#[py_signature("gcd(*integers)", error_name = "math.gcd")]
+#[py_signature("gcd(*integers)", error_name = "math.gcd", bind = mut)]
 fn math_gcd(vm: &mut VM<'_>, positional: &mut ArgPosIter) -> RunResult<Value> {
     let mut result = BigInt::ZERO;
     for arg in positional.by_ref() {
@@ -971,7 +971,7 @@ fn math_gcd(vm: &mut VM<'_>, positional: &mut ArgPosIter) -> RunResult<Value> {
 /// Supports 0 or more arguments, matching CPython 3.9+. `lcm()` returns 1,
 /// `lcm(n)` returns `abs(n)`, and for multiple args reduces pairwise.
 /// The result is always non-negative. Returns 0 if any argument is 0.
-#[py_signature("lcm(*integers)", error_name = "math.lcm")]
+#[py_signature("lcm(*integers)", error_name = "math.lcm", bind = mut)]
 fn math_lcm(vm: &mut VM<'_>, positional: &mut ArgPosIter) -> RunResult<Value> {
     let mut result = BigInt::one();
     for arg in positional.by_ref() {

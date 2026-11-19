@@ -123,7 +123,7 @@ impl Tuple {
     ///
     /// - `tuple()` with no args returns an empty tuple (singleton)
     /// - `tuple(iterable)` creates a tuple from any iterable (list, tuple, range, str, bytes, dict)
-    #[py_signature("tuple(iterable=..., /)")]
+    #[py_signature("tuple(iterable=..., /)", bind = owned)]
     pub fn init(vm: &mut VM<'_>, args: TupleArgs) -> RunResult<Value> {
         let TupleArgs { iterable: value } = args;
         match value {
