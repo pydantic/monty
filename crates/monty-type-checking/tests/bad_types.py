@@ -1,8 +1,12 @@
 # This file contains intentional type errors to test the type checker.
 # Each section demonstrates a different category of type error.
-# ===
 
+import decimal
+import functools
+import hashlib
 import sys
+import tomllib
+from pathlib import Path
 from typing import TypedDict, assert_type
 
 
@@ -134,3 +138,53 @@ def loop_over_dict_items(mapping: dict[str, int]) -> None:
 
 
 print(sys.missing)
+hashlib.file_digest
+hashlib.sha256('text')
+tomllib.loads(b'a = 1')
+tomllib.load('pyproject.toml')
+tomllib.loads('a = 1', parse_float=float)
+
+
+# The cached-wrapper stub names its `cache_info()` return type the way typeshed
+# does, `_CacheInfo`; neither CPython nor Monty has a public `CacheInfo`.
+print(functools.CacheInfo)
+
+
+# A cached function keeps the signature it wrapped, so its call sites are
+# checked like any other function's.
+@functools.cache
+def cached_takes_int(n: int) -> int:
+    return n * 2
+
+
+cached_takes_int('nope')
+cached_takes_int(1, 2)
+cached_takes_int(n='nope')
+
+# === decimal: traps and flags take a list or a signal dict, not a tuple ===
+decimal.Context(traps=(decimal.Inexact,))
+decimal.localcontext(flags=(decimal.Rounded,))
+
+
+# === Invalid open calls ===
+# Non-default `buffering`, `errors` and the like are left to the runtime to reject,
+# since a variable holding the default must still type-check.
+
+open()
+open('/work/example.txt', 1)
+open('/work/example.txt', encoding=1)
+open('/work/example.txt', 'w').write(b'hello')
+open('/work/example.bin', 'wb').write('hello')
+open('/work/example.txt').closed = False
+
+path = Path('/work/example.txt')
+path.open(1)
+path.open(encoding=1)
+path.open(closefd=False)
+path.open(opener=lambda file, flags: 0)
+
+import annotationlib
+
+annotationlib.call_annotate_function
+annotationlib.ForwardRef(1)
+annotationlib.get_annotations(takes_int, eval_str='yes')

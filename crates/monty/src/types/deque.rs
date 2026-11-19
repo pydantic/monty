@@ -6,14 +6,19 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap::{
+        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadMut,
+        HeapReadOutput,
+    },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
-    resource_checks::{check_estimated_size, check_repeat_size, check_value_buffer_growth},
+    py_value::PyValue,
+    resource_checks::{
+        check_estimated_size, check_repeat_size, check_value_buffer_growth, repeated_len, try_vec_with_capacity,
+    },
     types::{
-        LazyHeapSet, Type,
+        LazyHeapSet, Type, TypeRef,
         list::repr_items_fmt,
-        long_int::repeat_count,
         slice::{normalize_sequence_index, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -241,10 +246,9 @@ fn check_maxlen(n: i64) -> RunResult<usize> {
 /// exception kind the caller supplies (`OverflowError` for maxlen/rotate/insert,
 /// `IndexError` for subscript).
 fn read_ssize(value: &Value, vm: &VM<'_>, overflow: fn() -> RunError) -> Option<RunResult<i64>> {
-    match value {
-        Value::Int(i) => Some(Ok(*i)),
-        Value::Bool(b) => Some(Ok(i64::from(*b))),
-        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => Some(li.to_i64().ok_or_else(overflow)),
+    match value.py_value(vm) {
+        PyValue::Int(integer) => Some(integer.to_i64(vm).ok_or_else(overflow)),
+        PyValue::Bool(value) => Some(Ok(i64::from(value))),
         _ => None,
     }
 }
@@ -259,13 +263,15 @@ impl<'h> HeapRead<'h, Deque> {
         evicted.drop_with(vm);
         Value::Ref(vm.heap.allocate(HeapData::Deque(deque)))
     }
+}
 
+impl<'h> HeapReadMut<'h, Deque> {
     /// Appends to the right, evicting from the left if `maxlen` is reached.
     ///
     /// Ownership of `item` transfers to the deque (refcount already handled by
     /// the caller); any evicted item is released here. A push that would grow the
     /// ring past the memory limit fails with `MemoryError`, dropping `item`.
-    pub fn append(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
+    pub fn append(&self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
         let item = self.check_push(vm, item)?;
         if matches!(item, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
@@ -281,7 +287,7 @@ impl<'h> HeapRead<'h, Deque> {
     }
 
     /// Appends to the left, evicting from the right if `maxlen` is reached.
-    pub fn appendleft(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
+    pub fn appendleft(&self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
         let item = self.check_push(vm, item)?;
         if matches!(item, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
@@ -310,7 +316,9 @@ impl<'h> HeapRead<'h, Deque> {
             check_value_buffer_growth(vm, len, capacity, item)
         }
     }
+}
 
+impl<'h> HeapRead<'h, Deque> {
     /// Clones every item, incrementing refcounts — used by `copy`, `+` and `*`.
     fn clone_all_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
         let len = self.get(vm.heap).len();
@@ -395,8 +403,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         Ok(Some(false))
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Deque
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Deque.into()
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
@@ -409,13 +417,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         }
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let deque_id = self.id();
         let iterator = vm
             .heap
             .allocate(HeapData::DequeIterator(DequeIterator::new(deque_id, vm)));
         vm.heap.inc_ref(deque_id);
-        Ok(Value::Ref(iterator))
+        Ok(CallResult::Value(Value::Ref(iterator)))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -553,8 +561,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
             return Ok(None);
         };
         let maxlen = self.get(vm.heap).maxlen();
-        let mut items = self.clone_all_items(vm)?;
-        items.extend(other.clone_all_items(vm)?);
+        // The guard releases our clones if cloning `other` hits the memory limit.
+        let mut items = DropGuard::new(self.clone_all_items(vm)?, vm);
+        let (left, vm) = items.as_parts_mut();
+        left.extend(other.clone_all_items(vm)?);
+        let (items, vm) = items.into_parts();
         let (deque, evicted) = Deque::new(items, maxlen);
         evicted.drop_with(vm.heap);
         let id = vm.heap.allocate(HeapData::Deque(deque));
@@ -576,7 +587,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
     /// `deque * int` — repetition that keeps the deque's `maxlen`, so a bounded
     /// deque builds only its surviving suffix rather than the full product.
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(count) = repeat_count(other, vm)? else {
+        let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(None);
         };
         let maxlen = self.get(vm.heap).maxlen();
@@ -590,7 +601,44 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
             self.get(vm.heap).iter().map(|v| v.clone_with_heap(vm.heap)).collect()
         };
         let result = repeat_deque(source, maxlen, count, vm)?;
-        Ok(Some(result))
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Deque(result)))))
+    }
+
+    /// Repeats for integer or `__index__` counts, retaining identity and respecting `maxlen`.
+    fn py_imul_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        let Some(count) = other.py_value(vm).repeat_count(vm)? else {
+            return Ok(false);
+        };
+
+        // These no-op repetitions must not invalidate iterators already traversing this deque.
+        if count == 1 || self.get(vm.heap).items.is_empty() {
+            return Ok(true);
+        }
+
+        // `__index__` may mutate the deque; capture its contents and bound afterward.
+        let maxlen = self.get(vm.heap).maxlen;
+        let len = self.get(vm.heap).items.len();
+        vm.heap
+            .tracker
+            .check_allocation(if count == 0 { 0 } else { len.saturating_mul(VALUE_SIZE) })?;
+        let source = if count == 0 {
+            Vec::new()
+        } else {
+            self.get(vm.heap)
+                .iter()
+                .map(|item| item.clone_with_heap(vm.heap))
+                .collect()
+        };
+
+        // Build first so allocation/time failures preserve the original contents.
+        let mut result = repeat_deque(source, maxlen, count, vm)?;
+        // Advance the old mutation counter so iterators detect replacement at unchanged length.
+        result.state = self.get(vm.heap).state.wrapping_add(1);
+        let old = mem::replace(self.get_mut(vm.heap), result);
+        for item in old.items {
+            item.drop_with(vm);
+        }
+        Ok(true)
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -706,8 +754,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DequeIterator> {
         true
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::DequeIterator
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::DequeIterator.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
@@ -718,8 +766,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DequeIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(self.clone_value(vm.heap))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -840,7 +888,7 @@ fn call_deque_method<'h>(
 }
 
 /// `deque.rotate([n=1])` — rotates right by `n` (left if negative), wrapping.
-fn rotate<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let RotateArgs { n } = RotateArgs::from_args(args, vm)?;
     defer_drop!(n, vm);
     // A big int is a valid rotation count; only one out of `i64` range is an
@@ -866,7 +914,7 @@ fn rotate<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>)
 }
 
 /// `deque.insert(i, x)` — raises if the deque is already at `maxlen`.
-fn insert<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn insert<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let InsertArgs {
         index: index_value,
         item,
@@ -909,7 +957,7 @@ fn insert<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>)
 }
 
 /// `deque.remove(x)` — removes the first item equal to `x`.
-fn remove<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn remove<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let target = args.get_one_arg("deque.remove", vm.heap)?;
     defer_drop!(target, vm);
 
@@ -940,7 +988,7 @@ fn remove<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>)
 }
 
 /// `deque.index(x[, start[, stop]])` — index of the first item equal to `x`.
-fn index<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn index<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let IndexArgs {
         value: target,
         start,
@@ -978,7 +1026,7 @@ fn index<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) 
 }
 
 /// `deque.count(x)` — number of items equal to `x`.
-fn count<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn count<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let target = args.get_one_arg("deque.count", vm.heap)?;
     defer_drop!(target, vm);
 
@@ -1053,7 +1101,7 @@ pub(crate) fn deque_extend<'h>(
         }
         Ok(())
     } else {
-        let iter = iterable.into_py_iter(vm)?;
+        let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iter, vm);
         let mut iter = iter.read(vm);
         // One-shot preflight from the size hint: exact-hint iterators (e.g.
@@ -1073,7 +1121,7 @@ pub(crate) fn deque_extend<'h>(
 }
 
 /// Appends one item to whichever end the extension targets.
-fn deque_push<'h>(deque: &mut HeapRead<'h, Deque>, item: Value, end: ExtendEnd, vm: &mut VM<'h>) -> RunResult<()> {
+fn deque_push<'h>(deque: &HeapReadMut<'h, Deque>, item: Value, end: ExtendEnd, vm: &mut VM<'h>) -> RunResult<()> {
     match end {
         ExtendEnd::Right => deque.append(vm, item),
         ExtendEnd::Left => deque.appendleft(vm, item),
@@ -1086,11 +1134,14 @@ fn deque_push<'h>(deque: &mut HeapRead<'h, Deque>, item: Value, end: ExtendEnd, 
 /// surviving suffix rather than the full product — `deque([1,2], maxlen=2) *
 /// 10**9` must not materialize two billion `Value`s before truncating. The
 /// pattern is periodic with period `len`, so the kept window of `L = min(len*
-/// count, maxlen)` starts at `(len - L % len) % len`. An unbounded deque has no
-/// shortcut and materializes the full product (may hit resource limits, like
-/// CPython's `MemoryError`).
-fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mut VM<'_>) -> RunResult<Value> {
+/// count, maxlen)` starts at `(len - L % len) % len`. An unbounded deque
+/// materializes the full product (may hit resource limits, like CPython's
+/// `MemoryError`), except that an empty source builds nothing.
+fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mut VM<'_>) -> RunResult<Deque> {
     let len = source.len();
+    // An empty source yields an empty deque however large `count` is; clamping
+    // keeps the unbounded branch from spinning `count` times over nothing.
+    let count = if len == 0 { 0 } else { count };
     // `source` is an owned copy of the deque's items; release it on every exit.
     defer_drop!(source, vm);
     let result = if let Some(max) = maxlen {
@@ -1113,8 +1164,9 @@ fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mu
         }
         result.into_inner()
     } else {
+        let total = repeated_len(len, count, mem::size_of::<Value>())?;
         check_repeat_size(len.saturating_mul(mem::size_of::<Value>()), count, &vm.heap.tracker)?;
-        let mut result = DropGuard::new(Vec::with_capacity(len * count), vm);
+        let mut result = DropGuard::new(try_vec_with_capacity(total)?, vm);
         for rep in 0..count {
             let (items, vm) = result.as_parts_mut();
             items.extend(source.iter().map(|v| v.clone_with_heap(vm.heap)));
@@ -1126,7 +1178,7 @@ fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mu
     // no refcounts need releasing — `debug_assert` guards that invariant.
     let (new_deque, evicted) = Deque::new(result, maxlen);
     debug_assert!(evicted.is_empty(), "repeat_deque built more than maxlen items");
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Deque(new_deque))))
+    Ok(new_deque)
 }
 
 impl<'h> PyDeepCopy<'h> for HeapRead<'h, Deque> {
@@ -1156,7 +1208,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Deque> {
             let copied = deep_copy(&item, memo, vm);
             item.drop_with(vm);
             let copied = copied?;
-            let HeapReadOutput::Deque(mut dest) = vm.heap.read(copy_id) else {
+            let HeapReadOutput::Deque(dest) = vm.heap.read(copy_id) else {
                 unreachable!("copy was allocated as a deque")
             };
             dest.append(vm, copied)?;

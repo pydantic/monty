@@ -11,11 +11,11 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use monty_types::{MontyPath, OsFunctionCall};
+use monty_types::MontyPath;
 use smallvec::SmallVec;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs, LaxBool},
     builtins::open::builtin_open,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -23,8 +23,12 @@ use crate::{
     hash::HashValue,
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    os_dispatch::{PreConversionEffect, build_path_os_call, is_path_os_method},
-    types::{LazyHeapSet, List, PyTrait, Type, allocate_tuple, str::allocate_string},
+    os_dispatch::{build_path_os_call, is_path_os_method, value_as_path_str},
+    types::{
+        LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_tuple,
+        dir_scan::{glob_call, walk_call},
+        str::{StringRepr, allocate_string},
+    },
     value::{EitherStr, Value},
 };
 
@@ -41,7 +45,7 @@ pub(crate) struct Path {
     path: String,
     /// Lazily-computed Python hash. Paths are immutable (all "modifying"
     /// operations return new `Path` objects). Skipped on serde — see
-    /// [`super::Str::cached_hash`] for the rationale.
+    /// [`super::HeapStr`] for the rationale.
     #[serde(skip)]
     cached_hash: Cell<Option<HashValue>>,
 }
@@ -75,10 +79,14 @@ impl Path {
 
     /// Returns the final component of the path.
     ///
-    /// Returns an empty string if the path ends with a separator or is empty.
+    /// Returns an empty string for `.`, the root, or an empty path.
     #[must_use]
     pub fn name(&self) -> &str {
-        self.path.rsplit_once('/').map_or(self.path.as_str(), |(_, name)| name)
+        if self.path == "." {
+            ""
+        } else {
+            self.path.rsplit_once('/').map_or(self.path.as_str(), |(_, name)| name)
+        }
     }
 
     /// Returns the path without its final component (parent directory).
@@ -102,12 +110,7 @@ impl Path {
     /// last suffix is removed.
     #[must_use]
     pub fn stem(&self) -> &str {
-        let name = self.name();
-        if name.starts_with('.') && !name[1..].contains('.') {
-            // Hidden file without extension (e.g., ".bashrc")
-            return name;
-        }
-        name.rsplit_once('.').map_or(name, |(stem, _)| stem)
+        split_suffix(self.name()).0
     }
 
     /// Returns the file extension (last suffix), including the leading dot.
@@ -115,47 +118,31 @@ impl Path {
     /// Returns an empty string if there is no extension.
     #[must_use]
     pub fn suffix(&self) -> &str {
-        let name = self.name();
-        if name.starts_with('.') && !name[1..].contains('.') {
-            // Hidden file without extension (e.g., ".bashrc")
-            return "";
-        }
-        name.rfind('.').map_or("", |idx| &name[idx..])
+        split_suffix(self.name()).1
     }
 
     /// Returns all file extensions as a list of strings.
     ///
-    /// Each suffix includes its leading dot. Returns an empty list if no extensions.
+    /// Each suffix includes its leading dot. As in CPython, leading dots are
+    /// stripped first, so `.bashrc` and `...` have none while `a.` has `['.']`.
     #[must_use]
     pub fn suffixes(&self) -> Vec<&str> {
-        let name = self.name();
-        if name.is_empty() || name == "." || name == ".." {
-            return Vec::new();
-        }
-
-        let start_idx = usize::from(name.starts_with('.'));
-        let search_str = &name[start_idx..];
-
+        let mut rest = self.name().trim_start_matches('.');
         let mut result = Vec::new();
-        let mut pos = 0;
-        while let Some(idx) = search_str[pos..].find('.') {
-            let abs_idx = pos + idx;
-            // Each suffix is from this dot to the end or next dot
-            let suffix_end = search_str[abs_idx + 1..]
-                .find('.')
-                .map_or(search_str.len(), |next| abs_idx + 1 + next);
-            result.push(&name[start_idx + abs_idx..start_idx + suffix_end]);
-            pos = abs_idx + 1;
+        while let Some(idx) = rest.rfind('.') {
+            result.push(&rest[idx..]);
+            rest = &rest[..idx];
         }
+        result.reverse();
         result
     }
 
     /// Returns the path components as a list of strings.
     ///
-    /// Absolute paths start with "/" as the first component.
+    /// Absolute paths start with "/" as the first component; `.` has no parts.
     #[must_use]
     pub fn parts(&self) -> Vec<&str> {
-        if self.path.is_empty() {
+        if self.path.is_empty() || self.path == "." {
             return Vec::new();
         }
 
@@ -195,19 +182,14 @@ impl Path {
     /// Returns a new path with the name changed.
     ///
     /// # Errors
-    /// Returns an error if the path has no name or if the new name is empty.
+    /// Returns CPython's `ValueError` message when `name` is empty, `.` or contains
+    /// a separator (checked first, as CPython does), or when the path has no name.
     pub fn with_name(&self, name: &str) -> Result<String, String> {
-        if name.is_empty() {
-            return Err("Invalid name: empty string".to_owned());
-        }
-        if name.contains('/') {
-            return Err(format!("Invalid name: {name:?} contains path separator"));
-        }
-        if self.name().is_empty() {
-            return Err("Path has no name".to_owned());
-        }
-
-        if let Some(parent) = self.parent() {
+        if name.is_empty() || name == "." || name.contains('/') {
+            Err(format!("Invalid name {}", StringRepr(name)))
+        } else if self.name().is_empty() {
+            Err(self.empty_name_error())
+        } else if let Some(parent) = self.parent() {
             if parent == "/" {
                 Ok(format!("/{name}"))
             } else if parent == "." {
@@ -223,46 +205,42 @@ impl Path {
 
     /// Returns a new path with the stem changed (keeps the suffix).
     ///
-    /// # Errors
-    /// Returns an error if the path has no name or if the new stem is empty.
+    /// Mirrors CPython: with no suffix this is `with_name(stem)`, and an empty
+    /// stem is only rejected separately when a suffix would be left on its own.
     pub fn with_stem(&self, stem: &str) -> Result<String, String> {
-        if stem.is_empty() {
-            return Err("Invalid stem: empty string".to_owned());
-        }
-        if stem.contains('/') {
-            return Err(format!("Invalid stem: {stem:?} contains path separator"));
-        }
-        if self.name().is_empty() {
-            return Err("Path has no name".to_owned());
-        }
-
         let suffix = self.suffix();
-        let new_name = format!("{stem}{suffix}");
-        self.with_name(&new_name)
+        if suffix.is_empty() {
+            self.with_name(stem)
+        } else if stem.is_empty() {
+            Err(format!("{} has a non-empty suffix", self.repr()))
+        } else {
+            self.with_name(&format!("{stem}{suffix}"))
+        }
     }
 
     /// Returns a new path with the suffix changed.
     ///
-    /// If the suffix is empty, removes the existing suffix.
-    /// If the suffix doesn't start with '.', it's added.
+    /// An empty `suffix` removes the existing one; any other must start with `.`
+    /// (CPython rejects `'txt'` rather than adding the dot).
     pub fn with_suffix(&self, suffix: &str) -> Result<String, String> {
-        if self.name().is_empty() {
-            return Err("Path has no name".to_owned());
-        }
-
-        let suffix = if suffix.is_empty() || suffix.starts_with('.') {
-            suffix.to_owned()
-        } else {
-            format!(".{suffix}")
-        };
-
-        if suffix.contains('/') {
-            return Err(format!("Invalid suffix: {suffix:?} contains path separator"));
-        }
-
         let stem = self.stem();
-        let new_name = format!("{stem}{suffix}");
-        self.with_name(&new_name)
+        if stem.is_empty() {
+            Err(self.empty_name_error())
+        } else if !suffix.is_empty() && !suffix.starts_with('.') {
+            Err(format!("Invalid suffix {}", StringRepr(suffix)))
+        } else {
+            self.with_name(&format!("{stem}{suffix}"))
+        }
+    }
+
+    /// CPython's `ValueError` message for `with_*` on a path with no name (`.`, `/`).
+    fn empty_name_error(&self) -> String {
+        format!("{} has an empty name", self.repr())
+    }
+
+    /// The path's Python repr, `PosixPath('...')`, as used in `ValueError` messages.
+    fn repr(&self) -> String {
+        format!("PosixPath({})", StringRepr(&self.path))
     }
 
     /// Returns the path as a POSIX string (forward slashes).
@@ -302,6 +280,30 @@ impl Path {
     }
 }
 
+/// `Path.cwd()`.
+pub(crate) fn class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    if attr.static_string(vm.interns) == Some(StaticStrings::Cwd) {
+        Ok(class_cwd(vm, args).map(CallResult::Value))
+    } else {
+        Err(args)
+    }
+}
+
+/// Splits a final component into `(stem, suffix)` as `posixpath.splitext` does.
+///
+/// The last `.` starts the suffix only if a non-dot character precedes it, so
+/// `.bashrc` and `..` have no suffix while `a.` has the suffix `.`.
+fn split_suffix(name: &str) -> (&str, &str) {
+    match name.rfind('.') {
+        Some(idx) if name[..idx].bytes().any(|b| b != b'.') => name.split_at(idx),
+        _ => (name, ""),
+    }
+}
+
 /// Classmethod `Path.cwd()`, also callable through instances: returns the VM's
 /// virtual working directory without a host round-trip.
 ///
@@ -327,23 +329,86 @@ pub(crate) fn class_cwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
 }
 
-/// Extracts a string from a Value for use as a path.
-fn extract_path_string<'a>(val: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
-    value_as_path_str(val, vm.heap, vm.interns)
-        .ok_or_else(|| ExcType::type_error(format!("expected str or Path, got {}", val.py_type_name(vm))))
+/// `Path.glob(pattern, *, case_sensitive=None, recurse_symlinks=False)`.
+#[derive(FromArgs)]
+#[from_args(name = "Path.glob", style = def)]
+struct PathGlobArgs {
+    #[from_args(static_string = "PatternAttr")]
+    pattern: Value,
+    #[from_args(kw_only, default = Value::None)]
+    case_sensitive: Value,
+    #[from_args(kw_only, default = LaxBool::new(false))]
+    recurse_symlinks: LaxBool,
 }
 
-/// Extracts a path-like operand (`str` or `Path`) as a string slice, `None` otherwise.
-fn value_as_path_str<'a>(val: &Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
-    match val {
-        Value::InternString(string_id) => Some(interns.get_str(*string_id)),
-        Value::Ref(heap_id) => match heap.get(*heap_id) {
-            HeapData::Str(s) => Some(s.as_str()),
-            HeapData::Path(p) => Some(p.as_str()),
-            _ => None,
-        },
-        _ => None,
-    }
+/// `Path.rglob(pattern, *, case_sensitive=None, recurse_symlinks=False)`.
+#[derive(FromArgs)]
+#[from_args(name = "Path.rglob", style = def)]
+struct PathRglobArgs {
+    #[from_args(static_string = "PatternAttr")]
+    pattern: Value,
+    #[from_args(kw_only, default = Value::None)]
+    case_sensitive: Value,
+    #[from_args(kw_only, default = LaxBool::new(false))]
+    recurse_symlinks: LaxBool,
+}
+
+/// `Path.walk(top_down=True, on_error=None, follow_symlinks=False)`.
+#[derive(FromArgs)]
+#[from_args(name = "Path.walk", style = def)]
+struct PathWalkArgs {
+    #[from_args(default = LaxBool::new(true))]
+    top_down: LaxBool,
+    #[from_args(default = Value::None)]
+    on_error: Value,
+    #[from_args(default = LaxBool::new(false))]
+    follow_symlinks: LaxBool,
+}
+
+/// `Path.glob()` / `Path.rglob()` on the receiver `base`: validates the
+/// pattern as `pathlib` does, then hands it to [`glob_call`].
+///
+/// `rglob` is `glob` of `'**/' + pattern`. Any non-`None` `case_sensitive` is
+/// truth-tested, and makes CPython list even literal pattern parts.
+fn path_glob(
+    base: &str,
+    pattern: Value,
+    recursive: bool,
+    case_sensitive: Value,
+    recurse_symlinks: LaxBool,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
+    defer_drop!(pattern, vm);
+    defer_drop!(case_sensitive, vm);
+    let pattern_text = match value_as_path_str(pattern, vm.heap, vm.interns) {
+        Some(text) => text.to_owned(),
+        // CPython's `bytes` handling trips over its own `str` separator.
+        None if pattern.py_type(vm) == Type::Bytes => {
+            return Err(ExcType::type_error("a bytes-like object is required, not 'str'"));
+        }
+        None => {
+            return Err(ExcType::type_error(format!(
+                "_path_splitroot_ex: path should be string, bytes or os.PathLike, not {}",
+                pattern.py_type_name(vm)
+            )));
+        }
+    };
+    let case_sensitive = match case_sensitive {
+        Value::None => None,
+        value => Some(value.py_bool(vm)?),
+    };
+    let pattern_text = if recursive && !pattern_text.starts_with('/') {
+        format!("**/{pattern_text}")
+    } else {
+        pattern_text
+    };
+    glob_call(base, &pattern_text, case_sensitive, recurse_symlinks.bool())
+}
+
+/// Extracts a string from a Value for use as a path.
+fn extract_path_string<'a>(val: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
+    value_as_path_str(val, vm.heap, vm.interns)
+        .ok_or_else(|| ExcType::type_error(format!("expected str or Path, got {}", val.py_type_name(vm))))
 }
 
 fn fold_joinpath(mut path: Path, parts: &[Value], vm: &VM<'_>) -> RunResult<Path> {
@@ -373,6 +438,7 @@ fn path_rdiv(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> Opti
 /// - Removes `.` components (e.g. `/a/./b` → `/a/b`)
 /// - Collapses consecutive slashes (e.g. `//a///b` → `/a/b`)
 /// - Removes trailing slashes (except for root "/")
+/// - Turns a path with no components (`''`, `'.'`, `'./'`) into `.`
 /// - Does NOT resolve `..` components (that requires I/O for symlinks)
 fn normalize_path(mut path: String) -> String {
     // Convert backslashes to forward slashes
@@ -380,8 +446,8 @@ fn normalize_path(mut path: String) -> String {
         path = path.replace('\\', "/");
     }
 
-    // Fast path: no `.` component and no consecutive or trailing slashes
-    if !path.contains("/.") && !path.contains("//") && !path.starts_with("./") {
+    // Fast path: non-empty, no `.` component and no consecutive or trailing slashes
+    if !path.is_empty() && !path.contains("/.") && !path.contains("//") && !path.starts_with("./") {
         // Still strip trailing slashes
         while path.len() > 1 && path.ends_with('/') {
             path.pop();
@@ -461,8 +527,8 @@ impl Path {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Path
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Path.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -507,8 +573,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        // Format like: PosixPath('/usr/bin')
-        Ok(write!(f, "PosixPath('{}')", self.get(vm.heap).path)?)
+        Ok(f.write_str(&self.get(vm.heap).repr())?)
     }
 
     /// Handles attribute calls on Path objects, including both pure methods (no I/O)
@@ -523,32 +588,41 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
             return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
         };
 
-        // Check if this is an OS method that requires host system access.
-        //
-        // Pre-flight via `is_path_os_method` lets us extract the path string
-        // and commit ownership of `args` to the builder; the builder yields
-        // an `OsFunctionCall` variant with the typed args struct populated.
         if is_path_os_method(method) {
             let path = MontyPath::new(self.get(vm.heap).as_str().to_owned());
-            // SAFETY: builder owns `args` and is responsible for dropping it
-            // on every error path; `self` is a separate heap entry that
-            // we don't transfer here.
-            return match build_path_os_call(method, path, args, vm)? {
-                Some(OsFunctionCall::Iterdir(path)) => Ok(CallResult::OsCallWithEffect {
-                    effect: PreConversionEffect::IterdirPaths {
-                        path: path.as_str().to_owned(),
-                    }
-                    .into(),
-                    call: OsFunctionCall::Iterdir(path),
-                }),
-                Some(call) => Ok(CallResult::OsCall(call)),
-                None => unreachable!("is_path_os_method gates the call"),
-            };
+            return build_path_os_call(method, path, args, vm);
         }
 
         // Pure methods (no I/O)
         let value = match method {
             StaticStrings::Cwd => class_cwd(vm, args),
+            StaticStrings::Glob => {
+                let PathGlobArgs {
+                    pattern,
+                    case_sensitive,
+                    recurse_symlinks,
+                } = PathGlobArgs::from_args(args, vm)?;
+                let base = self.get(vm.heap).as_str().to_owned();
+                return path_glob(&base, pattern, false, case_sensitive, recurse_symlinks, vm);
+            }
+            StaticStrings::Rglob => {
+                let PathRglobArgs {
+                    pattern,
+                    case_sensitive,
+                    recurse_symlinks,
+                } = PathRglobArgs::from_args(args, vm)?;
+                let base = self.get(vm.heap).as_str().to_owned();
+                return path_glob(&base, pattern, true, case_sensitive, recurse_symlinks, vm);
+            }
+            StaticStrings::Walk => {
+                let PathWalkArgs {
+                    top_down,
+                    on_error,
+                    follow_symlinks,
+                } = PathWalkArgs::from_args(args, vm)?;
+                let top = self.get(vm.heap).as_str().to_owned();
+                return walk_call(top, true, top_down.bool(), on_error, follow_symlinks.bool(), vm);
+            }
             StaticStrings::IsAbsolute => {
                 args.check_zero_args("is_absolute", vm.heap)?;
                 Ok(Value::Bool(self.get(vm.heap).is_absolute()))
@@ -562,7 +636,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
             StaticStrings::WithName => {
                 let name_val = args.get_one_arg("with_name", vm.heap)?;
                 defer_drop!(name_val, vm);
-                let name = extract_path_string(name_val, vm)?.to_owned();
+                let name = name_val.try_to_str(vm)?.to_owned();
                 let result = self
                     .get(vm.heap)
                     .with_name(&name)
@@ -572,7 +646,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
             StaticStrings::WithStem => {
                 let stem_val = args.get_one_arg("with_stem", vm.heap)?;
                 defer_drop!(stem_val, vm);
-                let stem = extract_path_string(stem_val, vm)?.to_owned();
+                let stem = stem_val.try_to_str(vm)?.to_owned();
                 let result = self
                     .get(vm.heap)
                     .with_stem(&stem)
@@ -582,7 +656,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
             StaticStrings::WithSuffix => {
                 let suffix_val = args.get_one_arg("with_suffix", vm.heap)?;
                 defer_drop!(suffix_val, vm);
-                let suffix = extract_path_string(suffix_val, vm)?.to_owned();
+                let suffix = suffix_val.try_to_str(vm)?.to_owned();
                 let result = self
                     .get(vm.heap)
                     .with_suffix(&suffix)

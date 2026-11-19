@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # `__enter__` and `__exit__` run as real pushed frames (unlike
 # `__repr__`/`__str__`), so they can suspend on external function calls and
 # resume mid-`with`. `add_ints`/`concat_strings` are external functions

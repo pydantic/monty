@@ -100,9 +100,10 @@ random.seed(True)
 assert random.random() == 0.13436424411240122
 random.seed(-42)
 assert random.random() == 0.6394267984578837
-random.seed(2**64 + 5)
-assert random.random() == 0.5105783769365112
-assert random.getrandbits(40) == 626548792571
+for seed_value in (2**64 + 5, 18446744073709551621):
+    random.seed(seed_value)
+    assert random.random() == 0.5105783769365112
+    assert random.getrandbits(40) == 626548792571
 random.seed(3.25)
 assert random.random() == 0.10626827177291942
 random.seed(-1.5)

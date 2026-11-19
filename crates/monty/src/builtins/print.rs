@@ -7,8 +7,8 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::HeapData,
     intern::StaticStrings,
+    py_value::PyValue,
     types::PyTrait,
     value::{Marker, Value},
 };
@@ -54,8 +54,10 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         defer_drop!(s, vm);
         // Resolve the `str` `Value` against the heap/interns tables directly so
         // the `&str` borrow stays disjoint from the `&mut vm.print_writer` write.
-        vm.print_writer
-            .write(stream, s.to_str_heap(vm.heap, vm.interns)?.into())?;
+        vm.print_writer.write(
+            stream,
+            s.as_str_heap(vm.heap, vm.interns).expect("py_str returns str").into(),
+        )?;
     }
 
     if let Some(end) = end_str {
@@ -115,19 +117,9 @@ struct PrintArgs {
 /// The kwarg can be None (returns None) or a string (returns Some).
 /// Raises TypeError for other types.
 fn extract_string_kwarg(value: &Value, name: &str, vm: &VM<'_>) -> RunResult<Option<String>> {
-    match value {
-        Value::None => Ok(None),
-        Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),
-        Value::Ref(id) => {
-            if let HeapData::Str(s) = vm.heap.get(*id) {
-                return Ok(Some(s.as_str().to_owned()));
-            }
-            Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("{} must be None or a string, not {}", name, value.py_type_name(vm)),
-            )
-            .into())
-        }
+    match value.py_value(vm) {
+        PyValue::None => Ok(None),
+        PyValue::Str(string) => Ok(Some(string.as_str(vm).to_owned())),
         _ => Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("{} must be None or a string, not {}", name, value.py_type_name(vm)),

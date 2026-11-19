@@ -1,7 +1,11 @@
 //! Host-supplied results fed back into a suspended run:
 //! [`NameLookupResult`] and [`ExtFunctionResult`].
 
-use crate::{exceptions::MontyException, object::MontyObject};
+use crate::{
+    exceptions::{ExcType, MontyException},
+    import::ModuleFile,
+    object::MontyObject,
+};
 /// Result of a name lookup from the host.
 ///
 /// When the VM encounters an unresolved name (or a lazy attribute on a
@@ -55,8 +59,24 @@ pub enum ExtFunctionResult {
     /// snapshot. It is used to track the pending future so it can be resolved
     /// later via `ResolveFutures::resume()`.
     Future(u32),
-    /// The function was not found, should result in a `NameError` exception.
+    /// Raises `NameError`, or `ModuleNotFoundError` for an `import` call.
     NotFound(String),
+    /// Answers an `import` call with the module's `.py` file, which the sandbox
+    /// runs as the module. Only valid for an import with a non-empty search path.
+    ModuleFile(ModuleFile),
+}
+
+impl ExtFunctionResult {
+    /// The `NameError` a [`NotFound`](Self::NotFound) answer raises for
+    /// `function_name`, for hosts that must deliver it as an exception
+    /// (a future settles only with a value or an exception).
+    #[must_use]
+    pub fn not_found_exception(function_name: &str) -> MontyException {
+        MontyException::new(
+            ExcType::NameError,
+            Some(format!("name '{function_name}' is not defined")),
+        )
+    }
 }
 
 impl From<MontyObject> for ExtFunctionResult {

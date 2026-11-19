@@ -71,9 +71,10 @@ fix.
         `docs/limitations/index.md`
     - the start-latency numbers — `scripts/startup_latency_chart.py` (`ROWS`, which renders
         `docs/img/startup-latency.svg`), `docs/index.md`, `docs/alternatives.md`, `README.md`
-    - default limits (1000 recursion frames, 100 MB per-mount memory, 10 MiB print
+    - default limits (1000 recursion frames, 10 MiB print
         collectors, 1s duration grace) — `limitations/resource_limits.md`,
-        `docs/resource-limits.md`, the binding docstrings
+        `docs/resource-limits.md`, the binding docstrings; the per-mount memory default
+        is stated only in `monty_fs::DEFAULT_MEMORY_USAGE_LIMIT`, so flag any copy of its value
     - mount modes and defaults — `limitations/filesystem.md`, `docs/filesystem.md`, the
         `MountDir` docstrings in `_monty.pyi` and `crates/monty-js/ts/mount.ts`
 
@@ -101,7 +102,7 @@ fix.
     list will not appear on the site.
 
 1. **Security framing is preserved.** Where the change touches mounts, host callbacks,
-    the worker boundary, resource limits or the WebSocket transport, `docs/security.md`
+    the worker boundary, resource limits or the remote transport, `docs/security.md`
     must still state the caveat honestly. Watch for a guarantee that has quietly become
     stronger in the prose than it is in the code.
 

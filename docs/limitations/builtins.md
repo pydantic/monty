@@ -14,7 +14,7 @@ Python.
 
 ## Implemented type constructors (also builtins)
 
-`bool`, `bytes`, `dict`, `float`, `frozenset`, `int`, `list`, `range`,
+`bool`, `bytes`, `complex`, `dict`, `float`, `frozenset`, `int`, `list`, `range`,
 `set`, `slice`, `str`, `tuple`. Exception classes (`ValueError`,
 `TypeError`, etc.) are also names in the builtin namespace.
 
@@ -25,14 +25,14 @@ These raise `NameError`:
 - **Code objects and imports**: `compile`, `__import__`.
 - **Namespace introspection**: `globals`, `vars`, `dir`.
 - **Interactive**: `input`, `breakpoint`, `help`.
-- **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`,
-    `super`. (`@property` on functions is not recognized; use a method.)
-- **Construction / coercion**: `bytearray`, `complex`, `memoryview`,
-    `object`, `ascii`.
-- **Other**: `callable`, `delattr`, `issubclass`, `aiter`, `anext`.
+- **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`.
+    (`@property` on functions is not recognized; use a method.)
+- **Construction / coercion**: `bytearray`, `memoryview`, `object`, `ascii`.
+- **Inheritance**: `super`; call the base explicitly (`Base.__init__(self, ...)`).
+- **Other**: `callable`, `delattr`, `aiter`, `anext`.
 
-`super()` is the biggest practical omission: with no class inheritance either
-(see [classes.md](classes.md)), there is no inheritance mechanism at all.
+`object` exists as the root class but cannot be instantiated, and `issubclass()`
+works on classes; see [classes.md](classes.md#inheritance).
 
 ## Behavioural divergences
 
@@ -43,9 +43,13 @@ These raise `NameError`:
     `AttributeError`, so `[1].append`, `'a'.upper`, `{}.get`, `dict.fromkeys`
     and `list.__class_getitem__` cannot be assigned, passed as a callback or
     reached through `getattr`. Call them directly (`list.__class_getitem__(int)`).
-- **`hash(x)`** — Monty hashes `str`, `bytes`, `float` and every container with
-    its own algorithm, so the values differ from CPython's. Only `bool` and
-    small `int` agree: an `int` hashes to itself, which is what CPython does
+- **Large integer literal identity** — separate occurrences of the same literal outside the `i64` range are not
+    deduplicated, so `a = 18446744073709551616; b = 18446744073709551616; a is b` is `False` where CPython may reuse a
+    single constant and return `True`.
+    Repeated loads of one literal share its identity; use `==` to compare numeric values.
+- **`hash(x)`** — Monty hashes `str`, `bytes`, `float`, `complex` and every container with
+    its own algorithm, so the values differ from CPython's. Only `bool`,
+    small `int`, and a `float` or `complex` equal to one of them agree: an `int` hashes to itself, which is what CPython does
     while `abs(x) < 2**61 - 1`, but CPython reduces modulo `2**61 - 1` from
     there up (`hash(2**62)` is `2` in CPython, `4611686018427387904` in Monty)
     and Monty hashes an `int` too large for an `i64` differently again. Monty's
@@ -53,23 +57,34 @@ These raise `NameError`:
     no hash randomisation), but never persist one or compare one against a
     CPython hash. `sys.hash_info` is not exposed, so the parameters CPython
     publishes are unavailable (see [sys.md](sys.md)).
-- **`repr` of a dict being mutated by its own elements** — Monty iterates the
-    live entries like CPython, but deletion compacts Monty's dense entry storage
-    where CPython leaves a tombstone in place: a key deleted from inside a user
-    `__repr__` running *during that dict's repr* shifts later entries down, so
-    the entry after the deleted one can be skipped from the output where CPython
-    would still print it. Insertions during repr match CPython (appended and
-    printed), as do list (live length, mid-repr pops truncate / appends extend),
-    `set`, `collections.deque` and `collections.Counter` (all snapshot, like
-    CPython).
-- **copying a dict or rebuilding a set re-hashes the keys** — CPython copies the
-    hash table, so `d.copy()`, `dict(d)`, `{**d}`, `defaultdict.copy()`,
-    `Counter.copy()`, `set(s)` and `frozenset(s)` never call a key's `__hash__`.
-    Monty re-inserts each element, so a key with a custom `__hash__` sees it
+- **a set iterated while it is mutated may yield a newly added element** —
+    Monty's sets keep insertion order, so an element added during iteration is
+    appended after the cursor and gets yielded. CPython places it by hash, which
+    can put it behind the cursor and out of that walk's reach. Both engines raise
+    `RuntimeError: Set changed size during iteration` when the size changes; this
+    is only about which walk sees a same-size replacement.
+    Monty also stops a set walk once it has yielded the set's starting length,
+    where CPython keeps going: replacing each element as it is visited yields
+    every replacement in CPython but only the original elements in Monty.
+- **`is` and `id()` on short strings** — equal strings of 2–15 UTF-8 bytes stored
+    inline share identity by content. Separate runtime results such as `bin(4)` can therefore
+    compare identical and return the same `id()`, where CPython gives those
+    results distinct identities.
+- **Some dict copies re-hash the keys** — CPython copies the hash table for
+    `{**d}` and `copy.copy(d)` without calling a key's `__hash__`.
+    Monty re-inserts each pair, so a key with a custom `__hash__` sees it
     called again — observable through a counter or other side effect, and a
-    `__hash__` that raises makes the copy fail where CPython's succeeds. Only
-    `set.copy()` clones the storage directly and matches CPython. `copy.copy`
-    inherits this for dicts (see [copy.md](copy.md)).
+    `__hash__` that raises makes the copy fail where CPython's succeeds.
+    `dict(d)`, `defaultdict(factory, d)`, `d.copy()` and `Counter.copy()` reuse
+    stored hashes and run no key callbacks while copying entries.
+    An empty Counter receiving a dict's counts also uses this path; keyword
+    arguments are applied afterward. See [copy.md](copy.md) for `copy.copy`.
+    `set.copy()` clones the storage directly, and `frozenset(f)` returns `f`
+    unchanged when `f` is already a frozenset; neither re-hashes its elements.
+- **Equality callbacks while copying dicts** — Monty's cached-hash copies
+    preserve live entries without calling key `__eq__` methods.
+    CPython may compare keys when rebuilding a sparse table after deletions;
+    such a callback can raise or change which keys survive in the copy there.
 - **dict/set lookups under a mutating `__eq__`** — like CPython, a lookup
     (`in`, `d[k]`, `set.remove`, …) whose user `__eq__` mutates the container
     keeps probing rather than raising, and a mutation that only *adds* colliding
@@ -82,7 +97,7 @@ These raise `NameError`:
     on *every* comparison never finishes in either engine; under a duration
     limit Monty raises `TimeoutError`. No mutation pattern can panic or corrupt either
     engine.
-- **Set algebra under a mutating `__eq__`** — `-`, `&`, `^` and their method
+- **Set algebra under a mutating `__eq__`** — `-`, `&`, `^`, in-place intersection (`&=`), and their method
     forms walk one of the two sets while user `__eq__` code can run. Monty
     raises `RuntimeError: Set changed size during iteration` if that code adds
     or removes an element from the set being walked, where CPython carries on
@@ -96,23 +111,20 @@ These raise `NameError`:
     `s.isdisjoint(t)` is `False` in Monty, which keeps the comparison that
     matched, and `True` in CPython, which restarts the probe and finds the set
     empty.
+    In-place `|=`, `-=`, `^=`, and `&=` also snapshot their right operand before mutation.
+    Changes to that operand made by user `__eq__` are not observed.
 - **Dict-view set operators re-hash the view's own keys** — `d.keys() - s`,
-    `|`, `^`, `isdisjoint` and the reflected forms collect those keys through a
+    `|`, `^` and their reflected forms collect those keys through a
     live, resize-checked walk that calls `__hash__` on each one. CPython probes
     with each key's stored hash and mostly does not call it at all. So a
     `__hash__` — or a colliding `__eq__` — that resizes the dict raises
     `RuntimeError: dictionary changed size during iteration` in Monty where
     CPython completes, as in `d.keys() - s`; CPython raises too wherever its own
     walk observes the change, as in `s - d.keys()` and `d.items() - s`.
-    `d.keys() & s` diverges the other way: Monty always walks the other operand
-    and probes the live dict, so the view's keys are never hashed and the
-    intersection completes, while CPython walks the view whenever the dict is no
-    larger than the other operand — hashing each of its keys into that operand —
-    and so raises where Monty returns a result.
-    The operand that is *not* the view is snapshotted before the operation
-    begins, so mutating that one is never observed. Absent mutation every result
-    agrees. Set-to-set operators do not re-hash at all, and dict-view equality
-    (`d.keys() == s`) raises exactly where CPython does.
+    The operand that is *not* the view is snapshotted before these operators
+    begin, so mutating that one is never observed. Absent mutation every result
+    agrees. `&` and `isdisjoint` walk and probe the same operands as CPython, set-to-set operators do not
+    re-hash at all, and dict-view equality (`d.keys() == s`) raises exactly where CPython does.
 - **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager, not lazy** —
     each drains its source and returns a `list`, so `type(enumerate(x)).__name__`
     is `'list'` rather than `'enumerate'`. Observable several ways: a
@@ -142,37 +154,28 @@ These raise `NameError`:
 - **`int(x, base=10)`** — string/bytes parsing accepts ASCII digits only;
     CPython also accepts non-ASCII Unicode decimal digits (`int('١٢')` == 12),
     which Monty rejects with `invalid literal for int() with base 10`.
-- **`bytes(source)`** — an iterable of ints is not supported: CPython's
-    `bytes([65, 66])` == `b'AB'`, Monty raises `TypeError: cannot convert 'list' object to bytes`. The int /
-    str-with-encoding / bytes source forms
-    all work. A count above `i64` (`bytes(2**70)`) raises the same shape of `TypeError`
-    (`cannot convert 'int' object to bytes`), not CPython's
-    `OverflowError: cannot fit 'int' into an index-sized integer`.
-- **`slice`** — `start`, `stop` and `step` are readable, but `slice.indices(length)` is not implemented and
-    raises `AttributeError: 'slice' object has no attribute 'indices'`.
+- **`float(x)`** — string parsing accepts ASCII digits only; CPython also accepts Unicode decimal digits
+    (`float('١.٥')` == 1.5), which Monty rejects with `could not convert string to float`.
+- **`slice`** — slice bounds and the `length` argument to `slice.indices(length)` are saturated to `i64::MIN`/`i64::MAX` when outside the `i64` range; sequence lengths are represented as `usize`.
 - **`isinstance(obj, T)`** — `T` must be a built-in type (`int`, `str`,
     `list`, ...), a built-in exception class, a sandbox-defined class (see
     [classes.md](classes.md)), a `|` union of those (see [typing.md](typing.md)),
     or a tuple of those. Passing a host-supplied dataclass / namedtuple as the
     second argument raises `TypeError`.
 - **`iter()`** — see [iter.md](iter.md) for iterator and `iter(callable, sentinel)` divergences.
-- **`pow(base, exp, mod)`** — the three-argument form requires all integers and
-    rejects negative exponents with `ValueError` instead of computing a modular
-    inverse. Non-modular exponents whose result cannot be materialized raise
+- **`pow(base, exp, mod)` with integer operands** rejects negative exponents with `ValueError`
+    instead of computing a modular inverse. Non-modular exponents whose result cannot be materialized raise
     `OverflowError` (see [resource_limits.md](resource_limits.md)).
-- **`pow(base, exp)` and `**` with a negative float base and a fractional
-    exponent** — gives `nan` where CPython returns a `complex` (Monty has no
-    complex type). Overflow raises `OverflowError` like CPython, always worded
+- **`pow(base, exp)` and `**` with float operands and a real result** — overflow raises
+    `OverflowError` like CPython, always worded
     `(34, 'Numerical result out of range')` (glibc's `strerror(ERANGE)`; CPython
     on macOS and Windows says `(34, 'Result too large')`), and `exc.args` is that
     text as one string rather than CPython's `(34, '...')` tuple.
 - **`sorted(iterable, *, key=None, reverse=False)`** — `key` and `reverse`
     must be passed by keyword; positional forms raise `TypeError`.
-- **`round(n, ndigits)`** — `ndigits` values outside the i64 range are
-    clamped by sign. For floats this matches CPython (which clamps to
-    `Py_ssize_t`); for an int `n` with a hugely negative `ndigits`, CPython
-    tries to materialise `10**-ndigits` and dies with `MemoryError` where
-    Monty returns `0` immediately.
+- **`round(n, ndigits)` for an int `n`** — `ndigits` values outside the i64 range are clamped by sign.
+    For a hugely negative `ndigits`, CPython tries to materialise `10**-ndigits` and dies with `MemoryError`
+    where Monty returns `0` immediately.
 - **`print`** — writes via the host print callback. `file=`, `flush=` are
     not honoured; `sep=` and `end=` are.
 - **Identity of host-supplied callables** — host functions passed in as inputs

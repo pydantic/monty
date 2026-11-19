@@ -3,18 +3,12 @@
 // wasm bundle imports `mount.ts` (via `session.ts`) but has no addon.
 
 import { NativeMountDir } from '../native-addon.js'
-import {
-  DEFAULT_MEMORY_USAGE_LIMIT,
-  NATIVE_MOUNT,
-  VALID_MODES,
-  type MountDirMode,
-  type MountDirOptions,
-} from './mount.js'
+import { NATIVE_MOUNT, VALID_MODES, type MountDirMode, type MountDirOptions } from './mount.js'
 
 /**
  * Mounts a real host directory into the sandbox at a virtual path.
  * Retained overlay data and filesystem results share a per-mount memory
- * budget, `memoryUsageLimit` (100 MB by default).
+ * budget, `memoryUsageLimit` (monty-fs's `DEFAULT_MEMORY_USAGE_LIMIT` by default).
  *
  * Mounts passed to one feed must have distinct virtual paths and cover
  * disjoint host directories: overlap (the same directory, or one inside the
@@ -60,8 +54,8 @@ export class MountDir {
     this.virtualPath = options.virtualPath
     this.mode = mode
     this.writeBytesLimit = options.writeBytesLimit ?? null
-    this.memoryUsageLimit = options.memoryUsageLimit ?? DEFAULT_MEMORY_USAGE_LIMIT
-    if (!Number.isSafeInteger(this.memoryUsageLimit) || this.memoryUsageLimit < 0) {
+    const { memoryUsageLimit } = options
+    if (memoryUsageLimit !== undefined && (!Number.isSafeInteger(memoryUsageLimit) || memoryUsageLimit < 0)) {
       throw new Error('memoryUsageLimit must be a non-negative safe integer')
     }
     // Opens the directory, so a bad host path throws here rather than at the
@@ -71,9 +65,11 @@ export class MountDir {
       virtualPath: this.virtualPath,
       hostPath: this.hostPath,
       mode: this.mode,
-      memoryUsageLimit: this.memoryUsageLimit,
+      ...(memoryUsageLimit !== undefined ? { memoryUsageLimit } : {}),
       ...(this.writeBytesLimit !== null ? { writeBytesLimit: this.writeBytesLimit } : {}),
     })
+    // The native side applies the default, so it is defined once, in Rust.
+    this.memoryUsageLimit = this[NATIVE_MOUNT].memoryUsageLimit
   }
 
   /** Releases the open host directory. Later feeds using this mount throw;

@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 def foo():
     return add_ints(1, 2)
 

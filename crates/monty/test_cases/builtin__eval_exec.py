@@ -158,13 +158,47 @@ try:
     assert False, 'expected SyntaxError'
 except SyntaxError as e:
     assert str(e).endswith('(<string>, line 1)')
-# leading blank lines are skipped by eval but still counted in the line number
+# eval skips leading spaces and tabs only; line numbers count from the start of the source
 for source, line in [('\n)', 2), ('\n\n  )', 3), ('  \n\n*', 3)]:
     try:
         eval(source)
         assert False, 'expected SyntaxError'
     except SyntaxError as e:
         assert str(e).endswith(f'(<string>, line {line})')
+# an indented line after a newline, and other whitespace, are not stripped
+for source, line in [('\n\n  1', 3), ('  \r\n  1', 2), ('\xa01', 1), ('\x0b1', 1)]:
+    try:
+        eval(source)
+        assert False, 'expected SyntaxError'
+    except SyntaxError as e:
+        assert str(e).endswith(f'(<string>, line {line})')
+assert eval('\x0c1') == 1
+assert eval('\t\n1') == 1
+assert eval('  #c\n1') == 1
+assert eval(' \t \r\n2') == 2
+# a last line of only indentation, with no newline after it, is an unexpected indent
+for source, line in [('1\n  ', 2), ('1\n\t', 2), ('(1\n  )\n  ', 3), ('1\r\n  ', 2), ('1\n\x0c ', 2)]:
+    try:
+        eval(source)
+        assert False, 'expected SyntaxError'
+    except SyntaxError as e:
+        assert str(e).endswith(f'(<string>, line {line})')
+assert eval('1\n  \n') == 1
+assert eval('1\n  #c') == 1
+assert eval('1\n \x0c') == 1
+assert eval('1\\\n  ') == 1
+# a byte-order mark is an invalid character in a snippet string
+for source in ['\ufeff1', '\ufeff\n1', ' \ufeff1']:
+    try:
+        eval(source)
+        assert False, 'expected SyntaxError'
+    except SyntaxError as e:
+        assert str(e) == 'invalid non-printable character U+FEFF (<string>, line 1)'
+try:
+    exec('\ufeffx = 1')
+    assert False, 'expected SyntaxError'
+except SyntaxError as e:
+    assert str(e) == 'invalid non-printable character U+FEFF (<string>, line 1)'
 
 
 # === async functions and methods inside snippets still accept await ===

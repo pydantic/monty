@@ -49,6 +49,10 @@ export interface TimedeltaNode {
   seconds: number
   microseconds: number
 }
+export interface ComplexNode {
+  real: number
+  imag: number
+}
 export interface TimezoneNode {
   offsetSeconds: number
   name?: string
@@ -74,6 +78,11 @@ export interface ClassInstanceNode {
   instanceId: string
   attrs: Array<NodePair>
 }
+export interface ModuleNode {
+  name: string
+  id: string
+  attrs: Array<NodePair>
+}
 export interface FunctionNode {
   name: string
   docstring?: string
@@ -86,6 +95,7 @@ export type ValueNode =
   | ValueNodeInteger
   | ValueNodeBigint
   | ValueNodeFloat
+  | ValueNodeComplex
   | ValueNodeText
   | ValueNodeBytes
   | ValueNodeListValue
@@ -109,6 +119,8 @@ export type ValueNode =
   | ValueNodeFunction
   | ValueNodeRepr
   | ValueNodeCycle
+  | ValueNodeModule
+  | ValueNodeDecimal
 export interface ValueNodeEllipsis {
   tag: 'ellipsis'
 }
@@ -133,6 +145,10 @@ export interface ValueNodeBigint {
 export interface ValueNodeFloat {
   tag: 'float'
   val: number
+}
+export interface ValueNodeComplex {
+  tag: 'complex'
+  val: ComplexNode
 }
 export interface ValueNodeText {
   tag: 'text'
@@ -224,6 +240,14 @@ export interface ValueNodeRepr {
 }
 export interface ValueNodeCycle {
   tag: 'cycle'
+  val: string
+}
+export interface ValueNodeModule {
+  tag: 'module'
+  val: ModuleNode
+}
+export interface ValueNodeDecimal {
+  tag: 'decimal'
   val: string
 }
 export interface Arena {
@@ -348,15 +372,7 @@ export interface OsPolicy {
  * ## `"github"`
  */
 export type TypeCheckFormat =
-  | 'full'
-  | 'concise'
-  | 'azure'
-  | 'json'
-  | 'json-lines'
-  | 'rdjson'
-  | 'pylint'
-  | 'gitlab'
-  | 'github'
+  'full' | 'concise' | 'azure' | 'json' | 'json-lines' | 'rdjson' | 'pylint' | 'gitlab' | 'github'
 export interface ConfigureRequest {
   scriptName: string
   limits?: ResourceLimits
@@ -379,12 +395,17 @@ export interface RaisedError {
   excType: string
   message: string
 }
+export interface ModuleFile {
+  path: string
+  source: string
+}
 export type CallResult =
   | CallResultReturnValue
   | CallResultError
   | CallResultPendingFuture
   | CallResultNotFound
   | CallResultNotHandled
+  | CallResultModuleFile
 export interface CallResultReturnValue {
   tag: 'return-value'
   val: number
@@ -403,6 +424,10 @@ export interface CallResultNotFound {
 }
 export interface CallResultNotHandled {
   tag: 'not-handled'
+}
+export interface CallResultModuleFile {
+  tag: 'module-file'
+  val: ModuleFile
 }
 export interface ResumeCallRequest {
   callId: number
@@ -549,6 +574,7 @@ export type Event =
   | EventOk
   | EventFatalError
   | EventShutdown
+  | EventSessionRefused
 export interface EventPrint {
   tag: 'print'
   val: PrintEvent
@@ -595,6 +621,10 @@ export interface EventFatalError {
 export interface EventShutdown {
   tag: 'shutdown'
   val: Uint8Array | undefined
+}
+export interface EventSessionRefused {
+  tag: 'session-refused'
+  val: string
 }
 export interface DispatchResult {
   status: Status

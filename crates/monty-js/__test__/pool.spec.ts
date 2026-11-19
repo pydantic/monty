@@ -64,7 +64,7 @@ test('shutdown during Configure preserves the fatal diagnostic', async () => {
       })),
     { instanceOf: TransportCrashedError },
   )
-  t.is(error.message, 'RuntimeError: configuration failed')
+  t.is(error.message, 'configuration failed')
   t.is(error.exitStatus, 'exit code: 7')
 })
 
@@ -211,7 +211,7 @@ test('feed after session close rejects', async () => {
   t.is(error.message, 'the session is closed — check out a new one')
 })
 
-test.each([undefined, 0xffffffff])(
+test.each([undefined, null, 0xffffffff])(
   'workers are reused across checkouts (recycle count %s)',
   async (maxCheckoutsPerWorker) => {
     await using pool = await Monty.create({ maxProcesses: 1, maxCheckoutsPerWorker })
@@ -242,6 +242,23 @@ test.each([0, 1])('maxCheckoutsPerWorker %s recycles the worker', async (maxChec
   const second = await pool.checkout()
   t.not(second.workerId, id)
   await second.close()
+})
+
+test.each([
+  [undefined, true],
+  [null, false],
+])('recycle count %s: worker replaced after 1000 checkouts = %s', async (maxCheckoutsPerWorker, recycled) => {
+  await using pool = await Monty.create({ maxProcesses: 1, maxCheckoutsPerWorker })
+  const ids = new Set<number | undefined>()
+  for (let i = 0; i < 1000; i++) {
+    const session = await pool.checkout()
+    ids.add(session.workerId)
+    await session.close()
+  }
+  t.is(ids.size, 1)
+  const last = await pool.checkout()
+  t.is(ids.has(last.workerId), !recycled)
+  await last.close()
 })
 
 test('maxMemory leaves normal work alone', async () => {
@@ -305,7 +322,8 @@ test('exhausted pool times out the checkout', async () => {
   await using pool = await Monty.create({ maxProcesses: 1, checkoutTimeout: 0.2 })
   const held = await pool.checkout()
   try {
-    const error = await t.throwsAsync(() => pool.checkout())
+    const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: DOMException })
+    t.is(error.name, 'TimeoutError')
     t.is(error.message, 'no monty worker became available within the checkout timeout')
   } finally {
     await held.close()
@@ -386,7 +404,7 @@ test('requestTimeout kills a wedged worker', async () => {
   clearTimeout(timer)
   t.true(hostResponsive)
   t.true(error.timedOut)
-  t.is(error.message, 'RuntimeError: monty worker killed after exceeding request timeout of 500ms')
+  t.is(error.message, 'monty worker killed after exceeding request timeout of 500ms')
   await t.throwsAsync(() => session.feedRun('1'), { instanceOf: MontyCrashedError })
   await using fresh = await pool.checkout()
   t.is(await fresh.feedRun('6 * 7'), 42)

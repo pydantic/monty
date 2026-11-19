@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # External calls in comparison expressions
 
 # External call on left side of comparison

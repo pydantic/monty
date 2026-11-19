@@ -93,9 +93,9 @@ fn an_os_call_after_a_nested_dunder_call_points_at_the_call() {
 fn a_call_inside_eval_points_into_the_string() {
     let call = start("eval('1 + fetch()')").into_function_call().unwrap();
     assert_eq!(covered(&call.position, "<string>", "1 + fetch()"), "fetch()");
-    // offsets index the eval text after its leading whitespace
+    // offsets index the whole eval text, leading whitespace included
     let call = start("eval('  \\t1 + fetch()')").into_function_call().unwrap();
-    assert_eq!(covered(&call.position, "<string>", "1 + fetch()"), "fetch()");
+    assert_eq!(covered(&call.position, "<string>", "  \t1 + fetch()"), "fetch()");
 }
 
 #[test]
@@ -113,6 +113,7 @@ fn a_call_from_an_earlier_feed_points_into_that_snippet() {
     let bytes = dump(
         "repl.py",
         None,
+        &[],
         SessionRef::Suspended(&ReplProgress::FunctionCall(call)),
     )
     .unwrap();
@@ -129,7 +130,7 @@ fn a_call_from_an_earlier_feed_points_into_that_snippet() {
 fn a_one_shot_dump_carries_the_position() {
     let code = "value = fetch()";
     let progress = start(code);
-    let bytes = dump("test.py", None, SessionRef::Running(&progress)).unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
     let Session::Running(loaded) = Dump::load(&bytes).unwrap().state else {
         panic!("dumped a running session, loaded something else");
     };

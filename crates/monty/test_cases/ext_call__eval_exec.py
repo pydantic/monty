@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # === external functions are reachable from the implicit forms ===
 assert eval('add_ints(1, 2)') == 3
 

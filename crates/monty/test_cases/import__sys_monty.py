@@ -1,4 +1,6 @@
-# xfail=cpython
+# /// monty
+# xfail = ['cpython']
+# ///
 # Tests for Monty-specific sys module values
 
 import sys
@@ -54,6 +56,7 @@ assert tuple(name for name in sys.builtin_module_names if name != 'gc') == (
     'asyncio',
     'base64',
     'binascii',
+    'bisect',
     'collections',
     'dataclasses',
     'datetime',
@@ -102,4 +105,4 @@ for missing in ('hash_info', 'int_info', 'thread_info', 'ps1', 'ps2'):
         getattr(sys, missing)
         assert False, f'expected sys.{missing} to raise AttributeError'
     except AttributeError as exc:
-        assert str(exc) == f"'module' object has no attribute '{missing}'"
+        assert str(exc) == f"module 'sys' has no attribute '{missing}'"

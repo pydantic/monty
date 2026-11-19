@@ -1,30 +1,15 @@
 //! Implementation of the round() builtin function.
 
-use num_bigint::BigInt;
-use num_integer::Integer;
-use num_traits::Pow;
-
 use crate::{
-    args::{ArgValues, FromArgs, is_long_int},
+    args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
-    heap::Heap,
-    types::LongInt,
+    exception_private::{ExcType, ExcTypeExt, RunResult},
+    types::PyTrait,
     value::Value,
 };
 
-pub fn normalize_bool_to_int(value: Value) -> Value {
-    match value {
-        Value::Bool(b) => Value::Int(i64::from(b)),
-        other => other,
-    }
-}
-
-/// Argument shape for `round(number, ndigits=None)` — CPython parses it with
-/// `PyArg_ParseTupleAndKeywords("O|O:round")`, so both arguments are
-/// keyword-capable, missing-argument errors carry `(pos N)` (`c_named`), and
-/// the total pre-count reports `round() takes at most 2 arguments (3 given)`.
+/// CPython's keyword-capable `round(number, ndigits=None)` argument shape.
 #[derive(FromArgs)]
 #[from_args(name = "round", style = c_named, at_most_total)]
 struct RoundArgs {
@@ -33,174 +18,17 @@ struct RoundArgs {
     ndigits: Value,
 }
 
-/// Implementation of the round() builtin function.
-///
-/// Rounds a number to a given precision in decimal digits.
-/// If ndigits is omitted or None, returns the nearest integer.
-/// Uses banker's rounding (round half to even).
+/// Rounds through `__round__`, leaving precision coercion to the receiving type.
 pub fn builtin_round(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let RoundArgs { number, ndigits } = RoundArgs::from_args(args, vm)?;
-    let number = normalize_bool_to_int(number);
     defer_drop!(number, vm);
     defer_drop!(ndigits, vm);
-
-    // Determine the number of digits (None means round to integer)
-    let digits: Option<i64> = match ndigits {
-        Value::None => None,
-        Value::Int(n) => Some(*n),
-        Value::Bool(b) => Some(i64::from(*b)),
-        // A genuine int wider than i64: clamp by sign — the saturating paths
-        // below then return the number unchanged (huge positive) or 0 / ±0.0
-        // (huge negative), matching CPython's `Py_ssize_t` clamp for floats.
-        v if is_long_int(v, vm) => Some(if v.long_int_is_negative(vm) { i64::MIN } else { i64::MAX }),
-        v => {
-            let type_name = v.py_type_name(vm);
-            return Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("'{type_name}' object cannot be interpreted as an integer"),
-            )
-            .into());
-        }
+    let ndigits = if matches!(ndigits, Value::None) {
+        None
+    } else {
+        Some(ndigits)
     };
-
-    match number {
-        Value::Int(n) => {
-            if let Some(d) = digits {
-                if d >= 0 {
-                    // Positive or zero digits: return the integer unchanged
-                    Ok(Value::Int(*n))
-                } else {
-                    // Negative digits: round to the nearest multiple of 10^|d|,
-                    // half to even, exactly in integers — f64 division corrupts
-                    // large values and an i64 write-back multiply can overflow.
-                    // |n| < 10^19, so any |d| >= 20 rounds to 0, and the i128
-                    // intermediates stay far below their limits.
-                    let result: i128 = match u32::try_from(d.unsigned_abs()) {
-                        Ok(exp @ ..=19) => {
-                            let factor = 10_i128.pow(exp);
-                            let n = i128::from(*n);
-                            let mut q = n / factor;
-                            let r2 = (n % factor).abs() * 2;
-                            if r2 > factor || (r2 == factor && q % 2 != 0) {
-                                q += if n < 0 { -1 } else { 1 };
-                            }
-                            q * factor
-                        }
-                        _ => 0,
-                    };
-                    // Rounding up can cross i64::MAX (e.g. round(2**63 - 1, -1)).
-                    Ok(match i64::try_from(result) {
-                        Ok(i) => Value::Int(i),
-                        Err(_) => LongInt::new(BigInt::from(result)).into_value(vm.heap),
-                    })
-                }
-            } else {
-                // No digits specified: return the integer unchanged
-                Ok(Value::Int(*n))
-            }
-        }
-        Value::Float(f) => {
-            if let Some(d) = digits {
-                // Round to `d` decimal places using banker's rounding.
-                Ok(Value::Float(round_float_to_digits(*f, d)))
-            } else {
-                LongInt::value_from_f64(bankers_round(*f), vm.heap)
-            }
-        }
-        _ if let Some(n) = number.as_long_int(vm) => match digits {
-            Some(d) if d < 0 => Ok(round_to_tens(n, d.unsigned_abs(), vm.heap)),
-            // Rounding to a whole number of places leaves an int unchanged.
-            _ => Ok(number.clone_with_heap(vm.heap)),
-        },
-        _ => {
-            let type_name = number.py_type_name(vm);
-            Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("type {type_name} doesn't define __round__ method"),
-            )
-            .into())
-        }
-    }
-}
-
-/// Rounds an integer to the nearest multiple of `10**k`, half to even, exactly in integers
-/// like CPython's `int.__round__`.
-fn round_to_tens(n: &BigInt, k: u64, heap: &Heap) -> Value {
-    // `10**k` exceeds `|n|` once `k` passes its decimal digit count, so the result is 0.
-    let digit_bound = n.bits().saturating_mul(30_103) / 100_000 + 1;
-    if k > digit_bound {
-        return Value::Int(0);
-    }
-    let factor = Pow::pow(BigInt::from(10u8), k);
-    let (quotient, remainder) = n.div_mod_floor(&factor);
-    let twice_remainder = remainder << 1u32;
-    let quotient = if twice_remainder > factor || (twice_remainder == factor && quotient.is_odd()) {
-        quotient + 1
-    } else {
-        quotient
-    };
-    LongInt::new(quotient * factor).into_value(heap)
-}
-
-/// Implements banker's rounding (round half to even).
-///
-/// This is the rounding mode used by Python's `round()` function.
-/// When the value is exactly halfway between two integers, it rounds to the nearest even integer.
-fn bankers_round(value: f64) -> f64 {
-    let floor = value.floor();
-    let frac = value - floor;
-
-    if frac < 0.5 {
-        floor
-    } else if frac > 0.5 {
-        floor + 1.0
-    } else if floor % 2.0 == 0.0 {
-        floor
-    } else {
-        floor + 1.0
-    }
-}
-
-/// Rounds a finite float to a given number of decimal digits using banker's rounding.
-///
-/// This is used for `round(x, ndigits)` where Python always returns a float.
-///
-/// For large `ndigits` values where scaling by `10**ndigits` would overflow/underflow `f64`,
-/// CPython returns either the original value (large positive `ndigits`) or a signed zero
-/// (large negative `ndigits`). We mirror that behavior and also preserve the sign of `0.0`.
-fn round_float_to_digits(value: f64, digits: i64) -> f64 {
-    if !value.is_finite() {
-        return value;
-    }
-
-    let rounded = if digits >= 0 {
-        let Ok(exp) = i32::try_from(digits) else {
-            return value;
-        };
-        let multiplier = 10_f64.powi(exp);
-        if !multiplier.is_finite() {
-            return value;
-        }
-        let scaled = value * multiplier;
-        if !scaled.is_finite() {
-            return value;
-        }
-        bankers_round(scaled) / multiplier
-    } else {
-        let Ok(exp) = i32::try_from(digits) else {
-            return 0.0_f64.copysign(value);
-        };
-        let multiplier = 10_f64.powi(exp);
-        if multiplier == 0.0 {
-            return 0.0_f64.copysign(value);
-        }
-        let scaled = value * multiplier;
-        bankers_round(scaled) / multiplier
-    };
-
-    if rounded == 0.0 {
-        0.0_f64.copysign(value)
-    } else {
-        rounded
-    }
+    number
+        .py_round_impl(ndigits, vm)?
+        .ok_or_else(|| ExcType::type_error_missing_numeric_dunder(&number.py_type_name(vm), "__round__"))
 }

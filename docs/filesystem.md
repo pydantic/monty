@@ -82,6 +82,8 @@ Pass `cwd=` to switch to another absolute virtual path before a feed.
 Custom `os` callbacks in Python and JavaScript receive normalized absolute paths, with `.` and `..` collapsed.
 For example, `os.listdir()` passes `/data` when the cwd is `/data`, and `../secret` becomes `/secret`.
 Both rename arguments are normalized.
+An empty string path never reaches a callback or mount: `os.stat('')` and the like raise `FileNotFoundError` in the interpreter, and `os.path.exists('')` returns `False`.
+`Path('')` is `Path('.')`, as in CPython, so `Path('').exists()` checks the working directory.
 Check access rules against complete path components: a string prefix check can confuse `/data` with `/database`.
 Use `MountTable` for host filesystem access: normalization and prefix checks alone do not confine symlinks or prevent races.
 
@@ -137,6 +139,67 @@ The directory is not checked against the mounts, and `os.chdir()` needs a mount 
 target exists.
 The divergences are in [`limitations/os.md`](limitations/os.md).
 
+### Importing modules
+
+`import helpers` runs the package `helpers/__init__.py`, or else `helpers.py`, from the working directory when no
+[host module](host-functions.md#importing-host-modules) of that name exists, so a module file in a mount imports
+directly.
+The host reads each candidate itself, as a `Path.read_text` call to the `os` callback first and through the mounts when
+the callback declines it, so the whole search costs one round trip; each module that imports successfully runs once per
+session.
+This is the reverse of `open()`, where mounts go first: the callback can serve a module without mounting a directory,
+and shadow a mounted file before it runs as code.
+To refuse one, raise `FileNotFoundError`, `NotADirectoryError`, `IsADirectoryError` or `PermissionError`, which skips
+that file even when a mount holds it; any other error fails the import.
+Only a name `external_modules` lacks is searched for: a factory exception is the import's error, and no file is read:
+
+=== "Python"
+
+    ```python
+    import tempfile
+    from pathlib import Path
+
+    from pydantic_monty import Monty, MountDir
+
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, 'helpers.py').write_text('def double(x):\n    return x * 2\n')
+
+        code = 'import helpers\nhelpers.double(21)'
+
+        with MountDir(host_path=tmp, virtual_path='/data', mode='read-only') as mount:
+            with Monty() as pool:
+                with pool.checkout() as session:
+                    print(session.feed_run(code, mount=mount))
+                    #> 42
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+    import { tmpdir } from 'node:os'
+    import { join } from 'node:path'
+
+    import { Monty } from '@pydantic/monty'
+    import { MountDir } from '@pydantic/monty/node'
+
+    const tmp = mkdtempSync(join(tmpdir(), 'monty-'))
+    writeFileSync(join(tmp, 'helpers.py'), 'def double(x):\n    return x * 2\n')
+
+    const code = 'import helpers\nhelpers.double(21)'
+
+    {
+      using mount = new MountDir({ hostPath: tmp, virtualPath: '/data', mode: 'read-only' })
+      await using pool = await Monty.create()
+      await using session = await pool.checkout()
+      console.log(await session.feedRun(code, { mount })) // 42
+    }
+    rmSync(tmp, { recursive: true })
+    ```
+
+The divergences, including the search path and the module cache, are in
+[`limitations/modules.md`](limitations/modules.md#modules-from-files).
+
 ### Modes
 
 | Mode                  | Reads                    | Writes                                           |
@@ -160,17 +223,21 @@ Each feed starts with a fresh overlay.
 
 ### Options
 
-| Argument             | Default       | Meaning                                                                                  |
-| -------------------- | ------------- | ---------------------------------------------------------------------------------------- |
-| `host_path`          | required      | Real host directory; canonicalized at construction, raises if missing or not a directory |
-| `virtual_path`       | required      | Absolute POSIX-style path prefix inside the sandbox, whatever the host OS                |
-| `mode`               | `'overlay'`   | One of the three above                                                                   |
-| `write_bytes_limit`  | `None`        | Cap on bytes written through the mount per feed; exceeding it raises `OSError`           |
-| `memory_usage_limit` | `100_000_000` | Byte budget for overlay data and transient results; exceeding it raises `MemoryError`    |
+| Argument             | Default                                                                         | Meaning                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `host_path`          | required                                                                        | Real host directory; canonicalized at construction, raises if missing or not a directory |
+| `virtual_path`       | required                                                                        | Absolute POSIX-style path prefix inside the sandbox, whatever the host OS                |
+| `mode`               | `'overlay'`                                                                     | One of the three above                                                                   |
+| `write_bytes_limit`  | `None`                                                                          | Cap on bytes written through the mount per feed; exceeding it raises `OSError`           |
+| `memory_usage_limit` | [`DEFAULT_MEMORY_USAGE_LIMIT`](api/rust/monty-fs.md#default_memory_usage_limit) | Byte budget for overlay data and transient results; exceeding it raises `MemoryError`    |
 
 Validation happens at construction, not at feed time — a bad `virtual_path` raises immediately.
 Mounts are serviced by the host, including for remote workers; the worker never receives host paths.
 Closing a mount prevents new feeds from using it, but an in-flight feed keeps its own reference.
+Each directory `mkdir` creates, parents included, counts as [`DIRECTORY_WRITE_BYTES`](api/rust/monty-fs.md#directory_write_bytes)
+(4,096 bytes) against `write_bytes_limit`.
+Mounts reject a positional binary write that starts past the end of the file, so writes cannot create zero-filled gaps.
+The first positional mutation of a backing file in a memory overlay charges the resulting materialized content.
 
 The names are keyword-only on purpose: mount tools disagree on whether host or virtual comes first (`docker -v` versus
 nginx's `alias`), so requiring names removes the ambiguity.
@@ -195,7 +262,8 @@ Relative symlinks that stay inside the mount are followed in the non-overlay mod
 - **No live file descriptors.** `open()` keeps no OS handle between calls; each read or write is a separate one-shot
     host operation.
     This is what makes mid-execution [snapshots](snapshots.md) safe.
-    It also means `for line in f` is not supported.
+    It also means a file's whole content is loaded into the sandbox on its first read, `seek()` or iteration step;
+    [limitations/open.md](limitations/open.md) lists the iterator consumers that cannot issue that load.
 - **Only regular files** can be read, written or opened.
     FIFOs, sockets and device nodes raise `PermissionError`, because mount I/O must never block on sandbox-reachable
     input.
@@ -219,6 +287,15 @@ Use host storage whose availability and side effects are acceptable for the work
 ## The `os` callback
 
 Operations no mount covers fall through to the `os=` handler, an [`OsHandler`][pydantic_monty.OsHandler].
+Two kinds of call never reach this handler: [host module](host-functions.md#importing-host-modules) calls
+(`import` and `import_stubs`) are answered from the checkout's `external_modules`, and `typing.get_type_hints` of a
+host function or class is answered by that function or class.
+An import of a module the checkout does not provide reaches it first, before the mounts, as `Path.read_text` of
+`<cwd>/name/__init__.py` and `<cwd>/name.py` (see [importing modules](#importing-modules)): return the source of a
+file you serve, and answer one you do not with `NOT_HANDLED`, so the mounts are read next.
+A `FileNotFoundError` (or `PermissionError`, `NotADirectoryError`, `IsADirectoryError`) skips that file without
+consulting the mounts, so a handler that raises it for every path it does not serve hides every mounted module;
+any other error fails the import.
 It is called with keyword arguments, `name`, `args`, `kwargs` and `is_async`, and its return value is handed back to the sandbox.
 Absorb the arguments you do not use with `**_future_kwargs`, so a later version can pass more:
 
@@ -260,8 +337,24 @@ handler at all.
 
 The operations that can arrive are a fixed set: `Path.exists`, `Path.is_file`, `Path.is_dir`, `Path.is_symlink`, `open`,
 `Path.read_text`, `Path.read_bytes`, `Path.write_text`, `Path.write_bytes`, `Path.append_text`, `Path.append_bytes`,
-`Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.stat`, `Path.rename`, `Path.resolve`, `Path.absolute`,
-`os.getenv`, `os.environ` and `os.urandom`.
+`Path.mkdir`, `Path.unlink`, `Path.rmdir`, `Path.iterdir`, `Path.scan`, `Path.stat`, `Path.rename`, `Path.resolve`,
+`Path.absolute`, `os.getenv`, `os.environ` and `os.urandom`.
+
+`Path.scan` answers `os.scandir`, `os.walk`, `Path.walk`, `Path.glob` and `Path.rglob` with one call for a whole subtree.
+Its keyword arguments are `max_depth` (`None` for the whole tree), `follow_symlinks`, and a glob's `pattern` parts,
+`case_sensitive` and `recurse_symlinks`.
+The reply is a list of `(path, is_dir, is_file, is_symlink)` tuples, one for the scanned directory itself (`''`) and
+one per entry below it, with paths relative to the scanned directory.
+The pattern is only a hint: a handler may return entries it cannot match, because the sandbox filters the reply itself.
+A glob's handler may instead reply `{'matches': [path, ...]}`: the matches already selected, relative to the scanned directory, which the sandbox uses as they are.
+A directory matched before the pattern's last part keeps a trailing `/` there.
+Mounts reply that way unless the matches outnumber the entries they read.
+[`AbstractOS.path_scan()`][pydantic_monty.AbstractOS.path_scan] does this by default from `path_iterdir()` and the
+predicates, returning [`ScanEntry`][pydantic_monty.ScanEntry] tuples.
+When the root is neither an existing path nor a symlink, it calls `path_stat()` to distinguish a missing path
+from an invalid parent directory.
+A handler that declines `Path.scan` makes `glob()` return nothing and `walk()` report a `PermissionError`, since both
+treat a directory they cannot read as CPython does.
 With `os_policy` configured to call the host, the handler also receives clock and sleep calls
 (see [the clock](security.md#the-clock)).
 Unseeded random generators and `random.seed()` call `os.urandom` only under `random_start='call_host'`
@@ -287,6 +380,7 @@ Plain `resume(...)` bypasses both mounts and the handler, using only the supplie
 
 `pydantic_monty` ships a ready-made [`AbstractOS`][pydantic_monty.AbstractOS] implementation for when you want a filesystem with no host directory
 behind it at all.
+
 JavaScript has no equivalent class, so the TypeScript tab answers the same operations from a `Map` in an `os` callback:
 
 === "Python"
@@ -335,12 +429,34 @@ The marker canonicalizes `mode` and exposes `path`, `mode`, `position`, `binary`
 Paths are virtual POSIX paths; `position` defaults to zero.
 Returning a handle answers only `open`; reads and writes are separate callbacks, never operations on a live host descriptor.
 
+Text appends through `OSAccess` preserve the file's storage type: `str` stays `str`, and `bytes` stays `bytes`.
+For bytes-backed files, only the appended text is UTF-8 encoded; existing bytes are not decoded.
+For `CallbackFile`, a text append calls the read callback first.
+The write callback then receives the full content (existing plus appended) in the stored type.
+
 [`OSAccess`][pydantic_monty.OSAccess] backed by [`MemoryFile`][pydantic_monty.MemoryFile] objects is fully sandboxed: content lives in host memory, path traversal cannot escape
 to real files, and `os.getenv` sees only the `environ` mapping you passed.
+Because that content lives in host memory, `OSAccess` caps all `MemoryFile` content, initial files included, at
+`max_total_file_bytes` (50 MB by default).
+A write past it raises `OSError` in the sandbox, and `None` removes the cap; see
+[write limits](limitations/filesystem.md#write-limits).
 
 [`CallbackFile`][pydantic_monty.CallbackFile] read and write callbacks run in the host and can reach real resources.
 That is the point of it, but it means an `OSAccess` containing a `CallbackFile` is exactly as sandboxed as the callback
 you wrote.
+
+Binary writes in `wb` and `w+b` mode call
+[`AbstractOS.path_write_bytes_at(path, offset, data)`][pydantic_monty.AbstractOS.path_write_bytes_at].
+It overwrites an existing file at the byte offset, preserves surrounding content, and returns the number of bytes written.
+A non-empty write whose offset is past the end of the file raises `ValueError`.
+Overrides must reject these too, or one byte at a huge offset grows the host file by the whole offset.
+The default uses `path_stat`, `path_read_bytes` and `path_write_bytes` and caps the replacement at 50 MB.
+The handler must enforce allocation bounds in `path_read_bytes`; a stat check cannot bound a read if the file grows.
+Handlers that cannot bound reads under concurrent modification must override `path_write_bytes_at`.
+It requires read access and can overwrite concurrent changes between reading and writing.
+An incomplete replacement write raises `OSError` and may leave the file partially replaced.
+Override it for native positional writes, stronger concurrency guarantees, or larger files.
+`OSAccess` implements the method for its registered files.
 
 For anything more specific, subclass `OSAccess` and override the methods you want to change, or implement every
 abstract method of `AbstractOS` yourself; the optional hooks (`path_open`, the append methods, `date_today`,

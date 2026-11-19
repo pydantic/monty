@@ -11,14 +11,14 @@ use std::borrow::Cow;
 
 use monty_proto::DEFAULT_MAX_DECODE_BYTES;
 use monty_types::{
-    BuiltinsFunctions, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone,
-    MontyType, MontyUuid,
-    unstable::{ClassTypeNode as MontyClassTypeNode, MontyGraph, MontyNode, NodeId},
+    BuiltinsFunctions, FileMode, MontyComplex, MontyDate, MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta,
+    MontyTimeZone, MontyType, MontyUuid,
+    unstable::{ClassEq, ClassHash, ClassTypeNode as MontyClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 
 use crate::bindings::exports::pydantic::monty::worker::{
-    Arena, ClassInstanceNode, ClassTypeNode, DateNode, DatetimeNode, ExceptionValueNode, FileHandleNode, FunctionNode,
-    NamedTupleNode, NodePair, TimeNode, TimedeltaNode, TimezoneNode, ValueNode,
+    Arena, ClassInstanceNode, ClassTypeNode, ComplexNode, DateNode, DatetimeNode, ExceptionValueNode, FileHandleNode,
+    FunctionNode, ModuleNode, NamedTupleNode, NodePair, TimeNode, TimedeltaNode, TimezoneNode, ValueNode,
 };
 
 /// Remaining expanded-value allowance for one request's arena.
@@ -78,9 +78,11 @@ fn node_decoded_size(node: &ValueNode) -> usize {
         // Two decimal digits per byte is a conservative bound for the parsed
         // binary integer without allocating it merely to measure its bits.
         ValueNode::Bigint(value) => value.len().div_ceil(2),
-        ValueNode::Text(value) | ValueNode::Path(value) | ValueNode::Repr(value) | ValueNode::Cycle(value) => {
-            value.len()
-        }
+        ValueNode::Text(value)
+        | ValueNode::Path(value)
+        | ValueNode::Repr(value)
+        | ValueNode::Cycle(value)
+        | ValueNode::Decimal(value) => value.len(),
         ValueNode::Bytes(value) => value.len(),
         ValueNode::ListValue(items)
         | ValueNode::TupleValue(items)
@@ -98,6 +100,7 @@ fn node_decoded_size(node: &ValueNode) -> usize {
         ValueNode::Exception(value) => value.message.as_ref().map_or(0, String::len),
         ValueNode::FileHandle(value) => value.path.len(),
         ValueNode::ClassInstance(value) => pairs(value.attrs.len()),
+        ValueNode::Module(value) => value.name.len().saturating_add(pairs(value.attrs.len())),
         ValueNode::ClassType(value) => size_of::<MontyClassTypeNode>()
             .saturating_add(value.name.len())
             .saturating_add(pairs(value.attrs.len())),
@@ -111,6 +114,7 @@ fn node_decoded_size(node: &ValueNode) -> usize {
         | ValueNode::Boolean(_)
         | ValueNode::Integer(_)
         | ValueNode::Float(_)
+        | ValueNode::Complex(_)
         | ValueNode::Date(_)
         | ValueNode::Timedelta(_)
         | ValueNode::TypeName(_)
@@ -141,6 +145,10 @@ fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
                 .map_err(|_| format!("invalid arbitrary-precision integer {value:?}"))?,
         ),
         ValueNode::Float(value) => MontyNode::Float(value),
+        ValueNode::Complex(value) => MontyNode::Complex(MontyComplex {
+            real: value.real,
+            imag: value.imag,
+        }),
         ValueNode::Text(value) => MontyNode::String(value),
         ValueNode::Bytes(value) => MontyNode::Bytes(value),
         ValueNode::ListValue(items) => MontyNode::List(ids(items)),
@@ -215,6 +223,10 @@ fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
             host_defined: value.host_defined,
             is_dataclass: value.is_dataclass,
             attrs: id_pairs(value.attrs),
+            // The WIT record carries no equality rule: JS proxies compare by
+            // reference, and the sandbox reads none for a class it receives.
+            eq: ClassEq::Identity,
+            hash: ClassHash::Identity,
         })),
         ValueNode::BuiltinFunction(value) => MontyNode::BuiltinFunction(
             value
@@ -222,6 +234,7 @@ fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
                 .map_err(|_| format!("unknown builtin function {value:?}"))?,
         ),
         ValueNode::Path(value) => MontyNode::Path(value),
+        ValueNode::Decimal(value) => MontyNode::Decimal(value),
         ValueNode::FileHandle(value) => MontyNode::FileHandle(MontyFileHandle {
             path: value.path,
             mode: value.mode.parse::<FileMode>().map_err(Cow::into_owned)?,
@@ -235,9 +248,16 @@ fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
         ValueNode::Function(value) => MontyNode::Function {
             name: value.name,
             docstring: value.docstring,
+            // the component interface cannot mark a function async yet
+            is_async: false,
         },
         ValueNode::Repr(value) => MontyNode::Repr(value),
         ValueNode::Cycle(value) => MontyNode::Cycle(value),
+        ValueNode::Module(value) => MontyNode::Module {
+            name: value.name,
+            id: parse_uuid(&value.id)?,
+            attrs: id_pairs(value.attrs),
+        },
     })
 }
 
@@ -251,6 +271,10 @@ fn node_into_component(node: MontyNode) -> ValueNode {
         MontyNode::Int(value) => ValueNode::Integer(value),
         MontyNode::BigInt(value) => ValueNode::Bigint(value.to_string()),
         MontyNode::Float(value) => ValueNode::Float(value),
+        MontyNode::Complex(value) => ValueNode::Complex(ComplexNode {
+            real: value.real,
+            imag: value.imag,
+        }),
         MontyNode::String(value) => ValueNode::Text(value),
         MontyNode::Bytes(value) => ValueNode::Bytes(value),
         MontyNode::List(items) => ValueNode::ListValue(raw_ids(items)),
@@ -315,6 +339,7 @@ fn node_into_component(node: MontyNode) -> ValueNode {
         }),
         MontyNode::BuiltinFunction(value) => ValueNode::BuiltinFunction(value.to_string()),
         MontyNode::Path(value) => ValueNode::Path(value),
+        MontyNode::Decimal(value) => ValueNode::Decimal(value),
         MontyNode::FileHandle(value) => ValueNode::FileHandle(FileHandleNode {
             path: value.path,
             mode: value.mode.as_str().to_owned(),
@@ -329,9 +354,14 @@ fn node_into_component(node: MontyNode) -> ValueNode {
             instance_id: instance_id.to_string(),
             attrs: raw_pairs(attrs),
         }),
-        MontyNode::Function { name, docstring } => ValueNode::Function(FunctionNode { name, docstring }),
+        MontyNode::Function { name, docstring, .. } => ValueNode::Function(FunctionNode { name, docstring }),
         MontyNode::Repr(value) => ValueNode::Repr(value),
         MontyNode::Cycle(placeholder) => ValueNode::Cycle(placeholder),
+        MontyNode::Module { name, id, attrs } => ValueNode::Module(ModuleNode {
+            name,
+            id: id.to_string(),
+            attrs: raw_pairs(attrs),
+        }),
     }
 }
 

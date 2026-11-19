@@ -15,6 +15,11 @@ path `C:/Users/foo`. Path repr is always `PosixPath(...)`.
 Bytes paths are accepted but decoded as strict UTF-8 (no `surrogateescape`
 / PEP 383 round-tripping). See [open.md](open.md) for the full rationale.
 
+A host entry whose name is not valid UTF-8 (possible on Linux, not on macOS or Windows) is left out of
+`os.listdir`, `os.scandir`, `os.walk`, `Path.iterdir`, `Path.walk` and `Path.glob`.
+CPython lists it with `surrogateescape`, so `'\udcff'` stands for the byte `0xff` and opens the file.
+Monty's strings cannot hold such a name, and a lossy spelling (`'\ufffd'`) would name a different file or nothing.
+
 ## Mount modes
 
 Each mount is configured by the host as one of:
@@ -48,6 +53,11 @@ Disjoint host directories at nested virtual paths (`/data`, `/data/sub`)
 remain fine: each virtual path routes to exactly one mount. Two mounts on the
 *same* virtual path are refused because only one of them could ever be
 reached.
+A nested mount appears in its parent's listing only if the parent's host
+directory has an entry of that name; otherwise `os.listdir`, `os.scandir`,
+`os.walk`, `Path.walk`, `Path.rglob` and a `Path.glob` pattern that lists the
+parent do not reach it, though its own path still works, as does a pattern
+that names it literally (`glob('sub/*')`).
 
 The same-directory check uses the opened directory's identity on Unix, so a
 directory renamed between two mounts is still recognised; the nesting check is
@@ -70,12 +80,12 @@ inode. The path is still stat-ed first, but only to phrase the error.
 
 ## Mount memory limits
 
-Each mount has a configurable `memory_usage_limit`, defaulting to 100 MB
-(100,000,000 bytes). Retained in-memory overlay entries and transient
+Each mount has a configurable `memory_usage_limit`, defaulting to
+[`DEFAULT_MEMORY_USAGE_LIMIT`](../api/rust/monty-fs.md#default_memory_usage_limit) bytes. Retained in-memory overlay entries and transient
 filesystem results share the budget. Host files are read incrementally up to
 the remaining budget without trusting file-size metadata; an operation that
 would exceed it raises
-`MemoryError: mount memory usage limit of 100 MB exceeded`. CPython has no
+`MemoryError: mount memory usage limit of <limit> exceeded`. CPython has no
 equivalent default limit.
 
 Consequences of the shared budget that have no CPython analogue:
@@ -91,12 +101,45 @@ Consequences of the shared budget that have no CPython analogue:
 - Raising the budget above 256 MiB can hit the [message size cap](host-values.md#message-size):
     a mounted read whose result is too large raises `RuntimeError` inside the sandbox.
 
+## Directory scans
+
+`os.scandir`, `os.walk`, `Path.walk`, `Path.glob` and `Path.rglob` read their subtree in one host call (see
+[pathlib.md](pathlib.md#glob-rglob-and-walk)).
+
+- Every entry a scan reads counts against the mount's memory limit, including entries excluded from a glob's matches,
+    so walking or globbing a tree with millions of entries raises `MemoryError` where CPython would stream it.
+- A glob also charges each directory it reaches at each wildcard part, so a pattern that returns to the same
+    directories many times (`'*/../' * 30 + '*'`) can raise `MemoryError` on a tree its single-part form reads.
+- A scan may examine at most 10,000,000 entries, counting each time a glob pattern revisits a directory, then raises
+    `RuntimeError: directory scan examined more than 10000000 entries`. CPython has no such cap; it bounds patterns
+    like `*/**/*/**/*` whose cost multiplies with every recursive part, and walks through symlink cycles.
+- Paths deeper than [64 components](#at-most-64-path-components) are not listed, so a walk stops there.
+- `OverlayMemory` never follows symlinks, so a scan there reports them as neither files nor directories.
+- A symlink whose target is missing or outside the mount is left out, as `iterdir()` leaves it out and the
+    predicates answer `False` for it, so `glob('*')` and a walk never list a dangling link, where CPython lists it
+    with `is_symlink()` alone.
+
 ## Write limits
 
 Hosts can configure a cumulative `write_bytes_limit` per mount. In
 `OverlayMemory`, appending to an existing real file can materialize that
 file into the in-memory overlay, so the existing file bytes count against
 the limit along with the newly appended bytes.
+Each directory `mkdir` creates, parents included, counts 4,096 bytes against the limit.
+The total is checked before anything is created, so a `mkdir(parents=True)` that would exceed the limit creates
+nothing.
+
+Positional binary writes charge their payload against `write_bytes_limit`, including repeated overwrites.
+In `OverlayMemory`, the first positional write to a backing file charges the whole materialized file instead.
+The full charge is reserved before writing and remains charged if a partial write fails.
+
+Python's [`OSAccess`][pydantic_monty.OSAccess] caps [`MemoryFile`][pydantic_monty.MemoryFile] content instead.
+A write that would grow all `MemoryFile` content past `max_total_file_bytes` (50 MB by default, initial files
+included) raises `OSError` with `[Errno 28] No space left on device`.
+Text counts as its UTF-8 size; the file is left unchanged, and deleting or shrinking a file frees its bytes.
+Initial files are not checked against the cap: they count toward the total, so content that starts over it only
+blocks writes that would grow it.
+`CallbackFile` content is not counted.
 
 ## Sandbox guarantees
 
@@ -317,3 +360,9 @@ escapes. That matches CPython, and reveals nothing about the target.
 [snapshots](../snapshots.md) possible, and it means
 external processes can observe partial state between writes. See the design
 note in [open.md](open.md).
+
+## Python `OSAccess` exception attributes
+
+[`OSAccess`][pydantic_monty.OSAccess] raises filesystem `OSError`s (including subclasses) with a message only.
+In direct host-Python calls, `errno`, `filename` and `filename2` are `None`; the error number and paths appear only in the message.
+The `max_total_file_bytes` error is the exception: it sets `errno` to `ENOSPC` and `filename` to the path.

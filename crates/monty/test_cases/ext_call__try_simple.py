@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # Test external call with exception variable
 
 exc_with_ext = None

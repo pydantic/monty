@@ -173,6 +173,59 @@ test('print mixed types', async () => {
 // Throwing print callbacks: the feed rejects with the callback's error
 // =============================================================================
 
+test.each([null, undefined, false, 0, 'stopped', new Error('stopped')])(
+  'preserves a thrown print callback value: %s',
+  async (error) => {
+    let calls = 0
+    let rejected = false
+    let thrown: unknown
+    try {
+      await run('print(1); print(2); 42', {
+        printFlushInterval: 0,
+        printCallback: () => {
+          calls++
+          throw error
+        },
+      })
+    } catch (caught) {
+      rejected = true
+      thrown = caught
+    }
+    t.true(rejected)
+    t.is(thrown, error)
+    t.is(calls, 1)
+  },
+)
+
+test.each(['feedRun', 'feedStart'] as const)('rejects a null print failure before %s suspends', async (method) => {
+  const session = await pool().checkout({ printFlushInterval: 0 })
+  let hostCalls = 0
+  let calls = 0
+  try {
+    const thrown = await t.throwsAsync(() =>
+      session[method]('print(1); print(2); fetch()', {
+        printCallback: () => {
+          calls++
+          throw null
+        },
+        externalLookup: {
+          fetch: () => {
+            hostCalls++
+            return 7
+          },
+        },
+      }),
+    )
+    t.is(thrown.message, 'null')
+    t.is(calls, 1)
+    t.is(hostCalls, 0)
+    const next = await t.throwsAsync(() => session.feedRun('1 + 1'))
+    t.is(next, thrown)
+  } finally {
+    await session.close()
+  }
+})
+
 function makeErrorCallback(error: Error) {
   const callback = (stream: 'stdout' | 'stderr', _text: string) => {
     t.is(stream, 'stdout')

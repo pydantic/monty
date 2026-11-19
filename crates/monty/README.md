@@ -93,7 +93,12 @@ let RunProgress::Complete(result) = progress else { panic!("expected completion"
 assert_eq!(result, MontyObject::int(42));
 ```
 
-A REPL session is a self-contained snapshot of the interpreter: serialize it with `dump()`, store it in a file or database, and `Dump::load()` + keep feeding it later — in a different process or on a different machine. The dump carries the session metadata (script name, type-check stubs) alongside the state, behind a version this build checks on load:
+Serialize a REPL session with `dump()` and restore it with `Dump::load()` to continue in another process or machine.
+The dump includes the interpreter state and the supplied script name, type-check state and module stubs.
+Published releases with the same dump version can read and resume each other's dumps.
+This guarantee does not extend to unreleased Git revisions.
+A release that breaks compatibility in either direction uses a new dump version, even if it is a patch release.
+Loading checks the dump version:
 
 ```rust
 use monty::{Dump, MontyRepl, Session, SessionRef, dump};
@@ -101,7 +106,7 @@ use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
 
 let mut repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
 repl.feed_run("x = 41", vec![], PrintWriter::Stdout).unwrap();
-let bytes = dump("main.py", None, SessionRef::Idle(&repl)).unwrap();
+let bytes = dump("main.py", None, &[], SessionRef::Idle(&repl)).unwrap();
 
 // later, restore and carry on feeding
 let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
@@ -119,6 +124,21 @@ Invalid snapshots have no correctness or availability guarantees: loading or usi
 Successful decoding is not evidence of authenticity or validity.
 
 Async host functions are supported too: `FunctionCall::resume_pending` continues execution with a pending future the sandboxed code can `await`; when all tasks are blocked, execution yields `RunProgress::ResolveFutures` for the host to supply results. When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the result can pass it to `FunctionCall::resume_eager` and skip the `ResolveFutures` round trip. `OsCall::allow_eager_await` says the same of an `asyncio.sleep` the host has already waited out.
+
+Imports of unknown modules suspend with `OsFunctionCall::Import`, whose `ImportArgs` carry the dotted module name and
+its search path: the working directory for a top-level name, or a file package's `__path__` for its submodules.
+A returned value becomes the module; dotted imports read subsequent components as attributes of that value.
+Hosts usually return a host-backed class instance containing the module's attributes.
+A host with no such module can answer `ExtFunctionResult::ModuleFile` with the module's `.py` file instead:
+`ImportArgs::candidates` lists `<dir>/name/__init__.py`, then `<dir>/name.py`, for each search directory,
+`find_module_file` reads them in turn with a function the host supplies (a missing file moves on, any other read error
+is the answer), and `MountTable::read_module` reads one through the mounts.
+The sandbox runs the file as the module and caches it for the session.
+`ExtFunctionResult::NotFound` (what `OsFunctionCall::no_handler_result` answers), or running without a host, raises
+`ModuleNotFoundError`; an exception the host raises for the import is raised as it is.
+The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the interpreter never raises it.
+`typing.get_type_hints()` of a host function or class suspends with `OsFunctionCall::GetTypeHints`; the host's dict
+answer is the call's result, and running without a host gives `{}`.
 
 ## Other pieces
 
@@ -141,6 +161,8 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
   Defaults use the system clock, UTC and OS entropy, with sleeps capped at ten seconds.
   System sleeps suspend for the host to wait without its `os` handler; standard execution waits inline.
   `CallHost` delegates to the host through `RunProgress::OsCall`.
+  A loaded dump keeps the policy it was taken under until the host calls `MontyRepl::set_os_policy` or
+  `ReplProgress::set_os_policy`; the worker applies the restoring checkout's policy this way.
 
 ## Monty crates
 
@@ -149,7 +171,7 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
 - [`monty-fs`](https://crates.io/crates/monty-fs) — host-side filesystem mounts: maps virtual sandbox paths to real host directories.
 - [`monty-runtime`](https://crates.io/crates/monty-runtime) — the `monty` binary: REPL, file runner, and subprocess worker mode.
 - [`monty-pool`](https://crates.io/crates/monty-pool) — an elastic pool of crash-isolated `monty` worker subprocesses.
-- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between pool parents and workers.
+- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between clients and workers.
 - [`monty-type-checking`](https://crates.io/crates/monty-type-checking) — type checking of sandboxed code, powered by [ty](https://docs.astral.sh/ty/).
 - [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
 - [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing.

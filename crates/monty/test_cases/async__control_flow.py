@@ -1,5 +1,7 @@
-# run-async
-# call-external
+# /// monty
+# run-async = true
+# call-external = true
+# ///
 # Control flow (break/continue/return) through try/finally around awaits.
 # The unwind machinery must behave identically when suspension points sit
 # inside the protected regions — whether the awaited coroutine completes

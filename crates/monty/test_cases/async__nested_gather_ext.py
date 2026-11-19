@@ -1,5 +1,7 @@
-# call-external
-# run-async
+# /// monty
+# call-external = true
+# run-async = true
+# ///
 # Test nested asyncio.gather where outer gather spawns tasks that each
 # do a sequential external await followed by an inner gather of external calls.
 import asyncio

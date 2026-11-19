@@ -8,12 +8,21 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, get_args
 
 import pytest
 from inline_snapshot import snapshot
 
-from pydantic_monty import Monty, MontyError, MontyRuntimeError, MontySession, MontyTypingError, TypeCheckFormat
+from pydantic_monty import (
+    Monty,
+    MontyError,
+    MontyRuntimeError,
+    MontySession,
+    MontyTypingError,
+    MountDir,
+    TypeCheckFormat,
+)
 
 
 @pytest.fixture
@@ -29,6 +38,16 @@ def tc_session(pool: Monty) -> Iterator[MontySession]:
 def test_type_check_no_errors(tc_session: MontySession):
     """Valid code passes type checking and executes."""
     assert tc_session.feed_run('1 + 2') == 3
+
+
+def test_type_check_complex(tc_session: MontySession):
+    """The bundled builtins stubs include `complex`, so its constructor and members type-check."""
+    assert tc_session.feed_run('z: complex = complex(1, 2) * 2j\n[z.real, z.imag, abs(z), z.conjugate() == z]') == [
+        -4.0,
+        2.0,
+        snapshot(4.47213595499958),
+        False,
+    ]
 
 
 def test_type_check_with_errors(tc_session: MontySession):
@@ -84,7 +103,7 @@ def test_type_check_module_not_leaked_to_later_session():
             with pytest.raises(MontyTypingError) as exc_info:
                 session.feed_run('from a import SECRET')
             assert str(exc_info.value) == snapshot(
-                'b.py:1:6: error[unresolved-import] Cannot resolve imported module `a`\n'
+                'b.py:1:6: error[import-not-found] Cannot resolve imported module `a`\n'
             )
 
 
@@ -103,7 +122,7 @@ def test_type_check_stubs_not_leaked_to_later_session():
             with pytest.raises(MontyTypingError) as exc_info:
                 session.feed_run('from repl_type_stubs import call1_stub_var')
             assert str(exc_info.value) == snapshot(
-                'main.py:1:6: error[unresolved-import] Cannot resolve imported module `repl_type_stubs`\n'
+                'main.py:1:6: error[import-not-found] Cannot resolve imported module `repl_type_stubs`\n'
             )
 
 
@@ -163,6 +182,20 @@ def test_type_check_default_allows_run_with_inputs(pool: Monty):
     """Default (type_check=False) allows running code that would fail type checking."""
     with pool.checkout() as session:
         assert session.feed_run('x + 1', inputs={'x': 5}) == 6
+
+
+def test_type_check_open_and_run(tc_session: MontySession, tmp_path: Path):
+    """Builtin open has type information and writes through a mounted directory."""
+    code = """\
+with open('/work/example.txt', 'w') as output:
+    output.write('hello')
+"""
+    mount = MountDir(host_path=tmp_path, virtual_path='/work', mode='read-write')
+
+    result = tc_session.feed_run(code, mount=mount)
+
+    assert result == snapshot(None)
+    assert (tmp_path / 'example.txt').read_text() == snapshot('hello')
 
 
 # === MontyTypingError shape ===

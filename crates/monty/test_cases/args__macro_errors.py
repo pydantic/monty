@@ -12,6 +12,7 @@
 import asyncio
 import base64
 import binascii
+import bisect
 import copy
 import datetime
 import json
@@ -145,6 +146,76 @@ except TypeError as e:
     assert str(e) == (
         'dumps() takes 1 positional argument but 2 positional arguments (and 1 keyword-only argument) were given'
     ), f'py-def-overflow-kwonly: {e}'
+
+# `json.load` / `json.dump` bind like `loads` / `dumps` with the file object
+# as an extra positional; unknown keywords name the CPython decoder / encoder
+# constructor that would have rejected them.
+try:
+    json.load()
+    assert False, 'json.load() should raise missing'
+except TypeError as e:
+    assert str(e) == "load() missing 1 required positional argument: 'fp'"
+
+try:
+    json.load(1, 2)
+    assert False, 'json.load(1, 2) should raise overflow'
+except TypeError as e:
+    assert str(e) == 'load() takes 1 positional argument but 2 were given'
+
+try:
+    json.load(1, fp=2)
+    assert False, 'json.load(1, fp=2) should raise multiple-values'
+except TypeError as e:
+    assert str(e) == "load() got multiple values for argument 'fp'"
+
+
+# CPython reads `fp` before `loads` rejects the keyword, so the object needs a `read`.
+class _JsonReader:
+    def read(self):
+        return '1'
+
+
+try:
+    json.load(_JsonReader(), bogus=2)
+    assert False, 'json.load(bogus=) should raise'
+except TypeError as e:
+    assert str(e) == "JSONDecoder.__init__() got an unexpected keyword argument 'bogus'"
+
+try:
+    json.loads('1', bogus=2)
+    assert False, 'json.loads(bogus=) should raise'
+except TypeError as e:
+    assert str(e) == "JSONDecoder.__init__() got an unexpected keyword argument 'bogus'"
+
+try:
+    json.dump()
+    assert False, 'json.dump() should raise missing'
+except TypeError as e:
+    assert str(e) == "dump() missing 2 required positional arguments: 'obj' and 'fp'"
+
+try:
+    json.dump(1)
+    assert False, 'json.dump(1) should raise missing'
+except TypeError as e:
+    assert str(e) == "dump() missing 1 required positional argument: 'fp'"
+
+try:
+    json.dump(1, 2, 3)
+    assert False, 'json.dump(1, 2, 3) should raise overflow'
+except TypeError as e:
+    assert str(e) == 'dump() takes 2 positional arguments but 3 were given'
+
+try:
+    json.dump(1, 2, obj=3)
+    assert False, 'json.dump(1, 2, obj=3) should raise multiple-values'
+except TypeError as e:
+    assert str(e) == "dump() got multiple values for argument 'obj'"
+
+try:
+    json.dump(1, 2, bogus=3)
+    assert False, 'json.dump(bogus=) should raise'
+except TypeError as e:
+    assert str(e) == "JSONEncoder.__init__() got an unexpected keyword argument 'bogus'"
 
 # === Python: missing required positional (PyArg_UnpackKeywords wording derived from `pos_only`) ===
 try:
@@ -964,3 +1035,88 @@ try:
     assert False, 'isoformat(1) should raise'
 except TypeError as e:
     assert str(e) == 'date.isoformat() takes no arguments (1 given)'
+
+
+# === bisect: Clinic keyword-capable arguments and a keyword-only key ===
+for f, name in [
+    (bisect.bisect_left, 'bisect_left'),
+    (bisect.bisect_right, 'bisect_right'),
+    (bisect.insort_left, 'insort_left'),
+    (bisect.insort_right, 'insort_right'),
+]:
+    cases = [
+        ((), {}, TypeError, name + "() missing required argument 'a' (pos 1)"),
+        (([],), {}, TypeError, name + "() missing required argument 'x' (pos 2)"),
+        (([], 1, 0, None, None), {}, TypeError, name + '() takes at most 4 positional arguments (5 given)'),
+        (([], 1), {'unknown': 1}, TypeError, name + "() got an unexpected keyword argument 'unknown'"),
+        (([], 1), {'a': []}, TypeError, 'argument for ' + name + "() given by name ('a') and position (1)"),
+        (([], 1), {'lo': 0.5, 'oops': 1}, TypeError, name + "() got an unexpected keyword argument 'oops'"),
+        (([], 1, 0.5), {'lo': 2}, TypeError, 'argument for ' + name + "() given by name ('lo') and position (3)"),
+    ]
+    for args, kwargs, error, message in cases:
+        try:
+            f(*args, **kwargs)
+            assert False, 'expected failure'
+        except error as exc:
+            assert str(exc) == message
+
+# === 2-arg fast path error cleanup (refcount safety for heap-allocated objects) ===
+# 1. Error on arg 1 while arg 2 is a freshly allocated heap object:
+try:
+    'hello'.replace(123, 'a' * 100)
+    assert False, 'replace(non-str, str) should raise TypeError'
+except TypeError as exc:
+    assert str(exc) == 'replace() argument 1 must be str, not int'
+
+# 2. Error on arg 2 while arg 1 was extracted into an owning field:
+try:
+    'hello'.replace('a' * 100, 123)
+    assert False, 'replace(str, non-str) should raise TypeError'
+except TypeError as exc:
+    assert str(exc) == 'replace() argument 2 must be str, not int'
+
+# 3. Positional argument count arity checks via fast-path / fallback:
+try:
+    'hello'.replace()
+    assert False, 'replace() with 0 args should raise TypeError'
+except TypeError as exc:
+    assert str(exc) == 'replace() takes at least 2 positional arguments (0 given)'
+
+try:
+    'hello'.replace('a')
+    assert False, 'replace() with 1 arg should raise TypeError'
+except TypeError as exc:
+    assert str(exc) == 'replace() takes at least 2 positional arguments (1 given)'
+
+# 4. Overflow check for ssize_t count:
+try:
+    'a'.replace('a', 'b', 10**30)
+    assert False, 'replace with oversized count should raise OverflowError'
+except OverflowError as exc:
+    assert str(exc) == 'Python int too large to convert to C ssize_t'
+
+# 5. Invalid count type check (must keep plain __index__ integer wording):
+try:
+    'a'.replace('a', 'b', 'x')
+    assert False, 'replace with non-int count should raise TypeError'
+except TypeError as exc:
+    assert str(exc) == "'str' object cannot be interpreted as an integer"
+
+try:
+    'a'.replace('a', 'b', count='x')
+    assert False, 'replace with non-int count kwarg should raise TypeError'
+except TypeError as exc:
+    assert str(exc) == "'str' object cannot be interpreted as an integer"
+
+# 6. Type name lookup on object without __index__ (preserves exact class name):
+from collections import namedtuple
+
+Point = namedtuple('Point', ['x', 'y'])
+try:
+    'a'.replace('a', 'b', Point(1, 2))
+    assert False, 'replace with namedtuple count should raise TypeError'
+except TypeError as exc:
+    assert str(exc) == "'Point' object cannot be interpreted as an integer"
+
+# 7. 32-bit boundary: count >= 2**31 must not overflow on 32-bit targets
+assert 'a'.replace('a', 'b', 2**31) == 'b'

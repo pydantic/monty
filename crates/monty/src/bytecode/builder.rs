@@ -94,6 +94,11 @@ impl CodeBuilder {
         self.emit_with_operand(op, Operand::U16(operand))
     }
 
+    /// Emits two u16 operands, e.g. attribute and dotted-path IDs for `LoadSubmodule`.
+    pub fn emit_u16_u16(&mut self, op: Opcode, operand1: u16, operand2: u16) -> Result<(), CompileError> {
+        self.emit_with_operand(op, Operand::U16U16(operand1, operand2))
+    }
+
     /// Emits an instruction with a u16 operand followed by a u8 operand.
     ///
     /// Used for `MakeFunction`, `CallAttr`, `CallAttrExtended`.
@@ -450,15 +455,25 @@ impl CodeBuilder {
         )
     }
 
-    /// Records the current location in the location table if set.
+    /// Records the current location in the location table if set and not
+    /// already the last entry's.
     ///
     /// Returns a `CompileError` if the bytecode offset has grown past
     /// `u32::MAX` — the i16 jump-offset cap means this is practically
     /// unreachable, but `LocationEntry`'s offset is `u32` so we surface the
     /// limit cleanly rather than panic.
     fn record_location(&mut self) -> Result<(), CompileError> {
-        if let Some(range) = self.current_location {
-            let offset = u32::try_from(self.bytecode.len()).map_err(|_| self.bytecode_too_large())?;
+        let Some(range) = self.current_location else {
+            return Ok(());
+        };
+        // checked for every located instruction, including one that repeats the last location
+        let offset = u32::try_from(self.bytecode.len()).map_err(|_| self.bytecode_too_large())?;
+        // an entry covers every instruction up to the next one, so repeating the last location adds nothing
+        if !self
+            .location_table
+            .last()
+            .is_some_and(|last| last.has_location(range, self.current_focus))
+        {
             self.location_table
                 .push(LocationEntry::new(offset, range, self.current_focus));
         }

@@ -1,4 +1,6 @@
-# cpython-main-module
+# /// monty
+# cpython-main-module = true
+# ///
 
 # === Script-style module dunders ===
 assert __name__ == '__main__'

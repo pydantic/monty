@@ -11,11 +11,13 @@ from ._monty import (
     AsyncFunctionSnapshot,
     AsyncFutureSnapshot,
     AsyncMonty,
+    AsyncMontyRemote,
     AsyncMontySession,
-    AsyncMontyWebsocket,
+    AsyncMontyWebsocket,  # pyright: ignore[reportDeprecated]
     AsyncNameLookupSnapshot,
     CollectStreams,
     CollectString,
+    ExternalModule,
     Frame,
     FunctionSnapshot,
     FutureSnapshot,
@@ -23,11 +25,14 @@ from ._monty import (
     MontyClassProxy,
     MontyClassTypeProxy,
     MontyComplete,
+    MontyConfigurationError,
+    MontyConnectError,
     MontyConversionError,
     MontyCrashedError,
     MontyDisconnectError,
     MontyError,
     MontyFileHandle,
+    MontyRefusedError,
     MontyRuntimeError,
     MontySession,
     MontyShutdown,
@@ -40,6 +45,7 @@ from ._monty import (
     __version__,
     _install_telemetry,
 )
+from ._namedtuple import MontyNamedTuple
 from .class_instance import ClassInstance, ClassType
 from .os_access import (
     AbstractFile,
@@ -48,6 +54,7 @@ from .os_access import (
     MemoryFile,
     OSAccess,
     OsFunction,
+    ScanEntry,
     StatResult,
 )
 
@@ -74,13 +81,17 @@ __all__ = (
     # class_instance
     'ClassInstance',
     'ClassType',
+    # _namedtuple
+    'MontyNamedTuple',
     # _monty
     '__version__',
     'AsyncMonty',
     'AsyncMontySession',
+    'AsyncMontyRemote',
     'AsyncMontyWebsocket',
     'CollectStreams',
     'CollectString',
+    'ExternalModule',
     'Frame',
     'SourceRange',
     'Monty',
@@ -92,6 +103,9 @@ __all__ = (
     'MontyDisconnectError',
     'MontyError',
     'MontyFileHandle',
+    'MontyRefusedError',
+    'MontyConfigurationError',
+    'MontyConnectError',
     'MontySession',
     'MontyShutdown',
     'MontySyntaxError',
@@ -108,6 +122,7 @@ __all__ = (
     'AsyncFutureSnapshot',
     # os_access
     'StatResult',
+    'ScanEntry',
     'OsFunction',
     'NOT_HANDLED',
     'AbstractOS',
@@ -266,6 +281,8 @@ ExcType = Literal[
     'UnicodeDecodeError',
     'UnicodeEncodeError',
     'json.JSONDecodeError',
+    'tomllib.TOMLDecodeError',
+    '_csv.Error',
     'ImportError',
     'ModuleNotFoundError',
     'OSError',
@@ -284,14 +301,30 @@ ExcType = Literal[
     're.PatternError',
     'binascii.Error',
     'binascii.Incomplete',
+    'statistics.StatisticsError',
+    'decimal.DecimalException',
+    'decimal.Clamped',
+    'decimal.InvalidOperation',
+    'decimal.ConversionSyntax',
+    'decimal.DivisionByZero',
+    'decimal.DivisionImpossible',
+    'decimal.DivisionUndefined',
+    'decimal.Inexact',
+    'decimal.InvalidContext',
+    'decimal.Rounded',
+    'decimal.Subnormal',
+    'decimal.Overflow',
+    'decimal.Underflow',
+    'decimal.FloatOperation',
 ]
 """String names of Python exception types that Monty understands.
 
 Used by `ExternalExceptionData` to identify an exception by name rather than
 passing a concrete Python exception instance. Names match Python's built-in
-exception classes, except for `json.JSONDecodeError`, `re.PatternError`,
-`binascii.Error` and `binascii.Incomplete`, which are dotted to disambiguate
-from their `ValueError` / `Exception` parents.
+exception classes, except for `json.JSONDecodeError`, `tomllib.TOMLDecodeError`,
+`re.PatternError`, `binascii.Error`, `binascii.Incomplete`, `statistics.StatisticsError`, `_csv.Error` and the
+`decimal` signals (`decimal.InvalidOperation`, ...), which are dotted to
+disambiguate from their `ValueError` / `Exception` / `ArithmeticError` parents.
 """
 
 

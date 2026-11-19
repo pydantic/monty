@@ -39,6 +39,20 @@ fn every_schema_repeated_field_is_budgeted() {
         |message: &WireNamedTuple| &message.values,
     );
     check_repeated(
+        "monty.v1.Type.eq_fields",
+        7,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::Type| &message.eq_fields,
+    );
+    check_repeated(
+        "monty.v1.Type.hash_fields",
+        9,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::Type| &message.hash_fields,
+    );
+    check_repeated(
         "monty.v1.RaisedException.traceback",
         3,
         WireType::LengthDelimited,
@@ -51,6 +65,13 @@ fn every_schema_repeated_field_is_budgeted() {
         WireType::LengthDelimited,
         &[],
         |message: &pb::Feed| &message.inputs,
+    );
+    check_repeated(
+        "monty.v1.Feed.async_functions",
+        6,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::Feed| &message.async_functions,
     );
     check_repeated(
         "monty.v1.ResumeFutures.results",
@@ -86,6 +107,34 @@ fn every_schema_repeated_field_is_budgeted() {
         WireType::LengthDelimited,
         &[],
         |message: &WireFunctionCall| &message.kwargs,
+    );
+    check_repeated(
+        "monty.v1.StreamedCalls.calls",
+        1,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::StreamedCalls| &message.calls,
+    );
+    check_repeated(
+        "monty.v1.OsCall.Scan.pattern",
+        4,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::os_call::Scan| &message.pattern,
+    );
+    check_repeated(
+        "monty.v1.OsCall.Import.search_path",
+        2,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::os_call::Import| &message.search_path,
+    );
+    check_repeated(
+        "monty.v1.OsCall.ImportStubs.modules",
+        1,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::os_call::ImportStubs| &message.modules,
     );
     check_repeated(
         "monty.v1.ResolveFutures.pending_call_ids",

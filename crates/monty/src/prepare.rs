@@ -4,11 +4,11 @@ use ahash::{AHashMap, AHashSet, RandomState};
 use indexmap::IndexMap;
 
 use crate::{
-    args::{ArgExprs, CallArg, CallKwarg, Signature},
+    args::{ArgExprs, CallArg, CallKwarg, Kwarg, Signature},
     builtins::Builtins,
     expressions::{
         AssignTarget, Callable, CaptureSource, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName,
-        NameScope, Node, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
+        MatchCase, NameScope, Node, Pattern, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
     intern::{CompileInterns, StringId},
@@ -54,7 +54,9 @@ pub(crate) fn prepare_with_existing_names(
     interner: &CompileInterns<'_>,
     globals: &mut NameMap,
 ) -> Result<Vec<PreparedNode>, ParseError> {
-    let mut prepared_nodes = Prepare::new_module(globals, interner).prepare_nodes(nodes)?;
+    let mut prepare = Prepare::new_module(globals, interner);
+    prepare.has_star_import = has_star_import(&nodes);
+    let mut prepared_nodes = prepare.prepare_nodes(nodes)?;
 
     // In the root frame, the last expression is implicitly returned if it
     // is not `None`. This matches Python REPL behavior where the last
@@ -71,7 +73,7 @@ pub(crate) fn prepare_with_existing_names(
 }
 
 /// How the top-level names of an `eval()` / `exec()` snippet bind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum SnippetNames {
     /// An ordinary module compile against the session `NameMap` (`LoadGlobal`):
     /// the implicit form at module scope.
@@ -98,6 +100,7 @@ pub(crate) fn prepare_snippet(
     names: SnippetNames,
 ) -> Result<Vec<PreparedNode>, ParseError> {
     let mut prepare = Prepare::new_module(globals, interner);
+    prepare.has_star_import = has_star_import(&nodes);
     if names != SnippetNames::Slots {
         prepare.top_level_by_name = true;
         // `global x` at the top level binds in the globals (CPython emits
@@ -116,6 +119,32 @@ pub(crate) fn prepare_snippet(
     prepare.prepare_nodes(nodes)
 }
 
+/// Whether any module-level statement, however nested in control flow, is a
+/// `from m import *`. Function and class bodies are skipped: preparation
+/// rejects a star import there.
+fn has_star_import(nodes: &[ParseNode]) -> bool {
+    nodes.iter().any(|node| match node {
+        Node::ImportStar { .. } => true,
+        Node::For { body, or_else, .. } | Node::While { body, or_else, .. } | Node::If { body, or_else, .. } => {
+            has_star_import(body) || has_star_import(or_else)
+        }
+        Node::With { body, .. } => has_star_import(body),
+        Node::Try(Try {
+            body,
+            handlers,
+            or_else,
+            finally,
+        }) => {
+            has_star_import(body)
+                || handlers.iter().any(|handler| has_star_import(&handler.body))
+                || has_star_import(or_else)
+                || has_star_import(finally)
+        }
+        Node::Match { cases, .. } => cases.iter().any(|case| has_star_import(&case.body)),
+        _ => false,
+    })
+}
+
 /// State machine for the preparation phase that transforms parsed AST nodes into a prepared form.
 ///
 /// Resolves names to namespace slots and rewrites the AST so the bytecode
@@ -126,6 +155,10 @@ pub(crate) fn prepare_snippet(
 /// The interner is borrowed immutably — every `StringId` we need already
 /// arrived through the AST (parse-time interning), so no new strings are
 /// allocated during prepare.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent scope flags, not a state machine"
+)]
 struct Prepare<'i, 'g> {
     /// String interner for resolving names in error messages.
     interner: &'i CompileInterns<'i>,
@@ -192,6 +225,9 @@ struct Prepare<'i, 'g> {
     /// Names declared `global` at a by-name snippet's top level; they keep
     /// slot resolution. Empty otherwise.
     module_global_names: AHashSet<StringId>,
+    /// Whether the module runs a `from m import *`, which may rebind any
+    /// builtin name, so module-scope reads never substitute builtins.
+    has_star_import: bool,
     /// Class members whose binding statement has already been prepared, in
     /// source order (only populated when `is_class_scope`).
     ///
@@ -205,6 +241,15 @@ struct Prepare<'i, 'g> {
     /// (see [`Self::get_id_read`]). If class bodies ever allow conditional
     /// bindings this must become a runtime-fallback opcode instead.
     bound_class_members: AHashSet<StringId>,
+    /// Aliased class-body local slot holding the implicit `__class__` cell when a
+    /// method or nested closure in this class references `__class__`.
+    class_cell_slot: Option<NamespaceId>,
+    /// Whether the annotation expressions of a synthesized `__annotate__` scope
+    /// are being prepared: every name, even the scope's `format` parameter,
+    /// resolves by name at run time (`NameScope::Name`), through the class
+    /// namespace the function runs under and then the globals, and nothing is
+    /// captured. Set after the scope's prologue (see `prepare_annotate_body`).
+    is_annotate: bool,
 }
 
 /// Insertion-ordered bindings for one active comprehension's lexical scope.
@@ -340,6 +385,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 let mut locals: AHashSet<StringId> = state.free_var_map.keys().copied().collect();
                 locals.extend(state.enclosing_locals.iter().copied());
                 locals.retain(|name| !state.global_names.contains(name));
+                if let Some(dunder_class_id) = self.interner.get_string_id_by_name("__class__") {
+                    locals.insert(dunder_class_id);
+                }
                 locals
             }
             PrepareState::Function(state) => {
@@ -380,6 +428,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 binding.captured = true;
                 return CaptureSource::CompVar(binding.slot);
             }
+        }
+        if self.is_class_scope
+            && self.interner.get_str(name_id) == "__class__"
+            && let Some(slot) = self.class_cell_slot
+        {
+            return CaptureSource::Namespace(slot);
         }
         if let PrepareState::Function(state) = &self.state {
             if let Some(&slot) = state.cell_var_map.get(&name_id) {
@@ -425,6 +479,14 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let PrepareState::Function(state) = &mut self.state else {
             return Ok(());
         };
+
+        if self.is_class_scope && self.interner.get_str(captured_name) == "__class__" {
+            if self.class_cell_slot.is_none() {
+                let slot = state.locals.push_aliased_slot(captured_name, position)?;
+                self.class_cell_slot = Some(slot);
+            }
+            return Ok(());
+        }
 
         if state.cell_var_map.contains_key(&captured_name) || state.free_var_map.contains_key(&captured_name) {
             return Ok(());
@@ -519,8 +581,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
             comp_name_scopes: Vec::new(),
             top_level_by_name: false,
             module_global_names: AHashSet::new(),
+            has_star_import: false,
             is_class_scope: false,
             bound_class_members: AHashSet::new(),
+            class_cell_slot: None,
+            is_annotate: false,
         }
     }
 
@@ -633,8 +698,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
             comp_name_scopes: Vec::new(),
             top_level_by_name: false,
             module_global_names: AHashSet::new(),
+            has_star_import: false,
             is_class_scope: false,
             bound_class_members: AHashSet::new(),
+            class_cell_slot: None,
+            is_annotate: false,
         })
     }
 
@@ -659,8 +727,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     Some(expr) => Some(self.prepare_expression(expr)?),
                     None => None,
                 })),
-                Node::Raise(exc) => {
-                    let expr = match exc {
+                Node::Raise { exc, cause } => {
+                    let exc = match exc {
                         Some(expr) => {
                             let prepared = self.prepare_expression(expr)?;
                             match prepared.expr {
@@ -679,7 +747,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         }
                         None => None,
                     };
-                    new_nodes.push(Node::Raise(expr));
+                    // A bare class as the cause is instantiated at raise time, so it stays as is.
+                    let cause = match cause {
+                        Some(expr) => Some(self.prepare_expression(expr)?),
+                        None => None,
+                    };
+                    new_nodes.push(Node::Raise { exc, cause });
                 }
                 Node::Assert { test, msg } => {
                     let test = self.prepare_expression(test)?;
@@ -846,6 +919,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
                             signature,
                             body,
                             is_async,
+                            annotate,
+                            is_annotate,
                         },
                     decorators,
                 } => {
@@ -856,7 +931,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         .into_iter()
                         .map(|d| self.prepare_expression(d))
                         .collect::<Result<Vec<_>, ParseError>>()?;
-                    let func = self.prepare_function_def(name, &signature, body, is_async)?;
+                    let func = self.prepare_function_def(name, &signature, body, is_async, annotate, is_annotate)?;
                     // In a class body, the method name becomes a bound member
                     // only now — its own parameter defaults (evaluated in class
                     // scope, above) must see the pre-binding state.
@@ -867,12 +942,16 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 }
                 Node::ClassDef {
                     name,
+                    bases,
+                    keywords,
                     body,
                     members,
                     decorators,
                     position,
                 } => {
-                    new_nodes.push(self.prepare_class_def(name, body, members, decorators, position)?);
+                    let prepared =
+                        self.prepare_class_def(name, bases, keywords, body, members, decorators, position)?;
+                    new_nodes.push(prepared);
                 }
                 Node::Global { names, position } => {
                     // At module level, `global` is a no-op since all variables are already global.
@@ -954,6 +1033,22 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         finally,
                     }));
                 }
+                Node::Match {
+                    subject,
+                    cases,
+                    position,
+                } => {
+                    let subject = self.prepare_expression(subject)?;
+                    let cases = cases
+                        .into_iter()
+                        .map(|case| self.prepare_match_case(case))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    new_nodes.push(Node::Match {
+                        subject,
+                        cases,
+                        position,
+                    });
+                }
                 Node::With {
                     context,
                     target,
@@ -987,6 +1082,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
                             let resolved_binding = self.get_id(import_name.binding)?;
                             Ok(ImportName {
                                 module_name: import_name.module_name,
+                                submodules: import_name.submodules,
+                                binds_top_level: import_name.binds_top_level,
                                 binding: resolved_binding,
                             })
                         })
@@ -995,6 +1092,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 }
                 Node::ImportFrom {
                     module_name,
+                    submodules,
                     names,
                     position,
                 } => {
@@ -1009,8 +1107,30 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         .collect::<Result<_, _>>()?;
                     new_nodes.push(Node::ImportFrom {
                         module_name,
+                        submodules,
                         names: resolved_names,
                         position,
+                    });
+                }
+                // Binds names unknown until runtime, so it never reaches the slot
+                // resolution that function and class bodies depend on.
+                Node::ImportStar {
+                    module_name,
+                    submodules,
+                    position,
+                    star_position,
+                } => {
+                    if !self.is_module_scope() {
+                        return Err(ParseError::syntax(
+                            "import * only allowed at module level",
+                            star_position,
+                        ));
+                    }
+                    new_nodes.push(Node::ImportStar {
+                        module_name,
+                        submodules,
+                        position,
+                        star_position,
                     });
                 }
             }
@@ -1259,7 +1379,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
         //
         // A by-name snippet top level never has it either: its namespace dict
         // may shadow the builtin, so the read is deferred to runtime too.
-        if self.is_module_scope() && !self.top_level_by_name {
+        // A star import can bind any name. A later REPL snippet sees the slots it
+        // bound, but within this snippet nothing tells which names it binds.
+        if self.is_module_scope() && !self.top_level_by_name && !self.has_star_import {
             let name_str = self.interner.get_str(name.name_id);
             let already_bound =
                 self.names_assigned_in_order.contains(&name.name_id) || self.globals.globals.contains(name.name_id);
@@ -1325,7 +1447,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // Anchor any namespace-overflow error to the first generator's iter,
         // since the walrus statements themselves can be scattered through the
         // comprehension and don't have a single load-bearing position.
-        let comp_pos = generators.first().map(|g| g.iter.position).unwrap_or_default();
+        let comp_pos = generators.first().map_or_default(|g| g.iter.position);
         for &name in &walrus_targets {
             self.ensure_scope_slot(name, comp_pos)?;
             self.names_assigned_in_order.insert(name);
@@ -1508,6 +1630,100 @@ impl<'i, 'g> Prepare<'i, 'g> {
         }
     }
 
+    /// Prepares one `case` clause: pattern captures bind like assignment
+    /// targets, then the guard and body are prepared in the same scope.
+    fn prepare_match_case(&mut self, case: MatchCase<ParseNode>) -> Result<MatchCase<PreparedNode>, ParseError> {
+        let pattern = self.prepare_pattern(case.pattern)?;
+        let guard = match case.guard {
+            Some(guard) => Some(self.prepare_expression(guard)?),
+            None => None,
+        };
+        let body = self.prepare_nodes(case.body)?;
+        Ok(MatchCase {
+            pattern,
+            guard,
+            body,
+            position: case.position,
+        })
+    }
+
+    /// Resolves a pattern's expressions and capture names.
+    ///
+    /// Every capture (`case x`, `*rest`, `**rest`, `as name`) is a store target in
+    /// the enclosing scope, so it goes through [`Self::get_id`] like an unpack name.
+    fn prepare_pattern(&mut self, pattern: Pattern) -> Result<Pattern, ParseError> {
+        Ok(match pattern {
+            Pattern::Value(expr) => Pattern::Value(self.prepare_expression(expr)?),
+            Pattern::Singleton(expr) => Pattern::Singleton(self.prepare_expression(expr)?),
+            Pattern::Sequence { patterns, position } => Pattern::Sequence {
+                patterns: self.prepare_patterns(patterns)?,
+                position,
+            },
+            Pattern::Mapping {
+                keys,
+                patterns,
+                rest,
+                position,
+            } => Pattern::Mapping {
+                keys: keys
+                    .into_iter()
+                    .map(|key| self.prepare_expression(key))
+                    .collect::<Result<Vec<_>, _>>()?,
+                patterns: self.prepare_patterns(patterns)?,
+                rest: self.prepare_capture(rest)?,
+                position,
+            },
+            Pattern::Class {
+                cls,
+                patterns,
+                kwd_attrs,
+                kwd_patterns,
+                position,
+            } => Pattern::Class {
+                cls: self.prepare_expression(cls)?,
+                patterns: self.prepare_patterns(patterns)?,
+                kwd_attrs,
+                kwd_patterns: self.prepare_patterns(kwd_patterns)?,
+                position,
+            },
+            Pattern::Star { name, position } => Pattern::Star {
+                name: self.prepare_capture(name)?,
+                position,
+            },
+            Pattern::As {
+                pattern,
+                name,
+                position,
+            } => Pattern::As {
+                pattern: match pattern {
+                    Some(inner) => Some(Box::new(self.prepare_pattern(*inner)?)),
+                    None => None,
+                },
+                name: self.prepare_capture(name)?,
+                position,
+            },
+            Pattern::Or { patterns, position } => Pattern::Or {
+                patterns: self.prepare_patterns(patterns)?,
+                position,
+            },
+        })
+    }
+
+    fn prepare_patterns(&mut self, patterns: Vec<Pattern>) -> Result<Vec<Pattern>, ParseError> {
+        patterns.into_iter().map(|p| self.prepare_pattern(p)).collect()
+    }
+
+    /// Resolves an optional capture name to its store slot.
+    fn prepare_capture(&mut self, name: Option<Identifier>) -> Result<Option<Identifier>, ParseError> {
+        match name {
+            Some(ident) => {
+                self.names_assigned_in_order.insert(ident.name_id);
+                Ok(Some(self.get_id(ident)?))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Predeclares an unpack target's names as comprehension-variable slots.
     ///
     /// Called during the first pass of `prepare_comprehension`, before any
@@ -1593,11 +1809,50 @@ impl<'i, 'g> Prepare<'i, 'g> {
         parsed_sig: &ParsedSignature,
         body: Vec<ParseNode>,
         is_async: bool,
+        annotate: Option<Box<RawFunctionDef>>,
+        is_annotate: bool,
     ) -> Result<PreparedFunctionDef, ParseError> {
         // A `def` (top-level, nested, or method — class bodies are function scopes
         // too) binds its name in the enclosing scope.
         self.names_assigned_in_order.insert(name.name_id);
         let name = self.get_id(name)?;
+        self.prepare_function_scope(name, parsed_sig, body, is_async, annotate, is_annotate)
+    }
+
+    /// Prepares a `def`'s `__annotate__` (see `Parser::synthesize_annotate`) in
+    /// this scope, like its defaults. It binds no name: the function is reached
+    /// through the `Function` that owns it, never through a namespace.
+    fn prepare_annotate(&mut self, def: RawFunctionDef) -> Result<Box<PreparedFunctionDef>, ParseError> {
+        let RawFunctionDef {
+            name, signature, body, ..
+        } = def;
+        let name = Identifier::new_with_scope(
+            name.name_id,
+            name.position,
+            NamespaceId::new(0).expect("slot 0 fits in u16"),
+            NameScope::Local,
+        );
+        self.prepare_function_scope(name, &signature, body, false, None, true)
+            .map(Box::new)
+    }
+
+    /// Prepares a function scope whose `name` is already resolved: the body of a
+    /// `def`, a method or an `__annotate__`.
+    ///
+    /// `is_annotate` makes the child an annotate scope (see [`Prepare::is_annotate`]):
+    /// it captures nothing, so an enclosing local named in an annotation resolves
+    /// by name at run time (a documented divergence, see `limitations/typing.md`).
+    fn prepare_function_scope(
+        &mut self,
+        name: Identifier,
+        parsed_sig: &ParsedSignature,
+        body: Vec<ParseNode>,
+        is_async: bool,
+        annotate: Option<Box<RawFunctionDef>>,
+        is_annotate: bool,
+    ) -> Result<PreparedFunctionDef, ParseError> {
+        // The annotate function evaluates in this scope, like the defaults.
+        let annotate = annotate.map(|def| self.prepare_annotate(*def)).transpose()?;
 
         // Extract param names from the parsed signature for scope analysis
         let param_names: Vec<StringId> = parsed_sig.param_names().collect();
@@ -1607,8 +1862,13 @@ impl<'i, 'g> Prepare<'i, 'g> {
 
         // Build `enclosing_locals` for the new function: the union of every
         // ancestor function scope's locals (see `child_enclosing_locals` for the
-        // transitive-closure and class-scope-skipping rationale).
-        let enclosing_locals = self.child_enclosing_locals();
+        // transitive-closure and class-scope-skipping rationale). An annotate
+        // scope sees none, so nothing becomes a cell.
+        let enclosing_locals = if is_annotate {
+            AHashSet::new()
+        } else {
+            self.child_enclosing_locals()
+        };
 
         // Filter potential_captures to get actual implicit captures.
         // Only names that are ALSO in enclosing_locals are true implicit captures.
@@ -1638,7 +1898,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
         )?;
 
         // Prepare the function body
-        let prepared_body = inner_prepare.prepare_nodes(body)?;
+        let prepared_body = if is_annotate {
+            inner_prepare.prepare_annotate_body(body)?
+        } else {
+            inner_prepare.prepare_nodes(body)?
+        };
 
         // Take the per-function state out of `inner_prepare` and drop the
         // child so its `GlobalsRef` borrow is released. We need exclusive
@@ -1732,7 +1996,21 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs,
             is_async,
+            annotate,
+            is_annotate,
         })
+    }
+
+    /// Prepares a synthesized `__annotate__` body (see `Parser::synthesize_annotate`):
+    /// the prologue testing `format` as ordinary code, then the returned dict of
+    /// annotation expressions with every name resolved at run time, so a global
+    /// named `format` is not shadowed by the parameter, as in CPython.
+    fn prepare_annotate_body(&mut self, mut body: Vec<ParseNode>) -> Result<Vec<PreparedNode>, ParseError> {
+        let values = body.pop().expect("an annotate body ends with its return");
+        let mut prepared = self.prepare_nodes(body)?;
+        self.is_annotate = true;
+        prepared.extend(self.prepare_nodes(vec![values])?);
+        Ok(prepared)
     }
 
     /// Prepares a `class Foo: ...` definition.
@@ -1750,9 +2028,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
     ///   assembly) from the inner preparer's locals.
     ///
     /// The class name itself binds in the **enclosing** scope, exactly like a `def`.
+    #[expect(clippy::too_many_arguments)]
     fn prepare_class_def(
         &mut self,
         name: Identifier,
+        bases: Vec<SequenceItem>,
+        keywords: Vec<Kwarg>,
         body: RawFunctionDef,
         members: Vec<Identifier>,
         decorators: Vec<ExprLoc>,
@@ -1761,6 +2042,24 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // The class name binds in the enclosing scope, exactly like a `def`.
         self.names_assigned_in_order.insert(name.name_id);
         let name = self.get_id(name)?;
+
+        let bases = bases
+            .into_iter()
+            .map(|item| match item {
+                SequenceItem::Value(e) => Ok(SequenceItem::Value(self.prepare_expression(e)?)),
+                SequenceItem::Unpack(e) => Ok(SequenceItem::Unpack(self.prepare_expression(e)?)),
+            })
+            .collect::<Result<Vec<_>, ParseError>>()?;
+
+        let keywords = keywords
+            .into_iter()
+            .map(|kw| {
+                Ok(Kwarg {
+                    key: kw.key,
+                    value: self.prepare_expression(kw.value)?,
+                })
+            })
+            .collect::<Result<Vec<_>, ParseError>>()?;
 
         // Decorators evaluate in the enclosing scope, not the class body.
         let decorators = decorators
@@ -1823,6 +2122,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             ..
         } = *inner_state;
         let namespace_size = inner_locals.len();
+        let class_cell_slot = inner_prepare.class_cell_slot;
         drop(inner_prepare);
 
         // Resolve each member to its class-body-local slot. Every member is
@@ -1859,9 +2159,13 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let FinalizedScope {
             free_var_enclosing_slots,
             free_var_slots,
-            cell_var_slots,
-            cell_param_indices,
+            mut cell_var_slots,
+            mut cell_param_indices,
         } = self.finalize_child_scope(inner_free_var_map, inner_cell_var_map, &param_names, position)?;
+        if let Some(slot) = class_cell_slot {
+            cell_var_slots.push(slot);
+            cell_param_indices.push(None);
+        }
 
         // The class body is a synthetic, never-registered zero-arg function. Its
         // name reuses the class `name_id` (for tracebacks) with a placeholder slot.
@@ -1886,10 +2190,14 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs: Vec::new(),
             is_async: false,
+            annotate: None,
+            is_annotate: false,
         };
 
         Ok(Node::ClassDef {
             name,
+            bases,
+            keywords,
             body: body_def,
             members,
             decorators,
@@ -2050,6 +2358,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs,
             is_async: false,
+            annotate: None,
+            is_annotate: false,
         };
 
         Ok(ExprLoc::new(
@@ -2174,6 +2484,15 @@ impl<'i, 'g> Prepare<'i, 'g> {
             }
             PrepareState::Function(state) => state,
         };
+
+        // An annotation expression loads every name at run time, as CPython's
+        // annotate scope does: the class namespace it runs under, then the
+        // globals. Its `format` parameter is not visible to it either; only the
+        // synthesized prologue, prepared before this flag is set, reads that.
+        if self.is_annotate {
+            let slot = self.globals.ensure_slot(name_id, position)?;
+            return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Name));
+        }
 
         // In a function: walk the scope cascade.
 
@@ -2509,7 +2828,7 @@ fn collect_scope_info_from_node(
             }
         }
         Node::FunctionDef {
-            def: RawFunctionDef { name, .. },
+            def: RawFunctionDef { name, signature, .. },
             decorators,
         } => {
             // Function definition creates a local binding for the function name
@@ -2519,11 +2838,31 @@ fn collect_scope_info_from_node(
             for decorator in decorators {
                 collect_assigned_names_from_expr(decorator, assigned_names, interner);
             }
+            // Defaults also evaluate in this scope, unlike the function body.
+            for default in signature.default_exprs() {
+                collect_assigned_names_from_expr(default, assigned_names, interner);
+            }
         }
-        Node::ClassDef { name, decorators, .. } => {
+        Node::ClassDef {
+            name,
+            bases,
+            keywords,
+            decorators,
+            ..
+        } => {
             // A class definition binds the class name in this scope, just like a `def`.
             // The class body is a separate scope (handled by the cell-var pass).
             assigned_names.insert(name.name_id);
+            for base in bases {
+                match base {
+                    SequenceItem::Value(e) | SequenceItem::Unpack(e) => {
+                        collect_assigned_names_from_expr(e, assigned_names, interner);
+                    }
+                }
+            }
+            for kw in keywords {
+                collect_assigned_names_from_expr(&kw.value, assigned_names, interner);
+            }
             // Decorators evaluate in *this* scope, so a walrus in one binds here.
             for decorator in decorators {
                 collect_assigned_names_from_expr(decorator, assigned_names, interner);
@@ -2555,6 +2894,21 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
+        Node::Match { subject, cases, .. } => {
+            collect_assigned_names_from_expr(subject, assigned_names, interner);
+            for case in cases {
+                collect_pattern_captures(&case.pattern, assigned_names);
+                for_each_pattern_expr(&case.pattern, &mut |expr| {
+                    collect_assigned_names_from_expr(expr, assigned_names, interner);
+                });
+                if let Some(guard) = &case.guard {
+                    collect_assigned_names_from_expr(guard, assigned_names, interner);
+                }
+                for n in &case.body {
+                    collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+                }
+            }
+        }
         Node::With {
             context, target, body, ..
         } => {
@@ -2568,6 +2922,8 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
+        // A star import is rejected in function scopes, which this walks.
+        Node::ImportStar { .. } => {}
         // Import creates bindings for each module name (or alias)
         Node::Import { names, .. } => {
             for import_name in names {
@@ -2581,8 +2937,13 @@ fn collect_scope_info_from_node(
             }
         }
         // Statements with expressions that may contain walrus operators
-        Node::Expr(expr) | Node::Return(Some(expr)) | Node::Raise(Some(expr)) => {
+        Node::Expr(expr) | Node::Return(Some(expr)) => {
             collect_assigned_names_from_expr(expr, assigned_names, interner);
+        }
+        Node::Raise { exc, cause } => {
+            for expr in exc.iter().chain(cause) {
+                collect_assigned_names_from_expr(expr, assigned_names, interner);
+            }
         }
         Node::Assert { test, msg } => {
             collect_assigned_names_from_expr(test, assigned_names, interner);
@@ -2591,7 +2952,7 @@ fn collect_scope_info_from_node(
             }
         }
         // These don't create new names
-        Node::Pass | Node::Return(None) | Node::Raise(None) | Node::Break { .. } | Node::Continue { .. } => {}
+        Node::Pass | Node::Return(None) | Node::Break { .. } | Node::Continue { .. } => {}
     }
 }
 
@@ -2799,6 +3160,11 @@ fn collect_cell_vars_from_node(
     interner: &CompileInterns<'_>,
 ) {
     match node {
+        // A class body's `__annotate__` captures nothing (see `Prepare::is_annotate`).
+        Node::FunctionDef {
+            def: RawFunctionDef { is_annotate: true, .. },
+            ..
+        } => {}
         Node::FunctionDef {
             def: RawFunctionDef { signature, body, .. },
             decorators,
@@ -2810,7 +3176,23 @@ fn collect_cell_vars_from_node(
                 collect_cell_vars_from_expr(decorator, our_locals, cell_vars, interner);
             }
         }
-        Node::ClassDef { body, decorators, .. } => {
+        Node::ClassDef {
+            bases,
+            keywords,
+            body,
+            decorators,
+            ..
+        } => {
+            for base in bases {
+                match base {
+                    SequenceItem::Value(e) | SequenceItem::Unpack(e) => {
+                        collect_cell_vars_from_expr(e, our_locals, cell_vars, interner);
+                    }
+                }
+            }
+            for kw in keywords {
+                collect_cell_vars_from_expr(&kw.value, our_locals, cell_vars, interner);
+            }
             // The class body is a nested scope of *this* scope, like a `def`: any
             // of our locals referenced from the class-var values or (transitively)
             // the method bodies becomes a cell var. `collect_cell_vars_from_function`
@@ -2867,6 +3249,9 @@ fn collect_cell_vars_from_node(
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
             }
             for handler in handlers {
+                if let Some(exc_type) = &handler.exc_type {
+                    collect_cell_vars_from_expr(exc_type, our_locals, cell_vars, interner);
+                }
                 for n in &handler.body {
                     collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
                 }
@@ -2876,6 +3261,20 @@ fn collect_cell_vars_from_node(
             }
             for n in finally {
                 collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+            }
+        }
+        Node::Match { subject, cases, .. } => {
+            collect_cell_vars_from_expr(subject, our_locals, cell_vars, interner);
+            for case in cases {
+                for_each_pattern_expr(&case.pattern, &mut |expr| {
+                    collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
+                });
+                if let Some(guard) = &case.guard {
+                    collect_cell_vars_from_expr(guard, our_locals, cell_vars, interner);
+                }
+                for n in &case.body {
+                    collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+                }
             }
         }
         Node::With {
@@ -2893,7 +3292,17 @@ fn collect_cell_vars_from_node(
         Node::Expr(expr) | Node::Return(Some(expr)) => {
             collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
         }
-        Node::Return(None) => {}
+        Node::Raise { exc, cause } => {
+            for expr in exc.iter().chain(cause) {
+                collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
+            }
+        }
+        Node::Assert { test, msg } => {
+            collect_cell_vars_from_expr(test, our_locals, cell_vars, interner);
+            if let Some(msg) = msg {
+                collect_cell_vars_from_expr(msg, our_locals, cell_vars, interner);
+            }
+        }
         Node::Assign { object, .. } => {
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
         }
@@ -2934,8 +3343,17 @@ fn collect_cell_vars_from_node(
             }
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
         }
-        // Other nodes don't contain nested function definitions or lambdas
-        _ => {}
+        // Listed rather than matched by `_`: a missed capture compiles a local's
+        // stores as plain stores and its later loads as cell loads.
+        Node::Pass
+        | Node::Return(None)
+        | Node::Break { .. }
+        | Node::Continue { .. }
+        | Node::Global { .. }
+        | Node::Nonlocal { .. }
+        | Node::Import { .. }
+        | Node::ImportFrom { .. }
+        | Node::ImportStar { .. } => {}
     }
 }
 
@@ -3283,10 +3701,15 @@ fn collect_referenced_names_from_node(
     interner: &CompileInterns<'_>,
 ) {
     match node {
-        Node::Expr(expr) | Node::Return(Some(expr)) | Node::Raise(Some(expr)) => {
+        Node::Expr(expr) | Node::Return(Some(expr)) => {
             collect_referenced_names_from_expr(expr, referenced, interner);
         }
-        Node::Return(None) | Node::Raise(None) => {}
+        Node::Raise { exc, cause } => {
+            for expr in exc.iter().chain(cause) {
+                collect_referenced_names_from_expr(expr, referenced, interner);
+            }
+        }
+        Node::Return(None) => {}
         Node::Assert { test, msg } => {
             collect_referenced_names_from_expr(test, referenced, interner);
             if let Some(m) = msg {
@@ -3368,10 +3791,19 @@ fn collect_referenced_names_from_node(
                 collect_referenced_names_from_node(n, referenced, interner);
             }
         }
+        // A class body's `__annotate__` references nothing from enclosing scopes.
+        Node::FunctionDef {
+            def: RawFunctionDef { is_annotate: true, .. },
+            ..
+        } => {}
         Node::FunctionDef {
             def: RawFunctionDef { signature, body, .. },
             decorators,
         } => {
+            // Default parameter expressions evaluate in *our* scope at function-definition time.
+            for default in signature.default_exprs() {
+                collect_referenced_names_from_expr(default, referenced, interner);
+            }
             // Recurse into the nested function's body so transitively-captured
             // names propagate out of it. Without this, an intermediate scope
             // that doesn't itself reference a deep capture would not see it
@@ -3382,7 +3814,22 @@ fn collect_referenced_names_from_node(
                 collect_referenced_names_from_expr(decorator, referenced, interner);
             }
         }
-        Node::ClassDef { decorators, .. } => {
+        Node::ClassDef {
+            bases,
+            keywords,
+            decorators,
+            ..
+        } => {
+            for base in bases {
+                match base {
+                    SequenceItem::Value(e) | SequenceItem::Unpack(e) => {
+                        collect_referenced_names_from_expr(e, referenced, interner);
+                    }
+                }
+            }
+            for kw in keywords {
+                collect_referenced_names_from_expr(&kw.value, referenced, interner);
+            }
             // The class body is a separate scope and the name is a binding, so
             // neither is a reference here — but decorators evaluate in *our*
             // scope, so their names are ours to collect.
@@ -3415,6 +3862,20 @@ fn collect_referenced_names_from_node(
                 collect_referenced_names_from_node(n, referenced, interner);
             }
         }
+        Node::Match { subject, cases, .. } => {
+            collect_referenced_names_from_expr(subject, referenced, interner);
+            for case in cases {
+                for_each_pattern_expr(&case.pattern, &mut |expr| {
+                    collect_referenced_names_from_expr(expr, referenced, interner);
+                });
+                if let Some(guard) = &case.guard {
+                    collect_referenced_names_from_expr(guard, referenced, interner);
+                }
+                for n in &case.body {
+                    collect_referenced_names_from_node(n, referenced, interner);
+                }
+            }
+        }
         Node::With {
             context, target, body, ..
         } => {
@@ -3427,12 +3888,11 @@ fn collect_referenced_names_from_node(
             }
         }
         // Imports create bindings but don't reference names
-        Node::Import { .. } | Node::ImportFrom { .. } => {}
+        Node::Import { .. } | Node::ImportFrom { .. } | Node::ImportStar { .. } => {}
         Node::Pass | Node::Global { .. } | Node::Nonlocal { .. } | Node::Break { .. } | Node::Continue { .. } => {}
     }
 }
 
-/// Collects all names referenced in an expression.
 /// Adds the transitive free-name references of a nested function definition
 /// to `referenced`, after filtering out names that the nested function binds
 /// for itself (params, body-assigned, and `global` declarations).
@@ -3460,21 +3920,31 @@ fn collect_nested_function_references(
     // Anything the nested function binds for itself does NOT propagate out.
     // We treat `global X` the same way: the nested function explicitly
     // routes X to module scope, so we don't want to capture X in this scope's
-    // cell variables.
-    let param_names: Vec<StringId> = signature.param_names().collect();
-    let nested_scope = collect_function_scope_info(body, &param_names, interner);
-    let nested_params: AHashSet<StringId> = param_names.iter().copied().collect();
+    // cell variables. Only its own bindings are needed, so this uses the
+    // non-descending `collect_scope_info_from_node`: `collect_function_scope_info`
+    // would re-walk every deeper function and make this exponential in nesting depth.
+    let mut nested_global = AHashSet::new();
+    let mut nested_nonlocal = AHashSet::new();
+    let mut nested_assigned = AHashSet::new();
+    for n in body {
+        collect_scope_info_from_node(
+            n,
+            &mut nested_global,
+            &mut nested_nonlocal,
+            &mut nested_assigned,
+            interner,
+        );
+    }
+    let nested_params: AHashSet<StringId> = signature.param_names().collect();
     for name in nested_referenced {
-        if nested_scope.assigned_names.contains(&name)
-            || nested_params.contains(&name)
-            || nested_scope.global_names.contains(&name)
-        {
+        if nested_assigned.contains(&name) || nested_params.contains(&name) || nested_global.contains(&name) {
             continue;
         }
         referenced.insert(name);
     }
 }
 
+/// Collects all names referenced in an expression.
 fn collect_referenced_names_from_expr(
     expr: &ExprLoc,
     referenced: &mut AHashSet<StringId>,
@@ -3753,6 +4223,84 @@ fn collect_referenced_names_from_fstring_parts(
             // Also check dynamic format specs which can contain interpolated expressions
             if let Some(FormatSpec::Dynamic(spec_parts)) = format_spec {
                 collect_referenced_names_from_fstring_parts(spec_parts, referenced, interner);
+            }
+        }
+    }
+}
+
+/// Adds every name a pattern binds (`case x`, `*rest`, `**rest`, `as name`) to `names`.
+fn collect_pattern_captures(pattern: &Pattern, names: &mut AHashSet<StringId>) {
+    match pattern {
+        Pattern::Value(_) | Pattern::Singleton(_) => {}
+        Pattern::Sequence { patterns, .. } | Pattern::Or { patterns, .. } => {
+            for p in patterns {
+                collect_pattern_captures(p, names);
+            }
+        }
+        Pattern::Mapping { patterns, rest, .. } => {
+            for p in patterns {
+                collect_pattern_captures(p, names);
+            }
+            if let Some(rest) = rest {
+                names.insert(rest.name_id);
+            }
+        }
+        Pattern::Class {
+            patterns, kwd_patterns, ..
+        } => {
+            for p in patterns.iter().chain(kwd_patterns) {
+                collect_pattern_captures(p, names);
+            }
+        }
+        Pattern::Star { name, .. } => {
+            if let Some(name) = name {
+                names.insert(name.name_id);
+            }
+        }
+        Pattern::As { pattern, name, .. } => {
+            if let Some(inner) = pattern {
+                collect_pattern_captures(inner, names);
+            }
+            if let Some(name) = name {
+                names.insert(name.name_id);
+            }
+        }
+    }
+}
+
+/// Calls `f` on every expression a pattern evaluates: value and singleton
+/// constants, mapping keys and class names. Captures are not expressions.
+fn for_each_pattern_expr(pattern: &Pattern, f: &mut impl FnMut(&ExprLoc)) {
+    match pattern {
+        Pattern::Value(expr) | Pattern::Singleton(expr) => f(expr),
+        Pattern::Sequence { patterns, .. } | Pattern::Or { patterns, .. } => {
+            for p in patterns {
+                for_each_pattern_expr(p, f);
+            }
+        }
+        Pattern::Mapping { keys, patterns, .. } => {
+            for key in keys {
+                f(key);
+            }
+            for p in patterns {
+                for_each_pattern_expr(p, f);
+            }
+        }
+        Pattern::Class {
+            cls,
+            patterns,
+            kwd_patterns,
+            ..
+        } => {
+            f(cls);
+            for p in patterns.iter().chain(kwd_patterns) {
+                for_each_pattern_expr(p, f);
+            }
+        }
+        Pattern::Star { .. } => {}
+        Pattern::As { pattern, .. } => {
+            if let Some(inner) = pattern {
+                for_each_pattern_expr(inner, f);
             }
         }
     }

@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # Test setattr() builtin function
 
 mut_point = make_mutable_point()

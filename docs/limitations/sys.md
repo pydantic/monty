@@ -65,10 +65,6 @@ access raises `AttributeError`.
     which routes output to that stream through the host print callback (see
     [print.md](print.md)).
 
-Accessing an attribute the module does not define raises Monty's generic
-`AttributeError: 'module' object has no attribute '<name>'`, where CPython says
-`module 'sys' has no attribute '<name>'`.
-
 ## Not implemented
 
 `path`, `modules`, `exit`, `exc_info`, `getrecursionlimit`,

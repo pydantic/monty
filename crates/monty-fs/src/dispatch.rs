@@ -7,9 +7,17 @@
 //! Ownership matters: write payloads are *moved* through here so overlay
 //! storage can retain them without a copy.
 
-use monty_types::{FileMode, MontyFileHandle, MontyObject, MontyPath, OsFunctionCall, normalize_virtual_path};
+use monty_types::{
+    FileMode, MontyFileHandle, MontyObject, MontyPath, OsFunctionCall, normalize_virtual_path, scan::EntryInfo,
+};
 
-use super::{common::MountContext, direct, error::MountError, mount_mode::MountMode, overlay};
+use super::{
+    common::{MemoryBudget, MountContext, PathInfo},
+    direct,
+    error::MountError,
+    mount_mode::MountMode,
+    overlay,
+};
 
 /// Parsed filesystem request passed to the direct or overlay backend.
 #[derive(Debug)]
@@ -34,6 +42,12 @@ pub(super) enum FsRequest {
     AppendText { path: MontyPath, data: String },
     /// `Path.append_bytes(data)`
     AppendBytes { path: MontyPath, data: Vec<u8> },
+    /// Overwrite an existing file at a byte offset.
+    WriteBytesAt {
+        path: MontyPath,
+        offset: u64,
+        data: Vec<u8>,
+    },
     /// `Path.mkdir(parents=..., exist_ok=...)`
     Mkdir {
         /// Target path.
@@ -57,9 +71,13 @@ pub(super) enum FsRequest {
     Resolve { path: MontyPath },
     /// `Path.absolute()`
     Absolute { path: MontyPath },
-    /// `open(path, mode)` — performs the open-time effect and returns a
-    /// [`MontyFileHandle`] value. The mode is parsed once during dispatch
-    /// so backends never re-parse the raw string.
+    /// Create an empty file only when the pathname is unoccupied.
+    CreateExclusive {
+        path: MontyPath,
+        mode: FileMode,
+        permissions: u32,
+    },
+    /// `open(path, mode)` returns a handle after the host performs its open-time effect.
     Open {
         /// Target path.
         path: MontyPath,
@@ -83,6 +101,7 @@ impl FsRequest {
             | Self::WriteBytes { path, .. }
             | Self::AppendText { path, .. }
             | Self::AppendBytes { path, .. }
+            | Self::WriteBytesAt { path, .. }
             | Self::Mkdir { path, .. }
             | Self::Unlink { path }
             | Self::Rmdir { path }
@@ -91,6 +110,7 @@ impl FsRequest {
             | Self::Resolve { path }
             | Self::Absolute { path }
             | Self::Open { path, .. }
+            | Self::CreateExclusive { path, .. }
             | Self::Rename { src: path, .. } => path,
         }
     }
@@ -107,7 +127,9 @@ impl FsRequest {
             | Self::WriteBytes { .. }
             | Self::AppendText { .. }
             | Self::AppendBytes { .. }
+            | Self::WriteBytesAt { .. }
             | Self::Mkdir { .. }
+            | Self::CreateExclusive { .. }
             | Self::Unlink { .. }
             | Self::Rmdir { .. }
             | Self::Rename { .. } => true,
@@ -149,6 +171,16 @@ pub(super) fn fs_request_from_call(call: OsFunctionCall) -> FsRequest {
             path: a.path,
             data: a.data,
         },
+        OsFunctionCall::WriteBytesAt(a) => FsRequest::WriteBytesAt {
+            path: a.path,
+            offset: a.offset,
+            data: a.data,
+        },
+        OsFunctionCall::CreateExclusive(a) => FsRequest::CreateExclusive {
+            path: a.path,
+            mode: a.mode,
+            permissions: a.permissions,
+        },
         OsFunctionCall::Mkdir(a) => FsRequest::Mkdir {
             path: a.path,
             parents: a.parents,
@@ -174,11 +206,18 @@ pub(super) fn fs_request_from_call(call: OsFunctionCall) -> FsRequest {
         | OsFunctionCall::Sleep(_)
         | OsFunctionCall::SystemSleep(_)
         | OsFunctionCall::AsyncSleep(_)
-        | OsFunctionCall::AsyncSystemSleep(_) => unreachable!("non-filesystem OS function reached filesystem parser"),
+        | OsFunctionCall::AsyncSystemSleep(_)
+        | OsFunctionCall::Import(_)
+        | OsFunctionCall::ImportStubs(_)
+        | OsFunctionCall::GetTypeHints(_) => unreachable!("non-filesystem OS function reached filesystem parser"),
+        OsFunctionCall::Scan(_) => unreachable!("scans are run by the mount table, not one mount"),
     }
 }
 
 /// Routes a parsed request to the correct backend for the mount mode.
+///
+/// A scan never arrives here: the mount table runs it over every mount, built
+/// from the other requests, which this routes in turn.
 pub(super) fn execute(
     request: FsRequest,
     ctx: &mut MountContext<'_>,
@@ -191,6 +230,30 @@ pub(super) fn execute(
             MountMode::ReadWrite | MountMode::ReadOnly => direct::execute(request, ctx),
             MountMode::OverlayMemory(state) => overlay::execute(request, ctx, state),
         }
+    }
+}
+
+/// Answers the four path predicates for a directory scan in one backend
+/// lookup, under the same policy each would apply alone.
+pub(super) fn path_info(path: &str, ctx: &MountContext<'_>, mode: &MountMode) -> Result<PathInfo, MountError> {
+    match mode {
+        MountMode::ReadWrite | MountMode::ReadOnly => direct::path_info(path, ctx),
+        MountMode::OverlayMemory(state) => overlay::path_info(path, ctx, state, |_| None),
+    }
+}
+
+/// Lists the directory `path` for a scan with each entry described as
+/// [`path_info`] on it would describe it, without a lookup per entry, within
+/// what is left of the scan's `budget`.
+pub(super) fn scan_list(
+    path: &str,
+    ctx: &MountContext<'_>,
+    mode: &MountMode,
+    budget: MemoryBudget,
+) -> Result<Vec<(String, EntryInfo)>, MountError> {
+    match mode {
+        MountMode::ReadWrite | MountMode::ReadOnly => direct::scan_list(path, ctx, budget),
+        MountMode::OverlayMemory(state) => overlay::scan_list(path, ctx, state, budget, |_| None),
     }
 }
 

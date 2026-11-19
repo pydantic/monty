@@ -7,17 +7,27 @@
 //! and [`Dump::load`]; whether the session was idle or suspended is the
 //! [`Session`] discriminant, not a separate tag.
 //!
-//! # Naming contract
+//! Inline builtin types serialize as `Type` variant names; `Builtins` reads the
+//! shapes written before exception classes and `type` joined the native type table.
+//! Numeric identities retain their explicit legacy codes independently of the dump encoding.
+//! See the tests in `types/native.rs` and the legacy serialization fixture.
 //!
-//! The payload is self-describing: structs are maps keyed by field name and
-//! enums are keyed by variant name, so serde's derive evolves the schema on
-//! its own. A dumped type may gain a field with `#[serde(default)]`, lose a
-//! field, or have variants inserted anywhere, and older dumps still load.
-//! Tuple structs and tuple variants are positional, so their fields may only
-//! be appended.
-//! The names themselves are the contract: renaming a serialized field or
-//! variant needs `#[serde(alias = "old")]` (or a [`DUMP_VERSION`] bump), and
-//! `#[serde(deny_unknown_fields)]` must never be added to a dumped type.
+//! # Compatibility contract
+//!
+//! Published releases with the same dump version must read and resume each
+//! other's dumps. This guarantee does not extend to unreleased Git revisions.
+//!
+//! By default, Serde encodes named structs as maps keyed by field name and
+//! externally tagged enums by variant name. Untagged enums, transparent newtypes
+//! and custom serializers can use other layouts.
+//! Adding a named field is compatible if newer readers accept its absence (e.g.
+//! with `#[serde(default)]`) and older readers ignore it when present.
+//! Removing a field requires older readers to tolerate its absence.
+//! Writing a new variant can break older readers. An alias lets newer readers
+//! accept an older name; it does not make older readers accept a new name.
+//! Tuple structs and tuple variants are positional, so appending fields also
+//! requires compatibility in both directions. `#[serde(deny_unknown_fields)]`
+//! must never be added to a dumped type.
 
 use std::{convert::Infallible, error::Error, fmt, mem::size_of};
 
@@ -25,10 +35,13 @@ use minicbor_serde::{
     Deserializer, Serializer,
     error::{DecodeError, EncodeError},
 };
-use monty_types::TypeCheckState;
+use monty_types::{ModuleStub, TypeCheckState};
 use serde::{Deserialize, Serialize, de::Error as _};
 
 use crate::{
+    dump_upgrade,
+    heap::Heap,
+    intern::Interns,
     repl::{MontyRepl, ReplProgress},
     run_progress::RunProgress,
 };
@@ -38,21 +51,26 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 
 /// Version of the dump schema.
 ///
-/// The payload names its fields and variants, so adding a field with a default,
-/// removing one or reordering them does not need a bump (see the module docs).
-/// Bump for every release where
-/// the *meaning* of serialized data changes: opcodes or their operand shapes,
-/// `BuiltinsFunctions` order (its discriminants are bytecode operands),
-/// `CmpOperator` values, the compiler's constant layout, how a dict or set key
-/// hashes (entries persist their hash), or a semantic change to a stored value.
-/// Older dumps are then rejected instead of misexecuting.
+/// Bump for the first incompatible change since the last published release, even
+/// for a patch release. Further bumps before the next release are allowed but
+/// not required. Check both directions: reading older dumps does not make a new
+/// encoding readable by older releases.
 ///
-/// Before bumping, check there's already been a bump since the last release - multiple bumps
-/// between releases is unnecessary and can lead to confusion.
-pub const DUMP_VERSION: u16 = 13;
+/// Changes to the *meaning* of serialized data can also break compatibility:
+/// opcodes or their operand shapes, `BuiltinsFunctions` discriminants (bytecode
+/// operands), `CmpOperator` values,
+/// the compiler's constant layout, numeric identities, how a dict or set key
+/// hashes (entries persist their hash), or a semantic change to a stored value.
+/// Frozen code is persisted too: incompatible changes to its Rust entry arguments or
+/// private native helper contracts need compatibility handling or a bump. Compatible
+/// source-body changes do not require one; restored sessions retain their captured code.
+/// Older releases reject dumps with newer versions, and this build rejects dumps
+/// below [`MIN_SUPPORTED_DUMP_VERSION`].
+pub const DUMP_VERSION: u16 = 16;
 
-/// Set to [`DUMP_VERSION`], the current dump version, until this crate can load older dumps.
-pub const MIN_SUPPORTED_DUMP_VERSION: u16 = DUMP_VERSION;
+/// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
+/// over an older dump, rebuilding what the newer versions changed.
+pub const MIN_SUPPORTED_DUMP_VERSION: u16 = 13;
 
 // The supported range must be non-empty, and must exclude zero
 const _: () = assert!(MIN_SUPPORTED_DUMP_VERSION >= 1);
@@ -77,6 +95,7 @@ const MIN_PAYLOAD_CAPACITY: usize = 1024;
 pub fn dump(
     script_name: &str,
     type_check: Option<&TypeCheckState>,
+    module_stubs: &[ModuleStub],
     state: SessionRef<'_>,
 ) -> Result<Vec<u8>, DumpEncodeError> {
     /// Borrowed mirror of [`Dump`]; serde encodes it identically.
@@ -84,6 +103,7 @@ pub fn dump(
     struct DumpRef<'a> {
         script_name: &'a str,
         type_check: Option<&'a TypeCheckState>,
+        module_stubs: &'a [ModuleStub],
         state: SessionRef<'a>,
     }
 
@@ -94,6 +114,7 @@ pub fn dump(
     let dump = DumpRef {
         script_name,
         type_check,
+        module_stubs,
         state,
     };
     dump.serialize(&mut Serializer::new(&mut bytes))
@@ -106,13 +127,17 @@ pub fn dump(
 ///
 /// The metadata travels with the state because a restored session is otherwise
 /// silently downgraded — losing `script_name` corrupts tracebacks, and losing
-/// `type_check` disables enforcement the parent asked for.
+/// `type_check` disables enforcement the client asked for.
 #[derive(Debug, Deserialize)]
 pub struct Dump {
     /// Script name used for tracebacks and type-check diagnostics.
     pub script_name: String,
     /// `Some` when the session was created with type checking enabled.
     pub type_check: Option<TypeCheckState>,
+    /// The stubs of the session's host-provided modules, whether or not it
+    /// type-checks, so a restored session checks against the same ones.
+    #[serde(default)]
+    pub module_stubs: Vec<ModuleStub>,
     /// The interpreter state, and where it was paused.
     pub state: Session,
 }
@@ -128,8 +153,8 @@ impl Dump {
     /// Successful decoding does not authenticate or fully validate a snapshot.
     /// The same contract applies to direct serde deserialization.
     ///
-    /// Accepts [`MIN_SUPPORTED_DUMP_VERSION`]`..=`[`DUMP_VERSION`], which is one
-    /// version wide until a compatibility mechanism lowers the floor.
+    /// Accepts [`MIN_SUPPORTED_DUMP_VERSION`]`..=`[`DUMP_VERSION`], upgrading a
+    /// dump older than [`DUMP_VERSION`] before returning it.
     ///
     /// # Errors
     /// Returns [`DumpError`] for a dump this build cannot read. The version
@@ -155,10 +180,16 @@ impl Dump {
         } else {
             let payload = &bytes[HEADER_LEN..];
             let mut deserializer = Deserializer::new(payload);
-            let value = Self::deserialize(&mut deserializer).map_err(|err| DumpError::Payload(DumpDecodeError(err)))?;
+            let mut value =
+                Self::deserialize(&mut deserializer).map_err(|err| DumpError::Payload(DumpDecodeError(err)))?;
             // trailing bytes are rejected rather than ignored, so a padded dump
             // cannot decode as the shorter valid one it starts with
             if deserializer.into_decoder().position() == payload.len() {
+                if version < DUMP_VERSION
+                    && let Some((heap, interns)) = value.state.heap_and_interns()
+                {
+                    dump_upgrade::upgrade(version, heap, interns);
+                }
                 Ok(value)
             } else {
                 Err(DumpError::Payload(DumpDecodeError::custom(
@@ -183,6 +214,17 @@ pub enum Session {
     /// A one-shot [`crate::MontyRun`] execution paused at a suspension. Not a
     /// repl, so it cannot be fed further — only resumed to completion.
     Running(Box<RunProgress>),
+}
+
+impl Session {
+    /// The session heap and its interns, or `None` for a one-shot run that has completed.
+    fn heap_and_interns(&mut self) -> Option<(&mut Heap, &mut Interns)> {
+        match self {
+            Self::Idle(repl) => Some(repl.heap_and_interns()),
+            Self::Suspended(progress) => Some(progress.heap_and_interns()),
+            Self::Running(progress) => progress.heap_and_interns(),
+        }
+    }
 }
 
 /// Borrowed counterpart of [`Session`] used when dumping, so a live session can
@@ -322,20 +364,16 @@ mod tests {
     use strum::VariantNames;
 
     use super::DUMP_VERSION;
-    use crate::{
-        bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, heap::HeapId, types::Type,
-    };
+    use crate::{bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, types::Type};
 
-    /// If a component changes incompatibly, bump `DUMP_VERSION` before updating its
-    /// expected fingerprint. Compatible changes only require a fingerprint update.
-    ///
-    /// NB this test is not exhaustive of all possible compatibility issues, it just helps
-    /// catch the obvious ones!
+    /// Flags changes to persisted components for review. Before updating a fingerprint,
+    /// check compatibility in both directions and bump the dump version if required
+    /// by the policy on `DUMP_VERSION`.
     #[test]
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0xa05b_38e4_12c3_61f8,
+            0x4f1f_0e65_ba57_1672,
             "opcodes changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(opcode_fingerprint())
         );
@@ -345,40 +383,31 @@ mod tests {
             "comparison operators changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(comparison_operators_fingerprint())
         );
-        // `VariantNames` keeps the `#[strum(disabled)]` variants that `EnumString`
-        // drops, so the counts below cover every serialized variant once the
-        // disabled ones are supplied by hand. Asserted rather than assumed, so a
-        // strum upgrade that changed it says so instead of quietly narrowing the guard.
-        assert!(Type::VARIANTS.contains(&"instance"));
         assert!(MontyType::VARIANTS.contains(&"exception"));
 
-        let type_names = serde_variant_names(
-            Type::VARIANTS,
-            &[
-                Type::Instance(HeapId::from_index(0)),
-                Type::Exception(ExcType::ValueError),
-            ],
-        );
+        let type_names: Vec<String> = Type::ALL
+            .iter()
+            .map(|ty| encoded_variant_name(&minicbor_serde::to_vec(ty).unwrap()))
+            .collect();
         assert_eq!(
             variant_name_fingerprint(&type_names),
-            0x9901_dcf3_9e42_3098,
+            0x8644_05e4_90d7_b768,
             "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&type_names))
         );
         let monty_type_names = serde_variant_names(MontyType::VARIANTS, &[MontyType::Exception(ExcType::ValueError)]);
         assert_eq!(
             variant_name_fingerprint(&monty_type_names),
-            0x8af8_54dc_0bfe_1e6d,
+            0xa95a_cc16_8f6c_5e31,
             "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&monty_type_names))
         );
-        // Builtin discriminants are `CallBuiltinFunction` operands, so the enum
-        // is append-only: a new builtin goes after the last variant.
+        // Explicit builtin codes are `CallBuiltinFunction` operands; declaration order is free.
         assert_eq!(
-            variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
-            0xcdd8_09b1_2adc_3852,
-            "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}, actual: {}",
-            grouped_hex(variant_order_fingerprint(BuiltinsFunctions::VARIANTS))
+            builtin_functions_fingerprint(),
+            0x23ab_4f4f_417a_b85c,
+            "BuiltinsFunctions codes changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(builtin_functions_fingerprint())
         );
     }
 
@@ -391,22 +420,23 @@ mod tests {
         format!("0x{s}")
     }
 
-    /// FNV-1a over variant names in declaration order.
-    ///
-    /// `BuiltinsFunctions` discriminants are bytecode operands, so inserting a
-    /// variant rewrites what older dumps execute rather than failing the version
-    /// check. Appending leaves this unchanged for every existing variant;
-    /// inserting or reordering does not.
-    fn variant_order_fingerprint(variants: &[&str]) -> u64 {
-        fnv1a(variants)
+    /// Pins builtin names to their bytecode operands without constraining declaration order.
+    fn builtin_functions_fingerprint() -> u64 {
+        let mut codes = BuiltinsFunctions::VARIANTS
+            .iter()
+            .map(|name| {
+                let function: BuiltinsFunctions = name.parse().unwrap();
+                format!("{name}:{}", function as u8)
+            })
+            .collect::<Vec<_>>();
+        codes.sort_unstable();
+        fnv1a(&codes)
     }
 
     /// FNV-1a over variant names in sorted order.
     ///
-    /// `Type` and `MontyType` are encoded by variant name inside a `Dump`, so
-    /// order is free but a rename or removal breaks older dumps: fix it with
-    /// `#[serde(alias)]` or bump `DUMP_VERSION`. Adding a variant only needs
-    /// the expected hash updated.
+    /// `Type` and `MontyType` are encoded by variant name, so reordering is compatible.
+    /// An older reader may reject a new variant; check both directions before updating the hash.
     fn variant_name_fingerprint(names: &[String]) -> u64 {
         let mut sorted = names.to_vec();
         sorted.sort_unstable();
@@ -460,10 +490,8 @@ mod tests {
         String::from_utf8(text[start..start + len].to_vec()).unwrap()
     }
 
-    /// `TypeCheckingFormat` reaches the dump schema through
-    /// `monty_types::TypeCheckState` and serializes by variant name, so the
-    /// names are compared in sorted order: renaming one needs `#[serde(alias)]`
-    /// or a `DUMP_VERSION` bump, adding one only needs this list updated.
+    /// Pins the serialized names of `TypeCheckingFormat` in `monty_types::TypeCheckState`.
+    /// An older reader may reject a new variant; check both directions before updating the list.
     #[test]
     fn type_checking_format_variants_match_dump_version() {
         let mut variants = serde_variant_names::<TypeCheckingFormat>(TypeCheckingFormat::VARIANTS, &[]);

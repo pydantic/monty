@@ -8,7 +8,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{HeapId, HeapRead},
+    heap::{HeapId, HeapRead, HeapReadMut},
     types::{LazyHeapSet, PyTrait, itertools::ItertoolsIter},
     value::Value,
 };
@@ -56,7 +56,7 @@ impl Repeat {
 /// steps, until `remaining` runs out. Infallible, unlike every other adaptor,
 /// but keeps the fallible signature for a uniform dispatch shape.
 #[expect(clippy::unnecessary_wraps, reason = "uniform per-adaptor dispatch signature")]
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let ItertoolsIter::Repeat(repeat) = iter.get(vm.heap) else {
         unreachable!("dispatched on Kind::Repeat")
     };

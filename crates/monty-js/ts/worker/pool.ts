@@ -1,7 +1,7 @@
 // An elastic pool of real workers sharing the native pool's checkout and shutdown contract.
 
-import { validateMaxCheckouts } from '../options.js'
-import { MontySession } from '../session.js'
+import { resolveMaxCheckouts } from '../options.js'
+import { HostModules, MontySession } from '../session.js'
 import { deadlineTimer, timeoutOption, type DeadlineTimer } from './deadline.js'
 import type { Dispatcher } from './host.js'
 import { WorkerTransport, prepareSession, type WorkerSessionConfig, type DurationGraces } from './transport.js'
@@ -24,7 +24,8 @@ export interface WorkerPoolOptions extends DurationGraces {
   minWorkers?: number
   maxWorkers?: number
   checkoutTimeoutMs?: number
-  maxCheckoutsPerWorker?: number
+  /** Omitted means the default; `null` never recycles. */
+  maxCheckoutsPerWorker?: number | null
 }
 
 /** One worker and its checkout bookkeeping. */
@@ -59,6 +60,8 @@ export class WorkerPool {
   private constructor(
     private readonly factory: WorkerFactory,
     private readonly maxWorkers: number,
+    /** Resolved recycle count; `undefined` never recycles. */
+    private readonly maxCheckouts: number | undefined,
     private readonly options: WorkerPoolOptions,
   ) {}
 
@@ -67,11 +70,11 @@ export class WorkerPool {
     const max = integerOption(options.maxWorkers ?? 4, 'maxProcesses', 1)
     const min = integerOption(options.minWorkers ?? 1, 'minProcesses', 0)
     if (min > max) throw new TypeError('minProcesses cannot exceed maxProcesses')
-    validateMaxCheckouts(options.maxCheckoutsPerWorker)
+    const maxCheckoutsPerWorker = resolveMaxCheckouts(options.maxCheckoutsPerWorker)
     timeoutOption(options.checkoutTimeoutMs, 'checkoutTimeout')
     timeoutOption(options.feedDurationLimitGraceMs ?? undefined, 'feedDurationLimitGrace')
     timeoutOption(options.turnDurationLimitGraceMs ?? undefined, 'turnDurationLimitGrace')
-    const pool = new WorkerPool(factory, max, options)
+    const pool = new WorkerPool(factory, max, maxCheckoutsPerWorker, options)
     // Wait for every spawn before handling failure, so no late worker escapes cleanup.
     const warm = await Promise.allSettled(Array.from({ length: min }, () => pool.spawn()))
     for (const result of warm) {
@@ -89,6 +92,7 @@ export class WorkerPool {
   async checkout(config: WorkerSessionConfig = {}): Promise<MontySession> {
     if (this.closed) throw closedError()
     const configuration = prepareSession(config)
+    const modules = new HostModules(config.externalModules)
     const slot = await this.acquire()
     if (this.closed) {
       await this.discard(slot)
@@ -108,7 +112,7 @@ export class WorkerPool {
       throw closedError()
     }
     transport.onFinish = (reusable) => this.release(slot, reusable)
-    return new MontySession(transport as unknown as SessionNative)
+    return new MontySession(transport as unknown as SessionNative, modules)
   }
 
   /** Rejects new/waiting checkouts and reaps idle workers; active sessions retain their workers. */
@@ -164,7 +168,7 @@ export class WorkerPool {
         waiter.timer = deadlineTimer(this.options.checkoutTimeoutMs, () => {
           const index = this.waiters.indexOf(waiter)
           if (index >= 0) this.waiters.splice(index, 1)
-          reject(new Error('no monty worker became available within the checkout timeout'))
+          reject(new DOMException('no monty worker became available within the checkout timeout', 'TimeoutError'))
         })
       }
       this.waiters.push(waiter)
@@ -174,8 +178,7 @@ export class WorkerPool {
   /** Returns clean sessions to waiters and retires exhausted or dead workers. */
   private async release(slot: WorkerSlot, reusable: boolean): Promise<void> {
     slot.checkouts++
-    const recycle =
-      this.options.maxCheckoutsPerWorker !== undefined && slot.checkouts >= this.options.maxCheckoutsPerWorker
+    const recycle = this.maxCheckouts !== undefined && slot.checkouts >= this.maxCheckouts
     if (this.closed || !reusable || !slot.worker.alive || recycle) {
       await this.discard(slot)
     } else {

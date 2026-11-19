@@ -1,25 +1,29 @@
 use std::{cmp::Ordering, fmt::Write, mem};
 
+use monty_types::ResourceError;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
-use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
+use super::{
+    CmpOrder, PyTrait,
+    iter::{collect_owned_iterable, collect_python_iterator},
+};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{
-        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput,
-        HeapReader,
+        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadMut,
+        HeapReadOutput, HeapReader,
     },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
-    resource_checks::{check_repeat_size, check_value_buffer_growth},
+    py_value::PyValue,
+    resource_checks::{check_repeat_size, check_value_buffer_growth, repeated_len, try_vec_with_capacity},
     sorting::parse_and_sort,
     types::{
-        LazyHeapSet, Type,
-        long_int::repeat_count,
+        LazyHeapSet, Type, TypeRef,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -128,7 +132,85 @@ impl List {
     }
 }
 
-impl<'h> HeapRead<'h, List> {
+impl<'h> HeapReadMut<'h, List> {
+    /// Collects replacements before assignment to support self-assignment and avoid
+    /// partial writes on iterator failure. Bounds are normalized after collection
+    /// because the iterator may have resized the target.
+    fn setitem_slice(&self, slice: &super::Slice, value: &Value, vm: &mut VM<'h>) -> RunResult<()> {
+        // Reject a zero step before executing the replacement iterator.
+        slice.indices(self.get(vm.heap).len())?;
+
+        // Collect replacements before mutation to support self-assignment.
+        let items = match value.read_heap(vm) {
+            Some(HeapReadOutput::List(list)) => list.clone_all_items(vm)?,
+            Some(HeapReadOutput::Tuple(tuple)) => tuple.cloned_items(vm)?,
+            _ => {
+                let iterator = value
+                    .py_iter(vm)
+                    .and_then(|call| call.require_synchronous(vm))
+                    .map_err(|error| {
+                        if matches!(&error, RunError::Exc(raise) if raise.exc.exc_type() == ExcType::TypeError) {
+                            ExcType::type_error("must assign iterable to extended slice")
+                        } else {
+                            error
+                        }
+                    })?;
+                collect_python_iterator(iterator, vm)?
+            }
+        };
+        defer_drop_mut!(items, vm);
+
+        // Iteration may have changed the target list's length.
+        let (start, stop, step) = slice.indices(self.get(vm.heap).len())?;
+        let count = if step > 0 && start < stop {
+            usize::try_from((stop - start - 1) / step + 1).expect("slice length fits usize")
+        } else if step < 0 && start > stop {
+            usize::try_from((start - stop - 1).unsigned_abs() / step.unsigned_abs() + 1)
+                .expect("slice length fits usize")
+        } else {
+            0
+        };
+
+        // Only step 1 permits resizing; other steps require one value per selected position.
+        if step != 1 && items.len() != count {
+            return Err(ExcType::value_error(format!(
+                "attempt to assign sequence of size {} to extended slice of size {count}",
+                items.len()
+            )));
+        }
+
+        if items.len() == count {
+            let list = self.get_mut(vm.heap);
+            list.contains_refs |= items.iter().any(|item| matches!(item, Value::Ref(_)));
+            if step == 1 {
+                let start = usize::try_from(start).expect("positive slice start is non-negative");
+                list.items[start..start + count].swap_with_slice(items);
+            } else {
+                let mut index = i128::from(start);
+                for item in items.iter_mut() {
+                    mem::swap(
+                        &mut list.items[usize::try_from(index).expect("slice index is within the list")],
+                        item,
+                    );
+                    index += i128::from(step);
+                }
+            }
+        } else {
+            let growth = items.len().saturating_sub(count);
+            vm.heap
+                .tracker
+                .check_allocation(growth.saturating_add(count).saturating_mul(VALUE_SIZE))?;
+
+            let list = self.get_mut(vm.heap);
+            list.contains_refs |= items.iter().any(|item| matches!(item, Value::Ref(_)));
+            let start = usize::try_from(start).expect("positive slice start is non-negative");
+            let removed: Vec<Value> = list.items.splice(start..start + count, items.drain(..)).collect();
+            removed.drop_with(vm);
+        }
+
+        Ok(())
+    }
+
     /// Appends an element to the end of the list.
     ///
     /// The caller transfers ownership of `item` to the list. The item's refcount
@@ -137,7 +219,7 @@ impl<'h> HeapRead<'h, List> {
     ///
     /// A push that would grow the buffer past the memory limit fails with
     /// `MemoryError` and drops `item`, so the ownership transfer holds either way.
-    pub fn append(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
+    pub fn append(&self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
         // Track whether the list now contains heap refs so child-walk fast paths
         // can short-circuit; cycle-collector seeding is handled by `dec_ref`,
         // not at mutation time.
@@ -170,7 +252,7 @@ impl<'h> HeapRead<'h, List> {
     /// # Arguments
     /// * `index` - The position to insert at (0-based). If index >= len(),
     ///   the item is appended to the end (matching Python semantics).
-    pub fn insert(&mut self, vm: &mut VM<'h>, index: usize, item: Value) -> RunResult<()> {
+    pub fn insert(&self, vm: &mut VM<'h>, index: usize, item: Value) -> RunResult<()> {
         let items = &self.get(vm.heap).items;
         let (len, capacity) = (items.len(), items.capacity());
         let item = if len < capacity {
@@ -327,9 +409,8 @@ impl<'h> HeapRead<'h, List> {
 
 /// Stack-borrowed lending iterator over a [`List`]'s items.
 ///
-/// Borrows a [`HeapRead`] for its lifetime, so the heap entry is pinned by the
-/// reader count for the duration of iteration — no extra refcount on the
-/// container is needed.
+/// Borrows a [`HeapRead`] for its lifetime, retaining its object guard or
+/// protected source — no extra refcount on the container is needed.
 ///
 /// **Lending shape.** [`next`](Self::next) returns `Option<&Value>` rather
 /// than `Option<Value>`. The iterator itself owns the most-recently-yielded
@@ -435,8 +516,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         Ok(Some(false))
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::List
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::List.into()
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -477,26 +558,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         defer_drop!(key, vm);
         defer_drop_mut!(value, vm);
 
-        // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt.
-        // Note: The LongInt-to-i64 conversion is defensive code. In normal execution,
-        // heap-allocated LongInt values always exceed i64 range because into_value()
-        // demotes i64-fitting values to Value::Int. However, this could be reached via
-        // deserialization of crafted snapshot data.
-        let index = match *key {
-            Value::Int(i) => i,
-            Value::Bool(b) => i64::from(b),
-            Value::Ref(heap_id) => {
-                if let HeapData::LongInt(li) = vm.heap.get(heap_id) {
-                    if let Some(i) = li.to_i64() {
-                        i
-                    } else {
-                        return Err(ExcType::index_error_int_too_large());
-                    }
-                } else {
-                    let key_type = key.py_type_name(vm);
-                    return Err(ExcType::type_error_indices(Type::List, &key_type));
-                }
-            }
+        if let Value::Ref(id) = key
+            && let HeapData::Slice(slice) = vm.heap.get(*id)
+        {
+            let slice = slice.clone();
+            return self.setitem_slice(&slice, value, vm);
+        }
+
+        let index = match key.py_value(vm) {
+            PyValue::Int(integer) => integer.to_i64(vm).ok_or_else(ExcType::index_error_int_too_large)?,
+            PyValue::Bool(value) => i64::from(value),
             _ => {
                 let key_type = key.py_type_name(vm);
                 return Err(ExcType::type_error_indices(Type::List, &key_type));
@@ -557,54 +628,101 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        repr_sequence_fmt('[', ']', |heap, i| self.get(heap).as_slice().get(i), f, vm, heap_ids)
+        repr_sequence_fmt(
+            '[',
+            ']',
+            |heap, i| self.get(heap).as_slice().get(i).map(|item| item.clone_with_heap(heap)),
+            f,
+            vm,
+            heap_ids,
+        )
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
-        let mut items = self.clone_all_items(vm)?;
-        items.extend(other.clone_all_items(vm)?);
+        // The guard releases our clones if cloning `other` hits the memory limit.
+        let mut items = DropGuard::new(self.clone_all_items(vm)?, vm);
+        let (left, vm) = items.as_parts_mut();
+        left.extend(other.clone_all_items(vm)?);
+        let (items, vm) = items.into_parts();
         let id = vm.heap.allocate(HeapData::List(List::new(items)));
         Ok(Some(Value::Ref(id)))
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(count) = repeat_count(other, vm)? else {
+        let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(None);
         };
-        let value = self.get(vm.heap);
-        check_repeat_size(value.len().saturating_mul(VALUE_SIZE), count, &vm.heap.tracker)?;
-        let mut result = Vec::with_capacity(value.len() * count);
+        let len = self.get(vm.heap).len();
+        // An empty operand yields `[]` however large `count` is; without this the
+        // loop below would spin `count` times over nothing.
+        if count == 0 || len == 0 {
+            return Ok(Some(Value::Ref(
+                vm.heap.allocate(HeapData::List(List::new(Vec::new()))),
+            )));
+        }
+        let total = repeated_len(len, count, VALUE_SIZE)?;
+        check_repeat_size(len.saturating_mul(VALUE_SIZE), count, &vm.heap.tracker)?;
+        // The guard releases the clones built so far if the time poll trips.
+        let mut result = DropGuard::new(try_vec_with_capacity(total)?, vm);
         for rep in 0..count {
-            result.extend(value.as_slice().iter().map(|value| value.clone_with_heap(vm.heap)));
+            let (items, vm) = result.as_parts_mut();
+            items.extend(
+                self.get(vm.heap)
+                    .as_slice()
+                    .iter()
+                    .map(|value| value.clone_with_heap(vm.heap)),
+            );
             vm.heap.tracker.check_time_every(rep)?;
         }
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::List(List::new(result))))))
+        let (items, vm) = result.into_parts();
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items))))))
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.py_mul_impl(other, vm)
     }
 
+    /// Extends in place from a list or synchronous iterable, preserving aliases.
     fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
-        let Value::Ref(other_id) = other else {
-            return Ok(false);
+        // Lists use bulk copying; other operands follow the iterator protocol, including its errors.
+        let other_id = other
+            .ref_id()
+            .filter(|id| matches!(vm.heap.get(*id), HeapData::List(_)));
+        let Some(other_id) = other_id else {
+            // Append as the source yields so an iterator error keeps earlier additions.
+            let iterator = other.py_iter(vm)?.require_synchronous(vm)?;
+            defer_drop!(iterator, vm);
+            let mut iterator = iterator.read(vm);
+
+            // Preflight the size hint; append still checks growth if the iterator yields more.
+            let hint = iterator.iter_size_hint(vm);
+            vm.heap.tracker.check_allocation(hint.saturating_mul(VALUE_SIZE))?;
+
+            while let Some(item) = iterator.py_next(vm)? {
+                self.append(vm, item)?;
+            }
+            return Ok(true);
         };
 
-        if *other_id == self.id() {
-            // Self-extend: clone our own items with proper refcounting. Checked
-            // at 2× — the temporary clone plus the equal-sized target growth —
-            // up front, while no owned values need releasing on failure.
+        if other_id == self.id() {
+            // Snapshot before extending so `a += a` copies only the original items.
+            // Budget for both the snapshot and target growth before acquiring owned references.
             let len = self.get(vm.heap).items.len();
             vm.heap.tracker.check_allocation(len.saturating_mul(2 * VALUE_SIZE))?;
+            self.get_mut(vm.heap)
+                .items
+                .try_reserve_exact(len)
+                .map_err(|_| ExcType::allocation_too_large())?;
             let items = self.clone_all_items(vm)?;
+            // Duplicating existing elements cannot change whether this list contains heap references.
             self.get_mut(vm.heap).items.extend(items);
         } else {
             // Read source list via HeapRead, clone items into a temporary Vec.
             // Checked at 2× — the clone plus the target growth — see above.
-            let source = vm.heap.read(*other_id);
+            let source = vm.heap.read(other_id);
             let HeapReadOutput::List(source_list) = source else {
                 return Ok(false);
             };
@@ -612,8 +730,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             vm.heap
                 .tracker
                 .check_allocation(source_len.saturating_mul(2 * VALUE_SIZE))?;
+            // Exact reservation avoids doubling a full list for a small source.
+            self.get_mut(vm.heap)
+                .items
+                .try_reserve_exact(source_len)
+                .map_err(|_| ExcType::allocation_too_large())?;
             let source_items = source_list.clone_all_items(vm)?;
-            // Check if new items contain refs
+            // GC skips lists without heap references; newly appended references must enable scanning.
             let has_new_refs = source_items.iter().any(|v| matches!(v, Value::Ref(_)));
             self.get_mut(vm.heap).items.extend(source_items);
             if has_new_refs {
@@ -621,6 +744,46 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             }
         }
 
+        Ok(true)
+    }
+
+    /// Repeats for integer or `__index__` counts, retaining identity and shared elements.
+    fn py_imul_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        let Some(count) = other.py_value(vm).repeat_count(vm)? else {
+            return Ok(false);
+        };
+
+        // `__index__` can resize this list; read its length only after conversion.
+        let len = self.get(vm.heap).items.len();
+        // These no-op repetitions need neither allocation nor reference-count changes.
+        if count == 1 || len == 0 {
+            return Ok(true);
+        }
+
+        // Clear the existing list rather than replacing it, so aliases also see an empty list.
+        // Detach the items before releasing their references, which may include the list itself.
+        if count == 0 {
+            let items = mem::take(&mut self.get_mut(vm.heap).items);
+            self.get_mut(vm.heap).contains_refs = false;
+            items.drop_with(vm);
+            return Ok(true);
+        }
+
+        // Check and reserve the entire result before appending, so allocation failure leaves it unchanged.
+        check_repeat_size(len.saturating_mul(VALUE_SIZE), count, &vm.heap.tracker)?;
+        let total = len.checked_mul(count).ok_or_else(ExcType::allocation_too_large)?;
+        self.get_mut(vm.heap)
+            .items
+            .try_reserve_exact(total - len)
+            .map_err(|_| ExcType::allocation_too_large())?;
+
+        // Grow from the original prefix without a snapshot; only the vector's storage may move.
+        // Cloning preserves element identity; `contains_refs` stays valid because every element is already present.
+        for index in len..total {
+            let item = self.get(vm.heap).items[index % len].clone_with_heap(vm.heap);
+            self.get_mut(vm.heap).items.push(item);
+            vm.heap.tracker.check_time_every(index)?;
+        }
         Ok(true)
     }
 
@@ -639,11 +802,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         call_list_method(self, method, args, vm).map(CallResult::Value)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let list_id = self.id();
         let iterator = vm.heap.allocate(HeapData::ListIterator(ListIterator::new(list_id)));
         vm.heap.inc_ref(list_id);
-        Ok(Value::Ref(iterator))
+        Ok(CallResult::Value(Value::Ref(iterator)))
     }
 }
 
@@ -673,7 +836,7 @@ impl HeapItem for List {
 /// * `args` - The method arguments
 /// * `heap` - The heap for allocation and reference counting
 fn call_list_method<'h>(
-    list: &mut HeapRead<'h, List>,
+    list: &HeapReadMut<'h, List>,
     method: StaticStrings,
     args: ArgValues,
     vm: &mut VM<'h>,
@@ -714,7 +877,7 @@ fn call_list_method<'h>(
 }
 
 /// Implements Python's `list.insert(index, item)` method.
-fn list_insert<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn list_insert<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let (index_obj, item) = args.get_two_args("insert", vm.heap)?;
     defer_drop!(index_obj, vm);
     let mut item_guard = DropGuard::new(item, vm);
@@ -742,7 +905,7 @@ fn list_insert<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'
 ///
 /// Removes the item at the given index (default: -1) and returns it.
 /// Raises IndexError if the list is empty or the index is out of range.
-fn list_pop<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn list_pop<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let index_arg = args.get_zero_one_arg("list.pop", vm.heap)?;
 
     // Validate index type FIRST (if provided), matching Python's validation order.
@@ -778,7 +941,7 @@ fn list_pop<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>)
 /// Implements Python's `list.remove(value)` method.
 ///
 /// Removes the first occurrence of value. Raises ValueError if not found.
-fn list_remove<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn list_remove<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let value = args.get_one_arg("list.remove", vm.heap)?;
     defer_drop!(value, vm);
 
@@ -813,7 +976,7 @@ fn list_remove<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'
 /// Implements Python's `list.clear()` method.
 ///
 /// Removes all items from the list.
-fn list_clear<'h>(list: &mut HeapRead<'h, List>, vm: &mut VM<'h>) {
+fn list_clear<'h>(list: &HeapReadMut<'h, List>, vm: &mut VM<'h>) {
     mem::take(&mut list.get_mut(vm.heap).items).drop_with(vm);
     // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
 }
@@ -833,7 +996,7 @@ fn list_copy(list: &List, heap: &Heap) -> RunResult<Value> {
 /// Implements Python's `list.extend(iterable)` method.
 ///
 /// Extends the list by appending all items from the iterable.
-fn list_extend<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn list_extend<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let iterable = args.get_one_arg("list.extend", vm.heap)?;
     let items: SmallVec<[_; 2]> = collect_owned_iterable(iterable, vm)?;
 
@@ -874,8 +1037,12 @@ fn list_index<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -
     let start = start_arg.map_or(0, |i| normalize_sequence_index(i, len));
     let end = end_arg.map_or(len, |i| normalize_sequence_index(i, len)).max(start);
 
-    // Search for the value in the specified range
-    let iter = list.iter(vm)?;
+    // Nested short offset searches may never reach an iterator checkpoint.
+    vm.heap.tracker.check_time()?;
+
+    let mut iter = list.iter(vm)?;
+    // Excluded prefix entries need neither equality calls nor reference-count traffic.
+    iter.index = start;
     defer_drop_mut!(iter, vm);
     while let Some((idx, item)) = iter.next_with_index(vm)? {
         if idx >= end {
@@ -920,7 +1087,7 @@ fn list_count<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -
 /// list afterwards. If the user mutated the live (empty) list during the
 /// sort, we additionally raise `ValueError: list modified during sort`,
 /// matching CPython exactly.
-fn do_list_sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> Result<(), RunError> {
+fn do_list_sort<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> Result<(), RunError> {
     // Detach the list's items so reentrant access via the list's heap id sees
     // an empty list. The detached buffer is always swapped back into the list
     // when we're done. Done *before* parsing args so the reentrancy guard is
@@ -929,7 +1096,7 @@ fn do_list_sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<
     let items = mem::take(&mut list.get_mut(vm.heap).items);
     defer_drop_mut!(items, vm);
 
-    let sort_result = parse_and_sort("sort() key argument", items, args, vm);
+    let sort_result = parse_and_sort(items, args, vm);
 
     // Swap our (sorted) buffer back into the list. Whatever the user placed
     // on the live empty list during the sort ends up in `items`; if
@@ -961,17 +1128,16 @@ fn do_list_sort<'h>(list: &mut HeapRead<'h, List>, args: ArgValues, vm: &mut VM<
 /// # Arguments
 /// * `start` - The opening character (e.g., '[' for lists, '(' for tuples)
 /// * `end` - The closing character (e.g., ']' for lists, ')' for tuples)
-/// * `get_item` - Returns the i-th value via brief immutable heap access, or
-///   `None` once `i` is out of range. The `for<'r>` bound means only
-///   heap-derived borrows fit — containers whose repr snapshots up front
-///   (deque, set, dict) own their clones already and use [`repr_items_fmt`].
+/// * `get_item` - Returns an owned clone of the i-th value via brief heap access,
+///   or `None` once `i` is out of range. The clone keeps the item alive across
+///   user `__repr__` calls that may remove it from the container.
 /// * `f` - The formatter to write to
 /// * `vm` - The VM for resolving value references and looking up interned strings
 /// * `heap_ids` - Set of heap IDs being repr'd (for cycle detection)
 pub(crate) fn repr_sequence_fmt<'h>(
     start: char,
     end: char,
-    get_item: impl for<'r> Fn(&'r HeapReader<'h>, usize) -> Option<&'r Value>,
+    get_item: impl Fn(&HeapReader<'h>, usize) -> Option<Value>,
     f: &mut impl Write,
     vm: &mut VM<'h>,
     heap_ids: &mut LazyHeapSet,
@@ -984,18 +1150,13 @@ pub(crate) fn repr_sequence_fmt<'h>(
 
     f.write_char(start)?;
     // The item is fetched before the separator is written so nothing is emitted
-    // for an index that turned out to be out of range. `repr_check_time` bounds
+    // for an index that turned out to be out of range. `repr_should_truncate` bounds
     // reprs that keep growing the sequence from inside a user `__repr__`.
     for i in 0.. {
         let Some(item) = get_item(vm.heap, i) else { break };
-        // The clone (a refcount bump, not a deep copy) is load-bearing: the
-        // recursion below runs user `__repr__` code that may drop the
-        // container's reference to this very item — CPython incref's the same
-        // way. It also releases the heap borrow the getter's reference holds.
-        let item = item.clone_with_heap(vm.heap);
         defer_drop!(item, vm);
         if i > 0 {
-            if repr_check_time(i, vm) {
+            if repr_should_truncate(i, vm)? {
                 f.write_str(", ...[timeout]")?;
                 break;
             }
@@ -1023,7 +1184,7 @@ pub(crate) fn repr_items_fmt(
 ) -> RunResult<()> {
     for (i, item) in items.iter().enumerate() {
         if i > 0 {
-            if repr_check_time(i, vm) {
+            if repr_should_truncate(i, vm)? {
                 f.write_str(", ...[timeout]")?;
                 break;
             }
@@ -1034,11 +1195,17 @@ pub(crate) fn repr_items_fmt(
     Ok(())
 }
 
-/// Polls the time/memory soft limits every 64th item rather than every item,
-/// keeping per-item overhead to one branch while still truncating huge reprs
-/// promptly with `", ...[timeout]"` (tested in `resource_limits.rs`).
-pub(crate) fn repr_check_time(i: usize, vm: &VM<'_>) -> bool {
-    vm.heap.tracker.check_memory_time_every(i).is_err()
+/// Polls the time and memory soft limits every 64th item of a container repr.
+///
+/// `Ok(true)` means the time limit ran out, so the caller writes `", ...[timeout]"`
+/// and stops (tested in `resource_limits.rs`). A memory error propagates instead,
+/// since a truncated repr would let the feed carry on past `max_memory`.
+pub(crate) fn repr_should_truncate(i: usize, vm: &VM<'_>) -> RunResult<bool> {
+    match vm.heap.tracker.check_memory_time_every(i) {
+        Ok(()) => Ok(false),
+        Err(ResourceError::Time { .. }) => Ok(true),
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// Iterates over a list while observing changes to its current contents.
@@ -1085,8 +1252,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ListIterator> {
         true
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::ListIterator
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::ListIterator.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
@@ -1097,8 +1264,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ListIterator> {
         Ok(None)
     }
 
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(self.clone_value(vm.heap))
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -1141,7 +1308,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
             let copied = deep_copy(&item, memo, vm);
             item.drop_with(vm);
             let copied = copied?;
-            let HeapReadOutput::List(mut dest) = vm.heap.read(copy_id) else {
+            let HeapReadOutput::List(dest) = vm.heap.read(copy_id) else {
                 unreachable!("copy was allocated as a list")
             };
             dest.append(vm, copied)?;

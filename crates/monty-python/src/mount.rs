@@ -1,12 +1,12 @@
 //! Python bindings for filesystem mount configuration.
 //!
 //! [`PyMountDir`] stores immutable configuration for one mount point. Each
-//! feed copies that configuration into a fresh parent-side mount table, so
+//! feed copies that configuration into a fresh client-side mount table, so
 //! overlay state lasts only for that feed and host paths never reach workers.
 
 use std::path::PathBuf;
 
-use monty_fs::{MountMode, MountRoot};
+use monty_fs::{DEFAULT_MEMORY_USAGE_LIMIT, MountMode, MountRoot};
 use monty_pool::{MountSpec, MountSpecMode};
 use monty_proto::python::exc_monty_to_py;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyTuple};
@@ -18,9 +18,9 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyTuple};
 /// A single mount point mapping a virtual path to a host directory.
 ///
 /// Passing one instance to multiple feeds reuses only its configuration;
-/// `'overlay'` writes live in each feed's parent-side mount table.
+/// `'overlay'` writes live in each feed's client-side mount table.
 /// Retained overlay data and filesystem results share a configurable memory
-/// budget, which defaults to 100 MB.
+/// budget, which defaults to `monty_fs::DEFAULT_MEMORY_USAGE_LIMIT`.
 ///
 /// Mounts passed to one feed must have distinct virtual paths and cover
 /// disjoint host directories: overlap (the same directory, or one inside the
@@ -79,10 +79,9 @@ impl PyMountDir {
         host_path,
         virtual_path,
         mode = "overlay",
-        // must stay a literal mirroring monty_fs::DEFAULT_MEMORY_USAGE_LIMIT: a
-        // const default renders as `...` in the text signature, breaking stubtest
         write_bytes_limit = None,
-        memory_usage_limit = 100_000_000,
+        // renders as `...` in the text signature, as the stub spells it
+        memory_usage_limit = DEFAULT_MEMORY_USAGE_LIMIT,
     ))]
     #[expect(clippy::needless_pass_by_value)] // PyO3 requires owned PathBuf for conversion from Python str/Path
     fn new(
@@ -180,7 +179,7 @@ impl PyMountDir {
 }
 
 impl PyMountDir {
-    /// Copies the validated configuration for a new parent-side mount table.
+    /// Copies the validated configuration for a new client-side mount table.
     ///
     /// # Errors
     ///

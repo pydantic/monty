@@ -239,7 +239,8 @@ test('MountDir attributes', (ctx) => {
     t.is(md.virtualPath, '/data')
     t.is(md.hostPath, dir)
     t.is(md.mode, 'read-only')
-    t.is(md.memoryUsageLimit, 100_000_000)
+    // the default lives in monty-fs alone, so only its shape is checked here
+    t.true(Number.isSafeInteger(md.memoryUsageLimit) && md.memoryUsageLimit > 0)
 
     const limited = mount({ virtualPath: '/limited', memoryUsageLimit: 1234 })
     t.is(limited.memoryUsageLimit, 1234)

@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # External function calls inside closures (nested functions with captured variables).
 
 

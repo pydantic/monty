@@ -6,7 +6,9 @@ interact with through the `os=` callback surface.
 """
 
 import datetime
+import errno
 from pathlib import PurePosixPath
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -14,7 +16,8 @@ from conftest import CALL_HOST, RunMonty
 from inline_snapshot import snapshot
 
 import pydantic_monty
-from pydantic_monty import NOT_HANDLED, AbstractOS, MontyFileHandle, StatResult
+import pydantic_monty.os_access as os_access
+from pydantic_monty import NOT_HANDLED, AbstractOS, MontyFileHandle, ScanEntry, StatResult
 from pydantic_monty.os_access import path_from_arg
 
 
@@ -207,6 +210,129 @@ class TestOS(AbstractOS):
 # =============================================================================
 # Basic AbstractOS tests
 # =============================================================================
+
+
+@pytest.mark.parametrize('as_handle', [False, True])
+def test_default_positional_write_preserves_suffix_and_rejects_gaps(as_handle: bool):
+    fs = TestOS()
+    fs.files['/file'] = b'abcdef'
+    path = MontyFileHandle('/file', 'wb') if as_handle else PurePosixPath('/file')
+    assert fs.path_write_bytes_at(path, 2, b'XY') == snapshot(2)
+    assert fs.files['/file'] == snapshot(b'abXYef')
+    assert fs.path_write_bytes_at(path, 6, b'Z') == snapshot(1)
+    assert fs.files['/file'] == snapshot(b'abXYefZ')
+    with pytest.raises(ValueError) as exc_info:
+        fs.path_write_bytes_at(path, 9, b'Z')
+    assert exc_info.value.args[0] == snapshot('write offset is past the end of the file')
+    assert fs.files['/file'] == snapshot(b'abXYefZ')
+
+
+def test_default_empty_positional_write_only_validates_target():
+    fs = TestOS()
+    fs.files['/file'] = b'abc'
+    fs.path_read_bytes = Mock(side_effect=AssertionError('must not read'))
+    fs.path_write_bytes = Mock(side_effect=AssertionError('must not write'))
+    assert fs.path_write_bytes_at(PurePosixPath('/file'), 2**40, b'') == snapshot(0)
+    fs.path_read_bytes.assert_not_called()
+    fs.path_write_bytes.assert_not_called()
+    assert fs.files['/file'] == snapshot(b'abc')
+
+
+@pytest.mark.parametrize('data', [b'', b'x'])
+def test_default_positional_write_requires_an_existing_file(data: bytes):
+    fs = TestOS()
+    with pytest.raises(FileNotFoundError):
+        fs.path_write_bytes_at(PurePosixPath('/missing'), 0, data)
+    with pytest.raises(IsADirectoryError):
+        fs.path_write_bytes_at(PurePosixPath('/'), 0, data)
+    assert fs.files == snapshot({})
+
+
+@pytest.mark.parametrize('offset', [-1, 2**63 - 1])
+def test_default_positional_write_rejects_invalid_ranges_before_io(offset: int):
+    fs = TestOS()
+    fs.path_stat = Mock(side_effect=AssertionError('must not stat'))
+    with pytest.raises(ValueError, match='write range exceeds the supported file-position range'):
+        fs.path_write_bytes_at(PurePosixPath('/file'), offset, b'x')
+    fs.path_stat.assert_not_called()
+
+
+def test_default_positional_write_bounds_replacement_before_reading(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(os_access, '_MAX_POSITIONAL_WRITE_BYTES', 8)
+    fs = TestOS()
+    fs.files['/file'] = b'abcdefg'
+    assert fs.path_write_bytes_at(PurePosixPath('/file'), 7, b'X') == snapshot(1)
+    assert fs.files['/file'] == snapshot(b'abcdefgX')
+    fs.path_read_bytes = Mock(side_effect=AssertionError('must not read'))
+    fs.path_write_bytes = Mock(side_effect=AssertionError('must not write'))
+    with pytest.raises(OSError) as error:
+        fs.path_write_bytes_at(PurePosixPath('/file'), 8, b'x')
+    assert error.value.errno == errno.ENOSPC
+    with pytest.raises(ValueError):
+        fs.path_write_bytes_at(PurePosixPath('/file'), 2**40, b'x')
+    fs.files['/file'] = b'123456789'
+    with pytest.raises(OSError) as error:
+        fs.path_write_bytes_at(PurePosixPath('/file'), 0, b'x')
+    assert error.value.errno == errno.ENOSPC
+    fs.path_read_bytes.assert_not_called()
+    fs.path_write_bytes.assert_not_called()
+
+
+def test_default_positional_write_rechecks_length_after_reading(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(os_access, '_MAX_POSITIONAL_WRITE_BYTES', 8)
+    fs = TestOS()
+    fs.files['/file'] = b'abc'
+    fs.path_read_bytes = Mock(return_value=b'123456789')
+    fs.path_write_bytes = Mock(side_effect=AssertionError('must not write'))
+    with pytest.raises(OSError) as error:
+        fs.path_write_bytes_at(PurePosixPath('/file'), 0, b'x')
+    assert error.value.errno == errno.ENOSPC
+    fs.path_write_bytes.assert_not_called()
+
+
+def test_default_positional_write_rejects_short_replacement_writes():
+    fs = TestOS()
+    fs.files['/file'] = b'abcdef'
+    fs.path_write_bytes = Mock(return_value=1)
+    with pytest.raises(OSError) as error:
+        fs.path_write_bytes_at(PurePosixPath('/file'), 2, b'X')
+    assert error.value.errno == errno.EIO
+    fs.path_write_bytes.assert_called_once_with(PurePosixPath('/file'), b'abXdef')
+
+
+@pytest.mark.parametrize('mode', ['wb', 'w+b'])
+def test_default_positional_write_serves_binary_file_objects(monty_run: RunMonty, mode: str):
+    class OpenOS(TestOS):
+        def path_open(self, path: PurePosixPath, mode: str) -> MontyFileHandle:
+            handle = MontyFileHandle(str(path), mode)
+            self.path_write_bytes(path, b'')
+            return handle
+
+    fs = OpenOS()
+    result = monty_run(
+        f"""
+f = open('/file', {mode!r})
+f.write(b'abcdef')
+if {mode!r} == 'w+b':
+    f.seek(0)
+    assert f.read() == b'abcdef'
+f.seek(2)
+f.write(b'XY')
+if {mode!r} == 'w+b':
+    f.seek(0)
+    assert f.read() == b'abXYef'
+f.seek(6)
+f.write(b'Z')
+if {mode!r} == 'w+b':
+    f.seek(0)
+    assert f.read() == b'abXYefZ'
+f.close()
+from pathlib import Path
+Path('/file').read_bytes()
+""",
+        os=fs,
+    )
+    assert result == snapshot(b'abXYefZ')
 
 
 def test_abstract_filesystem_exists(monty_run: RunMonty):
@@ -613,6 +739,22 @@ def test_dir_stat_helper():
     assert stat[8] == snapshot(1700000000.0)  # st_mtime
 
 
+@pytest.mark.parametrize('permissions', [0, 0o755, 0o1755, 0o2755, 0o4755, 0o7755])
+def test_stat_helpers_permission_bits(permissions: int):
+    """Special permission bits do not replace the file type."""
+    file_mode = StatResult.file_stat(0, permissions).st_mode
+    dir_mode = StatResult.dir_stat(permissions).st_mode
+    assert (file_mode & 0o170000, dir_mode & 0o170000) == snapshot((0o100000, 0o040000))
+    assert (file_mode & 0o7777, dir_mode & 0o7777) == (permissions, permissions)
+
+
+@pytest.mark.parametrize('mode', [0o100644, 0o104755, 0o041755, 0o120777])
+def test_stat_helpers_preserve_file_type(mode: int):
+    """A full mode is kept intact, including a caller-supplied file type."""
+    assert StatResult.file_stat(0, mode).st_mode == mode
+    assert StatResult.dir_stat(mode).st_mode == mode
+
+
 def test_path_monty_to_py(monty_run: RunMonty):
     result = monty_run('from pathlib import Path; Path("/foo/bar/thing.txt")')
     assert result == PurePosixPath('/foo/bar/thing.txt')
@@ -623,3 +765,107 @@ def test_path_py_to_monty(monty_run: RunMonty):
     p = PurePosixPath('/foo/bar/thing.txt')
     result = monty_run('f"type={type(p)} {p=}"', inputs={'p': p})
     assert result == snapshot("type=<class 'PosixPath'> p=PosixPath('/foo/bar/thing.txt')")
+
+
+class ScanOS(TestOS):
+    """A filesystem that answers `Path.scan` itself, returning `ScanEntry` values."""
+
+    __test__ = False
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scans: list[tuple[str, dict[str, Any]]] = []
+
+    def path_scan(self, path: PurePosixPath, **kwargs: Any) -> list[ScanEntry]:
+        self.scans.append((str(path), kwargs))
+        return [
+            ScanEntry('', True, False, False),
+            ScanEntry('a.py', False, True, False),
+            ScanEntry('notes.txt', False, True, False),
+            ScanEntry('pkg', True, False, False),
+            ScanEntry('pkg/b.py', False, True, False),
+        ]
+
+
+def test_abstract_os_path_scan_override(monty_run: RunMonty):
+    """An overriding `path_scan` gets the glob as a hint; Monty filters the reply."""
+    fs = ScanOS()
+    result = monty_run("from pathlib import Path; sorted(str(p) for p in Path('/data').glob('**/*.py'))", os=fs)
+    assert result == snapshot(['/data/a.py', '/data/pkg/b.py'])
+    assert fs.scans == snapshot(
+        [
+            (
+                '/data',
+                {
+                    'max_depth': None,
+                    'follow_symlinks': False,
+                    'pattern': ['**', '*.py'],
+                    'case_sensitive': None,
+                    'recurse_symlinks': False,
+                },
+            )
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    'code,expected',
+    [
+        (
+            "import os; os.walk('/data', followlinks=True)",
+            snapshot(
+                [
+                    (
+                        '/data',
+                        {
+                            'max_depth': None,
+                            'follow_symlinks': True,
+                            'pattern': None,
+                            'case_sensitive': None,
+                            'recurse_symlinks': False,
+                        },
+                    )
+                ]
+            ),
+        ),
+        (
+            "import os; os.scandir('/data')",
+            snapshot(
+                [
+                    (
+                        '/data',
+                        {
+                            'max_depth': 1,
+                            'follow_symlinks': False,
+                            'pattern': None,
+                            'case_sensitive': None,
+                            'recurse_symlinks': False,
+                        },
+                    )
+                ]
+            ),
+        ),
+        (
+            "from pathlib import Path; Path('/data').glob('*.py', case_sensitive=False, recurse_symlinks=True)",
+            snapshot(
+                [
+                    (
+                        '/data',
+                        {
+                            'max_depth': 1,
+                            'follow_symlinks': True,
+                            'pattern': ['*.py'],
+                            'case_sensitive': False,
+                            'recurse_symlinks': True,
+                        },
+                    )
+                ]
+            ),
+        ),
+    ],
+)
+def test_abstract_os_path_scan_arguments(monty_run: RunMonty, code: str, expected: Any):
+    """Each scan forwards its own depth, symlink and pattern arguments."""
+    fs = ScanOS()
+    monty_run(code, os=fs)
+    assert fs.scans == expected

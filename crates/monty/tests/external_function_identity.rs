@@ -191,7 +191,7 @@ fn extfunction_cache_is_rebuilt_after_snapshot_load() {
             PrintWriter::Stdout,
         )
         .unwrap();
-    let bytes = dump("test.py", None, SessionRef::Running(&progress)).unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
     assert_eq!(resume_snapshot_identity_test(progress), MontyObject::bool(true));
 
     let Session::Running(progress) = Dump::load(&bytes).unwrap().state else {
@@ -307,4 +307,46 @@ y = missing
             MontyObject::string("<function 'ext_fn' external>".to_owned()),
         ]),
     );
+}
+
+/// A sync and an async host function with one name stay distinct objects, and
+/// each keeps its kind through a dump: the async flag is stored with the name.
+#[test]
+fn async_flag_survives_dump_and_splits_identity() {
+    let runner = MontyRun::new(
+        "gate()\n(a is b, a, b)".to_owned(),
+        "test.py",
+        vec!["a".to_owned(), "b".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(
+            vec![
+                MontyObject::function("foo".to_owned(), None),
+                MontyObject::async_function("foo".to_owned(), None),
+            ],
+            ResourceTracker::default(),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+    let expected = MontyObject::tuple([
+        MontyObject::bool(false),
+        MontyObject::function("foo".to_owned(), None),
+        MontyObject::async_function("foo".to_owned(), None),
+    ]);
+    assert_eq!(resume_gate(progress), expected);
+
+    let Session::Running(progress) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped a running session")
+    };
+    assert_eq!(resume_gate(*progress), expected);
+}
+
+/// Answers the `gate()` call and returns the run's result.
+fn resume_gate(progress: RunProgress) -> MontyObject {
+    let call = progress.into_function_call().expect("expected call to 'gate'");
+    let progress = call.resume(MontyObject::none(), PrintWriter::Stdout).unwrap();
+    progress.into_complete().unwrap()
 }

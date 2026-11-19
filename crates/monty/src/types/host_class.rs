@@ -5,9 +5,12 @@ use std::{
     mem,
 };
 
-use monty_types::{MontyUuid, unstable::ClassTypeNode};
+use monty_types::{
+    MontyUuid,
+    unstable::{ClassEq, ClassHash, ClassTypeNode},
+};
 
-use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value, str::allocate_string};
+use super::{Dict, LazyHeapSet, PyTrait, list::repr_should_truncate, str::allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -16,10 +19,11 @@ use crate::{
     hash::HashValue,
     heap::{
         BorrowedHeapRead, BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem,
-        HeapObjectRead, HeapRead, HeapReadOutput, HeapReader, heap_read_ref_as_field, heap_read_ref_as_field_mut,
+        HeapObjectRead, HeapRead, HeapReadMut, HeapReadOutput, HeapReader, heap_read_ref_as_field,
+        heap_read_ref_as_field_mut,
     },
     intern::Interns,
-    types::{Type, Union},
+    types::{Type, TypeRef, Union},
     value::{EitherStr, Value},
 };
 
@@ -106,29 +110,33 @@ pub(crate) fn host_class_type(heap: &Heap, class_id: HeapId) -> &HostClassType {
     }
 }
 
-impl<'h> HeapRead<'h, HostClass> {
+impl<'h> HeapReadMut<'h, HostClass> {
     /// Sets an attribute value on the sandbox copy (the host object is
     /// never touched).
     ///
     /// The caller transfers ownership of both `name` and `value`. Returns the
     /// old value if the attribute existed (caller must drop it), or None if this
     /// is a new attribute.
-    pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    pub fn set_attr(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.attrs_mut().set(name, value, vm)
     }
 
-    pub fn attrs(&self) -> BorrowedHeapRead<'_, 'h, Dict> {
-        heap_read_ref_as_field!(self, HostClass, attrs)
-    }
-
-    pub fn attrs_mut(&mut self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
+    /// Borrows the inline attribute dictionary for reader-gated mutation.
+    pub fn attrs_mut(&self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
         heap_read_ref_as_field_mut!(self, HostClass, attrs)
     }
 }
 
+impl<'h> HeapRead<'h, HostClass> {
+    /// Borrows the inline attribute dictionary for comparisons and lookups.
+    pub fn attrs(&self) -> BorrowedHeapRead<'_, 'h, Dict> {
+        heap_read_ref_as_field!(self, HostClass, attrs)
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::HostClass
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        TypeRef::Class(self.get(vm.heap).class_id())
     }
 
     /// The real class name (`'Point'`), not the `Type::HostClass` placeholder.
@@ -145,7 +153,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut value_guard = DropGuard::new(value, vm);
-        let name = attribute_name_value(name, value_guard.ctx());
+        let name = name.as_value(value_guard.ctx().heap);
         let (value, vm) = value_guard.into_parts();
         let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);
@@ -181,19 +189,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
         let name = self.get(vm.heap).name(vm.heap, vm.interns).to_owned();
         let attr_count = self.get(vm.heap).attrs.len();
         write_dataclass_repr(f, &name, attr_count, vm, heap_ids, |i, vm| {
-            let Some((key, _)) = self.get(vm.heap).attrs.item_at(i) else {
+            let Some((key, _)) = self.get(vm.heap).attrs.iter().nth(i) else {
                 return Ok((String::new(), None));
             };
             let key = key.clone_with_heap(vm.heap);
             defer_drop!(key, vm);
             // Keys are strings in practice; render a non-string key (possible
             // in host-built attrs) via repr rather than fail.
-            let key_str = if let Ok(s) = key.to_str(vm) {
+            let key_str = if let Some(s) = key.as_str(vm) {
                 s.to_owned()
             } else {
                 let repr = key.py_repr(vm)?;
                 defer_drop!(repr, vm);
-                repr.to_str(vm)?.to_owned()
+                repr.as_str(vm).expect("py_repr returns str").to_owned()
             };
             // The value is cloned only after the fallible key formatting, so a
             // formatting error cannot strand an unguarded clone; re-reading at
@@ -202,9 +210,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
             let value = self
                 .get(vm.heap)
                 .attrs
-                .item_at(i)
+                .iter()
+                .nth(i)
                 .map(|(_, v)| v.clone_with_heap(vm.heap));
             Ok((key_str, value))
+        })
+    }
+
+    /// Suspends as a `__call__` on the instance's uuid: whether a host object
+    /// is callable, and what calling it does, is the host's decision.
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::MethodCall {
+            name: EitherStr::Heap("__call__".to_owned()),
+            args,
+            object_id: self.get(vm.heap).instance_id(),
         })
     }
 
@@ -298,7 +317,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
 ///
 /// Each caller supplies its own field list via `field`, mapping an index to that
 /// field's name and a cloned value (dropped here). A cycle renders `...`, a
-/// `None` value `<?>`, and exhausting a time limit truncates `...[timeout]`.
+/// `None` value `<?>`, and exhausting a time limit truncates `...[timeout]`
+/// (a memory limit raises instead, see [`repr_should_truncate`]).
 ///
 /// `field` is resolved immediately before that field is written, never all up
 /// front, so a `__repr__` that mutates a later field is observed — matching the
@@ -321,7 +341,7 @@ pub(crate) fn write_dataclass_repr<'h>(
         if i > 0 {
             // Same between-item checkpoint as sequence repr, so a wide instance
             // cannot outrun its time limit.
-            if vm.heap.tracker.check_memory_time_every(i).is_err() {
+            if repr_should_truncate(i, vm)? {
                 f.write_str(", ...[timeout]")?;
                 break;
             }
@@ -424,6 +444,10 @@ impl HostClassType {
             host_defined: true,
             is_dataclass: self.is_dataclass,
             attrs: Vec::new(),
+            // A host proxy of a host class compares by identity: the sandbox
+            // never learns how the host's class compares.
+            eq: ClassEq::Identity,
+            hash: ClassHash::Identity,
         }
     }
 }
@@ -436,13 +460,13 @@ impl HostClassType {
     }
 }
 
-impl<'h> HeapRead<'h, HostClassType> {
+impl<'h> HeapReadMut<'h, HostClassType> {
     /// Applies a re-sent wire class type: `name` and `is_dataclass` are
     /// overwritten (the host is authoritative), and `attrs`, when `Some`,
     /// replaces the eager class attrs (a snapshot at send time). Returns the
     /// replaced dict, which the caller must drop.
     pub fn update_from_wire(
-        &mut self,
+        &self,
         name: EitherStr,
         is_dataclass: bool,
         attrs: Option<Dict>,
@@ -466,8 +490,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
         })
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Type
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Type.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

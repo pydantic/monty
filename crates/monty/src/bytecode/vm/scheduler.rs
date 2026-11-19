@@ -10,12 +10,12 @@ use std::{collections::VecDeque, mem};
 use ahash::AHashMap;
 use smallvec::{SmallVec, smallvec};
 
-use super::FrameNamespace;
+use super::{FrameNamespace, exceptions::CaughtException};
 use crate::{
     asyncio::{Awaiter, CallId, TaskId},
     exception_private::RunResult,
     heap::{ContainsHeap, DropWithContext, Heap, HeapId, HeapReadOutput, HeapReader},
-    intern::FunctionId,
+    intern::{FunctionId, StringId},
     value::Value,
 };
 
@@ -48,7 +48,7 @@ pub(crate) struct Task {
     /// Saved operand stack; the current task uses the VM's stack.
     pub stack: Vec<Value>,
     /// Exception stack for nested except blocks.
-    pub exception_stack: Vec<Value>,
+    pub exception_stack: Vec<CaughtException>,
     /// VM-level instruction_ip (for exception table lookup).
     pub instruction_ip: usize,
     /// Owned coroutine reference for a spawned task; the main task has none.
@@ -97,10 +97,13 @@ pub(crate) struct SerializedTaskFrame {
     /// Caller's bytecode offset at the call site (for tracebacks). See
     /// `CallFrame.call_offset`.
     pub call_offset: Option<u32>,
-    /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
+    /// Whether this frame is a class `__init__` or an imported module body (see `CallFrame.is_initializer`).
     pub is_initializer: bool,
     /// Frame namespace, owning its dict references (see `CallFrame.namespace`).
     pub namespace: Option<Box<FrameNamespace>>,
+    /// The `from ... import` in progress, if the frame parked inside one.
+    #[serde(default)]
+    pub import_from_module: Option<StringId>,
 }
 
 impl Task {

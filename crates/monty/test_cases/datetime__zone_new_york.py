@@ -1,4 +1,6 @@
-# timezone=America/New_York
+# /// monty
+# timezone = 'America/New_York'
+# ///
 # `America/New_York` covers west of UTC, EST/EDT.
 # Every expectation is CPython 3.14 under the same `TZ`.
 import time

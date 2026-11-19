@@ -22,7 +22,8 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     types::{
-        CmpOrder, LazyHeapSet, PyTrait, Type, date, datetime, long_int, str::allocate_string, tuple::allocate_tuple,
+        CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef, date, datetime, long_int, str::allocate_string,
+        tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };
@@ -220,6 +221,21 @@ pub(crate) fn floor_div_rem(total: i128, divisor: i128) -> (i128, i128) {
     }
 }
 
+/// `timedelta.min`, `timedelta.max` and `timedelta.resolution`.
+pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+    // One microsecond short of `MAX_TIMEDELTA_DAYS + 1` days, which normalizes to
+    // CPython's `timedelta(days=999999999, seconds=86399, microseconds=999999)`.
+    const MAX_MICROS: i128 = ((MAX_TIMEDELTA_DAYS as i128) + 1) * DAY_MICROSECONDS - 1;
+    const MIN_MICROS: i128 = (MIN_TIMEDELTA_DAYS as i128) * DAY_MICROSECONDS;
+    let micros = match attr.static_string(vm.interns)? {
+        StaticStrings::Min => MIN_MICROS,
+        StaticStrings::Max => MAX_MICROS,
+        StaticStrings::Resolution => 1,
+        _ => return None,
+    };
+    Some(allocate_micros(micros, vm.heap))
+}
+
 /// Allocates a `timedelta` from a microsecond count known to be in range.
 ///
 /// Used for the class constants (`resolution`, `min`, `max`) and by
@@ -295,14 +311,15 @@ impl FromValue for DeltaComponent {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
     fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
-        let result = match value {
+        match value {
             Value::Bool(b) => Ok(Self(i128::from(b))),
             Value::Int(i) => Ok(Self(i128::from(i))),
-            _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_int())),
-            _ => Err(FromValueFail::WrongType),
-        };
-        value.drop_with(vm);
-        result
+            _ if is_long_int(&value, vm) => {
+                value.drop_with(vm);
+                Err(FromValueFail::Raise(ExcType::overflow_c_int()))
+            }
+            other => Err(FromValueFail::WrongType(other)),
+        }
     }
 
     fn type_error(got: &str) -> RunError {
@@ -356,8 +373,8 @@ impl HeapItem for TimeDelta {
 /// `HeapRead`-based dispatch for `TimeDelta`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident timedeltas.
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::TimeDelta
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::TimeDelta.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -414,9 +431,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
         Ok(allocate_string(s, vm.heap))
     }
 
-    /// `-delta` — `from_total_microseconds` is fallible, though no in-range
-    /// value can overflow it here: the bounds are `±999999999` days, so every
-    /// negation lands back inside them.
+    fn py_abs_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let delta = from_total_microseconds(total_microseconds(self.get(vm.heap)).abs())?;
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta)))))
+    }
+
+    /// Negation can overflow because the upper bound includes a partial day
+    /// beyond `999999999` days, while the lower bound is exactly `-999999999` days.
     fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let negated = from_total_microseconds(-total_microseconds(self.get(vm.heap)))?;
         Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(negated)))))
@@ -430,18 +451,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         match other.read_heap(vm) {
-            Some(HeapReadOutput::Date(other)) => Ok(date::py_add(*other.get(vm.heap), *self.get(vm.heap), vm.heap)),
+            Some(HeapReadOutput::Date(other)) => {
+                date::py_add(*other.get(vm.heap), *self.get(vm.heap), vm.heap).map(Some)
+            }
             Some(HeapReadOutput::DateTime(other)) => {
                 let other = other.get(vm.heap).clone();
                 let value = *self.get(vm.heap);
-                Ok(datetime::py_add(&other, &value, vm.heap))
+                datetime::py_add(&other, &value, vm.heap).map(Some)
             }
             Some(HeapReadOutput::TimeDelta(other)) => {
-                let total = total_microseconds(self.get(vm.heap)).checked_add(total_microseconds(other.get(vm.heap)));
-                let Some(total) = total else { return Ok(None) };
-                let Ok(result) = from_total_microseconds(total) else {
-                    return Ok(None);
-                };
+                let total = total_microseconds(self.get(vm.heap)) + total_microseconds(other.get(vm.heap));
+                let result = from_total_microseconds(total)?;
                 Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result)))))
             }
             _ => Ok(None),
@@ -452,11 +472,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
         let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
-        let total = total_microseconds(self.get(vm.heap)).checked_sub(total_microseconds(other.get(vm.heap)));
-        let Some(total) = total else { return Ok(None) };
-        let Ok(result) = from_total_microseconds(total) else {
-            return Ok(None);
-        };
+        let total = total_microseconds(self.get(vm.heap)) - total_microseconds(other.get(vm.heap));
+        let result = from_total_microseconds(total)?;
         Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result)))))
     }
 

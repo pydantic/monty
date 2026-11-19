@@ -106,7 +106,7 @@ buffers. That growth is **not** covered by `ResourceLimits.max_memory`
         code **can** catch it with `except MemoryError`. Unlike a real resource
         limit it is a catchable `RunError::Exc`, not `UncatchableExc`.
     - **Pool hosts** (`pydantic_monty`, `@pydantic/monty`): the cap is enforced
-        in the parent as print events arrive, so it fails the protocol *turn*
+        in the client as print events arrive, so it fails the protocol *turn*
         rather than raising into the VM. Sandboxed code cannot catch it, and the
         host sees `MontyRuntimeError` whose inner exception is `MemoryError`
         (`exc.exception()` in Python, `err.exception.typeName` in JS). The JS

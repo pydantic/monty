@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # External function calls in deep call stacks (function calling function).
 # Tests that the outer function receives the return value correctly when
 # the inner function makes an external call.

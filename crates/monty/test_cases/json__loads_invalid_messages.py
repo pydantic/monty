@@ -121,3 +121,18 @@ for source, expected in invalid_cases:
         assert False, f'invalid JSON should raise JSONDecodeError: {source!r}'
     except json.JSONDecodeError as exc:
         assert str(exc) == expected, f'invalid JSON message mismatch for {source!r}'
+
+# === byte order mark ===
+# `bytes` input is decoded as `utf-8-sig`; `str` input rejects the BOM
+assert json.loads(b'\xef\xbb\xbf[1]') == [1]
+try:
+    json.loads(b'\xef\xbb\xbf[1, x]')
+    assert False, 'invalid JSON after a BOM should raise JSONDecodeError'
+except json.JSONDecodeError as exc:
+    assert str(exc) == 'Expecting value: line 1 column 5 (char 4)'
+for source in ['\ufeff[1]', '\ufeff']:
+    try:
+        json.loads(source)
+        assert False, 'a str BOM should raise JSONDecodeError'
+    except json.JSONDecodeError as exc:
+        assert str(exc) == 'Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)'

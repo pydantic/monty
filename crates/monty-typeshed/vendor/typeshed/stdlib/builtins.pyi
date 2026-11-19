@@ -3,9 +3,12 @@ import sys
 import types
 from _collections_abc import dict_items, dict_keys, dict_values
 from collections.abc import Awaitable, Callable, Iterable, Iterator, MutableSet, Reversible, Set as AbstractSet, Sized
+from io import BufferedRandom, BufferedReader, BufferedWriter, FileIO, TextIOWrapper
 from types import CellType, CodeType, GenericAlias, TracebackType
 from typing import (
+    IO,
     Any,
+    BinaryIO,
     ClassVar,
     Final,
     Generic,
@@ -16,6 +19,7 @@ from typing import (
     Sequence,
     SupportsAbs,
     SupportsBytes,
+    SupportsComplex,
     SupportsFloat,
     SupportsIndex,
     TypeVar,
@@ -29,6 +33,12 @@ from _typeshed import (
     AnnotationForm,
     ConvertibleToFloat,
     ConvertibleToInt,
+    FileDescriptorOrPath,
+    OpenBinaryMode,
+    OpenBinaryModeReading,
+    OpenBinaryModeUpdating,
+    OpenBinaryModeWriting,
+    OpenTextMode,
     ReadableBuffer,
     SupportsAdd,
     SupportsAnext,
@@ -344,6 +354,45 @@ class float:
     if sys.version_info >= (3, 14):
         @classmethod
         def from_number(cls, number: float | SupportsIndex | SupportsFloat, /) -> Self: ...
+
+@disjoint_base
+class complex:
+    @overload
+    def __new__(
+        cls,
+        real: complex | SupportsComplex | SupportsFloat | SupportsIndex = 0,
+        imag: complex | SupportsFloat | SupportsIndex = 0,
+    ) -> Self: ...
+    @overload
+    def __new__(cls, real: str | SupportsComplex | SupportsFloat | SupportsIndex | complex) -> Self: ...
+    @property
+    def real(self) -> float: ...
+    @property
+    def imag(self) -> float: ...
+    def conjugate(self) -> complex: ...
+    def __add__(self, value: complex, /) -> complex: ...
+    def __sub__(self, value: complex, /) -> complex: ...
+    def __mul__(self, value: complex, /) -> complex: ...
+    def __pow__(self, value: complex, mod: None = None, /) -> complex: ...
+    def __truediv__(self, value: complex, /) -> complex: ...
+    def __radd__(self, value: complex, /) -> complex: ...
+    def __rsub__(self, value: complex, /) -> complex: ...
+    def __rmul__(self, value: complex, /) -> complex: ...
+    def __rpow__(self, value: complex, mod: None = None, /) -> complex: ...
+    def __rtruediv__(self, value: complex, /) -> complex: ...
+    def __eq__(self, value: object, /) -> bool: ...
+    def __ne__(self, value: object, /) -> bool: ...
+    def __neg__(self) -> complex: ...
+    def __pos__(self) -> complex: ...
+    def __abs__(self) -> float: ...
+    def __hash__(self) -> int: ...
+    def __bool__(self) -> bool: ...
+    def __format__(self, format_spec: str, /) -> str: ...
+    if sys.version_info >= (3, 11):
+        def __complex__(self) -> complex: ...
+    if sys.version_info >= (3, 14):
+        @classmethod
+        def from_number(cls, number: complex | SupportsComplex | SupportsFloat | SupportsIndex, /) -> Self: ...
 
 @type_check_only
 class _FormatMapMapping(Protocol):
@@ -1155,6 +1204,83 @@ def oct(number: SupportsIndex, /) -> str: ...
 
 _Opener: TypeAlias = Callable[[str, int], int]
 
+@overload
+def open(
+    file: FileDescriptorOrPath,
+    mode: OpenTextMode = 'r',
+    buffering: int = -1,
+    encoding: str | None = None,
+    errors: str | None = None,
+    newline: str | None = None,
+    closefd: bool = True,
+    opener: _Opener | None = None,
+) -> TextIOWrapper: ...
+@overload
+def open(
+    file: FileDescriptorOrPath,
+    mode: OpenBinaryMode,
+    buffering: Literal[0],
+    encoding: None = None,
+    errors: None = None,
+    newline: None = None,
+    closefd: bool = True,
+    opener: _Opener | None = None,
+) -> FileIO: ...
+@overload
+def open(
+    file: FileDescriptorOrPath,
+    mode: OpenBinaryModeUpdating,
+    buffering: Literal[-1, 1] = -1,
+    encoding: None = None,
+    errors: None = None,
+    newline: None = None,
+    closefd: bool = True,
+    opener: _Opener | None = None,
+) -> BufferedRandom: ...
+@overload
+def open(
+    file: FileDescriptorOrPath,
+    mode: OpenBinaryModeWriting,
+    buffering: Literal[-1, 1] = -1,
+    encoding: None = None,
+    errors: None = None,
+    newline: None = None,
+    closefd: bool = True,
+    opener: _Opener | None = None,
+) -> BufferedWriter: ...
+@overload
+def open(
+    file: FileDescriptorOrPath,
+    mode: OpenBinaryModeReading,
+    buffering: Literal[-1, 1] = -1,
+    encoding: None = None,
+    errors: None = None,
+    newline: None = None,
+    closefd: bool = True,
+    opener: _Opener | None = None,
+) -> BufferedReader: ...
+@overload
+def open(
+    file: FileDescriptorOrPath,
+    mode: OpenBinaryMode,
+    buffering: int = -1,
+    encoding: None = None,
+    errors: None = None,
+    newline: None = None,
+    closefd: bool = True,
+    opener: _Opener | None = None,
+) -> BinaryIO: ...
+@overload
+def open(
+    file: FileDescriptorOrPath,
+    mode: str,
+    buffering: int = -1,
+    encoding: str | None = None,
+    errors: str | None = None,
+    newline: str | None = None,
+    closefd: bool = True,
+    opener: _Opener | None = None,
+) -> IO[Any]: ...
 def ord(c: str | bytes | bytearray, /) -> int: ...
 
 @type_check_only
@@ -1484,6 +1610,11 @@ class OverflowError(ArithmeticError): ...
 class ZeroDivisionError(ArithmeticError): ...
 class IndexError(LookupError): ...
 class KeyError(LookupError): ...
+class FileExistsError(OSError): ...
+class FileNotFoundError(OSError): ...
+class IsADirectoryError(OSError): ...
+class NotADirectoryError(OSError): ...
+class PermissionError(OSError): ...
 class TimeoutError(OSError): ...
 class NotImplementedError(RuntimeError): ...
 class RecursionError(RuntimeError): ...

@@ -126,6 +126,31 @@ with Monty() as pool:
     #> 11
 ```
 
+### Host modules
+
+`external_modules` on `checkout()` maps import names to `ExternalModule` values containing the module's public items
+and a `.pyi` stub, for every feed of the session.
+Callables become host functions.
+Type checking fetches the stub when a feed first imports the module.
+
+```python
+from pydantic_monty import ExternalModule, Monty
+
+
+def add(a: int, b: int) -> int:
+    return a + b
+
+
+tools = ExternalModule({'add': add}, stubs='def add(a: int, b: int) -> int: ...\n')
+modules = {'tools': tools}
+code = 'from tools import add\nadd(1, 2)'
+
+with Monty() as pool:
+    with pool.checkout(external_modules=modules) as session:
+        print(session.feed_run(code))
+        #> 3
+```
+
 ### Host objects and classes
 
 Wrap a host object in `ClassInstance` to let the sandbox read chosen attributes and call chosen methods on it, or a
@@ -412,9 +437,9 @@ instrument_telemetry(
 
 Each component is optional. A configured tracer records each checkout as a
 session span with nested feed and suspension spans. A logger records exceptions
-and `print` output under those spans. An `AsyncMontyWebsocket` checkout also
-sends the active context as W3C `traceparent`/`tracestate` headers on its
-upgrade request, so a server that honours them can join the same trace. A meter
+and `print` output under those spans. An `AsyncMontyRemote` checkout also
+sends the active context as W3C `traceparent`/`tracestate` metadata on its
+session stream, so a server that honours them can join the same trace. A meter
 records live, immediately available and host-blocked worker counts, checkout
 waits, worker deaths by reason, run durations and the sandbox execution time of
 each feed.

@@ -2,19 +2,12 @@ use std::fmt::Write;
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyException};
+use monty_types::{CompileOptions, ExcType, MontyException, MontyObject};
 
 /// Helper to extract the exception from a parse error.
 fn get_parse_err(code: impl Into<String>) -> MontyException {
     let result = MontyRun::new(code.into(), "test.py", vec![], CompileOptions::default());
     result.expect_err("expected parse error")
-}
-
-#[test]
-fn complex_numbers_return_not_implemented_error() {
-    let err = get_parse_err("1 + 2j");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support complex constants");
 }
 
 #[test]
@@ -33,6 +26,32 @@ fn repeated_class_keyword_returns_syntax_error() {
 }
 
 #[test]
+fn missing_nonlocal_binding_in_nested_function_returns_syntax_error() {
+    let err =
+        get_parse_err("def outer():\n    def inner():\n        nonlocal absent\n        absent += 1\n    inner()");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"no binding for nonlocal 'absent' found");
+}
+
+#[test]
+fn default_assignment_before_global_declaration_returns_syntax_error() {
+    let err = get_parse_err(
+        "def outer():\n    def inner(value=(bound := 0)):\n        return value\n    global bound\nouter()",
+    );
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"name 'bound' is assigned to before global declaration");
+}
+
+#[test]
+fn default_assignment_before_nonlocal_declaration_returns_syntax_error() {
+    let err = get_parse_err(
+        "def outer():\n    bound = 10\n    def middle():\n        def inner(value=(bound := 0)):\n            return value\n        nonlocal bound\n    middle()\nouter()",
+    );
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"name 'bound' is assigned to before nonlocal declaration");
+}
+
+#[test]
 fn simple_classes_compile_successfully() {
     // Simple classes are supported; only the advanced forms below are rejected.
     let result = MontyRun::new(
@@ -45,13 +64,24 @@ fn simple_classes_compile_successfully() {
 }
 
 #[test]
-fn class_inheritance_returns_not_implemented_error() {
-    let err = get_parse_err("class Foo(Bar): pass");
+fn class_metaclass_returns_not_implemented_error() {
+    let err = get_parse_err("class Foo(metaclass=Meta): pass");
     assert_eq!(err.exc_type(), ExcType::NotImplementedError);
     assert_snapshot!(
         err.message().unwrap(),
-        @"The monty syntax parser does not yet support class inheritance and metaclasses"
+        @"The monty syntax parser does not yet support metaclasses"
     );
+}
+
+#[test]
+fn class_inheritance_compiles_successfully() {
+    let result = MontyRun::new(
+        "class Foo(Bar): pass".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    );
+    assert!(result.is_ok(), "a class with base classes should compile");
 }
 
 #[test]
@@ -127,14 +157,29 @@ fn unknown_imports_compile_successfully_error_deferred_to_runtime() {
 
 #[test]
 fn explicit_class_annotations_assignment_returns_not_implemented_error() {
-    // The synthesized `__annotations__` is the last class-body statement, so an
-    // explicit assignment would be silently clobbered and its entries lost.
-    // CPython merges the two; Monty rejects rather than dropping them quietly.
-    let err = get_parse_err("class C:\n    __annotations__ = {'a': 'b'}\n    x: int");
+    // Under PEP 563 the synthesized `__annotations__` is the last class-body
+    // statement, so an explicit assignment would be silently clobbered and its
+    // entries lost. CPython merges the two; Monty rejects rather than dropping
+    // them quietly.
+    let err =
+        get_parse_err("from __future__ import annotations\nclass C:\n    __annotations__ = {'a': 'b'}\n    x: int");
     assert_eq!(err.exc_type(), ExcType::NotImplementedError);
     assert_snapshot!(
         err.message().unwrap(),
         @"The monty syntax parser does not yet support assigning `__annotations__` in a class body with annotated names"
+    );
+    // Without the import the annotations compile to `__annotate__`, so the
+    // binding is an ordinary member that wins, as in CPython.
+    let mut runner = MontyRun::new(
+        "class C:\n    __annotations__ = {'a': 'b'}\n    x: int\nC.__annotations__".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        runner.run_no_limits(vec![]).unwrap(),
+        MontyObject::dict([(MontyObject::string("a"), MontyObject::string("b"))]),
     );
 }
 
@@ -221,13 +266,13 @@ fn async_with_statement_returns_not_implemented_error() {
 #[test]
 fn error_display_format() {
     // Verify the Display format matches Python's exception output with traceback
-    let err = get_parse_err("1 + 2j");
+    let err = get_parse_err("type Alias = int");
     assert_snapshot!(err, @r#"
     Traceback (most recent call last):
       File "test.py", line 1, in <module>
-        1 + 2j
-            ~~
-    NotImplementedError: The monty syntax parser does not yet support complex constants
+        type Alias = int
+        ~~~~~~~~~~~~~~~~
+    NotImplementedError: The monty syntax parser does not yet support type aliases
     "#);
 }
 
@@ -583,23 +628,6 @@ fn deeply_nested_boolean_or_exceed_limit() {
     let err = get_parse_err(code);
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
     assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
-}
-
-// === Runtime NotImplementedError tests ===
-// These test that unimplemented features return proper errors instead of panicking.
-
-/// Helper to run code and get the exception from a runtime error.
-fn run_and_get_err(code: &str) -> MontyException {
-    let mut runner =
-        MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
-    runner.run_no_limits(vec![]).expect_err("expected runtime error")
-}
-
-#[test]
-fn matrix_multiplication_returns_not_implemented_error() {
-    // The @ operator (matrix multiplication) is not supported at runtime
-    let err = run_and_get_err("1 @ 2");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
 }
 
 #[test]
@@ -983,6 +1011,18 @@ fn module_with_too_many_interned_strings_returns_syntax_error() {
         err.message(),
         Some("module has too many distinct names; the bytecode format supports up to 65536 interned strings"),
     );
+}
+
+#[test]
+fn dotted_import_with_too_many_components_returns_syntax_error() {
+    // each component interns the path through it, so the chain is capped
+    let code = format!("import a{}", ".a".repeat(32));
+    let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
+    let err = result.expect_err("expected compile error");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(err.message(), Some("dotted import has more than 32 components"));
+    let code = format!("from a{} import b", ".a".repeat(31));
+    MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("32 components compile");
 }
 
 #[test]

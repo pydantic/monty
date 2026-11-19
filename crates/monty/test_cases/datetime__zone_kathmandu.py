@@ -1,4 +1,6 @@
-# timezone=Asia/Kathmandu
+# /// monty
+# timezone = 'Asia/Kathmandu'
+# ///
 # `Asia/Kathmandu` covers a fractional offset and no DST.
 # Every expectation is CPython 3.14 under the same `TZ`.
 import time

@@ -1,16 +1,76 @@
-/// Tests for execution-time limits and garbage collection.
-///
-/// Allocator-backed memory limits are exercised through worker subprocesses.
+//! Tests for execution-time limits and garbage collection.
+//!
+//! Allocator-backed memory limits are exercised through worker subprocesses.
+
+#[cfg(not(any(unix, windows)))]
+use std::time::Instant as ThreadTime;
 use std::{
+    borrow::Cow,
+    fmt::Write,
+    hint::spin_loop,
     thread,
     time::{Duration, Instant},
 };
 
+#[cfg(any(unix, windows))]
+use cpu_time::ThreadTime;
 use monty::{MontyRepl, MontyRun, RunProgress};
 use monty_types::{
-    CompileOptions, ExcType, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceLimits,
-    ResourceTracker,
+    CompileOptions, ExcType, MontyException, MontyObject, NameLookupResult, PrintWriter, PrintWriterCallback,
+    ResourceLimits, ResourceTracker,
 };
+
+/// Terminal errors must cross each native caller before unwinding its Python frame.
+#[test]
+fn terminal_error_respects_synchronous_reentry_boundaries() {
+    let code = "\
+def fail():
+    return ''.ljust(width, 'é')
+
+def middle():
+    for value in iter(fail, None):
+        pass
+
+def outer():
+    for value in iter(middle, None):
+        pass
+
+outer()
+";
+    let mut runner = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["width".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    // Twice this width exceeds StringBuilder's capacity ceiling without attempting an allocation.
+    let width = isize::MAX as usize / 2 + 1;
+    let error = runner
+        .run_no_limits(vec![MontyObject::int(i64::try_from(width).unwrap())])
+        .expect_err("oversized padding must return a terminal MemoryError");
+    assert_eq!(error.exc_type(), ExcType::MemoryError);
+    let message = error
+        .message()
+        .unwrap()
+        .replace(&(width * 2).to_string(), "<requested>")
+        .replace(&isize::MAX.to_string(), "<limit>");
+    insta::assert_snapshot!(message, @"memory limit exceeded: <requested> bytes > <limit> bytes");
+    let frames: Vec<_> = error
+        .traceback()
+        .iter()
+        .map(|frame| (frame.frame_name.as_deref(), frame.start.line))
+        .collect();
+    assert_eq!(
+        frames,
+        vec![
+            (Some("<module>"), 12),
+            (Some("outer"), 9),
+            (Some("middle"), 5),
+            (Some("fail"), 2)
+        ]
+    );
+}
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
 ///
@@ -368,6 +428,75 @@ x
     );
 }
 
+/// `DictReader` skips blank rows in a native loop over the source, which must poll the
+/// clock: an endless source of blank lines never reaches a Python-level checkpoint.
+#[test]
+fn time_limit_covers_csv_blank_row_skipping() {
+    let code = r"
+import csv
+import itertools
+next(csv.DictReader(itertools.repeat(''), fieldnames=['a']))
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let exc = ex
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+/// The streaming `writerows()` loops feed a non-file target from a native loop, which
+/// polls through its retained iterator view; a `write` that is a builtin never runs a
+/// frame, so nothing else would check the clock.
+#[test]
+fn time_limit_covers_csv_streaming_writerows() {
+    for code in [
+        "import csv\nimport itertools\nclass Sink:\n    pass\nsink = Sink()\nsink.write = len\ncsv.writer(sink).writerows(itertools.repeat([]))\n",
+        "import csv\nimport itertools\nclass Sink:\n    pass\nsink = Sink()\nsink.write = len\ncsv.DictWriter(sink, ['a']).writerows(itertools.repeat({}))\n",
+    ] {
+        let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+        let exc = ex
+            .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+            .unwrap_err();
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{code}");
+    }
+}
+
+/// A field with no special character is scanned as one run: too few rows for the
+/// per-row poll and a single run per field would otherwise never read the clock. The
+/// turn's closing check raises either way, so the elapsed time is what proves the poll:
+/// the rows take tens of seconds to format in full.
+#[test]
+fn time_limit_covers_csv_long_ordinary_fields() {
+    let code = "import csv\nclass Sink:\n    pass\nsink = Sink()\nsink.write = len\ncsv.writer(sink).writerows([['x' * 10_000_000]] * 60)\n";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let start = ThreadTime::now();
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    let elapsed = start.elapsed();
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "formatting should stop at the first poll past the limit, took {elapsed:?}"
+    );
+}
+
+/// A user `__repr__` run to export a result or an external call's argument
+/// counts towards the time limits, although the export follows the run loop.
+#[test]
+fn time_limit_covers_export_repr() {
+    let repr_class = "import functools\nclass R:\n    def __repr__(self):\n        for _ in range(10**7):\n            pass\n        return 'r'\n";
+    for tail in ["functools.partial(print, R())", "add(functools.partial(print, R()))"] {
+        let code = format!("{repr_class}{tail}");
+        let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+        let progress = run.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+        let exc = progress.and_then(resolve_name_lookups).map(|_| ()).unwrap_err();
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{tail}");
+    }
+}
+
 #[test]
 fn time_limit_not_exceeded() {
     // Simple code that runs quickly
@@ -480,7 +609,7 @@ fn assert_timeout_in_builtin(code: &str, label: &str) {
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(100));
-    let start = Instant::now();
+    let start = ThreadTime::now();
     let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
     let elapsed = start.elapsed();
 
@@ -500,6 +629,26 @@ fn assert_timeout_in_builtin(code: &str, label: &str) {
 /// Test that `sum(range(huge))` respects the time limit.
 ///
 /// `sum()` iterates via `for_next()`, which polls the time limit every 64th step.
+/// A dict walk polls the clock by entries yielded, not by slot. With every
+/// even slot tombstoned the slot only takes even values, so a poll keyed on it
+/// never fired and nested comparisons ran unbounded past the time limit.
+#[test]
+fn timeout_in_dict_comparison_over_tombstones() {
+    let code = "
+def build(depth):
+    child = 0
+    for _ in range(depth):
+        d = {i: child for i in range(128)}
+        for i in range(0, 128, 2):
+            d.pop(i)
+        child = d
+    return child
+
+build(5) == build(5)
+";
+    assert_timeout_in_builtin(code, "dict comparison over tombstones");
+}
+
 #[test]
 fn timeout_in_sum_builtin() {
     assert_timeout_in_builtin("sum(range(10**18))", "sum(range(10**18))");
@@ -560,7 +709,7 @@ interrupt()
 template.format()
 ";
     let scan_call = pause_at_interrupt(scan_code);
-    let scan_started = Instant::now();
+    let scan_started = ThreadTime::now();
     let scan_result = scan_call.resume(MontyObject::none(), PrintWriter::Stdout);
     let scan_elapsed = scan_started.elapsed();
     assert_eq!(scan_result.unwrap_err().exc_type(), ExcType::KeyError);
@@ -579,7 +728,7 @@ template.format(value)
     let mut call = pause_at_interrupt(code);
 
     call.tracker_mut().set_max_feed_duration(traversal_budget);
-    let started = Instant::now();
+    let started = ThreadTime::now();
     let result = call.resume(MontyObject::none(), PrintWriter::Stdout);
     let elapsed = started.elapsed();
 
@@ -615,7 +764,7 @@ fn run_bytes_search(expr: &str, haystack: Vec<u8>, needle: Vec<u8>, limits: Reso
     )
     .unwrap();
 
-    let start = Instant::now();
+    let start = ThreadTime::now();
     let result = run.run(
         vec![MontyObject::bytes(haystack), MontyObject::bytes(needle)],
         ResourceTracker::new(limits),
@@ -664,6 +813,55 @@ fn bytes_search_is_not_quadratic() {
     }
 }
 
+/// Runs `code` over one `data` argument of `size` bytes under `limits`.
+fn run_over_bytes(code: &str, size: usize, limits: ResourceLimits) -> (Duration, Result<MontyObject, MontyException>) {
+    let mut run = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["data".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let start = ThreadTime::now();
+    let result = run.run(
+        vec![MontyObject::bytes(vec![b'a'; size])],
+        ResourceTracker::new(limits),
+        PrintWriter::Stdout,
+    );
+    (start.elapsed(), result)
+}
+
+/// Hashing polls the deadline once per input chunk, so a large `update()` is
+/// interrupted instead of running to completion.
+#[test]
+fn timeout_in_hashing() {
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(20));
+    let (elapsed, result) = run_over_bytes(
+        "import hashlib\nhashlib.sha3_512(data).hexdigest()",
+        128 * 1024 * 1024,
+        limits,
+    );
+    let exc = result.expect_err("expected the time limit to fire");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "should terminate promptly, took {elapsed:?}"
+    );
+}
+
+/// PBKDF2 absorbs the salt once, so a large salt costs one pass however many
+/// output blocks are derived.
+#[test]
+fn pbkdf2_hashes_the_salt_once() {
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_secs(5));
+    let (_, result) = run_over_bytes(
+        "import hashlib\nlen(hashlib.pbkdf2_hmac('sha256', b'p', data, 1, dklen=4096))",
+        8 * 1024 * 1024,
+        limits,
+    );
+    assert_eq!(result.unwrap(), MontyObject::int(4096));
+}
+
 /// Bytes searches must remain interruptible by the time limit.
 ///
 /// The haystack is large enough that even a linear scan outlives the budget.
@@ -706,6 +904,44 @@ fn timeout_in_bounded_deque_repeat() {
 #[test]
 fn timeout_in_sorted_builtin() {
     assert_timeout_in_builtin("sorted(range(10**18))", "sorted(range(10**18))");
+}
+
+#[test]
+fn timeout_in_sorted_list_and_tuple_copy() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("x = [1] * 20_000\nt = (1,) * 20_000", vec![], PrintWriter::Stdout)
+        .expect("list and tuple should build without a limit");
+
+    repl.tracker_mut().set_max_feed_duration(Duration::from_nanos(1));
+    let exc = repl
+        .feed_run("sorted(x)", vec![], PrintWriter::Stdout)
+        .expect_err("sorted(list) must hit the time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+
+    repl.tracker_mut().set_max_feed_duration(Duration::from_nanos(1));
+    let exc = repl
+        .feed_run("sorted(t)", vec![], PrintWriter::Stdout)
+        .expect_err("sorted(tuple) must hit the time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+#[test]
+fn memory_preflight_in_sorted_list_and_tuple_copy() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("x = [1] * 20_000\nt = (1,) * 20_000", vec![], PrintWriter::Stdout)
+        .expect("list and tuple should build without a limit");
+
+    *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(10_000 * 16 + 8));
+    let exc = repl
+        .feed_run("sorted(x)", vec![], PrintWriter::Stdout)
+        .expect_err("sorted(list) must hit memory preflight");
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+
+    *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(10_000 * 16 + 8));
+    let exc = repl
+        .feed_run("sorted(t)", vec![], PrintWriter::Stdout)
+        .expect_err("sorted(tuple) must hit memory preflight");
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
 }
 
 /// Test that `min(range(huge))` respects the time limit.
@@ -762,19 +998,26 @@ fn timeout_in_str_join() {
     assert_timeout_in_builtin("' '.join(str(i) for i in range(10**18))", "str.join with generator");
 }
 
-/// Test that the insertion sort inner loop in `sorted()` respects the time limit.
+/// Test that the sort comparison loop respects the time limit.
 ///
-/// Uses reverse-sorted data to trigger worst-case O(n^2) insertion sort behavior.
-/// The sort comparison loop polls the time limit (amortized, every 64th comparison).
+/// `x.sort()` sorts in place without an iterable collection or copy phase,
+/// isolating the comparison loop which polls the time limit every 64th comparison.
 #[test]
 fn timeout_in_sorted_comparison_loop() {
-    // Build a reverse-sorted list, then sort it. Insertion sort on reverse-sorted
-    // data is O(n^2).
-    let code = r"
-x = list(range(10**6, 0, -1))
-sorted(x)
-";
-    assert_timeout_in_builtin(code, "sorted(reversed list)");
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("x = list(range(10_000, 0, -1))", vec![], PrintWriter::Stdout)
+        .expect("setup should succeed");
+    repl.tracker_mut().set_max_feed_duration(Duration::from_nanos(1));
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("x.sort()", vec![], PrintWriter::Stdout)
+        .expect_err("sort comparison loop must hit the time limit");
+    let elapsed = start.elapsed();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "should terminate promptly, took {elapsed:?}"
+    );
 }
 
 /// Test that `[1] * 10_000_000` (list repetition) respects the time limit.
@@ -912,12 +1155,12 @@ for _ in range(400):
         repl.feed_run(&build, vec![], PrintWriter::Stdout)
             .unwrap_or_else(|e| panic!("{label}: build failed: {e}"));
 
-        let start = Instant::now();
+        let start = ThreadTime::now();
         repl.feed_run(found_lookups, vec![], PrintWriter::Stdout)
             .unwrap_or_else(|e| panic!("{label}: found lookups failed: {e}"));
         let found_elapsed = start.elapsed();
 
-        let start = Instant::now();
+        let start = ThreadTime::now();
         repl.feed_run(missing_lookups, vec![], PrintWriter::Stdout)
             .unwrap_or_else(|e| panic!("{label}: missing lookups failed: {e}"));
         let missing_elapsed = start.elapsed();
@@ -926,6 +1169,32 @@ for _ in range(400):
             missing_elapsed < found_elapsed * 3,
             "{label}: misses took {missing_elapsed:?} vs finds {found_elapsed:?}, expected linear seen-checks"
         );
+    }
+}
+
+/// Builtins that collect heap values in a Rust loop polling the time limit.
+///
+/// Every piece is a heap value (split pieces are at least two characters, so not
+/// interned; repeated items are lists), and a timeout part-way through must release
+/// the pieces built so far: under memory-model-checks a leaked `Value::Ref` panics on
+/// drop. `bytes.splitlines` was already guarded and stays as a regression check.
+const PIECE_BUILDING_EXPRS: &[&str] = &[
+    "('ab,' * 3_000_000).split(',')",
+    "('ab,' * 3_000_000).rsplit(',')",
+    "('ab\\n' * 3_000_000).splitlines()",
+    "(b'ab ' * 3_000_000).split()",
+    "(b'ab ' * 3_000_000).rsplit()",
+    "(b'ab\\n' * 3_000_000).splitlines()",
+    "[[1]] * 10_000_000",
+    "([1],) * 10_000_000",
+    "from collections import namedtuple\nnamedtuple('P', 'a')([1]) * 10_000_000",
+];
+
+/// A timeout while a builtin is still building its result releases the pieces built so far.
+#[test]
+fn timeout_mid_build_releases_pieces() {
+    for expression in PIECE_BUILDING_EXPRS {
+        assert_timeout_in_builtin(expression, expression);
     }
 }
 
@@ -942,6 +1211,69 @@ s.splitlines()
     assert_timeout_in_builtin(code, "str.splitlines()");
 }
 
+/// A synchronous print sink that spends CPU once, without adding interpreter checkpoints.
+struct CpuConsumingOutput {
+    output: String,
+    burn: Option<Duration>,
+}
+
+impl PrintWriterCallback for CpuConsumingOutput {
+    fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
+        if let Some(duration) = self.burn.take() {
+            let cpu = ThreadTime::now();
+            let wall = Instant::now();
+            while cpu.elapsed() < duration {
+                assert!(wall.elapsed() < Duration::from_secs(10), "CPU counter did not advance");
+                spin_loop();
+            }
+        }
+        self.output.push_str(&output);
+        Ok(())
+    }
+
+    fn stdout_push(&mut self, output: char) -> Result<(), MontyException> {
+        self.output.push(output);
+        Ok(())
+    }
+}
+
+/// A `default_factory` re-enters `run()` with a fresh dispatch countdown, so a
+/// construction whose factories are each shorter than the interval reaches no
+/// checkpoint of its own. The binder therefore polls the clock itself, like
+/// every other native loop that calls back into Python.
+#[test]
+fn timeout_in_dataclass_default_factories() {
+    const FIELDS: usize = 200;
+
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    let body = (0..FIELDS).fold(String::new(), |mut body, i| {
+        let _ = writeln!(body, "    f{i}: int = field(default_factory=tick)");
+        body
+    });
+    repl.feed_run(
+        &format!(
+            "from dataclasses import dataclass, field\ndef tick():\n    print('.', end='')\n    return 1\n@dataclass\nclass Many:\n{body}"
+        ),
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .expect("the class should build without a limit");
+
+    let budget = Duration::from_millis(50);
+    repl.tracker_mut().set_max_feed_duration(budget);
+    let mut printed = CpuConsumingOutput {
+        output: String::new(),
+        burn: Some(budget * 2),
+    };
+    let exc = repl
+        .feed_run("Many()", vec![], PrintWriter::Callback(&mut printed))
+        .expect_err("the factory loop must hit the time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    // The poll fires on the interval's last index, before the factory it guards,
+    // so anything near `FIELDS` means the loop never checked at all.
+    assert_eq!(printed.output.len(), ResourceTracker::LOOP_CHECK_INTERVAL - 1);
+}
+
 #[test]
 fn timeout_in_str_format_parser() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
@@ -949,7 +1281,7 @@ fn timeout_in_str_format_parser() {
         .unwrap();
 
     let full_scan = fastest_of_attempts(|| {
-        let start = Instant::now();
+        let start = ThreadTime::now();
         let exc = repl
             .feed_run("template.format()", vec![], PrintWriter::Stdout)
             .expect_err("an unterminated field must fail without a time limit");
@@ -959,7 +1291,7 @@ fn timeout_in_str_format_parser() {
 
     let elapsed = fastest_of_attempts(|| {
         repl.tracker_mut().set_max_feed_duration(full_scan / 10);
-        let start = Instant::now();
+        let start = ThreadTime::now();
         let exc = repl
             .feed_run("template.format()", vec![], PrintWriter::Stdout)
             .expect_err("the format-string parser must hit the time limit");
@@ -973,38 +1305,32 @@ fn timeout_in_str_format_parser() {
     );
 }
 
-/// Copying the receiver is only a few milliseconds of work, so this compares
-/// the tracker's execution clock rather than wall time: compiling the feed and
-/// tearing down the 20 MB buffer would otherwise be a large share of both runs.
+/// An exhausted execution budget takes precedence over a missing format field.
 #[test]
 fn timeout_in_str_format_receiver_snapshot() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
     repl.feed_run("template = '{missing}' + 'x' * 20_000_000", vec![], PrintWriter::Stdout)
         .unwrap();
+    let exc = repl
+        .feed_run("template.format()", vec![], PrintWriter::Stdout)
+        .expect_err("the missing field must fail after snapshotting the receiver");
+    assert_eq!(exc.exc_type(), ExcType::KeyError);
 
-    // The feed clock restarts at each feed, so it already reports one feed's
-    // execution time on its own — no need to difference the cumulative clock.
-    let full_snapshot = fastest_of_attempts(|| {
-        let exc = repl
-            .feed_run("template.format()", vec![], PrintWriter::Stdout)
-            .expect_err("the missing field must fail after snapshotting the receiver");
-        assert_eq!(exc.exc_type(), ExcType::KeyError);
-        repl.tracker().feed_elapsed()
-    });
-
-    let elapsed = fastest_of_attempts(|| {
-        repl.tracker_mut().set_max_feed_duration(full_snapshot / 10);
-        let exc = repl
-            .feed_run("template.format()", vec![], PrintWriter::Stdout)
-            .expect_err("the receiver snapshot must hit the time limit before field lookup");
-        assert_eq!(exc.exc_type(), ExcType::TimeoutError);
-        repl.tracker().feed_elapsed()
-    });
-
-    assert!(
-        elapsed < full_snapshot / 2,
-        "str.format() should stop while copying the receiver; full snapshot {full_snapshot:?}, timed snapshot {elapsed:?}"
-    );
+    let budget = Duration::from_millis(50);
+    repl.tracker_mut().set_max_feed_duration(budget);
+    let mut printed = CpuConsumingOutput {
+        output: String::new(),
+        burn: Some(budget * 2),
+    };
+    let exc = repl
+        .feed_run(
+            "print('start')\ntemplate.format()",
+            vec![],
+            PrintWriter::Callback(&mut printed),
+        )
+        .expect_err("formatting must hit the time limit before field lookup");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert_eq!(printed.output, "start\n");
 }
 
 #[test]
@@ -1014,14 +1340,14 @@ fn timeout_in_str_format_escaped_braces() {
         .unwrap();
 
     let full_scan = fastest_of_attempts(|| {
-        let start = Instant::now();
+        let start = ThreadTime::now();
         repl.feed_run("template.format()", vec![], PrintWriter::Stdout).unwrap();
         start.elapsed()
     });
 
     let elapsed = fastest_of_attempts(|| {
         repl.tracker_mut().set_max_feed_duration(full_scan / 10);
-        let start = Instant::now();
+        let start = ThreadTime::now();
         let exc = repl
             .feed_run("template.format()", vec![], PrintWriter::Stdout)
             .expect_err("escaped braces must not bypass the time limit");
@@ -1046,7 +1372,7 @@ fn fastest_of_attempts(mut measure: impl FnMut() -> Duration) -> Duration {
 fn timeout_in_str_format_grouped_padding() {
     let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::from_millis(10)));
     let mut repl = MontyRepl::new("test.py", tracker, CompileOptions::default());
-    let start = Instant::now();
+    let start = ThreadTime::now();
     let exc = repl
         .feed_run("'{:09223372036854775807,}'.format(1)", vec![], PrintWriter::Stdout)
         .expect_err("grouped padding must hit the time limit before allocating the full width");
@@ -1068,7 +1394,7 @@ fn timeout_in_str_format_large_str_field() {
         .unwrap();
 
     repl.tracker_mut().set_max_feed_duration(Duration::from_millis(5));
-    let start = Instant::now();
+    let start = ThreadTime::now();
     let exc = repl
         .feed_run("'{0:<1}'.format(s)", vec![], PrintWriter::Stdout)
         .expect_err("a large str field must observe the time limit");
@@ -1097,7 +1423,7 @@ s.splitlines()
 // These tests verify that `repr()` on large containers respects the time limit
 // and terminates promptly instead of hanging indefinitely. The repr methods
 // (`repr_sequence_fmt`, `Dict::py_repr_fmt`, `SetInner::repr_fmt`) poll the
-// limits every 64th item via `repr_check_time` and write `...[timeout]` when the
+// limits every 64th item via `repr_should_truncate` and write `...[timeout]` when the
 // time limit is exceeded, returning normally instead of propagating an error.
 //
 // Each test uses the external function "interrupt" pattern: the large object is
@@ -1165,7 +1491,7 @@ fn timeout_in_sort_key_loop() {
     )
     .unwrap();
     repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
-    let start = Instant::now();
+    let start = ThreadTime::now();
     let exc = repl
         .feed_run("x.sort(key=f)", vec![], PrintWriter::Stdout)
         .expect_err("the key loop must hit the time limit");
@@ -1173,6 +1499,30 @@ fn timeout_in_sort_key_loop() {
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
     // Polled, this stops one budget in at any machine speed; unpolled it runs
     // all 4M key calls before anything re-checks, which takes seconds.
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "should stop promptly, took {elapsed:?}"
+    );
+}
+
+/// Many references to 16 long strings sharing a 1 MB prefix: each comparison scans the prefix, so the sort must
+/// poll between comparisons rather than run Rust's uninterruptible `sort_by`.
+#[test]
+fn timeout_in_sort_of_long_strings() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "s = 'a' * 1_000_000\nkeys = [s + chr(97 + i) for i in range(16)]\nx = [keys[i * 7 % 16] for i in range(20_000)]",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
+    let start = ThreadTime::now();
+    let exc = repl
+        .feed_run("x.sort()", vec![], PrintWriter::Stdout)
+        .expect_err("the sort must hit the time limit");
+    let elapsed = start.elapsed();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
     assert!(
         elapsed < Duration::from_millis(500),
         "should stop promptly, took {elapsed:?}"
@@ -1188,7 +1538,7 @@ fn timeout_in_deepcopy_fill_loop() {
     repl.feed_run("import copy\nx = [[0]] * 4_000_000", vec![], PrintWriter::Stdout)
         .unwrap();
     repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
-    let start = Instant::now();
+    let start = ThreadTime::now();
     let exc = repl
         .feed_run("copy.deepcopy(x)", vec![], PrintWriter::Stdout)
         .expect_err("the copy must hit the time limit");
@@ -1202,7 +1552,7 @@ fn timeout_in_deepcopy_fill_loop() {
     );
 }
 
-/// `copy.copy` reaches no dispatch checkpoint either, and a dict copy has two
+/// `copy.copy` reaches no dispatch checkpoint either, and its dict path has two
 /// Rust loops to get past: the snapshot of every pair, then the re-hashing
 /// fill. Both poll, so the copy stops a budget in whatever the dict costs per
 /// entry — the claim the tests above make, and what makes a fixed threshold
@@ -1240,7 +1590,7 @@ fn timeout_in_shallow_copy_fill_loop() {
     };
     for budget in [50, 600] {
         repl.tracker_mut().set_max_feed_duration(Duration::from_millis(budget));
-        let start = Instant::now();
+        let start = ThreadTime::now();
         let exc = repl
             .feed_run("copy.copy(x)", vec![], PrintWriter::Stdout)
             .expect_err("the copy must hit the time limit");
@@ -1251,6 +1601,174 @@ fn timeout_in_shallow_copy_fill_loop() {
             "budget {budget}ms: should stop promptly, took {elapsed:?}"
         );
     }
+}
+
+/// Empty copies reserve no entry/index buffers, so their preflight must charge zero bytes.
+#[test]
+fn empty_container_copies_do_not_charge_entry_storage() {
+    for code in [
+        "len({}.copy())",
+        "len(dict({}))",
+        "from collections import Counter\nlen(Counter({}))",
+        "from collections import defaultdict\nlen(defaultdict(None, {}))",
+        "from collections import Counter\nc = Counter()\nc.update({})\nlen(c)",
+        "s = set()\nlen(s.copy())",
+        "s = set()\nlen(set(s))",
+        "s = set()\nlen(frozenset(s))",
+        "import copy\ns = set()\nlen(copy.copy(s))",
+    ] {
+        let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        // This binary has no allocator probe; a zero limit isolates bulk-allocation preflights.
+        let tracker = ResourceTracker::new(ResourceLimits::default().max_memory(0));
+        let result = run.run(vec![], tracker, PrintWriter::Stdout).unwrap();
+        assert_eq!(result, MontyObject::int(0), "{code}");
+    }
+}
+
+/// A direct dict copy polls while retaining entries and releases a partial copy on timeout.
+#[test]
+fn timeout_in_dict_copy_releases_partial_entries() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "from collections import Counter\nshared = []\nd = {i: shared for i in range(4_000_000)}",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    for code in ["d.copy()", "dict(d)", "Counter(d)"] {
+        repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
+        let start = ThreadTime::now();
+        let exc = repl
+            .feed_run(code, vec![], PrintWriter::Stdout)
+            .expect_err("the copy must hit the time limit");
+        let elapsed = start.elapsed();
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{code}");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "{code}: should stop promptly, took {elapsed:?}"
+        );
+        // The next feed's GC scans the retained source under memory-model-checks.
+        repl.tracker_mut().set_max_feed_duration(Duration::from_secs(5));
+        assert_eq!(
+            repl.feed_run("len(d)", vec![], PrintWriter::Stdout).unwrap(),
+            MontyObject::int(4_000_000)
+        );
+    }
+}
+
+/// A refused copy must release the factory reference retained by its requested kind.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn refused_dict_copy_releases_default_factory() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "from collections import defaultdict\ndef make_factory():\n    captured = []\n    def factory():\n        return captured\n    return factory",
+        vec![],
+        PrintWriter::Disabled,
+    ).unwrap();
+    let initial_entries = repl.heap_entry_count();
+    repl.feed_run(
+        "factory = make_factory()\nsource = defaultdict(factory, {1: 2})",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    // Without an allocator probe, zero isolates the nonempty table-copy preflight.
+    repl.tracker_mut()
+        .tighten_limits(&ResourceLimits::default().max_memory(0));
+    let error = repl
+        .feed_run("source.copy()", vec![], PrintWriter::Disabled)
+        .expect_err("the table-copy preflight must reject the copy");
+    assert_eq!(error.exc_type(), ExcType::MemoryError);
+    repl.feed_run("source = None\nfactory = None", vec![], PrintWriter::Disabled)
+        .unwrap();
+    assert_eq!(
+        repl.heap_entry_count(),
+        initial_entries,
+        "the rejected kind must not retain its factory"
+    );
+}
+
+/// Full set copies must stop mid-fill and release every retained member on failure.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn timeout_in_set_copy_releases_partial_entries() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("import copy\ntarget = set()", vec![], PrintWriter::Disabled)
+        .unwrap();
+    let initial_entries = repl.heap_entry_count();
+    // Insert the heap-backed member first so a partial copy has retained it before timing out.
+    repl.feed_run(
+        "shared = ('a heap-backed set member',)\ns = {shared}\ns.update(range(4_000_000))",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    for code in [
+        "s.copy()",
+        "copy.copy(s)",
+        "set(s)",
+        "frozenset(s)",
+        "s | set()",
+        "s.issubset(s)",
+        "target |= s",
+        "target.update(s)",
+    ] {
+        repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
+        let start = ThreadTime::now();
+        let exc = repl
+            .feed_run(code, vec![], PrintWriter::Disabled)
+            .expect_err("the copy must hit the time limit");
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{code}");
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "{code}: copy did not stop promptly"
+        );
+
+        repl.tracker_mut().set_max_feed_duration(Duration::from_secs(5));
+        assert_eq!(
+            repl.feed_run("len(s)", vec![], PrintWriter::Disabled).unwrap(),
+            MontyObject::int(4_000_001),
+            "{code}"
+        );
+    }
+    // In-place operations may retain a completed prefix when the budget expires.
+    repl.feed_run("target.clear()\ns = None\nshared = None", vec![], PrintWriter::Disabled)
+        .unwrap();
+    assert_eq!(
+        repl.heap_entry_count(),
+        initial_entries,
+        "partial copies must release their members"
+    );
+}
+
+/// Pair snapshots must release retained values when the deadline expires before ordering begins.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn timeout_in_counter_snapshot_releases_pairs() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("from collections import Counter", vec![], PrintWriter::Disabled)
+        .unwrap();
+    let initial_entries = repl.heap_entry_count();
+    repl.feed_run(
+        "shared = []\nsource = Counter(dict.fromkeys(range(1_000_000), shared))",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    repl.tracker_mut().set_max_feed_duration(Duration::from_millis(10));
+    let error = repl
+        .feed_run("source.most_common()", vec![], PrintWriter::Disabled)
+        .expect_err("snapshotting must hit the deadline");
+    assert_eq!(error.exc_type(), ExcType::TimeoutError);
+    repl.tracker_mut().set_max_feed_duration(Duration::from_secs(5));
+    repl.feed_run("source = None\nshared = None", vec![], PrintWriter::Disabled)
+        .unwrap();
+    assert_eq!(
+        repl.heap_entry_count(),
+        initial_entries,
+        "the partial snapshot must release its pairs"
+    );
 }
 
 /// Feeds shorter than the dispatch-checkpoint interval never probe GC inside
@@ -1361,7 +1879,7 @@ fn assert_timeout_promptly(code: &str, label: &str) {
     // Phase 2: set a short time limit and resume — repr() should timeout
     call.tracker_mut().set_max_feed_duration(Duration::from_millis(10));
 
-    let start = Instant::now();
+    let start = ThreadTime::now();
     let result = call.resume(MontyObject::none(), PrintWriter::Stdout);
     let elapsed = start.elapsed();
 
@@ -1412,7 +1930,7 @@ repr(x)
 /// limit.
 ///
 /// The bound arguments and keywords are formatted in one native loop, so
-/// without the shared `repr_check_time` counter the repr runs to completion
+/// without the shared `repr_should_truncate` counter the repr runs to completion
 /// before any checkpoint — 500k arguments overshoot the deadline by more than
 /// an order of magnitude over the bound asserted here.
 #[test]
@@ -1432,7 +1950,7 @@ repr(p)
 /// the time limit.
 ///
 /// The arguments are formatted in one native loop, as a tuple's are, so the
-/// same `repr_check_time` poll has to truncate it.
+/// same `repr_should_truncate` poll has to truncate it.
 #[test]
 fn timeout_truncation_in_generic_alias_repr() {
     let code = r"
@@ -1460,6 +1978,19 @@ typing.Union[members]
     assert_timeout_promptly(code, "union construction");
 }
 
+/// Test that the match scans of `re.split()` and `re.findall()` respect the time limit.
+///
+/// Each scan collects its matches in one native loop, so a subject with a million
+/// matches would run to completion without the poll in `check_slice_growth`. A
+/// pattern with a capture group takes its own loop, `split_with_groups`.
+#[test]
+fn timeout_in_re_scans() {
+    for expression in ["re.split('(,)', s)", "re.split(',', s)", "re.findall(',', s)"] {
+        let code = format!("import re\ns = ',' * 1_000_000\ninterrupt()\n{expression}");
+        assert_timeout_promptly(&code, expression);
+    }
+}
+
 /// Test that `repr(large_set)` respects the time limit.
 ///
 /// The elements are ints rather than strings so that the promptness bound
@@ -1475,16 +2006,40 @@ repr(x)
 ";
     assert_timeout_promptly(code, "set repr");
 }
+
+/// `re.finditer` releases the matches it already built when a later match hits the
+/// backtracking limit.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn re_finditer_error_releases_earlier_matches() {
+    let code = r"
+import re
+try:
+    re.finditer('a|(x+x+)+\\1y', 'aaa' + 'x' * 30 + 'zy')
+    result = 'no error'
+except re.PatternError:
+    result = 'raised'
+result
+";
+    let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let output = run.run_ref_counts(vec![]).expect("should run");
+
+    assert_eq!(output.value, MontyObject::string("raised".to_owned()));
+    assert_eq!(output.unreachable, Vec::<String>::new());
+}
+
 /// Test that `re.sub` raises `re.PatternError` when the regex engine hits its backtracking limit.
 ///
-/// The pattern `(a+)+\1b` forces `fancy_regex` into its backtracking VM (due to the
-/// backreference `\1`). With enough `a`s followed by a non-matching character, the
-/// exponential blowup exceeds the engine's backtracking step limit (~1M steps).
+/// The pattern `(x+x+)+\1y` forces `fancy_regex` into its backtracking VM (due to the
+/// backreference `\1`). With enough `x`s followed by a non-matching character, the
+/// exponential blowup exceeds the engine's backtracking step limit (~1M steps). The doubled
+/// `x+` gets past fancy-regex 0.20's nested-repeat optimisation, which defuses `(a+)+`, and the
+/// subject contains the `y` the pattern requires, so the engine's prefilter cannot skip it.
 #[test]
 fn re_sub_backtracking_limit_raises_pattern_error() {
     let code = r"
 import re
-re.sub('(a+)+\\1b', 'X', 'a' * 30 + 'c')
+re.sub('(x+x+)+\\1y', 'X', 'x' * 30 + 'zy')
 ";
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
@@ -1497,6 +2052,59 @@ re.sub('(a+)+\\1b', 'X', 'a' * 30 + 'c')
         exc.message().is_some_and(|m| m.contains("backtrack")),
         "expected backtracking error, got: {exc}"
     );
+}
+
+/// Subroutine calls, a fancy-regex extension CPython lacks, are rejected before fancy-regex
+/// compiles them, with CPython's error.
+#[test]
+fn re_subroutine_call_is_rejected_before_compiling() {
+    let code = r"
+import re
+re.compile('(a\\g<1>?\\g<1>?\\g<1>?)')
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let start = Instant::now();
+    let exc = ex.run_no_limits(vec![]).unwrap_err();
+
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "rejection should be immediate"
+    );
+    assert_eq!(exc.exc_type(), ExcType::RePatternError);
+    assert_eq!(exc.message(), Some("bad escape \\g at position 2"));
+}
+
+/// User slots that recurse through native dispatch must fail before exhausting the Rust stack.
+#[test]
+fn recursive_instance_protocols_are_bounded() {
+    for (slot, body, invocation) in [
+        ("__neg__", "return -self", "-obj"),
+        ("__add__", "return self + args[0]", "obj + ['argument']"),
+        ("__radd__", "return args[0] + self", "['argument'] + obj"),
+        (
+            "__pow__",
+            "return pow(self, *args)",
+            "pow(obj, ['exponent'], ['modulus'])",
+        ),
+        ("__getitem__", "return self[args[0]]", "obj[['key']]"),
+        ("__setitem__", "self[args[0]] = args[1]", "obj[['key']] = ['value']"),
+        ("__call__", "return self(*args)", "obj(['argument'])"),
+    ] {
+        let code =
+            format!("class Recursive:\n    def {slot}(self, *args):\n        {body}\nobj = Recursive()\n{invocation}");
+        let mut runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        let error = runner
+            .run_no_limits(vec![])
+            .expect_err(&format!("slot {slot} should exceed the recursion limit"));
+        assert_eq!(error.exc_type(), ExcType::RecursionError, "slot: {slot}");
+    }
+
+    // This cycle never pushes a Python frame: the slot is itself a callable instance.
+    let code = "class Recursive:\n    pass\nobj = Recursive()\nRecursive.__call__ = obj\nobj(['argument'])";
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let error = runner.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::RecursionError);
 }
 
 /// Source-driving `itertools` adaptors delegate `next()` to their wrapped
@@ -1708,6 +2316,84 @@ fn a_refused_unpacked_call_releases_its_kwargs() {
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
 }
 
+/// A concatenation refused while cloning its right operand releases the clones of its left.
+///
+/// The right operand is built by appends, whose growth checks stay below the limit, so
+/// only the 160 KB clone of it is refused; `memory-model-checks` panics on the stranded
+/// `[]` clone if the left side leaks.
+#[test]
+fn a_refused_concatenation_releases_its_left_clones() {
+    for (setup, kind) in [
+        ("a = [[]]\nb = [None for _ in range(10_000)]", "list"),
+        ("a = ([],)\nb = tuple(None for _ in range(10_000))", "tuple"),
+        (
+            "from collections import deque\na = deque([[]])\nb = deque(None for _ in range(10_000))",
+            "deque",
+        ),
+    ] {
+        let code = format!("{setup}\na + b");
+        let mut ex = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_memory(150_000);
+        let exc = ex
+            .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+            .expect_err("cloning the right operand should be refused");
+        assert_eq!(exc.exc_type(), ExcType::MemoryError, "{kind} + {kind}");
+    }
+}
+
+/// A named tuple clones the right operand before it preflights its own items.
+/// Refusal at the second check must release the first operand's heap references.
+#[test]
+fn refused_namedtuple_concatenation_releases_cloned_operand() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "from collections import namedtuple\nLarge = namedtuple('Large', ['f' + str(i) for i in range(32)])\nSmall = namedtuple('Small', ['x'])\nlarge = Large(*([None] * 32))\nsmall = Small([])",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(128));
+    let error = repl
+        .feed_run("large + small", vec![], PrintWriter::Disabled)
+        .unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::MemoryError);
+    *repl.tracker_mut() = ResourceTracker::default();
+    assert_eq!(
+        repl.feed_run("large[0] is None and small[0] == []", vec![], PrintWriter::Disabled)
+            .unwrap(),
+        MontyObject::bool(true)
+    );
+}
+
+/// A refused second comparison snapshot releases the first one's heap references.
+#[test]
+fn refused_namedtuple_comparison_releases_cloned_operand() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "from collections import namedtuple\nLarge = namedtuple('Large', ['f' + str(i) for i in range(32)])\nSmall = namedtuple('Small', ['x'])\nlarge = Large(*([None] * 32))\nsmall = Small([])\nlarge_tuple = tuple(large)\nsmall_tuple = ([],)",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+
+    for expression in ["small < large", "small < large_tuple", "small_tuple < large"] {
+        *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(128));
+        let error = repl.feed_run(expression, vec![], PrintWriter::Disabled).unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::MemoryError, "{expression}");
+    }
+
+    *repl.tracker_mut() = ResourceTracker::default();
+    assert_eq!(
+        repl.feed_run(
+            "small[0] == [] and small_tuple[0] == [] and large[0] is None and large_tuple[0] is None",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap(),
+        MontyObject::bool(true)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Per-feed and per-turn duration limits
 // ---------------------------------------------------------------------------
@@ -1826,6 +2512,17 @@ fn max_turn_duration_is_enforced_alone() {
     );
 }
 
+/// An `n` too large to address raises `MemoryError` instead of aborting on the reservation.
+#[test]
+fn statistics_quantiles_unaddressable_n_is_a_memory_error() {
+    let code = "import statistics\nstatistics.quantiles([1, 2], n=2**62)\n";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let exc = ex
+        .run_no_limits(vec![])
+        .expect_err("an unaddressable result must be refused");
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
 /// `call_function` is its own unit of work: it opens a fresh feed, so a
 /// session that has already spent one still gets the full per-feed budget.
 ///
@@ -1846,4 +2543,19 @@ fn call_function_starts_a_fresh_feed_budget() {
         .call_function("work", vec![], PrintWriter::Stdout)
         .expect("the call gets its own budget");
     assert_eq!(value, MontyObject::int(49_995_000));
+}
+
+/// Draining a large iterable into `bytes` checks allocation sizes and halts with MemoryError.
+#[test]
+fn bytes_iterable_respects_max_memory() {
+    let mut ex = MontyRun::new(
+        "import itertools\nbytes(itertools.repeat(0, 200_000))".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_memory(10_000));
+    let err = ex.run(vec![], tracker, PrintWriter::Stdout).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
 }

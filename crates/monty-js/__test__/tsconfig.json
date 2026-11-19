@@ -5,6 +5,7 @@
   "extends": "../tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "rootDir": "..",
     "declaration": false,
     "declarationMap": false,

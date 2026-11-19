@@ -27,13 +27,18 @@ Snippets rejected before execution retain none of their compilation products (se
 
 ## Memory / size limits
 
+- Source code is limited to `u32::MAX` (4,294,967,295) UTF-8 bytes because parser offsets are 32 bits.
+    Oversized source raises `SyntaxError`.
+
 - Memory usage is measured by the worker's process-global allocator, while the
     configured budget belongs to one session.
+
 - Workers count bytes requested from their global allocator. Direct Rust users
     must install `monty-alloc` as the global allocator and arm its hard ceiling
     with `set_hard_limit(memory_limit_with_headroom(...))` before using
     `max_memory`; without it usage always reads as zero and the limit is silently
     not enforced.
+
 - Operations whose result is bounded by simple arithmetic on input sizes
     are **pre-checked** before allocating: integer multiplication, left
     shift, integer power, sequence repeat (`'x' * n`), replacement
@@ -44,10 +49,15 @@ Snippets rejected before execution retain none of their compilation products (se
     container, and string formatting with dynamic width or precision, for
     f-strings (`f"{v:>{w}}"`, `f"{v:.{p}f}"`), `str.format()`
     (`"{0:>{1}}".format(v, w)`, `"{0:.{1}f}".format(v, p)`) and `%`
-    formatting (`"%*d" % (w, v)`, `"%.*f" % (p, v)`). The pre-check
-    threshold is 100 KB:
+    formatting (`"%*d" % (w, v)`, `"%.*f" % (p, v)`), and every `binascii` and
+    `base64` conversion that can outgrow its input — including `base64.a85decode`,
+    where Ascii85's `z` (and `y` with `foldspaces=True`) stands for a whole
+    four-byte word. Each of these reserves what it pre-checked, so the buffer
+    never grows past it.
+    The pre-check threshold is 100 KB:
     estimates above that are checked against the remaining budget and rejected
     with `MemoryError` before allocation when they would exceed it.
+
 - `bigint.pow(base, exp)` estimates result size as `bits(base) * exp` with
     a 4× safety multiplier to cover repeated-squaring intermediate values.
 
@@ -68,12 +78,12 @@ without one is unlimited.
     result operations are pre-checked to avoid this path when their size is known,
     as is buffer growth a program drives one element at a time — `append`,
     `insert`, `add` or `d[k] = v` on a list, deque, set or dict, a parsed JSON
-    array — and the argument buffers behind `f(*args)` and the pieces `re.split`
-    collects.
+    array — and the argument buffers behind `f(*args)`, the pieces `str.split`,
+    `bytes.split` and `re.split` collect, and the matches `re.finditer` builds.
     `re.findall` is covered only for a pattern with at most one capture group.
-    A wider `findall` builds a tuple per match, and `re.finditer` a match object,
-    and those accumulate between the checks on the result list itself, so a
-    large enough subject still crosses the ceiling and kills the worker.
+    A wider `findall` builds a tuple per match, and those accumulate between the
+    checks on the result list itself, so a large enough subject still crosses the
+    ceiling and kills the worker.
 - **Work outside Python execution is hard-limit-only.** Request framing, input
     decoding, loading snapshots, and type checking do not reach an interpreter
     checkpoint. A sufficiently large allocation there can cross the hard ceiling
@@ -100,22 +110,22 @@ without one is unlimited.
     with type checking. Use `max_processes` and an OS-level limit to bound a host.
 - **Per session, but against a fixed baseline.** A worker serves many checkouts
     and re-derives the cap for each session, always from the leanest the process
-    has been, plus the type checker once a session has needed it.
+    has been, plus process-wide typeshed and lint-registry initialization.
+    The session's type-checker database and caches are released on reset.
     Other memory retained between sessions therefore consumes the headroom
     rather than raising the cap, and a worker whose residue outgrows it is killed
     and replaced rather than allowed to grow indefinitely.
-- **Restoring a dump is bounded by the checkout it lands in.** `load_session` /
-    `load_snapshot` restore the dump's own limits (see
-    [snapshot configuration](../snapshots.md#what-restoring-does-and-does-not-carry)), and the cap is re-derived from
-    them once the session exists, but the load *itself* runs under the limit the
-    `checkout()` config applied. Restoring a large dump into a checkout with a
-    much smaller `max_memory` can therefore exceed it while loading; pass a
-    comparable limit to `checkout()`.
+- **Loading a dump makes no soft `max_memory` check.** Only the hard ceiling derived
+    from the checkout's `max_memory` bounds it, so restoring a large dump into a
+    checkout with a much smaller `max_memory` ends the worker rather than raising a
+    recoverable `MemoryError`; pass a comparable limit to `checkout()`.
+    The limits a restored session keeps are covered in
+    [snapshot configuration](../snapshots.md#what-restoring-does-and-does-not-carry).
 - **The wasm worker cannot classify a hard breach.** A soft breach is a normal
     `MemoryError`, but exceeding the hard limit traps the instance and the host
     reports [`MontyCrashedError`][pydantic_monty.MontyCrashedError]. Its `usize` is also 32 bits, so a limit near
     4 GiB leaves the module uncapped.
-- WebSocket workers get no allocator-enforced limit at all: they are remote
+- Remote workers get no allocator-enforced limit at all: they are remote
     processes this pool does not spawn.
 
 Independently of any limit, **any** allocation a worker's allocator refuses —
@@ -184,6 +194,8 @@ indistinguishable from a stack overflow.
     external function calls, host-object method calls, attribute lookups and
     construction, OS calls, name lookups, and each `ResolveFutures` round trip
     (a partial future resolution that re-suspends counts again).
+    Each import of a module the [file-module cache](modules.md#modules-from-files) lacks costs one `import` call,
+    whether or not the host finds its file and however many files it reads; a cached module costs nothing.
 - It defaults to 1000 and cannot be disabled (like `max_recursion_depth`):
     omitting it, or passing `None`, keeps the default; set a larger number
     for sessions that legitimately make more host calls.
@@ -263,12 +275,16 @@ indistinguishable from a stack overflow.
     `swapcase`) and `is*()` predicates are **not** polled and run to completion.
     Their cost is linear in the input, so the overshoot is bounded by the largest
     string `max_memory` admits.
+- `binascii` and `base64` conversions are **not** polled either, for the same
+    reason; a large input can overrun the budget into the grace period.
 - `base64.a85decode()` polls the clock every 64th byte that matches no
     Ascii85 digit and so reaches `ignorechars`. Each of those bytes is one
     `in` test against the container, so a large explicit `ignorechars`
     overshoots its duration budget in proportion to its length.
-- Both budgets cover **execution time**, not wall-clock time: the clock runs
-    only while the interpreter executes bytecode, and is paused while execution
+- Budgets use wall time by default. CPU mode, Linux only, uses thread CPU time, with elapsed-time fallback for unusable counters.
+    See [resource limits](../resource-limits.md#time) for sampling details.
+- Both budgets cover **execution time**: the clock runs
+    only while the interpreter executes bytecode or its native builtins. The clock pauses while execution
     is suspended waiting on the host (external function calls, OS callbacks)
     and between REPL feeds.
 - There is no in-sandbox way to observe either budget or the time left in it.
@@ -291,10 +307,13 @@ indistinguishable from a stack overflow.
     resumes the feed budget it was dumped mid-way through; `max_turn_duration`'s
     clock is not, because a dump is only ever taken between turns.
 
-## JSON
+## JSON and TOML
 
 - `json.loads` rejects input nested deeper than 200 levels with
     `json.JSONDecodeError` (independent of the Python recursion limit).
+- `tomllib.loads` rejects inline arrays and tables nested deeper than 100 levels,
+    and dotted keys of more than 1,000 parts, with `RecursionError`; both are fixed
+    caps independent of the Python recursion limit (see [tomllib.md](tomllib.md)).
 
 ## After a terminal resource error
 

@@ -85,3 +85,35 @@ fn manually_raised_json_decode_error_has_no_data() {
     assert_eq!(exc.exc_type().to_string(), "json.JSONDecodeError");
     assert_eq!(exc.json_data(), None);
 }
+
+/// `tomllib.TOMLDecodeError` defines the same five attributes, so it rides the
+/// same payload; `pos` counts characters of the `\r\n`-normalised document.
+#[test]
+fn toml_decode_error_carries_structured_data() {
+    let exc = run_exc("import tomllib\ntomllib.loads('a = \"☃\"\\r\\nb = [1,,]')");
+    assert_eq!(exc.exc_type().to_string(), "tomllib.TOMLDecodeError");
+    assert_eq!(exc.message(), Some("Invalid value (at line 2, column 8)"));
+    let data = exc.json_data().unwrap();
+    assert_eq!(data.msg, "Invalid value");
+    assert_eq!(data.doc.as_deref(), Some("a = \"☃\"\nb = [1,,]"));
+    assert_eq!(data.pos, 15);
+    assert_eq!(data.lineno, 2);
+    assert_eq!(data.colno, 8);
+}
+
+/// An error past the last character reports `end of document` while still
+/// carrying CPython's `pos`, which can exceed the document length.
+#[test]
+fn toml_decode_error_at_end_of_document() {
+    let exc = run_exc("import tomllib\ntomllib.loads('a = \"\\\\')");
+    assert_eq!(exc.message(), Some("Unescaped '\\' in a string (at end of document)"));
+    let data = exc.json_data().unwrap();
+    assert_eq!(data.doc.as_deref(), Some("a = \"\\"));
+    assert_eq!((data.pos, data.lineno, data.colno), (7, 1, 8));
+
+    // The escape steps over a whole multibyte character, as CPython's two-character `pos += 2`.
+    let exc = run_exc("import tomllib\ntomllib.loads('a = \"\\\\é')");
+    assert_eq!(exc.message(), Some("Unescaped '\\' in a string (at end of document)"));
+    let data = exc.json_data().unwrap();
+    assert_eq!((data.pos, data.lineno, data.colno), (7, 1, 8));
+}

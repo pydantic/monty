@@ -17,9 +17,14 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
+    expressions::CmpOperator,
     heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead, HeapReadOutput},
+    py_value::PyValue,
     resource_checks::check_repeat_size,
-    types::{Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder},
+    sorting::{py_eq_item, py_lt, sort_indices, sort_indices_by},
+    types::{
+        Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, key_hash::plain_hash, py_trait::CmpOrder,
+    },
     value::{VALUE_SIZE, Value},
 };
 
@@ -94,24 +99,6 @@ fn count_holds(lhs: &Value, rhs: &Value, op: CountCmp, vm: &mut VM<'_>) -> RunRe
     }
 }
 
-/// Orders two counts for *sorting* (`most_common`, Counter repr), raising the
-/// sort's `<` `TypeError` when they are incomparable.
-///
-/// Unlike the algebra's [`count_holds`], a `NaN` pair is treated as **equal**
-/// here: Python's `sorted`/`heapq` never raise on `NaN`, they just leave it
-/// wherever the (ill-defined for `NaN`) ordering happens to place it.
-fn count_sort_cmp(lhs: &Value, rhs: &Value, vm: &mut VM<'_>) -> RunResult<Ordering> {
-    match lhs.py_cmp(rhs, vm)? {
-        CmpOrder::Ordered(ordering) => Ok(ordering),
-        CmpOrder::Unordered => Ok(Ordering::Equal),
-        CmpOrder::Incomparable => Err(ExcType::type_error_ordering(
-            "<",
-            &lhs.py_type_name(vm),
-            &rhs.py_type_name(vm),
-        )),
-    }
-}
-
 /// Whether a count is strictly greater than zero (the `Counter` algebra keeps
 /// only positive results). CPython's `_keep_positive` filters with `count > 0`,
 /// so an unorderable count reports `>` and a `NaN` count is not positive.
@@ -129,7 +116,7 @@ fn count_is_positive(value: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
 /// CPython converts before it inspects the sign, so a huge negative count is
 /// rejected rather than skipped. That boundary is exactly Monty's `Int`
 /// (`i64`) / `LongInt` split, so the type of the count decides it.
-fn count_repeat_len(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
+fn count_repeat_len(value: &Value, vm: &VM<'_>) -> RunResult<usize> {
     match value {
         Value::Int(i) => Ok(usize::try_from(*i).unwrap_or(0)),
         Value::Bool(b) => Ok(usize::from(*b)),
@@ -188,6 +175,10 @@ pub(crate) fn counter_update<'h>(
     subtract: bool,
     vm: &mut VM<'h>,
 ) -> RunResult<()> {
+    // Copying or folding the source can fail before keyword counts are applied.
+    let mut kwargs_guard = DropGuard::new(kwargs, vm);
+    let vm = kwargs_guard.ctx();
+
     // An explicit `None` source is a no-op (CPython skips it before dispatch), so
     // `Counter(None)` and `c.update(None)` only apply the keyword counts below.
     if let Some(source) = source
@@ -195,21 +186,28 @@ pub(crate) fn counter_update<'h>(
     {
         let is_mapping = matches!(&source, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_)));
         if is_mapping {
+            defer_drop!(source, vm);
             let Value::Ref(src_id) = source else {
                 unreachable!("mapping is a ref");
             };
-            // Snapshot (key, delta) pairs first so `c.update(c)` is well-defined.
-            let pairs: Vec<(Value, Value)> = {
-                let Some(src) = vm.heap.read_as::<Dict>(src_id) else {
+            // Only an empty additive update can copy counts verbatim; other updates
+            // must add to existing counts, and subtract must negate incoming counts.
+            if !subtract && counter.get(vm.heap).is_empty() {
+                let Some(src) = vm.heap.read_as::<Dict>(*src_id) else {
                     unreachable!("mapping is a dict");
                 };
-                let src = src.get(vm.heap);
-                src.iter()
-                    .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
-                    .collect()
-            };
-            source.drop_with(vm);
-            counter_merge_mapping(counter, pairs, subtract, vm)?;
+                let copy = src.copy_as(counter.get(vm.heap).cloned_kind(vm.heap), vm)?;
+                mem::replace(counter.get_mut(vm.heap), copy).drop_with(vm);
+            } else {
+                // Snapshot first so `c.update(c)` is well-defined, then release the read guard before callbacks.
+                let pairs = {
+                    let Some(src) = vm.heap.read_as::<Dict>(*src_id) else {
+                        unreachable!("mapping is a dict");
+                    };
+                    src.clone_all_pairs(vm)?
+                };
+                counter_merge_mapping(counter, pairs, subtract, vm)?;
+            }
         } else {
             // `_count_elements`: `self[elem] = self_get(elem, 0) + 1`, so the
             // existing count is the left operand here.
@@ -218,7 +216,12 @@ pub(crate) fn counter_update<'h>(
             // items it never reached.
             defer_drop_mut!(items, vm);
             for item in items.by_ref() {
-                counter_bump(counter, item, &Value::Int(1), subtract, false, vm)?;
+                // `subtract` is pure Python (`self.get(elem, 0) - 1`), keeping the dict key error.
+                if subtract {
+                    counter_bump(counter, item, &Value::Int(1), true, false, vm)?;
+                } else {
+                    counter_count_element(counter, item, vm)?;
+                }
             }
         }
     }
@@ -226,8 +229,27 @@ pub(crate) fn counter_update<'h>(
     // Keyword counts, e.g. `Counter(a=2)` / `c.update(a=5)`. CPython recurses
     // via `self.update(kwds)`, so these follow the mapping path — including the
     // empty-Counter fast path, re-evaluated after the iterable was folded in.
+    let (kwargs, vm) = kwargs_guard.into_parts();
     let kwarg_pairs = counter_kwarg_deltas(kwargs);
     counter_merge_mapping(counter, kwarg_pairs, subtract, vm)?;
+    Ok(())
+}
+
+/// Counts one occurrence of `item` as `_count_elements` does: one bare
+/// `PyObject_Hash`, reused for the lookup and the store, so an unhashable item
+/// raises `hash()`'s error rather than the dict key one.
+fn counter_count_element<'h>(counter: &mut HeapObjectRead<'h, Dict>, item: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    let mut item_guard = DropGuard::new(item, vm);
+    let (item, vm) = item_guard.as_parts_mut();
+    let hash = plain_hash(item, vm)?.raw();
+    let base = counter.get_known_hash(item, hash, vm)?.unwrap_or(Value::Int(0));
+    let total = count_arith(&base, &Value::Int(1), false, vm);
+    base.drop_with(vm);
+    let total = total?;
+    let (item, vm) = item_guard.into_parts();
+    if let Some(old) = counter.set_known_hash(item, total, hash, vm)? {
+        old.drop_with(vm);
+    }
     Ok(())
 }
 
@@ -332,34 +354,21 @@ pub(crate) fn counter_total<'h>(counter: &HeapObjectRead<'h, Dict>, vm: &mut VM<
 }
 
 /// Orders entry indices for `most_common` / Counter repr: count descending,
-/// ties in insertion order (the sort is stable).
+/// ties in insertion order, as CPython's `sorted(items, key=count, reverse=True)`.
 ///
 /// Takes the counts by value because the comparison needs `&mut VM` (big ints
 /// live on the heap), which callers cannot hold alongside a `Dict` borrow.
 /// Consumes `counts`.
 pub(crate) fn counter_order(counts: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Vec<usize>> {
+    defer_drop!(counts, vm);
+    sort_counts(counts, vm)
+}
+
+/// [`counter_order`] over borrowed counts.
+fn sort_counts(counts: &[Value], vm: &mut VM<'_>) -> RunResult<Vec<usize>> {
     let mut order: Vec<usize> = (0..counts.len()).collect();
-    // `sort_by` needs an infallible comparator, so a comparison error is stashed
-    // and reported once the sort finishes; the ordering it produces in that case
-    // is discarded.
-    let mut failure = None;
-    order.sort_by(|&a, &b| {
-        if failure.is_some() {
-            return Ordering::Equal;
-        }
-        match count_sort_cmp(&counts[b], &counts[a], vm) {
-            Ok(ordering) => ordering,
-            Err(e) => {
-                failure = Some(e);
-                Ordering::Equal
-            }
-        }
-    });
-    counts.drop_with(vm);
-    match failure {
-        Some(e) => Err(e),
-        None => Ok(order),
-    }
+    sort_indices(&mut order, counts, true, vm)?;
+    Ok(order)
 }
 
 /// `Counter.most_common([n])` — a list of `(element, count)` tuples ordered by
@@ -370,50 +379,177 @@ pub(crate) fn counter_most_common<'h>(
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let n_arg = args.get_zero_one_arg("most_common", vm.heap)?;
-    // `n` goes through `__index__`, so a bool counts as `0`/`1` and a big int is
-    // accepted (clamped): a huge positive returns every item, a negative none.
-    // Only a genuinely non-integer `n` is rejected.
-    let limit = match n_arg {
-        None | Some(Value::None) => None,
-        Some(Value::Int(n)) => Some(usize::try_from(n.max(0)).unwrap_or(usize::MAX)),
-        Some(Value::Bool(b)) => Some(usize::from(b)),
-        // `value @` binds the whole `Value` (so it is dropped, not plain-`Drop`ped
-        // — the `Ref` owns a heap refcount), while `id` reads the entry.
-        Some(value @ Value::Ref(id)) if matches!(vm.heap.get(id), HeapData::LongInt(_)) => {
-            let negative = match vm.heap.get(id) {
-                HeapData::LongInt(li) => li.is_negative(),
-                _ => unreachable!("guarded by the matches! above"),
-            };
-            value.drop_with(vm);
-            Some(if negative { 0 } else { usize::MAX })
-        }
-        Some(other) => {
-            let ty = other.py_type_name(vm);
-            other.drop_with(vm);
-            return Err(ExcType::type_error(format!(
-                "'{ty}' object cannot be interpreted as an integer"
-            )));
+    // Huge positive limits return every item; negative limits return none.
+    let limit = {
+        let n_arg = args.get_zero_one_arg("most_common", vm.heap)?;
+        defer_drop!(n_arg, vm);
+        match n_arg.as_ref().map(|value| value.py_value(vm)) {
+            None | Some(PyValue::None) => None,
+            Some(PyValue::Int(integer)) => Some(integer.collection_limit(vm)),
+            Some(PyValue::Bool(value)) => Some(usize::from(value)),
+            Some(other) => return Err(ExcType::type_error_not_integer(&other.py_type_name(vm))),
         }
     };
 
-    let counts = counter
-        .get(vm.heap)
-        .iter()
-        .map(|(_, count)| count.clone_with_heap(vm.heap))
-        .collect();
-    let order = counter_order(counts, vm)?;
-    let take = limit.unwrap_or(order.len()).min(order.len());
-
-    let mut items: Vec<Value> = Vec::with_capacity(take);
-    for &i in &order[..take] {
-        let dict = counter.get(vm.heap);
-        let key = dict.key_at(i).expect("index in range").clone_with_heap(vm.heap);
-        let count = dict.value_at(i).expect("index in range").clone_with_heap(vm.heap);
-        let pair = allocate_tuple(smallvec![key, count], vm.heap);
-        items.push(pair);
+    // CPython's `heapq.nlargest(0, ...)` returns before comparing anything.
+    if limit == Some(0) {
+        return Ok(vm.heap.allocate_as(List::new(Vec::new())).into_value());
     }
+    // Snapshot the entries before ordering: comparing counts can run a user
+    // `__eq__` that mutates the Counter, so the ordered indices must refer to
+    // the snapshot. CPython's `sorted(self.items(), ...)` snapshots the same way.
+    let pairs = counter.clone_all_pairs(vm)?;
+    defer_drop!(pairs, vm);
+    let counts: Vec<Value> = pairs.iter().map(|(_, count)| count.clone_with_heap(vm.heap)).collect();
+    defer_drop!(counts, vm);
+    let order = match limit {
+        None => sort_counts(counts, vm)?,
+        Some(n) => nlargest(n, counts, vm)?,
+    };
+    // Below the length, CPython's `heapq.nlargest` compares while iterating the
+    // live dict, so a comparison that resized it raises there.
+    if order.len() < pairs.len() && counter.get(vm.heap).len() != pairs.len() {
+        return Err(ExcType::runtime_error_dict_changed_size());
+    }
+
+    let items = order
+        .iter()
+        .map(|&i| {
+            let (key, count) = &pairs[i];
+            allocate_tuple(
+                smallvec![key.clone_with_heap(vm.heap), count.clone_with_heap(vm.heap)],
+                vm.heap,
+            )
+        })
+        .collect();
     Ok(vm.heap.allocate_as(List::new(items)).into_value())
+}
+
+/// Indices of the `n` largest of `counts` (`n > 0`), largest first, picked as CPython's
+/// `heapq.nlargest(n, items, key=count)` picks them, making the same comparisons.
+///
+/// The comparisons matter when counts are not totally ordered (`NaN`, sets) or cannot be compared at all: the
+/// items chosen, their order and the error raised all follow from which pairs are compared, in which order.
+fn nlargest(n: usize, counts: &[Value], vm: &mut VM<'_>) -> RunResult<Vec<usize>> {
+    if counts.is_empty() {
+        Ok(Vec::new())
+    } else if n == 1 {
+        // CPython's shortcut: `max()`, which keeps the first of equal counts.
+        let mut best = 0;
+        for i in 1..counts.len() {
+            vm.heap.tracker.check_time_every(i)?;
+            if vm.cmp_values(CmpOperator::Gt, &counts[i], &counts[best])? {
+                best = i;
+            }
+        }
+        Ok(vec![best])
+    } else if n >= counts.len() {
+        sort_counts(counts, vm)
+    } else {
+        nlargest_heap(n, counts, vm)
+    }
+}
+
+/// `heapq.nlargest`'s general case for `1 < n < len(counts)`: a min-heap of the best `n` so far.
+///
+/// CPython's heap holds `(count, order, item)` tuples, where `order` counts down from 0 so that, of equal counts,
+/// the item that entered the heap first ranks higher; tuple comparison never reaches `item`.
+fn nlargest_heap(n: usize, counts: &[Value], vm: &mut VM<'_>) -> RunResult<Vec<usize>> {
+    let mut heap: Vec<HeapEntry> = (0..n).map(|i| HeapEntry { index: i, rank: i }).collect();
+    heapify(&mut heap, counts, vm)?;
+    let mut rank = n;
+    for (i, count) in counts.iter().enumerate().skip(n) {
+        vm.heap.tracker.check_time_every(i)?;
+        if py_lt(&counts[heap[0].index], count, vm)? {
+            heap[0] = HeapEntry { index: i, rank };
+            sift_up(&mut heap, 0, counts, vm)?;
+            rank += 1;
+        }
+    }
+    // CPython's `result.sort(reverse=True)`.
+    let mut ids: Vec<usize> = (0..heap.len()).collect();
+    sort_indices_by(&mut ids, true, vm, |a, b, vm| heap[a].lt(heap[b], counts, vm))?;
+    Ok(ids.into_iter().map(|id| heap[id].index).collect())
+}
+
+/// One `(count, order, item)` tuple of [`nlargest_heap`], naming the item by its index into the counts.
+#[derive(Clone, Copy)]
+struct HeapEntry {
+    index: usize,
+    /// When the item entered the heap, `0, 1, 2, ...`: CPython's `order` negated.
+    rank: usize,
+}
+
+impl HeapEntry {
+    /// Tuple `<`: the counts decide unless they are equal, then the later entry is the lesser.
+    fn lt(self, other: Self, counts: &[Value], vm: &mut VM<'_>) -> RunResult<bool> {
+        let (a, b) = (&counts[self.index], &counts[other.index]);
+        if py_eq_item(a, b, vm)? {
+            Ok(self.rank > other.rank)
+        } else {
+            py_lt(a, b, vm)
+        }
+    }
+}
+
+/// A port of CPython's `heapify` (`Modules/_heapqmodule.c`), including the cache-friendly order it uses above 2500
+/// entries, since the order of comparisons decides the result for counts that are not totally ordered.
+fn heapify(heap: &mut [HeapEntry], counts: &[Value], vm: &mut VM<'_>) -> RunResult<()> {
+    let n = heap.len();
+    if n > 2500 {
+        let m = n >> 1; // first childless node
+        let leftmost = keep_top_bit(m + 1) - 1; // leftmost node in the row of `m`
+        let mhalf = m >> 1; // parent of the first childless node
+        for i in (mhalf..leftmost).rev().chain((leftmost..m).rev()) {
+            let mut j = i;
+            loop {
+                sift_up(heap, j, counts, vm)?;
+                if j & 1 == 0 {
+                    break;
+                }
+                j >>= 1;
+            }
+        }
+    } else {
+        for i in (0..n >> 1).rev() {
+            sift_up(heap, i, counts, vm)?;
+        }
+    }
+    Ok(())
+}
+
+/// `n` with every bit below its highest set bit cleared.
+fn keep_top_bit(n: usize) -> usize {
+    if n == 0 { 0 } else { 1 << n.ilog2() }
+}
+
+/// CPython's `siftup`: moves the smaller child up from `pos` until reaching a leaf, then sifts the entry that was
+/// at `pos` back down into place.
+fn sift_up(heap: &mut [HeapEntry], mut pos: usize, counts: &[Value], vm: &mut VM<'_>) -> RunResult<()> {
+    let start = pos;
+    let limit = heap.len() >> 1;
+    while pos < limit {
+        let mut child = 2 * pos + 1;
+        if child + 1 < heap.len() && !heap[child].lt(heap[child + 1], counts, vm)? {
+            child += 1;
+        }
+        heap.swap(child, pos);
+        pos = child;
+    }
+    sift_down(heap, start, pos, counts, vm)
+}
+
+/// CPython's `siftdown`: moves the entry at `pos` towards `start` while it is less than its parent.
+fn sift_down(heap: &mut [HeapEntry], start: usize, mut pos: usize, counts: &[Value], vm: &mut VM<'_>) -> RunResult<()> {
+    while pos > start {
+        let parent = (pos - 1) >> 1;
+        if !heap[pos].lt(heap[parent], counts, vm)? {
+            break;
+        }
+        heap.swap(pos, parent);
+        pos = parent;
+    }
+    Ok(())
 }
 
 /// `Counter.elements()` — a list repeating each element by its count, skipping
@@ -425,22 +561,19 @@ pub(crate) fn counter_elements<'h>(
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
     args.check_zero_args("elements", vm.heap)?;
-    let n = counter.get(vm.heap).len();
 
     // Resolve every repetition length up front: a count that `itertools.repeat`
     // rejects — non-integer (TypeError) or outside `ssize_t` (OverflowError) —
-    // must raise before anything is built.
-    let mut lengths = Vec::with_capacity(n);
-    for i in 0..n {
-        let count = counter
+    // must raise before anything is built. No user code runs here or below, so
+    // each pass reads the entries under one borrow.
+    let lengths = {
+        let vm: &VM<'h> = vm;
+        counter
             .get(vm.heap)
-            .value_at(i)
-            .expect("index in range")
-            .clone_with_heap(vm.heap);
-        let len = count_repeat_len(&count, vm);
-        count.drop_with(vm);
-        lengths.push(len?);
-    }
+            .iter()
+            .map(|(_, count)| count_repeat_len(count, vm))
+            .collect::<RunResult<Vec<usize>>>()?
+    };
 
     // Pre-check the total element count against the resource tracker: a single
     // large count (e.g. `c['a'] = 10**18`) would otherwise attempt to build a
@@ -452,14 +585,9 @@ pub(crate) fn counter_elements<'h>(
     // and `check_repeat_size` above is the real guard (it fires before this loop
     // whenever a memory limit is set). Pre-reserving would itself panic.
     let mut items: Vec<Value> = Vec::new();
-    for (i, &count) in lengths.iter().enumerate() {
+    for ((key, _), &count) in counter.get(vm.heap).iter().zip(&lengths) {
         for _ in 0..count {
-            let key = counter
-                .get(vm.heap)
-                .key_at(i)
-                .expect("index in range")
-                .clone_with_heap(vm.heap);
-            items.push(key);
+            items.push(key.clone_with_heap(vm.heap));
         }
     }
     Ok(vm.heap.allocate_as(List::new(items)).into_value())

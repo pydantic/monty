@@ -9,7 +9,7 @@
 
 use monty_types::{ExcData, ExcType, JsonErrorData, MontyException, UnicodeErrorObject, unstable::MontyNode};
 use pyo3::{
-    PyTypeCheck,
+    PyTypeCheck, PyTypeInfo,
     exceptions::{self},
     prelude::*,
     sync::PyOnceLock,
@@ -60,6 +60,7 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
         ExcType::ValueError => exceptions::PyValueError::new_err(msg),
         ExcType::UnicodeDecodeError | ExcType::UnicodeEncodeError => unicode_error_to_py(py, exc_type, exc_data, msg),
         ExcType::JsonDecodeError => json_decode_error_to_py(py, exc_data, msg),
+        ExcType::TomlDecodeError => toml_decode_error_to_py(py, exc_data, msg),
         ExcType::ImportError => exceptions::PyImportError::new_err(msg),
         ExcType::ModuleNotFoundError => exceptions::PyModuleNotFoundError::new_err(msg),
         ExcType::OSError => exceptions::PyOSError::new_err(msg),
@@ -74,7 +75,7 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
             {
                 PyErr::from_value(exc_instance)
             } else {
-                // Fall back to OSError — the parent we model in `is_subclass_of`.
+                // Fall back to OSError, its first base.
                 exceptions::PyOSError::new_err(msg)
             }
         }
@@ -93,7 +94,17 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
             {
                 PyErr::from_value(exc_instance)
             } else {
-                // Fall back to ValueError — the parent we model in `is_subclass_of`.
+                // Fall back to ValueError, its base.
+                exceptions::PyValueError::new_err(msg)
+            }
+        }
+        ExcType::StatisticsError => {
+            if let Ok(statistics_error) = get_statistics_error(py)
+                && let Ok(exc_instance) = statistics_error.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                // Fall back to ValueError, the parent we model in `is_subclass_of`.
                 exceptions::PyValueError::new_err(msg)
             }
         }
@@ -107,15 +118,92 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
                 exceptions::PyException::new_err(msg)
             }
         }
+        ExcType::CsvError => {
+            if let Ok(csv_error) = get_csv_error(py)
+                && let Ok(exc_instance) = csv_error.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                // Falls back to its parent, `Exception`.
+                exceptions::PyException::new_err(msg)
+            }
+        }
+        ExcType::DecimalException
+        | ExcType::DecimalClamped
+        | ExcType::DecimalInvalidOperation
+        | ExcType::DecimalConversionSyntax
+        | ExcType::DecimalDivisionByZero
+        | ExcType::DecimalDivisionImpossible
+        | ExcType::DecimalDivisionUndefined
+        | ExcType::DecimalInexact
+        | ExcType::DecimalInvalidContext
+        | ExcType::DecimalRounded
+        | ExcType::DecimalSubnormal
+        | ExcType::DecimalOverflow
+        | ExcType::DecimalUnderflow
+        | ExcType::DecimalFloatOperation => decimal_error_to_py(py, exc_type, msg),
     }
 }
 
+/// Builds the `decimal` module's own exception class for a decimal signal, so
+/// `except decimal.InvalidOperation:` catches it on the host. Falls back to the
+/// signal's builtin base: `ZeroDivisionError`, `TypeError` or `ArithmeticError`.
+fn decimal_error_to_py(py: Python<'_>, exc_type: ExcType, msg: String) -> PyErr {
+    let full: &'static str = exc_type.into();
+    let name = full.strip_prefix("decimal.").unwrap_or(full);
+    if let Ok(decimal) = get_decimal_module(py)
+        && let Ok(exc_cls) = decimal.getattr(name)
+        && let Ok(exc_instance) = exc_cls.call1((PyString::new(py, &msg),))
+    {
+        PyErr::from_value(exc_instance)
+    } else {
+        match exc_type {
+            ExcType::DecimalDivisionByZero | ExcType::DecimalDivisionUndefined => {
+                exceptions::PyZeroDivisionError::new_err(msg)
+            }
+            ExcType::DecimalFloatOperation => exceptions::PyTypeError::new_err(msg),
+            _ => exceptions::PyArithmeticError::new_err(msg),
+        }
+    }
+}
+
+/// Returns the cached host `decimal` module.
+fn get_decimal_module(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DECIMAL: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    DECIMAL
+        .get_or_try_init(py, || py.import("decimal").map(|m| m.into_any().unbind()))
+        .map(|m| m.bind(py))
+}
+
+/// The `ExcType` of a host `decimal` exception: its nearest class in the MRO that
+/// is one of the `decimal` module's signal classes (by identity, not by name), so a
+/// subclass maps to the signal it extends.
+/// `None` for anything that is not a `decimal.DecimalException`.
+fn decimal_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> Option<ExcType> {
+    let decimal = get_decimal_module(exc.py()).ok()?;
+    let base = decimal.getattr("DecimalException").ok()?;
+    if !exc.is_instance(&base).unwrap_or(false) {
+        return None;
+    }
+    let mro = exc.get_type().getattr("__mro__").ok()?.cast_into::<PyTuple>().ok()?;
+    mro.iter().find_map(|cls| {
+        let name: String = cls.getattr("__name__").ok()?.extract().ok()?;
+        let exc_type = format!("decimal.{name}").parse::<ExcType>().ok()?;
+        decimal.getattr(name.as_str()).ok()?.is(&cls).then_some(exc_type)
+    })
+}
+
 /// The host class for an exception type: the class its instances decode to,
-/// except the three whose instances need a payload, which resolve directly
+/// except the four whose instances need a payload, which resolve directly
 /// so the class never degrades to the payload-less `ValueError` fallback.
 pub(super) fn exc_class_to_py(py: Python<'_>, exc_type: ExcType) -> PyResult<Py<PyAny>> {
     match exc_type {
         ExcType::JsonDecodeError => get_json_decode_error(py).map(|b| b.clone().unbind()),
+        // If importing the class fails, match the instance fallback.
+        ExcType::TomlDecodeError => Ok(get_toml_decode_error(py).map_or_else(
+            |_| py.get_type::<exceptions::PyValueError>().into_any().unbind(),
+            |cls| cls.clone().unbind(),
+        )),
         ExcType::UnicodeDecodeError => Ok(py.get_type::<exceptions::PyUnicodeDecodeError>().into_any().unbind()),
         ExcType::UnicodeEncodeError => Ok(py.get_type::<exceptions::PyUnicodeEncodeError>().into_any().unbind()),
         _ => Ok(exc_monty_to_py(py, MontyException::new(exc_type, None))
@@ -177,6 +265,28 @@ fn json_decode_error_to_py(py: Python<'_>, exc_data: ExcData, msg: String) -> Py
     }
 }
 
+/// Builds a real `tomllib.TOMLDecodeError` from the `msg` / `doc` / `pos`
+/// payload, which it shares with `json.JSONDecodeError`. Every attribute is
+/// set explicitly: before Python 3.14 the constructor stores only `args`, and
+/// on 3.14 it derives `lineno` / `colno` from `doc`, which is wrong for a
+/// dropped (oversized) document, as is the message it formats.
+fn toml_decode_error_to_py(py: Python<'_>, exc_data: ExcData, msg: String) -> PyErr {
+    if let ExcData::Json(data) = exc_data
+        && let Ok(exc_cls) = get_toml_decode_error(py)
+        && let Ok(exc_instance) = exc_cls.call1((&data.msg, data.doc.as_deref().unwrap_or(""), data.pos))
+        && exc_instance.setattr("msg", &data.msg).is_ok()
+        && exc_instance.setattr("doc", data.doc.as_deref().unwrap_or("")).is_ok()
+        && exc_instance.setattr("pos", data.pos).is_ok()
+        && exc_instance.setattr("lineno", data.lineno).is_ok()
+        && exc_instance.setattr("colno", data.colno).is_ok()
+        && exc_instance.setattr("args", (PyString::new(py, &msg),)).is_ok()
+    {
+        PyErr::from_value(exc_instance)
+    } else {
+        exceptions::PyValueError::new_err(msg)
+    }
+}
+
 /// Converts a python exception to monty.
 ///
 /// Used when resuming execution with an exception from Python.
@@ -184,7 +294,10 @@ pub fn exc_py_to_monty(py: Python<'_>, py_err: &PyErr) -> MontyException {
     let exc = py_err.value(py);
     let exc_type = py_err_to_exc_type(exc);
     let arg = exception_arg(exc);
-    let data = if exc_type == ExcType::JsonDecodeError {
+    // Since Python 3.14 `tomllib.TOMLDecodeError` defines the same five
+    // attributes as `json.JSONDecodeError`, so both travel as the json payload;
+    // older versions have none, and the extraction yields no payload.
+    let data = if matches!(exc_type, ExcType::JsonDecodeError | ExcType::TomlDecodeError) {
         json_data_from_py(exc)
     } else {
         ExcData::None
@@ -220,10 +333,22 @@ fn exception_arg(exc: &Bound<'_, exceptions::PyBaseException>) -> Option<String>
 /// (matching the cap Monty applies when raising) while the rest is kept.
 fn json_data_from_py(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcData {
     let extract = || -> PyResult<JsonErrorData> {
-        let doc: String = exc.getattr("doc")?.extract()?;
+        let doc = exc.getattr("doc")?.cast_into::<PyString>()?;
+        // The cap counts UTF-8 bytes, which are never fewer than code points, so a
+        // document over the cap in code points is dropped without being copied.
+        // `str.__len__` is called unbound because a `str` subclass may override `__len__`.
+        // TODO: switch to `PyStringMethods::code_point_len` once on PyO3 0.30.
+        let code_points: usize = PyString::type_object(exc.py())
+            .call_method1("__len__", (&doc,))?
+            .extract()?;
+        let doc = if code_points <= JsonErrorData::MAX_DOC_LEN {
+            Some(doc.extract::<String>()?).filter(|doc| doc.len() <= JsonErrorData::MAX_DOC_LEN)
+        } else {
+            None
+        };
         Ok(JsonErrorData {
             msg: exc.getattr("msg")?.extract()?,
-            doc: (doc.len() <= JsonErrorData::MAX_DOC_LEN).then_some(doc),
+            doc,
             pos: exc.getattr("pos")?.extract()?,
             lineno: exc.getattr("lineno")?.extract()?,
             colno: exc.getattr("colno")?.extract()?,
@@ -248,15 +373,23 @@ pub fn exc_to_monty_node(exc: &Bound<'_, exceptions::PyBaseException>) -> MontyN
 fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
     // Exception hierarchy
     if exceptions::PyException::type_check(exc) {
+        // `decimal` signals first: `FloatOperation` is also a `TypeError` and
+        // `DivisionByZero` a `ZeroDivisionError`, so the builtin checks would claim them.
+        if let Some(exc_type) = decimal_exc_type(exc) {
+            exc_type
         // put the most commonly used exceptions first
-        if exceptions::PyTypeError::type_check(exc) {
+        } else if exceptions::PyTypeError::type_check(exc) {
             ExcType::TypeError
         // ValueError hierarchy (check UnicodeDecodeError/UnicodeEncodeError first as they're subclasses)
         } else if exceptions::PyValueError::type_check(exc) {
             if is_json_decode_error(exc) {
                 ExcType::JsonDecodeError
+            } else if is_toml_decode_error(exc) {
+                ExcType::TomlDecodeError
             } else if is_binascii_error(exc) {
                 ExcType::BinasciiError
+            } else if is_statistics_error(exc) {
+                ExcType::StatisticsError
             } else if exceptions::PyUnicodeDecodeError::type_check(exc) {
                 ExcType::UnicodeDecodeError
             } else if exceptions::PyUnicodeEncodeError::type_check(exc) {
@@ -350,6 +483,8 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
         // last as it needs a python isinstance call against an imported class
         } else if is_re_pattern_error(exc) {
             ExcType::RePatternError
+        } else if is_csv_error(exc) {
+            ExcType::CsvError
         } else {
             ExcType::Exception
         }
@@ -384,6 +519,22 @@ fn is_json_decode_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
     }
 }
 
+/// Checks if an exception is a `tomllib.TOMLDecodeError` (a stdlib class, not
+/// a PyO3 built-in, so looked up lazily and cached).
+fn is_toml_decode_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(toml_decode_error_cls) = get_toml_decode_error(exc.py()) {
+        exc.is_instance(toml_decode_error_cls).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Returns the cached `tomllib.TOMLDecodeError` class.
+fn get_toml_decode_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static TOML_DECODE_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    TOML_DECODE_ERROR.import(py, "tomllib", "TOMLDecodeError")
+}
+
 /// Checks if an exception is a `binascii.Error` (a stdlib class, not a
 /// PyO3 built-in, so looked up lazily and cached).
 fn is_binascii_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
@@ -399,6 +550,22 @@ fn is_binascii_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
 fn get_binascii_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static BINASCII_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
     BINASCII_ERROR.import(py, "binascii", "Error")
+}
+
+/// Checks if an exception is a `statistics.StatisticsError` (a stdlib class,
+/// looked up lazily and cached).
+fn is_statistics_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(statistics_error_cls) = get_statistics_error(exc.py()) {
+        exc.is_instance(statistics_error_cls).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Returns the cached `statistics.StatisticsError` class, a `ValueError` subclass.
+fn get_statistics_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static STATISTICS_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    STATISTICS_ERROR.import(py, "statistics", "StatisticsError")
 }
 
 /// Checks if an exception is a `binascii.Incomplete`, which hangs off
@@ -425,6 +592,21 @@ fn is_re_pattern_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
     } else {
         false
     }
+}
+
+/// Checks if an exception is a `csv.Error`, a direct `Exception` subclass.
+fn is_csv_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(csv_error_cls) = get_csv_error(exc.py()) {
+        exc.is_instance(csv_error_cls).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Returns the cached `csv.Error` class.
+fn get_csv_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static CSV_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    CSV_ERROR.import(py, "csv", "Error")
 }
 
 /// Returns the cached `re.PatternError` class (named `re.error` before 3.13).
@@ -456,7 +638,7 @@ fn get_json_decode_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
 /// is a subclass of both `OSError` and `ValueError` in CPython. Monty raises
 /// the real CPython class here so user code can `isinstance(e,
 /// io.UnsupportedOperation)`; both parents are modelled by
-/// [`ExcType::is_subclass_of`], so `except OSError:` and `except ValueError:`
+/// the interpreter's type table, so `except OSError:` and `except ValueError:`
 /// catch it just like in CPython.
 fn get_unsupported_operation(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static UNSUPPORTED_OPERATION: PyOnceLock<Py<PyAny>> = PyOnceLock::new();

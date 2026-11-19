@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # Tests for os module import and os.getenv()
 
 import os

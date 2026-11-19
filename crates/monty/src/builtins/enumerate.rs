@@ -21,7 +21,7 @@ pub fn builtin_enumerate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Guard `start` before building the iterator: a non-iterable `iterable`
     // errors out of `py_iter`, and a heap-backed start must not leak.
     defer_drop!(start, vm);
-    let iter = iterable.into_py_iter(vm)?;
+    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 

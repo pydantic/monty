@@ -27,7 +27,12 @@ fn type_name_round_trips_through_from_type_name() {
 /// `#[strum(disabled)]` precisely so `EnumString` never accepts it.
 #[test]
 fn exception_type_names_round_trip() {
-    for exc in [ExcType::ValueError, ExcType::JsonDecodeError, ExcType::Exception] {
+    for exc in [
+        ExcType::ValueError,
+        ExcType::JsonDecodeError,
+        ExcType::TomlDecodeError,
+        ExcType::Exception,
+    ] {
         let t = MontyType::Exception(exc);
         assert_eq!(MontyType::from_type_name(&t.to_string()), Some(t));
     }

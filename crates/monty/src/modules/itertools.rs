@@ -13,7 +13,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, HEAP_ENTRY_SIZE, HeapData, HeapId},
+    heap::{DropGuard, DropWithContext, HEAP_ENTRY_SIZE, HeapData},
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
@@ -25,7 +25,7 @@ use crate::{
             Pairwise, Permutations, Product, Repeat, StarMap, TakeWhile, ZipLongest, tee,
         },
     },
-    value::{VALUE_SIZE, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// The `itertools` callables that are not type objects.
@@ -34,14 +34,15 @@ use crate::{
 /// Monty — `itertools.count` IS `Type::ItertoolsCount`, constructed through
 /// [`construct`]. Only `tee` is a plain function there, and `from_iterable` is
 /// reached through the `chain` type rather than the module.
+#[monty_macros::explicit_discriminants(checksum = 0xd321_9a55_cf78_bc1f)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum ItertoolsFunctions {
-    Tee,
+    Tee = 0,
     /// `chain.from_iterable`, an attribute of the `chain` type rather than a
     /// name in the module — resolved by `Value::py_getattr`.
     #[strum(serialize = "from_iterable")]
-    ChainFromIterable,
+    ChainFromIterable = 1,
 }
 
 /// The module's type objects, by the name each is bound to.
@@ -73,8 +74,8 @@ const ITERTOOLS_TYPES: &[(StaticStrings, Type)] = &[
     (StaticStrings::TeeDataObject, Type::ItertoolsTeeDataObject),
 ];
 
-/// Creates the `itertools` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `itertools` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Itertools, vm.interns);
 
     for (name, type_) in ITERTOOLS_TYPES {
@@ -86,7 +87,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to one of the module's two plain functions.
@@ -95,6 +96,14 @@ pub(crate) fn call(vm: &mut VM<'_>, function: ItertoolsFunctions, args: ArgValue
         ItertoolsFunctions::Tee => call_tee(vm, args),
         ItertoolsFunctions::ChainFromIterable => call_chain_from_iterable(vm, args),
     }
+}
+
+/// `chain.from_iterable`, the one attribute an `itertools` type carries. Handed
+/// out as a value so it can be bound and called later, not only called in place.
+pub(crate) fn chain_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+    (attr.static_string(vm.interns) == Some(StaticStrings::FromIterable)).then_some(Value::ModuleFunction(
+        ModuleFunctions::Itertools(ItertoolsFunctions::ChainFromIterable),
+    ))
 }
 
 /// Constructs one of the module's iterators, reached through [`Type::call`].
@@ -127,7 +136,7 @@ pub(crate) fn construct(type_: Type, vm: &mut VM<'_>, args: ArgValues) -> RunRes
         // arguments its internals use. See `limitations/itertools.md`.
         Type::ItertoolsGrouper | Type::ItertoolsTee | Type::ItertoolsTeeDataObject => {
             args.drop_with(vm);
-            Err(ExcType::type_error_not_callable(&type_.name(vm.heap, vm.interns)))
+            Err(ExcType::type_error_not_callable(type_.name()))
         }
         other => unreachable!("{other} is not an itertools type"),
     }
@@ -200,9 +209,12 @@ fn call_repeat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Whether `value` satisfies CPython's `PyNumber_Check` for `count()`.
 ///
 /// Monty's numeric types are exactly `int` (immediate, interned big, or heap
-/// `LongInt` — all reported as [`Type::Int`]), `float`, and `bool`.
+/// `LongInt` — all reported as [`Type::Int`]), `float`, `complex` and `bool`.
 fn is_number(value: &Value, vm: &VM<'_>) -> bool {
-    matches!(value.py_type_heap(vm.heap), Type::Int | Type::Float | Type::Bool)
+    matches!(
+        value.py_type_heap(vm.heap).native(),
+        Some(Type::Int | Type::Float | Type::Complex | Type::Bool)
+    )
 }
 
 /// Widens a `bool` start/step to the `int` it stands for.
@@ -249,7 +261,7 @@ fn call_pairwise(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let PairwiseArgs { iterable } = PairwiseArgs::from_args(args, vm)?;
     // Resolve to an iterator up front, as CPython does: a non-iterable raises
     // here rather than on the first `next()`.
-    let source = iterable.into_py_iter(vm)?;
+    let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Pairwise(Pairwise::new(source));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -272,10 +284,10 @@ fn call_compress(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // `into_py_iter` consumes its receiver, so each conversion guards the other
     // argument: whichever is not being converted is released if this one raises.
     let mut guard = DropGuard::new(selectors, vm);
-    let data = data.into_py_iter(guard.ctx())?;
+    let data = data.into_py_iter(guard.ctx())?.require_synchronous(guard.ctx())?;
     let (selectors, vm) = guard.into_parts();
     let mut guard = DropGuard::new(data, vm);
-    let selectors = selectors.into_py_iter(guard.ctx())?;
+    let selectors = selectors.into_py_iter(guard.ctx())?.require_synchronous(guard.ctx())?;
     let (data, vm) = guard.into_parts();
     let iter = ItertoolsIter::Compress(Compress::new(data, selectors));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
@@ -319,7 +331,7 @@ fn call_islice(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (start, stop, step) = bounds?;
     let (iterable, vm) = guard.into_parts();
 
-    let source = iterable.into_py_iter(vm)?;
+    let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Islice(Islice::new(source, start, stop, step));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -421,7 +433,7 @@ struct CycleArgs {
 fn call_cycle(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let CycleArgs { iterable } = CycleArgs::from_args(args, vm)?;
     // Unlike `chain`, CPython resolves eagerly here, so `cycle(5)` raises now.
-    let source = iterable.into_py_iter(vm)?;
+    let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Cycle(Cycle::new(source));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -563,7 +575,7 @@ fn call_batched(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         }
     };
 
-    let source = iterable.into_py_iter(vm)?;
+    let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Batched(Batched::new(source, size, strict));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -621,7 +633,7 @@ fn call_zip_longest(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     for slot in iterables.iter_mut() {
         let iterable = mem::replace(slot, Value::None);
         let (resolved, vm) = guard.as_parts_mut();
-        match iterable.into_py_iter(vm) {
+        match iterable.into_py_iter(vm).and_then(|call| call.require_synchronous(vm)) {
             Ok(source) => resolved.push(source),
             Err(error) => {
                 fillvalue.drop_with(vm);
@@ -741,7 +753,7 @@ fn permutations_r(r: Value, n: usize, vm: &mut VM<'_>) -> RunResult<usize> {
     defer_drop!(r, vm);
     if matches!(r, Value::None) {
         Ok(n)
-    } else if matches!(r.py_type_heap(vm.heap), Type::Int | Type::Bool) {
+    } else if matches!(r.py_type_heap(vm.heap).native(), Some(Type::Int | Type::Bool)) {
         usize::try_from(ssize_arg(r, vm)?).map_err(|_| ExcType::combinatoric_negative_r())
     } else {
         Err(ExcType::permutations_bad_r())
@@ -861,7 +873,7 @@ fn call_chain_from_iterable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value
     // The outer iterable is resolved now — `chain.from_iterable(5)` raises
     // here — while its items are resolved one at a time, as `chain`'s
     // arguments are.
-    let outer = iterable.into_py_iter(vm)?;
+    let outer = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     let iter = ItertoolsIter::Chain(Chain::from_iterable(outer));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
@@ -911,7 +923,7 @@ fn call_tee(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Resolved first, then tested: CPython calls `iter()` before it reaches for
     // `__copy__`, so an object whose `__iter__` hands back an existing `_tee`
     // is copied too rather than being drained into a second buffer.
-    let source = iterable.into_py_iter(vm)?;
+    let source = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     // An existing `_tee` is copied rather than drained, so the copies replay
     // from where it stands — CPython reaches for `__copy__` for the same
     // reason. Anything else becomes the source of a fresh group.
@@ -949,7 +961,7 @@ fn tee_n(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
 /// non-callable is only discovered when the adaptor first applies it.
 fn resolve_source(callable: Value, iterable: Value, vm: &mut VM<'_>) -> RunResult<(Value, Value)> {
     let mut guard = DropGuard::new(callable, vm);
-    let source = iterable.into_py_iter(guard.ctx())?;
+    let source = iterable.into_py_iter(guard.ctx())?.require_synchronous(guard.ctx())?;
     let (callable, _) = guard.into_parts();
     Ok((callable, source))
 }

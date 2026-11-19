@@ -1,4 +1,4 @@
-# This test case is also used in the benchmark (benches/main.rs)
+# Every `bench__*.py` test case is also a `monty-bench` benchmark (benches/main.rs)
 # List operations
 my_list = []
 my_list.append(1)
@@ -64,5 +64,4 @@ dict_comp_sum = sum(square_dict.values())
 # Final result
 result = list_len + list_item + dict_val + dict_len + tuple_item + tuple_len
 result += str_len + func_result + total + comp_sum + dict_comp_sum
-result
-# Return=373
+assert result == 373

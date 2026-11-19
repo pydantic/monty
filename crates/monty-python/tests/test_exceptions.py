@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import binascii
+import csv
 import json
+import statistics
+import tomllib
 
 import pytest
 from conftest import RunMonty
@@ -121,6 +124,40 @@ def test_json_decode_error_message_only_fallback(monty_run: RunMonty):
     assert str(inner) == snapshot('nope')
 
 
+def test_toml_decode_error(monty_run: RunMonty):
+    # `tomllib.TOMLDecodeError` carries the same five attributes as
+    # `json.JSONDecodeError`, so it surfaces through the same payload.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import tomllib\ntomllib.loads('a = 1\\nb = [1,,]')")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, tomllib.TOMLDecodeError)
+    assert isinstance(inner, ValueError)
+    assert str(inner) == snapshot('Invalid value (at line 2, column 8)')
+    assert inner.msg == snapshot('Invalid value')
+    assert (inner.lineno, inner.colno, inner.pos) == snapshot((2, 8, 13))
+    assert inner.doc == 'a = 1\nb = [1,,]'
+
+
+def test_toml_decode_error_at_end_of_document(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import tomllib\ntomllib.loads('a = \\'x')")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, tomllib.TOMLDecodeError)
+    assert str(inner) == snapshot('Expected "\'" (at end of document)')
+    assert (inner.lineno, inner.colno, inner.pos) == snapshot((1, 7, 6))
+
+
+def test_toml_decode_error_long_key(monty_run: RunMonty):
+    # The key repr makes `msg` longer than the 64 KiB document cap; the payload must survive.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import tomllib\nk = 'k' * 70_000\ntomllib.loads(f'[{k}]\\n[{k}]')")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, tomllib.TOMLDecodeError)
+    assert inner.msg == f'Cannot declare ({"k" * 70_000!r},) twice'
+    assert inner.doc == ''
+    assert (inner.lineno, inner.colno, inner.pos) == snapshot((2, 70002, 140004))
+
+
 def test_binascii_error(monty_run: RunMonty):
     # A sandbox `base64` failure surfaces as the real stdlib class, not a bare `ValueError`.
     with pytest.raises(MontyRuntimeError) as exc_info:
@@ -129,6 +166,26 @@ def test_binascii_error(monty_run: RunMonty):
     assert isinstance(inner, binascii.Error)
     assert isinstance(inner, ValueError)
     assert str(inner) == snapshot('Incorrect padding')
+
+
+def test_statistics_error(monty_run: RunMonty):
+    # A sandbox `statistics` failure surfaces as the real stdlib class, a `ValueError` subclass.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import statistics\nstatistics.mean([])')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, statistics.StatisticsError)
+    assert isinstance(inner, ValueError)
+    assert str(inner) == snapshot('mean requires at least one data point')
+
+
+def test_csv_error(monty_run: RunMonty):
+    # A sandbox `csv` failure surfaces as the real stdlib class, a direct `Exception` subclass.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import csv\nlist(csv.reader([1]))')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, csv.Error)
+    assert not isinstance(inner, ValueError)
+    assert str(inner) == snapshot('iterator should return strings, not int (the file should be opened in text mode)')
 
 
 def test_type_error(monty_run: RunMonty):
@@ -377,7 +434,7 @@ ValueError: test message\
 
 def test_multiline_span_traceback(monty_run: RunMonty):
     # Regression test for #631: a frame spanning multiple lines can end on a
-    # lower column than it starts (hanging-indent `)`); the parent-side wire
+    # lower column than it starts (hanging-indent `)`); the client-side wire
     # validation used to reject the whole exception payload as malformed.
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run('def f(a):\n    raise ValueError("boom")\n\nr = f(\n    a=1,\n)\n')

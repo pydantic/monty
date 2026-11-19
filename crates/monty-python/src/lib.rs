@@ -14,6 +14,7 @@ mod build;
 mod callback_context;
 pub mod exceptions;
 mod external;
+mod import_files;
 mod limits;
 mod mount;
 mod os_policy;
@@ -21,16 +22,24 @@ mod pool;
 mod print_target;
 mod snapshot;
 mod telemetry;
+mod type_hints;
 mod version;
+
+// The Python API cannot construct a Rust disconnect without transport evidence.
+// Private access tests that conversion without inventing peer details.
+#[cfg(test)]
+#[path = "../tests/rust/disconnect.rs"]
+mod disconnect_tests;
 
 use std::sync::OnceLock;
 
 pub use exceptions::{
-    MontyConversionError, MontyCrashedError, MontyDisconnectError, MontyError, MontyRuntimeError, MontyShutdown,
-    MontySyntaxError, MontyTypingError, PyFrame, PySourceRange,
+    MontyConfigurationError, MontyConnectError, MontyConversionError, MontyCrashedError, MontyDisconnectError,
+    MontyError, MontyRefusedError, MontyRuntimeError, MontyShutdown, MontySyntaxError, MontyTypingError, PyFrame,
+    PySourceRange,
 };
 pub use mount::PyMountDir;
-pub use pool::{PyAsyncMonty, PyAsyncMontySession, PyAsyncMontyWebsocket, PyMonty, PyMontySession};
+pub use pool::{PyAsyncMonty, PyAsyncMontyRemote, PyAsyncMontySession, PyMonty, PyMontySession};
 pub use print_target::{PyCollectStreams, PyCollectString};
 use pyo3::{prelude::*, sync::PyOnceLock, types::PyAny};
 pub use snapshot::{
@@ -87,6 +96,8 @@ mod _monty {
     // fresh session); `MontyStdTypeProxy` stands in for builtin functions and
     // type objects the host never materialises from sandbox output.
     #[pymodule_export]
+    use monty_proto::python::PyExternalModule as ExternalModule;
+    #[pymodule_export]
     use monty_proto::python::PyMontyClassProxy as MontyClassProxy;
     #[pymodule_export]
     use monty_proto::python::PyMontyClassTypeProxy as MontyClassTypeProxy;
@@ -99,6 +110,10 @@ mod _monty {
     #[pymodule_export]
     use super::MontyComplete;
     #[pymodule_export]
+    use super::MontyConfigurationError;
+    #[pymodule_export]
+    use super::MontyConnectError;
+    #[pymodule_export]
     use super::MontyConversionError;
     #[pymodule_export]
     use super::MontyCrashedError;
@@ -106,6 +121,8 @@ mod _monty {
     use super::MontyDisconnectError;
     #[pymodule_export]
     use super::MontyError;
+    #[pymodule_export]
+    use super::MontyRefusedError;
     #[pymodule_export]
     use super::MontyRuntimeError;
     #[pymodule_export]
@@ -121,9 +138,9 @@ mod _monty {
     #[pymodule_export]
     use super::PyAsyncMonty as AsyncMonty;
     #[pymodule_export]
-    use super::PyAsyncMontySession as AsyncMontySession;
+    use super::PyAsyncMontyRemote as AsyncMontyRemote;
     #[pymodule_export]
-    use super::PyAsyncMontyWebsocket as AsyncMontyWebsocket;
+    use super::PyAsyncMontySession as AsyncMontySession;
     #[pymodule_export]
     use super::PyAsyncNameLookupSnapshot as AsyncNameLookupSnapshot;
     #[pymodule_export]
@@ -147,14 +164,18 @@ mod _monty {
     #[pymodule_export]
     use super::PySourceRange as SourceRange;
     #[pymodule_export]
-    use super::telemetry::_install_telemetry;
-    use super::{get_not_handled, get_version};
+    use super::telemetry::install_telemetry;
+    use super::{get_not_handled, get_version, pool::binary_finder};
 
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
         let py = m.py();
         m.add("__version__", get_version())?;
         m.add("NOT_HANDLED", get_not_handled(py)?.clone_ref(py))?;
+        // the remote pool's former name, kept as a plain alias of the class
+        m.add("AsyncMontyWebsocket", m.getattr("AsyncMontyRemote")?)?;
+        // cache the binary resolver now so pool construction never imports
+        binary_finder(py)?;
         Ok(())
     }
 }

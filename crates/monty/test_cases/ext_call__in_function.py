@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # === External function calls inside user-defined functions ===
 
 # Basic function calling external function

@@ -1,9 +1,9 @@
 # Exceptions
 
 Monty implements a fixed set of exception classes, listed below. Sandboxed
-code **cannot define new exception classes**: the `class` statement exists
-(see [classes.md](classes.md)) but classes cannot inherit, so there is no way
-to subclass `BaseException`/`Exception`. `raise` must therefore use one of
+code **cannot define new exception classes**: classes can inherit only from
+classes defined in Python and `object` (see [classes.md](classes.md#inheritance)), so there
+is no way to subclass `BaseException`/`Exception`. `raise` must therefore use one of
 these built-ins; `raise MyClass()` on a plain user class raises
 `TypeError: exceptions must derive from BaseException`, as in CPython.
 
@@ -12,16 +12,17 @@ these built-ins; `raise MyClass()` on a plain user class raises
 `BaseException`, `Exception`, `SystemExit`, `KeyboardInterrupt`,
 `ArithmeticError`, `OverflowError`, `ZeroDivisionError`, `LookupError`,
 `IndexError`, `KeyError`, `RuntimeError`, `NotImplementedError`,
-`RecursionError`, `AttributeError`, `FrozenInstanceError`, `NameError`,
+`RecursionError`, `AttributeError`, `NameError`,
 `UnboundLocalError`, `ValueError`, `UnicodeDecodeError`, `UnicodeEncodeError`,
 `ImportError`, `ModuleNotFoundError`, `OSError`, `FileNotFoundError`, `FileExistsError`,
 `IsADirectoryError`, `NotADirectoryError`, `PermissionError`,
 `AssertionError`, `MemoryError`, `StopIteration`, `SyntaxError`,
 `TimeoutError`, `TypeError`.
 
-Module-specific: `json.JSONDecodeError` (subclass of `ValueError`),
+Module-specific: `json.JSONDecodeError` and `tomllib.TOMLDecodeError` (subclasses of `ValueError`),
 `re.PatternError` / `re.error`, `io.UnsupportedOperation` (catchable as
-both `OSError` and `ValueError`, matching CPython's dual parentage).
+both `OSError` and `ValueError`, matching CPython's dual parentage), and
+`dataclasses.FrozenInstanceError` (a subclass of `AttributeError`).
 
 ## Exception classes NOT implemented
 
@@ -47,32 +48,48 @@ not supported; passing more than one argument raises an internal error.
 
 - `exc.args` — a tuple with 0 or 1 elements. Always a `tuple`, even when
     empty.
+
 - `str(exc)` — returns the single message string, or `""` if none.
+
 - `KeyError` always carries the missing key's `str()` text rather than the key
     itself, so `str(exc)` and `repr(exc)` quote non-string keys:
     `{}[1]` gives `KeyError('1')` where CPython gives `KeyError(1)`, and a
     `bytes` key gives `KeyError("b'a'")`.
+    The key's `__str__` therefore runs when the `KeyError` is raised, which CPython never does.
+    An exception from it is replaced by the type name (`KeyError('<K>')`), but a resource limit hit inside it
+    ends the run with `MemoryError` or `TimeoutError` where CPython raises a plain `KeyError`.
+
 - `repr(exc)` — `ClassName('message')` matching CPython, **except**
     `UnicodeDecodeError`/`UnicodeEncodeError`: CPython reprs these from their
     real 5-field constructor (`UnicodeDecodeError('ascii', b'\xff', 0, 1, 'ordinal not in range(128)')`), which Monty
     doesn't track, so Monty's
     `repr()` uses the generic single-message form instead.
-- The dotted exception classes — `json.JSONDecodeError`, `re.PatternError`,
-    `binascii.Error`, `binascii.Incomplete` — repr under their qualified name:
+
+- The dotted exception classes — `json.JSONDecodeError`, `tomllib.TOMLDecodeError`, `re.PatternError`,
+    `binascii.Error`, `binascii.Incomplete`, `_csv.Error`, `statistics.StatisticsError` — repr under their qualified
+    name:
     `binascii.Error('bad')` where CPython gives `Error('bad')`.
     `type(exc).__name__` and `str(type(exc))` match CPython.
 
-**Not implemented:** `__cause__`, `__context__`, `__suppress_context__`,
-`__traceback__`, `__notes__`, `add_note()`. The `raise X from Y` syntax
-parses, but the `from Y` cause is **silently dropped**: chained
-tracebacks are not preserved across `raise from`.
+- `exc.__cause__`, `exc.__context__` and `exc.__suppress_context__` are read-only: `exc.__cause__ = other` raises
+    `AttributeError`, where CPython accepts an exception or `None`.
+
+- An exception rebuilt from a copy loses its chain: one that escapes a nested synchronous call (a `sorted()` key,
+    `json.dumps(default=...)`, a `__repr__`) reaches the outer handler with `__cause__` reset to `None`,
+    `__suppress_context__` to `False`, and `__context__` set to the exception the *caller* was handling, if any,
+    rather than the one the callee was handling.
+
+- A chain that forms a cycle (`raise e from e`) is only reclaimed when the session ends, since exceptions are not
+    cycle-collected.
+
+**Not implemented:** `__traceback__`, `__notes__`, `add_note()`. A traceback printed for an exception with a
+`__cause__` or `__context__` shows that exception alone: CPython's chained output (`The above exception was the direct cause of the following exception:`) is not produced, inside the sandbox or at the host boundary.
 
 ## Custom subclasses
 
-User `class` definitions are supported, but classes cannot inherit
-(`class Foo(Exception):` raises `NotImplementedError: ... class inheritance and metaclasses`), so there is no way to
-create a new exception class inside
-the sandbox. Raising a plain user class instance (`raise MyClass()`) fails
+User `class` definitions are supported, but a class cannot derive from an
+exception type (`class Foo(Exception):` raises `TypeError: Monty does not support subclassing 'Exception': ...`),
+so there is no way to create a new exception class inside the sandbox. Raising a plain user class instance (`raise MyClass()`) fails
 with `TypeError: exceptions must derive from BaseException`. Define custom
 exception types on the host side if needed, or use the built-in subclass
 that best fits.
@@ -118,12 +135,3 @@ Monty never emits CPython's `Did you mean: '...'?` suggestions on
 `NameError`/`AttributeError`. This divergence is invisible to the test
 suite: `scripts/run_traceback.py` strips the suggestions from CPython's output
 before comparison, so traceback tests cannot catch it.
-
-An exception raised inside a Python callable that native code invokes
-*synchronously* — the `key=`/predicate/function argument of `map`, `filter`,
-`sorted`/`min`/`max`, and a user-defined
-`__iter__`/`__next__`/`__contains__`/`__repr__`/`__str__` — omits the **calling**
-frame from its traceback; the callee frame is present.
-CPython shows both. The re-entrant call path (`evaluate_function`) does not
-splice the host call site into the traceback. The exception type and message
-are unaffected.

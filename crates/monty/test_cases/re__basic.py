@@ -576,6 +576,31 @@ assert m.group(0) == 'bbb'
 assert m.group(1) is None
 assert m.group(2) == 'bbb'
 
+# === match and fullmatch of a pattern that ends in a VERBOSE comment ===
+# match() and fullmatch() wrap the pattern, so a trailing `#` comment must not hide the end of the wrapper
+m = re.match(r'(?x)a # comment', 'ab')
+assert m is not None
+assert m.group() == 'a'
+
+m = re.fullmatch(r'(?x)a # comment', 'a')
+assert m is not None
+assert m.group() == 'a'
+
+assert re.fullmatch(r'(?x)a # comment', 'ab') is None, 'fullmatch still needs the whole string'
+assert re.match('(?x)a#', 'a').group() == 'a', 'empty comment'
+assert re.fullmatch(r'(?x)a|b # either letter', 'b').group() == 'b', 'comment after an alternation'
+assert re.fullmatch(r'(?xi)A # comment', 'a').group() == 'a', 'x combined with another flag'
+assert re.fullmatch(r'(?x)a # (unbalanced', 'a').group() == 'a', 'parenthesis in the comment'
+assert re.fullmatch(r'(?x)\w+$  # the last word', 'abc').group() == 'abc', '$ before the comment'
+assert re.compile(r'(?x)a # comment').fullmatch('a').group() == 'a', 'compiled pattern'
+
+# the line break that ends the comment must not become a literal where VERBOSE is off
+assert re.fullmatch('a # c', 'a # c').group() == 'a # c', '# is a literal without VERBOSE'
+assert re.fullmatch('a', 'a\n') is None, 'no newline added to a pattern without VERBOSE'
+assert re.match(r'(?x:a) # c', 'a') is None, 'VERBOSE ends with its scoped group'
+assert re.fullmatch(r'(?x:a)b # c', 'ab # c').group() == 'ab # c', 'literal comment after a scoped group'
+assert re.fullmatch(r'(?x)(?-x:a )# c', 'a ').group() == 'a ', 'comment after a group that turns VERBOSE off'
+
 # === Literal $ in replacement ===
 result = re.sub(r'\d+', '$', 'a1b2')
 assert result == 'a$b$'
@@ -765,6 +790,50 @@ p = re.compile(r'B|AB', re.IGNORECASE)
 m = p.match('ab')
 assert m is not None
 assert m.group() == 'ab'
+
+# === Octal escapes and \g<0> whole-match backreference ===
+assert re.sub('(a)', r'\0', 'a') == '\x00'
+assert re.sub('(a)', r'\g<0>', 'a') == 'a'
+assert re.sub('(a)', r'\01', 'a') == '\x01'
+assert re.sub('(a)', r'\07', 'a') == '\x07'
+assert re.sub('(a)', r'\08', 'a') == '\x008'
+assert re.sub('(a)', r'\012', 'a') == '\n'
+assert re.sub('(a)', r'\077', 'a') == '?'
+assert re.sub('(a)', r'\123', 'a') == 'S'
+assert re.sub('(a)', r'\0123', 'a') == '\n3'
+assert re.sub('(a)', r'\0444', 'a') == '$4'
+
+pattern = re.compile('(a)')
+assert pattern.sub(r'\0', 'a') == '\x00'
+assert pattern.sub(r'\0444', 'a') == '$4'
+for count in [0, -1]:
+    try:
+        pattern.sub(r'\400', 'a', count)
+        assert False, 'expected PatternError for out-of-range octal escape'
+    except re.PatternError as e:
+        assert str(e) == 'octal escape value \\400 outside of range 0-0o377 at position 0'
+
+# The positive-count Pattern.sub path still checks the subject type.
+try:
+    pattern.sub('X', 123)
+    assert False, 'expected TypeError for non-string Pattern.sub subject'
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'expected string, not int'
+    else:
+        assert str(e) == "expected string or bytes-like object, got 'int'"
+
+# Three-digit octal escapes above 0o377 are invalid replacement templates.
+for repl, count, expected in [
+    (r'\400', 0, 'octal escape value \\400 outside of range 0-0o377 at position 0'),
+    ('x\\777', 0, 'octal escape value \\777 outside of range 0-0o377 at position 1'),
+    (r'\400', -1, 'octal escape value \\400 outside of range 0-0o377 at position 0'),
+]:
+    try:
+        re.sub('(a)', repl, 'a', count)
+        assert False, 'expected PatternError for out-of-range octal escape'
+    except re.PatternError as e:
+        assert str(e) == expected
 
 # === \g<N> numeric backreference in replacement ===
 result = re.sub(r'(\w+)\s+(\w+)', r'\g<2> \g<1>', 'hello world')

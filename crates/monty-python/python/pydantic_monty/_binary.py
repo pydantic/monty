@@ -5,6 +5,10 @@ package, the same pattern `uv` and `ruff` use), which installs it into the
 environment's scripts directory. Installing `pydantic-monty` pulls that in; the
 `pydantic-monty-client` distribution alone does not, so the other resolution
 steps below matter when only the bindings are installed.
+
+The compiled `_monty` module imports this file during its own init, while
+`pydantic_monty/__init__.py` is still executing, so it must import nothing
+from `pydantic_monty`.
 """
 
 from __future__ import annotations
@@ -16,6 +20,8 @@ import sysconfig
 from pathlib import Path
 
 _BIN_NAME = 'monty.exe' if sys.platform == 'win32' else 'monty'
+
+__all__ = ('find_monty_binary',)
 
 
 def find_monty_binary(explicit: str | Path | None = None) -> str:
@@ -33,19 +39,21 @@ def find_monty_binary(explicit: str | Path | None = None) -> str:
     """
     if explicit is not None:
         return str(explicit)
-    env = os.environ.get('MONTY_BIN')
-    if env:
+
+    if env := os.environ.get('MONTY_BIN'):
         return env
+
     for scripts_dir in _script_dirs():
         candidate = scripts_dir / _BIN_NAME
         if candidate.is_file():
             return str(candidate)
-    found = shutil.which('monty')
-    if found:
+
+    if found := shutil.which('monty'):
         return found
-    dev = _development_binary()
-    if dev is not None:
+
+    if dev := _development_binary():
         return str(dev)
+
     raise FileNotFoundError(
         'could not locate the `monty` binary required to run sandboxed code; '
         'install it with `pip install pydantic-monty` (or `make dev-py` in the monty repo), '

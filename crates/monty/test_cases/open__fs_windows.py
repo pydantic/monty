@@ -1,4 +1,6 @@
-# mount-fs
+# /// monty
+# mount-fs = true
+# ///
 # Windows-safe companion to open__fs.py covering the non-ASCII text I/O paths.
 #
 # open__fs.py is skipped on Windows CPython because its default text encoding
@@ -10,9 +12,9 @@
 #
 # `\n` characters are also avoided in text-mode writes: Windows CPython's
 # default universal-newline translation rewrites `\n` to `\r\n` on write,
-# whereas Monty performs no newline translation (see limitations/open.md).
-# Monty rejects `newline=''` as a non-default kwarg, so we can't opt out;
-# the test data is shaped to keep both interpreters byte-identical.
+# whereas the sandbox's `os.linesep` is `\n` on every host so Monty writes it
+# unchanged (see limitations/open.md). `newline=''` would opt both out; the
+# test data is shaped to keep the defaults byte-identical instead.
 
 # === Text write with explicit utf-8 encoding ===
 writer = open(root / 'open_write.txt', 'w', encoding='utf-8')

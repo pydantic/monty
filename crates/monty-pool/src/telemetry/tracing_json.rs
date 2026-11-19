@@ -24,7 +24,7 @@ use std::{
 };
 
 use monty_types::{
-    MontyDateTime, MontyTime, bytes_repr,
+    FormatComplex, MontyDateTime, MontyTime, bytes_repr,
     unstable::{MontyNode, NodeId},
 };
 use num_traits::ToPrimitive;
@@ -178,9 +178,14 @@ impl Serialize for JsonEncoded<'_> {
             MontyNode::Bool(b) => s.serialize_bool(*b),
             MontyNode::Int(i) => s.serialize_i64(*i),
             // beyond i128 the digits become a string: a raw JSON number would
-            // need serde_json's arbitrary-precision mode
+            // need serde_json's arbitrary-precision mode. Decimal conversion is
+            // superlinear, so values over `4 * limit` bits (more than `16^limit`,
+            // hence over `limit` digits) are cut unformatted. The bound is loose:
+            // the exact one is `log2(10) * limit` bits, and values in between are
+            // still formatted before the writer rejects them.
             MontyNode::BigInt(b) => match b.to_i128() {
                 Some(i) => s.serialize_i128(i),
+                None if b.bits() > (self.limit as u64).saturating_mul(4) => Err(S::Error::custom("byte limit reached")),
                 None => s.collect_str(b),
             },
             MontyNode::Float(f) if f.is_finite() => s.serialize_f64(*f),
@@ -221,8 +226,27 @@ impl Serialize for JsonEncoded<'_> {
                 )?;
                 map.end()
             }
+            // a host module: its name, id and attrs
+            MontyNode::Module { name, id, attrs } => {
+                let mut map = s.serialize_map(Some(3))?;
+                map.serialize_entry("module", name)?;
+                map.serialize_entry("id", &Displayed(id))?;
+                map.serialize_entry(
+                    "attrs",
+                    &JsonAttrs {
+                        holder: self,
+                        pairs: attrs,
+                    },
+                )?;
+                map.end()
+            }
             MontyNode::ClassType(_) => JsonClassType(Self { ..*self }).serialize(s),
             MontyNode::Type(builtin) => s.collect_str(&format_args!("<class '{builtin}'>")),
+            // JSON has no complex number, so it crosses as its Python repr.
+            MontyNode::Complex(c) => s.collect_str(&FormatComplex {
+                real: c.real,
+                imag: c.imag,
+            }),
             MontyNode::Date(d) => s.collect_str(&format_args!("{:04}-{:02}-{:02}", d.year, d.month, d.day)),
             MontyNode::DateTime(dt) => s.serialize_str(&datetime_isoformat(dt)),
             MontyNode::Time(t) => s.serialize_str(&time_isoformat(t)),
@@ -234,6 +258,8 @@ impl Serialize for JsonEncoded<'_> {
             // like logfire: `str(exc)`, which in Python is the message alone
             MontyNode::Exception { arg, .. } => s.serialize_str(arg.as_deref().unwrap_or_default()),
             MontyNode::Path(p) => s.serialize_str(p),
+            // like logfire: `str(d)`, which keeps every digit a JSON number would round
+            MontyNode::Decimal(d) => s.serialize_str(d),
             MontyNode::Cycle(_) => s.serialize_str("<circular reference>"),
             MontyNode::Repr(r) => s.serialize_str(r),
             MontyNode::Ellipsis => s.serialize_str("Ellipsis"),
@@ -665,6 +691,21 @@ mod tests {
     fn big_ints_encode_as_numbers() {
         let big = MontyObject::bigint("123456789012345678901234567890".parse().unwrap());
         assert_eq!(json(&big), "123456789012345678901234567890");
+    }
+
+    /// A `BigInt` whose digits cannot fit the cap is cut without being
+    /// converted to decimal, which is quadratic in its size.
+    #[test]
+    fn oversize_big_int_is_cut_before_formatting() {
+        let huge = MontyObject::bigint(num_bigint::BigInt::from(1) << 8_000_000_u32);
+        let value = MontyObject::list([MontyObject::int(1), huge]);
+        let (s, cut) = capped(&value, 64);
+        assert!(cut);
+        assert_eq!(s, "[1,");
+        // the bound is tight enough to keep a value that just fits
+        let digits = "1".repeat(62);
+        let big = MontyObject::bigint(digits.parse().unwrap());
+        assert_eq!(capped(&big, 64), (format!("\"{digits}\""), false));
     }
 
     #[test]

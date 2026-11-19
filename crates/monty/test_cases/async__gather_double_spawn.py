@@ -1,4 +1,6 @@
-# run-async
+# /// monty
+# run-async = true
+# ///
 """Cross-gather coroutine reuse must raise `RuntimeError`, not panic."""
 
 import asyncio

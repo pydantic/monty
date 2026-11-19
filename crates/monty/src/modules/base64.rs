@@ -15,14 +15,17 @@
 
 use std::{borrow::Cow, cmp::Ordering};
 
+use monty_types::ResourceTracker;
+
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData},
     intern::StaticStrings,
     modules::ModuleFunctions,
+    resource_checks::check_estimated_size,
     types::{CmpOrder, Module, PyTrait, bytes::bytes_repr},
     value::Value,
 };
@@ -62,48 +65,49 @@ const MAX_LINE_SIZE: u8 = 76;
 /// `base64` module functions, one variant per Python-visible function.
 ///
 /// Serialized into dumps by variant name, so renaming one needs `#[serde(alias)]`.
+#[monty_macros::explicit_discriminants(checksum = 0x15d1_f528_cc90_6ab5)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Base64Functions {
     #[strum(serialize = "b64encode")]
-    B64Encode,
+    B64Encode = 0,
     #[strum(serialize = "b64decode")]
-    B64Decode,
+    B64Decode = 1,
     #[strum(serialize = "standard_b64encode")]
-    StandardB64Encode,
+    StandardB64Encode = 2,
     #[strum(serialize = "standard_b64decode")]
-    StandardB64Decode,
+    StandardB64Decode = 3,
     #[strum(serialize = "urlsafe_b64encode")]
-    UrlsafeB64Encode,
+    UrlsafeB64Encode = 4,
     #[strum(serialize = "urlsafe_b64decode")]
-    UrlsafeB64Decode,
+    UrlsafeB64Decode = 5,
     #[strum(serialize = "b32encode")]
-    B32Encode,
+    B32Encode = 6,
     #[strum(serialize = "b32decode")]
-    B32Decode,
+    B32Decode = 7,
     #[strum(serialize = "b32hexencode")]
-    B32HexEncode,
+    B32HexEncode = 8,
     #[strum(serialize = "b32hexdecode")]
-    B32HexDecode,
+    B32HexDecode = 9,
     #[strum(serialize = "b16encode")]
-    B16Encode,
+    B16Encode = 10,
     #[strum(serialize = "b16decode")]
-    B16Decode,
+    B16Decode = 11,
     #[strum(serialize = "encodebytes")]
-    Encodebytes,
+    Encodebytes = 12,
     #[strum(serialize = "decodebytes")]
-    Decodebytes,
+    Decodebytes = 13,
     #[strum(serialize = "b85encode")]
-    B85Encode,
+    B85Encode = 14,
     #[strum(serialize = "b85decode")]
-    B85Decode,
+    B85Decode = 15,
     #[strum(serialize = "z85encode")]
-    Z85Encode,
+    Z85Encode = 16,
     #[strum(serialize = "z85decode")]
-    Z85Decode,
+    Z85Decode = 17,
     #[strum(serialize = "a85encode")]
-    A85Encode,
+    A85Encode = 18,
     #[strum(serialize = "a85decode")]
-    A85Decode,
+    A85Decode = 19,
 }
 
 /// Static mapping of attribute names to functions for module creation.
@@ -130,8 +134,8 @@ const BASE64_FUNCTIONS: &[(StaticStrings, Base64Functions)] = &[
     (StaticStrings::A85Decode, Base64Functions::A85Decode),
 ];
 
-/// Creates the `base64` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `base64` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Base64, vm.interns);
 
     for (name, func) in BASE64_FUNCTIONS {
@@ -141,7 +145,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     module.set_attr(StaticStrings::MaxBinSize, Value::Int(i64::from(MAX_BIN_SIZE)), vm);
     module.set_attr(StaticStrings::MaxLineSize, Value::Int(i64::from(MAX_LINE_SIZE)), vm);
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `base64` module function.
@@ -179,7 +183,7 @@ fn call_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(s, vm);
     defer_drop!(altchars, vm);
 
-    let mut encoded = b64_encode(encode_input(s, vm)?.as_ref());
+    let mut encoded = b64_encode(encode_input(s, vm)?.as_ref(), &vm.heap.tracker)?;
     if !matches!(altchars, Value::None) {
         // CPython asserts on the raw object's length before `bytes.maketrans`
         // type-checks it, so a 1-byte `str` is an AssertionError, not a TypeError.
@@ -216,7 +220,7 @@ fn call_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_standard_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let StandardB64EncodeArgs { s } = StandardB64EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let encoded = b64_encode(encode_input(s, vm)?.as_ref());
+    let encoded = b64_encode(encode_input(s, vm)?.as_ref(), &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -233,7 +237,7 @@ fn call_standard_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 fn call_urlsafe_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let UrlsafeB64EncodeArgs { s } = UrlsafeB64EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let mut encoded = b64_encode(encode_input(s, vm)?.as_ref());
+    let mut encoded = b64_encode(encode_input(s, vm)?.as_ref(), &vm.heap.tracker)?;
     translate(&mut encoded, b"+/", b"-_");
     Ok(allocate_bytes(encoded, vm.heap))
 }
@@ -252,7 +256,7 @@ fn call_urlsafe_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 fn call_b32encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let B32EncodeArgs { s } = B32EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let encoded = b32_encode(memoryview_input(s, vm)?.as_ref(), B32_ALPHABET);
+    let encoded = b32_encode(memoryview_input(s, vm)?.as_ref(), B32_ALPHABET, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -283,7 +287,7 @@ fn call_b32decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_b32hexencode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let B32HexEncodeArgs { s } = B32HexEncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let encoded = b32_encode(memoryview_input(s, vm)?.as_ref(), B32HEX_ALPHABET);
+    let encoded = b32_encode(memoryview_input(s, vm)?.as_ref(), B32HEX_ALPHABET, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -306,7 +310,7 @@ fn call_b32hexdecode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_b16encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let B16EncodeArgs { s } = B16EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let encoded = b16_encode(encode_input(s, vm)?.as_ref());
+    let encoded = b16_encode(encode_input(s, vm)?.as_ref(), &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -329,9 +333,17 @@ fn call_encodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(s, vm);
 
     let data = input_type_check(s, vm)?;
-    let mut encoded = Vec::new();
+    // Each `MAX_BIN_SIZE` chunk becomes `MAX_LINE_SIZE` characters plus a
+    // newline. The per-chunk encode only ever sees 57 bytes, so the whole
+    // output has to be preflighted here.
+    let capacity = data
+        .len()
+        .div_ceil(usize::from(MAX_BIN_SIZE))
+        .saturating_mul(usize::from(MAX_LINE_SIZE) + 1);
+    check_estimated_size(capacity, &vm.heap.tracker)?;
+    let mut encoded = Vec::with_capacity(capacity);
     for chunk in data.chunks(usize::from(MAX_BIN_SIZE)) {
-        encoded.extend_from_slice(&b64_encode(chunk));
+        encoded.extend_from_slice(&b64_encode(chunk, &vm.heap.tracker)?);
         encoded.push(b'\n');
     }
     Ok(allocate_bytes(encoded, vm.heap))
@@ -356,7 +368,7 @@ fn call_b85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(pad, vm);
 
     let pad = pad.py_bool(vm)?;
-    let encoded = b85_encode(memoryview_input(b, vm)?.as_ref(), B85_ALPHABET, pad);
+    let encoded = b85_encode(memoryview_input(b, vm)?.as_ref(), B85_ALPHABET, pad, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -374,7 +386,7 @@ fn call_z85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let Z85EncodeArgs { s } = Z85EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
 
-    let encoded = b85_encode(memoryview_input(s, vm)?.as_ref(), Z85_ALPHABET, false);
+    let encoded = b85_encode(memoryview_input(s, vm)?.as_ref(), Z85_ALPHABET, false, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -415,7 +427,12 @@ fn call_a85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let fold = foldspaces.py_bool(vm)?;
     let keep_padding = data.len() % 4 != 0 && pad.py_bool(vm)?;
     let adobe = adobe.py_bool(vm)?;
-    let mut encoded = a85_encode(&data, keep_padding, fold);
+    let framing = if adobe {
+        A85_ADOBE_START.len() + A85_ADOBE_END.len()
+    } else {
+        0
+    };
+    let mut encoded = a85_encode(&data, keep_padding, fold, framing, &vm.heap.tracker)?;
 
     if adobe {
         encoded.splice(0..0, *A85_ADOBE_START);
@@ -424,7 +441,7 @@ fn call_a85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // result — so the opening marker counts towards the first line.
     if wrapcol.py_bool(vm)? {
         let width = a85_wrapcol(wrapcol, if adobe { 2 } else { 1 }, vm)?;
-        encoded = a85_wrap(&encoded, width, adobe);
+        encoded = a85_wrap(&encoded, width, adobe, &vm.heap.tracker)?;
     }
     if adobe {
         encoded.extend_from_slice(A85_ADOBE_END);
@@ -599,8 +616,19 @@ single_arg_struct!(Z85EncodeArgs, "z85encode");
 single_arg_struct!(Z85DecodeArgs, "z85decode");
 
 /// Encodes bytes as standard base64 with `=` padding.
-pub(super) fn b64_encode(data: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(data.len().div_ceil(3) * 4);
+pub(super) fn b64_encode(data: &[u8], tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
+    b64_encode_reserving(data, 0, tracker)
+}
+
+/// [`b64_encode`], leaving room for `extra` bytes the caller will append.
+///
+/// The encoder fills its buffer exactly, so appending even one byte —
+/// `b2a_base64`'s trailing newline — grows it, and a `Vec` grows by doubling:
+/// a second copy of the output, charged as a burst the preflight never saw.
+pub(super) fn b64_encode_reserving(data: &[u8], extra: usize, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
+    let capacity = data.len().div_ceil(3) * 4 + extra;
+    check_estimated_size(capacity, tracker)?;
+    let mut out = Vec::with_capacity(capacity);
     for chunk in data.chunks(3) {
         let b0 = usize::from(chunk[0]);
         let b1 = chunk.get(1).map_or(0, |b| usize::from(*b));
@@ -614,7 +642,7 @@ pub(super) fn b64_encode(data: &[u8]) -> Vec<u8> {
         });
         out.push(if chunk.len() > 2 { B64_ALPHABET[b2 & 0x3f] } else { b'=' });
     }
-    out
+    Ok(out)
 }
 
 /// Decodes base64, mirroring `binascii.a2b_base64`'s two modes.
@@ -734,8 +762,10 @@ fn b64_value(byte: u8) -> Option<u8> {
 
 /// Encodes bytes as base32 over `alphabet`, padding the final group to eight
 /// characters with `=`.
-fn b32_encode(data: &[u8], alphabet: &[u8; 32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(data.len().div_ceil(5) * 8);
+fn b32_encode(data: &[u8], alphabet: &[u8; 32], tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
+    let capacity = data.len().div_ceil(5) * 8;
+    check_estimated_size(capacity, tracker)?;
+    let mut out = Vec::with_capacity(capacity);
     for chunk in data.chunks(5) {
         let mut acc: u64 = 0;
         for i in 0..5 {
@@ -758,7 +788,7 @@ fn b32_encode(data: &[u8], alphabet: &[u8; 32]) -> Vec<u8> {
             });
         }
     }
-    out
+    Ok(out)
 }
 
 /// Decodes base32 over `alphabet`.
@@ -812,14 +842,16 @@ fn b32_decode(data: &[u8], alphabet: &[u8; 32], casefold: bool) -> RunResult<Vec
 }
 
 /// Encodes bytes as uppercase hex (`b16encode`).
-fn b16_encode(data: &[u8]) -> Vec<u8> {
+fn b16_encode(data: &[u8], tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out = Vec::with_capacity(data.len() * 2);
+    let capacity = data.len() * 2;
+    check_estimated_size(capacity, tracker)?;
+    let mut out = Vec::with_capacity(capacity);
     for byte in data {
         out.push(HEX[usize::from(byte >> 4)]);
         out.push(HEX[usize::from(byte & 0x0f)]);
     }
-    out
+    Ok(out)
 }
 
 /// Decodes uppercase hex, folding case first when asked.
@@ -858,9 +890,11 @@ fn hex_value(byte: u8) -> u8 {
 /// A short final group is zero-padded to four bytes; unless `pad` is set, the
 /// characters those padding bytes produced are dropped again, so the output
 /// length tracks the input's.
-fn b85_encode(data: &[u8], alphabet: &[u8; 85], pad: bool) -> Vec<u8> {
+fn b85_encode(data: &[u8], alphabet: &[u8; 85], pad: bool, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
     let padding = (4 - data.len() % 4) % 4;
-    let mut out = Vec::with_capacity(data.len().div_ceil(4) * 5);
+    let capacity = data.len().div_ceil(4) * 5;
+    check_estimated_size(capacity, tracker)?;
+    let mut out = Vec::with_capacity(capacity);
 
     for chunk in data.chunks(4) {
         let mut word: u32 = 0;
@@ -879,7 +913,7 @@ fn b85_encode(data: &[u8], alphabet: &[u8; 85], pad: bool) -> Vec<u8> {
     if !pad {
         out.truncate(out.len() - padding);
     }
-    out
+    Ok(out)
 }
 
 /// Decodes base85 over `alphabet`, with `codec` naming the scheme in errors.
@@ -928,9 +962,14 @@ fn base85_table(alphabet: &[u8; 85]) -> [Option<u8>; 256] {
 /// An all-zero word folds to `z` and, with `foldspaces`, four spaces fold to
 /// `y`. A short final group is zero-padded to a full word and the digits that
 /// padding produced are dropped again unless `pad` is set.
-fn a85_encode(data: &[u8], pad: bool, foldspaces: bool) -> Vec<u8> {
+///
+/// `extra` reserves the Adobe framing the caller splices onto both ends, which
+/// would otherwise double a buffer this fills to the byte.
+fn a85_encode(data: &[u8], pad: bool, foldspaces: bool, extra: usize, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
     let padding = (4 - data.len() % 4) % 4;
-    let mut out: Vec<u8> = Vec::with_capacity(data.len().div_ceil(4) * 5);
+    let capacity = data.len().div_ceil(4) * 5 + extra;
+    check_estimated_size(capacity, tracker)?;
+    let mut out: Vec<u8> = Vec::with_capacity(capacity);
     // Where the final word's digits start, so the padding trim below can
     // rewrite them the way CPython rewrites `chunks[-1]`.
     let mut last_start = 0;
@@ -965,15 +1004,20 @@ fn a85_encode(data: &[u8], pad: bool, foldspaces: bool) -> Vec<u8> {
         }
         out.truncate(out.len() - padding);
     }
-    out
+    Ok(out)
 }
 
 /// Breaks encoded output into lines of at most `width` characters.
 ///
 /// With the Adobe framing an extra newline is added when `~>` would not fit on
 /// the last line, so no line ever exceeds `width`.
-fn a85_wrap(result: &[u8], width: usize, adobe: bool) -> Vec<u8> {
-    let mut out = Vec::with_capacity(result.len() + result.len() / width + 1);
+fn a85_wrap(result: &[u8], width: usize, adobe: bool, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
+    // The closing marker is appended to what this returns, so it is reserved
+    // here alongside the newlines rather than growing the buffer afterwards.
+    let closing = if adobe { A85_ADOBE_END.len() } else { 0 };
+    let capacity = result.len() + result.len() / width + 1 + closing;
+    check_estimated_size(capacity, tracker)?;
+    let mut out = Vec::with_capacity(capacity);
     let mut last_len = 0;
     for (index, line) in result.chunks(width).enumerate() {
         if index > 0 {
@@ -985,7 +1029,7 @@ fn a85_wrap(result: &[u8], width: usize, adobe: bool) -> Vec<u8> {
     if adobe && last_len + A85_ADOBE_END.len() > width {
         out.push(b'\n');
     }
-    out
+    Ok(out)
 }
 
 /// Resolves `max(2 if adobe else 1, wrapcol)` and the index `range` then needs.
@@ -1053,8 +1097,13 @@ fn a85_strip_adobe(data: &[u8], adobe: bool) -> RunResult<&[u8]> {
 /// The four `u`s appended to the input flush a trailing partial group, exactly
 /// as CPython's `b + b'u' * 4` does; the bytes they contributed are trimmed
 /// off again at the end, so a group left one digit short decodes to nothing.
+///
+/// Alone among the decoders this can outgrow its input, so its buffer is sized
+/// by [`a85_decoded_size`] rather than from the input's length.
 fn a85_decode(data: &[u8], foldspaces: bool, ignore: &IgnoreChars<'_>, vm: &mut VM<'_>) -> RunResult<Vec<u8>> {
-    let mut out: Vec<u8> = Vec::with_capacity(data.len().div_ceil(5) * 4);
+    let capacity = a85_decoded_size(data, foldspaces);
+    check_estimated_size(capacity, &vm.heap.tracker)?;
+    let mut out: Vec<u8> = Vec::with_capacity(capacity);
     let mut acc: u64 = 0;
     let mut digits = 0u8;
     // Counts only the bytes reaching `skips`, the one arm whose cost grows with
@@ -1104,6 +1153,27 @@ fn a85_decode(data: &[u8], foldspaces: bool, ignore: &IgnoreChars<'_>, vm: &mut 
     // guarantees a whole word was written, so there is always that much to trim.
     out.truncate(out.len() - usize::from(4 - digits));
     Ok(out)
+}
+
+/// How many bytes [`a85_decode`] writes before its trailing trim.
+///
+/// The input's length is no guide: five ordinary digits decode to four bytes,
+/// but `z` (and `y` when folding) stands for a whole four-byte word, so a
+/// buffer of them quadruples. Exact for an input that decodes, and an upper
+/// bound for one that fails part-way.
+fn a85_decoded_size(data: &[u8], foldspaces: bool) -> usize {
+    // Two plain counts rather than one if/else chain, so each vectorises.
+    let digits = data
+        .iter()
+        .filter(|byte| (A85_FIRST_DIGIT..=A85_LAST_DIGIT).contains(*byte))
+        .count();
+    let words = data
+        .iter()
+        .filter(|byte| **byte == b'z' || (foldspaces && **byte == b'y'))
+        .count();
+    // The decode appends four digits of its own, so a partial group is flushed
+    // as a whole one. Saturating so a 32-bit target reports a rejectable size.
+    digits.div_ceil(5).saturating_add(words).saturating_mul(4)
 }
 
 /// Which bytes `a85decode` skips rather than decoding.
@@ -1186,8 +1256,7 @@ pub(super) fn decode_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Co
 /// The same coercion with `expected` naming the accepted types, which
 /// `binascii`'s own functions word differently from `base64`'s.
 pub(super) fn decode_input_described<'a>(value: &'a Value, vm: &'a VM<'_>, expected: &str) -> RunResult<Cow<'a, [u8]>> {
-    if value.is_str(vm.heap) {
-        let text = value.to_str(vm)?;
+    if let Some(text) = value.as_str(vm) {
         if text.is_ascii() {
             Ok(Cow::Borrowed(text.as_bytes()))
         } else {
@@ -1262,7 +1331,7 @@ fn assert_len_bytes(bytes: &[u8], expected: usize) -> RunResult<()> {
 fn assertion_error(value: &Value, vm: &mut VM<'_>) -> RunResult<RunError> {
     let repr = value.py_repr(vm)?;
     defer_drop!(repr, vm);
-    let message = repr.to_str(vm)?.to_owned();
+    let message = repr.as_str(vm).expect("py_repr returns str").to_owned();
     Ok(SimpleException::new_msg(ExcType::AssertionError, message).into())
 }
 

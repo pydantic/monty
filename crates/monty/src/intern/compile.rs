@@ -5,7 +5,10 @@ use std::sync::Arc;
 use ahash::AHashMap;
 use num_bigint::BigInt;
 
-use super::{BytesId, InternedString, Interns, LongIntId, SOURCE_ID_BASE, StaticStrings, StringId, next_string_id};
+use super::{
+    BytesId, FILE_SOURCE_ID_BASE, FileSource, InternedString, Interns, LongIntId, SOURCE_ID_BASE, StaticStrings,
+    StringId, next_string_id,
+};
 use crate::{function::Function, hash::WithHash};
 
 /// Compilation tables with final IDs assigned before execution.
@@ -27,6 +30,7 @@ struct PendingInterns {
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Function>,
     sources: Vec<Arc<str>>,
+    file_sources: Vec<FileSource>,
 }
 
 impl<'i> CompileInterns<'i> {
@@ -71,6 +75,9 @@ impl<'i> CompileInterns<'i> {
             }
             for source in pending.sources.drain(..) {
                 self.base.eval_sources.push(source);
+            }
+            for file in pending.file_sources.drain(..) {
+                self.base.file_sources.push(file);
             }
         }
     }
@@ -158,6 +165,24 @@ impl<'i> CompileInterns<'i> {
         }
     }
 
+    /// Borrows a committed or pending bytes literal for diagnostics.
+    pub(crate) fn get_bytes(&self, id: BytesId) -> &[u8] {
+        let base = self.base.bytes.len();
+        match &self.pending {
+            Some(pending) if id.index() >= base => pending.bytes[id.index() - base].value(),
+            _ => self.base.get_bytes(id),
+        }
+    }
+
+    /// Borrows a committed or pending big integer literal for diagnostics.
+    pub(crate) fn get_long_int(&self, id: LongIntId) -> &BigInt {
+        let base = self.base.long_ints.len();
+        match &self.pending {
+            Some(pending) if id.index() >= base => pending.long_ints[id.index() - base].value(),
+            _ => self.base.get_long_int(id),
+        }
+    }
+
     /// Finds a name already present in either table.
     pub(crate) fn get_string_id_by_name(&self, text: &str) -> Option<StringId> {
         if text.is_empty() {
@@ -182,6 +207,20 @@ impl<'i> CompileInterns<'i> {
             pending.sources.push(source);
         } else {
             self.base.eval_sources.push(source);
+        }
+        id
+    }
+
+    /// Records an imported file's source; tracebacks display `path` and its source lines.
+    pub(crate) fn add_file_source(&mut self, path: Arc<str>, source: Arc<str>) -> StringId {
+        let pending_len = self.pending.as_ref().map_or(0, |pending| pending.file_sources.len());
+        let index = FILE_SOURCE_ID_BASE + self.base.file_sources.len() + pending_len;
+        let id = StringId(index.try_into().expect("source ID overflow"));
+        let file = FileSource { path, source };
+        if let Some(pending) = &mut self.pending {
+            pending.file_sources.push(file);
+        } else {
+            self.base.file_sources.push(file);
         }
         id
     }

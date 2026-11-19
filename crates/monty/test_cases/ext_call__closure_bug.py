@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # BUG: External calls in closures cannot access captured variables
 # When an external call is inside a closure, it fails to access free variables
 # Error: "cannot access free variable 'x' where it is not associated with a value"

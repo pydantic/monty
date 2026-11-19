@@ -26,7 +26,7 @@ use crate::{
     },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
-    types::{Dict, LazyHeapSet, PyTrait, Type, list::repr_check_time, tuple::allocate_tuple},
+    types::{Dict, LazyHeapSet, PyTrait, Type, TypeRef, list::repr_should_truncate, tuple::allocate_tuple},
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -77,7 +77,7 @@ impl Partial {
         defer_drop_mut!(keywords, vm);
 
         let func = positional.remove(0);
-        if !func.is_callable(vm.heap) {
+        if !func.is_callable(vm) {
             func.drop_with(vm);
             return Err(ExcType::partial_not_callable());
         }
@@ -230,7 +230,7 @@ fn merge_keywords(bound: &mut Vec<(Value, Value)>, keywords: impl Iterator<Item 
         }
         let position = match &index {
             Some(index) => name
-                .to_str_heap(vm.heap, vm.interns)
+                .try_to_str_heap(vm.heap, vm.interns)
                 .ok()
                 .and_then(|name| index.get(name).copied()),
             None => keyword_index(bound, &name, vm),
@@ -241,7 +241,7 @@ fn merge_keywords(bound: &mut Vec<(Value, Value)>, keywords: impl Iterator<Item 
             old_value.drop_with(vm);
         } else {
             if let Some(index) = &mut index
-                && let Ok(name) = name.to_str_heap(vm.heap, vm.interns)
+                && let Ok(name) = name.try_to_str_heap(vm.heap, vm.interns)
             {
                 index.insert(name.to_owned(), bound.len());
             }
@@ -255,10 +255,12 @@ fn merge_keywords(bound: &mut Vec<(Value, Value)>, keywords: impl Iterator<Item 
 /// A non-`str` name never matches; the binder rejects it when the merged
 /// arguments reach the wrapped callable.
 fn keyword_index(bound: &[(Value, Value)], name: &Value, vm: &VM<'_>) -> Option<usize> {
-    let name = name.to_str_heap(vm.heap, vm.interns).ok()?;
-    bound
-        .iter()
-        .position(|(bound, _)| bound.to_str_heap(vm.heap, vm.interns).is_ok_and(|bound| bound == name))
+    let name = name.as_str_heap(vm.heap, vm.interns)?;
+    bound.iter().position(|(bound, _)| {
+        bound
+            .as_str_heap(vm.heap, vm.interns)
+            .is_some_and(|bound| bound == name)
+    })
 }
 
 /// Maps each bound keyword name to its position, for [`merge_keywords`].
@@ -270,7 +272,7 @@ fn keyword_index_map(bound: &[(Value, Value)], vm: &VM<'_>) -> AHashMap<String, 
     bound
         .iter()
         .enumerate()
-        .filter_map(|(position, (name, _))| Some((name.to_str_heap(vm.heap, vm.interns).ok()?.to_owned(), position)))
+        .filter_map(|(position, (name, _))| Some((name.as_str_heap(vm.heap, vm.interns)?.to_owned(), position)))
         .collect()
 }
 
@@ -332,8 +334,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
         vm.call_function(func, args)
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::Partial
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::Partial.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
@@ -371,7 +373,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
         let mut item = 0;
         'items: {
             for index in 0..self.get(vm.heap).args.len() {
-                if repr_check_time(item, vm) {
+                if repr_should_truncate(item, vm)? {
                     f.write_str(", ...[timeout]")?;
                     break 'items;
                 }
@@ -383,7 +385,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
             }
 
             for index in 0..self.get(vm.heap).keywords.len() {
-                if repr_check_time(item, vm) {
+                if repr_should_truncate(item, vm)? {
                     f.write_str(", ...[timeout]")?;
                     break 'items;
                 }
@@ -395,7 +397,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
                 // CPython writes the name unquoted, as keyword syntax rather than
                 // as a dict key. The `repr` fallback is for a non-`str` name, which
                 // Monty rejects at the `**` unpack before it can reach a partial.
-                if let Ok(name) = name.to_str_heap(vm.heap, vm.interns) {
+                if let Ok(name) = name.try_to_str_heap(vm.heap, vm.interns) {
                     write!(f, ", {name}=")?;
                 } else {
                     f.write_str(", ")?;
@@ -484,7 +486,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Partial> {
         let copied = copied?;
         // CPython's `partial.__setstate__` rejects a non-callable too, which is
         // reachable through a `__deepcopy__` that returns something else.
-        if !copied.is_callable(vm.heap) {
+        if !copied.is_callable(vm) {
             copied.drop_with(vm);
             return Err(ExcType::partial_not_callable());
         }
@@ -529,7 +531,7 @@ fn deep_copy_args<'h>(
         let copied = deep_copy(&arg, memo, vm);
         arg.drop_with(vm);
         let copied = copied?;
-        let HeapReadOutput::Partial(mut dest) = vm.heap.read(copy_id) else {
+        let HeapReadOutput::Partial(dest) = vm.heap.read(copy_id) else {
             unreachable!("copy was allocated as a partial")
         };
         dest.get_mut(vm.heap).args.push(copied);
@@ -556,10 +558,46 @@ fn deep_copy_keywords<'h>(
         let (name, value) = &source.get(vm.heap).keywords[index];
         let (name, value) = (name.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap));
         let pair = deep_copy_pair(name, value, memo, vm)?;
-        let HeapReadOutput::Partial(mut dest) = vm.heap.read(copy_id) else {
+        let HeapReadOutput::Partial(dest) = vm.heap.read(copy_id) else {
             unreachable!("copy was allocated as a partial")
         };
         dest.get_mut(vm.heap).keywords.push(pair);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use monty_types::{PrintWriter, ResourceTracker};
+
+    use super::*;
+    use crate::{
+        heap::{Heap, HeapReader},
+        run::{Program, SessionTables},
+        types::str::allocate_string,
+    };
+
+    #[test]
+    fn keyword_indexes_ignore_non_string_names_until_binding() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            let bound = vec![
+                (Value::Int(1), Value::Int(10)),
+                (allocate_string("key", vm.heap), Value::Int(20)),
+            ];
+            defer_drop!(bound, vm);
+            let key = allocate_string("key", vm.heap);
+            defer_drop!(key, vm);
+
+            assert_eq!(keyword_index(bound, key, vm), Some(1));
+            assert_eq!(keyword_index(bound, &Value::Int(1), vm), None);
+            let index = keyword_index_map(bound, vm);
+            assert_eq!(index.len(), 1);
+            assert_eq!(index.get("key"), Some(&1));
+        });
+    }
 }

@@ -8,24 +8,22 @@ import re
 
 # Compile a pattern and run search — both pattern and match stay alive
 p = re.compile(r'(\w+)')
-m = p.search('hello world')
+m = p.search('hello_world_token extra')
 assert m is not None
 group_str = m.group(0)
-assert group_str == 'hello'
+assert group_str == 'hello_world_token'
 
 # Run fullmatch — exercises the compiled_fullmatch regex path
-m2 = p.fullmatch('hello')
+m2 = p.fullmatch('hello_world_token')
 assert m2 is not None
 full_str = m2.group(0)
-assert full_str == 'hello'
+assert full_str == 'hello_world_token'
 
 # findall returns a list — keep individual elements in variables
 # so strict matching passes (all heap objects must be reachable).
-# Use multi-char tokens so each result is heap-allocated; single-ASCII results
-# would be interned (see allocate_string), and interned values don't appear in
-# the ref-counts map.
-results = p.findall('aa bb cc')
-assert results == ['aa', 'bb', 'cc']
+# Use tokens longer than inline capacity so each result is heap-allocated.
+results = p.findall('aaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbb cccccccccccccccc')
+assert results == ['aaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbb', 'cccccccccccccccc']
 r0 = results[0]
 r1 = results[1]
 r2 = results[2]
@@ -35,7 +33,7 @@ r2 = results[2]
 # body coercions (resolve_pattern / extract_count / subject_str) must drop
 # their peers on each failure path.
 # (Concatenation defeats literal interning, so subject is a real heap string.)
-subject = 'hello' + ' world'
+subject = 'hello' + ' world of strings'
 
 # Non-string pattern: binding succeeds, pattern coercion fails in the body —
 # the subject is dropped by its defer_drop guard
@@ -74,7 +72,7 @@ assert m3 is not None
 
 # Negative count returns the subject: subject gains a reference from the result
 sub_result = re.sub('h', 'X', subject, -1)
-assert sub_result == 'hello world'
+assert sub_result == 'hello world of strings'
 
 # p: 1, m: 1, group_str: 1, m2: 1, full_str: 1
 # results: 1, r0: 2 (var + list), r1: 2 (var + list), r2: 2 (var + list + final expr)

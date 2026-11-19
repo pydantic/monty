@@ -34,7 +34,7 @@ pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let iterators: Vec<Value> = Vec::with_capacity(iterables.len());
     defer_drop_mut!(iterators, vm);
     for iterable in iterables.drain(..) {
-        iterators.push(iterable.into_py_iter(vm)?);
+        iterators.push(iterable.into_py_iter(vm)?.require_synchronous(vm)?);
     }
     let mut iterators = iterators.iter().map(|iter| iter.read(vm)).collect::<Vec<_>>();
 

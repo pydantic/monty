@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     bytecode::VM,
-    heap::{HeapId, HeapRead},
+    heap::{HeapId, HeapReadMut},
     types::itertools::{
         ItertoolsIter,
         combinatoric::{Phase, gather, pool_child_ids, pool_dec_ref_ids},
@@ -93,7 +93,7 @@ impl Permutations {
 }
 
 /// Steps the indices and gathers the pool items the first `r` select.
-pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) -> Option<Value> {
+pub(super) fn next<'h>(iter: &HeapReadMut<'h, ItertoolsIter>, vm: &mut VM<'h>) -> Option<Value> {
     let ItertoolsIter::Permutations(permutations) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::Permutations")
     };

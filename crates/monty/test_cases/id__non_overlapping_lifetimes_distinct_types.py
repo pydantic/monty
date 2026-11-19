@@ -1,4 +1,6 @@
-# xfail=cpython
+# /// monty
+# xfail = ['cpython']
+# ///
 # === Heap types may have the same id if lifetimes do not overlap ===
 # See https://docs.python.org/3/library/functions.html#id
 # for Cpython it happens to be the case that for different types they end

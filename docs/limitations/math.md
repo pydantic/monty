@@ -22,8 +22,9 @@ below.
 
 ## Behavioural notes
 
-- Real-number arguments accept floats, integers of any size, and booleans, but do not call user-defined `__float__` or
-    `__index__` methods.
+- Except for `floor` and `ceil`, real-number arguments do not call user-defined `__float__` or `__index__` methods.
+- User `__floor__`, `__ceil__` and `__trunc__` methods cannot suspend on external or OS calls;
+    see [classes.md](classes.md).
 - `math.factorial(n)` and `math.perm(n)` accept `n` up to `2**63 - 1` everywhere and
     report that limit in their `OverflowError`. CPython's limit is C `long`, so on
     Windows it is `2**31 - 1` and the message says `should not exceed 2147483647`.

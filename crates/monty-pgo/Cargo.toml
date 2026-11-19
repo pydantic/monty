@@ -1,0 +1,17 @@
+[package]
+name = "monty-pgo"
+version = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+description = "Subprocess workload for training the Monty runtime's PGO profiles"
+publish = false
+
+[dependencies]
+monty-pool = { workspace = true }
+monty-types = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

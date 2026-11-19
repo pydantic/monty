@@ -9,13 +9,13 @@ use monty_proto::{
     BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameReader, WireArena, WireFunctionCall, WireIndexes, WireNamedTuple,
     WireNodePairs,
     budgeted_prost::encoding,
-    decode_budget_remaining, decode_frame, pb,
+    decode_budget_remaining, decode_frame, decode_frame_with_budget, pb,
     test_util::{push_reserved, reserve_with_overhead},
     with_decode_budget,
 };
 use monty_types::{
-    MontyUuid,
-    unstable::{ClassTypeNode, MontyNode, NodeId},
+    ExcType, MontyUuid,
+    unstable::{ClassEq, ClassHash, ClassTypeNode, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
 use prost::{
@@ -472,6 +472,8 @@ fn value_allocations_are_measured_independently() {
         host_defined: false,
         is_dataclass: false,
         attrs: vec![(NodeId(0), NodeId(1))],
+        eq: ClassEq::Fields(vec!["x".to_owned()]),
+        hash: ClassHash::Fields(vec!["x".to_owned()]),
     };
     let values = [
         MontyNode::None,
@@ -593,6 +595,26 @@ fn invalid_value_diagnostics_have_bounded_overhead() {
     });
     assert!(allocations.bytes_total < (name_len + 2048) as u64, "{allocations:?}");
     assert_snapshot!(error.unwrap(), @"failed to decode Protobuf message: invalid wire value (error message exceeds 512 bytes)");
+}
+
+/// An unknown exception name's fallback message is built within the charge made for it.
+#[test]
+fn unknown_exception_fallback_is_charged() {
+    let name = "x".repeat(1024 * 1024);
+    let payload = pb::Exception {
+        exc_type: name.clone(),
+        arg: Some(String::new()),
+    }
+    .encode_to_vec();
+    let node = repeated_field(22, WireType::LengthDelimited, &payload, 1);
+    let wire = repeated_field(2, WireType::LengthDelimited, &node, 1);
+    let (decoded, charged) = measured_decode::<WireArena>(&wire);
+    let expected = MontyNode::Exception {
+        exc_type: ExcType::Exception,
+        arg: Some(format!("{name}: ")),
+    };
+    assert_eq!(decoded.0, vec![expected]);
+    with_decode_budget(charged - 1, || assert!(WireArena::decode(wire.as_slice()).is_err()));
 }
 
 /// Allocation attempts outside framing cannot consume a stale or implicit budget.
@@ -879,4 +901,13 @@ fn container_ids_are_charged() {
 #[test]
 fn named_tuple_field_names_are_charged() {
     assert_snapshot!(decode(&nearly_full_arena(Some(named_tuple_node(8)))).unwrap_err(), @"failed to decode Protobuf message: MontyNode.kind: frame exceeds decode memory budget");
+}
+
+/// A rejected custom-budget frame leaves the default budget intact.
+#[test]
+fn caller_can_lower_the_frame_budget_without_affecting_the_next_decode() {
+    let wire = repeated_field(1, WireType::LengthDelimited, &[], 1);
+    assert!(decode_frame_with_budget::<pb::Print>(&wire, 0).is_err());
+    assert!(decode_frame::<pb::Print>(&wire).is_ok());
+    assert_eq!(decode_budget_remaining(), None);
 }

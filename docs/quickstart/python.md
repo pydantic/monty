@@ -12,7 +12,7 @@ Or with pip:
 pip install pydantic-monty
 ```
 
-Requires Python 3.10 or newer.
+Requires Python 3.11 or newer.
 The download is about 4.5 MB and there is nothing else to run: no daemon, no image, no API key.
 
 `pydantic-monty` is a metapackage with no code of its own; it pins two distributions:
@@ -89,12 +89,31 @@ it.
 
 A name present in both is served by the eager `inputs` binding.
 
+`external_modules` on `checkout()` maps import names to [`ExternalModule`][pydantic_monty.ExternalModule] values
+containing the module's public items and an optional type stub, for every feed of the session:
+
+```python
+from pydantic_monty import ExternalModule, Monty
+
+modules = {'tools': ExternalModule({'add': lambda a, b: a + b})}
+code = 'import tools\ntools.add(1, 2)'
+
+with Monty() as pool:
+    with pool.checkout(external_modules=modules) as session:
+        print(session.feed_run(code))
+        #> 3
+```
+
+See [importing host modules](../host-functions.md#importing-host-modules).
+
 ### Which values cross the boundary
 
-`None`, `bool`, `int` (arbitrary precision), `float`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`, `frozenset`,
-`Ellipsis`, `NotImplemented`, `datetime.date`, `datetime.datetime`, `datetime.timedelta`, `datetime.timezone`, named
-tuples, exception instances, and the type objects of the data types Monty models (`int`, `str`, `datetime.date`, ...)
+`None`, `bool`, `int` (arbitrary precision), `float`, `complex`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`, `frozenset`,
+`Ellipsis`, `NotImplemented`, `datetime.date`, `datetime.datetime`, `datetime.timedelta`, `datetime.timezone`,
+`decimal.Decimal` (exactly, as its string form), named tuples, exception instances, and the type objects of the data types Monty models (`int`, `str`, `datetime.date`, ...)
 all convert in both directions.
+Named tuples come out as [`MontyNamedTuple`][pydantic_monty.MontyNamedTuple], one tuple class shared by every
+sandbox named-tuple type, with the type name in `_type_name`.
 Builtin functions and other type objects come out as a read-only [`MontyStdTypeProxy`][pydantic_monty.MontyStdTypeProxy]
 carrying the name; see [host-value limitations](../limitations/host-values.md#lossy-outputs).
 Class instances differ in each direction: a host instance enters only wrapped in [`ClassInstance`][pydantic_monty.ClassInstance], and a sandbox-defined
@@ -111,18 +130,18 @@ are always POSIX.
 Anything else is rejected with [`MontyConversionError`][pydantic_monty.MontyConversionError] before it reaches the sandbox:
 
 ```python
-from decimal import Decimal
+from fractions import Fraction
 
 from pydantic_monty import Monty, MontyConversionError
 
 with Monty() as pool:
     with pool.checkout() as session:
         try:
-            session.feed_run('v', inputs={'v': Decimal('1.5')})
+            session.feed_run('v', inputs={'v': Fraction(3, 2)})
         except MontyConversionError as exc:
             print(exc)
             """
-            Cannot convert decimal.Decimal to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)
+            Cannot convert fractions.Fraction to Monty value — wrap class instances in pydantic_monty.ClassInstance(...)
             """
 ```
 
@@ -408,7 +427,7 @@ pool = Monty(
     max_processes=None,  # cap on live workers; defaults to the CPU count
     checkout_timeout=None,  # seconds `checkout()` waits for a free worker
     request_timeout=None,  # hard per-turn deadline; kills the worker
-    max_checkouts_per_worker=None,  # recycle a worker after N sessions
+    max_checkouts_per_worker=1000,  # recycle a worker after N sessions; None never recycles
 )
 ```
 

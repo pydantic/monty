@@ -42,6 +42,9 @@ pub enum MountError {
         dst: String,
     },
 
+    /// Malformed filesystem operation arguments, reported as `ValueError`.
+    InvalidArgument(String),
+
     /// An I/O error from the host filesystem.
     Io(io::Error, String),
 
@@ -91,6 +94,10 @@ pub enum MountError {
     /// An operation would exceed the mount's aggregate memory budget.
     /// The configured byte limit that was exceeded.
     MemoryUsageLimitExceeded(u64),
+
+    /// A directory scan examined more entries than its cap (the payload),
+    /// which a glob pattern can multiply far beyond the size of the tree.
+    ScanLimitExceeded(u64),
 }
 
 impl MountError {
@@ -110,6 +117,7 @@ impl MountError {
             // argument, not a denied path, and answering `PermissionError`
             // implied the sandbox had refused something it could have allowed.
             Self::EmbeddedNullByte(message) => MontyException::new(ExcType::ValueError, Some(message.to_owned())),
+            Self::InvalidArgument(message) => MontyException::new(ExcType::ValueError, Some(message)),
             Self::ReadOnly(path) => MontyException::new(
                 ExcType::PermissionError,
                 Some(format!("[Errno 30] Read-only file system: {}", StringRepr(&path))),
@@ -199,6 +207,12 @@ impl MountError {
                     format_bytes_pretty(limit)
                 )),
             ),
+            // Not an `OSError`: glob swallows those, and the caller must learn
+            // that the result was cut short rather than see an empty match.
+            Self::ScanLimitExceeded(limit) => MontyException::new(
+                ExcType::RuntimeError,
+                Some(format!("directory scan examined more than {limit} entries")),
+            ),
         }
     }
 
@@ -225,6 +239,7 @@ impl fmt::Display for MountError {
             Self::InvalidUtf8 { start, first_byte, .. } => {
                 write!(f, "invalid UTF-8 byte 0x{first_byte:02x} at position {start}")
             }
+            Self::InvalidArgument(message) => write!(f, "{message}"),
             Self::InvalidMount(msg) => write!(f, "invalid mount: {msg}"),
             Self::OverlappingMounts {
                 virtual_path,
@@ -247,6 +262,7 @@ impl fmt::Display for MountError {
                     format_bytes_pretty(*limit)
                 )
             }
+            Self::ScanLimitExceeded(limit) => write!(f, "directory scan examined more than {limit} entries"),
         }
     }
 }

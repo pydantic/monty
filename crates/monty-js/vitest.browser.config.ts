@@ -1,6 +1,8 @@
+import { fileURLToPath } from 'node:url'
+import { playwright } from '@vitest/browser-playwright'
 import { defineConfig } from 'vitest/config'
 
-const nodeBuiltinsStub = new URL('./test-support/node-builtins-stub.ts', import.meta.url).pathname
+const nodeBuiltinsStub = fileURLToPath(new URL('./test-support/node-builtins-stub.ts', import.meta.url))
 
 export default defineConfig({
   optimizeDeps: {
@@ -9,7 +11,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@pydantic/monty/node': new URL('./test-support/node-stubs.ts', import.meta.url).pathname,
+      '@pydantic/monty/node': fileURLToPath(new URL('./test-support/node-stubs.ts', import.meta.url)),
     },
   },
   plugins: [
@@ -35,7 +37,7 @@ export default defineConfig({
     hookTimeout: 60_000,
     browser: {
       enabled: true,
-      provider: 'playwright',
+      provider: playwright(),
       headless: true,
       instances: [{ browser: 'chromium' }],
     },

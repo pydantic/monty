@@ -1,47 +1,30 @@
 use std::fmt::Write;
 
 use monty_types::MontyUuid;
+use smallvec::smallvec;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
+use super::{
+    Dict, LazyHeapSet, OwnedTypeRef, PyTrait, Type, TypeRef,
+    instance::{BoundMethod, is_method_value},
+    tuple::allocate_tuple,
+};
 use crate::{
+    annotations,
     args::ArgValues,
     boundary_uuid::create_uuid,
+    builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapRead,
-        heap_read_ref_as_field_mut,
+        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut,
+        HeapReader, heap_read_ref_as_field_mut,
     },
-    types::{Union, str::allocate_string},
+    intern::{Interns, StringId},
+    types::{Union, str::allocate_string, r#type::bind_init_subclass},
     value::{EitherStr, Value},
 };
-
-/// The `@dataclass(...)` options Monty implements.
-///
-/// Small and `Copy`, so it doubles as the payload of the *configured decorator*
-/// (`dataclass(frozen=True)`) without a heap allocation. Every other CPython
-/// flag is rejected at the call, so each is either stored here or known to hold
-/// its default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub(crate) struct DataclassOptions {
-    /// Synthesize a field-wise `__eq__` (CPython's `eq`, default `True`).
-    pub eq: bool,
-    /// Reject attribute assignment, and hash by field values when `eq` is also
-    /// set (CPython's `frozen`, default `False`).
-    pub frozen: bool,
-}
-
-impl Default for DataclassOptions {
-    /// CPython's defaults: `eq=True, frozen=False`.
-    fn default() -> Self {
-        Self {
-            eq: true,
-            frozen: false,
-        }
-    }
-}
 
 /// A user-defined class object created by a `class Foo: ...` statement.
 ///
@@ -63,11 +46,14 @@ pub(crate) struct Class {
     name: EitherStr,
     /// Members: method name / class-variable name -> value.
     namespace: Dict,
-    /// The `@dataclass(...)` options this class was decorated with, left at
-    /// CPython's defaults for a class that was not. Stands in for the dunders
-    /// CPython generates and Monty cannot yet install: baked in at decoration
-    /// so `__dataclass_params__` stays a report, not a rewritable control.
-    options: DataclassOptions,
+    /// Direct bases in declaration order (`__bases__`), owning their class
+    /// references. Empty for a class written before inheritance, read as `(object,)`.
+    #[serde(default)]
+    bases: Box<[OwnedTypeRef]>,
+    /// The C3 linearisation after this class (`__mro__[1:]`), ending at `object`.
+    /// Borrowed: each base owns its own ancestors and `__bases__` never changes.
+    #[serde(default)]
+    mro: Box<[TypeRef]>,
     /// Boundary identity, generated lazily the first time the class (or one of
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
@@ -75,16 +61,26 @@ pub(crate) struct Class {
 }
 
 impl Class {
-    /// Creates a new class object from its name and member namespace.
-    ///
-    /// Dataclass options start at their defaults; `@dataclass` sets them with
-    /// [`HeapRead::set_dataclass_options`] once it has built the class.
+    /// Creates a new class object with no explicit bases, so `object` is its only ancestor.
     #[must_use]
     pub fn new(name: EitherStr, namespace: Dict) -> Self {
+        Self::with_bases(name, namespace, Box::default(), Box::default())
+    }
+
+    /// Creates a class with `bases` (whose class references it takes) and the
+    /// C3 linearisation `mro` of those bases, which must end at `object`.
+    #[must_use]
+    pub(crate) fn with_bases(
+        name: EitherStr,
+        namespace: Dict,
+        bases: Box<[OwnedTypeRef]>,
+        mro: Box<[TypeRef]>,
+    ) -> Self {
         Self {
             name,
             namespace,
-            options: DataclassOptions::default(),
+            bases,
+            mro,
             uuid: None,
         }
     }
@@ -102,16 +98,6 @@ impl Class {
         self.uuid
     }
 
-    /// The `@dataclass(...)` options in force for this class.
-    ///
-    /// Meaningful only once [`dataclass_options`](crate::modules::dataclasses::dataclass_options)
-    /// has confirmed the class is a dataclass — a plain class reports the
-    /// defaults it was never decorated with.
-    #[must_use]
-    pub fn dataclass_options(&self) -> DataclassOptions {
-        self.options
-    }
-
     /// Returns the class name (interned or heap-owned).
     #[must_use]
     pub fn name(&self) -> &EitherStr {
@@ -123,10 +109,40 @@ impl Class {
     pub fn namespace(&self) -> &Dict {
         &self.namespace
     }
+
+    /// The direct bases (`__bases__`); empty means `(object,)`.
+    #[must_use]
+    pub(crate) fn bases(&self) -> &[OwnedTypeRef] {
+        &self.bases
+    }
+
+    /// Looks `name` up in this class's namespace, then in each ancestor class's
+    /// in MRO order. Native ancestors carry no namespace, so they are skipped.
+    #[must_use]
+    pub(crate) fn lookup<'h>(&'h self, name: &str, heap: &'h Heap, interns: &Interns) -> Option<&'h Value> {
+        self.namespace.get_by_str(name, heap, interns).or_else(|| {
+            self.mro.iter().find_map(|ancestor| match ancestor {
+                TypeRef::Class(id) => match heap.get(*id) {
+                    HeapData::Class(class) => class.namespace.get_by_str(name, heap, interns),
+                    _ => None,
+                },
+                TypeRef::Native(_) => None,
+            })
+        })
+    }
+
+    /// The ancestors after this class in method resolution order, ending at `object`.
+    #[must_use]
+    pub(crate) fn ancestors(&self) -> &[TypeRef] {
+        /// The MRO tail of a class with no explicit bases.
+        const OBJECT_ONLY: &[TypeRef] = &[TypeRef::Native(Type::Object)];
+        if self.mro.is_empty() { OBJECT_ONLY } else { &self.mro }
+    }
 }
 
-impl<'h> HeapRead<'h, Class> {
-    fn namespace_mut(&mut self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
+impl<'h> HeapReadMut<'h, Class> {
+    /// Borrows the inline namespace for reader-gated attribute mutation.
+    fn namespace_mut(&self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
         heap_read_ref_as_field_mut!(self, Class, namespace)
     }
 
@@ -135,18 +151,44 @@ impl<'h> HeapRead<'h, Class> {
     ///
     /// Existing instances observe the change immediately: instance attribute reads
     /// fall through to this namespace.
-    pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.namespace_mut().set(name, value, vm)
+    pub fn set_attr(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let guarded = name
+            .as_either_str(vm.heap)
+            .map(|name| name.as_str(vm.interns).to_owned());
+        match guarded.as_deref() {
+            Some("__bases__" | "__class__") => {
+                [name, value].drop_with(vm);
+                Err(ExcType::type_error("type controls __class__ and __bases__"))
+            }
+            Some("__mro__") => {
+                [name, value].drop_with(vm);
+                Err(ExcType::attribute_error_not_writable("__mro__", "type"))
+            }
+            _ => self.namespace_mut().set(name, value, vm),
+        }
     }
 
-    /// Records what `@dataclass(...)` decorated this class with.
+    /// [`set_attr`](Self::set_attr) for a dump upgrade, which has no VM and
+    /// cannot fail: see `HeapRead::<Dict>::set_interned_str`.
+    pub(crate) fn set_interned_attr(
+        &self,
+        name: StringId,
+        value: Value,
+        heap: &mut HeapReader<'h>,
+        interns: &Interns,
+    ) -> Option<Value> {
+        self.namespace_mut().set_interned_str(name, value, heap, interns)
+    }
+
+    /// Removes a class attribute, returning it for the caller to drop.
     ///
-    /// Called once per decoration, so re-decorating replaces the options as it
-    /// replaces the fields. Assigning to `__dataclass_params__` afterwards does
-    /// not reach here, which is what makes that object a report rather than a
-    /// control.
-    pub fn set_dataclass_options(&mut self, options: DataclassOptions, vm: &mut VM<'h>) {
-        self.get_mut(vm.heap).options = options;
+    /// Only `@dataclass` needs this, to clear the `field()` object a class body
+    /// bound for a factory-only field — CPython's decorator `delattr`s it.
+    pub fn pop_attr(&self, name: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(self.namespace_mut().pop(name, vm)?.map(|(key, value)| {
+            key.drop_with(vm);
+            value
+        }))
     }
 }
 
@@ -156,9 +198,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         vm.instantiate_class(self.id(), args)
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
         // The type of a class object is `type` (matching `type(Foo) is type`).
-        Type::Type
+        Type::Type.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -182,8 +224,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        if name.as_str(vm.interns) == "__annotations__" {
+            return annotations::set_class_annotations(self.id(), value, vm);
+        }
         let mut value_guard = DropGuard::new(value, vm);
-        let name = attribute_name_value(name, value_guard.ctx());
+        let name = name.as_value(value_guard.ctx().heap);
         let (value, vm) = value_guard.into_parts();
         let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);
@@ -206,59 +251,130 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let attr_str = attr.as_str(vm.interns);
-        // `Foo.__name__` returns the class name — before the namespace lookup
-        // because in CPython `type.__name__` is a metaclass data descriptor that
-        // shadows a same-named class-dict member (`class Foo: __name__ = 'bar'`
-        // still reads `'Foo'`; only instances see the member).
-        if attr_str == "__name__" {
-            let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
-            return Ok(Some(CallResult::Value(allocate_string(name, vm.heap))));
+        // PEP 649: computed from the class's own `__annotate__` on first access,
+        // which may run Python code, so it cannot go through `class_getattr`.
+        if attr.as_str(vm.interns) == "__annotations__" {
+            return annotations::class_annotations(self.id(), vm).map(Some);
         }
-        // Otherwise look up a member (method or class variable) in the namespace.
-        match self.get(vm.heap).namespace.get_by_str(attr_str, vm.heap, vm.interns) {
-            Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),
+        match class_getattr(self.id(), attr, vm)? {
+            Some(value) => Ok(Some(CallResult::Value(value))),
             None => Err(ExcType::attribute_error_type(
                 self.get(vm.heap).name.as_str(vm.interns),
-                attr_str,
+                attr.as_str(vm.interns),
             )),
         }
     }
 
+    /// `Foo.method(args)` calls the raw member with the given args: no `self`
+    /// is inserted, the caller passes the instance explicitly. `__init_subclass__`
+    /// is an implicit classmethod, which `class_getattr` binds to the class.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let attr_str = attr.as_str(vm.interns);
-        // `__name__` is a synthesized string, not a namespace member (see
-        // `py_getattr`), so calling it goes through the normal callable
-        // dispatch and raises CPython's `TypeError: 'str' object is not
-        // callable` rather than a spurious `AttributeError`.
-        if attr_str == "__name__" {
-            let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
-            let name_val = allocate_string(name, vm.heap);
-            defer_drop!(name_val, vm);
-            return vm.call_function(name_val, args);
+        let class_id = self.id();
+        if attr.as_str(vm.interns) == "__annotations__" {
+            let annotations =
+                annotations::class_annotations(class_id, vm).and_then(|call| call.require_synchronous(vm));
+            let annotations = match annotations {
+                Ok(annotations) => annotations,
+                Err(err) => {
+                    args.drop_with(vm);
+                    return Err(err);
+                }
+            };
+            defer_drop!(annotations, vm);
+            return vm.call_function(annotations, args);
         }
-        // `Foo.method(args)` calls the raw (unbound) member with the given args —
-        // no `self` is inserted, the caller passes the instance explicitly.
-        let member = self
-            .get(vm.heap)
+        let member = match class_getattr(class_id, attr, vm) {
+            Ok(member) => member,
+            Err(err) => {
+                args.drop_with(vm);
+                return Err(err);
+            }
+        };
+        let Some(member) = member else {
+            args.drop_with(vm);
+            return Err(ExcType::attribute_error_type(
+                self.get(vm.heap).name.as_str(vm.interns),
+                attr.as_str(vm.interns),
+            ));
+        };
+        defer_drop!(member, vm);
+        vm.call_function(member, args)
+    }
+}
+
+/// Reads an attribute of the class `class_id`, `None` when it has no such member.
+///
+/// Follows CPython's `type_getattro`: the metatype's data descriptors
+/// (`__name__`, `__bases__`, `__mro__`) shadow the class's
+/// own members, which come next in MRO order, then the members native
+/// ancestors provide (`object.__init__`), then `type`'s methods (`mro`).
+pub(crate) fn class_getattr(class_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+    let HeapData::Class(class) = vm.heap.get(class_id) else {
+        unreachable!("class_getattr takes a class")
+    };
+    let attr_str = attr.as_str(vm.interns);
+    Ok(Some(match attr_str {
+        "__name__" => allocate_string(class.name.as_str(vm.interns).to_owned(), vm.heap),
+        "__bases__" => bases_tuple(class, vm.heap),
+        "__mro__" => mro_tuple(class_id, vm.heap),
+        // Annotations are per class: an inherited `__annotate__` would describe the base.
+        "__annotate__" | "__annotate_func__" => class
             .namespace
             .get_by_str(attr_str, vm.heap, vm.interns)
-            .map(|v| v.clone_with_heap(vm.heap));
-        if let Some(member) = member {
-            defer_drop!(member, vm);
-            vm.call_function(member, args)
-        } else {
-            args.drop_with(vm);
-            Err(ExcType::attribute_error_type(
-                self.get(vm.heap).name.as_str(vm.interns),
-                attr_str,
-            ))
+            .map_or(Value::None, |value| value.clone_with_heap(vm.heap)),
+        _ => {
+            if let Some(member) = class.lookup(attr_str, vm.heap, vm.interns) {
+                let member = member.clone_with_heap(vm.heap);
+                if attr_str == "__init_subclass__" && is_method_value(&member, vm) {
+                    vm.heap.inc_ref(class_id);
+                    bind_init_subclass(Value::Ref(class_id), member, vm.heap)
+                } else {
+                    member
+                }
+            } else if let Some(native) = class.ancestors().iter().find_map(|ancestor| ancestor.native())
+                && let Some(member) = native.class_constant(attr, vm)
+            {
+                if attr_str == "__init_subclass__" {
+                    vm.heap.inc_ref(class_id);
+                    bind_init_subclass(Value::Ref(class_id), member, vm.heap)
+                } else {
+                    member
+                }
+            } else if attr_str == "mro" {
+                vm.heap.inc_ref(class_id);
+                BoundMethod::allocate(
+                    Value::Ref(class_id),
+                    Value::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
+                    vm.heap,
+                )
+            } else if attr_str == "__class__" {
+                Value::Builtin(Builtins::Type(Type::Type))
+            } else {
+                return Ok(None);
+            }
         }
-    }
+    }))
+}
+
+/// `cls.__bases__`: the declared bases, or `(object,)` for a class with none.
+fn bases_tuple(class: &Class, heap: &Heap) -> Value {
+    let items = if class.bases.is_empty() {
+        smallvec![Value::Builtin(Builtins::Type(Type::Object))]
+    } else {
+        class.bases.iter().map(|base| base.borrow().to_value(heap)).collect()
+    };
+    allocate_tuple(items, heap)
+}
+
+/// `cls.__mro__`: the class itself followed by its ancestors.
+pub(crate) fn mro_tuple(class_id: HeapId, heap: &Heap) -> Value {
+    let items = TypeRef::Class(class_id).mro(heap).map(|ty| ty.to_value(heap)).collect();
+    allocate_tuple(items, heap)
 }
 
 impl HeapItem for Class {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        stack.extend(self.bases.iter().filter_map(|base| base.class_id()));
         self.namespace.py_dec_ref_ids(stack);
     }
 }

@@ -1,13 +1,7 @@
 use std::{borrow::Cow, env, fs, path::Path, process::Command};
 
-/// Build script that sets up napi bindings and syncs package.json's version
-/// fields with the Cargo workspace version.
-///
-/// Cargo sets `CARGO_PKG_VERSION` in the environment when executing build scripts,
-/// so we use that as the single source of truth. If package.json's top-level
-/// `version` or any `@pydantic/monty-*` platform pin in `optionalDependencies`
-/// differs, we update it in place (CI's create-platform-packages fails if the
-/// pins drift from the package version).
+/// Sets up napi bindings and syncs package.json's version with the Cargo workspace.
+/// Platform dependency pins are added only when assembling release tarballs.
 fn main() {
     // Re-run when package.json changes so we can re-check the versions.
     println!("cargo:rerun-if-changed=package.json");
@@ -53,24 +47,10 @@ fn sync_package_json_version() {
     assert!(status.success(), "npm install --package-lock-only failed");
 }
 
-/// Rewrite `line` with `version` if it is a version-bearing line: the top-level
-/// `"version"` field or a `@pydantic/monty-*` platform pin in
-/// `optionalDependencies`. All other lines pass through unchanged.
-///
-/// Matching is indentation-sensitive (prettier-formatted, 2-space indent per
-/// level): exactly 2 spaces for the top-level field — so nested `version` keys
-/// don't match — and exactly 4 for the platform pins.
+/// Rewrites only the top-level version, identified by its two-space JSON indentation.
 fn sync_line<'a>(line: &'a str, version: &str) -> Cow<'a, str> {
     if line.starts_with("  \"version\"") {
         Cow::Owned(format!("  \"version\": \"{version}\","))
-    } else if let Some(name) = line
-        .strip_prefix("    \"@pydantic/monty-")
-        .and_then(|rest| rest.split('"').next())
-    {
-        // Preserve the presence/absence of the trailing comma (the last entry
-        // in optionalDependencies has none).
-        let comma = if line.ends_with(',') { "," } else { "" };
-        Cow::Owned(format!("    \"@pydantic/monty-{name}\": \"{version}\"{comma}"))
     } else {
         Cow::Borrowed(line)
     }

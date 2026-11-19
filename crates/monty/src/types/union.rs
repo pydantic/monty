@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use crate::{
-    builtins::{Builtins, BuiltinsFunctions},
+    builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -23,7 +23,10 @@ use crate::{
         HeapReadOutput,
     },
     intern::StaticStrings,
-    types::{LazyHeapSet, PyTrait, Type, generic_alias::repr_type_arg, list::repr_check_time, tuple::allocate_tuple},
+    types::{
+        LazyHeapSet, PyTrait, Type, TypeRef, generic_alias::repr_type_arg, list::repr_should_truncate,
+        tuple::allocate_tuple,
+    },
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -106,7 +109,9 @@ impl Union {
             defer_drop!(key, vm);
             let repr = key.py_repr(vm)?;
             defer_drop!(repr, vm);
-            Err(ExcType::optional_requires_single_type(repr.to_str(vm)?))
+            Err(ExcType::optional_requires_single_type(
+                repr.as_str(vm).expect("py_repr returns str"),
+            ))
         } else {
             Self::from_members(vec![key, Value::None], vm)
         }
@@ -119,7 +124,7 @@ impl Union {
     /// Deduplication is a linear scan per member, so a union built from a
     /// huge tuple is quadratic; the loop polls the time limit rather than
     /// running to completion.
-    fn from_members(members: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Value> {
+    pub(crate) fn from_members(members: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Value> {
         defer_drop!(members, vm);
         let mut guard = DropGuard::new(Vec::new(), vm);
         let (flat, vm) = guard.as_parts_mut();
@@ -209,11 +214,9 @@ fn push_unique(flat: &mut Vec<Value>, member: &Value, vm: &mut VM<'_>) -> RunRes
 fn operand_kind(value: &Value, vm: &VM<'_>) -> Option<Operand> {
     match value {
         Value::None => Some(Operand::NoneValue),
-        Value::Builtin(Builtins::Type(_) | Builtins::ExcType(_) | Builtins::Function(BuiltinsFunctions::Type)) => {
-            Some(Operand::TypeLike)
-        }
+        Value::Builtin(Builtins::Type(_)) => Some(Operand::TypeLike),
         // `typing.Any`, `typing.List` and the other forms all define `__or__`.
-        Value::Marker(marker) if marker.py_type() != Type::TextIOWrapper => Some(Operand::TypeLike),
+        Value::Marker(marker) if marker.py_type() == Type::SpecialForm => Some(Operand::TypeLike),
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Union(_) => Some(Operand::Union),
             HeapData::Class(_)
@@ -276,8 +279,8 @@ impl<'h> HeapObjectRead<'h, Union> {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::Union
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::Union.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
@@ -359,7 +362,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
         let count = args.get(vm.heap).as_slice().len();
         for index in 0..count {
             if index > 0 {
-                if repr_check_time(index, vm) {
+                if repr_should_truncate(index, vm)? {
                     f.write_str(" | ...[timeout]")?;
                     break;
                 }

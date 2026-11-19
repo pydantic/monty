@@ -45,6 +45,18 @@ export interface MontyTimeDelta {
   microseconds: number
 }
 
+/**
+ * Marker object representing a Python `decimal.Decimal`.
+ *
+ * `value` is the exact string form, `str(d)` in Python (`'1.20'`, `'1E+5'`, `'NaN'`);
+ * pass it to a JS decimal library to compute with it. Sending one into the
+ * sandbox parses `value` as `Decimal(value)` does.
+ */
+export interface MontyDecimal {
+  __monty_type__: 'Decimal'
+  value: string
+}
+
 /** Marker object representing a Python `datetime.timezone`. */
 export interface MontyTimeZone {
   __monty_type__: 'TimeZone'
@@ -118,6 +130,7 @@ export class MontyFileHandle {
 
 /** Canonicalizes the subset of Python file modes Monty supports. */
 export function canonicalFileMode(mode: string): string {
+  let update = false
   if (mode.length === 0) {
     throw new TypeError('Must have exactly one of create/read/write/append mode and at most one plus')
   }
@@ -138,7 +151,8 @@ export function canonicalFileMode(mode: string): string {
       if (text) throw new TypeError('invalid mode: text mode specified twice')
       text = true
     } else if (char === '+') {
-      throw new TypeError("update modes ('+') are not yet supported")
+      if (update) throw new TypeError("invalid mode: '+' specified twice")
+      update = true
     } else {
       throw new TypeError(`invalid mode: '${char}'`)
     }
@@ -147,7 +161,8 @@ export function canonicalFileMode(mode: string): string {
   if (action === undefined) {
     throw new TypeError('Must have exactly one of create/read/write/append mode and at most one plus')
   }
-  return `${action}${binary ? 'b' : ''}`
+  if (update && !(action === 'w' && binary)) throw new TypeError("update modes ('+') are not yet supported")
+  return `${action}${binary ? 'b' : ''}${update ? '+' : ''}`
 }
 
 /** Validates that a file position can cross the JavaScript boundary exactly. */

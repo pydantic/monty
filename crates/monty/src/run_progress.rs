@@ -15,9 +15,10 @@ use monty_types::{
 
 use crate::{
     asyncio::CallId,
-    bytecode::{FrameExit, PendingLookupEffect, VM, VMSnapshot},
+    bytecode::{FrameExit, PendingImport, PendingLookupEffect, VM, VMSnapshot},
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
+    intern::Interns,
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect},
     run::Executor,
@@ -49,6 +50,20 @@ pub enum RunProgress {
 }
 
 impl RunProgress {
+    /// The execution heap and its interns for a dump upgrade, or `None` once
+    /// execution has completed.
+    pub(crate) fn heap_and_interns(&mut self) -> Option<(&mut Heap, &mut Interns)> {
+        match self {
+            Self::FunctionCall(FunctionCall { snapshot, .. })
+            | Self::OsCall(OsCall { snapshot, .. })
+            | Self::NameLookup(NameLookup { snapshot, .. }) => {
+                Some((&mut snapshot.heap, &mut snapshot.executor.tables.interns))
+            }
+            Self::ResolveFutures(ResolveFutures { heap, executor, .. }) => Some((heap, &mut executor.tables.interns)),
+            Self::Complete(_) => None,
+        }
+    }
+
     /// Consumes the progress and returns the [`FunctionCall`] struct if this is a function call.
     #[must_use]
     pub fn into_function_call(self) -> Option<FunctionCall> {
@@ -132,27 +147,6 @@ pub struct FunctionCall {
 }
 
 impl FunctionCall {
-    /// Creates a new `FunctionCall` from its parts.
-    fn new(
-        function_name: String,
-        args: CallArgs,
-        call_id: u32,
-        object_id: Option<MontyUuid>,
-        allow_eager_await: bool,
-        position: SourceRange,
-        snapshot: Snapshot,
-    ) -> Self {
-        Self {
-            function_name,
-            args,
-            call_id,
-            object_id,
-            allow_eager_await,
-            position,
-            snapshot,
-        }
-    }
-
     /// Returns a mutable reference to the resource tracker.
     ///
     /// This allows modifying resource limits between execution phases,
@@ -179,7 +173,7 @@ impl FunctionCall {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
-        self.snapshot.run(result, print)
+        self.snapshot.run(result.into(), print)
     }
 
     /// Resumes execution by pushing an `ExternalFuture` instead of a concrete value.
@@ -529,7 +523,7 @@ pub(crate) fn resume_lookup(
     let value = match (answer, effect) {
         (LookupAnswer::Error(err), effect) => {
             effect.drop_with(vm);
-            return vm.resume_with_exception(err);
+            return vm.resume_with_exception(import_from_error(err, name, vm));
         }
         (LookupAnswer::Value(value), Some(effect)) => effect.apply(Some(value), vm),
         (LookupAnswer::Undefined, Some(effect)) => effect.apply(None, vm),
@@ -553,10 +547,31 @@ pub(crate) fn resume_lookup(
             }
             value
         }
-        (LookupAnswer::Undefined, None) => return vm.resume_with_exception(undefined_lookup_error(scope, name)),
+        (LookupAnswer::Undefined, None) => {
+            return vm.resume_with_exception(import_from_error(undefined_lookup_error(scope, name), name, vm));
+        }
     };
     vm.push(value);
     vm.run_external()
+}
+
+/// Converts missing import attributes to `ImportError` for `from` imports or
+/// `ModuleNotFoundError` for dotted modules, matching synchronous loads.
+/// Other errors and non-import lookups pass through unchanged.
+fn import_from_error(err: RunError, name: &str, vm: &VM<'_>) -> RunError {
+    let RunError::Exc(exc) = &err else {
+        return err;
+    };
+    if exc.exc.exc_type() != ExcType::AttributeError {
+        return err;
+    }
+    if let Some(module) = vm.suspended_import_from() {
+        ExcType::cannot_import_name(name, vm.interns.get_str(module), None)
+    } else if let Some(path) = vm.suspended_submodule() {
+        ExcType::module_not_found_error(vm.interns.get_str(path), None)
+    } else {
+        err
+    }
 }
 
 /// Answers every lookup exit no host will serve — the non-iterative paths —
@@ -707,7 +722,7 @@ impl ResolveFutures {
             position,
         } = self;
 
-        let vm_state = HeapReader::with(&mut heap, &mut &mut executor, |reader, executor| {
+        let vm_state = HeapReader::with(&mut heap, &mut executor, |reader, executor| {
             let mut vm = VM::restore(
                 vm_state,
                 &mut executor.tables,
@@ -891,6 +906,15 @@ pub(crate) fn resume_with_result(
     result: ExtFunctionResult,
     eager_call_id: Option<u32>,
 ) -> Result<FrameExit, RunError> {
+    // An `import` call: armed as the pending effect, or, in a dump written
+    // before file imports, named by the suspended `LoadModule`.
+    if let Some(pending) = vm.take_pending_import() {
+        return vm.resume_import(pending, result, eager_call_id);
+    }
+    if let Some(module_id) = vm.suspended_import() {
+        let pending = PendingImport::top_level(vm.interns.get_str(module_id).to_owned());
+        return vm.resume_import(pending, result, eager_call_id);
+    }
     // An eager answer and a future both register the call's future; the
     // eager one settles it in the same step.
     let future_call_id = match (&result, eager_call_id) {
@@ -934,6 +958,7 @@ pub(crate) fn resume_with_result(
         (ExtFunctionResult::NotFound(function_name), None) => {
             vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
         }
+        (ExtFunctionResult::ModuleFile(_), None) => vm.resume_with_exception(ExcType::module_file_for_non_import()),
         (ExtFunctionResult::Future(_), None) => unreachable!("a future answer always carries its call id"),
     }
 }
@@ -972,8 +997,7 @@ pub use monty_types::{ExtFunctionResult, NameLookupResult};
 pub(crate) trait ExtFunctionResultExt {
     /// The `NameError` raised when the host reports the function isn't defined.
     fn not_found_exc(function_name: &str) -> RunError {
-        let msg = format!("name '{function_name}' is not defined");
-        MontyException::new(ExcType::NameError, Some(msg)).into()
+        ExtFunctionResult::not_found_exception(function_name).into()
     }
 }
 
@@ -999,6 +1023,8 @@ pub(crate) enum ConvertedExit {
         call_id: u32,
         object_id: Option<MontyUuid>,
         allow_eager_await: bool,
+        /// See [`ReplFunctionCall::is_async`](crate::ReplFunctionCall::is_async).
+        is_async: bool,
         /// The call expression.
         position: SourceRange,
     },
@@ -1049,23 +1075,30 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
     // `instruction_ip` still names the opcode that suspended, so the current
     // position is the suspending expression for every exit but `ResolveFutures`.
     match result {
-        Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::export(value, vm)),
+        Ok(FrameExit::Return(value)) => match vm.export_on_clock(|vm| MontyObject::export(value, vm)) {
+            Ok(obj) => ConvertedExit::Complete(obj),
+            Err(err) => ConvertedExit::Error(err),
+        },
         Ok(FrameExit::ExternalCall {
             function_name,
             args,
             call_id,
+            is_async,
             ..
         }) => {
             let position = vm.suspension_position();
             let name = function_name.into_string(vm.interns);
-            let args = args.into_call_args(vm);
-            ConvertedExit::FunctionCall {
-                function_name: name,
-                args,
-                call_id: call_id.raw(),
-                object_id: None,
-                allow_eager_await: vm.allow_eager_await(),
-                position,
+            match vm.export_on_clock(|vm| args.into_call_args(vm)) {
+                Ok(args) => ConvertedExit::FunctionCall {
+                    function_name: name,
+                    args,
+                    call_id: call_id.raw(),
+                    object_id: None,
+                    allow_eager_await: vm.allow_eager_await(),
+                    is_async,
+                    position,
+                },
+                Err(err) => ConvertedExit::Error(err),
             }
         }
         Ok(FrameExit::OsCall {
@@ -1094,14 +1127,18 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
         }) => {
             let position = vm.suspension_position();
             let name = method_name.into_string(vm.interns);
-            let args = args.into_call_args(vm);
-            ConvertedExit::FunctionCall {
-                function_name: name,
-                args,
-                call_id: call_id.raw(),
-                object_id: Some(object_id),
-                allow_eager_await: vm.allow_eager_await(),
-                position,
+            match vm.export_on_clock(|vm| args.into_call_args(vm)) {
+                Ok(args) => ConvertedExit::FunctionCall {
+                    function_name: name,
+                    args,
+                    call_id: call_id.raw(),
+                    object_id: Some(object_id),
+                    allow_eager_await: vm.allow_eager_await(),
+                    // host methods have no async marker yet
+                    is_async: false,
+                    position,
+                },
+                Err(err) => ConvertedExit::Error(err),
             }
         }
         Ok(FrameExit::ResolveFutures(pending_call_ids)) => ConvertedExit::ResolveFutures {
@@ -1189,16 +1226,18 @@ pub(crate) fn build_run_progress(
             call_id,
             object_id,
             allow_eager_await,
+            // only REPL hosts start calls without waiting (`ReplFunctionCall::is_async`)
+            is_async: _,
             position,
-        } => Ok(RunProgress::FunctionCall(FunctionCall::new(
+        } => Ok(RunProgress::FunctionCall(FunctionCall {
             function_name,
             args,
             call_id,
             object_id,
             allow_eager_await,
             position,
-            new_snapshot!(),
-        ))),
+            snapshot: new_snapshot!(),
+        })),
         ConvertedExit::OsCall {
             function_call,
             call_id,

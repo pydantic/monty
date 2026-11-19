@@ -34,7 +34,7 @@ pub fn builtin_filter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (function, iterable) = args.get_two_args("filter", vm.heap)?;
     defer_drop!(function, vm);
 
-    let iter = iterable.into_py_iter(vm)?;
+    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 
@@ -49,7 +49,7 @@ pub fn builtin_filter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             // No predicate - use truthiness of element
             item.py_bool(vm)?
         } else {
-            call_predicate(function, item, "filter()", vm)?
+            call_predicate(function, item, vm)?
         };
 
         if should_include {

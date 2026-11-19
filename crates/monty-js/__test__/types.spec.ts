@@ -418,6 +418,59 @@ test.each([
   })
 })
 
+test('complex output from sandbox', async () => {
+  t.deepEqual(await run('(1.5 - 2j) * 2'), { __monty_type__: 'Complex', real: 3, imag: -4 })
+})
+
+test('complex input round-trips', async () => {
+  const z = { __monty_type__: 'Complex', real: 1.5, imag: -2 }
+  t.deepEqual(await run('x', { inputs: { x: z } }), z)
+  t.deepEqual(await run('x.conjugate()', { inputs: { x: z } }), { __monty_type__: 'Complex', real: 1.5, imag: 2 })
+  // Negative zero is preserved in both directions.
+  const negativeZero = { __monty_type__: 'Complex', real: -0, imag: -0 }
+  t.deepEqual(await run('repr(x)', { inputs: { x: negativeZero } }), '(-0-0j)')
+  const back = (await run('complex(-0.0, -0.0)')) as { real: number; imag: number }
+  t.is(Object.is(back.real, -0) && Object.is(back.imag, -0), true)
+})
+
+test('decimal output from sandbox', async () => {
+  t.deepEqual(await run("import decimal\ndecimal.Decimal('19.990')"), { __monty_type__: 'Decimal', value: '19.990' })
+  t.deepEqual(await run("import decimal\ndecimal.Decimal('-1e-30')"), { __monty_type__: 'Decimal', value: '-1E-30' })
+})
+
+test('decimal input round-trips', async () => {
+  const price = { __monty_type__: 'Decimal', value: '19.99' }
+  t.deepEqual(await run('x', { inputs: { x: price } }), price)
+  t.deepEqual(await run('(str(x), x > 1)', { inputs: { x: price } }), ['19.99', true])
+  // Any numeric string `Decimal()` accepts comes back in canonical form.
+  t.deepEqual(await run('x', { inputs: { x: { __monty_type__: 'Decimal', value: 'nan' } } }), {
+    __monty_type__: 'Decimal',
+    value: 'NaN',
+  })
+})
+
+test('malformed decimal marker is rejected by the wasm encoder', () => {
+  t.deepEqual(encodeValue({ __monty_type__: 'Decimal', value: '1.5' }), {
+    root: 0,
+    nodes: [{ tag: 'decimal', val: '1.5' }],
+  })
+  t.throws(() => encodeValue({ __monty_type__: 'Decimal', value: 1.5 }), {
+    instanceOf: TypeError,
+    message: 'Decimal marker requires a string value',
+  })
+})
+
+test('malformed complex marker is rejected by the wasm encoder', () => {
+  t.deepEqual(encodeValue({ __monty_type__: 'Complex', real: 1.5, imag: -2 }), {
+    root: 0,
+    nodes: [{ tag: 'complex', val: { real: 1.5, imag: -2 } }],
+  })
+  t.throws(() => encodeValue({ __monty_type__: 'Complex', real: '1', imag: 2 }), {
+    instanceOf: TypeError,
+    message: 'Complex marker requires numeric real and imag',
+  })
+})
+
 test.each([
   { fields: { hour: 10, minute: 20, second: 30, microsecond: 40, fold: 1 }, iso: '10:20:30.000040' },
   {

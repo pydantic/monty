@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # === Basic dataclass tests ===
 
 # Get dataclass instance from external function

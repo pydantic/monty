@@ -7,7 +7,7 @@
 use num_bigint::BigInt;
 
 use super::{CallArgs, MontyObject, NamedValues, ObjectRef};
-pub use crate::graph::{ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId};
+pub use crate::graph::{ClassEq, ClassHash, ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId};
 use crate::{file_mode::FileMode, os::TimeCaller};
 
 /// The owned arena, positional roots and keyword roots of a call.
@@ -183,6 +183,22 @@ impl PushValue for i64 {
 impl PushValue for u64 {
     fn push_into(self, graph: &mut MontyGraph) -> NodeId {
         graph.push(i64::try_from(self).map_or_else(|_| MontyNode::BigInt(BigInt::from(self)), MontyNode::Int))
+    }
+}
+
+impl PushValue for u32 {
+    fn push_into(self, graph: &mut MontyGraph) -> NodeId {
+        graph.push(MontyNode::Int(i64::from(self)))
+    }
+}
+
+/// `None` crosses as Python `None`.
+impl<T: PushValue> PushValue for Option<T> {
+    fn push_into(self, graph: &mut MontyGraph) -> NodeId {
+        match self {
+            Some(value) => value.push_into(graph),
+            None => graph.push(MontyNode::None),
+        }
     }
 }
 

@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # === Basic external function tests ===
 
 # Simple calls

@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import subprocess
 import sys
 import threading
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from conftest import RunMonty
@@ -18,6 +19,28 @@ from pydantic_monty import AsyncMonty, Monty, MontyCrashedError, MontyRuntimeErr
 
 def test_basic_execution(monty_run: RunMonty):
     assert monty_run('1 + 2') == snapshot(3)
+
+
+def test_pool_construction_imports_no_modules_lazily():
+    # hosts that run `pydantic_monty` under an import-restricted environment
+    # (e.g. Temporal's workflow sandbox) fail any module first imported after
+    # the initial load — pool construction must not trigger a `pydantic_monty.*`
+    # import, which is why `_monty`'s init imports `_binary` and caches the
+    # resolver. A fresh interpreter is required since pytest has already
+    # imported the module.
+    code = """\
+import sys
+
+import pydantic_monty
+
+loaded = set(sys.modules)
+with pydantic_monty.Monty() as pool, pool.checkout() as session:
+    session.feed_run('1 + 1')
+late = sorted(name for name in sys.modules.keys() - loaded if name.startswith('pydantic_monty'))
+print(late)
+"""
+    result = subprocess.run([sys.executable, '-c', code], check=True, capture_output=True, text=True)
+    assert result.stdout == snapshot('[]\n')
 
 
 def test_session_state_persists_across_feeds(pool: Monty):
@@ -111,6 +134,35 @@ def test_worker_pid_mid_turn_does_not_deadlock(pool: Monty):
         assert mid_turn_pid == [None]
         # idle again: the getter sees the worker
         assert session.worker_pid is not None
+
+
+def test_one_checkout_per_worker_gets_a_fresh_process_each_time():
+    # every session gets a fresh process; the background refill itself is covered by monty-pool's tests
+    pids: set[int | None] = set()
+    with Monty(min_processes=2, max_processes=2, max_checkouts_per_worker=1) as pool:
+        for i in range(4):
+            with pool.checkout() as session:
+                pids.add(session.worker_pid)
+                assert session.feed_run(f'{i} * 2') == i * 2
+    assert None not in pids
+    assert len(pids) == snapshot(4)
+
+
+@pytest.mark.parametrize(
+    'kwargs,recycled',
+    [
+        pytest.param({}, True, id='default'),
+        pytest.param({'max_checkouts_per_worker': None}, False, id='none'),
+    ],
+)
+def test_default_recycles_after_1000_checkouts(kwargs: dict[str, Any], recycled: bool):
+    with Monty(max_processes=1, **kwargs) as pool:
+        pids: list[int | None] = []
+        for _ in range(1001):
+            with pool.checkout() as session:
+                pids.append(session.worker_pid)
+    assert len(set(pids[:1000])) == 1
+    assert (pids[1000] != pids[0]) == recycled
 
 
 def test_request_timeout_kills_hung_worker():

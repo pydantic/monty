@@ -1,6 +1,8 @@
 # === int-to-str: within limit ===
 assert str(10**4299) is not None
 assert len(str(10**4299)) == 4300
+assert len(repr(10**4300 - 1)) == 4300
+assert len(repr(-(10**4300 - 1))) == 4301
 assert str(0) == '0'
 assert str(-1) == '-1'
 assert str(10**18) == '1000000000000000000'

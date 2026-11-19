@@ -426,7 +426,7 @@ fn a_named_zone_applies_its_dst_rules() {
     };
     assert_eq!(
         run("import time\ntime.tzname", no_clock).unwrap_err(),
-        "AttributeError: 'module' object has no attribute 'tzname'"
+        "AttributeError: module 'time' has no attribute 'tzname'"
     );
     assert_eq!(
         run_repr_under("(time.timezone, time.tzname)", call_host()),
@@ -677,7 +677,7 @@ fn call_function_honours_call_host_too() {
       File "<python-input-0>", line 3, in when
         return date.today()
                ~~~~~~~~~~~~
-    NotImplementedError: MontyRepl::call_function: OS function 'date.today' is not yet supported in this context
+    NotImplementedError: OS function 'date.today' cannot suspend in this synchronous context
     "#);
 }
 
@@ -691,7 +691,7 @@ fn the_configuration_survives_a_dump() {
         MontyRepl::new("<test>", ResourceTracker::default(), CompileOptions::default()).with_os_policy(calls);
     repl.feed_run("x = 1", vec![], PrintWriter::Disabled).unwrap();
 
-    let bytes = dump("<test>", None, SessionRef::Idle(&repl)).unwrap();
+    let bytes = dump("<test>", None, &[], SessionRef::Idle(&repl)).unwrap();
     let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
         panic!("expected an idle session");
     };
@@ -706,7 +706,11 @@ fn the_configuration_survives_a_dump() {
     assert_eq!(result, MontyObject::string("datetime.date(2023, 11, 15)".to_owned()));
     // the process clock is a policy of its own, so it must survive too
     let elapsed = restored
-        .feed_run("import time\ntime.process_time() > 0.0", vec![], PrintWriter::Disabled)
+        .feed_run(
+            "import time\nfor _ in range(1_000_000):\n    if time.process_time() > 0.0:\n        break\ntime.process_time() > 0.0",
+            vec![],
+            PrintWriter::Disabled,
+        )
         .unwrap();
     assert_eq!(elapsed, MontyObject::bool(true));
 }

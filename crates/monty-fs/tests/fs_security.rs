@@ -1595,36 +1595,34 @@ mod hard_link_tests {
         }
     }
 
-    /// An in-mount symlink whose *name* is not valid UTF-8 must still be listed.
-    ///
-    /// The in-mount check has to run against the raw directory entry: rebuilding
-    /// the path from a lossy name looks up something that does not exist, so the
-    /// link is silently dropped. Its listed name is still lossy — that predates
-    /// this and is unchanged here.
+    /// Entries whose names are not UTF-8 are left out of listings: the sandbox
+    /// cannot spell them, and a lossy spelling names a different file or nothing.
     #[test]
     #[cfg(unix)]
-    fn iterdir_keeps_inbound_symlink_with_non_utf8_name() {
-        if !symlinks_supported() {
-            return;
-        }
+    fn iterdir_omits_non_utf8_names() {
         let dir = create_test_dir();
-        let raw_name = OsStr::from_bytes(b"nonutf8\xff_link");
-        if symlink("hello.txt", dir.path().join(raw_name)).is_err() {
-            // APFS and friends reject non-UTF-8 filenames outright, so the bug
-            // this guards is unobservable there. ext4 exercises it.
+        if fs::write(dir.path().join(OsStr::from_bytes(b"nonutf8\xff.txt")), b"x").is_err() {
+            // APFS and friends reject non-UTF-8 filenames outright; ext4 exercises this.
             eprintln!("skipped: filesystem rejects non-UTF-8 filenames");
             return;
         }
+        if symlinks_supported() {
+            symlink("hello.txt", dir.path().join(OsStr::from_bytes(b"nonutf8\xff_link"))).unwrap();
+        }
+        // a real file spelled as the lossy names would be is still listed
+        fs::write(dir.path().join("nonutf8\u{fffd}.txt"), b"y").unwrap();
 
-        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
-        let result = call(&mut mt, PathOp::Iterdir, "/mnt").unwrap().unwrap();
-        let names = sorted_names_from_list(&result);
-
-        let lossy = raw_name.to_string_lossy().to_string();
-        assert!(
-            names.contains(&lossy),
-            "in-mount symlink with a non-UTF-8 name was dropped: {names:?}"
-        );
+        for mode in [
+            MountMode::ReadWrite,
+            MountMode::ReadOnly,
+            MountMode::OverlayMemory(OverlayState::new()),
+        ] {
+            let mut mt = mount_at_mnt(&dir, mode);
+            let result = call(&mut mt, PathOp::Iterdir, "/mnt").unwrap().unwrap();
+            let names = sorted_names_from_list(&result);
+            let odd: Vec<&String> = names.iter().filter(|name| name.starts_with("nonutf8")).collect();
+            assert_eq!(odd, ["nonutf8\u{fffd}.txt"]);
+        }
     }
 
     /// Renaming a directory whose real contents include a non-UTF-8 name must

@@ -6,7 +6,7 @@ use std::{mem, slice, vec::IntoIter};
 
 pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
 pub(crate) use bind_python::Signature;
-pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg, is_long_int};
+pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg, is_long_int, long_int};
 pub(crate) use monty_macros::FromArgs;
 use monty_types::{
     CallArgs,
@@ -22,7 +22,7 @@ use crate::{
     object_bridge::{CallArgsExt, GraphExporter},
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// Type for method call arguments.
@@ -67,6 +67,23 @@ impl ArgValues {
         match self {
             Self::Empty | Self::One(_) | Self::Two(_, _) => false,
             Self::Kwargs(kwargs) | Self::ArgsKargs { kwargs, .. } => !kwargs.is_empty(),
+        }
+    }
+
+    /// A copy of these arguments holding its own references, for passing the
+    /// same arguments to two calls (`__new__` then `__init__`).
+    ///
+    /// Bounded by the arguments already built, so it needs no memory preflight.
+    pub(crate) fn clone_with_heap(&self, heap: &Heap) -> Self {
+        match self {
+            Self::Empty => Self::Empty,
+            Self::One(v) => Self::One(v.clone_with_heap(heap)),
+            Self::Two(a, b) => Self::Two(a.clone_with_heap(heap), b.clone_with_heap(heap)),
+            Self::Kwargs(kwargs) => Self::Kwargs(kwargs.clone_with_heap(heap)),
+            Self::ArgsKargs { args, kwargs } => Self::ArgsKargs {
+                args: args.iter().map(|v| v.clone_with_heap(heap)).collect(),
+                kwargs: kwargs.clone_with_heap(heap),
+            },
         }
     }
 
@@ -227,8 +244,10 @@ impl ArgValues {
     }
 
     /// Exports the arguments into one arena for delivery to an external
-    /// function, so an object passed twice crosses once.
-    pub fn into_call_args(self, vm: &mut VM<'_>) -> CallArgs {
+    /// function, so an object passed twice crosses once. Fails only with a
+    /// resource limit hit during export, where a user `__repr__` can run;
+    /// callers outside the run loop wrap it in [`VM::export_on_clock`].
+    pub fn into_call_args(self, vm: &mut VM<'_>) -> RunResult<CallArgs> {
         let mut exporter = GraphExporter::new();
         let mut call = CallArgs::new();
         match self {
@@ -246,8 +265,25 @@ impl ArgValues {
                 kwargs.export_into(&mut call, &mut exporter, vm);
             }
         }
-        *unstable::call_args_parts_mut(&mut call).0 = exporter.finish(vm);
-        call
+        *unstable::call_args_parts_mut(&mut call).0 = exporter.finish(vm)?;
+        Ok(call)
+    }
+
+    /// The first positional argument, if any, without consuming the arguments.
+    pub(crate) fn first_positional(&self) -> Option<&Value> {
+        match self {
+            Self::Empty | Self::Kwargs(_) => None,
+            Self::One(v) | Self::Two(v, _) => Some(v),
+            Self::ArgsKargs { args, .. } => args.first(),
+        }
+    }
+
+    /// The keyword argument called `name`, if any, without consuming the arguments.
+    pub(crate) fn keyword(&self, name: &str, heap: &Heap, interns: &Interns) -> Option<&Value> {
+        match self {
+            Self::Empty | Self::One(_) | Self::Two(_, _) => None,
+            Self::Kwargs(kwargs) | Self::ArgsKargs { kwargs, .. } => kwargs.get(name, heap, interns),
+        }
     }
 
     /// Returns the number of positional arguments.
@@ -375,6 +411,21 @@ pub(crate) enum KwargsValues {
 }
 
 impl KwargsValues {
+    /// A copy holding its own references; a dict becomes key/value pairs.
+    pub(crate) fn clone_with_heap(&self, heap: &Heap) -> Self {
+        let clone_pairs = |pairs: &mut dyn Iterator<Item = (&Value, &Value)>| {
+            pairs
+                .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
+                .collect()
+        };
+        match self {
+            Self::Empty => Self::Empty,
+            Self::Inline(items) => Self::Inline(items.iter().map(|(k, v)| (*k, v.clone_with_heap(heap))).collect()),
+            Self::Pairs(items) => Self::Pairs(clone_pairs(&mut items.iter().map(|(k, v)| (k, v)))),
+            Self::Dict(dict) => Self::Pairs(clone_pairs(&mut dict.iter())),
+        }
+    }
+
     /// Returns the number of keyword arguments.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -392,13 +443,30 @@ impl KwargsValues {
         self.len() == 0
     }
 
+    /// The value passed under `name`, if any; a non-string key (only possible via `**`
+    /// unpacking) never matches.
+    pub(crate) fn get(&self, name: &str, heap: &Heap, interns: &Interns) -> Option<&Value> {
+        let is_name = |key: &Value| key.as_either_str(heap).is_some_and(|key| key.as_str(interns) == name);
+        match self {
+            Self::Empty => None,
+            Self::Inline(kvs) => kvs
+                .iter()
+                .find(|(id, _)| interns.get_str(*id) == name)
+                .map(|(_, value)| value),
+            Self::Pairs(kvs) => kvs.iter().find(|(key, _)| is_name(key)).map(|(_, value)| value),
+            Self::Dict(dict) => dict.iter().find(|(key, _)| is_name(key)).map(|(_, value)| value),
+        }
+    }
+
     /// The first keyword's name, for callables that accept none and report
     /// CPython's `got an unexpected keyword argument`. A non-string key (only
     /// possible via `**` unpacking) is CPython's `keywords must be strings`.
     pub fn first_key(&self, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
         let key = match self {
             Self::Empty => return Ok(None),
-            Self::Inline(kvs) => return Ok(kvs.first().map(|(id, _)| interns.get_str(*id).to_owned())),
+            Self::Inline(kvs) => {
+                return Ok(kvs.first().map(|(id, _)| EitherStr::Interned(*id).into_string(interns)));
+            }
             Self::Pairs(kvs) => kvs.first().map(|(key, _)| key),
             Self::Dict(dict) => dict.iter().next().map(|(key, _)| key),
         };
@@ -406,7 +474,7 @@ impl KwargsValues {
             None => Ok(None),
             Some(key) => key
                 .as_either_str(heap)
-                .map(|key| Some(key.as_str(interns).to_owned()))
+                .map(|key| Some(key.into_string(interns)))
                 .ok_or_else(ExcType::type_error_kwargs_nonstring_key),
         }
     }

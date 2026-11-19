@@ -7,6 +7,8 @@
 //! globals through that dict at every call. [`FrameNamespace`] records which
 //! case a frame is in; the descriptor owns the dict references it names.
 
+use std::{iter, ops::Not};
+
 use ahash::AHashSet;
 
 use super::{CallFrame, VM};
@@ -16,7 +18,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::{CompileInterns, FunctionId, StringId},
     prepare::SnippetNames,
-    types::Dict,
+    types::{Dict, ForwardRef},
     value::Value,
 };
 
@@ -52,7 +54,57 @@ pub(crate) enum FrameNamespace {
         globals: FrameGlobals,
         /// The snippet's locals dict, if it runs with one distinct from its globals.
         locals: Option<HeapId>,
+        /// Bound slot globals shadow `locals`: the lookup order CPython's
+        /// `get_type_hints` gives a class forward reference (module, then class).
+        #[serde(default, skip_serializing_if = "Not::not")]
+        globals_first: bool,
+        /// What a name nothing resolves loads as.
+        #[serde(default)]
+        missing: MissingNames,
     },
+    /// A frame running an `__annotate__` function (PEP 649): names resolve by
+    /// name through `classdict`, a copy of the class namespace for a class's
+    /// annotations, then `globals` — CPython's `LOAD_FROM_DICT_OR_GLOBALS` —
+    /// with `missing` supplying CPython's "fake globals" for `FORWARDREF` and `STRING`.
+    Annotate {
+        /// Where the function's globals live.
+        globals: FrameGlobals,
+        /// The class namespace consulted first, for a class's `__annotate__`.
+        classdict: Option<HeapId>,
+        /// What a name nothing resolves loads as.
+        missing: MissingNames,
+    },
+}
+
+/// What a snippet does with a name nothing resolves.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) enum MissingNames {
+    /// Ask the host for a slot global, then raise `NameError`.
+    #[default]
+    Raise,
+    /// Load a `ForwardRef` stringifier instead: an annotation evaluating in
+    /// `annotationlib.Format.FORWARDREF`, where every operation on the result
+    /// composes source text (see `types/forward_ref.rs`).
+    ForwardRef {
+        /// The function or class the annotation belongs to, or `None`; OWNED.
+        owner: Value,
+        /// Whether the annotation was written in a class body.
+        is_class: bool,
+        /// Stringify every name, bound or not: annotationlib's retry after an
+        /// annotation raised, which runs it against empty globals.
+        every_name: bool,
+    },
+    /// Raise `NameError` without asking the host: the plain evaluation
+    /// `annotationlib`'s `FORWARDREF` tries first, which must never suspend.
+    NameError,
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for MissingNames {
+    fn drop_with(self, ctx: &mut C) {
+        if let Self::ForwardRef { owner, .. } = self {
+            owner.drop_with(ctx);
+        }
+    }
 }
 
 impl FrameNamespace {
@@ -63,9 +115,17 @@ impl FrameNamespace {
             Self::Snippet {
                 globals: FrameGlobals::Slots,
                 ..
+            }
+            | Self::Annotate {
+                globals: FrameGlobals::Slots,
+                ..
             } => None,
             Self::Function { globals }
             | Self::Snippet {
+                globals: FrameGlobals::Dict(globals),
+                ..
+            }
+            | Self::Annotate {
                 globals: FrameGlobals::Dict(globals),
                 ..
             } => Some(*globals),
@@ -87,19 +147,30 @@ impl<C: ContainsHeap> DropWithContext<C> for Box<FrameNamespace> {
     fn drop_with(self, ctx: &mut C) {
         match *self {
             FrameNamespace::Function { globals } => ctx.heap_mut().dec_ref(globals),
-            FrameNamespace::Snippet { globals, locals } => {
+            FrameNamespace::Snippet {
+                globals,
+                locals,
+                missing,
+                ..
+            }
+            | FrameNamespace::Annotate {
+                globals,
+                classdict: locals,
+                missing,
+            } => {
                 if let FrameGlobals::Dict(globals) = globals {
                     ctx.heap_mut().dec_ref(globals);
                 }
                 if let Some(locals) = locals {
                     ctx.heap_mut().dec_ref(locals);
                 }
+                missing.drop_with(ctx);
             }
         }
     }
 }
 
-impl VM<'_> {
+impl<'h> VM<'h> {
     /// The namespace an `eval()` / `exec()` snippet runs in, from the call's
     /// `globals` / `locals` dicts (owned references, or `None`), and the mode
     /// its top level compiles in.
@@ -116,10 +187,11 @@ impl VM<'_> {
     ) -> RunResult<(SnippetNames, Box<FrameNamespace>)> {
         let (globals, locals) = match globals {
             Some(dict) => (FrameGlobals::Dict(dict), locals),
-            None => match self.current_frame.namespace.as_deref() {
+            None => match self.namespace_frame().namespace.as_deref() {
                 Some(FrameNamespace::Snippet {
                     globals,
                     locals: frame_locals,
+                    ..
                 }) => {
                     let (globals, frame_locals) = (*globals, *frame_locals);
                     if let FrameGlobals::Dict(dict) = globals {
@@ -144,8 +216,20 @@ impl VM<'_> {
                     self.heap.inc_ref(dict);
                     (FrameGlobals::Dict(dict), locals)
                 }
+                // An annotation's `eval()` sees the annotate function's globals and locals.
+                Some(FrameNamespace::Annotate { globals, .. }) => {
+                    let globals = *globals;
+                    let locals = match locals {
+                        Some(dict) => Some(dict),
+                        None => Some(self.snapshot_locals()?),
+                    };
+                    if let FrameGlobals::Dict(dict) = globals {
+                        self.heap.inc_ref(dict);
+                    }
+                    (globals, locals)
+                }
                 None => {
-                    let locals = match (locals, self.current_frame.function_id) {
+                    let locals = match (locals, self.namespace_frame().function_id) {
                         (Some(dict), _) => Some(dict),
                         (None, Some(_)) => Some(self.snapshot_locals()?),
                         (None, None) => None,
@@ -159,15 +243,24 @@ impl VM<'_> {
             (FrameGlobals::Slots, Some(_)) => SnippetNames::NameOverSlots,
             (FrameGlobals::Slots, None) => SnippetNames::Slots,
         };
-        Ok((names, Box::new(FrameNamespace::Snippet { globals, locals })))
+        Ok((
+            names,
+            Box::new(FrameNamespace::Snippet {
+                globals,
+                locals,
+                globals_first: false,
+                missing: MissingNames::Raise,
+            }),
+        ))
     }
 
     /// Admits a snippet before publishing its compilation and installing its frame.
     /// A recursion-limit rejection discards both the overlay and the owned namespace.
+    /// `overlay` is `None` when `func_id` is already committed (a cached hint snippet).
     pub(crate) fn push_snippet_frame(
         &mut self,
         func_id: FunctionId,
-        overlay: CompileInterns<'_>,
+        overlay: Option<CompileInterns<'_>>,
         namespace: Box<FrameNamespace>,
     ) -> RunResult<()> {
         let mut namespace_guard = DropGuard::new(namespace, self);
@@ -176,7 +269,9 @@ impl VM<'_> {
         vm.incr_recursion()?;
         // Publication makes the code borrowable for the run. Nothing fallible or
         // re-entrant may intervene between admission and installing the frame.
-        overlay.commit();
+        if let Some(overlay) = overlay {
+            overlay.commit();
+        }
         let (namespace, vm) = namespace_guard.into_parts();
         let code = &vm.interns.get_function(func_id).code;
         let frame = CallFrame::new_function(
@@ -198,12 +293,13 @@ impl VM<'_> {
     /// straight in a globals dict returns the dict. Every other frame gets a
     /// snapshot: named stack slots for a function, bound slots for a module.
     pub(crate) fn locals_dict(&mut self) -> RunResult<Value> {
-        let dict_id = match self.current_frame.namespace.as_deref() {
+        let dict_id = match self.namespace_frame().namespace.as_deref() {
             Some(
                 FrameNamespace::Snippet { locals: Some(dict), .. }
                 | FrameNamespace::Snippet {
                     globals: FrameGlobals::Dict(dict),
                     locals: None,
+                    ..
                 },
             ) => {
                 let dict = *dict;
@@ -213,9 +309,10 @@ impl VM<'_> {
             Some(FrameNamespace::Snippet {
                 globals: FrameGlobals::Slots,
                 locals: None,
+                ..
             }) => self.snapshot_globals()?,
-            Some(FrameNamespace::Function { .. }) => self.snapshot_locals()?,
-            None if self.current_frame.function_id.is_none() => self.snapshot_globals()?,
+            Some(FrameNamespace::Function { .. } | FrameNamespace::Annotate { .. }) => self.snapshot_locals()?,
+            None if self.namespace_frame().function_id.is_none() => self.snapshot_globals()?,
             None => self.snapshot_locals()?,
         };
         Ok(Value::Ref(dict_id))
@@ -247,30 +344,152 @@ impl VM<'_> {
     /// resolves nothing else for `exec(src, {})`.
     pub(super) fn load_name(&mut self, slot: u16, name_id: StringId, flags: u8) -> RunResult<Option<FrameExit>> {
         let (globals, locals) = self.frame_namespace();
-        if flags & NAME_GLOBAL_ONLY == 0
-            && let Some(locals) = locals
-            && let Some(value) = self.namespace_get(locals, name_id)?
-        {
-            self.push(value);
+        let stringify = self.frame_stringifies_names();
+        let without_host = self.frame_names_without_host();
+        if stringify == Some(true) {
+            let stringifier = self.stringifier(name_id);
+            self.push(stringifier);
             return Ok(None);
         }
+        if flags & NAME_GLOBAL_ONLY == 0
+            && let Some(locals) = locals
+        {
+            if globals == FrameGlobals::Slots
+                && self.frame_globals_first()
+                && !matches!(self.globals[usize::from(slot)], Value::Undefined)
+            {
+                let value = self.globals[usize::from(slot)].clone_with_heap(self.heap);
+                self.push(value);
+                return Ok(None);
+            }
+            if let Some(value) = self.namespace_get(locals, name_id)? {
+                self.push(value);
+                return Ok(None);
+            }
+        }
         match globals {
-            FrameGlobals::Slots if flags & NAME_CALLABLE != 0 => {
+            FrameGlobals::Slots if flags & NAME_CALLABLE != 0 && stringify.is_none() && !without_host => {
                 self.load_global_callable(slot, name_id);
                 Ok(None)
             }
-            FrameGlobals::Slots => self.load_global(slot),
+            // An unresolved name stringifies, or raises, rather than asking the host.
+            FrameGlobals::Slots => match self.load_global(slot)? {
+                Some(FrameExit::NameLookup { .. }) if stringify.is_some() => {
+                    let stringifier = self.stringifier(name_id);
+                    self.push(stringifier);
+                    Ok(None)
+                }
+                Some(FrameExit::NameLookup { .. }) if without_host => {
+                    Err(ExcType::name_error(self.interns.get_str(name_id)).into())
+                }
+                exit => Ok(exit),
+            },
             FrameGlobals::Dict(dict) => {
                 if let Some(value) = self.namespace_get(dict, name_id)? {
                     self.push(value);
                 } else if let Some(builtin) = self.builtin_for_name(name_id) {
                     self.push(builtin);
+                } else if stringify.is_some() {
+                    let stringifier = self.stringifier(name_id);
+                    self.push(stringifier);
                 } else {
                     return Err(ExcType::name_error(self.interns.get_str(name_id)).into());
                 }
                 Ok(None)
             }
         }
+    }
+
+    /// Whether the running code was compiled under `from __future__ import
+    /// annotations`, which an `eval()` / `exec()` it calls inherits.
+    pub(crate) fn frame_future_annotations(&self) -> bool {
+        self.current_frame.code.future_annotations()
+    }
+
+    /// Whether the current frame stringifies unresolved names, and if so whether
+    /// it stringifies every name (see [`MissingNames::ForwardRef`]).
+    fn frame_stringifies_names(&self) -> Option<bool> {
+        match self.current_frame.namespace.as_deref() {
+            Some(
+                FrameNamespace::Snippet {
+                    missing: MissingNames::ForwardRef { every_name, .. },
+                    ..
+                }
+                | FrameNamespace::Annotate {
+                    missing: MissingNames::ForwardRef { every_name, .. },
+                    ..
+                },
+            ) => Some(*every_name),
+            _ => None,
+        }
+    }
+
+    /// Whether the current frame raises `NameError` for a name the host would
+    /// otherwise be asked for (see [`MissingNames::NameError`]).
+    fn frame_names_without_host(&self) -> bool {
+        matches!(
+            self.current_frame.namespace.as_deref(),
+            Some(
+                FrameNamespace::Snippet {
+                    missing: MissingNames::NameError,
+                    ..
+                } | FrameNamespace::Annotate {
+                    missing: MissingNames::NameError,
+                    ..
+                }
+            )
+        )
+    }
+
+    /// A new `ForwardRef` stringifier for `name_id`, owned by the current frame's annotation owner.
+    fn stringifier(&mut self, name_id: StringId) -> Value {
+        let Some(
+            FrameNamespace::Snippet {
+                globals,
+                missing: MissingNames::ForwardRef { owner, is_class, .. },
+                ..
+            }
+            | FrameNamespace::Annotate {
+                globals,
+                missing: MissingNames::ForwardRef { owner, is_class, .. },
+                ..
+            },
+        ) = self.current_frame.namespace.as_deref()
+        else {
+            unreachable!("stringifier requested outside a FORWARDREF evaluation")
+        };
+        if let FrameGlobals::Dict(dict) = globals {
+            self.heap.inc_ref(*dict);
+        }
+        let forward_ref = ForwardRef::stringifier(
+            Value::InternString(name_id),
+            owner.clone_with_heap(self.heap),
+            *is_class,
+            *globals,
+        );
+        Value::Ref(self.heap.allocate(HeapData::ForwardRef(Box::new(forward_ref))))
+    }
+
+    /// Whether a `FORWARDREF` annotation evaluation is on the stack, during
+    /// which every stringifier composes source text (see `types/forward_ref.rs`).
+    pub(crate) fn in_forward_ref_evaluation(&self) -> bool {
+        self.suspended_frames
+            .iter()
+            .chain(iter::once(&self.current_frame))
+            .any(|frame| {
+                matches!(
+                    frame.namespace.as_deref(),
+                    Some(
+                        FrameNamespace::Snippet {
+                            missing: MissingNames::ForwardRef { .. },
+                            ..
+                        } | FrameNamespace::Annotate {
+                            missing: MissingNames::ForwardRef { .. },
+                            ..
+                        }
+                    )
+                )
+            })
     }
 
     /// `StoreName`: pops the value and binds `name_id` in the locals dict when
@@ -312,17 +531,17 @@ impl VM<'_> {
         // Owned by the guard until every entry is in, so a failed insert frees it.
         let mut dict_guard = DropGuard::new(Value::Ref(dict_id), self);
         let (_, this) = dict_guard.as_parts_mut();
-        let base = this.current_frame.stack_base();
-        let code = this.current_frame.code;
-        let names = (0..this.current_frame.locals_count).filter_map(|slot| {
+        let frame = this.namespace_frame();
+        let base = frame.stack_base();
+        let code = frame.code;
+        let names = (0..frame.locals_count).filter_map(|slot| {
             code.local_name(slot)
                 .filter(|name_id| *name_id != StringId::default())
                 .map(|name_id| (usize::from(slot), name_id))
         });
         // Cell slots go last so a captured parameter's live cell value replaces
         // the stale copy left in its parameter slot under the same name.
-        let cell_slots: AHashSet<usize> = this
-            .current_frame
+        let cell_slots: AHashSet<usize> = frame
             .function_id
             .map(|id| this.interns.get_function(id))
             .into_iter()
@@ -351,6 +570,21 @@ impl VM<'_> {
         Ok(dict.into_ref_id().expect("snapshot dict is a heap reference"))
     }
 
+    /// Finds the Python caller for namespace-sensitive builtins invoked by frozen code.
+    /// Private continuation locals must never escape through `locals()`, `eval()` or `exec()`.
+    fn namespace_frame(&self) -> &CallFrame<'h> {
+        self.suspended_frames
+            .iter()
+            .chain(iter::once(&self.current_frame))
+            .rev()
+            .find(|frame| {
+                frame
+                    .function_id
+                    .is_none_or(|id| !self.interns.is_internal_function(id))
+            })
+            .expect("frozen code has a Python caller")
+    }
+
     /// Stores one `locals()` entry, skipping unbound slots.
     fn snapshot_entry(&mut self, dict_id: HeapId, name_id: StringId, value: Value) -> RunResult<()> {
         if matches!(value, Value::Undefined) {
@@ -363,12 +597,24 @@ impl VM<'_> {
     /// The globals and locals the current frame resolves names through.
     ///
     /// A frame with no namespace resolves like compiled module code.
-    fn frame_namespace(&self) -> (FrameGlobals, Option<HeapId>) {
+    pub(super) fn frame_namespace(&self) -> (FrameGlobals, Option<HeapId>) {
         match self.current_frame.namespace.as_deref() {
             None => (FrameGlobals::Slots, None),
             Some(FrameNamespace::Function { globals }) => (FrameGlobals::Dict(*globals), None),
-            Some(FrameNamespace::Snippet { globals, locals }) => (*globals, *locals),
+            Some(FrameNamespace::Snippet { globals, locals, .. }) => (*globals, *locals),
+            Some(FrameNamespace::Annotate { globals, classdict, .. }) => (*globals, *classdict),
         }
+    }
+
+    /// Whether the current frame is a snippet whose bound slot globals shadow its locals.
+    fn frame_globals_first(&self) -> bool {
+        matches!(
+            self.current_frame.namespace.as_deref(),
+            Some(FrameNamespace::Snippet {
+                globals_first: true,
+                ..
+            })
+        )
     }
 
     /// Looks `name_id` up in a namespace dict, returning an owned value.
@@ -381,7 +627,7 @@ impl VM<'_> {
 
     /// Binds `name_id` to `value` in a namespace dict, releasing any old value.
     fn namespace_set(&mut self, dict_id: HeapId, name_id: StringId, value: Value) -> RunResult<()> {
-        let HeapReadOutput::Dict(mut dict) = self.heap.read(dict_id) else {
+        let HeapReadOutput::Dict(dict) = self.heap.read(dict_id) else {
             value.drop_with(self);
             return Err(RunError::internal("namespace is not a dict"));
         };
@@ -392,7 +638,7 @@ impl VM<'_> {
 
     /// Removes `name_id` from a namespace dict; `false` if it was not bound.
     fn namespace_pop(&mut self, dict_id: HeapId, name_id: StringId) -> RunResult<bool> {
-        let HeapReadOutput::Dict(mut dict) = self.heap.read(dict_id) else {
+        let HeapReadOutput::Dict(dict) = self.heap.read(dict_id) else {
             return Err(RunError::internal("namespace is not a dict"));
         };
         match dict.pop(&Value::InternString(name_id), self)? {

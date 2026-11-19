@@ -19,6 +19,11 @@ try:
     assert False, 'set should not be serializable'
 except TypeError as exc:
     assert str(exc) == 'Object of type set is not JSON serializable'
+try:
+    json.dumps(type('a.b', (), {})())
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'Object of type a.b is not JSON serializable'
 
 # === separators errors ===
 try:
@@ -50,6 +55,42 @@ try:
     assert False, 'non-string second separator should raise TypeError'
 except TypeError as exc:
     assert str(exc) == 'make_encoder() argument 5 must be str, not int'
+
+# === indent errors ===
+# the heap-backed kwargs after `indent` are released when it fails
+try:
+    json.dumps({'a': 1}, indent=10**30, sort_keys=[1], allow_nan=[2], separators=[',', ':'])
+    assert False, 'huge indent should raise OverflowError'
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
+
+# any other indent goes through `' ' * indent`
+for bad, name in [(0.5, 'float'), ([1], 'list'), (b'  ', 'bytes')]:
+    try:
+        json.dumps([1], indent=bad)
+        assert False, 'non-int indent should raise TypeError'
+    except TypeError as exc:
+        assert str(exc) == f"can't multiply sequence by non-int of type '{name}'"
+
+# `separators` is unpacked before `indent` is used, but its types are checked after
+try:
+    json.dumps([1], indent=0.5, separators=[1])
+    assert False, 'short separators should raise ValueError'
+except ValueError as exc:
+    assert str(exc) == 'not enough values to unpack (expected 2, got 1)'
+try:
+    json.dumps([1], indent=0.5, separators=[1, ':'])
+    assert False, 'float indent should raise TypeError'
+except TypeError as exc:
+    assert str(exc) == "can't multiply sequence by non-int of type 'float'"
+
+# a `str` document skips the encoder, so only the unpacking is checked
+assert json.dumps('x', indent=0.5, separators=[1, 2]) == '"x"'
+try:
+    json.dumps('x', separators=[1])
+    assert False, 'short separators should raise ValueError'
+except ValueError as exc:
+    assert str(exc) == 'not enough values to unpack (expected 2, got 1)'
 
 # === unexpected keyword argument ===
 try:
@@ -128,3 +169,71 @@ try:
     assert False, 'should raise ValueError for -inf key'
 except ValueError as exc:
     assert str(exc) == 'Out of range float values are not JSON compliant: -inf'
+
+# === default= errors ===
+# a `default` that returns its argument is a circular reference, as in CPython
+for _default in [lambda o: o, lambda o: [o]]:
+    try:
+        json.dumps({1, 2}, default=_default)
+        assert False, 'expected ValueError'
+    except ValueError as exc:
+        assert str(exc) == 'Circular reference detected'
+
+
+# the value is marked before `default` runs, so a cycle through two objects is
+# detected on the revisit without calling `default` a third time
+
+
+class _Node:
+    pass
+
+
+_a = _Node()
+_b = _Node()
+_calls = []
+
+
+def _swap(o):
+    _calls.append(o)
+    return _b if o is _a else _a
+
+
+try:
+    json.dumps(_a, default=_swap)
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'Circular reference detected'
+assert _calls == [_a, _b]
+
+# `default` is only called when needed, so a non-callable passes until then
+try:
+    json.dumps({1}, default=5)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not callable"
+
+try:
+    json.dumps([{1}], default=lambda o: 1 / 0)
+    assert False, 'expected ZeroDivisionError'
+except ZeroDivisionError as exc:
+    assert str(exc) == 'division by zero'
+
+# `default=None` is the default: unserializable values raise
+try:
+    json.dumps({1}, default=None)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'Object of type set is not JSON serializable'
+
+# dict keys never go through `default`
+try:
+    json.dumps({(1, 2): 1}, default=str)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'keys must be str, int, float, bool or None, not tuple'
+
+try:
+    json.dumps({1}, default=lambda o: float('nan'), allow_nan=False)
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'Out of range float values are not JSON compliant: nan'

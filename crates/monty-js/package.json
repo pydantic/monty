@@ -1,6 +1,6 @@
 {
   "name": "@pydantic/monty",
-  "version": "1.0.0",
+  "version": "1.6.0",
   "type": "module",
   "description": "Python sandbox running in crash-isolated subprocess workers",
   "main": "dist/index.js",
@@ -16,6 +16,7 @@
       "types": "./dist/node.d.ts",
       "default": "./dist/node.js"
     },
+    "./wasm/worker": "./dist/worker/browserWorkerEntry.js",
     "./wasm": {
       "types": "./dist/worker/index.d.ts",
       "node": "./dist/worker/index.node.js",
@@ -47,7 +48,7 @@
     "dtsHeaderFile": "./index-header.d.ts"
   },
   "engines": {
-    "node": ">= 20"
+    "node": ">= 22.18"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
@@ -60,6 +61,7 @@
     "build:napi:debug": "napi build --platform --esm --js native-addon.js --dts native-addon.generated.d.ts",
     "build:wasm": "cargo build -p monty-wasm-runtime --target wasm32-wasip1 --release && node scripts/build-component.mjs",
     "build:ts": "tsc",
+    "check:dist-types": "tsc -p tsconfig.dist.json && tsc -p tsconfig.dist-node.json",
     "format": "prettier . -w",
     "lint": "run-s lint:oxlint lint:tests",
     "lint:oxlint": "oxlint .",
@@ -71,7 +73,7 @@
     "create-platform-packages": "node scripts/create-platform-packages.mjs"
   },
   "dependencies": {
-    "@bytecodealliance/preview2-shim": "^0.19.0",
+    "@bytecodealliance/preview2-shim": "^0.31.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/api-logs": "^0.222.0"
   },
@@ -83,20 +85,21 @@
     "@napi-rs/wasm-runtime": "^1.1.5",
     "@opentelemetry/context-async-hooks": "^2.11.0",
     "@opentelemetry/instrumentation": "^0.222.0",
+    "@grpc/grpc-js": "^1.14.7",
     "@opentelemetry/sdk-logs": "^0.222.0",
     "@opentelemetry/sdk-metrics": "^2.11.0",
     "@opentelemetry/sdk-node": "^0.222.0",
     "@opentelemetry/sdk-trace-base": "^2.11.0",
     "@playwright/test": "^1.49.1",
     "@tybys/wasm-util": "^0.10.0",
-    "@types/node": "^25.0.9",
-    "@vitest/browser": "^3.2.4",
-    "npm-run-all2": "^8.0.4",
+    "@types/node": "^26.6.6",
+    "@vitest/browser-playwright": "^5.1.0",
+    "npm-run-all2": "^9.0.4",
     "oxlint": "^1.14.0",
     "prettier": "^3.6.2",
-    "typescript": "^5.9.2",
-    "vite": "^6.3.5",
-    "vitest": "^3.2.4"
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6",
+    "vitest": "^5.1.0"
   },
   "prettier": {
     "printWidth": 120,
@@ -104,14 +107,5 @@
     "trailingComma": "all",
     "singleQuote": true,
     "arrowParens": "always"
-  },
-  "optionalDependencies": {
-    "@pydantic/monty-darwin-x64": "1.0.0",
-    "@pydantic/monty-darwin-arm64": "1.0.0",
-    "@pydantic/monty-linux-x64-gnu": "1.0.0",
-    "@pydantic/monty-linux-x64-musl": "1.0.0",
-    "@pydantic/monty-linux-arm64-gnu": "1.0.0",
-    "@pydantic/monty-linux-arm64-musl": "1.0.0",
-    "@pydantic/monty-win32-x64-msvc": "1.0.0"
   }
 }

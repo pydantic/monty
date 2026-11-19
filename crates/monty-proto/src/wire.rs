@@ -32,9 +32,9 @@ use std::{
 };
 
 use monty_types::{
-    BuiltinsFunctions, CallArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyDate, MontyDateTime,
-    MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, SourceRange,
-    unstable::{self, ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
+    BuiltinsFunctions, CallArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MontyComplex, MontyDate,
+    MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, SourceRange,
+    unstable::{self, ClassEq, ClassHash, ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
 use prost::{
@@ -49,7 +49,7 @@ pub use references::{WireIndexes, WireNamedTuple, WireNodePairs};
 use crate::{
     BudgetVec,
     budgeted_prost::encoding,
-    convert::ProtoConvertError,
+    convert::{ProtoConvertError, exc_type_from_wire},
     decode_budget,
     pb::{self, monty_node::Kind},
 };
@@ -145,7 +145,7 @@ impl Message for WireArena {
 /// Wire form of `monty.v1.FunctionCall`: the call's argument arena plus the
 /// ids of its positional and keyword arguments.
 ///
-/// Installed with `prost_build::extern_path`, so generated `ChildEvent`
+/// Installed with `prost_build::extern_path`, so generated `WorkerEvent`
 /// decoding still handles the envelope while this payload keeps the argument
 /// vectors as bare ids and uses `WireArena`'s incremental node decoding.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -158,7 +158,7 @@ pub struct WireFunctionCall {
     pub args: BudgetVec<NodeId>,
     /// Keyword arguments as `(key, value)` ids, preserving wire order.
     pub kwargs: BudgetVec<(NodeId, NodeId)>,
-    /// Child-assigned call id used by the matching resume request.
+    /// Worker-assigned call id used by the matching resume request.
     pub call_id: u32,
     /// Uuid of the routed receiver (a host-backed instance, or a class type
     /// for `__call__`/classmethod calls); `None` for plain external function
@@ -167,7 +167,7 @@ pub struct WireFunctionCall {
     /// The worker accepts an eagerly settled coroutine via `ResumeFutures`.
     pub allow_eager_await: bool,
     /// Where the call expression is in the source; `None` for a frame from a
-    /// child that predates the field.
+    /// worker that predates the field.
     pub position: Option<SourceRange>,
 }
 
@@ -338,6 +338,9 @@ mod tag {
     pub const FILE_HANDLE: u32 = 28;
     pub const REPR: u32 = 29;
     pub const CYCLE: u32 = 30;
+    pub const COMPLEX: u32 = 31;
+    pub const MODULE: u32 = 32;
+    pub const DECIMAL: u32 = 33;
 }
 
 // ============================================================================
@@ -393,6 +396,7 @@ fn encode_node(node: &MontyNode, buf: &mut impl BufMut) {
         MontyNode::Int(i) => encoding::sint64::encode(tag::INT, i, buf),
         MontyNode::BigInt(bi) => encoding::message::encode(tag::BIGINT, &bigint_to_proto(bi), buf),
         MontyNode::Float(f) => encoding::double::encode(tag::FLOAT, f, buf),
+        MontyNode::Complex(c) => encoding::message::encode(tag::COMPLEX, &complex_to_proto(c), buf),
         MontyNode::String(s) => encoding::string::encode(tag::STR, s, buf),
         MontyNode::Bytes(b) => encoding::bytes::encode(tag::BYTES, b, buf),
         MontyNode::List(ids) => encode_indexes(tag::LIST, ids, buf),
@@ -453,22 +457,34 @@ fn encode_node(node: &MontyNode, buf: &mut impl BufMut) {
             encode_message_key(3, node_pairs_len(1, attrs), buf);
             encode_node_pairs(1, attrs, buf);
         }
+        MontyNode::Module { name, id, attrs } => {
+            let id = uuid_to_pb(id);
+            encode_message_key(tag::MODULE, module_len(name, &id, attrs), buf);
+            encode_str(1, name, buf);
+            encoding::message::encode(2, &id, buf);
+            encode_message_key(3, node_pairs_len(1, attrs), buf);
+            encode_node_pairs(1, attrs, buf);
+        }
         MontyNode::BuiltinFunction(bf) => encoding::string::encode(tag::BUILTIN_FUNCTION, &bf.to_string(), buf),
         MontyNode::Path(p) => encoding::string::encode(tag::PATH, p, buf),
+        MontyNode::Decimal(d) => encoding::string::encode(tag::DECIMAL, d, buf),
         MontyNode::FileHandle(fh) => {
             encode_message_key(tag::FILE_HANDLE, file_handle_len(fh), buf);
             encode_str(1, &fh.path, buf);
             encode_str(2, fh.mode.as_str(), buf);
             encode_uint64(3, fh.position, buf);
         }
-        MontyNode::Function { name, docstring } => {
-            encode_message_key(
-                tag::FUNCTION,
-                str_len(1, name) + opt_str_len(2, docstring.as_deref()),
-                buf,
-            );
+        MontyNode::Function {
+            name,
+            docstring,
+            is_async,
+        } => {
+            encode_message_key(tag::FUNCTION, function_len(name, docstring.as_deref(), *is_async), buf);
             encode_str(1, name, buf);
             encode_opt_str(2, docstring.as_deref(), buf);
+            if *is_async {
+                encoding::bool::encode(3, &true, buf);
+            }
         }
         MontyNode::Repr(r) => encoding::string::encode(tag::REPR, r, buf),
         MontyNode::Cycle(placeholder) => encoding::string::encode(tag::CYCLE, placeholder, buf),
@@ -486,6 +502,7 @@ fn node_len(node: &MontyNode) -> usize {
         MontyNode::Int(i) => encoding::sint64::encoded_len(tag::INT, i),
         MontyNode::BigInt(bi) => encoding::message::encoded_len(tag::BIGINT, &bigint_to_proto(bi)),
         MontyNode::Float(f) => encoding::double::encoded_len(tag::FLOAT, f),
+        MontyNode::Complex(c) => encoding::message::encoded_len(tag::COMPLEX, &complex_to_proto(c)),
         MontyNode::String(s) => encoding::string::encoded_len(tag::STR, s),
         MontyNode::Bytes(b) => encoding::bytes::encoded_len(tag::BYTES, b),
         MontyNode::List(ids) => submessage_len(tag::LIST, packed_ids_len(1, ids)),
@@ -517,12 +534,16 @@ fn node_len(node: &MontyNode) -> usize {
             tag::CLASS_INSTANCE,
             class_instance_len(*class_type, &uuid_to_pb(instance_id), attrs),
         ),
+        MontyNode::Module { name, id, attrs } => submessage_len(tag::MODULE, module_len(name, &uuid_to_pb(id), attrs)),
         MontyNode::BuiltinFunction(bf) => encoding::string::encoded_len(tag::BUILTIN_FUNCTION, &bf.to_string()),
         MontyNode::Path(p) => encoding::string::encoded_len(tag::PATH, p),
+        MontyNode::Decimal(d) => encoding::string::encoded_len(tag::DECIMAL, d),
         MontyNode::FileHandle(fh) => submessage_len(tag::FILE_HANDLE, file_handle_len(fh)),
-        MontyNode::Function { name, docstring } => {
-            submessage_len(tag::FUNCTION, str_len(1, name) + opt_str_len(2, docstring.as_deref()))
-        }
+        MontyNode::Function {
+            name,
+            docstring,
+            is_async,
+        } => submessage_len(tag::FUNCTION, function_len(name, docstring.as_deref(), *is_async)),
         MontyNode::Repr(r) => encoding::string::encoded_len(tag::REPR, r),
         MontyNode::Cycle(placeholder) => encoding::string::encoded_len(tag::CYCLE, placeholder),
     }
@@ -612,7 +633,8 @@ fn named_tuple_len(type_name: &str, field_names: &[String], values: &[NodeId]) -
 
 /// `Type` body for a class node: `string name = 1; Uuid id = 2; TypeOrigin
 /// origin = 3; bool is_dataclass = 4; NodePairs attrs = 5`, attrs only when
-/// non-empty (matching the generated encoder's absent field).
+/// non-empty (matching the generated encoder's absent field), then the
+/// equality rule in fields 6–9.
 fn class_type_len(class: &ClassTypeNode) -> usize {
     str_len(1, &class.name)
         + encoding::message::encoded_len(2, &uuid_to_pb(&class.id))
@@ -627,6 +649,10 @@ fn class_type_len(class: &ClassTypeNode) -> usize {
         } else {
             submessage_len(5, node_pairs_len(1, &class.attrs))
         }
+        + int32_len(6, class_eq_to_pb(&class.eq) as i32)
+        + repeated_str_len(7, class.eq.field_names())
+        + int32_len(8, class_hash_to_pb(&class.hash) as i32)
+        + repeated_str_len(9, class.hash.field_names())
 }
 
 fn encode_class_type(class: &ClassTypeNode, buf: &mut impl BufMut) {
@@ -640,6 +666,10 @@ fn encode_class_type(class: &ClassTypeNode, buf: &mut impl BufMut) {
         encode_message_key(5, node_pairs_len(1, &class.attrs), buf);
         encode_node_pairs(1, &class.attrs, buf);
     }
+    encode_int32(6, class_eq_to_pb(&class.eq) as i32, buf);
+    encode_repeated_str(7, class.eq.field_names(), buf);
+    encode_int32(8, class_hash_to_pb(&class.hash) as i32, buf);
+    encode_repeated_str(9, class.hash.field_names(), buf);
 }
 
 fn class_origin(class: &ClassTypeNode) -> pb::TypeOrigin {
@@ -650,10 +680,32 @@ fn class_origin(class: &ClassTypeNode) -> pb::TypeOrigin {
     }
 }
 
+fn class_eq_to_pb(eq: &ClassEq) -> pb::ClassEq {
+    match eq {
+        ClassEq::Identity => pb::ClassEq::Identity,
+        ClassEq::Fields(_) => pb::ClassEq::Fields,
+        ClassEq::Custom => pb::ClassEq::Custom,
+    }
+}
+
+fn class_hash_to_pb(hash: &ClassHash) -> pb::ClassHash {
+    match hash {
+        ClassHash::Identity => pb::ClassHash::Identity,
+        ClassHash::Fields(_) => pb::ClassHash::Fields,
+        ClassHash::Unhashable => pb::ClassHash::Unhashable,
+        ClassHash::Custom => pb::ClassHash::Custom,
+    }
+}
+
 /// `ClassInstanceNode` body: `uint32 class_type = 1; Uuid instance_id = 2;
 /// NodePairs attrs = 3`.
 fn class_instance_len(class_type: NodeId, id: &pb::Uuid, attrs: &[(NodeId, NodeId)]) -> usize {
     uint32_len(1, class_type.0) + encoding::message::encoded_len(2, id) + submessage_len(3, node_pairs_len(1, attrs))
+}
+
+/// `ModuleNode` body: `name = 1`, `id = 2`, `attrs = 3`.
+fn module_len(name: &str, id: &pb::Uuid, attrs: &[(NodeId, NodeId)]) -> usize {
+    str_len(1, name) + encoding::message::encoded_len(2, id) + submessage_len(3, node_pairs_len(1, attrs))
 }
 
 /// `DateTime` body: scalar fields 1–7 (implicit presence, skipped at
@@ -717,6 +769,17 @@ fn timezone_len(tz: &MontyTimeZone) -> usize {
 /// uint64 position = 3`.
 fn file_handle_len(fh: &MontyFileHandle) -> usize {
     str_len(1, &fh.path) + str_len(2, fh.mode.as_str()) + uint64_len(3, fh.position)
+}
+
+/// Body length of a `Function` message; `is_async` is skipped when false.
+fn function_len(name: &str, docstring: Option<&str>, is_async: bool) -> usize {
+    str_len(1, name)
+        + opt_str_len(2, docstring)
+        + if is_async {
+            encoding::bool::encoded_len(3, &true)
+        } else {
+            0
+        }
 }
 
 // --- proto3 field helpers, mirroring prost's generated default-skipping ---
@@ -823,6 +886,7 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
         Kind::Boolean(value) => MontyNode::Bool(value),
         Kind::Int(value) => MontyNode::Int(value),
         Kind::Float(value) => MontyNode::Float(value),
+        Kind::Complex(value) => MontyNode::Complex(complex_from_proto(&value).map_err(to_decode_err)?),
         Kind::Str(value) => MontyNode::String(value),
         Kind::Bytes(value) => MontyNode::Bytes(value.into_inner()),
         Kind::List(value) => MontyNode::List(value.0.into_inner()),
@@ -836,9 +900,13 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
         },
         Kind::Dict(value) => MontyNode::Dict(value.0.into_inner()),
         Kind::Path(value) => MontyNode::Path(value),
+        // Validated by whoever turns the text into a `Decimal`: the sandbox parses
+        // it, the bindings call their own `Decimal` constructor.
+        Kind::Decimal(value) => MontyNode::Decimal(value),
         Kind::Function(value) => MontyNode::Function {
             name: value.name,
             docstring: value.docstring,
+            is_async: value.is_async,
         },
         Kind::Repr(value) => MontyNode::Repr(value),
         Kind::Cycle(value) => MontyNode::Cycle(value),
@@ -857,6 +925,19 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
                 attrs: attrs.0.into_inner(),
             }
         }
+        Kind::Module(value) => {
+            let id = value
+                .id
+                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ModuleNode.id")))?;
+            let attrs = value
+                .attrs
+                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("ModuleNode.attrs")))?;
+            MontyNode::Module {
+                name: value.name,
+                id: pb_uuid_to_monty(&id, "ModuleNode.id")?,
+                attrs: attrs.0.into_inner(),
+            }
+        }
         Kind::Date(value) => MontyNode::Date(date_from_proto(&value).map_err(to_decode_err)?),
         Kind::Datetime(value) => MontyNode::DateTime(datetime_from_proto(value).map_err(to_decode_err)?),
         Kind::Time(value) => MontyNode::Time(time_from_proto(value).map_err(to_decode_err)?),
@@ -865,13 +946,10 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
             offset_seconds: timezone_offset(value.offset_seconds, "TimeZone.offset_seconds").map_err(to_decode_err)?,
             name: value.name,
         }),
-        Kind::Exception(value) => MontyNode::Exception {
-            exc_type: value
-                .exc_type
-                .parse()
-                .map_err(|_| to_decode_err(ProtoConvertError::UnknownExcType(value.exc_type)))?,
-            arg: value.arg,
-        },
+        Kind::Exception(value) => {
+            let (exc_type, arg) = exc_type_from_wire(value.exc_type, value.arg, decode_budget::charge)?;
+            MontyNode::Exception { exc_type, arg }
+        }
         Kind::BuiltinFunction(name) => MontyNode::BuiltinFunction(
             name.parse::<BuiltinsFunctions>()
                 .map_err(|_| to_decode_err(ProtoConvertError::UnknownBuiltinFunction(name)))?,
@@ -1060,9 +1138,32 @@ fn type_to_node(ty: pb::Type) -> Result<MontyNode, DecodeError> {
                 id: pb_uuid_to_monty(&id, "Type.id")?,
                 host_defined: origin == pb::TypeOrigin::Host,
                 is_dataclass: ty.is_dataclass,
-                attrs: ty.attrs.map(|attrs| attrs.0.into_inner()).unwrap_or_default(),
+                attrs: ty.attrs.map_or_default(|attrs| attrs.0.into_inner()),
+                eq: class_eq_from_pb(ty.eq, ty.eq_fields.into_inner()),
+                hash: class_hash_from_pb(ty.hash, ty.hash_fields.into_inner()),
             })?))
         }
+    }
+}
+
+/// Reads a `Type`'s `eq` rule. An unknown value is a rule this build cannot
+/// replay, so it reads as [`ClassEq::Custom`]; field names only count for
+/// `CLASS_EQ_FIELDS`.
+fn class_eq_from_pb(eq: i32, fields: Vec<String>) -> ClassEq {
+    match pb::ClassEq::try_from(eq) {
+        Ok(pb::ClassEq::Identity) => ClassEq::Identity,
+        Ok(pb::ClassEq::Fields) => ClassEq::Fields(fields),
+        Ok(pb::ClassEq::Custom) | Err(_) => ClassEq::Custom,
+    }
+}
+
+/// Reads a `Type`'s `hash` rule, as [`class_eq_from_pb`] reads `eq`.
+fn class_hash_from_pb(hash: i32, fields: Vec<String>) -> ClassHash {
+    match pb::ClassHash::try_from(hash) {
+        Ok(pb::ClassHash::Identity) => ClassHash::Identity,
+        Ok(pb::ClassHash::Fields) => ClassHash::Fields(fields),
+        Ok(pb::ClassHash::Unhashable) => ClassHash::Unhashable,
+        Ok(pb::ClassHash::Custom) | Err(_) => ClassHash::Custom,
     }
 }
 
@@ -1152,6 +1253,22 @@ fn time_from_proto(t: pb::Time) -> Result<MontyTime, ProtoConvertError> {
             .transpose()?,
         timezone_name: t.timezone_name,
         fold: ranged_u8(t.fold, 0..=1, "Time.fold")?,
+    })
+}
+
+fn complex_to_proto(c: &MontyComplex) -> pb::Complex {
+    pb::Complex {
+        real: Some(c.real),
+        imag: Some(c.imag),
+    }
+}
+
+/// Both parts are `optional` only so that `-0.0` survives the wire; a frame
+/// leaving one out is malformed.
+fn complex_from_proto(c: &pb::Complex) -> Result<MontyComplex, ProtoConvertError> {
+    Ok(MontyComplex {
+        real: c.real.ok_or(ProtoConvertError::MissingField("Complex.real"))?,
+        imag: c.imag.ok_or(ProtoConvertError::MissingField("Complex.imag"))?,
     })
 }
 

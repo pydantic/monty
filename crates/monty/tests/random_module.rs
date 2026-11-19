@@ -292,7 +292,7 @@ except OSError as exc:
 fn call_host_dump_taken_while_waiting_for_entropy_resumes_the_stashed_draw() {
     let code = "import random\nrandom.choice(['a', 'b', 'c']) + random.choice('xyz')";
     let progress = start_call_host(code);
-    let bytes = dump("test.py", None, SessionRef::Running(&progress)).unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
     let Session::Running(loaded) = Dump::load(&bytes).unwrap().state else {
         panic!("expected a running session");
     };
@@ -380,7 +380,7 @@ fn the_module_generator_persists_across_repl_feeds() {
         MontyObject::float(0.622_901_694_889_701_9)
     );
     // The seeded generator also travels through a dump of the idle session.
-    let bytes = dump("test.py", None, SessionRef::Idle(&repl)).unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Idle(&repl)).unwrap();
     let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
         panic!("expected an idle session");
     };
@@ -402,7 +402,7 @@ fn a_session_seed_applies_across_repl_feeds_and_dumps() {
     let mut repl =
         MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default()).with_os_policy(os_policy);
     repl.feed_run("import random", vec![], PrintWriter::Stdout).unwrap();
-    let bytes = dump("test.py", None, SessionRef::Idle(&repl)).unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Idle(&repl)).unwrap();
     let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
         panic!("expected an idle session");
     };

@@ -2,7 +2,8 @@
 
 ## 1. Bump Version
 
-Edit `Cargo.toml` to bump the version (both the main `version` and the package versions)
+Edit `Cargo.toml` to bump the version: the main `version` and every internal crate in `[workspace.dependencies]`.
+Keep the internal crates' `=` prefix: each published crate must depend on exactly its own release of the others.
 
 Run
 
@@ -14,12 +15,12 @@ This will update `Cargo.lock`, sync `package.json`/`package-lock.json` (via `cra
 and sync the `pydantic-monty` metapackage's version and its exact pins on
 `pydantic-monty-client`/`pydantic-monty-runtime` (via `crates/monty-python/build.rs`).
 
-## 2. Commit and Push
+## 2. Commit and Push a new branch
 
 ```bash
 git checkout -b prepare-release-vX.Y.Z
 git commit -am "Bump version to vX.Y.Z"
-git push
+git push --set-upstream origin HEAD
 ```
 
 ## 3. Create Release via GitHub UI
@@ -35,6 +36,11 @@ Once the tag is pushed, CI will:
     and the `pydantic-monty` metapackage that pins both)
 - Publish to NPM (`@pydantic/monty` + the platform packages carrying the napi library, the `monty` binary, and the wasm build)
 - Publish the Rust crates to crates.io (`monty`, `monty-types`, `monty-alloc`, `monty-fs`, `monty-runtime`, `monty-macros`, `monty-proto`, `monty-pool`, `monty-type-checking`, `monty-typeshed`) via `cargo publish --workspace`
+
+`crates/monty-js/scripts/assemble-packages.mjs` stages the main npm package under `npm/main/`
+and adds exact platform `optionalDependencies` there before packing.
+The development manifest and lockfile omit these dependencies so version bumps do not need unpublished packages.
+CI tests the assembled tarballs, then publishes the platform packages before the main package.
 
 Monitor the workflow at https://github.com/pydantic/monty/actions
 

@@ -11,20 +11,19 @@ use std::{
     fmt,
     iter::once,
     marker::PhantomData,
-    mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
     sync::Arc,
 };
 
-use monty_types::{MontyUuid, ResourceTracker};
+use monty_types::{DEFAULT_GC_INTERVAL, MontyUuid, ResourceTracker};
 use serde::{de::Error as _, ser::SerializeStruct};
 
 #[cfg(feature = "ref-count-return")]
-use crate::types::Type;
+use crate::types::TypeRef;
 use crate::{
     asyncio::{Awaiter, ExternalFutureState, GatherState},
-    types::{ExtFunction, HostClassType, TimeZone, Tuple},
+    types::{ExtFunction, HostClassType, TimeZone, Tuple, decimal::py_context::DecimalSlot},
     value::Value,
 };
 // Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
@@ -191,26 +190,28 @@ impl<'a> HeapReader<'a> {
         }
     }
 
+    /// Brands a shared external borrow without granting mutable access to its source.
     #[expect(clippy::unused_self, reason = "'a lifetime is used to create the safety guarantees")]
     pub fn protect<'t, U: ?Sized>(&mut self, value: &'t U) -> BorrowedHeapRead<'t, 'a, U> {
         BorrowedHeapRead {
-            inner: ManuallyDrop::new(HeapRead {
+            inner: HeapRead {
                 value: NonNull::from(value),
-                readers: NonNull::dangling(),
                 borrow: PhantomData,
-            }),
+            },
             original: PhantomData,
         }
     }
 
+    /// Brands an exclusive external borrow; payload access is serialized by this reader.
     #[expect(clippy::unused_self, reason = "'a lifetime is used to create the safety guarantees")]
     pub fn protect_mut<'t, U: ?Sized>(&mut self, value: &'t mut U) -> BorrowedHeapReadMut<'t, 'a, U> {
         BorrowedHeapReadMut {
-            inner: ManuallyDrop::new(HeapRead {
-                value: NonNull::from(value),
-                readers: NonNull::dangling(),
-                borrow: PhantomData,
-            }),
+            inner: HeapReadMut {
+                read: HeapRead {
+                    value: NonNull::from(value),
+                    borrow: PhantomData,
+                },
+            },
             original: PhantomData,
         }
     }
@@ -363,8 +364,10 @@ impl<C: ContainsHeap, T> DropWithContext<C> for HeapAllocation<'_, T> {
 pub struct HeapObjectRead<'a, T: ?Sized> {
     /// Identity of the complete Python object exposed by `read`.
     id: HeapId,
-    /// Typed access guard that keeps the entry alive.
-    read: HeapRead<'a, T>,
+    /// Mutable capability; never exposed by value or mutable reference.
+    read: HeapReadMut<'a, T>,
+    /// Owned reader count, keeping this entry alive until the guard is dropped.
+    readers: NonNull<Cell<usize>>,
 }
 
 impl<'a, T: ?Sized> HeapObjectRead<'a, T> {
@@ -381,16 +384,19 @@ impl<'a, T: ?Sized> HeapObjectRead<'a, T> {
 }
 
 impl<'a, T: ?Sized> Deref for HeapObjectRead<'a, T> {
-    type Target = HeapRead<'a, T>;
+    type Target = HeapReadMut<'a, T>;
 
     fn deref(&self) -> &Self::Target {
         &self.read
     }
 }
 
-impl<T: ?Sized> DerefMut for HeapObjectRead<'_, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.read
+impl<T: ?Sized> Drop for HeapObjectRead<'_, T> {
+    fn drop(&mut self) {
+        // SAFETY: the paged storage keeps the counter's address stable, and this
+        // owned reader count prevents the entry from being freed before the guard.
+        let cell = unsafe { self.readers.as_ref() };
+        cell.set(cell.get() - 1);
     }
 }
 
@@ -400,11 +406,6 @@ impl<T: ?Sized> DerefMut for HeapObjectRead<'_, T> {
 /// handle also supports projected fields and data protected by `protect`.
 pub struct HeapRead<'a, T: ?Sized> {
     value: NonNull<T>,
-    /// Pointer to the `readers` counter in the owning `HeapValue`.
-    ///
-    /// Incremented on creation, decremented on drop. This ensures `dec_ref`
-    /// cannot free the entry while any `HeapRead` pointing into it exists.
-    readers: NonNull<Cell<usize>>,
     /// Makes the lifetime `'a` invariant. In combination with the invariant lifetime
     /// on `HeapReader` and the `HeapReader::with` API, this guarantees that this
     /// `HeapRead` originated from that matching `HeapReader` (there is no way to
@@ -412,119 +413,133 @@ pub struct HeapRead<'a, T: ?Sized> {
     borrow: PhantomData<fn(&'a T) -> &'a T>,
 }
 
-impl<T: ?Sized> Drop for HeapRead<'_, T> {
-    fn drop(&mut self) {
-        // SAFETY: (DH) the readers pointer is valid for the lifetime of the HeapValue,
-        // which is guaranteed by the paged storage (addresses never move) and the
-        // reader count itself (dec_ref cannot free an entry with active readers).
-        let cell = unsafe { self.readers.as_ref() };
-        cell.set(cell.get() - 1);
+/// Aliasable mutable-access capability, used only through shared references.
+///
+/// The matching reader serializes payload access. Owners expose no `DerefMut`,
+/// extraction or cloning API: replacing this capability could detach its pointer
+/// from the source lifetime or reader count held by its owner.
+pub struct HeapReadMut<'a, T: ?Sized> {
+    read: HeapRead<'a, T>,
+}
+
+impl<'a, T: ?Sized> Deref for HeapReadMut<'a, T> {
+    type Target = HeapRead<'a, T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.read
     }
 }
 
 impl<'a, T: ?Sized> HeapRead<'a, T> {
-    /// Accesses the value contained in this reference.
-    pub fn get<'r>(&self, _: &'r HeapReader<'a>) -> &'r T {
+    /// Borrows the value while both this handle and the reader remain borrowed.
+    ///
+    /// Borrowing the handle also keeps protected external data and projection sources alive.
+    pub fn get<'r>(&'r self, _: &'r HeapReader<'a>) -> &'r T {
         // SAFETY: (DH)
         //  - The HeapReader has an invariant lifetime 'a which guarantees that this HeapRead
         //    came from the heap borrowed by this HeapReader.
         //  - The address of the `HeapValue` never changes because entries are stored in
         //    paged storage (`HeapEntries`) where each page is never reallocated or moved.
-        //  - The HeapRead holds a strong reader reference (via the `readers` counter in
-        //    `HeapValue`) which guarantees the entry will never be freed by `dec_ref`
-        //    or `collect_cycles` while this `HeapRead` exists. The cycle collector's
+        //  - The owning HeapObjectRead holds a reader count which guarantees the entry
+        //    will never be freed by `dec_ref` or `collect_cycles` while the owner is
+        //    borrowed through this HeapRead. The cycle collector's
         //    `Scan` phase treats `readers > 0` as an external reference and resurrects
         //    the entry to Black instead of condemning it as White.
         //  - The type of the `HeapValue` can never change once allocated. This is
         //    guaranteed by never exposing `&mut HeapData` outside of this module.
+        //  - For protected external data and projections, borrowing this handle keeps the source
+        //    borrow alive instead; their wrappers do not own a reader count.
         //  - The borrow on `HeapReader` guarantees that there are no mutable borrows on any heap
         //    data while the return value of this function is alive.
         unsafe { self.value.as_ref() }
     }
 
-    /// Mutably accesses the value contained in this reference.
-    pub fn get_mut<'r>(&mut self, _: &'r mut HeapReader<'a>) -> &'r mut T {
-        // SAFETY: see same constraints as in get() above.
-        unsafe { self.value.as_mut() }
-    }
-
     /// Casts this reader to a field of type `U` at some `offset` within the struct.
     ///
-    /// Transfers ownership of the reader count from `self` to the returned `HeapRead`.
+    /// Borrows `self` to keep the source alive; the projection owns no reader count.
     ///
     /// # Safety
     ///   - The field of type `U` must ALWAYS exist at `offset` within `T` (i.e. `T` cannot be an enum, union etc)
     unsafe fn cast_as_member_ref<U>(&self, offset: usize) -> BorrowedHeapRead<'_, 'a, U> {
         BorrowedHeapRead {
-            // SAFETY: (DH) - caller of this function guarantees the offset & cast is valid
-            inner: ManuallyDrop::new(HeapRead {
+            inner: HeapRead {
                 // SAFETY: caller guarantees offset points to a valid field of type U within T
                 value: unsafe { self.value.byte_add(offset) }.cast(),
-                // dangling is fine because this heapread will never be dropped, and it is
-                // also not `Clone` so there's no risk of this value ever being used
-                readers: NonNull::dangling(),
                 borrow: PhantomData,
-            }),
+            },
             original: PhantomData,
         }
+    }
+}
+
+impl<'a, T: ?Sized> HeapReadMut<'a, T> {
+    /// Exclusively borrows the payload, not the capability; aliases share the reader lock.
+    pub fn get_mut<'r>(&'r self, _: &'r mut HeapReader<'a>) -> &'r mut T {
+        let mut value = self.read.value;
+        // SAFETY: the owner guarantees a writable, live pointee. The mutable reader
+        // borrow excludes all other payload access until this reference expires.
+        unsafe { value.as_mut() }
     }
 
     /// Casts this reader to a field of type `U` at some `offset` within the struct.
     ///
-    /// Transfers ownership of the reader count from `self` to the returned `HeapRead`.
+    /// Borrows the capability's owner; payload exclusivity still comes from the reader.
     ///
     /// # Safety
     ///   - The field of type `U` must ALWAYS exist at `offset` within `T` (i.e. `T` cannot be an enum, union etc)
-    unsafe fn cast_as_member_ref_mut<U>(&mut self, offset: usize) -> BorrowedHeapReadMut<'_, 'a, U> {
+    unsafe fn cast_as_member_ref_mut<U>(&self, offset: usize) -> BorrowedHeapReadMut<'_, 'a, U> {
         BorrowedHeapReadMut {
-            // SAFETY: (DH) - caller of this function guarantees the offset & cast is valid
-            inner: ManuallyDrop::new(HeapRead {
-                // SAFETY: caller guarantees offset points to a valid field of type U within T
-                value: unsafe { self.value.byte_add(offset) }.cast(),
-                // dangling is fine because this heapread will never be dropped, and it is
-                // also not `Clone` so there's no risk of this value ever being used
-                readers: NonNull::dangling(),
-                borrow: PhantomData,
-            }),
+            inner: HeapReadMut {
+                read: HeapRead {
+                    // SAFETY: caller guarantees offset points to a valid field of type U within T
+                    value: unsafe { self.read.value.byte_add(offset) }.cast(),
+                    borrow: PhantomData,
+                },
+            },
             original: PhantomData,
         }
+    }
+}
+
+/// Read-only payload access, including projections that must re-resolve their storage.
+///
+/// A vector may be replaced between accesses through another capability;
+/// its projection must borrow the current allocation rather than cache a pointer.
+pub(crate) trait HeapView<'a, T: ?Sized> {
+    /// Borrows the current payload for the joint lifetime of the view and reader.
+    fn get<'r>(&'r self, reader: &'r HeapReader<'a>) -> &'r T;
+}
+
+impl<'a, T: ?Sized> HeapView<'a, T> for HeapRead<'a, T> {
+    fn get<'r>(&'r self, reader: &'r HeapReader<'a>) -> &'r T {
+        self.get(reader)
     }
 }
 
 impl<'a, T> HeapRead<'a, Vec<T>> {
-    pub fn as_slice(&self, reader: &HeapReader<'a>) -> BorrowedHeapRead<'_, 'a, [T]> {
-        BorrowedHeapRead {
-            inner: ManuallyDrop::new(HeapRead {
-                value: NonNull::from(self.get(reader).as_slice()),
-                readers: NonNull::dangling(),
-                borrow: PhantomData,
-            }),
-            original: PhantomData,
-        }
+    /// Projects the current vector buffer without retaining its allocation address.
+    pub fn as_slice(&self) -> HeapSliceRead<'_, 'a, T> {
+        HeapSliceRead { source: self }
     }
 }
 
-impl<'a, T: ?Sized> HeapRead<'a, Box<T>> {
-    pub fn as_box_value(&self, reader: &HeapReader<'a>) -> BorrowedHeapRead<'_, 'a, T> {
-        BorrowedHeapRead {
-            inner: ManuallyDrop::new(HeapRead {
-                value: NonNull::from(self.get(reader).as_ref()),
-                readers: NonNull::dangling(),
-                borrow: PhantomData,
-            }),
-            original: PhantomData,
-        }
+/// A vector projection that observes buffer replacement between reader borrows.
+pub struct HeapSliceRead<'source, 'a, T> {
+    source: &'source HeapRead<'a, Vec<T>>,
+}
+
+impl<'a, T> HeapView<'a, [T]> for HeapSliceRead<'_, 'a, T> {
+    fn get<'r>(&'r self, reader: &'r HeapReader<'a>) -> &'r [T] {
+        self.source.get(reader).as_slice()
     }
 }
 
-/// Represents the reborrow of a `HeapRead` as a reference to a field of the original type.
+/// Shared capability whose source borrow stays alive through every payload access.
 pub struct BorrowedHeapRead<'original, 'a, U: ?Sized> {
-    // inner is a projected HeapRead which will never be dropped
-    inner: ManuallyDrop<HeapRead<'a, U>>,
+    inner: HeapRead<'a, U>,
     original: PhantomData<&'original U>,
 }
 
-// NB no DerefMut - would need to have a `BorrowedHeapReadMut`
 impl<'a, U: ?Sized> Deref for BorrowedHeapRead<'_, 'a, U> {
     type Target = HeapRead<'a, U>;
 
@@ -533,7 +548,7 @@ impl<'a, U: ?Sized> Deref for BorrowedHeapRead<'_, 'a, U> {
     }
 }
 
-/// Unsafe helper for `heap_read_as_field`, do not use. Same safety invariants as `HeapRead::cast_as_member`.
+/// Helper for `heap_read_ref_as_field`; callers must uphold `HeapRead::cast_as_member_ref`'s contract.
 pub(crate) unsafe fn cast_as_member_ref_type_hinted<'r, 'a, T, U>(
     heap_read: &'r HeapRead<'a, T>,
     offset: usize,
@@ -560,30 +575,23 @@ macro_rules! heap_read_ref_as_field {
 
 pub(crate) use heap_read_ref_as_field;
 
-/// Represents the reborrow of a `HeapRead` as a reference to a field of the original type.
+/// Mutable capability backed by a source borrow, never exposing its inner handle mutably.
 pub struct BorrowedHeapReadMut<'original, 'a, U: ?Sized> {
-    // inner is a projected HeapRead which will never be dropped
-    inner: ManuallyDrop<HeapRead<'a, U>>,
+    inner: HeapReadMut<'a, U>,
     original: PhantomData<&'original mut U>,
 }
 
 impl<'a, U: ?Sized> Deref for BorrowedHeapReadMut<'_, 'a, U> {
-    type Target = HeapRead<'a, U>;
+    type Target = HeapReadMut<'a, U>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl<U: ?Sized> DerefMut for BorrowedHeapReadMut<'_, '_, U> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
-    }
-}
-
-/// Unsafe helper for `heap_read_as_field`, do not use. Same safety invariants as `HeapRead::cast_as_member`.
+/// Helper for `heap_read_ref_as_field_mut`; callers must uphold `HeapReadMut::cast_as_member_ref_mut`'s contract.
 pub(crate) unsafe fn cast_as_member_ref_mut_type_hinted<'r, 'a, T, U>(
-    heap_read: &'r mut HeapRead<'a, T>,
+    heap_read: &'r HeapReadMut<'a, T>,
     offset: usize,
     _type_hint: impl for<'s> Fn(&'s HeapRead<'a, T>) -> *const U,
 ) -> BorrowedHeapReadMut<'r, 'a, U> {
@@ -681,7 +689,7 @@ impl<'a> HeapPtr<'a> {
     /// `UnsafeCell::get` produces a `*mut HeapData` with `SharedReadWrite` permission,
     /// so the returned `&HeapData` is sound even though the underlying `HeapPtr` was
     /// minted via `&self`-derived `entry_ptr`. Mutation of the payload still requires
-    /// `&mut HeapReader` via the [`HeapRead`] machinery.
+    /// `&mut HeapReader` via the [`HeapReadMut`] machinery.
     pub fn data<'r>(self, reader: &'r HeapReader<'a>) -> &'r HeapData {
         let entry = self.entry(reader);
         // SAFETY: `UnsafeCell::get` yields a `SharedReadWrite` pointer; the `&HeapReader`
@@ -691,15 +699,13 @@ impl<'a> HeapPtr<'a> {
     }
 
     /// Returns the typed [`HeapReadOutput`] for this entry, incrementing the
-    /// reader count so the wrapped [`HeapRead<T>`] participates in the
-    /// reader-count GC safety net (it is decremented on `Drop`).
+    /// reader count owned by the wrapped [`HeapObjectRead<T>`] until its `Drop`.
     ///
-    /// All `HeapRead<T>` handle pointers are derived through the `UnsafeHeapData`
-    /// `UnsafeCell`, so they retain `SharedReadWrite` permission and remain valid
-    /// for both read and mutable access (the latter via `HeapRead::get_mut`,
-    /// which requires `&mut HeapReader`).
+    /// The guard's capability pointers are derived through the `UnsafeHeapData`
+    /// `UnsafeCell`, retaining `SharedReadWrite` permission for both read access
+    /// and mutation via [`HeapReadMut::get_mut`], which requires `&mut HeapReader`.
     fn read(self, id: HeapId, reader: &HeapReader<'a>) -> HeapReadOutput<'a> {
-        /// Computes a `HeapRead` from the raw `UnsafeCell` pointer and a shared reference
+        /// Computes a `HeapObjectRead` from the raw `UnsafeCell` pointer and a shared reference
         /// to the variant field. The `&T` is only used to compute the field's byte offset
         /// within the `HeapData` enum; the returned `NonNull` is derived from the original
         /// `*mut HeapData` pointer so it inherits the `SharedReadWrite` permission from
@@ -716,13 +722,15 @@ impl<'a> HeapPtr<'a> {
             let offset = field_addr - base_addr;
             HeapObjectRead {
                 id,
-                read: HeapRead {
-                    // SAFETY: The pointer is derived from the UnsafeCell's `*mut` via byte
-                    // offset, preserving the `SharedReadWrite` permission. No reference retag
-                    // occurs — we only use the `&T` for its address, not to derive the pointer.
-                    value: unsafe { NonNull::new_unchecked(base.byte_add(offset).cast::<T>()) },
-                    readers,
-                    borrow: PhantomData,
+                readers,
+                read: HeapReadMut {
+                    read: HeapRead {
+                        // SAFETY: The pointer is derived from the UnsafeCell's `*mut` via byte
+                        // offset, preserving the `SharedReadWrite` permission. No reference retag
+                        // occurs — we only use the `&T` for its address, not to derive the pointer.
+                        value: unsafe { NonNull::new_unchecked(base.byte_add(offset).cast::<T>()) },
+                        borrow: PhantomData,
+                    },
                 },
             }
         }
@@ -733,7 +741,7 @@ impl<'a> HeapPtr<'a> {
         /// inner pointer is *loaded out of* that field rather than derived by
         /// dereferencing the box. Dereferencing (`boxed.as_ref()`) would create a
         /// shared `&T` whose `SharedReadOnly` provenance makes later
-        /// `HeapRead::get_mut` writes UB; the loaded pointer instead carries the
+        /// `HeapReadMut::get_mut` writes UB; the loaded pointer instead carries the
         /// box's own stored (writeable) provenance.
         #[expect(
             clippy::borrowed_box,
@@ -757,10 +765,12 @@ impl<'a> HeapPtr<'a> {
             let value = unsafe { NonNull::new_unchecked(base.byte_add(offset).cast::<*mut T>().read()) };
             HeapObjectRead {
                 id,
-                read: HeapRead {
-                    value,
-                    readers,
-                    borrow: PhantomData,
+                readers,
+                read: HeapReadMut {
+                    read: HeapRead {
+                        value,
+                        borrow: PhantomData,
+                    },
                 },
             }
         }
@@ -776,7 +786,7 @@ impl<'a> HeapPtr<'a> {
 
         let entry = self.entry(reader);
         // Increment the reader count for this entry. The corresponding decrement
-        // happens in `HeapRead::drop`.
+        // happens in `HeapObjectRead::drop`.
         entry.readers.set(entry.readers.get() + 1);
         let readers = NonNull::from(&entry.readers);
         // Get the raw pointer from the UnsafeCell — this has SharedReadWrite permission.
@@ -950,10 +960,15 @@ pub(crate) struct Heap {
     /// Lazily allocated on first access to `timezone.utc`. Once created, the refcount
     /// is incremented on each access so the caller can drop their reference normally.
     timezone_utc: Option<HeapId>,
-    /// Live external functions indexed by name without owning heap references.
+    /// Owned references to the session's `decimal` contexts, indexed by [`DecimalSlot`].
+    ///
+    /// Created lazily by `types::decimal::py_context`. Kept here rather than on the VM so the
+    /// current context outlives each VM, as the heap does across REPL feeds and dumps.
+    decimal_contexts: [Option<HeapId>; DecimalSlot::COUNT],
+    /// Live sync and async external functions indexed by name without owning heap references.
     ///
     /// Uses `BTreeMap` to avoid large residual capacity from spikes of `ExtFunction` allocations.
-    ext_function_cache: BTreeMap<Arc<str>, HeapId>,
+    ext_function_cache: BTreeMap<Arc<str>, ExtFunctionSlots>,
     /// Live sandbox classes and instances by boundary uuid, so a value the host
     /// hands back resolves to the original object. Weak like
     /// `ext_function_cache`: cleared when the object is freed, rebuilt on restore.
@@ -967,12 +982,13 @@ pub(crate) struct Heap {
 
 impl serde::Serialize for Heap {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("Heap", 5)?;
+        let mut state = serializer.serialize_struct("Heap", 6)?;
         state.serialize_field("entries", &self.entries)?;
         state.serialize_field("tracker", &self.tracker)?;
         state.serialize_field("purple_count", &self.purple_count)?;
         state.serialize_field("allocations_since_gc", &self.allocations_since_gc.get())?;
         state.serialize_field("timezone_utc", &self.timezone_utc)?;
+        state.serialize_field("decimal_contexts", &self.decimal_contexts)?;
         state.end()
     }
 }
@@ -986,6 +1002,8 @@ impl<'de> serde::Deserialize<'de> for Heap {
             purple_count: usize,
             allocations_since_gc: u32,
             timezone_utc: Option<HeapId>,
+            #[serde(default)]
+            decimal_contexts: [Option<HeapId>; DecimalSlot::COUNT],
         }
         let fields = HeapFields::deserialize(deserializer)?;
         let mut entries = fields.entries;
@@ -1002,6 +1020,7 @@ impl<'de> serde::Deserialize<'de> for Heap {
             #[cfg(feature = "test-hooks")]
             gc_disabled: false,
             timezone_utc: fields.timezone_utc,
+            decimal_contexts: fields.decimal_contexts,
             ext_function_cache,
             boundary_index,
             host_type_index,
@@ -1026,7 +1045,11 @@ fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<WeakIndexes, &
         }
         match entry.get_mut().data.0.get_mut() {
             HeapData::ExtFunction(function) => {
-                indexes.ext_function_cache.insert(function.cache_key(), id);
+                *indexes
+                    .ext_function_cache
+                    .entry(function.cache_key())
+                    .or_default()
+                    .slot_mut(function.is_async()) = Some(id);
             }
             HeapData::Instance(instance) => {
                 indexes.index_boundary_uuid(instance.uuid(), id);
@@ -1045,7 +1068,7 @@ fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<WeakIndexes, &
 
 /// A freed object's key in one of the heap's weak indexes.
 enum WeakIndexKey {
-    ExtFunction(Arc<str>),
+    ExtFunction { name: Arc<str>, is_async: bool },
     Boundary(MontyUuid),
     HostType(MontyUuid),
 }
@@ -1053,9 +1076,29 @@ enum WeakIndexKey {
 /// The heap's weak (non-owning) indexes, rebuilt from the entries on restore.
 #[derive(Default)]
 struct WeakIndexes {
-    ext_function_cache: BTreeMap<Arc<str>, HeapId>,
+    ext_function_cache: BTreeMap<Arc<str>, ExtFunctionSlots>,
     boundary_index: BTreeMap<MontyUuid, HeapId>,
     host_type_index: BTreeMap<MontyUuid, HeapId>,
+}
+
+/// The live sync and async `ExtFunction`s sharing one name, each held
+/// separately so a sync and an async host function with that name stay distinct.
+#[derive(Debug, Default)]
+struct ExtFunctionSlots {
+    sync: Option<HeapId>,
+    async_fn: Option<HeapId>,
+}
+
+impl ExtFunctionSlots {
+    /// The slot for the sync or async function.
+    fn slot_mut(&mut self, is_async: bool) -> &mut Option<HeapId> {
+        if is_async { &mut self.async_fn } else { &mut self.sync }
+    }
+
+    /// The live function of the requested kind, if any.
+    fn get(&self, is_async: bool) -> Option<HeapId> {
+        if is_async { self.async_fn } else { self.sync }
+    }
 }
 
 impl WeakIndexes {
@@ -1067,8 +1110,7 @@ impl WeakIndexes {
     }
 }
 
-/// Default GC interval — run cycle collection every 100 000 GC-tracked
-/// allocations unless the configured resource tracker overrides it.
+/// GC interval when the resource tracker sets none: [`DEFAULT_GC_INTERVAL`].
 ///
 /// The trial-deletion collector additionally short-circuits the trace when
 /// `purple_count == 0`, so programs that produce no cycle candidates pay no
@@ -1076,10 +1118,10 @@ impl WeakIndexes {
 ///
 /// When the `memory-model-checks` feature is enabled, this is reduced to 1 to
 /// stress-test GC behavior on every allocation.
-const DEFAULT_GC_INTERVAL: usize = if cfg!(feature = "memory-model-checks") {
+const GC_INTERVAL: usize = if cfg!(feature = "memory-model-checks") {
     1
 } else {
-    100_000
+    DEFAULT_GC_INTERVAL
 };
 
 impl Heap {
@@ -1095,6 +1137,7 @@ impl Heap {
             #[cfg(feature = "test-hooks")]
             gc_disabled: false,
             timezone_utc: None,
+            decimal_contexts: [None; DecimalSlot::COUNT],
             ext_function_cache: BTreeMap::new(),
             boundary_index: BTreeMap::new(),
             host_type_index: BTreeMap::new(),
@@ -1116,6 +1159,19 @@ impl Heap {
         let empty_tuple = this.entries.allocate(new_entry);
         debug_assert_eq!(empty_tuple, EMPTY_TUPLE_ID);
         this
+    }
+
+    /// The ids of the live entries `keep` accepts, in index order, for a one-off
+    /// pass over a loaded heap (`dump_upgrade`).
+    pub(crate) fn ids_where(&mut self, keep: impl Fn(&HeapData) -> bool) -> Vec<HeapId> {
+        (0..self.entries.len())
+            .map(HeapId::from_index)
+            .filter(|&id| {
+                self.entries
+                    .entry(id)
+                    .is_some_and(|mut entry| keep(entry.get_mut().data.0.get_mut()))
+            })
+            .collect()
     }
 
     /// Number of entries in the heap (including freed slots).
@@ -1174,28 +1230,36 @@ impl Heap {
         Value::Ref(EMPTY_TUPLE_ID)
     }
 
-    /// Returns the external function for `name`, reusing a live object when possible.
+    /// Returns the sync or async external function for `name`, reusing a live object when possible.
     ///
     /// The cache holds no reference count of its own. Its entry is removed when the
     /// last owning reference is dropped, before the heap slot can be reused.
-    pub fn get_ext_function(&mut self, name: &str) -> Value {
-        if let Some(id) = self.ext_function_cache.get(name).copied() {
+    pub fn get_ext_function(&mut self, name: &str, is_async: bool) -> Value {
+        if let Some(id) = self.ext_function_cache.get(name).and_then(|slots| slots.get(is_async)) {
             self.inc_ref(id);
             Value::Ref(id)
         } else {
-            let function = ExtFunction::new(name);
+            let function = ExtFunction::new(name, is_async);
             let cache_key = function.cache_key();
             let id = self.allocate(HeapData::ExtFunction(function));
-            let previous = self.ext_function_cache.insert(cache_key, id);
-            debug_assert!(previous.is_none());
+            let slot = self.ext_function_cache.entry(cache_key).or_default().slot_mut(is_async);
+            debug_assert!(slot.is_none());
+            *slot = Some(id);
             Value::Ref(id)
         }
     }
 
-    /// Removes `id` from the weak cache without disturbing a duplicate-name winner.
-    fn remove_ext_function_cache_entry(cache: &mut BTreeMap<Arc<str>, HeapId>, name: &str, id: HeapId) {
-        if cache.get(name) == Some(&id) {
-            cache.remove(name);
+    /// Clears `id` from the weak cache without disturbing a duplicate-name winner,
+    /// dropping the name once neither its sync nor its async slot is live.
+    fn remove_ext_function_cache_entry(&mut self, name: &str, is_async: bool, id: HeapId) {
+        if let Some(slots) = self.ext_function_cache.get_mut(name) {
+            let slot = slots.slot_mut(is_async);
+            if *slot == Some(id) {
+                *slot = None;
+            }
+            if slots.sync.is_none() && slots.async_fn.is_none() {
+                self.ext_function_cache.remove(name);
+            }
         }
     }
 
@@ -1203,7 +1267,10 @@ impl Heap {
     /// the index entry can be cleared (see [`Heap::remove_weak_index_entry`]).
     fn weak_index_key(data: &HeapData) -> Option<WeakIndexKey> {
         match data {
-            HeapData::ExtFunction(function) => Some(WeakIndexKey::ExtFunction(function.cache_key())),
+            HeapData::ExtFunction(function) => Some(WeakIndexKey::ExtFunction {
+                name: function.cache_key(),
+                is_async: function.is_async(),
+            }),
             HeapData::Instance(instance) => instance.uuid().map(WeakIndexKey::Boundary),
             HeapData::Class(class) => class.uuid().map(WeakIndexKey::Boundary),
             HeapData::HostClassType(ty) => Some(WeakIndexKey::HostType(ty.type_id())),
@@ -1216,8 +1283,8 @@ impl Heap {
     /// restored dump may hold duplicates).
     fn remove_weak_index_entry(&mut self, key: Option<WeakIndexKey>, id: HeapId) {
         match key {
-            Some(WeakIndexKey::ExtFunction(name)) => {
-                Self::remove_ext_function_cache_entry(&mut self.ext_function_cache, &name, id);
+            Some(WeakIndexKey::ExtFunction { name, is_async }) => {
+                self.remove_ext_function_cache_entry(&name, is_async, id);
             }
             Some(WeakIndexKey::Boundary(uuid)) if self.boundary_index.get(&uuid) == Some(&id) => {
                 self.boundary_index.remove(&uuid);
@@ -1294,6 +1361,20 @@ impl Heap {
             self.timezone_utc = Some(id);
             Value::Ref(id)
         }
+    }
+
+    /// The heap-owned `decimal` context in `slot`, if it has been created.
+    ///
+    /// The id is borrowed: callers handing it out as a `Value` must `inc_ref` it.
+    pub(crate) fn decimal_context(&self, slot: DecimalSlot) -> Option<HeapId> {
+        self.decimal_contexts[slot as usize]
+    }
+
+    /// Stores an owned reference to a `decimal` context in `slot`, returning the owned
+    /// reference it replaces for the caller to release (callers may hold heap readers).
+    #[must_use]
+    pub(crate) fn replace_decimal_context(&mut self, slot: DecimalSlot, id: HeapId) -> Option<HeapId> {
+        self.decimal_contexts[slot as usize].replace(id)
     }
 
     /// Increments the reference count for an existing heap entry.
@@ -1448,7 +1529,7 @@ impl Heap {
         if self.purple_count == 0 {
             return false;
         }
-        let interval = self.tracker.gc_interval().unwrap_or(DEFAULT_GC_INTERVAL);
+        let interval = self.tracker.gc_interval().unwrap_or(GC_INTERVAL);
         (self.allocations_since_gc.get() as usize) >= interval
     }
 
@@ -1730,10 +1811,12 @@ impl HeapReader<'_> {
     ///
     /// Unlike the cycle collector's [`mark_gray`](Self::mark_gray) this touches
     /// no colors or refcounts, so it cannot perturb the state under test.
-    pub(crate) fn unreachable_entries(&self, roots: impl IntoIterator<Item = HeapId>) -> Vec<(HeapId, Type)> {
+    pub(crate) fn unreachable_entries(&self, roots: impl IntoIterator<Item = HeapId>) -> Vec<(HeapId, TypeRef)> {
         let mut seen: HashSet<HeapId> = HashSet::new();
         let mut work_stack: Vec<HeapId> = Vec::new();
-        for root in roots {
+        // The heap owns the session's decimal contexts, so they are live without a name.
+        let held = self.decimal_contexts.iter().flatten().copied();
+        for root in roots.into_iter().chain(held) {
             if seen.insert(root) {
                 work_stack.push(root);
             }
@@ -1956,6 +2039,12 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::Class(class) => {
+            // Base classes the class owns; must match `Class::py_dec_ref_ids`.
+            for base in class.bases() {
+                if let Some(id) = base.class_id() {
+                    on_child(id);
+                }
+            }
             // The class namespace holds method/class-variable values.
             for (k, v) in class.namespace() {
                 if let Value::Ref(id) = k {
@@ -1987,13 +2076,18 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::DataclassField(field) => {
-            // A captured default can reach back to the class the field belongs
-            // to (`x: object = SomeInstanceOfIt`), closing a cycle.
-            if let Value::Ref(id) = field.annotation() {
-                on_child(*id);
+            // A captured default or factory can reach back to the class the
+            // field belongs to (`x: object = SomeInstanceOfIt`, or a factory
+            // closure capturing the class), closing a cycle.
+            for value in field.ref_children() {
+                on_child(value);
             }
-            if let Some(Value::Ref(id)) = field.default() {
-                on_child(*id);
+        }
+        HeapData::DataclassMethod(method) => {
+            // A generated `__init__` holds the captured defaults and factories,
+            // which can reach back to the class it lives in.
+            for id in method.ref_children() {
+                on_child(id);
             }
         }
         HeapData::ListIterator(iter) => on_child(iter.list_id()),
@@ -2015,24 +2109,16 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::DictValueIterator(iter) => on_child(iter.source_id()),
         HeapData::SetIterator(iter) => on_child(iter.source_id()),
         HeapData::CallableIterator(iter) => iter.for_each_child_id(on_child),
+        HeapData::DirScan(scan) => scan.for_each_child_id(on_child),
         HeapData::Itertools(iter) => iter.for_each_child_id(on_child),
+        HeapData::Csv(csv) => csv.for_each_child_id(on_child),
         HeapData::Partial(partial) => partial.for_each_child_id(on_child),
         HeapData::GenericAlias(alias) => alias.for_each_child_id(on_child),
         HeapData::Union(union) => union.for_each_child_id(on_child),
-        HeapData::Module(m) => {
-            // Module attrs can contain references to heap values
-            if !m.has_refs() {
-                return;
-            }
-            for (k, v) in m.attrs() {
-                if let Value::Ref(id) = k {
-                    on_child(*id);
-                }
-                if let Value::Ref(id) = v {
-                    on_child(*id);
-                }
-            }
-        }
+        HeapData::ForwardRef(forward_ref) => forward_ref.for_each_child_id(on_child),
+        HeapData::LruCache(cache) => cache.for_each_child_id(on_child),
+        // Attrs and, for a file module, its namespace dict.
+        HeapData::Module(m) => m.for_each_child_id(on_child),
         HeapData::Coroutine(coro) => {
             // Add namespace values that are heap references
             for value in &coro.namespace {
@@ -2117,6 +2203,11 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(*id);
             }
         }
+        // Mirror `py_dec_ref_ids_for_data`: both own references to decimal contexts.
+        HeapData::DecimalSignalDict(dict) => on_child(dict.context_id()),
+        HeapData::DecimalContextManager(manager) => manager.context_ids().for_each(on_child),
+        // The owned `__cause__` / `__context__`; exceptions are still not GC-tracked.
+        HeapData::Exception(exc) => exc.owned_chain_ids().for_each(on_child),
         // Leaf types with no heap references
         _ => {}
     }
@@ -2160,6 +2251,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Instance(instance) => instance.py_dec_ref_ids(stack),
         HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
         HeapData::DataclassField(field) => field.py_dec_ref_ids(stack),
+        HeapData::DataclassMethod(method) => method.py_dec_ref_ids(stack),
         HeapData::DataclassParams(params) => params.py_dec_ref_ids(stack),
         HeapData::ListIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::DequeIterator(iter) => iter.py_dec_ref_ids(stack),
@@ -2172,10 +2264,14 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::DictValueIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::SetIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::CallableIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::DirScan(scan) => scan.py_dec_ref_ids(stack),
         HeapData::Itertools(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::Csv(csv) => csv.py_dec_ref_ids(stack),
         HeapData::Partial(partial) => partial.py_dec_ref_ids(stack),
         HeapData::GenericAlias(alias) => alias.py_dec_ref_ids(stack),
         HeapData::Union(union) => union.py_dec_ref_ids(stack),
+        HeapData::ForwardRef(forward_ref) => forward_ref.py_dec_ref_ids(stack),
+        HeapData::LruCache(cache) => cache.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {
             // Decrement ref count for namespace values that are heap references
@@ -2243,6 +2339,11 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         }
         // Release the shared subject reference (mirrors `for_each_child_id`).
         HeapData::ReMatch(m) => m.py_dec_ref_ids(stack),
+        // Release the owned decimal context references (mirrors `for_each_child_id`).
+        HeapData::DecimalSignalDict(dict) => dict.py_dec_ref_ids(stack),
+        HeapData::DecimalContextManager(manager) => manager.py_dec_ref_ids(stack),
+        // Release the owned `__cause__` / `__context__` references (mirrors `for_each_child_id`).
+        HeapData::Exception(exc) => exc.py_dec_ref_ids(stack),
         // other types have no nested heap references
         _ => {}
     }
@@ -2251,10 +2352,15 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
 /// Compile-fail soundness tests for [`HeapReader`].
 ///
 /// Gated behind `--cfg heap_reader_compile_fail_tests` so they are only compiled
-/// when the integration test harness runs `cargo check` with the appropriate flags.
+/// when the integration test harness runs `cargo rustc` with the appropriate flags.
 #[cfg(heap_reader_compile_fail_tests)]
 #[path = "../../tests/heap_reader_compile_fail_cases/cases.rs"]
 mod heap_reader_compile_fail_cases;
+
+/// Valid borrowed-handle usage, kept here to exercise the private production API under Miri.
+#[cfg(test)]
+#[path = "../../tests/heap_reader/borrowed.rs"]
+mod borrowed_tests;
 
 /// Cycle-collector unit tests.
 ///
@@ -2648,7 +2754,7 @@ mod tests {
         // Close the cycle: the callable list references the iterator back.
         heap.inc_ref(iter);
         HeapReader::with(&mut heap, &mut (), |reader, ()| {
-            let HeapReadOutput::List(mut l) = reader.read(list) else {
+            let HeapReadOutput::List(l) = reader.read(list) else {
                 unreachable!("just allocated a list")
             };
             let l = l.get_mut(reader);

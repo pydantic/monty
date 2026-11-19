@@ -1,18 +1,18 @@
-//! Benchmarks for host-side decoding of child frames: how long one frame can
+//! Benchmarks for host-side decoding of worker frames: how long one frame can
 //! occupy a thread in `Worker::recv`. Three payload shapes exercise bulk copy
 //! and UTF-8 validation (one big string), mixed values (row dicts), and shared
 //! references (a DAG of small lists).
 
-#[cfg(codspeed)]
+#[cfg(feature = "codspeed")]
 use codspeed_criterion_compat::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-#[cfg(not(codspeed))]
+#[cfg(not(feature = "codspeed"))]
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use monty_proto::{decode_frame, encode_to_capped_vec, pb};
 use monty_types::{
     MontyObject,
     unstable::{self, MontyGraph, MontyNode},
 };
-#[cfg(all(not(codspeed), unix))]
+#[cfg(all(not(feature = "codspeed"), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 
 const KIB: usize = 1024;
@@ -33,7 +33,7 @@ fn decode_benchmark(c: &mut Criterion) {
     for (shape, size, frame) in payloads {
         group.throughput(Throughput::Bytes(frame.len() as u64));
         group.bench_with_input(BenchmarkId::new(shape, size_label(size)), &frame, |bench, frame| {
-            bench.iter_with_large_drop(|| decode_frame::<pb::ChildEvent>(black_box(frame)).unwrap());
+            bench.iter_with_large_drop(|| decode_frame::<pb::WorkerEvent>(black_box(frame)).unwrap());
         });
     }
     group.finish();
@@ -42,16 +42,18 @@ fn decode_benchmark(c: &mut Criterion) {
 /// Encodes a `Complete` turn event carrying `value` — byte-identical to the
 /// frame body `Worker::recv` hands to `decode_frame`.
 fn complete_frame(value: MontyObject) -> Vec<u8> {
-    let event = pb::ChildEvent {
+    let event = pb::WorkerEvent {
         total_execution_micros: 0,
         max_suspensions: None,
         restored_script_name: None,
         session_id: None,
+        execution_clock: None,
+        feed_suspended: None,
         feed_execution_micros: 0,
         max_feed_duration_micros: None,
         max_turn_duration_micros: None,
         max_total_sleep_micros: None,
-        kind: Some(pb::child_event::Kind::Complete(pb::Complete::from(value))),
+        kind: Some(pb::worker_event::Kind::Complete(pb::Complete::from(value))),
     };
     encode_to_capped_vec(&event).expect("frame within MAX_FRAME_LEN")
 }
@@ -124,7 +126,7 @@ fn size_label(bytes: usize) -> String {
 }
 
 // Use pprof flamegraph profiler when running locally on Unix (not on CodSpeed or Windows)
-#[cfg(all(not(codspeed), unix))]
+#[cfg(all(not(feature = "codspeed"), unix))]
 criterion_group!(
     name = benches;
     config = Criterion::default().with_profiler(PProfProfiler::new(100, Output::Flamegraph(None)));
@@ -132,7 +134,7 @@ criterion_group!(
 );
 
 // Use default config on CodSpeed or Windows (pprof is Unix-only)
-#[cfg(any(codspeed, not(unix)))]
+#[cfg(any(feature = "codspeed", not(unix)))]
 criterion_group!(benches, decode_benchmark);
 
 criterion_main!(benches);

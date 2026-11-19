@@ -1,11 +1,13 @@
 //! Comparison operation helpers for the VM.
 
+use std::cmp::Ordering;
+
 use super::VM;
 use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::CmpOperator,
-    types::{CmpOrder, PyTrait},
+    types::{CmpOrder, PyTrait, long_int::i64_cmp_f64},
     value::Value,
 };
 
@@ -15,7 +17,7 @@ impl VM<'_> {
     /// Shared by fused asserts and comparison helpers that need truth rather
     /// than the arbitrary value a direct `==` expression may produce.
     #[inline]
-    pub(super) fn cmp_values(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
+    pub(crate) fn cmp_values(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
         match op {
             CmpOperator::Eq | CmpOperator::NotEq => {
                 let result = lhs.py_rich_eq(rhs, self)?;
@@ -35,6 +37,10 @@ impl VM<'_> {
 
     /// Executes direct `==`, preserving an arbitrary value returned by `__eq__`.
     pub(super) fn compare_eq(&mut self) -> Result<(), RunError> {
+        if self.compare_numeric(|ordering| ordering == Some(Ordering::Equal)) {
+            return Ok(());
+        }
+
         let this = self;
         let rhs = this.pop();
         defer_drop!(rhs, this);
@@ -48,6 +54,10 @@ impl VM<'_> {
 
     /// Executes direct `!=`; user `__ne__` dispatch is not yet supported.
     pub(super) fn compare_ne(&mut self) -> Result<(), RunError> {
+        if self.compare_numeric(|ordering| ordering != Some(Ordering::Equal)) {
+            return Ok(());
+        }
+
         let this = self;
         let rhs = this.pop();
         defer_drop!(rhs, this);
@@ -65,6 +75,16 @@ impl VM<'_> {
     /// unordered values such as `NaN` and incomparable operand types.
     #[inline]
     fn cmp_ordering(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
+        if let (Value::Int(a), Value::Int(b)) = (lhs, rhs) {
+            return Ok(match op {
+                CmpOperator::Lt => a < b,
+                CmpOperator::LtE => a <= b,
+                CmpOperator::Gt => a > b,
+                CmpOperator::GtE => a >= b,
+                _ => unreachable!("cmp_ordering reached with a non-ordering operator"),
+            });
+        }
+
         // A type whose ordering no `CmpOrder` describes (a `Counter` compares as
         // a multiset) answers the operator itself. Hooked in here rather than at
         // the opcode so the fused-assert path, which calls `cmp_values` directly,
@@ -72,6 +92,20 @@ impl VM<'_> {
         if let Some(result) = lhs.py_cmp_op(rhs, op, self)? {
             return Ok(result);
         }
+
+        // The right operand may handle a comparison the left declines:
+        // dict_keys <= set is answered by set >= dict_keys.
+        let reflected_op = match op {
+            CmpOperator::Lt => CmpOperator::Gt,
+            CmpOperator::LtE => CmpOperator::GtE,
+            CmpOperator::Gt => CmpOperator::Lt,
+            CmpOperator::GtE => CmpOperator::LtE,
+            _ => unreachable!("cmp_ordering reached with a non-ordering operator"),
+        };
+        if let Some(result) = rhs.py_cmp_op(lhs, reflected_op, self)? {
+            return Ok(result);
+        }
+
         match lhs.py_cmp(rhs, self)? {
             CmpOrder::Ordered(ordering) => Ok(match op {
                 CmpOperator::Lt => ordering.is_lt(),
@@ -90,12 +124,43 @@ impl VM<'_> {
         }
     }
 
+    /// Compares immediate int/float pairs without owning heap references.
+    /// The callback receives `None` for NaN operands.
+    #[inline]
+    fn compare_numeric(&mut self, compare: impl FnOnce(Option<Ordering>) -> bool) -> bool {
+        let len = self.stack.len();
+        let ordering = match (&self.stack[len - 2], &self.stack[len - 1]) {
+            (Value::Int(lhs), Value::Int(rhs)) => Some(lhs.cmp(rhs)),
+            (Value::Float(lhs), Value::Float(rhs)) => lhs.partial_cmp(rhs),
+            // Casting integers to floats would lose precision above 2**53.
+            (Value::Int(lhs), Value::Float(rhs)) => i64_cmp_f64(*lhs, *rhs),
+            (Value::Float(lhs), Value::Int(rhs)) => i64_cmp_f64(*rhs, *lhs).map(Ordering::reverse),
+            _ => return false,
+        };
+        let result = compare(ordering);
+
+        self.stack[len - 2] = Value::Bool(result);
+        self.stack.truncate(len - 1);
+        true
+    }
+
     /// Pops both operands and pushes a boolean comparison result.
     /// The const operator lets dispatch specialize the implementation per opcode.
     fn compare_op<const OP: u8>(&mut self) -> Result<(), RunError> {
         // Rejects a bad `OP` at compile time, which makes the `else` dead.
         const { assert!(CmpOperator::from_repr(OP).is_some(), "invalid CmpOperator operand") };
         let op = CmpOperator::from_repr(OP).expect("invalid CmpOperator operand");
+        let handled = match op {
+            CmpOperator::Lt => self.compare_numeric(|ordering| ordering.is_some_and(Ordering::is_lt)),
+            CmpOperator::LtE => self.compare_numeric(|ordering| ordering.is_some_and(Ordering::is_le)),
+            CmpOperator::Gt => self.compare_numeric(|ordering| ordering.is_some_and(Ordering::is_gt)),
+            CmpOperator::GtE => self.compare_numeric(|ordering| ordering.is_some_and(Ordering::is_ge)),
+            _ => false,
+        };
+        if handled {
+            return Ok(());
+        }
+
         let this = self;
 
         let rhs = this.pop();

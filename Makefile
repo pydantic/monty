@@ -16,8 +16,8 @@ endif
 
 .PHONY: install-py
 install-py: .uv ## Install python dependencies
-	# --only-dev avoids building the python packages; --inexact preserves builds installed by make dev-py
-	uv sync --all-packages --only-dev --inexact
+	# --only-group avoids building the python packages; --inexact preserves builds installed by make dev-py
+	uv sync --all-packages --only-group dev --only-group grpc --inexact
 
 .PHONY: install-js
 install-js: ## Install JS package dependencies
@@ -29,13 +29,25 @@ install: .cargo install-py install-js ## Install the package, dependencies, and 
 	uvx prek install --install-hooks
 
 .PHONY: dev-py
-dev-py: install-py ## Install python packages for development
+dev-py: dev-py-runtime dev-py-bindings ## Install python packages for development
+
+.PHONY: dev-py-runtime
+dev-py-runtime: install-py ## Install the debug worker for Python development
 	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml
+
+.PHONY: dev-py-bindings
+dev-py-bindings: install-py ## Install debug Python bindings without rebuilding the worker
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml
 
 .PHONY: dev-py-release
-dev-py-release: install-py ## Install python packages for development with a release build
+dev-py-release: dev-py-runtime-release dev-py-bindings-release ## Install python packages for development with a release build
+
+.PHONY: dev-py-runtime-release
+dev-py-runtime-release: install-py ## Install the release worker for Python development
 	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml --release
+
+.PHONY: dev-py-bindings-release
+dev-py-bindings-release: install-py ## Install release Python bindings without rebuilding the worker
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
 
 .PHONY: build-js
@@ -55,11 +67,19 @@ test-js: build-js ## Test the JS package (builds the monty binary the workers ru
 build-wasm: install-js ## Build the WASI 0.2 worker component (requires the wasm32-wasip1 target)
 	cd crates/monty-js && npm run build:wasm && npm run build:ts
 
+WASM_GENERATED_SOURCES := \
+	crates/monty-js/ts/worker/component \
+	crates/monty-js/ts/worker/componentModules.ts \
+	crates/monty-js/ts/worker/loadModule.browser.ts
+
 .PHONY: check-wasm-types
-check-wasm-types: build-wasm ## Verify checked-in component declarations match the WIT interface
-	git diff --exit-code -- crates/monty-js/ts/worker/component
-	@untracked=$$(git ls-files --others --exclude-standard -- crates/monty-js/ts/worker/component); \
-		test -z "$$untracked" || { echo "Untracked generated component declarations:"; echo "$$untracked"; exit 1; }
+check-wasm-types: build-wasm ## Verify checked-in component declarations and asset loaders match Jco output
+	git diff --exit-code -- $(WASM_GENERATED_SOURCES)
+	@untracked=$$(git ls-files --others --exclude-standard -- $(WASM_GENERATED_SOURCES)); \
+		test -z "$$untracked" || { echo "Untracked generated component files:"; echo "$$untracked"; exit 1; }
+	@# the published `dist` has to type-check for a strict consumer, and the
+	@# build cannot see that because it compiles from `ts`
+	cd crates/monty-js && npm run check:dist-types
 
 .PHONY: test-wasm
 test-wasm: install-js ## Test the wasm worker component from node, with no browser
@@ -145,7 +165,7 @@ lint: lint-rs lint-py lint-md ## Lint the code with ruff, clippy and mdformat
 
 .PHONY: test-no-features
 test-no-features: ## Run rust tests without any features enabled
-	cargo test -p monty -p monty-fs
+	cargo test -p monty -p monty-fs -p monty-types
 	cargo run -p monty-datatest
 
 .PHONY: test-memory-model-checks
@@ -175,9 +195,17 @@ test-type-checking: ## Run rust tests on monty-type-checking
 	cargo test -p monty-type-checking -p monty-typeshed
 
 .PHONY: test-subprocess
-test-subprocess: ## Run subprocess protocol, child-mode, and worker-pool tests
+test-subprocess: ## Run subprocess protocol, worker-mode, and worker-pool tests
 	cargo build -p monty-runtime
 	cargo test -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
+
+.PHONY: test-restore-policy
+test-restore-policy: ## Verify snapshot limits with tracker, protocol, and real-process regressions
+	cargo build -p monty-runtime
+	cargo test -p monty-types --test resource_limits
+	cargo test -p monty-proto --features worker --test dispatch restore_caps_idle_and_suspended_resource_limits
+	cargo test -p monty-pool --features telemetry --test pool_test restored_session_cannot_raise_the_destination_memory_budget
+	cargo test -p monty-pool --features telemetry --test pool_test a_load_reply_cannot_loosen_the_feed_backstop
 
 .PHONY: pytest
 pytest: ## Run Python tests with pytest
@@ -212,7 +240,7 @@ testcov: ## Run Rust tests with coverage, print table, and generate HTML report
 	@cargo llvm-cov --version > /dev/null 2>&1 || echo 'Please run: `cargo install cargo-llvm-cov`'
 	cargo llvm-cov clean --workspace
 	echo "coverage for `make test-no-features`"
-	cargo llvm-cov --no-report -p monty
+	cargo llvm-cov --no-report -p monty -p monty-fs -p monty-types
 	cargo llvm-cov run --no-report -p monty-datatest
 	echo "coverage for `make test-memory-model-checks`"
 	cargo llvm-cov --no-report -p monty --features memory-model-checks
@@ -264,7 +292,7 @@ bench-pool: ## Run subprocess pool benchmarks (spawn, checkout, wire round-trips
 	MONTY_TEST_BIN=$(CURDIR)/target/release/monty cargo bench -p monty-bench --bench pool
 
 .PHONY: bench-decode
-bench-decode: ## Run child-frame protobuf decode benchmarks
+bench-decode: ## Run worker-frame protobuf decode benchmarks
 	cargo bench -p monty-bench --bench decode
 
 .PHONY: dev-bench

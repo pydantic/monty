@@ -1,4 +1,6 @@
-# call-external
+# /// monty
+# call-external = true
+# ///
 # Decorators run as ordinary bytecode, so they may suspend on an external call
 # — both while the decorator body runs and inside the wrapper it returns.
 def scaled(fn):

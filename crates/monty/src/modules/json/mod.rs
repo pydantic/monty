@@ -1,30 +1,31 @@
 //! Implementation of Python's `json` module.
 //!
-//! This module currently implements the two high-traffic entry points used by
-//! most programs:
-//! - `json.loads()` for parsing JSON text into Monty values
-//! - `json.dumps()` for serializing Monty values to JSON text
+//! This module implements the four entry points used by most programs:
+//! - `json.loads()` / `json.load()` for parsing JSON text into Monty values
+//! - `json.dumps()` / `json.dump()` for serializing Monty values to JSON text
 //!
 //! The implementation is split by direction so parsing and serialization logic
 //! stay isolated:
 //! - [`load`] handles JSON text -> Monty values
 //! - [`dump`] handles Monty values -> JSON text
+//! - [`fp`] reaches the file object the `load` / `dump` variants take
 
 mod dump;
+mod fp;
 mod load;
 mod string_cache;
 
+pub(crate) use load::apply_json_load;
 pub(crate) use string_cache::JsonStringCache;
 
 use super::ModuleFunctions;
 use crate::{
     args::ArgValues,
     builtins::Builtins,
-    bytecode::VM,
-    exception_private::{ExcType, RunResult},
-    heap::{HeapData, HeapId},
+    bytecode::{CallResult, VM},
+    exception_private::RunResult,
     intern::StaticStrings,
-    types::Module,
+    types::{Module, Type},
     value::Value,
 };
 
@@ -33,47 +34,53 @@ use crate::{
 /// Each variant corresponds to a module-level callable stored in the module's
 /// attribute dictionary. The display form matches the Python-visible function
 /// name so reprs look like normal builtins.
+#[monty_macros::explicit_discriminants(checksum = 0xe42d_b90d_ee47_8363)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum JsonFunctions {
     /// `json.loads()` parses JSON text into Monty values.
-    Loads,
+    Loads = 0,
     /// `json.dumps()` serializes Monty values into JSON text.
-    Dumps,
+    Dumps = 1,
+    /// `json.load()` parses the rest of a file object as JSON.
+    Load = 2,
+    /// `json.dump()` serializes a Monty value into a file object.
+    Dump = 3,
 }
 
-/// Creates the `json` module and allocates it on the heap.
+/// Creates the `json` module.
 ///
-/// The module exposes `loads`, `dumps`, and `JSONDecodeError`. These are the
-/// most widely used parts of CPython's `json` module and are sufficient for
-/// common data interchange and round-tripping use cases inside the sandbox.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// The module exposes `loads`, `dumps`, `load`, `dump` and `JSONDecodeError`.
+/// These are the most widely used parts of CPython's `json` module and are
+/// sufficient for common data interchange and round-tripping use cases inside
+/// the sandbox.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Json, vm.interns);
-    module.set_attr(
-        StaticStrings::Loads,
-        Value::ModuleFunction(ModuleFunctions::Json(JsonFunctions::Loads)),
-        vm,
-    );
-    module.set_attr(
-        StaticStrings::Dumps,
-        Value::ModuleFunction(ModuleFunctions::Json(JsonFunctions::Dumps)),
-        vm,
-    );
+    for (name, function) in [
+        (StaticStrings::Loads, JsonFunctions::Loads),
+        (StaticStrings::Dumps, JsonFunctions::Dumps),
+        (StaticStrings::Load, JsonFunctions::Load),
+        (StaticStrings::Dump, JsonFunctions::Dump),
+    ] {
+        module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Json(function)), vm);
+    }
     module.set_attr(
         StaticStrings::JsonDecodeError,
-        Value::Builtin(Builtins::ExcType(ExcType::JsonDecodeError)),
+        Value::Builtin(Builtins::Type(Type::JsonDecodeError)),
         vm,
     );
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a `json` module function call.
 ///
-/// Both functions are pure computations that return ordinary Monty values and
-/// never need host involvement, so the dispatcher returns `Value` directly.
-pub(super) fn call(vm: &mut VM<'_>, function: JsonFunctions, args: ArgValues) -> RunResult<Value> {
+/// `loads` and `dumps` are pure computations; `load` and `dump` on an unread
+/// or written `open()` handle suspend to the host like `fp.read()` / `fp.write()`.
+pub(super) fn call(vm: &mut VM<'_>, function: JsonFunctions, args: ArgValues) -> RunResult<CallResult> {
     match function {
-        JsonFunctions::Loads => load::call_loads(vm, args),
-        JsonFunctions::Dumps => dump::call_dumps(vm, args),
+        JsonFunctions::Loads => load::call_loads(vm, args).map(CallResult::Value),
+        JsonFunctions::Dumps => dump::call_dumps(vm, args).map(CallResult::Value),
+        JsonFunctions::Load => load::call_load(vm, args),
+        JsonFunctions::Dump => dump::call_dump(vm, args),
     }
 }

@@ -5,6 +5,7 @@ import sys
 
 import pytest
 from conftest import RunMonty
+from inline_snapshot import snapshot
 
 from pydantic_monty import MontyRuntimeError
 
@@ -26,9 +27,8 @@ supported_flags = [
     (['re.I', 're.IGNORECASE'], re.IGNORECASE),
     (['re.M', 're.MULTILINE'], re.MULTILINE),
     (['re.S', 're.DOTALL'], re.DOTALL),
+    (['re.NOFLAG'], re.NOFLAG),
 ]
-if sys.version_info >= (3, 11):
-    supported_flags.append((['re.NOFLAG'], re.NOFLAG))
 
 
 @pytest.mark.parametrize(
@@ -89,8 +89,7 @@ except Exception as e:
     error_message = str(e)
 error_message
 """
-    output = monty_run(code)
-    assert 'Parsing error at position 1: Invalid character class' in output
+    assert monty_run(code) == snapshot('unterminated character set at position 0')
 
 
 def test_re_error_upcast(monty_run: RunMonty):
@@ -104,4 +103,4 @@ re.compile(r'[')
         assert type(exc_info.value.exception()) is re.PatternError
     else:
         assert type(exc_info.value.exception()) is re.error
-    assert 'Parsing error at position 1: Invalid character class' in str(exc_info.value)
+    assert str(exc_info.value) == snapshot('re.PatternError: unterminated character set at position 0')
