@@ -36,3 +36,37 @@ check_type_error(lambda: mapping.get(), 'get expected at least 1 argument, got 0
 check_type_error(lambda: mapping.get(1, 2, 3), 'get expected at most 2 arguments, got 3')
 check_type_error(lambda: mapping.get(1, 2, 3, key=[]), 'dict.get() takes no keyword arguments')
 check_type_error(lambda: mapping.get([], []), "cannot use 'list' as a dict key (unhashable type: 'list')")
+
+views = {}
+values = views.values()
+items_view = views.items()
+assert list(values) == []
+assert list(items_view) == []
+views['a'] = 1
+views['b'] = 2
+views['a'] = 3
+assert views.pop('b') == 2
+assert list(values) == [3]
+assert list(items_view) == [('a', 3)]
+for positional in [(), ([],)]:
+    check_type_error(lambda: views.values(*positional, wrong=[]), 'dict.values() takes no keyword arguments')
+    check_type_error(lambda: views.items(*positional, wrong=[]), 'dict.items() takes no keyword arguments')
+
+fallback = []
+target = {'key': fallback}
+assert target.pop('key', []) is fallback
+assert target == {}
+assert target.pop([], fallback) is fallback
+assert target.pop('missing', None) is None
+try:
+    target.pop('missing')
+except KeyError as exc:
+    assert exc.args == ('missing',)
+else:
+    assert False, 'pop without a default must raise KeyError'
+target['key'] = 1
+check_type_error(lambda: target.pop([], fallback), "cannot use 'list' as a dict key (unhashable type: 'list')")
+check_type_error(lambda: target.pop(), 'pop expected at least 1 argument, got 0')
+check_type_error(lambda: target.pop(1, 2, 3), 'pop expected at most 2 arguments, got 3')
+check_type_error(lambda: target.pop(1, 2, 3, key=[]), 'dict.pop() takes no keyword arguments')
+assert target == {'key': 1}

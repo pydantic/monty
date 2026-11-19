@@ -621,6 +621,10 @@ pub enum StaticStrings {
     Asin,
     /// `math.asinh()` function.
     Asinh,
+    /// `typing.assert_never()` function.
+    AssertNever,
+    /// `typing.assert_type()` function.
+    AssertType,
     /// `datetime.astimezone()` method.
     Astimezone,
     /// Module name for `import asyncio`.
@@ -750,6 +754,8 @@ pub enum StaticStrings {
     CaseSensitive,
     /// `str.casefold()` method.
     Casefold,
+    /// `typing.cast()` function.
+    Cast,
     /// `unicodedata.category()` function.
     Category,
     /// `math.cbrt()` function.
@@ -2569,6 +2575,8 @@ pub enum StaticStrings {
     /// `typing.Tuple` marker.
     #[strum(serialize = "Tuple")]
     TupleType,
+    /// `typ` parameter of `typing.cast()`.
+    Typ,
     /// `typing.Type` marker.
     #[strum(serialize = "Type")]
     Type,
@@ -2657,6 +2665,8 @@ pub enum StaticStrings {
     /// `sys.flags.utf8_mode` field.
     #[strum(serialize = "utf8_mode")]
     Utf8Mode,
+    /// `val` parameter of `typing.cast()` and `typing.assert_type()`.
+    Val,
     /// `validate` parameter of `base64.b64decode()`.
     #[strum(serialize = "validate")]
     Validate,

@@ -13,6 +13,8 @@
 //! though Monty doesn't perform static type checking. `Optional[X]` is the one
 //! marker that can be subscripted, producing `X | None`.
 
+use std::fmt;
+
 use monty_macros::py_signature;
 use monty_types::{OsFunctionCall, TypeHintsTarget};
 use smallvec::SmallVec;
@@ -23,7 +25,7 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions, eval_exec},
     bytecode::{CallResult, MissingNames, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     frozen::{FrozenFunction, FrozenFunctions},
     heap::{HeapData, HeapId},
     intern::{FunctionId, StaticStrings},
@@ -68,6 +70,14 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
         vm,
     );
 
+    for (name, function) in [
+        (StaticStrings::Cast, TypingFunctions::Cast),
+        (StaticStrings::AssertType, TypingFunctions::AssertType),
+        (StaticStrings::AssertNever, TypingFunctions::AssertNever),
+    ] {
+        module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Typing(function)), vm);
+    }
+
     module
 }
 
@@ -103,18 +113,91 @@ const MARKER_ATTRS: &[StaticStrings] = &[
 ];
 
 /// `typing` module functions, each a Python-visible callable.
-#[monty_macros::explicit_discriminants(checksum = 0x0e79_0e6c_2461_cebf)]
+#[monty_macros::explicit_discriminants(checksum = 0x126e_e9f4_b5e0_813c)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum TypingFunctions {
     GetTypeHints = 0,
+    Cast = 1,
+    AssertType = 2,
+    AssertNever = 3,
 }
 
 /// Dispatches a `typing` module function call.
 pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) -> RunResult<CallResult> {
     match function {
         TypingFunctions::GetTypeHints => get_type_hints(vm, args),
+        TypingFunctions::Cast => cast(vm, args),
+        TypingFunctions::AssertType => assert_type(vm, args),
+        TypingFunctions::AssertNever => assert_never(vm, args),
     }
+}
+
+/// `typing.cast()`: returns `val`; `typ` is any object, a string forward reference included.
+#[py_signature("cast(typ, val)", style = def)]
+fn cast(vm: &mut VM<'_>, CastArgs { typ, val }: CastArgs) -> RunResult<CallResult> {
+    defer_drop!(typ, vm);
+    Ok(CallResult::Value(val))
+}
+
+/// `typing.assert_type()`: returns `val`; only a static type checker looks at `typ`.
+#[py_signature("assert_type(val, typ, /)", style = def)]
+fn assert_type(vm: &mut VM<'_>, AssertTypeArgs { val, typ }: AssertTypeArgs) -> RunResult<CallResult> {
+    defer_drop!(typ, vm);
+    Ok(CallResult::Value(val))
+}
+
+/// Longest `repr` `typing.assert_never()` quotes before it truncates, in characters.
+const ASSERT_NEVER_REPR_MAX_LENGTH: usize = 100;
+
+/// A `fmt::Write` sink holding at most [`ASSERT_NEVER_REPR_MAX_LENGTH`] characters.
+///
+/// Once more text arrives it sets `truncated` and fails the write, which stops the repr walk early.
+#[derive(Default)]
+struct CappedRepr {
+    text: String,
+    chars: usize,
+    truncated: bool,
+}
+
+impl fmt::Write for CappedRepr {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let room = ASSERT_NEVER_REPR_MAX_LENGTH - self.chars;
+        let mut taken = 0;
+        for (idx, _) in s.char_indices() {
+            if taken == room {
+                self.text.push_str(&s[..idx]);
+                self.chars += taken;
+                self.truncated = true;
+                return Err(fmt::Error);
+            }
+            taken += 1;
+        }
+        self.text.push_str(s);
+        self.chars += taken;
+        Ok(())
+    }
+}
+
+/// `typing.assert_never()`: always raises `AssertionError` quoting a bounded `repr(arg)`.
+#[py_signature("assert_never(arg, /)", style = def)]
+fn assert_never(vm: &mut VM<'_>, AssertNeverArgs { arg }: &AssertNeverArgs) -> RunResult<CallResult> {
+    // The repr is written into a capped buffer that refuses text past the limit, so a huge or
+    // deeply nested value never has its whole repr built in host memory.
+    let mut capped = CappedRepr::default();
+    let result = arg.py_repr_fmt(&mut capped, vm, &mut LazyHeapSet::default());
+    if !capped.truncated {
+        result?;
+    }
+    let mut shown = capped.text;
+    if capped.truncated {
+        shown.push_str("...");
+    }
+    Err(SimpleException::new_msg(
+        ExcType::AssertionError,
+        format!("Expected code to be unreachable, but got: {shown}"),
+    )
+    .into())
 }
 
 /// Evaluates annotations as CPython 3.14's `annotationlib.get_annotations` and

@@ -89,12 +89,13 @@ fn parse_option<T: Parse>(meta: &ParseNestedMeta<'_>, slot: &mut Option<T>) -> s
 }
 
 pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Result<TokenStream> {
+    let def = parse_function(declaration)?;
     if declaration
         .style
         .as_ref()
-        .is_some_and(|s| s == "no_args" || s == "one_arg" || s == "two_args")
+        .is_some_and(|s| s == "one_arg" || s == "two_args")
     {
-        return positional_adapter(declaration, function);
+        return positional_adapter(declaration, &def, function);
     }
     for input in &mut function.sig.inputs {
         let FnArg::Typed(arg) = input else { continue };
@@ -109,7 +110,7 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
         if !matches!(ty, Type::Path(path) if path.path.is_ident(name)) {
             return Err(syn::Error::new_spanned(ty, "expected the destructured argument type"));
         }
-        let (bound, implementation) = arguments(declaration, Some(name))?;
+        let (bound, implementation) = arguments(declaration, &def, Some(name))?;
         let guard = borrowed.then(|| quote!(crate::defer_drop!(__bound, vm);));
         let original = function.block;
         function.block = Box::new(parse_quote!({
@@ -122,24 +123,37 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
         arg.ty = parse_quote!(crate::args::ArgValues);
         return Ok(quote!(#bound #implementation #function));
     }
-    let (bound_struct, implementation) = arguments(declaration, None)?;
+    let (bound_struct, implementation) = arguments(declaration, &def, None)?;
     let bound_name = &bound_struct.ident;
     let error = |message: &str| syn::Error::new(declaration.signature.span(), message);
-    let bound = function
-        .sig
-        .inputs
-        .iter_mut()
-        .find_map(|input| {
-            let FnArg::Typed(arg) = input else { return None };
-            let Type::Reference(reference) = arg.ty.as_ref() else {
-                return None;
-            };
-            let Type::Path(path) = reference.elem.as_ref() else {
-                return None;
-            };
-            path.path.is_ident(bound_name).then_some(arg)
-        })
-        .ok_or_else(|| error(&format!("expected a parameter of type &{bound_name}")))?;
+    let bound = function.sig.inputs.iter_mut().find_map(|input| {
+        let FnArg::Typed(arg) = input else { return None };
+        let Type::Reference(reference) = arg.ty.as_ref() else {
+            return None;
+        };
+        let Type::Path(path) = reference.elem.as_ref() else {
+            return None;
+        };
+        path.path.is_ident(bound_name).then_some(arg)
+    });
+    let Some(bound) = bound else {
+        if let Some(name) = zero_arg_name(declaration, &def)
+            && function.sig.inputs.iter().any(
+                |arg| matches!(arg, FnArg::Typed(arg) if matches!(arg.pat.as_ref(), Pat::Ident(p) if p.ident == "vm")),
+            )
+        {
+            function
+                .sig
+                .inputs
+                .push(parse_quote!(__py_args: crate::args::ArgValues));
+            function
+                .block
+                .stmts
+                .insert(0, parse_quote!(__py_args.check_zero_args(#name, vm.heap)?;));
+            return Ok(quote!(#function));
+        }
+        return Err(error(&format!("expected a parameter of type &{bound_name}")));
+    };
     let Pat::Ident(pattern) = &*bound.pat else {
         return Err(error("expected a name for the bound arguments"));
     };
@@ -172,7 +186,7 @@ pub(super) fn expand_struct(declaration: &Declaration, item: ItemStruct) -> syn:
     {
         return Err(syn::Error::new_spanned(item, "expected a unit struct without generics"));
     }
-    let (mut bound, implementation) = arguments(declaration, Some(&item.ident))?;
+    let (mut bound, implementation) = arguments(declaration, &parse_function(declaration)?, Some(&item.ident))?;
     bound.attrs = item.attrs;
     bound.vis = item.vis;
     if let syn::Data::Struct(data) = &mut bound.data {
@@ -207,10 +221,13 @@ fn parse_function(declaration: &Declaration) -> syn::Result<StmtFunctionDef> {
     Ok(def)
 }
 
-fn arguments(declaration: &Declaration, named: Option<&Ident>) -> syn::Result<(DeriveInput, TokenStream)> {
+fn arguments(
+    declaration: &Declaration,
+    def: &StmtFunctionDef,
+    named: Option<&Ident>,
+) -> syn::Result<(DeriveInput, TokenStream)> {
     let literal = &declaration.signature;
     let error = |message: &str| syn::Error::new(literal.span(), message);
-    let def = parse_function(declaration)?;
     let name = def.name.as_str();
     let params = &def.parameters;
     let is_def = declaration.style.as_ref().is_some_and(|style| style == "def");
@@ -267,11 +284,7 @@ fn arguments(declaration: &Declaration, named: Option<&Ident>) -> syn::Result<(D
     if declaration.owner.is_some() && !receiver {
         return Err(error("owner requires a positional-only self parameter"));
     }
-    let qualified_name = declaration
-        .owner
-        .as_ref()
-        .map_or_else(|| name.to_owned(), |owner| format!("{}.{name}", owner.value()));
-    let qualified_name = declaration.error_name.as_ref().map_or(qualified_name, LitStr::value);
+    let qualified_name = callable_name(declaration, name);
     let modifiers = &declaration.modifiers;
     let style = declaration.style.as_ref().map(|style| quote!(, style = #style));
     let bad_arg = (receiver
@@ -290,7 +303,19 @@ fn arguments(declaration: &Declaration, named: Option<&Ident>) -> syn::Result<(D
         struct #bound_name { #(#fields,)* }
     })?;
     let signature = Signature::parse(&input)?;
-    let from_args = signature.render(receiver);
+    let from_args = if let Some(name) = zero_arg_name(declaration, def) {
+        quote! {
+            impl #bound_name {
+                pub(crate) fn from_args(args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'_>)
+                    -> crate::exception_private::RunResult<Self> {
+                    args.check_zero_args(#name, vm.heap)?;
+                    Ok(Self {})
+                }
+            }
+        }
+    } else {
+        signature.render(receiver)
+    };
     let drop_args = signature.drop_bound_args();
     let mut bound_struct = input;
     bound_struct.attrs.clear();
@@ -303,7 +328,35 @@ fn arguments(declaration: &Declaration, named: Option<&Ident>) -> syn::Result<(D
     Ok((bound_struct, quote!(#from_args #drop_args)))
 }
 
-fn positional_adapter(declaration: &Declaration, mut function: ItemFn) -> syn::Result<TokenStream> {
+fn zero_arg_name(declaration: &Declaration, def: &StmtFunctionDef) -> Option<String> {
+    if declaration.style.is_some() || !declaration.modifiers.is_empty() || declaration.kwarg_error_name.is_some() {
+        return None;
+    }
+    let params = &def.parameters;
+    let receiver_only = params.iter().count() == 1
+        && params
+            .posonlyargs
+            .first()
+            .is_some_and(|p| p.name().as_str() == "self" && p.annotation().is_none() && p.default().is_none());
+    (params.is_empty() || receiver_only).then(|| callable_name(declaration, def.name.as_str()))
+}
+
+fn callable_name(declaration: &Declaration, name: &str) -> String {
+    if let Some(owner) = &declaration.owner {
+        format!("{}.{name}", owner.value())
+    } else {
+        declaration
+            .error_name
+            .as_ref()
+            .map_or_else(|| name.to_owned(), LitStr::value)
+    }
+}
+
+fn positional_adapter(
+    declaration: &Declaration,
+    def: &StmtFunctionDef,
+    mut function: ItemFn,
+) -> syn::Result<TokenStream> {
     let literal = &declaration.signature;
     let error = |message: &str| syn::Error::new(literal.span(), message);
     if !declaration.modifiers.is_empty() || !declaration.converters.is_empty() || declaration.error_name.is_some() {
@@ -311,7 +364,6 @@ fn positional_adapter(declaration: &Declaration, mut function: ItemFn) -> syn::R
             "fixed-arity helpers do not accept parser modifiers or custom converters",
         ));
     }
-    let def = parse_function(declaration)?;
     let name = def.name.as_str();
     let params = &def.parameters;
     if declaration.style.as_ref().is_some_and(|style| style == "one_arg") {
@@ -330,73 +382,40 @@ fn positional_adapter(declaration: &Declaration, mut function: ItemFn) -> syn::R
         let field = field_name(&param.parameter, literal)?;
         return single_positional_adapter(function, name, &field);
     }
-    if declaration.style.as_ref().is_some_and(|style| style == "two_args") {
-        let [first, second] = params.posonlyargs.as_slice() else {
-            return Err(error("`style = two_args` requires two positional-only parameters"));
-        };
-        if params.iter().count() != 2
-            || params.iter().any(|p| p.annotation().is_some() || p.default().is_some())
-            || declaration.owner.is_some()
-            || declaration.kwarg_error_name.is_some()
-        {
-            return Err(error(
-                "`style = two_args` requires two raw values and uses the callable name for errors",
-            ));
-        }
-        let first = field_name(&first.parameter, literal)?;
-        let second = field_name(&second.parameter, literal)?;
-        let wanted_pat: Pat = parse_quote!((#first, #second));
-        let wanted_ty: Type = parse_quote!((&Value, &Value));
-        let arg = function
-            .sig
-            .inputs
-            .iter_mut()
-            .find_map(|input| match input {
-                FnArg::Typed(arg) if *arg.pat == wanted_pat && *arg.ty == wanted_ty => Some(arg),
-                _ => None,
-            })
-            .ok_or_else(|| error("expected a pair of &Value parameters in signature order"))?;
-        arg.pat = parse_quote!(__py_args);
-        arg.ty = parse_quote!(crate::args::ArgValues);
-        let body = function.block;
-        function.block = Box::new(parse_quote!({
-            let (#first, #second) = __py_args.unpack_two_args(#name, vm.heap)?;
-            crate::defer_drop!(#first, vm);
-            crate::defer_drop!(#second, vm);
-            #body
-        }));
-        return Ok(quote!(#function));
-    }
-    let receiver = params.posonlyargs.first().is_some_and(|p| p.name().as_str() == "self");
-    if declaration.owner.is_some() && !receiver {
-        return Err(error("owner requires a positional-only self parameter"));
-    }
-    let qualified_name = declaration
-        .owner
-        .as_ref()
-        .map_or_else(|| name.to_owned(), |owner| format!("{}.{name}", owner.value()));
-
-    if params.iter().count() != usize::from(receiver)
-        || params
-            .posonlyargs
-            .first()
-            .is_some_and(|p| p.annotation().is_some() || p.default().is_some())
+    let [first, second] = params.posonlyargs.as_slice() else {
+        return Err(error("`style = two_args` requires two positional-only parameters"));
+    };
+    if params.iter().count() != 2
+        || params.iter().any(|p| p.annotation().is_some() || p.default().is_some())
+        || declaration.owner.is_some()
+        || declaration.kwarg_error_name.is_some()
     {
         return Err(error(
-            "`style = no_args` accepts only an optional positional-only self parameter",
+            "`style = two_args` requires two raw values and uses the callable name for errors",
         ));
     }
-    if declaration.kwarg_error_name.is_some() {
-        return Err(error("`style = no_args` uses the callable name for keyword errors"));
-    }
-    function
+    let first = field_name(&first.parameter, literal)?;
+    let second = field_name(&second.parameter, literal)?;
+    let wanted_pat: Pat = parse_quote!((#first, #second));
+    let wanted_ty: Type = parse_quote!((&Value, &Value));
+    let arg = function
         .sig
         .inputs
-        .push(parse_quote!(__py_args: crate::args::ArgValues));
-    function
-        .block
-        .stmts
-        .insert(0, parse_quote!(__py_args.check_zero_args(#qualified_name, vm.heap)?;));
+        .iter_mut()
+        .find_map(|input| match input {
+            FnArg::Typed(arg) if *arg.pat == wanted_pat && *arg.ty == wanted_ty => Some(arg),
+            _ => None,
+        })
+        .ok_or_else(|| error("expected a pair of &Value parameters in signature order"))?;
+    arg.pat = parse_quote!(__py_args);
+    arg.ty = parse_quote!(crate::args::ArgValues);
+    let body = function.block;
+    function.block = Box::new(parse_quote!({
+        let (#first, #second) = __py_args.unpack_two_args(#name, vm.heap)?;
+        crate::defer_drop!(#first, vm);
+        crate::defer_drop!(#second, vm);
+        #body
+    }));
     Ok(quote!(#function))
 }
 

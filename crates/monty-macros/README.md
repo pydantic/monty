@@ -29,9 +29,9 @@ This preserves the helper’s arity errors, including its positional-count error
 For two required positional values, `#[py_signature("divmod(x, y, /)", style = two_args)]`
 binds the Rust parameter `(x, y): (&Value, &Value)` directly. Keywords take precedence over arity errors.
 
-Use `style = no_args` for a callable that uses `ArgValues::check_zero_args`. For example,
-`#[py_signature("keys(self, /)", style = no_args, owner = "dict")]` adds a trailing `ArgValues`
-parameter to the Rust method and checks it before the body runs. The receiver is already bound.
+For `f()` or a bound method such as `#[py_signature("keys(self, /)", owner = "dict")]`, the Rust
+body can omit the argument struct. The macro adds a trailing `ArgValues` parameter and calls
+`check_zero_args` before the body. An explicit parser style such as `style = def` keeps its own arity errors.
 
 ### Ownership and conversion
 

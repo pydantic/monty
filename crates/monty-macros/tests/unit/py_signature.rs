@@ -190,7 +190,7 @@ fn one_arg_uses_the_existing_positional_fast_path() {
 
 #[test]
 fn no_args_checks_before_running_the_method() {
-    let declaration = parse_quote!("keys(self, /)", style = no_args, owner = "dict");
+    let declaration = parse_quote!("keys(self, /)", owner = "dict");
     let function = parse_quote!(
         fn keys(&self, vm: &mut VM<'_>) {
             self.make_view(vm)
@@ -207,26 +207,60 @@ fn no_args_checks_before_running_the_method() {
 }
 
 #[test]
-fn no_args_rejects_python_arguments() {
+fn infers_no_arguments_for_a_free_function() {
+    let f = parse_quote!(
+        fn f(vm: &mut VM<'_>) {}
+    );
+    let expanded: ItemFn = syn::parse2(expand(&parse_quote!("f()"), f).unwrap()).unwrap();
+    let expected = parse_quote! {
+        fn f(vm: &mut VM<'_>, __py_args: crate::args::ArgValues) {
+            __py_args.check_zero_args("f", vm.heap)?;
+        }
+    };
+    assert_eq!(expanded, expected);
+}
+
+#[test]
+fn infers_the_same_check_for_a_named_binder() {
+    let binder = super::expand_struct(
+        &parse_quote!("f()"),
+        parse_quote!(
+            struct FArgs;
+        ),
+    )
+    .unwrap();
+    assert!(binder.to_string().contains("check_zero_args"));
+    let python = super::expand_struct(
+        &parse_quote!("f()", style = def),
+        parse_quote!(
+            struct FArgs;
+        ),
+    )
+    .unwrap();
+    assert!(!python.to_string().contains("check_zero_args"));
+}
+
+#[test]
+fn a_callable_with_parameters_still_needs_a_binder() {
     for signature in [
         "f(x, /)",
-        "f(self)",
+        "f(x)",
         "f(self=None, /)",
         "f(self: str, /)",
         "f(*items)",
+        "f(*, x=None)",
         "f(self, /, **kw)",
     ] {
-        let declaration = parse_quote!(#signature, style = no_args);
+        let declaration = parse_quote!(#signature);
+        let function = parse_quote!(
+            fn f(vm: &mut VM<'_>) {}
+        );
         assert_eq!(
-            expand(&declaration, adapter()).unwrap_err().to_string(),
-            "`style = no_args` accepts only an optional positional-only self parameter"
+            expand(&declaration, function).unwrap_err().to_string(),
+            "expected a parameter of type &FArgs",
+            "{signature}"
         );
     }
-    let declaration = parse_quote!("f()", style = no_args, kwarg_error_name = "g");
-    assert_eq!(
-        expand(&declaration, adapter()).unwrap_err().to_string(),
-        "`style = no_args` uses the callable name for keyword errors"
-    );
 }
 
 #[test]
@@ -296,7 +330,7 @@ fn rejects_invalid_named_binders_and_converters() {
             "fixed-arity helpers do not accept parser modifiers or custom converters",
         ),
         (
-            r#""f()", style = no_args, owner = "T""#,
+            r#""f()", owner = "T""#,
             "owner requires a positional-only self parameter",
         ),
     ] {

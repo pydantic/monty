@@ -1548,46 +1548,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
             }
             StaticStrings::Get => dict_get_method(self, args, vm),
             StaticStrings::Keys => self.keys(vm, args),
-            StaticStrings::Values => {
-                args.check_zero_args("dict.values", vm.heap)?;
-                let view_id = vm
-                    .heap
-                    .allocate(HeapData::DictValuesView(DictValuesView::new(self.id())));
-                vm.heap.inc_ref(self.id());
-                Ok(Value::Ref(view_id))
-            }
-            StaticStrings::Items => {
-                args.check_zero_args("dict.items", vm.heap)?;
-                let view_id = vm.heap.allocate(HeapData::DictItemsView(DictItemsView::new(self.id())));
-                vm.heap.inc_ref(self.id());
-                Ok(Value::Ref(view_id))
-            }
-            StaticStrings::Pop => {
-                // dict.pop() accepts 1 or 2 arguments (key, optional default)
-                let (key, default) = args.get_one_two_args("pop", vm.heap)?;
-                defer_drop!(key, vm);
-                let mut default_guard = DropGuard::new(default, vm);
-                let vm = default_guard.ctx();
-                // CPython's `PyDict_Pop` returns before hashing when the dict is empty.
-                let popped = if self.get(vm.heap).is_empty() {
-                    None
-                } else {
-                    self.pop(key, vm)?
-                };
-                if let Some((old_key, value)) = popped {
-                    // Drop the old key - we don't need it
-                    old_key.drop_with(vm);
-                    Ok(value)
-                } else {
-                    let (default, vm) = default_guard.into_parts();
-                    // No matching key - return default if provided, else KeyError
-                    if let Some(d) = default {
-                        Ok(d)
-                    } else {
-                        Err(ExcType::key_error(key, vm))
-                    }
-                }
-            }
+            StaticStrings::Values => self.values_view(vm, args),
+            StaticStrings::Items => self.items_view(vm, args),
+            StaticStrings::Pop => dict_pop(self, args, vm),
             StaticStrings::Clear => {
                 args.check_zero_args("dict.clear", vm.heap)?;
                 dict_clear(self, vm);
@@ -1631,11 +1594,27 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
 }
 
 impl<'h> HeapObjectRead<'h, Dict> {
-    #[py_signature("keys(self, /)", style = no_args, owner = "dict")]
+    #[py_signature("keys(self, /)", owner = "dict")]
     fn keys(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(self.id())));
         vm.heap.inc_ref(self.id());
         Ok(Value::Ref(view_id))
+    }
+
+    #[py_signature("values(self, /)", owner = "dict")]
+    fn values_view(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        let view = vm
+            .heap
+            .allocate(HeapData::DictValuesView(DictValuesView::new(self.id())));
+        vm.heap.inc_ref(self.id());
+        Ok(Value::Ref(view))
+    }
+
+    #[py_signature("items(self, /)", owner = "dict")]
+    fn items_view(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        let view = vm.heap.allocate(HeapData::DictItemsView(DictItemsView::new(self.id())));
+        vm.heap.inc_ref(self.id());
+        Ok(Value::Ref(view))
     }
 
     /// Runs a binary `Counter` operator (`+ - & |`), which needs *both* operands
@@ -1804,6 +1783,19 @@ fn dict_get_method<'h>(
         let ((key, default), vm) = pending.into_parts();
         key.drop_with(vm);
         Ok(default)
+    }
+}
+
+#[py_signature("pop(key, default=..., /)", style = unpack, kwarg_error_name = "dict.pop")]
+fn dict_pop<'h>(dict: &HeapObjectRead<'h, Dict>, args: &mut PopArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+    // CPython skips hashing the key when the dictionary is empty.
+    if !dict.get(vm.heap).is_empty()
+        && let Some((old_key, value)) = dict.pop(&args.key, vm)?
+    {
+        old_key.drop_with(vm);
+        Ok(value)
+    } else {
+        args.default.take().ok_or_else(|| ExcType::key_error(&args.key, vm))
     }
 }
 
