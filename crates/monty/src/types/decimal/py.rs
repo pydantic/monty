@@ -167,7 +167,7 @@ fn decimal_at<'a>(vm: &'a VM<'_>, id: HeapId) -> &'a Decimal {
 
 /// `decimal.Decimal(value='0', context=None)`: an exact conversion. The context only
 /// decides whether a malformed string or an `float` raises.
-#[py_signature("Decimal(value=..., context=None)", style = c, bind = owned)]
+#[py_signature("Decimal(value=..., context=None)", bind = owned)]
 pub(crate) fn init(vm: &mut VM<'_>, args: DecimalArgs) -> RunResult<Value> {
     let DecimalArgs { value, context } = args;
     defer_drop!(context, vm);
@@ -1012,23 +1012,23 @@ fn as_tuple(d: &Decimal, vm: &VM<'_>) -> Value {
 }
 
 /// Arguments of the methods taking only `context=None`.
-#[py_signature("function(context=None)", style = c)]
+#[py_signature("function(context=None)")]
 struct ContextOnlyArgs;
 
 /// Arguments of the binary methods, `(other, context=None)`.
-#[py_signature("function(other, context=None)", style = c)]
+#[py_signature("function(other, context=None)")]
 struct OtherArgs;
 
 /// Arguments of `quantize(exp, rounding=None, context=None)`.
-#[py_signature("function(exp, rounding=None, context=None)", style = c)]
+#[py_signature("function(exp, rounding=None, context=None)")]
 struct QuantizeArgs;
 
 /// Arguments of `fma(other, third, context=None)`.
-#[py_signature("function(other, third, context=None)", style = c)]
+#[py_signature("function(other, third, context=None)")]
 struct FmaArgs;
 
 /// Arguments of the `to_integral*` methods, `(rounding=None, context=None)`.
-#[py_signature("function(rounding=None, context=None)", style = c)]
+#[py_signature("function(rounding=None, context=None)")]
 struct RoundingArgs;
 
 // ============================================================================
@@ -1398,7 +1398,7 @@ impl ContextMethod {
 }
 
 /// Arguments of `Context.power(a, b, modulo=None)`.
-#[py_signature("function(a, b, modulo=None)", style = c)]
+#[py_signature("function(a, b, modulo=None)")]
 struct PowerArgs;
 
 /// Calls a `Context` arithmetic method; the operation runs under that context.

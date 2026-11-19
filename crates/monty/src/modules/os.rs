@@ -163,10 +163,7 @@ pub(super) fn call(vm: &mut VM<'_>, functions: OsFunctions, args: ArgValues) -> 
 
 /// Implementation of `os.scandir(path=None)`: one depth-one host scan,
 /// answered with a `ScandirIterator` whose entries need no further host calls.
-///
-/// `os.scandir(path=None)` argument shape — clinic-parsed with the
-/// `at_most_total` pre-count, like `os.listdir`.
-#[py_signature("scandir(path=None)", at_most_total)]
+#[py_signature("scandir(path=None)")]
 fn scandir(vm: &mut VM<'_>, args: &ScandirArgs) -> RunResult<CallResult> {
     let ScandirArgs { path } = args;
     let path = if matches!(path, Value::None) {
@@ -184,10 +181,7 @@ fn scandir(vm: &mut VM<'_>, args: &ScandirArgs) -> RunResult<CallResult> {
 /// honouring `dirnames` pruning and calling `onerror` as CPython's generator
 /// does. `top` is converted eagerly, so a bad type raises here rather than at
 /// the first `next()`.
-///
-/// `os.walk(top, topdown=True, onerror=None, followlinks=False)` argument
-/// shape — a pure-Python generator in CPython, hence `style = def`.
-#[py_signature("walk(top, topdown=True, onerror=None, followlinks=False)", style = def, bind = owned)]
+#[py_signature("walk(top, topdown=True, onerror=None, followlinks=False)", bind = owned)]
 fn walk(vm: &mut VM<'_>, args: WalkArgs) -> RunResult<CallResult> {
     let WalkArgs {
         top,
@@ -251,7 +245,7 @@ fn getcwdb(vm: &mut VM<'_>) -> RunResult<CallResult> {
 /// with a [`PreConversionEffect::Chdir`] that adopts it on a directory reply.
 /// `FileNotFoundError` therefore comes from the host, `NotADirectoryError`
 /// from the resume side.
-#[py_signature("chdir(path)", style = c_named, at_most_total)]
+#[py_signature("chdir(path)")]
 fn chdir(vm: &mut VM<'_>, args: &ChdirArgs) -> RunResult<CallResult> {
     let ChdirArgs { path } = args;
     let spelled = extract_os_path(path, "chdir", "path", PathAccepts::Fd, vm)?;
@@ -312,10 +306,7 @@ fn getenv(vm: &mut VM<'_>, args: OsGetenvArgs) -> RunResult<CallResult> {
 /// [`PreConversionEffect::ListdirNames`] — armed at dispatch, not here — so the
 /// resume reduces them to bare entry names. `None` maps to `'.'` like
 /// CPython, which the VM resolves to the working directory on its way out.
-///
-/// `os.listdir(path=None)` argument shape — clinic-parsed with the
-/// `at_most_total` pre-count (`listdir() takes at most 1 argument (2 given)`).
-#[py_signature("listdir(path=None)", at_most_total)]
+#[py_signature("listdir(path=None)")]
 fn listdir(vm: &mut VM<'_>, args: &ListdirArgs) -> RunResult<CallResult> {
     let ListdirArgs { path } = args;
     let path = if matches!(path, Value::None) {
@@ -335,7 +326,7 @@ fn listdir(vm: &mut VM<'_>, args: &ListdirArgs) -> RunResult<CallResult> {
 /// `os.stat(path, *, dir_fd=None, follow_symlinks=True)` argument shape.
 /// `follow_symlinks` uses [`LaxBool`](crate::args::LaxBool) — CPython truth-tests it, so any value
 /// is accepted.
-#[py_signature("stat(path, *, dir_fd=None, follow_symlinks: bool=True)", style = c_named, bind = owned)]
+#[py_signature("stat(path, *, dir_fd=None, follow_symlinks: bool=True)", bind = owned)]
 fn stat(vm: &mut VM<'_>, args: StatArgs) -> RunResult<CallResult> {
     let StatArgs {
         path,
@@ -356,7 +347,7 @@ fn stat(vm: &mut VM<'_>, args: StatArgs) -> RunResult<CallResult> {
 /// Implementation of `os.mkdir(path, mode=0o777)` — single level, no
 /// exist-tolerance. `mode` is validated but ignored: Monty's filesystem
 /// backends do not model POSIX permission bits.
-#[py_signature("mkdir(path, mode=0o777, *, dir_fd=None)", style = c_named)]
+#[py_signature("mkdir(path, mode=0o777, *, dir_fd=None)")]
 fn mkdir(vm: &mut VM<'_>, args: &MkdirArgs) -> RunResult<CallResult> {
     let MkdirArgs { path, mode, dir_fd } = args;
     let path = extract_os_path(path, "mkdir", "path", PathAccepts::NoFd, vm)?;
@@ -371,7 +362,7 @@ fn mkdir(vm: &mut VM<'_>, args: &MkdirArgs) -> RunResult<CallResult> {
 
 /// Implementation of `os.makedirs(name, mode=0o777, exist_ok=False)` —
 /// recursive `mkdir` via the `parents=True` flag on the `Mkdir` OS call.
-#[py_signature("makedirs(name, mode=0o777, exist_ok=False)", style = def)]
+#[py_signature("makedirs(name, mode=0o777, exist_ok=False)")]
 fn makedirs(vm: &mut VM<'_>, args: &MakedirsArgs) -> RunResult<CallResult> {
     let MakedirsArgs { name, mode, exist_ok } = args;
     let exist_ok = exist_ok.py_bool(vm)?;
@@ -388,7 +379,7 @@ fn makedirs(vm: &mut VM<'_>, args: &MakedirsArgs) -> RunResult<CallResult> {
 
 /// Implementation of `os.remove(path)` — yields the same `Unlink` OS call as
 /// `Path.unlink()`.
-#[py_signature("remove(path, *, dir_fd=None)", style = c_named, bind = owned)]
+#[py_signature("remove(path, *, dir_fd=None)", bind = owned)]
 fn remove(vm: &mut VM<'_>, args: RemoveArgs) -> RunResult<CallResult> {
     let RemoveArgs { path, dir_fd } = args;
     single_path_call(path, dir_fd, "remove", OsFunctionCall::Unlink, vm)
@@ -396,7 +387,7 @@ fn remove(vm: &mut VM<'_>, args: RemoveArgs) -> RunResult<CallResult> {
 
 /// Implementation of `os.unlink(path)` — alias of [`remove`] with its own
 /// name in error messages.
-#[py_signature("unlink(path, *, dir_fd=None)", style = c_named, bind = owned)]
+#[py_signature("unlink(path, *, dir_fd=None)", bind = owned)]
 fn unlink(vm: &mut VM<'_>, args: UnlinkArgs) -> RunResult<CallResult> {
     let UnlinkArgs { path, dir_fd } = args;
     single_path_call(path, dir_fd, "unlink", OsFunctionCall::Unlink, vm)
@@ -420,14 +411,14 @@ fn single_path_call(
 
 /// Implementation of `os.rmdir(path)` — yields the same `Rmdir` OS call as
 /// `Path.rmdir()`.
-#[py_signature("rmdir(path, *, dir_fd=None)", style = c_named, bind = owned)]
+#[py_signature("rmdir(path, *, dir_fd=None)", bind = owned)]
 fn rmdir(vm: &mut VM<'_>, args: RmdirArgs) -> RunResult<CallResult> {
     let RmdirArgs { path, dir_fd } = args;
     single_path_call(path, dir_fd, "rmdir", OsFunctionCall::Rmdir, vm)
 }
 
 /// Implementation of `os.rename(src, dst)`.
-#[py_signature("rename(src, dst, *, src_dir_fd=None, dst_dir_fd=None)", style = c_named, bind = owned)]
+#[py_signature("rename(src, dst, *, src_dir_fd=None, dst_dir_fd=None)", bind = owned)]
 fn rename(vm: &mut VM<'_>, args: RenameArgs) -> RunResult<CallResult> {
     let RenameArgs {
         src,
@@ -440,7 +431,7 @@ fn rename(vm: &mut VM<'_>, args: RenameArgs) -> RunResult<CallResult> {
 
 /// Implementation of `os.replace(src, dst)` — same `Rename` OS call as
 /// [`rename`]; overwrite behavior is whatever the host backend does.
-#[py_signature("replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None)", style = c_named, bind = owned)]
+#[py_signature("replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None)", bind = owned)]
 fn replace(vm: &mut VM<'_>, args: ReplaceArgs) -> RunResult<CallResult> {
     let ReplaceArgs {
         src,
@@ -480,10 +471,7 @@ fn rename_like(
 
 /// Implementation of `os.fspath(path)` — pure, no host involvement: `str` and
 /// `bytes` pass through unchanged, `Path` and `DirEntry` yield their string form.
-///
-/// `os.fspath(path)` argument shape — clinic-parsed with the `at_most_total`
-/// pre-count (`fspath() takes at most 1 argument (2 given)`).
-#[py_signature("fspath(path)", style = c_named, at_most_total, bind = owned)]
+#[py_signature("fspath(path)", bind = owned)]
 fn fspath(vm: &mut VM<'_>, args: FspathArgs) -> RunResult<CallResult> {
     let FspathArgs { path } = args;
     match path.py_type_heap(vm.heap).native() {

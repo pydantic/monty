@@ -128,15 +128,7 @@ pub(crate) fn to_ymd(date: Date) -> (i32, u32, u32) {
 }
 
 /// Constructor for `date(year, month, day)`.
-///
-/// Argument shape for `date(year, month, day)`.
-///
-/// CPython's `date()` is C-implemented (`PyArg_ParseTupleAndKeywords`), hence
-/// `style = c` — "function takes at most N arguments", "function missing
-/// required argument 'X' (pos N)", etc. Unlike `datetime()` it has no
-/// keyword-only fields, so the derive keeps the plain (non-"positional")
-/// at-most wording automatically.
-#[py_signature("date(year: c_int, month: c_int, day: c_int)", style = c, at_most_total, error_name = "function", bind = owned)]
+#[py_signature("date(year: c_int, month: c_int, day: c_int)", bind = owned)]
 pub(crate) fn init(vm: &mut VM<'_>, args: DateInitArgs) -> RunResult<Value> {
     let DateInitArgs { year, month, day } = args;
     let date = from_ymd(year, month, day)?;
@@ -527,17 +519,11 @@ pub(crate) fn invalid_strftime_error() -> RunError {
 
 /// Argument shape for `date.strftime(format)` and `datetime.strftime(format)`.
 ///
-/// CPython implements `strftime` as a C method and reports errors with the
-/// bare method name (no class prefix), so we use `style = c_named` + the
-/// `"strftime"` descriptor — matching wordings like
-/// `strftime() missing required argument 'format' (pos 1)` and
-/// `strftime() takes at most 1 argument (2 given)`.
-///
 /// `bad_arg` opts the wrong-type wording into CPython's `_PyArg_BadArgument`
 /// form (`strftime() argument 1 must be str, not <type>`), including the
 /// `None`-vs-`NoneType` special case — so the type-check logic lives in
 /// the derive rather than a hand-written extract helper.
-#[py_signature("strftime(format: str)", style = c_named, at_most_total, bad_arg)]
+#[py_signature("strftime(format: str)", bad_arg)]
 pub(crate) struct StrftimeArgs;
 
 /// Keyword arguments for `date.replace()`. All keyword-only; absent fields

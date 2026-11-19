@@ -125,11 +125,17 @@ pub(crate) struct ForwardRef {
 }
 
 /// Arguments of `ForwardRef(arg, *, module=None, owner=None, is_argument=True, is_class=False)`.
-#[py_signature("__init__(arg, *, module=None, owner=None, is_argument=True, is_class=False)", style = def, error_name = "ForwardRef.__init__")]
+#[py_signature(
+    "__init__(arg, *, module=None, owner=None, is_argument=True, is_class=False)",
+    error_name = "ForwardRef.__init__"
+)]
 struct ForwardRefArgs;
 
 /// Arguments of `ForwardRef.evaluate(*, globals=None, locals=None, type_params=None, owner=None, format=Format.VALUE)`.
-#[py_signature("evaluate(*, globals=None, locals=None, type_params=None, owner=None, format=1)", style = def, error_name = "ForwardRef.evaluate")]
+#[py_signature(
+    "evaluate(*, globals=None, locals=None, type_params=None, owner=None, format=1)",
+    error_name = "ForwardRef.evaluate"
+)]
 struct EvaluateArgs;
 
 impl ForwardRef {

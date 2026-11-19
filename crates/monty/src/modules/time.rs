@@ -178,15 +178,15 @@ fn convert_clock(vm: &mut VM<'_>, args: ArgValues, caller: TimeCaller, reading: 
 
 /// `time.gmtime(secs=None)`; `PyArg_ParseTuple` in CPython, hence `parse_tuple`.
 /// [`LocaltimeArgs`] and [`CtimeArgs`] are the same shape under their own names.
-#[py_signature("gmtime(seconds=None, /)", style = parse_tuple)]
+#[py_signature("gmtime(seconds=None, /)", style = unpack)]
 struct GmtimeArgs;
 
 /// `time.localtime(secs=None)`; see [`GmtimeArgs`].
-#[py_signature("localtime(seconds=None, /)", style = parse_tuple)]
+#[py_signature("localtime(seconds=None, /)", style = unpack)]
 struct LocaltimeArgs;
 
 /// `time.ctime(secs=None)`; see [`GmtimeArgs`].
-#[py_signature("ctime(seconds=None, /)", style = parse_tuple)]
+#[py_signature("ctime(seconds=None, /)", style = unpack)]
 struct CtimeArgs;
 
 /// Suspends with the shared `time.time` call, carrying the work still to do on
@@ -387,7 +387,7 @@ fn asctime(vm: &mut VM<'_>, args: AsctimeArgs) -> RunResult<CallResult> {
 }
 
 /// `time.strftime(format, t=None)`, formatting `t` or the clock.
-#[py_signature("strftime(format, t=None, /)", style = parse_tuple, bind = owned)]
+#[py_signature("strftime(format, t=None, /)", style = unpack, bind = owned)]
 fn strftime(vm: &mut VM<'_>, args: StrftimeArgs) -> RunResult<CallResult> {
     let StrftimeArgs { format, t } = args;
     let result = strftime_result(&format, &t, vm);
@@ -410,7 +410,7 @@ fn strftime_result(format: &Value, t: &Value, vm: &mut VM<'_>) -> RunResult<Call
 ///
 /// CPython's is the pure-Python `_strptime_time`, which is why the binding
 /// errors name that function rather than `strptime`.
-#[py_signature("_strptime_time(data_string, format=None)", style = def, bind = owned)]
+#[py_signature("_strptime_time(data_string, format=None)", bind = owned)]
 fn strptime(vm: &mut VM<'_>, args: StrptimeArgs) -> RunResult<CallResult> {
     let StrptimeArgs { data_string, format } = args;
     let result = strptime_result(&data_string, &format, vm);

@@ -134,7 +134,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) 
 }
 
 /// `typing.cast()`: returns `val`; `typ` is any object, a string forward reference included.
-#[py_signature("cast(typ, val)", style = def, bind = owned)]
+#[py_signature("cast(typ, val)", bind = owned)]
 fn cast(vm: &mut VM<'_>, args: CastArgs) -> RunResult<CallResult> {
     let CastArgs { typ, val } = args;
     defer_drop!(typ, vm);
@@ -142,7 +142,7 @@ fn cast(vm: &mut VM<'_>, args: CastArgs) -> RunResult<CallResult> {
 }
 
 /// `typing.assert_type()`: returns `val`; only a static type checker looks at `typ`.
-#[py_signature("assert_type(val, typ, /)", style = def, bind = owned)]
+#[py_signature("assert_type(val, typ, /)", bind = owned)]
 fn assert_type(vm: &mut VM<'_>, args: AssertTypeArgs) -> RunResult<CallResult> {
     let AssertTypeArgs { val, typ } = args;
     defer_drop!(typ, vm);
@@ -182,7 +182,7 @@ impl fmt::Write for CappedRepr {
 }
 
 /// `typing.assert_never()`: always raises `AssertionError` quoting a bounded `repr(arg)`.
-#[py_signature("assert_never(arg, /)", style = def)]
+#[py_signature("assert_never(arg, /)")]
 fn assert_never(vm: &mut VM<'_>, args: &AssertNeverArgs) -> RunResult<CallResult> {
     let AssertNeverArgs { arg } = args;
     // The repr is written into a capped buffer that refuses text past the limit, so a huge or
@@ -388,7 +388,7 @@ def __monty_get_annotations(owner, annotate, stored, classdict, scopes, format_,
 ";
 
 /// `typing.get_type_hints()`: see [`collect_hints`].
-#[py_signature("get_type_hints(obj, globalns=None, localns=None, include_extras=False, *, format=None)", style = def, bind = owned)]
+#[py_signature("get_type_hints(obj, globalns=None, localns=None, include_extras=False, *, format=None)", bind = owned)]
 fn get_type_hints(vm: &mut VM<'_>, args: GetTypeHintsArgs) -> RunResult<CallResult> {
     let GetTypeHintsArgs {
         obj,

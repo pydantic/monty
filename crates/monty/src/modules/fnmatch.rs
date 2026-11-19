@@ -85,19 +85,19 @@ pub(super) fn call(vm: &mut VM<'_>, function: FnmatchFunctions, args: ArgValues)
 }
 
 /// Argument shape for `fnmatch(name, pat)`.
-#[py_signature("fnmatch(name, pat)", style = def)]
+#[py_signature("fnmatch(name, pat)")]
 struct FnmatchArgs;
 
 /// Argument shape for `fnmatchcase(name, pat)`.
-#[py_signature("fnmatchcase(name, pat)", style = def)]
+#[py_signature("fnmatchcase(name, pat)")]
 struct FnmatchcaseArgs;
 
 /// Argument shape for `filter(names, pat)`.
-#[py_signature("filter(names, pat)", style = def)]
+#[py_signature("filter(names, pat)")]
 struct FilterArgs;
 
 /// Argument shape for `translate(pat)`.
-#[py_signature("translate(pat)", style = def)]
+#[py_signature("translate(pat)")]
 struct TranslateArgs;
 
 /// `filter(names, pat)`: the members of `names` that match, in order and unchanged.

@@ -236,22 +236,11 @@ pub(crate) fn to_monty_datetime(datetime: &DateTime) -> Option<MontyDateTime> {
     })
 }
 
-/// Constructor for `datetime(...)`.
-///
-/// Argument shape for `datetime(year, month, day, hour=0, minute=0, second=0,
-/// microsecond=0, tzinfo=None, *, fold=0)`.
-///
-/// CPython emits two distinct wordings for over-arity: when the overflow
-/// could still fit in the keyword-only tail (`actual <= 9`) the message is
-/// "function takes at most 8 *positional* arguments"; once it exceeds the
-/// total slot count it switches to "function takes at most 9 arguments".
-/// The derive turns the pivot on automatically for `style = c` structs with
-/// keyword-only fields — the trailing kw-only `fold` slot is what bumps
-/// `max_total` to 9.
+/// Constructs a datetime from its calendar fields and optional timezone.
 ///
 /// `fold` itself is accepted for CPython parity but currently has no effect
 /// on the stored datetime — Monty does not track DST-fold disambiguation.
-#[py_signature("function(year: c_int, month: c_int, day: c_int, hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)", style = c, bind = owned)]
+#[py_signature("datetime(year: c_int, month: c_int, day: c_int, hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)", bind = owned)]
 pub(crate) fn init(vm: &mut VM<'_>, args: DatetimeInitArgs) -> RunResult<Value> {
     let DatetimeInitArgs {
         year,
@@ -309,14 +298,7 @@ pub(crate) fn class_method(
 /// Reads `datetime.now(tz=None)` from the session clock, preserving `tz` identity.
 /// Naive results use the session zone. A `CallHost` clock yields `DateTimeNow`
 /// with a validated [`Option<MontyTimeZone>`] for the host to answer.
-///
-/// Argument shape for `datetime.now(tz=None)`.
-///
-/// `tz` stays a raw [`Value`] so the None-or-timezone check runs in the body
-/// (`tzinfo_from_value`) with CPython's tzinfo wording. `at_most_total`
-/// matches CPython's `PyArg_ParseTupleAndKeywords` pre-count: a duplicate tz
-/// (`now(utc, tz=utc)`) reports "takes at most 1 argument (2 given)".
-#[py_signature("now(tz=None)", at_most_total)]
+#[py_signature("now(tz=None)")]
 pub(crate) fn class_now(vm: &mut VM<'_>, args: &NowArgs) -> RunResult<CallResult> {
     let NowArgs { tz } = args;
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
@@ -340,11 +322,7 @@ pub(crate) fn class_now(vm: &mut VM<'_>, args: &NowArgs) -> RunResult<CallResult
 /// `datetime.fromtimestamp(timestamp, tz=None)`: the instant `timestamp` seconds
 /// after the Unix epoch, as wall-clock time in `tz`, or in the session zone when
 /// `tz` is `None` (CPython reads the host's zone there).
-///
-/// Argument shape for `datetime.fromtimestamp(timestamp, tz=None)`, a
-/// `PyArg_ParseTupleAndKeywords` parser: `at_most_total` gives CPython's
-/// `fromtimestamp() takes at most 2 arguments (3 given)` for a duplicated `tz`.
-#[py_signature("fromtimestamp(timestamp, tz=None)", style = c_named, at_most_total)]
+#[py_signature("fromtimestamp(timestamp, tz=None)")]
 pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: &FromtimestampArgs) -> RunResult<Value> {
     let FromtimestampArgs { timestamp, tz } = args;
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
@@ -505,10 +483,7 @@ fn timestamp_not_a_number(value: &Value, vm: &VM<'_>) -> RunError {
 /// `datetime.astimezone(tz=None)`: the same instant in `tz`, or in the sandbox
 /// zone at that instant when `tz` is `None`. A naive value is read as sandbox-local
 /// wall time, as CPython reads it in the host's zone.
-///
-/// Argument shape for `datetime.astimezone(tz=None)`, checked like [`NowArgs`]:
-/// `at_most_total` gives CPython's `astimezone() takes at most 1 argument (2 given)`.
-#[py_signature("astimezone(tz=None)", at_most_total)]
+#[py_signature("astimezone(tz=None)")]
 fn astimezone(dt: &DateTime, vm: &mut VM<'_>, args: &AstimezoneArgs) -> RunResult<CallResult> {
     let AstimezoneArgs { tz } = args;
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
@@ -673,7 +648,7 @@ pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: &DatetimeFromisoformatA
 /// Every field stays a raw [`Value`] so the type checks run in the body with
 /// CPython's own wording (`combine() argument 1 must be datetime.date, not
 /// str`, and the shared `tzinfo argument must be ...` message).
-#[py_signature("combine(date, time, tzinfo=...)", style = c_named, at_most_total, bind = owned)]
+#[py_signature("combine(date, time, tzinfo=...)", bind = owned)]
 pub(crate) fn class_combine(vm: &mut VM<'_>, args: CombineArgs) -> RunResult<Value> {
     let CombineArgs { date, time, tzinfo } = args;
     defer_drop!(date, vm);
@@ -1261,7 +1236,7 @@ fn format_isoformat(dt: &DateTime, sep: char, spec: TimeSpec) -> String {
 /// `FromValue` impl produces — it reports the *length* of a rejected string
 /// (`not a string of length 2`) — so [`isoformat_separator`] checks it in the
 /// body. `bad_arg` still covers `timespec`.
-#[py_signature("isoformat(sep=..., timespec: str=...)", style = c_named, at_most_total, bad_arg)]
+#[py_signature("isoformat(sep=..., timespec: str=...)", bad_arg)]
 struct IsoformatArgs;
 
 /// Validates `isoformat`'s `sep` argument: any single character, `'T'` by default.

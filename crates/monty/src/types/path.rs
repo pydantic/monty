@@ -308,7 +308,7 @@ fn split_suffix(name: &str) -> (&str, &str) {
 ///
 /// A pure-Python classmethod in CPython, so its arity errors count `cls`:
 /// one stray positional is `takes 1 positional argument but 2 were given`.
-#[py_signature("cwd(self, /)", style = def, owner = "Path", bind = owned)]
+#[py_signature("cwd(self, /)", owner = "Path", bind = owned)]
 pub(crate) fn class_cwd(vm: &mut VM<'_>, args: CwdArgs) -> RunResult<Value> {
     let CwdArgs {} = args;
     let path = Path::new(vm.env.cwd.to_string());
@@ -316,15 +316,24 @@ pub(crate) fn class_cwd(vm: &mut VM<'_>, args: CwdArgs) -> RunResult<Value> {
 }
 
 /// `Path.glob(pattern, *, case_sensitive=None, recurse_symlinks=False)`.
-#[py_signature("glob(pattern, *, case_sensitive=None, recurse_symlinks=False)", style = def, error_name = "Path.glob")]
+#[py_signature(
+    "glob(pattern, *, case_sensitive=None, recurse_symlinks=False)",
+    error_name = "Path.glob"
+)]
 struct PathGlobArgs;
 
 /// `Path.rglob(pattern, *, case_sensitive=None, recurse_symlinks=False)`.
-#[py_signature("rglob(pattern, *, case_sensitive=None, recurse_symlinks=False)", style = def, error_name = "Path.rglob")]
+#[py_signature(
+    "rglob(pattern, *, case_sensitive=None, recurse_symlinks=False)",
+    error_name = "Path.rglob"
+)]
 struct PathRglobArgs;
 
 /// `Path.walk(top_down=True, on_error=None, follow_symlinks=False)`.
-#[py_signature("walk(top_down=True, on_error=None, follow_symlinks=False)", style = def, error_name = "Path.walk")]
+#[py_signature(
+    "walk(top_down=True, on_error=None, follow_symlinks=False)",
+    error_name = "Path.walk"
+)]
 struct PathWalkArgs;
 
 /// `Path.glob()` / `Path.rglob()` on the receiver `base`: validates the

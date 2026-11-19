@@ -378,15 +378,15 @@ fn entry_method(
 }
 
 /// `DirEntry.is_dir(*, follow_symlinks=True)`.
-#[py_signature("is_dir(*, follow_symlinks: bool=True)", style = c_named)]
+#[py_signature("is_dir(*, follow_symlinks: bool=True)")]
 struct IsDirArgs;
 
 /// `DirEntry.is_file(*, follow_symlinks=True)`.
-#[py_signature("is_file(*, follow_symlinks: bool=True)", style = c_named)]
+#[py_signature("is_file(*, follow_symlinks: bool=True)")]
 struct IsFileArgs;
 
 /// `DirEntry.stat(*, follow_symlinks=True)`.
-#[py_signature("stat(*, follow_symlinks: bool=True)", style = c_named)]
+#[py_signature("stat(*, follow_symlinks: bool=True)")]
 struct StatArgs;
 
 /// Takes one step of a walk: prunes by the last `dirnames`, then pops steps

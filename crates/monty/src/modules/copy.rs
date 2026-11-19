@@ -56,7 +56,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: CopyFunctions, args: ArgValues) ->
 }
 
 /// `copy.copy(x)`: a new object holding the *same* items as `x`.
-#[py_signature("copy(x)", style = def)]
+#[py_signature("copy(x)")]
 fn call_copy(vm: &mut VM<'_>, args: &CopyArgs) -> RunResult<Value> {
     let CopyArgs { x } = args;
     shallow_copy(x, vm)
@@ -66,7 +66,7 @@ fn call_copy(vm: &mut VM<'_>, args: &CopyArgs) -> RunResult<Value> {
 ///
 /// CPython's signature. `_nil` is its private "missing from `memo`" sentinel,
 /// accepted for arity parity and never read.
-#[py_signature("deepcopy(x, memo=None, _nil=None)", style = def, bind = owned)]
+#[py_signature("deepcopy(x, memo=None, _nil=None)", bind = owned)]
 fn call_deepcopy(vm: &mut VM<'_>, args: DeepcopyArgs) -> RunResult<Value> {
     let DeepcopyArgs { x, memo, _nil: nil } = args;
     defer_drop!(x, vm);

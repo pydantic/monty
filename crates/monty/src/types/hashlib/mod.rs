@@ -413,11 +413,11 @@ pub(crate) fn hex_string(data: &[u8]) -> String {
 }
 
 /// `digest(length)` of a `_hashlib.HASHXOF`.
-#[py_signature("digest(length)", style = c_named, at_most_total, convert(length = u64))]
+#[py_signature("digest(length)", convert(length = u64))]
 struct XofDigestArgs;
 
 /// `hexdigest(length)` of a `_hashlib.HASHXOF`.
-#[py_signature("hexdigest(length)", style = c_named, at_most_total, convert(length = u64))]
+#[py_signature("hexdigest(length)", convert(length = u64))]
 struct XofHexdigestArgs;
 
 // ============================================================================

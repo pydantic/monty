@@ -21,7 +21,7 @@ use crate::{
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
 /// Invalid calls raise `TypeError`. CPython’s custom parser can report a different
 /// argument first, for example in `enumerate(start=1)`.
-#[py_signature("enumerate(iterable, start: SupportsIndex=0)", at_most_total, bind = mut)]
+#[py_signature("enumerate(iterable, start: SupportsIndex=0)", bind = mut)]
 pub fn builtin_enumerate(vm: &mut VM<'_>, args: &mut EnumerateArgs) -> RunResult<Value> {
     let iterable = mem::replace(&mut args.iterable, Value::None);
     let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;

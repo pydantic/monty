@@ -879,7 +879,7 @@ fn call_list_method<'h>(
 }
 
 /// Implements Python's `list.insert(index, item)` method.
-#[py_signature("insert(self, index, object, /)", bind = owned)]
+#[py_signature("insert(self, index, object, /)", style = unpack, bind = owned)]
 fn list_insert<'h>(list: &HeapReadMut<'h, List>, args: InsertArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let InsertArgs {
         index: index_obj,

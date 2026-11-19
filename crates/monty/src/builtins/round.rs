@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// Rounds through `__round__`, leaving precision coercion to the receiving type.
-#[py_signature("round(number, ndigits=None)", style = c_named, at_most_total)]
+#[py_signature("round(number, ndigits=None)")]
 pub fn builtin_round(vm: &mut VM<'_>, args: &RoundArgs) -> RunResult<Value> {
     let RoundArgs { number, ndigits } = args;
     let ndigits = if matches!(ndigits, Value::None) {

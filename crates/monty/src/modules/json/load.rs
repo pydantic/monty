@@ -70,13 +70,8 @@ const JSON_RECURSION_LIMIT: usize = 200;
 ///
 /// Argument shape for `json.loads(s)`.
 ///
-/// CPython's `loads` is a pure-Python `def loads(s, *, cls=None, …)`, so `s`
-/// is positional-or-keyword (`json.loads(s='1')` works) and signature errors
-/// use `style = def` wording. The additional CPython kwargs (`cls`, `object_hook`,
-/// …) are intentionally not implemented; leaving them off this struct means
-/// the macro emits the "unexpected keyword" error for them, naming
-/// `JSONDecoder.__init__` as CPython does for a keyword the decoder rejects.
-#[py_signature("loads(s, *, parse_float=None, parse_int=None)", style = def, kwarg_error_name = "JSONDecoder.__init__", bind = owned)]
+/// Unsupported decoder options are reported as errors from `JSONDecoder.__init__`.
+#[py_signature("loads(s, *, parse_float=None, parse_int=None)", kwarg_error_name = "JSONDecoder.__init__", bind = owned)]
 pub(super) fn call_loads(vm: &mut VM<'_>, args: JsonLoadsArgs) -> RunResult<Value> {
     let JsonLoadsArgs {
         s,
@@ -111,7 +106,7 @@ struct NumberHooks<'a> {
 ///
 /// Argument shape for `json.load(fp)`, a pure-Python `def` like [`JsonLoadsArgs`]
 /// with the same keyword policy.
-#[py_signature("load(fp)", style = def, kwarg_error_name = "JSONDecoder.__init__")]
+#[py_signature("load(fp)", kwarg_error_name = "JSONDecoder.__init__")]
 pub(super) fn call_load(vm: &mut VM<'_>, args: &JsonLoadArgs) -> RunResult<CallResult> {
     let JsonLoadArgs { fp } = args;
     match FileTarget::reader(fp, vm)? {

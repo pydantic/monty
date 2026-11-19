@@ -315,10 +315,7 @@ fn value_error_could_not_convert_string_to_float(value: impl fmt::Display) -> Ru
 /// Implements the `int()` constructor: numeric coercion, and str/bytes
 /// parsing with an optional base (auto-detected when `base=0`).
 ///
-/// Argument shape for `int(x=..., /, base=...)`. `x` is positional-only with
-/// no kwarg id, so `int(x=1)` reports an unknown keyword exactly like CPython;
-/// `vectorcall` + `at_most_total` model `long_vectorcall`'s dual arity wording.
-#[py_signature("int(x=..., /, base=...)", at_most_total, vectorcall, bind = owned)]
+#[py_signature("int(x=..., /, base=...)", bind = owned)]
 pub(crate) fn int_init(vm: &mut VM<'_>, args: IntArgs) -> RunResult<Value> {
     let IntArgs { x, base } = args;
     let Some(x) = x else {

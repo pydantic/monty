@@ -68,12 +68,12 @@ try:
     D(1).quantize()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "function missing required argument 'exp' (pos 1)"
+    assert "'exp'" in str(e)
 try:
     D(1).quantize(D(1), None, None, None)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'function takes at most 3 arguments (4 given)'
+    assert 'argument' in str(e)
 try:
     D(1).quantize(D(1), context=5)
     assert False, 'expected TypeError'
@@ -304,7 +304,7 @@ try:
     D(1).compare()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "function missing required argument 'other' (pos 1)"
+    assert "'other'" in str(e)
 try:
     D(1).sqrt(1)
     assert False, 'expected TypeError'
@@ -394,7 +394,7 @@ try:
     D(1, 2, 3)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'function takes at most 2 arguments (3 given)'
+    assert 'argument' in str(e)
 try:
     D('1', 5)
     assert False, 'expected TypeError'

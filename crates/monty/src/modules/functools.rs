@@ -97,11 +97,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: FunctoolsFunctions, args: ArgValue
 ///
 /// Argument shape for `reduce(function, iterable, /[, initial])`.
 ///
-/// CPython's Argument Clinic signature makes the first two positional-only
-/// while `initial` is also accepted by keyword, and counts positionals plus
-/// keywords together for the maximum (`at_most_total`): `reduce(f, x, 0,
-/// initial=1)` reports four arguments.
-#[py_signature("reduce(function, iterable, /, initial=...)", at_most_total, bind = owned)]
+#[py_signature("reduce(function, iterable, /, initial=...)", bind = owned)]
 fn call_reduce(vm: &mut VM<'_>, args: ReduceArgs) -> RunResult<CallResult> {
     let ReduceArgs {
         function,
@@ -125,7 +121,7 @@ fn call_reduce(vm: &mut VM<'_>, args: ReduceArgs) -> RunResult<CallResult> {
 }
 
 /// Arguments to the unbounded caching decorator.
-#[py_signature("cache(user_function, /)", style = def)]
+#[py_signature("cache(user_function, /)")]
 struct CacheArgs;
 
 /// Wraps a callable in an unbounded cache.
@@ -135,7 +131,7 @@ fn call_cache(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// Returns a configured decorator, or wraps a callable passed as the first argument.
-#[py_signature("lru_cache(maxsize=128, typed=False)", style = def)]
+#[py_signature("lru_cache(maxsize=128, typed=False)")]
 fn call_lru_cache_factory(vm: &mut VM<'_>, args: &LruCacheArgs) -> RunResult<Value> {
     let LruCacheArgs { maxsize, typed } = args;
     let typed_flag = typed.py_bool(vm)?;

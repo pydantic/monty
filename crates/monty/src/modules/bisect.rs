@@ -69,7 +69,7 @@ fn convert_hi(value: &Value, vm: &mut VM<'_>) -> RunResult<i64> {
 // Separate derives preserve each function's name in Clinic binding errors.
 macro_rules! arguments {
     ($ty:ident, $name:literal) => {
-        #[py_signature("(a, x, lo=0, hi=None, *, key=None)", style = c_named, error_name = $name)]
+        #[py_signature("(a, x, lo=0, hi=None, *, key=None)", error_name = $name)]
         struct $ty;
     };
 }

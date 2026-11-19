@@ -163,7 +163,7 @@ impl<C: ContainsHeap> DropWithContext<C> for ConstructorArgs {
 /// the function name (`openssl_sha256() takes at most …`) into the spec.
 macro_rules! openssl_constructor_args {
     ($($args:ident => $name:literal),* $(,)?) => {$(
-        #[py_signature("(data=..., *, usedforsecurity=True, string=...)", style = c_named, at_most_total, error_name = $name)]
+        #[py_signature("(data=..., *, usedforsecurity=True, string=...)", error_name = $name)]
         struct $args;
 
         impl From<$args> for ConstructorArgs {
@@ -226,7 +226,7 @@ fn initial_data<'a>(data: Option<&'a Value>, string: Option<&'a Value>) -> RunRe
 }
 
 /// `_hashlib.new(name, data=b'', *, usedforsecurity=True, string=None)`.
-#[py_signature("new(name: str, data=..., *, usedforsecurity=True, string=...)", style = c_named, bad_arg_named, at_most_total)]
+#[py_signature("new(name: str, data=..., *, usedforsecurity=True, string=...)", bad_arg_named)]
 struct OpensslNewArgs;
 
 /// `hashlib.new()`: the name is checked for a BLAKE2 constructor first, so
@@ -235,7 +235,7 @@ struct OpensslNewArgs;
 ///
 /// `hashlib.new(name, *args, **kwargs)`, a pure-Python `def` that routes
 /// BLAKE2 names to the `_blake2` types and everything else to `_hashlib.new`.
-#[py_signature("__hash_new(name, *args, **kwargs)", style = def, bind = owned)]
+#[py_signature("__hash_new(name, *args, **kwargs)", bind = owned)]
 fn call_new(vm: &mut VM<'_>, args: HashNewArgs) -> RunResult<Value> {
     let HashNewArgs { name, args, kwargs } = args;
     let blake2 = name.as_str(vm).and_then(Blake2Kind::from_name);
@@ -372,7 +372,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Blake2RawArgs {
 /// the name their errors carry.
 macro_rules! blake2_constructor_args {
     ($($args:ident => $name:literal),* $(,)?) => {$(
-        #[py_signature("(data=..., *, digest_size=..., key=..., salt=..., person=..., fanout=..., depth=..., leaf_size=..., node_offset=..., node_depth=..., inner_size=..., last_node: bool=False, usedforsecurity=True, string=...)", style = c_named, at_most_total, error_name = $name)]
+        #[py_signature("(data=..., *, digest_size=..., key=..., salt=..., person=..., fanout=..., depth=..., leaf_size=..., node_offset=..., node_depth=..., inner_size=..., last_node: bool=False, usedforsecurity=True, string=...)", error_name = $name)]
         struct $args;
 
         impl From<$args> for Blake2RawArgs {
@@ -617,7 +617,7 @@ fn overflow_error(msg: impl Display) -> RunError {
 /// `pbkdf2_hmac(hash_name, password, salt, iterations, dklen=None)`, a clinic
 /// function whose `password`, `salt` and `iterations` convert in the body so
 /// their errors come out in signature order.
-#[py_signature("pbkdf2_hmac(hash_name: str, password, salt, iterations, dklen=None)", style = c_named, bad_arg_named, at_most_total, bind = owned)]
+#[py_signature("pbkdf2_hmac(hash_name: str, password, salt, iterations, dklen=None)", bad_arg_named, bind = owned)]
 fn call_pbkdf2_hmac(vm: &mut VM<'_>, args: Pbkdf2HmacArgs) -> RunResult<Value> {
     let Pbkdf2HmacArgs {
         hash_name,

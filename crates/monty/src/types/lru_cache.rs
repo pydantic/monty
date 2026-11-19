@@ -183,7 +183,7 @@ struct CallArgs;
 /// CPython's decorator is a closure over the two settings taking just the
 /// function, so this shape is what its arity errors describe; Monty keeps the
 /// settings on a function-less wrapper instead.
-#[py_signature("decorating_function(user_function)", style = def, error_name = "lru_cache.<locals>.decorating_function", bind = owned)]
+#[py_signature("decorating_function(user_function)", error_name = "lru_cache.<locals>.decorating_function", bind = owned)]
 fn decorate(maxsize: Option<u64>, typed: bool, args: DecoratingFunctionArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let DecoratingFunctionArgs { user_function } = args;
     allocate(Some(user_function), maxsize, typed, vm)

@@ -293,9 +293,8 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
 /// `encoding`/`errors` are raw `Value`s validated in the body: CPython's
 /// `unicode_new` names a wrong type by its `tp_name` (`must be str, not
 /// NoneType`), not `_PyArg_BadArgument`'s `None` special case, so the macro's
-/// `bad_arg_named` wording can't be used. `vectorcall` + `at_most_total`
-/// model `unicode_vectorcall`'s dual arity wording.
-#[py_signature("str(object=..., encoding=..., errors=...)", at_most_total, vectorcall)]
+/// `bad_arg_named` wording can't be used.
+#[py_signature("str(object=..., encoding=..., errors=...)")]
 struct StrInitArgs;
 
 /// Rejects a non-str `encoding`/`errors` argument to `str()` with CPython's
@@ -1483,7 +1482,7 @@ fn str_splitlines<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunRes
 /// Argument shape for `str.splitlines(keepends=False)`. CPython evaluates
 /// `keepends` for truthiness rather than strict-typing, so the field stays as
 /// a raw `Value` for `value_is_truthy` to inspect.
-#[py_signature("splitlines(keepends=...)", at_most_total, bind = owned)]
+#[py_signature("splitlines(keepends=...)", bind = owned)]
 fn parse_splitlines_args(args: SplitlinesArgs, vm: &mut VM<'_>) -> RunResult<bool> {
     let SplitlinesArgs { keepends } = args;
     let result = keepends.as_ref().is_some_and(value_is_truthy);
@@ -1751,7 +1750,7 @@ fn str_zfill<'h>(s: &PyStr<'h>, args: &StrZfillArgs, vm: &mut VM<'h>) -> RunResu
 /// Argument shape for `str.expandtabs(tabsize=8)`. `tabsize` is `Option<Value>`
 /// so callers can distinguish "absent" (default 8) from any explicit value
 /// without forcing the macro into a type-checked default.
-#[py_signature("expandtabs(tabsize=...)", at_most_total, bind = owned)]
+#[py_signature("expandtabs(tabsize=...)", bind = owned)]
 fn str_expandtabs<'h>(s: &PyStr<'h>, args: ExpandtabsArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let ExpandtabsArgs { tabsize } = args;
     let tabsize = match tabsize {
@@ -1815,7 +1814,7 @@ fn str_expandtabs<'h>(s: &PyStr<'h>, args: ExpandtabsArgs, vm: &mut VM<'h>) -> R
 /// CPython rejects explicit `None` here with the bad-arg error, which falls
 /// out naturally because `Option<StrArg>::from_value` delegates to
 /// `StrArg::from_value` and rejects `Value::None`.
-#[py_signature("encode(encoding: str=..., errors: str=...)", at_most_total, bad_arg_named)]
+#[py_signature("encode(encoding: str=..., errors: str=...)", bad_arg_named)]
 fn str_encode<'h>(s: &PyStr<'h>, args: &EncodeArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let EncodeArgs { encoding, errors } = args;
     let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));

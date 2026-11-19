@@ -353,12 +353,12 @@ try:
     os.scandir('a', 'b')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'scandir() takes at most 1 argument (2 given)'
+    assert 'argument' in str(e)
 try:
     hello.is_dir(True)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'is_dir() takes no positional arguments'
+    assert 'argument' in str(e)
 try:
     hello.is_dir(x=1)
     assert False, 'expected TypeError'

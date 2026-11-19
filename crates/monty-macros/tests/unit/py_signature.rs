@@ -11,7 +11,7 @@ fn adapter() -> ItemFn {
 #[test]
 fn rejects_invalid_options() {
     for options in [
-        "style = def, style = clinic",
+        "style = unpack, style = one_arg",
         "bind = shared, bind = owned",
         "bad_arg, bad_arg",
         "reject_keywords, reject_keywords",
@@ -29,18 +29,6 @@ fn rejects_invalid_options() {
         result.err().expect("unknown option").to_string(),
         "unknown py_signature option"
     );
-}
-
-#[test]
-fn def_rejects_parameter_annotations() {
-    for signature in ["f(x: str, /)", "f(x: float)", "f(*, x: SupportsIndex = -1)"] {
-        let declaration = syn::parse_str::<Declaration>(&format!(r#""{signature}", style = def"#)).unwrap();
-        let error = expand(&declaration, adapter()).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "leave parameters unannotated with style = def and convert values in the function body"
-        );
-    }
 }
 
 #[test]
@@ -228,7 +216,7 @@ fn implicit_direct_binding_preserves_explicit_styles_and_struct_binders() {
                 fn f(x: State, args: &FArgs, vm: &mut VM<'_>) {}
             ),
         ),
-        (parse_quote!("f(x, /)", style = def), adapter()),
+        (parse_quote!("f(x, /)", style = unpack), adapter()),
     ] {
         let output: ItemFn = syn::parse2(expand(&declaration, function).unwrap()).unwrap();
         assert!(
@@ -274,7 +262,7 @@ fn infers_no_arguments_for_a_free_function() {
 }
 
 #[test]
-fn infers_the_same_check_for_a_named_binder() {
+fn empty_named_binder_has_an_inline_fast_path() {
     let binder = super::expand_struct(
         &parse_quote!("f()"),
         parse_quote!(
@@ -282,15 +270,7 @@ fn infers_the_same_check_for_a_named_binder() {
         ),
     )
     .unwrap();
-    assert!(binder.to_string().contains("check_zero_args"));
-    let python = super::expand_struct(
-        &parse_quote!("f()", style = def),
-        parse_quote!(
-            struct FArgs;
-        ),
-    )
-    .unwrap();
-    assert!(!python.to_string().contains("check_zero_args"));
+    assert!(binder.to_string().contains("ArgValues :: Empty"));
 }
 
 #[test]
@@ -354,10 +334,7 @@ fn rejects_invalid_named_binders_and_converters() {
             r#""f(*items)", style = unpack"#,
             "`style = unpack` requires a fixed positional range",
         ),
-        (
-            r#""f(**extras)", style = parse_tuple"#,
-            "`style = parse_tuple` rejects all keyword arguments",
-        ),
+        (r#""f(x)", style = c_named"#, "expected `style = unpack`"),
         (r#""(x)""#, "a parameter list requires error_name"),
         (
             r#""f(self, /)", owner = "T", error_name = "g""#,
@@ -512,7 +489,7 @@ fn ownership_modes_share_the_one_argument_fast_path() {
             .unwrap()
             .to_string(),
     );
-    assert!(shared.contains("get_one_arg"));
+    assert!(shared.contains("ArgValues :: One"));
     assert!(shared.contains("defer_drop !"));
 
     let mutable = parse_quote!(
@@ -521,7 +498,7 @@ fn ownership_modes_share_the_one_argument_fast_path() {
     let output = expand(&parse_quote!("f(x, /)", bind = mut), mutable)
         .unwrap()
         .to_string();
-    assert!(output.contains("get_one_arg"));
+    assert!(output.contains("ArgValues :: One"));
     assert!(output.contains("defer_drop_mut !"));
 
     let owned = parse_quote!(
@@ -533,6 +510,6 @@ fn ownership_modes_share_the_one_argument_fast_path() {
     let output = expand(&parse_quote!("f(x, /)", bind = owned), owned)
         .unwrap()
         .to_string();
-    assert!(output.contains("get_one_arg"));
+    assert!(output.contains("ArgValues :: One"));
     assert!(!output.contains("defer_drop"));
 }

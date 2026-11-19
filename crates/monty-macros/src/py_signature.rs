@@ -65,15 +65,9 @@ impl Parse for Declaration {
                         declaration.converters.push((name, field.value()?.parse()?));
                         Ok(())
                     })
-                } else if [
-                    "at_most_total",
-                    "bad_arg",
-                    "bad_arg_named",
-                    "vectorcall",
-                    "kwargs_not_supported_yet",
-                ]
-                .iter()
-                .any(|option| meta.path.is_ident(option))
+                } else if ["bad_arg", "bad_arg_named", "kwargs_not_supported_yet"]
+                    .iter()
+                    .any(|option| meta.path.is_ident(option))
                 {
                     let ident = meta.path.require_ident()?.clone();
                     if declaration.modifiers.contains(&ident) {
@@ -401,12 +395,6 @@ fn arguments(
     let error = |message: &str| syn::Error::new(literal.span(), message);
     let name = def.name.as_str();
     let params = &def.parameters;
-    let is_def = declaration.style.as_ref().is_some_and(|style| style == "def");
-    if is_def && (!declaration.converters.is_empty() || params.iter().any(|param| param.annotation().is_some())) {
-        return Err(error(
-            "leave parameters unannotated with style = def and convert values in the function body",
-        ));
-    }
     for (field, _) in &declaration.converters {
         let name = field.to_string();
         if !params
@@ -472,21 +460,21 @@ fn arguments(
     })?;
     let signature = Signature::parse(&input)?;
     let drop_args = signature.drop_bound_args();
-    let positional = &params.posonlyargs[usize::from(receiver)..];
-    let inline = if params.vararg.is_none() && raw_positional(declaration, def) {
-        let required = positional.iter().take_while(|p| p.default().is_none()).count();
-        match (required, positional.len()) {
-            (0, 0) => Some(quote!(check_zero_args)),
-            (0, 1) => Some(quote!(get_zero_one_arg)),
-            (1, 1) => Some(quote!(get_one_arg)),
-            (1, 2) => Some(quote!(get_one_two_args)),
-            (2, 2) => Some(quote!(get_two_args)),
-            _ => None,
+    let from_args = if declaration.reject_keywords {
+        let invalid = || error("reject_keywords requires a fixed raw positional signature");
+        if !raw_positional(declaration, def) || params.vararg.is_some() {
+            return Err(invalid());
         }
-    } else {
-        None
-    };
-    let from_args = if let Some(helper) = inline {
+        let positional = &params.posonlyargs[usize::from(receiver)..];
+        let required = positional.iter().take_while(|p| p.default().is_none()).count();
+        let helper = match (required, positional.len()) {
+            (0, 0) => quote!(check_zero_args),
+            (0, 1) => quote!(get_zero_one_arg),
+            (1, 1) => quote!(get_one_arg),
+            (1, 2) => quote!(get_one_two_args),
+            (2, 2) => quote!(get_two_args),
+            _ => return Err(invalid()),
+        };
         let names = positional
             .iter()
             .map(|p| field_name(&p.parameter, literal))
@@ -496,21 +484,16 @@ fn arguments(
         } else {
             quote!((#(#names),*))
         };
-        let reject = declaration
-            .reject_keywords
-            .then(|| quote!(let args = args.reject_kwargs(#qualified_name, vm.heap)?;));
         quote! {
             impl #bound_name {
                 pub(crate) fn from_args(args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'_>)
                     -> crate::exception_private::RunResult<Self> {
-                    #reject
+                    let args = args.reject_kwargs(#qualified_name, vm.heap)?;
                     let #binding = args.#helper(#qualified_name, vm.heap)?;
                     Ok(Self { #(#names),* })
                 }
             }
         }
-    } else if declaration.reject_keywords {
-        return Err(error("reject_keywords requires a fixed raw positional signature"));
     } else {
         signature.render(receiver)
     };

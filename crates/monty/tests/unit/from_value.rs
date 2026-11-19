@@ -367,7 +367,7 @@ fn from_args_vm_field_and_block_default() {
     });
 }
 
-#[monty_macros::py_signature("f(*, _replace=None)", style = def)]
+#[monty_macros::py_signature("f(*, _replace=None)")]
 fn underscored_keyword(vm: &mut VM<'_>, args: &FArgs) -> RunResult<i64> {
     let FArgs { _replace: value } = args;
     value.as_int(vm)

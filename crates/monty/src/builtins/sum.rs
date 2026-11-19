@@ -19,12 +19,7 @@ use crate::{
 /// Sums the items of an iterable from left to right with an optional start value.
 /// The default start value is 0. Str and bytes start values are explicitly
 /// rejected, pointing at `''.join(seq)` / `b''.join(seq)` instead.
-///
-/// Argument shape for `sum(iterable, /, start=0)` — Argument Clinic in
-/// CPython, so `start` is keyword-capable while `iterable` is positional-only.
-/// `at_most_total` reproduces `_PyArg_UnpackKeywords`' total pre-count
-/// (`sum() takes at most 2 arguments (3 given)`).
-#[py_signature("sum(iterable, /, start=0)", at_most_total, bind = owned)]
+#[py_signature("sum(iterable, /, start=0)", bind = owned)]
 pub fn builtin_sum(vm: &mut VM<'_>, args: SumArgs) -> RunResult<Value> {
     let SumArgs { iterable, start } = args;
     defer_drop_mut!(start, vm);

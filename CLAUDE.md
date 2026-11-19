@@ -627,10 +627,9 @@ The binder handles positional and keyword dispatch, defaults, error ordering and
 Methods implemented inside a shared dispatcher use the `ArgValues` helpers in the selected arm.
 Move the signature onto the handler when extracting the method into its own Rust function.
 
-Choose the parser style by checking CPython's error wording and precedence.
-For Python `def` signatures, convert values in the body. For C parsers, annotations or
-`convert(parameter = RustType)` select the conversion during binding.
-See the [macro reference](crates/monty-macros/README.md) for the supported signatures and parser styles.
+Declare accepted calls with the Python signature. Annotations or `convert(parameter = RustType)`
+select conversions that run after binding. Use the handler body for conversions that belong to the operation itself.
+See the [macro reference](crates/monty-macros/README.md) for supported signatures and diagnostics.
 
 ## Code style
 

@@ -91,10 +91,8 @@ pub(super) fn call(vm: &mut VM<'_>, function: TomllibFunctions, args: ArgValues)
 ///
 /// Argument shape for `tomllib.loads(s, /, *, parse_float=float)`.
 ///
-/// CPython's `loads` is a pure-Python `def`, so signature errors use
-/// `style = def` wording. `parse_float` is not implemented: leaving it off the
-/// struct makes the macro reject it as an unexpected keyword.
-#[py_signature("loads(s, /)", style = def)]
+/// `parse_float` is currently unsupported.
+#[py_signature("loads(s, /)")]
 fn call_loads(vm: &mut VM<'_>, args: &TomlLoadsArgs) -> RunResult<Value> {
     let TomlLoadsArgs { s } = args;
     let source = s
@@ -113,7 +111,7 @@ fn call_loads(vm: &mut VM<'_>, args: &TomlLoadsArgs) -> RunResult<Value> {
 ///
 /// Argument shape for `tomllib.load(fp, /, *, parse_float=float)`; see
 /// [`TomlLoadsArgs`] for why `parse_float` is absent.
-#[py_signature("load(fp, /)", style = def)]
+#[py_signature("load(fp, /)")]
 fn call_load(vm: &mut VM<'_>, args: &TomlLoadArgs) -> RunResult<CallResult> {
     let TomlLoadArgs { fp } = args;
     let Value::Ref(file_id) = fp else {

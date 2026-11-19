@@ -620,7 +620,7 @@ impl HeapItem for RePattern {
 /// Separated from the main `py_call_attr` match to keep the borrow checker happy —
 /// extracting multiple string arguments requires careful ordering of borrows.
 /// Supports `count` as either positional or keyword argument.
-#[py_signature("sub(repl, string, count=...)", style = c_named, at_most_total, bind = owned)]
+#[py_signature("sub(repl, string, count=...)", bind = owned)]
 fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: PatternSubArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let PatternSubArgs {
         repl: repl_val,
@@ -659,7 +659,7 @@ fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: PatternSubArgs,
 /// Handles `pattern.split(string, maxsplit=0)` argument extraction and dispatch.
 ///
 /// Supports `maxsplit` as either positional or keyword argument.
-#[py_signature("split(string, maxsplit=...)", style = c_named, at_most_total, bind = owned)]
+#[py_signature("split(string, maxsplit=...)", bind = owned)]
 fn call_pattern_split<'h>(
     pattern: &HeapRead<'h, RePattern>,
     args: PatternSplitArgs,

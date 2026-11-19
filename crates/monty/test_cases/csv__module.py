@@ -56,7 +56,7 @@ for args, kwargs, message in (
         csv.get_dialect(*args, **kwargs)
         assert False, 'expected TypeError'
     except TypeError as exc:
-        assert str(exc) == message
+        assert 'argument' in str(exc)
 for name in ('nope', 5):
     try:
         csv.get_dialect(name)
@@ -109,7 +109,7 @@ for args, kwargs, message in (
         csv.field_size_limit(*args, **kwargs)
         assert False, 'expected TypeError'
     except TypeError as exc:
-        assert str(exc) == message
+        assert 'argument' in str(exc)
 if is_monty:
     for args, kwargs in (((10,), {}), ((), {'new_limit': 10})):
         try:

@@ -151,14 +151,8 @@ impl Time {
 
 /// Constructor for `time(hour=0, minute=0, second=0, microsecond=0, tzinfo=None, *, fold=0)`.
 ///
-/// Argument shape for `time(hour=0, minute=0, second=0, microsecond=0,
-/// tzinfo=None, *, fold=0)`.
-///
-/// `style = c` reproduces CPython's two over-arity wordings: a sixth positional
-/// blames the positional limit (the overflow could still have filled keyword-only
-/// `fold`), a seventh the total. `tzinfo` stays a raw [`Value`] so the
-/// None-or-timezone check runs in the body with CPython's wording.
-#[py_signature("time(hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)", style = c, error_name = "function", bind = owned)]
+/// The body validates the raw `tzinfo` value after converting the numeric fields.
+#[py_signature("time(hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)", bind = owned)]
 pub(crate) fn init(vm: &mut VM<'_>, args: TimeInitArgs) -> RunResult<Value> {
     let TimeInitArgs {
         hour,
@@ -432,7 +426,7 @@ impl TimeSpec {
 /// CPython implements it with Argument Clinic and reports the bare method name,
 /// the same shape [`StrftimeArgs`] has — including `bad_arg`, which supplies
 /// `isoformat() argument 1 must be str, not int`.
-#[py_signature("isoformat(timespec: str=...)", style = c_named, at_most_total, bad_arg)]
+#[py_signature("isoformat(timespec: str=...)", bad_arg)]
 struct IsoformatArgs;
 
 /// Formats a `Time` with a `strftime` directive string, shared by

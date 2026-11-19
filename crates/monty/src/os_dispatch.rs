@@ -771,7 +771,10 @@ fn extract_bytes_data(
 }
 
 /// Path.mkdir binds a receiver slot so arity errors include self.
-#[py_signature("mkdir(receiver, /, mode=0o777, parents=False, exist_ok=False)", style = def, error_name = "Path.mkdir")]
+#[py_signature(
+    "mkdir(receiver, /, mode=0o777, parents=False, exist_ok=False)",
+    error_name = "Path.mkdir"
+)]
 struct PathMkdirArgs;
 
 /// Extracts `mode`/`parents`/`exist_ok` for `mkdir`, rejecting unknown or
@@ -798,13 +801,13 @@ fn extract_mkdir_args(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunR
 }
 
 /// Keyword-only options shared with os.stat.
-#[py_signature("stat(receiver, /, *, follow_symlinks=True)", style = def, error_name = "Path.stat")]
+#[py_signature("stat(receiver, /, *, follow_symlinks=True)", error_name = "Path.stat")]
 struct PathStatArgs;
 
-#[py_signature("rename(receiver, /, target)", style = def, error_name = "Path.rename")]
+#[py_signature("rename(receiver, /, target)", error_name = "Path.rename")]
 struct PathRenameArgs;
 
-#[py_signature("replace(receiver, /, target)", style = def, error_name = "Path.replace")]
+#[py_signature("replace(receiver, /, target)", error_name = "Path.replace")]
 struct PathReplaceArgs;
 
 fn extract_rename_args(src: MontyPath, args: ArgValues, replace: bool, vm: &mut VM<'_>) -> RunResult<RenameCallArgs> {
@@ -838,7 +841,7 @@ fn extract_rename_args(src: MontyPath, args: ArgValues, replace: bool, vm: &mut 
     }
 }
 
-#[py_signature("unlink(receiver, /, missing_ok=False)", style = def, error_name = "Path.unlink")]
+#[py_signature("unlink(receiver, /, missing_ok=False)", error_name = "Path.unlink")]
 struct PathUnlinkArgs;
 
 fn build_path_unlink(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {

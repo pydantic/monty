@@ -154,7 +154,7 @@ impl Random {
 }
 
 /// `Random(x=None)` — `random.Random.__init__` is a plain Python `def`.
-#[py_signature("Random(x=None)", style = def)]
+#[py_signature("Random(x=None)")]
 struct RandomInitArgs;
 
 /// The `version` `seed()` uses when none is given.

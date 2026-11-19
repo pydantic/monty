@@ -153,7 +153,10 @@ impl EncoderChecks {
 ///
 /// CPython kwargs `cls` and `check_circular` are intentionally unsupported and
 /// will raise `TypeError` if passed.
-#[py_signature("dumps(obj, *, skipkeys=False, ensure_ascii=True, allow_nan=True, indent=None, separators=None, default=None, sort_keys=False)", style = def, kwarg_error_name = "JSONEncoder.__init__")]
+#[py_signature(
+    "dumps(obj, *, skipkeys=False, ensure_ascii=True, allow_nan=True, indent=None, separators=None, default=None, sort_keys=False)",
+    kwarg_error_name = "JSONEncoder.__init__"
+)]
 pub(super) fn call_dumps(vm: &mut VM<'_>, args: &DumpsArgs) -> RunResult<Value> {
     impl_encoder_config!(DumpsArgs);
     let config = args.encoder_config(EncoderChecks::for_call(&args.obj, false, vm), vm)?;
@@ -170,7 +173,10 @@ pub(super) fn call_dumps(vm: &mut VM<'_>, args: &DumpsArgs) -> RunResult<Value> 
 /// synchronously. CPython streams chunks instead, so it reaches `fp.write`
 /// before a bad element deep in a container raises, but after a scalar that
 /// cannot be encoded; the file object is checked first or last to match.
-#[py_signature("dump(obj, fp, *, skipkeys=False, ensure_ascii=True, allow_nan=True, indent=None, separators=None, default=None, sort_keys=False)", style = def, kwarg_error_name = "JSONEncoder.__init__")]
+#[py_signature(
+    "dump(obj, fp, *, skipkeys=False, ensure_ascii=True, allow_nan=True, indent=None, separators=None, default=None, sort_keys=False)",
+    kwarg_error_name = "JSONEncoder.__init__"
+)]
 pub(super) fn call_dump(vm: &mut VM<'_>, args: &DumpArgs) -> RunResult<CallResult> {
     impl_encoder_config!(DumpArgs);
     let config = args.encoder_config(EncoderChecks::for_call(&args.obj, true, vm), vm)?;

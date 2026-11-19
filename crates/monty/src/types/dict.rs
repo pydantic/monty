@@ -2040,7 +2040,7 @@ pub(crate) fn dict_class_method(
 /// dict.fromkeys(['a', 'b', 'c'])  # {'a': None, 'b': None, 'c': None}
 /// dict.fromkeys(['a', 'b'], 0)    # {'a': 0, 'b': 0}
 /// ```
-#[py_signature("fromkeys(iterable, value=..., /)", bind = owned)]
+#[py_signature("fromkeys(iterable, value=..., /)", style = unpack, bind = owned)]
 pub fn dict_fromkeys(args: FromkeysArgs, kind: DictKind, vm: &mut VM<'_>) -> RunResult<Value> {
     let FromkeysArgs {
         iterable,

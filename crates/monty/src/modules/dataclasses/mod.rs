@@ -123,7 +123,7 @@ pub(super) fn call(vm: &mut VM<'_>, func: DataclassesFunctions, args: ArgValues)
 ///
 /// Raw `Value` fields because CPython's `def` type-checks nothing; the body
 /// takes each option's truthiness instead.
-#[py_signature("dataclass(cls=None, /, *, init=True, repr=True, eq=True, order=False, unsafe_hash=False, frozen=False, match_args=True, kw_only=False, slots=False, weakref_slot=False)", style = def, bind = owned)]
+#[py_signature("dataclass(cls=None, /, *, init=True, repr=True, eq=True, order=False, unsafe_hash=False, frozen=False, match_args=True, kw_only=False, slots=False, weakref_slot=False)", bind = owned)]
 fn dataclass_decorator(vm: &mut VM<'_>, args: DataclassArgs) -> RunResult<Value> {
     let DataclassArgs {
         cls,
@@ -214,7 +214,7 @@ fn dataclass_decorator(vm: &mut VM<'_>, args: DataclassArgs) -> RunResult<Value>
 /// than `dataclass` itself. Raw `Value` for [`DataclassArgs`]' reason: a `def`
 /// type-checks nothing, and `apply_dataclass` makes the class check the body
 /// would.
-#[py_signature("wrap(cls)", style = def, error_name = "dataclass.<locals>.wrap")]
+#[py_signature("wrap(cls)", error_name = "dataclass.<locals>.wrap")]
 struct ConfiguredArgs;
 
 /// Writes `__dataclass_fields__`, `__dataclass_params__` and the generated
@@ -822,7 +822,7 @@ pub(crate) fn is_dataclass_class(class_id: HeapId, vm: &VM<'_>) -> bool {
 
 /// `is_dataclass(obj)` — true when `obj` is a dataclass **class** or an
 /// **instance** of one (matching CPython, which accepts both).
-#[py_signature("is_dataclass(obj)", style = def)]
+#[py_signature("is_dataclass(obj)")]
 fn is_dataclass(vm: &mut VM<'_>, args: &IsDataclassArgs) -> RunResult<Value> {
     let IsDataclassArgs { obj } = args;
     let result = match obj {

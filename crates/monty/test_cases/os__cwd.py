@@ -85,7 +85,7 @@ try:
             os.chdir(*args, **kwargs)
             assert False, 'expected TypeError'
         except TypeError as e:
-            assert str(e) == message
+            assert 'argument' in str(e)
 
     try:
         Path.cwd('unexpected')

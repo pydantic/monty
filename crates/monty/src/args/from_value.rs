@@ -94,14 +94,7 @@ pub(crate) enum FromValueFail {
 /// extraction, consuming the value and handling refcount cleanup on both
 /// success and failure paths.
 ///
-/// **Only use `FromValue`-typed fields for functions that are implemented in
-/// C in CPython** (builtins and extension modules, where CPython's argument
-/// clinic type-checks each argument *while binding* it). Functions that are
-/// pure-Python `def`s in CPython (`style = def` structs — the `re` module,
-/// `json.dumps`/`loads`, …) must declare fields as raw `Value` and coerce in
-/// the function body instead: CPython `def` binding never type-checks, so a
-/// coercion failure at extraction time would wrongly preempt later binding
-/// errors such as missing arguments or unexpected kwargs.
+/// Generated adapters convert fields in declaration order after validating the call shape.
 ///
 /// Implementations *must* consume the input on every path: either drop it
 /// (`drop_with`) once any needed data has been read out, or transfer

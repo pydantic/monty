@@ -4,10 +4,7 @@
 //! MIME helpers `encodebytes`/`decodebytes`; the file-object `encode`/`decode`
 //! pair is not — see `limitations/base64.md`.
 //!
-//! CPython's `base64` is pure Python delegating to `binascii`, so every
-//! function here uses `#[from_args(style = def)]` and coerces in the body,
-//! reproducing both CPython's signature errors and the order its bodies reject
-//! bad values in. Decode failures raise [`ExcType::BinasciiError`]
+//! The functions coerce values in the body before decoding. Decode failures raise [`ExcType::BinasciiError`]
 //! (`binascii.Error`, a `ValueError` subclass) with `binascii`'s wording.
 //!
 //! Encoders take bytes only; decoders also take ASCII `str` (CPython's
@@ -268,7 +265,7 @@ fn call_b32encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// Argument shape for `b32decode(s, casefold=False, map01=None)` — see
 /// [`B64DecodeArgs`] for why the flags are raw `Value`s.
-#[py_signature("b32decode(s, casefold=False, map01=None)", style = def)]
+#[py_signature("b32decode(s, casefold=False, map01=None)")]
 fn call_b32decode(vm: &mut VM<'_>, args: &B32DecodeArgs) -> RunResult<Value> {
     let B32DecodeArgs { s, casefold, map01 } = args;
     let mut data = decode_input(s, vm)?.into_owned();
@@ -294,7 +291,7 @@ fn call_b32hexencode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `base64.b32hexdecode(s, casefold=False)` — no `map01`, since `0` and `1`
 /// are themselves digits in the extended-hex alphabet.
-#[py_signature("b32hexdecode(s, casefold=False)", style = def)]
+#[py_signature("b32hexdecode(s, casefold=False)")]
 fn call_b32hexdecode(vm: &mut VM<'_>, args: &B32HexDecodeArgs) -> RunResult<Value> {
     let B32HexDecodeArgs { s, casefold } = args;
     let data = decode_input(s, vm)?.into_owned();
@@ -315,7 +312,7 @@ fn call_b16encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `base64.b16decode(s, casefold=False)` — rejects lowercase hex unless
 /// `casefold` is set, as CPython does.
-#[py_signature("b16decode(s, casefold=False)", style = def)]
+#[py_signature("b16decode(s, casefold=False)")]
 fn call_b16decode(vm: &mut VM<'_>, args: &B16DecodeArgs) -> RunResult<Value> {
     let B16DecodeArgs { s, casefold } = args;
     let data = decode_input(s, vm)?.into_owned();
@@ -362,7 +359,7 @@ fn call_decodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// Argument shape for `b85encode(b, pad=False)` — note the parameter is `b`,
 /// not the `s` the rest of the module uses, which signature errors report.
-#[py_signature("b85encode(b, pad=False)", style = def)]
+#[py_signature("b85encode(b, pad=False)")]
 fn call_b85encode(vm: &mut VM<'_>, args: &B85EncodeArgs) -> RunResult<Value> {
     let B85EncodeArgs { b, pad } = args;
     let pad = pad.py_bool(vm)?;
@@ -371,7 +368,7 @@ fn call_b85encode(vm: &mut VM<'_>, args: &B85EncodeArgs) -> RunResult<Value> {
 }
 
 /// `base64.b85decode(b)` — the inverse of [`call_b85encode`].
-#[py_signature("b85decode(b)", style = def)]
+#[py_signature("b85decode(b)")]
 fn call_b85decode(vm: &mut VM<'_>, args: &B85DecodeArgs) -> RunResult<Value> {
     let B85DecodeArgs { b } = args;
     let decoded = b85_decode(decode_input(b, vm)?.as_ref(), B85_ALPHABET, "base85")?;
@@ -404,7 +401,7 @@ fn call_z85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// Argument shape for
 /// `a85encode(b, *, foldspaces=False, wrapcol=0, pad=False, adobe=False)`.
-#[py_signature("a85encode(b, *, foldspaces=False, wrapcol=0, pad=False, adobe=False)", style = def, bind = owned)]
+#[py_signature("a85encode(b, *, foldspaces=False, wrapcol=0, pad=False, adobe=False)", bind = owned)]
 fn call_a85encode(vm: &mut VM<'_>, args: A85EncodeArgs) -> RunResult<Value> {
     let A85EncodeArgs {
         b,
@@ -462,7 +459,7 @@ fn call_a85encode(vm: &mut VM<'_>, args: A85EncodeArgs) -> RunResult<Value> {
 /// `ignorechars` is absent rather than defaulted: CPython tests membership in
 /// whatever object was passed, so an explicit argument takes a different path
 /// from the built-in set — see [`IgnoreChars`].
-#[py_signature("a85decode(b, *, foldspaces=False, adobe=False, ignorechars=...)", style = def, bind = owned)]
+#[py_signature("a85decode(b, *, foldspaces=False, adobe=False, ignorechars=...)", bind = owned)]
 fn call_a85decode(vm: &mut VM<'_>, args: A85DecodeArgs) -> RunResult<Value> {
     let A85DecodeArgs {
         b,
@@ -494,14 +491,14 @@ fn call_a85decode(vm: &mut VM<'_>, args: A85DecodeArgs) -> RunResult<Value> {
 /// Fields stay raw `Value` throughout this module: CPython's `def` binding
 /// never type-checks, so the body's coercion order is what produces the
 /// observable errors.
-#[py_signature("b64encode(s, altchars=None)", style = def)]
+#[py_signature("b64encode(s, altchars=None)")]
 struct B64EncodeArgs;
 
 /// Argument shape for `b64decode(s, altchars=None, validate=False)`.
 ///
 /// `validate` is a raw `Value` truth-tested in the body — CPython forwards it
 /// to `binascii.a2b_base64(strict_mode=...)`, which accepts any object.
-#[py_signature("b64decode(s, altchars=None, validate=False)", style = def)]
+#[py_signature("b64decode(s, altchars=None, validate=False)")]
 struct B64DecodeArgs;
 
 /// Declares the argument struct for one of the module's `f(s)` functions.
@@ -511,7 +508,7 @@ struct B64DecodeArgs;
 /// derive bakes in, so a shared struct cannot serve them.
 macro_rules! single_arg_struct {
     ($struct_name:ident, $py_name:literal) => {
-        #[py_signature("(s)", style = def, error_name = $py_name)]
+        #[py_signature("(s)", error_name = $py_name)]
         struct $struct_name;
     };
 }

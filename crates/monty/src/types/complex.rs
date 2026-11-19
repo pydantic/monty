@@ -396,7 +396,7 @@ fn init_single(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
 
 /// Argument shape for `complex(real=0, imag=0)`; a string is only accepted
 /// through the single-positional form handled by [`init`].
-#[py_signature("complex(real=..., imag=...)", at_most_total, bad_arg_named, convert(real = Part, imag = Part))]
+#[py_signature("complex(real=..., imag=...)", bad_arg_named, convert(real = Part, imag = Part))]
 struct ComplexArgs;
 
 /// One `complex(...)` constructor argument: a real number or a complex.

@@ -493,5 +493,5 @@ fn group_index(n: i64) -> usize {
 
 /// Argument shape for `re.Match.groupdict(default=None)` — one optional
 /// pos-or-keyword `default` value used to fill groups that didn't match.
-#[py_signature("groupdict(default=...)", at_most_total)]
+#[py_signature("groupdict(default=...)")]
 struct GroupdictArgs;

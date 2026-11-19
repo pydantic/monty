@@ -290,7 +290,7 @@ fn call_seeded(target: RandomTarget, function: RandomFunctions, args: ArgValues,
 
 /// `seed(a=None, version=2)`: `None` takes a fresh state according to `RandomStart`;
 /// explicit seeds follow `random.py`.
-#[py_signature("seed(a=None, version=2)", style = def, error_name = "Random.seed")]
+#[py_signature("seed(a=None, version=2)", error_name = "Random.seed")]
 fn seed(target: RandomTarget, args: &SeedArgs, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let SeedArgs { a, version } = args;
     let state = if matches!(a, Value::None) {
@@ -339,7 +339,7 @@ fn getstate(target: RandomTarget, vm: &mut VM<'_>) -> RunResult<Value> {
 
 /// `setstate(state)`: restores a `getstate()` tuple, accepting version 2
 /// states (signed words) as CPython does.
-#[py_signature("setstate(state)", style = def, error_name = "Random.setstate")]
+#[py_signature("setstate(state)", error_name = "Random.setstate")]
 fn setstate(target: RandomTarget, args: &SetstateArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let SetstateArgs { state } = args;
     // `version = state[0]` runs before the unpack, so a non-subscriptable
@@ -529,7 +529,7 @@ fn getrandbits(target: RandomTarget, args: &RandomGetrandbitsArgs, vm: &mut VM<'
 }
 
 /// `randbytes(n)`: `n` random bytes, the little-endian bytes of `getrandbits(8n)`.
-#[py_signature("randbytes(n)", style = def, error_name = "Random.randbytes")]
+#[py_signature("randbytes(n)", error_name = "Random.randbytes")]
 fn randbytes(target: RandomTarget, args: &RandbytesArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let RandbytesArgs { n } = args;
     // `getrandbits(n * 8)` is what rejects a negative or oversized count.
@@ -563,7 +563,7 @@ fn randbytes(target: RandomTarget, args: &RandbytesArgs, vm: &mut VM<'_>) -> Run
 /// `randrange(start, stop=None, step=1)` — a Python `def`. `step` is optional
 /// rather than defaulted so the `step is not _ONE` check can tell an explicit
 /// step from the default.
-#[py_signature("randrange(start, stop=None, step=...)", style = def, error_name = "Random.randrange")]
+#[py_signature("randrange(start, stop=None, step=...)", error_name = "Random.randrange")]
 fn randrange(target: RandomTarget, args: &RandrangeArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let RandrangeArgs { start, stop, step } = args;
     let istart = i128::from(start.as_int(vm)?);
@@ -626,7 +626,7 @@ fn randrange(target: RandomTarget, args: &RandrangeArgs, vm: &mut VM<'_>) -> Run
 }
 
 /// `randint(a, b)`: a random int in `[a, b]`.
-#[py_signature("randint(a, b)", style = def, error_name = "Random.randint")]
+#[py_signature("randint(a, b)", error_name = "Random.randint")]
 fn randint(target: RandomTarget, args: &RandintArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let RandintArgs { a, b } = args;
     let a = i128::from(a.as_int(vm)?);
@@ -676,7 +676,7 @@ fn int_arg_str(value: &Value) -> String {
 // ============================================================================
 
 /// `choice(seq)`: `seq[randbelow(len(seq))]`.
-#[py_signature("choice(seq)", style = def, error_name = "Random.choice")]
+#[py_signature("choice(seq)", error_name = "Random.choice")]
 fn choice(target: RandomTarget, args: &ChoiceArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let ChoiceArgs { seq } = args;
     let len = len_of(seq, vm)?;
@@ -692,7 +692,7 @@ fn choice(target: RandomTarget, args: &ChoiceArgs, vm: &mut VM<'_>) -> RunResult
 /// Lists are swapped directly. Anything else goes through `x[i], x[j] = x[j],
 /// x[i]` per swap, as `random.py` does, so a tuple, `str`, set or dict fails
 /// (or, for a dict keyed `0..n`, succeeds) exactly where CPython does.
-#[py_signature("shuffle(x)", style = def, error_name = "Random.shuffle", bind = owned)]
+#[py_signature("shuffle(x)", error_name = "Random.shuffle", bind = owned)]
 fn shuffle(target: RandomTarget, args: ShuffleArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let ShuffleArgs { x } = args;
     defer_drop_mut!(x, vm);
@@ -739,7 +739,7 @@ fn swap_items(x: &mut Value, i: i64, j: i64, vm: &mut VM<'_>) -> RunResult<()> {
 /// `sample(population, k, *, counts=None)`: `k` distinct picks, in selection
 /// order, drawn exactly as CPython does (pool below its set-size threshold,
 /// rejection into a set above it).
-#[py_signature("sample(population, k, *, counts=None)", style = def, error_name = "Random.sample")]
+#[py_signature("sample(population, k, *, counts=None)", error_name = "Random.sample")]
 fn sample(target: RandomTarget, args: &SampleArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let SampleArgs { population, k, counts } = args;
     if !population.py_type_heap(vm.heap).native().is_some_and(is_sequence) {
@@ -860,7 +860,7 @@ fn cumulative_counts(counts: &Value, vm: &mut VM<'_>) -> RunResult<Vec<i128>> {
 
 /// `choices(population, weights=None, *, cum_weights=None, k=1)`: `k` picks
 /// with replacement, uniform or by (cumulative) weight.
-#[py_signature("choices(population, weights=None, *, cum_weights=None, k=1)", style = def, error_name = "Random.choices", bind = owned)]
+#[py_signature("choices(population, weights=None, *, cum_weights=None, k=1)", error_name = "Random.choices", bind = owned)]
 fn choices(target: RandomTarget, args: ChoicesArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let ChoicesArgs {
         population,
@@ -1035,7 +1035,7 @@ fn index_value(index: u128) -> i64 {
 // ============================================================================
 
 /// `uniform(a, b)`: `a + (b - a) * random()`.
-#[py_signature("uniform(a, b)", style = def, error_name = "Random.uniform")]
+#[py_signature("uniform(a, b)", error_name = "Random.uniform")]
 fn uniform(target: RandomTarget, args: &UniformArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let UniformArgs { a, b } = args;
     let (a, b) = (to_float(a, vm)?, to_float(b, vm)?);
@@ -1046,7 +1046,7 @@ fn uniform(target: RandomTarget, args: &UniformArgs, vm: &mut VM<'_>) -> RunResu
 /// `triangular(low=0.0, high=1.0, mode=None)`: the triangular distribution.
 /// With `mode` given and `low == high`, CPython catches the `ZeroDivisionError`
 /// and returns `low` itself, so an int `low` comes back as an int.
-#[py_signature("triangular(low=0.0, high=1.0, mode=None)", style = def, error_name = "Random.triangular")]
+#[py_signature("triangular(low=0.0, high=1.0, mode=None)", error_name = "Random.triangular")]
 fn triangular(target: RandomTarget, args: &TriangularArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let TriangularArgs { low, high, mode } = args;
     let (low_value, high_value) = (low, high);
@@ -1072,7 +1072,7 @@ fn triangular(target: RandomTarget, args: &TriangularArgs, vm: &mut VM<'_>) -> R
 }
 
 /// `normalvariate(mu=0.0, sigma=1.0)`: Kinderman–Monahan ratio of uniforms.
-#[py_signature("normalvariate(mu=0.0, sigma=1.0)", style = def, error_name = "Random.normalvariate")]
+#[py_signature("normalvariate(mu=0.0, sigma=1.0)", error_name = "Random.normalvariate")]
 fn normalvariate(target: RandomTarget, args: &NormalArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let NormalArgs { mu, sigma } = args;
     let (mu, sigma) = (to_float(mu, vm)?, to_float(sigma, vm)?);
@@ -1100,7 +1100,7 @@ fn normal_deviate(rng: &mut Mt19937, tracker: &ResourceTracker) -> RunResult<f64
 
 /// `gauss(mu=0.0, sigma=1.0)`: Box–Muller, keeping the second deviate for
 /// the next call.
-#[py_signature("gauss(mu=0.0, sigma=1.0)", style = def, error_name = "Random.gauss")]
+#[py_signature("gauss(mu=0.0, sigma=1.0)", error_name = "Random.gauss")]
 fn gauss(target: RandomTarget, args: &GaussArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let GaussArgs { mu, sigma } = args;
     let (mu, sigma) = (to_float(mu, vm)?, to_float(sigma, vm)?);
@@ -1119,7 +1119,7 @@ fn gauss(target: RandomTarget, args: &GaussArgs, vm: &mut VM<'_>) -> RunResult<V
 }
 
 /// `lognormvariate(mu, sigma)`: `exp(normalvariate(mu, sigma))`.
-#[py_signature("lognormvariate(mu, sigma)", style = def, error_name = "Random.lognormvariate")]
+#[py_signature("lognormvariate(mu, sigma)", error_name = "Random.lognormvariate")]
 fn lognormvariate(target: RandomTarget, args: &LognormArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let LognormArgs { mu, sigma } = args;
     let (mu, sigma) = (to_float(mu, vm)?, to_float(sigma, vm)?);
@@ -1134,7 +1134,7 @@ fn lognormvariate(target: RandomTarget, args: &LognormArgs, vm: &mut VM<'_>) -> 
 }
 
 /// `expovariate(lambd=1.0)`: `-log(1 - random()) / lambd`.
-#[py_signature("expovariate(lambd=1.0)", style = def, error_name = "Random.expovariate")]
+#[py_signature("expovariate(lambd=1.0)", error_name = "Random.expovariate")]
 fn expovariate(target: RandomTarget, args: &ExpovariateArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let ExpovariateArgs { lambd } = args;
     let lambd = to_float(lambd, vm)?;
@@ -1144,7 +1144,7 @@ fn expovariate(target: RandomTarget, args: &ExpovariateArgs, vm: &mut VM<'_>) ->
 }
 
 /// `vonmisesvariate(mu, kappa)`: Fisher's circular distribution algorithm.
-#[py_signature("vonmisesvariate(mu, kappa)", style = def, error_name = "Random.vonmisesvariate")]
+#[py_signature("vonmisesvariate(mu, kappa)", error_name = "Random.vonmisesvariate")]
 fn vonmisesvariate(target: RandomTarget, args: &VonmisesArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let VonmisesArgs { mu, kappa } = args;
     let (mu, kappa) = (to_float(mu, vm)?, to_float(kappa, vm)?);
@@ -1181,7 +1181,7 @@ fn vonmisesvariate(target: RandomTarget, args: &VonmisesArgs, vm: &mut VM<'_>) -
 
 /// `gammavariate(alpha, beta)`: the gamma distribution, by Cheng's method
 /// above `alpha == 1`, exponential at it, and Kennedy & Gentle's below.
-#[py_signature("gammavariate(alpha, beta)", style = def, error_name = "Random.gammavariate")]
+#[py_signature("gammavariate(alpha, beta)", error_name = "Random.gammavariate")]
 fn gammavariate(target: RandomTarget, args: &GammaArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let GammaArgs { alpha, beta } = args;
     let (alpha, beta) = (to_float(alpha, vm)?, to_float(beta, vm)?);
@@ -1252,7 +1252,7 @@ fn gamma_deviate(rng: &mut Mt19937, alpha: f64, beta: f64, tracker: &ResourceTra
 }
 
 /// `betavariate(alpha, beta)`: a ratio of two gamma deviates.
-#[py_signature("betavariate(alpha, beta)", style = def, error_name = "Random.betavariate")]
+#[py_signature("betavariate(alpha, beta)", error_name = "Random.betavariate")]
 fn betavariate(target: RandomTarget, args: &BetaArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let BetaArgs { alpha, beta } = args;
     let (alpha, beta) = (to_float(alpha, vm)?, to_float(beta, vm)?);
@@ -1277,7 +1277,7 @@ fn betavariate(target: RandomTarget, args: &BetaArgs, vm: &mut VM<'_>) -> RunRes
 }
 
 /// `paretovariate(alpha)`: `(1 - random()) ** (-1 / alpha)`.
-#[py_signature("paretovariate(alpha)", style = def, error_name = "Random.paretovariate")]
+#[py_signature("paretovariate(alpha)", error_name = "Random.paretovariate")]
 fn paretovariate(target: RandomTarget, args: &ParetoArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let ParetoArgs { alpha } = args;
     let alpha = to_float(alpha, vm)?;
@@ -1286,7 +1286,7 @@ fn paretovariate(target: RandomTarget, args: &ParetoArgs, vm: &mut VM<'_>) -> Ru
 }
 
 /// `weibullvariate(alpha, beta)`: `alpha * (-log(1 - random())) ** (1 / beta)`.
-#[py_signature("weibullvariate(alpha, beta)", style = def, error_name = "Random.weibullvariate")]
+#[py_signature("weibullvariate(alpha, beta)", error_name = "Random.weibullvariate")]
 fn weibullvariate(target: RandomTarget, args: &WeibullArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let WeibullArgs { alpha, beta } = args;
     let (alpha, beta) = (to_float(alpha, vm)?, to_float(beta, vm)?);
@@ -1300,7 +1300,7 @@ fn weibullvariate(target: RandomTarget, args: &WeibullArgs, vm: &mut VM<'_>) -> 
     clippy::float_cmp,
     reason = "`p == 0.0` / `p == 1.0` are exact edge cases in random.py"
 )]
-#[py_signature("binomialvariate(n=1, p=0.5)", style = def, error_name = "Random.binomialvariate")]
+#[py_signature("binomialvariate(n=1, p=0.5)", error_name = "Random.binomialvariate")]
 fn binomialvariate(target: RandomTarget, args: &BinomialArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     let BinomialArgs { n, p } = args;
     let n = n.as_int(vm)?;

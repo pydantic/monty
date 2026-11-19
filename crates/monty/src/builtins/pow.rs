@@ -21,7 +21,7 @@ use crate::{bytecode::VM, exception_private::RunResult, value::Value};
 /// `pow() missing required argument 'X' (pos N)`. The `modulus` field
 /// will be renamed to `r#mod` and lose the flag when kwargs are
 /// implemented.
-#[py_signature("pow(base, exp, modulus=None)", style = c_named, at_most_total, kwargs_not_supported_yet)]
+#[py_signature("pow(base, exp, modulus=None)", kwargs_not_supported_yet)]
 pub fn builtin_pow(vm: &mut VM<'_>, args: &PowArgs) -> RunResult<Value> {
     let PowArgs { base, exp, modulus } = args;
     base.py_pow(exp, Some(modulus), vm)

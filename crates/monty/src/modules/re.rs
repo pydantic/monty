@@ -18,8 +18,7 @@
 //! Like CPython's pure-Python `re` functions, all arguments are accepted
 //! positionally or by keyword, and `pattern` may be a `str` or an
 //! already-compiled `re.Pattern` (in which case non-zero `flags` raise
-//! `ValueError`). Signature errors use `#[from_args(style = def)]` so their
-//! wording matches CPython's `def` binding exactly.
+//! `ValueError`).
 //!
 //! # Module attributes
 //!
@@ -200,7 +199,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: ReFunctions, args: ArgValues) -> R
 /// `re.compile(pattern, flags=0)` — returns a reusable `re.Pattern`. An
 /// already-compiled pattern passes through unchanged (`re.compile(p) is p`,
 /// matching CPython's `_compile`).
-#[py_signature("compile(pattern, flags=0)", style = def, bind = owned)]
+#[py_signature("compile(pattern, flags=0)", bind = owned)]
 fn call_compile(vm: &mut VM<'_>, args: ReCompileArgs) -> RunResult<Value> {
     let ReCompileArgs { pattern, flags } = args;
     match resolve_pattern(pattern, flags, vm)? {
@@ -217,7 +216,7 @@ fn call_compile(vm: &mut VM<'_>, args: ReCompileArgs) -> RunResult<Value> {
 
 /// `re.search(pattern, string, flags=0)` — scan for a match anywhere in the string,
 /// returning a `re.Match` or `None`.
-#[py_signature("search(pattern, string, flags=0)", style = def, bind = owned)]
+#[py_signature("search(pattern, string, flags=0)", bind = owned)]
 fn call_search(vm: &mut VM<'_>, args: ReSearchArgs) -> RunResult<Value> {
     let ReSearchArgs { pattern, string, flags } = args;
     defer_drop!(string, vm);
@@ -228,7 +227,7 @@ fn call_search(vm: &mut VM<'_>, args: ReSearchArgs) -> RunResult<Value> {
 
 /// `re.match(pattern, string, flags=0)` — match anchored at position 0, returning a
 /// `re.Match` or `None`.
-#[py_signature("match(pattern, string, flags=0)", style = def, bind = owned)]
+#[py_signature("match(pattern, string, flags=0)", bind = owned)]
 fn call_match(vm: &mut VM<'_>, args: ReMatchArgs) -> RunResult<Value> {
     let ReMatchArgs { pattern, string, flags } = args;
     defer_drop!(string, vm);
@@ -241,7 +240,7 @@ fn call_match(vm: &mut VM<'_>, args: ReMatchArgs) -> RunResult<Value> {
 
 /// `re.fullmatch(pattern, string, flags=0)` — match the whole string, returning a
 /// `re.Match` or `None`.
-#[py_signature("fullmatch(pattern, string, flags=0)", style = def, bind = owned)]
+#[py_signature("fullmatch(pattern, string, flags=0)", bind = owned)]
 fn call_fullmatch(vm: &mut VM<'_>, args: ReFullmatchArgs) -> RunResult<Value> {
     let ReFullmatchArgs { pattern, string, flags } = args;
     defer_drop!(string, vm);
@@ -254,7 +253,7 @@ fn call_fullmatch(vm: &mut VM<'_>, args: ReFullmatchArgs) -> RunResult<Value> {
 
 /// `re.findall(pattern, string, flags=0)` — all non-overlapping matches, as a list of
 /// strings or of tuples depending on the capture-group count (as CPython).
-#[py_signature("findall(pattern, string, flags=0)", style = def, bind = owned)]
+#[py_signature("findall(pattern, string, flags=0)", bind = owned)]
 fn call_findall(vm: &mut VM<'_>, args: ReFindallArgs) -> RunResult<Value> {
     let ReFindallArgs { pattern, string, flags } = args;
     defer_drop!(string, vm);
@@ -269,7 +268,7 @@ fn call_findall(vm: &mut VM<'_>, args: ReFindallArgs) -> RunResult<Value> {
 /// The pattern resolves *before* `count` is validated, so a bad pattern (or flags
 /// with a compiled pattern) wins over a bad count — as in CPython, where `_compile`
 /// runs before `Pattern.sub` parses its arguments.
-#[py_signature("sub(pattern, repl, string, count=..., flags=0)", style = def, bind = owned)]
+#[py_signature("sub(pattern, repl, string, count=..., flags=0)", bind = owned)]
 fn call_sub(vm: &mut VM<'_>, args: ReSubArgs) -> RunResult<Value> {
     let ReSubArgs {
         pattern,
@@ -315,7 +314,7 @@ fn call_sub(vm: &mut VM<'_>, args: ReSubArgs) -> RunResult<Value> {
 
 /// `re.split(pattern, string, maxsplit=0, flags=0)` — split on pattern occurrences.
 /// A non-zero `maxsplit` caps the splits, leaving the remainder as the final element.
-#[py_signature("split(pattern, string, maxsplit=..., flags=0)", style = def, bind = owned)]
+#[py_signature("split(pattern, string, maxsplit=..., flags=0)", bind = owned)]
 fn call_split(vm: &mut VM<'_>, args: ReSplitArgs) -> RunResult<Value> {
     let ReSplitArgs {
         pattern,
@@ -615,7 +614,7 @@ fn resolve_pattern(pattern: Value, flags: Value, vm: &mut VM<'_>) -> RunResult<R
 /// Eagerly collected rather than CPython's lazy iterator: `for m in re.finditer(...)`
 /// works, but `next()` on the result raises and it can be iterated twice (see
 /// `limitations/re.md`).
-#[py_signature("finditer(pattern, string, flags=0)", style = def, bind = owned)]
+#[py_signature("finditer(pattern, string, flags=0)", bind = owned)]
 fn call_finditer(vm: &mut VM<'_>, args: ReFinditerArgs) -> RunResult<Value> {
     let ReFinditerArgs { pattern, string, flags } = args;
     defer_drop!(string, vm);
@@ -634,7 +633,7 @@ fn call_finditer(vm: &mut VM<'_>, args: ReFinditerArgs) -> RunResult<Value> {
 /// `pattern` stays a plain `Value`: CPython's `escape` is a str-only helper
 /// whose non-str error (the `decoding to str: …` fallback) differs from the
 /// pattern wording [`PatternArg`] produces.
-#[py_signature("escape(pattern)", style = def)]
+#[py_signature("escape(pattern)")]
 fn call_escape(vm: &mut VM<'_>, args: &ReEscapeArgs) -> RunResult<Value> {
     let ReEscapeArgs { pattern } = args;
     let Some(text) = pattern.as_str(vm) else {

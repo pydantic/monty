@@ -205,7 +205,7 @@ fn round_partials(partials: &mut SmallVec<[f64; 32]>) -> f64 {
 }
 
 /// Multiplies through Python's numeric protocol, retaining arbitrary-size integer results.
-#[py_signature("prod(iterable, /, *, start=1)", style = c_named, at_most_total, bind = owned)]
+#[py_signature("prod(iterable, /, *, start=1)", bind = owned)]
 pub(super) fn prod(vm: &mut VM<'_>, args: ProdArgs) -> RunResult<Value> {
     let ProdArgs { iterable, start } = args;
     let mut result = DropGuard::new(start, vm);

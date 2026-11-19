@@ -302,7 +302,7 @@ fn counter_kwarg_deltas(kwargs: KwargsValues) -> Vec<(Value, Value)> {
     }
 }
 
-#[py_signature("update(self, iterable=None, /, **kwds)", style = def, owner = "Counter", bind = mut)]
+#[py_signature("update(self, iterable=None, /, **kwds)", owner = "Counter", bind = mut)]
 pub(crate) fn counter_update_method<'h>(
     counter: &mut HeapObjectRead<'h, Dict>,
     args: &mut UpdateArgs,
@@ -314,7 +314,7 @@ pub(crate) fn counter_update_method<'h>(
     Ok(Value::None)
 }
 
-#[py_signature("subtract(self, iterable=None, /, **kwds)", style = def, owner = "Counter", bind = mut)]
+#[py_signature("subtract(self, iterable=None, /, **kwds)", owner = "Counter", bind = mut)]
 pub(crate) fn counter_subtract_method<'h>(
     counter: &mut HeapObjectRead<'h, Dict>,
     args: &mut SubtractArgs,

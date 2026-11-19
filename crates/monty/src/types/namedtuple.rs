@@ -1309,7 +1309,7 @@ fn fields_tuple_from(names: &[EitherStr], vm: &mut VM<'_>) -> Value {
     allocate_tuple(SmallVec::from_vec(items), vm.heap)
 }
 
-#[monty_macros::py_signature("_replace(self, /, **kwargs)", style = def)]
+#[monty_macros::py_signature("_replace(self, /, **kwargs)")]
 struct ReplaceArgs;
 
 /// Normalizes call kwargs into `(name, value)` pairs, dropping non-interned

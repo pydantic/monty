@@ -147,11 +147,7 @@ pub(crate) fn construct(type_: Type, vm: &mut VM<'_>, args: ArgValues) -> RunRes
 /// `itertools.count(start=0, step=1)` — an infinite arithmetic progression.
 ///
 /// Argument shape for `count(start=0, step=1)`.
-///
-/// CPython parses this with `"|OO:count"`, so errors carry the function name
-/// (`style = c_named`) and arity counts positionals + keywords together
-/// (`at_most_total`): `count(1, 2, step=3)` reports three arguments.
-#[py_signature("count(start=0, step=1)", style = c_named, at_most_total, bind = owned)]
+#[py_signature("count(start=0, step=1)", bind = owned)]
 fn call_count(vm: &mut VM<'_>, args: CountArgs) -> RunResult<Value> {
     let CountArgs { start, step } = args;
     // CPython's `count_new` runs one `PyNumber_Check` over both arguments after
@@ -170,10 +166,7 @@ fn call_count(vm: &mut VM<'_>, args: CountArgs) -> RunResult<Value> {
 /// `itertools.repeat(object, times=?)` — `object` forever, or `times` times.
 ///
 /// Argument shape for `repeat(object, times=?)`.
-///
-/// CPython parses this with `"O|n:repeat"` — see [`CountArgs`] for why that
-/// means `c_named` + `at_most_total`.
-#[py_signature("repeat(object, times: i64=...)", style = c_named, at_most_total, bind = owned)]
+#[py_signature("repeat(object, times: i64=...)", bind = owned)]
 fn call_repeat(vm: &mut VM<'_>, args: RepeatArgs) -> RunResult<Value> {
     let RepeatArgs { object, times } = args;
     let remaining = times.map(|n| usize::try_from(n.max(0)).unwrap_or(usize::MAX));
@@ -228,7 +221,7 @@ fn call_pairwise(vm: &mut VM<'_>, args: PairwiseArgs) -> RunResult<Value> {
 /// CPython parses this with `PyArg_ParseTupleAndKeywords`, so both parameters
 /// are also accepted by keyword and arity counts positionals + keywords
 /// together: `compress([1], [1], data=[1])` reports three arguments.
-#[py_signature("compress(data, selectors)", style = c_named, at_most_total, bind = owned)]
+#[py_signature("compress(data, selectors)", bind = owned)]
 fn call_compress(vm: &mut VM<'_>, args: CompressArgs) -> RunResult<Value> {
     let CompressArgs { data, selectors } = args;
     // `into_py_iter` consumes its receiver, so each conversion guards the other
@@ -430,7 +423,7 @@ fn call_starmap(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// arguments (3 given)` form, pivoting to a total count once kwargs push the
 /// overflow past every slot. `func` is never type-checked here: CPython only
 /// discovers a non-callable when the second item arrives.
-#[py_signature("accumulate(iterable, func=None, *, initial=None)", style = c_named, bind = owned)]
+#[py_signature("accumulate(iterable, func=None, *, initial=None)", bind = owned)]
 fn call_accumulate(vm: &mut VM<'_>, args: AccumulateArgs) -> RunResult<Value> {
     let AccumulateArgs {
         iterable,
@@ -466,7 +459,7 @@ fn call_accumulate(vm: &mut VM<'_>, args: AccumulateArgs) -> RunResult<Value> {
 /// needs `as_int`'s message rather than the binder's, as `repeat`'s `times`
 /// does; `strict` is a [`LaxBool`](crate::args::LaxBool) so CPython's `bool()`-style truth test
 /// happens in the binder, which releases the value on both paths.
-#[py_signature("batched(iterable, n, *, strict: bool=False)", style = c_named, bind = owned)]
+#[py_signature("batched(iterable, n, *, strict: bool=False)", bind = owned)]
 fn call_batched(vm: &mut VM<'_>, args: BatchedArgs) -> RunResult<Value> {
     let BatchedArgs { iterable, n, strict } = args;
     let strict = strict.bool();
@@ -528,14 +521,12 @@ fn call_zip_longest(vm: &mut VM<'_>, args: &mut ZipLongestArgs) -> RunResult<Val
 /// Argument shape for `combinations(iterable, r)` and its
 /// `_with_replacement` twin.
 ///
-/// Argument Clinic with both parameters keyword-capable, so `c_named` (see
-/// [`AccumulateArgs`]), and `at_most_total` because a stray keyword reports
-/// `takes at most 2 arguments (3 given)`. `r` stays a raw `Value`: its
+/// `r` stays a raw `Value`: its
 /// `Py_ssize_t` conversion runs in the body, ahead of the pool being collected
 /// and before the sign check, as the clinic converter and body order them.
 macro_rules! iterable_and_r_args {
     ($struct_name:ident, $py_name:literal) => {
-        #[py_signature("(iterable, r)", style = c_named, at_most_total, error_name = $py_name)]
+        #[py_signature("(iterable, r)", error_name = $py_name)]
         struct $struct_name;
     };
 }
@@ -596,7 +587,7 @@ fn build_combinations(iterable: Value, r: Value, replacement: bool, vm: &mut VM<
 ///
 /// Clinic and keyword-capable like [`CombinationsArgs`]. `r` is an `object`
 /// to clinic, so the body inspects it — and only once the pool exists.
-#[py_signature("permutations(iterable, r=None)", style = c_named, at_most_total, bind = owned)]
+#[py_signature("permutations(iterable, r=None)", bind = owned)]
 fn call_permutations(vm: &mut VM<'_>, args: PermutationsArgs) -> RunResult<Value> {
     let PermutationsArgs { iterable, r } = args;
     let mut r_guard = DropGuard::new(r, vm);
@@ -702,7 +693,7 @@ fn index_bytes(slots: usize) -> Option<usize> {
 /// Clinic and keyword-capable like [`CombinationsArgs`]; `key` is never
 /// type-checked, as CPython discovers a non-callable only when the first
 /// item is keyed.
-#[py_signature("groupby(iterable, key=None)", style = c_named, at_most_total, bind = owned)]
+#[py_signature("groupby(iterable, key=None)", bind = owned)]
 fn call_groupby(vm: &mut VM<'_>, args: GroupbyArgs) -> RunResult<Value> {
     let GroupbyArgs { iterable, key } = args;
     let (key, source) = resolve_source(key, iterable, vm)?;

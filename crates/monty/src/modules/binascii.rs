@@ -173,7 +173,7 @@ fn call_unhexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Val
 
 /// `binascii.b2a_base64(data, *, newline=True)` — base64 with the trailing
 /// newline `encodebytes` relies on.
-#[py_signature("b2a_base64(data, /, *, newline=True)", style = c_named)]
+#[py_signature("b2a_base64(data, /, *, newline=True)")]
 fn call_b2a_base64(vm: &mut VM<'_>, args: &B2aBase64Args) -> RunResult<Value> {
     let B2aBase64Args { data, newline } = args;
     // Resolved before encoding so the newline is reserved with the rest, which
@@ -188,7 +188,7 @@ fn call_b2a_base64(vm: &mut VM<'_>, args: &B2aBase64Args) -> RunResult<Value> {
 
 /// `binascii.a2b_base64(data, *, strict_mode=False)` — the decoder every
 /// `base64` decode path funnels into.
-#[py_signature("a2b_base64(data, /, *, strict_mode=False)", style = c_named)]
+#[py_signature("a2b_base64(data, /, *, strict_mode=False)")]
 fn call_a2b_base64(vm: &mut VM<'_>, args: &A2bBase64Args) -> RunResult<Value> {
     let A2bBase64Args { data, strict_mode } = args;
     let strict = strict_mode.py_bool(vm)?;
@@ -234,7 +234,7 @@ fn call_crc_hqx(vm: &mut VM<'_>, args: &CrcHqxArgs) -> RunResult<Value> {
 
 /// `binascii.b2a_uu(data, *, backtick=False)` — one uuencoded line, newline
 /// included, for at most the 45 bytes the line-length byte can describe.
-#[py_signature("b2a_uu(data, /, *, backtick=False)", style = c_named)]
+#[py_signature("b2a_uu(data, /, *, backtick=False)")]
 fn call_b2a_uu(vm: &mut VM<'_>, args: &B2aUuArgs) -> RunResult<Value> {
     let B2aUuArgs { data, backtick } = args;
     let backtick = backtick.py_bool(vm)?;
@@ -257,7 +257,7 @@ fn call_a2b_uu(vm: &mut VM<'_>, args: &BinasciiA2bUuArgs) -> RunResult<Value> {
 ///
 /// Argument shape for `b2a_qp(data, quotetabs=False, istext=True, header=False)`,
 /// whose three flags are all positional-or-keyword.
-#[py_signature("b2a_qp(data, quotetabs=False, istext=True, header=False)", style = c_named, at_most_total, bind = owned)]
+#[py_signature("b2a_qp(data, quotetabs=False, istext=True, header=False)", bind = owned)]
 fn call_b2a_qp(vm: &mut VM<'_>, args: B2aQpArgs) -> RunResult<Value> {
     let B2aQpArgs {
         data,
@@ -281,7 +281,7 @@ fn call_b2a_qp(vm: &mut VM<'_>, args: B2aQpArgs) -> RunResult<Value> {
 
 /// `binascii.a2b_qp(data, header=False)` — quoted-printable decoding, which
 /// never fails: anything malformed is copied through verbatim.
-#[py_signature("a2b_qp(data, header=False)", style = c_named, at_most_total)]
+#[py_signature("a2b_qp(data, header=False)")]
 fn call_a2b_qp(vm: &mut VM<'_>, args: &A2bQpArgs) -> RunResult<Value> {
     let A2bQpArgs { data, header } = args;
     let header = header.py_bool(vm)?;
@@ -296,11 +296,11 @@ fn call_a2b_qp(vm: &mut VM<'_>, args: &A2bQpArgs) -> RunResult<Value> {
 ///
 /// `PyArg_ParseTupleAndKeywords` with a `:name`, plus the up-front count that
 /// reports `takes at most 3 arguments` rather than an unexpected keyword.
-#[py_signature("hexlify(data, sep=..., bytes_per_sep: c_int=1)", style = c_named, at_most_total)]
+#[py_signature("hexlify(data, sep=..., bytes_per_sep: c_int=1)")]
 struct HexlifyArgs;
 
 /// The same shape under the `b2a_hex` name, which its signature errors report.
-#[py_signature("b2a_hex(data, sep=..., bytes_per_sep: c_int=1)", style = c_named, at_most_total)]
+#[py_signature("b2a_hex(data, sep=..., bytes_per_sep: c_int=1)")]
 struct B2aHexArgs;
 
 /// Reduces an `int` to the `unsigned int` CPython's `I` format takes, which

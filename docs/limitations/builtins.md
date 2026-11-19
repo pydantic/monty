@@ -34,6 +34,16 @@ These raise `NameError`:
 `object` exists as the root class but cannot be instantiated, and `issubclass()`
 works on classes; see [classes.md](classes.md#inheritance).
 
+## Native call diagnostics
+
+Monty uses the declared signature to check arity, parameter names, positional-only arguments and keyword-only arguments.
+Native call errors can differ from CPython in wording and in which problem is reported first when several inputs are invalid.
+Monty validates the whole call before invoking any declared converters.
+It then runs conversions in parameter declaration order before the operation validates the converted values.
+
+For example, `datetime.date(year, month, bogus=1)` raises an unexpected-keyword error before calling
+`year.__index__()` or `month.__index__()`.
+
 ## Behavioural divergences
 
 - **No `__class__` on builtin values** — `[].__class__`, `list.__class__` and

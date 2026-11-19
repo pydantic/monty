@@ -217,7 +217,7 @@ fn join(vm: &mut VM<'_>, args: &JoinArgs) -> RunResult<Value> {
 }
 
 /// Implementation of `os.path.split(p)`.
-#[py_signature("split(p)", style = def)]
+#[py_signature("split(p)")]
 fn split(vm: &mut VM<'_>, args: &SplitArgs) -> RunResult<Value> {
     let SplitArgs { p } = args;
     let text = PathText::fspath(p, vm)?;
@@ -226,7 +226,7 @@ fn split(vm: &mut VM<'_>, args: &SplitArgs) -> RunResult<Value> {
 }
 
 /// Implementation of `os.path.splitext(p)`.
-#[py_signature("splitext(p)", style = def)]
+#[py_signature("splitext(p)")]
 fn splitext(vm: &mut VM<'_>, args: &SplitextArgs) -> RunResult<Value> {
     let SplitextArgs { p } = args;
     let text = PathText::fspath(p, vm)?;
@@ -235,7 +235,7 @@ fn splitext(vm: &mut VM<'_>, args: &SplitextArgs) -> RunResult<Value> {
 }
 
 /// Implementation of `os.path.splitdrive(p)`: POSIX paths have no drive.
-#[py_signature("splitdrive(p)", style = def)]
+#[py_signature("splitdrive(p)")]
 fn splitdrive(vm: &mut VM<'_>, args: &SplitdriveArgs) -> RunResult<Value> {
     let SplitdriveArgs { p } = args;
     let text = PathText::fspath(p, vm)?;
@@ -247,7 +247,7 @@ fn splitdrive(vm: &mut VM<'_>, args: &SplitdriveArgs) -> RunResult<Value> {
 ///
 /// `os.path.splitroot(p)` argument shape — CPython's is the C
 /// `posix._path_splitroot_ex`, whose clinic wording the errors keep.
-#[py_signature("_path_splitroot_ex(p)", style = c_named, at_most_total)]
+#[py_signature("_path_splitroot_ex(p)")]
 fn splitroot(vm: &mut VM<'_>, args: &SplitrootArgs) -> RunResult<Value> {
     let SplitrootArgs { p } = args;
     let text = PathText::extract(p, vm, |type_name| {
@@ -263,7 +263,7 @@ fn splitroot(vm: &mut VM<'_>, args: &SplitrootArgs) -> RunResult<Value> {
 }
 
 /// Implementation of `os.path.basename(p)`.
-#[py_signature("basename(p)", style = def)]
+#[py_signature("basename(p)")]
 fn basename(vm: &mut VM<'_>, args: &BasenameArgs) -> RunResult<Value> {
     let BasenameArgs { p } = args;
     let text = PathText::fspath(p, vm)?;
@@ -271,7 +271,7 @@ fn basename(vm: &mut VM<'_>, args: &BasenameArgs) -> RunResult<Value> {
 }
 
 /// Implementation of `os.path.dirname(p)`.
-#[py_signature("dirname(p)", style = def)]
+#[py_signature("dirname(p)")]
 fn dirname(vm: &mut VM<'_>, args: &DirnameArgs) -> RunResult<Value> {
     let DirnameArgs { p } = args;
     let text = PathText::fspath(p, vm)?;
@@ -279,7 +279,7 @@ fn dirname(vm: &mut VM<'_>, args: &DirnameArgs) -> RunResult<Value> {
 }
 
 /// Implementation of `os.path.isabs(s)`.
-#[py_signature("isabs(s)", style = def)]
+#[py_signature("isabs(s)")]
 fn isabs(vm: &mut VM<'_>, args: &IsabsArgs) -> RunResult<Value> {
     let IsabsArgs { s } = args;
     let text = PathText::fspath(s, vm)?;
@@ -287,7 +287,7 @@ fn isabs(vm: &mut VM<'_>, args: &IsabsArgs) -> RunResult<Value> {
 }
 
 /// Implementation of `os.path.normcase(s)`: the identity on POSIX, after `os.fspath`.
-#[py_signature("normcase(s)", style = def)]
+#[py_signature("normcase(s)")]
 fn normcase(vm: &mut VM<'_>, args: &NormcaseArgs) -> RunResult<Value> {
     let NormcaseArgs { s } = args;
     let text = PathText::fspath(s, vm)?;
@@ -298,7 +298,7 @@ fn normcase(vm: &mut VM<'_>, args: &NormcaseArgs) -> RunResult<Value> {
 ///
 /// `os.path.normpath(path)` argument shape — CPython's is the C
 /// `posix._path_normpath`, whose clinic wording the errors keep.
-#[py_signature("_path_normpath(path)", style = c_named, at_most_total)]
+#[py_signature("_path_normpath(path)")]
 fn normpath(vm: &mut VM<'_>, args: &NormpathArgs) -> RunResult<Value> {
     let NormpathArgs { path } = args;
     let text = PathText::extract(path, vm, |type_name| {
@@ -313,7 +313,7 @@ const C_PATH_ACCEPTS: &str = "string, bytes or os.PathLike";
 
 /// Implementation of `os.path.abspath(path)`: pure, against the sandbox's
 /// virtual working directory.
-#[py_signature("abspath(path)", style = def)]
+#[py_signature("abspath(path)")]
 fn abspath(vm: &mut VM<'_>, args: &AbspathArgs) -> RunResult<Value> {
     let AbspathArgs { path } = args;
     let text = PathText::fspath(path, vm)?;
@@ -322,7 +322,7 @@ fn abspath(vm: &mut VM<'_>, args: &AbspathArgs) -> RunResult<Value> {
 
 /// Implementation of `os.path.relpath(path, start=None)`: pure, against the
 /// sandbox's virtual working directory. `start=None` means `os.curdir`.
-#[py_signature("relpath(path, start=None)", style = def)]
+#[py_signature("relpath(path, start=None)")]
 fn relpath(vm: &mut VM<'_>, args: &RelpathArgs) -> RunResult<Value> {
     let RelpathArgs { path, start } = args;
     let path_text = PathText::fspath(path, vm)?;
@@ -348,7 +348,7 @@ fn relpath(vm: &mut VM<'_>, args: &RelpathArgs) -> RunResult<Value> {
 /// Implementation of `os.path.commonpath(paths)`: `os.fspath` over the
 /// sequence first, so a non-path element fails before an empty sequence or
 /// mixed kinds do.
-#[py_signature("commonpath(paths)", style = def)]
+#[py_signature("commonpath(paths)")]
 fn commonpath(vm: &mut VM<'_>, args: &CommonpathArgs) -> RunResult<Value> {
     let CommonpathArgs { paths } = args;
     let items = collect_iterable(paths, vm)?;
@@ -372,7 +372,7 @@ fn commonpath(vm: &mut VM<'_>, args: &CommonpathArgs) -> RunResult<Value> {
 /// leading slice of `min(m)` and `max(m)`. Elements are passed through
 /// `os.fspath` unless `m[0]` is a list or tuple, in which case the elements
 /// are compared as sequences and the prefix is a slice of the smallest one.
-#[py_signature("commonprefix(m)", style = def)]
+#[py_signature("commonprefix(m)")]
 fn commonprefix(vm: &mut VM<'_>, args: &CommonprefixArgs) -> RunResult<Value> {
     let CommonprefixArgs { m } = args;
     if !m.py_bool(vm)? {
@@ -462,7 +462,7 @@ fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Va
 
 /// Implementation of `os.path.isjunction(path)`: junctions are a Windows
 /// concept, so this is `False` once `os.fspath` accepts the argument.
-#[py_signature("isjunction(path)", style = def)]
+#[py_signature("isjunction(path)")]
 fn isjunction(vm: &mut VM<'_>, args: &IsjunctionArgs) -> RunResult<Value> {
     let IsjunctionArgs { path } = args;
     PathText::fspath(path, vm)?;
@@ -471,7 +471,7 @@ fn isjunction(vm: &mut VM<'_>, args: &IsjunctionArgs) -> RunResult<Value> {
 
 /// Implementation of `os.path.isdevdrive(path)`: Dev Drives are a Windows
 /// concept, so this is `False` once `os.fspath` accepts the argument.
-#[py_signature("isdevdrive(path)", style = def)]
+#[py_signature("isdevdrive(path)")]
 fn isdevdrive(vm: &mut VM<'_>, args: &IsdevdriveArgs) -> RunResult<Value> {
     let IsdevdriveArgs { path } = args;
     PathText::fspath(path, vm)?;
@@ -481,7 +481,7 @@ fn isdevdrive(vm: &mut VM<'_>, args: &IsdevdriveArgs) -> RunResult<Value> {
 /// Implementation of `os.path.samestat(s1, s2)`:
 /// `s1.st_ino == s2.st_ino and s1.st_dev == s2.st_dev`, evaluated in that
 /// order so a missing attribute is reported as CPython reports it.
-#[py_signature("samestat(s1, s2)", style = def)]
+#[py_signature("samestat(s1, s2)")]
 fn samestat(vm: &mut VM<'_>, args: &SamestatArgs) -> RunResult<Value> {
     let SamestatArgs { s1, s2 } = args;
     let same =
@@ -511,21 +511,21 @@ fn data_attribute(value: &Value, attr: StaticStrings, vm: &mut VM<'_>) -> RunRes
 // ============================================================================
 
 /// Implementation of `os.path.exists(path)` — the `Path.exists` host call.
-#[py_signature("exists(path)", style = def)]
+#[py_signature("exists(path)")]
 fn exists(vm: &mut VM<'_>, args: &ExistsArgs) -> RunResult<CallResult> {
     let ExistsArgs { path } = args;
     predicate(path, "stat", PathAccepts::Fd, OsFunctionCall::Exists, vm)
 }
 
 /// Implementation of `os.path.isfile(path)` — the `Path.is_file` host call.
-#[py_signature("isfile(path)", style = def)]
+#[py_signature("isfile(path)")]
 fn isfile(vm: &mut VM<'_>, args: &IsfileArgs) -> RunResult<CallResult> {
     let IsfileArgs { path } = args;
     predicate(path, "stat", PathAccepts::Fd, OsFunctionCall::IsFile, vm)
 }
 
 /// Implementation of `os.path.isdir(s)` — the `Path.is_dir` host call.
-#[py_signature("isdir(s)", style = def)]
+#[py_signature("isdir(s)")]
 fn isdir(vm: &mut VM<'_>, args: &IsdirArgs) -> RunResult<CallResult> {
     let IsdirArgs { s } = args;
     predicate(s, "stat", PathAccepts::Fd, OsFunctionCall::IsDir, vm)
@@ -533,7 +533,7 @@ fn isdir(vm: &mut VM<'_>, args: &IsdirArgs) -> RunResult<CallResult> {
 
 /// Implementation of `os.path.islink(path)` — the `Path.is_symlink` host
 /// call. CPython reaches it through `os.lstat`, whose converter takes no fd.
-#[py_signature("islink(path)", style = def)]
+#[py_signature("islink(path)")]
 fn islink(vm: &mut VM<'_>, args: &IslinkArgs) -> RunResult<CallResult> {
     let IslinkArgs { path } = args;
     predicate(path, "lstat", PathAccepts::NoFd, OsFunctionCall::IsSymlink, vm)
@@ -543,7 +543,7 @@ fn islink(vm: &mut VM<'_>, args: &IslinkArgs) -> RunResult<CallResult> {
 /// mount point, so this is the `Path.exists` host call. The sandbox cannot
 /// see where the host's mounts begin, and answering `True` is what keeps the
 /// usual "walk up until a mount point" loops terminating.
-#[py_signature("ismount(path)", style = def)]
+#[py_signature("ismount(path)")]
 fn ismount(vm: &mut VM<'_>, args: &IsmountArgs) -> RunResult<CallResult> {
     let IsmountArgs { path } = args;
     predicate(path, "lstat", PathAccepts::NoFd, OsFunctionCall::Exists, vm)
@@ -552,7 +552,7 @@ fn ismount(vm: &mut VM<'_>, args: &IsmountArgs) -> RunResult<CallResult> {
 /// Implementation of `os.path.lexists(path)`: `Path.exists`, and when that is
 /// `False`, `Path.is_symlink` (a dangling symlink exists without a target);
 /// see [`PreConversionEffect::Lexists`].
-#[py_signature("lexists(path)", style = def)]
+#[py_signature("lexists(path)")]
 fn lexists(vm: &mut VM<'_>, args: &LexistsArgs) -> RunResult<CallResult> {
     let LexistsArgs { path } = args;
     let path = extract_os_path(path, "lstat", "path", PathAccepts::NoFd, vm)?;
@@ -588,7 +588,7 @@ pub(crate) fn lexists_reply(value: &MontyObject, path: String) -> Result<Reshape
 /// then `samestat` on the replies (see [`PreConversionEffect::SamefileFirst`]).
 /// `f2` is extracted now but its errors are deferred to after the first
 /// stat, which is when CPython's `os.stat(f2)` would raise them.
-#[py_signature("samefile(f1, f2)", style = def)]
+#[py_signature("samefile(f1, f2)")]
 fn samefile(vm: &mut VM<'_>, args: &SamefileArgs) -> RunResult<CallResult> {
     let SamefileArgs { f1, f2 } = args;
     let first = extract_os_path(f1, "stat", "path", PathAccepts::Fd, vm)?;
@@ -686,28 +686,28 @@ fn predicate(
 }
 
 /// Implementation of `os.path.getsize(filename)`: `os.stat(filename).st_size`.
-#[py_signature("getsize(filename)", style = def)]
+#[py_signature("getsize(filename)")]
 fn getsize(vm: &mut VM<'_>, args: &GetsizeArgs) -> RunResult<CallResult> {
     let GetsizeArgs { filename } = args;
     stat_field(filename, StatField::Size, vm)
 }
 
 /// Implementation of `os.path.getmtime(filename)`: `os.stat(filename).st_mtime`.
-#[py_signature("getmtime(filename)", style = def)]
+#[py_signature("getmtime(filename)")]
 fn getmtime(vm: &mut VM<'_>, args: &GetmtimeArgs) -> RunResult<CallResult> {
     let GetmtimeArgs { filename } = args;
     stat_field(filename, StatField::Mtime, vm)
 }
 
 /// Implementation of `os.path.getatime(filename)`: `os.stat(filename).st_atime`.
-#[py_signature("getatime(filename)", style = def)]
+#[py_signature("getatime(filename)")]
 fn getatime(vm: &mut VM<'_>, args: &GetatimeArgs) -> RunResult<CallResult> {
     let GetatimeArgs { filename } = args;
     stat_field(filename, StatField::Atime, vm)
 }
 
 /// Implementation of `os.path.getctime(filename)`: `os.stat(filename).st_ctime`.
-#[py_signature("getctime(filename)", style = def)]
+#[py_signature("getctime(filename)")]
 fn getctime(vm: &mut VM<'_>, args: &GetctimeArgs) -> RunResult<CallResult> {
     let GetctimeArgs { filename } = args;
     stat_field(filename, StatField::Ctime, vm)
@@ -785,7 +785,7 @@ pub(crate) fn stat_field_reply(value: &MontyObject, field: StatField) -> Result<
 ///
 /// `os.path.realpath(filename, *, strict=False)` argument shape. `strict` is
 /// truth-tested like CPython's, hence [`LaxBool`](crate::args::LaxBool).
-#[py_signature("realpath(filename, *, strict=False)", style = def)]
+#[py_signature("realpath(filename, *, strict=False)")]
 fn realpath(vm: &mut VM<'_>, args: &RealpathArgs) -> RunResult<CallResult> {
     let RealpathArgs { filename, strict } = args;
     let strict = strict.py_bool(vm)?;
@@ -847,7 +847,7 @@ pub(crate) fn realpath_strict_reply(value: &MontyObject, resolved: String) -> Re
 /// with a [`PreConversionEffect::ExpandUser`] splicing the answer in. `~user`
 /// needs the password database, which the sandbox has no access to, so it is
 /// returned unchanged as CPython does for an unknown user.
-#[py_signature("expanduser(path)", style = def)]
+#[py_signature("expanduser(path)")]
 fn expanduser(vm: &mut VM<'_>, args: &ExpanduserArgs) -> RunResult<CallResult> {
     let ExpanduserArgs { path } = args;
     let text = PathText::fspath(path, vm)?;
@@ -883,7 +883,7 @@ pub(crate) fn expand_user_reply(value: &MontyObject, tail: &[u8], is_bytes: bool
 /// Implementation of `os.path.expandvars(path)`. A path without `$` is
 /// returned as is; otherwise the host's `os.environ` is fetched and a
 /// [`PreConversionEffect::ExpandVars`] performs the substitution on resume.
-#[py_signature("expandvars(path)", style = def)]
+#[py_signature("expandvars(path)")]
 fn expandvars(vm: &mut VM<'_>, args: &ExpandvarsArgs) -> RunResult<CallResult> {
     let ExpandvarsArgs { path } = args;
     let text = PathText::fspath(path, vm)?;

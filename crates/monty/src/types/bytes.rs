@@ -302,11 +302,7 @@ fn collect_bytes_from_iterator(iterator: Value, vm: &mut VM<'_>) -> RunResult<Ve
 /// pos-or-keyword. Unlike `str()`, CPython's `bytes_new` reports wrong-typed
 /// `encoding`/`errors` with `_PyArg_BadArgument`'s wording (`must be str, not
 /// None` for `None`), which is exactly the macro's `bad_arg_named` form.
-#[py_signature(
-    "bytes(source=..., encoding: str=..., errors: str=...)",
-    at_most_total,
-    bad_arg_named
-)]
+#[py_signature("bytes(source=..., encoding: str=..., errors: str=...)", bad_arg_named)]
 struct BytesInitArgs;
 
 /// Concatenates two byte strings into a tracked heap value.
@@ -719,7 +715,7 @@ fn call_bytes_method_impl<'h>(
 /// CPython rejects explicit `None` here with the bad-arg error, which falls
 /// out naturally because `Option<StrArg>::from_value` delegates to
 /// `StrArg::from_value` and rejects `Value::None`.
-#[py_signature("decode(encoding: str=..., errors: str=...)", at_most_total, bad_arg_named)]
+#[py_signature("decode(encoding: str=..., errors: str=...)", bad_arg_named)]
 fn bytes_decode<'h>(bytes: &impl HeapView<'h, [u8]>, args: &BytesDecodeArgs, vm: &mut VM<'h>) -> RunResult<Value> {
     let BytesDecodeArgs { encoding, errors } = args;
     let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
@@ -2313,7 +2309,11 @@ fn bytes_hex<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'
 /// `bytes.hex() takes at most 2 arguments (N given)`. Fields become real
 /// kwargs and the flag goes away when the kwarg dispatch is plumbed
 /// through.
-#[py_signature("hex(sep=None, bytes_per_sep=None)", style = c_named, at_most_total, kwargs_not_supported_yet, error_name = "bytes.hex")]
+#[py_signature(
+    "hex(sep=None, bytes_per_sep=None)",
+    kwargs_not_supported_yet,
+    error_name = "bytes.hex"
+)]
 fn parse_bytes_hex_args(args: &BytesHexArgs, vm: &mut VM<'_>) -> RunResult<(Option<char>, i64)> {
     let BytesHexArgs { sep, bytes_per_sep } = args;
     let Some(sep_value) = (match &sep {
