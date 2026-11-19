@@ -338,6 +338,20 @@ impl FromValue for u64 {
     }
 }
 
+impl FromValue for f64 {
+    const EXPECTED_TYPE_NAME: Option<&'static str> = Some("real number");
+
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        let result = value.py_float(vm);
+        value.drop_with(vm);
+        result.map_err(FromValueFail::Raise)?.ok_or(FromValueFail::WrongType)
+    }
+
+    fn type_error(got: &str) -> RunError {
+        ExcType::type_error_not_real_number(got)
+    }
+}
+
 impl FromValue for bool {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("bool");
 

@@ -31,7 +31,7 @@ use crate::{
     intern::{StaticStrings, StringId},
     modules::{ModuleFunctions, StandardLib},
     object_bridge::MontyObjectExt,
-    os_dispatch::{PreConversionEffect, value_to_owned_string},
+    os_dispatch::{PreConversionEffect, urandom_call, value_to_owned_string},
     types::{
         Bytes, Module, Property, PyTrait, Type, TypeRef,
         dir_scan::{scandir_call, walk_call},
@@ -236,16 +236,15 @@ fn walk(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// enforced by [`PreConversionEffect::UrandomLength`] before it is converted.
 #[py_signature("urandom(size: SupportsIndex, /) -> bytes")]
 fn urandom(vm: &mut VM<'_>, args: &UrandomArgs) -> RunResult<CallResult> {
-    let size = args.size;
-    if size < 0 {
+    if args.size < 0 {
         return Err(ExcType::value_error("negative argument not allowed"));
     }
     // `ssize_t` is the platform's word, so a 32-bit target rejects here as CPython does.
-    let len = usize::try_from(size).map_err(|_| ExcType::overflow_c_ssize_t())?;
-    vm.heap.tracker.check_allocation(len)?;
+    let size = usize::try_from(args.size).map_err(|_| ExcType::overflow_c_ssize_t())?;
+    vm.heap.tracker.check_allocation(size)?;
     Ok(CallResult::OsCallWithEffect {
-        call: OsFunctionCall::Urandom(monty_types::UrandomArgs { size: len as u64 }),
-        effect: PreConversionEffect::UrandomLength { size: len }.into(),
+        call: urandom_call(size),
+        effect: PreConversionEffect::UrandomLength { size }.into(),
     })
 }
 

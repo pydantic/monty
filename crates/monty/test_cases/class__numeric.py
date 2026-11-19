@@ -86,6 +86,9 @@ assert calls == ['int', 'float']
 assert math.floor(convertible) == 2
 assert math.ceil(convertible) == 3
 assert calls == ['int', 'float', 'float', 'float']
+calls.clear()
+assert math.isclose(convertible, 0, abs_tol=convertible)
+assert calls == ['float', 'float']
 
 for integer in [True, False, 2**100, -(2**100)]:
     convertible.integer = integer
@@ -165,6 +168,7 @@ for integer in [0, 65, -1, 2**100, -(2**100), True]:
     assert int(index) == int(integer)
     assert type(int(index)) is int
     assert float(index) == float(integer)
+    assert math.isclose(index, integer)
     assert bin(index) == bin(integer)
     assert oct(index) == oct(integer)
     assert hex(index) == hex(integer)

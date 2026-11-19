@@ -733,12 +733,9 @@ fn math_copysign(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// Raises `ValueError` if either tolerance is negative.
-#[py_signature("isclose(a, b, *, rel_tol=1e-09, abs_tol=0.0) -> bool")]
+#[py_signature("isclose(a: float, b: float, *, rel_tol: float = 1e-09, abs_tol: float = 0.0) -> bool")]
 fn math_isclose(vm: &mut VM<'_>, args: &IscloseArgs) -> RunResult<Value> {
-    let a = value_to_float(&args.a, vm)?;
-    let b = value_to_float(&args.b, vm)?;
-    let rel_tol = value_to_float(&args.rel_tol, vm)?;
-    let abs_tol = value_to_float(&args.abs_tol, vm)?;
+    let IscloseArgs { a, b, rel_tol, abs_tol } = *args;
 
     if rel_tol < 0.0 || abs_tol < 0.0 {
         return Err(SimpleException::new_msg(ExcType::ValueError, "tolerances must be non-negative").into());

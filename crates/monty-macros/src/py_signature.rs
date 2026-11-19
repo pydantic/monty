@@ -148,6 +148,7 @@ fn named_field(param: &ParameterWithDefault, role: &TokenStream, literal: &LitSt
         None if matches!(param.default(), Some(Expr::StringLiteral(_))) => quote!(crate::args::DefaultedStringArg),
         None => quote!(crate::value::Value),
         Some("str") => quote!(crate::args::StrArg),
+        Some("float") => quote!(f64),
         Some("SupportsIndex") => quote!(i64),
         Some(_) => return Err(error("unsupported native parameter annotation")),
     };
@@ -159,11 +160,15 @@ fn named_field(param: &ParameterWithDefault, role: &TokenStream, literal: &LitSt
             let value = b.value;
             quote!(default = crate::value::Value::Bool(#value))
         }
-        (None, Some(Expr::NumberLiteral(n)))
+        (None | Some("float"), Some(Expr::NumberLiteral(n)))
             if let Number::Float(value) = n.value
                 && value.is_finite() =>
         {
-            quote!(default = crate::value::Value::Float(#value))
+            if annotation.is_some() {
+                quote!(default = #value)
+            } else {
+                quote!(default = crate::value::Value::Float(#value))
+            }
         }
         (None, Some(Expr::StringLiteral(s))) => {
             let value = s.value.to_str();
