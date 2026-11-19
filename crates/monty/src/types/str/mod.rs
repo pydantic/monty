@@ -208,7 +208,11 @@ impl<'h> PyStr<'h> {
             return Ok(0);
         }
         let text = self.as_str(vm);
-        if self.known_char_len(vm) == Some(text.len()) {
+        let ascii = match self {
+            Self::Heap(value) => value.get(vm.heap).checked_is_ascii(|| vm.heap.tracker.check_time())?,
+            _ => self.is_ascii(vm),
+        };
+        if ascii {
             return Ok(byte_offset);
         }
         if byte_offset <= text.len() - byte_offset {
@@ -2023,7 +2027,7 @@ pub(crate) fn str_contains(container_str: &str, item: &Value, heap: &Heap, inter
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::{cell::Cell, time::Duration};
 
     use monty_types::PrintWriter;
 
@@ -2136,8 +2140,25 @@ mod tests {
     }
 
     #[test]
+    fn ascii_search_offsets_cache_the_heap_character_count() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            let value = allocate_string_on_heap("a".repeat(128 * 1024), vm.heap);
+            defer_drop!(value, vm);
+            let text = PyStr::from_value(value, vm).unwrap();
+            assert_eq!(text.known_char_len(vm), None);
+            assert_eq!(text.char_index_of(5, vm).unwrap(), 5);
+            assert_eq!(text.known_char_len(vm), Some(128 * 1024));
+            assert_eq!(text.char_index_of(10, vm).unwrap(), 10);
+        });
+    }
+
+    #[test]
     fn indexing_an_uncounted_heap_string_polls_the_deadline() {
-        let limits = monty_types::ResourceLimits::default().max_feed_duration(std::time::Duration::ZERO);
+        let limits = monty_types::ResourceLimits::default().max_feed_duration(Duration::ZERO);
         let mut heap = Heap::new(16, ResourceTracker::new(limits));
         let mut tables = SessionTables::default();
         let program = Program::for_tests();

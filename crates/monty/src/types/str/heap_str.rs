@@ -131,6 +131,23 @@ impl HeapStr {
         }
     }
 
+    /// A search can stop checking as soon as it sees the first non-ASCII byte.
+    pub(super) fn checked_is_ascii<E>(&self, check_time: impl Fn() -> Result<(), E>) -> Result<bool, E> {
+        const CHUNK: usize = 64 * 1024;
+        if self.char_len.get() != 0 || self.text.len() < CHUNK {
+            return Ok(self.is_ascii());
+        }
+        for chunk in self.text.as_bytes().chunks(CHUNK) {
+            check_time()?;
+            if !chunk.is_ascii() {
+                self.char_len.set(1);
+                return Ok(false);
+            }
+        }
+        self.cache_char_len(self.text.len());
+        Ok(true)
+    }
+
     /// Counts Unicode code points on first use, then reuses counts of at least two.
     #[inline]
     pub fn char_len(&self) -> usize {

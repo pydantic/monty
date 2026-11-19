@@ -291,6 +291,17 @@ mod tests {
     }
 
     #[test]
+    fn every_boundary_in_long_mixed_width_strings() {
+        for text in ["abcdefgé".repeat(512), "aé中🐍".repeat(1024)] {
+            let offsets = boundaries(&text);
+            for (index, expected) in offsets.iter().copied().enumerate() {
+                let byte = byte_offset(&text, offsets.len() - 1, None, index, || Ok::<(), Infallible>(()));
+                assert_eq!(byte, Ok(expected));
+            }
+        }
+    }
+
+    #[test]
     fn scanner_crossovers_in_both_directions() {
         let mostly_ascii = format!("{}é", "a".repeat(99)).repeat(100);
         let dense = "aé中🐍".repeat(2500);
