@@ -6,7 +6,7 @@
 use std::fmt::{self, Write};
 
 use crate::{
-    args::{ArgValues, NativeSignature},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::RunResult,
     frozen::{self, FrozenFunctions},
@@ -329,14 +329,6 @@ impl fmt::Display for ModuleFunctions {
 }
 
 impl ModuleFunctions {
-    pub(crate) fn signature(self) -> Option<&'static NativeSignature> {
-        match self {
-            Self::Math(math::MathFunctions::Isclose) => Some(&math::MATH_ISCLOSE_SIGNATURE),
-            Self::Os(os::OsFunctions::Urandom) => Some(&os::URANDOM_SIGNATURE),
-            _ => None,
-        }
-    }
-
     /// Calls the module function with the given arguments.
     ///
     /// Returns `CallResult` to support both immediate values and OS calls that

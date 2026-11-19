@@ -28,7 +28,7 @@ pub fn explicit_discriminants(args: TokenStream, input: TokenStream) -> TokenStr
         .into()
 }
 
-/// Generates a native call adapter and its runtime signature from a Python declaration.
+/// Generates a native call adapter from a Python signature.
 #[cfg(feature = "native-signatures")]
 #[proc_macro_attribute]
 pub fn py_signature(attr: TokenStream, item: TokenStream) -> TokenStream {

@@ -2523,7 +2523,6 @@ dependencies = [
  "quote",
  "ruff_python_ast",
  "ruff_python_parser",
- "ruff_text_size",
  "syn 3.0.9",
 ]
 

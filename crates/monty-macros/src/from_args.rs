@@ -26,7 +26,7 @@ use syn::{Data, DataStruct, DeriveInput, Expr, Fields, Ident, LitStr, Token, Typ
 
 pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let signature = Signature::parse(input)?;
-    Ok(signature.render(None, None))
+    signature.render(false, None)
 }
 
 /// Parsed, validated signature for a single struct deriving `FromArgs`.
@@ -379,7 +379,7 @@ impl Signature {
         Ok(())
     }
 
-    pub(super) fn render_native(&self, spec: TokenStream, check_last: Option<&Ident>) -> syn::Result<TokenStream> {
+    pub(super) fn render(&self, bound_receiver: bool, check_last: Option<&Ident>) -> syn::Result<TokenStream> {
         if let Some(name) = check_last
             && (self.style != Style::Clinic || !self.named_fields().any(|field| field.ident == *name))
         {
@@ -388,10 +388,6 @@ impl Signature {
                 "check_last requires a named parameter and clinic binding",
             ));
         }
-        Ok(self.render(Some(spec), check_last))
-    }
-
-    fn render(&self, shared_spec: Option<TokenStream>, check_last: Option<&Ident>) -> TokenStream {
         let struct_ident = &self.struct_ident;
         // Dedicated owning-slots struct: holds the raw `Bound` returned by the
         // runtime binder plus one typed `Option` per named field. A `DropGuard`
@@ -484,20 +480,14 @@ impl Signature {
             quote!()
         };
 
-        let spec = shared_spec.map_or_else(
-            || {
-                let binding = self.binding_spec(false);
-                quote! { static __SPEC: crate::args::ParamSpec = #binding; let __spec = &__SPEC; }
-            },
-            |spec| quote! { let __spec = #spec; },
-        );
+        let binding = self.binding_spec(bound_receiver);
         if let Some(last) = check_last {
             named.sort_by_key(|field| field.ident == *last);
         }
         let fast_keywords = (n_required_positional == 0 && self.varkwargs_idx.is_some()).then(|| {
             let inits = self.default_field_inits(&positional, 0, &quote!(__keywords));
             quote! {
-                if __spec.forwards_keywords()
+                if __SPEC.forwards_keywords()
                     && let crate::args::ArgValues::Kwargs(__keywords @ crate::args::KwargsValues::Inline(_)) = args
                 {
                     return Ok(Self { #(#inits,)* });
@@ -520,7 +510,7 @@ impl Signature {
             .flatten()
             .map(|idx| &self.fields[idx].ident);
 
-        quote! {
+        Ok(quote! {
             /// Owning slots for the corresponding `from_args`: the raw bound
             /// arguments plus each converted field. Its `DropWithContext` impl
             /// releases both, so a `DropGuard` around it keeps refcounts
@@ -565,7 +555,7 @@ impl Signature {
                     #fast_one
                     #fast_two
 
-                    #spec
+                    static __SPEC: crate::args::ParamSpec = #binding;
                     #fast_keywords
 
                     // The guard owns cleanup on every error path — including
@@ -573,12 +563,12 @@ impl Signature {
                     // success path every slot is drained by the build below,
                     // so the guard's drop at scope exit is a cheap no-op.
                     let __slots = #slots_struct_ident {
-                        raw: crate::args::Bound::new(__spec),
+                        raw: crate::args::Bound::new(&__SPEC),
                         #(#slot_idents: ::std::option::Option::None,)*
                     };
                     let mut __guard = crate::heap::DropGuard::new(#guarded, vm);
                     let (#bindings, vm) = __guard.as_parts_mut();
-                    crate::args::bind::<#n_slots>(__spec, &mut __slots.raw, args, #collector, vm)?;
+                    crate::args::bind::<#n_slots>(&__SPEC, &mut __slots.raw, args, #collector, vm)?;
 
                     #(#conversions)*
                     __slots.raw.finish()?;
@@ -588,7 +578,7 @@ impl Signature {
                     })
                 }
             }
-        }
+        })
     }
 
     fn default_field_inits(&self, positional: &[&Field], start_pos: usize, keywords: &TokenStream) -> Vec<TokenStream> {
@@ -623,7 +613,7 @@ impl Signature {
     }
 
     /// The `static __SPEC: ParamSpec` literal interpreted by the runtime binder.
-    pub(super) fn binding_spec(&self, bound_receiver: bool) -> TokenStream {
+    fn binding_spec(&self, bound_receiver: bool) -> TokenStream {
         let named: Vec<_> = self.named_fields().collect();
         let func_name = self.func_name.as_str();
         // Under `kwargs_not_supported_yet` no kwarg is ever dispatched (they

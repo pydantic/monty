@@ -28,12 +28,6 @@ use crate::{
     value::{EitherStr, Value},
 };
 
-/// Shared by the native call adapter and callable attribute lookup.
-pub(crate) struct NativeSignature {
-    pub binding: ParamSpec,
-    pub text_signature: &'static str,
-}
-
 /// A native Python signature whose extracted fields own their heap references.
 pub(crate) trait FromArgs: Sized + for<'h> DropWithContext<VM<'h>> {
     fn from_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Self>;

@@ -13,7 +13,7 @@ use smallvec::smallvec;
 
 use crate::{
     annotations,
-    builtins::{Builtins, BuiltinsFunctionsExt},
+    builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -1330,16 +1330,6 @@ impl Value {
             Self::DefFunction(func_id) => {
                 if let Some(result) = annotations::function_getattr(*func_id, None, attr.as_str(vm.interns), vm) {
                     return result;
-                }
-            }
-            _ if attr.as_str(vm.interns) == "__text_signature__" => {
-                let signature = match self {
-                    Self::Builtin(Builtins::Function(func)) => func.signature(),
-                    Self::ModuleFunction(func) => func.signature(),
-                    _ => None,
-                };
-                if let Some(signature) = signature {
-                    return Ok(CallResult::Value(allocate_string(signature.text_signature, vm.heap)));
                 }
             }
             _ => {}

@@ -7,8 +7,7 @@ Not a public crate — consumers get the macros re-exported
 
 ## `#[py_signature]`
 
-Inside the interpreter, a Python declaration can generate the argument struct, its `FromArgs` binding and a runtime
-signature descriptor together.
+A Python signature on a native function generates the Rust argument struct and its `FromArgs` implementation.
 
 ```rust
 #[py_signature("split(self, /, sep: str | None = None, maxsplit: SupportsIndex = -1) -> list", check_last = sep)]

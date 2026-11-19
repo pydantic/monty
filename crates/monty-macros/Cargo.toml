@@ -13,10 +13,9 @@ repository = { workspace = true }
 proc-macro = true
 
 [features]
-native-signatures = ["dep:ruff_python_ast", "dep:ruff_python_parser", "dep:ruff_text_size"]
+native-signatures = ["dep:ruff_python_ast", "dep:ruff_python_parser"]
 
 [dependencies]
-ruff_text_size = { workspace = true, optional = true }
 ruff_python_ast = { workspace = true, optional = true }
 ruff_python_parser = { workspace = true, optional = true }
 syn = { version = "3", features = ["full", "extra-traits"] }

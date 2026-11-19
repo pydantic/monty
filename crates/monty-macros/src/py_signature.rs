@@ -4,7 +4,6 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use ruff_python_ast::{Expr, Number, Operator, Parameter, ParameterWithDefault, Stmt, UnaryOp};
 use ruff_python_parser::parse_module;
-use ruff_text_size::Ranged;
 use syn::{
     DeriveInput, FnArg, Ident, ItemFn, LitStr, Pat, Token, Type,
     meta::parser,
@@ -137,9 +136,7 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
         struct #bound_name { #(#fields,)* }
     })?;
     let signature = Signature::parse(&input)?;
-    let binding = signature.binding_spec(receiver);
-    let descriptor = format_ident!("{}_SIGNATURE", function.sig.ident.to_string().to_uppercase());
-    let from_args = signature.render_native(quote!(&#descriptor.binding), declaration.check_last.as_ref())?;
+    let from_args = signature.render(receiver, declaration.check_last.as_ref())?;
     let mut bound_struct = input;
     bound_struct.attrs.clear();
     if let syn::Data::Struct(data) = &mut bound_struct.data {
@@ -151,41 +148,7 @@ pub(super) fn expand(declaration: &Declaration, mut function: ItemFn) -> syn::Re
     *bound.ty = parse_quote!(crate::args::ArgValues);
     let body = function.block;
     function.block = Box::new(parse_quote!({ vm.#with_args(#arg, |#arg: #bound_ty, vm| #body) }));
-    let display_param = |p: &ParameterWithDefault| {
-        let mut text = p.name().as_str().to_owned();
-        if let Some(default) = p.default() {
-            text.push('=');
-            text.push_str(&source[default.range()]);
-        }
-        text
-    };
-    let mut text = if receiver {
-        vec!["$self".to_owned()]
-    } else if is_def {
-        Vec::new()
-    } else {
-        vec!["$module".to_owned()]
-    };
-    text.extend(params.posonlyargs.iter().skip(usize::from(receiver)).map(display_param));
-    if !text.is_empty() {
-        text.push("/".to_owned());
-    }
-    text.extend(params.args.iter().map(display_param));
-    if let Some(vararg) = &params.vararg {
-        text.push(format!("*{}", vararg.name));
-    } else if !params.kwonlyargs.is_empty() {
-        text.push("*".to_owned());
-    }
-    text.extend(params.kwonlyargs.iter().map(display_param));
-    if let Some(kwargs) = &params.kwarg {
-        text.push(format!("**{}", kwargs.name));
-    }
-    let text_signature = format!("({})", text.join(", "));
     Ok(quote! {
-        pub(crate) static #descriptor: crate::args::NativeSignature = crate::args::NativeSignature {
-            binding: #binding,
-            text_signature: #text_signature,
-        };
         #bound_struct
         #from_args
         #function

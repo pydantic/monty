@@ -46,7 +46,7 @@ mod zip;
 use std::{fmt, fmt::Write, str::FromStr};
 
 use crate::{
-    args::{ArgValues, NativeSignature},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult},
     types::Type,
@@ -148,18 +148,10 @@ pub use monty_types::BuiltinsFunctions;
 pub(crate) use type_::type_of_ref;
 
 pub(crate) trait BuiltinsFunctionsExt: Sized {
-    fn signature(self) -> Option<&'static NativeSignature>;
     fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult>;
 }
 
 impl BuiltinsFunctionsExt for BuiltinsFunctions {
-    fn signature(self) -> Option<&'static NativeSignature> {
-        match self {
-            Self::Print => Some(&print::BUILTIN_PRINT_SIGNATURE),
-            _ => None,
-        }
-    }
-
     fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         let r = match self {
             Self::Abs => abs::builtin_abs(vm, args),

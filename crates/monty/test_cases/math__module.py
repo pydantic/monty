@@ -357,7 +357,6 @@ except TypeError:
 assert threw
 
 # === math.isclose() ===
-assert math.isclose.__text_signature__ == '($module, /, a, b, *, rel_tol=1e-09, abs_tol=0.0)'
 assert math.isclose(1.0, 1.0) == True
 assert math.isclose(1.0, 1.0000000001) == True
 assert math.isclose(1.0, 1.1) == False
