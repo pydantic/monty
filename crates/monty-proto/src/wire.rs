@@ -634,7 +634,7 @@ fn named_tuple_len(type_name: &str, field_names: &[String], values: &[NodeId]) -
 /// `Type` body for a class node: `string name = 1; Uuid id = 2; TypeOrigin
 /// origin = 3; bool is_dataclass = 4; NodePairs attrs = 5`, attrs only when
 /// non-empty (matching the generated encoder's absent field), then the
-/// equality rule in fields 6–9.
+/// equality and hash rules in fields 6–9.
 fn class_type_len(class: &ClassTypeNode) -> usize {
     str_len(1, &class.name)
         + encoding::message::encoded_len(2, &uuid_to_pb(&class.id))
