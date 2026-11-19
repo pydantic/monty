@@ -5,9 +5,9 @@
 //! entry plus its constructor. Facts that used to live in scattered `match`es —
 //! names, bases, constructors, class attributes, behaviour flags — live here.
 //!
-//! Variant names are the dump contract (dumps store them as strings) and the
-//! order is the `id()` contract: [`Type::legacy_index`] maps it onto the indices
-//! the pre-table enum gave postcard. Append new types at the end of their group.
+//! Variant names are the dump contract (dumps store them as strings).
+//! [`Type::legacy_index`] pins numeric identity codes independently of table order;
+//! existing codes must never change or be reused.
 
 use std::{fmt, iter::FusedIterator, slice, sync::LazyLock};
 
@@ -271,15 +271,171 @@ impl Type {
         self.def().builtin
     }
 
-    /// The index the pre-table enum gave this type, used for postcard and so `id()`.
-    ///
-    /// That enum had `HostClass`, `Instance` and `Exception` between `FrozenSet`
-    /// and `Function`; the table drops all three, so later types skip their slots.
+    /// Permanent native type codes, independent of the table's dense discriminants.
+    /// Slots 27–29 remain reserved for the former `HostClass`, `Instance` and `Exception` variants.
     pub(crate) fn legacy_index(self) -> u32 {
-        const REMOVED_AFTER: u32 = Type::FrozenSet as u32;
-        const REMOVED: u32 = 3;
-        let index = self as u32;
-        if index > REMOVED_AFTER { index + REMOVED } else { index }
+        match self {
+            Self::Ellipsis => 0,
+            Self::NotImplementedType => 1,
+            Self::Type => 2,
+            Self::NoneType => 3,
+            Self::Bool => 4,
+            Self::Int => 5,
+            Self::Float => 6,
+            Self::Complex => 7,
+            Self::Range => 8,
+            Self::Slice => 9,
+            Self::Date => 10,
+            Self::DateTime => 11,
+            Self::TimeDelta => 12,
+            Self::TimeZone => 13,
+            Self::Str => 14,
+            Self::Bytes => 15,
+            Self::List => 16,
+            Self::Tuple => 17,
+            Self::NamedTuple => 18,
+            Self::Dict => 19,
+            Self::DefaultDict => 20,
+            Self::Counter => 21,
+            Self::DictKeys => 22,
+            Self::DictItems => 23,
+            Self::DictValues => 24,
+            Self::Set => 25,
+            Self::FrozenSet => 26,
+            Self::Function => 30,
+            Self::BuiltinFunction => 31,
+            Self::Cell => 32,
+            Self::Iterator => 33,
+            Self::ListIterator => 34,
+            Self::CallableIterator => 35,
+            Self::Coroutine => 36,
+            Self::Module => 37,
+            Self::TextIOWrapper => 38,
+            Self::BufferedReader => 39,
+            Self::BufferedWriter => 40,
+            Self::BufferedRandom => 41,
+            Self::SpecialForm => 42,
+            Self::Path => 43,
+            Self::Property => 44,
+            Self::RePattern => 45,
+            Self::ReMatch => 46,
+            Self::DirEntry => 47,
+            Self::ScandirIterator => 48,
+            Self::WalkGenerator => 49,
+            Self::TupleIterator => 50,
+            Self::StrAsciiIterator => 51,
+            Self::StrIterator => 52,
+            Self::BytesIterator => 53,
+            Self::RangeIterator => 54,
+            Self::DictKeyIterator => 55,
+            Self::DictItemIterator => 56,
+            Self::DictValueIterator => 57,
+            Self::SetIterator => 58,
+            Self::ItertoolsCount => 59,
+            Self::ItertoolsRepeat => 60,
+            Self::DataclassField => 61,
+            Self::Deque => 62,
+            Self::DequeIterator => 63,
+            Self::ItertoolsPairwise => 64,
+            Self::ItertoolsCompress => 65,
+            Self::ItertoolsIslice => 66,
+            Self::ItertoolsChain => 67,
+            Self::ItertoolsCycle => 68,
+            Self::DataclassParams => 69,
+            Self::MissingType => 70,
+            Self::ItertoolsTakeWhile => 71,
+            Self::ItertoolsDropWhile => 72,
+            Self::ItertoolsFilterFalse => 73,
+            Self::ItertoolsStarMap => 74,
+            Self::Object => 75,
+            Self::Time => 76,
+            Self::Partial => 77,
+            Self::ItertoolsAccumulate => 78,
+            Self::ItertoolsBatched => 79,
+            Self::ItertoolsZipLongest => 80,
+            Self::GenericAlias => 81,
+            Self::Union => 82,
+            Self::ItertoolsCombinations => 83,
+            Self::ItertoolsCombinationsWithReplacement => 84,
+            Self::ItertoolsPermutations => 85,
+            Self::ItertoolsProduct => 86,
+            Self::ItertoolsGroupBy => 87,
+            Self::ItertoolsGrouper => 88,
+            Self::ItertoolsTee => 89,
+            Self::ItertoolsTeeDataObject => 90,
+            Self::Random => 91,
+            Self::LruCacheWrapper => 92,
+            Self::HashlibHash => 93,
+            Self::HashlibHashXof => 94,
+            Self::Blake2b => 95,
+            Self::Blake2s => 96,
+            Self::CsvReader => 97,
+            Self::CsvWriter => 98,
+            Self::CsvDictReader => 99,
+            Self::CsvDictWriter => 100,
+            Self::CsvDialect => 101,
+            Self::Decimal => 102,
+            Self::DecimalContext => 103,
+            Self::DecimalSignalDict => 104,
+            Self::DecimalContextManager => 105,
+            Self::ForwardRef => 106,
+            Self::Exception => 107,
+            Self::BaseException => 108,
+            Self::SystemExit => 109,
+            Self::KeyboardInterrupt => 110,
+            Self::ArithmeticError => 111,
+            Self::OverflowError => 112,
+            Self::ZeroDivisionError => 113,
+            Self::LookupError => 114,
+            Self::IndexError => 115,
+            Self::KeyError => 116,
+            Self::RuntimeError => 117,
+            Self::NotImplementedError => 118,
+            Self::RecursionError => 119,
+            Self::AttributeError => 120,
+            Self::FrozenInstanceError => 121,
+            Self::NameError => 122,
+            Self::UnboundLocalError => 123,
+            Self::ValueError => 124,
+            Self::UnicodeDecodeError => 125,
+            Self::UnicodeEncodeError => 126,
+            Self::JsonDecodeError => 127,
+            Self::TomlDecodeError => 128,
+            Self::ImportError => 129,
+            Self::ModuleNotFoundError => 130,
+            Self::OSError => 131,
+            Self::FileNotFoundError => 132,
+            Self::FileExistsError => 133,
+            Self::IsADirectoryError => 134,
+            Self::NotADirectoryError => 135,
+            Self::PermissionError => 136,
+            Self::UnsupportedOperation => 137,
+            Self::TimeoutError => 138,
+            Self::AssertionError => 139,
+            Self::MemoryError => 140,
+            Self::StopIteration => 141,
+            Self::SyntaxError => 142,
+            Self::TypeError => 143,
+            Self::RePatternError => 144,
+            Self::BinasciiError => 145,
+            Self::BinasciiIncomplete => 146,
+            Self::CsvError => 147,
+            Self::DecimalException => 148,
+            Self::DecimalClamped => 149,
+            Self::DecimalInvalidOperation => 150,
+            Self::DecimalConversionSyntax => 151,
+            Self::DecimalDivisionByZero => 152,
+            Self::DecimalDivisionImpossible => 153,
+            Self::DecimalDivisionUndefined => 154,
+            Self::DecimalInexact => 155,
+            Self::DecimalInvalidContext => 156,
+            Self::DecimalRounded => 157,
+            Self::DecimalSubnormal => 158,
+            Self::DecimalOverflow => 159,
+            Self::DecimalUnderflow => 160,
+            Self::DecimalFloatOperation => 161,
+            Self::StatisticsError => 162,
+        }
     }
 
     /// This type then its ancestors, in method resolution order, ending at `object`.
@@ -1026,15 +1182,14 @@ mod tests {
         }
     }
 
-    /// `id()` encodes types through postcard, so the legacy indices the
-    /// pre-table enum gave postcard must hold; dumps store the variant names.
+    /// Native type identity codes and dump names retain the pre-table format independently.
     #[test]
     fn serialization_matches_pre_table_format() {
         let fixture = include_str!("../../tests/fixtures/builtin_type_serialization.txt");
         for line in fixture.lines().filter(|line| !line.starts_with("HostClass ")) {
             let (variant, index) = line.split_once(' ').unwrap();
             let ty = Type::from_variant_name(variant).unwrap_or_else(|| panic!("{variant} was removed"));
-            assert_eq!(postcard::to_allocvec(&ty).unwrap(), vec![index.parse::<u8>().unwrap()]);
+            assert_eq!(ty.legacy_index(), index.parse::<u32>().unwrap(), "{variant}");
             let cbor = minicbor_serde::to_vec(ty).unwrap();
             assert_eq!(cbor, minicbor_serde::to_vec(variant).unwrap(), "{variant}");
             assert_eq!(minicbor_serde::from_slice::<Type>(&cbor).unwrap(), ty);

@@ -65,48 +65,49 @@ const MAX_LINE_SIZE: u8 = 76;
 /// `base64` module functions, one variant per Python-visible function.
 ///
 /// Serialized into dumps by variant name, so renaming one needs `#[serde(alias)]`.
+#[monty_macros::explicit_discriminants(checksum = 0x15d1_f528_cc90_6ab5)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Base64Functions {
     #[strum(serialize = "b64encode")]
-    B64Encode,
+    B64Encode = 0,
     #[strum(serialize = "b64decode")]
-    B64Decode,
+    B64Decode = 1,
     #[strum(serialize = "standard_b64encode")]
-    StandardB64Encode,
+    StandardB64Encode = 2,
     #[strum(serialize = "standard_b64decode")]
-    StandardB64Decode,
+    StandardB64Decode = 3,
     #[strum(serialize = "urlsafe_b64encode")]
-    UrlsafeB64Encode,
+    UrlsafeB64Encode = 4,
     #[strum(serialize = "urlsafe_b64decode")]
-    UrlsafeB64Decode,
+    UrlsafeB64Decode = 5,
     #[strum(serialize = "b32encode")]
-    B32Encode,
+    B32Encode = 6,
     #[strum(serialize = "b32decode")]
-    B32Decode,
+    B32Decode = 7,
     #[strum(serialize = "b32hexencode")]
-    B32HexEncode,
+    B32HexEncode = 8,
     #[strum(serialize = "b32hexdecode")]
-    B32HexDecode,
+    B32HexDecode = 9,
     #[strum(serialize = "b16encode")]
-    B16Encode,
+    B16Encode = 10,
     #[strum(serialize = "b16decode")]
-    B16Decode,
+    B16Decode = 11,
     #[strum(serialize = "encodebytes")]
-    Encodebytes,
+    Encodebytes = 12,
     #[strum(serialize = "decodebytes")]
-    Decodebytes,
+    Decodebytes = 13,
     #[strum(serialize = "b85encode")]
-    B85Encode,
+    B85Encode = 14,
     #[strum(serialize = "b85decode")]
-    B85Decode,
+    B85Decode = 15,
     #[strum(serialize = "z85encode")]
-    Z85Encode,
+    Z85Encode = 16,
     #[strum(serialize = "z85decode")]
-    Z85Decode,
+    Z85Decode = 17,
     #[strum(serialize = "a85encode")]
-    A85Encode,
+    A85Encode = 18,
     #[strum(serialize = "a85decode")]
-    A85Decode,
+    A85Decode = 19,
 }
 
 /// Static mapping of attribute names to functions for module creation.

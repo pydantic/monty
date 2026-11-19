@@ -1,0 +1,13 @@
+---
+source: crates/monty-macros/tests/explicit_discriminants.rs
+expression: "errors.join(\"\\n\\n\")"
+---
+duplicate `checksum`
+
+expected `checksum = <u64 integer literal>`
+
+expected integer literal
+
+number too large to fit in target type
+
+expected `=`
