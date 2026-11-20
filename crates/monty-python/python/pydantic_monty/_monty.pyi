@@ -1186,10 +1186,12 @@ class AsyncMontyRemote:
         max_decode_bytes: int | None = None,
         connect_headers: Callable[[], Mapping[str, str]] | None = None,
         stream_async_calls: bool = True,
+        pre_warm: int = 0,
+        pre_warm_wait: bool = True,
     ) -> Self:
         """
         Configure a remote worker pool; the connection is made by the first
-        checkout (no workers are pre-warmed).
+        checkout, unless `pre_warm` opens sessions ahead of it.
 
         Arguments:
             url: `http://`/`https://` URL of the server — a relay, or any
@@ -1243,12 +1245,25 @@ class AsyncMontyRemote:
                 are lowercase ASCII and values ASCII, duplicate names are
                 last-wins, a `user-agent` entry is put in front of the default
                 one, and a malformed name or value raises
-                `MontyConfigurationError` as the session is entered.
+                `MontyConfigurationError` as the session is entered. With
+                `pre_warm` it is not sent by a session that takes a ready one.
             feed_duration_limit_grace: Client wall-time grace beyond
                 `max_feed_duration_secs` when the server uses wall time.
                 CPU mode uses the server's supervisor and grace instead.
                 `None` disables this client backstop. `request_timeout` stays independent.
             turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
+            pre_warm: Sessions to keep open and ready, so a checkout takes one
+                instead of dialing. `__aenter__` opens them (see `pre_warm_wait`)
+                and they are replaced in the background as checkouts take them; a
+                checkout waits for one already dialing. They count against
+                `max_processes`, so it must be at least `pre_warm`. A server
+                may close one that waits too long, which is then replaced.
+                `metadata` is also called for each of these sessions, from a
+                pool thread without the caller's contextvars. Any checkout takes
+                any ready session, and one that does sends no metadata of its own.
+            pre_warm_wait: `__aenter__` waits until the `pre_warm` sessions are
+                open, raising if one cannot open (the default); `False` opens them
+                in the background instead.
             auto_resume: When a server that stores sessions drains one, open a
                 new stream, load the state it named into a new session and re-send the
                 request it did not run, instead of raising `MontyShutdown`; the

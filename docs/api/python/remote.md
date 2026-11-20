@@ -20,6 +20,18 @@ A remote peer may be CPython rather than a Monty sandbox; the transport does not
 The client sends the name to the server unchecked; what a profile means is the server's choice, and the `monty` worker
 ignores it.
 
+## Pre-warmed sessions
+
+`AsyncMontyRemote(url, pre_warm=2)` keeps two sessions open and ready beyond those checked out, so a checkout takes one
+instead of opening a stream.
+`__aenter__` waits for them to open and raises if one cannot; `pre_warm_wait=False` opens them in the background.
+Each one a checkout takes is replaced in the background, and a checkout waits for one already opening rather than
+opening another.
+They count against `max_processes`, and each is a session to the server from the moment it opens.
+`metadata` is called for each pre-warmed session as the pool opens it, from a pool thread without the caller's
+contextvars.
+Any checkout takes any ready session, and one that does sends no metadata of its own.
+
 ## Connection loss and shutdown
 
 [`MontyRefusedError`][pydantic_monty.MontyRefusedError] means the server refused to open the session's stream: at
