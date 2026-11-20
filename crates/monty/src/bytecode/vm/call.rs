@@ -16,7 +16,7 @@ use crate::{
     args::{ArgValues, KwargsValues, Signature},
     asyncio::Coroutine,
     builtins::{BuiltinsFunctions, BuiltinsFunctionsExt, object::takes_no_arguments},
-    bytecode::FrameExit,
+    bytecode::{FrameExit, Opcode},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     frozen::FrozenFunction,
@@ -466,6 +466,58 @@ impl<'h> VM<'h> {
         };
 
         self.call_attr(obj, name_id, args)
+    }
+
+    /// Finishes a positional unpacked call directly from list or tuple storage.
+    /// The last unpack must be immediately followed by the call's tuple conversion
+    /// and call, so no later argument evaluation can mutate the source before copying.
+    pub(super) fn try_call_unpacked_sequence(&mut self) -> Option<Result<CallResult, RunError>> {
+        let ip = self.current_frame.ip;
+        if !self.current_frame.bytecode.get(ip..)?.starts_with(&[
+            Opcode::ListToTuple as u8,
+            Opcode::CallFunctionExtended as u8,
+            0,
+        ]) {
+            return None;
+        }
+        let [_, Value::Ref(prefix_id), Value::Ref(source_id)] = self.stack.last_chunk::<3>()? else {
+            return None;
+        };
+        let HeapData::List(prefix) = self.heap.get(*prefix_id) else {
+            return None;
+        };
+        let source = match self.heap.get(*source_id) {
+            HeapData::List(list) => list.as_slice(),
+            HeapData::Tuple(tuple) => tuple.as_slice(),
+            _ => return None,
+        };
+        let arg_count = prefix.len() + source.len();
+        // Larger unpackings use the iterator's cooperative resource checks.
+        if arg_count > usize::from(u8::MAX) {
+            return None;
+        }
+        let stack_len = self.stack.len() - 2 + arg_count;
+        if stack_len > self.stack.capacity() {
+            let capacity = self.stack.capacity().saturating_mul(2).max(stack_len);
+            if let Err(error) = check_estimated_size(capacity.saturating_mul(VALUE_SIZE), &self.heap.tracker) {
+                return Some(Err(error.into()));
+            }
+        }
+
+        let source_owner = self.stack.pop().expect("unpack source");
+        let prefix_owner = self.stack.pop().expect("unpack prefix");
+        self.stack.extend(
+            prefix
+                .as_slice()
+                .iter()
+                .chain(source)
+                .map(|item| item.clone_with_heap(self.heap)),
+        );
+        (source_owner, prefix_owner).drop_with(self);
+
+        self.instruction_ip = ip + 1;
+        self.current_frame.ip = ip + 3;
+        Some(self.exec_call_function(arg_count))
     }
 
     /// Executes `CallFunctionExtended` opcode.

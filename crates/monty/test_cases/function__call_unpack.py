@@ -2,6 +2,29 @@ def f(*args, **kwargs):
     return args, kwargs
 
 
+# === Direct list and tuple unpacking ===
+def exact(a, b, c=3):
+    return a, b, c
+
+
+left = [1, 2]
+pair = (1, 2)
+assert exact(*left) == exact(*pair) == (1, 2, 3)
+assert exact(0, *pair) == (0, 1, 2)
+assert exact(*pair, c=4) == (1, 2, 4)
+assert exact(*range(3)) == (0, 1, 2)
+assert len(f(*([1] * 256))[0]) == 256
+
+
+def replace_left():
+    left[0] = 10
+    return (4,)
+
+
+assert exact(*left, *replace_left()) == (1, 2, 4)
+assert exact(*left) == (10, 2, 3)
+
+
 # === Multiple *args ===
 assert f(*[1, 2], *[3, 4]) == ((1, 2, 3, 4), {})
 assert f(0, *[1, 2], 3) == ((0, 1, 2, 3), {})

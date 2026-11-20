@@ -268,6 +268,43 @@ else:
     assert!(output.unreachable.is_empty(), "{:?}", output.unreachable);
 }
 
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn unpacked_lists_and_tuples_release_call_references() {
+    let source = r"
+owner = []
+items = [owner, 2]
+pair = (owner, 3)
+
+def first(a, b):
+    return a
+
+def recurse(a, b):
+    return recurse(*[a, b])
+
+assert first(*items) is owner
+assert first(*pair) is owner
+try:
+    first(*[owner])
+except TypeError:
+    pass
+else:
+    assert False
+
+try:
+    recurse(*pair)
+except RecursionError:
+    pass
+else:
+    assert False
+";
+    let mut run = MontyRun::new(source.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_recursion_depth(6));
+    let output = run.run_ref_counts_with_tracker(vec![], tracker).unwrap();
+    assert_eq!(output.counts.get("owner"), Some(&3));
+    assert!(output.unreachable.is_empty(), "{:?}", output.unreachable);
+}
+
 /// `map()` must contextually drop earlier heap results when a later callback
 /// raises instead of leaking the native output vector.
 #[test]

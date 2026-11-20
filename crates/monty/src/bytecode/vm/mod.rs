@@ -1567,7 +1567,16 @@ impl<'h> VM<'h> {
                     try_catch!(self, self.build_slice());
                 }
                 Opcode::ListExtend => {
-                    try_catch!(self, self.list_extend());
+                    // The fused call consumes the next two instructions. Leave
+                    // them to normal dispatch if either would run a checkpoint.
+                    if countdown >= 2
+                        && let Some(result) = self.try_call_unpacked_sequence()
+                    {
+                        countdown -= 2;
+                        handle_call_result!(self, result);
+                    } else {
+                        try_catch!(self, self.list_extend());
+                    }
                 }
                 Opcode::ListToTuple => {
                     try_catch!(self, self.list_to_tuple());

@@ -139,6 +139,30 @@ fn a_one_shot_dump_carries_the_position() {
 }
 
 #[test]
+fn an_unpacked_call_resumes_after_the_call_opcode() {
+    for sequence in ["[42]", "(42,)"] {
+        let code = format!("values = {sequence}\nfetch(*values) + 1");
+        let progress = start(&code);
+        let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+        let Session::Running(loaded) = Dump::load(&bytes).unwrap().state else {
+            panic!("expected a running session");
+        };
+        let results = [progress, *loaded].map(|progress| {
+            let call = progress.into_function_call().unwrap();
+            let position = call.position.clone();
+            let args_match = call.args.args().eq([MontyObject::int(42)]);
+            let result = call.resume(MontyObject::int(100), PrintWriter::Stdout).unwrap();
+            (position, args_match, result.into_complete().unwrap())
+        });
+        for (position, args_match, value) in results {
+            assert_eq!(covered(&position, "test.py", &code), "fetch(*values)");
+            assert!(args_match);
+            assert_eq!(value, MontyObject::int(101));
+        }
+    }
+}
+
+#[test]
 fn resolve_futures_points_at_the_main_task_await() {
     // The main task awaits the pending future itself.
     let code = "x = await fetch()";
