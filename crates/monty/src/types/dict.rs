@@ -236,6 +236,23 @@ impl Dict {
         }
     }
 
+    /// Builds a dict from explicit keyword operands, whose names the compiler checked for duplicates.
+    pub(crate) fn from_explicit_keywords(
+        pairs: impl ExactSizeIterator<Item = (StringId, Value)>,
+        interns: &Interns,
+    ) -> Self {
+        let mut dict = Self::with_capacity(pairs.len());
+        for (name, value) in pairs {
+            dict.contains_refs |= matches!(value, Value::Ref(_));
+            dict.table.push(DictEntry {
+                key: Value::InternString(name),
+                value,
+                hash: interns.str_hash(name).raw(),
+            });
+        }
+        dict
+    }
+
     /// The live entries, in insertion order.
     #[inline]
     fn live(&self) -> Live<'_, DictEntry> {
@@ -618,6 +635,41 @@ impl Dict {
 }
 
 impl<'h> HeapReadMut<'h, Dict> {
+    /// Merges a compact, validated string-keyed source into a keyword accumulator.
+    /// Returns the first duplicate in source order, before inserting that entry.
+    pub(crate) fn merge_dense_keywords(
+        &self,
+        source: &HeapRead<'h, Dict>,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Option<String>> {
+        let source_len = source.get(vm.heap).len();
+        for index in 0..source_len {
+            let source = source.get(vm.heap);
+            let entry = &source.table.dense_entries().expect("validated keyword dict")[index];
+            let key = entry
+                .key
+                .as_str_heap(vm.heap, vm.interns)
+                .expect("validated string keyword");
+            let destination = self.get(vm.heap);
+            if destination
+                .table
+                .find(entry.hash, |candidate| {
+                    json_key_equals_str(&candidate.key, key, vm.heap, vm.interns)
+                })
+                .is_some()
+            {
+                return Ok(Some(key.to_owned()));
+            }
+            destination.table.check_growth(&vm.heap.tracker)?;
+            let contains_refs = source.contains_refs;
+            let entry = entry.clone_with_heap(vm.heap);
+            let destination = self.get_mut(vm.heap);
+            destination.contains_refs |= contains_refs;
+            destination.table.push(entry);
+        }
+        Ok(None)
+    }
+
     /// Sets a key-value pair in the dict.
     ///
     /// The caller transfers ownership of `key` and `value` to the dict. Their refcounts

@@ -318,8 +318,12 @@ def first(a, b=owner):
 def recurse(a):
     return recurse(**{'a': a})
 
+def combined(a, *rest, flag=None, **extras):
+    return a, rest, flag, extras
+
 assert first(**keywords)[0] is owner
 assert first(**keywords)[1] is owner
+assert combined(owner, *[owner], flag=owner, **{'extra': owner})[3]['extra'] is owner
 
 try:
     first(**{'b': owner})
@@ -2405,21 +2409,17 @@ fn timeout_in_a85decode_ignorechars() {
 
 /// A refused unpacked call must release the kwargs it never passed on.
 ///
-/// `f(*args, **kwargs)` owns the kwargs dict until the argument pack is built,
-/// and building it became fallible when the `*args` clone gained its size
-/// preflight. Dropping a `Value` does not decrement its refcount, so the kwargs
-/// were stranded on the heap, which `memory-model-checks` turns into a panic.
-/// The limit sits between the tuple's cost and the clone's estimate, so only
-/// the clone is refused.
+/// The named keyword-only parameter sends this call through the general binder.
+/// The limit admits the temporary tuple and refuses the argument buffer's spare slot.
 #[test]
 fn a_refused_unpacked_call_releases_its_kwargs() {
-    let code = "def f(*a, **k):\n    return len(a)\nt = tuple(range(10_000))\nf(*t, **{'a': [1, 2, 3]})";
+    let code = "def f(*a, flag=0, **k):\n    return len(a)\nt = tuple(range(10_000))\nf(*t, **{'a': [1, 2, 3]})";
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let limits = ResourceLimits::default().max_memory(10_000 * 16 + 8);
     let exc = ex
         .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
-        .expect_err("the *args clone should be refused");
+        .expect_err("the positional argument buffer reservation should be refused");
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
 }
 

@@ -144,6 +144,13 @@ enum BindMode {
 impl Signature {
     pub(crate) const MAX_DIRECT_KEYWORDS: usize = u32::BITS as usize;
 
+    /// Reports which argument containers a signature with only variadic parameters captures.
+    pub(crate) fn variadic_only(&self) -> Option<(bool, bool)> {
+        let args = self.var_args.is_some();
+        let kwargs = self.var_kwargs.is_some();
+        ((args || kwargs) && self.param_count() == 0).then_some((args, kwargs))
+    }
+
     /// Returns the parameter count when positional arguments need no binding.
     ///
     /// With no defaults, variadic slots, or keyword-only parameters, positional

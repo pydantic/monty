@@ -1,5 +1,7 @@
 //! Collection building and unpacking helpers for the VM.
 
+use std::mem;
+
 use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
@@ -8,7 +10,7 @@ use crate::{
     intern::StringId,
     resource_checks::check_estimated_size,
     types::{
-        Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
+        Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded, dict::DictKind,
         instance::instance_defines_iter, slice::value_to_option_i64,
     },
     value::{VALUE_SIZE, Value},
@@ -132,17 +134,30 @@ impl VM<'_> {
         let mut list_ref_guard = DropGuard::new(this.pop(), this);
         let (list_ref, this) = list_ref_guard.as_parts();
 
-        if !iterable.py_is_iterable(this) {
-            let type_ = iterable.py_type_name(this);
-            return Err(if opts_out_of_iter(iterable, this) {
-                ExcType::type_error_not_iterable(&type_)
-            } else {
-                ExcType::type_error_value_after_star(&type_)
-            });
-        }
-
         {
-            let copied_items: Vec<Value> = collect_iterable(iterable, this)?;
+            let sequence = if let Value::Ref(id) = iterable {
+                match this.heap.get(*id) {
+                    HeapData::List(list) => Some(list.as_slice()),
+                    HeapData::Tuple(tuple) => Some(tuple.as_slice()),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let copied_items: Vec<Value> =
+                if let Some(items) = sequence.filter(|items| u8::try_from(items.len()).is_ok()) {
+                    items.iter().map(|item| item.clone_with_heap(this.heap)).collect()
+                } else {
+                    if !iterable.py_is_iterable(this) {
+                        let type_ = iterable.py_type_name(this);
+                        return Err(if opts_out_of_iter(iterable, this) {
+                            ExcType::type_error_not_iterable(&type_)
+                        } else {
+                            ExcType::type_error_value_after_star(&type_)
+                        });
+                    }
+                    collect_iterable(iterable, this)?
+                };
             defer_drop_mut!(copied_items, this);
 
             // Check if any copied items are refs (for updating contains_refs)
@@ -168,7 +183,7 @@ impl VM<'_> {
         Ok(())
     }
 
-    /// Converts a list to a tuple.
+    /// Converts the compiler's private list accumulator to a tuple.
     ///
     /// Stack: [list] -> [tuple]
     pub(super) fn list_to_tuple(&mut self) -> Result<(), RunError> {
@@ -180,11 +195,11 @@ impl VM<'_> {
         let Value::Ref(id) = list_ref else {
             return Err(RunError::internal("ListToTuple: expected list ref"));
         };
-        let HeapData::List(list) = this.heap.get(*id) else {
+        let Some(list) = this.heap.read_as::<List>(*id) else {
             return Err(RunError::internal("ListToTuple: expected list"));
         };
-        let items = list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect();
-        let value = allocate_tuple(items, this.heap);
+        let items = mem::take(list.get_mut(this.heap).as_vec_mut());
+        let value = allocate_tuple(items.into(), this.heap);
         this.push(value);
         Ok(())
     }
@@ -197,8 +212,53 @@ impl VM<'_> {
     /// Uses `defer_drop!` for `mapping` (always dropped) and `DropGuard` for
     /// `dict_ref` (pushed back on success, dropped on error).
     pub(super) fn dict_merge(&mut self, func_name_id: u16) -> Result<(), RunError> {
+        if let Some(result) = self.try_merge_dense_keyword_dict(func_name_id) {
+            return result;
+        }
         let func_name = func_name_for_dict_merge(func_name_id, self);
         self.dict_merge_inner(&func_name)
+    }
+
+    /// Merges a small string-keyed source using its cached hashes.
+    fn try_merge_dense_keyword_dict(&mut self, func_name_id: u16) -> Option<Result<(), RunError>> {
+        let [Value::Ref(destination), Value::Ref(source)] = *self.stack.last_chunk::<2>()? else {
+            return None;
+        };
+        let HeapData::Dict(target) = self.heap.get(destination) else {
+            return None;
+        };
+        let HeapData::Dict(mapping) = self.heap.get(source) else {
+            return None;
+        };
+        if mapping.len() > usize::from(u8::MAX) || !mapping.dense_pairs()?.all(|(key, _)| key.as_str(self).is_some()) {
+            return None;
+        }
+
+        let target_is_empty = target.is_empty();
+        let source = self.heap.read_as::<Dict>(source).expect("validated keyword source");
+        let destination = self.heap.read_as::<Dict>(destination).expect("keyword accumulator");
+        let result = if target_is_empty {
+            source.copy_as(DictKind::plain(), self).map(|copy| {
+                let previous = mem::replace(destination.get_mut(self.heap), copy);
+                previous.drop_with(self);
+                None
+            })
+        } else {
+            destination.merge_dense_keywords(&source, self)
+        };
+        drop(destination);
+        drop(source);
+        Some(match result {
+            Ok(None) => {
+                self.pop().drop_with(self);
+                Ok(())
+            }
+            Ok(Some(key)) => {
+                let func_name = func_name_for_dict_merge(func_name_id, self);
+                Err(ExcType::type_error_multiple_values(&func_name, &key))
+            }
+            Err(error) => Err(error),
+        })
     }
 
     /// Method-call variant of [`Self::dict_merge`]. Qualifies the error wording

@@ -29,7 +29,7 @@ use crate::{
     py_value::PyValue,
     resource_checks::check_estimated_size,
     types::{
-        Dict, Instance, PyTrait, Type, TypeRef,
+        Dict, Instance, PyTrait, Tuple, TupleVec, Type, TypeRef, allocate_tuple,
         instance::{class_defines, class_lookup},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -342,7 +342,7 @@ impl<'h> VM<'h> {
         };
         let func = self.interns.get_function(func_id);
         if func.exact_positional_call() != Some(ExactPositionalCall::Sync(arg_count)) {
-            return None;
+            return self.try_call_variadic_keywords(func_id, func, callable_index, pos_count, names, end);
         }
         let mut slots = [0; Signature::MAX_DIRECT_KEYWORDS];
         let destinations = &mut slots[..kw_count];
@@ -359,6 +359,42 @@ impl<'h> VM<'h> {
         }
         self.current_frame.ip = end;
         Some(self.call_exact_sync_function(func_id, func, callable_index))
+    }
+
+    /// Builds the capture dict and optional tuple directly from explicit arguments.
+    fn try_call_variadic_keywords(
+        &mut self,
+        func_id: FunctionId,
+        func: &'h Function,
+        stack_base: usize,
+        pos_count: usize,
+        names: impl ExactSizeIterator<Item = StringId>,
+        end: usize,
+    ) -> Option<Result<CallResult, RunError>> {
+        let (capture_args, capture_kwargs) = func.signature.variadic_only()?;
+        if !capture_kwargs
+            || (!capture_args && pos_count != 0)
+            || func.is_async
+            || !func.cell_var_slots.is_empty()
+            || !func.free_var_slots.is_empty()
+        {
+            return None;
+        }
+        let keyword_base = stack_base + 1 + pos_count;
+        let kwargs = Dict::from_explicit_keywords(names.zip(self.stack.drain(keyword_base..)), self.interns);
+        let items = self.stack.drain(stack_base + 1..).collect();
+        let callable = self.pop();
+        debug_assert_exact_callable(&callable, func_id);
+        if capture_args {
+            let args = allocate_tuple(items, self.heap);
+            self.push(args);
+        } else {
+            debug_assert!(items.is_empty());
+        }
+        let kwargs = Value::Ref(self.heap.allocate(HeapData::Dict(kwargs)));
+        self.push(kwargs);
+        self.current_frame.ip = end;
+        Some(self.push_stack_function(func_id, func, stack_base, None))
     }
 
     /// Binds explicit keywords and fills any unoccupied slots from the callable's defaults.
@@ -605,6 +641,10 @@ impl<'h> VM<'h> {
     ///
     /// Handles calls with `*args` and/or `**kwargs` unpacking.
     pub(super) fn exec_call_function_extended(&mut self, has_kwargs: bool) -> Result<CallResult, RunError> {
+        if let Some(result) = self.try_call_variadic_extended(has_kwargs) {
+            return result;
+        }
+
         // Pop kwargs dict if present
         let kwargs = if has_kwargs { Some(self.pop()) } else { None };
 
@@ -616,6 +656,58 @@ impl<'h> VM<'h> {
 
         // Unpack and call
         self.call_function_extended(callable, args_tuple, kwargs)
+    }
+
+    /// Installs the private unpacking containers directly for a variadic-only signature.
+    fn try_call_variadic_extended(&mut self, has_kwargs: bool) -> Option<Result<CallResult, RunError>> {
+        let stack_base = self.stack.len() - 2 - usize::from(has_kwargs);
+        let Value::DefFunction(func_id) = self.stack[stack_base] else {
+            return None;
+        };
+        let func = self.interns.get_function(func_id);
+        let (capture_args, capture_kwargs) = func.signature.variadic_only()?;
+        if func.is_async || !func.cell_var_slots.is_empty() || !func.free_var_slots.is_empty() {
+            return None;
+        }
+        if !capture_args {
+            let Value::Ref(id) = self.stack[stack_base + 1] else {
+                return None;
+            };
+            let HeapData::Tuple(args) = self.heap.get(id) else {
+                return None;
+            };
+            if !args.as_slice().is_empty() {
+                return None;
+            }
+        }
+        if has_kwargs && !capture_kwargs {
+            let Value::Ref(id) = self.stack[stack_base + 2] else {
+                return None;
+            };
+            let HeapData::Dict(kwargs) = self.heap.get(id) else {
+                return None;
+            };
+            if !kwargs.is_empty() {
+                return None;
+            }
+        }
+
+        let kwargs = has_kwargs.then(|| self.pop());
+        let args = self.pop();
+        let callable = self.pop();
+        debug_assert_exact_callable(&callable, func_id);
+        if capture_args {
+            self.push(args);
+        } else {
+            args.drop_with(self);
+        }
+        if capture_kwargs {
+            let kwargs = kwargs.unwrap_or_else(|| Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))));
+            self.push(kwargs);
+        } else {
+            kwargs.drop_with(self);
+        }
+        Some(self.push_stack_function(func_id, func, stack_base, None))
     }
 
     /// Executes `CallAttrExtended` opcode.
@@ -852,23 +944,7 @@ impl<'h> VM<'h> {
         let this = self;
         defer_drop!(args_tuple, this);
         defer_drop!(callable, this);
-        // Building the argument pack is fallible (a refused `*args` clone) and the
-        // kwargs are handed on only once it succeeds, so the guard releases them on
-        // the error paths in between.
-        let mut pending_kwargs = DropGuard::new(kwargs, this);
-        let (pending, this) = pending_kwargs.as_parts_mut();
-
-        // Extract positional args from tuple
-        let copied_args = this.extract_args_tuple(args_tuple)?;
-
-        // Build ArgValues from positional args and optional kwargs
-        let args = if let Some(kwargs_ref) = pending.take() {
-            this.build_args_with_kwargs(copied_args, kwargs_ref)?
-        } else {
-            Self::build_args_positional_only(copied_args)
-        };
-
-        // Call the function (args_tuple guard drops at scope exit)
+        let args = this.take_extended_args(args_tuple, kwargs)?;
         this.call_function(callable, args)
     }
 
@@ -884,147 +960,68 @@ impl<'h> VM<'h> {
     ) -> Result<CallResult, RunError> {
         let this = self;
         defer_drop!(args_tuple, this);
-        // Building the argument pack is fallible (a refused `*args` clone, a kwargs
-        // dict that cannot grow) and the receiver and kwargs are handed on only once
-        // it succeeds, so the guard releases them on the error paths in between.
-        let mut pending = DropGuard::new((obj, kwargs), this);
-        let (pending_values, this) = pending.as_parts_mut();
-
-        // Extract positional args from tuple
-        let copied_args = this.extract_args_tuple_for_attr(args_tuple)?;
-
-        // Build ArgValues from positional args and optional kwargs
-        let args = if let Some(kwargs_ref) = pending_values.1.take() {
-            this.build_args_with_kwargs_for_attr(copied_args, kwargs_ref)?
-        } else {
-            Self::build_args_positional_only(copied_args)
-        };
-
-        // Call the method (args_tuple guard drops at scope exit)
-        let ((obj, _), this) = pending.into_parts();
+        let mut pending = DropGuard::new(obj, this);
+        let args = pending.ctx().take_extended_args(args_tuple, kwargs)?;
+        let (obj, this) = pending.into_parts();
         this.call_attr(obj, name_id, args)
     }
 
-    /// Extracts arguments from a tuple for `CallFunctionExtended`.
-    ///
-    /// # Panics
-    /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
-    /// the compiler always emits `ListToTuple` before `CallFunctionExtended`.
-    fn extract_args_tuple(&mut self, args_tuple: &Value) -> RunResult<Vec<Value>> {
-        let Value::Ref(id) = args_tuple else {
-            unreachable!("CallFunctionExtended: args_tuple must be a Ref")
-        };
-        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
-            unreachable!("CallFunctionExtended: args_tuple must be a Tuple")
-        };
-        clone_args_from_tuple(tuple.as_slice(), self)
-    }
-
-    /// Builds `ArgValues` with kwargs for `CallFunctionExtended`.
-    ///
-    /// # Panics
-    /// Panics if `kwargs_ref` is not a dict. This indicates a compiler bug since
-    /// the compiler always emits `BuildDict` before `CallFunctionExtended` with kwargs.
-    fn build_args_with_kwargs(&mut self, copied_args: Vec<Value>, kwargs_ref: Value) -> Result<ArgValues, RunError> {
-        let this = self;
-        defer_drop!(kwargs_ref, this);
-
-        // Extract kwargs dict items
-        let Value::Ref(id) = kwargs_ref else {
-            unreachable!("CallFunctionExtended: kwargs must be a Ref")
-        };
-        let HeapData::Dict(dict) = this.heap.get(*id) else {
-            unreachable!("CallFunctionExtended: kwargs must be a Dict")
-        };
-        let copied_kwargs: Vec<(Value, Value)> = dict
-            .iter()
-            .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
-            .collect();
-
-        // `copied_args` travels unguarded through this `?`, which is sound only
-        // because `from_pairs` cannot fail here: it sizes both dict buffers to the
-        // pair count up front so the growth preflight is a no-op, and keys taken out
-        // of a dict are already known hashable. Size that dict lazily and this leaks
-        // the args.
-        let kwargs_values = if copied_kwargs.is_empty() {
-            KwargsValues::Empty
-        } else {
-            let kwargs_dict = Dict::from_pairs(copied_kwargs, this)?;
-            KwargsValues::Dict(kwargs_dict)
-        };
-
-        Ok(ArgValues::from_parts(copied_args, kwargs_values))
-    }
-
-    /// Builds `ArgValues` from positional args only.
-    fn build_args_positional_only(copied_args: Vec<Value>) -> ArgValues {
-        match copied_args.len() {
-            0 => ArgValues::Empty,
-            1 => ArgValues::One(copied_args.into_iter().next().unwrap()),
-            2 => {
-                let mut iter = copied_args.into_iter();
-                ArgValues::Two(iter.next().unwrap(), iter.next().unwrap())
+    /// Takes the contents of the compiler's argument containers. Non-empty positional tuples
+    /// and keyword dicts are private to the call, so binding can take their owned values.
+    fn take_extended_args(&mut self, args_tuple: &Value, kwargs: Option<Value>) -> RunResult<ArgValues> {
+        let mut pending = DropGuard::new(kwargs, self);
+        let items = pending.ctx().take_extended_positional(args_tuple)?;
+        let (kwargs, this) = pending.into_parts();
+        let kwargs = kwargs.map_or(KwargsValues::Empty, |value| this.take_extended_keywords(value));
+        Ok(match (items.len(), kwargs) {
+            (0, KwargsValues::Empty) => ArgValues::Empty,
+            (1, KwargsValues::Empty) => ArgValues::One(items.into_iter().next().unwrap()),
+            (2, KwargsValues::Empty) => {
+                let mut items = items.into_iter();
+                ArgValues::Two(items.next().unwrap(), items.next().unwrap())
             }
-            _ => ArgValues::ArgsKargs {
-                args: copied_args,
-                kwargs: KwargsValues::Empty,
-            },
-        }
+            (0, kwargs) => ArgValues::Kwargs(kwargs),
+            (_, kwargs) => {
+                let mut args = items.into_vec();
+                // A bound method may prepend its receiver.
+                args.reserve_exact(1);
+                ArgValues::ArgsKargs { args, kwargs }
+            }
+        })
     }
 
-    /// Extracts arguments from a tuple for `CallAttrExtended`.
-    ///
-    /// # Panics
-    /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
-    /// the compiler always emits `ListToTuple` before `CallAttrExtended`.
-    fn extract_args_tuple_for_attr(&mut self, args_tuple: &Value) -> RunResult<Vec<Value>> {
+    fn take_extended_positional(&mut self, args_tuple: &Value) -> RunResult<TupleVec> {
         let Value::Ref(id) = args_tuple else {
-            unreachable!("CallAttrExtended: args_tuple must be a Ref")
+            unreachable!("unpacked positionals must be a tuple")
         };
-        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
-            unreachable!("CallAttrExtended: args_tuple must be a Tuple")
-        };
-        clone_args_from_tuple(tuple.as_slice(), self)
+        let tuple = self
+            .heap
+            .read_as::<Tuple>(*id)
+            .expect("unpacked positionals must be a tuple");
+        let len = tuple.get(self.heap).as_slice().len();
+        if len == 0 {
+            // The empty tuple is shared.
+            return Ok(TupleVec::new());
+        }
+        check_estimated_size(len.saturating_add(1).saturating_mul(VALUE_SIZE), &self.heap.tracker)?;
+        Ok(tuple.get_mut(self.heap).take_items())
     }
 
-    /// Builds `ArgValues` with kwargs for `CallAttrExtended`.
-    ///
-    /// # Panics
-    /// Panics if `kwargs_ref` is not a dict. This indicates a compiler bug since
-    /// the compiler always emits `BuildDict` before `CallAttrExtended` with kwargs.
-    fn build_args_with_kwargs_for_attr(
-        &mut self,
-        copied_args: Vec<Value>,
-        kwargs_ref: Value,
-    ) -> Result<ArgValues, RunError> {
+    fn take_extended_keywords(&mut self, kwargs: Value) -> KwargsValues {
         let this = self;
-        defer_drop!(kwargs_ref, this);
-
-        // Extract kwargs dict items
-        let Value::Ref(id) = kwargs_ref else {
-            unreachable!("CallAttrExtended: kwargs must be a Ref")
+        defer_drop!(kwargs, this);
+        let Value::Ref(id) = kwargs else {
+            unreachable!("unpacked keywords must be a dict")
         };
-        let HeapData::Dict(dict) = this.heap.get(*id) else {
-            unreachable!("CallAttrExtended: kwargs must be a Dict")
-        };
-        let copied_kwargs: Vec<(Value, Value)> = dict
-            .iter()
-            .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
-            .collect();
-
-        // `copied_args` travels unguarded through this `?`, which is sound only
-        // because `from_pairs` cannot fail here: it sizes both dict buffers to the
-        // pair count up front so the growth preflight is a no-op, and keys taken out
-        // of a dict are already known hashable. Size that dict lazily and this leaks
-        // the args.
-        let kwargs_values = if copied_kwargs.is_empty() {
+        let dict = this
+            .heap
+            .read_as::<Dict>(*id)
+            .expect("unpacked keywords must be a dict");
+        if dict.get(this.heap).is_empty() {
             KwargsValues::Empty
         } else {
-            let kwargs_dict = Dict::from_pairs(copied_kwargs, this)?;
-            KwargsValues::Dict(kwargs_dict)
-        };
-
-        Ok(ArgValues::from_parts(copied_args, kwargs_values))
+            KwargsValues::Dict(mem::take(dict.get_mut(this.heap)))
+        }
     }
 
     // ========================================================================
@@ -1046,8 +1043,45 @@ impl<'h> VM<'h> {
             Some(ExactPositionalCall::Async(count)) if count == arg_count => {
                 Some(Ok(self.create_exact_coroutine(func_id, func, callable_index)))
             }
-            _ => None,
+            _ => self.try_call_variadic_positional(func_id, func, callable_index, arg_count),
         }
+    }
+
+    /// Moves the positional tail directly into the callee's `*args` tuple.
+    fn try_call_variadic_positional(
+        &mut self,
+        func_id: FunctionId,
+        func: &'h Function,
+        callable_index: usize,
+        arg_count: usize,
+    ) -> Option<Result<CallResult, RunError>> {
+        let (capture_args, capture_kwargs) = func.signature.variadic_only()?;
+        if func.is_async
+            || !func.cell_var_slots.is_empty()
+            || !func.free_var_slots.is_empty()
+            || (!capture_args && arg_count != 0)
+        {
+            return None;
+        }
+        let slots = arg_count.checked_next_power_of_two().unwrap_or(usize::MAX);
+        if let Err(error) = check_estimated_size(slots.saturating_mul(VALUE_SIZE), &self.heap.tracker) {
+            return Some(Err(error.into()));
+        }
+
+        let items = self.stack.drain(callable_index + 1..).collect();
+        let callable = self.pop();
+        debug_assert_exact_callable(&callable, func_id);
+        if capture_args {
+            let args = allocate_tuple(items, self.heap);
+            self.push(args);
+        } else {
+            debug_assert!(items.is_empty());
+        }
+        if capture_kwargs {
+            let kwargs = Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new())));
+            self.push(kwargs);
+        }
+        Some(self.push_stack_function(func_id, func, callable_index, None))
     }
 
     /// Pushes a simple function frame using arguments already present on the VM stack.
@@ -1590,21 +1624,6 @@ fn fill_default_slots(values: &mut [Value], defaults: &[Value], mut missing: u32
         let default_index = defaults.len() - (values.len() - slot);
         values[slot] = defaults[default_index].clone_with_heap(heap);
     }
-}
-
-/// Clones a `*args` tuple's contents into the owned buffer a call needs.
-///
-/// The clone is one allocation the size of the whole tuple, so it is preflighted:
-/// past the allocator's hard-limit headroom that single allocation kills the worker
-/// rather than raising `MemoryError`.
-fn clone_args_from_tuple(items: &[Value], vm: &impl ContainsHeap) -> RunResult<Vec<Value>> {
-    // One spare slot so `ArgValues::prepend` can put `self` in front of a bound
-    // method's arguments without reallocating; that insert has no preflight of its own.
-    let slots = items.len().saturating_add(1);
-    check_estimated_size(slots.saturating_mul(VALUE_SIZE), &vm.heap().tracker)?;
-    let mut args = Vec::with_capacity(slots);
-    args.extend(items.iter().map(|v| v.clone_with_heap(vm)));
-    Ok(args)
 }
 
 /// Asserts a callable popped off the stack by an exact-positional-call fast

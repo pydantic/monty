@@ -58,6 +58,41 @@ captured['a'] = 2
 assert source == {'a': 1}
 
 
+# === Named arguments mixed with unpacking and variadic capture ===
+def combined(head, *rest, flag=False, **extras):
+    return head, rest, flag, extras
+
+
+sequence = [2, 3]
+mapping = {'key': 4}
+
+
+def set_flag():
+    sequence[0] = 20
+    mapping['key'] = 40
+    return True
+
+
+assert combined(1, *sequence, flag=set_flag(), **mapping) == (1, (2, 3), True, {'key': 40})
+assert sequence == [20, 3]
+
+try:
+    combined(1, *sequence, flag=True, **{'flag': False})
+    assert False, 'expected TypeError for a repeated keyword'
+except TypeError as e:
+    assert e.args == ("combined() got multiple values for keyword argument 'flag'",)
+
+supplied = (1, 2)
+capture_args, capture_kwargs = f(*supplied, **mapping)
+assert capture_args == supplied
+assert capture_args is not supplied
+capture_kwargs['key'] = 50
+assert mapping == {'key': 40}
+assert f(1, 2, z=3, a=4) == ((1, 2), {'z': 3, 'a': 4})
+assert list(f(1, z=3, a=4)[1]) == ['z', 'a']
+assert f() == ((), {})
+
+
 # === Multiple *args ===
 assert f(*[1, 2], *[3, 4]) == ((1, 2, 3, 4), {})
 assert f(0, *[1, 2], 3) == ((0, 1, 2, 3), {})
