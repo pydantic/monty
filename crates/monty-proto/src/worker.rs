@@ -32,7 +32,7 @@ use monty_types::{
     AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExecutionClock, ExtFunctionResult,
     IMPORT_STUBS_CALL_ID, ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
     PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES, SOURCE_SCAN_THRESHOLD,
-    SourceRange, TypeCheckState, TypeCheckingConfig,
+    SourceRange, TypeCheckState, TypeCheckingConfig, measure_into_baseline, release_from_baseline,
 };
 
 use super::{
@@ -226,13 +226,23 @@ struct PendingFeed {
 /// Drive it by reading framed [`pb::ClientRequest`]s from the host transport
 /// and passing each to [`Self::handle`] along with an [`EventSink`]; the worker
 /// streams `Print` and `StreamedCalls` events and one turn-ending event per request.
+#[expect(clippy::struct_excessive_bools, reason = "independent session and worker flags")]
 pub struct Worker {
     state: SessionState,
     /// Script name of the current session (used for error and type-check
     /// diagnostics).
     script_name: String,
-    /// Built by the first type-checked feed and dropped when the session resets.
+    /// The session's checker: taken from `warm_checker` or built by the first
+    /// type-checked feed, and always dropped on reset.
     type_checker: Option<TypeChecker>,
+    /// Built by [`Self::warm_up`] between sessions. No session writes to it until
+    /// it is moved into `type_checker`, so it can outlive sessions that never type-check.
+    warm_checker: Option<TypeChecker>,
+    /// Bytes [`Self::warm_up`] added to the baseline for the checker now in `warm_checker`,
+    /// or in `type_checker` once a session takes it; [`Self::reset`] releases them.
+    warm_checker_cost: usize,
+    /// Whether [`Self::warm_up`] builds `warm_checker`.
+    prewarm_type_checker: bool,
     /// `Some` when the session was created with `type_check: true`.
     type_check: Option<TypeCheckState>,
     /// How long [`ProtoPrint`] may hold buffered output, from the session's
@@ -264,6 +274,9 @@ impl Default for Worker {
             state: SessionState::Configured(None),
             script_name: String::new(),
             type_checker: None,
+            warm_checker: None,
+            warm_checker_cost: 0,
+            prewarm_type_checker: false,
             type_check: None,
             print_flush_interval: DEFAULT_PRINT_FLUSH_INTERVAL,
             os_policy: OsPolicy::default(),
@@ -278,6 +291,46 @@ impl Default for Worker {
 }
 
 impl Worker {
+    /// A worker whose [`Self::warm_up`] prepares a type checker between sessions.
+    ///
+    /// Trades roughly 6 MiB of idle memory per worker for skipping most of a session's first type check.
+    /// Without type-checked sessions the warm checker is never used, so the memory is wasted.
+    /// An unused checker's cost stays in `BASELINE_MEMORY` after the worker drops, so keep one such worker
+    /// per process: a replacement's sessions get up to ~6 MiB extra headroom until the next arming.
+    #[must_use]
+    pub fn with_prewarmed_type_checker() -> Self {
+        Self {
+            prewarm_type_checker: true,
+            ..Self::default()
+        }
+    }
+
+    /// Builds the warm type checker when this worker has one enabled, none is built and no session is running.
+    ///
+    /// Call it at startup and after sending each turn-ending event, so the work falls between sessions;
+    /// a request arriving mid-build waits for it.
+    /// Its memory joins the worker baseline, so no session's `max_memory` pays for it.
+    ///
+    /// `Err` means the built-in warm-up snippet failed to check, a build bug rather than a runtime condition.
+    /// The checker is kept either way: it is still correct, only less warm, so callers should report and carry on.
+    pub fn warm_up(&mut self) -> Result<(), String> {
+        if self.prewarm_type_checker
+            && self.warm_checker.is_none()
+            && matches!(self.state, SessionState::Configured(None))
+        {
+            let ((checker, warmed), cost) = measure_into_baseline(|| {
+                let mut type_checker = TypeChecker::default();
+                let warmed = type_checker.warm_up();
+                (type_checker, warmed)
+            });
+            self.warm_checker = Some(checker);
+            self.warm_checker_cost = cost;
+            warmed
+        } else {
+            Ok(())
+        }
+    }
+
     /// Handles one request: streams any mid-turn events and emits exactly one
     /// turn-ending event through `sink`, then reports what the host loop should
     /// do next. `Err` means the sink is broken (for stdout, the client is
@@ -1251,7 +1304,9 @@ impl Worker {
             module_stubs: &self.module_stubs,
             prelude: &state.committed_imports,
         };
-        let type_checker = self.type_checker.get_or_insert_with(TypeChecker::default);
+        let type_checker = self
+            .type_checker
+            .get_or_insert_with(|| self.warm_checker.take().unwrap_or_default());
         match type_checker.run_with(&SourceFile::new(code, &self.script_name), &context, state.config) {
             Ok(None) => None,
             Ok(Some(diagnostics)) => Some(event(pb::worker_event::Kind::TypingError(pb::TypingError {
@@ -1267,6 +1322,11 @@ impl Worker {
         self.state = SessionState::Configured(None);
         // Invalidating source files leaves Salsa caches and interned data allocated.
         self.type_checker = None;
+        // A warm checker the session took was just dropped with it; release its cost
+        // before the host re-arms, so the baseline returns to the floor, not floor plus residue.
+        if self.warm_checker.is_none() {
+            release_from_baseline(mem::take(&mut self.warm_checker_cost));
+        }
         self.type_check = None;
         self.script_name = String::new();
         self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;

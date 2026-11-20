@@ -42,9 +42,9 @@ use std::{
 };
 
 use monty_pool::{
-    Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, OnPrint,
-    OnStreamedCall, Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, StreamedCall,
-    TurnEvent,
+    Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MetadataFn, MountSpec,
+    OnPrint, OnStreamedCall, Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue,
+    StreamedCall, TurnEvent, TurnOptions,
 };
 use monty_proto::{
     DEFAULT_MAX_DECODE_BYTES,
@@ -92,7 +92,7 @@ use crate::{
     os_policy::OsPolicyArg,
     print_target::PrintTarget,
     snapshot::{DriveContext, build_snapshot, feed_start_async, feed_start_sync},
-    telemetry::{capture_otel_context, capture_telemetry_context, pool_metrics},
+    telemetry::{capture_otel_context, capture_telemetry_context, capture_turn_options, pool_metrics},
 };
 
 /// The pool handle shared between a pool object and its sessions. `None`
@@ -144,7 +144,8 @@ impl PyMonty {
         max_checkouts_per_worker = Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER),
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
-    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0)")]
+        pre_warm = 0,
+    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0, pre_warm=0)")]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
@@ -157,12 +158,14 @@ impl PyMonty {
         max_checkouts_per_worker: Option<u32>,
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
+        pre_warm: usize,
     ) -> PyResult<Self> {
         Ok(Self {
             config: parse_pool_config(
                 py,
                 binary_path,
                 min_processes,
+                pre_warm,
                 max_processes,
                 checkout_timeout,
                 request_timeout,
@@ -515,7 +518,8 @@ impl PyMontySession {
             return Err(session_used_err());
         }
         let checkout = Arc::clone(&self.checkout);
-        let result = py.detach(|| block_on_sync(restore_turn(&checkout, state, mounts)))?;
+        let turn = capture_turn_options(py);
+        let result = py.detach(|| block_on_sync(restore_turn(&checkout, state, mounts, turn)))?;
         result.map_err(|e| pool_err_to_py(py, e))
     }
 }
@@ -547,7 +551,8 @@ impl PyAsyncMonty {
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
         stream_async_calls = false,
-    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0, stream_async_calls=False)")]
+        pre_warm = 0,
+    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0, stream_async_calls=False, pre_warm=0)")]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
@@ -561,11 +566,13 @@ impl PyAsyncMonty {
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
         stream_async_calls: bool,
+        pre_warm: usize,
     ) -> PyResult<Self> {
         let mut config = parse_pool_config(
             py,
             binary_path,
             min_processes,
+            pre_warm,
             max_processes,
             checkout_timeout,
             request_timeout,
@@ -688,8 +695,9 @@ pub struct PyAsyncMontyRemote {
 
 #[pymethods]
 impl PyAsyncMontyRemote {
-    /// Creates the pool configuration; the connection is made by the first
-    /// checkout (no workers are pre-warmed).
+    /// Creates the pool configuration; nothing connects here. `__aenter__`
+    /// opens `pre_warm` sessions (in the background without `pre_warm_wait`),
+    /// otherwise the first checkout dials.
     ///
     /// `request_timeout` is the per-turn deadline in seconds (default 10.0): a
     /// server that admits the stream but never answers would otherwise leave
@@ -714,6 +722,8 @@ impl PyAsyncMontyRemote {
         max_decode_bytes = None,
         connect_headers = None,
         stream_async_calls = true,
+        pre_warm = 0,
+        pre_warm_wait = true,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -729,6 +739,8 @@ impl PyAsyncMontyRemote {
         max_decode_bytes: Option<usize>,
         connect_headers: Option<Py<PyAny>>,
         stream_async_calls: bool,
+        pre_warm: usize,
+        pre_warm_wait: bool,
     ) -> PyResult<Self> {
         // the keyword's former name, kept for one release
         let metadata = match (metadata, connect_headers) {
@@ -759,6 +771,19 @@ impl PyAsyncMontyRemote {
             auto_resume,
         )?;
         config.stream_async_calls = stream_async_calls;
+        config.pre_warm = pre_warm;
+        config.pre_warm_wait = pre_warm_wait;
+        // the pool calls this from its own threads, for each session it pre-warms
+        if pre_warm > 0
+            && let Some(callback) = &metadata
+        {
+            let callback = callback.clone_ref(py);
+            config.pre_warm_metadata = Some(MetadataFn::new(move || {
+                ready(Python::attach(|py| {
+                    extract_metadata(py, &callback).map_err(|err| format!("metadata callback failed: {err}"))
+                }))
+            }));
+        }
         if let Some(bytes) = max_decode_bytes {
             if bytes > DEFAULT_MAX_DECODE_BYTES {
                 return Err(PyValueError::new_err(format!(
@@ -1027,9 +1052,10 @@ impl PyAsyncMontySession {
         }
         let checkout = Arc::clone(&self.checkout);
         let session_id = Arc::clone(&self.session_id);
+        let turn = capture_turn_options(py);
         future_into_py(py, async move {
             // an idle session has no snapshot, so the restored name is unused
-            let restored = restore_turn(&checkout, state, Vec::new()).await;
+            let restored = restore_turn(&checkout, state, Vec::new(), turn).await;
             refresh_session_id(&checkout, &session_id).await;
             let restored = restored.map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             if restored.0.is_some() {
@@ -1071,9 +1097,10 @@ impl PyAsyncMontySession {
         let instances = self.instances.clone_ref(py);
         let config_script_name = self.repl_config.script_name.clone();
         let trace_context = capture_otel_context(py);
+        let turn = capture_turn_options(py);
         let session_id = Arc::clone(&self.session_id);
         future_into_py(py, async move {
-            let restored = restore_turn(&checkout, state, mounts).await;
+            let restored = restore_turn(&checkout, state, mounts, turn).await;
             refresh_session_id(&checkout, &session_id).await;
             let (event, restored_script_name) = restored.map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             let Some(event) = event else {
@@ -1217,6 +1244,7 @@ fn parse_pool_config(
     py: Python<'_>,
     binary_path: Option<PathBuf>,
     min_processes: usize,
+    pre_warm: usize,
     max_processes: Option<usize>,
     checkout_timeout: Option<f64>,
     request_timeout: Option<f64>,
@@ -1235,6 +1263,7 @@ fn parse_pool_config(
         _ => return Err(PyValueError::new_err("execution_clock must be 'wall' or 'cpu'")),
     };
     config.min_processes = min_processes;
+    config.pre_warm = pre_warm;
     if let Some(max) = max_processes {
         config.max_processes = max;
     }
@@ -1284,13 +1313,14 @@ async fn restore_turn(
     checkout: &SharedCheckout,
     state: Vec<u8>,
     mounts: Vec<MountSpec>,
+    turn: TurnOptions,
 ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
     let result = {
         let mut guard = checkout.lock().await;
         match guard.as_mut() {
             Some(checkout) => {
                 checkout
-                    .restore(state, mounts, &mut monty_pool::on_print_sync(|_, _| {}))
+                    .restore_with(state, mounts, turn, &mut monty_pool::on_print_sync(|_, _| {}))
                     .await
             }
             None => Err(PoolError::Finished),
@@ -1349,9 +1379,9 @@ async fn finish_checkout(checkout: &SharedCheckout) {
 }
 
 /// Builds the remote-transport `monty-pool` config from the `AsyncMontyRemote`
-/// constructor arguments. Each checkout opens a stream to `url`; there is no
-/// pre-warming, so `min_processes` stays 0 and `max_processes` caps concurrent
-/// streams.
+/// constructor arguments. Each checkout opens a stream to `url`, or takes one
+/// of the `pre_warm` sessions the caller configures; `max_processes` caps
+/// concurrent streams, pre-warmed ones included.
 fn parse_remote_config(
     url: String,
     max_processes: Option<usize>,
@@ -1539,6 +1569,8 @@ async fn install_deps_checkout(checkout: &SharedCheckout, requirements: Vec<Stri
 /// sync and async drive loops share one validation path.
 pub(crate) struct FeedArgs {
     pub(crate) callback_context: CallbackContext,
+    /// The caller's span, captured on the caller's task.
+    pub(crate) turn: TurnOptions,
     pub(crate) code: String,
     pub(crate) inputs: NamedValues,
     pub(crate) mounts: Vec<MountSpec>,
@@ -1569,6 +1601,7 @@ impl FeedArgs {
         check_callable(py, os.as_ref())?;
         Ok(Self {
             callback_context: CallbackContext::capture(py)?,
+            turn: capture_turn_options(py),
             code: extract_source_code(py, code)?,
             inputs: extract_repl_inputs(inputs, instances)?,
             mounts: extract_mount_specs(mount)?,
@@ -1591,6 +1624,7 @@ impl FeedArgs {
 fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<PyAny>> {
     let FeedArgs {
         callback_context,
+        turn,
         code,
         inputs,
         mounts,
@@ -1613,7 +1647,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
             Box::pin(async move {
                 // coroutine functions cannot run here, so their calls suspend as any call
                 c.set_async_functions(None);
-                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                c.feed_with(code, inputs, mounts, cwd.as_deref(), skip_type_check, turn, p)
                     .await
             })
         }),
@@ -1862,6 +1896,7 @@ impl Drop for AbandonGuard {
 async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<AtomicBool>) -> PyResult<Py<PyAny>> {
     let FeedArgs {
         callback_context,
+        turn,
         code,
         inputs,
         mounts,
@@ -1896,7 +1931,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
             Box::pin(async move {
                 c.set_async_functions(Some(async_functions));
                 c.set_streamed_call_handler(Some(handler));
-                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                c.feed_with(code, inputs, mounts, cwd.as_deref(), skip_type_check, turn, p)
                     .await
             })
         }),
