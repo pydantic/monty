@@ -191,7 +191,7 @@ fn wide16(text: &str, mut remaining: usize) -> usize {
         let leaders = (lanes & u8x16::splat(0xc0)).simd_ne(u8x16::splat(0x80));
         let mut mask = leaders.to_bitmask();
         let count = mask.count_ones() as usize;
-        // If every leader in this block is skipped, the target is in a later block or at the end.
+        // Select the next leader only if the skip leaves one in this block.
         if remaining < count {
             // When every byte is a leading byte, character and byte ranks coincide.
             if count == 16 {
