@@ -446,6 +446,15 @@ class MontyClassProxy:
     instance's `id`, so passed back in it resolves to the live sandbox object
     (`attributes` not applied; a freed one raises) or, after a restore, re-enters
     as a host-backed copy built from `attributes`.
+
+    `==` and `hash()` follow the sandbox class where the host can replay it: a
+    `@dataclass` compares (and, when frozen, hashes) its fields. Sandbox code
+    never runs on the host, so a user-defined `__eq__` is replaced by `id`
+    comparison, as is any rule for a proxy whose attributes hold a host
+    object (whose own `__eq__` / `__hash__` would run). The hash follows `==`: the compared fields, or the `id` (even
+    for a user-defined `__hash__`). A class the sandbox cannot hash raises
+    `TypeError` from `hash()`, and proxies nested over 1000 deep through their
+    fields raise `RecursionError`.
     """
 
     @property
@@ -462,17 +471,18 @@ class MontyClassProxy:
 
     @property
     def attributes(self) -> dict[str, Any]:
-        """The instance's attributes as a plain dict."""
+        """A copy of the instance's attributes as a plain dict; editing it changes nothing."""
 
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
 
 @final
 class MontyClassTypeProxy:
     """Read-only proxy for a host class the session has no class object for: a
     `ClassType`, or `type(x)` of a `ClassInstance`, returned after a session
     restore. It keeps the class `id`, so passed back in it is the same sandbox
-    type object.
+    type object. Proxies compare and hash by `id`.
     """
 
     @property
@@ -489,10 +499,11 @@ class MontyClassTypeProxy:
 
     @property
     def attributes(self) -> dict[str, Any]:
-        """The eager class attrs that crossed with the class, as a plain dict."""
+        """A copy of the eager class attrs that crossed with the class, as a plain dict; editing it changes nothing."""
 
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
 
 @final
 class MontyStdTypeProxy:
@@ -719,6 +730,7 @@ class Monty:
         max_checkouts_per_worker: int | None = 1000,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
+        pre_warm: int = 0,
     ) -> Self:
         """
         Configure a worker pool; the workers are spawned by `with`.
@@ -731,6 +743,10 @@ class Monty:
             min_processes: Workers spawned eagerly, and a floor on live workers:
                 while the pool is open, background refills restore it after a
                 worker is recycled, crashes or is discarded.
+            pre_warm: Idle workers to keep ready beyond those checked out: each
+                one a checkout takes is replaced in the background, so the next
+                checkout usually finds one ready. They count against
+                `max_processes`; a larger `pre_warm` raises `MontyConfigurationError`.
             max_processes: Cap on live workers (defaults to the CPU count);
                 checkouts beyond it wait for a worker to be returned.
             checkout_timeout: Seconds `checkout()` waits for a free worker
@@ -1084,6 +1100,7 @@ class AsyncMonty:
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
         stream_async_calls: bool = False,
+        pre_warm: int = 0,
     ) -> Self:
         """
         Configure a worker pool; the workers are spawned by `async with`.
@@ -1175,10 +1192,12 @@ class AsyncMontyRemote:
         max_decode_bytes: int | None = None,
         connect_headers: Callable[[], Mapping[str, str]] | None = None,
         stream_async_calls: bool = True,
+        pre_warm: int = 0,
+        pre_warm_wait: bool = True,
     ) -> Self:
         """
         Configure a remote worker pool; the connection is made by the first
-        checkout (no workers are pre-warmed).
+        checkout, unless `pre_warm` opens sessions ahead of it.
 
         Arguments:
             url: `http://`/`https://` URL of the server — a relay, or any
@@ -1230,15 +1249,32 @@ class AsyncMontyRemote:
                 on the checking-out task, so it sees that task's contextvars
                 and must not block. Monty never interprets the values; names
                 are lowercase ASCII and values ASCII, duplicate names are
-                last-wins, also over the `traceparent` the Logfire integration
-                adds, a `user-agent` entry is put in front of the default one,
-                and a malformed name or value raises `MontyConfigurationError` as the
-                session is entered.
+                last-wins, a `user-agent` entry is put in front of the default
+                one, and a malformed name or value raises
+                `MontyConfigurationError` as the session is entered.
             feed_duration_limit_grace: Client wall-time grace beyond
                 `max_feed_duration_secs` when the server uses wall time.
                 CPU mode uses the server's supervisor and grace instead.
                 `None` disables this client backstop. `request_timeout` stays independent.
             turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
+            pre_warm: Sessions to keep open and ready, so a checkout takes one
+                instead of dialing. `__aenter__` opens them (see `pre_warm_wait`)
+                and they are replaced in the background as checkouts take them; a
+                checkout waits for one already dialing. They count against
+                `max_processes`; a larger `pre_warm` raises
+                `MontyConfigurationError`. A server may close one that waits too
+                long, which is then replaced. `metadata` is also called for each
+                of these sessions, from a pool thread without the caller's
+                contextvars. A checkout takes one only if its own `metadata` call
+                returned the same value; otherwise it closes the ready sessions
+                and dials for itself, so this helps only while `metadata` is stable:
+                leave it off when one pool's checkouts send different metadata,
+                such as per-user credentials.
+            pre_warm_wait: `__aenter__` waits until the `pre_warm` sessions are
+                open, raising if one cannot open (the default); `False` opens them
+                in the background instead, where a failed open is retried with a
+                backoff and not raised; a checkout that finds none ready dials
+                for itself and raises what that dial does.
             auto_resume: When a server that stores sessions drains one, open a
                 new stream, load the state it named into a new session and re-send the
                 request it did not run, instead of raising `MontyShutdown`; the
@@ -1569,8 +1605,9 @@ class FunctionSnapshot:
     def trace_context(self) -> Context:
         """Return the suspension's OTel context, without activating it or resuming.
 
-        Preserves context entries captured at `feed_start` / `load_snapshot`; without Monty tracing,
-        returns that captured context unchanged. Raises `ImportError` without `opentelemetry-api`
+        Preserves context entries captured at `feed_start` / `load_snapshot`. Without Monty tracing,
+        its span is the one a remote server named for the suspension, else the captured context is
+        returned unchanged. Raises `ImportError` without `opentelemetry-api`
         or `RuntimeError` after resume. Previously returned contexts do not keep the span open.
         """
 

@@ -1,16 +1,23 @@
 //! Python `datetime.date` implementation.
 //!
-//! Monty stores dates with `chrono::NaiveDate` and keeps CPython-compatible
+//! Monty stores dates with `jiff::civil::Date` and keeps CPython-compatible
 //! constructor validation and arithmetic behavior.
 
 use std::{
     borrow::Cow,
     collections::hash_map::DefaultHasher,
-    fmt::{self, Write},
+    fmt::Write,
     hash::{Hash, Hasher},
 };
 
-use chrono::{Datelike, NaiveDate, NaiveTime, format::StrftimeItems};
+use jiff::{
+    SignedDuration,
+    civil::{self, Date as CivilDate},
+    fmt::{
+        StdFmtWrite,
+        strtime::{BrokenDownTime, Config, PosixCustom},
+    },
+};
 use monty_types::{OsFunctionCall, ResourceTracker};
 
 use crate::{
@@ -34,9 +41,22 @@ use crate::{
 
 const MICROSECONDS_PER_DAY: i128 = 86_400_000_000;
 
-/// `datetime.date` storage backed by `chrono::NaiveDate`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Date(pub(crate) NaiveDate);
+/// `datetime.date` storage backed by `jiff::civil::Date`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Date(pub(crate) CivilDate);
+
+impl Hash for Date {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Dumps persist the former packed date hash: year, ordinal, common-year bit,
+        // and the preceding December 31's nonzero Monday-based weekday.
+        let year = i32::from(self.0.year());
+        let january = civil::date(self.0.year(), 1, 1);
+        let weekday = i32::from(january.weekday().to_monday_zero_offset());
+        let previous = (weekday + 5) % 7 + 1;
+        let common = i32::from(!self.0.in_leap_year()) << 3;
+        ((year << 13) | (i32::from(self.0.day_of_year()) << 4) | common | previous).hash(state);
+    }
+}
 
 /// Creates a date from validated civil components.
 ///
@@ -50,16 +70,15 @@ pub(crate) fn from_ymd(year: i32, month: i32, day: i32) -> RunResult<Date> {
             SimpleException::new_msg(ExcType::ValueError, format!("month must be in 1..12, not {month}")).into(),
         );
     }
-    let Ok(month_u32) = u32::try_from(month) else {
-        return Err(
-            SimpleException::new_msg(ExcType::ValueError, format!("month must be in 1..12, not {month}")).into(),
-        );
-    };
-    let Ok(day_u32) = u32::try_from(day) else {
-        return Err(day_out_of_range_error(day, month, year));
-    };
-
-    let Some(date) = NaiveDate::from_ymd_opt(year, month_u32, day_u32) else {
+    let date = i8::try_from(day).ok().and_then(|day| {
+        CivilDate::new(
+            i16::try_from(year).expect("validated year"),
+            i8::try_from(month).expect("validated month"),
+            day,
+        )
+        .ok()
+    });
+    let Some(date) = date else {
         return Err(day_out_of_range_error(day, month, year));
     };
     Ok(Date(date))
@@ -86,21 +105,21 @@ fn day_out_of_range_error(day: i32, month: i32, year: i32) -> RunError {
 
 /// Returns the maximum valid day for a given month and year.
 fn max_day_for_month(year: i32, month: i32) -> u32 {
-    // Try the last possible day (31) and work backwards to find the actual max
-    let Ok(month_u32) = u32::try_from(month) else {
-        return 31;
-    };
-    for d in (28..=31).rev() {
-        if NaiveDate::from_ymd_opt(year, month_u32, d).is_some() {
-            return d;
-        }
-    }
-    31
+    CivilDate::new(
+        i16::try_from(year).expect("validated year"),
+        i8::try_from(month).expect("validated month"),
+        1,
+    )
+    .map_or(31, |date| {
+        u32::try_from(date.days_in_month()).expect("positive day count")
+    })
 }
 
 /// Creates a date from a proleptic Gregorian ordinal value.
 pub(crate) fn from_ordinal(ordinal: i32) -> RunResult<Date> {
-    let Some(date) = NaiveDate::from_num_days_from_ce_opt(ordinal) else {
+    let Ok(date) =
+        civil::date(1970, 1, 1).checked_add(SignedDuration::from_secs((i64::from(ordinal) - 719_163) * 86_400))
+    else {
         return Err(date_value_out_of_range());
     };
     if !(1..=9999).contains(&date.year()) {
@@ -117,13 +136,17 @@ pub(crate) fn date_value_out_of_range() -> RunError {
 /// Returns the proleptic Gregorian ordinal (`1 == 0001-01-01`) for a date.
 #[must_use]
 pub(crate) fn to_ordinal(date: Date) -> i32 {
-    date.0.num_days_from_ce()
+    i32::try_from(date.0.duration_since(civil::date(1, 1, 1)).as_secs() / 86_400 + 1).expect("civil ordinal fits i32")
 }
 
 /// Returns civil components `(year, month, day)`.
 #[must_use]
 pub(crate) fn to_ymd(date: Date) -> (i32, u32, u32) {
-    (date.0.year(), date.0.month(), date.0.day())
+    (
+        i32::from(date.0.year()),
+        u32::try_from(date.0.month()).expect("positive month"),
+        u32::try_from(date.0.day()).expect("positive day"),
+    )
 }
 
 /// Constructor for `date(year, month, day)`.
@@ -194,10 +217,10 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult
     defer_drop!(value, vm);
     // `date` floors to whole seconds and uses `__index__`-style wording, where
     // `datetime` rounds to microseconds and names both numeric types.
-    let utc = datetime::timestamp_to_utc(value, datetime::TimestampRounding::Floor, vm)?
+    let (seconds, micros) = datetime::timestamp_parts(value, datetime::TimestampRounding::Floor, vm)?
         .ok_or_else(|| ExcType::type_error_not_integer(&value.py_type_name(vm)))?;
-    let offset = vm.env.os_policy.timezone.at(utc).offset_seconds;
-    let local = datetime::wall_clock_at(utc, offset)?;
+    let offset = datetime::timestamp_zone(seconds, micros, &vm.env.os_policy.timezone).offset_seconds;
+    let local = datetime::timestamp_wall_clock(seconds, micros, offset)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::Date(Date(local.date())))))
 }
 
@@ -344,13 +367,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
             Some(StaticStrings::Weekday) => {
                 args.check_zero_args("date.weekday", vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
-                    date.0.weekday().num_days_from_monday(),
+                    date.0.weekday().to_monday_zero_offset(),
                 ))))
             }
             Some(StaticStrings::Isoweekday) => {
                 args.check_zero_args("date.isoweekday", vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
-                    date.0.weekday().number_from_monday(),
+                    date.0.weekday().to_monday_one_offset(),
                 ))))
             }
             // A classmethod, so CPython also reaches it through an instance.
@@ -400,24 +423,20 @@ fn offset_days(date: Date, days: i32) -> RunResult<Date> {
 /// Formats a [`Date`] with a `strftime` directive string, shared by the
 /// `date.strftime()` method and f-string formatting (`f"{d:%Y-%m-%d}"`).
 ///
-/// Uses `chrono`'s **lenient** parser so an unrecognised directive is emitted
-/// verbatim (`%Q` → `"%Q"`), matching glibc/Linux CPython — see
-/// [`invalid_strftime_error`] for why that platform is the target. The
-/// `ValueError` path remains for the rare directive that parses but can't be
-/// rendered (so [`render_strftime`] never has to panic).
+/// Unknown directives pass through verbatim, matching glibc/Linux CPython.
+/// Zone directives are empty because a date has no timezone.
 pub(crate) fn format_date_strftime(date: Date, format: &str, tracker: &ResourceTracker) -> RunResult<String> {
     // Anchored at midnight so time directives render CPython's zeros
     // (`date(2024, 6, 15).strftime('%H:%M')` is `'00:00'` on both) rather than
     // failing for want of a time component.
-    let anchored = date.0.and_time(NaiveTime::MIN);
+    let anchored = date.0.at(0, 0, 0, 0);
     let format = rewrite_zone_directives(format, None, None, tracker)?;
-    render_strftime(anchored.format_with_items(StrftimeItems::new_lenient(&rewrite_microsecond_directive(&format))))
-        .ok_or_else(invalid_strftime_error)
+    render_strftime(anchored, &format, tracker)
 }
 
 /// Substitutes the zone directives CPython fills from `utcoffset()` and
 /// `tzname()`: `%z` (`±HHMM[SS]`), `%:z` (`±HH:MM[:SS]`) and `%Z` (the zone
-/// name), all empty for a naive value. chrono renders the naive components
+/// name), all empty for a naive value. Jiff renders the naive components
 /// and cannot supply them. A `%` in the name is doubled to stay literal.
 /// Every `%Z` copies the name, so the output is built against the tracker.
 pub(crate) fn rewrite_zone_directives<'f>(
@@ -427,7 +446,7 @@ pub(crate) fn rewrite_zone_directives<'f>(
     tracker: &ResourceTracker,
 ) -> RunResult<Cow<'f, str>> {
     // One byte-pair pass: three `str::contains` calls cost more than the whole
-    // chrono render on a short format. `%%z` and `%:` without `z` pass here
+    // Jiff render on a short format. `%%z` and `%:` without `z` pass here
     // and are handled by the loop below.
     let may_have_zone = format
         .as_bytes()
@@ -475,57 +494,70 @@ pub(crate) fn rewrite_zone_directives<'f>(
     out.finish_raw().map(Cow::Owned)
 }
 
-/// Rewrites CPython's `%f` to chrono's `%6f` in a strftime format string.
-///
-/// Both mean "fractional seconds", but chrono's bare `%f` is 9-digit
-/// nanoseconds where CPython's is 6-digit microseconds; `%6f` is chrono's
-/// spelling for the latter. `%%` is an escaped percent, so the `f` after it is
-/// a literal and must not be rewritten.
-pub(crate) fn rewrite_microsecond_directive(format: &str) -> Cow<'_, str> {
-    if !format.contains("%f") {
-        return Cow::Borrowed(format);
-    }
-    let mut out = String::with_capacity(format.len() + 1);
+/// Formats civil components without panicking on unsupported directives.
+/// POSIX locale names and literal unknown directives preserve sandbox behavior.
+pub(crate) fn render_strftime(datetime: civil::DateTime, format: &str, tracker: &ResourceTracker) -> RunResult<String> {
+    let mut out = StringBuilder::new(tracker);
+    let broken = BrokenDownTime::from(datetime);
+    let config = Config::new().custom(PosixCustom::new()).lenient(true);
     let mut rest = format;
-    while let Some(percent) = rest.find('%') {
-        let (before, from_percent) = rest.split_at(percent);
-        out.push_str(before);
-        // Take the directive whole, so `%%f` consumes `%%` and leaves `f` as text.
-        let mut chars = from_percent.char_indices().skip(1);
-        match chars.next() {
-            Some((_, 'f')) => {
-                out.push_str("%6f");
-                rest = &from_percent[2..];
-            }
-            Some((_, c)) => {
-                out.push('%');
-                out.push(c);
-                rest = &from_percent[1 + c.len_utf8()..];
-            }
-            None => {
-                out.push('%');
-                rest = "";
-            }
+    while let Some(at) = rest.find('%') {
+        let (literal, directive) = rest.split_at(at);
+        out.push_str(literal)?;
+        if directive.starts_with("%#z") {
+            return Err(invalid_strftime_error());
         }
+        let (end, conversion) = strftime_directive(directive);
+        let spec = &directive[..end];
+        // Only glibc's conversions reach Jiff, so its extensions (`%q`, `%.f`, `%N`) stay literal.
+        let jiff_spec = match conversion {
+            Some('s') => {
+                let seconds = datetime::epoch_duration(datetime).as_nanos().div_euclid(1_000_000_000);
+                out.push_str(&seconds.to_string())?;
+                None
+            }
+            // CPython substitutes only a bare `%f`, always six digits.
+            Some('f') if end == 2 => Some("%6f"),
+            Some(c) if GLIBC_CONVERSIONS.contains(c) => Some(spec),
+            _ => {
+                out.push_str(spec)?;
+                None
+            }
+        };
+        if let Some(jiff_spec) = jiff_spec
+            && broken
+                .format_with_config(&config, jiff_spec, &mut StdFmtWrite(&mut out))
+                .is_err()
+        {
+            // A resource error is retained by the builder and takes precedence.
+            out.finish_raw()?;
+            return Err(invalid_strftime_error());
+        }
+        rest = &directive[end..];
     }
-    out.push_str(rest);
-    Cow::Owned(out)
+    out.push_str(rest)?;
+    out.finish_raw()
 }
 
-/// Renders a `chrono` strftime result without the panic that `.to_string()`
-/// triggers on an invalid directive.
-///
-/// `chrono`'s `DelayedFormat` `Display` impl returns `fmt::Error` for an
-/// unsupported/invalid directive, and `ToString::to_string` turns that into a
-/// panic — unacceptable for untrusted sandbox input. Writing into our own
-/// buffer surfaces the failure as `None` so the caller can raise instead.
-pub(crate) fn render_strftime(formatted: impl fmt::Display) -> Option<String> {
-    let mut out = String::new();
-    write!(out, "{formatted}").ok().map(|()| out)
+/// glibc's `strftime` conversions; any other directive is copied through verbatim.
+const GLIBC_CONVERSIONS: &str = "%ABCDFGHIMPRSTUVWXYZabcdeghjklmnprstuwxyz";
+
+/// Splits a `%` directive into its byte length and conversion, after glibc's flags and width.
+/// `%:z` keeps its colon; `None` means the format ended mid-directive.
+fn strftime_directive(directive: &str) -> (usize, Option<char>) {
+    let mut start = directive[1..]
+        .find(|c: char| !matches!(c, '-' | '_' | '0' | '^' | '#') && !c.is_ascii_digit())
+        .map_or(directive.len(), |at| 1 + at);
+    if directive[start..].starts_with(":z") {
+        start += 1;
+    }
+    match directive[start..].chars().next() {
+        Some(c) => (start + c.len_utf8(), Some(c)),
+        None => (start, None),
+    }
 }
 
-/// The `ValueError` raised when a `strftime` directive parses but can't be
-/// rendered for this value (e.g. a time directive on a bare `date`).
+/// The `ValueError` for unsupported offset-dependent directives (`%#z`).
 ///
 /// Unrecognised directives no longer reach this path — the lenient parser
 /// emits them verbatim to match glibc/Linux CPython (`strftime('%Q') == '%Q'`),

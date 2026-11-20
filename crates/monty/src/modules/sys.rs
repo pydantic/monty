@@ -83,12 +83,13 @@ const BUILTIN_MODULE_NAMES: &[StaticStrings] = &[
 /// (and only fixtures) can call back into Monty internals that production
 /// sandbox code must never reach.
 #[cfg(feature = "test-hooks")]
+#[monty_macros::explicit_discriminants(checksum = 0x93cf_5b81_e7e9_9376)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum SysFunctions {
     /// `sys.setrecursionlimit(n)` — tightens the live recursion ceiling to
     /// `n`. Only allows lowering; attempting to raise raises `ValueError`.
-    Setrecursionlimit,
+    Setrecursionlimit = 0,
 }
 
 /// Creates the `sys` module.

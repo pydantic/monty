@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import collections
+import copy
 import datetime
+import gc
 import itertools
 import json
 import pathlib
+import pickle
 import re
-import sys
+import tracemalloc
 import types
 import zoneinfo
-from typing import NamedTuple
+from collections.abc import Callable
+from typing import Any, NamedTuple
 
 import pytest
 from conftest import RunMonty
@@ -19,6 +23,7 @@ from pydantic_monty import (
     AsyncMonty,
     MontyComplete,
     MontyConversionError,
+    MontyNamedTuple,
     MontyRuntimeError,
     MontySession,
     MontyStdTypeProxy,
@@ -714,24 +719,222 @@ def test_namedtuple_sys_version_info_tuple_comparison(monty_run: RunMonty):
     assert result == snapshot((3, 14, 0))
 
 
+def test_namedtuple_types_share_one_class(monty_run: RunMonty):
+    """Every sandbox namedtuple type decodes to `MontyNamedTuple`, so the sandbox cannot make the host
+    build classes, however many types it uses."""
+    result = monty_run(
+        "from collections import namedtuple\nts = [namedtuple(f'T{i}', ['a']) for i in range(2000)]\n[t(i) for i, t in enumerate(ts)]"
+    )
+    assert len(result) == 2000
+    assert {r.__class__ for r in result} == {MontyNamedTuple}
+    assert (result[3]._type_name, result[3].a, result[3]._fields) == snapshot(('T3', 3, ('a',)))
+
+
+def test_namedtuple_same_type_shares_names(monty_run: RunMonty):
+    """Values of one type in a result share their type name and field names."""
+    result: Any = monty_run("from collections import namedtuple\nP = namedtuple('P', ['x'])\n[P(1), P(2)]")
+    first, second = result
+    assert (first.x, second.x) == (1, 2)
+    assert first._fields is second._fields
+    assert first._type_name is second._type_name
+
+
+def test_namedtuple_names_not_retained(monty_run: RunMonty):
+    """Decoded namedtuple names are freed with their values: `collections.namedtuple`
+    compiles field names into code, which makes them immortal on 3.12+."""
+    code = "from collections import namedtuple\nnamedtuple('T', ['f' + 'y' * 100_000 + str(i)])(i)"
+    monty_run(code, inputs={'i': 1000})  # warm up the pool
+    gc.collect()
+    tracemalloc.start()
+    try:
+        for i in range(30):
+            assert monty_run(code, inputs={'i': i}) == (i,)
+        gc.collect()
+        retained, _ = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert retained < 1_000_000
+
+
+class P0(NamedTuple):
+    pass
+
+
+class P1(NamedTuple):
+    a: object
+
+
+class P2(NamedTuple):
+    a: object
+    b: object
+
+
+def _error(func: Callable[[], object]) -> str:
+    """The type and message of the exception `func` raises."""
+    with pytest.raises(Exception) as exc_info:
+        func()
+    return f'{type(exc_info.value).__name__}: {exc_info.value}'
+
+
+@pytest.mark.parametrize('real_type', [P0, P1, P2], ids=['no_fields', 'one_field', 'two_fields'])
+def test_namedtuple_matches_collections(monty_run: RunMonty, real_type: Any):
+    """A decoded namedtuple behaves like an instance of the host's own namedtuple class."""
+    fields = list(real_type._fields)
+    values = tuple(range(len(fields)))
+    code = f'from collections import namedtuple\nnamedtuple({real_type.__name__!r}, {fields!r})(*{values!r})'
+    decoded: Any = monty_run(code)
+    real: Any = real_type(*values)
+    assert decoded.__class__ is MontyNamedTuple
+    assert decoded == real
+    assert hash(decoded) == hash(real)
+    assert repr(decoded) == repr(real)
+    assert decoded._fields == real._fields
+    assert decoded._field_defaults == real._field_defaults
+    assert decoded._asdict() == real._asdict()
+    assert [getattr(decoded, f) for f in fields] == [getattr(real, f) for f in fields]
+    assert repr(decoded._make(reversed(values))) == repr(real._make(reversed(values)))
+    assert repr(decoded._replace(**dict.fromkeys(fields, 'r'))) == repr(real._replace(**dict.fromkeys(fields, 'r')))
+    assert _error(lambda: decoded._replace(z=1)) == _error(lambda: real._replace(z=1))
+    assert _error(lambda: decoded._make([*values, 9])) == _error(lambda: real._make([*values, 9]))
+    assert _error(lambda: decoded.z) == _error(lambda: real.z)
+    assert repr(copy.copy(decoded)) == repr(real)
+    assert repr(pickle.loads(pickle.dumps(decoded))) == repr(real)
+    assert hasattr(decoded, '__replace__') == hasattr(real, '__replace__')
+    assert decoded.__getnewargs__() == real.__getnewargs__()
+
+
+def test_namedtuple_fields_shadow_tuple_methods(monty_run: RunMonty):
+    """A field named like a tuple method wins, as on a real namedtuple; otherwise the method is there."""
+    code = "from collections import namedtuple\n[namedtuple('C', ['count', 'index'])(5, 6), namedtuple('D', ['a'])(1)]"
+    result: Any = monty_run(code)
+    with_fields, without = result
+    assert (with_fields.count, with_fields.index) == (5, 6)
+    assert (without.count(1), without.index(1)) == (1, 0)
+
+
+def test_namedtuple_is_immutable(monty_run: RunMonty):
+    p: Any = monty_run("from collections import namedtuple\nnamedtuple('Point', ['x'])(1)")
+    assert _error(lambda: setattr(p, 'x', 2)) == snapshot("AttributeError: 'Point' object is immutable")
+    assert _error(lambda: setattr(p, 'y', 2)) == snapshot("AttributeError: 'Point' object is immutable")
+
+
+def test_namedtuple_renamed_field(monty_run: RunMonty):
+    """`rename=True` gives fields starting with `_`, which a host namedtuple class could not have."""
+    p: Any = monty_run("from collections import namedtuple\nnamedtuple('P', ['a', 'a'], rename=True)(1, 2)")
+    assert (p.a, p._1, repr(p)) == snapshot((1, 2, 'P(a=1, _1=2)'))
+
+
+def test_namedtuple_keeps_type_name_back_into_sandbox(monty_run: RunMonty):
+    """A decoded namedtuple crosses back under its sandbox type name, not `MontyNamedTuple`."""
+    p = monty_run('import sys\nsys.version_info')
+    assert monty_run('import sys\n(repr(p), p.major, p == sys.version_info)', inputs={'p': p}) == snapshot(
+        (
+            "sys.version_info(major=3, minor=14, micro=0, releaselevel='final', serial=0)",
+            3,
+            True,
+        )
+    )
+
+
+def test_namedtuple_call_arguments_many_types(monty_run: RunMonty):
+    """Host-call arguments may use any number of namedtuple types."""
+    calls: list[tuple[object, ...]] = []
+
+    def f(*args: object) -> None:
+        calls.append(args)
+
+    code = "from collections import namedtuple\nf([namedtuple(f'T{i}', ['a'])(i) for i in range(2000)])"
+    monty_run(code, external_lookup={'f': f})
+    [(arg,)] = calls
+    items: Any = arg
+    assert (len(items), repr(items[1999])) == snapshot((2000, 'T1999(a=1999)'))
+
+
 # === Results the host cannot build ===
 
-# the `TypeError` comes from the host's own CPython, which reworded it in 3.14
-if sys.version_info >= (3, 14):
-    PROXY_DICT_KEY_ERROR = "MontyRuntimeError(TypeError: cannot convert the result to a Python value: cannot use 'pydantic_monty.MontyClassProxy' as a dict key (unhashable type: 'pydantic_monty.MontyClassProxy'))"
-else:
-    PROXY_DICT_KEY_ERROR = "MontyRuntimeError(TypeError: cannot convert the result to a Python value: unhashable type: 'pydantic_monty.MontyClassProxy')"
+# the sandbox reads the class-level default of a field `__init__` never set,
+# but class defaults do not cross, so the host proxy's hash cannot find it
+UNSET_FIELD_CODE = """
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class K:
+    x: int = 0
+
+    def __init__(self):
+        pass
+
+{K()}
+"""
+UNSET_FIELD_ERROR = (
+    "MontyRuntimeError(AttributeError: cannot convert the result to a Python value: 'K' object has no attribute 'x')"
+)
+
+# keys `k * (2**61 - 1)` all hash to 0 in CPython, but not in the sandbox
+KEY_COLLISIONS_ERROR = (
+    'MontyRuntimeError(ValueError: cannot convert the result to a Python value: '
+    'too many hash collisions among dict or set keys)'
+)
+SHARED_KEYS_ERROR = (
+    'MontyRuntimeError(ValueError: cannot convert the result to a Python value: '
+    'dict or set keys nest too many shared values to hash)'
+)
 
 UNDECODABLE_RESULTS = [
+    pytest.param(UNSET_FIELD_CODE, UNSET_FIELD_ERROR, id='dataclass_key_unset_field'),
     pytest.param(
-        "from collections import namedtuple\nnamedtuple('P', ['a', 'a'], rename=True)(1, 2)",
-        "MontyRuntimeError(ValueError: cannot convert the result to a Python value: Field names cannot start with an underscore: '_1')",
-        id='namedtuple_underscore_field',
+        '{k * (2**61 - 1): None for k in range(1, 2000)}',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_dict_keys',
     ),
     pytest.param(
-        'class K:\n    pass\n{K(): 1}',
-        PROXY_DICT_KEY_ERROR,
-        id='proxy_dict_key',
+        '{k * (2**61 - 1) for k in range(1, 2000)}',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_set_items',
+    ),
+    pytest.param(
+        'frozenset(k * (2**61 - 1) for k in range(1, 2000))',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_frozenset_items',
+    ),
+    pytest.param(
+        # each dict is under the budget alone; the result's arena is not
+        '[{k * (2**61 - 1): None for k in range(1, 1000)} for _ in range(3)]',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_keys_across_dicts',
+    ),
+    pytest.param(
+        # 300 colliding int keys fit the budget; wrapped with a 100-item tuple, each comparison costs more
+        '{(tuple(range(100)), k * (2**61 - 1)): None for k in range(1, 300)}',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_tuple_keys',
+    ),
+    pytest.param(
+        # `a` and `b` are 41 tuple nodes each but 2**40 leaves to hash or compare
+        'a = (0,)\nb = (0,)\nfor _ in range(40):\n    a = (a, a)\n    b = (b, b)\n'
+        '{(a, 2**61 - 1): None, (b, 2 * (2**61 - 1)): None}',
+        SHARED_KEYS_ERROR,
+        id='shared_nested_tuple_keys',
+    ),
+    pytest.param(
+        # 2**22 leaves, each a million-bit int that CPython before 3.14 rehashes
+        'a = (1 << 1_000_000,)\nfor _ in range(22):\n    a = (a, a)\n{a: None}',
+        SHARED_KEYS_ERROR,
+        id='shared_big_int_key',
+    ),
+    pytest.param(
+        # colliding big ints differ only in their low digits, so each comparison scans them all
+        '{(1 << 80_000) + k * (2**61 - 1): None for k in range(1, 300)}',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_big_int_keys',
+    ),
+    pytest.param(
+        # the proxy hashes only the hashable fields, skipping the lists its `==` compares in full
+        'from dataclasses import dataclass\n'
+        '@dataclass\nclass K:\n    xs: list\n    def __hash__(self):\n        return 0\n'
+        'base = list(range(1000))\n{K(base + [k]): None for k in range(100)}',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_dataclass_list_field_keys',
     ),
 ]
 
@@ -755,12 +958,77 @@ async def test_undecodable_result_async(code: str, expected: str):
     assert repr(exc_info.value) == expected
 
 
+def test_colliding_keys_under_budget(monty_run: RunMonty):
+    """Colliding keys decode while the arena stays under the collision budget."""
+    result = monty_run('{k * (2**61 - 1): k for k in range(1, 1000)}')
+    assert len(result) == snapshot(999)
+    assert result[5 * (2**61 - 1)] == snapshot(5)
+
+
+def test_big_int_keys_decode(monty_run: RunMonty):
+    """Big `int` keys that do not collide stay within the hash budget."""
+    result = monty_run('{(1 << 80_000) + k: k for k in range(300)}')
+    assert len(result) == snapshot(300)
+    assert result[(1 << 80_000) + 7] == snapshot(7)
+
+
+def test_keys_sharing_a_tuple_decode(monty_run: RunMonty):
+    """Keys sharing one large tuple stay within the hash budget."""
+    result = monty_run('t = tuple(range(1000))\n{(t, i): i for i in range(2000)}')
+    assert len(result) == snapshot(2000)
+    assert result[(tuple(range(1000)), 7)] == snapshot(7)
+
+
+@pytest.mark.parametrize('container', ['list', 'tuple'])
+def test_instances_sharing_a_value_decode(monty_run: RunMonty, container: str):
+    """Identity-hashed instances sharing one large value stay within the hash budget."""
+    result = monty_run(
+        'class Obj:\n    def __init__(self, cfg):\n        self.cfg = cfg\n'
+        f'cfg = {container}(range(10000))\n{{Obj(cfg) for _ in range(20000)}}'
+    )
+    assert len(result) == snapshot(20000)
+
+
+# a leaf-first list exports each level before the next, so export's depth limit never trips
+DEEP_CHAIN = 'nodes = [()]\nfor _ in range(2000):\n    nodes.append((nodes[-1],))\n'
+
+
+@pytest.mark.parametrize(
+    'code',
+    [
+        # hashing each level as it is built keeps the sandbox's (cached) hash shallow
+        pytest.param('for t in nodes:\n    hash(t)\n(nodes, {nodes[-1]: None})', id='tuple'),
+        # the sandbox runs the body `__hash__`; the proxy hashes the field instead
+        pytest.param(
+            'from dataclasses import dataclass\n'
+            '@dataclass\nclass K:\n    value: object\n    def __hash__(self):\n        return 0\n'
+            '(nodes, {K(nodes[-1]): None})',
+            id='dataclass_field',
+        ),
+    ],
+)
+def test_deep_key_rejected(monty_run: RunMonty, code: str):
+    """A key nested too deeply for CPython's unguarded tuple hash, which
+    overflows the host's stack around 100,000 levels, is rejected before hashing."""
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(DEEP_CHAIN + code)
+    assert repr(exc_info.value) == snapshot(
+        'MontyRuntimeError(RecursionError: cannot convert the result to a Python value: maximum recursion depth exceeded while hashing a dict or set key)'
+    )
+
+
+def test_nested_tuple_key_under_depth_limit(monty_run: RunMonty):
+    """A key nested below the depth limit decodes."""
+    result = monty_run('t = ()\nfor _ in range(900):\n    t = (t,)\n{t: 1}')
+    assert list(result.values()) == snapshot([1])
+
+
 def test_undecodable_result_feed_start(session: MontySession):
-    complete = session.feed_start('class K:\n    pass\n{K(): 1}')
+    complete = session.feed_start(UNSET_FIELD_CODE)
     assert isinstance(complete, MontyComplete)
     with pytest.raises(MontyRuntimeError) as exc_info:
         complete.output
-    assert repr(exc_info.value) == PROXY_DICT_KEY_ERROR
+    assert repr(exc_info.value) == UNSET_FIELD_ERROR
 
 
 # === User-defined NamedTuple input ===
@@ -811,6 +1079,16 @@ def test_namedtuple_custom_input_repr(monty_run: RunMonty):
     result = monty_run('repr(item)', inputs={'item': Item(name='widget', price=9.99)})
     # Monty uses the full qualified name (module.ClassName) for the type
     assert result == snapshot("test_types.Item(name='widget', price=9.99)")
+
+
+def test_namedtuple_custom_input_builtin_module(monty_run: RunMonty):
+    """A NamedTuple from `builtins` or a private module crosses without a module prefix."""
+
+    class Item(NamedTuple):
+        name: str
+
+    Item.__module__ = 'builtins'
+    assert monty_run('repr(item)', inputs={'item': Item(name='widget')}) == snapshot("Item(name='widget')")
 
 
 def test_namedtuple_custom_input_len(monty_run: RunMonty):

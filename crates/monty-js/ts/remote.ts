@@ -39,7 +39,8 @@ export interface MontyRemoteOptions {
    * Called at each checkout for extra request metadata on that session's
    * stream, e.g. a short-lived auth token: lowercase ASCII names, ASCII
    * values. May return a promise. A resume after a server shutdown reuses
-   * the metadata of the original checkout.
+   * the metadata of the original checkout. With `preWarm` it is also called
+   * for each session the pool opens ahead of a checkout.
    */
   metadata?: () => Record<string, string> | Promise<Record<string, string>>
   /**
@@ -68,6 +69,21 @@ export interface MontyRemoteOptions {
    * default, unlike the subprocess `Monty`. See [starting calls without waiting](https://pydantic.dev/docs/monty/host-functions#starting-calls-without-waiting).
    */
   streamAsyncCalls?: boolean
+  /**
+   * Sessions kept open and ready (default 0), so a checkout takes one instead
+   * of opening a stream; each one taken is replaced in the background. They
+   * share `maxProcesses` with checked-out sessions, and a larger `preWarm`
+   * rejects `create()`. A checkout takes one only
+   * if `metadata` returned the same value for both; otherwise the ready
+   * sessions are closed and the checkout opens its own.
+   */
+  preWarm?: number
+  /**
+   * Whether `create()` waits for the `preWarm` sessions to open, rejecting if
+   * one cannot (default `true`). `false` opens them in the background, where
+   * a failed open is retried with a backoff and not raised.
+   */
+  preWarmWait?: boolean
 }
 
 /** Options for [`MontyRemote.checkout`]: the local options plus the server's session settings. */
@@ -84,8 +100,8 @@ export interface RemoteCheckoutOptions extends CheckoutOptions {
 /**
  * An async pool of remote `monty` workers reached over gRPC — the intended
  * peer is `monty-server`. The pool keeps one HTTP/2 connection to `url` and
- * each checkout opens a session stream on it; streams are never pre-warmed
- * or reused. The transport provides no isolation of its own: the server is
+ * each checkout opens a session stream on it, or takes one `preWarm` keeps
+ * ready; streams are never reused. The transport provides no isolation of its own: the server is
  * responsible for sandboxing. Also exported as `MontyWebsocket`, its deprecated former name.
  *
  * ```ts
@@ -109,7 +125,7 @@ export class MontyRemote {
    * Creates the pool. `url` is the server's `http://` or `https://` URL
    * (`ws://` and `wss://` are read as those two); an `https://` certificate
    * is verified against the operating system's trust store. Nothing is
-   * dialed until the first checkout.
+   * dialed until the first checkout, unless `preWarm` opens sessions here.
    */
   static async create(url: string, options: MontyRemoteOptions = {}): Promise<MontyRemote> {
     if (options.connectHeaders !== undefined && options.metadata !== undefined) {
@@ -132,8 +148,13 @@ export class MontyRemote {
       ...graceMs('turnDurationLimitGraceMs', options.turnDurationLimitGrace),
       autoResume: options.autoResume ?? true,
       streamAsyncCalls: options.streamAsyncCalls ?? true,
+      ...(options.preWarm !== undefined ? { preWarm: options.preWarm } : {}),
+      ...(options.preWarmWait !== undefined ? { preWarmWait: options.preWarmWait } : {}),
     })
-    await startPool(native)
+    // the pool calls this itself for each session it pre-warms
+    const preWarmMetadata =
+      metadata !== undefined && (options.preWarm ?? 0) > 0 ? async () => headerList(await metadata()) : undefined
+    await startPool(native, preWarmMetadata)
     return new MontyRemote(native, metadata)
   }
 

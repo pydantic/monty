@@ -436,10 +436,16 @@ instrument_telemetry(
 ```
 
 Each component is optional. A configured tracer records each checkout as a
-session span with nested feed and suspension spans. A logger records exceptions
+session span, and each feed as a span under the span it was called from, with
+nested suspension spans. A logger records exceptions
 and `print` output under those spans. An `AsyncMontyRemote` checkout also
 sends the active context as W3C `traceparent`/`tracestate` metadata on its
-session stream, so a server that honours them can join the same trace. A meter
+session stream, so a server that honours them can join the same trace. Each
+feed sends the `traceparent` of the span it was called from, when
+`opentelemetry-api` is installed and a span is current, whether or not
+instrumentation is installed. Against a server that records the session itself, a
+tracer records every span twice; pass only `meter=` there (and `logger=`, for
+Monty's logs) to keep client metrics. A meter
 records live, immediately available and host-blocked worker counts, checkout
 waits, worker deaths by reason, run durations and the sandbox execution time of
 each feed.

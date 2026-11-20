@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.dist.json",
+  "compilerOptions": {
+    "lib": ["ESNext"]
+  },
+  "files": ["smoke-test/node-wasm-types.ts"]
+}

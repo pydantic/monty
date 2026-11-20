@@ -2887,6 +2887,34 @@ async fn recycled_workers_are_replaced_in_the_background() {
     assert_eq!(seen.len(), 5);
 }
 
+/// `pre_warm` is a floor on idle workers, where `min_processes` is one on live
+/// ones: taking the ready worker starts its replacement.
+#[tokio::test]
+async fn pre_warm_keeps_idle_workers_ready_beyond_those_checked_out() {
+    let mut config = config();
+    config.min_processes = 1;
+    config.max_processes = 3;
+    let pool = Pool::new(config.clone()).await.unwrap();
+    let session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    // `min_processes` is met by the worker checked out, so nothing is spawned
+    sleep(Duration::from_millis(200)).await;
+    assert_eq!(pool.idle_workers(), 0);
+    session.finish().await.unwrap();
+
+    config.pre_warm = 2;
+    let pool = Pool::new(config).await.unwrap();
+    assert_eq!(pool.idle_workers(), 2);
+    let first = pool.checkout(&ReplConfig::default()).await.unwrap();
+    wait_for_idle(&pool, 2).await;
+    // at `max_processes` the floor gives way to the cap
+    let second = pool.checkout(&ReplConfig::default()).await.unwrap();
+    sleep(Duration::from_millis(200)).await;
+    assert_eq!(pool.idle_workers(), 1);
+    first.finish().await.unwrap();
+    second.finish().await.unwrap();
+    wait_for_idle(&pool, 3).await;
+}
+
 /// Workers lost to a crash or an abandoned checkout are replaced too.
 #[tokio::test]
 async fn crashed_and_dropped_workers_are_replaced() {
@@ -3013,6 +3041,35 @@ async fn typing_error_via_pool() {
         MontyObject::int(2)
     );
     session.finish().await.unwrap();
+}
+
+/// `prewarm_type_checker` reaches the worker: its pre-built checker is charged to the
+/// worker baseline, so a type-checked session runs within a 2 MiB budget a cold
+/// worker's first check alone exceeds.
+#[tokio::test]
+async fn prewarm_type_checker_runs_type_checked_sessions_in_a_small_budget() {
+    let pool = Pool::new(PoolConfig {
+        prewarm_type_checker: true,
+        max_processes: 1,
+        ..config()
+    })
+    .await
+    .unwrap();
+    let repl_config = ReplConfig {
+        type_check: true,
+        limits: Some(ResourceLimits::default().max_memory(2 * 1024 * 1024)),
+        ..ReplConfig::default()
+    };
+    // the second checkout reuses the worker, whose checker was rebuilt after the reset
+    for _ in 0..2 {
+        let mut session = pool.checkout(&repl_config).await.unwrap();
+        let event = session
+            .feed("x = 'a b'.split()\nlen(x)", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert_eq!(expect_complete(event), MontyObject::int(2));
+        session.finish().await.unwrap();
+    }
 }
 
 /// Security-critical: a reused worker's type checker must not let one

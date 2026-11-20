@@ -1609,6 +1609,29 @@ assert str(datetime.timezone.min) == 'UTC-23:59'
 # are allocated per access here but cached in CPython (see limitations).
 assert datetime.timezone.utc is datetime.timezone.utc
 
+# === Arithmetic across the full civil range ===
+
+assert datetime.date.min + (datetime.date.max - datetime.date.min) == datetime.date.max
+assert datetime.date.max - (datetime.date.max - datetime.date.min) == datetime.date.min
+assert datetime.date.max + datetime.timedelta(0) == datetime.date.max
+assert datetime.datetime.min + (datetime.datetime.max - datetime.datetime.min) == datetime.datetime.max
+assert datetime.datetime.max - (datetime.datetime.max - datetime.datetime.min) == datetime.datetime.min
+
+# === Aware arithmetic at the civil boundaries ===
+
+for _offset in [-86399, 86399]:
+    _tz = datetime.timezone(datetime.timedelta(seconds=_offset))
+    for _boundary, _seconds in [(datetime.datetime.min, -62135596800), (datetime.datetime.max, 253402300799)]:
+        _aware_boundary = _boundary.replace(tzinfo=_tz)
+        assert _aware_boundary + datetime.timedelta(0) == _aware_boundary
+        assert _aware_boundary - _aware_boundary == datetime.timedelta(0)
+        assert _aware_boundary.replace(microsecond=0).timestamp() == _seconds - _offset
+        assert {_aware_boundary: 42}[_aware_boundary.replace()] == 42
+    _first = datetime.datetime.min.replace(tzinfo=_tz)
+    _last = datetime.datetime.max.replace(tzinfo=_tz)
+    assert _last - _first == datetime.timedelta(days=3652058, seconds=86399, microseconds=999999)
+    assert _last - datetime.timedelta(microseconds=1) == _last.replace(microsecond=999998)
+
 # === fromtimestamp ===
 # Only aware results here: a naive result is the host's wall time, so those checks live
 # in datetime__zone_default.py, which Windows CPython skips.

@@ -75,7 +75,8 @@ test('standard OpenTelemetry components receive Monty telemetry', async (ctx) =>
   const [run, session] = spans
   t.is(session?.parentSpanContext?.spanId, parent.spanContext().spanId)
   t.is(session?.parentSpanContext?.isRemote, false)
-  t.is(run?.parentSpanContext?.spanId, session?.spanContext().spanId)
+  // the feed is a child of the span it was called under, not of the session
+  t.is(run?.parentSpanContext?.spanId, parent.spanContext().spanId)
   t.is(session?.attributes.script_name, 'calculation.py')
   const output = run?.attributes.output
   t.is(typeof output, 'string')
