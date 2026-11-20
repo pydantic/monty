@@ -212,6 +212,7 @@ Each is replaced when a checkout takes it; one checkout per session already open
 finds none dials for itself.
 The pool calls `pre_warm_metadata` for each one it dials, and a checkout takes one only if it was dialed with that
 checkout's `CheckoutOptions::metadata`; otherwise it closes the ready sessions unused and dials for itself.
+Leave `pre_warm` at 0 when one pool's checkouts send different metadata, such as per-user credentials.
 See [the security model](../security.md#remote-workers) before using it.
 
 ### Host decode budget

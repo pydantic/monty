@@ -36,6 +36,7 @@ it opens.
 contextvars.
 A checkout takes a ready session only if its own `metadata` call returned the same value.
 Otherwise it closes the ready sessions unused and opens its own, so `pre_warm` helps only while `metadata` is stable.
+Leave it off when one pool's checkouts send different metadata, such as per-user credentials.
 
 ## Connection loss and shutdown
 

@@ -1267,7 +1267,9 @@ class AsyncMontyRemote:
                 of these sessions, from a pool thread without the caller's
                 contextvars. A checkout takes one only if its own `metadata` call
                 returned the same value; otherwise it closes the ready sessions
-                and dials for itself, so this helps only while `metadata` is stable.
+                and dials for itself, so this helps only while `metadata` is stable:
+                leave it off when one pool's checkouts send different metadata,
+                such as per-user credentials.
             pre_warm_wait: `__aenter__` waits until the `pre_warm` sessions are
                 open, raising if one cannot open (the default); `False` opens them
                 in the background instead, where a failed open is retried with a

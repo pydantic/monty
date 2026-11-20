@@ -160,7 +160,8 @@ pub struct PoolConfig {
     /// Remote transport only: called for the request metadata of each
     /// [`Self::pre_warm`] session the pool dials; `None` sends none. A checkout whose
     /// [`CheckoutOptions::metadata`] differs closes those sessions and dials for itself,
-    /// at `max_processes` once the server has ended one of them.
+    /// at `max_processes` once the server has ended one of them, so leave `pre_warm`
+    /// at 0 when checkouts send different metadata.
     pub pre_warm_metadata: Option<MetadataFn>,
     /// Where pool and turn metrics are recorded, from
     /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).

@@ -422,7 +422,7 @@ stream is reused.
 `preWarm` keeps that many sessions open and ready so a checkout takes one instead of opening a stream; `create()` waits
 for them unless `preWarmWait` is `false`.
 The pool calls `metadata` for each one it opens, and a checkout takes one only if `metadata` returned the same value for
-both.
+both, so leave `preWarm` off when one pool's checkouts send different metadata, such as per-user credentials.
 Sessions are the same `MontySession` a local pool returns:
 
 ```ts test="skip"

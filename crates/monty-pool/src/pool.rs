@@ -164,6 +164,14 @@ impl Pool {
                 runtime: Handle::current(),
             }),
         };
+        let ready: Vec<_> = lock_ignore_poison(&pool.inner.state)
+            .idle
+            .iter_mut()
+            .filter_map(|worker| Some((worker.id, worker.take_ended()?)))
+            .collect();
+        for (id, ended) in ready {
+            pool.inner.evict_when_ended(id, ended);
+        }
         let workers = worker_count(total);
         pool.inner.record_worker_delta(workers, workers);
         if eager < pool.inner.config.pre_warm {
@@ -511,8 +519,31 @@ impl PoolInner {
         });
     }
 
+    /// Drops ready session `id` once the server ends its stream, refilling at
+    /// once rather than leaving the next checkout to find it dead. A session a
+    /// checkout took first is no longer idle, so its end is ignored here.
+    fn evict_when_ended(&self, id: u64, ended: oneshot::Receiver<()>) {
+        let pool = self.this.clone();
+        self.runtime.spawn(async move {
+            let _ = ended.await;
+            let Some(pool) = pool.upgrade() else { return };
+            let worker = {
+                let mut state = lock_ignore_poison(&pool.state);
+                let index = state.idle.iter().position(|worker| worker.id == id);
+                index.map(|index| state.idle.remove(index))
+            };
+            if let Some(worker) = worker {
+                drop(worker);
+                pool.count_termination("died_idle");
+                pool.record_worker_delta(0, -1);
+                pool.release_capacity();
+            }
+        });
+    }
+
     /// Records the death/retirement of a worker, freeing capacity for a
-    /// future spawn, and refills towards `pre_warm` and `min_processes`.
+    /// future spawn, and refills towards `pre_warm` and, for a subprocess
+    /// pool, `min_processes`.
     pub(crate) fn release_capacity(&self) {
         lock_ignore_poison(&self.state).total -= 1;
         self.available.notify_one();
@@ -611,11 +642,15 @@ async fn refill_one(pool: Weak<PoolInner>, config: PoolConfig, remote: Option<Ar
     // a closed pool kills a late worker, as `slot` then records
     if !state.closed {
         worker.id = id;
+        let ended = worker.take_ended();
         state.refilling -= 1;
         state.refill_failures = 0;
         state.idle.push(worker);
         drop(state);
         slot.filled = true;
+        if let Some(ended) = ended {
+            pool.evict_when_ended(id, ended);
+        }
         pool.available.notify_one();
         pool.record_worker_delta(0, 1);
     }

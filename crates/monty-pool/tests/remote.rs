@@ -4474,6 +4474,29 @@ async fn a_pre_warmed_session_the_server_closed_is_skipped() {
     join_server(server).await;
 }
 
+/// A ready session the server ends while it waits is replaced at once, with
+/// no checkout needed to find it dead.
+#[tokio::test]
+async fn a_pre_warmed_session_the_server_closes_is_replaced_without_a_checkout() {
+    let mock = MockServer::start().await;
+    let config = pre_warm_config(&mock, 1);
+    let (replaced, replaced_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        mock.accept().close(None);
+        // panics if the pool opens no replacement within the accept timeout
+        let mut replacement = mock.accept();
+        replaced.send(()).expect("report");
+        assert!(try_read_request(&mut replacement).is_none(), "closed unused");
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    spawn_blocking(move || replaced_rx.recv().expect("a replacement"))
+        .await
+        .expect("join");
+    pool.close().await;
+    join_server(server).await;
+}
+
 /// Metadata naming `token` as the bearer credential.
 fn bearer(token: &str) -> Vec<(String, String)> {
     vec![("authorization".to_owned(), format!("Bearer {token}"))]
