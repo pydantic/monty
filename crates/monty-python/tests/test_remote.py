@@ -862,8 +862,10 @@ async def test_checkout_retries_worker_capacity_once():
     assert caught.value.retry_after == snapshot(0.0)
 
 
-@pytest.mark.parametrize('hints', [('3',), ('0', '3')])
-async def test_checkout_does_not_wait_on_long_or_conflicting_hints(hints: tuple[str, ...]):
+@pytest.mark.parametrize('hints,expected_delay', [(('3',), 3.0), (('0', '3'), None)])
+async def test_checkout_does_not_wait_on_long_or_conflicting_hints(
+    hints: tuple[str, ...], expected_delay: float | None
+):
     attempts = 0
 
     async def behaviour(
@@ -883,7 +885,7 @@ async def test_checkout_does_not_wait_on_long_or_conflicting_hints(hints: tuple[
             async with asyncio.timeout(2), pool.checkout():
                 pass
     assert attempts == 1
-    assert caught.value.retry_after == float(hints[0])
+    assert caught.value.retry_after == expected_delay
 
 
 @pytest.mark.parametrize('checkout_timeout,request_timeout', [(1, 10), (10, 1), (None, 10)])

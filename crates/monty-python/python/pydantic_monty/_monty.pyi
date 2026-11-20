@@ -669,7 +669,7 @@ class MontyRefusedError(MontyError):
 
     @property
     def retry_after(self) -> float | None:
-        """Suggested delay in seconds from `Retry-After`, or `None` if absent or invalid.
+        """Suggested delay in seconds from a single valid `Retry-After`, or `None`.
 
         Both delay-seconds and HTTP dates are accepted. Past dates give zero;
         delays are capped at one hour.

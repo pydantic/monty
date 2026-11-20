@@ -166,6 +166,9 @@ fn conflicting_admission_trailers_cannot_schedule_a_retry() {
             .insert("x-monty-refusal-reason", "worker_capacity".parse().unwrap());
         status.metadata_mut().append(name, value.parse().unwrap());
         let refusal = RemoteDisconnect::from_refusal(&status);
+        if name == "retry-after" {
+            assert_eq!(refusal.retry_after, None);
+        }
         assert_eq!(
             admission_retry_delay(&status, &refusal, || Duration::ZERO),
             None,

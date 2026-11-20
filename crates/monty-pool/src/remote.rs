@@ -329,7 +329,7 @@ fn admission_retry_delay(
         .retry_after
         .filter(|&delay| delay <= MAX_ADMISSION_RETRY_AFTER)?;
     let metadata = status.metadata();
-    for name in ["retry-after", CAUSE_METADATA_KEY, "x-monty-refusal-reason"] {
+    for name in [CAUSE_METADATA_KEY, "x-monty-refusal-reason"] {
         if metadata.get_all(name).iter().nth(1).is_some() {
             return None;
         }
@@ -785,10 +785,12 @@ impl RemoteDisconnect {
     /// Classifies an admission refusal, keeping the server's `Retry-After`:
     /// retry hints mean nothing once a session exists.
     fn from_refusal(status: &Status) -> Self {
+        let hints = status.metadata().get_all("retry-after");
+        let mut hints = hints.iter();
         Self {
-            retry_after: status
-                .metadata()
-                .get("retry-after")
+            retry_after: hints
+                .next()
+                .filter(|_| hints.next().is_none())
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| retry_after(value, SystemTime::now())),
             ..Self::from_status(status)

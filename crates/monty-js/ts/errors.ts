@@ -286,9 +286,11 @@ export interface RefusalDetails {
  * The server gives details in `statusCode`,
  * `statusMessage` and `remoteCause`. No session existed, so
  * nothing ran. `retryable` identifies temporary refusals. `retryAfter` is
- * the server's suggested delay. The pool retries some refusals once within
- * the checkout and dial deadlines when the server supplies a delay of
- * at most two seconds. An unreachable server, an unexpected status such as
+ * the server's suggested delay. The pool retries selected temporary capacity
+ * and throttling refusals once when the server gives a delay of at most two
+ * seconds. Waiting and redialing share a five-second budget and the checkout
+ * and dial deadlines. A retry timeout rejects with the original refusal.
+ * An unreachable server, an unexpected status such as
  * `UNIMPLEMENTED`, or a non-gRPC response raises `MontyConnectError`.
  */
 export class MontyRefusedError extends MontyError {
@@ -300,7 +302,7 @@ export class MontyRefusedError extends MontyError {
   readonly remoteCause: string | null
   /** True for `RESOURCE_EXHAUSTED` or `UNAVAILABLE`; credentials must be fixed separately. */
   readonly retryable: boolean
-  /** Suggested delay in seconds, or `null` for absent or invalid `Retry-After`. */
+  /** Suggested delay in seconds from a single valid `Retry-After`, or `null`. */
   readonly retryAfter: number | null
 
   constructor(message: string, details: RefusalDetails = {}) {
