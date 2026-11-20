@@ -13,7 +13,7 @@ use super::{
     recursion::RunReentryGuard,
 };
 use crate::{
-    args::{ArgValues, KwargsValues, Signature},
+    args::{ArgValues, ExtendedBinding, KwargsValues, Signature},
     asyncio::Coroutine,
     builtins::{BuiltinsFunctions, BuiltinsFunctionsExt, object::takes_no_arguments},
     bytecode::{FrameExit, Opcode},
@@ -549,7 +549,7 @@ impl<'h> VM<'h> {
         Some(self.exec_call_function(arg_count))
     }
 
-    /// Binds a final `**dict` directly when the merge has no earlier keywords.
+    /// Binds a final `**dict` and any earlier keywords without constructing a merged dict.
     /// Validation leaves the inputs intact so the general path reports binding and merge errors.
     pub(super) fn try_call_unpacked_keywords(&mut self) -> Option<Result<CallResult, RunError>> {
         let ip = self.current_frame.ip;
@@ -570,8 +570,8 @@ impl<'h> VM<'h> {
         let HeapData::Dict(source) = self.heap.get(*source) else {
             return None;
         };
-        let kw_count = source.len();
-        if !merged.is_empty() || kw_count > Signature::MAX_DIRECT_KEYWORDS {
+        let kw_count = merged.len() + source.len();
+        if kw_count > Signature::MAX_DIRECT_KEYWORDS {
             return None;
         }
         let HeapData::Tuple(args) = self.heap.get(*args) else {
@@ -592,11 +592,15 @@ impl<'h> VM<'h> {
             _ => return None,
         };
         let func = self.interns.get_function(func_id);
-        if func.is_async || !func.cell_var_slots.is_empty() || !func.free_var_slots.is_empty() {
+        if func.signature.has_variadic_parameters()
+            || func.is_async
+            || !func.cell_var_slots.is_empty()
+            || !func.free_var_slots.is_empty()
+        {
             return None;
         }
 
-        let pairs = source.dense_pairs()?;
+        let pairs = merged.dense_pairs()?.chain(source.dense_pairs()?);
         let keys = pairs.clone().map(|(key, _)| key.as_str_heap(self.heap, self.interns));
         let mut slots = [0; Signature::MAX_DIRECT_KEYWORDS];
         let destinations = &mut slots[..kw_count];
@@ -644,6 +648,9 @@ impl<'h> VM<'h> {
         if let Some(result) = self.try_call_variadic_extended(has_kwargs) {
             return result;
         }
+        if has_kwargs && let Some(result) = self.try_call_bound_extended() {
+            return result;
+        }
 
         // Pop kwargs dict if present
         let kwargs = if has_kwargs { Some(self.pop()) } else { None };
@@ -656,6 +663,105 @@ impl<'h> VM<'h> {
 
         // Unpack and call
         self.call_function_extended(callable, args_tuple, kwargs)
+    }
+
+    /// Binds the compiler's private argument containers directly into a synchronous frame.
+    fn try_call_bound_extended(&mut self) -> Option<Result<CallResult, RunError>> {
+        let [callable, Value::Ref(args_id), Value::Ref(kwargs_id)] = self.stack.last_chunk::<3>()? else {
+            return None;
+        };
+        let (args_id, kwargs_id) = (*args_id, *kwargs_id);
+        let (func_id, globals) = match callable {
+            Value::DefFunction(id) => (*id, None),
+            Value::Ref(id) => match self.heap.get(*id) {
+                HeapData::FunctionDefaults(function) => (function.func_id, function.globals),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let func = self.interns.get_function(func_id);
+        if !func.signature.has_variadic_parameters()
+            || func.is_async
+            || !func.cell_var_slots.is_empty()
+            || !func.free_var_slots.is_empty()
+        {
+            return None;
+        }
+        let HeapData::Tuple(args) = self.heap.get(args_id) else {
+            return None;
+        };
+        let HeapData::Dict(kwargs) = self.heap.get(kwargs_id) else {
+            return None;
+        };
+        let positional_count = args.as_slice().len();
+        let keyword_count = kwargs.len();
+        if positional_count > usize::from(u8::MAX) || keyword_count > Signature::MAX_DIRECT_KEYWORDS {
+            return None;
+        }
+        let names = kwargs
+            .dense_pairs()?
+            .map(|(key, _)| key.as_str_heap(self.heap, self.interns));
+        let mut destinations = [0; Signature::MAX_DIRECT_KEYWORDS];
+        let destinations = &mut destinations[..keyword_count];
+        let binding = func
+            .signature
+            .extended_binding(positional_count, names, destinations, self.interns)?;
+        let stack_base = self.stack.len() - 3;
+        if let Err(error) = self.check_argument_stack_growth(stack_base + func.namespace_size) {
+            return Some(Err(error));
+        }
+
+        let mut items = match self.take_extended_positional(args_id) {
+            Ok(items) => items.into_iter(),
+            Err(error) => return Some(Err(error)),
+        };
+        let kwargs_owner = self.pop();
+        self.pop().drop_with(self);
+        let callable = self.pop();
+        self.stack.extend(items.by_ref().take(binding.positional_bound));
+        self.stack
+            .resize_with(stack_base + func.namespace_size, || Value::Undefined);
+        if let Some(slot) = binding.args_slot {
+            self.stack[stack_base + slot] = allocate_tuple(items.collect(), self.heap);
+        } else {
+            debug_assert_eq!(items.len(), 0);
+        }
+
+        let dict = self.heap.read_as::<Dict>(kwargs_id).expect("validated keyword dict");
+        if let Some(kwargs_slot) = binding.kwargs_slot {
+            // The accumulator already owns the extras in insertion order.
+            for (index, &slot) in destinations.iter().enumerate() {
+                if slot != ExtendedBinding::EXTRA_KEYWORD {
+                    let (key, value) = dict.get_mut(self.heap).take_keyword_at(index);
+                    key.drop_with(self.heap);
+                    self.stack[stack_base + usize::from(slot)] = value;
+                }
+            }
+            // Frame admission can release the captured dict on recursion failure.
+            drop(dict);
+            self.stack[stack_base + kwargs_slot] = kwargs_owner;
+        } else {
+            let keywords = mem::take(dict.get_mut(self.heap));
+            for ((key, value), &slot) in keywords.into_iter().zip(destinations.iter()) {
+                key.drop_with(self.heap);
+                self.stack[stack_base + usize::from(slot)] = value;
+            }
+            drop(dict);
+            kwargs_owner.drop_with(self);
+        }
+
+        let defaults = match &callable {
+            Value::Ref(id) => match self.heap.get(*id) {
+                HeapData::FunctionDefaults(function) => function.defaults.as_slice(),
+                _ => unreachable!("validated function with defaults"),
+            },
+            _ => &[],
+        };
+        func.signature
+            .fill_extended_defaults(&binding, &mut self.stack[stack_base..], defaults, self.heap);
+        let frame_namespace = function_namespace(globals, self.heap);
+        callable.drop_with(self);
+        Some(self.push_stack_function(func_id, func, stack_base, frame_namespace))
     }
 
     /// Installs the private unpacking containers directly for a variadic-only signature.
@@ -970,7 +1076,10 @@ impl<'h> VM<'h> {
     /// and keyword dicts are private to the call, so binding can take their owned values.
     fn take_extended_args(&mut self, args_tuple: &Value, kwargs: Option<Value>) -> RunResult<ArgValues> {
         let mut pending = DropGuard::new(kwargs, self);
-        let items = pending.ctx().take_extended_positional(args_tuple)?;
+        let Value::Ref(args_id) = args_tuple else {
+            unreachable!("unpacked positionals must be a tuple")
+        };
+        let items = pending.ctx().take_extended_positional(*args_id)?;
         let (kwargs, this) = pending.into_parts();
         let kwargs = kwargs.map_or(KwargsValues::Empty, |value| this.take_extended_keywords(value));
         Ok(match (items.len(), kwargs) {
@@ -990,13 +1099,10 @@ impl<'h> VM<'h> {
         })
     }
 
-    fn take_extended_positional(&mut self, args_tuple: &Value) -> RunResult<TupleVec> {
-        let Value::Ref(id) = args_tuple else {
-            unreachable!("unpacked positionals must be a tuple")
-        };
+    fn take_extended_positional(&mut self, id: HeapId) -> RunResult<TupleVec> {
         let tuple = self
             .heap
-            .read_as::<Tuple>(*id)
+            .read_as::<Tuple>(id)
             .expect("unpacked positionals must be a tuple");
         let len = tuple.get(self.heap).as_slice().len();
         if len == 0 {

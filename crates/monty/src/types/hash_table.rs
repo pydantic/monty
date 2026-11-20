@@ -306,6 +306,12 @@ impl<E: TableEntry> PyHashTable<E> {
         self.tombstone_at(slot.0)
     }
 
+    /// Takes an entry at a previously validated physical slot. Other slots keep their indices.
+    pub(crate) fn take_at(&mut self, index: usize) -> E {
+        assert!(self.get_live(index).is_some(), "{PROBE_SLOT_LIVE}");
+        self.tombstone_at(index)
+    }
+
     /// Validates `cursor`'s guards and yields the next live entry.
     ///
     /// For the heap-resident iterators, which keep their cursor in a different

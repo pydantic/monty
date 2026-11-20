@@ -23,7 +23,7 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     expressions::Identifier,
-    heap::{DropGuard, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData},
     intern::{Interns, StringId},
     resource_checks::check_estimated_size,
     types::{Dict, allocate_tuple},
@@ -141,6 +141,23 @@ enum BindMode {
     Complex,
 }
 
+/// Frame slots for a validated call whose positional tuple and keyword dict are already built.
+pub(crate) struct ExtendedBinding {
+    pub positional_bound: usize,
+    pub args_slot: Option<usize>,
+    pub kwargs_slot: Option<usize>,
+    missing: u32,
+}
+
+impl ExtendedBinding {
+    pub(crate) const EXTRA_KEYWORD: u8 = u8::MAX;
+}
+
+fn parameter_mask(count: usize) -> u32 {
+    let count = u32::try_from(count).expect("bounded parameter count");
+    u32::MAX.checked_shr(u32::BITS - count).unwrap_or(0)
+}
+
 impl Signature {
     pub(crate) const MAX_DIRECT_KEYWORDS: usize = u32::BITS as usize;
 
@@ -149,6 +166,107 @@ impl Signature {
         let args = self.var_args.is_some();
         let kwargs = self.var_kwargs.is_some();
         ((args || kwargs) && self.param_count() == 0).then_some((args, kwargs))
+    }
+
+    pub(crate) fn has_variadic_parameters(&self) -> bool {
+        self.var_args.is_some() || self.var_kwargs.is_some()
+    }
+
+    /// Maps keyword entries to parameter slots before any argument container is changed.
+    /// Invalid calls go through `bind` for the usual error ordering.
+    pub(crate) fn extended_binding<'a>(
+        &self,
+        positional_count: usize,
+        names: impl ExactSizeIterator<Item = Option<&'a str>>,
+        destinations: &mut [u8],
+        interns: &Interns,
+    ) -> Option<ExtendedBinding> {
+        let positional_only = self.pos_args.as_deref().unwrap_or_default();
+        let positional_names = self.args.as_deref().unwrap_or_default();
+        let keyword_only = self.kwargs.as_deref().unwrap_or_default();
+        let positional_slots = positional_only.len() + positional_names.len();
+        let args_slot = self.var_args.map(|_| positional_slots);
+        let keyword_base = positional_slots + usize::from(args_slot.is_some());
+        let keyword_end = keyword_base + keyword_only.len();
+        let kwargs_slot = self.var_kwargs.map(|_| keyword_end);
+        if keyword_end + usize::from(kwargs_slot.is_some()) > Self::MAX_DIRECT_KEYWORDS
+            || (positional_count > positional_slots && args_slot.is_none())
+        {
+            return None;
+        }
+        debug_assert_eq!(names.len(), destinations.len());
+        let positional_bound = positional_count.min(positional_slots);
+        let mut occupied = parameter_mask(positional_bound);
+        if let Some(slot) = args_slot {
+            occupied |= 1 << slot;
+        }
+
+        for (name, destination) in names.zip(destinations) {
+            let name = name?;
+            let matches = |param: &StringId| interns.get_str(*param) == name;
+            if positional_only.iter().any(matches) {
+                return None;
+            }
+            let slot = positional_names
+                .iter()
+                .position(matches)
+                .map(|index| positional_only.len() + index)
+                .or_else(|| keyword_only.iter().position(matches).map(|index| keyword_base + index));
+            let Some(slot) = slot else {
+                kwargs_slot?;
+                *destination = ExtendedBinding::EXTRA_KEYWORD;
+                continue;
+            };
+            let bit = 1 << slot;
+            if occupied & bit != 0 {
+                return None;
+            }
+            occupied |= bit;
+            *destination = u8::try_from(slot).ok()?;
+        }
+
+        let missing = parameter_mask(keyword_end) & !occupied;
+        let mut unchecked = missing;
+        while unchecked != 0 {
+            let slot = unchecked.trailing_zeros() as usize;
+            unchecked &= unchecked - 1;
+            self.extended_default_index(slot)?;
+        }
+        Some(ExtendedBinding {
+            positional_bound,
+            args_slot,
+            kwargs_slot,
+            missing,
+        })
+    }
+
+    /// Fills the optional parameter slots verified by `extended_binding`.
+    pub(crate) fn fill_extended_defaults(
+        &self,
+        binding: &ExtendedBinding,
+        slots: &mut [Value],
+        defaults: &[Value],
+        heap: &impl ContainsHeap,
+    ) {
+        let mut missing = binding.missing;
+        while missing != 0 {
+            let slot = missing.trailing_zeros() as usize;
+            missing &= missing - 1;
+            let index = self.extended_default_index(slot).expect("validated optional parameter");
+            slots[slot] = defaults[index].clone_with_heap(heap);
+        }
+    }
+
+    fn extended_default_index(&self, slot: usize) -> Option<usize> {
+        let positional_slots = self.pos_arg_count() + self.arg_count();
+        let positional_defaults = self.pos_defaults_count + self.arg_defaults_count;
+        if slot < positional_slots {
+            slot.checked_sub(positional_slots - positional_defaults)
+        } else {
+            let index = slot.checked_sub(positional_slots + usize::from(self.var_args.is_some()))?;
+            let default = self.kwarg_default_map.as_ref()?.get(index).copied().flatten()?;
+            Some(positional_defaults + default)
+        }
     }
 
     /// Returns the parameter count when positional arguments need no binding.
@@ -200,7 +318,7 @@ impl Signature {
     pub(crate) fn keyword_default_slots<K>(
         &self,
         pos_count: usize,
-        names: impl ExactSizeIterator<Item = K>,
+        names: impl Iterator<Item = K>,
         slots: &mut [u8],
         name_matches: impl Fn(&K, StringId) -> bool,
     ) -> Option<(usize, u32)> {
@@ -222,8 +340,7 @@ impl Signature {
             name_matches,
         )?;
 
-        let shift = u32::try_from(Self::MAX_DIRECT_KEYWORDS - remaining).ok()?;
-        let missing = u32::MAX.checked_shr(shift).unwrap_or(0) & !occupied;
+        let missing = parameter_mask(remaining) & !occupied;
         let first_missing = pos_count + missing.trailing_zeros() as usize;
         (first_missing >= self.required_positional_count()).then_some((remaining, missing))
     }
@@ -231,11 +348,11 @@ impl Signature {
     fn map_keyword_slots<K>(
         candidates: &[StringId],
         offset: usize,
-        names: impl ExactSizeIterator<Item = K>,
+        names: impl Iterator<Item = K>,
         slots: &mut [u8],
         name_matches: impl Fn(&K, StringId) -> bool,
     ) -> Option<u32> {
-        debug_assert_eq!(names.len(), slots.len());
+        debug_assert_eq!(names.size_hint(), (slots.len(), Some(slots.len())));
         debug_assert!(offset + candidates.len() <= Self::MAX_DIRECT_KEYWORDS);
 
         let mut occupied = 0_u32;

@@ -75,12 +75,41 @@ def set_flag():
 
 assert combined(1, *sequence, flag=set_flag(), **mapping) == (1, (2, 3), True, {'key': 40})
 assert sequence == [20, 3]
+assert combined(1, *sequence, flag=True, **{}) == (1, (20, 3), True, {})
+
+
+def fixed(head, next_value, tail, flag):
+    return head, next_value, tail, flag
+
+
+assert fixed(1, *[2], flag=True, **{'tail': 3}) == (1, 2, 3, True)
 
 try:
     combined(1, *sequence, flag=True, **{'flag': False})
     assert False, 'expected TypeError for a repeated keyword'
 except TypeError as e:
     assert e.args == ("combined() got multiple values for keyword argument 'flag'",)
+
+try:
+    combined(1, *sequence, **{'head': []})
+    assert False, 'expected TypeError for a keyword duplicating a positional argument'
+except TypeError as e:
+    assert e.args == ("combined() got multiple values for argument 'head'",)
+
+
+def with_default_slots(a=1, b=2, /, c=3, *rest, enabled=False, needed, payload=[], **unused):
+    return a, b, c, rest, enabled, needed, payload, unused
+
+
+result = with_default_slots(8, *(), **{'z': 40, 'needed': True, 'c': 30, 'q': 50})
+assert result == (8, 2, 30, (), False, True, [], {'z': 40, 'q': 50})
+assert list(result[-1]) == ['z', 'q']
+
+try:
+    with_default_slots(**{'unknown': []})
+    assert False, 'expected TypeError for a missing keyword-only parameter'
+except TypeError as e:
+    assert e.args == ("with_default_slots() missing 1 required keyword-only argument: 'needed'",)
 
 supplied = (1, 2)
 capture_args, capture_kwargs = f(*supplied, **mapping)

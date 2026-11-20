@@ -321,9 +321,16 @@ def recurse(a):
 def combined(a, *rest, flag=None, **extras):
     return a, rest, flag, extras
 
+def fixed(a, b, c, d):
+    return a
+
+def mixed_recurse(a, *rest, flag=None, **extras):
+    return mixed_recurse(a, *rest, flag=flag, **extras)
+
 assert first(**keywords)[0] is owner
 assert first(**keywords)[1] is owner
 assert combined(owner, *[owner], flag=owner, **{'extra': owner})[3]['extra'] is owner
+assert fixed(owner, *[owner], d=owner, **{'c': owner}) is owner
 
 try:
     first(**{'b': owner})
@@ -334,6 +341,13 @@ else:
 
 try:
     recurse(**keywords)
+except RecursionError:
+    pass
+else:
+    assert False
+
+try:
+    mixed_recurse(owner, *[owner], flag=owner, **{'extra': owner})
 except RecursionError:
     pass
 else:

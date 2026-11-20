@@ -842,6 +842,12 @@ impl Dict {
         )
     }
 
+    /// Removes one named argument from a private keyword dict, preserving the other slots' indices.
+    pub(crate) fn take_keyword_at(&mut self, index: usize) -> (Value, Value) {
+        let entry = self.table.take_at(index);
+        (entry.key, entry.value)
+    }
+
     /// Clones the pair after `cursor`, applying the dict iterator's guards.
     ///
     /// For Rust-side walks that run Python between steps and so cannot hold a
