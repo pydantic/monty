@@ -68,8 +68,6 @@ server's.
 This needs only `opentelemetry-api`, not `instrument_telemetry()`.
 Nothing is sent when `opentelemetry-api` is not installed or no span is current, and a server that names no span
 leaves callbacks in the caller's context.
-`metadata` is still sent once per session; a `traceparent` there names the span current at checkout, which a server
-uses as the parent of its session span.
 
 Against a server that records the session, calling `instrument_telemetry()` as well records every span twice, once
 on each side.

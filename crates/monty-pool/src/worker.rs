@@ -276,8 +276,9 @@ impl Worker {
                 w.send(body).await
             }
         };
-        // record only requests that hit the wire: a rejected oversize frame
-        // leaves the turn (and any pending suspension) exactly where it was
+        // a request not recorded before encoding is recorded only once it hit the
+        // wire: a rejected oversize frame leaves the turn (and any pending
+        // suspension) exactly where it was
         #[cfg(feature = "telemetry")]
         if let Ok(len) = result {
             if let (Some(recorder), false) = (&mut self.recorder, recorded) {
@@ -318,10 +319,12 @@ impl Worker {
             Some(pb::client_request::Kind::Feed(_) | pb::client_request::Kind::Load(_))
         );
         // the frame may grow by one `traceparent` field
-        let len = frame.map_or_else(|| request.encoded_len(), Message::encoded_len) + TRACEPARENT_FIELD_LEN;
-        let fits = u32::try_from(len).is_ok_and(|len| len <= MAX_FRAME_LEN);
+        let fits = || {
+            let len = frame.map_or_else(|| request.encoded_len(), Message::encoded_len) + TRACEPARENT_FIELD_LEN;
+            u32::try_from(len).is_ok_and(|len| len <= MAX_FRAME_LEN)
+        };
         match &mut self.recorder {
-            Some(recorder) if starts_turn && fits => {
+            Some(recorder) if starts_turn && fits() => {
                 if let Some(opening) = opening {
                     recorder.begin_session(opening);
                 }

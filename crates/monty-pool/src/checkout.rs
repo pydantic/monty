@@ -2917,11 +2917,6 @@ fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::Configure {
     }
 }
 
-/// The `monty.pool.session.resumed` outcome for a failed reload: `exhausted`
-/// (no pool capacity), `disconnected` (the new connection failed), `refused`
-/// (the relay rejected the load), `shutdown` (the new relay is shutting down
-/// too), `mismatch` (the reloaded state is not the one shut down), `configuration`
-/// (the new server is incompatible with the client settings) or `timeout`.
 /// The context a host callback runs under: `recorded` when it holds a span,
 /// else the remote span `traceparent` names.
 #[cfg(feature = "telemetry")]
@@ -2932,6 +2927,11 @@ fn callback_context(recorded: opentelemetry::Context, traceparent: Option<Tracep
     }
 }
 
+/// The `monty.pool.session.resumed` outcome for a failed reload: `exhausted`
+/// (no pool capacity), `disconnected` (the new connection failed), `refused`
+/// (the relay rejected the load), `shutdown` (the new relay is shutting down
+/// too), `mismatch` (the reloaded state is not the one shut down), `configuration`
+/// (the new server is incompatible with the client settings) or `timeout`.
 #[cfg(feature = "telemetry")]
 fn resume_failure(err: &PoolError) -> &'static str {
     match err {

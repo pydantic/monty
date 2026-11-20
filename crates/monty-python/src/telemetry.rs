@@ -153,12 +153,13 @@ pub(crate) fn callback_context(py: Python<'_>, context: &Context) -> Option<Py<P
 /// The caller's current span for a turn-starting call, read on the caller's task.
 ///
 /// Needs only `opentelemetry-api`: nothing is captured when it is not
-/// installed or no span is current.
+/// installed or no span is current. The module is read from `sys.modules`,
+/// since no span is current before it is imported and a failed import is slow.
 pub(crate) fn capture_turn_options(py: Python<'_>) -> TurnOptions {
     let traceparent = (|| {
-        let span_context = py
-            .import("opentelemetry.trace")
-            .ok()?
+        let modules = py.import("sys").ok()?.getattr("modules").ok()?;
+        let trace = modules.get_item("opentelemetry.trace").ok()?;
+        let span_context = trace
             .call_method0("get_current_span")
             .ok()?
             .call_method0("get_span_context")

@@ -176,6 +176,11 @@ impl TelemetryContext {
         self.logfire.clone()
     }
 
+    /// Whether a foreign SDK re-creates this checkout's spans.
+    pub(crate) fn has_adapter(&self) -> bool {
+        self.adapter.is_some()
+    }
+
     /// Maps a recorded span to the one a peer can name as a parent: itself
     /// without an adapter, else whatever the adapter's SDK exported it as.
     pub(crate) fn exported_span_context(&self, span: &SpanContext) -> Option<SpanContext> {

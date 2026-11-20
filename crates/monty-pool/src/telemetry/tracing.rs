@@ -607,6 +607,48 @@ impl Recorder {
         OpenSpan::new(span, cut)
     }
 
+    /// The span the turn `request` started, for the peer running it to parent
+    /// its own spans to: the feed's, or a `Load`'s.
+    pub(crate) fn turn_traceparent(&self, request: &pb::ClientRequest) -> Option<Traceparent> {
+        let span = match request.kind {
+            Some(pb::client_request::Kind::Feed(_)) => self.feed.as_ref().map(OpenSpan::span),
+            Some(pb::client_request::Kind::Load(_)) => self.turn.as_ref(),
+            _ => None,
+        }?;
+        self.exported(span)
+    }
+
+    /// Names this recorder's suspension spans on `event`, so the host answering
+    /// it parents its work to them. Leaves a span it cannot name as the peer set it.
+    pub(crate) fn stamp(&self, event: &mut pb::WorkerEvent) {
+        // a host bridging to its own SDK answers the event itself, under the recorded span
+        if self.exporter.as_ref().is_none_or(TelemetryContext::has_adapter) {
+            return;
+        }
+        match &mut event.kind {
+            Some(
+                pb::worker_event::Kind::FunctionCall(_)
+                | pb::worker_event::Kind::OsCall(_)
+                | pb::worker_event::Kind::NameLookup(_)
+                | pb::worker_event::Kind::ResolveFutures(_),
+            ) => {
+                let pending = self.pending.as_ref().and_then(|pending| self.exported(pending.span()));
+                if let Some(traceparent) = pending {
+                    event.traceparent = Some(traceparent.to_string());
+                }
+            }
+            Some(pb::worker_event::Kind::StreamedCalls(started)) => {
+                for call in &mut started.calls {
+                    let span = self.streamed_calls.get(&call.call_id);
+                    if let Some(traceparent) = span.and_then(|call| self.exported(call.span())) {
+                        call.traceparent = Some(traceparent);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// The parent for a turn or suspension span: the span a peer named in
     /// `traceparent`, else the innermost open span.
     fn parent(&self, traceparent: Option<Traceparent>) -> SpanParent {
@@ -644,44 +686,6 @@ impl Recorder {
     fn checkout_span_id(&self) -> Option<String> {
         let session = self.exported(self.session.as_ref()?)?;
         Some(format!("{:016x}", session.span_id()))
-    }
-
-    /// The span the turn `request` started, for the peer running it to parent
-    /// its own spans to: the feed's, or a `Load`'s.
-    pub(crate) fn turn_traceparent(&self, request: &pb::ClientRequest) -> Option<Traceparent> {
-        let span = match request.kind {
-            Some(pb::client_request::Kind::Feed(_)) => self.feed.as_ref().map(OpenSpan::span),
-            Some(pb::client_request::Kind::Load(_)) => self.turn.as_ref(),
-            _ => None,
-        }?;
-        self.exported(span)
-    }
-
-    /// Names this recorder's suspension spans on `event`, so the host answering
-    /// it parents its work to them. Leaves a span it cannot name as the peer set it.
-    pub(crate) fn stamp(&self, event: &mut pb::WorkerEvent) {
-        match &mut event.kind {
-            Some(
-                pb::worker_event::Kind::FunctionCall(_)
-                | pb::worker_event::Kind::OsCall(_)
-                | pb::worker_event::Kind::NameLookup(_)
-                | pb::worker_event::Kind::ResolveFutures(_),
-            ) => {
-                let pending = self.pending.as_ref().and_then(|pending| self.exported(pending.span()));
-                if let Some(traceparent) = pending {
-                    event.traceparent = Some(traceparent.to_string());
-                }
-            }
-            Some(pb::worker_event::Kind::StreamedCalls(started)) => {
-                for call in &mut started.calls {
-                    let span = self.streamed_calls.get(&call.call_id);
-                    if let Some(traceparent) = span.and_then(|call| self.exported(call.span())) {
-                        call.traceparent = Some(traceparent);
-                    }
-                }
-            }
-            _ => {}
-        }
     }
 
     fn context_span(&self) -> Span {

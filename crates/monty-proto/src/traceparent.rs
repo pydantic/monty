@@ -76,6 +76,7 @@ impl pb::ClientRequest {
         self.traceparent.as_deref().and_then(Traceparent::parse)
     }
 }
+
 impl pb::WorkerEvent {
     /// The sender's span for this suspension; `None` when unset or malformed.
     #[must_use]
