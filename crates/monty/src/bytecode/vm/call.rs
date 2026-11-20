@@ -4,7 +4,7 @@
 //! functions for executing function calls. The main entry points are the `exec_*`
 //! methods which are called from the VM's main dispatch loop.
 
-use std::{array, mem};
+use std::{array, mem, ops::Range};
 
 use monty_types::{MontyUuid, OsFunctionCall};
 
@@ -21,9 +21,9 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     frozen::FrozenFunction,
     function::{ExactPositionalCall, Function},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId},
     heap_data::CellValue,
-    intern::{FunctionId, StaticStrings, StringId},
+    intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::dataclasses,
     os_dispatch::{PendingEffect, release_pending_effect},
     py_value::PyValue,
@@ -34,6 +34,92 @@ use crate::{
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
+
+#[derive(Clone, Copy)]
+enum DirectReceiver {
+    None,
+    Stack,
+    Bound(HeapId),
+}
+
+impl DirectReceiver {
+    fn count(self) -> usize {
+        usize::from(!matches!(self, Self::None))
+    }
+
+    fn place(self, stack: &mut Vec<Value>, index: usize, heap: &Heap) -> Value {
+        match self {
+            Self::None => stack.remove(index),
+            Self::Stack => Value::Undefined,
+            Self::Bound(id) => {
+                heap.inc_ref(id);
+                mem::replace(&mut stack[index], Value::Ref(id))
+            }
+        }
+    }
+
+    fn take(self, owner: &mut Value, heap: &Heap) -> Option<Value> {
+        match self {
+            Self::None => None,
+            Self::Stack => Some(mem::replace(owner, Value::Undefined)),
+            Self::Bound(id) => {
+                heap.inc_ref(id);
+                Some(Value::Ref(id))
+            }
+        }
+    }
+}
+
+struct DirectCallTarget<'a> {
+    func_id: FunctionId,
+    defaults: &'a [Value],
+    globals: Option<HeapId>,
+    receiver: DirectReceiver,
+}
+
+impl<'a> DirectCallTarget<'a> {
+    fn function(value: &Value, receiver: DirectReceiver, heap: &'a Heap) -> Option<Self> {
+        let (func_id, defaults, globals) = match *value {
+            Value::DefFunction(id) => (id, &[][..], None),
+            Value::Ref(id) => match heap.get(id) {
+                HeapData::FunctionDefaults(function) => {
+                    (function.func_id, function.defaults.as_slice(), function.globals)
+                }
+                _ => return None,
+            },
+            _ => return None,
+        };
+        Some(Self {
+            func_id,
+            defaults,
+            globals,
+            receiver,
+        })
+    }
+
+    /// Resolves an ordinary instance method or a previously bound method without running Python.
+    fn method(value: &Value, name: Option<StringId>, heap: &'a Heap, interns: &Interns) -> Option<Self> {
+        match (heap.get(value.ref_id()?), name) {
+            (HeapData::Instance(instance), Some(name)) => {
+                let name = interns.get_str(name);
+                if matches!(name, "__new__" | "__init_subclass__") {
+                    return None;
+                }
+                let (member, from_class) = instance.lookup_call_member(name, heap, interns)?;
+                let receiver = if from_class {
+                    DirectReceiver::Stack
+                } else {
+                    DirectReceiver::None
+                };
+                Self::function(member, receiver, heap)
+            }
+            (HeapData::BoundMethod(bound), None) => {
+                Self::function(&bound.func, DirectReceiver::Bound(bound.instance.ref_id()?), heap)
+            }
+            _ => None,
+        }
+    }
+}
 
 /// Result of executing a call or attribute method.
 ///
@@ -227,8 +313,12 @@ impl<'h> VM<'h> {
         callable_index: usize,
         arg_count: usize,
     ) -> Option<Result<CallResult, RunError>> {
-        let HeapData::FunctionDefaults(function) = self.heap.get(id) else {
-            return None;
+        let function = match self.heap.get(id) {
+            HeapData::FunctionDefaults(function) => function,
+            HeapData::BoundMethod(_) => {
+                return self.try_call_stack_method(None, arg_count, 0);
+            }
+            _ => return None,
         };
         let func_id = function.func_id;
         let func = self.interns.get_function(func_id);
@@ -408,8 +498,12 @@ impl<'h> VM<'h> {
     ) -> Option<Result<CallResult, RunError>> {
         const EMPTY: u8 = u8::MAX;
 
-        let HeapData::FunctionDefaults(function) = self.heap.get(id) else {
-            return None;
+        let function = match self.heap.get(id) {
+            HeapData::FunctionDefaults(function) => function,
+            HeapData::BoundMethod(_) => {
+                return self.try_call_stack_method(None, pos_count, names.len());
+            }
+            _ => return None,
         };
         let func_id = function.func_id;
         let func = self.interns.get_function(func_id);
@@ -430,16 +524,7 @@ impl<'h> VM<'h> {
         self.stack.resize_with(keyword_base + remaining, || Value::Undefined);
         let values = &mut self.stack[keyword_base..];
 
-        // Swapping into an empty slot ends a chain. Cycles end when the starting slot is filled.
-        for index in 0..kw_count {
-            let mut destination = destinations[index];
-            while destination != EMPTY && usize::from(destination) != index {
-                let slot = usize::from(destination);
-                values.swap(index, slot);
-                destinations.swap(index, slot);
-                destination = destinations[index];
-            }
-        }
+        move_keyword_values(values, &mut destinations, kw_count);
         fill_default_slots(values, &function.defaults, missing, self.heap);
 
         let frame_namespace = function_namespace(function.globals, self.heap);
@@ -453,9 +538,13 @@ impl<'h> VM<'h> {
     /// Pops the object and arguments from the stack, calls the attribute,
     /// and returns a `CallResult` which may indicate an OS or external call.
     pub(super) fn exec_call_attr(&mut self, name_id: StringId, arg_count: usize) -> Result<CallResult, RunError> {
+        let mut receiver = None;
+        if let Some(result) = self.try_call_instance_attr(name_id, arg_count, 0, &mut receiver) {
+            return result;
+        }
         let args = self.pop_n_args(arg_count);
         let obj = self.pop();
-        self.call_attr(obj, name_id, args)
+        self.call_resolved_attr(obj, name_id, args, receiver)
     }
 
     /// Executes `CallAttrKw` opcode.
@@ -470,6 +559,10 @@ impl<'h> VM<'h> {
         pos_count: usize,
         kw_count: usize,
     ) -> Result<CallResult, RunError> {
+        let mut receiver = None;
+        if let Some(result) = self.try_call_instance_attr(name_id, pos_count, kw_count, &mut receiver) {
+            return result;
+        }
         // Pop keyword values (TOS is last kwarg value)
         let kw_values = self.pop_n(kw_count);
 
@@ -498,7 +591,89 @@ impl<'h> VM<'h> {
             }
         };
 
-        self.call_attr(obj, name_id, args)
+        self.call_resolved_attr(obj, name_id, args, receiver)
+    }
+
+    /// Reuses the receiver's normal dispatch view on the fallback path.
+    fn try_call_instance_attr(
+        &mut self,
+        name_id: StringId,
+        pos_count: usize,
+        kw_count: usize,
+        receiver: &mut Option<PyValue<'h>>,
+    ) -> Option<RunResult<CallResult>> {
+        let stack_base = self.stack.len() - 1 - pos_count - kw_count;
+        let view = self.stack[stack_base].py_value(self);
+        if matches!(view, PyValue::Instance(_)) {
+            // Direct binding can consume the receiver's stack owner.
+            drop(view);
+            self.try_call_stack_method(Some(name_id), pos_count, kw_count)
+        } else {
+            *receiver = Some(view);
+            None
+        }
+    }
+
+    fn try_call_stack_method(
+        &mut self,
+        name: Option<StringId>,
+        pos_count: usize,
+        kw_count: usize,
+    ) -> Option<RunResult<CallResult>> {
+        if kw_count > Signature::MAX_DIRECT_KEYWORDS {
+            return None;
+        }
+        let stack_base = self.stack.len() - 1 - pos_count - kw_count;
+        let DirectCallTarget {
+            func_id,
+            defaults,
+            globals,
+            receiver,
+        } = DirectCallTarget::method(&self.stack[stack_base], name, self.heap, self.interns)?;
+        let func = self.interns.get_function(func_id);
+        if func.is_async || !func.cell_var_slots.is_empty() || !func.free_var_slots.is_empty() {
+            return None;
+        }
+        let pos_count = pos_count + receiver.count();
+        let end = self.current_frame.ip + 2 * kw_count;
+        if kw_count == 0 {
+            let defaults = func.signature.trailing_positional_defaults(pos_count, defaults)?;
+            self.check_argument_stack_growth(stack_base + func.namespace_size)
+                .ok()?;
+            let owner = receiver.place(&mut self.stack, stack_base, self.heap);
+            self.stack
+                .extend(defaults.iter().map(|value| value.clone_with_heap(self.heap)));
+            let namespace = function_namespace(globals, self.heap);
+            owner.drop_with(self);
+            return Some(self.push_stack_function(func_id, func, stack_base, namespace));
+        }
+        let names = self
+            .current_frame
+            .bytecode
+            .get(self.current_frame.ip..end)?
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&bytes| StringId::from_index(u16::from_le_bytes(bytes)));
+        let mut destinations = [u8::MAX; Signature::MAX_DIRECT_KEYWORDS];
+        let (remaining, missing) = func.signature.keyword_default_slots(
+            pos_count,
+            names,
+            &mut destinations[..kw_count],
+            |name, parameter| *name == parameter,
+        )?;
+        self.check_argument_stack_growth(stack_base + func.namespace_size)
+            .ok()?;
+        let owner = receiver.place(&mut self.stack, stack_base, self.heap);
+        let keyword_base = stack_base + pos_count;
+        self.stack.resize_with(keyword_base + remaining, || Value::Undefined);
+        let values = &mut self.stack[keyword_base..];
+        move_keyword_values(values, &mut destinations, kw_count);
+        fill_default_slots(values, defaults, missing, self.heap);
+        let namespace = function_namespace(globals, self.heap);
+        owner.drop_with(self);
+        self.current_frame.ip = end;
+        Some(self.push_stack_function(func_id, func, stack_base, namespace))
     }
 
     /// Finishes a positional unpacked call directly from list or tuple storage.
@@ -506,13 +681,19 @@ impl<'h> VM<'h> {
     /// and call, so no later argument evaluation can mutate the source before copying.
     pub(super) fn try_call_unpacked_sequence(&mut self) -> Option<Result<CallResult, RunError>> {
         let ip = self.current_frame.ip;
-        if !self.current_frame.bytecode.get(ip..)?.starts_with(&[
-            Opcode::ListToTuple as u8,
-            Opcode::CallFunctionExtended as u8,
-            0,
-        ]) {
-            return None;
-        }
+        let (method, end) = match self.current_frame.bytecode.get(ip..)? {
+            [convert, call, 0, ..]
+                if *convert == Opcode::ListToTuple as u8 && *call == Opcode::CallFunctionExtended as u8 =>
+            {
+                (None, ip + 3)
+            }
+            [convert, call, low, high, 0, ..]
+                if *convert == Opcode::ListToTuple as u8 && *call == Opcode::CallAttrExtended as u8 =>
+            {
+                (Some(StringId::from_index(u16::from_le_bytes([*low, *high]))), ip + 5)
+            }
+            _ => return None,
+        };
         let [_, Value::Ref(prefix_id), Value::Ref(source_id)] = self.stack.last_chunk::<3>()? else {
             return None;
         };
@@ -545,8 +726,11 @@ impl<'h> VM<'h> {
         (source_owner, prefix_owner).drop_with(self);
 
         self.instruction_ip = ip + 1;
-        self.current_frame.ip = ip + 3;
-        Some(self.exec_call_function(arg_count))
+        self.current_frame.ip = end;
+        Some(match method {
+            Some(name) => self.exec_call_attr(name, arg_count),
+            None => self.exec_call_function(arg_count),
+        })
     }
 
     /// Binds a final `**dict` and any earlier keywords without constructing a merged dict.
@@ -642,6 +826,217 @@ impl<'h> VM<'h> {
             check_estimated_size(capacity.saturating_mul(VALUE_SIZE), &self.heap.tracker)?;
         }
         Ok(())
+    }
+
+    /// Calls with a single local `**dict` without constructing a keyword accumulator.
+    /// At ListExtend the sequence can stay borrowed because the tail only loads a local.
+    pub(super) fn try_call_local_unpack(&mut self, from_sequence: bool) -> Option<Result<CallResult, RunError>> {
+        let code = self.current_frame.bytecode;
+        let mut ip = self.current_frame.ip;
+        if from_sequence {
+            if !code
+                .get(ip..)?
+                .starts_with(&[Opcode::ListToTuple as u8, Opcode::BuildDict as u8, 0, 0])
+            {
+                return None;
+            }
+            ip += 4;
+        }
+        let load = *code.get(ip)?;
+        let (slot, merge_ip) = if (Opcode::LoadLocal0 as u8..=Opcode::LoadLocal3 as u8).contains(&load) {
+            (u16::from(load - Opcode::LoadLocal0 as u8), ip + 1)
+        } else if load == Opcode::LoadLocal as u8 {
+            (u16::from(*code.get(ip + 1)?), ip + 2)
+        } else if load == Opcode::LoadLocalW as u8 {
+            (u16::from_le_bytes(code.get(ip + 1..ip + 3)?.try_into().ok()?), ip + 3)
+        } else {
+            return None;
+        };
+        let call_ip = merge_ip + 3;
+        let (method, end) = match (*code.get(merge_ip)?, code.get(call_ip..)?) {
+            (merge, [call, 1, ..])
+                if merge == Opcode::DictMerge as u8 && *call == Opcode::CallFunctionExtended as u8 =>
+            {
+                (None, call_ip + 2)
+            }
+            (merge, [call, low, high, 1, ..])
+                if merge == Opcode::MethodDictMerge as u8 && *call == Opcode::CallAttrExtended as u8 =>
+            {
+                (
+                    Some(StringId::from_index(u16::from_le_bytes([*low, *high]))),
+                    call_ip + 4,
+                )
+            }
+            _ => return None,
+        };
+
+        let argc = 2 + usize::from(from_sequence);
+        let stack_base = self.stack.len().checked_sub(argc)?;
+        let local = self.current_frame.stack_base() + usize::from(slot);
+        if local >= stack_base {
+            return None;
+        }
+        let Value::Ref(kwargs_id) = self.stack[local] else {
+            return None;
+        };
+        if method.is_some()
+            || matches!(self.stack[stack_base], Value::Ref(id) if matches!(self.heap.get(id), HeapData::BoundMethod(_)))
+        {
+            self.bind_local_unpack::<true>(from_sequence, stack_base, kwargs_id, method, call_ip..end)
+        } else {
+            self.bind_local_unpack::<false>(from_sequence, stack_base, kwargs_id, None, call_ip..end)
+        }
+    }
+
+    fn bind_local_unpack<const METHOD: bool>(
+        &mut self,
+        from_sequence: bool,
+        stack_base: usize,
+        kwargs_id: HeapId,
+        method: Option<StringId>,
+        call: Range<usize>,
+    ) -> Option<RunResult<CallResult>> {
+        let HeapData::Dict(kwargs) = self.heap.get(kwargs_id) else {
+            return None;
+        };
+        let kw_count = kwargs.len();
+        if kw_count > Signature::MAX_DIRECT_KEYWORDS {
+            return None;
+        }
+        let callable = &self.stack[stack_base];
+        let target = if METHOD {
+            DirectCallTarget::method(callable, method, self.heap, self.interns)
+        } else {
+            DirectCallTarget::function(callable, DirectReceiver::None, self.heap)
+        }?;
+        let DirectCallTarget {
+            func_id,
+            defaults,
+            globals,
+            receiver,
+        } = target;
+        let func = self.interns.get_function(func_id);
+        if func.is_async || !func.cell_var_slots.is_empty() || !func.free_var_slots.is_empty() {
+            return None;
+        }
+        let Value::Ref(container_id) = self.stack[stack_base + 1] else {
+            return None;
+        };
+        let pos_args = if from_sequence {
+            let HeapData::List(prefix) = self.heap.get(container_id) else {
+                return None;
+            };
+            if !prefix.as_slice().is_empty() {
+                return None;
+            }
+            let Value::Ref(source_id) = self.stack[stack_base + 2] else {
+                return None;
+            };
+            match self.heap.get(source_id) {
+                HeapData::Tuple(tuple) => tuple.as_slice(),
+                HeapData::List(list) => list.as_slice(),
+                _ => return None,
+            }
+        } else {
+            let HeapData::Tuple(args) = self.heap.get(container_id) else {
+                return None;
+            };
+            args.as_slice()
+        };
+        if pos_args.len() > usize::from(u8::MAX) {
+            return None;
+        }
+        let pos_count = pos_args.len() + receiver.count();
+
+        let pairs = kwargs.dense_pairs()?;
+        let mut slots = [0; Signature::MAX_DIRECT_KEYWORDS];
+        let destinations = &mut slots[..kw_count];
+        let binding = if func.signature.use_hashed_keyword_plan(kw_count, pos_count) {
+            func.signature.planned_extended_binding(
+                pos_count,
+                kwargs.dense_hashed_keys()?,
+                destinations,
+                self.heap,
+                self.interns,
+            )
+        } else {
+            func.signature.bind_compact_keywords(
+                pos_count,
+                pairs.clone().map(|(key, _)| key),
+                destinations,
+                self.heap,
+                self.interns,
+            )
+        }?;
+        #[expect(clippy::naive_bytecount, reason = "At most 32 keyword slots")]
+        let extra_keywords = destinations
+            .iter()
+            .filter(|&&slot| slot == ExtendedBinding::EXTRA_KEYWORD)
+            .count();
+        let entry_bytes = 2 * VALUE_SIZE + size_of::<u64>() + 3 * size_of::<usize>();
+        self.check_argument_stack_growth(stack_base + func.namespace_size)
+            .ok()?;
+        check_estimated_size(extra_keywords * entry_bytes, &self.heap.tracker).ok()?;
+        let extra_positionals = pos_count - binding.positional_bound;
+        let reuse_capture_tuple = !from_sequence && receiver.count() == 0 && binding.positional_bound == 0;
+        let bind_receiver = receiver.count() != 0 && binding.positional_bound != 0;
+        let bound_positionals = binding.positional_bound - usize::from(bind_receiver);
+        if !reuse_capture_tuple {
+            check_estimated_size(extra_positionals * VALUE_SIZE, &self.heap.tracker).ok()?;
+        }
+
+        let source_owner = from_sequence.then(|| self.stack.pop().expect("unpack source"));
+        let mut container_owner = self.stack.pop().expect("positional accumulator");
+        let mut callable = self.stack.pop().expect("unpack callable");
+        let mut receiver = receiver.take(&mut callable, self.heap);
+        if bind_receiver {
+            self.stack.push(receiver.take().expect("bound receiver"));
+        }
+        self.stack.extend(
+            pos_args[..bound_positionals]
+                .iter()
+                .map(|value| value.clone_with_heap(self.heap)),
+        );
+        self.stack
+            .resize_with(stack_base + func.namespace_size, || Value::Undefined);
+        if let Some(slot) = binding.args_slot {
+            self.stack[stack_base + slot] = if reuse_capture_tuple {
+                mem::replace(&mut container_owner, Value::Undefined)
+            } else {
+                let items = receiver
+                    .take()
+                    .into_iter()
+                    .chain(
+                        pos_args[bound_positionals..]
+                            .iter()
+                            .map(|value| value.clone_with_heap(self.heap)),
+                    )
+                    .collect();
+                allocate_tuple(items, self.heap)
+            };
+        }
+        for ((_, value), &mut slot) in pairs.zip(destinations.iter_mut()) {
+            if slot != ExtendedBinding::EXTRA_KEYWORD {
+                self.stack[stack_base + usize::from(slot)] = value.clone_with_heap(self.heap);
+            }
+        }
+        if let Some(slot) = binding.kwargs_slot {
+            let extras = destinations
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &slot)| (slot == ExtendedBinding::EXTRA_KEYWORD).then_some(index));
+            let dict = kwargs.copy_dense_keywords(extras, extra_keywords, self.heap);
+            self.stack[stack_base + slot] = Value::Ref(self.heap.allocate(HeapData::Dict(dict)));
+        }
+        func.signature
+            .fill_extended_defaults(&binding, &mut self.stack[stack_base..], defaults, self.heap);
+        let frame_namespace = function_namespace(globals, self.heap);
+        debug_assert!(receiver.is_none());
+        (source_owner, (container_owner, callable)).drop_with(self);
+
+        self.instruction_ip = call.start;
+        self.current_frame.ip = call.end;
+        Some(self.push_stack_function(func_id, func, stack_base, frame_namespace))
     }
 
     /// Executes `CallFunctionExtended` opcode.
@@ -928,24 +1323,32 @@ impl<'h> VM<'h> {
     /// arms in their `py_call_attr` body. New dunder methods plug into the
     /// dispatch table here without touching individual types.
     pub(crate) fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<CallResult, RunError> {
+        self.call_resolved_attr(obj, name_id, args, None)
+    }
+
+    fn call_resolved_attr(
+        &mut self,
+        obj: Value,
+        name_id: StringId,
+        args: ArgValues,
+        receiver: Option<PyValue<'h>>,
+    ) -> RunResult<CallResult> {
         let this = self;
-        let attr = EitherStr::Interned(name_id);
-
-        // Centralised dunder dispatch — see `dispatch_dunder`. Wrap `args`
-        // in an `Option` so the helper can `take()` it only when it
-        // actually matches a dunder; on the fall-through path the
-        // original `args` is still owned here and goes into `py_call_attr`.
-        let mut args_slot = Some(args);
-        if let Value::Ref(heap_id) = obj
-            && let Some(result) = dispatch_dunder(name_id, heap_id, this, &mut args_slot)
-        {
-            defer_drop!(obj, this);
-            return result;
-        }
-        let args = args_slot.expect("dispatch_dunder returned None without taking args");
-
         defer_drop!(obj, this);
-        obj.py_value(this).py_call_attr(this, &attr, args)
+        let mut receiver = receiver.unwrap_or_else(|| obj.py_value(this));
+        if matches!(obj, Value::Ref(_)) {
+            match this.interns.static_string(name_id) {
+                Some(StaticStrings::Enter) if !matches!(receiver, PyValue::Instance(_)) => {
+                    args.check_zero_args("__enter__", this.heap)?;
+                    return receiver.py_enter(this);
+                }
+                Some(StaticStrings::Exit) if !matches!(receiver, PyValue::Instance(_)) => {
+                    return dispatch_exit(&mut receiver, this, args);
+                }
+                _ => {}
+            }
+        }
+        receiver.py_call_attr(this, &EitherStr::Interned(name_id), args)
     }
 
     /// Evaluates a function in a synchronous position that cannot suspend to the host.
@@ -1787,6 +2190,19 @@ fn fill_default_slots(values: &mut [Value], defaults: &[Value], mut missing: u32
     }
 }
 
+/// Moves explicit keyword operands to their validated slots.
+fn move_keyword_values(values: &mut [Value], destinations: &mut [u8], keyword_count: usize) {
+    for index in 0..keyword_count {
+        let mut destination = destinations[index];
+        while destination != u8::MAX && usize::from(destination) != index {
+            let slot = usize::from(destination);
+            values.swap(index, slot);
+            destinations.swap(index, slot);
+            destination = destinations[index];
+        }
+    }
+}
+
 /// Asserts a callable popped off the stack by an exact-positional-call fast
 /// path is the function that fast path was chosen for.
 ///
@@ -1795,54 +2211,6 @@ fn fill_default_slots(values: &mut [Value], defaults: &[Value], mut missing: u32
 /// dispatched on its `FunctionId` in [`VM::try_call_exact_def_function`].
 fn debug_assert_exact_callable(callable: &Value, func_id: FunctionId) {
     debug_assert!(matches!(callable, Value::DefFunction(id) if *id == func_id));
-}
-
-/// Centralised dunder dispatch for `__enter__` / `__exit__` (and, when added,
-/// any other dunder that maps to a [`PyTrait`] method).
-///
-/// Returns `Some(result)` when `name_id` names a recognised dunder — `args`
-/// is taken out of the slot and consumed. Returns `None` when it isn't —
-/// `args` is left untouched in the slot so the caller can hand it off to
-/// the regular `py_call_attr` dispatch.
-///
-/// The `&mut Option<ArgValues>` shape is what keeps "all the recognition
-/// and dispatch logic in one function" honest: `args` is non-`Copy` and
-/// has a `Drop` impl that panics on stray `Ref` values, so it can only be
-/// passed by value once we know we'll consume it.
-///
-/// Adding a new dunder is just a new arm in the inner `match`; type
-/// implementations only need to override the corresponding `PyTrait`
-/// method, never a `StaticStrings::Foo` arm in their `py_call_attr`.
-fn dispatch_dunder(
-    name_id: StringId,
-    heap_id: HeapId,
-    vm: &mut VM<'_>,
-    args: &mut Option<ArgValues>,
-) -> Option<Result<CallResult, RunError>> {
-    let static_str = vm.interns.static_string(name_id)?;
-    // User-defined instances are never intercepted: an explicit
-    // `obj.__enter__()` / `obj.__exit__(a, b, c)` on an instance is an
-    // ordinary method call in CPython — the instance `__dict__` can shadow
-    // the class method and the arguments must reach the user function
-    // verbatim (the trait hooks reduce them to an `Option<HeapId>`, which
-    // is lossy). The `with` statement still uses the trait hooks via the
-    // `BeforeWith`/`WithExit`/`WithExceptStart` opcodes, which perform the
-    // CPython type-level (class-only) lookup.
-    if matches!(vm.heap.get(heap_id), HeapData::Instance(_)) {
-        return None;
-    }
-    Some(match static_str {
-        StaticStrings::Enter => {
-            let args = args.take().expect("dispatch_dunder called with empty args slot");
-            args.check_zero_args("__enter__", vm.heap)
-                .and_then(|()| PyValue::from_heap(heap_id, vm.heap).py_enter(vm))
-        }
-        StaticStrings::Exit => {
-            let args = args.take().expect("dispatch_dunder called with empty args slot");
-            dispatch_exit(heap_id, vm, args)
-        }
-        _ => return None,
-    })
 }
 
 /// Direct `obj.__exit__(typ, val, tb)` invocation.
@@ -1864,7 +2232,7 @@ fn dispatch_dunder(
 /// `typ` and `tb` are discarded: every implementation we have re-derives the
 /// type from `val` and Monty has no traceback objects (see
 /// `limitations/with.md`).
-fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<CallResult, RunError> {
+fn dispatch_exit<'h>(receiver: &mut PyValue<'h>, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
     let positional = args.into_pos_only("__exit__", vm.heap)?;
     defer_drop!(positional, vm);
     let [typ, val, tb] = positional.as_slice() else {
@@ -1875,7 +2243,7 @@ fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<Ca
         Value::Ref(id) => Some(*id),
         _ => None,
     };
-    PyValue::from_heap(heap_id, vm.heap).py_exit(vm, exc)
+    receiver.py_exit(vm, exc)
 }
 
 /// What a Python function value is called with: its id, captured cells, owned

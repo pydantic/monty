@@ -23,7 +23,7 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     expressions::Identifier,
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData},
     intern::{Interns, StringId},
     resource_checks::check_estimated_size,
     types::{Dict, allocate_tuple},
@@ -114,6 +114,9 @@ pub(crate) struct Signature {
     /// that loads it.
     #[serde(skip)]
     bind_mode: OnceCell<BindMode>,
+    /// Lazily derived from parameter names and slot layout.
+    #[serde(skip)]
+    keyword_plan: OnceCell<Option<Box<KeywordCallPlan>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,7 +144,7 @@ enum BindMode {
     Complex,
 }
 
-/// Frame slots for a validated call whose positional tuple and keyword dict are already built.
+/// Frame slots for a validated unpacked call.
 pub(crate) struct ExtendedBinding {
     pub positional_bound: usize,
     pub args_slot: Option<usize>,
@@ -153,6 +156,29 @@ impl ExtendedBinding {
     pub(crate) const EXTRA_KEYWORD: u8 = u8::MAX;
 }
 
+#[derive(Debug, Clone)]
+struct KeywordCallPlan {
+    table: Box<[KeywordParameter]>,
+    positional_only: usize,
+    positional: usize,
+    args_slot: Option<usize>,
+    kwargs_slot: Option<usize>,
+    required: u32,
+    defaults: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct KeywordParameter {
+    hash: u64,
+    name: StringId,
+    slot: u8,
+}
+
+enum KeywordName<'a> {
+    Interned(StringId),
+    Text(&'a str),
+}
+
 fn parameter_mask(count: usize) -> u32 {
     let count = u32::try_from(count).expect("bounded parameter count");
     u32::MAX.checked_shr(u32::BITS - count).unwrap_or(0)
@@ -160,6 +186,134 @@ fn parameter_mask(count: usize) -> u32 {
 
 impl Signature {
     pub(crate) const MAX_DIRECT_KEYWORDS: usize = u32::BITS as usize;
+
+    #[expect(clippy::cast_possible_truncation, reason = "Only the low bits select a table entry")]
+    fn build_keyword_plan(&self, interns: &Interns) -> Option<Box<KeywordCallPlan>> {
+        let positional_only = self.pos_arg_count();
+        let positional = positional_only + self.arg_count();
+        let args_slot = self.var_args.map(|_| positional);
+        let keyword_base = positional + usize::from(args_slot.is_some());
+        let keyword_names = self.kwargs.as_deref().unwrap_or_default();
+        let keyword_end = keyword_base + keyword_names.len();
+        let kwargs_slot = self.var_kwargs.map(|_| keyword_end);
+        if keyword_end + usize::from(kwargs_slot.is_some()) > Self::MAX_DIRECT_KEYWORDS {
+            return None;
+        }
+        let names = self
+            .pos_args
+            .iter()
+            .flatten()
+            .chain(self.args.iter().flatten())
+            .enumerate()
+            .chain(
+                keyword_names
+                    .iter()
+                    .enumerate()
+                    .map(|(index, name)| (keyword_base + index, name)),
+            );
+        let count = positional + keyword_names.len();
+        let capacity = if count == 0 { 0 } else { (count * 2).next_power_of_two() };
+        let mut table = vec![
+            KeywordParameter {
+                hash: 0,
+                name: StringId::EMPTY,
+                slot: u8::MAX
+            };
+            capacity
+        ];
+        let mut required = 0;
+        let mut defaults = 0;
+        for (slot, &name) in names {
+            if self.extended_default_index(slot).is_some() {
+                defaults |= 1 << slot;
+            } else {
+                required |= 1 << slot;
+            }
+            let hash = interns.str_hash(name).raw();
+            let mask = capacity - 1;
+            let mut index = hash as usize & mask;
+            while table[index].slot != u8::MAX {
+                index = (index + 1) & mask;
+            }
+            table[index] = KeywordParameter {
+                hash,
+                name,
+                slot: u8::try_from(slot).expect("bounded plan slot"),
+            };
+        }
+        Some(Box::new(KeywordCallPlan {
+            table: table.into_boxed_slice(),
+            positional_only,
+            positional,
+            args_slot,
+            kwargs_slot,
+            required,
+            defaults,
+        }))
+    }
+
+    #[expect(clippy::cast_possible_truncation, reason = "Only the low bits select a table entry")]
+    pub(crate) fn planned_extended_binding<'a>(
+        &self,
+        positional_count: usize,
+        keys: impl Iterator<Item = (&'a Value, u64)>,
+        destinations: &mut [u8],
+        heap: &Heap,
+        interns: &Interns,
+    ) -> Option<ExtendedBinding> {
+        let plan = self
+            .keyword_plan
+            .get_or_init(|| self.build_keyword_plan(interns))
+            .as_deref()?;
+        if positional_count > plan.positional && plan.args_slot.is_none() {
+            return None;
+        }
+        let positional_bound = positional_count.min(plan.positional);
+        let mut occupied = parameter_mask(positional_bound);
+        for ((key, hash), destination) in keys.zip(destinations) {
+            let name = match key {
+                Value::InternString(_) => None,
+                _ => Some(key.as_str_heap(heap, interns)?),
+            };
+            let mut slot = ExtendedBinding::EXTRA_KEYWORD;
+            if !plan.table.is_empty() {
+                let mask = plan.table.len() - 1;
+                let mut index = hash as usize & mask;
+                loop {
+                    let candidate = plan.table[index];
+                    if candidate.slot == u8::MAX {
+                        break;
+                    }
+                    if candidate.hash == hash
+                        && match key {
+                            Value::InternString(id) => *id == candidate.name,
+                            _ => name == Some(interns.get_str(candidate.name)),
+                        }
+                    {
+                        slot = candidate.slot;
+                        break;
+                    }
+                    index = (index + 1) & mask;
+                }
+            }
+            if slot == ExtendedBinding::EXTRA_KEYWORD {
+                plan.kwargs_slot?;
+            } else {
+                let bit = 1 << slot;
+                if usize::from(slot) < plan.positional_only || occupied & bit != 0 {
+                    return None;
+                }
+                occupied |= bit;
+            }
+            *destination = slot;
+        }
+        (plan.required & !occupied == 0).then_some(ExtendedBinding {
+            positional_bound,
+            args_slot: plan.args_slot,
+            kwargs_slot: plan.kwargs_slot,
+            missing: plan.defaults & !occupied,
+        })
+    }
 
     /// Reports which argument containers a signature with only variadic parameters captures.
     pub(crate) fn variadic_only(&self) -> Option<(bool, bool)> {
@@ -172,6 +326,54 @@ impl Signature {
         self.var_args.is_some() || self.var_kwargs.is_some()
     }
 
+    /// Small and sparse calls can scan the signature's parameter IDs without building a table.
+    pub(crate) fn use_hashed_keyword_plan(&self, supplied: usize, positional: usize) -> bool {
+        let filled = positional.saturating_sub(self.pos_arg_count()).min(self.arg_count());
+        let unfilled = self.arg_count() - filled + self.kwarg_count();
+        supplied >= 4 && unfilled >= 6
+    }
+
+    pub(crate) fn bind_compact_keywords<'a>(
+        &self,
+        positional_count: usize,
+        keys: impl Iterator<Item = &'a Value>,
+        destinations: &mut [u8],
+        heap: &'a Heap,
+        interns: &'a Interns,
+    ) -> Option<ExtendedBinding> {
+        let names = keys.map(|key| match key {
+            Value::InternString(id) => Some(KeywordName::Interned(*id)),
+            _ => key.as_str_heap(heap, interns).map(KeywordName::Text),
+        });
+        let matches = |name: &KeywordName<'_>, parameter| match name {
+            KeywordName::Interned(id) => *id == parameter,
+            KeywordName::Text(text) => *text == interns.get_str(parameter),
+        };
+        if let Some(total) = self.fixed_positional_count()
+            && total <= Self::MAX_DIRECT_KEYWORDS
+        {
+            if total.checked_sub(positional_count)? < destinations.len() {
+                return None;
+            }
+            let positional_only = self.pos_arg_count();
+            let given = positional_count.saturating_sub(positional_only);
+            let candidates = self.args.as_deref().unwrap_or_default().get(given..)?;
+            let offset = positional_count.max(positional_only);
+            let keyword_slots = Self::map_keyword_slots(candidates, offset, names, destinations, |name, parameter| {
+                name.as_ref().is_some_and(|name| matches(name, parameter))
+            })?;
+            let missing = parameter_mask(total) & !(parameter_mask(positional_count) | keyword_slots);
+            let first_missing = missing.trailing_zeros() as usize;
+            return (first_missing >= self.required_positional_count()).then_some(ExtendedBinding {
+                positional_bound: positional_count,
+                args_slot: None,
+                kwargs_slot: None,
+                missing,
+            });
+        }
+        self.extended_binding_by_name(positional_count, names, destinations, matches)
+    }
+
     /// Maps keyword entries to parameter slots before any argument container is changed.
     /// Invalid calls go through `bind` for the usual error ordering.
     pub(crate) fn extended_binding<'a>(
@@ -180,6 +382,18 @@ impl Signature {
         names: impl Iterator<Item = Option<&'a str>>,
         destinations: &mut [u8],
         interns: &Interns,
+    ) -> Option<ExtendedBinding> {
+        self.extended_binding_by_name(positional_count, names, destinations, |name, parameter| {
+            *name == interns.get_str(parameter)
+        })
+    }
+
+    fn extended_binding_by_name<K>(
+        &self,
+        positional_count: usize,
+        names: impl Iterator<Item = Option<K>>,
+        destinations: &mut [u8],
+        name_matches: impl Fn(&K, StringId) -> bool,
     ) -> Option<ExtendedBinding> {
         let positional_only = self.pos_args.as_deref().unwrap_or_default();
         let positional_names = self.args.as_deref().unwrap_or_default();
@@ -203,7 +417,7 @@ impl Signature {
 
         for (name, destination) in names.zip(destinations) {
             let name = name?;
-            let matches = |param: &StringId| interns.get_str(*param) == name;
+            let matches = |param: &StringId| name_matches(&name, *param);
             if positional_only.iter().any(matches) {
                 return None;
             }
@@ -407,6 +621,7 @@ impl Signature {
             kwarg_default_map: if has_kwonly { Some(kwarg_default_map) } else { None },
             var_kwargs,
             bind_mode: OnceCell::new(),
+            keyword_plan: OnceCell::new(),
         }
     }
 

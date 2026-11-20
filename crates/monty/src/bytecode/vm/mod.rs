@@ -1549,7 +1549,15 @@ impl<'h> VM<'h> {
                 }
                 Opcode::BuildDict => {
                     let count = self.current_frame.fetch_u16() as usize;
-                    try_catch!(self, self.build_dict(count));
+                    if count == 0
+                        && countdown >= 3
+                        && let Some(result) = self.try_call_local_unpack(false)
+                    {
+                        countdown -= 3;
+                        handle_call_result!(self, result);
+                    } else {
+                        try_catch!(self, self.build_dict(count));
+                    }
                 }
                 Opcode::BuildSet => {
                     let count = self.current_frame.fetch_u16() as usize;
@@ -1573,6 +1581,11 @@ impl<'h> VM<'h> {
                         && let Some(result) = self.try_call_unpacked_sequence()
                     {
                         countdown -= 2;
+                        handle_call_result!(self, result);
+                    } else if countdown >= 5
+                        && let Some(result) = self.try_call_local_unpack(true)
+                    {
+                        countdown -= 5;
                         handle_call_result!(self, result);
                     } else {
                         try_catch!(self, self.list_extend());

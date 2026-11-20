@@ -276,3 +276,192 @@ assert result == ((1, 2, 3), {'x': 5})
 
 result = funcs[0](*[1, 2], *[3], x=5)
 assert result == ((1, 2, 3), {'x': 5})
+
+
+# === Local keyword dictionaries ===
+def call_local(fn, seq, mapping):
+    return fn(*seq, **mapping)
+
+
+def local_unpack_fixed(a, b, label='default'):
+    return a, b, label
+
+
+def variadic(a, *rest, mode, **extras):
+    extras['after'] = a
+    return a, rest, mode, extras
+
+
+def capture(*args, **kwargs):
+    return args, kwargs
+
+
+def long_names(value, *, this_keyword_name_is_long):
+    return value, this_keyword_name_is_long
+
+
+payload = []
+assert call_local(local_unpack_fixed, (payload,), {'b': payload}) == ([], [], 'default')
+assert call_local(local_unpack_fixed, [payload], {'b': payload})[0] is payload
+prefix = 'this_keyword_'
+assert call_local(long_names, [payload], {prefix + 'name_is_long': payload})[1] is payload
+
+seq = (payload, 2, 3)
+mapping = {'first': payload, 'mode': True, 'last': 4}
+a, rest, mode, extras = call_local(variadic, seq, mapping)
+assert a is payload
+assert rest == (2, 3)
+assert mode is True
+assert list(extras) == ['first', 'last', 'after']
+assert extras['first'] is payload
+assert list(mapping) == ['first', 'mode', 'last']
+args, kwargs = call_local(capture, seq, mapping)
+assert args == seq
+assert args is not seq
+assert kwargs is not mapping
+assert args[0] is payload
+
+for seq, mapping in [
+    ([payload], {'a': payload, 'b': payload}),
+    ([payload], {'b': payload, 5: payload}),
+    ([payload], {}),
+    ([payload], 1),
+    (1, {'a': payload, 'b': payload}),
+]:
+    try:
+        call_local(local_unpack_fixed, seq, mapping)
+        assert False, 'expected TypeError'
+    except TypeError:
+        pass
+
+
+def unbound(fn, seq, set_mapping):
+    if set_mapping:
+        mapping = {}
+    return fn(*seq, **mapping)
+
+
+try:
+    unbound(local_unpack_fixed, [payload], False)
+    assert False, 'expected UnboundLocalError'
+except UnboundLocalError:
+    pass
+
+
+def sparse(fn, seq):
+    mapping = {'x': 1, 'b': payload}
+    mapping.pop('x')
+    return fn(*seq, **mapping)
+
+
+assert sparse(local_unpack_fixed, (payload,))[1] is payload
+
+
+def wide(a, b, c, d, e, f, g, h):
+    return a, b, c, d, e, f, g, h
+
+
+wide_mapping = {'h': 8, 'g': 7, 'f': 6, 'e': 5, 'd': 4, 'c': 3}
+assert call_local(wide, (1, 2), wide_mapping) == (1, 2, 3, 4, 5, 6, 7, 8)
+wide_mapping['h'] = payload
+assert call_local(wide, [1, 2], wide_mapping)[-1] is payload
+
+
+def positional_only(a=1, /, b=2, c=3):
+    return a, b, c
+
+
+assert call_local(positional_only, (), {}) == (1, 2, 3)
+assert call_local(positional_only, (), {'c': 5}) == (1, 2, 5)
+assert call_local(positional_only, (4,), {'b': 5}) == (4, 5, 3)
+
+
+# === Instance and bound method binding ===
+class Base:
+    def method(self, x, y=3, z=4):
+        return self, x, y, z
+
+    def capture(self, x, *rest, flag=False, **extras):
+        return self, x, rest, flag, extras
+
+    def capture_receiver(*args, **kwargs):
+        return args, kwargs
+
+
+class Child(Base):
+    pass
+
+
+def through_method(obj, seq, d):
+    return obj.method(*seq, **d)
+
+
+def through_callable(fn, seq, d):
+    return fn(*seq, **d)
+
+
+def through_capture(obj, seq, d):
+    return obj.capture(*seq, **d)
+
+
+def captured_receiver(obj, seq, d):
+    return obj.capture_receiver(*seq, **d)
+
+
+obj = Child()
+payload = []
+assert obj.method(payload) == (obj, payload, 3, 4)
+assert obj.method(1, z=8, y=7) == (obj, 1, 7, 8)
+assert obj.method(y=7, x=6) == (obj, 6, 7, 4)
+assert obj.method(*(1, 2, 3)) == (obj, 1, 2, 3)
+assert through_method(obj, [payload], {'z': 5})[1] is payload
+assert through_method(obj, (6,), {'y': 7}) == (obj, 6, 7, 4)
+
+held = obj.method
+assert held(1) == (obj, 1, 3, 4)
+assert held(z=8, x=7) == (obj, 7, 3, 8)
+assert through_callable(held, (6,), {'y': 7}) == (obj, 6, 7, 4)
+
+mapping = {'flag': True, 'other': payload}
+self_arg, value, rest, flag, extras = through_capture(obj, (payload, 2), mapping)
+assert self_arg is obj
+assert value is payload
+assert rest == (2,)
+assert flag is True
+assert extras['other'] is payload
+extras['new'] = 5
+assert 'new' not in mapping
+seq = (payload,)
+args, kwargs = captured_receiver(obj, seq, mapping)
+assert args == (obj, payload)
+assert kwargs is not mapping
+
+
+def shadow(x, y=3, z=4):
+    return x, y, z
+
+
+other = Child()
+other.method = shadow
+assert other.method(1, z=9) == (1, 3, 9)
+assert through_method(other, [1], {'y': 2}) == (1, 2, 4)
+assert held(1) == (obj, 1, 3, 4)
+
+for mapping in ({'self': payload}, {'x': payload}, {4: payload}):
+    try:
+        through_method(obj, [payload], mapping)
+        assert False, 'expected TypeError'
+    except TypeError:
+        pass
+
+
+class Wide:
+    def method(self, a, b, c, d, e, f, g, h):
+        return a, b, c, d, e, f, g, h
+
+
+wide = Wide()
+wide_mapping = {'h': 8, 'g': 7, 'f': 6, 'e': 5, 'd': 4, 'c': 3}
+assert through_method(wide, (1, 2), wide_mapping) == (1, 2, 3, 4, 5, 6, 7, 8)
+wide_mapping['h'] = payload
+assert through_callable(wide.method, [1, 2], wide_mapping)[-1] is payload

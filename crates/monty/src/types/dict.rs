@@ -855,6 +855,22 @@ impl Dict {
         )
     }
 
+    pub(crate) fn dense_hashed_keys(&self) -> Option<impl ExactSizeIterator<Item = (&Value, u64)>> {
+        Some(self.table.dense_entries()?.iter().map(|entry| (&entry.key, entry.hash)))
+    }
+
+    /// Copies selected entries from a compact keyword source into a plain dict.
+    pub(crate) fn copy_dense_keywords(&self, indices: impl Iterator<Item = usize>, count: usize, heap: &Heap) -> Self {
+        let entries = self.table.dense_entries().expect("validated keyword dict");
+        let mut copy = Self::with_capacity(count);
+        for index in indices {
+            let entry = entries[index].clone_with_heap(heap);
+            copy.contains_refs |= matches!(entry.key, Value::Ref(_)) || matches!(entry.value, Value::Ref(_));
+            copy.table.push(entry);
+        }
+        copy
+    }
+
     /// Checks a compact, validated keyword source for duplicates without calling Python.
     pub(crate) fn overlaps_keyword_keys(&self, source: &Self, heap: &Heap, interns: &Interns) -> bool {
         let entries = source.table.dense_entries().expect("validated keyword dict");

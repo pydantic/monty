@@ -152,6 +152,19 @@ fn an_unpacked_call_resumes_after_the_call_opcode() {
              seq = [1, 2]\nkw = {'x': 3}\nrelay(*seq, flag=fetch(42), **kw) - 5",
             "fetch(42)",
         ),
+        (
+            "def relay(seq, d):\n    return last(*seq, **d) + increment(*seq, **d)\n\
+             def last(x, **d):\n    return fetch(x[0] + d['y'][0])\n\
+             def increment(x, **d):\n    return 1\n\
+             relay(([40],), {'y': [2]})",
+            "fetch(x[0] + d['y'][0])",
+        ),
+        (
+            "class Relay:\n    def method(self, x, **d):\n        return fetch(x[0] + d['y'][0])\n\
+             def invoke(obj, seq, d):\n    return obj.method(*seq, **d) + 1\n\
+             invoke(Relay(), ([40],), {'y': [2]})",
+            "fetch(x[0] + d['y'][0])",
+        ),
     ] {
         let progress = start(code);
         let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();

@@ -327,10 +327,37 @@ def fixed(a, b, c, d):
 def mixed_recurse(a, *rest, flag=None, **extras):
     return mixed_recurse(a, *rest, flag=flag, **extras)
 
+def local_recurse(a, *rest, **extras):
+    seq = (a, a)
+    return local_recurse(*seq, **extras)
+
+def change_after_unpack(items, mapping):
+    items.clear()
+    return mapping
+
+def evaluate_keywords_later(a):
+    items = [a]
+    mapping = {'b': a}
+    return first(*items, **change_after_unpack(items, mapping))
+
+class Relay:
+    def call(self, a, b=None):
+        return a
+
+    def recurse(self, a, *rest, **extras):
+        seq = (a, a)
+        return self.recurse(*seq, **extras)
+
+def call_relay(receiver, items, d):
+    return receiver.call(*items, **d)
+
+relay = Relay()
+assert call_relay(relay, (owner,), {'b': owner}) is owner
 assert first(**keywords)[0] is owner
 assert first(**keywords)[1] is owner
 assert combined(owner, *[owner], flag=owner, **{'extra': owner})[3]['extra'] is owner
 assert fixed(owner, *[owner], d=owner, **{'c': owner}) is owner
+assert evaluate_keywords_later(owner)[0] is owner
 
 try:
     first(**{'b': owner})
@@ -348,6 +375,20 @@ else:
 
 try:
     mixed_recurse(owner, *[owner], flag=owner, **{'extra': owner})
+except RecursionError:
+    pass
+else:
+    assert False
+
+try:
+    local_recurse(owner, extra=owner)
+except RecursionError:
+    pass
+else:
+    assert False
+
+try:
+    relay.recurse(owner, extra=owner)
 except RecursionError:
     pass
 else:
