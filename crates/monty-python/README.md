@@ -99,6 +99,10 @@ An import of a non-bundled name the mapping does not answer reads `<cwd>/name/__
 This requires the `pydantic-monty-runtime` package, which is generally
 installed as part of the `pydantic-monty` meta-package.
 
+`Monty(pre_warm=2)` and `AsyncMonty(pre_warm=2)` keep two idle workers ready beyond those checked out: each one a
+checkout takes is replaced in the background, and a checkout that finds none waits for one already spawning.
+They count against `max_processes`, alongside `min_processes`, which stays a floor on live workers.
+
 ```python
 from pydantic_monty import Monty
 

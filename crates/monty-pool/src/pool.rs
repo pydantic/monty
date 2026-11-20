@@ -507,7 +507,7 @@ impl PoolInner {
     }
 
     /// Records the death/retirement of a worker, freeing capacity for a
-    /// future spawn, and refills towards `min_processes`.
+    /// future spawn, and refills towards `pre_warm` and `min_processes`.
     pub(crate) fn release_capacity(&self) {
         lock_ignore_poison(&self.state).total -= 1;
         self.available.notify_one();
