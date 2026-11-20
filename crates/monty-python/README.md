@@ -41,9 +41,10 @@ if __name__ == '__main__':
 ```
 
 `AsyncMontyRemote(url, pre_warm=2)` keeps two sessions open and ready, so a checkout takes one, or waits for one still
-dialing, instead of dialing.
+dialing, instead of dialing; a checkout that finds neither dials for itself.
 `__aenter__` waits for them to open, raising if one cannot (`pre_warm_wait=False` opens them in the background
-instead); they are replaced in the background as checkouts take them, and count against `max_processes`.
+instead, retrying a failed open with a backoff); they are replaced in the background as checkouts take them, and count
+against `max_processes`.
 `metadata` is called for each of these sessions as the pool dials it, from a pool thread; a checkout takes one only if
 its own `metadata` call returned the same value, and otherwise closes the ready sessions and dials for itself.
 

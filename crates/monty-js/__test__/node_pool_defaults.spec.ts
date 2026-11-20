@@ -11,8 +11,8 @@ test('the JS recycle default matches monty-pool', () => {
   t.is(DEFAULT_MAX_CHECKOUTS_PER_WORKER, _defaultMaxCheckoutsPerWorker())
 })
 
-// the background refill itself is covered by monty-pool's tests
-test('preWarm keeps spare subprocess workers', async () => {
+// what `preWarm` keeps ready is covered by monty-pool's tests: nothing here can see idle workers
+test('a preWarm pool serves concurrent sessions', async () => {
   await using pool = await Monty.create({ preWarm: 2, maxProcesses: 3 })
   await using first = await pool.checkout()
   await using second = await pool.checkout()

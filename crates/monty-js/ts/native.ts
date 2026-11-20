@@ -204,7 +204,7 @@ export interface ExhaustedTurn {
 }
 
 /** What `NativePool.start` resolves to: started, or why not. */
-export type StartTurn = OkTurn | ProtocolTurn | ConnectTurn | ConfigurationTurn
+export type StartTurn = OkTurn | ProtocolTurn | ConnectTurn | ConfigurationTurn | RefusedTurn
 
 /** What `NativeSession.enter` resolves to: entered, or why not. */
 export type EnterTurn =

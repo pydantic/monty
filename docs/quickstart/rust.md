@@ -208,7 +208,8 @@ On a remote pool `PoolConfig::pre_warm` (0 by default) keeps that many sessions 
 with those checked out; a value above `max_processes` is a `PoolError::Configuration`.
 `Pool::new` opens them and fails if one cannot open; with `pre_warm_wait` off they open in the background, where a
 failed open is retried with a backoff.
-Each is replaced when a checkout takes it.
+Each is replaced when a checkout takes it; one checkout per session already opening waits for it, and a checkout that
+finds none dials for itself.
 The pool calls `pre_warm_metadata` for each one it dials, and a checkout takes one only if it was dialed with that
 checkout's `CheckoutOptions::metadata`; otherwise it closes the ready sessions unused and dials for itself.
 See [the security model](../security.md#remote-workers) before using it.

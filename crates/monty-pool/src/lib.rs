@@ -151,9 +151,10 @@ pub struct PoolConfig {
     /// and a checkout waits for one already starting rather than starting another.
     /// A remote checkout takes only a session dialed with its own metadata.
     pub pre_warm: usize,
-    /// [`Pool::new`] starts the [`Self::pre_warm`] workers itself, failing if one
-    /// cannot start, rather than in the background, where a failed start is
-    /// retried with a backoff. On by default.
+    /// [`Pool::new`] starts the [`Self::pre_warm`] workers itself (the larger of
+    /// that and a subprocess pool's `min_processes`), failing if one cannot start,
+    /// rather than in the background, where a failed start is retried with a
+    /// backoff. On by default.
     pub pre_warm_wait: bool,
     /// Remote transport only: called for the request metadata of each
     /// [`Self::pre_warm`] session the pool dials; `None` sends none. A checkout whose
@@ -223,8 +224,9 @@ type MetadataResult = Result<Vec<(String, String)>, String>;
 type MetadataFuture = Pin<Box<dyn Future<Output = MetadataResult> + Send>>;
 
 impl MetadataFn {
-    /// Wraps `f`, which the pool calls from its runtime's threads and awaits
-    /// for at most the time it allows a dial.
+    /// Wraps `f`, which the pool calls from its runtime's threads, so it must
+    /// return promptly; the future it returns is awaited for at most the time
+    /// the pool allows a dial.
     pub fn new<Fut>(f: impl Fn() -> Fut + Send + Sync + 'static) -> Self
     where
         Fut: Future<Output = MetadataResult> + Send + 'static,

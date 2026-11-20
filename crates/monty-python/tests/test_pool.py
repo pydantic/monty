@@ -155,8 +155,8 @@ def test_one_checkout_per_worker_gets_a_fresh_process_each_time():
     assert len(pids) == snapshot(4)
 
 
-def test_pre_warm_keeps_spare_workers():
-    # the background refill itself is covered by monty-pool's tests
+def test_pre_warm_pool_serves_concurrent_sessions():
+    # what `pre_warm` keeps ready is covered by monty-pool's tests: nothing here can see idle workers
     with Monty(pre_warm=2, max_processes=3) as pool:
         with pool.checkout() as first, pool.checkout() as second:
             assert first.feed_run('1 + 1') == snapshot(2)
@@ -164,7 +164,7 @@ def test_pre_warm_keeps_spare_workers():
             assert first.worker_pid != second.worker_pid
 
 
-async def test_async_pre_warm_keeps_spare_workers():
+async def test_async_pre_warm_pool_serves_concurrent_sessions():
     async with AsyncMonty(pre_warm=2, max_processes=3) as pool:
         async with pool.checkout() as first, pool.checkout() as second:
             assert await first.feed_run('1 + 1') == snapshot(2)

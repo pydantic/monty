@@ -72,7 +72,8 @@ export interface MontyRemoteOptions {
   /**
    * Sessions kept open and ready (default 0), so a checkout takes one instead
    * of opening a stream; each one taken is replaced in the background. They
-   * share `maxProcesses` with checked-out sessions. A checkout takes one only
+   * share `maxProcesses` with checked-out sessions, and a larger `preWarm`
+   * rejects `create()`. A checkout takes one only
    * if `metadata` returned the same value for both; otherwise the ready
    * sessions are closed and the checkout opens its own.
    */

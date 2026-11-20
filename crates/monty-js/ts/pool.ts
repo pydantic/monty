@@ -7,7 +7,7 @@
 import { availableParallelism } from 'node:os'
 import { NativePool } from '../native-addon.js'
 import { findMontyBinary } from './binary.js'
-import { MontyConfigurationError, MontyConnectError } from './errors.js'
+import { MontyConfigurationError, MontyConnectError, MontyRefusedError } from './errors.js'
 import type { StartTurn } from './native.js'
 import {
   type AssertMessageAnnotations,
@@ -35,7 +35,8 @@ export interface MontyOptions {
   minProcesses?: number
   /**
    * Idle workers kept ready beyond those checked out (default 0): each one a
-   * checkout takes is replaced in the background, up to `maxProcesses`.
+   * checkout takes is replaced in the background. They share `maxProcesses`
+   * with checked-out workers, and a larger `preWarm` rejects `create()`.
    */
   preWarm?: number
   /** Worker cap; checkouts beyond it wait (default: CPU count). */
@@ -187,7 +188,7 @@ export class Monty {
     this.native = native
   }
 
-  /** Creates the pool and prewarms `minProcesses` workers. */
+  /** Creates the pool and starts the larger of `minProcesses` and `preWarm` workers. */
   static async create(options: MontyOptions = {}): Promise<Monty> {
     const maxCheckoutsPerWorker = resolveMaxCheckouts(options.maxCheckoutsPerWorker)
     const native = new NativePool({
@@ -243,9 +244,10 @@ export class Monty {
 
 /**
  * Starts a native pool: `MontyConnectError` when a remote URL cannot be used,
+ * `MontyRefusedError` when the server refuses a pre-warmed session,
  * `MontyConfigurationError` for invalid pool settings, and a plain `Error`
- * when a worker cannot be spawned. `preWarmMetadata` supplies the metadata of
- * each session a remote pool pre-warms.
+ * for any other failure, such as a worker that cannot be spawned.
+ * `preWarmMetadata` supplies the metadata of each session a remote pool pre-warms.
  */
 export async function startPool(
   native: NativePool,
@@ -257,10 +259,13 @@ export async function startPool(
       return
     case 'connect':
       throw new MontyConnectError(turn.message, turn)
+    case 'refused':
+      throw new MontyRefusedError(turn.message, turn)
     case 'configuration':
       throw new MontyConfigurationError(turn.message)
-    case 'protocol':
-      throw new Error(turn.message)
+    default:
+      // never resolve on a failure this switch does not name
+      throw new Error((turn as { message?: string }).message ?? `the pool failed to start: ${turn.kind}`)
   }
 }
 

@@ -604,3 +604,9 @@ test('preWarm above maxProcesses rejects create', async () => {
   })
   t.is(error.message, 'invalid pool size: pre_warm=3 max_processes=2')
 })
+
+test('a refused pre-warmed session rejects create', async () => {
+  const { url } = await server((stream) => endWithStatus(stream, status.RESOURCE_EXHAUSTED, 'at capacity', 'capacity'))
+  const error = await t.throwsAsync(() => MontyRemote.create(url, { preWarm: 1 }), { instanceOf: MontyRefusedError })
+  t.is(error.message, `${url} refused the session: RESOURCE_EXHAUSTED (capacity): at capacity`)
+})

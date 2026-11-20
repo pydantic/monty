@@ -18,8 +18,8 @@ This is the recommended way to run Monty from Rust. It is also the engine undern
 A `Pool` keeps an elastic set of workers (`min_processes` prewarmed, up to `max_processes`).
 Until it is closed, a subprocess pool replaces any worker that is recycled, crashes or is
 discarded in the background until `min_processes` workers are live again; a replacement that
-fails to spawn is retried with a doubling backoff. `pre_warm` (0 by default) is a floor on
-ready workers instead, on either transport: each one a checkout takes is replaced the same
+fails to spawn is retried with a doubling backoff. `pre_warm` (0 by default) is a further floor,
+on ready workers and on either transport: each one a checkout takes is replaced the same
 way, up to `max_processes`. It is the only floor a remote pool has, since a checked-out
 session is never reused.
 `Pool::checkout` dedicates one worker to one REPL session: the caller feeds snippets of code

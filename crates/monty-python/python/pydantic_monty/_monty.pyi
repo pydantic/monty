@@ -745,7 +745,7 @@ class Monty:
                 worker is recycled, crashes or is discarded.
             pre_warm: Idle workers to keep ready beyond those checked out: each
                 one a checkout takes is replaced in the background, so the next
-                checkout does not wait for a spawn. They count against
+                checkout usually finds one ready. They count against
                 `max_processes`; a larger `pre_warm` raises `MontyConfigurationError`.
             max_processes: Cap on live workers (defaults to the CPU count);
                 checkouts beyond it wait for a worker to be returned.
@@ -1271,7 +1271,8 @@ class AsyncMontyRemote:
             pre_warm_wait: `__aenter__` waits until the `pre_warm` sessions are
                 open, raising if one cannot open (the default); `False` opens them
                 in the background instead, where a failed open is retried with a
-                backoff and not raised.
+                backoff and not raised; a checkout that finds none ready dials
+                for itself and raises what that dial does.
             auto_resume: When a server that stores sessions drains one, open a
                 new stream, load the state it named into a new session and re-send the
                 request it did not run, instead of raising `MontyShutdown`; the

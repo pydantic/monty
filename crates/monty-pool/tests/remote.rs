@@ -4315,8 +4315,11 @@ fn serve_ready_sessions(mock: &MockServer, streams: usize, seen: &mpsc::Sender<S
             let _ = seen.send(Seen::Opened(index, authorization.map(str::to_owned)));
             let seen = seen.clone();
             thread::spawn(move || {
-                let first = try_read_request(&mut socket);
-                if matches!(first.and_then(|r| r.kind), Some(pb::client_request::Kind::Configure(_))) {
+                // a session closed unused sends nothing
+                let Some(first) = try_read_request(&mut socket) else {
+                    return;
+                };
+                if matches!(first.kind, Some(pb::client_request::Kind::Configure(_))) {
                     let _ = seen.send(Seen::Used(index));
                 }
                 send_kind(&mut socket, ok_event());

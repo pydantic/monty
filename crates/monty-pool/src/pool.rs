@@ -221,34 +221,40 @@ impl Pool {
     /// Telemetry exporter shutdown remains the configuring application's
     /// responsibility and should happen after checked-out sessions finish.
     pub async fn close(&self) {
-        // Pair each removed worker with a capacity guard immediately: if this
-        // future is dropped mid-close, every unreaped worker is killed by its
-        // kill-on-drop handle and its slot released by the guard, instead of
-        // leaking capacity the pool can never recover.
-        let mut idle: Vec<_> = {
+        let idle = {
             let mut state = lock_ignore_poison(&self.inner.state);
             state.closed = true;
             mem::take(&mut state.idle)
-        }
-        .into_iter()
-        .map(|worker| (worker, CapacityGuard::new(&self.inner)))
-        .collect();
+        };
         self.inner.record_worker_delta(0, -worker_count(idle.len()));
-        for _ in &idle {
-            self.inner.count_termination("closed");
+        if self.inner.config.transport.is_remote() {
+            // a pre-warmed session has no interpreter to say goodbye to, and a
+            // request a stalled peer never reads must not hold up the close
+            for worker in idle {
+                self.inner.close_remote(worker, "closed");
+            }
+        } else {
+            // Pair each removed worker with a capacity guard immediately: if this
+            // future is dropped mid-close, every unreaped worker is killed by its
+            // kill-on-drop handle and its slot released by the guard, instead of
+            // leaking capacity the pool can never recover.
+            let mut idle: Vec<_> = idle
+                .into_iter()
+                .map(|worker| (worker, CapacityGuard::terminating(&self.inner, "closed")))
+                .collect();
+            for (worker, _) in &mut idle {
+                let _ = worker
+                    .send(&request(pb::client_request::Kind::Shutdown(pb::Shutdown {})), None)
+                    .await;
+            }
+            // Reap concurrently: a *nonresponsive* worker costs the full grace, so
+            // reaping serially would multiply it by the number of stuck workers.
+            join_all(idle.into_iter().map(|(mut worker, capacity)| async move {
+                let _capacity = capacity;
+                worker.reap_or_kill(SHUTDOWN_EXIT_GRACE).await;
+            }))
+            .await;
         }
-        for (worker, _) in &mut idle {
-            let _ = worker
-                .send(&request(pb::client_request::Kind::Shutdown(pb::Shutdown {})), None)
-                .await;
-        }
-        // Reap concurrently: a *nonresponsive* worker costs the full grace, so
-        // reaping serially would multiply it by the number of stuck workers.
-        join_all(idle.into_iter().map(|(mut worker, capacity)| async move {
-            let _capacity = capacity;
-            worker.reap_or_kill(SHUTDOWN_EXIT_GRACE).await;
-        }))
-        .await;
         if let Some(remote) = &self.inner.remote {
             remote.wait_closed(self.inner.config.max_processes).await;
         }
@@ -357,6 +363,9 @@ impl PoolInner {
                         died_idle += 1;
                         drop(worker); // kill-on-drop backstop; already dead
                     } else if remote && worker.dial_metadata != metadata {
+                        // its slot is freed at once so this checkout can take it
+                        // in this pass: freed later, a refill would race it for
+                        // the slot with metadata that still does not match
                         state.total -= 1;
                         stale.push(worker);
                     } else {
@@ -392,7 +401,7 @@ impl PoolInner {
                     self.count_termination("stale_metadata");
                 }
                 let gone = died_idle + stale.len();
-                drop(stale); // closes their streams
+                drop(stale); // half-closes their streams
                 let spawned = i64::from(below_cap);
                 self.record_worker_delta(spawned - worker_count(gone), -worker_count(removed_idle));
                 if gone > 0 {
@@ -466,15 +475,9 @@ impl PoolInner {
     ///
     /// A remote stream keeps its slot until the server has ended it: a server
     /// still counting the stream would refuse a full pool's next checkout.
-    pub(crate) fn release_worker(&self, mut worker: Worker) {
+    pub(crate) fn release_worker(&self, worker: Worker) {
         if self.config.transport.is_remote() {
-            let pool = self.this.clone();
-            worker.close_transport(move || {
-                if let Some(pool) = pool.upgrade() {
-                    pool.count_termination("single_use");
-                    pool.release_capacity();
-                }
-            });
+            self.close_remote(worker, "single_use");
         } else if self
             .config
             .max_checkouts_per_worker
@@ -488,6 +491,18 @@ impl PoolInner {
             self.available.notify_one();
             self.record_worker_delta(0, 1);
         }
+    }
+
+    /// Half-closes a live remote worker's stream, counting it under `reason` and
+    /// freeing its slot once the server has ended the stream (or the close gave up).
+    fn close_remote(&self, mut worker: Worker, reason: &'static str) {
+        let pool = self.this.clone();
+        worker.close_transport(move || {
+            if let Some(pool) = pool.upgrade() {
+                pool.count_termination(reason);
+                pool.release_capacity();
+            }
+        });
     }
 
     /// Records the death/retirement of a worker, freeing capacity for a
