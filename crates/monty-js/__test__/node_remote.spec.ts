@@ -515,3 +515,92 @@ test('a server ping is answered with a pong while the session is idle', async ()
   t.is(await answered!, true)
   await session.close()
 })
+
+/** Resolves once `condition` holds, polling for up to five seconds. */
+async function waitFor(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 500; attempt++) {
+    if (condition()) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error('condition not met within 5s')
+}
+
+test('preWarm opens sessions before a checkout and replaces the one taken', async () => {
+  const relayServer = await server(relay)
+  await using pool = await MontyRemote.create(relayServer.url, { requestTimeout: 30, preWarm: 2, maxProcesses: 4 })
+  t.is(relayServer.headers.length, 2)
+  {
+    await using session = await pool.checkout()
+    t.is(await session.feedRun('1 + 1'), 2)
+  }
+  await waitFor(() => relayServer.headers.length === 3)
+})
+
+test('preWarm calls metadata for each ready session', async () => {
+  const relayServer = await server(relay)
+  let calls = 0
+  await using pool = await MontyRemote.create(relayServer.url, {
+    requestTimeout: 30,
+    preWarm: 1,
+    maxProcesses: 4,
+    metadata: () => {
+      calls += 1
+      return { authorization: 'Bearer one' }
+    },
+  })
+  {
+    await using session = await pool.checkout()
+    t.is(await session.feedRun('1 + 1'), 2)
+  }
+  await waitFor(() => relayServer.headers.length === 2)
+  t.deepEqual(
+    relayServer.headers.map((headers) => headers.authorization),
+    ['Bearer one', 'Bearer one'],
+  )
+  // the two ready sessions, and the checkout's own call
+  t.is(calls, 3)
+})
+
+test('a preWarm session opened with other metadata is not taken', async () => {
+  const relayServer = await server(relay)
+  let token = 'Bearer one'
+  await using pool = await MontyRemote.create(relayServer.url, {
+    requestTimeout: 30,
+    preWarm: 1,
+    maxProcesses: 4,
+    metadata: () => ({ authorization: token }),
+  })
+  token = 'Bearer two'
+  {
+    await using session = await pool.checkout()
+    t.is(await session.feedRun('1 + 1'), 2)
+  }
+  // the unused ready session, the checkout's own stream and the replacement
+  await waitFor(() => relayServer.headers.length === 3)
+  t.deepEqual(
+    relayServer.headers.map((headers) => headers.authorization),
+    ['Bearer one', 'Bearer two', 'Bearer two'],
+  )
+})
+
+test('a metadata failure while pre-warming rejects create', async () => {
+  const relayServer = await server(relay)
+  const error = await t.throwsAsync(
+    () =>
+      MontyRemote.create(relayServer.url, {
+        preWarm: 1,
+        metadata: () => {
+          throw new Error('no token')
+        },
+      }),
+    { instanceOf: MontyConfigurationError },
+  )
+  t.is(error.message, 'metadata callback failed: no token')
+})
+
+test('preWarm above maxProcesses rejects create', async () => {
+  const error = await t.throwsAsync(() => MontyRemote.create('http://127.0.0.1:1', { preWarm: 3, maxProcesses: 2 }), {
+    instanceOf: MontyConfigurationError,
+  })
+  t.is(error.message, 'invalid pool size: pre_warm=3 max_processes=2')
+})

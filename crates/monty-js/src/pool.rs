@@ -36,9 +36,9 @@ use std::{
 
 use monty_pool::{
     telemetry::{remote_suspension, TelemetryAdapterHandle, TelemetryContext},
-    Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnStreamedCall, Persistence, Pool, PoolConfig,
-    PoolError, PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, StreamedCall, Traceparent, TurnEvent,
-    TurnOptions,
+    Checkout, CheckoutOptions, MetadataFn, MountSpec, MountSpecMode, OnPrint, OnStreamedCall, Persistence, Pool,
+    PoolConfig, PoolError, PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, StreamedCall, Traceparent,
+    TurnEvent, TurnOptions,
 };
 use monty_types::{
     unstable::{self, NodeId},
@@ -47,8 +47,8 @@ use monty_types::{
 };
 use napi::{
     bindgen_prelude::{
-        Array, BigInt, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw,
-        Unknown,
+        Array, BigInt, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, Promise,
+        PromiseRaw, Unknown,
     },
     threadsafe_function::UnknownReturnValue,
     Env, Error, Result,
@@ -75,6 +75,9 @@ type SharedCheckout = Arc<AsyncMutex<Option<Checkout>>>;
 /// The per-turn JS print callback, reached from the turn future through a
 /// threadsafe function.
 type PrintCallback<'env> = Function<'env, FnArgs<(String, String, Option<String>)>, UnknownReturnValue>;
+
+/// The JS callback producing the request metadata of one pre-warmed session.
+type MetadataCallback<'env> = Function<'env, (), Promise<Vec<NativeHeader>>>;
 
 /// The per-feed JS callback announcing a streamed call: its call ID and the
 /// span key of its telemetry context.
@@ -125,6 +128,9 @@ pub struct NativePoolOptions {
     pub min_processes: u32,
     /// Hard cap on live workers; checkouts beyond it wait.
     pub max_processes: u32,
+    /// Idle workers kept ready beyond those checked out (see
+    /// `PoolConfig::pre_warm`). Absent: none.
+    pub pre_warm: Option<u32>,
     /// How long `enter()` waits for a free worker (ms). Absent: forever.
     pub checkout_timeout_ms: Option<f64>,
     /// Client-side hard deadline per protocol turn (ms).
@@ -164,6 +170,11 @@ pub struct NativeRemotePoolOptions {
     pub auto_resume: bool,
     /// As [`NativePoolOptions::stream_async_calls`]. Absent: on.
     pub stream_async_calls: Option<bool>,
+    /// Sessions kept open and ready (see `PoolConfig::pre_warm`). Absent: none.
+    pub pre_warm: Option<u32>,
+    /// Whether `start()` opens them itself, failing if one cannot open, rather
+    /// than in the background. Absent: on.
+    pub pre_warm_wait: Option<bool>,
 }
 
 /// One request-metadata entry for a remote checkout's stream.
@@ -341,6 +352,7 @@ impl NativePool {
         };
         config.min_processes = options.min_processes as usize;
         config.max_processes = options.max_processes as usize;
+        config.pre_warm = options.pre_warm.unwrap_or(0) as usize;
         apply_timeouts(
             &mut config,
             options.checkout_timeout_ms,
@@ -357,7 +369,8 @@ impl NativePool {
     }
 
     /// Configures a pool of remote workers: each checkout opens a stream to
-    /// `url` over the pool's one connection, and no stream is pre-warmed or reused.
+    /// `url` over the pool's one connection, or takes one `pre_warm` keeps
+    /// ready; no stream is reused.
     #[napi(factory)]
     pub fn remote(options: NativeRemotePoolOptions) -> Result<Self> {
         let mut config = PoolConfig::remote(options.url);
@@ -373,14 +386,37 @@ impl NativePool {
         )?;
         config.auto_resume = options.auto_resume;
         config.stream_async_calls = options.stream_async_calls.unwrap_or(true);
+        config.pre_warm = options.pre_warm.unwrap_or(0) as usize;
+        config.pre_warm_wait = options.pre_warm_wait.unwrap_or(true);
         Self::from_config(config, "MontyRemote")
     }
 
     /// Spawns the prewarmed workers off the event loop. Resolves to an `ok`
     /// turn, or a `connect` / `configuration` / `protocol` turn saying why not.
+    /// `pre_warm_metadata` supplies the metadata of each session a remote pool
+    /// pre-warms; it is held weakly, so an open pool does not keep Node alive.
     #[napi]
-    pub fn start<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, Object<'env>>> {
-        let config = self.config.clone();
+    pub fn start<'env>(
+        &self,
+        env: &'env Env,
+        pre_warm_metadata: Option<MetadataCallback<'_>>,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        let mut config = self.config.clone();
+        if let Some(callback) = pre_warm_metadata {
+            let tsfn = Arc::new(callback.build_threadsafe_function().weak::<true>().build()?);
+            config.pre_warm_metadata = Some(MetadataFn::new(move || {
+                let tsfn = Arc::clone(&tsfn);
+                async move {
+                    let headers = match tsfn.call_async(()).await {
+                        Ok(promise) => promise.await,
+                        Err(err) => Err(err),
+                    };
+                    headers
+                        .map(|headers| headers.into_iter().map(|h| (h.name, h.value)).collect())
+                        .map_err(|err| format!("metadata callback failed: {}", err.reason))
+                }
+            }));
+        }
         let slot = Arc::clone(&self.pool);
         env.spawn_future_with_callback(
             async move {

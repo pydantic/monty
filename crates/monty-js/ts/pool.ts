@@ -33,6 +33,11 @@ export interface MontyOptions {
    * only prewarms: it replaces a departed worker only for a waiting checkout.
    */
   minProcesses?: number
+  /**
+   * Idle workers kept ready beyond those checked out (default 0): each one a
+   * checkout takes is replaced in the background, up to `maxProcesses`.
+   */
+  preWarm?: number
   /** Worker cap; checkouts beyond it wait (default: CPU count). */
   maxProcesses?: number
   /**
@@ -189,6 +194,7 @@ export class Monty {
       binaryPath: findMontyBinary(options.binaryPath),
       minProcesses: options.minProcesses ?? 1,
       maxProcesses: options.maxProcesses ?? availableParallelism(),
+      ...(options.preWarm !== undefined ? { preWarm: options.preWarm } : {}),
       executionClock: options.executionClock,
       ...(options.checkoutTimeout !== undefined ? { checkoutTimeoutMs: options.checkoutTimeout * 1000 } : {}),
       ...(options.requestTimeout !== undefined ? { requestTimeoutMs: options.requestTimeout * 1000 } : {}),
@@ -238,10 +244,14 @@ export class Monty {
 /**
  * Starts a native pool: `MontyConnectError` when a remote URL cannot be used,
  * `MontyConfigurationError` for invalid pool settings, and a plain `Error`
- * when a worker cannot be spawned.
+ * when a worker cannot be spawned. `preWarmMetadata` supplies the metadata of
+ * each session a remote pool pre-warms.
  */
-export async function startPool(native: NativePool): Promise<void> {
-  const turn = (await native.start()) as StartTurn
+export async function startPool(
+  native: NativePool,
+  preWarmMetadata?: () => Promise<{ name: string; value: string }[]>,
+): Promise<void> {
+  const turn = (await native.start(preWarmMetadata)) as StartTurn
   switch (turn.kind) {
     case 'ok':
       return
