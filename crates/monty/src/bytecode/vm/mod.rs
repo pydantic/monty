@@ -2349,6 +2349,7 @@ impl<'h> VM<'h> {
                 // Resume on attempting to unlink missing file with unlink(missing_ok=True)
                 PendingEffect::Pre(PreConversionEffect::Unlink { missing_ok: true }) if matches!(&error, RunError::Exc(raise) if raise.exc.exc_type() == ExcType::FileNotFoundError) =>
                 {
+                    error.drop_with(self);
                     self.push(Value::None);
                     return self.run_external();
                 }

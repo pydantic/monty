@@ -58,7 +58,7 @@ for the same object (see [classes.md](classes.md)).
 ## Immutable values are shared rather than rebuilt
 
 Both `copy.copy` and `copy.deepcopy` return the same object for `datetime`,
-`date`, `time`, `timedelta`, `timezone`, `Path`, exception instances, generic
+`date`, `time`, `timedelta`, `timezone`, `Path`, generic
 aliases (`list[int]`) and unions (`int | None`), where CPython builds an equal
 new one through the pickle protocol. `timezone.utc` is the exception, a
 singleton in both, so only other offsets show it. `deepcopy` of a `slice`

@@ -10,7 +10,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
-    types::{Class, Dict, List, OwnedTypeRef, PyTrait, Type, TypeRef, type_ref::c3_merge},
+    types::{Class, Dict, List, PyTrait, Type, TypeRef, type_ref::c3_merge},
     value::Value,
 };
 
@@ -156,16 +156,7 @@ fn create_class(
     }
     let namespace_dict = Dict::from_pairs(pairs, vm)?;
 
-    let owned_bases = bases
-        .iter()
-        .map(|base| match *base {
-            TypeRef::Native(ty) => OwnedTypeRef::Native(ty),
-            TypeRef::Class(id) => {
-                vm.heap.inc_ref(id);
-                OwnedTypeRef::Class(id)
-            }
-        })
-        .collect();
+    let owned_bases = bases.iter().map(|base| (*base).to_owned(vm.heap)).collect();
     let class = Class::with_bases(class_name, namespace_dict, owned_bases, mro.into());
     let class_value = Value::Ref(vm.heap.allocate(HeapData::Class(Box::new(class))));
     let mut class_guard = DropGuard::new(class_value, vm);

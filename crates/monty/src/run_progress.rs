@@ -523,7 +523,8 @@ pub(crate) fn resume_lookup(
     let value = match (answer, effect) {
         (LookupAnswer::Error(err), effect) => {
             effect.drop_with(vm);
-            return vm.resume_with_exception(import_from_error(err, name, vm));
+            let err = import_from_error(err, name, vm);
+            return vm.resume_with_exception(err);
         }
         (LookupAnswer::Value(value), Some(effect)) => effect.apply(Some(value), vm),
         (LookupAnswer::Undefined, Some(effect)) => effect.apply(None, vm),
@@ -548,7 +549,8 @@ pub(crate) fn resume_lookup(
             value
         }
         (LookupAnswer::Undefined, None) => {
-            return vm.resume_with_exception(import_from_error(undefined_lookup_error(scope, name), name, vm));
+            let err = import_from_error(undefined_lookup_error(scope, name), name, vm);
+            return vm.resume_with_exception(err);
         }
     };
     vm.push(value);
@@ -558,7 +560,7 @@ pub(crate) fn resume_lookup(
 /// Converts missing import attributes to `ImportError` for `from` imports or
 /// `ModuleNotFoundError` for dotted modules, matching synchronous loads.
 /// Other errors and non-import lookups pass through unchanged.
-fn import_from_error(err: RunError, name: &str, vm: &VM<'_>) -> RunError {
+fn import_from_error(err: RunError, name: &str, vm: &mut VM<'_>) -> RunError {
     let RunError::Exc(exc) = &err else {
         return err;
     };
@@ -566,8 +568,10 @@ fn import_from_error(err: RunError, name: &str, vm: &VM<'_>) -> RunError {
         return err;
     }
     if let Some(module) = vm.suspended_import_from() {
+        err.drop_with(vm);
         ExcType::cannot_import_name(name, vm.interns.get_str(module), None)
     } else if let Some(path) = vm.suspended_submodule() {
+        err.drop_with(vm);
         ExcType::module_not_found_error(vm.interns.get_str(path), None)
     } else {
         err

@@ -236,6 +236,14 @@ impl Dict {
         }
     }
 
+    pub(crate) fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
+        Self {
+            table: self.table.clone_with_heap(heap),
+            contains_refs: self.contains_refs,
+            kind: self.cloned_kind(heap),
+        }
+    }
+
     /// The live entries, in insertion order.
     #[inline]
     fn live(&self) -> Live<'_, DictEntry> {
@@ -1277,6 +1285,7 @@ impl<'h> HeapRead<'h, Dict> {
         let order = match counter_order(counts, vm) {
             Ok(order) => order,
             Err(RunError::Exc(raise)) if Type::from(raise.exc.exc_type()).is_subclass_of(Type::TypeError) => {
+                raise.drop_with(vm);
                 (0..pairs.len()).collect()
             }
             Err(err) => return Err(err),

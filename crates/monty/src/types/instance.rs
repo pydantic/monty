@@ -544,7 +544,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         match self.call_next(vm).and_then(|call| call.require_synchronous(vm)) {
             Ok(value) => Ok(Some(value)),
-            Err(e) if e.is_stop_iteration() => Ok(None),
+            Err(e) if e.is_stop_iteration() => {
+                e.drop_with(vm);
+                Ok(None)
+            }
             Err(e) => Err(e),
         }
     }
@@ -1126,7 +1129,12 @@ pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, interns: &'i Interns
 /// other callable value is called as-is. Shared by `py_call_attr` and the
 /// context-manager and iterator hooks so special-method invocation and
 /// ordinary method calls dispatch identically.
-fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+pub(crate) fn call_member_bound(
+    member: &Value,
+    self_id: HeapId,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
     if is_method_value(member, vm) {
         vm.heap.inc_ref(self_id);
         vm.call_function(member, args.prepend(Value::Ref(self_id)))
@@ -1138,7 +1146,7 @@ fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut 
 /// What a function found on an instance's class binds to: the instance, except
 /// for the implicit staticmethod `__new__` (nothing) and the implicit
 /// classmethod `__init_subclass__` (the class).
-fn implicit_receiver(attr: &str, self_id: HeapId, class_id: HeapId) -> Option<HeapId> {
+pub(crate) fn implicit_receiver(attr: &str, self_id: HeapId, class_id: HeapId) -> Option<HeapId> {
     match attr {
         "__new__" => None,
         "__init_subclass__" => Some(class_id),

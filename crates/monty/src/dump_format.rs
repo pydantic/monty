@@ -66,7 +66,10 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// source-body changes do not require one; restored sessions retain their captured code.
 /// Older releases reject dumps with newer versions, and this build rejects dumps
 /// below [`MIN_SUPPORTED_DUMP_VERSION`].
-pub const DUMP_VERSION: u16 = 16;
+///
+/// Before bumping, check there's already been a bump since the last release - multiple bumps
+/// between releases is unnecessary and can lead to confusion.
+pub const DUMP_VERSION: u16 = 17;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.
@@ -405,7 +408,7 @@ mod tests {
         // Explicit builtin codes are `CallBuiltinFunction` operands; declaration order is free.
         assert_eq!(
             builtin_functions_fingerprint(),
-            0x23ab_4f4f_417a_b85c,
+            0x60cd_c4d6_e4be_ffd7,
             "BuiltinsFunctions codes changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(builtin_functions_fingerprint())
         );

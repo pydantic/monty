@@ -92,7 +92,10 @@ pub(crate) fn write_method(target: &Value, vm: &mut VM<'_>) -> RunResult<Option<
             result.drop_with(vm);
             Ok(None)
         }
-        Err(err) if err.is_catchable(ExcType::AttributeError) => Ok(None),
+        Err(err) if err.is_catchable(ExcType::AttributeError) => {
+            err.drop_with(vm);
+            Ok(None)
+        }
         Err(err) => Err(err),
     }
 }
@@ -416,6 +419,7 @@ fn row_items(row: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
         let iterator = match row.py_iter(vm).and_then(|call| call.require_synchronous(vm)) {
             Ok(iterator) => iterator,
             Err(err) if err.is_catchable(ExcType::TypeError) => {
+                err.drop_with(vm);
                 return Err(ExcType::csv_error(format!(
                     "iterable expected, not {}",
                     row.py_type_name(vm)

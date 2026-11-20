@@ -22,7 +22,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, HeapData, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
     modules::{ModuleFunctions, collections::counter_init, math},
     resource_checks::try_vec_with_capacity,
@@ -176,13 +176,15 @@ fn weighted_fmean(data: Value, weights: Value, vm: &mut VM<'_>) -> RunResult<Val
     let (data, vm) = data_guard.into_parts();
     defer_drop!(weights, vm);
     let weights_for_sum = weights.clone_with_heap(vm.heap);
-    let num = math::sumprod(vm, ArgValues::Two(data, weights_for_sum)).map_err(|err| match err {
+    let num = match math::sumprod(vm, ArgValues::Two(data, weights_for_sum)) {
+        Ok(num) => num,
         // CPython turns any `ValueError` from `sumprod` into this message, not only the length check.
-        RunError::Exc(raise) if Type::from(raise.exc.exc_type()).is_subclass_of(Type::ValueError) => {
-            ExcType::statistics_error("data and weights must be the same length")
+        Err(RunError::Exc(raise)) if Type::from(raise.exc.exc_type()).is_subclass_of(Type::ValueError) => {
+            raise.drop_with(vm);
+            return Err(ExcType::statistics_error("data and weights must be the same length"));
         }
-        err => err,
-    })?;
+        Err(err) => return Err(err),
+    };
     defer_drop!(num, vm);
     let weights_for_den = weights.clone_with_heap(vm.heap);
     match math::fsum(vm, ArgValues::One(weights_for_den))? {

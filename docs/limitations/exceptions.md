@@ -37,53 +37,21 @@ both `OSError` and `ValueError`, matching CPython's dual parentage), and
 `EncodingWarning`, `EnvironmentError` / `IOError` aliases,
 `ExceptionGroup` / `BaseExceptionGroup` (see [language.md](language.md)).
 
-## Constructor signature
+## Constructor and attribute divergences
 
-All exception constructors accept **zero or one string argument** only.
-Multi-argument forms used in CPython (e.g. `OSError(errno, strerror, filename)`,
-`UnicodeDecodeError(encoding, obj, start, end, reason)`) are
-not supported; passing more than one argument raises an internal error.
+Sandbox-side instances of `OSError` (`errno`, `strerror`, `filename`), `SyntaxError` (`msg`, `filename`, `lineno`, `offset`, `text`), `UnicodeDecodeError`/`UnicodeEncodeError` (`encoding`, `object`, `start`, `end`, `reason`), and `JSONDecodeError`/`TOMLDecodeError` (`msg`, `doc`, `pos`, `lineno`, `colno`) do not validate CPython's specific constructor signatures or expose those per-type attributes inside the sandbox.
+VM-raised `AttributeError`, `NameError`, `UnboundLocalError`, `ImportError`, and `ModuleNotFoundError` leave `.name`, `.obj`, and `.path` as `None` rather than populating the offending symbol or module name.
 
-## Attributes
+`KeyError` carries the missing key's `str()` text rather than the key itself, so `str(exc)` and `repr(exc)` quote non-string keys: `{}[1]` gives `KeyError('1')` where CPython gives `KeyError(1)`, and a `bytes` key gives `KeyError("b'a'")`.
+The key's `__str__` runs when the `KeyError` is raised, which CPython never does.
+An exception from it is replaced by the type name (`KeyError('<K>')`), but a resource limit hit inside it ends the run with `MemoryError` or `TimeoutError` where CPython raises a plain `KeyError`.
 
-- `exc.args` — a tuple with 0 or 1 elements. Always a `tuple`, even when
-    empty.
+`repr(exc)` uses the generic args form; VM-raised `UnicodeDecodeError` and `UnicodeEncodeError` therefore differ from CPython's five-field repr, while missing-key `KeyError` and dotted exception classes have the divergences described above.
 
-- `str(exc)` — returns the single message string, or `""` if none.
+The dotted exception classes — `json.JSONDecodeError`, `tomllib.TOMLDecodeError`, `re.PatternError`, `binascii.Error`, `binascii.Incomplete`, `_csv.Error`, `statistics.StatisticsError` — repr under their qualified name: `binascii.Error('bad')` where CPython gives `Error('bad')`.
 
-- `KeyError` always carries the missing key's `str()` text rather than the key
-    itself, so `str(exc)` and `repr(exc)` quote non-string keys:
-    `{}[1]` gives `KeyError('1')` where CPython gives `KeyError(1)`, and a
-    `bytes` key gives `KeyError("b'a'")`.
-    The key's `__str__` therefore runs when the `KeyError` is raised, which CPython never does.
-    An exception from it is replaced by the type name (`KeyError('<K>')`), but a resource limit hit inside it
-    ends the run with `MemoryError` or `TimeoutError` where CPython raises a plain `KeyError`.
-
-- `repr(exc)` — `ClassName('message')` matching CPython, **except**
-    `UnicodeDecodeError`/`UnicodeEncodeError`: CPython reprs these from their
-    real 5-field constructor (`UnicodeDecodeError('ascii', b'\xff', 0, 1, 'ordinal not in range(128)')`), which Monty
-    doesn't track, so Monty's
-    `repr()` uses the generic single-message form instead.
-
-- The dotted exception classes — `json.JSONDecodeError`, `tomllib.TOMLDecodeError`, `re.PatternError`,
-    `binascii.Error`, `binascii.Incomplete`, `_csv.Error`, `statistics.StatisticsError` — repr under their qualified
-    name:
-    `binascii.Error('bad')` where CPython gives `Error('bad')`.
-    `type(exc).__name__` and `str(type(exc))` match CPython.
-
-- `exc.__cause__`, `exc.__context__` and `exc.__suppress_context__` are read-only: `exc.__cause__ = other` raises
-    `AttributeError`, where CPython accepts an exception or `None`.
-
-- An exception rebuilt from a copy loses its chain: one that escapes a nested synchronous call (a `sorted()` key,
-    `json.dumps(default=...)`, a `__repr__`) reaches the outer handler with `__cause__` reset to `None`,
-    `__suppress_context__` to `False`, and `__context__` set to the exception the *caller* was handling, if any,
-    rather than the one the callee was handling.
-
-- A chain that forms a cycle (`raise e from e`) is only reclaimed when the session ends, since exceptions are not
-    cycle-collected.
-
-**Not implemented:** `__traceback__`, `__notes__`, `add_note()`. A traceback printed for an exception with a
-`__cause__` or `__context__` shows that exception alone: CPython's chained output (`The above exception was the direct cause of the following exception:`) is not produced, inside the sandbox or at the host boundary.
+**Not implemented:** `__traceback__`, `__notes__`, `add_note()`.
+A traceback printed for an exception with a `__cause__` or `__context__` shows that exception alone: CPython's chained output (`The above exception was the direct cause of the following exception:`) is not produced, inside the sandbox or at the host boundary.
 
 ## Custom subclasses
 
