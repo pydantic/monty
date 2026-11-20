@@ -1241,12 +1241,9 @@ class AsyncMontyRemote:
                 on the checking-out task, so it sees that task's contextvars
                 and must not block. Monty never interprets the values; names
                 are lowercase ASCII and values ASCII, duplicate names are
-                last-wins, also over the `traceparent` the Logfire integration
-                adds, a `user-agent` entry is put in front of the default one,
-                a `traceparent` entry applies to the session as a whole, since
-                each feed sends its own caller's span with its request,
-                and a malformed name or value raises `MontyConfigurationError` as the
-                session is entered.
+                last-wins, a `user-agent` entry is put in front of the default
+                one, and a malformed name or value raises
+                `MontyConfigurationError` as the session is entered.
             feed_duration_limit_grace: Client wall-time grace beyond
                 `max_feed_duration_secs` when the server uses wall time.
                 CPU mode uses the server's supervisor and grace instead.

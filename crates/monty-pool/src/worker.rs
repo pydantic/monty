@@ -370,6 +370,7 @@ impl Worker {
     /// module docs), which is what lets `Checkout` race a turn against its
     /// deadline.
     pub(crate) async fn recv(&mut self) -> Result<pb::WorkerEvent, FrameError> {
+        #[cfg_attr(not(feature = "telemetry"), expect(unused_mut))]
         let (mut event, len) = match &mut self.kind {
             WorkerKind::Subprocess(w) => match w.recv.recv(self.max_decode_bytes).await? {
                 Some(mut framed) => {
