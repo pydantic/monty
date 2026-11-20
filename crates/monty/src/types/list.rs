@@ -23,7 +23,7 @@ use crate::{
     resource_checks::{check_repeat_size, check_value_buffer_growth, repeated_len, try_vec_with_capacity},
     sorting::parse_and_sort,
     types::{
-        LazyHeapSet, Type,
+        LazyHeapSet, Type, TypeRef,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -516,8 +516,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         Ok(Some(false))
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::List
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::List.into()
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -656,6 +656,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             return Ok(None);
         };
         let len = self.get(vm.heap).len();
+        // An empty operand yields `[]` however large `count` is; without this the
+        // loop below would spin `count` times over nothing.
+        if count == 0 || len == 0 {
+            return Ok(Some(Value::Ref(
+                vm.heap.allocate(HeapData::List(List::new(Vec::new()))),
+            )));
+        }
         let total = repeated_len(len, count, VALUE_SIZE)?;
         check_repeat_size(len.saturating_mul(VALUE_SIZE), count, &vm.heap.tracker)?;
         // The guard releases the clones built so far if the time poll trips.
@@ -1245,8 +1252,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ListIterator> {
         true
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::ListIterator
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::ListIterator.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {

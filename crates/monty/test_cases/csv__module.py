@@ -6,6 +6,8 @@ is_monty = sys.platform == 'monty'
 # === Constants ===
 assert (csv.QUOTE_MINIMAL, csv.QUOTE_ALL, csv.QUOTE_NONNUMERIC, csv.QUOTE_NONE) == (0, 1, 2, 3)
 assert (csv.QUOTE_STRINGS, csv.QUOTE_NOTNULL) == (4, 5)
+assert csv.__version__ == '1.0'
+assert isinstance(csv.__version__, str)
 
 # === Error ===
 assert str(csv.Error) == "<class '_csv.Error'>"

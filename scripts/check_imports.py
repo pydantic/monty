@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 """Check that `use` statements live at module scope, not inside function bodies.
 
-Enforces the rule in CLAUDE.md that imports must live at the top of the file.
+Enforces the rule in AGENTS.md that imports must live at the top of the file.
 Top-level `use` statements and `use` statements inside `mod { ... }` blocks are
 allowed; any `use` statement whose innermost enclosing item (walking outward)
 is a `fn` is flagged as a local import.

@@ -7,10 +7,13 @@
 //! dumps and REPL feeds. Python semantics, compared with CPython, are in
 //! `test_cases/import__files.py`.
 
+use std::time::Duration;
+
 use monty::{Dump, MontyRepl, MontyRun, ReplOsCall, ReplProgress, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, IMPORT_CALL, ImportArgs, MAX_SEARCH_DIRS, ModuleFile, ModuleRead,
-    MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker, find_module_file,
+    MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker,
+    find_module_file,
 };
 
 /// The files a test's host serves, by virtual path.
@@ -468,6 +471,20 @@ fn an_abandoned_import_reads_the_file_again() {
         assert_eq!(asked(&imports), [("helpers", vec!["/proj"])]);
         assert_eq!(result.unwrap(), eval("(1, 2)", &[]));
     }
+}
+
+/// A star import reads `__all__` in a native loop whose `__getitem__` calls each
+/// restart the dispatch loop's checkpoint countdown, so the loop polls the clock.
+#[test]
+fn a_star_import_of_an_endless_all_times_out() {
+    let endless = "class Names:\n    def __getitem__(self, i):\n        return 'x'\n__all__ = Names()\nx = 1\n";
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let mut repl = MontyRepl::new("main.py", ResourceTracker::new(limits), CompileOptions::default());
+    repl.set_cwd("/proj");
+    let (_, result) = feed(repl, "from endless import *", &[("/proj/endless.py", endless)]);
+    // The message carries the measured time, so only its fixed start is compared.
+    let error = result.unwrap_err();
+    assert!(error.starts_with("TimeoutError: feed time limit exceeded: "), "{error}");
 }
 
 /// `import helpers`, suspended at a `Path.read_text` between its two assignments.

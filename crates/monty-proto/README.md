@@ -68,6 +68,19 @@ Repeated fields and byte buffers in protocol messages use `BudgetVec<T>`.
 Construct them from standard vectors with `.into()` or collect an iterator directly; use `.into_inner()` to recover a standard vector without copying.
 Host construction and cloning are unbudgeted; fallible `try_push` charges any growth to the active decode budget.
 
+## Positional writes and protocol compatibility
+
+Protocol 9 adds `OsCall.write_bytes_at` for positional binary file-object writes, including ordinary `wb` files.
+`Path.write_bytes()` still uses the truncating `OsCall.write_bytes` operation.
+Protocol 7 and 8 clients remain supported: sequential `wb` writes use the original write/append calls.
+Binary update mode and writes away from EOF raise `NotImplementedError` before issuing filesystem calls to those clients.
+The configured client's capabilities also apply after loading a snapshot.
+A snapshot suspended on an unsupported operation is refused.
+Upgrade relays and filesystem handlers before enabling protocol 9 workers; the client/worker version check does not negotiate
+capabilities with an intermediary relay.
+Custom handlers serving protocol 9 must implement positional writes rather than substituting append or truncating writes.
+The built-in mounts and Python `OSAccess` implement it.
+
 ## Values are special-cased for performance
 
 Values cross as one flat `monty.v1.Arena` per message: a post-order node arena in which containers hold child indexes.
@@ -110,7 +123,9 @@ See `DEFAULT_MAX_DECODE_BYTES` in `src/frame.rs` for the accounting contract.
 The browser component uses separate decoded-value estimates for WIT arenas, with the same 1 GiB ceiling.
 Those checks do not account for all allocations made by the component ABI or JavaScript conversion.
 
-Invalid dates, timedeltas, exception names and other semantic values are rejected after parsing each protobuf node.
+Invalid dates, timedeltas and other semantic values are rejected after parsing each protobuf node.
+An exception name the receiver does not know decodes as `Exception`, with the name leading its message
+(`statistics.StatisticsError: ...`), so a peer from a newer release can add exception types without ending the session.
 The browser component validates semantic values while converting WIT arenas.
 A client receiving an invalid frame discards the worker with a protocol error.
 A worker receiving such a malformed request reports `RuntimeError("protocol violation: malformed request: ...")`

@@ -906,6 +906,44 @@ fn timeout_in_sorted_builtin() {
     assert_timeout_in_builtin("sorted(range(10**18))", "sorted(range(10**18))");
 }
 
+#[test]
+fn timeout_in_sorted_list_and_tuple_copy() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("x = [1] * 20_000\nt = (1,) * 20_000", vec![], PrintWriter::Stdout)
+        .expect("list and tuple should build without a limit");
+
+    repl.tracker_mut().set_max_feed_duration(Duration::from_nanos(1));
+    let exc = repl
+        .feed_run("sorted(x)", vec![], PrintWriter::Stdout)
+        .expect_err("sorted(list) must hit the time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+
+    repl.tracker_mut().set_max_feed_duration(Duration::from_nanos(1));
+    let exc = repl
+        .feed_run("sorted(t)", vec![], PrintWriter::Stdout)
+        .expect_err("sorted(tuple) must hit the time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+#[test]
+fn memory_preflight_in_sorted_list_and_tuple_copy() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("x = [1] * 20_000\nt = (1,) * 20_000", vec![], PrintWriter::Stdout)
+        .expect("list and tuple should build without a limit");
+
+    *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(10_000 * 16 + 8));
+    let exc = repl
+        .feed_run("sorted(x)", vec![], PrintWriter::Stdout)
+        .expect_err("sorted(list) must hit memory preflight");
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+
+    *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(10_000 * 16 + 8));
+    let exc = repl
+        .feed_run("sorted(t)", vec![], PrintWriter::Stdout)
+        .expect_err("sorted(tuple) must hit memory preflight");
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
 /// Test that `min(range(huge))` respects the time limit.
 ///
 /// `min()` with a single iterable argument iterates via `for_next()`.
@@ -960,19 +998,26 @@ fn timeout_in_str_join() {
     assert_timeout_in_builtin("' '.join(str(i) for i in range(10**18))", "str.join with generator");
 }
 
-/// Test that the insertion sort inner loop in `sorted()` respects the time limit.
+/// Test that the sort comparison loop respects the time limit.
 ///
-/// Uses reverse-sorted data to trigger worst-case O(n^2) insertion sort behavior.
-/// The sort comparison loop polls the time limit (amortized, every 64th comparison).
+/// `x.sort()` sorts in place without an iterable collection or copy phase,
+/// isolating the comparison loop which polls the time limit every 64th comparison.
 #[test]
 fn timeout_in_sorted_comparison_loop() {
-    // Build a reverse-sorted list, then sort it. Insertion sort on reverse-sorted
-    // data is O(n^2).
-    let code = r"
-x = list(range(10**6, 0, -1))
-sorted(x)
-";
-    assert_timeout_in_builtin(code, "sorted(reversed list)");
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("x = list(range(10_000, 0, -1))", vec![], PrintWriter::Stdout)
+        .expect("setup should succeed");
+    repl.tracker_mut().set_max_feed_duration(Duration::from_nanos(1));
+    let start = Instant::now();
+    let exc = repl
+        .feed_run("x.sort()", vec![], PrintWriter::Stdout)
+        .expect_err("sort comparison loop must hit the time limit");
+    let elapsed = start.elapsed();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "should terminate promptly, took {elapsed:?}"
+    );
 }
 
 /// Test that `[1] * 10_000_000` (list repetition) respects the time limit.
@@ -1507,7 +1552,7 @@ fn timeout_in_deepcopy_fill_loop() {
     );
 }
 
-/// `copy.copy` reaches no dispatch checkpoint either, and a dict copy has two
+/// `copy.copy` reaches no dispatch checkpoint either, and its dict path has two
 /// Rust loops to get past: the snapshot of every pair, then the re-hashing
 /// fill. Both poll, so the copy stops a budget in whatever the dict costs per
 /// entry — the claim the tests above make, and what makes a fixed threshold
@@ -1556,6 +1601,174 @@ fn timeout_in_shallow_copy_fill_loop() {
             "budget {budget}ms: should stop promptly, took {elapsed:?}"
         );
     }
+}
+
+/// Empty copies reserve no entry/index buffers, so their preflight must charge zero bytes.
+#[test]
+fn empty_container_copies_do_not_charge_entry_storage() {
+    for code in [
+        "len({}.copy())",
+        "len(dict({}))",
+        "from collections import Counter\nlen(Counter({}))",
+        "from collections import defaultdict\nlen(defaultdict(None, {}))",
+        "from collections import Counter\nc = Counter()\nc.update({})\nlen(c)",
+        "s = set()\nlen(s.copy())",
+        "s = set()\nlen(set(s))",
+        "s = set()\nlen(frozenset(s))",
+        "import copy\ns = set()\nlen(copy.copy(s))",
+    ] {
+        let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        // This binary has no allocator probe; a zero limit isolates bulk-allocation preflights.
+        let tracker = ResourceTracker::new(ResourceLimits::default().max_memory(0));
+        let result = run.run(vec![], tracker, PrintWriter::Stdout).unwrap();
+        assert_eq!(result, MontyObject::int(0), "{code}");
+    }
+}
+
+/// A direct dict copy polls while retaining entries and releases a partial copy on timeout.
+#[test]
+fn timeout_in_dict_copy_releases_partial_entries() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "from collections import Counter\nshared = []\nd = {i: shared for i in range(4_000_000)}",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    for code in ["d.copy()", "dict(d)", "Counter(d)"] {
+        repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
+        let start = ThreadTime::now();
+        let exc = repl
+            .feed_run(code, vec![], PrintWriter::Stdout)
+            .expect_err("the copy must hit the time limit");
+        let elapsed = start.elapsed();
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{code}");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "{code}: should stop promptly, took {elapsed:?}"
+        );
+        // The next feed's GC scans the retained source under memory-model-checks.
+        repl.tracker_mut().set_max_feed_duration(Duration::from_secs(5));
+        assert_eq!(
+            repl.feed_run("len(d)", vec![], PrintWriter::Stdout).unwrap(),
+            MontyObject::int(4_000_000)
+        );
+    }
+}
+
+/// A refused copy must release the factory reference retained by its requested kind.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn refused_dict_copy_releases_default_factory() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "from collections import defaultdict\ndef make_factory():\n    captured = []\n    def factory():\n        return captured\n    return factory",
+        vec![],
+        PrintWriter::Disabled,
+    ).unwrap();
+    let initial_entries = repl.heap_entry_count();
+    repl.feed_run(
+        "factory = make_factory()\nsource = defaultdict(factory, {1: 2})",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    // Without an allocator probe, zero isolates the nonempty table-copy preflight.
+    repl.tracker_mut()
+        .tighten_limits(&ResourceLimits::default().max_memory(0));
+    let error = repl
+        .feed_run("source.copy()", vec![], PrintWriter::Disabled)
+        .expect_err("the table-copy preflight must reject the copy");
+    assert_eq!(error.exc_type(), ExcType::MemoryError);
+    repl.feed_run("source = None\nfactory = None", vec![], PrintWriter::Disabled)
+        .unwrap();
+    assert_eq!(
+        repl.heap_entry_count(),
+        initial_entries,
+        "the rejected kind must not retain its factory"
+    );
+}
+
+/// Full set copies must stop mid-fill and release every retained member on failure.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn timeout_in_set_copy_releases_partial_entries() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("import copy\ntarget = set()", vec![], PrintWriter::Disabled)
+        .unwrap();
+    let initial_entries = repl.heap_entry_count();
+    // Insert the heap-backed member first so a partial copy has retained it before timing out.
+    repl.feed_run(
+        "shared = ('a heap-backed set member',)\ns = {shared}\ns.update(range(4_000_000))",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    for code in [
+        "s.copy()",
+        "copy.copy(s)",
+        "set(s)",
+        "frozenset(s)",
+        "s | set()",
+        "s.issubset(s)",
+        "target |= s",
+        "target.update(s)",
+    ] {
+        repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
+        let start = ThreadTime::now();
+        let exc = repl
+            .feed_run(code, vec![], PrintWriter::Disabled)
+            .expect_err("the copy must hit the time limit");
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{code}");
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "{code}: copy did not stop promptly"
+        );
+
+        repl.tracker_mut().set_max_feed_duration(Duration::from_secs(5));
+        assert_eq!(
+            repl.feed_run("len(s)", vec![], PrintWriter::Disabled).unwrap(),
+            MontyObject::int(4_000_001),
+            "{code}"
+        );
+    }
+    // In-place operations may retain a completed prefix when the budget expires.
+    repl.feed_run("target.clear()\ns = None\nshared = None", vec![], PrintWriter::Disabled)
+        .unwrap();
+    assert_eq!(
+        repl.heap_entry_count(),
+        initial_entries,
+        "partial copies must release their members"
+    );
+}
+
+/// Pair snapshots must release retained values when the deadline expires before ordering begins.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn timeout_in_counter_snapshot_releases_pairs() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("from collections import Counter", vec![], PrintWriter::Disabled)
+        .unwrap();
+    let initial_entries = repl.heap_entry_count();
+    repl.feed_run(
+        "shared = []\nsource = Counter(dict.fromkeys(range(1_000_000), shared))",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    repl.tracker_mut().set_max_feed_duration(Duration::from_millis(10));
+    let error = repl
+        .feed_run("source.most_common()", vec![], PrintWriter::Disabled)
+        .expect_err("snapshotting must hit the deadline");
+    assert_eq!(error.exc_type(), ExcType::TimeoutError);
+    repl.tracker_mut().set_max_feed_duration(Duration::from_secs(5));
+    repl.feed_run("source = None\nshared = None", vec![], PrintWriter::Disabled)
+        .unwrap();
+    assert_eq!(
+        repl.heap_entry_count(),
+        initial_entries,
+        "the partial snapshot must release its pairs"
+    );
 }
 
 /// Feeds shorter than the dispatch-checkpoint interval never probe GC inside
@@ -2128,6 +2341,23 @@ fn a_refused_concatenation_releases_its_left_clones() {
     }
 }
 
+/// `typing.assert_never` quotes at most 100 characters of the value's `repr`, and never builds the rest.
+///
+/// The list costs about 48 KB but its full `repr` is over 3 MB, so with a 300 KB limit the
+/// error must stay an `AssertionError` with a short message, not a `MemoryError`.
+#[test]
+fn assert_never_caps_the_repr_it_builds() {
+    let code = "from typing import assert_never\ns = 'x' * 1000\nassert_never([s] * 3000)";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_memory(300_000);
+    let exc = ex
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .expect_err("assert_never always raises");
+    assert_eq!(exc.exc_type(), ExcType::AssertionError);
+    let expected = format!("Expected code to be unreachable, but got: ['{}...", "x".repeat(98));
+    assert_eq!(exc.message(), Some(expected.as_str()));
+}
+
 /// A named tuple clones the right operand before it preflights its own items.
 /// Refusal at the second check must release the first operand's heap references.
 #[test]
@@ -2299,6 +2529,17 @@ fn max_turn_duration_is_enforced_alone() {
     );
 }
 
+/// An `n` too large to address raises `MemoryError` instead of aborting on the reservation.
+#[test]
+fn statistics_quantiles_unaddressable_n_is_a_memory_error() {
+    let code = "import statistics\nstatistics.quantiles([1, 2], n=2**62)\n";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let exc = ex
+        .run_no_limits(vec![])
+        .expect_err("an unaddressable result must be refused");
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
 /// `call_function` is its own unit of work: it opens a fresh feed, so a
 /// session that has already spent one still gets the full per-feed budget.
 ///
@@ -2319,4 +2560,19 @@ fn call_function_starts_a_fresh_feed_budget() {
         .call_function("work", vec![], PrintWriter::Stdout)
         .expect("the call gets its own budget");
     assert_eq!(value, MontyObject::int(49_995_000));
+}
+
+/// Draining a large iterable into `bytes` checks allocation sizes and halts with MemoryError.
+#[test]
+fn bytes_iterable_respects_max_memory() {
+    let mut ex = MontyRun::new(
+        "import itertools\nbytes(itertools.repeat(0, 200_000))".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_memory(10_000));
+    let err = ex.run(vec![], tracker, PrintWriter::Stdout).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
 }

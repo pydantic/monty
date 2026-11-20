@@ -33,7 +33,7 @@ use crate::{
     intern::StaticStrings,
     py_value::PyValue,
     types::{
-        BuiltinType, CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, allocate_string,
+        CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, TypeRef, allocate_string,
         str::allocate_string_no_interning, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
@@ -241,13 +241,14 @@ fn from_tuple(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decim
     defer_drop!(digit_values, vm);
     let mut coeff = String::with_capacity(digit_values.len());
     for digit in digit_values {
-        match digit {
-            Value::Int(d @ 0..=9) => {
-                if !coeff.is_empty() || *d != 0 {
-                    coeff.push(char::from(b'0' + u8::try_from(*d).expect("single digit")));
-                }
-            }
+        let digit = match digit {
+            Value::Int(d @ 0..=9) => u8::try_from(*d).expect("single digit"),
+            // Python's tuple constructor accepts bool as an int digit.
+            Value::Bool(b) => u8::from(*b),
             _ => return Err(ExcType::value_error("coefficient must be a tuple of digits")),
+        };
+        if !coeff.is_empty() || digit != 0 {
+            coeff.push(char::from(b'0' + digit));
         }
     }
     parse::check_digit_count(coeff.len())?;
@@ -295,6 +296,21 @@ fn sequence_items(value: &Value, vm: &VM<'_>) -> Option<Vec<Value>> {
         _ => return None,
     };
     Some(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
+}
+
+/// `Decimal.from_number(...)` and `Decimal.from_float(...)`.
+pub(crate) fn class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    if attr.static_string(vm.interns) == Some(StaticStrings::FromNumber) {
+        Ok(class_from_number(vm, args).map(CallResult::Value))
+    } else if attr.as_str(vm.interns) == "from_float" {
+        Ok(class_from_float(vm, args).map(CallResult::Value))
+    } else {
+        Err(args)
+    }
 }
 
 /// `Decimal.from_float(f)`: exact; an `int` is accepted too.
@@ -542,8 +558,8 @@ fn exact_fraction_float(coeff: &Coeff, exp: i64) -> Option<f64> {
 // ============================================================================
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Decimal> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Decimal
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Decimal.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -858,10 +874,7 @@ impl<'h> HeapObjectRead<'h, Decimal> {
             DecimalMethod::DunderReduce => {
                 let text = allocate_string(d.to_sci_string(false, true), vm.heap);
                 let args = allocate_tuple(smallvec![text], vm.heap);
-                allocate_tuple(
-                    smallvec![Value::Builtin(Builtins::Type(BuiltinType::Decimal)), args],
-                    vm.heap,
-                )
+                allocate_tuple(smallvec![Value::Builtin(Builtins::Type(Type::Decimal)), args], vm.heap)
             }
             DecimalMethod::DunderComplex => {
                 let real = d.to_f64()?;

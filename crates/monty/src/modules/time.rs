@@ -9,7 +9,10 @@
 
 use std::{borrow::Cow, time::Duration};
 
-use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeDelta, Timelike, format::StrftimeItems};
+use jiff::{
+    SignedDuration,
+    civil::{self, DateTime},
+};
 use monty_types::{
     MontyTimeZone, OsFunctionCall, ProcessTime, ResourceTracker, SandboxTimeZone, SleepError, SleepMode, TimeCaller,
     local_wall_clock, sleep_duration, unix_seconds,
@@ -21,7 +24,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
@@ -38,29 +41,29 @@ use crate::{
 
 /// `time` module functions, each a Python-visible callable.
 ///
-/// Serialised by declaration index through `ModuleFunctions`, so new variants
-/// must be appended.
+/// Variant names persist in dumps; explicit discriminants preserve numeric identities.
+#[monty_macros::explicit_discriminants(checksum = 0xd0fc_8b76_7b3d_a116)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum TimeFunctions {
-    Time,
-    Sleep,
-    TimeNs,
-    Monotonic,
-    MonotonicNs,
-    PerfCounter,
-    PerfCounterNs,
-    ProcessTime,
-    ProcessTimeNs,
-    ThreadTime,
-    ThreadTimeNs,
-    Gmtime,
-    Localtime,
-    Mktime,
-    Asctime,
-    Ctime,
-    Strftime,
-    Strptime,
+    Time = 0,
+    Sleep = 1,
+    TimeNs = 2,
+    Monotonic = 3,
+    MonotonicNs = 4,
+    PerfCounter = 5,
+    PerfCounterNs = 6,
+    ProcessTime = 7,
+    ProcessTimeNs = 8,
+    ThreadTime = 9,
+    ThreadTimeNs = 10,
+    Gmtime = 11,
+    Localtime = 12,
+    Mktime = 13,
+    Asctime = 14,
+    Ctime = 15,
+    Strftime = 16,
+    Strptime = 17,
 }
 
 /// Every function the module exposes, paired with the name it binds to.
@@ -85,15 +88,15 @@ const FUNCTIONS: [(StaticStrings, TimeFunctions); 18] = [
     (StaticStrings::Strptime, TimeFunctions::Strptime),
 ];
 
-/// Creates the `time` module and allocates it on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `time` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Time, vm.interns);
     for (name, function) in FUNCTIONS {
         module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Time(function)), vm);
     }
     set_zone_constants(&mut module, vm);
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Sets `timezone`, `altzone`, `daylight` and `tzname` from the sandbox zone,
@@ -101,7 +104,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 /// year. A named zone needs that year from the session clock, so the four are
 /// unset when the clock is `CallHost`: module creation cannot suspend.
 fn set_zone_constants(module: &mut Module, vm: &mut VM<'_>) {
-    let year = vm.env.os_policy.datetime.read().map(|utc| utc.year());
+    let year = vm.env.os_policy.datetime.read().map(|utc| i32::from(utc.year()));
     let Some(constants) = vm.env.os_policy.timezone.constants(year) else {
         return;
     };
@@ -233,7 +236,7 @@ pub(crate) enum ClockReading {
 
 impl ClockReading {
     /// Turns the instant into the value the `time` function returns.
-    fn apply(self, utc: NaiveDateTime, vm: &mut VM<'_>) -> RunResult<Value> {
+    fn apply(self, utc: DateTime, vm: &mut VM<'_>) -> RunResult<Value> {
         match self {
             Self::Nanoseconds => epoch_nanoseconds(utc).map(Value::Int),
             Self::Gmtime => Ok(gmtime_value(utc, vm)),
@@ -456,10 +459,12 @@ fn strptime_result(data_string: &Value, format: &Value, vm: &mut VM<'_>) -> RunR
         Value::None => DEFAULT_STRPTIME_FORMAT.to_owned(),
         other => string_arg(other, "strptime", 2, vm)?,
     };
-    let wall = datetime_type::parse_time_strptime(&text, &format)?;
+    let parsed = datetime_type::strptime::parse(&text, &format, vm.env.os_policy, &vm.heap.tracker)?;
     // A `%z` offset is parsed but dropped, so the zone half stays unset; CPython
     // records it in `tm_gmtoff` (see `limitations/time.md`).
-    Ok(struct_time_value(&TimeFields::naive(wall), vm))
+    let mut fields = TimeFields::naive(parsed.wall);
+    fields.second = i64::from(parsed.second);
+    Ok(struct_time_value(&fields, vm))
 }
 
 /// `time.strptime`'s format when the caller gives none: `asctime`'s form.
@@ -492,7 +497,9 @@ fn string_arg(value: &Value, name: &str, position: usize, vm: &VM<'_>) -> RunRes
 /// formats them as given: `strftime('%a', (…, tm_wday=0, …))` prints `Mon`
 /// even when the date is a Saturday.
 struct TimeFields {
-    wall: NaiveDateTime,
+    wall: DateTime,
+    /// Kept separately because `struct_time` permits leap seconds, unlike Jiff.
+    second: i64,
     weekday: i64,
     yearday: i64,
     /// -1 when unknown (`strptime`), else 0 or 1.
@@ -504,11 +511,12 @@ struct TimeFields {
 
 impl TimeFields {
     /// Fields for a wall clock in `zone`, deriving the weekday and year day.
-    fn zoned(wall: NaiveDateTime, zone: MontyTimeZone, isdst: i64) -> Self {
+    fn zoned(wall: DateTime, zone: MontyTimeZone, isdst: i64) -> Self {
         Self {
             wall,
-            weekday: i64::from(wall.weekday().num_days_from_monday()),
-            yearday: i64::from(wall.ordinal()),
+            second: i64::from(wall.second()),
+            weekday: i64::from(wall.weekday().to_monday_zero_offset()),
+            yearday: i64::from(wall.day_of_year()),
             isdst,
             zone: Some(zone),
         }
@@ -521,11 +529,12 @@ impl TimeFields {
     }
 
     /// Fields with no zone, for `strptime` and a bare 9-element tuple.
-    fn naive(wall: NaiveDateTime) -> Self {
+    fn naive(wall: DateTime) -> Self {
         Self {
             wall,
-            weekday: i64::from(wall.weekday().num_days_from_monday()),
-            yearday: i64::from(wall.ordinal()),
+            second: i64::from(wall.second()),
+            weekday: i64::from(wall.weekday().to_monday_zero_offset()),
+            yearday: i64::from(wall.day_of_year()),
             isdst: -1,
             zone: None,
         }
@@ -539,37 +548,34 @@ impl TimeFields {
             "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
         ];
         let day = DAYS[self.weekday_index()];
-        let month = MONTHS[(self.wall.month0() as usize).min(11)];
+        let month = MONTHS[usize::try_from(self.wall.month() - 1).expect("month in 1..=12")];
         format!(
             "{day} {month} {:2} {:02}:{:02}:{:02} {}",
             self.wall.day(),
             self.wall.hour(),
             self.wall.minute(),
-            self.wall.second(),
+            self.second,
             self.wall.year()
         )
     }
 
     /// Applies a `strftime` format, with the zone directives from the stored zone
     /// (as `datetime.strftime` does) and the day directives from the stored fields.
-    /// `%f` renders zeros via the shared rewrite; CPython's `time.strftime` has no
+    /// `%f` renders zeros as for a `datetime`; CPython's `time.strftime` has no
     /// microsecond field at all (see `limitations/time.md`).
     fn strftime(&self, format: &str, vm: &mut VM<'_>) -> RunResult<String> {
         let (offset, name) = match &self.zone {
             Some(zone) => (Some(zone.offset_seconds), zone.name.clone()),
             None => (None, None),
         };
-        let format = self.rewrite_day_directives(format, &vm.heap.tracker)?;
+        let format = self.rewrite_tuple_directives(format, &vm.heap.tracker)?;
         let format = date::rewrite_zone_directives(&format, offset, name.as_deref(), &vm.heap.tracker)?;
-        let format = date::rewrite_microsecond_directive(&format);
-        let rendered = self.wall.format_with_items(StrftimeItems::new_lenient(&format));
-        date::render_strftime(rendered).ok_or_else(date::invalid_strftime_error)
+        date::render_strftime(self.wall, &format, &vm.heap.tracker)
     }
 
-    /// Substitutes the directives CPython reads from `tm_wday`/`tm_yday`, which
-    /// chrono would recompute from the date. Shifting the date instead is not an
-    /// option: `%d`, `%m` and `%Y` must still come from the date itself.
-    fn rewrite_day_directives<'f>(&self, format: &'f str, tracker: &ResourceTracker) -> RunResult<Cow<'f, str>> {
+    /// Substitutes stored weekday, year-day and second fields, including leap
+    /// seconds that Jiff cannot represent. Clock aliases use the same fields.
+    fn rewrite_tuple_directives<'f>(&self, format: &'f str, tracker: &ResourceTracker) -> RunResult<Cow<'f, str>> {
         const DAYS: [(&str, &str); 7] = [
             ("Mon", "Monday"),
             ("Tue", "Tuesday"),
@@ -579,11 +585,14 @@ impl TimeFields {
             ("Sat", "Saturday"),
             ("Sun", "Sunday"),
         ];
-        let may_have_day = format
-            .as_bytes()
-            .windows(2)
-            .any(|pair| pair[0] == b'%' && matches!(pair[1], b'a' | b'A' | b'j' | b'w' | b'u' | b'U' | b'W'));
-        if !may_have_day {
+        let may_have_fields = format.as_bytes().windows(2).any(|pair| {
+            pair[0] == b'%'
+                && (matches!(
+                    pair[1],
+                    b'a' | b'A' | b'j' | b'w' | b'u' | b'U' | b'W' | b'S' | b'c' | b'r' | b'T' | b'X'
+                ) || (self.second > 59 && matches!(pair[1], b's' | b'-' | b'_' | b'0' | b'^' | b'#')))
+        });
+        if !may_have_fields {
             return Ok(Cow::Borrowed(format));
         }
         // C counts weekdays from Sunday and year days from zero, which is what
@@ -599,7 +608,10 @@ impl TimeFields {
         while let Some(percent) = rest.find('%') {
             let (before, from_percent) = rest.split_at(percent);
             out.push_str(before)?;
-            let directive = from_percent[1..].chars().next();
+            // A flagged leap second (`%-S`, `%0s`) takes the bare substitution, not Jiff's clamped 59.
+            let (flags, directive) = flagged_conversion(&from_percent[1..])
+                .filter(|&(_, c)| matches!(c, 'S' | 's') && self.second > 59)
+                .map_or((0, from_percent[1..].chars().next()), |(flags, c)| (flags, Some(c)));
             let substitute = match directive {
                 Some('a') => Some(short.to_owned()),
                 Some('A') => Some(long.to_owned()),
@@ -608,12 +620,20 @@ impl TimeFields {
                 Some('u') => Some((monday_based + 1).to_string()),
                 Some('U') => Some(format!("{:02}", week(0))),
                 Some('W') => Some(format!("{:02}", week(1))),
+                Some('S') => Some(format!("{:02}", self.second)),
+                Some('T' | 'X') => Some(format!("%H:%M:{:02}", self.second)),
+                Some('r') => Some(format!("%I:%M:{:02} %p", self.second)),
+                Some('c') => Some(format!("{short} %b %e %H:%M:{:02} %Y", self.second)),
+                // A leap second runs on into the next minute, as `mktime` counts it.
+                Some('s') if self.second > 59 => {
+                    Some((datetime_type::epoch_duration(self.wall).as_secs() + self.second - 59).to_string())
+                }
                 _ => None,
             };
             let consumed = match (substitute, directive) {
                 (Some(text), Some(c)) => {
                     out.push_str(&text)?;
-                    1 + c.len_utf8()
+                    1 + flags + c.len_utf8()
                 }
                 // Copy the directive whole, so `%%a` consumes `%%` and leaves `a` as text.
                 (None, Some(c)) => {
@@ -633,8 +653,17 @@ impl TimeFields {
     }
 }
 
+/// The flag length and conversion of a directive with glibc flags but no width
+/// (`-S`, `_S`), after its `%`.
+fn flagged_conversion(directive: &str) -> Option<(usize, char)> {
+    let flags = directive
+        .find(|c| !matches!(c, '-' | '_' | '0' | '^' | '#'))
+        .filter(|&flags| flags > 0)?;
+    directive[flags..].chars().next().map(|c| (flags, c))
+}
+
 /// `time.gmtime(secs)`: the instant broken down in UTC.
-fn gmtime_value(utc: NaiveDateTime, vm: &mut VM<'_>) -> Value {
+fn gmtime_value(utc: DateTime, vm: &mut VM<'_>) -> Value {
     let zone = MontyTimeZone {
         offset_seconds: 0,
         name: Some("UTC".to_owned()),
@@ -643,14 +672,14 @@ fn gmtime_value(utc: NaiveDateTime, vm: &mut VM<'_>) -> Value {
 }
 
 /// `time.localtime(secs)`: the instant broken down in the session zone.
-fn localtime_value(utc: NaiveDateTime, vm: &mut VM<'_>) -> RunResult<Value> {
+fn localtime_value(utc: DateTime, vm: &mut VM<'_>) -> RunResult<Value> {
     let fields = local_fields(utc, vm)?;
     Ok(struct_time_value(&fields, vm))
 }
 
 /// The session zone's reading of `utc`, with `tm_isdst` set from whether the
 /// zone is on its daylight half at that instant.
-fn local_fields(utc: NaiveDateTime, vm: &VM<'_>) -> RunResult<TimeFields> {
+fn local_fields(utc: DateTime, vm: &VM<'_>) -> RunResult<TimeFields> {
     let zone = vm.env.os_policy.timezone.at(utc);
     let isdst = i64::from(is_daylight(&vm.env.os_policy.timezone, utc, &zone));
     let wall = sandbox_local_wall_clock(vm, utc)?;
@@ -659,9 +688,9 @@ fn local_fields(utc: NaiveDateTime, vm: &VM<'_>) -> RunResult<TimeFields> {
 
 /// Whether `zone` is the daylight half of the session zone at `utc`, which is
 /// `tm_isdst`. A fixed zone has one half, so it is never daylight.
-fn is_daylight(sandbox_zone: &SandboxTimeZone, utc: NaiveDateTime, at: &MontyTimeZone) -> bool {
+fn is_daylight(sandbox_zone: &SandboxTimeZone, utc: DateTime, at: &MontyTimeZone) -> bool {
     sandbox_zone
-        .constants(Some(utc.year()))
+        .constants(Some(i32::from(utc.year())))
         .is_some_and(|constants| constants.daylight && at.offset_seconds == constants.daylight_zone.offset_seconds)
 }
 
@@ -704,7 +733,7 @@ fn struct_time_value(fields: &TimeFields, vm: &mut VM<'_>) -> Value {
             Value::Int(i64::from(wall.day())),
             Value::Int(i64::from(wall.hour())),
             Value::Int(i64::from(wall.minute())),
-            Value::Int(i64::from(wall.second())),
+            Value::Int(fields.second),
             Value::Int(fields.weekday),
             Value::Int(fields.yearday),
             Value::Int(fields.isdst),
@@ -723,21 +752,32 @@ fn struct_time_value(fields: &TimeFields, vm: &mut VM<'_>) -> Value {
 /// selects the session zone's standard or daylight half, as CPython does.
 fn time_fields(value: &Value, name: &str, vm: &mut VM<'_>) -> RunResult<TimeFields> {
     let (items, own_zone) = time_tuple_parts(value, name, vm)?;
-    let wall = naive_from_time_tuple(&items)?;
+    // Formatting preserves leap seconds; only `mktime` normalizes them forward.
+    let mut civil_items = items;
+    if (60..=61).contains(&civil_items[5]) {
+        civil_items[5] = 59;
+    }
+    // Jiff holds years to ±9999, where CPython's platform formatting goes further
+    // (see limitations/time.md); a year outside a C `int` keeps CPython's overflow.
+    if !(-9999..=9999).contains(&items[0]) && i32::try_from(items[0]).is_ok() {
+        return Err(ExcType::time_field_out_of_range("year"));
+    }
+    let wall = naive_from_time_tuple(&civil_items)?;
     // CPython's `checktm`, which `mktime` skips: a weekday below -1 goes
     // negative after its Sunday-first shift, and a year day is 0..=366 with 0
     // read as the first day. Bounding both here also keeps the `%U`/`%W`
     // arithmetic in range, so a hostile tuple cannot overflow it.
     if items[6] < -1 {
-        return Err(ExcType::value_error("day of week out of range"));
+        return Err(ExcType::time_field_out_of_range("day of week"));
     }
     if !(0..=366).contains(&items[7]) {
-        return Err(ExcType::value_error("day of year out of range"));
+        return Err(ExcType::time_field_out_of_range("day of year"));
     }
     let isdst = items[8].clamp(-1, 1);
-    let zone = own_zone.or_else(|| tuple_zone(wall.year(), isdst, vm));
+    let zone = own_zone.or_else(|| tuple_zone(i32::from(wall.year()), isdst, vm));
     Ok(TimeFields {
         wall,
+        second: items[5],
         weekday: items[6],
         yearday: items[7].max(1),
         isdst,
@@ -785,8 +825,9 @@ fn time_tuple_parts(value: &Value, name: &str, vm: &VM<'_>) -> RunResult<([i64; 
 }
 
 /// The wall clock a time tuple's first six fields denote, with CPython's
-/// per-field `ValueError` for one out of range.
-fn naive_from_time_tuple(items: &[i64; 9]) -> RunResult<NaiveDateTime> {
+/// per-field `ValueError` for one out of range. A wall clock past Jiff's ±9999
+/// raises `mktime`'s `OverflowError`; `time_fields` rejects such a year first.
+fn naive_from_time_tuple(items: &[i64; 9]) -> RunResult<DateTime> {
     const RANGES: [(&str, i64, i64); 5] = [
         ("month", 1, 12),
         ("day of month", 1, 31),
@@ -799,20 +840,33 @@ fn naive_from_time_tuple(items: &[i64; 9]) -> RunResult<NaiveDateTime> {
         *slot = u32::try_from(*value)
             .ok()
             .filter(|_| (low..=high).contains(value))
-            .ok_or_else(|| ExcType::value_error(format!("{field} out of range")))?;
+            .ok_or_else(|| ExcType::time_field_out_of_range(field))?;
     }
     let [month, day, hour, minute, second] = checked;
-    let year = i32::try_from(items[0]).map_err(|_| ExcType::value_error("year out of range"))?;
+    // CPython reads the year as a C `int`.
+    let year = i32::try_from(items[0]).map_err(|_| ExcType::overflow_signed_c_int(items[0]))?;
     // CPython accepts leap seconds here and folds them into the next minute.
     let (second, extra) = if second > 59 {
         (59, i64::from(second) - 59)
     } else {
         (second, 0)
     };
-    NaiveDate::from_ymd_opt(year, month, day)
-        .and_then(|date| date.and_hms_opt(hour, minute, second))
-        .and_then(|wall| wall.checked_add_signed(TimeDelta::seconds(extra)))
-        .ok_or_else(|| ExcType::value_error("day of month out of range"))
+    let year = i16::try_from(year)
+        .ok()
+        .filter(|year| (-9999..=9999).contains(year))
+        .ok_or_else(ExcType::mktime_out_of_range)?;
+    DateTime::new(
+        year,
+        i8::try_from(month).expect("validated month"),
+        i8::try_from(day).expect("validated day"),
+        i8::try_from(hour).expect("validated hour"),
+        i8::try_from(minute).expect("validated minute"),
+        i8::try_from(second).expect("validated second"),
+        0,
+    )
+    .map_err(|_| ExcType::time_field_out_of_range("day of month"))?
+    .checked_add(SignedDuration::from_secs(extra))
+    .map_err(|_| ExcType::mktime_out_of_range())
 }
 
 /// The zone a bare 9-element tuple denotes: the session zone's standard half,
@@ -828,7 +882,7 @@ fn tuple_zone(year: i32, isdst: i64, vm: &VM<'_>) -> Option<MontyTimeZone> {
 
 /// The instant an optional `secs` argument denotes; `None` means the caller
 /// passed nothing and the clock must be read instead.
-fn optional_instant(seconds: &Value, vm: &mut VM<'_>) -> RunResult<Option<NaiveDateTime>> {
+fn optional_instant(seconds: &Value, vm: &mut VM<'_>) -> RunResult<Option<DateTime>> {
     match seconds {
         Value::None => sandbox_instant(vm),
         // CPython's `_PyTime_ObjectToTime_t` floors to whole seconds, as for
@@ -842,7 +896,7 @@ fn optional_instant(seconds: &Value, vm: &mut VM<'_>) -> RunResult<Option<NaiveD
 
 /// The host's `time.time` answer as an instant. The whole seconds floor and the
 /// fraction is kept to the nanosecond so the `_ns` clocks see it.
-fn instant_from_seconds(seconds: f64) -> RunResult<NaiveDateTime> {
+fn instant_from_seconds(seconds: f64) -> RunResult<DateTime> {
     let floored = seconds.floor();
     if floored.is_nan() {
         return Err(ExcType::invalid_nan());
@@ -867,17 +921,20 @@ fn instant_from_seconds(seconds: f64) -> RunResult<NaiveDateTime> {
 
 /// Epoch seconds as an instant, raising the `time_t` overflow outside years
 /// 1..=9999, which a `struct_time` here cannot leave.
-fn instant_in_range(whole: i64, nanos: u32) -> RunResult<NaiveDateTime> {
-    DateTime::from_timestamp(whole, nanos)
-        .map(|utc| utc.naive_utc())
+fn instant_in_range(whole: i64, nanos: u32) -> RunResult<DateTime> {
+    civil::date(1970, 1, 1)
+        .at(0, 0, 0, 0)
+        .checked_add(SignedDuration::new(
+            whole,
+            i32::try_from(nanos).expect("subsecond nanoseconds"),
+        ))
+        .ok()
         .filter(|utc| local_wall_clock(*utc, 0).is_some())
         .ok_or_else(ExcType::timestamp_out_of_range)
 }
 
-/// Nanoseconds since the epoch, for the `_ns` clocks. Chrono's range is about
-/// 1677..2262, narrower than `datetime`'s, so a fixed clock outside it raises.
-fn epoch_nanoseconds(utc: NaiveDateTime) -> RunResult<i64> {
-    utc.and_utc()
-        .timestamp_nanos_opt()
-        .ok_or_else(ExcType::timestamp_out_of_range)
+/// Nanoseconds since the epoch, for the `_ns` clocks. An `i64` holds only
+/// about 1677..2262, so a fixed clock outside it raises.
+fn epoch_nanoseconds(utc: DateTime) -> RunResult<i64> {
+    i64::try_from(datetime_type::epoch_duration(utc).as_nanos()).map_err(|_| ExcType::timestamp_out_of_range())
 }
