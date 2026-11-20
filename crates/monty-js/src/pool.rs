@@ -392,7 +392,7 @@ impl NativePool {
     }
 
     /// Spawns the prewarmed workers off the event loop. Resolves to an `ok`
-    /// turn, or a `connect` / `configuration` / `protocol` turn saying why not.
+    /// turn, or a `connect` / `configuration` / `protocol` / `refused` turn saying why not.
     /// `pre_warm_metadata` supplies the metadata of each session a remote pool
     /// pre-warms; it is held weakly, so an open pool does not keep Node alive.
     #[napi]
@@ -1210,8 +1210,8 @@ enum TurnOutcome {
         details: Option<Box<RemoteDisconnect>>,
     },
     /// The remote server refused to open the session's stream, so no session
-    /// existed; `details` is the status it refused with. Only produced by
-    /// [`NativeSession::enter`].
+    /// existed; `details` is the status it refused with. Produced by
+    /// [`NativeSession::enter`], and by [`NativePool::start`] for a pre-warmed session.
     Refused {
         message: String,
         details: Box<RemoteDisconnect>,

@@ -151,7 +151,7 @@ export interface DisconnectedTurn {
 
 /** The remote server refused to open the session's stream, so no session
  *  existed and nothing ran; the details are the status it refused with.
- *  Only produced by `enter`. Remote pools only. */
+ *  Produced by `enter`, and by `start` for a pre-warmed session. Remote pools only. */
 export interface RefusedTurn {
   kind: 'refused'
   message: string

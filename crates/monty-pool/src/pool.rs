@@ -210,9 +210,10 @@ impl Pool {
         Ok(Checkout::create(worker, Arc::clone(&self.inner), repl, redial))
     }
 
-    /// Asks idle workers to exit cleanly and reaps them, capping the wait per
-    /// worker. Sessions still checked out keep their workers until they finish,
-    /// and are not replaced once they leave.
+    /// Asks idle subprocess workers to exit cleanly and reaps them, capping the
+    /// wait per worker; idle remote sessions are half-closed instead. Sessions
+    /// still checked out keep their workers until they finish, and are not
+    /// replaced once they leave.
     /// Retained remote streams finish their bounded graceful close before this returns.
     ///
     /// Optional: dropping the pool kills idle workers instead, which is just
