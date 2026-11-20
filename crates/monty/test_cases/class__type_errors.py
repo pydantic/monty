@@ -149,17 +149,19 @@ try:
     assert False, 'expected sorted to fail'
 except TypeError as exc:
     assert str(exc) == "'<' not supported between instances of 'Foo' and 'Foo'"
-# the direct `<` / `>=` operators raise too (not just via sorted)
-try:
-    f < Foo()
-    assert False, 'expected f < Foo() to fail'
-except TypeError as exc:
-    assert str(exc) == "'<' not supported between instances of 'Foo' and 'Foo'"
-try:
-    f >= Foo()
-    assert False, 'expected f >= Foo() to fail'
-except TypeError as exc:
-    assert str(exc) == "'>=' not supported between instances of 'Foo' and 'Foo'"
+# Identity cannot bypass unsupported ordering, for any of the four operators.
+for op, compare in (
+    ('<', lambda a, b: a < b),
+    ('<=', lambda a, b: a <= b),
+    ('>', lambda a, b: a > b),
+    ('>=', lambda a, b: a >= b),
+):
+    for other in (f, Foo()):
+        try:
+            compare(f, other)
+            assert False, 'expected unsupported ordering'
+        except TypeError as exc:
+            assert str(exc) == f"'{op}' not supported between instances of 'Foo' and 'Foo'"
 
 # === string / io / json sinks ===
 try:

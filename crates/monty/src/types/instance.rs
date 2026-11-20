@@ -8,6 +8,7 @@ use crate::{
     boundary_uuid::create_uuid,
     builtins::Builtins,
     bytecode::{CallResult, RunReentryGuard, VM},
+    comparison::RichCompareOp,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     frozen::{FrozenFunction, FrozenFunctions},
@@ -417,10 +418,38 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         Ok(())
     }
 
-    /// Returns `NotImplemented`; comparisons dispatch at the `Value` level because
-    /// user and synthesized dataclass equality require the instance's `HeapId`.
+    /// Instances use rich comparison directly rather than the builtin equality adapter.
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
+    }
+
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        let result = if op == RichCompareOp::Eq {
+            instance_user_eq(self.id(), other, vm)?
+        } else {
+            let arg = other.clone_with_heap(vm.heap);
+            instance_call_dunder_sync(self.id(), op.dunder(), Some(arg), vm)?
+        };
+        if let Some(result) = result {
+            Ok(result)
+        } else if op == RichCompareOp::Ne {
+            // object.__ne__ delegates to __eq__, but must preserve NotImplemented.
+            let equal = self.py_richcompare_impl(other, RichCompareOp::Eq, vm)?;
+            defer_drop!(equal, vm);
+            if equal.is_not_implemented() {
+                Ok(Value::NotImplemented)
+            } else {
+                Ok(Value::Bool(!equal.py_bool(vm)?))
+            }
+        } else if op == RichCompareOp::Eq {
+            if matches!(other, Value::Ref(id) if *id == self.id()) {
+                Ok(Value::Bool(true))
+            } else {
+                Ok(Value::NotImplemented)
+            }
+        } else {
+            Ok(Value::NotImplemented)
+        }
     }
 
     /// Hashes an instance, following CPython's precedence: the class's

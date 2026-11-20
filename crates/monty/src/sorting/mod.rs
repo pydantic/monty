@@ -12,7 +12,7 @@
 
 mod timsort;
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, mem::size_of_val};
 
 use smallvec::SmallVec;
 use timsort::{SortAborted, sort_short, timsort};
@@ -22,9 +22,8 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{RunError, RunResult},
-    expressions::CmpOperator,
     heap::HeapData,
-    types::{CmpOrder, PyTrait, long_int::i64_cmp_f64},
+    types::long_int::i64_cmp_f64,
     value::Value,
 };
 
@@ -76,7 +75,7 @@ pub fn sort_values(values: &mut [Value], key_fn: Option<&Value>, reverse: bool, 
             let item = item.clone_with_heap(vm);
             keys.push(vm.evaluate_function(f, ArgValues::One(item))?);
         }
-        let mut indices = identity_permutation(values.len());
+        let mut indices = identity_permutation(values.len(), vm)?;
         let result = sort_indices(&mut indices, keys, reverse, vm);
         apply_permutation(values, &mut indices);
         result
@@ -94,7 +93,7 @@ pub fn sort_values(values: &mut [Value], key_fn: Option<&Value>, reverse: bool, 
             cmp.finish(sorted)
         })
     } else {
-        let mut indices = identity_permutation(values.len());
+        let mut indices = identity_permutation(values.len(), vm)?;
         let result = sort_indices(&mut indices, values, reverse, vm);
         apply_permutation(values, &mut indices);
         result
@@ -126,6 +125,10 @@ pub fn sort_indices_by<'h>(
     vm: &mut VM<'h>,
     mut lt: impl FnMut(usize, usize, &mut VM<'h>) -> RunResult<bool>,
 ) -> RunResult<()> {
+    if indices.len() >= SHORT_SORT_LEN {
+        // Run scratch can grow geometrically to at most one full index buffer.
+        vm.heap.tracker.check_allocation(size_of_val(indices))?;
+    }
     with_reversal(indices, reverse, |indices| {
         let mut cmp = Comparer::new(vm);
         let sorted = timsort(indices, |a, b| cmp.lt(|vm| lt(a, b, vm)));
@@ -137,8 +140,15 @@ pub fn sort_indices_by<'h>(
 const SHORT_SORT_LEN: usize = 64;
 
 /// The ids `0..len` in order, the starting point of an index sort; inline for the short lists most sorts see.
-fn identity_permutation(len: usize) -> SmallVec<[usize; 32]> {
-    (0..len).collect()
+fn identity_permutation(len: usize, vm: &VM<'_>) -> RunResult<SmallVec<[usize; 32]>> {
+    if len > 32 {
+        vm.heap
+            .tracker
+            .check_allocation(len.saturating_mul(size_of::<usize>()))?;
+    }
+    let mut indices = SmallVec::with_capacity(len);
+    indices.extend(0..len);
+    Ok(indices)
 }
 
 /// Runs `sort` with `items` reversed before and after when `reverse` is set, which is how CPython sorts in reverse
@@ -247,8 +257,7 @@ impl<'v, 'h> Comparer<'v, 'h> {
 
 /// Python's `a < b`, the only comparison the sort makes.
 ///
-/// Only heap values other than `str` can answer `<` themselves (sets, `Counter`, `Decimal`), so the rest skip
-/// [`VM::cmp_values`]'s rich-comparison hooks; the common pairs are answered inline.
+/// Common scalar pairs are answered inline; other operands use reflected rich comparison.
 #[expect(
     clippy::inline_always,
     reason = "runs once per comparison; inlining it measurably speeds up sorts"
@@ -261,25 +270,15 @@ pub(crate) fn py_lt(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
         // A `NaN` operand is unordered, so `<` is `False`.
         _ if let (Some(a), Some(b)) = (Number::of(a), Number::of(b)) => Ok(a.partial_cmp(b) == Some(Ordering::Less)),
         _ if let (Some(a), Some(b)) = (str_of(a, vm), str_of(b, vm)) => Ok(a < b),
-        (Value::Ref(_), _) | (_, Value::Ref(_)) => vm.cmp_values(CmpOperator::Lt, a, b),
-        _ => match a.py_cmp(b, vm)? {
-            CmpOrder::Ordered(ordering) => Ok(ordering.is_lt()),
-            CmpOrder::Unordered => Ok(false),
-            // Raises CPython's `TypeError`.
-            CmpOrder::Incomparable => vm.cmp_values(CmpOperator::Lt, a, b),
-        },
+        _ => a.py_lt_operator(b, vm),
     }
 }
 
 /// Equality as CPython's tuple comparison asks it of an element pair, identity first.
 ///
-/// Numbers compare by value: Monty's immediate floats have no identity, so a `NaN` is never equal to another
-/// (see `limitations/language.md`), where [`Value::py_eq`] would call two `NaN`s with the same bits identical.
+/// Immediate floats retain Monty's [value-derived identity](Value::is), including NaNs.
 pub(crate) fn py_eq_item(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
-    match (Number::of(a), Number::of(b)) {
-        (Some(a), Some(b)) => Ok(a.partial_cmp(b) == Some(Ordering::Equal)),
-        _ => a.py_eq(b, vm),
-    }
+    a.py_eq(b, vm)
 }
 
 /// A number whose order needs no VM: an `int` that fits in `i64`, a `bool`, or a `float`.

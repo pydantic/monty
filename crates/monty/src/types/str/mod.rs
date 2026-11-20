@@ -14,7 +14,7 @@ pub use monty_types::{StringRepr, string_repr_fmt};
 use smallvec::smallvec;
 
 use super::{
-    Bytes, CmpOrder, PyTrait,
+    Bytes, PyTrait,
     unicode_type::{casefold, is_space, lowercase, type_record, uppercase},
     unicode_type_data::TypeRecord,
 };
@@ -22,6 +22,7 @@ use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail, StrArg},
     bytecode::{CallResult, VM},
     codecs::Codec,
+    comparison::{RichCompareOp, compare_str},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
@@ -282,8 +283,8 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
         call_str_method_impl(self, method, args, vm).map(CallResult::Value)
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        Ok(CmpOrder::Ordered(self.as_str(vm).cmp(other.as_str(vm))))
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(compare_str(self.as_str(vm), other, op, vm))
     }
 }
 
@@ -2235,9 +2236,24 @@ mod tests {
                     let view = PyStr::from_value(lhs, vm).unwrap();
                     assert_eq!(view.py_eq_impl(rhs, vm).unwrap(), Some(expected));
                     let order = lhs.as_str(vm).unwrap().cmp(rhs.as_str(vm).unwrap());
-                    let other_view = PyStr::from_value(rhs, vm).unwrap();
-                    assert_eq!(view.py_cmp(&other_view, vm).unwrap(), CmpOrder::Ordered(order));
-                    assert_eq!(lhs.py_cmp(rhs, vm).unwrap(), CmpOrder::Ordered(order));
+                    for op in [
+                        RichCompareOp::Eq,
+                        RichCompareOp::Ne,
+                        RichCompareOp::Lt,
+                        RichCompareOp::Le,
+                        RichCompareOp::Gt,
+                        RichCompareOp::Ge,
+                    ] {
+                        let expected = op.apply(Some(order)).py_bool(vm).unwrap();
+                        assert_eq!(
+                            view.py_richcompare_impl(rhs, op, vm).unwrap().py_bool(vm).unwrap(),
+                            expected
+                        );
+                        assert_eq!(
+                            lhs.py_richcompare_impl(rhs, op, vm).unwrap().py_bool(vm).unwrap(),
+                            expected
+                        );
+                    }
                 }
                 assert_eq!(lhs.py_eq_impl(&Value::Int(7), vm).unwrap(), None);
                 let view = PyStr::from_value(lhs, vm).unwrap();

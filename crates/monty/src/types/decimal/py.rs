@@ -25,15 +25,15 @@ use crate::{
     args::{ArgValues, FromArgs},
     builtins::Builtins,
     bytecode::{CallResult, VM},
+    comparison::RichCompareOp,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    expressions::CmpOperator,
     hash::{HashValue, hash_f64, hash_python_long_int, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapObjectRead},
     intern::StaticStrings,
     py_value::PyValue,
     types::{
-        CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, TypeRef, allocate_string,
+        Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, TypeRef, allocate_string,
         str::allocate_string_no_interning, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
@@ -406,55 +406,26 @@ impl<'h> HeapObjectRead<'h, Decimal> {
 
     /// An ordering comparison: `None` for `NotImplemented`. Any NaN operand raises
     /// `InvalidOperation` (`False` when untrapped); a float operand raises `FloatOperation`.
-    fn ordering(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(match ordering_against(self.id(), other, false, vm)? {
-            Some(CmpOrder::Ordered(ord)) => Some(match op {
-                CmpOperator::Lt => ord.is_lt(),
-                CmpOperator::LtE => ord.is_le(),
-                CmpOperator::Gt => ord.is_gt(),
-                CmpOperator::GtE => ord.is_ge(),
-                _ => unreachable!("ordering called with a non-ordering operator"),
-            }),
-            Some(_) => Some(false),
-            None => None,
+    fn ordering(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if comparison_operand(other, false, vm)?.is_none() {
+            return Ok(Value::NotImplemented);
+        }
+        let ctx_id = current_context(vm);
+        let id = self.id();
+        with_ctx(vm, ctx_id, |ctx, vm| {
+            let this = decimal_at(vm, id);
+            let (other, float) = comparison_operand(other, false, vm)?.expect("checked above");
+            if float {
+                ctx.raise(Condition::FloatOperation);
+            }
+            let ordering = if this.compare_check_nans(&other, ctx).is_some() {
+                None
+            } else {
+                Some(this.cmp_numeric(&other))
+            };
+            Ok(op.apply(ordering))
         })
     }
-}
-
-/// Orders the `Decimal` at `id` against `other` as `<` does, signalling on the current
-/// context; `reflected` reverses the result for `other < decimal`. `None` when
-/// `other` is not a number a `Decimal` compares with.
-fn ordering_against(id: HeapId, other: &Value, reflected: bool, vm: &mut VM<'_>) -> RunResult<Option<CmpOrder>> {
-    if comparison_operand(other, false, vm)?.is_none() {
-        return Ok(None);
-    }
-    let ctx_id = current_context(vm);
-    with_ctx(vm, ctx_id, |ctx, vm| {
-        let this = decimal_at(vm, id);
-        let (other, float) = comparison_operand(other, false, vm)?.expect("checked above");
-        if float {
-            ctx.raise(Condition::FloatOperation);
-        }
-        Ok(Some(if this.compare_check_nans(&other, ctx).is_some() {
-            CmpOrder::Unordered
-        } else {
-            let ord = this.cmp_numeric(&other);
-            CmpOrder::Ordered(if reflected { ord.reverse() } else { ord })
-        }))
-    })
-}
-
-/// The ordering `Value::py_cmp` uses (sorting, `min`, `max`, sequence comparison)
-/// when either operand is a `Decimal`; `None` when neither is.
-pub(crate) fn cmp_order(lhs: &Value, rhs: &Value, vm: &mut VM<'_>) -> RunResult<Option<CmpOrder>> {
-    let (id, other, reflected) = match (lhs, rhs) {
-        (Value::Ref(id), _) if matches!(vm.heap.get(*id), HeapData::Decimal(_)) => (*id, rhs, false),
-        (_, Value::Ref(id)) if matches!(vm.heap.get(*id), HeapData::Decimal(_)) => (*id, lhs, true),
-        _ => return Ok(None),
-    };
-    Ok(Some(
-        ordering_against(id, other, reflected, vm)?.unwrap_or(CmpOrder::Incomparable),
-    ))
 }
 
 /// Stores new settings on the context at `id` without checking traps.
@@ -570,8 +541,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Decimal> {
         self.rich_eq(other, vm)
     }
 
-    fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        self.ordering(other, op, vm)
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        if op.is_equality() {
+            Ok(op.equality_result(self.rich_eq(other, vm)?))
+        } else {
+            self.ordering(other, op, vm)
+        }
     }
 
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {

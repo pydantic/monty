@@ -82,7 +82,7 @@ pub(crate) use namedtuple::{NamedTuple, NamedTupleClass};
 pub(crate) use partial::Partial;
 pub(crate) use path::Path;
 pub(crate) use property::Property;
-pub(crate) use py_trait::{CmpOrder, LazyHeapSet, PyTrait};
+pub(crate) use py_trait::{LazyHeapSet, PyTrait};
 pub(crate) use random::{Random, SessionRandom};
 pub(crate) use range::{Range, RangeIterator};
 pub(crate) use re_match::ReMatch;

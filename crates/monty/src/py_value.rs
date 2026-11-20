@@ -14,9 +14,9 @@ use crate::{
     args::ArgValues,
     builtins::Builtins,
     bytecode::{CallResult, VM},
+    comparison::{Number, RichCompareOp},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    expressions::CmpOperator,
     fstring::FormatFloat,
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapObjectRead, HeapReadOutput, HeapReader},
@@ -370,8 +370,13 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         forward_py_value!(self, |value| value.py_ior_impl(other, vm), else Ok(false))
     }
 
-    fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        forward_py_value!(self, |value| value.py_cmp_op(other, op, vm), else Ok(None))
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        forward_py_value!(self, |value| value.py_richcompare_impl(other, op, vm), {
+            Self::Bool(value) => Ok(Number::Int(i64::from(*value)).richcompare(other, op, vm)),
+            Self::Float(value) => Ok(Number::Float(*value).richcompare(other, op, vm)),
+            _ if op.is_equality() => Ok(op.equality_result(self.py_eq_impl(other, vm)?)),
+            _ => Ok(Value::NotImplemented),
+        })
     }
 
     fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
