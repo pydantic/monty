@@ -155,6 +155,34 @@ impl Signature {
         .then(|| self.param_count())
     }
 
+    /// Maps keyword names to the slots left after the positional arguments.
+    /// The caller must have checked the exact arity and supplied at most eight keywords.
+    pub(crate) fn exact_keyword_slots(
+        &self,
+        pos_count: usize,
+        names: impl ExactSizeIterator<Item = StringId>,
+        slots: &mut [u8],
+    ) -> Option<()> {
+        let positional_or_keyword_given = pos_count.checked_sub(self.pos_arg_count())?;
+        let candidates = self.args.as_deref()?.get(positional_or_keyword_given..)?;
+        debug_assert_eq!(candidates.len(), slots.len());
+        debug_assert_eq!(names.len(), slots.len());
+        debug_assert!(slots.len() <= 8);
+
+        let mut occupied = 0_u8;
+        for (name, slot) in names.zip(slots) {
+            let index = candidates.iter().position(|&candidate| candidate == name)?;
+            let index = u8::try_from(index).ok()?;
+            let bit = 1 << index;
+            if occupied & bit != 0 {
+                return None;
+            }
+            occupied |= bit;
+            *slot = index;
+        }
+        Some(())
+    }
+
     /// Creates a full signature with all parameter types.
     ///
     /// # Arguments

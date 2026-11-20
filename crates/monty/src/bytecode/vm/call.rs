@@ -251,10 +251,12 @@ impl<'h> VM<'h> {
 
     /// Executes `CallFunctionKw` opcode.
     ///
-    /// Reads `kw_count` keyword name operands from the instruction stream,
-    /// pops the keyword values, positional args, and callable from the stack,
-    /// builds the appropriate `ArgValues`, and calls the function.
+    /// Binds eligible Python calls on the stack. Other calls use `ArgValues`.
     pub(super) fn exec_call_function_kw(&mut self, pos_count: usize, kw_count: usize) -> Result<CallResult, RunError> {
+        if let Some(result) = self.try_call_exact_keywords(pos_count, kw_count) {
+            return result;
+        }
+
         // Pop keyword values (TOS is last kwarg value)
         let kw_values = self.pop_n(kw_count);
 
@@ -286,6 +288,47 @@ impl<'h> VM<'h> {
         };
 
         this.call_function(callable, args)
+    }
+
+    /// Reuses the argument stack slots as locals once all keywords are validated.
+    fn try_call_exact_keywords(&mut self, pos_count: usize, kw_count: usize) -> Option<Result<CallResult, RunError>> {
+        const MAX_ARGS: usize = 8;
+
+        let arg_count = pos_count + kw_count;
+        if kw_count == 0 || arg_count > MAX_ARGS {
+            return None;
+        }
+        let callable_index = self.stack.len() - arg_count - 1;
+        let Value::DefFunction(func_id) = self.stack[callable_index] else {
+            return None;
+        };
+        let func = self.interns.get_function(func_id);
+        if func.exact_positional_call() != Some(ExactPositionalCall::Sync(arg_count)) {
+            return None;
+        }
+
+        // Leave the stack and instruction pointer intact for the general binder until every name matches.
+        let ip = self.current_frame.ip;
+        let end = ip + 2 * kw_count;
+        let names = self.current_frame.bytecode.get(ip..end)?.as_chunks::<2>().0;
+        let names = names
+            .iter()
+            .map(|&bytes| StringId::from_index(u16::from_le_bytes(bytes)));
+        let mut slots = [0; MAX_ARGS];
+        let destinations = &mut slots[..kw_count];
+        func.signature.exact_keyword_slots(pos_count, names, destinations)?;
+
+        // Each swap moves one value to its final parameter slot.
+        let values = &mut self.stack[callable_index + 1 + pos_count..];
+        for index in 0..kw_count {
+            while usize::from(destinations[index]) != index {
+                let destination = usize::from(destinations[index]);
+                values.swap(index, destination);
+                destinations.swap(index, destination);
+            }
+        }
+        self.current_frame.ip = end;
+        Some(self.call_exact_sync_function(func_id, func, callable_index))
     }
 
     /// Executes `CallAttr` opcode.
