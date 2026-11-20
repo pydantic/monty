@@ -444,7 +444,8 @@ session stream, so a server that honours them can join the same trace. Each
 feed sends the `traceparent` of the span it was called from, when
 `opentelemetry-api` is installed and a span is current, whether or not
 instrumentation is installed. Against a server that records the session itself, a
-tracer records every span twice; pass only `meter=` there to keep client metrics. A meter
+tracer records every span twice; pass only `meter=` there (and `logger=`, for
+Monty's logs) to keep client metrics. A meter
 records live, immediately available and host-blocked worker counts, checkout
 waits, worker deaths by reason, run durations and the sandbox execution time of
 each feed.
