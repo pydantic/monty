@@ -25,6 +25,9 @@ ALLOWED_FUNCTIONS = {
     'divmod',
     'eval',
     'exec',
+    'format',
+    'getattr',
+    'hasattr',
     'hash',
     'hex',
     'id',
@@ -42,11 +45,12 @@ ALLOWED_FUNCTIONS = {
     'print',
     'repr',
     'round',
+    'setattr',
     'sorted',
     'sum',
 }
 
-# Whitelisted builtin classes (from crates/monty/src/types/ and exception_private.rs)
+# Whitelisted builtin classes (from crates/monty/src/types/ and `ExcType` in crates/monty-types/src/exceptions.rs)
 ALLOWED_CLASSES = {
     # Core types
     'object',
@@ -66,15 +70,17 @@ ALLOWED_CLASSES = {
     'set',
     'frozenset',
     'range',
-    # Iterator types (these are classes, not functions)
+    # Iterator types (classes in the stub; Monty's versions return a list, see limitations/builtins.md)
     'enumerate',
+    'filter',
+    'map',
     'reversed',
     'zip',
     # Slicing
     'slice',
     # property is used by pathlib.Path
     'property',
-    # Exception hierarchy (from crates/monty/src/exception_private.rs)
+    # Exception hierarchy (`ExcType` in crates/monty-types/src/exceptions.rs)
     'BaseException',
     'Exception',
     'SystemExit',
@@ -90,8 +96,11 @@ ALLOWED_CLASSES = {
     'RecursionError',
     'AttributeError',
     'AssertionError',
+    'ImportError',
+    'ModuleNotFoundError',
     'MemoryError',
     'NameError',
+    'UnboundLocalError',
     'SyntaxError',
     'OSError',
     'FileExistsError',
