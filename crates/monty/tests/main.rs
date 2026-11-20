@@ -30,6 +30,19 @@ fn direct_keyword_binding_with_a_positional_prefix() {
     }
 }
 
+#[test]
+fn keyword_defaults_across_the_slot_mask_boundary() {
+    for count in [32, 33] {
+        let params = (0..count).map(|i| format!("k{i}={i}")).collect::<Vec<_>>().join(", ");
+        let names = (0..count).map(|i| format!("k{i}")).collect::<Vec<_>>().join(", ");
+        let last = count - 1;
+        let source = format!("def f({params}):\n    return ({names})\nf(k{last}=99, k0=100)");
+        let mut run = MontyRun::new(source, "test.py", vec![], CompileOptions::default()).unwrap();
+        let expected = [100].into_iter().chain(1..last).chain([99]).map(MontyObject::int);
+        assert_eq!(run.run_no_limits(vec![]).unwrap(), MontyObject::tuple(expected));
+    }
+}
+
 /// Test we can reuse exec without borrow checker issues.
 #[test]
 fn repeat_exec() {

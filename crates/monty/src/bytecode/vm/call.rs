@@ -204,9 +204,12 @@ impl<'h> VM<'h> {
     /// and returns the result.
     pub(super) fn exec_call_function(&mut self, arg_count: usize) -> Result<CallResult, RunError> {
         let callable_index = self.stack.len() - arg_count - 1;
-        if let Value::DefFunction(func_id) = self.stack[callable_index]
-            && let Some(result) = self.try_call_exact_def_function(func_id, callable_index, arg_count)
-        {
+        let fast_call = match self.stack[callable_index] {
+            Value::DefFunction(func_id) => self.try_call_exact_def_function(func_id, callable_index, arg_count),
+            Value::Ref(id) => self.try_call_positional_defaults(id, callable_index, arg_count),
+            _ => None,
+        };
+        if let Some(result) = fast_call {
             result
         } else {
             let args = self.pop_n_args(arg_count);
@@ -215,6 +218,34 @@ impl<'h> VM<'h> {
             defer_drop!(callable, this);
             this.call_function(callable, args)
         }
+    }
+
+    /// Copies just the missing defaults into the stack frame while the callable owns them.
+    fn try_call_positional_defaults(
+        &mut self,
+        id: HeapId,
+        callable_index: usize,
+        arg_count: usize,
+    ) -> Option<Result<CallResult, RunError>> {
+        let HeapData::FunctionDefaults(function) = self.heap.get(id) else {
+            return None;
+        };
+        let func_id = function.func_id;
+        let func = self.interns.get_function(func_id);
+        if func.is_async || !func.cell_var_slots.is_empty() || !func.free_var_slots.is_empty() {
+            return None;
+        }
+        let defaults = func
+            .signature
+            .trailing_positional_defaults(arg_count, &function.defaults)?;
+        let callable = self.stack.remove(callable_index);
+        self.stack.reserve(func.namespace_size - arg_count);
+        self.stack
+            .extend(defaults.iter().map(|value| value.clone_with_heap(self.heap)));
+
+        let frame_namespace = function_namespace(function.globals, self.heap);
+        callable.drop_with(self);
+        Some(self.push_stack_function(func_id, func, callable_index, frame_namespace))
     }
 
     /// Executes `CallBuiltinFunction` opcode.
@@ -253,7 +284,7 @@ impl<'h> VM<'h> {
     ///
     /// Binds eligible Python calls on the stack. Other calls use `ArgValues`.
     pub(super) fn exec_call_function_kw(&mut self, pos_count: usize, kw_count: usize) -> Result<CallResult, RunError> {
-        if let Some(result) = self.try_call_exact_keywords(pos_count, kw_count) {
+        if let Some(result) = self.try_call_direct_keywords(pos_count, kw_count) {
             return result;
         }
 
@@ -291,20 +322,12 @@ impl<'h> VM<'h> {
     }
 
     /// Reuses the argument stack slots as locals once all keywords are validated.
-    fn try_call_exact_keywords(&mut self, pos_count: usize, kw_count: usize) -> Option<Result<CallResult, RunError>> {
+    fn try_call_direct_keywords(&mut self, pos_count: usize, kw_count: usize) -> Option<Result<CallResult, RunError>> {
         if kw_count == 0 || kw_count > Signature::MAX_DIRECT_KEYWORDS {
             return None;
         }
         let arg_count = pos_count + kw_count;
         let callable_index = self.stack.len() - arg_count - 1;
-        let Value::DefFunction(func_id) = self.stack[callable_index] else {
-            return None;
-        };
-        let func = self.interns.get_function(func_id);
-        if func.exact_positional_call() != Some(ExactPositionalCall::Sync(arg_count)) {
-            return None;
-        }
-
         // Leave the stack and instruction pointer intact for the general binder until every name matches.
         let ip = self.current_frame.ip;
         let end = ip + 2 * kw_count;
@@ -312,6 +335,15 @@ impl<'h> VM<'h> {
         let names = names
             .iter()
             .map(|&bytes| StringId::from_index(u16::from_le_bytes(bytes)));
+        let func_id = match self.stack[callable_index] {
+            Value::DefFunction(id) => id,
+            Value::Ref(id) => return self.try_call_keyword_defaults(id, callable_index, pos_count, names, end),
+            _ => return None,
+        };
+        let func = self.interns.get_function(func_id);
+        if func.exact_positional_call() != Some(ExactPositionalCall::Sync(arg_count)) {
+            return None;
+        }
         let mut slots = [0; Signature::MAX_DIRECT_KEYWORDS];
         let destinations = &mut slots[..kw_count];
         func.signature.exact_keyword_slots(pos_count, names, destinations)?;
@@ -327,6 +359,60 @@ impl<'h> VM<'h> {
         }
         self.current_frame.ip = end;
         Some(self.call_exact_sync_function(func_id, func, callable_index))
+    }
+
+    /// Binds explicit keywords and fills any unoccupied slots from the callable's defaults.
+    fn try_call_keyword_defaults(
+        &mut self,
+        id: HeapId,
+        callable_index: usize,
+        pos_count: usize,
+        names: impl ExactSizeIterator<Item = StringId>,
+        end: usize,
+    ) -> Option<Result<CallResult, RunError>> {
+        const EMPTY: u8 = u8::MAX;
+
+        let HeapData::FunctionDefaults(function) = self.heap.get(id) else {
+            return None;
+        };
+        let func_id = function.func_id;
+        let func = self.interns.get_function(func_id);
+        if func.is_async || !func.cell_var_slots.is_empty() || !func.free_var_slots.is_empty() {
+            return None;
+        }
+
+        let kw_count = names.len();
+        let mut destinations = [EMPTY; Signature::MAX_DIRECT_KEYWORDS];
+        let (remaining, mut missing) =
+            func.signature
+                .keyword_default_slots(pos_count, names, &mut destinations[..kw_count])?;
+        let defaults_start = pos_count + remaining - function.defaults.len();
+
+        let callable = self.stack.remove(callable_index);
+        let keyword_base = callable_index + pos_count;
+        self.stack.resize_with(keyword_base + remaining, || Value::Undefined);
+        let values = &mut self.stack[keyword_base..];
+
+        // Swapping into an empty slot ends a chain. Cycles end when the starting slot is filled.
+        for index in 0..kw_count {
+            let mut destination = destinations[index];
+            while destination != EMPTY && usize::from(destination) != index {
+                let slot = usize::from(destination);
+                values.swap(index, slot);
+                destinations.swap(index, slot);
+                destination = destinations[index];
+            }
+        }
+        while missing != 0 {
+            let slot = missing.trailing_zeros() as usize;
+            missing &= missing - 1;
+            values[slot] = function.defaults[pos_count + slot - defaults_start].clone_with_heap(self.heap);
+        }
+
+        let frame_namespace = function_namespace(function.globals, self.heap);
+        callable.drop_with(self);
+        self.current_frame.ip = end;
+        Some(self.push_stack_function(func_id, func, callable_index, frame_namespace))
     }
 
     /// Executes `CallAttr` opcode.
@@ -841,25 +927,33 @@ impl<'h> VM<'h> {
         func: &'h Function,
         callable_index: usize,
     ) -> Result<CallResult, RunError> {
+        let callable = self.stack.remove(callable_index);
+        debug_assert_exact_callable(&callable, func_id);
+        self.push_stack_function(func_id, func, callable_index, None)
+    }
+
+    /// Extends the stack's bound argument slots to hold the remaining locals.
+    fn push_stack_function(
+        &mut self,
+        func_id: FunctionId,
+        func: &'h Function,
+        stack_base: usize,
+        frame_namespace: Option<Box<FrameNamespace>>,
+    ) -> Result<CallResult, RunError> {
         let call_offset = self.current_offset();
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
-        let code = &func.code;
-
-        let callable = self.stack.remove(callable_index);
-        debug_assert_exact_callable(&callable, func_id);
-        self.stack
-            .resize_with(callable_index + namespace_size, || Value::Undefined);
+        self.stack.resize_with(stack_base + namespace_size, || Value::Undefined);
 
         let exc_stack_base = self.exception_stack.len();
         self.push_frame(CallFrame::new_function(
-            code,
-            callable_index,
+            &func.code,
+            stack_base,
             locals_count,
             exc_stack_base,
             func_id,
             call_offset,
-            None,
+            frame_namespace,
         ))?;
 
         Ok(CallResult::FramePushed)

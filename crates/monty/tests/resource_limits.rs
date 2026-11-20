@@ -235,6 +235,39 @@ result
     );
 }
 
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn direct_defaults_release_frame_references() {
+    let source = r"
+owner = []
+def f(n, value=owner):
+    if n:
+        return f(n=n + 1)
+    return value
+
+assert f(0) is owner
+assert f(n=0) is owner
+try:
+    f(1)
+except RecursionError:
+    pass
+else:
+    assert False
+
+try:
+    f(value=[])
+except TypeError:
+    pass
+else:
+    assert False
+";
+    let mut run = MontyRun::new(source.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_recursion_depth(6));
+    let output = run.run_ref_counts_with_tracker(vec![], tracker).unwrap();
+    assert_eq!(output.counts.get("owner"), Some(&2));
+    assert!(output.unreachable.is_empty(), "{:?}", output.unreachable);
+}
+
 /// `map()` must contextually drop earlier heap results when a later callback
 /// raises instead of leaking the native output vector.
 #[test]

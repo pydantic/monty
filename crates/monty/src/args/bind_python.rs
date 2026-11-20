@@ -149,12 +149,29 @@ impl Signature {
     /// With no defaults, variadic slots, or keyword-only parameters, positional
     /// arguments already have the namespace layout produced by [`Self::bind`].
     pub(crate) fn exact_positional_count(&self) -> Option<usize> {
-        (self.pos_defaults_count == 0
-            && self.arg_defaults_count == 0
-            && self.var_args.is_none()
-            && self.kwargs.is_none()
-            && self.var_kwargs.is_none())
-        .then(|| self.param_count())
+        if self.pos_defaults_count != 0 || self.arg_defaults_count != 0 {
+            return None;
+        }
+        self.fixed_positional_count()
+    }
+
+    fn fixed_positional_count(&self) -> Option<usize> {
+        (self.var_args.is_none() && self.kwargs.is_none() && self.var_kwargs.is_none())
+            .then(|| self.pos_arg_count() + self.arg_count())
+    }
+
+    /// Returns the defaults that fill a positional call's remaining frame slots.
+    /// Positional defaults occupy the trailing slots across both positional parameter groups.
+    pub(crate) fn trailing_positional_defaults<'a>(
+        &self,
+        arg_count: usize,
+        defaults: &'a [Value],
+    ) -> Option<&'a [Value]> {
+        let total = self.fixed_positional_count()?;
+        debug_assert_eq!(defaults.len(), self.pos_defaults_count + self.arg_defaults_count);
+        let missing = total.checked_sub(arg_count)?;
+        let first_default = defaults.len().checked_sub(missing)?;
+        Some(&defaults[first_default..])
     }
 
     /// Maps keyword names to the slots left after the positional arguments.
@@ -168,13 +185,43 @@ impl Signature {
         let positional_or_keyword_given = pos_count.checked_sub(self.pos_arg_count())?;
         let candidates = self.args.as_deref()?.get(positional_or_keyword_given..)?;
         debug_assert_eq!(candidates.len(), slots.len());
+        Self::map_keyword_slots(candidates, 0, names, slots).map(|_| ())
+    }
+
+    /// Returns the size of the unfilled suffix and a mask of slots needing defaults.
+    /// Destination indices are relative to that suffix, including any positional-only slots.
+    pub(crate) fn keyword_default_slots(
+        &self,
+        pos_count: usize,
+        names: impl ExactSizeIterator<Item = StringId>,
+        slots: &mut [u8],
+    ) -> Option<(usize, u32)> {
+        let remaining = self.fixed_positional_count()?.checked_sub(pos_count)?;
+        if remaining < slots.len() || remaining > Self::MAX_DIRECT_KEYWORDS {
+            return None;
+        }
+        let pos_only = self.pos_arg_count();
+        let candidates = self.args.as_deref()?.get(pos_count.saturating_sub(pos_only)..)?;
+        let occupied = Self::map_keyword_slots(candidates, pos_only.saturating_sub(pos_count), names, slots)?;
+
+        let missing = (u32::MAX >> (Self::MAX_DIRECT_KEYWORDS - remaining)) & !occupied;
+        let first_missing = pos_count + missing.trailing_zeros() as usize;
+        (first_missing >= self.required_positional_count()).then_some((remaining, missing))
+    }
+
+    fn map_keyword_slots(
+        candidates: &[StringId],
+        offset: usize,
+        names: impl ExactSizeIterator<Item = StringId>,
+        slots: &mut [u8],
+    ) -> Option<u32> {
         debug_assert_eq!(names.len(), slots.len());
-        debug_assert!(slots.len() <= Self::MAX_DIRECT_KEYWORDS);
+        debug_assert!(offset + candidates.len() <= Self::MAX_DIRECT_KEYWORDS);
 
         let mut occupied = 0_u32;
         for (name, slot) in names.zip(slots) {
             let index = candidates.iter().position(|&candidate| candidate == name)?;
-            let index = u8::try_from(index).ok()?;
+            let index = u8::try_from(offset + index).ok()?;
             let bit = 1 << index;
             if occupied & bit != 0 {
                 return None;
@@ -182,7 +229,7 @@ impl Signature {
             occupied |= bit;
             *slot = index;
         }
-        Some(())
+        Some(occupied)
     }
 
     /// Creates a full signature with all parameter types.
