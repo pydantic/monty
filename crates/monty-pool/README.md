@@ -256,7 +256,8 @@ feature, workers contain no telemetry recorder or telemetry hot path.
 The session span is a child of the span in `CheckoutOptions::telemetry`, the one current at checkout.
 A feed or restore started with `TurnOptions::traceparent` is a child of the span that names, not of the session span;
 without one it is a child of the session span.
-A feed parented that way carries the session span's ID as `checkout_span_id`.
+A feed parented that way carries the session span's ID as `checkout_span_id`, when the session span's exported ID
+is known (see `TelemetryAdapter::exported_span_context` below).
 A remote stream's `traceparent` metadata still names the checkout-time span.
 
 The request the pool sends names the recorder's own span for the turn (the feed's, or a restore's `load`) when

@@ -173,7 +173,7 @@ async fn an_adapter_backed_checkout_keeps_the_servers_span_on_the_event() {
     assert_eq!(trace_id, remote_span(Traceparent::parse(SERVER_CALL).unwrap()).0);
     assert_ne!(span_id, remote_span(Traceparent::parse(SERVER_CALL).unwrap()).1);
     assert!(!remote);
-    // a host without a tracer cannot resolve the recorded span, so the server's stays reachable
+    // `remote_suspension` is what a host without a tracer resolves: still the server's span
     assert_eq!(
         remote_suspension(&checkout.callback_context()),
         Traceparent::parse(SERVER_CALL)
