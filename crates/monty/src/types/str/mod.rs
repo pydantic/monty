@@ -146,6 +146,7 @@ impl<'h> PyStr<'h> {
     /// Longer scans poll the execution deadline.
     fn character_at(&self, index: i64, vm: &VM<'h>) -> RunResult<Option<char>> {
         let text = self.as_str(vm);
+        // Reading the first or last character takes at most four bytes.
         if index == 0 {
             return Ok(text.chars().next());
         }
@@ -157,12 +158,13 @@ impl<'h> PyStr<'h> {
         };
         let from_end = index < 0;
         let distance = if from_end { magnitude - 1 } else { magnitude };
+        // Each character takes at least one byte, so the byte length can reject a distant index.
         if distance >= text.len() {
             return Ok(None);
         }
         let characters = match self.known_char_len(vm) {
             Some(characters) => characters,
-            // Probe at most 128 characters (512 UTF-8 bytes).
+            // Cap the probe at 512 UTF-8 bytes so a small lookup can skip the full count.
             None if distance < 128 => {
                 return Ok(if from_end {
                     text.chars().nth_back(distance)
@@ -187,7 +189,7 @@ impl<'h> PyStr<'h> {
     }
 
     /// Converts normalized character bounds to bytes and retains the start coordinate for search results.
-    /// The unbounded search range is `(0, usize::MAX)`.
+    /// `(0, usize::MAX)` selects the whole string using byte length alone.
     fn byte_range(&self, start: usize, end: usize, vm: &VM<'h>) -> RunResult<(Anchor, usize)> {
         let text = self.as_str(vm);
         if end == usize::MAX {
@@ -211,14 +213,16 @@ impl<'h> PyStr<'h> {
             character: start,
             byte: start_byte,
         };
+        // Nearby bounds can reuse the start lookup. A distant end may be closer to a string endpoint.
         let anchor = (end - start.character <= end.min(characters - end)).then_some(start);
         let end_byte = fast_offsets::byte_offset(text, characters, anchor, end, check_time)?;
         Ok((start, end_byte))
     }
 
-    /// Counts from the search start or from the string end when its character count is cached.
-    /// The offset and search start are UTF-8 boundaries in the same string.
+    /// Converts a search match at or after the search start to a character index.
+    /// Both offsets lie on UTF-8 boundaries.
     fn char_index_of(&self, byte_offset: usize, start: Anchor, vm: &VM<'h>) -> RunResult<usize> {
+        // A match at the search start already has a character index.
         if byte_offset == start.byte {
             return Ok(start.character);
         }
@@ -231,6 +235,7 @@ impl<'h> PyStr<'h> {
         if ascii {
             return Ok(byte_offset);
         }
+        // The shorter suffix saves work only when we can subtract it from a cached total.
         if text.len() - byte_offset < byte_offset - start.byte
             && let Some(characters) = self.known_char_len(vm)
         {

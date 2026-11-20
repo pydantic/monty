@@ -67,7 +67,7 @@ pub(super) fn byte_offset<E>(
     if n == 0 {
         return Ok(anchor.byte);
     }
-    // Sequential indexing needs only the adjacent UTF-8 boundary, avoiding scanner setup.
+    // The adjacent boundary is at most four bytes away, so inspect the UTF-8 byte tags directly.
     if n == 1 {
         if target > anchor.character {
             let lead = text.as_bytes()[anchor.byte];
@@ -89,7 +89,8 @@ pub(super) fn byte_offset<E>(
         }
         return Ok(byte);
     }
-    // Use the higher threshold when UTF-8 averages at least 1.5 bytes per code point.
+    // Wider characters leave more work after each bulk count. Delay the switch from the SIMD
+    // selector when the string averages at least 1.5 bytes per code point.
     let bulk_threshold = if text.len() - characters >= characters.div_ceil(2) {
         512
     } else {
@@ -116,6 +117,7 @@ fn forward<E>(
         return Ok(wide16(text, n));
     }
     let (mut remaining, mut byte, mut checked) = (n, 0, 0);
+    // Skipping 65,536 characters covers at least 64 KiB. Poll before starting that scan.
     if n >= 65_536 {
         check_time()?;
     }
@@ -128,7 +130,7 @@ fn forward<E>(
         }
         remaining -= count_bytes(&text.as_bytes()[byte..end]);
         byte = end;
-        // Boundary rounding can trim three bytes from a full 64 KiB chunk.
+        // Poll even if aligning a 64 KiB chunk trimmed up to three bytes.
         if byte - checked >= 65_532 {
             check_time()?;
             checked = byte;
@@ -189,6 +191,7 @@ fn wide16(text: &str, mut remaining: usize) -> usize {
         let leaders = (lanes & u8x16::splat(0xc0)).simd_ne(u8x16::splat(0x80));
         let mut mask = leaders.to_bitmask();
         let count = mask.count_ones() as usize;
+        // If every leader in this block is skipped, the target is in a later block or at the end.
         if remaining < count {
             // When every byte is a leading byte, character and byte ranks coincide.
             if count == 16 {
@@ -233,7 +236,7 @@ fn wide16_back(text: &str, mut remaining: usize) -> usize {
         let lanes = u8x16::from(<[u8; 16]>::try_from(&bytes[start..end]).unwrap());
         let mut mask = (lanes & u8x16::splat(0xc0)).simd_ne(u8x16::splat(0x80)).to_bitmask();
         let count = mask.count_ones() as usize;
-        // Reverse walking consumes the selected character; equality lands within this block.
+        // In reverse, the last skipped character's leading byte is the target boundary.
         if remaining <= count {
             if count == 16 {
                 return bytes.len() - end + remaining;

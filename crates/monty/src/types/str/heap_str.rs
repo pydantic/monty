@@ -131,12 +131,15 @@ impl HeapStr {
         }
     }
 
-    /// A search can stop checking as soon as it sees the first non-ASCII byte.
+    /// ASCII search results can use byte offsets as character indices.
+    /// A single non-ASCII byte settles the classification while leaving the character count lazy.
     pub(super) fn checked_is_ascii<E>(&self, check_time: impl Fn() -> Result<(), E>) -> Result<bool, E> {
         const CHUNK: usize = 64 * 1024;
+        // Cached metadata answers in O(1), and a short scan fits between deadline polls.
         if self.char_len.get() != 0 || self.text.len() < CHUNK {
             return Ok(self.is_ascii());
         }
+        // An uncached ASCII string can take a full pass to classify. Poll before each chunk.
         for chunk in self.text.as_bytes().chunks(CHUNK) {
             check_time()?;
             if !chunk.is_ascii() {
@@ -144,6 +147,7 @@ impl HeapStr {
                 return Ok(false);
             }
         }
+        // Each ASCII byte is one character, so the same pass establishes the exact count.
         self.cache_char_len(self.text.len());
         Ok(true)
     }
