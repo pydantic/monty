@@ -3694,22 +3694,15 @@ impl<'h> HeapObjectRead<'h, PyException> {
 
 impl<'h> PyDeepCopy<'h> for HeapRead<'h, PyException> {
     fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
-        let (class, exc_type, args_to_copy, data, chain_cause, chain_context, suppress_context, attrs_len) = {
+        let (class, exc_type, args_to_copy, data, attrs_len) = {
             let exc_ref = self.get(vm.heap);
             let args_to_copy = exc_ref.args.clone_with_heap(vm.heap);
-            let (chain_cause, chain_context, suppress_context) = exc_ref
-                .chain
-                .as_ref()
-                .map_or((None, None, false), |c| (c.cause, c.context, c.suppress_context));
             let attrs_len = exc_ref.attrs.as_ref().map(Dict::len);
             (
                 exc_ref.class,
                 exc_ref.exc_type,
                 args_to_copy,
                 exc_ref.data.clone(),
-                chain_cause,
-                chain_context,
-                suppress_context,
                 attrs_len,
             )
         };
@@ -3721,7 +3714,9 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, PyException> {
         let (copy, vm) = guard.as_parts_mut();
         memo.insert(source, copy, vm)?;
 
-        // 1. Deep-copy args
+        // 1. Deep-copy args. In CPython's `BaseException.__reduce__`, arguments are
+        // unpacked and copied elementwise into a new tuple rather than deep-copying
+        // the tuple container itself.
         let copied_args = match args_to_copy {
             ExceptionArgs::Empty => ExceptionArgs::Empty,
             ExceptionArgs::OneStr(s) => ExceptionArgs::OneStr(s.clone()),
@@ -3730,11 +3725,31 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, PyException> {
                 ExceptionArgs::OneValue(v_copy)
             }
             ExceptionArgs::Tuple(tuple_id) => {
-                let tuple_val = Value::Ref(*tuple_id);
-                let res = deep_copy(&tuple_val, memo, vm);
-                tuple_val.into_ref_id();
-                let copied_val = res?;
-                let copied_id = copied_val.into_ref_id().expect("tuple is a heap reference");
+                let len = match vm.heap.get(*tuple_id) {
+                    HeapData::Tuple(t) => t.as_slice().len(),
+                    _ => 0,
+                };
+                let mut copied_items = TupleVec::with_capacity(len);
+                for i in 0..len {
+                    vm.heap.tracker.check_memory_time_every(i)?;
+                    let item = match vm.heap.get(*tuple_id) {
+                        HeapData::Tuple(t) => t.as_slice()[i].clone_with_heap(vm.heap),
+                        _ => unreachable!(),
+                    };
+                    defer_drop!(item, vm);
+                    let res = deep_copy(item, memo, vm);
+                    match res {
+                        Ok(copied) => copied_items.push(copied),
+                        Err(err) => {
+                            for c in copied_items {
+                                c.drop_with(vm);
+                            }
+                            return Err(err);
+                        }
+                    }
+                }
+                let tuple_val = allocate_tuple(copied_items, vm.heap);
+                let copied_id = tuple_val.into_ref_id().expect("tuple is a heap reference");
                 ExceptionArgs::Tuple(copied_id)
             }
         };
@@ -3793,41 +3808,8 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, PyException> {
             }
         }
 
-        // 3. Deep-copy chain if any
-        if chain_cause.is_some() || chain_context.is_some() || suppress_context {
-            {
-                let HeapReadOutput::Exception(copy_exc) = vm.heap.read(copy_id) else {
-                    unreachable!("allocated an exception");
-                };
-                copy_exc.get_mut(vm.heap).chain = Some(Box::new(ExceptionChain {
-                    cause: None,
-                    context: None,
-                    suppress_context,
-                }));
-            }
-            if let Some(cause_id) = chain_cause {
-                let val = Value::Ref(cause_id);
-                let res = deep_copy(&val, memo, vm);
-                val.into_ref_id();
-                let copied = res?;
-                let copied_id = copied.into_ref_id();
-                let HeapReadOutput::Exception(copy_exc) = vm.heap.read(copy_id) else {
-                    unreachable!("allocated an exception");
-                };
-                copy_exc.get_mut(vm.heap).chain.as_mut().unwrap().cause = copied_id;
-            }
-            if let Some(context_id) = chain_context {
-                let val = Value::Ref(context_id);
-                let res = deep_copy(&val, memo, vm);
-                val.into_ref_id();
-                let copied = res?;
-                let copied_id = copied.into_ref_id();
-                let HeapReadOutput::Exception(copy_exc) = vm.heap.read(copy_id) else {
-                    unreachable!("allocated an exception");
-                };
-                copy_exc.get_mut(vm.heap).chain.as_mut().unwrap().context = copied_id;
-            }
-        }
+        // 3. Chain references: matching CPython's `BaseException.__reduce__`,
+        // `__cause__` and `__context__` are cleared to `None` on deepcopy as well.
 
         let (copy, _) = guard.into_parts();
         Ok(copy)

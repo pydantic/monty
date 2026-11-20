@@ -620,6 +620,39 @@ assert e_deep.args == ('orig', 123)
 assert e_deep.custom is not e_orig.custom
 assert e_deep.custom == [1, 2]
 
+# Deepcopying an exception with __cause__ and __context__ clears chain (matching CPython)
+e_chained = ValueError('chained')
+e_chained.__cause__ = RuntimeError('cause')
+e_chained.__context__ = KeyError('context')
+e_chained.__suppress_context__ = True
+e_chained_deep = copy.deepcopy(e_chained)
+assert e_chained_deep.__cause__ is None
+assert e_chained_deep.__context__ is None
+assert e_chained_deep.__suppress_context__ is False
+
+# Guest-controlled memo entries for id(e.args) do not panic or replace the args tuple
+e_memo = ValueError(1, 2)
+e_memo_copy = copy.deepcopy(e_memo, {id(e_memo.args): 0})
+assert e_memo_copy.args == (1, 2)
+
+
+# Callback during argument deepcopy clearing __cause__
+class CauseClearer:
+    def __init__(self, target):
+        self.target = target
+
+    def __deepcopy__(self, memo):
+        self.target.__cause__ = None
+        return 'cleared'
+
+
+e_hook = ValueError()
+e_hook.__cause__ = RuntimeError('cause')
+e_hook.args = (CauseClearer(e_hook), 'rest')
+e_hook_copy = copy.deepcopy(e_hook)
+assert e_hook_copy.args == ('cleared', 'rest')
+assert e_hook_copy.__cause__ is None
+
 # Cyclic exception deepcopy
 e_cyc = ValueError('cyclic')
 e_cyc.cycle = e_cyc
