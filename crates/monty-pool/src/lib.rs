@@ -13,7 +13,9 @@ pub mod telemetry;
 pub use telemetry as telemetry_adapter;
 mod worker;
 
-use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};
+use std::{
+    borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, sync::Arc, thread, time::Duration,
+};
 
 use monty_proto::DEFAULT_MAX_DECODE_BYTES;
 /// Why a remote server ended a session's stream; see [`RemoteDisconnect::cause`].
@@ -50,7 +52,7 @@ pub enum MontyTransport {
 
 impl MontyTransport {
     /// Whether this is the remote transport, whose workers are single-use (a
-    /// stream opened per checkout, never pooled idle or reused).
+    /// stream serves one checkout and is never reused).
     pub(crate) fn is_remote(&self) -> bool {
         matches!(self, Self::Remote(_))
     }
@@ -74,9 +76,9 @@ pub const DEFAULT_MAX_CHECKOUTS_PER_WORKER: u32 = 1000;
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
     /// Floor on live workers: spawned at pool creation, and replaced in the
-    /// background whenever one is recycled, crashes or is discarded. Forced to
-    /// 0 for the [`MontyTransport::Remote`] transport (streams are opened
-    /// per-checkout, not pre-warmed).
+    /// background whenever one is recycled, crashes or is discarded. Unused by
+    /// the [`MontyTransport::Remote`] transport, which keeps [`Self::pre_warm`]
+    /// sessions ready instead.
     pub min_processes: usize,
     /// Hard cap on live workers; checkouts beyond this wait. For the remote
     /// transport, a cap on concurrent streams.
@@ -143,6 +145,18 @@ pub struct PoolConfig {
     /// outside every session's `max_memory`, wasted if sessions do not type-check.
     /// Subprocess transport only; off by default.
     pub prewarm_type_checker: bool,
+    /// Remote transport only: sessions kept open and ready beyond those checked
+    /// out (0 by default), counted against `max_processes`. A checkout takes one,
+    /// or waits for one already dialing, rather than dialing; each one taken is
+    /// replaced in the background. Any checkout takes any ready session.
+    pub pre_warm: usize,
+    /// [`Pool::new`] opens the [`Self::pre_warm`] sessions itself, failing if one
+    /// cannot open, rather than in the background. On by default.
+    pub pre_warm_wait: bool,
+    /// Called for the request metadata of each [`Self::pre_warm`] session the pool
+    /// dials; `None` sends none. A checkout that takes a ready session does not
+    /// send its own [`CheckoutOptions::metadata`].
+    pub pre_warm_metadata: Option<MetadataFn>,
     /// Where pool and turn metrics are recorded, from
     /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).
     /// `None` records nothing at all. Independent of tracing: metrics cover
@@ -162,7 +176,7 @@ impl PoolConfig {
     }
 
     /// Creates a remote-transport config for the gRPC server at `url`, with a
-    /// stream opened per checkout. `min_processes` is 0 (no pre-warming) and
+    /// stream opened per checkout. `pre_warm` is 0 (no ready sessions) and
     /// `stream_async_calls` is on.
     pub fn remote(url: impl Into<String>) -> Self {
         let mut config = Self::with_transport(MontyTransport::Remote(url.into()));
@@ -186,11 +200,40 @@ impl PoolConfig {
             max_checkouts_per_worker: Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER),
             auto_resume: true,
             stream_async_calls: false,
+            pre_warm: 0,
+            pre_warm_wait: true,
+            pre_warm_metadata: None,
             max_decode_bytes: DEFAULT_MAX_DECODE_BYTES,
             prewarm_type_checker: false,
             #[cfg(feature = "telemetry")]
             metrics: None,
         }
+    }
+}
+
+/// Produces the request metadata for one pre-warmed remote session; see
+/// [`PoolConfig::pre_warm_metadata`]. An `Err` fails that session's dial.
+#[derive(Clone)]
+pub struct MetadataFn(Arc<dyn Fn() -> MetadataResult + Send + Sync>);
+
+/// Request metadata, or why it could not be produced.
+type MetadataResult = Result<Vec<(String, String)>, String>;
+
+impl MetadataFn {
+    /// Wraps `f`, which the pool calls from its runtime's threads.
+    pub fn new(f: impl Fn() -> MetadataResult + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+
+    /// Calls the function, reporting its failure as [`PoolError::Configuration`].
+    pub(crate) fn call(&self) -> Result<Vec<(String, String)>, PoolError> {
+        (self.0)().map_err(PoolError::Configuration)
+    }
+}
+
+impl fmt::Debug for MetadataFn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("MetadataFn(..)")
     }
 }
 

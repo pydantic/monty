@@ -434,12 +434,12 @@ impl Worker {
     }
 
     /// Whether the worker has already died (used to discard workers that died
-    /// while idle in the pool). Remote workers are never pooled idle, so
-    /// they always report alive here.
+    /// while idle in the pool): an exited child, or a pre-warmed remote session
+    /// the server has ended.
     pub(crate) fn is_dead(&mut self) -> bool {
         match &mut self.kind {
             WorkerKind::Subprocess(w) => w.child.try_wait().is_ok_and(|status| status.is_some()),
-            WorkerKind::Remote(_) => false,
+            WorkerKind::Remote(w) => w.disconnect().is_some(),
         }
     }
 

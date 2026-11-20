@@ -13,7 +13,10 @@ use std::sync::Arc;
 use std::{
     fs,
     future::ready,
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -25,8 +28,8 @@ use http::{Response as HttpResponse, StatusCode};
 #[cfg(feature = "telemetry")]
 use monty_pool::telemetry::{TelemetryAdapter, configure_telemetry_adapter};
 use monty_pool::{
-    Checkout, CheckoutOptions, MountSpec, MountSpecMode, Persistence, Pool, PoolConfig, PoolError, PrintFuture,
-    RemoteCause, RemoteDisconnect, ReplConfig, ResumeValue, TurnEvent,
+    Checkout, CheckoutOptions, MetadataFn, MountSpec, MountSpecMode, Persistence, Pool, PoolConfig, PoolError,
+    PrintFuture, RemoteCause, RemoteDisconnect, ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::{
     MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, grpc::Cause, pb, resume_call_from_proto,
@@ -39,7 +42,13 @@ use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, Resourc
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
 use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
-use tokio::{net::TcpListener, runtime::Builder, sync::oneshot, task::spawn_blocking, time::timeout};
+use tokio::{
+    net::TcpListener,
+    runtime::Builder,
+    sync::oneshot,
+    task::spawn_blocking,
+    time::{sleep, timeout},
+};
 use tonic::{Code, Status};
 
 /// Closing a remote transport cannot prove that the remote subprocess has exited.
@@ -4273,4 +4282,324 @@ async fn remote_clock_is_reported_by_the_server_without_a_client_preference() {
         pool.close().await;
         join_server(server).await;
     }
+}
+
+// ---- pre-warmed sessions -----------------------------------------------------
+//
+// `PoolConfig::pre_warm` keeps sessions open and ready: a checkout takes one
+// rather than dialing, and each one taken is replaced.
+
+/// What [`serve_ready_sessions`] saw of one of the streams it served.
+#[derive(Debug, PartialEq)]
+enum Seen {
+    /// The stream opened, with this `authorization`.
+    Opened(usize, Option<String>),
+    /// The stream's first request was `Configure`: a checkout took it.
+    Used(usize),
+}
+
+/// Accepts `streams` session streams, numbered as they open, and answers each
+/// on its own thread, reporting what it saw of them.
+fn serve_ready_sessions(mock: &MockServer, streams: usize, seen: &mpsc::Sender<Seen>) {
+    let sessions: Vec<_> = (0..streams)
+        .map(|index| {
+            let mut socket = mock.accept();
+            let authorization = socket.metadata.get("authorization").and_then(|v| v.to_str().ok());
+            let _ = seen.send(Seen::Opened(index, authorization.map(str::to_owned)));
+            let seen = seen.clone();
+            thread::spawn(move || {
+                let first = try_read_request(&mut socket);
+                if matches!(first.and_then(|r| r.kind), Some(pb::client_request::Kind::Configure(_))) {
+                    let _ = seen.send(Seen::Used(index));
+                }
+                send_kind(&mut socket, ok_event());
+                answer_requests(&mut socket);
+            })
+        })
+        .collect();
+    for session in sessions {
+        session.join().expect("session thread");
+    }
+}
+
+/// The next `count` reports, polled so the pool's tasks keep running on the
+/// test's runtime; panics after ten seconds.
+async fn next_seen(seen: &mpsc::Receiver<Seen>, count: usize) -> Vec<Seen> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut reports = Vec::with_capacity(count);
+    while reports.len() < count {
+        if let Ok(report) = seen.try_recv() {
+            reports.push(report);
+        } else {
+            assert!(Instant::now() < deadline, "timed out with {reports:?}");
+            sleep(Duration::from_millis(10)).await;
+        }
+    }
+    reports
+}
+
+/// Waits up to ten seconds for the pool to hold a ready session.
+async fn wait_for_ready(pool: &Pool) {
+    timeout(Duration::from_secs(10), async {
+        while pool.idle_workers() == 0 {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a ready session");
+}
+
+/// A remote config for `mock` keeping `pre_warm` sessions ready.
+fn pre_warm_config(mock: &MockServer, pre_warm: usize) -> PoolConfig {
+    let mut config = PoolConfig::remote(mock.url());
+    config.pre_warm = pre_warm;
+    config.max_processes = 4;
+    config.request_timeout = Some(Duration::from_secs(10));
+    config
+}
+
+/// Feeds once on a fresh checkout, asserting the mock's `Complete(42)`.
+async fn feed_once(pool: &Pool, options: CheckoutOptions) {
+    let mut checkout = pool
+        .checkout_with(&ReplConfig::default(), options)
+        .await
+        .expect("checkout");
+    let event = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    assert!(
+        matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
+        "got {event:?}"
+    );
+    checkout.finish().await.expect("finish");
+}
+
+/// `Pool::new` opens the sessions, a checkout takes one of them, and the pool
+/// opens its replacement.
+#[tokio::test]
+async fn pre_warmed_sessions_open_before_a_checkout_and_are_replaced() {
+    let mock = MockServer::start().await;
+    let config = pre_warm_config(&mock, 2);
+    let (tx, seen) = mpsc::channel();
+    let server = thread::spawn(move || serve_ready_sessions(&mock, 3, &tx));
+
+    let pool = Pool::new(config).await.expect("pool");
+    assert_eq!(
+        next_seen(&seen, 2).await,
+        [Seen::Opened(0, None), Seen::Opened(1, None)]
+    );
+    assert_eq!(pool.idle_workers(), 2);
+
+    feed_once(&pool, CheckoutOptions::default()).await;
+    let after = next_seen(&seen, 2).await;
+    assert!(after.contains(&Seen::Opened(2, None)), "got {after:?}");
+    assert!(
+        after.contains(&Seen::Used(0)) || after.contains(&Seen::Used(1)),
+        "got {after:?}"
+    );
+    pool.close().await;
+    join_server(server).await;
+}
+
+/// Without `pre_warm_wait` a checkout straight after `Pool::new` takes the
+/// session already dialing, rather than dialing another.
+#[tokio::test]
+async fn a_checkout_waits_for_a_pre_warmed_session_still_opening() {
+    let mock = MockServer::start().await;
+    let mut config = pre_warm_config(&mock, 1);
+    config.pre_warm_wait = false;
+    let (tx, seen) = mpsc::channel();
+    let server = thread::spawn(move || serve_ready_sessions(&mock, 2, &tx));
+
+    let pool = Pool::new(config).await.expect("pool");
+    feed_once(&pool, CheckoutOptions::default()).await;
+    let reports = next_seen(&seen, 3).await;
+    assert!(reports.contains(&Seen::Used(0)), "got {reports:?}");
+    assert!(!reports.contains(&Seen::Used(1)), "got {reports:?}");
+    pool.close().await;
+    join_server(server).await;
+}
+
+/// A burst beyond the refills in flight dials at once: only one checkout per
+/// refill waits for it, so three checkouts cost two ready dials, not four.
+#[tokio::test]
+async fn a_burst_of_checkouts_does_not_queue_behind_one_refill() {
+    static READY_DIALS: AtomicUsize = AtomicUsize::new(0);
+    let mock = MockServer::start().await;
+    let mut config = pre_warm_config(&mock, 1);
+    config.pre_warm_wait = false;
+    config.pre_warm_metadata = Some(MetadataFn::new(|| {
+        READY_DIALS.fetch_add(1, Ordering::SeqCst);
+        Ok(Vec::new())
+    }));
+    let pool = Pool::new(config).await.expect("pool");
+    let repl = ReplConfig::default();
+    let (first, second, third) = tokio::join!(pool.checkout(&repl), pool.checkout(&repl), pool.checkout(&repl));
+    let checkouts = [first.expect("first"), second.expect("second"), third.expect("third")];
+    // the session one of them took is replaced
+    wait_for_ready(&pool).await;
+    assert_eq!(READY_DIALS.load(Ordering::SeqCst), 2);
+    drop(checkouts);
+}
+
+/// A ready session the server ended while it waited is skipped.
+#[tokio::test]
+async fn a_pre_warmed_session_the_server_closed_is_skipped() {
+    let mock = MockServer::start().await;
+    let config = pre_warm_config(&mock, 1);
+    let (tx, seen) = mpsc::channel();
+    let server = thread::spawn(move || {
+        mock.accept().close(None);
+        serve_ready_sessions(&mock, 2, &tx);
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    // long enough for the stream's end to reach the pool's reader
+    sleep(Duration::from_millis(200)).await;
+    feed_once(&pool, CheckoutOptions::default()).await;
+    let reports = next_seen(&seen, 3).await;
+    assert_eq!(reports.iter().filter(|r| matches!(r, Seen::Used(_))).count(), 1);
+    pool.close().await;
+    join_server(server).await;
+}
+
+/// The metadata function is called for each ready session the pool dials, and
+/// a checkout with other metadata still takes the ready session.
+#[tokio::test]
+async fn pre_warm_metadata_is_called_per_ready_session() {
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    let mock = MockServer::start().await;
+    let mut config = pre_warm_config(&mock, 1);
+    config.pre_warm_metadata = Some(MetadataFn::new(|| {
+        let call = CALLS.fetch_add(1, Ordering::SeqCst) + 1;
+        Ok(vec![("authorization".to_owned(), format!("Bearer ready-{call}"))])
+    }));
+    let (tx, seen) = mpsc::channel();
+    let server = thread::spawn(move || serve_ready_sessions(&mock, 2, &tx));
+
+    let pool = Pool::new(config).await.expect("pool");
+    assert_eq!(
+        next_seen(&seen, 1).await,
+        [Seen::Opened(0, Some("Bearer ready-1".to_owned()))]
+    );
+    let options =
+        CheckoutOptions::default().with_metadata(vec![("authorization".to_owned(), "Bearer checkout".to_owned())]);
+    feed_once(&pool, options).await;
+    let reports = next_seen(&seen, 2).await;
+    assert!(reports.contains(&Seen::Used(0)), "got {reports:?}");
+    assert!(
+        reports.contains(&Seen::Opened(1, Some("Bearer ready-2".to_owned()))),
+        "got {reports:?}"
+    );
+    assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+    pool.close().await;
+    join_server(server).await;
+}
+
+/// A metadata function that fails, or a server that refuses, fails `Pool::new`
+/// under `pre_warm_wait`.
+#[tokio::test]
+async fn a_pre_warmed_session_that_cannot_open_fails_the_pool() {
+    let mock = MockServer::start().await;
+    let mut config = pre_warm_config(&mock, 1);
+    config.pre_warm_metadata = Some(MetadataFn::new(|| Err("no token".to_owned())));
+    let Err(err) = Pool::new(config).await else {
+        panic!("a failing metadata function must fail the pool");
+    };
+    assert!(
+        matches!(&err, PoolError::Configuration(message) if message == "no token"),
+        "got {err:?}"
+    );
+
+    mock.refuse_next(Cause::Capacity.status("server at capacity"));
+    let Err(err) = Pool::new(pre_warm_config(&mock, 1)).await else {
+        panic!("a refused session must fail the pool");
+    };
+    assert!(matches!(err, PoolError::Refused { .. }), "got {err:?}");
+}
+
+/// In the background, a refused ready session is retried later and the
+/// checkout that found nothing ready dials for itself.
+#[tokio::test]
+async fn a_refused_pre_warmed_session_does_not_fail_a_checkout() {
+    let mock = MockServer::start().await;
+    let mut config = pre_warm_config(&mock, 1);
+    config.pre_warm_wait = false;
+    mock.refuse_next(Cause::Capacity.status("server at capacity"));
+    let (tx, seen) = mpsc::channel();
+    let server = thread::spawn(move || serve_ready_sessions(&mock, 2, &tx));
+
+    let pool = Pool::new(config).await.expect("pool");
+    feed_once(&pool, CheckoutOptions::default()).await;
+    // the checkout's own dial, and the retried ready session
+    let reports = next_seen(&seen, 3).await;
+    assert_eq!(reports.iter().filter(|r| matches!(r, Seen::Used(_))).count(), 1);
+    pool.close().await;
+    join_server(server).await;
+}
+
+/// A resume takes a ready session like any checkout, here with the pool's
+/// one slot given over to pre-warming.
+#[tokio::test]
+async fn a_resume_takes_a_pre_warmed_session() {
+    let mock = MockServer::start().await;
+    let mut config = pre_warm_config(&mock, 1);
+    config.max_processes = 1;
+    config.checkout_timeout = Some(Duration::from_secs(5));
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_feed(&mut socket, "1 + 1");
+        send_kind(&mut socket, shutdown(Some(b"parked-1")));
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"parked-1");
+        send_with_session_id(&mut socket, ok_event(), b"sess-2");
+        expect_feed(&mut socket, "1 + 1");
+        send_complete(&mut socket);
+        while try_read_request(&mut socket).is_some() {}
+        // the slot the resumed session frees is pre-warmed again
+        answer_requests(&mut mock.accept());
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    feed_once(&pool, CheckoutOptions::default()).await;
+    wait_for_ready(&pool).await;
+    pool.close().await;
+    join_server(server).await;
+}
+
+/// `min_processes` means nothing to a remote pool: only `pre_warm` opens
+/// sessions ahead of a checkout.
+#[tokio::test]
+async fn min_processes_does_not_pre_warm_a_remote_pool() {
+    let mock = MockServer::start().await;
+    let mut config = PoolConfig::remote(mock.url());
+    config.min_processes = 2;
+    let pool = Pool::new(config).await.expect("pool");
+    let opened = spawn_blocking(move || mock.try_accept(Duration::from_millis(300)).is_some())
+        .await
+        .expect("join");
+    assert!(!opened, "no stream opens before a checkout");
+    assert_eq!(pool.idle_workers(), 0);
+}
+
+/// `pre_warm` is bounded by `max_processes` and belongs to remote pools.
+#[tokio::test]
+async fn invalid_pre_warm_is_a_configuration_error() {
+    let mut config = PoolConfig::remote("http://127.0.0.1:1");
+    config.pre_warm = 3;
+    config.max_processes = 2;
+    let Err(err) = Pool::new(config).await else {
+        panic!("pre_warm above max_processes must be refused");
+    };
+    assert_eq!(err.to_string(), "invalid pool size: pre_warm=3 max_processes=2");
+
+    let mut config = PoolConfig::subprocess("monty");
+    config.pre_warm = 1;
+    let Err(err) = Pool::new(config).await else {
+        panic!("pre_warm on a subprocess pool must be refused");
+    };
+    assert_eq!(err.to_string(), "pre_warm is only supported for the remote transport");
 }

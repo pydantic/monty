@@ -18,7 +18,8 @@ This is the recommended way to run Monty from Rust. It is also the engine undern
 A `Pool` keeps an elastic set of workers (`min_processes` prewarmed, up to `max_processes`).
 Until it is closed, a subprocess pool replaces any worker that is recycled, crashes or is
 discarded in the background until `min_processes` workers are live again; a replacement that
-fails to spawn is retried with a doubling backoff. Remote pools never refill.
+fails to spawn is retried with a doubling backoff. A remote pool refills only its `pre_warm`
+ready sessions, the same way, since a checked-out session is never reused.
 `Pool::checkout` dedicates one worker to one REPL session: the caller feeds snippets of code
 and answers suspension events (`TurnEvent` — external function calls, OS calls, name lookups,
 async futures) until the snippet completes, then `Checkout::finish` returns the worker to the
@@ -334,7 +335,12 @@ input so adapters that do not support metrics continue to work.
   revocation; a Linux host with no CA bundle cannot make an `https://` pool. A stream the server never took
   — it sent `GOAWAY` as it drained, refused the stream, or closed the connection before
   the stream was sent — is opened again, up to twice, within the same `request_timeout`. These workers are single-use:
-  a fresh stream per checkout, never prewarmed or returned to the pool. `finish` half-closes
+  a fresh stream per checkout, never returned to the pool. `pre_warm` (0 by default) keeps that many
+  open and ready beyond those checked out: `Pool::new` opens them (in the background when
+  `pre_warm_wait` is off), each is replaced when a checkout takes it, and a checkout waits for one
+  already dialing rather than dialing. The pool calls `pre_warm_metadata` for each one it dials and
+  compares no metadata, so any checkout takes any ready session without sending
+  `CheckoutOptions::metadata`. `finish` half-closes
   the stream and returns at once, but its `max_processes` slot is freed only when the server
   ends the stream (or after a second), so a full pool does not open its next stream while the
   server still counts the last one. At most `max_processes` closed streams wait like this;

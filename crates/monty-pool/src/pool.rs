@@ -41,8 +41,9 @@ pub struct Pool {
 pub(crate) struct PoolInner {
     pub(crate) config: PoolConfig,
     /// The remote transport's channel, present exactly when `config.transport`
-    /// is remote; every checkout opens its stream on it.
-    remote: Option<Remote>,
+    /// is remote; every stream is opened on it. Shared with refill tasks,
+    /// which open the pre-warmed sessions.
+    remote: Option<Arc<Remote>>,
     /// Guarded by a *synchronous* mutex: every critical section is short and
     /// await-free, and worker/checkout `Drop` impls must be able to release
     /// capacity without an async context.
@@ -71,17 +72,34 @@ struct PoolState {
     /// Refills are suspended until this deadline; `Some` also means the one
     /// retry task is armed.
     retry_at: Option<Instant>,
+    /// Refills in flight, counted in `total` but not yet in `idle`.
+    refilling: usize,
+    /// Remote checkouts waiting for a refill in flight instead of dialing, at
+    /// most one per refill so a burst still dials in parallel.
+    refill_claims: usize,
 }
 
 impl Pool {
-    /// Creates the pool and eagerly spawns `min_processes` workers, failing
-    /// fast if the binary cannot be spawned. Must be called within a tokio
-    /// runtime (worker process and pipe I/O is driven by the runtime).
+    /// Creates the pool and eagerly spawns `min_processes` workers, failing fast
+    /// if one cannot start; a remote pool opens its `pre_warm` sessions here
+    /// only with `pre_warm_wait`. Must be called within a tokio runtime (worker
+    /// process and pipe I/O is driven by the runtime).
     pub async fn new(config: PoolConfig) -> Result<Self, PoolError> {
         if config.min_processes > config.max_processes || config.max_processes == 0 {
             return Err(PoolError::Configuration(format!(
                 "invalid pool size: min_processes={} max_processes={}",
                 config.min_processes, config.max_processes
+            )));
+        }
+        if config.pre_warm > 0 && !config.transport.is_remote() {
+            return Err(PoolError::Configuration(
+                "pre_warm is only supported for the remote transport".to_owned(),
+            ));
+        }
+        if config.pre_warm > config.max_processes {
+            return Err(PoolError::Configuration(format!(
+                "invalid pool size: pre_warm={} max_processes={}",
+                config.pre_warm, config.max_processes
             )));
         }
         if config.execution_clock == ExecutionClock::Cpu && !config.transport.is_remote() {
@@ -101,23 +119,34 @@ impl Pool {
         }
         // a remote pool holds one channel for all its streams; nothing dials yet
         let remote = match &config.transport {
-            MontyTransport::Remote(url) => Some(Remote::connect(
+            MontyTransport::Remote(url) => Some(Arc::new(Remote::connect(
                 url,
                 config.request_timeout.unwrap_or(DEFAULT_DIAL_TIMEOUT),
                 config.keep_alive,
                 config.max_processes,
-            )?),
+            )?)),
             MontyTransport::Subprocess(_) => None,
         };
-        // Only the subprocess transport pre-warms workers; remote streams
-        // are opened per-checkout (its `min_processes` is 0).
-        let mut idle = Vec::with_capacity(config.min_processes);
-        if !config.transport.is_remote() {
+        // the first workers start here, failing the pool if they cannot:
+        // subprocesses one by one; remote sessions dialed at once, only with
+        // `pre_warm_wait`, else in the background once the pool exists
+        let remote_in_background = config.transport.is_remote() && !config.pre_warm_wait;
+        let mut idle = if remote_in_background {
+            Vec::new()
+        } else if config.transport.is_remote() {
+            join_all((0..config.pre_warm).map(|_| new_idle_worker(&config, remote.as_deref())))
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            let mut idle = Vec::with_capacity(config.min_processes);
             for _ in 0..config.min_processes {
-                let mut worker = Worker::new(&config, None, &[]).await?;
-                worker.id = idle.len() as u64 + 1;
-                idle.push(worker);
+                idle.push(new_idle_worker(&config, None).await?);
             }
+            idle
+        };
+        for (worker, id) in idle.iter_mut().zip(1..) {
+            worker.id = id;
         }
         let total = idle.len();
         let pool = Self {
@@ -131,6 +160,8 @@ impl Pool {
                     closed: false,
                     refill_failures: 0,
                     retry_at: None,
+                    refilling: 0,
+                    refill_claims: 0,
                 }),
                 available: Notify::new(),
                 this: this.clone(),
@@ -139,6 +170,9 @@ impl Pool {
         };
         let workers = worker_count(total);
         pool.inner.record_worker_delta(workers, workers);
+        if remote_in_background {
+            pool.inner.replenish();
+        }
         Ok(pool)
     }
 
@@ -255,9 +289,9 @@ const SHUTDOWN_EXIT_GRACE: Duration = Duration::from_millis(500);
 const DEFAULT_DIAL_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl PoolInner {
-    /// Takes a worker, reusing/spawning a local one or connecting a fresh
-    /// remote one (with `metadata` on its stream), waiting as
-    /// capacity allows — and times that for `monty.pool.checkout.wait`.
+    /// Takes a worker — an idle one (a remote pool's are its pre-warmed
+    /// sessions), else a spawned or dialed one (with `metadata` on its stream),
+    /// waiting as capacity allows — and times that for `monty.pool.checkout.wait`.
     pub(crate) async fn acquire_worker(&self, metadata: &[(String, String)]) -> Result<Worker, PoolError> {
         #[cfg(feature = "telemetry")]
         let started = Instant::now();
@@ -277,17 +311,17 @@ impl PoolInner {
         worker
     }
 
-    /// Reuses/spawns a local worker or opens a fresh remote stream (with
-    /// `metadata` on its stream), waiting as capacity allows, and
-    /// reports through `outcome` how it got one.
+    /// Reuses an idle worker, or spawns a local one or opens a remote stream
+    /// (with `metadata` on it), waiting as capacity allows, and reports through
+    /// `outcome` how it got one.
     async fn acquire_worker_inner(
         &self,
         metadata: &[(String, String)],
         outcome: &mut &'static str,
     ) -> Result<Worker, PoolError> {
-        // remote streams are single-use and never pooled idle, so the
-        // idle-reuse step is skipped and each acquisition opens a fresh one
         let remote = self.config.transport.is_remote();
+        // held while this acquisition waits for a refill in flight
+        let mut claim = None;
         let mut waited = false;
         let deadline = self.config.checkout_timeout.map(|t| Instant::now() + t);
         loop {
@@ -298,28 +332,33 @@ impl PoolInner {
             notified.as_mut().enable();
             // The guard's scope must close before any await below, so the
             // spawn/connect and the notified wait never hold the lock.
+            drop(claim.take());
             let spawn = {
                 let mut state = lock_ignore_poison(&self.state);
                 let mut reused = None;
                 let mut died_idle = 0;
                 let mut removed_idle = 0;
-                if !remote {
-                    // discard workers that died while idle — their replacement
-                    // is the spawn below or a background refill
-                    while let Some(mut worker) = state.idle.pop() {
-                        removed_idle += 1;
-                        if worker.is_dead() {
-                            state.total -= 1;
-                            died_idle += 1;
-                            drop(worker); // kill-on-drop backstop; already dead
-                        } else {
-                            reused = Some(worker);
-                            break;
-                        }
+                // discard workers that died while idle — their replacement
+                // is the spawn below or a background refill
+                while let Some(mut worker) = state.idle.pop() {
+                    removed_idle += 1;
+                    if worker.is_dead() {
+                        state.total -= 1;
+                        died_idle += 1;
+                        drop(worker); // kill-on-drop backstop; already dead
+                    } else {
+                        reused = Some(worker);
+                        break;
                     }
                 }
+                // a pre-warmed session already dialing will be ready before a
+                // new dial would, so one checkout per refill waits for it
+                let await_refill = reused.is_none() && remote && state.refilling > state.refill_claims;
+                if await_refill {
+                    state.refill_claims += 1;
+                }
                 // reserve capacity before releasing the lock to spawn/connect
-                let below_cap = reused.is_none() && state.total < self.config.max_processes;
+                let below_cap = reused.is_none() && !await_refill && state.total < self.config.max_processes;
                 let id = if below_cap {
                     state.total += 1;
                     let id = state.next_id;
@@ -329,6 +368,9 @@ impl PoolInner {
                     None
                 };
                 drop(state); // never call into the host adapter under the lock
+                if await_refill {
+                    claim = Some(RefillClaim(self));
+                }
                 for _ in 0..died_idle {
                     self.count_termination("died_idle");
                 }
@@ -339,6 +381,10 @@ impl PoolInner {
                 }
                 if let Some(worker) = reused {
                     *outcome = if waited { "waited" } else { "idle" };
+                    // a remote pool keeps `pre_warm` sessions ready, not live
+                    if remote {
+                        self.replenish();
+                    }
                     return Ok(worker);
                 }
                 id
@@ -348,7 +394,7 @@ impl PoolInner {
                 // guard the reserved slot: a failed — or cancelled, for the
                 // remote dial — spawn must release it or the pool shrinks
                 let capacity = CapacityGuard::new(self);
-                let mut worker = Worker::new(&self.config, self.remote.as_ref(), metadata).await?;
+                let mut worker = Worker::new(&self.config, self.remote.as_deref(), metadata).await?;
                 worker.id = id;
                 capacity.disarm();
                 return Ok(worker);
@@ -435,21 +481,29 @@ impl PoolInner {
         self.replenish();
     }
 
-    /// Spawns background workers until `min_processes` are live, reserving
-    /// their capacity first so a racing checkout can never overshoot
-    /// `max_processes`. Does nothing once closed or while refills back off.
+    /// Spawns background workers until `min_processes` are live (or, remote,
+    /// opens sessions until `pre_warm` are ready), reserving their capacity first
+    /// so a racing checkout can never overshoot `max_processes`. Does nothing
+    /// once closed or while refills back off.
     fn replenish(&self) {
-        if self.config.transport.is_remote() {
-            return;
-        }
         let (wanted, first_id) = {
             let mut state = lock_ignore_poison(&self.state);
             if state.closed || state.retry_at.is_some() {
                 (0, 0)
             } else {
-                let floor = self.config.min_processes.min(self.config.max_processes);
-                let wanted = floor.saturating_sub(state.total);
+                // a remote pool's floor is on ready sessions, since checked-out
+                // ones are never reused; a subprocess pool's is on live workers
+                let wanted = if self.config.transport.is_remote() {
+                    self.config
+                        .pre_warm
+                        .saturating_sub(state.idle.len() + state.refilling)
+                        .min(self.config.max_processes.saturating_sub(state.total))
+                } else {
+                    let floor = self.config.min_processes.min(self.config.max_processes);
+                    floor.saturating_sub(state.total)
+                };
                 state.total += wanted;
+                state.refilling += wanted;
                 let first_id = state.next_id;
                 state.next_id = first_id.checked_add(wanted as u64).expect("worker identity exhausted");
                 (wanted, first_id)
@@ -460,8 +514,12 @@ impl PoolInner {
             for id in first_id..first_id + wanted as u64 {
                 // a task the runtime drops mid-spawn (at its shutdown) loses its
                 // slot, which only matters to a pool that is going away anyway
-                self.runtime
-                    .spawn(refill_one(self.this.clone(), self.config.clone(), id));
+                self.runtime.spawn(refill_one(
+                    self.this.clone(),
+                    self.config.clone(),
+                    self.remote.clone(),
+                    id,
+                ));
             }
         }
     }
@@ -497,37 +555,61 @@ impl PoolInner {
     }
 }
 
-/// Spawns worker `id` into a slot [`PoolInner::replenish`] reserved.
+/// Spawns worker `id` (or opens a pre-warmed remote session) into a slot
+/// [`PoolInner::replenish`] reserved.
 ///
 /// Holds only a `Weak` across the spawn, so an in-flight refill never keeps a
 /// dropped pool alive; its worker is then killed on drop.
-async fn refill_one(pool: Weak<PoolInner>, config: PoolConfig, id: u64) {
-    // only subprocess pools refill, so there is no channel to hand over
-    let worker = Worker::new(&config, None, &[]).await;
+async fn refill_one(pool: Weak<PoolInner>, config: PoolConfig, remote: Option<Arc<Remote>>, id: u64) {
+    let worker = new_idle_worker(&config, remote.as_deref()).await;
     let Some(pool) = pool.upgrade() else { return };
+    let mut state = lock_ignore_poison(&pool.state);
+    state.refilling -= 1;
     match worker {
-        Ok(mut worker) => {
+        Ok(mut worker) if !state.closed => {
             worker.id = id;
-            let mut state = lock_ignore_poison(&pool.state);
-            if state.closed {
-                drop(state);
-                drop(worker);
-                pool.count_termination("closed");
-                pool.release_capacity();
-            } else {
-                state.refill_failures = 0;
-                state.idle.push(worker);
-                drop(state);
-                pool.available.notify_one();
-                pool.record_worker_delta(0, 1);
-            }
+            state.refill_failures = 0;
+            state.idle.push(worker);
+            drop(state);
+            pool.available.notify_one();
+            pool.record_worker_delta(0, 1);
         }
-        // a closed pool will not refill again, so it must not arm a retry
-        Err(_) if lock_ignore_poison(&pool.state).closed => {
+        // a closed pool kills a late worker and will not refill again, so a
+        // failure must not arm a retry either
+        Ok(worker) => {
+            drop(state);
+            drop(worker);
             pool.count_termination("closed");
             pool.release_capacity();
         }
-        Err(_) => pool.refill_failed(),
+        Err(_) if state.closed => {
+            drop(state);
+            pool.count_termination("closed");
+            pool.release_capacity();
+        }
+        Err(_) => {
+            drop(state);
+            pool.refill_failed();
+        }
+    }
+}
+
+/// Starts a worker for the idle queue: a subprocess, or a pre-warmed remote
+/// session dialed with [`PoolConfig::pre_warm_metadata`].
+async fn new_idle_worker(config: &PoolConfig, remote: Option<&Remote>) -> Result<Worker, PoolError> {
+    let metadata = match (remote, &config.pre_warm_metadata) {
+        (Some(_), Some(metadata)) => metadata.call()?,
+        _ => Vec::new(),
+    };
+    Worker::new(config, remote, &metadata).await
+}
+
+/// One checkout's claim on a refill in flight, released when it stops waiting.
+struct RefillClaim<'a>(&'a PoolInner);
+
+impl Drop for RefillClaim<'_> {
+    fn drop(&mut self) {
+        lock_ignore_poison(&self.0.state).refill_claims -= 1;
     }
 }
 
