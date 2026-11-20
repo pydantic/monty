@@ -444,8 +444,9 @@ impl HostClassType {
             host_defined: true,
             is_dataclass: self.is_dataclass,
             attrs: Vec::new(),
-            // A host proxy of a host class compares by identity: the sandbox
-            // never learns how the host's class compares.
+            // A host proxy of a host class compares and hashes by identity,
+            // deliberately unlike the sandbox (attrs `==`, unhashable): those
+            // rules approximate a host class whose real `__eq__` it never sees.
             eq: ClassEq::Identity,
             hash: ClassHash::Identity,
         }

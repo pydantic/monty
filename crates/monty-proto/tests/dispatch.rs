@@ -208,7 +208,7 @@ fn frame_request(kind: pb::client_request::Kind) -> Vec<u8> {
         &mut buf,
         &pb::ClientRequest {
             kind: Some(kind),
-            trace_parent: None,
+            traceparent: None,
         },
     )
     .expect("framing a request never fails");

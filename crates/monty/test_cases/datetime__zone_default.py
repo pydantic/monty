@@ -99,7 +99,7 @@ for _bad, _exc, _msg in [
         assert str(e) == _msg
 assert datetime.fromtimestamp(-62135596800, _plus_one) == datetime(1, 1, 1, 1, tzinfo=_plus_one)
 
-# instants past chrono's ±262143 years still raise the year error while C's `tm_year` holds the year
+# Instants outside the civil date range still raise the year error while C's `tm_year` holds the year
 for _bad, _msg in [
     ((1e13,), 'year must be in 1..9999, not 318857'),
     ((-1e13,), 'year must be in 1..9999, not -314918'),

@@ -27,13 +27,18 @@ Snippets rejected before execution retain none of their compilation products (se
 
 ## Memory / size limits
 
+- Source code is limited to `u32::MAX` (4,294,967,295) UTF-8 bytes because parser offsets are 32 bits.
+    Oversized source raises `SyntaxError`.
+
 - Memory usage is measured by the worker's process-global allocator, while the
     configured budget belongs to one session.
+
 - Workers count bytes requested from their global allocator. Direct Rust users
     must install `monty-alloc` as the global allocator and arm its hard ceiling
     with `set_hard_limit(memory_limit_with_headroom(...))` before using
     `max_memory`; without it usage always reads as zero and the limit is silently
     not enforced.
+
 - Operations whose result is bounded by simple arithmetic on input sizes
     are **pre-checked** before allocating: integer multiplication, left
     shift, integer power, sequence repeat (`'x' * n`), replacement
@@ -52,6 +57,7 @@ Snippets rejected before execution retain none of their compilation products (se
     The pre-check threshold is 100 KB:
     estimates above that are checked against the remaining budget and rejected
     with `MemoryError` before allocation when they would exceed it.
+
 - `bigint.pow(base, exp)` estimates result size as `bits(base) * exp` with
     a 4× safety multiplier to cover repeated-squaring intermediate values.
 
@@ -106,6 +112,8 @@ without one is unlimited.
     and re-derives the cap for each session, always from the leanest the process
     has been, plus process-wide typeshed and lint-registry initialization.
     The session's type-checker database and caches are released on reset.
+    A worker started with `--prewarm-type-checker` (`PoolConfig::prewarm_type_checker`) instead keeps a checker with the
+    builtins resolved in its baseline, about 6 MiB, and rebuilds it after each type-checked session.
     Other memory retained between sessions therefore consumes the headroom
     rather than raising the cap, and a worker whose residue outgrows it is killed
     and replaced rather than allowed to grow indefinitely.

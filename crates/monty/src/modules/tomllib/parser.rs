@@ -15,8 +15,8 @@
 
 use std::{borrow::Cow, collections::HashMap, mem, vec};
 
-use chrono::NaiveDate;
 use indexmap::{IndexMap, map};
+use jiff::civil::Date;
 use monty_types::{ResourceError, ResourceTracker};
 use num_bigint::BigInt;
 
@@ -1005,12 +1005,12 @@ impl TomlDate {
     /// Whether `datetime.date(year, month, day)` would accept these fields.
     fn is_valid(self) -> bool {
         (1..=9999).contains(&self.year)
-            && NaiveDate::from_ymd_opt(
-                self.year,
-                u32::try_from(self.month).expect("regex yields 01..12"),
-                u32::try_from(self.day).expect("regex yields 01..31"),
+            && Date::new(
+                i16::try_from(self.year).expect("validated year"),
+                i8::try_from(self.month).expect("regex yields 01..12"),
+                i8::try_from(self.day).expect("regex yields 01..31"),
             )
-            .is_some()
+            .is_ok()
     }
 }
 

@@ -1,6 +1,5 @@
-//! `strftime` behaviour that can't live in the dual-run `test_cases/` harness
-//! because the reference (the *host* CPython the harness compares against)
-//! differs by platform.
+//! Date/time formatting and parsing checks that cannot use the dual-run harness:
+//! platform-specific results, documented divergences and hostile formats.
 //!
 //! For an **unrecognised** directive, Monty deliberately matches **glibc/Linux**
 //! CPython: the directive is passed through verbatim (`strftime('%Q') == '%Q'`).
@@ -8,9 +7,11 @@
 //! test_case would fail on a macOS CI runner. They live here instead. See
 //! limitations/datetime.md.
 
+use std::time::{Duration, Instant};
+
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, MontyObject};
+use monty_types::{CompileOptions, ExcType, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
 
 /// Runs a snippet and returns its result as a `String`.
 fn run_str(code: &str) -> String {
@@ -44,6 +45,23 @@ fn unknown_directive_passes_through_verbatim() {
         run_str("from datetime import date\ndate(2024, 6, 15).strftime('%')"),
         "%"
     );
+    assert_snapshot!(run_str(
+        "from datetime import date, datetime, time, timezone\n\
+         values = [date(2024, 6, 15), datetime(2024, 6, 15), \
+         datetime(2024, 6, 15, tzinfo=timezone.utc), time(12), time(12, tzinfo=timezone.utc)]\n\
+         '|'.join(value.strftime('%+ %Y %%+') for value in values)"
+    ), @"%+ 2024 %+|%+ 2024 %+|%+ 2024 %+|%+ 1900 %+|%+ 1900 %+");
+}
+
+/// A directive ends at its first non-flag character, so `% ` cannot swallow the
+/// next directive, and Jiff's own extensions stay literal as glibc's unknowns do.
+#[test]
+fn non_glibc_directives_pass_through_verbatim() {
+    assert_snapshot!(run_str(
+        "from datetime import datetime\n\
+         d = datetime(2024, 6, 5, 7, 3, 4, 120)\n\
+         '|'.join(d.strftime(f) for f in ['50% %Y', '% 年 %Y', '%q', '%.f', '%.3f', '%3f', '%-q', '%::z', '%-'])"
+    ), @"50% 2024|% 年 2024|%q|%.f|%.3f|%3f|%-q|%::z|%-");
 }
 
 /// The f-string path (a dynamic spec carries the strftime string to runtime)
@@ -54,21 +72,26 @@ fn fstring_unknown_directive_passes_through_verbatim() {
         run_str("from datetime import datetime\nf'{datetime(2024, 6, 15):{\"%Q\"}}'"),
         "%Q"
     );
+    assert_eq!(
+        run_str("from datetime import datetime\nf'{datetime(2024, 6, 15):{\"%+ %Y\"}}'"),
+        "%+ 2024"
+    );
+    assert_eq!(
+        run_str("from datetime import datetime\n'{:%+ %Y}'.format(datetime(2024, 6, 15))"),
+        "%+ 2024"
+    );
 }
 
-/// A directive chrono *parses* but can't render for the value (`%+`, its RFC
-/// 3339 form, needs an offset the naive components lack) raises `ValueError`
-/// where CPython passes `%+` to the C library (glibc echoes it); see
-/// `limitations/datetime.md`. Critically, it must NOT panic the host: `chrono`'s
-/// `DelayedFormat::to_string()` panics here, which would be a sandbox escape
-/// on untrusted input.
+/// The unsupported `%#z` directive still raises without panicking the host.
 #[test]
 fn unrenderable_directive_raises_not_panics() {
-    let msg = run_err("from datetime import date\ndate(2024, 6, 15).strftime('%+')");
-    assert!(
-        msg.contains("ValueError") && msg.contains("Invalid format string"),
-        "expected ValueError: Invalid format string, got: {msg}"
-    );
+    assert_snapshot!(run_err("from datetime import date\ndate(2024, 6, 15).strftime('%#z')"), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 2, in <module>
+        date(2024, 6, 15).strftime('%#z')
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ValueError: Invalid format string
+    "#);
 }
 
 /// `time.strftime` shares `datetime`'s lenient formatter: unknown directives
@@ -83,11 +106,17 @@ fn time_strftime_shares_the_lenient_formatter() {
         run_str("import time\ntime.strftime('%Y-%m-%dT%H:%M:%S.%f%z', time.gmtime(0))"),
         "1970-01-01T00:00:00.000000+0000"
     );
-    let msg = run_err("import time\ntime.strftime('%+', time.gmtime(0))");
-    assert!(
-        msg.contains("ValueError") && msg.contains("Invalid format string"),
-        "expected ValueError: Invalid format string, got: {msg}"
+    assert_eq!(
+        run_str("import time\ntime.strftime('%+ %Y', time.gmtime(0))"),
+        "%+ 1970"
     );
+    assert_snapshot!(run_err("import time\ntime.strftime('%#z', time.gmtime(0))"), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 2, in <module>
+        time.strftime('%#z', time.gmtime(0))
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ValueError: Invalid format string
+    "#);
 }
 
 /// A time tuple's `tm_wday`/`tm_yday` are `i64` in Monty where CPython takes a
@@ -124,6 +153,38 @@ fn hostile_time_tuple_fields_raise_instead_of_panicking() {
     );
 }
 
+/// `mktime()` cannot place a wall clock past year 9999, where 64-bit CPython
+/// returns a timestamp. See limitations/time.md.
+#[test]
+fn mktime_beyond_year_9999_overflows() {
+    for tuple in [
+        "(10000, 1, 1, 0, 0, 0, 5, 1, -1)",
+        "(9999, 12, 31, 23, 59, 60, 4, 365, -1)",
+    ] {
+        assert_eq!(
+            run_err(&format!("import time\ntime.mktime({tuple})")).lines().last(),
+            Some("OverflowError: mktime argument out of range")
+        );
+    }
+}
+
+/// `strftime()` and `asctime()` refuse a year past ±9999, which Jiff cannot hold;
+/// glibc and macOS CPython format it. See limitations/time.md.
+#[test]
+fn strftime_beyond_year_9999_raises() {
+    for expr in [
+        "time.strftime('%Y', (10000, 1, 1, 0, 0, 0, 5, 1, 0))",
+        "time.strftime('%Y', (-10000, 1, 1, 0, 0, 0, 5, 1, 0))",
+        "time.asctime((10000, 1, 1, 0, 0, 0, 5, 1, 0))",
+    ] {
+        assert_eq!(
+            run_err(&format!("import time\n{expr}")).lines().last(),
+            Some("ValueError: year out of range"),
+            "{expr}"
+        );
+    }
+}
+
 /// `gmtime()` names its zone `UTC`, as macOS CPython does; glibc CPython says
 /// `GMT`, so the name cannot be asserted in a dual-run fixture. See
 /// limitations/time.md.
@@ -149,12 +210,9 @@ fn time_strptime_is_not_implemented() {
     );
 }
 
-/// `date.strptime` is CPython 3.14's other new `strptime`, also unimplemented —
-/// and `datetime.strptime` is not a substitute for a time-only format, since it
-/// requires the string to carry a date. Both are one-sided, so neither can live
-/// in `test_cases/`. See limitations/datetime.md.
+/// `date.strptime` remains unimplemented; its CPython counterpart succeeds.
 #[test]
-fn strptime_gaps_on_date_and_datetime() {
+fn date_strptime_is_not_implemented() {
     assert_snapshot!(
         run_err("from datetime import date\ndate.strptime('2020-01-01', '%Y-%m-%d')"),
         @r#"
@@ -164,16 +222,40 @@ fn strptime_gaps_on_date_and_datetime() {
     AttributeError: type object 'datetime.date' has no attribute 'strptime'
     "#
     );
-    assert_snapshot!(
-        run_err("from datetime import datetime\ndatetime.strptime('12:30', '%H:%M')"),
-        @r#"
-    Traceback (most recent call last):
-      File "test.py", line 2, in <module>
-        datetime.strptime('12:30', '%H:%M')
-        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    ValueError: time data '12:30' does not match format '%H:%M'
-    "#
-    );
+}
+
+/// Ambiguous repeated fields must fail without exponential retries or recursion.
+/// CPython rejects the duplicate groups at format compilation, so this is one-sided.
+#[test]
+fn hostile_strptime_fields_do_not_cause_exponential_backtracking() {
+    let code = r"
+from datetime import datetime
+text = '1' * 36 + 'Y'
+fmt = '%H' * 24 + 'X'
+try:
+    datetime.strptime(text, fmt)
+    assert False, 'expected the final literal to fail'
+except ValueError as exc:
+    assert str(exc) == f'time data {text!r} does not match format {fmt!r}'
+True
+";
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::bool(true));
+}
+
+/// The memoized field search is still quadratic, so it polls the clock: a hostile
+/// format that runs for seconds unpolled stops near the time limit.
+#[test]
+fn hostile_strptime_fields_respect_the_time_limit() {
+    let code = "from datetime import datetime\ndatetime.strptime('1' * 6000 + 'Y', '%H' * 4000 + 'X')";
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let start = Instant::now();
+    let exc = runner
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
 }
 
 /// A `%z` offset carrying a colon before its seconds only. Both interpreters
