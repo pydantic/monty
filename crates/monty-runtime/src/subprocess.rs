@@ -36,25 +36,33 @@ const WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
 /// Runs [`serve`] on a thread with [`WORKER_STACK_SIZE`] of stack and returns
 /// its exit code. A panic there has already written its `FatalError` frame in
 /// the panic hook, so it exits with 101 like an unwound main thread.
-pub(crate) fn run() -> ExitCode {
+///
+/// `prewarm_type_checker` selects [`Worker::with_prewarmed_type_checker`].
+pub(crate) fn run(prewarm_type_checker: bool) -> ExitCode {
     thread::Builder::new()
         .name("monty-worker".to_owned())
         .stack_size(WORKER_STACK_SIZE)
-        .spawn(serve)
+        .spawn(move || serve(prewarm_type_checker))
         .expect("failed to spawn the worker thread")
         .join()
         .unwrap_or(ExitCode::from(101))
 }
 
 /// The worker loop: one request in, its events out, until EOF, `Shutdown` or a fatal error.
-fn serve() -> ExitCode {
+fn serve(prewarm_type_checker: bool) -> ExitCode {
     install_panic_hook();
     let mut reader = FrameReader::new(io::stdin().lock());
-    let mut worker = Worker::default();
+    let mut worker = if prewarm_type_checker {
+        Worker::with_prewarmed_type_checker()
+    } else {
+        Worker::default()
+    };
     let mut sink = StdoutSink;
     // set the memory baseline on the pristine worker: a session's first request
     // is decoded before its ceiling is armed, and must not count as overhead
     apply_memory_limit(&worker);
+    let mut warm_up_failed = false;
+    warm_up(&mut worker, &mut warm_up_failed);
 
     loop {
         match reader.read::<pb::ClientRequest>() {
@@ -62,7 +70,9 @@ fn serve() -> ExitCode {
                 let outcome = worker.handle(request, &mut sink);
                 apply_memory_limit(&worker);
                 match outcome {
-                    Ok(HandleOutcome::Continue) => {}
+                    // after the re-arm, so a `Reset` that dropped the checker has
+                    // lowered the baseline before the new one is added to it
+                    Ok(HandleOutcome::Continue) => warm_up(&mut worker, &mut warm_up_failed),
                     Ok(HandleOutcome::Shutdown) => return ExitCode::SUCCESS,
                     // the worker emitted a FatalError (e.g. version skew) and cannot
                     // keep serving — exit non-zero so the client sees a clean cause
@@ -101,6 +111,20 @@ fn serve() -> ExitCode {
                 fatal(&worker, &mut sink, &format!("malformed request frame: {err}"));
                 return ExitCode::from(EX_PROTOCOL);
             }
+        }
+    }
+}
+
+/// Runs [`Worker::warm_up`], warning on stderr the first time it fails.
+///
+/// The warm-up snippet is constant, so a failure repeats on every rebuild; `failed` keeps it to one line per worker.
+/// The worker keeps serving: the checker is still correct, only colder. Debug builds panic so tests catch the drift.
+fn warm_up(worker: &mut Worker, failed: &mut bool) {
+    if let Err(err) = worker.warm_up() {
+        debug_assert!(false, "type-checker warm-up failed: {err}");
+        if !*failed {
+            *failed = true;
+            eprintln!("warning: type-checker warm-up failed, sessions will type-check cold: {err}");
         }
     }
 }
