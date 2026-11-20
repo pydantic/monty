@@ -662,12 +662,14 @@ class MontyRefusedError(MontyError):
     def retryable(self) -> bool:
         """`True` for `RESOURCE_EXHAUSTED` or `UNAVAILABLE`, not for credential errors.
 
-        No automatic retry is performed. A disconnected request must not be replayed.
+        The pool retries some checkout refusals once when the server supplies
+        a valid delay of at most two seconds and the retry fits the checkout
+        and dial deadlines.
         """
 
     @property
     def retry_after(self) -> float | None:
-        """Suggested delay in seconds from `Retry-After`, or `None` if absent or invalid.
+        """Suggested delay in seconds from a single valid `Retry-After`, or `None`.
 
         Both delay-seconds and HTTP dates are accepted. Past dates give zero;
         delays are capped at one hour.
@@ -1200,6 +1202,8 @@ class AsyncMontyRemote:
                 count); checkouts beyond it wait.
             checkout_timeout: Seconds `checkout()` waits for capacity before
                 raising `TimeoutError`. `None` waits forever.
+                This deadline also bounds the wait and stream open for an automatic
+                admission retry.
             request_timeout: Hard per-turn deadline in seconds (default 10.0) — a
                 worker that exceeds it has its connection killed and the call
                 raises `MontyCrashedError` with `timed_out=True`. It also bounds

@@ -6,11 +6,12 @@ use std::{
 };
 
 use h2::{Error as H2Error, Reason};
-use tonic::Status;
+use monty_proto::grpc::Cause;
+use tonic::{Code, Status};
 
 use super::{
     MAX_WINDOW_BYTES, MIN_CONNECTION_WINDOW_BYTES, MIN_STREAM_WINDOW_BYTES, RemoteDisconnect, STREAM_WINDOW_BYTES,
-    connection_window, retry_after, stream_window,
+    admission_retry_delay, connection_window, retry_after, stream_window,
 };
 
 /// Every stream a pool can hold, live and closing, stalled on a full stream
@@ -54,6 +55,125 @@ fn retry_after_accepts_delay_seconds_and_http_dates() {
         ("not a date", None),
     ] {
         assert_eq!(retry_after(value, now), expected.map(Duration::from_secs));
+    }
+}
+
+#[test]
+fn admission_retry_wait_preserves_the_server_delay_and_bounds_slot_occupancy() {
+    for (hint, expected_ms) in [
+        ("0", Some(350)),
+        ("Wed, 21 Oct 2015 07:27:00 GMT", Some(350)),
+        ("1", Some(1250)),
+        ("2", Some(2250)),
+        ("3", None),
+        ("3600", None),
+        ("garbage", None),
+    ] {
+        let mut status = Cause::WorkerUnavailable.status("temporary refusal");
+        status
+            .metadata_mut()
+            .insert("x-monty-refusal-reason", "worker_capacity".parse().unwrap());
+        status.metadata_mut().insert("retry-after", hint.parse().unwrap());
+        let refusal = RemoteDisconnect::from_refusal(&status);
+        assert_eq!(
+            admission_retry_delay(&status, &refusal, || Duration::from_millis(250)),
+            expected_ms.map(Duration::from_millis),
+            "{hint}",
+        );
+    }
+}
+
+#[test]
+fn admission_retry_matches_structured_refusals() {
+    for (code, cause, reason, eligible) in [
+        (
+            Code::Unavailable,
+            Cause::WorkerUnavailable,
+            Some("worker_capacity"),
+            true,
+        ),
+        (Code::Unavailable, Cause::WorkerUnavailable, None, false),
+        (
+            Code::ResourceExhausted,
+            Cause::WorkerUnavailable,
+            Some("worker_capacity"),
+            false,
+        ),
+        (Code::ResourceExhausted, Cause::Capacity, None, true),
+        (Code::ResourceExhausted, Cause::Capacity, Some("relay_sessions"), true),
+        (
+            Code::ResourceExhausted,
+            Cause::Capacity,
+            Some("worker_session_capacity"),
+            true,
+        ),
+        (
+            Code::ResourceExhausted,
+            Cause::Capacity,
+            Some("unknown_capacity"),
+            false,
+        ),
+        (
+            Code::ResourceExhausted,
+            Cause::CallerCap,
+            Some("assignment_attempt_rate"),
+            true,
+        ),
+        (
+            Code::ResourceExhausted,
+            Cause::CallerCap,
+            Some("tenant_allowance"),
+            false,
+        ),
+        (Code::FailedPrecondition, Cause::CallerCap, Some("caller_cap"), false),
+        (
+            Code::PermissionDenied,
+            Cause::WorkerUnavailable,
+            Some("worker_capacity"),
+            false,
+        ),
+    ] {
+        let mut status = Status::new(code, "worker capacity");
+        status
+            .metadata_mut()
+            .insert("monty-cause", cause.as_str().parse().unwrap());
+        status.metadata_mut().insert("retry-after", "1".parse().unwrap());
+        if let Some(reason) = reason {
+            status
+                .metadata_mut()
+                .insert("x-monty-refusal-reason", reason.parse().unwrap());
+        }
+        let refusal = RemoteDisconnect::from_refusal(&status);
+        assert_eq!(
+            admission_retry_delay(&status, &refusal, || Duration::ZERO),
+            eligible.then(|| Duration::from_secs(1)),
+            "{code:?} {cause:?} {reason:?}",
+        );
+    }
+}
+
+#[test]
+fn conflicting_admission_trailers_cannot_schedule_a_retry() {
+    for (name, value) in [
+        ("retry-after", "120"),
+        ("monty-cause", "permission_denied"),
+        ("x-monty-refusal-reason", "unknown_reason"),
+    ] {
+        let mut status = Cause::WorkerUnavailable.status("temporary refusal");
+        status.metadata_mut().insert("retry-after", "0".parse().unwrap());
+        status
+            .metadata_mut()
+            .insert("x-monty-refusal-reason", "worker_capacity".parse().unwrap());
+        status.metadata_mut().append(name, value.parse().unwrap());
+        let refusal = RemoteDisconnect::from_refusal(&status);
+        if name == "retry-after" {
+            assert_eq!(refusal.retry_after, None);
+        }
+        assert_eq!(
+            admission_retry_delay(&status, &refusal, || Duration::ZERO),
+            None,
+            "{name}"
+        );
     }
 }
 

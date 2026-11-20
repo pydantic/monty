@@ -89,6 +89,9 @@ pub struct PoolConfig {
     pub execution_clock: ExecutionClock,
     /// How long [`Pool::checkout`] waits for a free worker before
     /// [`PoolError::Exhausted`]. `None` waits forever.
+    /// On the remote transport this deadline also bounds an automatic
+    /// admission retry, including its wait and the new stream open.
+    /// A retry timeout returns the original [`PoolError::Refused`].
     pub checkout_timeout: Option<Duration>,
     /// How often the remote transport sends an HTTP/2 `PING` on its
     /// connection while a stream is open, to notice a dead TCP peer on the
@@ -329,8 +332,8 @@ pub struct RemoteDisconnect {
     /// The transport or protocol error for this failure; absent when the
     /// server sent a status.
     pub transport_error: Option<String>,
-    /// The server's valid `Retry-After` delay on a refusal; always `None`
-    /// for a connection failure or disconnect.
+    /// The server's delay when a refusal has a single valid `Retry-After`.
+    /// Always `None` for a connection failure or disconnect.
     pub retry_after: Option<Duration>,
 }
 

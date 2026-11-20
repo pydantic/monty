@@ -114,7 +114,7 @@ impl Pool {
         let mut idle = Vec::with_capacity(config.min_processes);
         if !config.transport.is_remote() {
             for _ in 0..config.min_processes {
-                let mut worker = Worker::new(&config, None, &[]).await?;
+                let mut worker = Worker::new(&config, None, &[], None).await?;
                 worker.id = idle.len() as u64 + 1;
                 idle.push(worker);
             }
@@ -289,7 +289,10 @@ impl PoolInner {
         // idle-reuse step is skipped and each acquisition opens a fresh one
         let remote = self.config.transport.is_remote();
         let mut waited = false;
-        let deadline = self.config.checkout_timeout.map(|t| Instant::now() + t);
+        let deadline = self
+            .config
+            .checkout_timeout
+            .and_then(|timeout| Instant::now().checked_add(timeout));
         loop {
             // Register for wakeups BEFORE checking state: a release landing
             // between the check and the await below is then still observed
@@ -348,7 +351,7 @@ impl PoolInner {
                 // guard the reserved slot: a failed — or cancelled, for the
                 // remote dial — spawn must release it or the pool shrinks
                 let capacity = CapacityGuard::new(self);
-                let mut worker = Worker::new(&self.config, self.remote.as_ref(), metadata).await?;
+                let mut worker = Worker::new(&self.config, self.remote.as_ref(), metadata, deadline).await?;
                 worker.id = id;
                 capacity.disarm();
                 return Ok(worker);
@@ -503,7 +506,7 @@ impl PoolInner {
 /// dropped pool alive; its worker is then killed on drop.
 async fn refill_one(pool: Weak<PoolInner>, config: PoolConfig, id: u64) {
     // only subprocess pools refill, so there is no channel to hand over
-    let worker = Worker::new(&config, None, &[]).await;
+    let worker = Worker::new(&config, None, &[], None).await;
     let Some(pool) = pool.upgrade() else { return };
     match worker {
         Ok(mut worker) => {

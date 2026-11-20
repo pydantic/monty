@@ -437,6 +437,9 @@ assert_eq!(result, MontyObject::int(42));
 The peer reason is unverified text, and a disconnect does not establish whether the request ran.
 The display text includes that reason.
 `PoolError::Refused` identifies a server refusal before a session exists.
-Its details provide `retryable()` and `retry_after` (a `Duration` from `Retry-After`, capped at one hour), with no automatic retry.
+Its details provide `retryable()` and `retry_after` (a `Duration` from `Retry-After`, capped at one hour).
+The pool retries a temporary capacity or throttling refusal once before admission when the server gives a valid delay of at most two seconds.
+The wait and retry dial share a five-second budget and respect the checkout and dial deadlines.
+A retry timeout returns the original `PoolError::Refused`.
 `PoolError::Connect` retains the status or transport error for other connection failures.
 `PoolError::Configuration` identifies invalid or incompatible settings, such as no finite `request_timeout` for a CPU-mode pool or server.

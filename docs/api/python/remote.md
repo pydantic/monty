@@ -26,8 +26,14 @@ ignores it.
 capacity, with no worker to serve it, or rejecting the caller; its `status_code`, `status_message` and `cause` say
 why, and no session existed.
 `retryable` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not for credential errors.
-`retry_after` is the suggested delay in seconds from `Retry-After`, capped at one hour, or `None` if absent or invalid.
-The client accepts delay-seconds and HTTP dates but does not retry automatically.
+`retry_after` is the suggested delay in seconds from `Retry-After`, capped at one hour.
+It is `None` if the hint is absent, invalid or repeated.
+The client accepts delay-seconds and HTTP dates.
+The client retries a temporary capacity or throttling refusal once before admission, with a single valid `Retry-After` of at most two seconds.
+It waits at least 100 ms or the server's delay, whichever is longer, plus up to 250 ms of jitter.
+The wait and retry share a five-second budget and respect the original checkout and dial deadlines.
+If the retry times out, the client returns the original refusal.
+If the server refuses the retry, the client returns that second refusal.
 A server that cannot be reached, that answers with any other status (such as `UNIMPLEMENTED` from a URL that is
 no Monty server), or that is no gRPC server at all (such as a web server's page), raises
 [`MontyConnectError`][pydantic_monty.MontyConnectError].

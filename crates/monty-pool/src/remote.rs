@@ -10,9 +10,11 @@
 //! turns, the liveness signal a relay behind a proxy relies on.
 
 use std::{
+    cmp::min,
     collections::VecDeque,
     error::Error,
     fmt::Display,
+    hash::{BuildHasher, RandomState},
     sync::{Arc, Once, OnceLock},
     time::{Duration, SystemTime},
 };
@@ -22,7 +24,7 @@ use h2::Reason;
 use http::{Response, StatusCode, uri::PathAndQuery};
 use monty_proto::{
     FrameError, MAX_FRAME_LEN, OpeningRequest, encode_to_capped_vec,
-    grpc::{BytesCodec, Cause, SESSION_PATH},
+    grpc::{BytesCodec, CAUSE_METADATA_KEY, Cause, SESSION_PATH},
     pb,
 };
 use rustls::crypto::{CryptoProvider, aws_lc_rs::default_provider};
@@ -34,7 +36,7 @@ use tokio::{
         mpsc::{self, WeakSender},
     },
     task::JoinHandle,
-    time::{Instant, timeout, timeout_at},
+    time::{Instant, sleep_until, timeout, timeout_at},
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{
@@ -147,6 +149,7 @@ impl Remote {
         &self,
         metadata: &[(String, String)],
         max_decode_bytes: usize,
+        checkout_deadline: Option<Instant>,
     ) -> Result<RemoteWorker, PoolError> {
         let url = &self.url;
         let mut map = MetadataMap::new();
@@ -170,8 +173,13 @@ impl Remote {
             .max_decoding_message_size(message_limit(max_decode_bytes))
             .max_encoding_message_size(MAX_FRAME_LEN as usize);
         // an unrepresentable timeout (`Duration::MAX`) leaves the dial unbounded
-        let deadline = Instant::now().checked_add(self.dial_timeout);
+        let dial_deadline = Instant::now().checked_add(self.dial_timeout);
         let mut retries = 0;
+        let mut retry: Option<(Instant, RemoteDisconnect)> = None;
+        let refused = |refusal| PoolError::Refused {
+            url: url.to_owned(),
+            refusal: Box::new(refusal),
+        };
         let (requests, response) = loop {
             let (requests, request_body) = mpsc::channel::<Bytes>(REQUEST_CHANNEL_DEPTH);
             let request = Request::from_parts(map.clone(), Extensions::default(), ReceiverStream::new(request_body));
@@ -180,9 +188,15 @@ impl Remote {
                 grpc.streaming(request, PathAndQuery::from_static(SESSION_PATH), BytesCodec)
                     .await
             };
-            let opened = match deadline {
-                Some(deadline) => timeout_at(deadline, open).await,
-                None => Ok(open.await),
+            let opened = match (&retry, dial_deadline) {
+                // Deadline first so a delayed wake-up cannot start or accept a late retry.
+                (Some((deadline, refusal)), _) => tokio::select! {
+                    biased;
+                    () = sleep_until(*deadline) => return Err(refused(refusal.clone())),
+                    result = open => Ok(result),
+                },
+                (None, Some(deadline)) => timeout_at(deadline, open).await,
+                (None, None) => Ok(open.await),
             };
             match opened {
                 // tonic opens a stream on any response without a `grpc-status`,
@@ -211,10 +225,24 @@ impl Remote {
                 // source error, and any other code (`UNIMPLEMENTED` from a URL
                 // that is no Monty server) is a misconfiguration, not a refusal
                 Ok(Err(status)) if Error::source(&status).is_none() && refuses_admission(status.code()) => {
-                    return Err(PoolError::Refused {
-                        url: url.to_owned(),
-                        refusal: Box::new(RemoteDisconnect::from_refusal(&status)),
-                    });
+                    let refusal = RemoteDisconnect::from_refusal(&status);
+                    if retry.is_none()
+                        && let Some(delay) = admission_retry_delay(&status, &refusal, admission_retry_jitter)
+                    {
+                        let now = Instant::now();
+                        let retry_deadline = dial_deadline
+                            .into_iter()
+                            .chain(checkout_deadline)
+                            .fold(now + MAX_ADMISSION_RETRY_TIME, min);
+                        let retry_at = now + delay;
+                        if retry_at < retry_deadline {
+                            drop(requests);
+                            sleep_until(retry_at).await;
+                            retry = Some((retry_deadline, refusal));
+                            continue;
+                        }
+                    }
+                    return Err(refused(refusal));
                 }
                 Ok(Err(status)) => {
                     let details = RemoteDisconnect::from_connect_status(url, &status);
@@ -279,6 +307,52 @@ fn refuses_admission(code: Code) -> bool {
             | Code::PermissionDenied
             | Code::FailedPrecondition
     )
+}
+
+const MIN_ADMISSION_RETRY_WAIT: Duration = Duration::from_millis(100);
+const MAX_ADMISSION_RETRY_AFTER: Duration = Duration::from_secs(2);
+const MAX_ADMISSION_RETRY_JITTER_MS: u64 = 250;
+const MAX_ADMISSION_RETRY_TIME: Duration = Duration::from_secs(5);
+
+fn admission_retry_jitter() -> Duration {
+    Duration::from_millis(RandomState::new().hash_one(0_u8) % (MAX_ADMISSION_RETRY_JITTER_MS + 1))
+}
+
+/// Pace retries even for a zero or past Retry-After. Leave longer waits to
+/// the caller so the automatic retry cannot hold a pool slot indefinitely.
+fn admission_retry_delay(
+    status: &Status,
+    refusal: &RemoteDisconnect,
+    jitter: impl FnOnce() -> Duration,
+) -> Option<Duration> {
+    let delay = refusal
+        .retry_after
+        .filter(|&delay| delay <= MAX_ADMISSION_RETRY_AFTER)?;
+    let metadata = status.metadata();
+    for name in [CAUSE_METADATA_KEY, "x-monty-refusal-reason"] {
+        if metadata.get_all(name).iter().nth(1).is_some() {
+            return None;
+        }
+    }
+    let reason = metadata
+        .get("x-monty-refusal-reason")
+        .map(MetadataValue::to_str)
+        .transpose()
+        .ok()?;
+    match (status.code(), refusal.cause, reason) {
+        (
+            Code::ResourceExhausted,
+            Some(Cause::Capacity),
+            None | Some("authentication_admission" | "relay_sessions" | "worker_session_capacity"),
+        )
+        | (Code::ResourceExhausted, Some(Cause::CallerCap), Some("assignment_attempt_rate" | "caller_cap"))
+        | (
+            Code::Unavailable,
+            Some(Cause::WorkerUnavailable),
+            Some("worker_capacity" | "claim_readiness" | "worker_unavailable" | "assignment_unavailable"),
+        ) => Some(delay.max(MIN_ADMISSION_RETRY_WAIT) + jitter()),
+        _ => None,
+    }
 }
 
 /// Whether a response's headers are a gRPC server's: the protocol requires a
@@ -711,10 +785,12 @@ impl RemoteDisconnect {
     /// Classifies an admission refusal, keeping the server's `Retry-After`:
     /// retry hints mean nothing once a session exists.
     fn from_refusal(status: &Status) -> Self {
+        let hints = status.metadata().get_all("retry-after");
+        let mut hints = hints.iter();
         Self {
-            retry_after: status
-                .metadata()
-                .get("retry-after")
+            retry_after: hints
+                .next()
+                .filter(|_| hints.next().is_none())
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| retry_after(value, SystemTime::now())),
             ..Self::from_status(status)

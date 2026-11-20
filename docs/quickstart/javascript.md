@@ -427,7 +427,9 @@ console.log(await session.feedRun('1 + 1')) // 2
 A server that refuses the stream rejects `checkout()` with `MontyRefusedError`; one that cannot be reached, with a
 `MontyConnectError`.
 Use `MontyRefusedError.retryable` and `MontyRefusedError.retryAfter` to decide whether and when to try a new checkout.
-No automatic retry is performed for these errors.
+The pool retries a temporary capacity or throttling refusal once before admission when the server gives a valid delay of at most two seconds.
+The wait and retry dial share a five-second budget and respect the checkout and dial deadlines.
+A retry timeout rejects `checkout()` with the original `MontyRefusedError`.
 
 A dropped connection raises `MontyDisconnectError`, and a draining server raises `MontyShutdown`; both lose the session.
 Disconnect text includes the server's code, `remoteCause` and message, or the transport error.
