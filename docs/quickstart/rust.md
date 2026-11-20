@@ -172,6 +172,7 @@ see [snapshot security](../security.md#deserializing-snapshots).
 - **Worker recycling** — `max_checkouts_per_worker` replaces a worker after [`DEFAULT_MAX_CHECKOUTS_PER_WORKER`](../api/rust/monty-pool.md#default_max_checkouts_per_worker) (1000) checkouts; `None` never recycles, and with `PoolConfig::subprocess` `Some(1)` gives every session a fresh process.
     Remote checkouts are single-use, so the setting does not apply to them.
     While a subprocess pool is open, recycled, crashed and discarded workers are replaced in the background until `min_processes` are live again, so checkouts usually find a warm worker.
+    `PoolConfig::pre_warm` also keeps that many idle workers ready beyond those checked out, replacing each one a checkout takes.
 - **Prewarmed type checker** — `prewarm_type_checker` has subprocess workers resolve the builtins between checkouts, ahead of
     a session's first type check, at about 6 MiB per worker outside every session's `max_memory`.
 
@@ -203,8 +204,8 @@ These are the poolable workers: prewarmed, reused across checkouts, replaced on 
 
 [`PoolConfig::remote`](../api/rust/monty-pool.md#poolconfig) reaches a remote worker over gRPC at an `http://`/`https://` URL: one HTTP/2 connection per pool, one `MontySession.Session` stream per checkout.
 Those workers are single-use, never returned to the pool, and isolation becomes the remote host's responsibility.
-`PoolConfig::pre_warm` (0 by default) keeps that many sessions open and ready, sharing `max_processes` with those
-checked out; a value above `max_processes` is a `PoolError::Configuration`.
+On a remote pool `PoolConfig::pre_warm` (0 by default) keeps that many sessions open and ready, sharing `max_processes`
+with those checked out; a value above `max_processes` is a `PoolError::Configuration`.
 `Pool::new` opens them and fails if one cannot open; with `pre_warm_wait` off they open in the background, where a
 failed open is retried with a backoff.
 Each is replaced when a checkout takes it.

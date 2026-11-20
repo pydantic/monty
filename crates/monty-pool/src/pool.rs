@@ -82,21 +82,16 @@ struct PoolState {
 }
 
 impl Pool {
-    /// Creates the pool and eagerly spawns `min_processes` workers, failing fast
-    /// if one cannot start; a remote pool opens its `pre_warm` sessions here
-    /// only with `pre_warm_wait`. Must be called within a tokio runtime (worker
-    /// process and pipe I/O is driven by the runtime).
+    /// Creates the pool and eagerly starts `min_processes` workers, and with
+    /// `pre_warm_wait` the `pre_warm` ready ones, failing fast if one cannot
+    /// start. Must be called within a tokio runtime (worker process and pipe
+    /// I/O is driven by the runtime).
     pub async fn new(config: PoolConfig) -> Result<Self, PoolError> {
         if config.min_processes > config.max_processes || config.max_processes == 0 {
             return Err(PoolError::Configuration(format!(
                 "invalid pool size: min_processes={} max_processes={}",
                 config.min_processes, config.max_processes
             )));
-        }
-        if config.pre_warm > 0 && !config.transport.is_remote() {
-            return Err(PoolError::Configuration(
-                "pre_warm is only supported for the remote transport".to_owned(),
-            ));
         }
         if config.pre_warm > config.max_processes {
             return Err(PoolError::Configuration(format!(
@@ -130,23 +125,22 @@ impl Pool {
             MontyTransport::Subprocess(_) => None,
         };
         // the first workers start here, failing the pool if they cannot:
-        // subprocesses one by one; remote sessions dialed at once, only with
-        // `pre_warm_wait`, else in the background once the pool exists
-        let remote_in_background = config.transport.is_remote() && !config.pre_warm_wait;
-        let mut idle = if remote_in_background {
-            Vec::new()
-        } else if config.transport.is_remote() {
-            join_all((0..config.pre_warm).map(|_| new_idle_worker(&config, remote.as_deref())))
-                .await
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>()?
+        // `min_processes` subprocesses, plus the rest of `pre_warm` under
+        // `pre_warm_wait`, whose remainder otherwise starts in the background
+        let floor = if config.transport.is_remote() {
+            0
         } else {
-            let mut idle = Vec::with_capacity(config.min_processes);
-            for _ in 0..config.min_processes {
-                idle.push(new_idle_worker(&config, None).await?);
-            }
-            idle
+            config.min_processes
         };
+        let eager = if config.pre_warm_wait {
+            floor.max(config.pre_warm)
+        } else {
+            floor
+        };
+        let mut idle = join_all((0..eager).map(|_| new_idle_worker(&config, remote.as_deref())))
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
         for (worker, id) in idle.iter_mut().zip(1..) {
             worker.id = id;
         }
@@ -172,7 +166,7 @@ impl Pool {
         };
         let workers = worker_count(total);
         pool.inner.record_worker_delta(workers, workers);
-        if remote_in_background {
+        if eager < pool.inner.config.pre_warm {
             pool.inner.replenish();
         }
         Ok(pool)
@@ -371,9 +365,9 @@ impl PoolInner {
                     }
                 }
                 mismatched |= !stale.is_empty();
-                // a pre-warmed session already dialing will be ready before a
-                // new dial would, so one checkout per refill waits for it
-                let await_refill = reused.is_none() && remote && !mismatched && state.refilling > state.refill_claims;
+                // a worker already starting will be ready before a new one
+                // would, so one checkout per refill waits for it
+                let await_refill = reused.is_none() && !mismatched && state.refilling > state.refill_claims;
                 if await_refill {
                     state.refill_claims += 1;
                 }
@@ -406,10 +400,8 @@ impl PoolInner {
                 }
                 if let Some(worker) = reused {
                     *outcome = if waited { "waited" } else { "idle" };
-                    // a remote pool keeps `pre_warm` sessions ready, not live
-                    if remote {
-                        self.replenish();
-                    }
+                    // `pre_warm` is a floor on ready workers, so taking one refills
+                    self.replenish();
                     return Ok(worker);
                 }
                 id
@@ -507,8 +499,8 @@ impl PoolInner {
         self.replenish();
     }
 
-    /// Spawns background workers until `min_processes` are live (or, remote,
-    /// opens sessions until `pre_warm` are ready), reserving their capacity first
+    /// Starts background workers until `pre_warm` are ready and, for a
+    /// subprocess pool, `min_processes` are live, reserving their capacity first
     /// so a racing checkout can never overshoot `max_processes`. Does nothing
     /// once closed or while refills back off.
     fn replenish(&self) {
@@ -517,17 +509,17 @@ impl PoolInner {
             if state.closed || state.retry_at.is_some() {
                 (0, 0)
             } else {
-                // a remote pool's floor is on ready sessions, since checked-out
-                // ones are never reused; a subprocess pool's is on live workers
-                let wanted = if self.config.transport.is_remote() {
-                    self.config
-                        .pre_warm
-                        .saturating_sub(state.idle.len() + state.refilling)
-                        .min(self.config.max_processes.saturating_sub(state.total))
+                // `pre_warm` is a floor on ready workers; a subprocess pool's
+                // `min_processes` is also one on live workers
+                let ready = self.config.pre_warm.saturating_sub(state.idle.len() + state.refilling);
+                let live = if self.config.transport.is_remote() {
+                    0
                 } else {
-                    let floor = self.config.min_processes.min(self.config.max_processes);
-                    floor.saturating_sub(state.total)
+                    self.config.min_processes.saturating_sub(state.total)
                 };
+                let wanted = ready
+                    .max(live)
+                    .min(self.config.max_processes.saturating_sub(state.total));
                 state.total += wanted;
                 state.refilling += wanted;
                 let first_id = state.next_id;

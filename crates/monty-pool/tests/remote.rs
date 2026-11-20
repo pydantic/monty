@@ -4647,9 +4647,9 @@ async fn min_processes_does_not_pre_warm_a_remote_pool() {
     assert_eq!(pool.idle_workers(), 0);
 }
 
-/// `pre_warm` is bounded by `max_processes` and belongs to remote pools.
+/// `pre_warm` is bounded by `max_processes`.
 #[tokio::test]
-async fn invalid_pre_warm_is_a_configuration_error() {
+async fn pre_warm_above_max_processes_is_a_configuration_error() {
     let mut config = PoolConfig::remote("http://127.0.0.1:1");
     config.pre_warm = 3;
     config.max_processes = 2;
@@ -4657,11 +4657,4 @@ async fn invalid_pre_warm_is_a_configuration_error() {
         panic!("pre_warm above max_processes must be refused");
     };
     assert_eq!(err.to_string(), "invalid pool size: pre_warm=3 max_processes=2");
-
-    let mut config = PoolConfig::subprocess("monty");
-    config.pre_warm = 1;
-    let Err(err) = Pool::new(config).await else {
-        panic!("pre_warm on a subprocess pool must be refused");
-    };
-    assert_eq!(err.to_string(), "pre_warm is only supported for the remote transport");
 }

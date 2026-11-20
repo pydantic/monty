@@ -2887,6 +2887,34 @@ async fn recycled_workers_are_replaced_in_the_background() {
     assert_eq!(seen.len(), 5);
 }
 
+/// `pre_warm` is a floor on idle workers, where `min_processes` is one on live
+/// ones: taking the ready worker starts its replacement.
+#[tokio::test]
+async fn pre_warm_keeps_idle_workers_ready_beyond_those_checked_out() {
+    let mut config = config();
+    config.min_processes = 1;
+    config.max_processes = 3;
+    let pool = Pool::new(config.clone()).await.unwrap();
+    let session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    // `min_processes` is met by the worker checked out, so nothing is spawned
+    sleep(Duration::from_millis(200)).await;
+    assert_eq!(pool.idle_workers(), 0);
+    session.finish().await.unwrap();
+
+    config.pre_warm = 2;
+    let pool = Pool::new(config).await.unwrap();
+    assert_eq!(pool.idle_workers(), 2);
+    let first = pool.checkout(&ReplConfig::default()).await.unwrap();
+    wait_for_idle(&pool, 2).await;
+    // at `max_processes` the floor gives way to the cap
+    let second = pool.checkout(&ReplConfig::default()).await.unwrap();
+    sleep(Duration::from_millis(200)).await;
+    assert_eq!(pool.idle_workers(), 1);
+    first.finish().await.unwrap();
+    second.finish().await.unwrap();
+    wait_for_idle(&pool, 3).await;
+}
+
 /// Workers lost to a crash or an abandoned checkout are replaced too.
 #[tokio::test]
 async fn crashed_and_dropped_workers_are_replaced() {

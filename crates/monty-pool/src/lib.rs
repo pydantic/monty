@@ -77,8 +77,8 @@ pub const DEFAULT_MAX_CHECKOUTS_PER_WORKER: u32 = 1000;
 pub struct PoolConfig {
     /// Floor on live workers: spawned at pool creation, and replaced in the
     /// background whenever one is recycled, crashes or is discarded. Unused by
-    /// the [`MontyTransport::Remote`] transport, which keeps [`Self::pre_warm`]
-    /// sessions ready instead.
+    /// the [`MontyTransport::Remote`] transport, whose sessions are single-use;
+    /// see [`Self::pre_warm`] for a floor on ready workers.
     pub min_processes: usize,
     /// Hard cap on live workers; checkouts beyond this wait. For the remote
     /// transport, a cap on concurrent streams.
@@ -145,18 +145,18 @@ pub struct PoolConfig {
     /// outside every session's `max_memory`, wasted if sessions do not type-check.
     /// Subprocess transport only; off by default.
     pub prewarm_type_checker: bool,
-    /// Remote transport only: sessions kept open and ready (0 by default),
-    /// sharing `max_processes` with those checked out. A checkout takes one
-    /// dialed with its own metadata, or waits for one already dialing, rather
-    /// than dialing; each one taken is replaced in the background.
+    /// Floor on ready (idle) workers, 0 by default, sharing `max_processes` with
+    /// those checked out: each one a checkout takes is replaced in the background,
+    /// and a checkout waits for one already starting rather than starting another.
+    /// A remote checkout takes only a session dialed with its own metadata.
     pub pre_warm: usize,
-    /// [`Pool::new`] opens the [`Self::pre_warm`] sessions itself, failing if one
-    /// cannot open, rather than in the background, where a failed open is
+    /// [`Pool::new`] starts the [`Self::pre_warm`] workers itself, failing if one
+    /// cannot start, rather than in the background, where a failed start is
     /// retried with a backoff. On by default.
     pub pre_warm_wait: bool,
-    /// Called for the request metadata of each [`Self::pre_warm`] session the pool
-    /// dials; `None` sends none. A checkout whose [`CheckoutOptions::metadata`]
-    /// differs closes the ready sessions unused and dials for itself.
+    /// Remote transport only: called for the request metadata of each
+    /// [`Self::pre_warm`] session the pool dials; `None` sends none. A checkout whose
+    /// [`CheckoutOptions::metadata`] differs closes those sessions and dials for itself.
     pub pre_warm_metadata: Option<MetadataFn>,
     /// Where pool and turn metrics are recorded, from
     /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).
@@ -177,7 +177,7 @@ impl PoolConfig {
     }
 
     /// Creates a remote-transport config for the gRPC server at `url`, with a
-    /// stream opened per checkout. `pre_warm` is 0 (no ready sessions) and
+    /// stream opened per checkout unless `pre_warm` keeps some ready.
     /// `stream_async_calls` is on.
     pub fn remote(url: impl Into<String>) -> Self {
         let mut config = Self::with_transport(MontyTransport::Remote(url.into()));

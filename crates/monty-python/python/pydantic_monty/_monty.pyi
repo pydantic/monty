@@ -730,6 +730,7 @@ class Monty:
         max_checkouts_per_worker: int | None = 1000,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
+        pre_warm: int = 0,
     ) -> Self:
         """
         Configure a worker pool; the workers are spawned by `with`.
@@ -742,6 +743,10 @@ class Monty:
             min_processes: Workers spawned eagerly, and a floor on live workers:
                 while the pool is open, background refills restore it after a
                 worker is recycled, crashes or is discarded.
+            pre_warm: Idle workers to keep ready beyond those checked out: each
+                one a checkout takes is replaced in the background, so the next
+                checkout does not wait for a spawn. They count against
+                `max_processes`; a larger `pre_warm` raises `MontyConfigurationError`.
             max_processes: Cap on live workers (defaults to the CPU count);
                 checkouts beyond it wait for a worker to be returned.
             checkout_timeout: Seconds `checkout()` waits for a free worker
@@ -1095,6 +1100,7 @@ class AsyncMonty:
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
         stream_async_calls: bool = False,
+        pre_warm: int = 0,
     ) -> Self:
         """
         Configure a worker pool; the workers are spawned by `async with`.

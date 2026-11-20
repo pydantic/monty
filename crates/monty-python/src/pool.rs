@@ -144,7 +144,8 @@ impl PyMonty {
         max_checkouts_per_worker = Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER),
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
-    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0)")]
+        pre_warm = 0,
+    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0, pre_warm=0)")]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
@@ -157,12 +158,14 @@ impl PyMonty {
         max_checkouts_per_worker: Option<u32>,
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
+        pre_warm: usize,
     ) -> PyResult<Self> {
         Ok(Self {
             config: parse_pool_config(
                 py,
                 binary_path,
                 min_processes,
+                pre_warm,
                 max_processes,
                 checkout_timeout,
                 request_timeout,
@@ -548,7 +551,8 @@ impl PyAsyncMonty {
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
         stream_async_calls = false,
-    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0, stream_async_calls=False)")]
+        pre_warm = 0,
+    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0, stream_async_calls=False, pre_warm=0)")]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
@@ -562,11 +566,13 @@ impl PyAsyncMonty {
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
         stream_async_calls: bool,
+        pre_warm: usize,
     ) -> PyResult<Self> {
         let mut config = parse_pool_config(
             py,
             binary_path,
             min_processes,
+            pre_warm,
             max_processes,
             checkout_timeout,
             request_timeout,
@@ -1238,6 +1244,7 @@ fn parse_pool_config(
     py: Python<'_>,
     binary_path: Option<PathBuf>,
     min_processes: usize,
+    pre_warm: usize,
     max_processes: Option<usize>,
     checkout_timeout: Option<f64>,
     request_timeout: Option<f64>,
@@ -1256,6 +1263,7 @@ fn parse_pool_config(
         _ => return Err(PyValueError::new_err("execution_clock must be 'wall' or 'cpu'")),
     };
     config.min_processes = min_processes;
+    config.pre_warm = pre_warm;
     if let Some(max) = max_processes {
         config.max_processes = max;
     }
