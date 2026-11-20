@@ -818,6 +818,172 @@ async def test_refused_stream_fails_the_checkout():
     )
 
 
+def _worker_capacity_trailers(*hints: str) -> tuple[tuple[str, str], ...]:
+    return (
+        ('monty-cause', 'worker_unavailable'),
+        ('x-monty-refusal-reason', 'worker_capacity'),
+        *(('retry-after', hint) for hint in hints),
+    )
+
+
+async def test_checkout_retries_worker_capacity_once():
+    attempts = 0
+    metadata_calls = 0
+    seen_headers: list[str] = []
+
+    def metadata():
+        nonlocal metadata_calls
+        metadata_calls += 1
+        return {'x-checkout-id': f'checkout-{metadata_calls}'}
+
+    async def behaviour(
+        _requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        nonlocal attempts
+        attempts += 1
+        checkout_id = dict(context.invocation_metadata() or ())['x-checkout-id']
+        assert isinstance(checkout_id, str)
+        seen_headers.append(checkout_id)
+        await context.abort(
+            grpc.StatusCode.UNAVAILABLE,
+            f'worker full on attempt {attempts}',
+            trailing_metadata=_worker_capacity_trailers('0'),
+        )
+        yield b''
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url, metadata=metadata) as pool:
+        with pytest.raises(MontyRefusedError) as caught:
+            async with pool.checkout():
+                pass
+    assert metadata_calls == 1
+    assert seen_headers == ['checkout-1', 'checkout-1']
+    assert attempts == snapshot(2)
+    assert caught.value.status_message == snapshot('worker full on attempt 2')
+    assert caught.value.retry_after == snapshot(0.0)
+
+
+@pytest.mark.parametrize('hints', [('3',), ('0', '3')])
+async def test_checkout_does_not_wait_on_long_or_conflicting_hints(hints: tuple[str, ...]):
+    attempts = 0
+
+    async def behaviour(
+        _requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        nonlocal attempts
+        attempts += 1
+        await context.abort(
+            grpc.StatusCode.UNAVAILABLE,
+            'worker capacity',
+            trailing_metadata=_worker_capacity_trailers(*hints),
+        )
+        yield b''
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url, request_timeout=10) as pool:
+        with pytest.raises(MontyRefusedError) as caught:
+            async with asyncio.timeout(2), pool.checkout():
+                pass
+    assert attempts == 1
+    assert caught.value.retry_after == float(hints[0])
+
+
+@pytest.mark.parametrize('checkout_timeout,request_timeout', [(1, 10), (10, 1), (None, 10)])
+async def test_checkout_retry_timeout_returns_the_original_refusal(checkout_timeout: int | None, request_timeout: int):
+    attempts = 0
+
+    async def behaviour(
+        _requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            await context.abort(
+                grpc.StatusCode.UNAVAILABLE,
+                'try again later',
+                trailing_metadata=_worker_capacity_trailers('0'),
+            )
+        await asyncio.Event().wait()  # the retry never receives response headers
+        yield b''
+
+    async with (
+        _serve_behaviour(behaviour) as url,
+        AsyncMontyRemote(url, checkout_timeout=checkout_timeout, request_timeout=request_timeout) as pool,
+    ):
+        with pytest.raises(MontyRefusedError) as caught:
+            async with asyncio.timeout(8), pool.checkout():
+                pass
+    assert attempts == 2
+    assert caught.value.status_message == 'try again later'
+    assert caught.value.retry_after == 0
+
+
+async def test_cancelling_checkout_during_backoff_frees_the_only_pool_slot():
+    attempts = 0
+    refused = asyncio.Event()
+
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            try:
+                await context.abort(
+                    grpc.StatusCode.UNAVAILABLE,
+                    'try again later',
+                    trailing_metadata=_worker_capacity_trailers('1'),
+                )
+            finally:
+                refused.set()
+        await context.send_initial_metadata(())
+        async for _frame in requests:
+            pass
+        yield b''  # keeps this an async generator
+
+    async def checkout(pool: AsyncMontyRemote):
+        async with pool.checkout():
+            pass
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url, max_processes=1) as pool:
+        task = asyncio.create_task(checkout(pool))
+        try:
+            await asyncio.wait_for(refused.wait(), timeout=3)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(checkout(pool), timeout=0.1)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        await asyncio.wait_for(checkout(pool), timeout=3)
+        assert attempts == 2
+
+
+async def test_admitted_feed_with_retryable_status_is_never_replayed():
+    attempts = 0
+    input_frames = 0
+
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        nonlocal attempts, input_frames
+        attempts += 1
+        await context.send_initial_metadata(())
+        await anext(requests)  # Configure carries the first feed.
+        input_frames += 1
+        await context.abort(
+            grpc.StatusCode.UNAVAILABLE,
+            'capacity changed',
+            trailing_metadata=_worker_capacity_trailers('0'),
+        )
+        yield b''
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url) as pool:
+        async with pool.checkout() as session:
+            with pytest.raises(MontyDisconnectError) as caught:
+                await session.feed_run('21 * 2')
+    assert caught.value.status_code == 'UNAVAILABLE'
+    assert attempts == input_frames == 1
+
+
 @pytest.mark.parametrize(
     'code,retryable',
     [

@@ -285,12 +285,11 @@ export interface RefusalDetails {
  * credential asked for (`permission_denied`), or returning `FAILED_PRECONDITION`.
  * The server gives details in `statusCode`,
  * `statusMessage` and `remoteCause`. No session existed, so
- * nothing ran. `retryable` identifies temporary refusals; `retryAfter` is
- * the server's suggested delay, not an automatic retry. A server that
- * cannot be reached, that answers with any other status (such as
- * `UNIMPLEMENTED` from a URL that is no Monty server), or that is no gRPC
- * server at all (a web server's error page), rejects with `MontyConnectError`
- * instead.
+ * nothing ran. `retryable` identifies temporary refusals. `retryAfter` is
+ * the server's suggested delay. The pool retries some refusals once within
+ * the checkout and dial deadlines when the server supplies a delay of
+ * at most two seconds. An unreachable server, an unexpected status such as
+ * `UNIMPLEMENTED`, or a non-gRPC response raises `MontyConnectError`.
  */
 export class MontyRefusedError extends MontyError {
   /** The status code the server refused with, by name, or `null`. */

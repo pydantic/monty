@@ -89,6 +89,8 @@ pub struct PoolConfig {
     pub execution_clock: ExecutionClock,
     /// How long [`Pool::checkout`] waits for a free worker before
     /// [`PoolError::Exhausted`]. `None` waits forever.
+    /// On the remote transport this deadline also bounds an automatic
+    /// admission retry, including its wait and the new stream open.
     pub checkout_timeout: Option<Duration>,
     /// How often the remote transport sends an HTTP/2 `PING` on its
     /// connection while a stream is open, to notice a dead TCP peer on the
