@@ -580,6 +580,75 @@ fn restore_caps_idle_and_suspended_resource_limits() {
     }
 }
 
+/// A client that accepts `LoadInfo` gets the dump's values ahead of the reply, which no longer carries them;
+/// a refused `Load` sends none.
+#[test]
+fn load_info_precedes_the_reply_and_replaces_its_stamps() {
+    for suspended in [false, true] {
+        let repl = MontyRepl::new(
+            "saved.py",
+            ResourceTracker::new(ResourceLimits::default().max_suspensions(20)),
+            CompileOptions::default(),
+        );
+        let progress = repl
+            .feed_start(
+                if suspended { "x = 42\nf(x)" } else { "x = 42" },
+                vec![("f".to_owned(), MontyObject::function("f".to_owned(), None))],
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+        let session = match &progress {
+            ReplProgress::Complete { repl, .. } => SessionRef::Idle(repl),
+            progress => SessionRef::Suspended(progress),
+        };
+        let state = dump("saved.py", None, &[], session).unwrap();
+        let mut worker = Worker::default();
+        let configure = frame_request(pb::client_request::Kind::Configure(pb::Configure {
+            protocol_version: PROTOCOL_VERSION,
+            monty_version: MONTY_VERSION.to_owned(),
+            limits: Some((&ResourceLimits::default().max_suspensions(3)).into()),
+            accepts_load_info: true,
+            ..Default::default()
+        }));
+        dispatch_frame(&mut worker, &configure);
+        let request = frame_request(pb::client_request::Kind::Load(pb::Load { state: state.into() }));
+        let (bytes, _) = dispatch_frame(&mut worker, &request);
+        let events = decode_full_events(&bytes);
+        let [info, reply] = events.as_slice() else {
+            panic!("expected LoadInfo and one reply, got {events:?}");
+        };
+        let Some(pb::worker_event::Kind::LoadInfo(info)) = &info.kind else {
+            panic!("expected LoadInfo first, got {info:?}");
+        };
+        assert_eq!(
+            *info,
+            pb::LoadInfo {
+                script_name: "saved.py".to_owned(),
+                total_sleep_micros: 0,
+                max_suspensions: Some(3),
+                max_feed_duration_micros: None,
+                max_turn_duration_micros: None,
+                max_total_sleep_micros: None,
+            }
+        );
+        // the reply is the ordinary one, without the values `LoadInfo` carries
+        assert_eq!(reply.restored_script_name, None);
+        assert_eq!(reply.max_suspensions, None);
+        assert_eq!(
+            matches!(reply.kind, Some(pb::worker_event::Kind::FunctionCall(_))),
+            suspended
+        );
+        assert_eq!(matches!(reply.kind, Some(pb::worker_event::Kind::Ok(_))), !suspended);
+
+        // a second `Load` is refused, and a refusal restored nothing to report
+        let (bytes, _) = dispatch_frame(&mut worker, &request);
+        assert!(matches!(
+            decode_events(&bytes).as_slice(),
+            [pb::worker_event::Kind::Error(_)]
+        ));
+    }
+}
+
 /// Decodes complete events, including their session budget fields.
 fn decode_full_events(bytes: &[u8]) -> Vec<pb::WorkerEvent> {
     let mut reader = FrameReader::new(bytes);

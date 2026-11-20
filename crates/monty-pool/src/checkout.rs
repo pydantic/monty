@@ -471,11 +471,14 @@ pub struct Checkout {
     /// The deadline armed for the most recent turn, surfaced by
     /// [`PoolError::Timeout`] when it fires.
     armed_deadline: Option<Duration>,
-    /// The script name a `restore` adopted, captured from the worker's `Load`
-    /// reply (the name travels inside the opaque dump, so the client learns it
-    /// only by the worker echoing it). Reset at the start of each `restore` and
+    /// The script name a `restore` adopted, captured from the worker's `LoadInfo`
+    /// or `Load` reply (the name travels inside the opaque dump, so the client
+    /// learns it only by the worker reporting it). Reset at the start of each `restore` and
     /// taken by `restore` to return; unset for non-restore turns.
     restored_script_name: Option<String>,
+    /// The system sleep a restored dump already holds, from the `LoadInfo` ahead of the `Load` reply
+    /// and taken when that reply settles the budget; `None` outside a `Load`.
+    loaded_sleep_micros: Option<u64>,
     /// The session ID a storing relay minted, from its reply to `Configure` or `Load`.
     session_id: Option<Vec<u8>>,
     /// Names sent as `Feed.async_functions` with every later feed, or `None`
@@ -517,7 +520,7 @@ pub struct Checkout {
 }
 
 /// Client-enforced limits from `Configure` or the first reply after `Load`.
-/// Restoring resets suspension and sleep totals, but keeps every limit as a ceiling:
+/// Restoring resets the suspension count and adopts the dump's sleep total, but keeps every limit as a ceiling:
 /// untrusted worker replies, including the `Load` reply, can only tighten them.
 #[derive(Clone, Copy)]
 struct SessionBudget {
@@ -547,7 +550,8 @@ struct SessionBudget {
     /// Client-enforced ceiling on each system sleep, even from a compromised worker.
     /// Uses the configured maximum, or the default for other modes because a restored dump may sleep.
     system_sleep_max: Duration,
-    /// Capped system sleep accepted so far; `charge_sleep` refuses a sleep that would exceed `sleep_limit`.
+    /// Capped system sleep accepted so far, seeded from the dump on restore;
+    /// `charge_sleep` refuses a sleep that would exceed `sleep_limit`.
     sleep_used: Duration,
 }
 
@@ -574,7 +578,7 @@ impl SessionBudget {
     }
 
     /// Clears consumption before adopting a dump's budget. The limits stay:
-    /// they are the ceilings on the dump's.
+    /// they are the ceilings on the dump's. Sleep usage is then taken from the `Load` reply.
     fn forget(&mut self) {
         *self = Self {
             execution_clock: self.execution_clock,
@@ -593,7 +597,7 @@ impl SessionBudget {
 
     /// Tightens limits and records consumption, counting suspensions in the client.
     /// Untrusted replies can only increase reported time and tighten limits.
-    /// Ordinary replies echo limits; a `Load` reply reports the dump's.
+    /// Ordinary replies from a worker that predates `LoadInfo` echo limits, a `Load` reply reporting the dump's.
     fn update_from(&mut self, event: &pb::WorkerEvent) {
         self.reported_feed_execution = self
             .reported_feed_execution
@@ -642,10 +646,39 @@ impl SessionBudget {
         (is_suspension(event) && self.suspensions_seen > self.suspension_limit).then_some(self.suspension_limit)
     }
 
+    /// Tightens the limits to the ones a restored dump reports in its `LoadInfo`.
+    fn adopt_load_limits(&mut self, info: &pb::LoadInfo) {
+        self.feed_budget = tighter(self.feed_budget, info.max_feed_duration_micros);
+        self.turn_budget = tighter(self.turn_budget, info.max_turn_duration_micros);
+        self.sleep_limit = tighter(self.sleep_limit, info.max_total_sleep_micros);
+        if let Some(reported) = info.max_suspensions {
+            self.suspension_limit = self.suspension_limit.min(reported);
+        }
+    }
+
+    /// Adopts the time a restored dump already slept, as its `LoadInfo` reported (`loaded`).
+    /// The dump's total counts a re-announced sleep, so it is taken off here and charged again
+    /// by `charge_sleep`: older dumps report nothing, and an aborted re-announcement is refunded.
+    fn adopt_sleep_used(&mut self, event: &pb::WorkerEvent, loaded: Duration) {
+        let pending = self.system_sleep(event).unwrap_or_default();
+        self.sleep_used = loaded.saturating_sub(pending);
+    }
+
     /// Charges a capped system sleep; other events, including `CallHost` sleeps, are free.
     /// Returns `Some((limit, total))` without charging if the caller must refuse the sleep.
-    /// Invalid worker delays count as the ceiling.
     fn charge_sleep(&mut self, event: &pb::WorkerEvent) -> Option<(Duration, Duration)> {
+        let total = self.sleep_used.saturating_add(self.system_sleep(event)?);
+        match self.sleep_limit {
+            Some(limit) if total > limit => Some((limit, total)),
+            _ => {
+                self.sleep_used = total;
+                None
+            }
+        }
+    }
+
+    /// The capped delay of a system sleep event; invalid worker delays count as the ceiling.
+    fn system_sleep(&self, event: &pb::WorkerEvent) -> Option<Duration> {
         let seconds = match &event.kind {
             Some(pb::worker_event::Kind::OsCall(call)) => match call.call {
                 Some(pb::os_call::Call::SystemSleep(pb::os_call::Sleep { seconds })) => seconds,
@@ -654,15 +687,7 @@ impl SessionBudget {
             },
             _ => return None,
         };
-        let delay = self.cap_system_sleep(Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX));
-        let total = self.sleep_used.saturating_add(delay);
-        match self.sleep_limit {
-            Some(limit) if total > limit => Some((limit, total)),
-            _ => {
-                self.sleep_used = total;
-                None
-            }
-        }
+        Some(self.cap_system_sleep(Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX)))
     }
 
     fn cap_system_sleep(&self, delay: Duration) -> Duration {
@@ -737,12 +762,17 @@ fn is_execution_turn(request: &pb::ClientRequest) -> bool {
     )
 }
 
-/// Recognizes the events a worker streams before a turn-ender: `Print`, and
-/// `StreamedCalls` (which `Configure.accepts_streamed_calls` asks for).
+/// Recognizes the events a worker streams before a turn-ender: `Print`,
+/// `StreamedCalls` (which `Configure.accepts_streamed_calls` asks for) and
+/// `LoadInfo` (`Configure.accepts_load_info`).
 fn is_mid_turn(event: &pb::WorkerEvent) -> bool {
     matches!(
         event.kind,
-        Some(pb::worker_event::Kind::Print(_) | pb::worker_event::Kind::StreamedCalls(_))
+        Some(
+            pb::worker_event::Kind::Print(_)
+                | pb::worker_event::Kind::StreamedCalls(_)
+                | pb::worker_event::Kind::LoadInfo(_)
+        )
     )
 }
 
@@ -902,6 +932,7 @@ impl Checkout {
             pending_load_budget: None,
             armed_deadline: None,
             restored_script_name: None,
+            loaded_sleep_micros: None,
             async_functions: Some(Vec::new()),
             accepts_streamed_calls,
             next_streamed_call_handler: None,
@@ -1636,12 +1667,14 @@ impl Checkout {
     /// re-adopt the dump's.
     fn begin_load(&mut self) {
         self.pending_load_budget = Some(self.budget);
+        self.loaded_sleep_micros = None;
         self.budget.forget();
     }
 
     /// Puts the pre-`Load` budget back if no reply ever decided its fate (the
     /// pre-send frame-size rejection, or a worker that died first).
     fn end_load(&mut self) {
+        self.loaded_sleep_micros = None;
         if let Some(budget) = self.pending_load_budget.take() {
             self.budget = budget;
         }
@@ -1660,6 +1693,12 @@ impl Checkout {
         let was_suspended = self.pending_load_budget.unwrap_or(self.budget).cpu_feed_suspended;
         let was_aborting = self.abort_in_flight;
         let is_print = is_mid_turn(event);
+        // ahead of the `Load` reply: the dump's limits only tighten, and a refused `Load`
+        // puts the saved budget back below, so adopting them here is safe
+        if let Some(pb::worker_event::Kind::LoadInfo(info)) = &event.kind {
+            self.budget.adopt_load_limits(info);
+            self.loaded_sleep_micros = Some(info.total_sleep_micros);
+        }
         if !is_print && mem::take(&mut self.abort_in_flight) && !is_abort_reply(event) {
             return Err(self.protocol_violation("worker answered AbortFeed with something other than an Error"));
         }
@@ -1667,6 +1706,8 @@ impl Checkout {
             if matches!(event.kind, Some(pb::worker_event::Kind::Ok(_))) || is_suspension(event) {
                 // Restore seeds saved VM usage. Live turns use OS measurements.
                 self.budget.observed_feed_execution = Duration::from_micros(event.feed_execution_micros);
+                let loaded = Duration::from_micros(self.loaded_sleep_micros.take().unwrap_or_default());
+                self.budget.adopt_sleep_used(event, loaded);
             } else {
                 self.budget = saved;
             }
@@ -1867,9 +1908,8 @@ impl Checkout {
         let expected = self.pending.as_ref().map(PendingKey::of);
         let timeout = self.pool.config.request_timeout;
         let mut no_print = on_print_sync(|_, _| {});
-        // a re-announced suspension counts and charges itself again on arrival,
-        // as after `restore`: let it through on zeroed totals, then put the
-        // session's true totals back
+        // a re-announced suspension counts and charges itself again on arrival:
+        // let it through on zeroed totals, then put the session's true totals back
         let (suspensions_seen, sleep_used) = (self.budget.suspensions_seen, self.budget.sleep_used);
         self.budget.suspensions_seen = 0;
         self.budget.sleep_used = Duration::ZERO;
@@ -1879,8 +1919,9 @@ impl Checkout {
         self.reloading = true;
         let reply = self.request_turn(&load, timeout, &mut no_print).await;
         self.reloading = false;
-        // the session's script name is the one it already had
+        // the session's script name is the one it already had, and its sleep total is counted
         self.restored_script_name = None;
+        self.loaded_sleep_micros = None;
         let matches = match reply? {
             ControlEvent::Ok => expected.is_none(),
             ControlEvent::Turn(_) => expected.is_some() && expected == self.pending.as_ref().map(PendingKey::of),
@@ -2175,15 +2216,20 @@ impl Checkout {
             {
                 continue;
             }
-            // Only a `Load` reply carries this; it lets `restore` report the
-            // dump's script name without parsing the opaque dump bytes.
+            // Only a `Load` reply (or the `LoadInfo` ahead of it) carries the name;
+            // it lets `restore` report it without parsing the opaque dump bytes.
             if let Some(name) = &event.restored_script_name {
                 self.restored_script_name = Some(name.clone());
+            }
+            if let Some(pb::worker_event::Kind::LoadInfo(info)) = &event.kind {
+                self.restored_script_name = Some(info.script_name.clone());
             }
             match event.kind {
                 // answered by the remote transport's reader task before it
                 // reaches here, and never sent by a subprocess; not a turn end
                 Some(pb::worker_event::Kind::Ping(_)) => {}
+                // adopted by `abort_if_over_budget`, and the script name above
+                Some(pb::worker_event::Kind::LoadInfo(_)) => {}
                 Some(pb::worker_event::Kind::Print(print)) => {
                     #[cfg(feature = "telemetry")]
                     let context = self.callback_context();
@@ -2815,6 +2861,8 @@ fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::Configure {
         profile: repl.profile.clone(),
         // each feed still opts in, and only with a handler (`set_streamed_call_handler`)
         accepts_streamed_calls: pool.stream_async_calls && repl.stream_async_calls,
+        // `restore` and `reload_session` read the dump's values from `LoadInfo`
+        accepts_load_info: true,
         // attached when the first request goes out (see `OpeningRequest`)
         first: None,
     }

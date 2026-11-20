@@ -1923,6 +1923,175 @@ async fn restored_session_readopts_the_suspension_limit() {
     join_server(server).await;
 }
 
+/// A dump from before slept time was recorded reports none, so the sleep its
+/// re-announced suspension asks for is still charged in full.
+#[tokio::test]
+async fn restored_sleep_is_charged_when_the_dump_reports_none_slept() {
+    let (mock, config) = mock_pool_config().await;
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::client_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::worker_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::client_request::Kind::Load(_)));
+        let sleep = pb::os_call::Call::SystemSleep(pb::os_call::Sleep { seconds: 10.0 });
+        send_event(
+            &mut socket,
+            &event_kind(pb::worker_event::Kind::OsCall(pb::OsCall {
+                call: Some(sleep),
+                ..Default::default()
+            })),
+        );
+        let pb::client_request::Kind::AbortFeed(abort) = read_request(&mut socket) else {
+            panic!("expected AbortFeed");
+        };
+        send_event(
+            &mut socket,
+            &event_kind(pb::worker_event::Kind::Error(pb::Error {
+                exception: abort.exception,
+            })),
+        );
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_total_sleep(Duration::from_millis(250))),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let err = checkout
+        .restore(vec![1, 2, 3], vec![], &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("sleep limit exceeded: 10s > 250ms"));
+    drop(checkout);
+    join_server(server).await;
+}
+
+/// A `LoadInfo` ahead of the re-announced sleep seeds the usage: the dump's 20s includes
+/// this 10s sleep, so 10s are already used and the second 10s overruns a 15s limit.
+#[tokio::test]
+async fn load_info_seeds_the_restored_sleep_usage() {
+    let (mock, config) = mock_pool_config().await;
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::client_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::worker_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::client_request::Kind::Load(_)));
+        send_kind(
+            &mut socket,
+            pb::worker_event::Kind::LoadInfo(pb::LoadInfo {
+                script_name: "restored.py".to_owned(),
+                total_sleep_micros: 20_000_000,
+                ..Default::default()
+            }),
+        );
+        let sleep = pb::os_call::Call::SystemSleep(pb::os_call::Sleep { seconds: 10.0 });
+        send_event(
+            &mut socket,
+            &event_kind(pb::worker_event::Kind::OsCall(pb::OsCall {
+                call: Some(sleep),
+                ..Default::default()
+            })),
+        );
+        let pb::client_request::Kind::AbortFeed(abort) = read_request(&mut socket) else {
+            panic!("expected AbortFeed");
+        };
+        send_event(
+            &mut socket,
+            &event_kind(pb::worker_event::Kind::Error(pb::Error {
+                exception: abort.exception,
+            })),
+        );
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_total_sleep(Duration::from_secs(15))),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let err = checkout
+        .restore(vec![1, 2, 3], vec![], &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("sleep limit exceeded: 20s > 15s"));
+    drop(checkout);
+    join_server(server).await;
+}
+
+/// `restore` reports the script name `LoadInfo` carries, and the limits it names
+/// (here the feed budget) take effect without the reply echoing them.
+#[tokio::test]
+async fn load_info_reports_the_script_name_and_limits() {
+    let (mock, mut config) = mock_pool_config().await;
+    config.feed_duration_limit_grace = Some(Duration::from_millis(300));
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::client_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::worker_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::client_request::Kind::Load(_)));
+        send_kind(
+            &mut socket,
+            pb::worker_event::Kind::LoadInfo(pb::LoadInfo {
+                script_name: "restored.py".to_owned(),
+                max_feed_duration_micros: Some(100_000),
+                ..Default::default()
+            }),
+        );
+        send_kind(&mut socket, ok_event());
+        assert!(matches!(read_request(&mut socket), pb::client_request::Kind::Feed(_)));
+        // never reply; only the backstop can end this turn
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_secs(5))),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let (event, script_name) = checkout
+        .restore(vec![1, 2, 3], vec![], &mut no_print)
+        .await
+        .expect("restore");
+    assert!(event.is_none());
+    assert_eq!(script_name.as_deref(), Some("restored.py"));
+    let err = checkout
+        .feed("1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected Timeout, got {err:?}");
+    };
+    // the dump's 100ms budget plus the grace — not the Configure-time 5s
+    assert_eq!(timeout, Duration::from_millis(400));
+    drop(checkout);
+    join_server(server).await;
+}
+
 // === server shutdown and disconnects ===
 //
 // These tests script the server side precisely, so they assert exactly what a

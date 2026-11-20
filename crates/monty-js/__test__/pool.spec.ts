@@ -35,7 +35,7 @@ test('wasm transport discards shutdown replies but preserves fatal diagnostics',
       requests.push(request.tag)
       return request.tag === 'configure'
         ? { status: 'continue', events: [{ tag: 'ok' }], feedExecutionMicros: 0n }
-        : { status: 'shutdown', events, feedExecutionMicros: 0n, exitStatus: 'exit code: 7' }
+        : { status: 'shutdown', events, feedExecutionMicros: 0n, totalSleepMicros: 0n, exitStatus: 'exit code: 7' }
     })
     const releases: boolean[] = []
     transport.onFinish = (reusable) => {
