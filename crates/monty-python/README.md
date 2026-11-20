@@ -40,6 +40,15 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
+`AsyncMontyRemote(url, pre_warm=2)` keeps two sessions open and ready, so a checkout takes one, or waits for one still
+dialing, instead of dialing; a checkout that finds neither dials for itself.
+`__aenter__` waits for them to open, raising if one cannot (`pre_warm_wait=False` opens them in the background
+instead, retrying a failed open with a backoff); they are replaced in the background as checkouts take them, and count
+against `max_processes`.
+`metadata` is called for each of these sessions as the pool dials it, from a pool thread; a checkout takes one only if
+its own `metadata` call returned the same value, and otherwise closes the ready sessions and dials for itself.
+Leave `pre_warm` off when one pool's checkouts send different metadata, such as per-user credentials.
+
 `MontyDisconnectError` exposes `status_code`, `status_message`, `cause` and `transport_error` when available.
 These fields preserve the status the server ended the stream with, or the transport or protocol failure, not proof that
 the request did or did not run.
@@ -53,7 +62,7 @@ Remote connection failures raise `MontyConnectError`, a `MontyError` subclass wi
 `status_message`, `cause` and `transport_error` attributes.
 A CPU-mode remote server requires a finite client `request_timeout`; without one, checkout raises `MontyConfigurationError`.
 Malformed request metadata also raises `MontyConfigurationError` before any connection attempt.
-Creating a pool with invalid settings raises it too: `min_processes` above `max_processes`, or a local CPU clock
+Creating a pool with invalid settings raises it too: `min_processes` (or `pre_warm`) above `max_processes`, or a local CPU clock
 off Linux or without a finite `request_timeout`.
 
 ## Host decode budget
@@ -90,6 +99,12 @@ An import of a non-bundled name the mapping does not answer reads `<cwd>/name/__
 
 This requires the `pydantic-monty-runtime` package, which is generally
 installed as part of the `pydantic-monty` meta-package.
+
+`Monty(pre_warm=2)` and `AsyncMonty(pre_warm=2)` keep two idle workers ready beyond those checked out: each one a
+checkout takes is replaced in the background, and a checkout that finds none waits for one already spawning, or spawns
+its own when every spawning one is already claimed.
+They count against `max_processes`, alongside `min_processes`, which stays a floor on live workers, so a `pre_warm`
+above `max_processes` raises `MontyConfigurationError`.
 
 ```python
 from pydantic_monty import Monty

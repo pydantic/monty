@@ -9,12 +9,17 @@
 
 mod binary;
 mod common;
+// only the pre-warm scenario below drives a remote session
+#[expect(dead_code)]
+#[path = "support/grpc_mock.rs"]
+mod grpc_mock;
 
 use std::{
     collections::HashMap,
     env, fs,
     future::ready,
     sync::{Arc, Mutex, PoisonError},
+    thread,
     time::Duration,
 };
 
@@ -24,7 +29,7 @@ use monty_pool::{
     telemetry::{Metrics, TelemetryAdapter, TelemetryContext, configure_telemetry_adapter},
     telemetry_adapter,
 };
-use monty_proto::pb;
+use monty_proto::{encode_to_capped_vec, pb};
 use monty_types::{ExcType, MontyException, MontyObject, PrintStream};
 use opentelemetry::{
     KeyValue,
@@ -40,11 +45,15 @@ use opentelemetry_sdk::{
     trace::{InMemorySpanExporter, SimpleSpanProcessor, SpanData},
 };
 use prost::Message;
-use tokio::time::{Instant, sleep};
+use tokio::{
+    task::spawn_blocking,
+    time::{Instant, sleep},
+};
 
 use crate::{
     binary::monty_binary,
     common::{kill_pid, wait_for_idle},
+    grpc_mock::MockServer,
 };
 
 /// A cumulative aggregate exported from a test Logfire provider.
@@ -572,6 +581,55 @@ async fn worker_counts_sum_across_pools_and_drop_cleanly() {
     drop(second);
     assert_eq!(capture.total("monty.pool.workers.live"), 0);
     assert_eq!(capture.total("monty.pool.workers.idle"), 0);
+}
+
+/// A remote pool's pre-warmed sessions are live and idle workers: taking one
+/// and replacing it keeps the counts, and they drain to zero as it closes.
+#[tokio::test]
+async fn pre_warmed_sessions_are_counted_as_idle_workers() {
+    let mock = MockServer::start().await;
+    let mut config = PoolConfig::remote(mock.url());
+    config.pre_warm = 1;
+    config.max_processes = 2;
+    config.request_timeout = Some(Duration::from_secs(10));
+    // the ready session and its replacement, each acknowledging what it is sent
+    let server = thread::spawn(move || {
+        let sessions: Vec<_> = (0..2)
+            .map(|_| {
+                let mut stream = mock.accept();
+                thread::spawn(move || {
+                    let ok = pb::WorkerEvent {
+                        kind: Some(pb::worker_event::Kind::Ok(pb::Ok {})),
+                        ..Default::default()
+                    };
+                    while stream.read().is_some() {
+                        let _ = stream.send(encode_to_capped_vec(&ok).expect("encode").into());
+                    }
+                })
+            })
+            .collect();
+        for session in sessions {
+            session.join().expect("session");
+        }
+    });
+
+    let (pool, capture) = pool_with_metrics(config).await;
+    assert_eq!(capture.total("monty.pool.workers.live"), 1);
+    assert_eq!(capture.total("monty.pool.workers.idle"), 1);
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    wait_until("the replacement", || {
+        capture.total("monty.pool.workers.live") == 2 && capture.total("monty.pool.workers.idle") == 1
+    })
+    .await;
+    checkout.finish().await.expect("finish");
+    pool.close().await;
+    wait_until("the worker counts to drain", || {
+        capture.total("monty.pool.workers.live") == 0 && capture.total("monty.pool.workers.idle") == 0
+    })
+    .await;
+    spawn_blocking(move || server.join().expect("server"))
+        .await
+        .expect("join");
 }
 
 /// A relay driving wire-level turns gets the same instrumentation as a typed

@@ -37,6 +37,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::{Child, ChildStdin, ChildStdout, Command},
     runtime::{Handle, RuntimeFlavor},
+    sync::oneshot,
     task::block_in_place,
     time::timeout,
 };
@@ -62,6 +63,9 @@ pub(crate) struct Worker {
     pub(crate) id: u64,
     /// Checkouts this worker has served, for `max_checkouts_per_worker`.
     pub(crate) checkouts_served: u32,
+    /// The metadata a pre-warmed remote session was dialed with, which a
+    /// checkout must match to take it; empty for every other worker.
+    pub(crate) dial_metadata: Vec<(String, String)>,
     /// Records an adapter checkout's protocol turns, created only while needed.
     #[cfg(feature = "telemetry")]
     recorder: Option<Box<Recorder>>,
@@ -194,6 +198,7 @@ impl Worker {
             last_frame_len: 0,
             id: 0,
             checkouts_served: 0,
+            dial_metadata: Vec::new(),
             #[cfg(feature = "telemetry")]
             recorder: None,
             #[cfg(feature = "telemetry")]
@@ -433,13 +438,21 @@ impl Worker {
         }
     }
 
+    /// Resolves when a remote worker's stream ends; `None` for a subprocess.
+    pub(crate) fn take_ended(&mut self) -> Option<oneshot::Receiver<()>> {
+        match &mut self.kind {
+            WorkerKind::Subprocess(_) => None,
+            WorkerKind::Remote(w) => w.take_ended(),
+        }
+    }
+
     /// Whether the worker has already died (used to discard workers that died
-    /// while idle in the pool). Remote workers are never pooled idle, so
-    /// they always report alive here.
+    /// while idle in the pool): an exited child, or a pre-warmed remote session
+    /// whose stream has ended.
     pub(crate) fn is_dead(&mut self) -> bool {
         match &mut self.kind {
             WorkerKind::Subprocess(w) => w.child.try_wait().is_ok_and(|status| status.is_some()),
-            WorkerKind::Remote(_) => false,
+            WorkerKind::Remote(w) => w.disconnect().is_some(),
         }
     }
 

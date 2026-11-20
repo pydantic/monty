@@ -904,7 +904,7 @@ impl PendingKey {
 pub(crate) struct Redial {
     /// Re-sent as the new worker's `Configure`.
     pub(crate) repl: ReplConfig,
-    /// The request metadata the checkout first dialed with.
+    /// The caller's request metadata the checkout first dialed with.
     pub(crate) metadata: Vec<(String, String)>,
     /// Parents the new worker's session span as the first one was.
     #[cfg(feature = "telemetry")]
@@ -1933,7 +1933,14 @@ impl Checkout {
     /// same reason the feed's streamed-call handler and held arguments survive the `Load`.
     async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
         let configure = configure_request(&redial.repl, &self.pool.config);
-        let worker = self.pool.acquire_worker(&redial.metadata).await?;
+        #[cfg(feature = "telemetry")]
+        let trace = redial
+            .telemetry
+            .as_ref()
+            .map_or_else(Vec::new, TelemetryContext::propagation_headers);
+        #[cfg(not(feature = "telemetry"))]
+        let trace = Vec::new();
+        let worker = self.pool.acquire_worker(&trace, &redial.metadata).await?;
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(redial.telemetry.clone());
         self.worker = Some(worker);
