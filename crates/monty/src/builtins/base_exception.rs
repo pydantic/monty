@@ -141,14 +141,14 @@ pub(crate) fn init_exception_instance(
 
     let new_args = ExceptionArgs::from_values(args, vm);
     let mut attrs_to_set = Vec::new();
-    if let Some(name) = name_val {
-        attrs_to_set.push(("name", name));
-    }
-    if let Some(obj) = obj_val {
-        attrs_to_set.push(("obj", obj));
-    }
-    if let Some(path) = path_val {
-        attrs_to_set.push(("path", path));
+    if is_attr_err {
+        attrs_to_set.push(("name", name_val.unwrap_or(Value::None)));
+        attrs_to_set.push(("obj", obj_val.unwrap_or(Value::None)));
+    } else if is_name_err {
+        attrs_to_set.push(("name", name_val.unwrap_or(Value::None)));
+    } else if is_import_err {
+        attrs_to_set.push(("name", name_val.unwrap_or(Value::None)));
+        attrs_to_set.push(("path", path_val.unwrap_or(Value::None)));
     }
     if is_stop_iter {
         let first = match &new_args {
@@ -159,9 +159,7 @@ pub(crate) fn init_exception_instance(
             },
             _ => None,
         };
-        if let Some(v) = first {
-            attrs_to_set.push(("value", v));
-        }
+        attrs_to_set.push(("value", first.unwrap_or(Value::None)));
     } else if is_sys_exit {
         let code = match &new_args {
             ExceptionArgs::Empty => None,
@@ -174,6 +172,18 @@ pub(crate) fn init_exception_instance(
         };
         if let Some(v) = code {
             attrs_to_set.push(("code", v));
+        } else {
+            let has_code = match vm.heap.read(heap_id) {
+                HeapReadOutput::Exception(exc) => exc
+                    .get(vm.heap)
+                    .attrs
+                    .as_ref()
+                    .is_some_and(|a| a.get_by_str("code", vm.heap, vm.interns).is_some()),
+                _ => false,
+            };
+            if !has_code {
+                attrs_to_set.push(("code", Value::None));
+            }
         }
     }
 

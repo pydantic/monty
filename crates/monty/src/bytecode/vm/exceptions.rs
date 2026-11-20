@@ -9,7 +9,8 @@ use crate::{
     builtins::Builtins,
     defer_drop,
     exception_private::{
-        ExcType, ExcTypeExt, ExceptionRaise, PyException, RawStackFrame, RunError, RunResult, SimpleException,
+        ExcType, ExcTypeExt, ExceptionArgs, ExceptionRaise, PyException, RawStackFrame, RunError, RunResult,
+        SimpleException,
     },
     expressions::CmpOperator,
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
@@ -111,12 +112,12 @@ impl VM<'_> {
     }
 
     /// Converts an exception instance on the heap to a `SimpleException`.
-    pub(crate) fn exception_to_simple_exception(&mut self, id: HeapId) -> Option<SimpleException> {
+    pub(crate) fn exception_to_simple_exception(&mut self, id: HeapId) -> RunResult<Option<SimpleException>> {
         let (exc_type, args, data) = match self.heap.get(id) {
             HeapData::Exception(e) => (e.exc_type, e.args.clone_with_heap(self.heap), e.data.clone()),
-            _ => return None,
+            _ => return Ok(None),
         };
-        Some(PyException::to_simple_exception_from_parts(exc_type, args, data, self))
+        PyException::to_simple_exception_from_parts(exc_type, args, data, self).map(Some)
     }
 
     /// Creates a RunError from a Value that should be an exception.
@@ -127,14 +128,16 @@ impl VM<'_> {
     pub(super) fn make_exception(&mut self, exc_value: &Value, is_raise: bool) -> RunError {
         let simple_exc = match exc_value {
             // Exception instance on heap
-            Value::Ref(heap_id) => {
-                if let Some(simple) = self.exception_to_simple_exception(*heap_id) {
-                    simple
-                } else {
-                    // Not an exception type
-                    SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
+            Value::Ref(heap_id) => match self.heap.get(*heap_id) {
+                HeapData::Exception(e) => {
+                    let arg = match &e.args {
+                        ExceptionArgs::OneStr(s) => Some(s.clone()),
+                        _ => None,
+                    };
+                    SimpleException::new(e.exc_type, arg).with_data(e.data.clone())
                 }
-            }
+                _ => SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException"),
+            },
             // Exception type (e.g., `raise ValueError` instead of `raise ValueError()`)
             // Instantiate with no message
             Value::Builtin(Builtins::Type(ty)) if let Some(exc_type) = ty.exc_type() => {
@@ -599,7 +602,8 @@ impl VM<'_> {
                         _ => None,
                     };
                     if let Some(args) = args_opt {
-                        match args.format_arg(vm_ref) {
+                        let exc_type = exc_raise.exc.exc_type;
+                        match args.format_arg(exc_type, vm_ref) {
                             Ok(formatted) => {
                                 exc_raise.exc.arg = formatted;
                             }
@@ -663,10 +667,15 @@ impl VM<'_> {
             if should_return {
                 let (exc_value, this) = exc_guard.into_parts();
                 if let RunError::Exc(exc) = &mut error {
-                    if let Value::Ref(id) = exc_value
-                        && let Some(simple) = this.exception_to_simple_exception(id)
-                    {
-                        exc.exc = simple;
+                    if let Value::Ref(id) = exc_value {
+                        match this.exception_to_simple_exception(id) {
+                            Ok(Some(simple)) => exc.exc = simple,
+                            Ok(None) => {}
+                            Err(terminal) => {
+                                exc_value.drop_with(this);
+                                return ExceptionHandlingResult::Unhandled(terminal);
+                            }
+                        }
                     }
                     exc.set_instance(exc_value);
                 } else {

@@ -2860,22 +2860,6 @@ pub(crate) struct ExceptionChain {
     pub(crate) suppress_context: bool,
 }
 
-impl ExceptionChain {
-    pub(crate) fn clone_with_heap(&self, heap: &Heap) -> Self {
-        if let Some(c) = self.cause {
-            heap.inc_ref(c);
-        }
-        if let Some(c) = self.context {
-            heap.inc_ref(c);
-        }
-        Self {
-            cause: self.cause,
-            context: self.context,
-            suppress_context: self.suppress_context,
-        }
-    }
-}
-
 impl fmt::Display for SimpleException {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.py_repr_fmt(f)
@@ -3017,7 +3001,7 @@ impl ExceptionArgs {
     }
 
     /// Formats the exception arguments into a message string.
-    pub(crate) fn format_arg(&self, vm: &mut VM<'_>) -> RunResult<Option<String>> {
+    pub(crate) fn format_arg(&self, exc_type: ExcType, vm: &mut VM<'_>) -> RunResult<Option<String>> {
         match self {
             Self::Empty => Ok(None),
             Self::OneStr(s) => Ok(Some(s.clone())),
@@ -3027,7 +3011,12 @@ impl ExceptionArgs {
                 } else {
                     let v_clone = v.clone_with_heap(vm.heap);
                     defer_drop!(v_clone, vm);
-                    match v_clone.py_str(vm) {
+                    let res = if exc_type == ExcType::KeyError {
+                        v_clone.py_repr(vm)
+                    } else {
+                        v_clone.py_str(vm)
+                    };
+                    match res {
                         Ok(s_val) => {
                             defer_drop!(s_val, vm);
                             Ok(s_val.as_str(vm).map(ToOwned::to_owned))
@@ -3057,7 +3046,12 @@ impl ExceptionArgs {
                         if let Some(s) = item.as_str(vm) {
                             Ok(Some(s.to_owned()))
                         } else {
-                            match item.py_str(vm) {
+                            let res = if exc_type == ExcType::KeyError {
+                                item.py_repr(vm)
+                            } else {
+                                item.py_str(vm)
+                            };
+                            match res {
                                 Ok(s_val) => {
                                     defer_drop!(s_val, vm);
                                     Ok(s_val.as_str(vm).map(ToOwned::to_owned))
@@ -3208,33 +3202,36 @@ impl PyException {
     }
 
     /// Converts exception parts to a `SimpleException` for synchronous boundaries.
-    #[must_use]
     pub(crate) fn to_simple_exception_from_parts(
         exc_type: ExcType,
         args: ExceptionArgs,
         data: ExcData,
         vm: &mut VM<'_>,
-    ) -> SimpleException {
-        let arg = match args.format_arg(vm) {
+    ) -> RunResult<SimpleException> {
+        let res = args.format_arg(exc_type, vm);
+        args.drop_with(vm);
+        let arg = match res {
             Ok(s) => s,
             Err(RunError::Exc(exc)) => {
                 exc.drop_with(vm);
                 Some("<exception str() failed>".to_owned())
             }
-            Err(_) => None,
+            Err(terminal) => return Err(terminal),
         };
-        args.drop_with(vm);
-        SimpleException { exc_type, arg, data }
+        Ok(SimpleException { exc_type, arg, data })
     }
 
     /// Clones this exception, incrementing refcounts for all nested heap references.
+    /// Clones this exception for shallow copying matching CPython's
+    /// `BaseException.__reduce__`, keeping type, args, and attrs, but clearing
+    /// `__cause__` and `__context__`.
     pub(crate) fn clone_with_heap(&self, heap: &Heap) -> Self {
         Self {
-            class: self.class,
+            class: self.class.clone_with_heap(heap),
             exc_type: self.exc_type,
             args: self.args.clone_with_heap(heap),
             data: self.data.clone(),
-            chain: self.chain.as_ref().map(|c| Box::new(c.clone_with_heap(heap))),
+            chain: None,
             attrs: self.attrs.as_ref().map(|d| d.clone_with_heap(heap)),
         }
     }
@@ -3430,6 +3427,7 @@ impl<'h> HeapObjectRead<'h, PyException> {
 
     /// Formats `repr(exc)` into a writer.
     pub fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+        vm.heap.tracker.check_memory_time()?;
         let (type_name, args_copy) = {
             let exc = self.get(vm.heap);
             let name = match exc.class {
@@ -3466,6 +3464,7 @@ impl<'h> HeapObjectRead<'h, PyException> {
                 });
                 if all_strings {
                     for i in 0..len {
+                        vm.heap.tracker.check_memory_time_every(i)?;
                         if i > 0 {
                             f.write_str(", ")?;
                         }
@@ -3479,6 +3478,7 @@ impl<'h> HeapObjectRead<'h, PyException> {
                     let mut guard = vm.recursion_guard()?;
                     let vm = &mut *guard;
                     for i in 0..len {
+                        vm.heap.tracker.check_memory_time_every(i)?;
                         if i > 0 {
                             f.write_str(", ")?;
                         }

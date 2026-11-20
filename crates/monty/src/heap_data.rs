@@ -225,7 +225,7 @@ impl HeapData {
     /// Returns whether this heap data type can participate in reference cycles.
     ///
     /// Only container types that can hold references to other heap objects need to be
-    /// tracked for GC purposes. Leaf types like Str, Bytes, Range, and Exception cannot
+    /// tracked for GC purposes. Leaf types like Str, Bytes, and Range cannot
     /// form cycles and should not count toward the GC allocation threshold.
     ///
     /// This optimization allows programs that allocate many leaf objects (like strings)

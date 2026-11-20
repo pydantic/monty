@@ -208,6 +208,19 @@ impl OwnedTypeRef {
         }
     }
 
+    /// Clones this owned type reference, incrementing the refcount if it is a class.
+    #[inline]
+    #[must_use]
+    pub(crate) fn clone_with_heap(&self, heap: &Heap) -> Self {
+        match *self {
+            Self::Native(ty) => Self::Native(ty),
+            Self::Class(id) => {
+                heap.inc_ref(id);
+                Self::Class(id)
+            }
+        }
+    }
+
     /// The owned class id, if any, for refcount release and GC tracing.
     #[inline]
     #[must_use]
@@ -320,6 +333,18 @@ mod tests {
         let class_ref = TypeRef::Class(class_id);
         let owned_class = class_ref.to_owned(&heap);
         assert_eq!(owned_class, OwnedTypeRef::Class(class_id));
+        heap.dec_ref(class_id);
+        heap.dec_ref(class_id);
+    }
+
+    #[test]
+    fn test_owned_type_ref_clone_with_heap() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let class = Class::new(EitherStr::Heap("Bar".to_string()), Dict::new());
+        let class_id = heap.allocate(HeapData::Class(Box::new(class)));
+        let owned_class = OwnedTypeRef::Class(class_id);
+        let cloned_owned = owned_class.clone_with_heap(&heap);
+        assert_eq!(cloned_owned, OwnedTypeRef::Class(class_id));
         heap.dec_ref(class_id);
         heap.dec_ref(class_id);
     }

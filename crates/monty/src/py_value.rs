@@ -25,8 +25,9 @@ use crate::{
     intern::{FunctionId, StaticStrings},
     modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
     types::{
-        GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_string,
+        GenericAlias, LazyHeapSet, LongInt, OwnedTypeRef, Property, PyTrait, Type, TypeRef, Union, allocate_string,
         bytes::PyBytes,
+        instance::{call_member_bound, class_lookup, implicit_receiver},
         long_int::{PyInt, arithmetic::float_binary},
         numeric::{round_digits, round_float},
         py_trait::PyObjectIdentity,
@@ -782,7 +783,18 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Exception(value) => {
-                if attr.as_str(vm.interns) == "__init__" {
+                let attr_str = attr.as_str(vm.interns);
+                if let OwnedTypeRef::Class(class_id) = value.get(vm.heap).class()
+                    && let Some(member) = class_lookup(class_id, attr_str, vm.heap, vm.interns)
+                        .map(|v| v.clone_with_heap(vm.heap))
+                {
+                    defer_drop!(member, vm);
+                    return match implicit_receiver(attr_str, value.id(), class_id) {
+                        Some(receiver) => call_member_bound(member, receiver, args, vm),
+                        None => vm.call_function(member, args),
+                    };
+                }
+                if attr_str == "__init__" {
                     let (pos_iter, kwargs) = args.into_parts();
                     let pos_vec: Vec<Value> = pos_iter.collect();
                     init_exception_instance(value.id(), pos_vec, kwargs, vm)?;
@@ -791,14 +803,14 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                     .get(vm.heap)
                     .attrs
                     .as_ref()
-                    .and_then(|attrs| attrs.get_by_str(attr.as_str(vm.interns), vm.heap, vm.interns))
+                    .and_then(|attrs| attrs.get_by_str(attr_str, vm.heap, vm.interns))
                 {
                     let callable = callable.clone_with_heap(vm.heap);
                     defer_drop_mut!(callable, vm);
                     callable.py_call(args, vm)
                 } else {
                     args.drop_with(vm);
-                    Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
+                    Err(ExcType::attribute_error(self.py_type_name(vm), attr_str))
                 }
             }
             Self::Module(value) => value.py_call_attr(vm, attr, args),

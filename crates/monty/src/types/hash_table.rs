@@ -176,6 +176,8 @@ impl<'de, E: TableEntry + serde::Deserialize<'de>> serde::Deserialize<'de> for P
 }
 
 impl<E: CloneTableEntry> PyHashTable<E> {
+    /// Clones the hash table, preserving the physical slot layout and index table
+    /// so the clone requires no re-hashing or index reconstruction.
     pub(crate) fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
         Self {
             indices: self.indices.clone(),

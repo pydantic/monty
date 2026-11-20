@@ -394,8 +394,9 @@ fn islice_index(value: &Value, vm: &mut VM<'_>) -> RunResult<IsliceBound> {
     let index = match value {
         Value::None => return Ok(IsliceBound::Unbounded),
         Value::Bool(b) => i64::from(*b),
-        // A raising `__index__` propagates; only a type mismatch is `Invalid`,
-        // which the caller words per parameter.
+        // In CPython, `islice` converts any failure to obtain an index (including
+        // exceptions raised from `__index__`) into `ValueError: ... argument for islice() must be None or an integer...`.
+        // Only uncatchable resource errors propagate.
         other => match other.as_int(vm) {
             Ok(index) => index,
             Err(RunError::Exc(exc)) => {

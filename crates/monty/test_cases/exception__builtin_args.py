@@ -195,3 +195,60 @@ assert v.args == ('reinit1', 'reinit2')
 e_custom = ValueError('custom_test')
 e_custom.extra = 42
 assert e_custom.extra == 42
+
+# Reinitialization resets specialized fields to None when omitted
+s_re = StopIteration('val')
+assert s_re.value == 'val'
+s_re.__init__()
+assert s_re.value is None
+
+se_re = SystemExit(1)
+assert se_re.code == 1
+se_re.__init__(2)
+assert se_re.code == 2
+se_re.__init__()
+assert se_re.code == 2
+
+ea_re = AttributeError('msg', name='attr_name', obj=123)
+assert ea_re.name == 'attr_name'
+assert ea_re.obj == 123
+ea_re.__init__('new_msg')
+assert ea_re.name is None
+assert ea_re.obj is None
+
+en_re = NameError('msg', name='var_name')
+assert en_re.name == 'var_name'
+en_re.__init__('new_msg')
+assert en_re.name is None
+
+ei_re = ImportError('msg', name='mod', path='pkg')
+assert ei_re.name == 'mod'
+assert ei_re.path == 'pkg'
+ei_re.__init__('new_msg')
+assert ei_re.name is None
+assert ei_re.path is None
+
+# Caught exception does not format argument with __str__
+class TrapStr:
+    def __init__(self):
+        self.called = False
+
+    def __str__(self):
+        self.called = True
+        return 'trap'
+
+trap = TrapStr()
+saved_caught = None
+try:
+    raise ValueError(trap)
+except ValueError as caught:
+    assert not trap.called
+    assert caught.args[0] is trap
+    saved_caught = caught
+
+assert str(saved_caught) == 'trap'
+assert trap.called
+
+# KeyError str with non-string and bytes
+assert str(KeyError(123)) == '123'
+assert str(KeyError(b'abc')) == "b'abc'"

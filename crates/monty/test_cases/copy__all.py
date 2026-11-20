@@ -598,6 +598,22 @@ assert e_shallow is not e_orig
 assert e_shallow.args == ('orig', 123)
 assert e_shallow.custom is e_orig.custom
 
+# Shallow copy clears __cause__ and __context__ matching CPython
+try:
+    raise ValueError('cause')
+except ValueError as c:
+    try:
+        raise RuntimeError('main') from c
+    except RuntimeError as r:
+        r.extra = [1]
+        r_copy = copy.copy(r)
+        assert r_copy is not r
+        assert r_copy.args == ('main',)
+        assert r_copy.extra is r.extra
+        assert r_copy.__cause__ is None
+        assert r_copy.__context__ is None
+        assert r_copy.__suppress_context__ is False
+
 e_deep = copy.deepcopy(e_orig)
 assert e_deep is not e_orig
 assert e_deep.args == ('orig', 123)

@@ -411,7 +411,7 @@ impl GraphExporter {
                 let arg = if self.error.is_some() {
                     None
                 } else {
-                    match args.format_arg(vm) {
+                    match args.format_arg(exc_type, vm) {
                         Ok(s) => s,
                         Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => {
                             self.error = Some(err);

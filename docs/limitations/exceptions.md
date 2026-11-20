@@ -46,10 +46,9 @@ VM-raised `AttributeError`, `NameError`, `UnboundLocalError`, `ImportError`, and
 The key's `__str__` runs when the `KeyError` is raised, which CPython never does.
 An exception from it is replaced by the type name (`KeyError('<K>')`), but a resource limit hit inside it ends the run with `MemoryError` or `TimeoutError` where CPython raises a plain `KeyError`.
 
-`repr(exc)` matches CPython, except for `UnicodeDecodeError` and `UnicodeEncodeError`: CPython reprs these from their five-field constructor (`UnicodeDecodeError('ascii', b'\xff', 0, 1, 'ordinal not in range(128)')`), which Monty does not track, so Monty's `repr()` uses the generic args form instead.
+`repr(exc)` uses the generic args form; VM-raised `UnicodeDecodeError` and `UnicodeEncodeError` therefore differ from CPython's five-field repr, while missing-key `KeyError` and dotted exception classes have the divergences described above.
 
 The dotted exception classes — `json.JSONDecodeError`, `tomllib.TOMLDecodeError`, `re.PatternError`, `binascii.Error`, `binascii.Incomplete`, `_csv.Error`, `statistics.StatisticsError` — repr under their qualified name: `binascii.Error('bad')` where CPython gives `Error('bad')`.
-`type(exc).__name__` and `str(type(exc))` match CPython.
 
 **Not implemented:** `__traceback__`, `__notes__`, `add_note()`.
 A traceback printed for an exception with a `__cause__` or `__context__` shows that exception alone: CPython's chained output (`The above exception was the direct cause of the following exception:`) is not produced, inside the sandbox or at the host boundary.
