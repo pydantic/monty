@@ -24,6 +24,8 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "telemetry")]
+use monty_proto::Traceparent;
 use monty_proto::{
     DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, OpeningRequest, TracedRequest, decode_frame_with_budget,
     encode_framed_into, encode_to_capped_vec, pb,
@@ -320,7 +322,8 @@ impl Worker {
         );
         // the frame may grow by one `traceparent` field
         let fits = || {
-            let len = frame.map_or_else(|| request.encoded_len(), Message::encoded_len) + TRACEPARENT_FIELD_LEN;
+            let len =
+                frame.map_or_else(|| request.encoded_len(), Message::encoded_len) + Traceparent::REQUEST_FIELD_LEN;
             u32::try_from(len).is_ok_and(|len| len <= MAX_FRAME_LEN)
         };
         match &mut self.recorder {
@@ -604,10 +607,6 @@ fn drop_worker_spans(event: &mut pb::WorkerEvent) {
         }
     }
 }
-
-/// Encoded size of a `ClientRequest.traceparent` field: key, length, value.
-#[cfg(feature = "telemetry")]
-const TRACEPARENT_FIELD_LEN: usize = 2 + 1 + 55;
 
 /// Decodes one complete frame body, synchronously on the current thread.
 ///

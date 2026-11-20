@@ -6,6 +6,7 @@ use monty_proto::{
     pb::{client_request::Kind as RequestKind, worker_event::Kind as EventKind},
     write_frame,
 };
+use prost::Message;
 
 /// A reader that returns at most one byte per `read` call, exercising the
 /// partial-read loop in the frame reader.
@@ -97,6 +98,10 @@ fn a_replacement_traceparent_is_sent_in_place_of_the_requests() {
             encode_to_capped_vec(&TracedRequest::new(&request, replacement)).unwrap(),
             encode_to_capped_vec(&expected).unwrap()
         );
+        assert_eq!(
+            expected.encoded_len(),
+            feed().encoded_len() + Traceparent::REQUEST_FIELD_LEN
+        );
         let configure = pb::Configure::default();
         let opening = OpeningRequest::new(&configure, &request)
             .unwrap()
@@ -154,6 +159,15 @@ fn a_traceparent_round_trips() {
         Some(traceparent)
     );
     assert_eq!(Traceparent::new(0, 1, 1), None);
+    assert_eq!(Traceparent::new(1, 0, 1), None);
+    assert_eq!(
+        Traceparent::new(u128::MAX, u64::MAX, 0xff).unwrap().as_str(),
+        "00-ffffffffffffffffffffffffffffffff-ffffffffffffffff-ff"
+    );
+    assert_eq!(
+        Traceparent::new(1, 2, 0).unwrap().as_str(),
+        "00-00000000000000000000000000000001-0000000000000002-00"
+    );
     let call = WireFunctionCall {
         function_name: "fetch".to_owned(),
         traceparent: Some(traceparent),

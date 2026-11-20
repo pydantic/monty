@@ -167,13 +167,20 @@ function withCallbackContext<T>(parent: string | undefined, callback: () => T): 
   }
 }
 
-/** Resolves a live suspension or print callback's parent to its host span. */
+/**
+ * Resolves a live suspension or print callback's parent to its host span: the span
+ * Monty recorded here, else the span a server named, which is all a host without a
+ * tracer can resolve. The key is `[<recorded>] [<traceparent>]`, space-separated.
+ */
 function callbackSpan(parent: string | undefined): Span | undefined {
   if (parent === undefined) {
     return undefined
   }
-  // a span Monty recorded here, else the span a server named for the suspension
-  return (spansDisabled ? undefined : spans.get(parent)?.span) ?? remoteCallbackSpan(parent)
+  const keys = parent.split(' ')
+  const recorded = spansDisabled
+    ? undefined
+    : keys.map((key) => spans.get(key)?.span).find((span) => span !== undefined)
+  return recorded ?? keys.map(remoteCallbackSpan).find((span) => span !== undefined)
 }
 
 /**

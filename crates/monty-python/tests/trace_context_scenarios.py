@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from grpc import aio
+from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -188,7 +189,18 @@ async def _run(spans: Spans, feeds: Callable[[Any], Awaitable[None]]) -> dict[st
 
 async def uninstrumented() -> dict[str, Any]:
     """No `instrument_telemetry()`: only `opentelemetry-api` reads and sets the current span."""
+    return await _callbacks_under_server_spans(Spans(TracingRelay()))
+
+
+async def logging_only() -> dict[str, Any]:
+    """`instrument_telemetry()` with only a logger: Monty records spans no host tracer can resolve."""
     spans = Spans(TracingRelay())
+    instrument_telemetry(logger=LoggerProvider().get_logger('trace-context-test'))
+    return await _callbacks_under_server_spans(spans)
+
+
+async def _callbacks_under_server_spans(spans: Spans) -> dict[str, Any]:
+    """Feeds whose suspending, streamed and OS callbacks each open a span, under three callers."""
     tracer = spans.tracer
 
     def lookup(key: str) -> str:
@@ -253,6 +265,7 @@ async def without_opentelemetry() -> dict[str, Any]:
 
 SCENARIOS = {
     'uninstrumented': uninstrumented,
+    'logging_only': logging_only,
     'instrumented': instrumented,
     'without_opentelemetry': without_opentelemetry,
 }

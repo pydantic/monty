@@ -28,7 +28,7 @@ use tracing::{Span, field::Empty};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::telemetry::{
-    TelemetryContext, remote_context,
+    TelemetryContext, remote_context, traceparent_of,
     tracing_json::{
         nonfinite_str, serialize_capped, serialize_dict_capped, serialize_named_iter_capped, serialize_seq_capped,
         serialize_value_capped,
@@ -236,7 +236,7 @@ impl Recorder {
                     inputs = inputs,
                     skip_type_check = f.skip_type_check,
                     // the session span is not this span's parent when the caller named one
-                    checkout_span_id = self.checkout_span_id(),
+                    checkout_span_id = parent.remote.as_ref().and_then(|_| self.checkout_span_id()),
                     length_limit_exceeded = cut.then_some(true),
                     // declared empty here, filled in by the `Complete` event
                     // that closes this span
@@ -675,11 +675,7 @@ impl Recorder {
         } else {
             None
         }?;
-        Traceparent::new(
-            u128::from_be_bytes(span.trace_id().to_bytes()),
-            u64::from_be_bytes(span.span_id().to_bytes()),
-            span.trace_flags().to_u8(),
-        )
+        traceparent_of(&span)
     }
 
     /// The session span's exported ID, as hex.
@@ -1628,14 +1624,17 @@ mod tests {
                 (session.span_context.trace_id(), session_id)
             ]
         );
-        for (feed, sent) in feeds.iter().zip(sent) {
+        // only a feed whose parent is not the session names it
+        let session_named = [
+            Some(session_id.to_string().into()),
+            Some(session_id.to_string().into()),
+            None,
+        ];
+        for ((feed, sent), session_named) in feeds.iter().zip(sent).zip(session_named) {
             assert_eq!(SpanId::from(sent.span_id()), feed.span_context.span_id());
             assert_eq!(TraceId::from(sent.trace_id()), feed.span_context.trace_id());
             let checkout_span_id = feed.attributes.iter().find(|kv| kv.key.as_str() == "checkout_span_id");
-            assert_eq!(
-                checkout_span_id.map(|kv| kv.value.clone()),
-                Some(session_id.to_string().into())
-            );
+            assert_eq!(checkout_span_id.map(|kv| kv.value.clone()), session_named);
         }
     }
 

@@ -14,7 +14,7 @@ use monty_pool::{
     Traceparent, TurnOptions,
     telemetry::{
         Measurement, MetricKind, MetricValue, Metrics, TelemetryAdapter, TelemetryAdapterHandle, TelemetryContext,
-        configure_telemetry_adapter_with_host_metrics,
+        configure_telemetry_adapter_with_host_metrics, remote_suspension,
     },
 };
 use opentelemetry::{
@@ -76,6 +76,8 @@ struct SpanKey {
 struct SpanState {
     span: Py<PyAny>,
     context: Py<PyAny>,
+    /// What the host SDK exported the span as, read when it started; `None` if unreadable.
+    exported: Option<SpanContext>,
     root: SpanKey,
     initial_attributes: HashMap<String, Value>,
 }
@@ -159,14 +161,8 @@ pub(crate) fn capture_turn_options(py: Python<'_>) -> TurnOptions {
     let traceparent = (|| {
         let modules = py.import("sys").ok()?.getattr("modules").ok()?;
         let trace = modules.get_item("opentelemetry.trace").ok()?;
-        let span_context = trace
-            .call_method0("get_current_span")
-            .ok()?
-            .call_method0("get_span_context")
-            .ok()?;
-        let trace_id: u128 = span_context.getattr("trace_id").ok()?.extract().ok()?;
-        let span_id: u64 = span_context.getattr("span_id").ok()?.extract().ok()?;
-        let trace_flags: u8 = span_context.getattr("trace_flags").ok()?.extract().ok()?;
+        let span = trace.call_method0("get_current_span").ok()?;
+        let (trace_id, span_id, trace_flags) = span_ids(&span).ok()?;
         // an invalid span has zero IDs, which `Traceparent::new` rejects
         Traceparent::new(trace_id, span_id, trace_flags)
     })();
@@ -226,24 +222,18 @@ fn callback_span(py: Python<'_>, context: &Context) -> Option<Py<PyAny>> {
             .get(&key)
             .map(|state| state.span.clone_ref(py))
     });
-    recorded.or_else(|| remote_span(py, span))
+    // without a tracer (or with spans disabled) the recorded span has no host span
+    recorded.or_else(|| remote_span(py, remote_suspension(context)?))
 }
 
-/// A non-recording host span for the remote `span`, needing only `opentelemetry-api`.
-fn remote_span(py: Python<'_>, span: &SpanContext) -> Option<Py<PyAny>> {
-    if !(span.is_valid() && span.is_remote()) {
-        return None;
-    }
+/// A non-recording host span for the remote span `traceparent` names, needing only `opentelemetry-api`.
+fn remote_span(py: Python<'_>, traceparent: Traceparent) -> Option<Py<PyAny>> {
     let trace = py.import("opentelemetry.trace").ok()?;
-    let flags = trace
-        .getattr("TraceFlags")
-        .ok()?
-        .call1((span.trace_flags().to_u8(),))
-        .ok()?;
+    let flags = trace.getattr("TraceFlags").ok()?.call1((traceparent.flags(),)).ok()?;
     let context = trace
         .getattr("SpanContext")
         .ok()?
-        .call1((trace_id_int(span.trace_id()), span_id_int(span.span_id()), true, flags))
+        .call1((traceparent.trace_id(), traceparent.span_id(), true, flags))
         .ok()?;
     trace
         .getattr("NonRecordingSpan")
@@ -251,6 +241,16 @@ fn remote_span(py: Python<'_>, span: &SpanContext) -> Option<Py<PyAny>> {
         .call1((context,))
         .ok()
         .map(Bound::unbind)
+}
+
+/// The trace ID, span ID and flags of a Python span.
+fn span_ids(span: &Bound<'_, PyAny>) -> PyResult<(u128, u64, u8)> {
+    let context = span.call_method0("get_span_context")?;
+    Ok((
+        context.getattr("trace_id")?.extract()?,
+        context.getattr("span_id")?.extract()?,
+        context.getattr("trace_flags")?.extract()?,
+    ))
 }
 
 /// The pool metrics handle when a meter was installed.
@@ -315,20 +315,7 @@ impl TelemetryAdapter for PythonBridge {
             trace_id: span.trace_id(),
             span_id: span.span_id(),
         };
-        Python::attach(|py| {
-            let exported = lock(&self.spans).get(&key)?.span.clone_ref(py);
-            let exported = exported.bind(py).call_method0("get_span_context").ok()?;
-            let trace_id: u128 = exported.getattr("trace_id").ok()?.extract().ok()?;
-            let span_id: u64 = exported.getattr("span_id").ok()?.extract().ok()?;
-            let trace_flags: u8 = exported.getattr("trace_flags").ok()?.extract().ok()?;
-            Some(SpanContext::new(
-                trace_id.into(),
-                span_id.into(),
-                TraceFlags::new(trace_flags),
-                false,
-                span.trace_state().clone(),
-            ))
-        })
+        lock(&self.spans).get(&key)?.exported.clone()
     }
 
     fn end_span(&self, data: &SpanData) -> bool {
@@ -538,6 +525,16 @@ impl PythonBridge {
                 .bind(py)
                 .call1((&span, parent_context))?
                 .unbind();
+            // read here, under the GIL already held, so lookups never need it
+            let exported = span_ids(&span).ok().map(|(trace_id, span_id, trace_flags)| {
+                SpanContext::new(
+                    trace_id.into(),
+                    span_id.into(),
+                    TraceFlags::new(trace_flags),
+                    false,
+                    data.span_context.trace_state().clone(),
+                )
+            });
             let initial_attributes = data
                 .attributes
                 .iter()
@@ -552,6 +549,7 @@ impl PythonBridge {
                     SpanState {
                         span: span.unbind(),
                         context,
+                        exported,
                         root,
                         initial_attributes,
                     },

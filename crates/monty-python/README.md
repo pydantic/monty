@@ -186,7 +186,8 @@ with Monty() as pool:
 
 The returned context preserves baggage and other entries captured at `feed_start` / `load_snapshot`, with the
 suspension's span when Monty tracing is enabled.
-Without Monty tracing it returns the captured context unchanged.
+Without Monty tracing, the span is the one a remote server named for the suspension, if it named one; otherwise the
+captured context is returned unchanged.
 Context is not serialized: restoring captures the restoring caller's context instead.
 The method does not activate the context or resume execution.
 It raises `ImportError` without `opentelemetry-api`, or `RuntimeError` after resume.

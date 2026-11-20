@@ -256,7 +256,7 @@ feature, workers contain no telemetry recorder or telemetry hot path.
 The session span is a child of the span in `CheckoutOptions::telemetry`, the one current at checkout.
 A feed or restore started with `TurnOptions::traceparent` is a child of the span that names, not of the session span;
 without one it is a child of the session span.
-A feed's span carries the session span's ID as `checkout_span_id`.
+A feed parented that way carries the session span's ID as `checkout_span_id`.
 A remote stream's `traceparent` metadata still names the checkout-time span.
 
 The request the pool sends names the recorder's own span for the turn (the feed's, or a restore's `load`) when
@@ -269,8 +269,11 @@ The pool surfaces it as `traceparent` on `TurnEvent::FunctionCall`, `OsCall`, `N
 each `StreamedCall`.
 `Checkout::callback_context` and `StreamedCall::callback_context` return the recorder's suspension span, which is then a
 child of the peer's, or without a recorder the peer's span as a remote context.
-A recording pool driven through `Checkout::turn_raw` sets the field on the events it returns, which is how a server
-built on the pool names its spans to its clients.
+`telemetry::remote_suspension` reads the peer's span from either, for a host that cannot resolve the recorded span
+(one recording logs without a tracer).
+A pool recording without a `TelemetryAdapter` (`TelemetryContext::for_logfire`) sets the field on the events it
+returns, `Checkout::turn_raw`'s included, which is how a server built on the pool names its spans to its clients.
+A pool recording through an adapter answers the event itself, so it leaves the peer's value in place.
 A malformed value from a peer is dropped, as is any value from a subprocess worker, which never records spans.
 
 ### Metrics

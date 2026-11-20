@@ -1579,8 +1579,9 @@ class FunctionSnapshot:
     def trace_context(self) -> Context:
         """Return the suspension's OTel context, without activating it or resuming.
 
-        Preserves context entries captured at `feed_start` / `load_snapshot`; without Monty tracing,
-        returns that captured context unchanged. Raises `ImportError` without `opentelemetry-api`
+        Preserves context entries captured at `feed_start` / `load_snapshot`. Without Monty tracing,
+        its span is the one a remote server named for the suspension, else the captured context is
+        returned unchanged. Raises `ImportError` without `opentelemetry-api`
         or `RuntimeError` after resume. Previously returned contexts do not keep the span open.
         """
 

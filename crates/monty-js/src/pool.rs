@@ -35,7 +35,7 @@ use std::{
 };
 
 use monty_pool::{
-    telemetry::{TelemetryAdapterHandle, TelemetryContext},
+    telemetry::{remote_suspension, TelemetryAdapterHandle, TelemetryContext},
     Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnStreamedCall, Persistence, Pool, PoolConfig,
     PoolError, PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, StreamedCall, Traceparent, TurnEvent,
     TurnOptions,
@@ -80,22 +80,16 @@ type PrintCallback<'env> = Function<'env, FnArgs<(String, String, Option<String>
 /// span key of its telemetry context.
 type StreamedCallCallback<'env> = Function<'env, FnArgs<(u32, Option<String>)>, UnknownReturnValue>;
 
-/// The key the TypeScript side resolves to a callback's parent span: a
-/// recorded span's IDs, or the `traceparent` of a remote span a server named.
+/// The key the TypeScript side resolves to a callback's parent span:
+/// `<trace>:<span>` for a recorded span, then the `traceparent` of the span a
+/// server named for the suspension, space-separated when there are both.
 fn callback_span_key(context: &Context) -> Option<String> {
     let span = context.span();
     let span = span.span_context();
-    if !span.is_valid() {
-        None
-    } else if span.is_remote() {
-        Some(format!(
-            "00-{}-{}-{:02x}",
-            span.trace_id(),
-            span.span_id(),
-            span.trace_flags().to_u8()
-        ))
-    } else {
-        Some(format!("{}:{}", span.trace_id(), span.span_id()))
+    let recorded = (span.is_valid() && !span.is_remote()).then(|| format!("{}:{}", span.trace_id(), span.span_id()));
+    match (recorded, remote_suspension(context)) {
+        (Some(recorded), Some(remote)) => Some(format!("{recorded} {remote}")),
+        (recorded, remote) => recorded.or_else(|| remote.map(|remote| remote.to_string())),
     }
 }
 

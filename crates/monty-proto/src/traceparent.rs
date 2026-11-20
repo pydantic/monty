@@ -15,10 +15,20 @@ const LEN: usize = 55;
 pub struct Traceparent([u8; LEN]);
 
 impl Traceparent {
+    /// Encoded size of a `ClientRequest.traceparent` field holding one: key, length and value.
+    pub const REQUEST_FIELD_LEN: usize = 2 + 1 + LEN;
+
     /// Builds the value for a span; `None` when either ID is zero, which W3C forbids.
     #[must_use]
     pub fn new(trace_id: u128, span_id: u64, flags: u8) -> Option<Self> {
-        Self::parse(&format!("00-{trace_id:032x}-{span_id:016x}-{flags:02x}"))
+        (trace_id != 0 && span_id != 0).then(|| {
+            let mut bytes = [b'-'; LEN];
+            bytes[..2].copy_from_slice(b"00");
+            write_hex(&mut bytes[3..35], trace_id);
+            write_hex(&mut bytes[36..52], u128::from(span_id));
+            write_hex(&mut bytes[53..], u128::from(flags));
+            Self(bytes)
+        })
     }
 
     /// Parses a header value: lower-case hex, version `00`, non-zero IDs.
@@ -54,6 +64,14 @@ impl Traceparent {
     #[must_use]
     pub fn flags(&self) -> u8 {
         u8::from_str_radix(&self.as_str()[53..], 16).unwrap_or_default()
+    }
+}
+
+/// Writes the low `out.len()` nibbles of `value` into `out` as lower-case hex.
+fn write_hex(out: &mut [u8], mut value: u128) {
+    for byte in out.iter_mut().rev() {
+        *byte = b"0123456789abcdef"[(value & 0xf) as usize];
+        value >>= 4;
     }
 }
 

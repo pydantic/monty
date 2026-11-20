@@ -48,6 +48,26 @@ def test_feeds_and_callbacks_join_the_callers_and_servers_spans():
     )
 
 
+def test_logging_only_instrumentation_keeps_callbacks_under_server_spans():
+    """With `instrument_telemetry(logger=...)` alone, Monty's recorded spans have no host
+    span, so a host callback still runs under the server's span for its call."""
+    assert run_scenario('logging_only') == snapshot(
+        {
+            'sent': ['first caller', 'second caller', 'third caller', None],
+            'spans': [
+                ['checkout', None],
+                ['in lookup', 'server call'],
+                ['first caller', None],
+                ['in fetch', 'server streamed call'],
+                ['in fetch', 'server streamed call'],
+                ['second caller', None],
+                ['in os.getenv', 'server os call'],
+                ['third caller', None],
+            ],
+        }
+    )
+
+
 def test_instrumented_feeds_nest_under_their_callers():
     """With `instrument_telemetry()`, each `run code` span is a child of its own caller
     and is the span the request names; the session span is the parent of none."""

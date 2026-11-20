@@ -229,6 +229,41 @@ pub(crate) fn remote_context(traceparent: Traceparent) -> Context {
     ))
 }
 
+/// The span a server named for a suspension, kept on a callback context whose
+/// current span is the recorder's, for a host that cannot resolve that span.
+#[derive(Debug, Clone, Copy)]
+struct RemoteSuspension(Traceparent);
+
+/// A callback context for the suspension a server named `traceparent` for:
+/// `recorded` when it holds a span, keeping `traceparent` as a fallback, else the remote span.
+pub(crate) fn suspension_context(recorded: Context, traceparent: Option<Traceparent>) -> Context {
+    match traceparent {
+        Some(traceparent) if recorded.has_active_span() => recorded.with_value(RemoteSuspension(traceparent)),
+        Some(traceparent) => remote_context(traceparent),
+        None => recorded,
+    }
+}
+
+/// The span a server named for the suspension a callback `context` answers,
+/// for a host that cannot resolve the context's recorded span (one without a tracer).
+#[must_use]
+pub fn remote_suspension(context: &Context) -> Option<Traceparent> {
+    context.get::<RemoteSuspension>().map(|remote| remote.0).or_else(|| {
+        let span = context.span();
+        let span = span.span_context();
+        if span.is_remote() { traceparent_of(span) } else { None }
+    })
+}
+
+/// The `traceparent` naming `span`; `None` for an invalid span.
+pub(crate) fn traceparent_of(span: &SpanContext) -> Option<Traceparent> {
+    Traceparent::new(
+        u128::from_be_bytes(span.trace_id().to_bytes()),
+        u64::from_be_bytes(span.span_id().to_bytes()),
+        span.trace_flags().to_u8(),
+    )
+}
+
 /// Receives Monty records without owning exporters or credentials.
 /// Returning false disables the affected Monty root and calls `disable_root`.
 pub trait TelemetryAdapter: Send + Sync + 'static {

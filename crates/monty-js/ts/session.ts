@@ -1373,8 +1373,9 @@ class SingleUse {
 
   /**
    * Returns the suspension's OTel context without activating it or resuming execution.
-   * Preserves context entries captured at `feedStart` / `loadSnapshot`; without Monty tracing,
-   * returns that captured context unchanged. Access after resume throws; previously returned
+   * Preserves context entries captured at `feedStart` / `loadSnapshot`. Without Monty tracing, its
+   * span is the one a remote server named for the suspension, else the captured context is returned
+   * unchanged. Access after resume throws; previously returned
    * contexts remain usable but do not keep the suspension span open.
    */
   traceContext(): Context {

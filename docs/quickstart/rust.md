@@ -145,6 +145,11 @@ A host module's `.pyi` reaches the checker through the `import_stubs` OS call be
 it returns `None` after the worker is released or discarded.
 `Checkout::pid()` is the subprocess-only OS diagnostic.
 
+[`Checkout::feed_with`](../api/rust/monty-pool.md#checkout) and [`Checkout::restore_with`](../api/rust/monty-pool.md#checkout)
+are `feed_with_cwd` and `restore` plus [`TurnOptions`](../api/rust/monty-pool.md#turnoptions), whose `traceparent` names the caller's span for the turn,
+so a remote server that records the session parents the turn's spans to it.
+A suspension the server named a span for carries it as `traceparent` on the `TurnEvent`.
+
 [`Checkout::dump`](../api/rust/monty-pool.md#checkout) and [`Checkout::restore`](../api/rust/monty-pool.md#checkout) snapshot and restore a session, including onto a different worker or machine.
 Restore only unmodified snapshots whose provenance and integrity the caller has established;
 see [snapshot security](../security.md#deserializing-snapshots).

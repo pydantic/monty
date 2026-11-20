@@ -30,7 +30,7 @@ use opentelemetry::trace::{FutureExt, TraceContextExt};
 use tokio::{task::spawn_blocking, time::Instant as DeadlineInstant};
 
 #[cfg(feature = "telemetry")]
-use crate::telemetry::{TelemetryContext, metrics::outcome, remote_context};
+use crate::telemetry::{TelemetryContext, metrics::outcome, suspension_context};
 use crate::{
     CrashCause, PoolConfig, PoolError, RemoteCause, cpu,
     pool::{CapacityGuard, PoolInner},
@@ -2195,14 +2195,15 @@ impl Checkout {
 
     /// The innermost telemetry context for host callbacks answering this checkout:
     /// the recorded span when this checkout records, else the remote span the
-    /// peer named for the pending suspension.
+    /// peer named for the pending suspension, which [`remote_suspension`](crate::telemetry::remote_suspension)
+    /// also reads behind a recorded span.
     #[cfg(feature = "telemetry")]
     pub fn callback_context(&self) -> opentelemetry::Context {
         let recorded = self
             .worker
             .as_ref()
             .map_or_else(opentelemetry::Context::new, Worker::callback_context);
-        callback_context(recorded, self.suspension_traceparent)
+        suspension_context(recorded, self.suspension_traceparent)
     }
 
     /// One request/reply exchange: send the request, stream prints, classify
@@ -2214,6 +2215,8 @@ impl Checkout {
         mut opening: Option<&pb::Configure>,
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
+        // sending an answer clears it, but a rejected answer leaves the suspension pending
+        let answered = self.suspension_traceparent;
         self.send_request(request, opening).await?;
         loop {
             let mut event = match self.worker.as_mut().expect("checked by send_request").recv().await {
@@ -2263,7 +2266,9 @@ impl Checkout {
             let traceparent = event.parsed_traceparent().filter(|_| is_suspension(&event));
             // a `Dump` reply ends its turn with the suspension still pending
             if ends_turn(&event) && !matches!(request.kind, Some(pb::client_request::Kind::Dump(_))) {
-                self.suspension_traceparent = traceparent;
+                let rejected =
+                    event.feed_suspended == Some(true) && matches!(event.kind, Some(pb::worker_event::Kind::Error(_)));
+                self.suspension_traceparent = if rejected { answered } else { traceparent };
             }
             match event.kind {
                 // answered by the remote transport's reader task before it
@@ -2325,7 +2330,7 @@ impl Checkout {
                             worker.streamed_call_context(call_id)
                         });
                         #[cfg(feature = "telemetry")]
-                        let context = callback_context(context, traceparent);
+                        let context = suspension_context(context, traceparent);
                         let call = StreamedCall {
                             function_name,
                             args,
@@ -2917,21 +2922,12 @@ fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::Configure {
     }
 }
 
-/// The context a host callback runs under: `recorded` when it holds a span,
-/// else the remote span `traceparent` names.
-#[cfg(feature = "telemetry")]
-fn callback_context(recorded: opentelemetry::Context, traceparent: Option<Traceparent>) -> opentelemetry::Context {
-    match traceparent {
-        Some(traceparent) if !recorded.has_active_span() => remote_context(traceparent),
-        _ => recorded,
-    }
-}
-
 /// The `monty.pool.session.resumed` outcome for a failed reload: `exhausted`
 /// (no pool capacity), `disconnected` (the new connection failed), `refused`
 /// (the relay rejected the load), `shutdown` (the new relay is shutting down
 /// too), `mismatch` (the reloaded state is not the one shut down), `configuration`
-/// (the new server is incompatible with the client settings) or `timeout`.
+/// (the new server is incompatible with the client settings), `timeout`,
+/// `cpu_limit` or `error`.
 #[cfg(feature = "telemetry")]
 fn resume_failure(err: &PoolError) -> &'static str {
     match err {

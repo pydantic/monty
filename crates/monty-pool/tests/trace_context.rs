@@ -6,6 +6,8 @@
 #[path = "support/grpc_mock.rs"]
 mod grpc_mock;
 
+#[cfg(feature = "telemetry")]
+use std::sync::Arc;
 use std::{
     future::ready,
     sync::mpsc,
@@ -17,10 +19,17 @@ use grpc_mock::{MockServer, MockStream};
 use monty_pool::{
     Checkout, Pool, PoolConfig, PrintFuture, ReplConfig, ResumeValue, Traceparent, TurnEvent, TurnOptions,
 };
+#[cfg(feature = "telemetry")]
+use monty_pool::{
+    CheckoutOptions,
+    telemetry::{TelemetryAdapter, configure_telemetry_adapter, remote_suspension},
+};
 use monty_proto::{WireFunctionCall, decode_frame, encode_to_capped_vec, pb};
 use monty_types::{CallArgs, MontyObject, PrintStream, SourceRange};
 #[cfg(feature = "telemetry")]
-use opentelemetry::trace::{SpanId, TraceContextExt, TraceId};
+use opentelemetry::trace::{SpanContext, SpanId, TraceContextExt, TraceId};
+#[cfg(feature = "telemetry")]
+use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
 use tokio::task::spawn_blocking;
 
 const FIRST_CALLER: &str = "00-000000000000000000000000000000a1-00000000000000b1-01";
@@ -116,6 +125,68 @@ async fn a_suspension_carries_the_servers_span() {
     join(server).await;
 }
 
+/// A checkout recording through a host SDK adapter keeps the server's span on
+/// the event, and runs the callback under its own recorded span.
+#[cfg(feature = "telemetry")]
+#[tokio::test]
+async fn an_adapter_backed_checkout_keeps_the_servers_span_on_the_event() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        read_request(&mut socket);
+        send_kind(&mut socket, pb::worker_event::Kind::Ok(pb::Ok {}));
+        read_request(&mut socket);
+        let event = pb::WorkerEvent {
+            kind: Some(pb::worker_event::Kind::FunctionCall(call(1))),
+            traceparent: Some(SERVER_CALL.to_owned()),
+            ..Default::default()
+        };
+        socket
+            .send(encode_to_capped_vec(&event).expect("encode event").into())
+            .expect("send event");
+        read_request(&mut socket);
+        send_complete(&mut socket);
+        drain(&mut socket);
+    });
+
+    let handle = configure_telemetry_adapter(Arc::new(NamesItsSpans)).expect("configure");
+    let mut config = PoolConfig::remote(&url);
+    config.max_processes = 1;
+    config.request_timeout = Some(Duration::from_secs(10));
+    let pool = Pool::new(config).await.expect("pool");
+    let context = handle
+        .context("0af7651916cd43dd8448eb211c80319c", "b7ad6b7169203331", 1, "")
+        .expect("context");
+    let options = CheckoutOptions::default().with_telemetry(Some(context));
+    let mut checkout = pool
+        .checkout_with(&ReplConfig::default(), options)
+        .await
+        .expect("checkout");
+
+    let event = feed(&mut checkout, Some(FIRST_CALLER)).await;
+    let TurnEvent::FunctionCall { traceparent, .. } = &event else {
+        panic!("expected a function call, got {event:?}");
+    };
+    assert_eq!(*traceparent, Traceparent::parse(SERVER_CALL));
+    let (trace_id, span_id, remote) = callback_span(&checkout.callback_context()).expect("the recorded call span");
+    assert_eq!(trace_id, remote_span(Traceparent::parse(SERVER_CALL).unwrap()).0);
+    assert_ne!(span_id, remote_span(Traceparent::parse(SERVER_CALL).unwrap()).1);
+    assert!(!remote);
+    // a host without a tracer cannot resolve the recorded span, so the server's stays reachable
+    assert_eq!(
+        remote_suspension(&checkout.callback_context()),
+        Traceparent::parse(SERVER_CALL)
+    );
+    let event = checkout
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+        .await
+        .expect("resume");
+    assert!(matches!(event, TurnEvent::Complete(_)), "got {event:?}");
+    checkout.finish().await.expect("finish");
+    join(server).await;
+}
+
 /// Dumping a suspended session leaves the suspension, and the span the server
 /// named for it, in place for the callback that answers it.
 #[cfg(feature = "telemetry")]
@@ -163,6 +234,66 @@ async fn a_dump_keeps_the_suspensions_span() {
         .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
         .await
         .expect("resume");
+    checkout.finish().await.expect("finish");
+    join(server).await;
+}
+
+/// An answer the server rejects without ending the feed leaves the suspension,
+/// and the span the server named for it, in place for the retried answer.
+#[cfg(feature = "telemetry")]
+#[tokio::test]
+async fn a_rejected_answer_keeps_the_suspensions_span() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        read_request(&mut socket);
+        send_kind(&mut socket, pb::worker_event::Kind::Ok(pb::Ok {}));
+        read_request(&mut socket);
+        let event = pb::WorkerEvent {
+            kind: Some(pb::worker_event::Kind::FunctionCall(call(1))),
+            traceparent: Some(SERVER_CALL.to_owned()),
+            ..Default::default()
+        };
+        socket
+            .send(encode_to_capped_vec(&event).expect("encode event").into())
+            .expect("send event");
+        read_request(&mut socket);
+        let rejected = pb::WorkerEvent {
+            kind: Some(pb::worker_event::Kind::Error(pb::Error {
+                exception: Some(pb::RaisedException {
+                    exc_type: "TypeError".to_owned(),
+                    message: Some("bad answer".to_owned()),
+                    traceback: vec![].into(),
+                    data: None,
+                }),
+            })),
+            feed_suspended: Some(true),
+            ..Default::default()
+        };
+        socket
+            .send(encode_to_capped_vec(&rejected).expect("encode event").into())
+            .expect("send event");
+        read_request(&mut socket);
+        send_complete(&mut socket);
+        drain(&mut socket);
+    });
+
+    let (_pool, mut checkout) = remote_checkout(&url).await;
+    feed(&mut checkout, None).await;
+    let rejected = checkout
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+        .await;
+    assert!(rejected.is_err(), "got {rejected:?}");
+    assert_eq!(
+        callback_span(&checkout.callback_context()),
+        Traceparent::parse(SERVER_CALL).map(remote_span)
+    );
+    let event = checkout
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+        .await
+        .expect("resume");
+    assert!(matches!(event, TurnEvent::Complete(_)), "got {event:?}");
     checkout.finish().await.expect("finish");
     join(server).await;
 }
@@ -274,6 +405,27 @@ fn callback_span(context: &opentelemetry::Context) -> Option<(TraceId, SpanId, b
     let span = span.span_context();
     span.is_valid()
         .then(|| (span.trace_id(), span.span_id(), span.is_remote()))
+}
+
+/// An adapter whose SDK exports each span under the ID the pool recorded it with.
+#[cfg(feature = "telemetry")]
+struct NamesItsSpans;
+
+#[cfg(feature = "telemetry")]
+impl TelemetryAdapter for NamesItsSpans {
+    fn start_span(&self, _: &SpanData) -> bool {
+        true
+    }
+    fn end_span(&self, _: &SpanData) -> bool {
+        true
+    }
+    fn emit_log(&self, _: SpanId, _: &SdkLogRecord) -> bool {
+        true
+    }
+    fn disable_root(&self, _: TraceId, _: SpanId) {}
+    fn exported_span_context(&self, span: &SpanContext) -> Option<SpanContext> {
+        Some(span.clone())
+    }
 }
 
 #[cfg(feature = "telemetry")]
