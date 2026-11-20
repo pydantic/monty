@@ -1006,6 +1006,7 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
         send_event(
             &mut socket,
             &pb::WorkerEvent {
+                traceparent: None,
                 total_execution_micros: 0,
                 max_suspensions: None,
                 restored_script_name: None,
@@ -1299,6 +1300,7 @@ async fn restored_session_rearms_the_duration_backstop() {
         send_event(
             &mut socket,
             &pb::WorkerEvent {
+                traceparent: None,
                 kind: Some(pb::worker_event::Kind::Ok(pb::Ok {})),
                 restored_script_name: Some("restored.py".to_owned()),
                 session_id: None,

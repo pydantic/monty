@@ -94,7 +94,7 @@ impl ChildProc {
             &mut self.writer,
             &pb::ClientRequest {
                 kind: Some(kind),
-                trace_parent: None,
+                traceparent: None,
             },
         )
         .expect("failed to write request");

@@ -638,7 +638,7 @@ message ClientRequest {
   // its own telemetry can attach its spans to the trace the request came
   // from. Purely additive context: the worker's execution of the request must
   // not depend on it, and it is absent whenever the client is not tracing.
-  optional string trace_parent = 20;
+  optional string traceparent = 20;
 }
 
 // Configures the REPL session this worker will serve until `Reset`, sent once
@@ -940,6 +940,13 @@ message WorkerEvent {
   // Configure acknowledgment, on the reply to `Configure` (its `first` request's
   // reply, when it carries one). Local CPU-mode clients require this.
   optional ExecutionClock execution_clock = 30;
+
+  // W3C `traceparent` of the sender's span for this suspension, set by a
+  // server that exports its own telemetry on `FunctionCall`, `OsCall`,
+  // `NameLookup` and `ResolveFutures`, so the host's work answering it joins
+  // that span. Purely additive context: handling of the event must not depend
+  // on it, a malformed value is ignored, and a worker never sets it.
+  optional string traceparent = 31;
 }
 
 enum PrintStream {
@@ -986,6 +993,10 @@ message FunctionCall {
   // Where the call expression is in the source. Absent from a worker that
   // predates the field; the client then reports an empty range at offset 0.
   SourceRange position = 8;
+  // As `WorkerEvent.traceparent`, for one call in a `StreamedCalls` event,
+  // which carries several. Unset on a suspending `FunctionCall`, whose event
+  // names the span.
+  optional string traceparent = 9;
 }
 
 // Mid-turn, like `Print`: calls to async host functions (`Function.is_async`)

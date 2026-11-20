@@ -71,7 +71,7 @@ fn request(worker: &mut Worker, kind: pb::client_request::Kind) -> pb::worker_ev
         &mut frame,
         &pb::ClientRequest {
             kind: Some(kind),
-            trace_parent: None,
+            traceparent: None,
         },
     )
     .expect("framing a request never fails");

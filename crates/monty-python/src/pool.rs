@@ -44,7 +44,7 @@ use std::{
 use monty_pool::{
     Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, OnPrint,
     OnStreamedCall, Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, StreamedCall,
-    TurnEvent,
+    TurnEvent, TurnOptions,
 };
 use monty_proto::{
     DEFAULT_MAX_DECODE_BYTES,
@@ -92,7 +92,7 @@ use crate::{
     os_policy::OsPolicyArg,
     print_target::PrintTarget,
     snapshot::{DriveContext, build_snapshot, feed_start_async, feed_start_sync},
-    telemetry::{capture_otel_context, capture_telemetry_context, pool_metrics},
+    telemetry::{capture_otel_context, capture_telemetry_context, capture_turn_options, pool_metrics},
 };
 
 /// The pool handle shared between a pool object and its sessions. `None`
@@ -515,7 +515,8 @@ impl PyMontySession {
             return Err(session_used_err());
         }
         let checkout = Arc::clone(&self.checkout);
-        let result = py.detach(|| block_on_sync(restore_turn(&checkout, state, mounts)))?;
+        let turn = capture_turn_options(py);
+        let result = py.detach(|| block_on_sync(restore_turn(&checkout, state, mounts, turn)))?;
         result.map_err(|e| pool_err_to_py(py, e))
     }
 }
@@ -1027,9 +1028,10 @@ impl PyAsyncMontySession {
         }
         let checkout = Arc::clone(&self.checkout);
         let session_id = Arc::clone(&self.session_id);
+        let turn = capture_turn_options(py);
         future_into_py(py, async move {
             // an idle session has no snapshot, so the restored name is unused
-            let restored = restore_turn(&checkout, state, Vec::new()).await;
+            let restored = restore_turn(&checkout, state, Vec::new(), turn).await;
             refresh_session_id(&checkout, &session_id).await;
             let restored = restored.map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             if restored.0.is_some() {
@@ -1071,9 +1073,10 @@ impl PyAsyncMontySession {
         let instances = self.instances.clone_ref(py);
         let config_script_name = self.repl_config.script_name.clone();
         let trace_context = capture_otel_context(py);
+        let turn = capture_turn_options(py);
         let session_id = Arc::clone(&self.session_id);
         future_into_py(py, async move {
-            let restored = restore_turn(&checkout, state, mounts).await;
+            let restored = restore_turn(&checkout, state, mounts, turn).await;
             refresh_session_id(&checkout, &session_id).await;
             let (event, restored_script_name) = restored.map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             let Some(event) = event else {
@@ -1284,13 +1287,14 @@ async fn restore_turn(
     checkout: &SharedCheckout,
     state: Vec<u8>,
     mounts: Vec<MountSpec>,
+    turn: TurnOptions,
 ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
     let result = {
         let mut guard = checkout.lock().await;
         match guard.as_mut() {
             Some(checkout) => {
                 checkout
-                    .restore(state, mounts, &mut monty_pool::on_print_sync(|_, _| {}))
+                    .restore_with(state, mounts, turn, &mut monty_pool::on_print_sync(|_, _| {}))
                     .await
             }
             None => Err(PoolError::Finished),
@@ -1539,6 +1543,8 @@ async fn install_deps_checkout(checkout: &SharedCheckout, requirements: Vec<Stri
 /// sync and async drive loops share one validation path.
 pub(crate) struct FeedArgs {
     pub(crate) callback_context: CallbackContext,
+    /// The caller's span, captured on the caller's task.
+    pub(crate) turn: TurnOptions,
     pub(crate) code: String,
     pub(crate) inputs: NamedValues,
     pub(crate) mounts: Vec<MountSpec>,
@@ -1569,6 +1575,7 @@ impl FeedArgs {
         check_callable(py, os.as_ref())?;
         Ok(Self {
             callback_context: CallbackContext::capture(py)?,
+            turn: capture_turn_options(py),
             code: extract_source_code(py, code)?,
             inputs: extract_repl_inputs(inputs, instances)?,
             mounts: extract_mount_specs(mount)?,
@@ -1591,6 +1598,7 @@ impl FeedArgs {
 fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<PyAny>> {
     let FeedArgs {
         callback_context,
+        turn,
         code,
         inputs,
         mounts,
@@ -1613,7 +1621,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
             Box::pin(async move {
                 // coroutine functions cannot run here, so their calls suspend as any call
                 c.set_async_functions(None);
-                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                c.feed_with(code, inputs, mounts, cwd.as_deref(), skip_type_check, turn, p)
                     .await
             })
         }),
@@ -1862,6 +1870,7 @@ impl Drop for AbandonGuard {
 async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<AtomicBool>) -> PyResult<Py<PyAny>> {
     let FeedArgs {
         callback_context,
+        turn,
         code,
         inputs,
         mounts,
@@ -1896,7 +1905,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
             Box::pin(async move {
                 c.set_async_functions(Some(async_functions));
                 c.set_streamed_call_handler(Some(handler));
-                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                c.feed_with(code, inputs, mounts, cwd.as_deref(), skip_type_check, turn, p)
                     .await
             })
         }),

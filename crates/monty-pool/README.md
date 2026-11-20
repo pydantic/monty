@@ -104,6 +104,8 @@ The default `SleepMode::System` sets `system_sleep` to the capped delay for the 
 `Checkout::feed` accepts inputs exposed as sandbox globals and per-feed filesystem mounts (`MountSpec`); mounts that
 overlap on the host or repeat a virtual path fail the feed with a session-preserving `PoolError::Runtime`.
 `Checkout::feed_with_cwd` also changes the working directory, which defaults to the first feed's first mount and persists.
+`Checkout::feed_with` and `Checkout::restore_with` also take `TurnOptions`, whose `traceparent` names the span the
+turn was started under (see [trace context](#trace-context)).
 `Checkout::worker_id` identifies a worker within its pool independently of PID reuse, for either transport.
 It returns `None` after the worker is released or discarded; `Checkout::pid` remains the subprocess-only OS diagnostic.
 
@@ -235,7 +237,7 @@ choices and its final flush/shutdown.
 
 Recording happens in the host process, which builds every request and decodes every event
 anyway, so both transports are covered and the workers stay uninstrumented. Each instrumented checkout
-becomes one session span; each feed is a nested span held across suspension round-trips, with
+becomes one session span; each feed is a span held across suspension round-trips, with
 a child span per suspension whose duration is the host round-trip. Fed code, inputs, call
 arguments and results, exceptions and `print` output are recorded in full — values encoded
 the way the Python logfire SDK encodes attributes, capped at 64KB per value — while
@@ -248,6 +250,32 @@ checkout's serialized parent context. Span and log records are emitted through
 the Rust pipeline or receive each raw measurement for aggregation by its native SDK. Python,
 Node, and third-party bindings retain ownership of their native SDK and exporter. Without the
 feature, workers contain no telemetry recorder or telemetry hot path.
+
+### Trace context
+
+The session span is a child of the span in `CheckoutOptions::telemetry`, the one current at checkout.
+A feed or restore started with `TurnOptions::traceparent` is a child of the span that names, not of the session span;
+without one it is a child of the session span.
+A feed parented that way carries the session span's ID as `checkout_span_id`, when the session span's exported ID
+is known (see `TelemetryAdapter::exported_span_context` below).
+A remote stream's `traceparent` metadata still names the checkout-time span.
+
+The request the pool sends names the recorder's own span for the turn (the feed's, or a restore's `load`) when
+there is one, else the caller's `TurnOptions::traceparent`, so a server that records the session nests its spans under the right one.
+A foreign SDK assigns its own span IDs, so an adapter reports them through `TelemetryAdapter::exported_span_context`;
+an adapter that cannot, such as one that creates spans asynchronously, leaves the caller's value on the request.
+
+A peer that records spans names its span for each suspension in `WorkerEvent.traceparent`.
+The pool surfaces it as `traceparent` on `TurnEvent::FunctionCall`, `OsCall`, `NameLookup` and `ResolveFutures`, and on
+each `StreamedCall`.
+`Checkout::callback_context` and `StreamedCall::callback_context` return the recorder's suspension span, which is then a
+child of the peer's, or without a recorder the peer's span as a remote context.
+`telemetry::remote_suspension` reads the peer's span from either, for a host that cannot resolve the recorded span
+(one recording logs without a tracer).
+A pool recording without a `TelemetryAdapter` (`TelemetryContext::for_logfire`) sets the field on the events it
+returns, `Checkout::turn_raw`'s included, which is how a server built on the pool names its spans to its clients.
+A pool recording through an adapter answers the event itself, so it leaves the peer's value in place.
+A malformed value from a peer is dropped, as is any value from a subprocess worker, which never records spans.
 
 ### Metrics
 
@@ -317,7 +345,8 @@ input so adapters that do not support metrics continue to work.
   stream carries `user-agent: monty-pool/<version>` (tonic appends its own), and with the
   `telemetry` feature the `traceparent` (and `tracestate`) of `CheckoutOptions::telemetry`,
   so server-side spans join the caller's trace; a `metadata` entry replaces the
-  trace metadata and is put in front of the user agent. A `Ping` event from the server is
+  trace metadata and is put in front of the user agent. That metadata names the span current
+  at checkout; each feed and restore names its own span in the request (see [trace context](#trace-context)). A `Ping` event from the server is
   answered with a `Pong` request by the transport, even while the checkout sits idle, so a
   relay behind a proxy can tell a quiet client from a vanished one; the answer follows the
   events read before the ping, so a server pings between turns, where a slow host callback

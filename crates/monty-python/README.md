@@ -149,6 +149,17 @@ with Monty() as pool:
         #> greet(x)
 ```
 
+## Trace context for remote sessions
+
+Each `feed_run`, `feed_start` and load on an `AsyncMontyRemote` session sends the W3C `traceparent` of the current
+OpenTelemetry span, so a server that records the session parents that feed's spans to it.
+When the server names its span for a call, the host callback runs with that span current, or with
+`instrument_telemetry()` under Monty's own span for the call, a child of the server's.
+If the server's spans are not exported to your tracing backend, spans started in host callbacks appear there without
+their parent.
+This needs `opentelemetry-api` only, not `instrument_telemetry()`; without the package, or without a current span,
+nothing is sent.
+
 ## Tracing snapshot handlers
 
 All sync and async snapshot types provide `snapshot.trace_context()` for manual handlers.
@@ -177,7 +188,8 @@ with Monty() as pool:
 
 The returned context preserves baggage and other entries captured at `feed_start` / `load_snapshot`, with the
 suspension's span when Monty tracing is enabled.
-Without Monty tracing it returns the captured context unchanged.
+Without Monty tracing, the span is the one a remote server named for the suspension, if it named one; otherwise the
+captured context is returned unchanged.
 Context is not serialized: restoring captures the restoring caller's context instead.
 The method does not activate the context or resume execution.
 It raises `ImportError` without `opentelemetry-api`, or `RuntimeError` after resume.

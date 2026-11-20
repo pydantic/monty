@@ -331,7 +331,7 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
 /// A checkout finished before its first request never configures its worker,
 /// so the worker's next, untraced checkout must not open a span under its trace.
 #[tokio::test]
-async fn an_unconfigured_checkout_leaves_no_trace_parent_behind() {
+async fn an_unconfigured_checkout_leaves_no_traceparent_behind() {
     let spans = InMemorySpanExporter::default();
     let logfire = logfire::configure()
         .local()

@@ -21,7 +21,7 @@ use bytes::Bytes;
 use h2::Reason;
 use http::{Response, StatusCode, uri::PathAndQuery};
 use monty_proto::{
-    FrameError, MAX_FRAME_LEN, OpeningRequest, encode_to_capped_vec,
+    FrameError, MAX_FRAME_LEN, encode_to_capped_vec,
     grpc::{BytesCodec, Cause, SESSION_PATH},
     pb,
 };
@@ -336,23 +336,14 @@ pub(crate) struct RemoteWorker {
 }
 
 impl RemoteWorker {
-    /// Sends one request, returning its encoded size. An oversize request is
-    /// rejected before any I/O so the stream stays in sync; a torn-down
-    /// worker fails as [`FrameError::Truncated`].
+    /// Sends one encoded request, returning its size. A torn-down worker
+    /// fails as [`FrameError::Truncated`].
     ///
     /// A stream the server ended under the request is not a failure here:
     /// what it ended with — a final event such as a deadline's exception, then
     /// its status — is on the read side, so the turn goes on to [`Self::recv`]
     /// and reports the server's last word rather than a bare send failure.
-    pub(crate) async fn send(
-        &mut self,
-        request: &pb::ClientRequest,
-        opening: Option<&OpeningRequest<'_>>,
-    ) -> Result<usize, FrameError> {
-        let body = match opening {
-            Some(opening) => encode_to_capped_vec(opening)?,
-            None => encode_to_capped_vec(request)?,
-        };
+    pub(crate) async fn send(&mut self, body: Vec<u8>) -> Result<usize, FrameError> {
         let len = body.len();
         match &self.requests {
             Some(requests) => {
@@ -662,7 +653,7 @@ fn oversized_message(status: &Status) -> Option<FrameError> {
 fn pong_body() -> Bytes {
     let pong = pb::ClientRequest {
         kind: Some(pb::client_request::Kind::Pong(pb::Pong {})),
-        trace_parent: None,
+        traceparent: None,
     };
     Bytes::from(encode_to_capped_vec(&pong).expect("a Pong is far below the frame cap"))
 }

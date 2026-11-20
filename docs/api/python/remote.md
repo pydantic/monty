@@ -54,6 +54,28 @@ Restoring a suspended call re-announces it even if the host already executed the
 can happen twice.
 Neither exception occurs on the local subprocess transport.
 
+## Trace context
+
+Each [`feed_run()`][pydantic_monty.AsyncMontySession.feed_run],
+[`feed_start()`][pydantic_monty.AsyncMontySession.feed_start] and load sends the W3C `traceparent` of the
+OpenTelemetry span current where it was called, so a server that records the session parents that feed's spans to it.
+A server that records spans names its span for each external call, OS call and name lookup, and the host callback
+answering it runs with that span current: a span the callback starts is its child.
+With `instrument_telemetry()` the callback runs under Monty's own span for the call instead, which is a child of the
+server's.
+[`trace_context()`][pydantic_monty.FunctionSnapshot.trace_context] returns the same span for a manual handler.
+If the server's spans are not exported to your tracing backend, spans started in host callbacks appear there without
+their parent.
+
+This needs only `opentelemetry-api`, not `instrument_telemetry()`.
+Nothing is sent when `opentelemetry-api` is not installed or no span is current, and a server that names no span
+leaves callbacks in the caller's context.
+
+Against a server that records the session, a tracer passed to `instrument_telemetry()` records every span twice, once
+on each side.
+Pass only `meter=` (and `logger=`, if you want Monty's logs) to keep client-side metrics without the duplicate spans.
+`logfire.instrument_monty()` always installs a tracer, so it records the duplicates.
+
 ## Stored sessions
 
 A server that stores sessions gives each one an opaque ID instead of sending its state back.

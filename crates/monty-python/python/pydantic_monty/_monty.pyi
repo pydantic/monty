@@ -1241,10 +1241,9 @@ class AsyncMontyRemote:
                 on the checking-out task, so it sees that task's contextvars
                 and must not block. Monty never interprets the values; names
                 are lowercase ASCII and values ASCII, duplicate names are
-                last-wins, also over the `traceparent` the Logfire integration
-                adds, a `user-agent` entry is put in front of the default one,
-                and a malformed name or value raises `MontyConfigurationError` as the
-                session is entered.
+                last-wins, a `user-agent` entry is put in front of the default
+                one, and a malformed name or value raises
+                `MontyConfigurationError` as the session is entered.
             feed_duration_limit_grace: Client wall-time grace beyond
                 `max_feed_duration_secs` when the server uses wall time.
                 CPU mode uses the server's supervisor and grace instead.
@@ -1580,8 +1579,9 @@ class FunctionSnapshot:
     def trace_context(self) -> Context:
         """Return the suspension's OTel context, without activating it or resuming.
 
-        Preserves context entries captured at `feed_start` / `load_snapshot`; without Monty tracing,
-        returns that captured context unchanged. Raises `ImportError` without `opentelemetry-api`
+        Preserves context entries captured at `feed_start` / `load_snapshot`. Without Monty tracing,
+        its span is the one a remote server named for the suspension, else the captured context is
+        returned unchanged. Raises `ImportError` without `opentelemetry-api`
         or `RuntimeError` after resume. Previously returned contexts do not keep the span open.
         """
 
