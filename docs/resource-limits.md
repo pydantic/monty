@@ -68,11 +68,39 @@ In JavaScript the same fields are `maxMemory`, `maxFeedDurationSecs`, `maxTurnDu
 In Rust they are the fields of [`monty_types::ResourceLimits`](api/rust/monty-types.md#resourcelimits), where the
 durations are `Duration`s named `max_feed_duration`, `max_turn_duration` and `max_total_sleep`.
 
+## Cooperative checks
+
+The worker's allocator ceiling and the pool's time backstops bound pathological execution.
+Cooperative checks aim to give ordinary workloads graceful errors rather than worker termination; they are not the
+safety boundary.
+The following policy guides checks in native operations.
+
+### Memory checks
+
+Soft memory checks target multi-MiB allocation bursts in ordinary builtin calls.
+Rare oversized results bounded by a constant multiple of an already-tracked input are permitted to rely on the hard limit.
+Unbounded or amplifying string construction requires resource-tracked buffers.
+
+### Time checks
+
+Roughly linear native operations over existing, memory-bounded inputs are permitted to run without clock polling.
+Where practical, superlinear algorithms and work not bounded by input size use amortized clock polling.
+This includes caller-chosen iteration counts and potentially endless iterators.
+Polling is not required where runtime overhead or implementation complexity outweighs the benefit.
+In particular, replacing an uninterruptible library call solely to add checkpoints is not required; the duration
+backstop may terminate the worker instead.
+Algorithmic inefficiency is a separate concern from cooperative limit enforcement.
+
 ## Memory
 
 `max_memory` budgets the bytes a worker requests from its global allocator, counted from the leanest the worker process
 has been.
 Everything the session allocates counts against it, including retained compiled code and interpreter internals.
+That includes the type checker: the first check in a type-checked session builds its database, about 7 MiB, most of
+it the resolved builtins.
+A Rust pool of subprocess workers with [`PoolConfig::prewarm_type_checker`](api/rust/monty-pool.md#poolconfig) builds a checker with the builtins
+resolved, about 6 MiB, between checkouts and charges it to the worker instead, so only what the session's own checks add
+counts.
 It is not a ceiling on process RSS.
 Allocations are counted as requested, so per-allocation overhead and fragmentation sit outside the count, as does memory
 obtained without the allocator: thread stacks, the binary's mapped image, a direct `mmap`.
@@ -165,7 +193,10 @@ Discard the session rather than feeding it again; see
 ### Host-side backstops
 
 The in-sandbox check runs at interpreter checkpoints, so it cannot catch code that wedges the interpreter itself.
-Host-side deadlines cover that:
+Native operations are not guaranteed to poll the clock and can exceed a duration budget without stopping cooperatively.
+If a host-side deadline expires first, the worker is terminated instead of raising a cooperative `TimeoutError`,
+and the session is lost.
+Host-side deadlines cover these cases:
 
 - **`request_timeout`** on the pool is a hard per-turn deadline.
     A worker that exceeds it is killed and the call raises [`MontyCrashedError`][pydantic_monty.MontyCrashedError] with `timed_out=True`.

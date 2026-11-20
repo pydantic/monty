@@ -42,26 +42,27 @@ use crate::{
 };
 
 /// OS module functions.
+#[monty_macros::explicit_discriminants(checksum = 0x0d2e_78c4_45c1_f709)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum OsFunctions {
-    Getenv,
-    Listdir,
-    Stat,
-    Mkdir,
-    Makedirs,
-    Remove,
-    Unlink,
-    Rmdir,
-    Rename,
-    Replace,
-    Fspath,
-    Getcwd,
-    Getcwdb,
-    Chdir,
-    Urandom,
-    Scandir,
-    Walk,
+    Getenv = 0,
+    Listdir = 1,
+    Stat = 2,
+    Mkdir = 3,
+    Makedirs = 4,
+    Remove = 5,
+    Unlink = 6,
+    Rmdir = 7,
+    Rename = 8,
+    Replace = 9,
+    Fspath = 10,
+    Getcwd = 11,
+    Getcwdb = 12,
+    Chdir = 13,
+    Urandom = 14,
+    Scandir = 15,
+    Walk = 16,
 }
 
 /// Creates the `os` module.

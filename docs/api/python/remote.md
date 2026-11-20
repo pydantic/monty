@@ -20,6 +20,24 @@ A remote peer may be CPython rather than a Monty sandbox; the transport does not
 The client sends the name to the server unchecked; what a profile means is the server's choice, and the `monty` worker
 ignores it.
 
+## Pre-warmed sessions
+
+`AsyncMontyRemote(url, pre_warm=2)` keeps two sessions open and ready, so a checkout takes one instead of opening a
+stream.
+`__aenter__` waits for them to open and raises if one cannot.
+`pre_warm_wait=False` opens them in the background instead: a failed open is not raised but retried with a backoff, and
+a checkout that finds none ready opens its own stream.
+Each one a checkout takes is replaced in the background.
+One checkout per session already opening waits for it; further concurrent checkouts open their own.
+They share `max_processes` with checked-out sessions, so `pre_warm` above it raises
+[`MontyConfigurationError`][pydantic_monty.MontyConfigurationError], and each is a session to the server from the moment
+it opens.
+`metadata` is called for each pre-warmed session as the pool opens it, from a pool thread without the caller's
+contextvars.
+A checkout takes a ready session only if its own `metadata` call returned the same value.
+Otherwise it closes the ready sessions unused and opens its own, so `pre_warm` helps only while `metadata` is stable.
+Leave it off when one pool's checkouts send different metadata, such as per-user credentials.
+
 ## Connection loss and shutdown
 
 [`MontyRefusedError`][pydantic_monty.MontyRefusedError] means the server refused to open the session's stream: at
@@ -53,6 +71,28 @@ If the exception includes a dump, restore it into a fresh session using the appr
 Restoring a suspended call re-announces it even if the host already executed the callback, so callback side effects
 can happen twice.
 Neither exception occurs on the local subprocess transport.
+
+## Trace context
+
+Each [`feed_run()`][pydantic_monty.AsyncMontySession.feed_run],
+[`feed_start()`][pydantic_monty.AsyncMontySession.feed_start] and load sends the W3C `traceparent` of the
+OpenTelemetry span current where it was called, so a server that records the session parents that feed's spans to it.
+A server that records spans names its span for each external call, OS call and name lookup, and the host callback
+answering it runs with that span current: a span the callback starts is its child.
+With `instrument_telemetry()` the callback runs under Monty's own span for the call instead, which is a child of the
+server's.
+[`trace_context()`][pydantic_monty.FunctionSnapshot.trace_context] returns the same span for a manual handler.
+If the server's spans are not exported to your tracing backend, spans started in host callbacks appear there without
+their parent.
+
+This needs only `opentelemetry-api`, not `instrument_telemetry()`.
+Nothing is sent when `opentelemetry-api` is not installed or no span is current, and a server that names no span
+leaves callbacks in the caller's context.
+
+Against a server that records the session, a tracer passed to `instrument_telemetry()` records every span twice, once
+on each side.
+Pass only `meter=` (and `logger=`, if you want Monty's logs) to keep client-side metrics without the duplicate spans.
+`logfire.instrument_monty()` always installs a tracer, so it records the duplicates.
 
 ## Stored sessions
 

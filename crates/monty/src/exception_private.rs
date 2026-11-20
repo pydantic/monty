@@ -276,28 +276,31 @@ pub(crate) trait ExcTypeExt: Sized {
     /// This matches Python 3.14's error message: `TypeError: unhashable type: 'list'`
     #[must_use]
     fn type_error_unhashable(type_: &str) -> RunError {
-        SimpleException::new_msg(ExcType::TypeError, format!("unhashable type: '{type_}'")).into()
+        SimpleException::new_msg(ExcType::TypeError, unhashable_type_message(type_)).into()
     }
 
-    /// Creates a TypeError for unhashable types used as dict keys.
+    /// Creates CPython's TypeError for a dict key that will not hash, e.g.
+    /// `cannot use 'tuple' as a dict key (unhashable type: 'list')`.
     ///
-    /// This matches Python 3.14's error message:
-    /// `TypeError: cannot use 'list' as a dict key (unhashable type: 'list')`
+    /// `reason` is the message of the hashing `TypeError`; see [`unhashable_type_message`].
     #[must_use]
-    fn type_error_unhashable_dict_key(type_: &str) -> RunError {
+    fn type_error_unhashable_dict_key(key_type: &str, reason: &str) -> RunError {
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("cannot use '{type_}' as a dict key (unhashable type: '{type_}')"),
+            format!("cannot use '{key_type}' as a dict key ({reason})"),
         )
         .into()
     }
 
-    /// Creates a TypeError for an unhashable value used as a set element.
+    /// Creates CPython's TypeError for a set element that will not hash, e.g.
+    /// `cannot use 'tuple' as a set element (unhashable type: 'list')`.
+    ///
+    /// `reason` is the message of the hashing `TypeError`; see [`unhashable_type_message`].
     #[must_use]
-    fn type_error_unhashable_set_element(element_type: &str, unhashable_type: &str) -> RunError {
+    fn type_error_unhashable_set_element(element_type: &str, reason: &str) -> RunError {
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("cannot use '{element_type}' as a set element (unhashable type: '{unhashable_type}')"),
+            format!("cannot use '{element_type}' as a set element ({reason})"),
         )
         .into()
     }
@@ -1133,6 +1136,11 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, msg).into()
     }
 
+    /// A datetime or time component outside Python's non-leap-second range.
+    fn second_out_of_range(second: impl fmt::Display) -> RunError {
+        Self::value_error(format_args!("second must be in 0..59, not {second}"))
+    }
+
     /// Creates a generic `IndexError` with a custom message.
     fn index_error(msg: impl fmt::Display) -> RunError {
         SimpleException::new_msg(ExcType::IndexError, msg).into()
@@ -1171,6 +1179,27 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn mktime_out_of_range() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "mktime argument out of range").into()
+    }
+
+    /// `strptime()`'s `ValueError` for a directive missing from its table, quoted
+    /// with bare `'` as CPython does: `'{directive}' is a bad directive in format '{format}'`.
+    #[must_use]
+    fn strptime_bad_directive(directive: &str, format: &str) -> RunError {
+        Self::value_error(format_args!("'{directive}' is a bad directive in format '{format}'"))
+    }
+
+    /// `strptime()`'s `ValueError` for a `%` with nothing, or only whitespace,
+    /// after it: `stray % in format '{format}'`.
+    #[must_use]
+    fn strptime_stray_percent(format: &str) -> RunError {
+        Self::value_error(format_args!("stray % in format '{format}'"))
+    }
+
+    /// The `ValueError` the `time` conversion functions raise for a time tuple
+    /// field outside its range: `{field} out of range`.
+    #[must_use]
+    fn time_field_out_of_range(field: &str) -> RunError {
+        Self::value_error(format_args!("{field} out of range"))
     }
 
     /// The `TypeError` the `time` conversion functions raise for a time tuple of
@@ -2034,6 +2063,18 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn overflow_c_long() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "Python int too large to convert to C long").into()
+    }
+
+    /// CPython's `i` format for an `i64` outside a C `int`:
+    /// `signed integer is less than minimum` / `signed integer is greater than maximum`.
+    #[must_use]
+    fn overflow_signed_c_int(value: i64) -> RunError {
+        let msg = if value < 0 {
+            "signed integer is less than minimum"
+        } else {
+            "signed integer is greater than maximum"
+        };
+        SimpleException::new_msg(ExcType::OverflowError, msg).into()
     }
 
     /// `OverflowError: Python int too large for C unsigned long`, from Argument
@@ -3287,6 +3328,12 @@ impl RunError {
     pub fn internal(msg: impl Into<Cow<'static, str>>) -> Self {
         Self::Internal(msg.into())
     }
+}
+
+/// CPython's `unhashable type: 'T'` message, raised by `hash()` and wrapped by
+/// the set element and dict key errors.
+pub(crate) fn unhashable_type_message(type_: &str) -> String {
+    format!("unhashable type: '{type_}'")
 }
 
 /// CPython's `ModuleNotFoundError` message for `module_name`.
