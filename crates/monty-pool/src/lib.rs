@@ -74,6 +74,7 @@ pub const DEFAULT_KEEP_ALIVE: Duration = Duration::from_mins(5);
 pub const DEFAULT_MAX_CHECKOUTS_PER_WORKER: u32 = 1000;
 
 /// Configuration for a [`Pool`].
+#[expect(clippy::struct_excessive_bools, reason = "independent on/off options")]
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
     /// Floor on live workers: spawned at pool creation, and replaced in the
