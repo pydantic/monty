@@ -4540,6 +4540,33 @@ async fn a_checkout_with_other_metadata_does_not_take_a_pre_warmed_session() {
     join_server(server).await;
 }
 
+/// At `max_processes`, a checkout with other metadata dials only once the
+/// server has ended the stale session's stream, so a one-session server never
+/// sees two streams.
+#[tokio::test]
+async fn a_checkout_with_other_metadata_waits_for_the_stale_session_to_close() {
+    let mock = MockServer::start().await;
+    let mut config = pre_warm_config(&mock, 1);
+    config.max_processes = 1;
+    config.pre_warm_metadata = Some(MetadataFn::new(|| ready(Ok(bearer("one")))));
+    let server = thread::spawn(move || {
+        let mut stale = mock.accept();
+        assert!(try_read_request(&mut stale).is_none(), "closed unused");
+        // the server still counts the stale stream until it ends it
+        assert!(mock.try_accept(Duration::from_millis(300)).is_none());
+        stale.close(None);
+        let mut own = mock.accept();
+        let authorization = own.metadata.get("authorization").and_then(|v| v.to_str().ok());
+        assert_eq!(authorization, Some("Bearer two"));
+        answer_requests(&mut own);
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    feed_once(&pool, CheckoutOptions::default().with_metadata(bearer("two"))).await;
+    pool.close().await;
+    join_server(server).await;
+}
+
 /// The trace headers the pool adds to a checkout's own dial are no part of the
 /// match: a traced checkout still takes a ready session.
 #[cfg(feature = "telemetry")]

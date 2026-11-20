@@ -12,7 +12,7 @@ use monty_proto::pb;
 use monty_types::ExecutionClock;
 use tokio::{
     runtime::Handle,
-    sync::Notify,
+    sync::{Notify, oneshot},
     time::{Instant, sleep_until, timeout, timeout_at},
 };
 
@@ -364,10 +364,7 @@ impl PoolInner {
                         died_idle += 1;
                         drop(worker); // kill-on-drop backstop; already dead
                     } else if remote && worker.dial_metadata != metadata {
-                        // its slot is freed at once so this checkout can take it
-                        // in this pass: freed later, a refill would race it for
-                        // the slot with metadata that still does not match
-                        state.total -= 1;
+                        // keeps its slot until the server has ended its stream
                         stale.push(worker);
                     } else {
                         reused = Some(worker);
@@ -383,8 +380,13 @@ impl PoolInner {
                 }
                 // reserve capacity before releasing the lock to spawn/connect
                 let below_cap = reused.is_none() && !await_refill && state.total < self.config.max_processes;
-                let id = if below_cap {
-                    state.total += 1;
+                // at the cap, take over a stale session's slot and dial once its
+                // stream has closed: freed instead, a refill could take the slot
+                let inherited = (reused.is_none() && !await_refill && !below_cap)
+                    .then(|| stale.pop())
+                    .flatten();
+                let id = if below_cap || inherited.is_some() {
+                    state.total += usize::from(below_cap);
                     let id = state.next_id;
                     state.next_id = id.checked_add(1).expect("worker identity exhausted");
                     Some(id)
@@ -398,13 +400,13 @@ impl PoolInner {
                 for _ in 0..died_idle {
                     self.count_termination("died_idle");
                 }
-                for _ in &stale {
-                    self.count_termination("stale_metadata");
+                let gone = died_idle + stale.len() + usize::from(inherited.is_some());
+                let closing = inherited.map(|worker| InheritedSlot::close(self, worker));
+                for worker in stale {
+                    self.close_remote(worker, "stale_metadata");
                 }
-                let gone = died_idle + stale.len();
-                drop(stale); // half-closes their streams
                 let spawned = i64::from(below_cap);
-                self.record_worker_delta(spawned - worker_count(gone), -worker_count(removed_idle));
+                self.record_worker_delta(spawned - worker_count(died_idle), -worker_count(removed_idle));
                 if gone > 0 {
                     self.replenish();
                 }
@@ -414,10 +416,13 @@ impl PoolInner {
                     self.replenish();
                     return Ok(worker);
                 }
-                id
+                id.map(|id| (id, closing))
             };
-            if let Some(id) = spawn {
+            if let Some((id, closing)) = spawn {
                 *outcome = if waited { "waited" } else { "spawned" };
+                if let Some(mut closing) = closing {
+                    closing.wait().await;
+                }
                 // guard the reserved slot: a failed — or cancelled, for the
                 // remote dial — spawn must release it or the pool shrinks
                 let capacity = CapacityGuard::new(self);
@@ -698,6 +703,56 @@ impl Drop for PoolInner {
         self.record_worker_delta(-worker_count(live), -worker_count(idle));
         for _ in 0..idle {
             self.count_termination("closed");
+        }
+    }
+}
+
+/// The slot of a stale pre-warmed session that a checkout takes over, held
+/// until the server has ended that session's stream. Dropped before then (the
+/// checkout was cancelled), the slot is freed once the stream has closed.
+struct InheritedSlot<'a> {
+    pool: &'a PoolInner,
+    closed: Option<oneshot::Receiver<()>>,
+}
+
+impl<'a> InheritedSlot<'a> {
+    /// Half-closes `worker`'s stream, keeping its slot for the caller.
+    fn close(pool: &'a PoolInner, mut worker: Worker) -> Self {
+        pool.count_termination("stale_metadata");
+        let (tx, closed) = oneshot::channel();
+        let weak = pool.this.clone();
+        worker.close_transport(move || {
+            // fails once the receiver is closed: no checkout will use the slot
+            if tx.send(()).is_err()
+                && let Some(pool) = weak.upgrade()
+            {
+                pool.release_capacity();
+            }
+        });
+        Self {
+            pool,
+            closed: Some(closed),
+        }
+    }
+
+    /// Waits for the stream to close; the slot is then the caller's.
+    async fn wait(&mut self) {
+        if let Some(closed) = &mut self.closed {
+            // an error means the callback was dropped uncalled, freeing nothing
+            let _ = closed.await;
+        }
+        self.closed = None;
+    }
+}
+
+impl Drop for InheritedSlot<'_> {
+    fn drop(&mut self) {
+        if let Some(mut closed) = self.closed.take() {
+            closed.close();
+            // the stream closed before the receiver did, so the slot is ours to free
+            if closed.try_recv().is_ok() {
+                self.pool.release_capacity();
+            }
         }
     }
 }
