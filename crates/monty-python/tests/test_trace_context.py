@@ -23,7 +23,8 @@ _SCENARIOS = Path(__file__).with_name('trace_context_scenarios.py')
 
 
 def run_scenario(name: str) -> dict[str, Any]:
-    result = subprocess.run([sys.executable, str(_SCENARIOS), name], check=True, capture_output=True, text=True)
+    # stderr is inherited, so a failing scenario's traceback reaches pytest's output
+    result = subprocess.run([sys.executable, str(_SCENARIOS), name], check=True, stdout=subprocess.PIPE, text=True)
     return json.loads(result.stdout)
 
 

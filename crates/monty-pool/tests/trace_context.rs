@@ -116,6 +116,57 @@ async fn a_suspension_carries_the_servers_span() {
     join(server).await;
 }
 
+/// Dumping a suspended session leaves the suspension, and the span the server
+/// named for it, in place for the callback that answers it.
+#[cfg(feature = "telemetry")]
+#[tokio::test]
+async fn a_dump_keeps_the_suspensions_span() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        read_request(&mut socket);
+        send_kind(&mut socket, pb::worker_event::Kind::Ok(pb::Ok {}));
+        read_request(&mut socket);
+        let event = pb::WorkerEvent {
+            kind: Some(pb::worker_event::Kind::FunctionCall(call(1))),
+            traceparent: Some(SERVER_CALL.to_owned()),
+            ..Default::default()
+        };
+        socket
+            .send(encode_to_capped_vec(&event).expect("encode event").into())
+            .expect("send event");
+        let dump = read_request(&mut socket);
+        assert!(
+            matches!(dump.kind, Some(pb::client_request::Kind::Dump(_))),
+            "got {dump:?}"
+        );
+        send_kind(
+            &mut socket,
+            pb::worker_event::Kind::DumpResult(pb::DumpResult {
+                state: b"state".to_vec().into(),
+            }),
+        );
+        read_request(&mut socket);
+        send_complete(&mut socket);
+        drain(&mut socket);
+    });
+
+    let (_pool, mut checkout) = remote_checkout(&url).await;
+    feed(&mut checkout, None).await;
+    assert_eq!(checkout.dump().await.expect("dump"), b"state");
+    assert_eq!(
+        callback_span(&checkout.callback_context()),
+        Traceparent::parse(SERVER_CALL).map(remote_span)
+    );
+    checkout
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+        .await
+        .expect("resume");
+    checkout.finish().await.expect("finish");
+    join(server).await;
+}
+
 /// Each streamed call carries the span the server named for it, as the value
 /// and as the context its handler runs under.
 #[tokio::test]

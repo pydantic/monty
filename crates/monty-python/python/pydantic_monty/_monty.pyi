@@ -1243,7 +1243,7 @@ class AsyncMontyRemote:
                 are lowercase ASCII and values ASCII, duplicate names are
                 last-wins, also over the `traceparent` the Logfire integration
                 adds, a `user-agent` entry is put in front of the default one,
-                a `traceparent` here names the span current at checkout, since
+                a `traceparent` entry applies to the session as a whole, since
                 each feed sends its own caller's span with its request,
                 and a malformed name or value raises `MontyConfigurationError` as the
                 session is entered.

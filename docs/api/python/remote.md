@@ -61,6 +61,8 @@ Each [`feed_run()`][pydantic_monty.AsyncMontySession.feed_run],
 OpenTelemetry span current where it was called, so a server that records the session parents that feed's spans to it.
 A server that records spans names its span for each external call, OS call and name lookup, and the host callback
 answering it runs with that span current: a span the callback starts is its child.
+With `instrument_telemetry()` the callback runs under Monty's own span for the call instead, which is a child of the
+server's.
 [`trace_context()`][pydantic_monty.FunctionSnapshot.trace_context] returns the same span for a manual handler.
 
 This needs only `opentelemetry-api`, not `instrument_telemetry()`.

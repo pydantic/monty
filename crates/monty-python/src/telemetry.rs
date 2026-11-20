@@ -166,7 +166,7 @@ pub(crate) fn capture_turn_options(py: Python<'_>) -> TurnOptions {
         let trace_id: u128 = span_context.getattr("trace_id").ok()?.extract().ok()?;
         let span_id: u64 = span_context.getattr("span_id").ok()?.extract().ok()?;
         let trace_flags: u8 = span_context.getattr("trace_flags").ok()?.extract().ok()?;
-        // zero IDs, an invalid span's, name no span
+        // an invalid span has zero IDs, which `Traceparent::new` rejects
         Traceparent::new(trace_id, span_id, trace_flags)
     })();
     TurnOptions::default().with_traceparent(traceparent)

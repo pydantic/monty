@@ -2261,7 +2261,8 @@ impl Checkout {
                 self.restored_script_name = Some(name.clone());
             }
             let traceparent = event.parsed_traceparent().filter(|_| is_suspension(&event));
-            if ends_turn(&event) {
+            // a `Dump` reply ends its turn with the suspension still pending
+            if ends_turn(&event) && !matches!(request.kind, Some(pb::client_request::Kind::Dump(_))) {
                 self.suspension_traceparent = traceparent;
             }
             match event.kind {

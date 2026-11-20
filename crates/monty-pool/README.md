@@ -254,12 +254,13 @@ feature, workers contain no telemetry recorder or telemetry hot path.
 ### Trace context
 
 The session span is a child of the span in `CheckoutOptions::telemetry`, the one current at checkout.
-A feed or restore started with `TurnOptions::traceparent` is a child of the span that names, not of the session span,
-and carries the session span's ID as `session_span_id`; without one it is a child of the session span.
+A feed or restore started with `TurnOptions::traceparent` is a child of the span that names, not of the session span;
+without one it is a child of the session span.
+A feed's span carries the session span's ID as `checkout_span_id`.
 A remote stream's `traceparent` metadata still names the checkout-time span.
 
-The request the pool sends names the recorder's own feed span when there is one, else the caller's
-`TurnOptions::traceparent`, so a server that records the session nests its spans under the right one.
+The request the pool sends names the recorder's own span for the turn (the feed's, or a restore's `load`) when
+there is one, else the caller's `TurnOptions::traceparent`, so a server that records the session nests its spans under the right one.
 A foreign SDK assigns its own span IDs, so an adapter reports them through `TelemetryAdapter::exported_span_context`;
 an adapter that cannot, such as one that creates spans asynchronously, leaves the caller's value on the request.
 
@@ -270,7 +271,7 @@ each `StreamedCall`.
 child of the peer's, or without a recorder the peer's span as a remote context.
 A recording pool driven through `Checkout::turn_raw` sets the field on the events it returns, which is how a server
 built on the pool names its spans to its clients.
-A malformed value from a peer is dropped.
+A malformed value from a peer is dropped, as is any value from a subprocess worker, which never records spans.
 
 ### Metrics
 
@@ -341,7 +342,7 @@ input so adapters that do not support metrics continue to work.
   `telemetry` feature the `traceparent` (and `tracestate`) of `CheckoutOptions::telemetry`,
   so server-side spans join the caller's trace; a `metadata` entry replaces the
   trace metadata and is put in front of the user agent. That metadata names the span current
-  at checkout; each feed names its own caller in the request (see [trace context](#trace-context)). A `Ping` event from the server is
+  at checkout; each feed and restore names its own span in the request (see [trace context](#trace-context)). A `Ping` event from the server is
   answered with a `Pong` request by the transport, even while the checkout sits idle, so a
   relay behind a proxy can tell a quiet client from a vanished one; the answer follows the
   events read before the ping, so a server pings between turns, where a slow host callback

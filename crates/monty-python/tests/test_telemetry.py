@@ -162,7 +162,7 @@ def test_standard_components_receive_session_tree():
     assert session.attributes['script_name'] == snapshot('calculation.py')
     assert run.attributes is not None
     assert run.attributes['code'] == snapshot("print('hello')\n1 + 2")
-    assert run.attributes['session_span_id'] == format(session.context.span_id, '016x')
+    assert run.attributes['checkout_span_id'] == format(session.context.span_id, '016x')
     assert run.attributes['sandbox.execution.code.attribute'] == snapshot('code')
     assert run.attributes['sandbox.execution.language'] == snapshot('python')
     assert run.attributes['output'] == snapshot(3)

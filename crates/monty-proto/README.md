@@ -147,7 +147,8 @@ Trace context crosses per message, as W3C `traceparent` values.
 `ClientRequest.traceparent` names the caller's span on a `Feed` or `Load`, including one a `Configure` carries.
 `WorkerEvent.traceparent` names the sender's span on `FunctionCall`, `OsCall`, `NameLookup` and `ResolveFutures`;
 `FunctionCall.traceparent` does so for each call in a `StreamedCalls` event.
-A server that records spans sets the event fields; a worker never does, and ignores the request's.
+A server that records spans sets the event fields, and may parent its own spans to the request's.
+The `monty` worker records no spans: it never sets the event fields and ignores the request's.
 The fields are advisory: execution does not depend on them, and `Traceparent::parse` and the `parsed_traceparent`
 accessors read anything but a well-formed version-`00` value as absent.
 `TracedRequest` and `OpeningRequest::with_traceparent` encode a borrowed request under another `traceparent`.

@@ -236,7 +236,7 @@ impl Recorder {
                     inputs = inputs,
                     skip_type_check = f.skip_type_check,
                     // the session span is not this span's parent when the caller named one
-                    session_span_id = self.session_span_id(),
+                    checkout_span_id = self.checkout_span_id(),
                     length_limit_exceeded = cut.then_some(true),
                     // declared empty here, filled in by the `Complete` event
                     // that closes this span
@@ -641,7 +641,7 @@ impl Recorder {
     }
 
     /// The session span's exported ID, as hex.
-    fn session_span_id(&self) -> Option<String> {
+    fn checkout_span_id(&self) -> Option<String> {
         let session = self.exported(self.session.as_ref()?)?;
         Some(format!("{:016x}", session.span_id()))
     }
@@ -1627,9 +1627,9 @@ mod tests {
         for (feed, sent) in feeds.iter().zip(sent) {
             assert_eq!(SpanId::from(sent.span_id()), feed.span_context.span_id());
             assert_eq!(TraceId::from(sent.trace_id()), feed.span_context.trace_id());
-            let session_span_id = feed.attributes.iter().find(|kv| kv.key.as_str() == "session_span_id");
+            let checkout_span_id = feed.attributes.iter().find(|kv| kv.key.as_str() == "checkout_span_id");
             assert_eq!(
-                session_span_id.map(|kv| kv.value.clone()),
+                checkout_span_id.map(|kv| kv.value.clone()),
                 Some(session_id.to_string().into())
             );
         }

@@ -370,10 +370,12 @@ impl Worker {
     /// module docs), which is what lets `Checkout` race a turn against its
     /// deadline.
     pub(crate) async fn recv(&mut self) -> Result<pb::WorkerEvent, FrameError> {
-        #[cfg_attr(not(feature = "telemetry"), expect(unused_mut))]
         let (mut event, len) = match &mut self.kind {
             WorkerKind::Subprocess(w) => match w.recv.recv(self.max_decode_bytes).await? {
-                Some(framed) => Ok(framed),
+                Some(mut framed) => {
+                    drop_worker_spans(&mut framed.0);
+                    Ok(framed)
+                }
                 None => Err(FrameError::Truncated), // clean EOF mid-checkout is still a vanished peer
             },
             // events come from the reader task; a channel recv is
@@ -587,6 +589,18 @@ impl FrameRecv {
     }
 }
 
+/// Removes the spans a subprocess worker's event names. Only a server that
+/// records spans names them; a worker's frames are untrusted, and a span taken
+/// from one would let sandbox output choose the trace host callbacks join.
+fn drop_worker_spans(event: &mut pb::WorkerEvent) {
+    event.traceparent = None;
+    if let Some(pb::worker_event::Kind::StreamedCalls(started)) = &mut event.kind {
+        for call in &mut started.calls {
+            call.traceparent = None;
+        }
+    }
+}
+
 /// Encoded size of a `ClientRequest.traceparent` field: key, length, value.
 #[cfg(feature = "telemetry")]
 const TRACEPARENT_FIELD_LEN: usize = 2 + 1 + 55;
@@ -607,3 +621,7 @@ pub(crate) fn decode_event(body: &[u8], max_decode_bytes: usize) -> Result<pb::W
         block_in_place(|| decode_frame_with_budget(body, max_decode_bytes))
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/worker.rs"]
+mod tests;
