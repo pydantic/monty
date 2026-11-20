@@ -27,7 +27,7 @@ use crate::{
         long_int::INT_MAX_STR_DIGITS,
         str::{StringRepr, allocate_string, string_repr_fmt},
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// Result type alias for operations that can produce a runtime error.
@@ -3729,9 +3729,15 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, PyException> {
                     HeapData::Tuple(t) => t.as_slice().len(),
                     _ => 0,
                 };
+                vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
                 let mut copied_items = TupleVec::with_capacity(len);
                 for i in 0..len {
-                    vm.heap.tracker.check_memory_time_every(i)?;
+                    if let Err(err) = vm.heap.tracker.check_memory_time_every(i) {
+                        for c in copied_items {
+                            c.drop_with(vm);
+                        }
+                        return Err(err.into());
+                    }
                     let item = match vm.heap.get(*tuple_id) {
                         HeapData::Tuple(t) => t.as_slice()[i].clone_with_heap(vm.heap),
                         _ => unreachable!(),
