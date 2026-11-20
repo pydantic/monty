@@ -9,7 +9,7 @@ mod binary;
 mod grpc_mock;
 
 #[cfg(feature = "telemetry")]
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::{
     fs,
     future::ready,
@@ -26,7 +26,7 @@ use grpc_mock::{MockServer, MockStream};
 use h2::server::handshake;
 use http::{Response as HttpResponse, StatusCode};
 #[cfg(feature = "telemetry")]
-use monty_pool::telemetry::{TelemetryAdapter, configure_telemetry_adapter};
+use monty_pool::telemetry::{TelemetryAdapter, TelemetryAdapterHandle, configure_telemetry_adapter};
 use monty_pool::{
     Checkout, CheckoutOptions, MetadataFn, MountSpec, MountSpecMode, Persistence, Pool, PoolConfig, PoolError,
     PrintFuture, RemoteCause, RemoteDisconnect, ReplConfig, ResumeValue, TurnEvent,
@@ -119,6 +119,13 @@ fn serve_capturing_headers(
         tx.send(seen).expect("send captured headers");
         answer_requests(&mut socket);
     }
+}
+
+/// The process's one telemetry adapter, which can be configured only once.
+#[cfg(feature = "telemetry")]
+fn telemetry_handle() -> &'static TelemetryAdapterHandle {
+    static HANDLE: OnceLock<TelemetryAdapterHandle> = OnceLock::new();
+    HANDLE.get_or_init(|| configure_telemetry_adapter(Arc::new(AcceptAll)).expect("configure"))
 }
 
 /// A telemetry adapter accepting every record, for tests that only care what
@@ -300,7 +307,7 @@ async fn user_agent_is_set_and_overridable() {
 #[cfg(feature = "telemetry")]
 #[tokio::test]
 async fn telemetry_context_is_propagated_on_the_dial() {
-    let handle = configure_telemetry_adapter(Arc::new(AcceptAll)).expect("configure");
+    let handle = telemetry_handle();
     let context = || {
         handle
             .context(
@@ -4464,35 +4471,90 @@ async fn a_pre_warmed_session_the_server_closed_is_skipped() {
     join_server(server).await;
 }
 
+/// Metadata naming `token` as the bearer credential.
+fn bearer(token: &str) -> Vec<(String, String)> {
+    vec![("authorization".to_owned(), format!("Bearer {token}"))]
+}
+
 /// The metadata function is called for each ready session the pool dials, and
-/// a checkout with other metadata still takes the ready session.
+/// a checkout with the same metadata takes one.
 #[tokio::test]
 async fn pre_warm_metadata_is_called_per_ready_session() {
     static CALLS: AtomicUsize = AtomicUsize::new(0);
     let mock = MockServer::start().await;
     let mut config = pre_warm_config(&mock, 1);
     config.pre_warm_metadata = Some(MetadataFn::new(|| {
-        let call = CALLS.fetch_add(1, Ordering::SeqCst) + 1;
-        Ok(vec![("authorization".to_owned(), format!("Bearer ready-{call}"))])
+        CALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(bearer("one"))
     }));
     let (tx, seen) = mpsc::channel();
     let server = thread::spawn(move || serve_ready_sessions(&mock, 2, &tx));
 
     let pool = Pool::new(config).await.expect("pool");
-    assert_eq!(
-        next_seen(&seen, 1).await,
-        [Seen::Opened(0, Some("Bearer ready-1".to_owned()))]
-    );
-    let options =
-        CheckoutOptions::default().with_metadata(vec![("authorization".to_owned(), "Bearer checkout".to_owned())]);
-    feed_once(&pool, options).await;
+    let ready = Some("Bearer one".to_owned());
+    assert_eq!(next_seen(&seen, 1).await, [Seen::Opened(0, ready.clone())]);
+    feed_once(&pool, CheckoutOptions::default().with_metadata(bearer("one"))).await;
     let reports = next_seen(&seen, 2).await;
     assert!(reports.contains(&Seen::Used(0)), "got {reports:?}");
-    assert!(
-        reports.contains(&Seen::Opened(1, Some("Bearer ready-2".to_owned()))),
-        "got {reports:?}"
-    );
+    assert!(reports.contains(&Seen::Opened(1, ready)), "got {reports:?}");
     assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+    pool.close().await;
+    join_server(server).await;
+}
+
+/// A checkout never runs on a session dialed with other metadata: the ready
+/// session is closed unused and replaced, and the checkout dials with its own.
+#[tokio::test]
+async fn a_checkout_with_other_metadata_does_not_take_a_pre_warmed_session() {
+    let mock = MockServer::start().await;
+    let mut config = pre_warm_config(&mock, 1);
+    config.pre_warm_metadata = Some(MetadataFn::new(|| Ok(bearer("one"))));
+    let (tx, seen) = mpsc::channel();
+    let server = thread::spawn(move || serve_ready_sessions(&mock, 3, &tx));
+
+    let pool = Pool::new(config).await.expect("pool");
+    assert_eq!(
+        next_seen(&seen, 1).await,
+        [Seen::Opened(0, Some("Bearer one".to_owned()))]
+    );
+    feed_once(&pool, CheckoutOptions::default().with_metadata(bearer("two"))).await;
+    // the checkout's own dial and the replacement open in either order
+    let mut reports = next_seen(&seen, 3).await;
+    let own = reports
+        .iter()
+        .find_map(|report| match report {
+            Seen::Opened(index, Some(token)) if token == "Bearer two" => Some(*index),
+            _ => None,
+        })
+        .expect("the checkout's own dial");
+    reports.retain(|report| !matches!(report, Seen::Opened(_, Some(token)) if token == "Bearer two"));
+    reports.sort_by_key(|report| matches!(report, Seen::Used(_)));
+    assert_eq!(
+        reports,
+        [Seen::Opened(3 - own, Some("Bearer one".to_owned())), Seen::Used(own)]
+    );
+    pool.close().await;
+    join_server(server).await;
+}
+
+/// The trace headers the pool adds to a checkout's own dial are no part of the
+/// match: a traced checkout still takes a ready session.
+#[cfg(feature = "telemetry")]
+#[tokio::test]
+async fn a_traced_checkout_takes_a_pre_warmed_session() {
+    let handle = telemetry_handle();
+    let context = handle
+        .context("0af7651916cd43dd8448eb211c80319c", "b7ad6b7169203331", 1, "")
+        .expect("context");
+    let mock = MockServer::start().await;
+    let config = pre_warm_config(&mock, 1);
+    let (tx, seen) = mpsc::channel();
+    let server = thread::spawn(move || serve_ready_sessions(&mock, 2, &tx));
+
+    let pool = Pool::new(config).await.expect("pool");
+    feed_once(&pool, CheckoutOptions::default().with_telemetry(Some(context))).await;
+    let reports = next_seen(&seen, 3).await;
+    assert!(reports.contains(&Seen::Used(0)), "got {reports:?}");
     pool.close().await;
     join_server(server).await;
 }

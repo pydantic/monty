@@ -40,11 +40,12 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
-`AsyncMontyRemote(url, pre_warm=2)` keeps two sessions open and ready, so a checkout takes one instead of dialing.
+`AsyncMontyRemote(url, pre_warm=2)` keeps two sessions open and ready, so a checkout takes one, or waits for one still
+dialing, instead of dialing.
 `__aenter__` waits for them to open, raising if one cannot (`pre_warm_wait=False` opens them in the background
 instead); they are replaced in the background as checkouts take them, and count against `max_processes`.
-`metadata` is called for each of these sessions as the pool dials it, from a pool thread; any checkout takes any ready
-session, and one that does sends no metadata of its own.
+`metadata` is called for each of these sessions as the pool dials it, from a pool thread; a checkout takes one only if
+its own `metadata` call returned the same value, and otherwise closes the ready sessions and dials for itself.
 
 `MontyDisconnectError` exposes `status_code`, `status_message`, `cause` and `transport_error` when available.
 These fields preserve the status the server ended the stream with, or the transport or protocol failure, not proof that

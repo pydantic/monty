@@ -1245,8 +1245,7 @@ class AsyncMontyRemote:
                 are lowercase ASCII and values ASCII, duplicate names are
                 last-wins, a `user-agent` entry is put in front of the default
                 one, and a malformed name or value raises
-                `MontyConfigurationError` as the session is entered. With
-                `pre_warm` it is not sent by a session that takes a ready one.
+                `MontyConfigurationError` as the session is entered.
             feed_duration_limit_grace: Client wall-time grace beyond
                 `max_feed_duration_secs` when the server uses wall time.
                 CPU mode uses the server's supervisor and grace instead.
@@ -1256,14 +1255,17 @@ class AsyncMontyRemote:
                 instead of dialing. `__aenter__` opens them (see `pre_warm_wait`)
                 and they are replaced in the background as checkouts take them; a
                 checkout waits for one already dialing. They count against
-                `max_processes`, so it must be at least `pre_warm`. A server
-                may close one that waits too long, which is then replaced.
-                `metadata` is also called for each of these sessions, from a
-                pool thread without the caller's contextvars. Any checkout takes
-                any ready session, and one that does sends no metadata of its own.
+                `max_processes`; a larger `pre_warm` raises
+                `MontyConfigurationError`. A server may close one that waits too
+                long, which is then replaced. `metadata` is also called for each
+                of these sessions, from a pool thread without the caller's
+                contextvars. A checkout takes one only if its own `metadata` call
+                returned the same value; otherwise it closes the ready sessions
+                and dials for itself, so this helps only while `metadata` is stable.
             pre_warm_wait: `__aenter__` waits until the `pre_warm` sessions are
                 open, raising if one cannot open (the default); `False` opens them
-                in the background instead.
+                in the background instead, where a failed open is retried with a
+                backoff and not raised.
             auto_resume: When a server that stores sessions drains one, open a
                 new stream, load the state it named into a new session and re-send the
                 request it did not run, instead of raising `MontyShutdown`; the

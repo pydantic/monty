@@ -336,11 +336,13 @@ input so adapters that do not support metrics continue to work.
   — it sent `GOAWAY` as it drained, refused the stream, or closed the connection before
   the stream was sent — is opened again, up to twice, within the same `request_timeout`. These workers are single-use:
   a fresh stream per checkout, never returned to the pool. `pre_warm` (0 by default) keeps that many
-  open and ready beyond those checked out: `Pool::new` opens them (in the background when
-  `pre_warm_wait` is off), each is replaced when a checkout takes it, and a checkout waits for one
-  already dialing rather than dialing. The pool calls `pre_warm_metadata` for each one it dials and
-  compares no metadata, so any checkout takes any ready session without sending
-  `CheckoutOptions::metadata`. `finish` half-closes
+  open and ready, sharing `max_processes` with those checked out: `Pool::new` opens them, failing if
+  one cannot open (in the background when `pre_warm_wait` is off, where a failed open is retried with
+  the refill backoff), and each is replaced when a checkout takes it. One checkout per session already
+  dialing waits for it rather than dialing. The pool calls `pre_warm_metadata` for each one it dials,
+  and a checkout takes one only if it was dialed with that checkout's `CheckoutOptions::metadata`
+  (the trace metadata below aside); otherwise it closes the ready sessions unused and dials for
+  itself. `finish` half-closes
   the stream and returns at once, but its `max_processes` slot is freed only when the server
   ends the stream (or after a second), so a full pool does not open its next stream while the
   server still counts the last one. At most `max_processes` closed streams wait like this;

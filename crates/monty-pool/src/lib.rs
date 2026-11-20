@@ -145,17 +145,18 @@ pub struct PoolConfig {
     /// outside every session's `max_memory`, wasted if sessions do not type-check.
     /// Subprocess transport only; off by default.
     pub prewarm_type_checker: bool,
-    /// Remote transport only: sessions kept open and ready beyond those checked
-    /// out (0 by default), counted against `max_processes`. A checkout takes one,
-    /// or waits for one already dialing, rather than dialing; each one taken is
-    /// replaced in the background. Any checkout takes any ready session.
+    /// Remote transport only: sessions kept open and ready (0 by default),
+    /// sharing `max_processes` with those checked out. A checkout takes one
+    /// dialed with its own metadata, or waits for one already dialing, rather
+    /// than dialing; each one taken is replaced in the background.
     pub pre_warm: usize,
     /// [`Pool::new`] opens the [`Self::pre_warm`] sessions itself, failing if one
-    /// cannot open, rather than in the background. On by default.
+    /// cannot open, rather than in the background, where a failed open is
+    /// retried with a backoff. On by default.
     pub pre_warm_wait: bool,
     /// Called for the request metadata of each [`Self::pre_warm`] session the pool
-    /// dials; `None` sends none. A checkout that takes a ready session does not
-    /// send its own [`CheckoutOptions::metadata`].
+    /// dials; `None` sends none. A checkout whose [`CheckoutOptions::metadata`]
+    /// differs closes the ready sessions unused and dials for itself.
     pub pre_warm_metadata: Option<MetadataFn>,
     /// Where pool and turn metrics are recorded, from
     /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).

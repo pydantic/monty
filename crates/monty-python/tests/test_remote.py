@@ -1064,7 +1064,7 @@ async def _wait_for(condition: Callable[[], bool]) -> None:
 async def test_pre_warm_opens_sessions_before_checkout():
     """`__aenter__` opens the pre-warmed sessions; a checkout takes one, and it is replaced."""
     async with _serve_recording() as (url, opened, used):
-        async with AsyncMontyRemote(url, request_timeout=30.0, pre_warm=2) as pool:
+        async with AsyncMontyRemote(url, request_timeout=30.0, pre_warm=2, max_processes=4) as pool:
             await _wait_for(lambda: len(opened) == 2)
             assert used == snapshot([])
             async with pool.checkout() as session:
@@ -1086,14 +1086,14 @@ async def test_a_checkout_waits_for_a_pre_warmed_session_still_opening():
 
 
 async def test_pre_warm_calls_metadata_for_each_ready_session():
-    """The pool calls `metadata` for each session it pre-warms; a checkout that takes
-    one does not send what its own call returned."""
+    """The pool calls `metadata` for each session it pre-warms, and a checkout whose own
+    call returned the same value takes one."""
     calls = 0
 
     def provide_metadata() -> dict[str, str]:
         nonlocal calls
         calls += 1
-        return {'authorization': f'Bearer {calls}'}
+        return {'authorization': 'Bearer one'}
 
     async with _serve_recording() as (url, opened, used):
         async with AsyncMontyRemote(url, request_timeout=30.0, pre_warm=1, metadata=provide_metadata) as pool:
@@ -1101,9 +1101,27 @@ async def test_pre_warm_calls_metadata_for_each_ready_session():
                 assert await session.feed_run('1 + 1') == snapshot(2)
             await _wait_for(lambda: len(opened) == 2)
             assert used == snapshot([0])
-    # the second call was the checkout's own, which took the ready session
-    assert [metadata['authorization'] for metadata in opened] == snapshot(['Bearer 1', 'Bearer 3'])
+    assert [metadata['authorization'] for metadata in opened] == snapshot(['Bearer one', 'Bearer one'])
+    # the two ready sessions, and the checkout's own call
     assert calls == snapshot(3)
+
+
+async def test_pre_warm_session_is_not_taken_with_other_metadata():
+    """A checkout never runs on a session opened with other metadata: a changed value
+    closes the ready session unused, and the checkout opens its own."""
+    token = 'Bearer one'
+
+    async with _serve_recording() as (url, opened, used):
+        async with AsyncMontyRemote(
+            url, request_timeout=30.0, pre_warm=1, metadata=lambda: {'authorization': token}
+        ) as pool:
+            await _wait_for(lambda: len(opened) == 1)
+            token = 'Bearer two'
+            async with pool.checkout() as session:
+                assert await session.feed_run('1 + 1') == snapshot(2)
+            await _wait_for(lambda: len(opened) == 3)
+            assert [opened[index]['authorization'] for index in used] == snapshot(['Bearer two'])
+    assert [metadata['authorization'] for metadata in opened] == snapshot(['Bearer one', 'Bearer two', 'Bearer two'])
 
 
 async def test_pre_warm_wait_raises_from_aenter_when_the_server_refuses():

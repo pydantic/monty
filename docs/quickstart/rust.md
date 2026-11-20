@@ -203,10 +203,13 @@ These are the poolable workers: prewarmed, reused across checkouts, replaced on 
 
 [`PoolConfig::remote`](../api/rust/monty-pool.md#poolconfig) reaches a remote worker over gRPC at an `http://`/`https://` URL: one HTTP/2 connection per pool, one `MontySession.Session` stream per checkout.
 Those workers are single-use, never returned to the pool, and isolation becomes the remote host's responsibility.
-`PoolConfig::pre_warm` (0 by default) keeps that many sessions open and ready beyond those checked out: `Pool::new` opens
-them (in the background when `pre_warm_wait` is off) and each is replaced when a checkout takes it.
-The pool calls `pre_warm_metadata` for each one it dials and does not compare metadata, so a checkout that takes a ready
-session does not send its own `CheckoutOptions::metadata`.
+`PoolConfig::pre_warm` (0 by default) keeps that many sessions open and ready, sharing `max_processes` with those
+checked out; a value above `max_processes` is a `PoolError::Configuration`.
+`Pool::new` opens them and fails if one cannot open; with `pre_warm_wait` off they open in the background, where a
+failed open is retried with a backoff.
+Each is replaced when a checkout takes it.
+The pool calls `pre_warm_metadata` for each one it dials, and a checkout takes one only if it was dialed with that
+checkout's `CheckoutOptions::metadata`; otherwise it closes the ready sessions unused and dials for itself.
 See [the security model](../security.md#remote-workers) before using it.
 
 ### Host decode budget
