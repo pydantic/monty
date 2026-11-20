@@ -226,6 +226,7 @@ struct PendingFeed {
 /// Drive it by reading framed [`pb::ClientRequest`]s from the host transport
 /// and passing each to [`Self::handle`] along with an [`EventSink`]; the worker
 /// streams `Print` and `StreamedCalls` events and one turn-ending event per request.
+#[expect(clippy::struct_excessive_bools, reason = "independent session and worker flags")]
 pub struct Worker {
     state: SessionState,
     /// Script name of the current session (used for error and type-check

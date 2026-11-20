@@ -143,9 +143,10 @@ Invalid snapshots have no correctness or availability guarantees.
   subprocess transport, `Some(1)` runs every session in a fresh process, which with
   `min_processes > 0` the background refill has usually spawned before the checkout asks.
 - **Prewarmed type checker** — `prewarm_type_checker` has each worker build a type checker with
-  the builtins resolved between checkouts, so a session's first type-checked feed skips that
+  the builtins resolved at startup and between checkouts, so a session's first type-checked feed skips that
   work; a checkout arriving mid-build waits for it. It costs
-  about 6 MiB per worker, counted in the worker's allocator baseline rather than any session's `max_memory`, and
+  about 6 MiB of allocator-tracked memory per worker, added to the worker's baseline rather than any session's
+  `max_memory`; it is not an RSS figure, so cap process memory with OS or cgroup limits. It
   is wasted when sessions do not type-check. Off by default; subprocess transport only.
 - **Memory limits** — a session's `max_memory` also caps the worker's live allocations,
   enforced in the worker's own global allocator
