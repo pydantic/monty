@@ -4,7 +4,7 @@
 //! functions for executing function calls. The main entry points are the `exec_*`
 //! methods which are called from the VM's main dispatch loop.
 
-use std::mem;
+use std::{array, mem};
 
 use monty_types::{MontyUuid, OsFunctionCall};
 
@@ -383,10 +383,11 @@ impl<'h> VM<'h> {
 
         let kw_count = names.len();
         let mut destinations = [EMPTY; Signature::MAX_DIRECT_KEYWORDS];
-        let (remaining, mut missing) =
+        let (remaining, missing) =
             func.signature
-                .keyword_default_slots(pos_count, names, &mut destinations[..kw_count])?;
-        let defaults_start = pos_count + remaining - function.defaults.len();
+                .keyword_default_slots(pos_count, names, &mut destinations[..kw_count], |name, param| {
+                    *name == param
+                })?;
 
         let callable = self.stack.remove(callable_index);
         let keyword_base = callable_index + pos_count;
@@ -403,11 +404,7 @@ impl<'h> VM<'h> {
                 destination = destinations[index];
             }
         }
-        while missing != 0 {
-            let slot = missing.trailing_zeros() as usize;
-            missing &= missing - 1;
-            values[slot] = function.defaults[pos_count + slot - defaults_start].clone_with_heap(self.heap);
-        }
+        fill_default_slots(values, &function.defaults, missing, self.heap);
 
         let frame_namespace = function_namespace(function.globals, self.heap);
         callable.drop_with(self);
@@ -496,12 +493,8 @@ impl<'h> VM<'h> {
         if arg_count > usize::from(u8::MAX) {
             return None;
         }
-        let stack_len = self.stack.len() - 2 + arg_count;
-        if stack_len > self.stack.capacity() {
-            let capacity = self.stack.capacity().saturating_mul(2).max(stack_len);
-            if let Err(error) = check_estimated_size(capacity.saturating_mul(VALUE_SIZE), &self.heap.tracker) {
-                return Some(Err(error.into()));
-            }
+        if let Err(error) = self.check_argument_stack_growth(self.stack.len() - 2 + arg_count) {
+            return Some(Err(error));
         }
 
         let source_owner = self.stack.pop().expect("unpack source");
@@ -518,6 +511,94 @@ impl<'h> VM<'h> {
         self.instruction_ip = ip + 1;
         self.current_frame.ip = ip + 3;
         Some(self.exec_call_function(arg_count))
+    }
+
+    /// Binds a final `**dict` directly when the merge has no earlier keywords.
+    /// Validation leaves the inputs intact so the general path reports binding and merge errors.
+    pub(super) fn try_call_unpacked_keywords(&mut self) -> Option<Result<CallResult, RunError>> {
+        let ip = self.current_frame.ip;
+        if !self
+            .current_frame
+            .bytecode
+            .get(ip..)?
+            .starts_with(&[Opcode::CallFunctionExtended as u8, 1])
+        {
+            return None;
+        }
+        let [callable, Value::Ref(args), Value::Ref(merged), Value::Ref(source)] = self.stack.last_chunk::<4>()? else {
+            return None;
+        };
+        let HeapData::Dict(merged) = self.heap.get(*merged) else {
+            return None;
+        };
+        let HeapData::Dict(source) = self.heap.get(*source) else {
+            return None;
+        };
+        let kw_count = source.len();
+        if !merged.is_empty() || kw_count > Signature::MAX_DIRECT_KEYWORDS {
+            return None;
+        }
+        let HeapData::Tuple(args) = self.heap.get(*args) else {
+            return None;
+        };
+        let pos_args = args.as_slice();
+        if pos_args.len() > usize::from(u8::MAX) {
+            return None;
+        }
+        let (func_id, defaults, globals) = match callable {
+            Value::DefFunction(id) => (*id, &[][..], None),
+            Value::Ref(id) => match self.heap.get(*id) {
+                HeapData::FunctionDefaults(function) => {
+                    (function.func_id, function.defaults.as_slice(), function.globals)
+                }
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let func = self.interns.get_function(func_id);
+        if func.is_async || !func.cell_var_slots.is_empty() || !func.free_var_slots.is_empty() {
+            return None;
+        }
+
+        let pairs = source.dense_pairs()?;
+        let keys = pairs.clone().map(|(key, _)| key.as_str_heap(self.heap, self.interns));
+        let mut slots = [0; Signature::MAX_DIRECT_KEYWORDS];
+        let destinations = &mut slots[..kw_count];
+        let (remaining, missing) =
+            func.signature
+                .keyword_default_slots(pos_args.len(), keys, destinations, |key, param| {
+                    *key == Some(self.interns.get_str(param))
+                })?;
+        let stack_base = self.stack.len() - 4;
+        if let Err(error) = self.check_argument_stack_growth(stack_base + func.namespace_size) {
+            return Some(Err(error));
+        }
+
+        let owners: [Value; 4] = array::from_fn(|_| self.stack.pop().expect("unpacked call operand"));
+        self.stack
+            .extend(pos_args.iter().map(|value| value.clone_with_heap(self.heap)));
+        let keyword_base = self.stack.len();
+        self.stack.resize_with(keyword_base + remaining, || Value::Undefined);
+        let values = &mut self.stack[keyword_base..];
+        for ((_, value), &mut slot) in pairs.zip(destinations) {
+            values[usize::from(slot)] = value.clone_with_heap(self.heap);
+        }
+        fill_default_slots(values, defaults, missing, self.heap);
+        let frame_namespace = function_namespace(globals, self.heap);
+        owners.drop_with(self);
+
+        self.instruction_ip = ip;
+        self.current_frame.ip = ip + 2;
+        Some(self.push_stack_function(func_id, func, stack_base, frame_namespace))
+    }
+
+    fn check_argument_stack_growth(&self, required: usize) -> RunResult<()> {
+        let capacity = self.stack.capacity();
+        if required > capacity {
+            let capacity = capacity.saturating_mul(2).max(required);
+            check_estimated_size(capacity.saturating_mul(VALUE_SIZE), &self.heap.tracker)?;
+        }
+        Ok(())
     }
 
     /// Executes `CallFunctionExtended` opcode.
@@ -1498,6 +1579,16 @@ impl<'h> VM<'h> {
             },
             _ => false,
         }
+    }
+}
+
+/// Copies the omitted trailing defaults into their vacant parameter slots.
+fn fill_default_slots(values: &mut [Value], defaults: &[Value], mut missing: u32, heap: &impl ContainsHeap) {
+    while missing != 0 {
+        let slot = missing.trailing_zeros() as usize;
+        missing &= missing - 1;
+        let default_index = defaults.len() - (values.len() - slot);
+        values[slot] = defaults[default_index].clone_with_heap(heap);
     }
 }
 

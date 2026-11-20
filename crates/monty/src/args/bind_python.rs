@@ -185,42 +185,57 @@ impl Signature {
         let positional_or_keyword_given = pos_count.checked_sub(self.pos_arg_count())?;
         let candidates = self.args.as_deref()?.get(positional_or_keyword_given..)?;
         debug_assert_eq!(candidates.len(), slots.len());
-        Self::map_keyword_slots(candidates, 0, names, slots).map(|_| ())
+        Self::map_keyword_slots(candidates, 0, names, slots, |name, param| *name == param).map(|_| ())
     }
 
     /// Returns the size of the unfilled suffix and a mask of slots needing defaults.
     /// Destination indices are relative to that suffix, including any positional-only slots.
-    pub(crate) fn keyword_default_slots(
+    pub(crate) fn keyword_default_slots<K>(
         &self,
         pos_count: usize,
-        names: impl ExactSizeIterator<Item = StringId>,
+        names: impl ExactSizeIterator<Item = K>,
         slots: &mut [u8],
+        name_matches: impl Fn(&K, StringId) -> bool,
     ) -> Option<(usize, u32)> {
         let remaining = self.fixed_positional_count()?.checked_sub(pos_count)?;
         if remaining < slots.len() || remaining > Self::MAX_DIRECT_KEYWORDS {
             return None;
         }
         let pos_only = self.pos_arg_count();
-        let candidates = self.args.as_deref()?.get(pos_count.saturating_sub(pos_only)..)?;
-        let occupied = Self::map_keyword_slots(candidates, pos_only.saturating_sub(pos_count), names, slots)?;
+        let candidates = self
+            .args
+            .as_deref()
+            .unwrap_or_default()
+            .get(pos_count.saturating_sub(pos_only)..)?;
+        let occupied = Self::map_keyword_slots(
+            candidates,
+            pos_only.saturating_sub(pos_count),
+            names,
+            slots,
+            name_matches,
+        )?;
 
-        let missing = (u32::MAX >> (Self::MAX_DIRECT_KEYWORDS - remaining)) & !occupied;
+        let shift = u32::try_from(Self::MAX_DIRECT_KEYWORDS - remaining).ok()?;
+        let missing = u32::MAX.checked_shr(shift).unwrap_or(0) & !occupied;
         let first_missing = pos_count + missing.trailing_zeros() as usize;
         (first_missing >= self.required_positional_count()).then_some((remaining, missing))
     }
 
-    fn map_keyword_slots(
+    fn map_keyword_slots<K>(
         candidates: &[StringId],
         offset: usize,
-        names: impl ExactSizeIterator<Item = StringId>,
+        names: impl ExactSizeIterator<Item = K>,
         slots: &mut [u8],
+        name_matches: impl Fn(&K, StringId) -> bool,
     ) -> Option<u32> {
         debug_assert_eq!(names.len(), slots.len());
         debug_assert!(offset + candidates.len() <= Self::MAX_DIRECT_KEYWORDS);
 
         let mut occupied = 0_u32;
         for (name, slot) in names.zip(slots) {
-            let index = candidates.iter().position(|&candidate| candidate == name)?;
+            let index = candidates
+                .iter()
+                .position(|&candidate| name_matches(&name, candidate))?;
             let index = u8::try_from(offset + index).ok()?;
             let bit = 1 << index;
             if occupied & bit != 0 {

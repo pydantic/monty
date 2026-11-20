@@ -780,6 +780,16 @@ impl Dict {
         self.into_iter()
     }
 
+    /// Borrows the pairs of a dict whose live entries occupy a contiguous slice.
+    pub(crate) fn dense_pairs(&self) -> Option<impl ExactSizeIterator<Item = (&Value, &Value)> + Clone> {
+        Some(
+            self.table
+                .dense_entries()?
+                .iter()
+                .map(|entry| (&entry.key, &entry.value)),
+        )
+    }
+
     /// Clones the pair after `cursor`, applying the dict iterator's guards.
     ///
     /// For Rust-side walks that run Python between steps and so cannot hold a

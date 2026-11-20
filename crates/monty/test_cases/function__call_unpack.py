@@ -25,6 +25,39 @@ assert exact(*left, *replace_left()) == (1, 2, 4)
 assert exact(*left) == (10, 2, 3)
 
 
+# === Direct dict unpacking ===
+assert exact(**{'b': 2, 'a': 1}) == (1, 2, 3)
+assert exact(1, **{'c': 4, 'b': 2}) == (1, 2, 4)
+assert exact(*(1,), **{'c': 4, 'b': 2}) == (1, 2, 4)
+assert exact(1, 2, **{}) == (1, 2, 3)
+assert (lambda: 42)(**{}) == 42
+
+
+def named(long_keyword_parameter):
+    return long_keyword_parameter
+
+
+prefix = 'long_keyword_'
+key = prefix + 'parameter'
+argument = []
+assert named(**{key: argument}) is argument
+
+sparse = {'unused': 0, 'a': 1, 'b': 2}
+sparse.pop('unused')
+assert exact(**sparse) == (1, 2, 3)
+
+try:
+    exact(**{'unknown': [], 1: []})
+    assert False, 'expected TypeError for a non-string keyword'
+except TypeError as e:
+    assert e.args == ('keywords must be strings',)
+
+source = {'a': 1}
+captured = f(**source)[1]
+captured['a'] = 2
+assert source == {'a': 1}
+
+
 # === Multiple *args ===
 assert f(*[1, 2], *[3, 4]) == ((1, 2, 3, 4), {})
 assert f(0, *[1, 2], 3) == ((0, 1, 2, 3), {})

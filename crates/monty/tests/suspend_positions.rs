@@ -140,9 +140,15 @@ fn a_one_shot_dump_carries_the_position() {
 
 #[test]
 fn an_unpacked_call_resumes_after_the_call_opcode() {
-    for sequence in ["[42]", "(42,)"] {
-        let code = format!("values = {sequence}\nfetch(*values) + 1");
-        let progress = start(&code);
+    for (code, host_call) in [
+        ("values = [42]\nfetch(*values) + 1", "fetch(*values)"),
+        ("values = (42,)\nfetch(*values) + 1", "fetch(*values)"),
+        (
+            "def relay(x, y=2):\n    return fetch(x + y)\nvalues = {'x': 40}\nrelay(**values) + 1",
+            "fetch(x + y)",
+        ),
+    ] {
+        let progress = start(code);
         let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
         let Session::Running(loaded) = Dump::load(&bytes).unwrap().state else {
             panic!("expected a running session");
@@ -155,7 +161,7 @@ fn an_unpacked_call_resumes_after_the_call_opcode() {
             (position, args_match, result.into_complete().unwrap())
         });
         for (position, args_match, value) in results {
-            assert_eq!(covered(&position, "test.py", &code), "fetch(*values)");
+            assert_eq!(covered(&position, "test.py", code), host_call);
             assert!(args_match);
             assert_eq!(value, MontyObject::int(101));
         }

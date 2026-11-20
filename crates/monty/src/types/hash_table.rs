@@ -238,6 +238,12 @@ impl<E: TableEntry> PyHashTable<E> {
         if self.is_empty() { &[] } else { &self.entries }
     }
 
+    /// The live slots, if reading them requires no tombstone scan.
+    pub(crate) fn dense_entries(&self) -> Option<&[E]> {
+        let slots = self.copy_slots();
+        (slots.len() == self.len()).then_some(slots)
+    }
+
     /// The live entries, in insertion order.
     ///
     /// The borrow is what makes this safe: nothing can mutate the table while

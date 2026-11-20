@@ -1583,7 +1583,14 @@ impl<'h> VM<'h> {
                 }
                 Opcode::DictMerge => {
                     let func_name_id = self.current_frame.fetch_u16();
-                    try_catch!(self, self.dict_merge(func_name_id));
+                    if countdown >= 1
+                        && let Some(result) = self.try_call_unpacked_keywords()
+                    {
+                        countdown -= 1;
+                        handle_call_result!(self, result);
+                    } else {
+                        try_catch!(self, self.dict_merge(func_name_id));
+                    }
                 }
                 Opcode::MethodDictMerge => {
                     let func_name_id = self.current_frame.fetch_u16();
