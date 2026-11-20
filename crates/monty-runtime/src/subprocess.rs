@@ -61,7 +61,8 @@ fn serve(prewarm_type_checker: bool) -> ExitCode {
     // set the memory baseline on the pristine worker: a session's first request
     // is decoded before its ceiling is armed, and must not count as overhead
     apply_memory_limit(&worker);
-    worker.warm_up();
+    let mut warm_up_failed = false;
+    warm_up(&mut worker, &mut warm_up_failed);
 
     loop {
         match reader.read::<pb::ClientRequest>() {
@@ -71,7 +72,7 @@ fn serve(prewarm_type_checker: bool) -> ExitCode {
                 match outcome {
                     // after the re-arm, so a `Reset` that dropped the checker has
                     // lowered the baseline before the new one is added to it
-                    Ok(HandleOutcome::Continue) => worker.warm_up(),
+                    Ok(HandleOutcome::Continue) => warm_up(&mut worker, &mut warm_up_failed),
                     Ok(HandleOutcome::Shutdown) => return ExitCode::SUCCESS,
                     // the worker emitted a FatalError (e.g. version skew) and cannot
                     // keep serving — exit non-zero so the client sees a clean cause
@@ -110,6 +111,20 @@ fn serve(prewarm_type_checker: bool) -> ExitCode {
                 fatal(&worker, &mut sink, &format!("malformed request frame: {err}"));
                 return ExitCode::from(EX_PROTOCOL);
             }
+        }
+    }
+}
+
+/// Runs [`Worker::warm_up`], warning on stderr the first time it fails.
+///
+/// The warm-up snippet is constant, so a failure repeats on every rebuild; `failed` keeps it to one line per worker.
+/// The worker keeps serving: the checker is still correct, only colder. Debug builds panic so tests catch the drift.
+fn warm_up(worker: &mut Worker, failed: &mut bool) {
+    if let Err(err) = worker.warm_up() {
+        debug_assert!(false, "type-checker warm-up failed: {err}");
+        if !*failed {
+            *failed = true;
+            eprintln!("warning: type-checker warm-up failed, sessions will type-check cold: {err}");
         }
     }
 }

@@ -27,7 +27,7 @@ const RESIDUE: usize = 3 * 1024 * 1024;
 fn consumed_warm_checker_keeps_residue_out_of_the_baseline() {
     let mut worker = Worker::with_prewarmed_type_checker();
     // the order `monty subprocess` uses: warm up, then arm after every request
-    worker.warm_up();
+    worker.warm_up().unwrap();
     arm(&worker);
     let mut residue = Vec::new();
     for _ in 0..3 {
@@ -53,7 +53,7 @@ fn consumed_warm_checker_keeps_residue_out_of_the_baseline() {
         assert!(matches!(fed, pb::worker_event::Kind::Complete(_)), "{fed:?}");
         residue.push(vec![1u8; RESIDUE]);
         request(&mut worker, pb::client_request::Kind::Reset(pb::Reset {}));
-        worker.warm_up();
+        worker.warm_up().unwrap();
 
         let after = BASELINE_MEMORY.load(Ordering::Relaxed);
         assert!(

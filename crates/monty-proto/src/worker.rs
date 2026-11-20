@@ -286,6 +286,8 @@ impl Worker {
     ///
     /// Trades roughly 6 MiB of idle memory per worker for skipping most of a session's first type check.
     /// Without type-checked sessions the warm checker is never used, so the memory is wasted.
+    /// An unused checker's cost stays in `BASELINE_MEMORY` after the worker drops, so keep one such worker
+    /// per process: a replacement's sessions get up to ~6 MiB extra headroom until the next arming.
     #[must_use]
     pub fn with_prewarmed_type_checker() -> Self {
         Self {
@@ -299,19 +301,24 @@ impl Worker {
     /// Call it at startup and after sending each turn-ending event, so the work falls between sessions;
     /// a request arriving mid-build waits for it.
     /// Its memory joins the worker baseline, so no session's `max_memory` pays for it.
-    pub fn warm_up(&mut self) {
+    ///
+    /// `Err` means the built-in warm-up snippet failed to check, a build bug rather than a runtime condition.
+    /// The checker is kept either way: it is still correct, only less warm, so callers should report and carry on.
+    pub fn warm_up(&mut self) -> Result<(), String> {
         if self.prewarm_type_checker
             && self.warm_checker.is_none()
             && matches!(self.state, SessionState::Configured(None))
         {
-            let (checker, cost) = measure_into_baseline(|| {
+            let ((checker, warmed), cost) = measure_into_baseline(|| {
                 let mut type_checker = TypeChecker::default();
-                // a diagnostic means the snippet drifted from the stubs; the checker is still warm
-                let _ = type_checker.warm_up();
-                type_checker
+                let warmed = type_checker.warm_up();
+                (type_checker, warmed)
             });
             self.warm_checker = Some(checker);
             self.warm_checker_cost = cost;
+            warmed
+        } else {
+            Ok(())
         }
     }
 
