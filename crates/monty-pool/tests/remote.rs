@@ -4497,6 +4497,31 @@ async fn a_pre_warmed_session_the_server_closes_is_replaced_without_a_checkout()
     join_server(server).await;
 }
 
+/// A server that ends every ready session at once is redialed with a backoff,
+/// not in a loop: the refill backoff starts at 100ms and doubles.
+#[tokio::test]
+async fn ready_sessions_the_server_ends_at_once_are_redialed_with_a_backoff() {
+    let mock = MockServer::start().await;
+    let config = pre_warm_config(&mock, 1);
+    let server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut opened = 0;
+        while let Some(stream) = mock.try_accept(deadline.saturating_duration_since(Instant::now())) {
+            stream.close(None);
+            opened += 1;
+        }
+        opened
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let opened = spawn_blocking(move || server.join().expect("server"))
+        .await
+        .expect("join");
+    // 0, 100, 300, 700ms: four opens in the first second, not hundreds
+    assert!((2..=5).contains(&opened), "opened {opened} streams");
+    drop(pool);
+}
+
 /// Metadata naming `token` as the bearer credential.
 fn bearer(token: &str) -> Vec<(String, String)> {
     vec![("authorization".to_owned(), format!("Bearer {token}"))]

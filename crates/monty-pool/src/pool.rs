@@ -380,6 +380,10 @@ impl PoolInner {
                     }
                 }
                 mismatched |= !stale.is_empty();
+                if reused.is_some() {
+                    // a ready worker a checkout takes proves refills healthy
+                    state.refill_failures = 0;
+                }
                 // a worker already starting will be ready before a new one
                 // would, so one checkout per refill waits for it
                 let await_refill = reused.is_none() && !mismatched && state.refilling > state.refill_claims;
@@ -519,13 +523,20 @@ impl PoolInner {
         });
     }
 
-    /// Drops ready session `id` once the server ends its stream, refilling at
-    /// once rather than leaving the next checkout to find it dead. A session a
-    /// checkout took first is no longer idle, so its end is ignored here.
-    fn evict_when_ended(&self, id: u64, ended: oneshot::Receiver<()>) {
+    /// Drops ready session `id` once the server ends its stream, refilling
+    /// rather than leaving the next checkout to find it dead; one that ends
+    /// before [`READY_HEALTHY`] counts as a failed refill, so refills back off.
+    /// A session a checkout took first is no longer idle, so its end is ignored.
+    fn evict_when_ended(&self, id: u64, mut ended: oneshot::Receiver<()>) {
         let pool = self.this.clone();
         self.runtime.spawn(async move {
-            let _ = ended.await;
+            let healthy = timeout(READY_HEALTHY, &mut ended).await.is_err();
+            if healthy {
+                if let Some(pool) = pool.upgrade() {
+                    lock_ignore_poison(&pool.state).refill_failures = 0;
+                }
+                let _ = ended.await;
+            }
             let Some(pool) = pool.upgrade() else { return };
             let worker = {
                 let mut state = lock_ignore_poison(&pool.state);
@@ -534,9 +545,13 @@ impl PoolInner {
             };
             if let Some(worker) = worker {
                 drop(worker);
-                pool.count_termination("died_idle");
                 pool.record_worker_delta(0, -1);
-                pool.release_capacity();
+                if healthy {
+                    pool.count_termination("died_idle");
+                    pool.release_capacity();
+                } else {
+                    pool.refill_failed("died_idle");
+                }
             }
         });
     }
@@ -598,7 +613,7 @@ impl PoolInner {
     /// doubles with each consecutive failure so a broken binary cannot become
     /// a spawn loop. Must run before the failed slot is released, since that
     /// release would otherwise start the next refill at once.
-    fn refill_failed(&self) {
+    fn refill_failed(&self, reason: &'static str) {
         let retry_at = {
             let mut state = lock_ignore_poison(&self.state);
             state.refill_failures = state.refill_failures.saturating_add(1);
@@ -620,7 +635,7 @@ impl PoolInner {
                 }
             });
         }
-        self.count_termination("refill_failed");
+        self.count_termination(reason);
         self.release_capacity();
     }
 }
@@ -644,7 +659,11 @@ async fn refill_one(pool: Weak<PoolInner>, config: PoolConfig, remote: Option<Ar
         worker.id = id;
         let ended = worker.take_ended();
         state.refilling -= 1;
-        state.refill_failures = 0;
+        // a remote session that opens may still be ended at once: it proves
+        // the server healthy only by staying up (see `evict_when_ended`)
+        if remote.is_none() {
+            state.refill_failures = 0;
+        }
         state.idle.push(worker);
         drop(state);
         slot.filled = true;
@@ -679,7 +698,7 @@ impl Drop for RefillSlot {
                 pool.count_termination("closed");
                 pool.release_capacity();
             } else {
-                pool.refill_failed();
+                pool.refill_failed("refill_failed");
             }
         }
     }
@@ -718,6 +737,10 @@ fn refill_backoff(failures: u32) -> Duration {
     let factor = 1u32.checked_shl(failures.saturating_sub(1)).unwrap_or(u32::MAX);
     REFILL_BACKOFF_MIN.saturating_mul(factor).min(REFILL_BACKOFF_MAX)
 }
+
+/// How long a ready remote session stays up before its server counts as
+/// healthy, resetting the refill backoff.
+const READY_HEALTHY: Duration = Duration::from_secs(10);
 
 /// First delay after a failed refill.
 const REFILL_BACKOFF_MIN: Duration = Duration::from_millis(100);

@@ -344,7 +344,7 @@ input so adapters that do not support metrics continue to work.
   dialing waits for it rather than dialing. The pool calls `pre_warm_metadata` for each one it dials,
   and a checkout takes one only if it was dialed with that checkout's `CheckoutOptions::metadata`
   (the trace metadata below aside); otherwise it closes the ready sessions unused and dials for
-  itself, at `max_processes` once the server has ended one of them. `finish` half-closes
+  itself (at `max_processes`, after waiting for the server to end one of them). `finish` half-closes
   the stream and returns at once, but its `max_processes` slot is freed only when the server
   ends the stream (or after a second), so a full pool does not open its next stream while the
   server still counts the last one. At most `max_processes` closed streams wait like this;

@@ -438,9 +438,6 @@ impl Worker {
         }
     }
 
-    /// Whether the worker has already died (used to discard workers that died
-    /// while idle in the pool): an exited child, or a pre-warmed remote session
-    /// whose stream has ended.
     /// Resolves when a remote worker's stream ends; `None` for a subprocess.
     pub(crate) fn take_ended(&mut self) -> Option<oneshot::Receiver<()>> {
         match &mut self.kind {
@@ -449,6 +446,9 @@ impl Worker {
         }
     }
 
+    /// Whether the worker has already died (used to discard workers that died
+    /// while idle in the pool): an exited child, or a pre-warmed remote session
+    /// whose stream has ended.
     pub(crate) fn is_dead(&mut self) -> bool {
         match &mut self.kind {
             WorkerKind::Subprocess(w) => w.child.try_wait().is_ok_and(|status| status.is_some()),
