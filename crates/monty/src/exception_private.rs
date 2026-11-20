@@ -3221,7 +3221,6 @@ impl PyException {
         Ok(SimpleException { exc_type, arg, data })
     }
 
-    /// Clones this exception, incrementing refcounts for all nested heap references.
     /// Clones this exception for shallow copying matching CPython's
     /// `BaseException.__reduce__`, keeping type, args, and attrs, but clearing
     /// `__cause__` and `__context__`.
@@ -3458,10 +3457,18 @@ impl<'h> HeapObjectRead<'h, PyException> {
                     HeapData::Tuple(t) => t.as_slice().len(),
                     _ => 0,
                 };
-                let all_strings = (0..len).all(|i| match vm.heap.get(*id) {
-                    HeapData::Tuple(t) => t.as_slice()[i].as_str(vm).is_some(),
-                    _ => false,
-                });
+                let mut all_strings = true;
+                for i in 0..len {
+                    vm.heap.tracker.check_memory_time_every(i)?;
+                    let is_str = match vm.heap.get(*id) {
+                        HeapData::Tuple(t) => t.as_slice()[i].as_str(vm).is_some(),
+                        _ => false,
+                    };
+                    if !is_str {
+                        all_strings = false;
+                        break;
+                    }
+                }
                 if all_strings {
                     for i in 0..len {
                         vm.heap.tracker.check_memory_time_every(i)?;

@@ -228,6 +228,7 @@ ei_re.__init__('new_msg')
 assert ei_re.name is None
 assert ei_re.path is None
 
+
 # Caught exception does not format argument with __str__
 class TrapStr:
     def __init__(self):
@@ -236,6 +237,7 @@ class TrapStr:
     def __str__(self):
         self.called = True
         return 'trap'
+
 
 trap = TrapStr()
 saved_caught = None
