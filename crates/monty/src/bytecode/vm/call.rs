@@ -564,6 +564,7 @@ impl<'h> VM<'h> {
         let [callable, Value::Ref(args), Value::Ref(merged), Value::Ref(source)] = self.stack.last_chunk::<4>()? else {
             return None;
         };
+        let source_id = *source;
         let HeapData::Dict(merged) = self.heap.get(*merged) else {
             return None;
         };
@@ -592,12 +593,14 @@ impl<'h> VM<'h> {
             _ => return None,
         };
         let func = self.interns.get_function(func_id);
-        if func.signature.has_variadic_parameters()
-            || func.is_async
-            || !func.cell_var_slots.is_empty()
-            || !func.free_var_slots.is_empty()
-        {
+        if func.is_async || !func.cell_var_slots.is_empty() || !func.free_var_slots.is_empty() {
             return None;
+        }
+        if func.signature.has_variadic_parameters() {
+            if func.signature.variadic_only().is_some() {
+                return None;
+            }
+            return self.try_call_bound_extended(Some((source_id, ip)));
         }
 
         let pairs = merged.dense_pairs()?.chain(source.dense_pairs()?);
@@ -648,7 +651,7 @@ impl<'h> VM<'h> {
         if let Some(result) = self.try_call_variadic_extended(has_kwargs) {
             return result;
         }
-        if has_kwargs && let Some(result) = self.try_call_bound_extended() {
+        if has_kwargs && let Some(result) = self.try_call_bound_extended(None) {
             return result;
         }
 
@@ -666,8 +669,12 @@ impl<'h> VM<'h> {
     }
 
     /// Binds the compiler's private argument containers directly into a synchronous frame.
-    fn try_call_bound_extended(&mut self) -> Option<Result<CallResult, RunError>> {
-        let [callable, Value::Ref(args_id), Value::Ref(kwargs_id)] = self.stack.last_chunk::<3>()? else {
+    fn try_call_bound_extended(
+        &mut self,
+        final_merge: Option<(HeapId, usize)>,
+    ) -> Option<Result<CallResult, RunError>> {
+        let stack_base = self.stack.len().checked_sub(3 + usize::from(final_merge.is_some()))?;
+        let [callable, Value::Ref(args_id), Value::Ref(kwargs_id)] = &self.stack[stack_base..stack_base + 3] else {
             return None;
         };
         let (args_id, kwargs_id) = (*args_id, *kwargs_id);
@@ -693,20 +700,46 @@ impl<'h> VM<'h> {
         let HeapData::Dict(kwargs) = self.heap.get(kwargs_id) else {
             return None;
         };
+        let source = match final_merge {
+            Some((id, _)) => match self.heap.get(id) {
+                HeapData::Dict(source) => Some(source),
+                _ => return None,
+            },
+            None => None,
+        };
         let positional_count = args.as_slice().len();
-        let keyword_count = kwargs.len();
+        let prefix_count = kwargs.len();
+        let keyword_count = prefix_count + source.map_or(0, Dict::len);
         if positional_count > usize::from(u8::MAX) || keyword_count > Signature::MAX_DIRECT_KEYWORDS {
             return None;
         }
-        let names = kwargs
+        let prefix_names = kwargs
             .dense_pairs()?
             .map(|(key, _)| key.as_str_heap(self.heap, self.interns));
         let mut destinations = [0; Signature::MAX_DIRECT_KEYWORDS];
         let destinations = &mut destinations[..keyword_count];
-        let binding = func
-            .signature
-            .extended_binding(positional_count, names, destinations, self.interns)?;
-        let stack_base = self.stack.len() - 3;
+        let binding = if let Some(source) = source {
+            let source_names = source
+                .dense_pairs()?
+                .map(|(key, _)| key.as_str_heap(self.heap, self.interns));
+            func.signature.extended_binding(
+                positional_count,
+                prefix_names.chain(source_names),
+                destinations,
+                self.interns,
+            )?
+        } else {
+            func.signature
+                .extended_binding(positional_count, prefix_names, destinations, self.interns)?
+        };
+        let (prefix_slots, source_slots) = destinations.split_at(prefix_count);
+        if let Some(source) = source
+            && prefix_slots.contains(&ExtendedBinding::EXTRA_KEYWORD)
+            && source_slots.contains(&ExtendedBinding::EXTRA_KEYWORD)
+            && kwargs.overlaps_keyword_keys(source, self.heap, self.interns)
+        {
+            return None;
+        }
         if let Err(error) = self.check_argument_stack_growth(stack_base + func.namespace_size) {
             return Some(Err(error));
         }
@@ -715,6 +748,7 @@ impl<'h> VM<'h> {
             Ok(items) => items.into_iter(),
             Err(error) => return Some(Err(error)),
         };
+        let source_owner = final_merge.map(|_| self.pop());
         let kwargs_owner = self.pop();
         self.pop().drop_with(self);
         let callable = self.pop();
@@ -728,27 +762,48 @@ impl<'h> VM<'h> {
         }
 
         let dict = self.heap.read_as::<Dict>(kwargs_id).expect("validated keyword dict");
-        if let Some(kwargs_slot) = binding.kwargs_slot {
+        if binding.kwargs_slot.is_some() {
             // The accumulator already owns the extras in insertion order.
-            for (index, &slot) in destinations.iter().enumerate() {
+            for (index, &slot) in prefix_slots.iter().enumerate() {
                 if slot != ExtendedBinding::EXTRA_KEYWORD {
                     let (key, value) = dict.get_mut(self.heap).take_keyword_at(index);
                     key.drop_with(self.heap);
                     self.stack[stack_base + usize::from(slot)] = value;
                 }
             }
-            // Frame admission can release the captured dict on recursion failure.
-            drop(dict);
-            self.stack[stack_base + kwargs_slot] = kwargs_owner;
         } else {
             let keywords = mem::take(dict.get_mut(self.heap));
-            for ((key, value), &slot) in keywords.into_iter().zip(destinations.iter()) {
+            for ((key, value), &slot) in keywords.into_iter().zip(prefix_slots) {
                 key.drop_with(self.heap);
                 self.stack[stack_base + usize::from(slot)] = value;
             }
-            drop(dict);
+        }
+        if let Some((source_id, ip)) = final_merge {
+            let source = self.heap.read_as::<Dict>(source_id).expect("validated keyword source");
+            for (index, &slot) in source_slots.iter().enumerate() {
+                if slot == ExtendedBinding::EXTRA_KEYWORD {
+                    dict.append_dense_keyword(&source, index, self.heap);
+                } else {
+                    let (_, value) = source
+                        .get(self.heap)
+                        .dense_pairs()
+                        .expect("validated keyword dict")
+                        .nth(index)
+                        .expect("validated keyword index");
+                    self.stack[stack_base + usize::from(slot)] = value.clone_with_heap(self.heap);
+                }
+            }
+            self.instruction_ip = ip;
+            self.current_frame.ip = ip + 2;
+        }
+        // Frame admission can release the captured dict on recursion failure.
+        drop(dict);
+        if let Some(slot) = binding.kwargs_slot {
+            self.stack[stack_base + slot] = kwargs_owner;
+        } else {
             kwargs_owner.drop_with(self);
         }
+        source_owner.drop_with(self);
 
         let defaults = match &callable {
             Value::Ref(id) => match self.heap.get(*id) {

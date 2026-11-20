@@ -349,6 +349,12 @@ impl<E: TableEntry> PyHashTable<E> {
         self.indices.is_empty()
     }
 
+    /// Reuses the slot buffer after all entries have been removed.
+    pub(crate) fn clear_empty_slots(&mut self) {
+        debug_assert!(self.is_empty());
+        self.entries.clear();
+    }
+
     /// Appends a live entry, dropping accumulated tombstones first if they have
     /// grown to half the slots.
     ///

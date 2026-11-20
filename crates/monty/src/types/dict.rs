@@ -635,6 +635,19 @@ impl Dict {
 }
 
 impl<'h> HeapReadMut<'h, Dict> {
+    /// Copies one known-distinct keyword from a compact source of at most 32 entries.
+    pub(crate) fn append_dense_keyword(&self, source: &HeapRead<'h, Dict>, index: usize, heap: &mut HeapReader<'h>) {
+        let source = source.get(heap);
+        let contains_refs = source.contains_refs;
+        let entry = source.table.dense_entries().expect("validated keyword dict")[index].clone_with_heap(heap);
+        let destination = self.get_mut(heap);
+        if destination.is_empty() {
+            destination.table.clear_empty_slots();
+        }
+        destination.contains_refs |= contains_refs;
+        destination.table.push(entry);
+    }
+
     /// Merges a compact, validated string-keyed source into a keyword accumulator.
     /// Returns the first duplicate in source order, before inserting that entry.
     pub(crate) fn merge_dense_keywords(
@@ -840,6 +853,19 @@ impl Dict {
                 .iter()
                 .map(|entry| (&entry.key, &entry.value)),
         )
+    }
+
+    /// Checks a compact, validated keyword source for duplicates without calling Python.
+    pub(crate) fn overlaps_keyword_keys(&self, source: &Self, heap: &Heap, interns: &Interns) -> bool {
+        let entries = source.table.dense_entries().expect("validated keyword dict");
+        entries.iter().any(|entry| {
+            let name = entry.key.as_str_heap(heap, interns).expect("validated keyword name");
+            self.table
+                .find(entry.hash, |candidate| {
+                    json_key_equals_str(&candidate.key, name, heap, interns)
+                })
+                .is_some()
+        })
     }
 
     /// Removes one named argument from a private keyword dict, preserving the other slots' indices.

@@ -177,7 +177,7 @@ impl Signature {
     pub(crate) fn extended_binding<'a>(
         &self,
         positional_count: usize,
-        names: impl ExactSizeIterator<Item = Option<&'a str>>,
+        names: impl Iterator<Item = Option<&'a str>>,
         destinations: &mut [u8],
         interns: &Interns,
     ) -> Option<ExtendedBinding> {
@@ -194,7 +194,7 @@ impl Signature {
         {
             return None;
         }
-        debug_assert_eq!(names.len(), destinations.len());
+        debug_assert_eq!(names.size_hint(), (destinations.len(), Some(destinations.len())));
         let positional_bound = positional_count.min(positional_slots);
         let mut occupied = parameter_mask(positional_bound);
         if let Some(slot) = args_slot {

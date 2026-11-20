@@ -76,6 +76,10 @@ def set_flag():
 assert combined(1, *sequence, flag=set_flag(), **mapping) == (1, (2, 3), True, {'key': 40})
 assert sequence == [20, 3]
 assert combined(1, *sequence, flag=True, **{}) == (1, (20, 3), True, {})
+captured = combined(1, *sequence, first=10, flag=True, **mapping)[3]
+assert list(captured) == ['first', 'key']
+captured['key'] = 50
+assert mapping == {'key': 40}
 
 
 def fixed(head, next_value, tail, flag):
@@ -89,6 +93,12 @@ try:
     assert False, 'expected TypeError for a repeated keyword'
 except TypeError as e:
     assert e.args == ("combined() got multiple values for keyword argument 'flag'",)
+
+try:
+    combined(1, *sequence, extra=[], **{'extra': []})
+    assert False, 'expected TypeError for a repeated captured keyword'
+except TypeError as e:
+    assert e.args == ("combined() got multiple values for keyword argument 'extra'",)
 
 try:
     combined(1, *sequence, **{'head': []})
