@@ -318,7 +318,13 @@ export class WorkerTransport {
     }
     const event = await this.run({ tag: 'load', val: state }, onPrint)
     if (!event) return this.crash()
-    return event.tag === 'ok' ? { kind: 'loaded' } : this.enforceLimits(this.toTurn(event), onPrint)
+    if (event.tag === 'ok') return { kind: 'loaded' }
+    const turn = this.toTurn(event)
+    // The dump's total counts a re-announced sleep: take it off so `chargeSleep` charges it again.
+    // Older dumps report nothing, and an aborted re-announcement is refunded by the worker.
+    const pending = sleepMicros(turn)
+    this.sleepUsedMicros = this.sleepUsedMicros > pending ? this.sleepUsedMicros - pending : 0n
+    return this.enforceLimits(turn, onPrint)
   }
 
   /** Resets a live worker for reuse and disposes a dead worker. */
@@ -386,8 +392,7 @@ export class WorkerTransport {
    */
   private chargeSleep(turn: NativeTurn): string | null {
     if (turn.kind !== 'osCall' || turn.systemSleepSecs === undefined) return null
-    const micros = BigInt(Math.round(turn.systemSleepSecs * 1_000_000))
-    const total = this.sleepUsedMicros + micros
+    const total = this.sleepUsedMicros + sleepMicros(turn)
     if (this.sleepLimitMicros !== undefined && total > this.sleepLimitMicros) {
       return `sleep limit exceeded: ${durationDebug(total)} > ${durationDebug(this.sleepLimitMicros)}`
     }
@@ -433,12 +438,13 @@ export class WorkerTransport {
         this.exitStatus = result.exitStatus ?? undefined
       }
       // the component reports the limit in force (the configured one, else
-      // the 1000 default; a dump's on load), so it is adopted from the reply
+      // the 1000 default; a dump's on load), so it is adopted from the reply;
+      // so is the time a dump already slept
       if (request.tag === 'configure' || request.tag === 'load') {
         this.suspensionLimit = tighter(this.suspensionLimit, result.maxSuspensions)
         this.suspensionsSeen = 0n
         this.sleepLimitMicros = tighter(this.configuredSleepLimitMicros, result.maxTotalSleepMicros)
-        this.sleepUsedMicros = 0n
+        this.sleepUsedMicros = request.tag === 'load' ? result.totalSleepMicros : 0n
       }
       events = result.events
     } catch (error) {
@@ -666,6 +672,13 @@ function isSuspension(turn: NativeTurn): boolean {
     turn.kind === 'nameLookup' ||
     turn.kind === 'resolveFutures'
   )
+}
+
+/** The capped `'system'` sleep a turn asks for, in microseconds; zero for any other turn. */
+function sleepMicros(turn: NativeTurn): bigint {
+  return turn.kind === 'osCall' && turn.systemSleepSecs !== undefined
+    ? BigInt(Math.round(turn.systemSleepSecs * 1_000_000))
+    : 0n
 }
 
 /** Converts a host return value and its arena, turning conversion failures

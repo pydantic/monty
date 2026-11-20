@@ -634,4 +634,5 @@ export interface DispatchResult {
   feedExecutionMicros: bigint
   maxFeedDurationMicros?: bigint
   maxTurnDurationMicros?: bigint
+  totalSleepMicros: bigint
 }

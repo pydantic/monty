@@ -34,8 +34,8 @@ test('wasm transport discards shutdown replies but preserves fatal diagnostics',
     const transport = await WorkerTransport.create(async (request) => {
       requests.push(request.tag)
       return request.tag === 'configure'
-        ? { status: 'continue', events: [{ tag: 'ok' }], feedExecutionMicros: 0n }
-        : { status: 'shutdown', events, feedExecutionMicros: 0n, exitStatus: 'exit code: 7' }
+        ? { status: 'continue', events: [{ tag: 'ok' }], feedExecutionMicros: 0n, totalSleepMicros: 0n }
+        : { status: 'shutdown', events, feedExecutionMicros: 0n, totalSleepMicros: 0n, exitStatus: 'exit code: 7' }
     })
     const releases: boolean[] = []
     transport.onFinish = (reusable) => {
@@ -60,6 +60,7 @@ test('shutdown during Configure preserves the fatal diagnostic', async () => {
         status: 'shutdown',
         events: [{ tag: 'fatal-error', val: 'configuration failed' }],
         feedExecutionMicros: 0n,
+        totalSleepMicros: 0n,
         exitStatus: 'exit code: 7',
       })),
     { instanceOf: TransportCrashedError },
@@ -124,7 +125,7 @@ test.each([new Error('spawn failed'), 'spawn failed', undefined])(
           alive: true,
           terminate() {},
           async dispatch() {
-            return { status: 'continue', events: [{ tag: 'ok' }], feedExecutionMicros: 0n }
+            return { status: 'continue', events: [{ tag: 'ok' }], feedExecutionMicros: 0n, totalSleepMicros: 0n }
           },
         }
       },

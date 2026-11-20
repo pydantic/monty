@@ -517,7 +517,7 @@ pub struct Checkout {
 }
 
 /// Client-enforced limits from `Configure` or the first reply after `Load`.
-/// Restoring resets suspension and sleep totals, but keeps every limit as a ceiling:
+/// Restoring resets the suspension count and adopts the dump's sleep total, but keeps every limit as a ceiling:
 /// untrusted worker replies, including the `Load` reply, can only tighten them.
 #[derive(Clone, Copy)]
 struct SessionBudget {
@@ -547,7 +547,8 @@ struct SessionBudget {
     /// Client-enforced ceiling on each system sleep, even from a compromised worker.
     /// Uses the configured maximum, or the default for other modes because a restored dump may sleep.
     system_sleep_max: Duration,
-    /// Capped system sleep accepted so far; `charge_sleep` refuses a sleep that would exceed `sleep_limit`.
+    /// Capped system sleep accepted so far, seeded from the dump on restore;
+    /// `charge_sleep` refuses a sleep that would exceed `sleep_limit`.
     sleep_used: Duration,
 }
 
@@ -574,7 +575,7 @@ impl SessionBudget {
     }
 
     /// Clears consumption before adopting a dump's budget. The limits stay:
-    /// they are the ceilings on the dump's.
+    /// they are the ceilings on the dump's. Sleep usage is then taken from the `Load` reply.
     fn forget(&mut self) {
         *self = Self {
             execution_clock: self.execution_clock,
@@ -642,10 +643,29 @@ impl SessionBudget {
         (is_suspension(event) && self.suspensions_seen > self.suspension_limit).then_some(self.suspension_limit)
     }
 
+    /// Adopts the time a restored dump already slept, as reported by a `Load` reply.
+    /// The dump's total counts a re-announced sleep, so it is taken off here and charged again
+    /// by `charge_sleep`: older dumps report nothing, and an aborted re-announcement is refunded.
+    fn adopt_sleep_used(&mut self, event: &pb::WorkerEvent) {
+        let pending = self.system_sleep(event).unwrap_or_default();
+        self.sleep_used = Duration::from_micros(event.total_sleep_micros).saturating_sub(pending);
+    }
+
     /// Charges a capped system sleep; other events, including `CallHost` sleeps, are free.
     /// Returns `Some((limit, total))` without charging if the caller must refuse the sleep.
-    /// Invalid worker delays count as the ceiling.
     fn charge_sleep(&mut self, event: &pb::WorkerEvent) -> Option<(Duration, Duration)> {
+        let total = self.sleep_used.saturating_add(self.system_sleep(event)?);
+        match self.sleep_limit {
+            Some(limit) if total > limit => Some((limit, total)),
+            _ => {
+                self.sleep_used = total;
+                None
+            }
+        }
+    }
+
+    /// The capped delay of a system sleep event; invalid worker delays count as the ceiling.
+    fn system_sleep(&self, event: &pb::WorkerEvent) -> Option<Duration> {
         let seconds = match &event.kind {
             Some(pb::worker_event::Kind::OsCall(call)) => match call.call {
                 Some(pb::os_call::Call::SystemSleep(pb::os_call::Sleep { seconds })) => seconds,
@@ -654,15 +674,7 @@ impl SessionBudget {
             },
             _ => return None,
         };
-        let delay = self.cap_system_sleep(Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX));
-        let total = self.sleep_used.saturating_add(delay);
-        match self.sleep_limit {
-            Some(limit) if total > limit => Some((limit, total)),
-            _ => {
-                self.sleep_used = total;
-                None
-            }
-        }
+        Some(self.cap_system_sleep(Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX)))
     }
 
     fn cap_system_sleep(&self, delay: Duration) -> Duration {
@@ -1667,6 +1679,7 @@ impl Checkout {
             if matches!(event.kind, Some(pb::worker_event::Kind::Ok(_))) || is_suspension(event) {
                 // Restore seeds saved VM usage. Live turns use OS measurements.
                 self.budget.observed_feed_execution = Duration::from_micros(event.feed_execution_micros);
+                self.budget.adopt_sleep_used(event);
             } else {
                 self.budget = saved;
             }
@@ -1867,9 +1880,8 @@ impl Checkout {
         let expected = self.pending.as_ref().map(PendingKey::of);
         let timeout = self.pool.config.request_timeout;
         let mut no_print = on_print_sync(|_, _| {});
-        // a re-announced suspension counts and charges itself again on arrival,
-        // as after `restore`: let it through on zeroed totals, then put the
-        // session's true totals back
+        // a re-announced suspension counts and charges itself again on arrival:
+        // let it through on zeroed totals, then put the session's true totals back
         let (suspensions_seen, sleep_used) = (self.budget.suspensions_seen, self.budget.sleep_used);
         self.budget.suspensions_seen = 0;
         self.budget.sleep_used = Duration::ZERO;
