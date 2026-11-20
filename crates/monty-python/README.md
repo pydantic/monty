@@ -149,6 +149,14 @@ with Monty() as pool:
         #> greet(x)
 ```
 
+## Trace context for remote sessions
+
+Each `feed_run`, `feed_start` and load on an `AsyncMontyRemote` session sends the W3C `traceparent` of the current
+OpenTelemetry span, so a server that records the session parents that feed's spans to it.
+When the server names its span for a call, the host callback runs with that span current.
+This needs `opentelemetry-api` only, not `instrument_telemetry()`; without the package, or without a current span,
+nothing is sent.
+
 ## Tracing snapshot handlers
 
 All sync and async snapshot types provide `snapshot.trace_context()` for manual handlers.

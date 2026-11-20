@@ -154,13 +154,15 @@ def test_standard_components_receive_session_tree():
     run, session = spans
     assert session.parent is not None
     assert (session.parent.trace_id, session.parent.span_id) == snapshot((1, 2))
+    # the feed is a child of the span it was called under, not of the session
     assert run.parent is not None
+    assert (run.parent.trace_id, run.parent.span_id) == snapshot((1, 2))
     assert session.context is not None
-    assert run.parent.span_id == session.context.span_id
     assert session.attributes is not None
     assert session.attributes['script_name'] == snapshot('calculation.py')
     assert run.attributes is not None
     assert run.attributes['code'] == snapshot("print('hello')\n1 + 2")
+    assert run.attributes['session_span_id'] == format(session.context.span_id, '016x')
     assert run.attributes['sandbox.execution.code.attribute'] == snapshot('code')
     assert run.attributes['sandbox.execution.language'] == snapshot('python')
     assert run.attributes['output'] == snapshot(3)

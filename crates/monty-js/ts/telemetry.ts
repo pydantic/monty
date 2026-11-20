@@ -29,7 +29,7 @@ import {
   _montyVersion as montyVersion,
   _setTelemetryMetricsEnabled as setNativeMetricsEnabled,
 } from '../native-addon.js'
-import { setCallbackContextHandlers } from './callbackContext.js'
+import { remoteCallbackSpan, setCallbackContextHandlers } from './callbackContext.js'
 
 const OTEL_SCOPE = '@pydantic/monty'
 const OTEL_VERSION = montyVersion()
@@ -169,7 +169,11 @@ function withCallbackContext<T>(parent: string | undefined, callback: () => T): 
 
 /** Resolves a live suspension or print callback's parent to its host span. */
 function callbackSpan(parent: string | undefined): Span | undefined {
-  return parent === undefined || spansDisabled ? undefined : spans.get(parent)?.span
+  if (parent === undefined) {
+    return undefined
+  }
+  // a span Monty recorded here, else the span a server named for the suspension
+  return (spansDisabled ? undefined : spans.get(parent)?.span) ?? remoteCallbackSpan(parent)
 }
 
 /**

@@ -25,10 +25,12 @@ use std::{
 };
 
 use monty_proto::{
-    DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, OpeningRequest, decode_frame_with_budget, encode_framed_into,
-    pb,
+    DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, OpeningRequest, TracedRequest, decode_frame_with_budget,
+    encode_framed_into, encode_to_capped_vec, pb,
 };
 use monty_types::ExecutionClock;
+#[cfg(feature = "telemetry")]
+use prost::Message;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -226,14 +228,34 @@ impl Worker {
     ) -> Result<(), FrameError> {
         let frame = opening
             .map(|configure| OpeningRequest::new(configure, request).expect("only a `Feed` or `Load` opens a session"));
+        #[cfg(feature = "telemetry")]
+        let recorded = self.record_turn_start(request, opening, frame.as_ref());
+        // the recorder's span for the turn, which the request names instead of its caller's
+        #[cfg(feature = "telemetry")]
+        let replacement = self
+            .recorder
+            .as_ref()
+            .filter(|_| recorded)
+            .and_then(|recorder| recorder.turn_traceparent(request));
+        #[cfg(not(feature = "telemetry"))]
+        let replacement = None;
+        let frame = match (frame, replacement) {
+            (Some(frame), Some(traceparent)) => Some(frame.with_traceparent(traceparent)),
+            (frame, _) => frame,
+        };
+        let traced = match (&frame, replacement) {
+            (None, Some(traceparent)) => Some(TracedRequest::new(request, traceparent)),
+            _ => None,
+        };
         let result = match &mut self.kind {
             WorkerKind::Subprocess(w) => {
                 // prefix + body in one reused buffer: a single write syscall
                 // per request, no per-frame allocation, and a pipe write needs
                 // no flush
-                match &frame {
-                    Some(frame) => encode_framed_into(frame, &mut w.send_buf),
-                    None => encode_framed_into(request, &mut w.send_buf),
+                match (&frame, &traced) {
+                    (Some(frame), _) => encode_framed_into(frame, &mut w.send_buf),
+                    (None, Some(traced)) => encode_framed_into(traced, &mut w.send_buf),
+                    (None, None) => encode_framed_into(request, &mut w.send_buf),
                 }?;
                 w.stdin.write_all(&w.send_buf).await?;
                 // body only, matching the remote transport and both receive
@@ -245,13 +267,20 @@ impl Worker {
                 }
                 Ok(len)
             }
-            WorkerKind::Remote(w) => w.send(request, frame.as_ref()).await,
+            WorkerKind::Remote(w) => {
+                let body = match (&frame, &traced) {
+                    (Some(frame), _) => encode_to_capped_vec(frame),
+                    (None, Some(traced)) => encode_to_capped_vec(traced),
+                    (None, None) => encode_to_capped_vec(request),
+                }?;
+                w.send(body).await
+            }
         };
         // record only requests that hit the wire: a rejected oversize frame
         // leaves the turn (and any pending suspension) exactly where it was
         #[cfg(feature = "telemetry")]
         if let Ok(len) = result {
-            if let Some(recorder) = &mut self.recorder {
+            if let (Some(recorder), false) = (&mut self.recorder, recorded) {
                 if let Some(opening) = opening {
                     recorder.begin_session(opening);
                 }
@@ -272,6 +301,35 @@ impl Worker {
             }
         }
         result.map(drop)
+    }
+
+    /// Records a `Feed` or `Load` before it is encoded, so the request can name
+    /// the span it opened, and returns whether it did. Other requests, and one
+    /// that may be rejected as oversize, are recorded once the frame is out.
+    #[cfg(feature = "telemetry")]
+    fn record_turn_start(
+        &mut self,
+        request: &pb::ClientRequest,
+        opening: Option<&pb::Configure>,
+        frame: Option<&OpeningRequest<'_>>,
+    ) -> bool {
+        let starts_turn = matches!(
+            request.kind,
+            Some(pb::client_request::Kind::Feed(_) | pb::client_request::Kind::Load(_))
+        );
+        // the frame may grow by one `traceparent` field
+        let len = frame.map_or_else(|| request.encoded_len(), Message::encoded_len) + TRACEPARENT_FIELD_LEN;
+        let fits = u32::try_from(len).is_ok_and(|len| len <= MAX_FRAME_LEN);
+        match &mut self.recorder {
+            Some(recorder) if starts_turn && fits => {
+                if let Some(opening) = opening {
+                    recorder.begin_session(opening);
+                }
+                recorder.begin_turn(request);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Copies the first recorded stream failure before teardown can add a
@@ -312,7 +370,8 @@ impl Worker {
     /// module docs), which is what lets `Checkout` race a turn against its
     /// deadline.
     pub(crate) async fn recv(&mut self) -> Result<pb::WorkerEvent, FrameError> {
-        let (event, len) = match &mut self.kind {
+        #[cfg_attr(not(feature = "telemetry"), expect(unused_mut))]
+        let (mut event, len) = match &mut self.kind {
             WorkerKind::Subprocess(w) => match w.recv.recv(self.max_decode_bytes).await? {
                 Some(framed) => Ok(framed),
                 None => Err(FrameError::Truncated), // clean EOF mid-checkout is still a vanished peer
@@ -326,6 +385,7 @@ impl Worker {
         #[cfg(feature = "telemetry")]
         if let Some(recorder) = &mut self.recorder {
             recorder.event(&event);
+            recorder.stamp(&mut event);
         }
         #[cfg(feature = "telemetry")]
         if let Some(metrics) = &mut self.metrics {
@@ -526,6 +586,10 @@ impl FrameRecv {
         }
     }
 }
+
+/// Encoded size of a `ClientRequest.traceparent` field: key, length, value.
+#[cfg(feature = "telemetry")]
+const TRACEPARENT_FIELD_LEN: usize = 2 + 1 + 55;
 
 /// Decodes one complete frame body, synchronously on the current thread.
 ///

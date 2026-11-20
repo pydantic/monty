@@ -54,6 +54,24 @@ Restoring a suspended call re-announces it even if the host already executed the
 can happen twice.
 Neither exception occurs on the local subprocess transport.
 
+## Trace context
+
+Each [`feed_run()`][pydantic_monty.AsyncMontySession.feed_run],
+[`feed_start()`][pydantic_monty.AsyncMontySession.feed_start] and load sends the W3C `traceparent` of the
+OpenTelemetry span current where it was called, so a server that records the session parents that feed's spans to it.
+A server that records spans names its span for each external call, OS call and name lookup, and the host callback
+answering it runs with that span current: a span the callback starts is its child.
+[`trace_context()`][pydantic_monty.FunctionSnapshot.trace_context] returns the same span for a manual handler.
+
+This needs only `opentelemetry-api`, not `instrument_telemetry()`.
+Nothing is sent when `opentelemetry-api` is not installed or no span is current, and a server that names no span
+leaves callbacks in the caller's context.
+`metadata` is still sent once per session; a `traceparent` there names the span current at checkout, which a server
+uses as the parent of its session span.
+
+Against a server that records the session, calling `instrument_telemetry()` as well records every span twice, once
+on each side.
+
 ## Stored sessions
 
 A server that stores sessions gives each one an opaque ID instead of sending its state back.

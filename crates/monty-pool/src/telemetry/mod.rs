@@ -28,6 +28,7 @@ use logfire::{
     config::{AdvancedOptions, MetricsOptions},
 };
 pub use metrics::{Measurement, MetricKind, MetricValue, Metrics};
+use monty_proto::Traceparent;
 use opentelemetry::{
     Context, InstrumentationScope,
     trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState},
@@ -51,6 +52,7 @@ pub struct TelemetryAdapterHandle {
     /// The one instrument set every pool built from this handle shares, so
     /// worker counters total over all of them.
     metrics: Metrics,
+    adapter: Arc<dyn TelemetryAdapter>,
 }
 
 /// Distributed parent context and recorder for one checkout root.
@@ -58,6 +60,8 @@ pub struct TelemetryAdapterHandle {
 pub struct TelemetryContext {
     parent: Option<SpanContext>,
     logfire: Logfire,
+    /// The bridge re-creating spans in a foreign SDK, which assigns its own span IDs.
+    adapter: Option<Arc<dyn TelemetryAdapter>>,
 }
 
 impl TelemetryAdapterHandle {
@@ -108,6 +112,7 @@ impl TelemetryAdapterHandle {
                 trace_state,
             )),
             logfire: self.logfire.clone(),
+            adapter: Some(Arc::clone(&self.adapter)),
         })
     }
 
@@ -117,6 +122,7 @@ impl TelemetryAdapterHandle {
         TelemetryContext {
             parent: None,
             logfire: self.logfire.clone(),
+            adapter: Some(Arc::clone(&self.adapter)),
         }
     }
 
@@ -148,7 +154,11 @@ impl TelemetryContext {
     /// in-process ambient span attaches through `tracing`, not W3C fields.
     #[must_use]
     pub fn for_logfire(logfire: Logfire) -> Self {
-        Self { parent: None, logfire }
+        Self {
+            parent: None,
+            logfire,
+            adapter: None,
+        }
     }
 
     /// Parents this checkout's session to `parent` while retaining its recorder.
@@ -164,6 +174,15 @@ impl TelemetryContext {
     /// Returns the configured recorder used while processing this checkout.
     pub(crate) fn logfire(&self) -> Logfire {
         self.logfire.clone()
+    }
+
+    /// Maps a recorded span to the one a peer can name as a parent: itself
+    /// without an adapter, else whatever the adapter's SDK exported it as.
+    pub(crate) fn exported_span_context(&self, span: &SpanContext) -> Option<SpanContext> {
+        match &self.adapter {
+            Some(adapter) => adapter.exported_span_context(span),
+            None => Some(span.clone()),
+        }
     }
 
     /// W3C `traceparent` (and `tracestate`, when non-empty) headers naming the
@@ -192,6 +211,17 @@ impl TelemetryContext {
         self.parent
             .map(|parent| Context::new().with_remote_span_context(parent))
     }
+}
+
+/// The context whose current span is the remote span `traceparent` names.
+pub(crate) fn remote_context(traceparent: Traceparent) -> Context {
+    Context::new().with_remote_span_context(SpanContext::new(
+        TraceId::from(traceparent.trace_id()),
+        SpanId::from(traceparent.span_id()),
+        TraceFlags::new(traceparent.flags()),
+        true,
+        TraceState::default(),
+    ))
 }
 
 /// Receives Monty records without owning exporters or credentials.
@@ -226,6 +256,13 @@ pub trait TelemetryAdapter: Send + Sync + 'static {
     fn export_metrics(&self, payload: &[u8]) {
         let _ = payload;
     }
+    /// The context the host SDK exported the open span `span` under, for a
+    /// peer to parent its own spans to. A host SDK assigns its own span IDs,
+    /// so the default names none and nothing is propagated.
+    fn exported_span_context(&self, span: &SpanContext) -> Option<SpanContext> {
+        let _ = span;
+        None
+    }
 }
 
 /// Configures the statically linked Logfire pipeline used by a language binding.
@@ -250,6 +287,7 @@ fn configure_adapter(
     host_owns_metrics: bool,
 ) -> Result<TelemetryAdapterHandle, ConfigureError> {
     let processor = AdapterProcessor::new(Arc::clone(&adapter));
+    let context_adapter = Arc::clone(&adapter);
     let config = logfire::configure()
         .send_to_logfire(false)
         .with_console(None)
@@ -269,7 +307,11 @@ fn configure_adapter(
     } else {
         Metrics::for_logfire(logfire.clone())
     };
-    Ok(TelemetryAdapterHandle { logfire, metrics })
+    Ok(TelemetryAdapterHandle {
+        logfire,
+        metrics,
+        adapter: context_adapter,
+    })
 }
 
 /// Exports aggregated SDK metrics through a foreign-language adapter.

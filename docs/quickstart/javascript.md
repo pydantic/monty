@@ -227,6 +227,11 @@ Call `flushTelemetry()` before flushing providers directly.
 Worker threads wait for span creation; other records use bounded queues whose overflow disables the affected telemetry path.
 This instrumentation is native-only; WASM still preserves caller context through `snapshot.traceContext()`.
 
+Without instrumentation, a `MontyRemote` session still sends the `traceparent` of the span active at each `feedRun`,
+`feedStart` and load, and runs a host callback under the span the server named for its suspension.
+With instrumentation the request names the caller's span rather than Monty's own feed span, so a recording server's
+spans are siblings of Monty's.
+
 ## Errors
 
 ```ts

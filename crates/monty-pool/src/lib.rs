@@ -16,9 +16,9 @@ mod worker;
 use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};
 
 use monty_proto::DEFAULT_MAX_DECODE_BYTES;
-pub use monty_proto::DEFAULT_PRINT_FLUSH_INTERVAL;
 /// Why a remote server ended a session's stream; see [`RemoteDisconnect::cause`].
 pub use monty_proto::grpc::Cause as RemoteCause;
+pub use monty_proto::{DEFAULT_PRINT_FLUSH_INTERVAL, Traceparent};
 use monty_types::{ExecutionClock, MontyException};
 
 #[cfg(feature = "telemetry")]
@@ -26,7 +26,7 @@ use crate::telemetry::Metrics;
 pub use crate::{
     checkout::{
         Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, OnStreamedCall, Persistence,
-        PrintFuture, ReplConfig, ResumeValue, StreamedCall, TurnEvent, on_print_sync,
+        PrintFuture, ReplConfig, ResumeValue, StreamedCall, TurnEvent, TurnOptions, on_print_sync,
     },
     pool::Pool,
 };

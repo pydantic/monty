@@ -146,7 +146,8 @@ To branch execution, dump the snapshot and restore it into separate sessions.
 Python snapshots expose [`trace_context()`][pydantic_monty.FunctionSnapshot.trace_context]; JavaScript snapshots expose
 `traceContext()`.
 Both return a standard OpenTelemetry `Context`, preserving baggage and other entries captured at feed/load entry and
-replacing its span with the suspension's span when Monty tracing is enabled.
+replacing its span with the suspension's span when Monty tracing is enabled, or with the span a remote server named
+for the suspension.
 The returned context does not depend on which thread or task later calls the method.
 Without Monty tracing, including on Browser/WASM, the methods return the captured context unchanged.
 If JavaScript context composition fails, `traceContext()` returns the captured context and reports the error through

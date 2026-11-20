@@ -167,6 +167,7 @@ pub(crate) fn feed_start_sync(
         checkout,
         instances,
         callback_context: _,
+        turn,
     } = args;
     let ctx = DriveContext::new(
         checkout,
@@ -184,7 +185,7 @@ pub(crate) fn feed_start_sync(
             Box::pin(async move {
                 // every call suspends, so each one reaches a snapshot
                 c.set_async_functions(None);
-                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                c.feed_with(code, inputs, mounts, cwd.as_deref(), skip_type_check, turn, p)
                     .await
             })
         }),
@@ -211,6 +212,7 @@ pub(crate) fn feed_start_async(
         checkout,
         instances,
         callback_context: _,
+        turn,
     } = args;
     let ctx = DriveContext::new(
         checkout,
@@ -228,7 +230,7 @@ pub(crate) fn feed_start_async(
                 Box::pin(async move {
                     // every call suspends, so each one reaches a snapshot
                     c.set_async_functions(None);
-                    c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                    c.feed_with(code, inputs, mounts, cwd.as_deref(), skip_type_check, turn, p)
                         .await
                 })
             }),
@@ -295,6 +297,7 @@ pub(crate) fn build_snapshot(
         )
         .map(Py::into_any),
         TurnEvent::FunctionCall {
+            traceparent: _,
             function_name,
             args,
             call_id,
@@ -333,6 +336,7 @@ pub(crate) fn build_snapshot(
             function_snapshot_py(py, ctx, call, is_async)
         }
         TurnEvent::NameLookup {
+            traceparent: _,
             name,
             object_id,
             position,
@@ -351,6 +355,7 @@ pub(crate) fn build_snapshot(
             }
         }
         TurnEvent::ResolveFutures {
+            traceparent: _,
             pending_call_ids,
             position,
         } => {

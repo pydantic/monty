@@ -37,7 +37,8 @@ use std::{
 use monty_pool::{
     telemetry::{TelemetryAdapterHandle, TelemetryContext},
     Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnStreamedCall, Persistence, Pool, PoolConfig,
-    PoolError, PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, StreamedCall, TurnEvent,
+    PoolError, PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, StreamedCall, Traceparent, TurnEvent,
+    TurnOptions,
 };
 use monty_types::{
     unstable::{self, NodeId},
@@ -79,11 +80,28 @@ type PrintCallback<'env> = Function<'env, FnArgs<(String, String, Option<String>
 /// span key of its telemetry context.
 type StreamedCallCallback<'env> = Function<'env, FnArgs<(u32, Option<String>)>, UnknownReturnValue>;
 
+/// The key the TypeScript side resolves to a callback's parent span: a
+/// recorded span's IDs, or the `traceparent` of a remote span a server named.
 fn callback_span_key(context: &Context) -> Option<String> {
     let span = context.span();
     let span = span.span_context();
-    span.is_valid()
-        .then(|| format!("{}:{}", span.trace_id(), span.span_id()))
+    if !span.is_valid() {
+        None
+    } else if span.is_remote() {
+        Some(format!(
+            "00-{}-{}-{:02x}",
+            span.trace_id(),
+            span.span_id(),
+            span.trace_flags().to_u8()
+        ))
+    } else {
+        Some(format!("{}:{}", span.trace_id(), span.span_id()))
+    }
+}
+
+/// The per-turn options for a feed or restore called under the span `traceparent` names.
+fn turn_options(traceparent: Option<&str>) -> TurnOptions {
+    TurnOptions::default().with_traceparent(traceparent.and_then(Traceparent::parse))
 }
 
 /// The boxed future a turn closure returns: one computation borrowing the
@@ -244,6 +262,8 @@ pub struct NativeFeedOptions<'env> {
     /// Receives the feed's streamed calls through all its turns; only `feedRun`
     /// passes one, and without it every call suspends.
     pub on_streamed_call: Option<StreamedCallCallback<'env>>,
+    /// W3C `traceparent` of the span active where the feed was called.
+    pub traceparent: Option<String>,
 }
 
 /// One mount entry for a feed, pre-validated by the TypeScript `MountDir`.
@@ -604,7 +624,9 @@ impl NativeSession {
             skip_type_check,
             async_functions,
             on_streamed_call,
+            traceparent,
         } = options;
+        let turn = turn_options(traceparent.as_deref());
         let handler = on_streamed_call
             .map(|callback| self.streamed_call_handler(callback))
             .transpose()?;
@@ -616,7 +638,7 @@ impl NativeSession {
                     checkout.set_async_functions(async_functions);
                     checkout.set_streamed_call_handler(handler);
                     let outcome = checkout
-                        .feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, on_print)
+                        .feed_with(code, inputs, mounts, cwd.as_deref(), skip_type_check, turn, on_print)
                         .await;
                     // a refused feed never adopted its handler; drop it, as monty-python does
                     checkout.set_streamed_call_handler(None);
@@ -896,16 +918,18 @@ impl NativeSession {
         state: Buffer,
         mounts: Vec<ClassInstance<'env, NativeMountDir>>,
         on_print: PrintCallback<'env>,
+        traceparent: Option<String>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let mounts = mount_specs(&mounts)?;
         let state = state.to_vec();
+        let turn = turn_options(traceparent.as_deref());
         self.run_outcome(
             env,
             on_print,
             outcome_fn(move |checkout, on_print| {
                 Box::pin(async move {
                     // JS snapshots expose no script name, so the restored name is unused
-                    match checkout.restore(state, mounts, on_print).await {
+                    match checkout.restore_with(state, mounts, turn, on_print).await {
                         Ok((Some(event), _)) => TurnOutcome::Event(event),
                         Ok((None, _)) => TurnOutcome::LoadedIdle,
                         Err(err) => TurnOutcome::from(Err(err)),
@@ -1260,6 +1284,7 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("value", monty_to_js(&value, env)?)?;
         }
         TurnOutcome::Event(TurnEvent::FunctionCall {
+            traceparent: _,
             function_name,
             args,
             call_id,
@@ -1280,6 +1305,7 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("objectId", object_id.map(|uuid| uuid.to_string()))?;
         }
         TurnOutcome::Event(TurnEvent::OsCall {
+            traceparent: _,
             function_name,
             args,
             call_id,
@@ -1301,6 +1327,7 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("allowEagerAwait", allow_eager_await)?;
         }
         TurnOutcome::Event(TurnEvent::NameLookup {
+            traceparent: _,
             name,
             object_id,
             position,
@@ -1312,6 +1339,7 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("position", source_range_to_js(env, &position)?)?;
         }
         TurnOutcome::Event(TurnEvent::ResolveFutures {
+            traceparent: _,
             pending_call_ids,
             position,
         }) => {

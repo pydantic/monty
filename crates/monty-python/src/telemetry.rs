@@ -10,14 +10,17 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use monty_pool::telemetry::{
-    Measurement, MetricKind, MetricValue, Metrics, TelemetryAdapter, TelemetryAdapterHandle, TelemetryContext,
-    configure_telemetry_adapter_with_host_metrics,
+use monty_pool::{
+    Traceparent, TurnOptions,
+    telemetry::{
+        Measurement, MetricKind, MetricValue, Metrics, TelemetryAdapter, TelemetryAdapterHandle, TelemetryContext,
+        configure_telemetry_adapter_with_host_metrics,
+    },
 };
 use opentelemetry::{
     Array, Context, KeyValue, Value,
     logs::AnyValue,
-    trace::{SpanId, Status, TraceContextExt, TraceId},
+    trace::{SpanContext, SpanId, Status, TraceContextExt, TraceFlags, TraceId},
 };
 use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
 use pyo3::{
@@ -132,16 +135,41 @@ pub(crate) fn install_telemetry(
         .map_err(|_| PyRuntimeError::new_err("Monty telemetry is already configured"))
 }
 
-/// Resolves a native callback parent to the span created by the host tracer.
+/// Resolves a native callback parent to a host span, set as current in the returned context.
 pub(crate) fn callback_context(py: Python<'_>, context: &Context) -> Option<Py<PyAny>> {
-    let bridge = &BRIDGE.get()?.bridge;
     let span = callback_span(py, context)?;
-    let parent = bridge.helpers.set_span_in_context.bind(py).call1((&span,)).ok()?;
+    let parent = py
+        .import("opentelemetry.trace")
+        .ok()?
+        .call_method1("set_span_in_context", (&span,))
+        .ok()?;
     py.import("opentelemetry.context")
         .ok()?
         .call_method1("set_value", (CALLBACK_SPAN_KEY, span, parent))
         .ok()
         .map(Bound::unbind)
+}
+
+/// The caller's current span for a turn-starting call, read on the caller's task.
+///
+/// Needs only `opentelemetry-api`: nothing is captured when it is not
+/// installed or no span is current.
+pub(crate) fn capture_turn_options(py: Python<'_>) -> TurnOptions {
+    let traceparent = (|| {
+        let span_context = py
+            .import("opentelemetry.trace")
+            .ok()?
+            .call_method0("get_current_span")
+            .ok()?
+            .call_method0("get_span_context")
+            .ok()?;
+        let trace_id: u128 = span_context.getattr("trace_id").ok()?.extract().ok()?;
+        let span_id: u64 = span_context.getattr("span_id").ok()?.extract().ok()?;
+        let trace_flags: u8 = span_context.getattr("trace_flags").ok()?.extract().ok()?;
+        // zero IDs, an invalid span's, name no span
+        Traceparent::new(trace_id, span_id, trace_flags)
+    })();
+    TurnOptions::default().with_traceparent(traceparent)
 }
 
 /// Captures feed/load context without requiring OpenTelemetry for ordinary execution.
@@ -183,16 +211,45 @@ pub(crate) fn snapshot_trace_context(
     Ok(context.unwrap_or(base))
 }
 
-/// Resolves the Rust span key to the host SDK's span, whose IDs may differ.
+/// Resolves the Rust span key to the host SDK's span, whose IDs may differ;
+/// a remote span, which a server named, becomes a non-recording host span.
 fn callback_span(py: Python<'_>, context: &Context) -> Option<Py<PyAny>> {
-    let bridge = &BRIDGE.get()?.bridge;
     let span = context.span();
     let span = span.span_context();
     let key = SpanKey {
         trace_id: span.trace_id(),
         span_id: span.span_id(),
     };
-    lock(&bridge.spans).get(&key).map(|state| state.span.clone_ref(py))
+    let recorded = BRIDGE.get().and_then(|installed| {
+        lock(&installed.bridge.spans)
+            .get(&key)
+            .map(|state| state.span.clone_ref(py))
+    });
+    recorded.or_else(|| remote_span(py, span))
+}
+
+/// A non-recording host span for the remote `span`, needing only `opentelemetry-api`.
+fn remote_span(py: Python<'_>, span: &SpanContext) -> Option<Py<PyAny>> {
+    if !(span.is_valid() && span.is_remote()) {
+        return None;
+    }
+    let trace = py.import("opentelemetry.trace").ok()?;
+    let flags = trace
+        .getattr("TraceFlags")
+        .ok()?
+        .call1((span.trace_flags().to_u8(),))
+        .ok()?;
+    let context = trace
+        .getattr("SpanContext")
+        .ok()?
+        .call1((trace_id_int(span.trace_id()), span_id_int(span.span_id()), true, flags))
+        .ok()?;
+    trace
+        .getattr("NonRecordingSpan")
+        .ok()?
+        .call1((context,))
+        .ok()
+        .map(Bound::unbind)
 }
 
 /// The pool metrics handle when a meter was installed.
@@ -250,6 +307,27 @@ impl TelemetryAdapter for PythonBridge {
 
     fn start_span_with_parent(&self, data: &SpanData, parent: &Context) -> bool {
         self.start_span_callback(data, parent.span().span_context().is_remote())
+    }
+
+    fn exported_span_context(&self, span: &SpanContext) -> Option<SpanContext> {
+        let key = SpanKey {
+            trace_id: span.trace_id(),
+            span_id: span.span_id(),
+        };
+        Python::attach(|py| {
+            let exported = lock(&self.spans).get(&key)?.span.clone_ref(py);
+            let exported = exported.bind(py).call_method0("get_span_context").ok()?;
+            let trace_id: u128 = exported.getattr("trace_id").ok()?.extract().ok()?;
+            let span_id: u64 = exported.getattr("span_id").ok()?.extract().ok()?;
+            let trace_flags: u8 = exported.getattr("trace_flags").ok()?.extract().ok()?;
+            Some(SpanContext::new(
+                trace_id.into(),
+                span_id.into(),
+                TraceFlags::new(trace_flags),
+                false,
+                span.trace_state().clone(),
+            ))
+        })
     }
 
     fn end_span(&self, data: &SpanData) -> bool {
