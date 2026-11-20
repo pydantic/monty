@@ -155,6 +155,8 @@ Each `feed_run`, `feed_start` and load on an `AsyncMontyRemote` session sends th
 OpenTelemetry span, so a server that records the session parents that feed's spans to it.
 When the server names its span for a call, the host callback runs with that span current, or with
 `instrument_telemetry()` under Monty's own span for the call, a child of the server's.
+If the server's spans are not exported to your tracing backend, spans started in host callbacks appear there without
+their parent.
 This needs `opentelemetry-api` only, not `instrument_telemetry()`; without the package, or without a current span,
 nothing is sent.
 

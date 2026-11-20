@@ -229,6 +229,8 @@ This instrumentation is native-only; WASM still preserves caller context through
 
 Without instrumentation, a `MontyRemote` session still sends the `traceparent` of the span active at each `feedRun`,
 `feedStart` and load, and runs a host callback under the span the server named for its suspension.
+If the server's spans are not exported to your tracing backend, spans started in host callbacks appear there without
+their parent.
 With instrumentation the request names the caller's span rather than Monty's own feed span, so a recording server's
 spans are siblings of Monty's.
 
