@@ -13,7 +13,7 @@ use super::{
     recursion::RunReentryGuard,
 };
 use crate::{
-    args::{ArgValues, KwargsValues},
+    args::{ArgValues, KwargsValues, Signature},
     asyncio::Coroutine,
     builtins::{BuiltinsFunctions, BuiltinsFunctionsExt, object::takes_no_arguments},
     bytecode::FrameExit,
@@ -292,12 +292,10 @@ impl<'h> VM<'h> {
 
     /// Reuses the argument stack slots as locals once all keywords are validated.
     fn try_call_exact_keywords(&mut self, pos_count: usize, kw_count: usize) -> Option<Result<CallResult, RunError>> {
-        const MAX_ARGS: usize = 8;
-
-        let arg_count = pos_count + kw_count;
-        if kw_count == 0 || arg_count > MAX_ARGS {
+        if kw_count == 0 || kw_count > Signature::MAX_DIRECT_KEYWORDS {
             return None;
         }
+        let arg_count = pos_count + kw_count;
         let callable_index = self.stack.len() - arg_count - 1;
         let Value::DefFunction(func_id) = self.stack[callable_index] else {
             return None;
@@ -314,7 +312,7 @@ impl<'h> VM<'h> {
         let names = names
             .iter()
             .map(|&bytes| StringId::from_index(u16::from_le_bytes(bytes)));
-        let mut slots = [0; MAX_ARGS];
+        let mut slots = [0; Signature::MAX_DIRECT_KEYWORDS];
         let destinations = &mut slots[..kw_count];
         func.signature.exact_keyword_slots(pos_count, names, destinations)?;
 

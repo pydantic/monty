@@ -142,6 +142,8 @@ enum BindMode {
 }
 
 impl Signature {
+    pub(crate) const MAX_DIRECT_KEYWORDS: usize = u32::BITS as usize;
+
     /// Returns the parameter count when positional arguments need no binding.
     ///
     /// With no defaults, variadic slots, or keyword-only parameters, positional
@@ -156,7 +158,7 @@ impl Signature {
     }
 
     /// Maps keyword names to the slots left after the positional arguments.
-    /// The caller must have checked the exact arity and supplied at most eight keywords.
+    /// The caller must have checked the exact arity and the keyword count limit.
     pub(crate) fn exact_keyword_slots(
         &self,
         pos_count: usize,
@@ -167,9 +169,9 @@ impl Signature {
         let candidates = self.args.as_deref()?.get(positional_or_keyword_given..)?;
         debug_assert_eq!(candidates.len(), slots.len());
         debug_assert_eq!(names.len(), slots.len());
-        debug_assert!(slots.len() <= 8);
+        debug_assert!(slots.len() <= Self::MAX_DIRECT_KEYWORDS);
 
-        let mut occupied = 0_u8;
+        let mut occupied = 0_u32;
         for (name, slot) in names.zip(slots) {
             let index = candidates.iter().position(|&candidate| candidate == name)?;
             let index = u8::try_from(index).ok()?;

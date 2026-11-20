@@ -7,6 +7,29 @@ use monty_types::{
     unstable::{self, ClassEq, ClassHash, MontyNode},
 };
 
+#[test]
+fn direct_keyword_binding_with_a_positional_prefix() {
+    let positional = (0..12).map(|i| format!("p{i}")).collect::<Vec<_>>().join(", ");
+    let arguments = (0..12).map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+
+    for keyword_count in [1, 32, 33] {
+        let names = (0..keyword_count)
+            .map(|i| format!("k{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let keywords = (0..keyword_count)
+            .rev()
+            .map(|i| format!("k{i}={}", i + 12))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let source =
+            format!("def f({positional}, {names}):\n    return ({positional}, {names})\nf({arguments}, {keywords})");
+        let mut run = MontyRun::new(source, "test.py", vec![], CompileOptions::default()).unwrap();
+        let expected = MontyObject::tuple((0..12 + keyword_count).map(MontyObject::int));
+        assert_eq!(run.run_no_limits(vec![]).unwrap(), expected);
+    }
+}
+
 /// Test we can reuse exec without borrow checker issues.
 #[test]
 fn repeat_exec() {
