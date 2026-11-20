@@ -20,6 +20,7 @@ use super::{
         FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, IMPORT_STAR_BIND, IMPORT_STAR_LOAD, IMPORT_STAR_NAMES,
         NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode, assert_flags,
     },
+    subscription::{GlobalSubscript, GlobalSubscriptKey, LocalSubscript, LocalSubscriptKey},
 };
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
@@ -679,8 +680,42 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 self.compile_return(expr.as_ref())?;
             }
             Node::Assign { target, object } => {
-                self.compile_expr(object)?;
-                self.compile_store(target)?;
+                let slots = if !self.is_module_scope
+                    && target.scope == NameScope::Local
+                    && let Expr::Subscript {
+                        object: container,
+                        index,
+                    } = &object.expr
+                    && let Expr::Name(container_name) = &container.expr
+                    && let Expr::Name(key_name) = &index.expr
+                    && container_name.scope == NameScope::Local
+                    && key_name.scope == NameScope::Local
+                    && let Ok(container_slot) = u8::try_from(container_name.namespace_id().as_u16())
+                    && let Ok(key_slot) = u8::try_from(key_name.namespace_id().as_u16())
+                    && let Ok(destination) = u8::try_from(target.namespace_id().as_u16())
+                {
+                    self.code
+                        .register_local_name(u16::from(container_slot), container_name.name_id);
+                    self.code.register_local_name(u16::from(key_slot), key_name.name_id);
+                    self.code.register_local_name(u16::from(destination), target.name_id);
+                    Some((
+                        container_slot,
+                        key_slot,
+                        destination,
+                        container.position,
+                        index.position,
+                    ))
+                } else {
+                    None
+                };
+                if let Some((container, key, destination, container_range, key_range)) = slots {
+                    self.code.set_location(object.position, None);
+                    self.code
+                        .emit_subscript_to_local(container, key, destination, container_range, key_range)?;
+                } else {
+                    self.compile_expr(object)?;
+                    self.compile_store(target)?;
+                }
             }
             Node::UnpackAssign {
                 targets,
@@ -1496,11 +1531,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             }
 
             Expr::Subscript { object, index } => {
-                self.compile_expr(object)?;
-                self.compile_expr(index)?;
-                // Restore the full subscript expression's position for traceback
-                self.code.set_location(expr_loc.position, None);
-                self.code.emit(Opcode::BinarySubscr)?;
+                self.compile_subscript(object, index, expr_loc.position)?;
             }
 
             Expr::IfElse { test, body, orelse } => {
@@ -1664,6 +1695,91 @@ impl<'a, 'i> Compiler<'a, 'i> {
     // ========================================================================
     // Variable Operations
     // ========================================================================
+
+    /// Selects a fused subscription when its operands fit, retaining generic evaluation order otherwise.
+    fn compile_subscript(
+        &mut self,
+        object: &ExprLoc,
+        index: &ExprLoc,
+        position: CodeRange,
+    ) -> Result<(), CompileError> {
+        if let Some((operand, name)) = self.global_subscript_operand(object, index) {
+            if self.is_module_scope {
+                self.code.register_local_name(operand.slot(), name);
+            }
+            self.code.set_location(position, None);
+            self.code.emit_subscript_global(operand, object.position)?;
+            // The key load and subscription remain executable when native lookup declines.
+            self.compile_expr(index)?;
+            self.code.set_location(position, None);
+            self.code.emit(Opcode::BinarySubscr)
+        } else if let Some(operand) = self.local_subscript_operand(object, index) {
+            self.code.set_location(position, None);
+            self.code
+                .emit_subscript_locals(operand, object.position, index.position)
+        } else {
+            self.compile_expr(object)?;
+            self.compile_expr(index)?;
+            self.code.set_location(position, None);
+            self.code.emit(Opcode::BinarySubscr)
+        }
+    }
+
+    /// Pairs a packed global slot with the key-load instruction the compiler will emit.
+    fn global_subscript_operand(&mut self, object: &ExprLoc, index: &ExprLoc) -> Option<(GlobalSubscript, StringId)> {
+        let Expr::Name(name) = &object.expr else {
+            return None;
+        };
+        let slot = self.subscript_global_slot(name)?;
+        let key = match &index.expr {
+            Expr::Name(key) if self.subscript_global_slot(key).is_some() => GlobalSubscriptKey::Global,
+            Expr::Name(key) => GlobalSubscriptKey::local(self.subscript_stack_slot(key)?),
+            Expr::Literal(Literal::Int(value)) if i8::try_from(*value).is_ok() => GlobalSubscriptKey::SmallInteger,
+            Expr::Literal(Literal::Int(_) | Literal::Str(_)) => GlobalSubscriptKey::Constant,
+            _ => return None,
+        };
+        Some((GlobalSubscript::new(slot, key)?, name.name_id))
+    }
+
+    /// Resolves local slots and embedded literal keys before checking their encoding limits.
+    fn local_subscript_operand(&mut self, object: &ExprLoc, index: &ExprLoc) -> Option<LocalSubscript> {
+        let Expr::Name(name) = &object.expr else {
+            return None;
+        };
+        let object = self.subscript_stack_slot(name)?;
+        let key = match &index.expr {
+            Expr::Name(name) => LocalSubscriptKey::Local(u8::try_from(self.subscript_stack_slot(name)?).ok()?),
+            Expr::Literal(Literal::Str(id)) => LocalSubscriptKey::String(u16::try_from(id.index()).ok()?),
+            Expr::Literal(Literal::Int(value)) => LocalSubscriptKey::Integer(i16::try_from(*value).ok()?),
+            _ => return None,
+        };
+        LocalSubscript::new(object, key)
+    }
+
+    /// Dynamic global namespaces keep their name-based resolution.
+    fn subscript_global_slot(&self, name: &Identifier) -> Option<u16> {
+        match name.scope {
+            NameScope::Local if self.is_module_scope => Some(name.namespace_id().as_u16()),
+            NameScope::Global if !self.flags.globals_by_name => Some(name.namespace_id().as_u16()),
+            _ => None,
+        }
+    }
+
+    /// Cell and dynamic-name loads retain their original resolution behavior.
+    fn subscript_stack_slot(&mut self, name: &Identifier) -> Option<u16> {
+        let slot = name.namespace_id().as_u16();
+        match name.scope {
+            NameScope::Local if !self.is_module_scope => {
+                self.code.register_local_name(slot, name.name_id);
+                Some(slot)
+            }
+            NameScope::CompVar => match self.comp_slots.get(usize::from(slot)).copied().flatten() {
+                Some(CompSlot::Value(offset)) => Some(offset),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 
     /// Compiles loading a variable onto the stack.
     ///

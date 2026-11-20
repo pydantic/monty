@@ -28,7 +28,7 @@ impl VM<'_> {
 
     /// Binary addition.
     pub(super) fn binary_add(&mut self) -> Result<(), RunError> {
-        if self.binary_numeric(i64::checked_add, |lhs, rhs| lhs + rhs, |lhs, rhs| lhs + rhs) {
+        if self.promote_numeric_overflow(|lhs, rhs| lhs + rhs) {
             return Ok(());
         }
 
@@ -37,7 +37,7 @@ impl VM<'_> {
 
     /// Binary subtraction.
     pub(super) fn binary_sub(&mut self) -> Result<(), RunError> {
-        if self.binary_numeric(i64::checked_sub, |lhs, rhs| lhs - rhs, |lhs, rhs| lhs - rhs) {
+        if self.promote_numeric_overflow(|lhs, rhs| lhs - rhs) {
             return Ok(());
         }
 
@@ -46,7 +46,7 @@ impl VM<'_> {
 
     /// Binary multiplication.
     pub(super) fn binary_mult(&mut self) -> Result<(), RunError> {
-        if self.binary_numeric(i64::checked_mul, |lhs, rhs| lhs * rhs, |lhs, rhs| lhs * rhs) {
+        if self.promote_numeric_overflow(|lhs, rhs| lhs * rhs) {
             return Ok(());
         }
 
@@ -60,43 +60,49 @@ impl VM<'_> {
 
     /// Binary division.
     pub(super) fn binary_div(&mut self) -> Result<(), RunError> {
-        if self.binary_numeric_division(
+        self.binary_op(|lhs, rhs, vm| lhs.py_truediv(rhs, vm))
+    }
+
+    /// Binary floor division.
+    pub(super) fn binary_floordiv(&mut self) -> Result<(), RunError> {
+        self.binary_op(|lhs, rhs, vm| lhs.py_floordiv(rhs, vm))
+    }
+
+    /// Binary modulo.
+    pub(super) fn binary_mod(&mut self) -> Result<(), RunError> {
+        self.binary_op(|lhs, rhs, vm| lhs.py_mod(rhs, vm))
+    }
+
+    /// Leaves operands untouched when the ordinary numeric path is needed.
+    #[inline]
+    pub(super) fn binary_div_immediate(&mut self) -> bool {
+        self.binary_numeric_division(
             |lhs, rhs| {
                 // Larger integers need exact division before rounding to a float.
                 (lhs.unsigned_abs() <= 1 << f64::MANTISSA_DIGITS && rhs.unsigned_abs() <= 1 << f64::MANTISSA_DIGITS)
                     .then(|| Value::Float(lhs as f64 / rhs as f64))
             },
             |lhs, rhs| lhs / rhs,
-        ) {
-            return Ok(());
-        }
-
-        self.binary_op(|lhs, rhs, vm| lhs.py_truediv(rhs, vm))
+        )
     }
 
-    /// Binary floor division.
-    pub(super) fn binary_floordiv(&mut self) -> Result<(), RunError> {
-        if self.binary_numeric_division(
+    /// Leaves operands untouched when the ordinary numeric path is needed.
+    #[inline]
+    pub(super) fn binary_floordiv_immediate(&mut self) -> bool {
+        self.binary_numeric_division(
             |lhs, rhs| floor_divmod(lhs, rhs).map(|(quotient, _)| Value::Int(quotient)),
             |lhs, rhs| py_float_divmod(lhs, rhs).0,
-        ) {
-            return Ok(());
-        }
-
-        self.binary_op(|lhs, rhs, vm| lhs.py_floordiv(rhs, vm))
+        )
     }
 
-    /// Binary modulo.
-    pub(super) fn binary_mod(&mut self) -> Result<(), RunError> {
-        if self.binary_numeric_division(
+    /// Leaves operands untouched when the ordinary numeric path is needed.
+    #[inline]
+    pub(super) fn binary_mod_immediate(&mut self) -> bool {
+        self.binary_numeric_division(
             // MIN % -1 is zero even though the quotient overflows i64.
             |lhs, rhs| Some(Value::Int(floor_divmod(lhs, rhs).map_or(0, |(_, remainder)| remainder))),
             py_float_mod,
-        ) {
-            return Ok(());
-        }
-
-        self.binary_op(|lhs, rhs, vm| lhs.py_mod(rhs, vm))
+        )
     }
 
     /// Binary power.
@@ -142,7 +148,7 @@ impl VM<'_> {
     /// the update; immutable ones fall back to ordinary addition. Uses lazy type
     /// capture: only calls `py_type()` in error paths.
     pub(super) fn inplace_add(&mut self) -> Result<(), RunError> {
-        if self.binary_numeric(i64::checked_add, |lhs, rhs| lhs + rhs, |lhs, rhs| lhs + rhs) {
+        if self.promote_numeric_overflow(|lhs, rhs| lhs + rhs) {
             return Ok(());
         }
 
@@ -163,7 +169,7 @@ impl VM<'_> {
 
     /// `-=` — an in-place mutation (a `Counter` subtracts counts), or binary `-`.
     pub(super) fn inplace_sub(&mut self) -> Result<(), RunError> {
-        if self.binary_numeric(i64::checked_sub, |lhs, rhs| lhs - rhs, |lhs, rhs| lhs - rhs) {
+        if self.promote_numeric_overflow(|lhs, rhs| lhs - rhs) {
             return Ok(());
         }
 
@@ -205,21 +211,40 @@ impl VM<'_> {
         }
     }
 
-    /// Handles immediate int/float pairs without reference-count guards or type dispatch.
+    /// Promotes integer pairs after threaded dispatch has rejected immediate arithmetic.
     #[inline]
-    fn binary_numeric(
+    fn promote_numeric_overflow(&mut self, wide_op: impl FnOnce(i128, i128) -> i128) -> bool {
+        let len = self.stack.len();
+        let (Value::Int(lhs), Value::Int(rhs)) = (&self.stack[len - 2], &self.stack[len - 1]) else {
+            return false;
+        };
+        // Only integer overflow reaches this branch; sums, differences and products fit in i128.
+        let result = wide_i128_into_value(wide_op(i128::from(*lhs), i128::from(*rhs)), self.heap);
+        self.stack[len - 2] = result;
+        self.stack.truncate(len - 1);
+        true
+    }
+
+    /// Tries non-allocating numeric work so dispatch can keep promotion and errors outlined.
+    #[inline]
+    pub(super) fn binary_numeric_immediate(
         &mut self,
         int_op: impl FnOnce(i64, i64) -> Option<i64>,
-        wide_op: impl FnOnce(i128, i128) -> i128,
         float_op: impl FnOnce(f64, f64) -> f64,
     ) -> bool {
         let len = self.stack.len();
+        if let Value::Int(lhs) = &self.stack[len - 2]
+            && let Value::Int(rhs) = &self.stack[len - 1]
+        {
+            let Some(result) = int_op(*lhs, *rhs) else {
+                return false;
+            };
+            self.stack[len - 2] = Value::Int(result);
+            self.stack.truncate(len - 1);
+            return true;
+        }
+
         let result = match (&self.stack[len - 2], &self.stack[len - 1]) {
-            (Value::Int(lhs), Value::Int(rhs)) => Some(match int_op(*lhs, *rhs) {
-                Some(result) => Value::Int(result),
-                // Sums, differences and products of two i64 operands fit in i128.
-                None => wide_i128_into_value(wide_op(i128::from(*lhs), i128::from(*rhs)), self.heap),
-            }),
             (Value::Float(lhs), Value::Float(rhs)) => Some(Value::Float(float_op(*lhs, *rhs))),
             (Value::Int(lhs), Value::Float(rhs)) => Some(Value::Float(float_op(*lhs as f64, *rhs))),
             (Value::Float(lhs), Value::Int(rhs)) => Some(Value::Float(float_op(*lhs, *rhs as f64))),

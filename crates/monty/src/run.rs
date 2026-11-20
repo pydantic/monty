@@ -62,6 +62,18 @@ pub struct MontyRun {
 }
 
 impl MontyRun {
+    /// Constructs a NOP stream for dispatch benchmarks and checkpoint regressions.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn opcode_cost_benchmark(count: usize) -> Self {
+        let mut runner = Self::new("0".to_owned(), "nop.py", vec![], CompileOptions::default()).unwrap();
+        let mut bytes = vec![Opcode::Nop as u8; count];
+        bytes.extend_from_slice(&[Opcode::LoadSmallInt as u8, 0, Opcode::ReturnValue as u8]);
+        runner.executor.program.module_code = Arc::new(Code::new(bytes, vec![], vec![], vec![], vec![]));
+        runner
+    }
+
     /// Creates a new run snapshot by parsing the given code.
     ///
     /// This only parses and prepares the code - no heap or namespaces are created yet.
