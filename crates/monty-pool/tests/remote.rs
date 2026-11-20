@@ -12,7 +12,7 @@ mod grpc_mock;
 use std::sync::{Arc, OnceLock};
 use std::{
     fs,
-    future::ready,
+    future::{Ready, pending, ready},
     sync::{
         atomic::{AtomicUsize, Ordering},
         mpsc,
@@ -4438,7 +4438,7 @@ async fn a_burst_of_checkouts_does_not_queue_behind_one_refill() {
     config.pre_warm_wait = false;
     config.pre_warm_metadata = Some(MetadataFn::new(|| {
         READY_DIALS.fetch_add(1, Ordering::SeqCst);
-        Ok(Vec::new())
+        ready(Ok(Vec::new()))
     }));
     let pool = Pool::new(config).await.expect("pool");
     let repl = ReplConfig::default();
@@ -4485,7 +4485,7 @@ async fn pre_warm_metadata_is_called_per_ready_session() {
     let mut config = pre_warm_config(&mock, 1);
     config.pre_warm_metadata = Some(MetadataFn::new(|| {
         CALLS.fetch_add(1, Ordering::SeqCst);
-        Ok(bearer("one"))
+        ready(Ok(bearer("one")))
     }));
     let (tx, seen) = mpsc::channel();
     let server = thread::spawn(move || serve_ready_sessions(&mock, 2, &tx));
@@ -4508,7 +4508,7 @@ async fn pre_warm_metadata_is_called_per_ready_session() {
 async fn a_checkout_with_other_metadata_does_not_take_a_pre_warmed_session() {
     let mock = MockServer::start().await;
     let mut config = pre_warm_config(&mock, 1);
-    config.pre_warm_metadata = Some(MetadataFn::new(|| Ok(bearer("one"))));
+    config.pre_warm_metadata = Some(MetadataFn::new(|| ready(Ok(bearer("one")))));
     let (tx, seen) = mpsc::channel();
     let server = thread::spawn(move || serve_ready_sessions(&mock, 3, &tx));
 
@@ -4565,7 +4565,7 @@ async fn a_traced_checkout_takes_a_pre_warmed_session() {
 async fn a_pre_warmed_session_that_cannot_open_fails_the_pool() {
     let mock = MockServer::start().await;
     let mut config = pre_warm_config(&mock, 1);
-    config.pre_warm_metadata = Some(MetadataFn::new(|| Err("no token".to_owned())));
+    config.pre_warm_metadata = Some(MetadataFn::new(|| ready(Err("no token".to_owned()))));
     let Err(err) = Pool::new(config).await else {
         panic!("a failing metadata function must fail the pool");
     };
@@ -4574,11 +4574,38 @@ async fn a_pre_warmed_session_that_cannot_open_fails_the_pool() {
         "got {err:?}"
     );
 
+    // one that never answers is bounded like the dial it precedes
+    let mut config = pre_warm_config(&mock, 1);
+    config.request_timeout = Some(Duration::from_millis(100));
+    config.pre_warm_metadata = Some(MetadataFn::new(pending));
+    let Err(err) = Pool::new(config).await else {
+        panic!("a metadata function that never answers must fail the pool");
+    };
+    assert_eq!(err.to_string(), "pre_warm_metadata did not answer within 100ms");
+
     mock.refuse_next(Cause::Capacity.status("server at capacity"));
     let Err(err) = Pool::new(pre_warm_config(&mock, 1)).await else {
         panic!("a refused session must fail the pool");
     };
     assert!(matches!(err, PoolError::Refused { .. }), "got {err:?}");
+}
+
+/// A refill whose metadata function panics gives its slot back like any failed
+/// refill, so a checkout that was waiting for it dials for itself.
+#[tokio::test]
+async fn a_panicking_metadata_function_does_not_strand_a_checkout() {
+    let mock = MockServer::start().await;
+    let mut config = pre_warm_config(&mock, 1);
+    config.pre_warm_wait = false;
+    config.checkout_timeout = Some(Duration::from_secs(5));
+    config.pre_warm_metadata = Some(MetadataFn::new(|| -> Ready<Result<Vec<(String, String)>, String>> {
+        panic!("metadata function panicked")
+    }));
+    let server = thread::spawn(move || serve_mock_worker(&mock));
+
+    let pool = Pool::new(config).await.expect("pool");
+    feed_once(&pool, CheckoutOptions::default()).await;
+    join_server(server).await;
 }
 
 /// In the background, a refused ready session is retried later and the

@@ -13,7 +13,7 @@ use monty_types::ExecutionClock;
 use tokio::{
     runtime::Handle,
     sync::Notify,
-    time::{Instant, sleep_until, timeout_at},
+    time::{Instant, sleep_until, timeout, timeout_at},
 };
 
 #[cfg(feature = "telemetry")]
@@ -579,35 +579,52 @@ impl PoolInner {
 /// Holds only a `Weak` across the spawn, so an in-flight refill never keeps a
 /// dropped pool alive; its worker is then killed on drop.
 async fn refill_one(pool: Weak<PoolInner>, config: PoolConfig, remote: Option<Arc<Remote>>, id: u64) {
+    let mut slot = RefillSlot {
+        pool: pool.clone(),
+        filled: false,
+    };
     let worker = new_idle_worker(&config, remote.as_deref()).await;
     let Some(pool) = pool.upgrade() else { return };
+    let Ok(mut worker) = worker else { return };
     let mut state = lock_ignore_poison(&pool.state);
-    state.refilling -= 1;
-    match worker {
-        Ok(mut worker) if !state.closed => {
-            worker.id = id;
-            state.refill_failures = 0;
-            state.idle.push(worker);
-            drop(state);
-            pool.available.notify_one();
-            pool.record_worker_delta(0, 1);
-        }
-        // a closed pool kills a late worker and will not refill again, so a
-        // failure must not arm a retry either
-        Ok(worker) => {
-            drop(state);
-            drop(worker);
-            pool.count_termination("closed");
-            pool.release_capacity();
-        }
-        Err(_) if state.closed => {
-            drop(state);
-            pool.count_termination("closed");
-            pool.release_capacity();
-        }
-        Err(_) => {
-            drop(state);
-            pool.refill_failed();
+    // a closed pool kills a late worker, as `slot` then records
+    if !state.closed {
+        worker.id = id;
+        state.refilling -= 1;
+        state.refill_failures = 0;
+        state.idle.push(worker);
+        drop(state);
+        slot.filled = true;
+        pool.available.notify_one();
+        pool.record_worker_delta(0, 1);
+    }
+}
+
+/// The slot a refill holds, given back when the refill ends without a worker:
+/// it failed, the pool closed, or its task panicked or was dropped. A refill
+/// that never reported would strand the checkout waiting for it.
+struct RefillSlot {
+    pool: Weak<PoolInner>,
+    filled: bool,
+}
+
+impl Drop for RefillSlot {
+    fn drop(&mut self) {
+        if !self.filled
+            && let Some(pool) = self.pool.upgrade()
+        {
+            let closed = {
+                let mut state = lock_ignore_poison(&pool.state);
+                state.refilling -= 1;
+                state.closed
+            };
+            // a closed pool will not refill again, so it must not arm a retry
+            if closed {
+                pool.count_termination("closed");
+                pool.release_capacity();
+            } else {
+                pool.refill_failed();
+            }
         }
     }
 }
@@ -616,7 +633,14 @@ async fn refill_one(pool: Weak<PoolInner>, config: PoolConfig, remote: Option<Ar
 /// session dialed with [`PoolConfig::pre_warm_metadata`], which it records.
 async fn new_idle_worker(config: &PoolConfig, remote: Option<&Remote>) -> Result<Worker, PoolError> {
     let metadata = match (remote, &config.pre_warm_metadata) {
-        (Some(_), Some(metadata)) => metadata.call()?,
+        // bounded like the dial it precedes, so a function that never answers
+        // cannot hold a slot forever
+        (Some(_), Some(metadata)) => {
+            let limit = config.request_timeout.unwrap_or(DEFAULT_DIAL_TIMEOUT);
+            timeout(limit, metadata.call())
+                .await
+                .map_err(|_| PoolError::Configuration(format!("pre_warm_metadata did not answer within {limit:?}")))??
+        }
         _ => Vec::new(),
     };
     let mut worker = Worker::new(config, remote, &metadata).await?;

@@ -779,9 +779,9 @@ impl PyAsyncMontyRemote {
         {
             let callback = callback.clone_ref(py);
             config.pre_warm_metadata = Some(MetadataFn::new(move || {
-                Python::attach(|py| {
+                ready(Python::attach(|py| {
                     extract_metadata(py, &callback).map_err(|err| format!("metadata callback failed: {err}"))
-                })
+                }))
             }));
         }
         if let Some(bytes) = max_decode_bytes {

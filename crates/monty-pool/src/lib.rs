@@ -14,7 +14,8 @@ pub use telemetry as telemetry_adapter;
 mod worker;
 
 use std::{
-    borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, sync::Arc, thread, time::Duration,
+    borrow::Cow, error, fmt, future::Future, io, num::NonZero, path::PathBuf, pin::Pin, process::ExitStatus, sync::Arc,
+    thread, time::Duration,
 };
 
 use monty_proto::DEFAULT_MAX_DECODE_BYTES;
@@ -215,20 +216,25 @@ impl PoolConfig {
 /// Produces the request metadata for one pre-warmed remote session; see
 /// [`PoolConfig::pre_warm_metadata`]. An `Err` fails that session's dial.
 #[derive(Clone)]
-pub struct MetadataFn(Arc<dyn Fn() -> MetadataResult + Send + Sync>);
+pub struct MetadataFn(Arc<dyn Fn() -> MetadataFuture + Send + Sync>);
 
 /// Request metadata, or why it could not be produced.
 type MetadataResult = Result<Vec<(String, String)>, String>;
+type MetadataFuture = Pin<Box<dyn Future<Output = MetadataResult> + Send>>;
 
 impl MetadataFn {
-    /// Wraps `f`, which the pool calls from its runtime's threads.
-    pub fn new(f: impl Fn() -> MetadataResult + Send + Sync + 'static) -> Self {
-        Self(Arc::new(f))
+    /// Wraps `f`, which the pool calls from its runtime's threads and awaits
+    /// for at most the time it allows a dial.
+    pub fn new<Fut>(f: impl Fn() -> Fut + Send + Sync + 'static) -> Self
+    where
+        Fut: Future<Output = MetadataResult> + Send + 'static,
+    {
+        Self(Arc::new(move || Box::pin(f())))
     }
 
     /// Calls the function, reporting its failure as [`PoolError::Configuration`].
-    pub(crate) fn call(&self) -> Result<Vec<(String, String)>, PoolError> {
-        (self.0)().map_err(PoolError::Configuration)
+    pub(crate) async fn call(&self) -> Result<Vec<(String, String)>, PoolError> {
+        (self.0)().await.map_err(PoolError::Configuration)
     }
 }
 
