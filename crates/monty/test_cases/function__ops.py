@@ -383,3 +383,44 @@ def exact_call_with_cell(value):
 
 
 assert exact_call_with_cell(42) == 42
+
+
+# === Exact keyword calls ===
+def keyword_order(a, b, c, d):
+    return a, b, c, d
+
+
+def keyword_order_reversed(d, c, b, a):
+    return d, c, b, a
+
+
+def keyword_call(fn, a, b, c, d):
+    return fn(d=d, a=a, b=b, c=c)
+
+
+def keyword_with_positional_only(a, /, b, c):
+    return a, b, c
+
+
+values = ([1], [2], [3], [4])
+for target, expected in ((keyword_order, values), (keyword_order_reversed, values[::-1])):
+    result = keyword_call(target, *values)
+    assert all(actual is wanted for actual, wanted in zip(result, expected))
+assert keyword_with_positional_only(1, c=3, b=2) == (1, 2, 3)
+
+try:
+    keyword_order([], d=[], a=[], c=[])
+    assert False, 'expected TypeError for a positional argument also passed by keyword'
+except TypeError as exc:
+    assert str(exc) == "keyword_order() got multiple values for argument 'a'"
+
+
+def keyword_recursion(a, b):
+    return keyword_recursion(b=[], a=[])
+
+
+try:
+    keyword_recursion(b=[], a=[])
+    assert False, 'expected RecursionError'
+except RecursionError:
+    pass

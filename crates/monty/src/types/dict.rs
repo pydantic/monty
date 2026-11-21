@@ -236,6 +236,23 @@ impl Dict {
         }
     }
 
+    /// Builds a dict from explicit keyword operands, whose names the compiler checked for duplicates.
+    pub(crate) fn from_explicit_keywords(
+        pairs: impl ExactSizeIterator<Item = (StringId, Value)>,
+        interns: &Interns,
+    ) -> Self {
+        let mut dict = Self::with_capacity(pairs.len());
+        for (name, value) in pairs {
+            dict.contains_refs |= matches!(value, Value::Ref(_));
+            dict.table.push(DictEntry {
+                key: Value::InternString(name),
+                value,
+                hash: interns.str_hash(name).raw(),
+            });
+        }
+        dict
+    }
+
     /// The live entries, in insertion order.
     #[inline]
     fn live(&self) -> Live<'_, DictEntry> {
@@ -618,6 +635,54 @@ impl Dict {
 }
 
 impl<'h> HeapReadMut<'h, Dict> {
+    /// Copies one known-distinct keyword from a compact source of at most 32 entries.
+    pub(crate) fn append_dense_keyword(&self, source: &HeapRead<'h, Dict>, index: usize, heap: &mut HeapReader<'h>) {
+        let source = source.get(heap);
+        let contains_refs = source.contains_refs;
+        let entry = source.table.dense_entries().expect("validated keyword dict")[index].clone_with_heap(heap);
+        let destination = self.get_mut(heap);
+        if destination.is_empty() {
+            destination.table.clear_empty_slots();
+        }
+        destination.contains_refs |= contains_refs;
+        destination.table.push(entry);
+    }
+
+    /// Merges a compact, validated string-keyed source into a keyword accumulator.
+    /// Returns the first duplicate in source order, before inserting that entry.
+    pub(crate) fn merge_dense_keywords(
+        &self,
+        source: &HeapRead<'h, Dict>,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Option<String>> {
+        let source_len = source.get(vm.heap).len();
+        for index in 0..source_len {
+            let source = source.get(vm.heap);
+            let entry = &source.table.dense_entries().expect("validated keyword dict")[index];
+            let key = entry
+                .key
+                .as_str_heap(vm.heap, vm.interns)
+                .expect("validated string keyword");
+            let destination = self.get(vm.heap);
+            if destination
+                .table
+                .find(entry.hash, |candidate| {
+                    json_key_equals_str(&candidate.key, key, vm.heap, vm.interns)
+                })
+                .is_some()
+            {
+                return Ok(Some(key.to_owned()));
+            }
+            destination.table.check_growth(&vm.heap.tracker)?;
+            let contains_refs = source.contains_refs;
+            let entry = entry.clone_with_heap(vm.heap);
+            let destination = self.get_mut(vm.heap);
+            destination.contains_refs |= contains_refs;
+            destination.table.push(entry);
+        }
+        Ok(None)
+    }
+
     /// Sets a key-value pair in the dict.
     ///
     /// The caller transfers ownership of `key` and `value` to the dict. Their refcounts
@@ -778,6 +843,51 @@ impl Dict {
     /// Returns an iterator over references to (key, value) pairs.
     pub fn iter(&self) -> DictEntriesIter<'_> {
         self.into_iter()
+    }
+
+    /// Borrows the pairs of a dict whose live entries occupy a contiguous slice.
+    pub(crate) fn dense_pairs(&self) -> Option<impl ExactSizeIterator<Item = (&Value, &Value)> + Clone> {
+        Some(
+            self.table
+                .dense_entries()?
+                .iter()
+                .map(|entry| (&entry.key, &entry.value)),
+        )
+    }
+
+    pub(crate) fn dense_hashed_keys(&self) -> Option<impl ExactSizeIterator<Item = (&Value, u64)>> {
+        Some(self.table.dense_entries()?.iter().map(|entry| (&entry.key, entry.hash)))
+    }
+
+    /// Copies selected entries from a compact keyword source into a plain dict.
+    pub(crate) fn copy_dense_keywords(&self, indices: impl Iterator<Item = usize>, count: usize, heap: &Heap) -> Self {
+        let entries = self.table.dense_entries().expect("validated keyword dict");
+        let mut copy = Self::with_capacity(count);
+        for index in indices {
+            let entry = entries[index].clone_with_heap(heap);
+            copy.contains_refs |= matches!(entry.key, Value::Ref(_)) || matches!(entry.value, Value::Ref(_));
+            copy.table.push(entry);
+        }
+        copy
+    }
+
+    /// Checks a compact, validated keyword source for duplicates without calling Python.
+    pub(crate) fn overlaps_keyword_keys(&self, source: &Self, heap: &Heap, interns: &Interns) -> bool {
+        let entries = source.table.dense_entries().expect("validated keyword dict");
+        entries.iter().any(|entry| {
+            let name = entry.key.as_str_heap(heap, interns).expect("validated keyword name");
+            self.table
+                .find(entry.hash, |candidate| {
+                    json_key_equals_str(&candidate.key, name, heap, interns)
+                })
+                .is_some()
+        })
+    }
+
+    /// Removes one named argument from a private keyword dict, preserving the other slots' indices.
+    pub(crate) fn take_keyword_at(&mut self, index: usize) -> (Value, Value) {
+        let entry = self.table.take_at(index);
+        (entry.key, entry.value)
     }
 
     /// Clones the pair after `cursor`, applying the dict iterator's guards.

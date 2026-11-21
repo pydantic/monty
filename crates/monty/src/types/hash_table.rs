@@ -238,6 +238,12 @@ impl<E: TableEntry> PyHashTable<E> {
         if self.is_empty() { &[] } else { &self.entries }
     }
 
+    /// The live slots, if reading them requires no tombstone scan.
+    pub(crate) fn dense_entries(&self) -> Option<&[E]> {
+        let slots = self.copy_slots();
+        (slots.len() == self.len()).then_some(slots)
+    }
+
     /// The live entries, in insertion order.
     ///
     /// The borrow is what makes this safe: nothing can mutate the table while
@@ -300,6 +306,12 @@ impl<E: TableEntry> PyHashTable<E> {
         self.tombstone_at(slot.0)
     }
 
+    /// Takes an entry at a previously validated physical slot. Other slots keep their indices.
+    pub(crate) fn take_at(&mut self, index: usize) -> E {
+        assert!(self.get_live(index).is_some(), "{PROBE_SLOT_LIVE}");
+        self.tombstone_at(index)
+    }
+
     /// Validates `cursor`'s guards and yields the next live entry.
     ///
     /// For the heap-resident iterators, which keep their cursor in a different
@@ -335,6 +347,12 @@ impl<E: TableEntry> PyHashTable<E> {
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
         self.indices.is_empty()
+    }
+
+    /// Reuses the slot buffer after all entries have been removed.
+    pub(crate) fn clear_empty_slots(&mut self) {
+        debug_assert!(self.is_empty());
+        self.entries.clear();
     }
 
     /// Appends a live entry, dropping accumulated tombstones first if they have

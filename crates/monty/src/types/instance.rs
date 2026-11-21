@@ -80,6 +80,21 @@ impl Instance {
     pub fn attrs(&self) -> &Dict {
         &self.attrs
     }
+
+    /// Finds the attribute used by a call and reports whether it came from the class.
+    pub(crate) fn lookup_call_member<'a>(
+        &'a self,
+        name: &str,
+        heap: &'a Heap,
+        interns: &Interns,
+    ) -> Option<(&'a Value, bool)> {
+        if !self.attrs.is_empty()
+            && let Some(value) = self.attrs.get_by_str(name, heap, interns)
+        {
+            return Some((value, false));
+        }
+        class_lookup(self.class, name, heap, interns).map(|value| (value, true))
+    }
 }
 
 /// A method bound to an instance, produced by `obj.method` (without calling it).
@@ -464,22 +479,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let attr_str = attr.as_str(vm.interns);
 
-        // 1. An instance attribute shadows class methods; call it as-is (unbound).
-        if let Some(callable) = self
-            .get(vm.heap)
-            .attrs
-            .get_by_str(attr_str, vm.heap, vm.interns)
-            .map(|v| v.clone_with_heap(vm.heap))
+        let instance = self.get(vm.heap);
+        let class_id = instance.class;
+        if let Some((member, from_class)) = instance
+            .lookup_call_member(attr_str, vm.heap, vm.interns)
+            .map(|(value, from_class)| (value.clone_with_heap(vm.heap), from_class))
         {
-            defer_drop!(callable, vm);
-            return vm.call_function(callable, args);
-        }
-
-        // 2. A class member: bind the receiver for methods, call data attributes as-is.
-        let class_id = self.get(vm.heap).class;
-        if let Some(member) = class_member(class_id, attr_str, vm) {
             defer_drop!(member, vm);
-            return match implicit_receiver(attr_str, self.id(), class_id) {
+            let receiver = from_class
+                .then(|| implicit_receiver(attr_str, self.id(), class_id))
+                .flatten();
+            return match receiver {
                 Some(receiver) => call_member_bound(member, receiver, args, vm),
                 None => vm.call_function(member, args),
             };
