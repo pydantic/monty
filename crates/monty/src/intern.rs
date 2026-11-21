@@ -1561,10 +1561,10 @@ pub enum StaticStrings {
     Isfinite,
     /// `str.isidentifier()` method.
     Isidentifier,
-    /// `is_integer()` method on `int` and `float`.
-    IsInteger,
     /// `math.isinf()` function.
     Isinf,
+    /// `is_integer()` method on `int` and `float`.
+    IsInteger,
     /// `os.path.isjunction()` function.
     Isjunction,
     /// `itertools.islice()` function.

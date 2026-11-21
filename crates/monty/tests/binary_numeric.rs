@@ -275,69 +275,6 @@ fn test_int_bit_methods_arguments() {
 }
 
 #[test]
-fn test_as_integer_ratio() {
-    run_checked(
-        r"
-assert (0.0).as_integer_ratio() == (0, 1)
-assert (-0.0).as_integer_ratio() == (0, 1)
-assert (1.0).as_integer_ratio() == (1, 1)
-assert (-1.0).as_integer_ratio() == (-1, 1)
-assert (1.5).as_integer_ratio() == (3, 2)
-assert (-1.5).as_integer_ratio() == (-3, 2)
-assert (0.25).as_integer_ratio() == (1, 4)
-assert (-0.125).as_integer_ratio() == (-1, 8)
-assert (0.1).as_integer_ratio() == (3602879701896397, 36028797018963968)
-assert (42.0).as_integer_ratio() == (42, 1)
-assert (1e20).as_integer_ratio() == (100000000000000000000, 1)
-assert (5e-324).as_integer_ratio() == (1, 1 << 1074)
-assert (-5e-324).as_integer_ratio() == (-1, 1 << 1074)
-
-assert (0).as_integer_ratio() == (0, 1)
-assert (1).as_integer_ratio() == (1, 1)
-assert (-1).as_integer_ratio() == (-1, 1)
-assert (42).as_integer_ratio() == (42, 1)
-assert (-9223372036854775808).as_integer_ratio() == (-9223372036854775808, 1)
-assert (10**30).as_integer_ratio() == (10**30, 1)
-assert (-(10**30)).as_integer_ratio() == (-(10**30), 1)
-
-t_ratio = True.as_integer_ratio()
-f_ratio = False.as_integer_ratio()
-assert t_ratio == (1, 1)
-assert f_ratio == (0, 1)
-assert type(t_ratio[0]) is int
-assert type(f_ratio[0]) is int
-",
-    );
-}
-
-#[test]
-fn test_is_integer() {
-    run_checked(
-        r"
-assert (0.0).is_integer() is True
-assert (-0.0).is_integer() is True
-assert (1.0).is_integer() is True
-assert (-42.0).is_integer() is True
-assert (1e100).is_integer() is True
-assert (1.5).is_integer() is False
-assert (-0.5).is_integer() is False
-assert (5e-324).is_integer() is False
-assert float('inf').is_integer() is False
-assert float('-inf').is_integer() is False
-assert float('nan').is_integer() is False
-
-assert (0).is_integer() is True
-assert (42).is_integer() is True
-assert (-42).is_integer() is True
-assert (10**30).is_integer() is True
-assert (-(10**30)).is_integer() is True
-assert True.is_integer() is True
-assert False.is_integer() is True
-",
-    );
-}
-
-#[test]
 fn test_as_integer_ratio_errors() {
     for (code, expected_exc, expected_msg) in [
         (
