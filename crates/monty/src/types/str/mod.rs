@@ -15,7 +15,7 @@ use smallvec::smallvec;
 
 use super::{
     Bytes, CmpOrder, PyTrait,
-    unicode_type::{casefold, is_space, lowercase, type_record, uppercase},
+    unicode_type::{casefold, is_space, lowercase, map_case, type_record, uppercase},
     unicode_type_data::TypeRecord,
 };
 use crate::{
@@ -526,27 +526,27 @@ fn call_str_method_impl<'h>(
         // Simple transformations (no arguments)
         StaticStrings::Lower => {
             args.check_zero_args("str.lower", vm.heap)?;
-            Ok(str_lower(s.as_str(vm), vm))
+            str_lower(s.as_str(vm), vm)
         }
         StaticStrings::Upper => {
             args.check_zero_args("str.upper", vm.heap)?;
-            Ok(str_upper(s.as_str(vm), vm))
+            str_upper(s.as_str(vm), vm)
         }
         StaticStrings::Capitalize => {
             args.check_zero_args("str.capitalize", vm.heap)?;
-            Ok(str_capitalize(s.as_str(vm), vm))
+            str_capitalize(s.as_str(vm), vm)
         }
         StaticStrings::Title => {
             args.check_zero_args("str.title", vm.heap)?;
-            Ok(str_title(s.as_str(vm), vm))
+            str_title(s.as_str(vm), vm)
         }
         StaticStrings::Swapcase => {
             args.check_zero_args("str.swapcase", vm.heap)?;
-            Ok(str_swapcase(s.as_str(vm), vm))
+            str_swapcase(s.as_str(vm), vm)
         }
         StaticStrings::Casefold => {
             args.check_zero_args("str.casefold", vm.heap)?;
-            Ok(str_casefold(s.as_str(vm), vm))
+            str_casefold(s.as_str(vm), vm)
         }
         // Predicate methods (no arguments, return bool)
         StaticStrings::Isalpha => {
@@ -697,75 +697,68 @@ fn str_join<'h>(separator: &PyStr<'h>, iterable: Value, vm: &mut VM<'h>) -> RunR
 // =============================================================================
 
 /// Implements Python's `str.lower()` method.
-fn str_lower(s: &str, vm: &VM<'_>) -> Value {
-    allocate_string(lowercase(s), vm.heap)
+fn str_lower(s: &str, vm: &VM<'_>) -> RunResult<Value> {
+    Ok(allocate_string(lowercase(s, &vm.heap.tracker)?, vm.heap))
 }
 
 /// Implements Python's `str.upper()` method.
-fn str_upper(s: &str, vm: &VM<'_>) -> Value {
-    allocate_string(uppercase(s), vm.heap)
+fn str_upper(s: &str, vm: &VM<'_>) -> RunResult<Value> {
+    Ok(allocate_string(uppercase(s, &vm.heap.tracker)?, vm.heap))
 }
 
 /// Implements Python's `str.capitalize()` method.
 ///
 /// Returns a copy of the string with its first character titlecased and the rest lowercased.
-fn str_capitalize(s: &str, vm: &VM<'_>) -> Value {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.char_indices();
-    if let Some((_, first)) = chars.next() {
-        type_record(first).push_title(&mut result, first);
-        for (i, c) in chars {
-            type_record(c).push_lower(&mut result, s, i, c);
+fn str_capitalize(s: &str, vm: &VM<'_>) -> RunResult<Value> {
+    let result = map_case(s, &vm.heap.tracker, |out, i, c| {
+        if i == 0 {
+            type_record(c).push_title(out, c);
+        } else {
+            type_record(c).push_lower(out, s, i, c);
         }
-    }
-    allocate_string(result, vm.heap)
+    })?;
+    Ok(allocate_string(result, vm.heap))
 }
 
 /// Implements Python's `str.title()` method.
 ///
 /// Titlecases the first character after each uncased one and lowercases the rest.
-fn str_title(s: &str, vm: &VM<'_>) -> Value {
-    let mut result = String::with_capacity(s.len());
+fn str_title(s: &str, vm: &VM<'_>) -> RunResult<Value> {
     let mut prev_is_cased = false;
-
-    for (i, c) in s.char_indices() {
+    let result = map_case(s, &vm.heap.tracker, |out, i, c| {
         let record = type_record(c);
         if prev_is_cased {
-            record.push_lower(&mut result, s, i, c);
+            record.push_lower(out, s, i, c);
         } else {
-            record.push_title(&mut result, c);
+            record.push_title(out, c);
         }
         prev_is_cased = record.is_cased();
-    }
-
-    allocate_string(result, vm.heap)
+    })?;
+    Ok(allocate_string(result, vm.heap))
 }
 
 /// Implements Python's `str.swapcase()` method.
 ///
 /// Returns a copy of the string with uppercase characters converted to lowercase and vice versa.
-fn str_swapcase(s: &str, vm: &VM<'_>) -> Value {
-    let mut result = String::with_capacity(s.len());
-
-    for (i, c) in s.char_indices() {
+fn str_swapcase(s: &str, vm: &VM<'_>) -> RunResult<Value> {
+    let result = map_case(s, &vm.heap.tracker, |out, i, c| {
         let record = type_record(c);
         if record.is_upper() {
-            record.push_lower(&mut result, s, i, c);
+            record.push_lower(out, s, i, c);
         } else if record.is_lower() {
-            record.push_upper(&mut result, c);
+            record.push_upper(out, c);
         } else {
-            result.push(c);
+            out.push(c);
         }
-    }
-
-    allocate_string(result, vm.heap)
+    })?;
+    Ok(allocate_string(result, vm.heap))
 }
 
 /// Implements Python's `str.casefold()` method.
 ///
 /// Uses full default Unicode folding without normalization or locale tailoring.
-fn str_casefold(s: &str, vm: &VM<'_>) -> Value {
-    allocate_string(casefold(s), vm.heap)
+fn str_casefold(s: &str, vm: &VM<'_>) -> RunResult<Value> {
+    Ok(allocate_string(casefold(s, &vm.heap.tracker)?, vm.heap))
 }
 
 // =============================================================================

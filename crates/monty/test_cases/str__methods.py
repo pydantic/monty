@@ -90,6 +90,14 @@ assert 'ﬗ'.casefold() == 'մխ'
 assert '\u212a\u2126\u212b'.casefold() == 'k\u03c9\u00e5'
 assert 'ǅǈǋǲ'.casefold() == 'ǆǉǌǳ'
 
+# long inputs take the resource-checked path
+assert ('ΐ' * 5000).upper() == '\u0399\u0308\u0301' * 5000
+assert ('aΣ ' * 4000).lower() == 'aς ' * 4000
+assert ('ɐß İx ' * 2000).title() == 'Ɐß İx ' * 2000
+assert ('ɐß İx ' * 2000).swapcase() == 'ⱯSS i̇X ' * 2000
+assert ('ǅx' * 6000).capitalize() == 'ǅx' + 'ǆx' * 5999
+assert ('ẞΣ ' * 4000).casefold() == 'ssσ ' * 4000
+
 # === Phase 2: Predicate methods ===
 
 # isalpha()

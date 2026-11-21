@@ -43,6 +43,7 @@ use crate::{
     heap::{ContainsHeap, DropWithContext, Heap, HeapData},
     intern::StaticStrings,
     modules::ModuleFunctions,
+    resource_checks::check_estimated_size,
     types::{
         BoundedCompileError, Module, RePattern, Type,
         re_pattern::{extract_count, extract_maxsplit, translate_replacement},
@@ -755,7 +756,10 @@ fn call_escape(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         )));
     };
 
-    let mut result = String::with_capacity(text.len() * 2);
+    // At most one backslash per char, so the reservation is the result's upper bound.
+    let capacity = text.len().saturating_mul(2);
+    check_estimated_size(capacity, &vm.heap.tracker)?;
+    let mut result = String::with_capacity(capacity);
     for c in text.chars() {
         if should_escape(c) {
             result.push('\\');
