@@ -227,6 +227,13 @@ Call `flushTelemetry()` before flushing providers directly.
 Worker threads wait for span creation; other records use bounded queues whose overflow disables the affected telemetry path.
 This instrumentation is native-only; WASM still preserves caller context through `snapshot.traceContext()`.
 
+Without instrumentation, a `MontyRemote` session still sends the `traceparent` of the span active at each `feedRun`,
+`feedStart` and load, and runs a host callback under the span the server named for its suspension.
+If the server's spans are not exported to your tracing backend, spans started in host callbacks appear there without
+their parent.
+With instrumentation the request names the caller's span rather than Monty's own feed span, so a recording server's
+spans are siblings of Monty's.
+
 ## Errors
 
 ```ts
@@ -371,6 +378,7 @@ import { Monty } from '@pydantic/monty'
 await using pool = await Monty.create({
   binaryPath: undefined, // explicit path to the `monty` worker binary
   minProcesses: 1, // workers spawned up front, and replaced in the background as they leave
+  preWarm: 0, // idle workers kept ready; they share maxProcesses with checked-out ones
   maxProcesses: 8, // cap on live workers; defaults to the CPU count
   checkoutTimeout: 5, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline; kills the worker
@@ -410,7 +418,11 @@ See [snapshots](../snapshots.md) for manual handlers, restoration and OpenTeleme
 ## Remote workers
 
 `MontyRemote` is a pool of remote workers, usually the [Commercial Support](../server.md) server: the pool holds one HTTP/2 connection to the URL, each checkout opens a gRPC stream on it, and no
-connection is pre-warmed or reused.
+stream is reused.
+`preWarm` keeps that many sessions open and ready so a checkout takes one instead of opening a stream; `create()` waits
+for them unless `preWarmWait` is `false`.
+The pool calls `metadata` for each one it opens, and a checkout takes one only if `metadata` returned the same value for
+both, so leave `preWarm` off when one pool's checkouts send different metadata, such as per-user credentials.
 Sessions are the same `MontySession` a local pool returns:
 
 ```ts test="skip"
@@ -512,6 +524,7 @@ Differences from the native path:
 - **`minProcesses` only prewarms.** A worker that is recycled, crashes or is discarded is replaced only when a checkout
     is already waiting for it, so the pool can fall below `minProcesses` and a checkout that finds no idle worker
     spawns a cold one.
+- **`preWarm` is ignored.** Only `minProcesses` workers are started ahead of a checkout.
 - **`binaryPath` is ignored.** The bundled WASM asset is used instead.
 - **OS diagnostics are backend-specific.** Browser crashes have no OS exit status.
     A hard allocator limit traps WASM and raises `MontyCrashedError`, not the native worker's classified `MemoryError`;

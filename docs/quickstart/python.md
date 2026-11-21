@@ -424,6 +424,7 @@ from pydantic_monty import Monty
 pool = Monty(
     binary_path=None,  # explicit path to the `monty` worker binary
     min_processes=1,  # workers spawned eagerly and kept warm
+    pre_warm=0,  # idle workers kept ready beyond those checked out
     max_processes=None,  # cap on live workers; defaults to the CPU count
     checkout_timeout=None,  # seconds `checkout()` waits for a free worker
     request_timeout=None,  # hard per-turn deadline; kills the worker

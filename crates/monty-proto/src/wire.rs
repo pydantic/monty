@@ -52,6 +52,7 @@ use crate::{
     convert::{ProtoConvertError, exc_type_from_wire},
     decode_budget,
     pb::{self, monty_node::Kind},
+    traceparent::Traceparent,
 };
 
 /// The wire form of a [`MontyGraph`]: what the `monty.v1.Arena` proto message
@@ -169,6 +170,8 @@ pub struct WireFunctionCall {
     /// Where the call expression is in the source; `None` for a frame from a
     /// worker that predates the field.
     pub position: Option<SourceRange>,
+    /// The sender's span for a streamed call; a malformed value decodes as `None`.
+    pub traceparent: Option<Traceparent>,
 }
 
 impl WireFunctionCall {
@@ -192,6 +195,7 @@ impl WireFunctionCall {
             object_id,
             allow_eager_await,
             position: Some(position),
+            traceparent: None,
         }
     }
 
@@ -222,6 +226,9 @@ impl Message for WireFunctionCall {
         if let Some(position) = &self.position {
             encode_source_range(8, position, buf);
         }
+        if let Some(traceparent) = &self.traceparent {
+            encode_str(9, traceparent.as_str(), buf);
+        }
     }
 
     fn encoded_len(&self) -> usize {
@@ -243,6 +250,10 @@ impl Message for WireFunctionCall {
                 .position
                 .as_ref()
                 .map_or(0, |position| submessage_len(8, source_range_len(position)))
+            + self
+                .traceparent
+                .as_ref()
+                .map_or(0, |traceparent| str_len(9, traceparent.as_str()))
     }
 
     fn merge_field(
@@ -280,6 +291,13 @@ impl Message for WireFunctionCall {
                 self.position = Some(SourceRange::from(position));
                 Ok(())
             }
+            9 => {
+                // advisory context from an untrusted peer: a malformed value is dropped
+                let mut traceparent = String::new();
+                encoding::string::merge(wire_type, &mut traceparent, buf, ctx)?;
+                self.traceparent = Traceparent::parse(&traceparent);
+                Ok(())
+            }
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }
@@ -293,6 +311,7 @@ impl Message for WireFunctionCall {
         self.object_id = None;
         self.allow_eager_await = false;
         self.position = None;
+        self.traceparent = None;
     }
 }
 
