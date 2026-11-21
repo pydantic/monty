@@ -17,7 +17,15 @@ import { fileURLToPath } from 'node:url'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 /** Native triples that ship a binary (kept in lockstep with `napi.targets`). */
-const NATIVE_TRIPLES = ['darwin-x64', 'darwin-arm64', 'linux-x64-gnu', 'linux-arm64-gnu', 'win32-x64-msvc']
+const NATIVE_TRIPLES = [
+  'darwin-x64',
+  'darwin-arm64',
+  'linux-x64-gnu',
+  'linux-x64-musl',
+  'linux-arm64-gnu',
+  'linux-arm64-musl',
+  'win32-x64-msvc',
+]
 
 for (const triple of NATIVE_TRIPLES) {
   const manifestPath = join(root, 'npm', triple, 'package.json')
