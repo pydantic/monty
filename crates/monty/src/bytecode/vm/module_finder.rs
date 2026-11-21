@@ -7,10 +7,13 @@
 //! as CPython checks built-in modules before `sys.path`, and answers with a
 //! host module, the [`ModuleFile`] it found, or not-found. A found file is
 //! compiled and run here as the module, so each module costs one round trip.
+//! A relative import names its package by its dots alone (`..`); the package is
+//! resolved here from the frame's `__package__`, and its submodules then load by
+//! absolute name like any other.
 
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
-use monty_types::{ExcType, ExtFunctionResult, ImportArgs, MAX_SEARCH_DIRS, ModuleFile, OsFunctionCall};
+use monty_types::{ExcType, ExtFunctionResult, ImportArgs, MAX_SEARCH_DIRS, ModuleFile, OsFunctionCall, is_identifier};
 
 use super::{
     FrameExit, FrameNamespace, VM,
@@ -19,9 +22,11 @@ use super::{
 use crate::{
     builtins::eval_exec::{SnippetSource, compile_and_push},
     bytecode::CallResult,
+    defer_drop,
     exception_private::{ExcTypeExt, ExceptionRaise, RunError, RunResult, SimpleException},
     heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
-    intern::StringId,
+    intern::{StaticStrings, StringId},
+    modules::StandardLib,
     os_dispatch::PendingEffect,
     prepare::SnippetNames,
     types::{Dict, List, Module, str::allocate_string},
@@ -113,12 +118,98 @@ impl VM<'_> {
         }
     }
 
-    /// `import pkg.sub` past a file module: the cached submodule, else the
+    /// `from .. import name` and the head of `from ..pkg import name`: the package
+    /// `level` dots name, counted up from the frame's `__package__` as CPython does.
+    pub(super) fn import_relative_package(&mut self, level: usize) -> RunResult<CallResult> {
+        let base = self.relative_base(level)?;
+        // `exec()` globals can name anything, but only dotted identifiers may reach the host
+        if let Some(invalid) = invalid_prefix(&base) {
+            return Err(ExcType::module_not_found_error(invalid, None));
+        }
+        // A built-in (`os`, or the dotted `os.path`) or top-level name loads as `import base` would.
+        let static_name = StaticStrings::from_str(&base).ok();
+        match base.rsplit_once('.') {
+            Some((parent, _)) if static_name.and_then(StandardLib::from_static).is_none() => {
+                match self.modules.get(&base, self.heap) {
+                    Some(module) => Ok(CallResult::Value(module)),
+                    None => self.reimport_package(&base, parent),
+                }
+            }
+            _ => Ok(self.import_absolute(&base, static_name)),
+        }
+    }
+
+    /// A dotted package missing from the cache, which a failed import of it removed:
+    /// imported again as a submodule of `parent` when that is cached.
+    /// CPython would import a missing `parent` too, but one instruction can run only one
+    /// import, so an uncached file parent raises `ModuleNotFoundError` naming `base`.
+    fn reimport_package(&mut self, base: &str, parent: &str) -> RunResult<CallResult> {
+        let this = self;
+        let Some(parent_module) = this.modules.get(parent, this.heap) else {
+            let builtin = StaticStrings::from_str(parent).ok().and_then(StandardLib::from_static);
+            return Err(ExcType::module_not_found_error(base, builtin.map(|_| parent)));
+        };
+        defer_drop!(parent_module, this);
+        this.import_file_submodule(parent_module, base)
+            .expect("the module cache holds only file modules")
+    }
+
+    /// The absolute name of the package `level` dots name from the current frame's package.
+    fn relative_base(&self, level: usize) -> RunResult<String> {
+        let package = self.frame_package()?;
+        let mut base = package.as_str();
+        for _ in 1..level {
+            base = base
+                .rsplit_once('.')
+                .ok_or_else(ExcType::relative_import_beyond_top_level)?
+                .0;
+        }
+        Ok(base.to_owned())
+    }
+
+    /// The package a relative import in the current frame resolves against, as CPython's
+    /// `_calc___package__` finds it: `__package__`, else `__name__`, less its last
+    /// component unless `__path__` is set. Slot globals (the main script) have none.
+    fn frame_package(&self) -> RunResult<String> {
+        let globals = self
+            .current_frame
+            .namespace
+            .as_deref()
+            .and_then(FrameNamespace::dict_globals)
+            .map(|globals| self.heap.get(globals));
+        let Some(HeapData::Dict(globals)) = globals else {
+            return Err(ExcType::relative_import_no_parent());
+        };
+        let get = |key| globals.get_by_str(key, self.heap, self.interns);
+        let package = match get("__package__") {
+            Some(package) if !matches!(package, Value::None) => package
+                .as_str_heap(self.heap, self.interns)
+                .ok_or_else(|| SimpleException::new_msg(ExcType::TypeError, "package must be a string"))?
+                .to_owned(),
+            _ => {
+                let name = get("__name__")
+                    .ok_or_else(|| SimpleException::new_msg(ExcType::KeyError, "'__name__' not in globals"))?
+                    .as_str_heap(self.heap, self.interns)
+                    .ok_or_else(|| SimpleException::new_msg(ExcType::TypeError, "__name__ must be a string"))?;
+                match get("__path__") {
+                    Some(_) => name,
+                    None => name.rsplit_once('.').map_or("", |(parent, _)| parent),
+                }
+                .to_owned()
+            }
+        };
+        if package.is_empty() {
+            Err(ExcType::relative_import_no_parent())
+        } else {
+            Ok(package)
+        }
+    }
+
+    /// `import pkg.sub` past a file module: the cached submodule `name`, else the
     /// host's `import` call searching the package's `__path__`. `None` when
     /// `parent` is not a file module.
-    pub(super) fn import_file_submodule(&mut self, parent: &Value, path_id: StringId) -> Option<RunResult<CallResult>> {
+    pub(super) fn import_file_submodule(&mut self, parent: &Value, name: &str) -> Option<RunResult<CallResult>> {
         let parent = self.file_parent(parent)?;
-        let name = self.interns.get_str(path_id);
         Some(match parent.search_path {
             None => Err(ExcType::module_not_found_error(name, Some(&parent.name))),
             Some(dirs) => Ok(match self.modules.get(name, self.heap) {
@@ -381,4 +472,18 @@ fn cannot_import(attr: &str, parent: &str, origin: &str, partial: bool) -> RunEr
     } else {
         ExcType::cannot_import_name(attr, parent, Some(origin))
     }
+}
+
+/// `name` up to its first component that is not an identifier, the module CPython fails to find;
+/// `None` when every component is one.
+fn invalid_prefix(name: &str) -> Option<&str> {
+    let mut end = 0;
+    for part in name.split('.') {
+        end += part.len();
+        if !is_identifier(part) {
+            return Some(&name[..end]);
+        }
+        end += 1;
+    }
+    None
 }

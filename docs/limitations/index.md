@@ -42,7 +42,8 @@ For compilation and runtime limits, see [resource limits](resource_limits.md).
 - `import x`, `import x.y`, `from x import y, z as w`, `from x import *` (see
     [modules.md](modules.md#star-imports)); a module the sandbox does not have is requested from the host,
     see [modules.md](modules.md#host-modules), which may answer with the module's `.py` file from the working
-    directory instead, see [modules from files](modules.md#modules-from-files)
+    directory instead, see [modules from files](modules.md#modules-from-files).
+    Modules in a file package can use [relative imports](language.md#imports), such as `from . import sibling`.
 - Starred unpacking everywhere CPython allows it
 - Runtime generic aliases (`list[int]`) and `|` unions (`int | None`), see [typing.md](typing.md)
 
