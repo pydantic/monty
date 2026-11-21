@@ -247,7 +247,8 @@ pub(crate) fn date_from_ordinal(ordinal: i32) -> RunResult<Date> {
         let year = civil_year_from_days(i64::from(ordinal) - 719_163);
         return Err(year_out_of_range(year));
     }
-    let date = NaiveDate::from_num_days_from_ce_opt(ordinal)
+    let date = civil::date(1970, 1, 1)
+        .checked_add(SignedDuration::from_secs((i64::from(ordinal) - 719_163) * 86_400))
         .expect("ordinal in 1..=3_652_059 is always a valid Gregorian date");
     Ok(Date(date))
 }

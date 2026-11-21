@@ -319,7 +319,7 @@ pub(crate) fn class_method(
 pub(crate) fn class_fromordinal(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let date::FromOrdinalArgs { ordinal } = date::FromOrdinalArgs::from_args(args, vm)?;
     let date = date::date_from_ordinal(ordinal)?;
-    let naive = date.0.and_hms_opt(0, 0, 0).expect("midnight is valid");
+    let naive = date.0.at(0, 0, 0, 0);
     let dt = DateTime {
         naive,
         offset_seconds: None,
@@ -1331,7 +1331,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
             Some(StaticStrings::Toordinal) => {
                 args.check_zero_args("date.toordinal", vm.heap)?;
                 let date = dt.naive.date();
-                Ok(CallResult::Value(Value::Int(i64::from(date.num_days_from_ce()))))
+                Ok(CallResult::Value(Value::Int(i64::from(date::to_ordinal(date::Date(
+                    date,
+                ))))))
             }
             Some(StaticStrings::Utcoffset) => {
                 args.check_zero_args("datetime.utcoffset", vm.heap)?;
