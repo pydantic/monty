@@ -1268,7 +1268,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ListIterator> {
         Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (list_id, index) = {
             let iterator = self.get(vm.heap);
             (iterator.list, iterator.index)
@@ -1280,7 +1280,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ListIterator> {
         if item.is_some() {
             self.get_mut(vm.heap).index += 1;
         }
-        Ok(item)
+        Ok(item.map(CallResult::Value))
     }
 }
 

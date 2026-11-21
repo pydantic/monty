@@ -187,11 +187,9 @@ fn collection_too_large(count: usize, position: CodeRange) -> CompileError {
     )
 }
 
-/// Converts the index of a newly-defined function into the `u16` operand used
-/// by `MakeFunction`/`MakeClosure`. The cap is the total number of
-/// `def`/`lambda`/comprehension function objects in the *whole module*, since
-/// `FunctionId`s are allocated linearly across nested scopes.
-fn check_function_count_u16(func_id: usize, position: CodeRange) -> Result<u16, CompileError> {
+/// Checks that an index in the interner's function table fits the `u16` bytecode operand.
+/// Nested definitions and frozen functions created at runtime share that table.
+pub(super) fn check_function_count_u16(func_id: usize, position: CodeRange) -> Result<u16, CompileError> {
     u16::try_from(func_id).map_err(|_| too_many_functions(func_id, position))
 }
 
@@ -2802,7 +2800,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
             break_jumps: Vec::new(),
         }));
 
-        // ForIter: advance iterator or jump to end
         let end_jump = self.code.emit_jump(Opcode::ForIter)?;
 
         // Store current value to target (handles both single identifiers and tuple unpacking)
@@ -2813,7 +2810,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
         // Jump back to loop start
         self.code.emit_jump_to(Opcode::Jump, loop_start)?;
-        // End of loop - ForIter jumps here when iterator is exhausted
         self.code.patch_jump(end_jump)?;
 
         // Pop loop block before compiling else block
@@ -3285,7 +3281,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // Loop start
         let loop_start = self.code.current_jump_target();
 
-        // FOR_ITER: pushes value, or pops iter and jumps to end on exhaustion.
         let end_jump = self.code.emit_jump(Opcode::ForIter)?;
 
         // Unpack target and record each leaf's active storage.

@@ -2069,7 +2069,7 @@ mod tests {
                     };
                     assert_eq!(iterator.py_type(vm), expected_type);
                     let mut actual = String::new();
-                    while let Some(character) = iterator.py_next(vm).unwrap() {
+                    while let Some(character) = iterator.read(vm).py_next(vm).unwrap() {
                         defer_drop!(character, vm);
                         actual.push_str(character.as_str(vm).unwrap());
                     }

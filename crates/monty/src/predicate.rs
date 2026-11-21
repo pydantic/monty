@@ -1,7 +1,6 @@
 //! Calling a user-supplied predicate and taking its truthiness.
 //!
-//! Shared by `filter` and the `itertools` adaptors `takewhile`, `dropwhile`
-//! and `filterfalse`, which differ only in what they do with the answer.
+//! Used by the `itertools` adaptors `takewhile`, `dropwhile` and `filterfalse`.
 
 use crate::{args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, types::PyTrait, value::Value};
 

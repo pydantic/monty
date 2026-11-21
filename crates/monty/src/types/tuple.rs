@@ -702,7 +702,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TupleIterator> {
         Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (source_id, index) = {
             let iter = self.get(vm.heap);
             (iter.source_id(), iter.index)
@@ -716,7 +716,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TupleIterator> {
         if item.is_some() {
             self.get_mut(vm.heap).index += 1;
         }
-        Ok(item)
+        Ok(item.map(CallResult::Value))
     }
 }
 

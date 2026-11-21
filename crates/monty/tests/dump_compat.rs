@@ -115,6 +115,13 @@ next(di_it)
 s_it = iter(st)
 next(s_it)
 call_it = iter(lambda: 7, 0)
+rows = map(next, [iter([3]), iter([]), iter([5])])
+
+
+def consume_rows():
+    return [value for value in rows]
+
+
 joined = '-'.join(['x', 'y'])
 str_it = iter('abc')
 next(str_it)
@@ -188,6 +195,7 @@ assert rnd.random() == fresh.random()
 assert list(dq_it) == [2, 3] and list(t_it) == ['two'] and list(b_it) == [8, 9]
 assert list(di_it) == [('b', [2, 3]), (3, 'int key')] and len(list(s_it)) == 2
 assert next(call_it) == 7
+assert consume_rows() == [3] and consume_rows() == [5]
 assert pending_log == ['finally']
 assert joined == 'x-y' and list(str_it) == ['b', 'c'] and list(range_it) == [1, 2]
 assert list(dk_it) == ['b', 3] and list(dv_it) == [[2, 3], 'int key'] and next(counter) == 6
@@ -279,7 +287,7 @@ fn fixture_dump_loads_and_resumes() {
 /// Older fixtures remain readable after adding inline strings and the star-import opcode.
 #[test]
 fn older_version_fixtures_load_and_resume() {
-    for version in [14, 15] {
+    for version in [14, 15, 16] {
         let bytes = fs::read(fixture_path_for(version)).expect("older fixture exists");
         let loaded = Dump::load(&bytes).expect("older dumps remain supported");
         assert_eq!(loaded.script_name, "fixture.py");
