@@ -2,9 +2,9 @@
 //!
 //! These cannot be datatest `test_cases` (which dual-run against CPython): the
 //! whole point is that Monty *diverges* from CPython here — CPython imports
-//! `OrderedDict` / `ChainMap` / `UserDict` fine, whereas Monty raises
+//! `ChainMap` / `UserDict` fine, whereas Monty raises
 //! `ImportError` because it implements only `deque`, `Counter`, `defaultdict`,
-//! and `namedtuple`. The narrowed typeshed stub
+//! `OrderedDict` and `namedtuple`. The narrowed typeshed stub
 //! (`crates/monty-typeshed/custom/collections/__init__.pyi`) makes the same
 //! names a type error; these tests pin the matching *runtime* behaviour so the
 //! two stay in agreement.
@@ -13,9 +13,13 @@
 //! they drive `gc.collect()`, which is a `test-hooks`-only module deliberately
 //! kept out of the sandbox surface.
 
+use std::time::Duration;
+
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyObject};
+use monty_types::{
+    CompileOptions, ExcType, ExecutionClock, MontyObject, MontyType, PrintWriter, ResourceLimits, ResourceTracker,
+};
 
 /// Runs `from collections import <name>` and returns the raised exception.
 fn import_err(name: &str) -> monty_types::MontyException {
@@ -24,11 +28,11 @@ fn import_err(name: &str) -> monty_types::MontyException {
     run.run_no_limits(vec![]).expect_err("expected ImportError")
 }
 
-/// The four members Monty implements import cleanly.
+/// The five members Monty implements import cleanly.
 #[test]
 fn implemented_names_import() {
     let mut run = MontyRun::new(
-        "from collections import deque, Counter, defaultdict, namedtuple".to_owned(),
+        "from collections import deque, Counter, defaultdict, OrderedDict, namedtuple".to_owned(),
         "test.py",
         vec![],
         CompileOptions::default(),
@@ -40,19 +44,8 @@ fn implemented_names_import() {
     );
 }
 
-/// `OrderedDict` is not implemented, so importing it raises `ImportError` with a
+/// `ChainMap` is not implemented, so importing it raises `ImportError` with a
 /// CPython-shaped message (Monty diverges here — CPython would import it).
-#[test]
-fn ordereddict_import_raises() {
-    let err = import_err("OrderedDict");
-    assert_eq!(err.exc_type(), ExcType::ImportError);
-    assert_snapshot!(
-        err.message().unwrap(),
-        @"cannot import name 'OrderedDict' from 'collections' (unknown location)"
-    );
-}
-
-/// `ChainMap` is likewise unimplemented.
 #[test]
 fn chainmap_import_raises() {
     let err = import_err("ChainMap");
@@ -180,4 +173,37 @@ fn deque_crosses_host_boundary_as_a_list() {
             MontyObject::int(2)
         ])
     );
+}
+
+/// The dict-backed `collections` types have no host-side type, so their type
+/// objects cross the boundary as `dict`, as their values do.
+#[test]
+fn dict_subclass_types_cross_host_boundary_as_dict() {
+    for name in ["defaultdict", "Counter", "OrderedDict"] {
+        assert_eq!(
+            host_value(&format!("from collections import {name}\n{name}")),
+            MontyObject::type_object(MontyType::Dict),
+            "{name}"
+        );
+    }
+}
+
+/// Draining an `OrderedDict` from the front and reversing one with
+/// `move_to_end(last=False)` cost amortized O(1) per call. Both were quadratic,
+/// rescanning the dead prefix or rebuilding the table on every call, and ran
+/// far past this limit.
+#[test]
+fn ordereddict_front_operations_are_amortized_constant() {
+    for code in [
+        "from collections import OrderedDict\nod = OrderedDict.fromkeys(range(200_000))\nfor _ in range(200_000):\n    od.popitem(last=False)",
+        "from collections import OrderedDict\nod = OrderedDict.fromkeys(range(50_000))\nfor k in range(50_000):\n    od.move_to_end(k, last=False)",
+    ] {
+        let mut ex =
+            MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+        let limits = ResourceLimits::default().max_feed_duration(Duration::from_secs(5));
+        // CPU time where the platform has it, so load from other tests cannot trip the limit.
+        let tracker = ResourceTracker::new(limits).with_execution_clock(ExecutionClock::Cpu);
+        let result = ex.run(vec![], tracker, PrintWriter::Stdout);
+        assert!(result.is_ok(), "{code}: {result:?}");
+    }
 }

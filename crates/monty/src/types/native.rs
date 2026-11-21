@@ -925,6 +925,12 @@ native_types! {
     /// `annotationlib.ForwardRef`, an unevaluated annotation.
     ForwardRef("annotationlib.ForwardRef")
         .ctor(Constructor::Value(ForwardRef::init)),
+    /// `collections.OrderedDict` — a `dict` subclass (also a `DictKind`).
+    OrderedDict("collections.OrderedDict", Dict)
+        .basetype()
+        .class_getitem()
+        .ctor(Constructor::Value(collections::ordereddict_init))
+        .class_method(collections::ordereddict_class_method),
     /// The base of every ordinary exception.
     Exception("Exception", BaseException)
         .builtin()
