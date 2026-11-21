@@ -610,6 +610,8 @@ pub enum StaticStrings {
     Args,
     /// `sys.argv` attribute.
     Argv,
+    /// `as_integer_ratio()` method on `int` and `float`.
+    AsIntegerRatio,
     /// `Path.as_posix()` method, answered without host I/O.
     AsPosix,
     /// `re.ASCII` flag
@@ -1559,6 +1561,8 @@ pub enum StaticStrings {
     Isfinite,
     /// `str.isidentifier()` method.
     Isidentifier,
+    /// `is_integer()` method on `int` and `float`.
+    IsInteger,
     /// `math.isinf()` function.
     Isinf,
     /// `os.path.isjunction()` function.

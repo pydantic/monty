@@ -8,6 +8,7 @@ use std::{
 };
 
 use num_bigint::BigInt;
+use smallvec::smallvec;
 
 use crate::{
     annotations,
@@ -25,10 +26,10 @@ use crate::{
     intern::{FunctionId, StaticStrings},
     modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
     types::{
-        GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_string,
+        GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_string, allocate_tuple,
         bytes::PyBytes,
         long_int::{PyInt, arithmetic::float_binary},
-        numeric::{round_digits, round_float},
+        numeric::{float_as_integer_ratio, float_is_integer, round_digits, round_float},
         py_trait::PyObjectIdentity,
         str::PyStr,
     },
@@ -792,9 +793,36 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                         args.check_zero_args("int.bit_count", vm.heap)?;
                         Ok(CallResult::Value(Value::Int(i64::from(*value))))
                     }
+                    Some(StaticStrings::AsIntegerRatio) => {
+                        args.check_zero_args("int.as_integer_ratio", vm.heap)?;
+                        Ok(CallResult::Value(allocate_tuple(
+                            smallvec![Value::Int(i64::from(*value)), Value::Int(1)],
+                            vm.heap,
+                        )))
+                    }
+                    Some(StaticStrings::IsInteger) => {
+                        args.check_zero_args("int.is_integer", vm.heap)?;
+                        Ok(CallResult::Value(Value::Bool(true)))
+                    }
                     _ => {
                         args.drop_with(vm);
                         Err(ExcType::attribute_error("bool", attr.as_str(vm.interns)))
+                    }
+                }
+            }
+            Self::Float(value) => {
+                match attr.static_string(vm.interns) {
+                    Some(StaticStrings::AsIntegerRatio) => {
+                        args.check_zero_args("float.as_integer_ratio", vm.heap)?;
+                        float_as_integer_ratio(*value, vm.heap).map(CallResult::Value)
+                    }
+                    Some(StaticStrings::IsInteger) => {
+                        args.check_zero_args("float.is_integer", vm.heap)?;
+                        Ok(CallResult::Value(Value::Bool(float_is_integer(*value))))
+                    }
+                    _ => {
+                        args.drop_with(vm);
+                        Err(ExcType::attribute_error("float", attr.as_str(vm.interns)))
                     }
                 }
             }
