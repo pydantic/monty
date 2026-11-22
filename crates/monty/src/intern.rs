@@ -1328,7 +1328,7 @@ pub enum StaticStrings {
     FromIterable,
     /// `complex.from_number()` classmethod.
     FromNumber,
-    /// `bytes.fromhex()` classmethod.
+    /// `bytes.fromhex()` and `float.fromhex()` classmethods.
     Fromhex,
     /// `date.fromisoformat()` / `datetime.fromisoformat()` classmethod.
     Fromisoformat,
@@ -1439,7 +1439,7 @@ pub enum StaticStrings {
     /// `header` parameter of the `binascii` quoted-printable pair.
     #[strum(serialize = "header")]
     Header,
-    /// `bytes.hex()` method.
+    /// `bytes.hex()` and `float.hex()` methods.
     Hex,
     /// `hexdigest()` method of a hash object.
     Hexdigest,
