@@ -25,7 +25,7 @@ use crate::{
     modules::{collections, csv, hashlib, itertools},
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
-        bytes, complex, date, datetime, decimal, dict, numeric, path,
+        bytes, complex, date, datetime, decimal, dict, long_int, numeric, path,
         str::PyStr,
         time, timedelta, timezone,
         r#type::{bool_init, float_init, int_init, union_init},
@@ -592,11 +592,13 @@ native_types! {
     NoneType("NoneType"),
     Bool("bool", Int)
         .builtin()
-        .ctor(Constructor::Value(bool_init)),
+        .ctor(Constructor::Value(bool_init))
+        .class_method(long_int::bool_class_method),
     Int("int")
         .builtin()
         .basetype()
-        .ctor(Constructor::Value(int_init)),
+        .ctor(Constructor::Value(int_init))
+        .class_method(long_int::int_class_method),
     Float("float")
         .builtin()
         .basetype()
