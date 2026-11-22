@@ -2751,18 +2751,13 @@ fn bytes_translate<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mu
     };
 
     let src = bytes.get(vm.heap);
-    if table_arr.is_none() && !has_delete {
-        check_repeat_size(src.len(), 1, &vm.heap.tracker)?;
-        return Ok(allocate_bytes(src.to_vec(), vm.heap));
-    }
-
     check_repeat_size(src.len(), 1, &vm.heap.tracker)?;
     let mut result = Vec::with_capacity(src.len());
 
     for chunk in src.chunks(SCAN_CHUNK) {
         vm.heap.tracker.check_time()?;
         match (&table_arr, has_delete) {
-            (None, false) => unreachable!(),
+            (None, false) => result.extend_from_slice(chunk),
             (None, true) => {
                 for &b in chunk {
                     if !delete_mask[usize::from(b)] {
