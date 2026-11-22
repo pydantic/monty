@@ -27,7 +27,7 @@ use crate::{
     types::{
         GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_string,
         bytes::PyBytes,
-        long_int::{PyInt, arithmetic::float_binary},
+        long_int::{PyInt, arithmetic::float_binary, int_from_bytes},
         numeric::{round_digits, round_float},
         py_trait::PyObjectIdentity,
         str::PyStr,
@@ -791,6 +791,12 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                     Some(StaticStrings::BitCount) => {
                         args.check_zero_args("int.bit_count", vm.heap)?;
                         Ok(CallResult::Value(Value::Int(i64::from(*value))))
+                    }
+                    Some(StaticStrings::ToBytes) => {
+                        PyInt::Small(i64::from(*value)).to_bytes(args, vm).map(CallResult::Value)
+                    }
+                    Some(StaticStrings::FromBytes) => {
+                        int_from_bytes(args, true, vm).map(CallResult::Value)
                     }
                     _ => {
                         args.drop_with(vm);

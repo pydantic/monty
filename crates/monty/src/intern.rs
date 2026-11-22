@@ -727,6 +727,8 @@ pub enum StaticStrings {
     BuiltinModuleNames,
     /// `sys.byteorder` attribute.
     Byteorder,
+    /// `bytes` parameter of `int.from_bytes()`.
+    Bytes,
     /// `bytes_per_sep` parameter of `binascii.hexlify()`.
     #[strum(serialize = "bytes_per_sep")]
     BytesPerSep,
@@ -1317,6 +1319,8 @@ pub enum StaticStrings {
     Fp,
     /// `math.frexp()` function.
     Frexp,
+    /// `int.from_bytes()` classmethod.
+    FromBytes,
     /// `chain.from_iterable` — the one attribute an `itertools` type carries.
     #[strum(serialize = "from_iterable")]
     FromIterable,
@@ -2331,6 +2335,8 @@ pub enum StaticStrings {
     Sigma,
     /// `DecimalTuple.sign` field.
     Sign,
+    /// `signed` parameter of `int.to_bytes()` / `int.from_bytes()`.
+    Signed,
     /// `math.sin()` function.
     Sin,
     /// `math.sinh()` function.
@@ -2544,6 +2550,8 @@ pub enum StaticStrings {
     TmYear,
     /// `struct_time.tm_zone` field.
     TmZone,
+    /// `int.to_bytes()` method.
+    ToBytes,
     /// `date.today()` / `datetime.today()` classmethod.
     Today,
     /// `tomllib.TOMLDecodeError` exception.

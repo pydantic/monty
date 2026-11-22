@@ -26,16 +26,19 @@ use smallvec::smallvec;
 
 use self::arithmetic::IntArithmetic;
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs, FromValue, FromValueFail, LaxBool, StrArg},
     bytecode::{CallResult, VM},
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_long_int},
     heap::{DropWithContext, Heap, HeapData, HeapObjectRead},
     identity::Identity,
     intern::{LongIntId, StaticStrings},
-    resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size},
+    py_value::PyValue,
+    resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size, check_repeat_size},
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
+        bytes::{PyBytes, allocate_bytes, collect_bytes_from_iterator},
         numeric::{round_bigint, round_digits, round_int},
         py_trait::PyObjectIdentity,
         str::allocate_string,
@@ -219,6 +222,92 @@ impl<'h> PyInt<'h> {
                 }
             },
         )
+    }
+    /// Implements `int.to_bytes(length=1, byteorder='big', *, signed=False)`.
+    pub(crate) fn to_bytes(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let IntToBytesArgs {
+            length: SsizeArg(raw_len),
+            byteorder,
+            signed,
+        } = IntToBytesArgs::from_args(args, vm)?;
+        defer_drop!(byteorder, vm);
+        let signed = signed.bool();
+
+        // CPython checks `byteorder` before `length < 0`.
+        let order = parse_byteorder(byteorder.as_ref(), vm)?;
+
+        let Ok(length) = usize::try_from(raw_len) else {
+            return Err(ExcType::value_error("length argument must be non-negative"));
+        };
+
+        let is_neg = self.with_value(vm, |v| v < 0, BigInt::is_negative);
+        if !signed && is_neg {
+            return Err(ExcType::overflow_error("can't convert negative int to unsigned"));
+        }
+
+        // Check if value fits in `length` bytes before allocating.
+        let fits = self.with_value(
+            vm,
+            |v| {
+                if length == 0 {
+                    v == 0
+                } else if length > 8 {
+                    true
+                } else if signed {
+                    let bits = u32::try_from(length * 8).unwrap_or(64);
+                    if bits == 64 {
+                        true
+                    } else {
+                        let min = -(1_i64 << (bits - 1));
+                        let max = (1_i64 << (bits - 1)) - 1;
+                        v >= min && v <= max
+                    }
+                } else {
+                    let uv = v.cast_unsigned();
+                    let bits = u32::try_from(length * 8).unwrap_or(64);
+                    bits == 64 || uv < (1_u64 << bits)
+                }
+            },
+            |big| {
+                let max_bits = (length as u64).saturating_mul(8);
+                if length == 0 {
+                    big.is_zero()
+                } else if signed {
+                    if big.is_zero() {
+                        true
+                    } else if big.is_positive() {
+                        big.bits() < max_bits
+                    } else {
+                        (big + 1_i32).bits() < max_bits
+                    }
+                } else {
+                    big.bits() <= max_bits
+                }
+            },
+        );
+        if !fits {
+            return Err(ExcType::overflow_error("int too big to convert"));
+        }
+
+        check_repeat_size(length, 1, &vm.heap.tracker)?;
+        let fill = if is_neg { 0xff_u8 } else { 0x00_u8 };
+        let mut buf = vec![fill; length];
+
+        if length > 0 {
+            match self {
+                Self::Small(v) => copy_small_to_buf(*v, order, length, &mut buf),
+                Self::Interned(id) => {
+                    let big = vm.interns.get_long_int(*id);
+                    copy_bigint_to_buf(big, signed, order, length, &mut buf);
+                }
+                Self::Heap(value) => {
+                    let big = value.get(vm.heap).inner();
+                    copy_bigint_to_buf(big, signed, order, length, &mut buf);
+                }
+            }
+        }
+
+        Ok(allocate_bytes(buf, vm.heap))
     }
 }
 
@@ -484,11 +573,211 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
                 args.check_zero_args("int.bit_count", vm.heap)?;
                 Ok(CallResult::Value(self.bit_count(vm)))
             }
+            Some(StaticStrings::ToBytes) => self.to_bytes(args, vm).map(CallResult::Value),
+            Some(StaticStrings::FromBytes) => int_from_bytes(args, false, vm).map(CallResult::Value),
             _ => {
                 args.drop_with(vm.heap);
                 Err(ExcType::attribute_error("int", attr.as_str(vm.interns)))
             }
         }
+    }
+}
+
+fn copy_small_to_buf(v: i64, order: ByteOrder, length: usize, buf: &mut [u8]) {
+    let le = v.to_le_bytes();
+    let copy_len = length.min(8);
+    match order {
+        ByteOrder::Little => buf[..copy_len].copy_from_slice(&le[..copy_len]),
+        ByteOrder::Big => {
+            for i in 0..copy_len {
+                buf[length - 1 - i] = le[i];
+            }
+        }
+    }
+}
+
+fn copy_bigint_to_buf(big: &BigInt, signed: bool, order: ByteOrder, length: usize, buf: &mut [u8]) {
+    let raw = if signed {
+        big.to_signed_bytes_le()
+    } else {
+        big.to_bytes_le().1
+    };
+    let copy_len = length.min(raw.len());
+    match order {
+        ByteOrder::Little => buf[..copy_len].copy_from_slice(&raw[..copy_len]),
+        ByteOrder::Big => {
+            for i in 0..copy_len {
+                buf[length - 1 - i] = raw[i];
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ByteOrder {
+    Big,
+    Little,
+}
+
+fn parse_byteorder(byteorder: Option<&StrArg>, vm: &VM<'_>) -> RunResult<ByteOrder> {
+    match byteorder.map(|s| s.as_str(vm)) {
+        None | Some("big") => Ok(ByteOrder::Big),
+        Some("little") => Ok(ByteOrder::Little),
+        Some(_) => Err(ExcType::value_error("byteorder must be either 'little' or 'big'")),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SsizeArg(isize);
+
+impl FromValue for SsizeArg {
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        let index = match value.py_index_impl(vm) {
+            Ok(Some(idx)) => {
+                value.drop_with(vm);
+                idx
+            }
+            Ok(None) => {
+                let got = value.py_type_name(vm);
+                value.drop_with(vm);
+                return Err(FromValueFail::Raise(ExcType::type_error_not_integer(&got)));
+            }
+            Err(err) => {
+                value.drop_with(vm);
+                return Err(FromValueFail::Raise(err));
+            }
+        };
+        let res = match index {
+            Value::Bool(b) => Ok(Self(isize::from(b))),
+            Value::Int(i) => isize::try_from(i)
+                .map(Self)
+                .map_err(|_| FromValueFail::Raise(ExcType::overflow_c_ssize_t())),
+            Value::Ref(id) if matches!(vm.heap.get(id), HeapData::LongInt(_)) => {
+                Err(FromValueFail::Raise(ExcType::overflow_c_ssize_t()))
+            }
+            Value::InternLongInt(_) => Err(FromValueFail::Raise(ExcType::overflow_c_ssize_t())),
+            _ => unreachable!("__index__ returned non-int"),
+        };
+        index.drop_with(vm);
+        res
+    }
+}
+
+#[derive(FromArgs)]
+#[from_args(name = "to_bytes", style = c_named, at_most_total, bad_arg_named)]
+struct IntToBytesArgs {
+    #[from_args(default = SsizeArg(1))]
+    length: SsizeArg,
+    #[from_args(default)]
+    byteorder: Option<StrArg>,
+    #[from_args(kw_only, default = LaxBool::new(false))]
+    signed: LaxBool,
+}
+
+#[derive(FromArgs)]
+#[from_args(name = "from_bytes", style = c_named, at_most_total, bad_arg_named)]
+struct IntFromBytesArgs {
+    bytes: Value,
+    #[from_args(default)]
+    byteorder: Option<StrArg>,
+    #[from_args(kw_only, default = LaxBool::new(false))]
+    signed: LaxBool,
+}
+
+/// Implements `int.from_bytes(bytes, byteorder='big', *, signed=False)` and `bool.from_bytes(...)`.
+pub(crate) fn int_from_bytes(args: ArgValues, as_bool: bool, vm: &mut VM<'_>) -> RunResult<Value> {
+    let IntFromBytesArgs {
+        bytes,
+        byteorder,
+        signed,
+    } = IntFromBytesArgs::from_args(args, vm)?;
+    defer_drop!(bytes, vm);
+    defer_drop!(byteorder, vm);
+    let signed = signed.bool();
+
+    // CPython validates `byteorder` BEFORE inspecting/converting `bytes`.
+    let order = parse_byteorder(byteorder.as_ref(), vm)?;
+
+    let (borrowed_bytes, owned_bytes);
+    let slice: &[u8] = if let Some(py_bytes) = PyBytes::from_value(bytes, vm) {
+        borrowed_bytes = py_bytes;
+        borrowed_bytes.as_slice(vm)
+    } else if matches!(bytes.py_value(vm), PyValue::Str(_)) {
+        return Err(ExcType::type_error_bytes_init(&bytes.py_type_name(vm)));
+    } else {
+        let iterator = match bytes.py_iter(vm).and_then(|call| call.require_synchronous(vm)) {
+            Ok(iter) => iter,
+            Err(e) if e.is_catchable(ExcType::TypeError) => {
+                return Err(ExcType::type_error_bytes_init(&bytes.py_type_name(vm)));
+            }
+            Err(e) => return Err(e),
+        };
+        owned_bytes = collect_bytes_from_iterator(iterator, vm)?;
+        &owned_bytes
+    };
+
+    if as_bool {
+        let non_zero = slice.iter().any(|&b| b != 0);
+        return Ok(Value::Bool(non_zero));
+    }
+
+    if slice.is_empty() {
+        return Ok(Value::Int(0));
+    }
+
+    // Fast path: fits in Value::Int(i64).
+    // - Length < 8: always fits in 64 bits (signed or unsigned).
+    // - Length == 8 && signed: fits in i64::MIN..=i64::MAX.
+    // - Length == 8 && !signed && MSB < 0x80: fits in 0..=i64::MAX.
+    let msb = match order {
+        ByteOrder::Big => slice[0],
+        ByteOrder::Little => slice[slice.len() - 1],
+    };
+    if slice.len() < 8 || (slice.len() == 8 && (signed || (msb & 0x80) == 0)) {
+        let sign_ext = if signed && (msb & 0x80) != 0 { 0xff_u8 } else { 0x00_u8 };
+        let mut le = [sign_ext; 8];
+        match order {
+            ByteOrder::Little => le[..slice.len()].copy_from_slice(slice),
+            ByteOrder::Big => {
+                for (i, &b) in slice.iter().rev().enumerate() {
+                    le[i] = b;
+                }
+            }
+        }
+        return Ok(Value::Int(i64::from_le_bytes(le)));
+    }
+
+    vm.heap.tracker.check_allocation(slice.len())?;
+    let big = match (order, signed) {
+        (ByteOrder::Big, false) => BigInt::from_bytes_be(num_bigint::Sign::Plus, slice),
+        (ByteOrder::Little, false) => BigInt::from_bytes_le(num_bigint::Sign::Plus, slice),
+        (ByteOrder::Big, true) => BigInt::from_signed_bytes_be(slice),
+        (ByteOrder::Little, true) => BigInt::from_signed_bytes_le(slice),
+    };
+    Ok(LongInt::new(big).into_value(vm.heap))
+}
+
+/// Class methods on `int` (`from_bytes`).
+pub(crate) fn int_class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    match attr.static_string(vm.interns) {
+        Some(StaticStrings::FromBytes) => Ok(int_from_bytes(args, false, vm).map(CallResult::Value)),
+        _ => Err(args),
+    }
+}
+
+/// Class methods on `bool` (`from_bytes`).
+pub(crate) fn bool_class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    match attr.static_string(vm.interns) {
+        Some(StaticStrings::FromBytes) => Ok(int_from_bytes(args, true, vm).map(CallResult::Value)),
+        _ => Err(args),
     }
 }
 
