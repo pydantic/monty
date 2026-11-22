@@ -795,9 +795,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                     Some(StaticStrings::ToBytes) => {
                         PyInt::Small(i64::from(*value)).to_bytes(args, vm).map(CallResult::Value)
                     }
-                    Some(StaticStrings::FromBytes) => {
-                        int_from_bytes(args, true, vm).map(CallResult::Value)
-                    }
+                    Some(StaticStrings::FromBytes) => int_from_bytes(args, true, vm).map(CallResult::Value),
                     _ => {
                         args.drop_with(vm);
                         Err(ExcType::attribute_error("bool", attr.as_str(vm.interns)))

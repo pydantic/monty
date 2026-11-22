@@ -144,6 +144,12 @@ try:
 except TypeError as e:
     assert str(e) == "'str' object cannot be interpreted as an integer"
 
+try:
+    (0).to_bytes(2**62)
+    assert False, 'expected MemoryError'
+except MemoryError:
+    pass
+
 # === Error cases for from_bytes() ===
 try:
     int.from_bytes()

@@ -35,7 +35,9 @@ use crate::{
     identity::Identity,
     intern::{LongIntId, StaticStrings},
     py_value::PyValue,
-    resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size, check_repeat_size},
+    resource_checks::{
+        check_div_size, check_lshift_size, check_mult_size, check_pow_size, check_repeat_size, try_vec_with_capacity,
+    },
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
         bytes::{PyBytes, allocate_bytes, collect_bytes_from_iterator},
@@ -291,7 +293,8 @@ impl<'h> PyInt<'h> {
 
         check_repeat_size(length, 1, &vm.heap.tracker)?;
         let fill = if is_neg { 0xff_u8 } else { 0x00_u8 };
-        let mut buf = vec![fill; length];
+        let mut buf = try_vec_with_capacity(length)?;
+        buf.resize(length, fill);
 
         if length > 0 {
             match self {
