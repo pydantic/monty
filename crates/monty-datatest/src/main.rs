@@ -1,7 +1,8 @@
 //! Data-driven test harness: runs every Python file in
 //! `crates/monty/test_cases/` against both Monty and CPython (via pyo3) and
-//! also runs selected CPython stdlib suites from `vendor/cpython/` on both.
-//! Run via `make test-cases`; see CLAUDE.md for the test-case file conventions.
+//! compares the results. It also runs selected CPython stdlib suites from
+//! `vendor/cpython/` on both. Run via `make test-cases`; see `AGENTS.md` for
+//! the test-case file conventions.
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;

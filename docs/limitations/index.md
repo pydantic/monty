@@ -10,6 +10,7 @@ The other pages in this section are the exhaustive record, one per builtin, modu
 They list every known divergence, including the ones that feel obvious, so a behaviour missing from them can be
 assumed to match CPython 3.14.
 They exist for development and for agents debugging code that runs on Monty; most users need only this page.
+For compilation and runtime limits, see [resource limits](resource_limits.md).
 
 !!! tip
 

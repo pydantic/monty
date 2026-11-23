@@ -39,25 +39,26 @@ use crate::{
 /// `blake2b` and `blake2s` are types rather than functions, as in CPython, so
 /// they are not here. Serialized into dumps by variant name, so renaming one
 /// needs `#[serde(alias)]`.
+#[monty_macros::explicit_discriminants(checksum = 0x05ef_ded8_6896_9495)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum HashlibFunctions {
-    Md5,
-    Sha1,
-    Sha224,
-    Sha256,
-    Sha384,
-    Sha512,
-    Sha3_224,
-    Sha3_256,
-    Sha3_384,
-    Sha3_512,
+    Md5 = 0,
+    Sha1 = 1,
+    Sha224 = 2,
+    Sha256 = 3,
+    Sha384 = 4,
+    Sha512 = 5,
+    Sha3_224 = 6,
+    Sha3_256 = 7,
+    Sha3_384 = 8,
+    Sha3_512 = 9,
     #[strum(serialize = "shake_128")]
-    Shake128,
+    Shake128 = 10,
     #[strum(serialize = "shake_256")]
-    Shake256,
-    New,
-    Pbkdf2Hmac,
+    Shake256 = 11,
+    New = 12,
+    Pbkdf2Hmac = 13,
 }
 
 /// Static mapping of attribute names to functions for module creation.

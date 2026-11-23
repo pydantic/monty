@@ -14,7 +14,7 @@ use monty_types::{
 /// 2023-11-14 22:13:20 UTC, shared with the datatest fixtures.
 const FIXTURE_SECONDS: i64 = 1_700_000_000;
 
-/// 2023-11-14 22:13:59 UTC, where chrono accepts leap-second fractions.
+/// 2023-11-14 22:13:59 UTC, for rejecting leap-second fractions.
 const LAST_SECOND_OF_A_MINUTE: i64 = 1_700_000_039;
 
 const FIXED: DateTimeSource = DateTimeSource::Fixed {
@@ -476,6 +476,23 @@ fn a_named_zone_spans_the_full_datetime_range() {
     );
 }
 
+/// UTC year 10000 is outside Jiff's civil range, but can still denote a valid
+/// local datetime west of UTC. The shifted result, not the UTC intermediate, is bounded.
+#[test]
+fn fromtimestamp_can_shift_into_the_last_civil_day() {
+    let calls = OsPolicy {
+        timezone: SandboxTimeZone::Fixed {
+            offset_seconds: -3_600,
+            name: None,
+        },
+        ..OsPolicy::default()
+    };
+    assert_snapshot!(run_repr_under(
+        "(date.fromtimestamp(253402300800), datetime.fromtimestamp(253402300800))",
+        calls,
+    ), @"(datetime.date(9999, 12, 31), datetime.datetime(9999, 12, 31, 23, 0))");
+}
+
 /// CPython renders the days either side of a naive value to find its local
 /// offset, so `astimezone()` refuses the first and last representable days in
 /// every zone; an aware value on those days converts. Expectations were checked
@@ -567,6 +584,43 @@ fn naive_timestamp_reads_the_session_zone() {
         run_repr_under("datetime(9999, 12, 31, 18, 0).timestamp()", kathmandu),
         "253402258500.0"
     );
+}
+
+/// Fixed-zone names remain available to both parsers without reading a host clock.
+#[test]
+fn strptime_uses_fixed_zone_names_with_a_host_clock() {
+    for (name, abbreviation) in [(Some("LOCAL".to_owned()), "local"), (None, "UTC+02:00")] {
+        let calls = OsPolicy {
+            datetime: DateTimeSource::CallHost,
+            timezone: SandboxTimeZone::Fixed {
+                offset_seconds: 7200,
+                name,
+            },
+            ..OsPolicy::default()
+        };
+        let code = format!(
+            "import time\nfrom datetime import datetime\n\
+             text = '2024-01-01 {abbreviation}'\n\
+             datetime.strptime(text, '%Y-%m-%d %Z') == datetime(2024, 1, 1) \
+             and time.strptime(text, '%Y-%m-%d %Z')[:6] == (2024, 1, 1, 0, 0, 0)"
+        );
+        assert_eq!(run(&code, calls).unwrap(), MontyObject::bool(true));
+    }
+}
+
+/// A named zone cannot derive its seasonal abbreviations without a clock year.
+#[test]
+fn strptime_with_a_host_clock_still_recognizes_utc_and_gmt() {
+    let calls = OsPolicy {
+        datetime: DateTimeSource::CallHost,
+        timezone: SandboxTimeZone::named("Europe/London").unwrap(),
+        ..OsPolicy::default()
+    };
+    for name in ["UTC", "GMT"] {
+        let code = format!("from datetime import datetime\ndatetime.strptime('{name}', '%Z').year");
+        assert_eq!(run(&code, calls.clone()).unwrap(), MontyObject::int(1900));
+    }
+    assert_snapshot!(run("from datetime import datetime\ndatetime.strptime('BST', '%Z')", calls).unwrap_err(), @"ValueError: time data 'BST' does not match format '%Z'");
 }
 
 /// Zone names are validated before the database sees them, and the database
