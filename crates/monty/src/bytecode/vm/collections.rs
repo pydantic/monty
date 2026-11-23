@@ -18,7 +18,7 @@ impl VM<'_> {
     /// Builds a list from the top n stack values.
     pub(super) fn build_list(&mut self, count: usize) {
         let items = self.pop_n(count);
-        let list = List::new(items);
+        let list = List::from_values(items, self.heap);
         let heap_id = self.heap.allocate(HeapData::List(list));
         self.push(Value::Ref(heap_id));
     }
@@ -147,7 +147,7 @@ impl VM<'_> {
                 .and_then(|id| this.heap.read_as::<List>(id))
                 .ok_or_else(|| RunError::internal("ListExtend: expected list on stack"))?;
             let items = collect_iterable(iterable, this)?;
-            list.get_mut(this.heap).extend_owned(items);
+            list.extend_values(this, items)?;
         }
 
         // Push list_ref back on the stack (don't drop it)
@@ -571,7 +571,9 @@ impl VM<'_> {
 
         // Middle items as a list (starred target)
         let middle_list: Vec<Value> = items.drain(before..).collect();
-        let list_id = this.heap.allocate(HeapData::List(List::new(middle_list)));
+        let list_id = this
+            .heap
+            .allocate(HeapData::List(List::from_values(middle_list, this.heap)));
         this.push(Value::Ref(list_id));
 
         // Before items

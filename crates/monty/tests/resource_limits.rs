@@ -1020,13 +1020,10 @@ fn timeout_in_sorted_comparison_loop() {
     );
 }
 
-/// Test that `[1] * 10_000_000` (list repetition) respects the time limit.
-///
-/// The sequence-repetition copy loop in `py_mult` polls the time limit every
-/// 64th repetition, so a large multiplication cannot bypass the timeout.
+/// A large generic-list repetition must hit its own time check during copying.
 #[test]
 fn timeout_in_list_repetition() {
-    assert_timeout_in_builtin("[1, 2, 3] * 10_000_000", "list repetition");
+    assert_timeout_in_builtin("len([0.25, 2, 3] * 10_000_000)", "list repetition");
 }
 
 /// Test that `(1,) * 10_000_000` (tuple repetition) respects the time limit.

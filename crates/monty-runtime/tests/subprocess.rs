@@ -1265,6 +1265,65 @@ fn copy_of_a_near_limit_dict_raises_rather_than_dying() {
     child.shutdown();
 }
 
+#[test]
+fn nullable_integers_stay_packed_below_the_generic_memory_limit() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(10 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete(
+            "a = [1000] * 1_000_000\na.append(None)\na[64] = None\na[65] = 0\na[64] is None and type(a[65]) is int and a[-1] is None"
+        ),
+        MontyObject::bool(true),
+    );
+    let (_, event) = child.feed("a[-1] = True");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(
+        child.feed_complete("a[66:200] = []\nlen(a) == 999_867 and a[-1] is None and a[65] == 0"),
+        MontyObject::bool(true),
+    );
+    child.shutdown();
+}
+
+#[test]
+fn booleans_and_nulls_fit_in_bitmaps() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    assert_eq!(
+        child.feed_complete(
+            "flags = [True] * 1_000_000\nflags.append(None)\nflags[64] = False\nflags.extend(flags)\nlen(flags) == 2_000_002 and flags[65] is True and flags[64] is False and flags[-1] is None"
+        ),
+        MontyObject::bool(true),
+    );
+    let (_, event) = child.feed("flags[-1] = 1");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(
+        child.feed_complete(
+            "values = [None] * 1_000_000\nvalues[0] = True\nlen(values) == 1_000_000 and values[0] is True and values[-1] is None and flags[-1] is None"
+        ),
+        MontyObject::bool(true),
+    );
+    child.shutdown();
+}
+
+#[test]
+fn byte_integers_can_fit_under_a_budget_that_refuses_widening() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(3 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete(
+            "source = bytes([0, 255]) * 500_000\na = list(source)\nalias = a\na[64] = None\na[63] == 255 and a[64] is None and a[65] == 255"
+        ),
+        MontyObject::bool(true),
+    );
+    let (_, event) = child.feed("a[0] = 256");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(
+        child.feed_complete("alias is a and len(a) == 1_000_000 and a[0] == 0 and a[64] is None"),
+        MontyObject::bool(true),
+    );
+    child.shutdown();
+}
+
 /// Known large results are rejected against allocator usage before they can
 /// jump from below the soft limit past the hard ceiling. The reported figure is
 /// what each result really costs, so it pins down that the refusal accounted for
@@ -1293,7 +1352,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("b'%*d' % (2_000_000, 1)", 2_052_499),
         ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_652_829),
         ("b'x' * 10_000_000", 10_052_479),
-        ("[None] * 1_000_000", 16_044_279),
+        ("[0.25] * 1_000_000", 16_044_279),
         ("2 ** 10_000_000", 10_044_244),
         ("1 << 10_000_000", 1_294_245),
         // `int / int` scales one operand before dividing; both shift directions are
@@ -1317,12 +1376,12 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.
-        ("x = [None] * 40_000\nx += x", 1_964_483),
+        ("x = [0.25] * 40_000\nx += x", 1_964_483),
         ("t = (None,) * 40_000\nt + t", 1_324_611),
-        ("x = [None] * 40_000\nx.copy()", 1_324_613),
+        ("x = [0.25] * 40_000\nx.copy()", 1_324_613),
         // A container repr polls the limits between items: crossing the memory
         // limit raises rather than truncating the way a timeout does.
-        ("x = [None] * 50_000\nlen(repr(x))", 1_106_811),
+        ("x = [0.25] * 50_000\nlen(repr(x))", 1_106_811),
         // The other container reprs poll the same way, each from its own loop.
         (
             "s = 'x' * 200\nd = dict.fromkeys(range(5_000), s)\nlen(repr(d))",
@@ -1356,17 +1415,17 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // A partial re-clones its bound arguments on every call, so that clone
         // is preflighted like any other bulk container copy.
         (
-            "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [None] * 40_000\np()",
+            "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [0.25] * 40_000\np()",
             1_328_267,
         ),
         // Reading `p.args` / `p.keywords` rebuilds them in full, so both are
         // preflighted like any other bulk container copy.
         (
-            "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [0] * 40_000\np.args",
+            "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [0.25] * 40_000\np.args",
             1_328_267,
         ),
         (
-            "import functools\ndef f(**k):\n    return 0\np = functools.partial(f, **{str(i): i for i in range(6_000)})\njunk = [0] * 30_000\np.keywords",
+            "import functools\ndef f(**k):\n    return 0\np = functools.partial(f, **{str(i): i for i in range(6_000)})\njunk = [0.25] * 30_000\np.keywords",
             1_104_447,
         ),
         // A `typing` alias copies its subscript into its `__args__`, and a class's
@@ -1380,10 +1439,10 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `Literal` copies its values to deduplicate them, `Callable` its
         // parameter list; both copies are preflighted.
         ("from typing import Literal\nLiteral[(None,) * 40_000]", 1_325_093),
-        ("from typing import Callable\nCallable[[None] * 40_000, int]", 1_325_113),
+        ("from typing import Callable\nCallable[[int] * 40_000, int]", 1_325_113),
         // `__metadata__` copies an `Annotated` alias's metadata, preflighted too.
         (
-            "from typing import Annotated\nmeta = (None,) * 12_000\na = Annotated[(int,) + meta]\njunk = [None] * 30_000\na.__metadata__",
+            "from typing import Annotated\nmeta = (None,) * 12_000\na = Annotated[(int,) + meta]\njunk = [0.25] * 30_000\na.__metadata__",
             1_171_846,
         ),
         // Flattening a nested `Annotated` copies both aliases' arguments into
@@ -1395,11 +1454,11 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // Comparing or hashing a `Literal` copies its values again, so an alias
         // that fits is refused when the copy would not.
         (
-            "from typing import Literal\nL = Literal[tuple(range(10_000))]\njunk = [None] * 40_000\nL == L",
+            "from typing import Literal\nL = Literal[tuple(range(10_000))]\njunk = [0.25] * 40_000\nL == L",
             1_107_763,
         ),
         (
-            "from typing import Literal\nL = Literal[tuple(range(10_000))]\njunk = [None] * 40_000\nhash(L)",
+            "from typing import Literal\nL = Literal[tuple(range(10_000))]\njunk = [0.25] * 40_000\nhash(L)",
             1_107_764,
         ),
         // `deque.extend` preflights exact-hint iterators up front.
@@ -1430,7 +1489,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `multimode` of distinct data returns every value, so its result is preflighted; `junk` puts
         // that result past the limit while the counter and its pairs still fit.
         (
-            "import statistics\njunk = [None] * 12_000\nstatistics.multimode(range(8_000))",
+            "import statistics\njunk = [0.25] * 12_000\nstatistics.multimode(range(8_000))",
             1_096_974,
         ),
         // `itertools.batched` preflights one batch, capped at `n`.
@@ -1464,12 +1523,12 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // dict copy.
         (
             "import csv\nnames = list(range(30_000))\nnext(csv.DictReader(['x'], fieldnames=names))",
-            1_967_962,
+            1_728_474,
         ),
         // A list `fieldnames` is copied per row, and the keys of a row dict are copied for
         // the `extrasaction='raise'` check: both bulk copies are preflighted.
         (
-            "import csv\nclass S:\n    def write(self, t):\n        pass\nnames = [None] * 40_000\ncsv.DictWriter(S(), names).writerow({})",
+            "import csv\nclass S:\n    def write(self, t):\n        pass\nnames = [0.25] * 40_000\ncsv.DictWriter(S(), names).writerow({})",
             1_331_396,
         ),
         (
@@ -1530,9 +1589,9 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
     }
 
     for code in [
-        "a = [None] * 1_000_000\na *= 2",
-        "a = [None] * 1_000_000\na += range(1_000_000)",
-        "from collections import deque\nd = deque([None] * 500_000)\nd *= 4",
+        "a = [0.25] * 1_000_000\na *= 2",
+        "a = [0.25] * 1_000_000\na += range(1_000_000)",
+        "from collections import deque\nd = deque([0.25] * 500_000)\nd *= 4",
         // The line buffer's next doubling would land past the hard headroom.
         "('\\n' * 2_000_000).splitlines()",
         // Case methods and `re.escape` check their result before building it; a non-ASCII mapping that
@@ -1555,7 +1614,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
     assert_eq!(
-        child.feed_complete("a = [None] * 1_000_000\nalias = a\na += [None]\nlen(alias)"),
+        child.feed_complete("a = [0.25] * 1_000_000\nalias = a\na += [0.25]\nlen(alias)"),
         MontyObject::int(1_000_001),
     );
     child.shutdown();
@@ -2020,17 +2079,13 @@ fn cycles_export_one_placeholder_each() {
     child.shutdown();
 }
 
-/// Export is not checkpointed against the soft limit. A value that fits the
-/// heap but whose arena (72 bytes a node against 16 for a heap value) crosses
-/// the hard ceiling exits the worker with the OOM code, which the client
-/// classifies as a crash.
+/// The export arena can cross the hard limit even when the packed list fits
+/// in the heap. The client treats the worker's OOM exit as a crash.
 #[test]
 fn an_export_that_outgrows_the_hard_limit_exits_with_the_oom_code() {
     let mut child = ChildProc::spawn_stderr_piped();
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
-    // 100,000 ints: 2 MB in the heap, 7.2 MB as nodes plus the frame, past
-    // the 4 MiB headroom; `len(...)` of the same list completes
-    child.feed_expecting_death("list(range(100_000))");
+    child.feed_expecting_death("list(range(150_000))");
     let (status, stderr) = child.reap_with_stderr();
     assert_eq!(status.code(), Some(monty_types::OOM_EXIT_CODE), "got {status:?}");
     assert!(stderr.contains("exceeds the memory limit"), "{stderr}");
@@ -2109,7 +2164,7 @@ fn reading_partial_args_cannot_kill_the_worker() {
     let build = "import functools\n\
                  def f(*a):\n    return 0\n\
                  p = functools.partial(f, *range(1_000_000))\n\
-                 junk = [0] * 2_800_000";
+                 junk = [0.25] * 2_800_000";
     assert_eq!(child.feed_complete(build), MontyObject::none());
 
     let (_, event) = child.feed("p.args");
@@ -3703,7 +3758,7 @@ fn drop_stdin(_child: &mut ChildProc) {
 
 #[test]
 fn slice_assignment_rejects_large_replacement_without_killing_worker() {
-    for code in ["a = []\na[:] = range(1_000_000)", "a = [None] * 40_000\na[:0] = a"] {
+    for code in ["a = []\na[:] = range(1_000_000)", "a = [0.25] * 40_000\na[:0] = a"] {
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(1024 * 1024));
         let (_, event) = child.feed(code);

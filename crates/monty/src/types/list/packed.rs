@@ -1,0 +1,829 @@
+use std::{mem, ops::Range};
+
+use monty_types::ResourceTracker;
+
+use super::bitmap::Bitmap;
+use crate::{
+    exception_private::{ExcType, ExcTypeExt, RunResult},
+    value::Value,
+};
+
+const COPY_BATCH: usize = 1024;
+
+/// Nonnegative integers through 255 fit in one byte. Other `i64` values need wide slots.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum IntWidth {
+    Byte,
+    Wide,
+}
+
+impl IntWidth {
+    pub(super) fn of(value: i64) -> Self {
+        if u8::try_from(value).is_ok() {
+            Self::Byte
+        } else {
+            Self::Wide
+        }
+    }
+
+    pub(super) fn size(self) -> usize {
+        match self {
+            Self::Byte => size_of::<u8>(),
+            Self::Wide => size_of::<i64>(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Packing {
+    Empty,
+    Nones,
+    Int { width: IntWidth, nullable: bool },
+    Bool { nullable: bool },
+    Generic,
+}
+
+impl Packing {
+    pub(super) fn of(value: &Value) -> Self {
+        match value {
+            Value::None => Self::Nones,
+            Value::Int(value) => Self::Int {
+                width: IntWidth::of(*value),
+                nullable: false,
+            },
+            Value::Bool(_) => Self::Bool { nullable: false },
+            _ => Self::Generic,
+        }
+    }
+
+    pub(super) fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Empty, b) | (b, Self::Empty) => b,
+            (Self::Nones, Self::Nones) => Self::Nones,
+            (Self::Nones, Self::Int { width, .. }) | (Self::Int { width, .. }, Self::Nones) => {
+                Self::Int { width, nullable: true }
+            }
+            (Self::Nones, Self::Bool { .. }) | (Self::Bool { .. }, Self::Nones) => Self::Bool { nullable: true },
+            (Self::Int { width: aw, nullable: a }, Self::Int { width: bw, nullable: b }) => Self::Int {
+                width: aw.max(bw),
+                nullable: a || b,
+            },
+            (Self::Bool { nullable: a }, Self::Bool { nullable: b }) => Self::Bool { nullable: a || b },
+            _ => Self::Generic,
+        }
+    }
+
+    pub(super) fn for_values(items: &[Value], tracker: &ResourceTracker) -> RunResult<Self> {
+        let mut packing = Self::Empty;
+        for (index, item) in items.iter().enumerate() {
+            tracker.check_time_every(index)?;
+            packing = packing.merge(Self::of(item));
+            if packing == Self::Generic {
+                break;
+            }
+        }
+        Ok(packing)
+    }
+}
+
+#[derive(Debug)]
+pub(super) enum PackedList {
+    Empty,
+    Nones(Box<Nones>),
+    ByteInts(Vec<u8>),
+    Ints(Vec<i64>),
+    NullableBytes(Box<NullableInts<u8>>),
+    NullableInts(Box<NullableInts<i64>>),
+    Bools(Box<Bools>),
+}
+
+impl PackedList {
+    pub(super) fn new(capacity: usize, packing: Packing, tracker: &ResourceTracker) -> RunResult<Self> {
+        let mut items = Self::Empty;
+        if capacity != 0 {
+            tracker.check_pending_allocation(items.growth_bytes(capacity, packing))?;
+            items.reserve(capacity, packing)?;
+        }
+        Ok(items)
+    }
+
+    pub(super) fn from_bytes(bytes: &[u8], tracker: &ResourceTracker) -> RunResult<Self> {
+        tracker.check_pending_allocation(bytes.len())?;
+        let mut values = Vec::new();
+        reserve_vec(&mut values, bytes.len())?;
+        for chunk in bytes.chunks(COPY_BATCH) {
+            tracker.check_time()?;
+            values.extend_from_slice(chunk);
+        }
+        Ok(Self::ByteInts(values))
+    }
+
+    pub(super) fn packing(&self) -> Packing {
+        match self {
+            Self::Empty => Packing::Empty,
+            Self::Nones(_) => Packing::Nones,
+            Self::ByteInts(_) => Packing::Int {
+                width: IntWidth::Byte,
+                nullable: false,
+            },
+            Self::Ints(_) => Packing::Int {
+                width: IntWidth::Wide,
+                nullable: false,
+            },
+            Self::NullableBytes(_) => Packing::Int {
+                width: IntWidth::Byte,
+                nullable: true,
+            },
+            Self::NullableInts(_) => Packing::Int {
+                width: IntWidth::Wide,
+                nullable: true,
+            },
+            Self::Bools(items) => Packing::Bool {
+                nullable: items.nulls.is_some(),
+            },
+        }
+    }
+
+    pub(super) fn len(&self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::Nones(items) => items.len,
+            Self::ByteInts(items) => items.len(),
+            Self::Ints(items) => items.len(),
+            Self::NullableBytes(items) => items.values.len(),
+            Self::NullableInts(items) => items.values.len(),
+            Self::Bools(items) => items.len,
+        }
+    }
+
+    pub(super) fn capacity(&self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::Nones(items) => items.slots.capacity(),
+            Self::ByteInts(items) => items.capacity(),
+            Self::Ints(items) => items.capacity(),
+            Self::NullableBytes(items) => items.values.capacity(),
+            Self::NullableInts(items) => items.values.capacity(),
+            Self::Bools(items) => items.values.capacity(),
+        }
+    }
+
+    pub(super) fn growth_bytes(&self, capacity: usize, packing: Packing) -> usize {
+        match packing {
+            Packing::Empty => 0,
+            Packing::Nones => match self {
+                Self::Nones(items) => items.slots.growth_bytes(capacity),
+                _ => Bitmap::allocation_bytes(capacity).saturating_add(size_of::<Nones>()),
+            },
+            Packing::Int { width, nullable } => {
+                if self.needs_wider_ints(packing) {
+                    return Self::Empty.growth_bytes(capacity, packing);
+                }
+                let (current, nulls) = match self {
+                    Self::ByteInts(items) => (items.capacity(), None),
+                    Self::Ints(items) => (items.capacity(), None),
+                    Self::NullableBytes(items) => (items.values.capacity(), Some(&items.nulls)),
+                    Self::NullableInts(items) => (items.values.capacity(), Some(&items.nulls)),
+                    _ => (0, None),
+                };
+                let values = capacity.saturating_sub(current).saturating_mul(width.size());
+                let bitmap = if let Some(nulls) = nulls {
+                    nulls.growth_bytes(capacity)
+                } else if nullable {
+                    let allocation = match self {
+                        Self::Nones(items) => items.slots.growth_bytes(capacity),
+                        _ => Bitmap::allocation_bytes(capacity),
+                    };
+                    let layout = match width {
+                        IntWidth::Byte => size_of::<NullableInts<u8>>(),
+                        IntWidth::Wide => size_of::<NullableInts<i64>>(),
+                    };
+                    allocation.saturating_add(layout)
+                } else {
+                    0
+                };
+                values.saturating_add(bitmap)
+            }
+            Packing::Bool { nullable } => match self {
+                Self::Bools(items) => items.values.growth_bytes(capacity).saturating_add(match &items.nulls {
+                    Some(nulls) => nulls.growth_bytes(capacity),
+                    None if nullable => Bitmap::allocation_bytes(capacity),
+                    None => 0,
+                }),
+                Self::Nones(items) => Bitmap::allocation_bytes(capacity)
+                    .saturating_add(items.slots.growth_bytes(capacity))
+                    .saturating_add(size_of::<Bools>()),
+                _ => Bitmap::allocation_bytes(capacity)
+                    .saturating_mul(1 + usize::from(nullable))
+                    .saturating_add(size_of::<Bools>()),
+            },
+            Packing::Generic => unreachable!("generic storage has its own buffer"),
+        }
+    }
+
+    pub(super) fn needs_wider_ints(&self, packing: Packing) -> bool {
+        matches!(self, Self::ByteInts(_) | Self::NullableBytes(_))
+            && matches!(
+                packing,
+                Packing::Int {
+                    width: IntWidth::Wide,
+                    ..
+                }
+            )
+    }
+
+    pub(super) fn widen(&self, capacity: usize, packing: Packing, tracker: &ResourceTracker) -> RunResult<Self> {
+        let mut result = Self::new(capacity, packing, tracker)?;
+        result.copy_range(self, 0..self.len(), tracker)?;
+        Ok(result)
+    }
+
+    /// The caller preflights payload and bitmap allocations together.
+    pub(super) fn reserve(&mut self, capacity: usize, packing: Packing) -> RunResult<()> {
+        match self {
+            Self::Empty => {
+                *self = match packing {
+                    Packing::Nones => {
+                        let mut items = Nones::default();
+                        items.slots.reserve(capacity)?;
+                        Self::Nones(Box::new(items))
+                    }
+                    Packing::Int {
+                        width: IntWidth::Byte,
+                        nullable: false,
+                    } => Self::ByteInts(new_slots(capacity, 0)?),
+                    Packing::Int {
+                        width: IntWidth::Wide,
+                        nullable: false,
+                    } => Self::Ints(new_slots(capacity, 0)?),
+                    Packing::Int {
+                        width: IntWidth::Byte,
+                        nullable: true,
+                    } => Self::NullableBytes(Box::new(NullableInts::new(capacity)?)),
+                    Packing::Int {
+                        width: IntWidth::Wide,
+                        nullable: true,
+                    } => Self::NullableInts(Box::new(NullableInts::new(capacity)?)),
+                    Packing::Bool { nullable } => {
+                        let mut items = Bools::default();
+                        items.reserve(capacity, nullable)?;
+                        Self::Bools(Box::new(items))
+                    }
+                    _ => unreachable!("checked packing for a nonempty list"),
+                };
+            }
+            Self::Nones(items) => {
+                items.slots.reserve(capacity)?;
+                match packing {
+                    Packing::Nones => {}
+                    Packing::Int {
+                        width: IntWidth::Byte,
+                        nullable: true,
+                    } => *self = Self::NullableBytes(Box::new(items.with_ints(capacity)?)),
+                    Packing::Int {
+                        width: IntWidth::Wide,
+                        nullable: true,
+                    } => *self = Self::NullableInts(Box::new(items.with_ints(capacity)?)),
+                    Packing::Bool { nullable: true } => {
+                        let mut values = Bitmap::default();
+                        values.reserve(capacity)?;
+                        items.slots.fill(0, items.len, true);
+                        let nulls = Some(mem::take(&mut items.slots));
+                        *self = Self::Bools(Box::new(Bools {
+                            len: items.len,
+                            values,
+                            nulls,
+                        }));
+                    }
+                    _ => unreachable!("lists containing None require nullable storage"),
+                }
+            }
+            Self::ByteInts(values) => {
+                if matches!(packing, Packing::Int { nullable: true, .. }) {
+                    *self = Self::NullableBytes(Box::new(NullableInts::from_ints(values, capacity)?));
+                } else {
+                    reserve_vec(values, capacity)?;
+                }
+            }
+            Self::Ints(values) => {
+                if matches!(packing, Packing::Int { nullable: true, .. }) {
+                    *self = Self::NullableInts(Box::new(NullableInts::from_ints(values, capacity)?));
+                } else {
+                    reserve_vec(values, capacity)?;
+                }
+            }
+            Self::NullableBytes(items) => items.reserve(capacity)?,
+            Self::NullableInts(items) => items.reserve(capacity)?,
+            Self::Bools(items) => items.reserve(capacity, packing == (Packing::Bool { nullable: true }))?,
+        }
+        Ok(())
+    }
+
+    pub(super) fn view(&self) -> PackedView<'_> {
+        PackedView(self)
+    }
+
+    pub(super) fn get(&self, index: usize) -> Option<Value> {
+        match self {
+            Self::Empty => None,
+            Self::Nones(items) => (index < items.len).then_some(Value::None),
+            Self::ByteInts(items) => items.get(index).map(|&item| Value::Int(i64::from(item))),
+            Self::Ints(items) => items.get(index).copied().map(Value::Int),
+            Self::NullableBytes(items) => items.get(index),
+            Self::NullableInts(items) => items.get(index),
+            Self::Bools(items) => (index < items.len).then(|| items.get(index)),
+        }
+    }
+
+    pub(super) fn push(&mut self, value: &Value) {
+        self.insert(self.len(), value);
+    }
+
+    pub(super) fn insert(&mut self, index: usize, value: &Value) {
+        match self {
+            Self::Empty => unreachable!("reserved storage before insert"),
+            Self::Nones(items) => items.len += 1,
+            Self::ByteInts(items) => items.insert(index, u8::from_value(value)),
+            Self::Ints(items) => items.insert(index, i64::from_value(value)),
+            Self::NullableBytes(items) => items.insert(index, value),
+            Self::NullableInts(items) => items.insert(index, value),
+            Self::Bools(items) => {
+                items.move_within(index, index + 1, items.len - index);
+                items.set(index, value);
+                items.len += 1;
+            }
+        }
+    }
+
+    pub(super) fn slice(&self, start: i64, step: i64, count: usize, tracker: &ResourceTracker) -> RunResult<Self> {
+        if count == 0 {
+            return Ok(Self::Empty);
+        }
+        match self {
+            Self::ByteInts(values) => return Ok(Self::ByteInts(slice_slots(values, start, step, count, tracker)?)),
+            Self::Ints(values) => return Ok(Self::Ints(slice_slots(values, start, step, count, tracker)?)),
+            _ => {}
+        }
+
+        let mut result = Self::new(count, self.packing(), tracker)?;
+        if let Self::Nones(items) = &mut result {
+            items.len = count;
+        } else {
+            for (offset, index) in slice_indices(start, step, count).enumerate() {
+                tracker.check_time_every(offset)?;
+                result.push(&self.get(index).expect("checked list index"));
+            }
+        }
+        Ok(result)
+    }
+
+    pub(super) fn splice(&mut self, range: Range<usize>, values: &[Value]) {
+        let start = range.start;
+        let dst = start + values.len();
+        match self {
+            Self::Empty => debug_assert!(range.is_empty() && values.is_empty()),
+            Self::Nones(items) => items.len = items.len - range.len() + values.len(),
+            Self::ByteInts(items) => splice_slots(items, range, values),
+            Self::Ints(items) => splice_slots(items, range, values),
+            Self::NullableBytes(items) => items.splice(range, values),
+            Self::NullableInts(items) => items.splice(range, values),
+            Self::Bools(items) => {
+                items.move_within(range.end, dst, items.len - range.end);
+                items.len = items.len - range.len() + values.len();
+                for (index, value) in values.iter().enumerate() {
+                    items.set(start + index, value);
+                }
+            }
+        }
+    }
+
+    pub(super) fn set(&mut self, index: usize, value: &Value) {
+        match self {
+            Self::Empty | Self::Nones(_) => {}
+            Self::ByteInts(items) => items[index] = u8::from_value(value),
+            Self::Ints(items) => items[index] = i64::from_value(value),
+            Self::NullableBytes(items) => items.set(index, value),
+            Self::NullableInts(items) => items.set(index, value),
+            Self::Bools(items) => items.set(index, value),
+        }
+    }
+
+    pub(super) fn remove(&mut self, index: usize) -> Value {
+        match self {
+            Self::ByteInts(items) => return Value::Int(i64::from(items.remove(index))),
+            Self::Ints(items) => return Value::Int(items.remove(index)),
+            _ => {}
+        }
+        let value = self.get(index).expect("checked list index");
+        self.splice(index..index + 1, &[]);
+        value
+    }
+
+    pub(super) fn swap(&mut self, a: usize, b: usize) {
+        match self {
+            Self::Empty | Self::Nones(_) => {}
+            Self::ByteInts(items) => items.swap(a, b),
+            Self::Ints(items) => items.swap(a, b),
+            Self::NullableBytes(items) => items.swap(a, b),
+            Self::NullableInts(items) => items.swap(a, b),
+            Self::Bools(items) => {
+                items.values.swap(a, b);
+                if let Some(nulls) = &mut items.nulls {
+                    nulls.swap(a, b);
+                }
+            }
+        }
+    }
+
+    pub(super) fn reverse(&mut self) {
+        match self {
+            Self::Empty | Self::Nones(_) => {}
+            Self::ByteInts(items) => items.reverse(),
+            Self::Ints(items) => items.reverse(),
+            Self::NullableBytes(items) => items.reverse(),
+            Self::NullableInts(items) => items.reverse(),
+            Self::Bools(items) => {
+                items.values.reverse(items.len);
+                if let Some(nulls) = &mut items.nulls {
+                    nulls.reverse(items.len);
+                }
+            }
+        }
+    }
+
+    pub(super) fn extend_from_within(&mut self, range: Range<usize>) {
+        match self {
+            Self::Empty => unreachable!("reserved storage before extending"),
+            Self::Nones(items) => items.len += range.len(),
+            Self::ByteInts(items) => items.extend_from_within(range),
+            Self::Ints(items) => items.extend_from_within(range),
+            Self::NullableBytes(items) => items.extend_from_within(range),
+            Self::NullableInts(items) => items.extend_from_within(range),
+            Self::Bools(items) => {
+                items.move_within(range.start, items.len, range.len());
+                items.len += range.len();
+            }
+        }
+    }
+
+    /// Requires space for `total` elements to be reserved first.
+    pub(super) fn repeat_prefix(&mut self, total: usize, tracker: &ResourceTracker) -> RunResult<()> {
+        if let Self::Nones(items) = self {
+            items.len = total;
+            return Ok(());
+        }
+        let prefix = self.len();
+        while self.len() < total {
+            tracker.check_time()?;
+            let len = self.len();
+            let start = len % prefix;
+            let count = (total - len).min(len - start).min(COPY_BATCH);
+            self.extend_from_within(start..start + count);
+        }
+        Ok(())
+    }
+
+    pub(super) fn copy_range(
+        &mut self,
+        source: &Self,
+        range: Range<usize>,
+        tracker: &ResourceTracker,
+    ) -> RunResult<()> {
+        if let (Self::Nones(dst), Self::Nones(_)) = (&mut *self, source) {
+            dst.len += range.len();
+            return Ok(());
+        }
+        let mut start = range.start;
+        while start < range.end {
+            tracker.check_time()?;
+            let end = start.saturating_add(COPY_BATCH).min(range.end);
+            self.append_range(source, start..end);
+            start = end;
+        }
+        Ok(())
+    }
+
+    pub(super) fn append_range(&mut self, source: &Self, range: Range<usize>) {
+        match (&mut *self, source) {
+            (Self::Nones(dst), Self::Nones(_)) => dst.len += range.len(),
+            (Self::ByteInts(dst), Self::ByteInts(src)) => dst.extend_from_slice(&src[range]),
+            (Self::Ints(dst), Self::Ints(src)) => dst.extend_from_slice(&src[range]),
+            (Self::Ints(dst), Self::ByteInts(src)) => dst.extend(src[range].iter().copied().map(i64::from)),
+            (Self::NullableBytes(dst), Self::Nones(_)) => dst.append_nones(range.len()),
+            (Self::NullableInts(dst), Self::Nones(_)) => dst.append_nones(range.len()),
+            (Self::Bools(dst), Self::Nones(_)) => {
+                dst.nulls
+                    .as_mut()
+                    .expect("reserved nullable storage")
+                    .fill(dst.len, range.len(), true);
+                dst.len += range.len();
+            }
+            (Self::NullableBytes(dst), Self::ByteInts(src)) => dst.append_ints(&src[range]),
+            (Self::NullableInts(dst), Self::Ints(src)) => dst.append_ints(&src[range]),
+            (Self::NullableInts(dst), Self::ByteInts(src)) => {
+                dst.nulls.fill(dst.values.len(), range.len(), false);
+                dst.values.extend(src[range].iter().copied().map(i64::from));
+            }
+            (Self::NullableBytes(dst), Self::NullableBytes(src)) => dst.append_nullable(src, range),
+            (Self::NullableInts(dst), Self::NullableInts(src)) => dst.append_nullable(src, range),
+            (Self::NullableInts(dst), Self::NullableBytes(src)) => {
+                dst.nulls
+                    .copy_from(dst.values.len(), &src.nulls, range.start, range.len());
+                dst.values.extend(src.values[range].iter().copied().map(i64::from));
+            }
+            (Self::Bools(dst), Self::Bools(src)) => {
+                dst.values.copy_from(dst.len, &src.values, range.start, range.len());
+                if let Some(nulls) = &mut dst.nulls {
+                    if let Some(src_nulls) = &src.nulls {
+                        nulls.copy_from(dst.len, src_nulls, range.start, range.len());
+                    } else {
+                        nulls.fill(dst.len, range.len(), false);
+                    }
+                }
+                dst.len += range.len();
+            }
+            _ => {
+                for index in range {
+                    self.push(&source.get(index).expect("checked list index"));
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PackedView<'a>(&'a PackedList);
+
+impl PackedView<'_> {
+    pub(crate) fn len(self) -> usize {
+        self.0.len()
+    }
+
+    pub(crate) fn get(self, index: usize) -> Option<Value> {
+        self.0.get(index)
+    }
+
+    pub(crate) fn iter(self) -> impl DoubleEndedIterator<Item = Value> + ExactSizeIterator {
+        (0..self.len()).map(move |index| self.get(index).expect("checked list index"))
+    }
+}
+
+/// Reserves the null bitmap before the list gains an integer or boolean.
+#[derive(Debug, Default)]
+pub(super) struct Nones {
+    len: usize,
+    slots: Bitmap,
+}
+
+impl Nones {
+    fn with_ints<T: IntegerSlot>(&mut self, capacity: usize) -> RunResult<NullableInts<T>> {
+        let values = new_slots(capacity, self.len)?;
+        self.slots.fill(0, self.len, true);
+        Ok(NullableInts {
+            values,
+            nulls: mem::take(&mut self.slots),
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct NullableInts<T> {
+    values: Vec<T>,
+    nulls: Bitmap,
+}
+
+impl<T: IntegerSlot> NullableInts<T> {
+    fn new(capacity: usize) -> RunResult<Self> {
+        Self::from_ints(&mut Vec::new(), capacity)
+    }
+
+    fn from_ints(values: &mut Vec<T>, capacity: usize) -> RunResult<Self> {
+        let mut nulls = Bitmap::default();
+        nulls.reserve(capacity)?;
+        reserve_vec(values, capacity)?;
+        Ok(Self {
+            values: mem::take(values),
+            nulls,
+        })
+    }
+
+    fn reserve(&mut self, capacity: usize) -> RunResult<()> {
+        self.nulls.reserve(capacity)?;
+        reserve_vec(&mut self.values, capacity)
+    }
+
+    fn get(&self, index: usize) -> Option<Value> {
+        let value = *self.values.get(index)?;
+        Some(if self.nulls.get(index) {
+            Value::None
+        } else {
+            Value::Int(value.as_i64())
+        })
+    }
+
+    fn insert(&mut self, index: usize, value: &Value) {
+        self.nulls.move_within(index, index + 1, self.values.len() - index);
+        self.values.insert(index, T::from_nullable(value));
+        self.nulls.set(index, matches!(value, Value::None));
+    }
+
+    fn splice(&mut self, range: Range<usize>, values: &[Value]) {
+        let start = range.start;
+        self.nulls
+            .move_within(range.end, start + values.len(), self.values.len() - range.end);
+        drop(self.values.splice(range, values.iter().map(T::from_nullable)));
+        for (index, value) in values.iter().enumerate() {
+            self.nulls.set(start + index, matches!(value, Value::None));
+        }
+    }
+
+    fn set(&mut self, index: usize, value: &Value) {
+        self.values[index] = T::from_nullable(value);
+        self.nulls.set(index, matches!(value, Value::None));
+    }
+
+    fn swap(&mut self, a: usize, b: usize) {
+        self.values.swap(a, b);
+        self.nulls.swap(a, b);
+    }
+
+    fn reverse(&mut self) {
+        self.values.reverse();
+        self.nulls.reverse(self.values.len());
+    }
+
+    fn extend_from_within(&mut self, range: Range<usize>) {
+        self.nulls.move_within(range.start, self.values.len(), range.len());
+        self.values.extend_from_within(range);
+    }
+
+    fn append_nones(&mut self, len: usize) {
+        self.nulls.fill(self.values.len(), len, true);
+        self.values.resize(self.values.len() + len, T::default());
+    }
+
+    fn append_ints(&mut self, values: &[T]) {
+        self.nulls.fill(self.values.len(), values.len(), false);
+        self.values.extend_from_slice(values);
+    }
+
+    fn append_nullable(&mut self, source: &Self, range: Range<usize>) {
+        self.nulls
+            .copy_from(self.values.len(), &source.nulls, range.start, range.len());
+        self.values.extend_from_slice(&source.values[range]);
+    }
+}
+
+#[derive(Debug, Default)]
+pub(super) struct Bools {
+    len: usize,
+    values: Bitmap,
+    nulls: Option<Bitmap>,
+}
+
+impl Bools {
+    fn reserve(&mut self, capacity: usize, nullable: bool) -> RunResult<()> {
+        if let Some(nulls) = &mut self.nulls {
+            nulls.reserve(capacity)?;
+        } else if nullable {
+            let mut nulls = Bitmap::default();
+            nulls.reserve(capacity)?;
+            self.values.reserve(capacity)?;
+            self.nulls = Some(nulls);
+            return Ok(());
+        }
+        self.values.reserve(capacity)
+    }
+
+    fn get(&self, index: usize) -> Value {
+        if self.nulls.as_ref().is_some_and(|nulls| nulls.get(index)) {
+            Value::None
+        } else {
+            Value::Bool(self.values.get(index))
+        }
+    }
+
+    fn set(&mut self, index: usize, value: &Value) {
+        let boolean = match value {
+            Value::Bool(value) => *value,
+            Value::None => false,
+            _ => unreachable!("boolean storage accepts booleans and None"),
+        };
+        self.values.set(index, boolean);
+        if let Some(nulls) = &mut self.nulls {
+            nulls.set(index, matches!(value, Value::None));
+        }
+    }
+
+    fn move_within(&mut self, src: usize, dst: usize, count: usize) {
+        self.values.move_within(src, dst, count);
+        if let Some(nulls) = &mut self.nulls {
+            nulls.move_within(src, dst, count);
+        }
+    }
+}
+
+pub(super) trait IntegerSlot: Copy + Default {
+    fn from_i64(value: i64) -> Self;
+    fn as_i64(self) -> i64;
+
+    fn from_value(value: &Value) -> Self {
+        let Value::Int(value) = value else {
+            unreachable!("integer storage requires an integer");
+        };
+        Self::from_i64(*value)
+    }
+
+    fn from_nullable(value: &Value) -> Self {
+        if matches!(value, Value::None) {
+            Self::default()
+        } else {
+            Self::from_value(value)
+        }
+    }
+}
+
+impl IntegerSlot for i64 {
+    fn from_i64(value: i64) -> Self {
+        value
+    }
+
+    fn as_i64(self) -> i64 {
+        self
+    }
+}
+
+impl IntegerSlot for u8 {
+    fn from_i64(value: i64) -> Self {
+        Self::try_from(value).expect("byte-sized list integer")
+    }
+
+    fn as_i64(self) -> i64 {
+        i64::from(self)
+    }
+}
+
+fn new_slots<T: IntegerSlot>(capacity: usize, len: usize) -> RunResult<Vec<T>> {
+    let mut values = Vec::new();
+    reserve_vec(&mut values, capacity)?;
+    values.resize(len, T::default());
+    Ok(values)
+}
+
+fn slice_indices(start: i64, step: i64, count: usize) -> impl Iterator<Item = usize> {
+    let mut index = i128::from(start);
+    (0..count).map(move |_| {
+        let current = index;
+        index += i128::from(step);
+        usize::try_from(current).expect("slice index is within the list")
+    })
+}
+
+fn slice_slots<T: IntegerSlot>(
+    source: &[T],
+    start: i64,
+    step: i64,
+    count: usize,
+    tracker: &ResourceTracker,
+) -> RunResult<Vec<T>> {
+    tracker.check_pending_allocation(count.saturating_mul(size_of::<T>()))?;
+    let mut target = new_slots(count, 0)?;
+    let index = usize::try_from(start).expect("slice starts within the list");
+    match step {
+        1 => {
+            for chunk in source[index..index + count].chunks(COPY_BATCH) {
+                tracker.check_time()?;
+                target.extend_from_slice(chunk);
+            }
+        }
+        -1 => {
+            for chunk in source[index + 1 - count..=index].rchunks(COPY_BATCH) {
+                tracker.check_time()?;
+                target.extend(chunk.iter().rev().copied());
+            }
+        }
+        _ => {
+            for (offset, index) in slice_indices(start, step, count).enumerate() {
+                tracker.check_time_every(offset)?;
+                target.push(source[index]);
+            }
+        }
+    }
+    Ok(target)
+}
+
+fn splice_slots<T: IntegerSlot>(target: &mut Vec<T>, range: Range<usize>, values: &[Value]) {
+    if range.len() == values.len() {
+        for (slot, value) in target[range].iter_mut().zip(values) {
+            *slot = T::from_value(value);
+        }
+    } else {
+        drop(target.splice(range, values.iter().map(T::from_value)));
+    }
+}
+
+fn reserve_vec<T>(items: &mut Vec<T>, capacity: usize) -> RunResult<()> {
+    items
+        .try_reserve_exact(capacity.saturating_sub(items.len()))
+        .map_err(|_| ExcType::allocation_too_large())
+}
