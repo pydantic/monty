@@ -586,6 +586,8 @@ pub enum StaticStrings {
     Altsep,
     /// `time.altzone` constant.
     Altzone,
+    /// `Path.anchor` property.
+    Anchor,
     /// `typing.Annotated` marker.
     #[strum(serialize = "Annotated")]
     Annotated,
@@ -1010,6 +1012,8 @@ pub enum StaticStrings {
     DotallFlag,
     /// `doublequote` dialect attribute and `csv` format parameter.
     Doublequote,
+    /// `Path.drive` property.
+    Drive,
     /// `itertools.dropwhile()` function.
     Dropwhile,
     /// Kwarg name `dst` — `os.rename(dst=...)`, `os.replace(dst=...)`.
@@ -1535,6 +1539,8 @@ pub enum StaticStrings {
     /// `unicodedata.is_normalized()` function.
     #[strum(serialize = "is_normalized")]
     IsNormalized,
+    /// `Path.is_reserved()` method.
+    IsReserved,
     /// `Path.is_symlink()` method — yields a host call.
     IsSymlink,
     /// `os.path.isabs()` function.
@@ -2008,6 +2014,8 @@ pub enum StaticStrings {
     PathClass,
     /// Module name for `import pathlib`.
     Pathlib,
+    /// Parameter name `path_pattern` — `Path.match(path_pattern=...)`.
+    PathPattern,
     /// Kwarg name `paths` — `os.path.commonpath(paths=...)`.
     Paths,
     /// `os.pathsep` / `os.path.pathsep` constant name.
@@ -2202,6 +2210,8 @@ pub enum StaticStrings {
     Rjust,
     /// `Path.rmdir()` and `os.rmdir()` — yields a host call.
     Rmdir,
+    /// `Path.root` property.
+    Root,
     /// `deque.rotate()` method.
     Rotate,
     /// `decimal.ROUND_05UP` rounding mode.
