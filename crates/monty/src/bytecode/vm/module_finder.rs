@@ -29,7 +29,7 @@ use crate::{
     modules::vendored::{VENDORED_PREFIX, VendoredSource},
     os_dispatch::PendingEffect,
     prepare::SnippetNames,
-    types::{Dict, List, Module, str::allocate_string},
+    types::{Dict, List, Module, sequence::SequenceItems, str::allocate_string},
     value::Value,
     virtual_path::posix_join,
 };
@@ -355,21 +355,19 @@ impl VM<'_> {
         })
     }
 
-    /// A package's `__path__` (a list or tuple) as directories joined to the
+    /// A package's `__path__` as directories joined to the
     /// working directory, skipping anything that is not a `str` or that holds
     /// a NUL byte (the host skips those too), up to the [`MAX_SEARCH_DIRS`] it searches.
     fn search_path(&self, path: &Value) -> Vec<String> {
-        let dirs = match path.ref_id().map(|id| self.heap.get(id)) {
-            Some(HeapData::List(list)) => list.as_slice(),
-            Some(HeapData::Tuple(tuple)) => tuple.as_slice(),
-            _ => return Vec::new(),
+        let Some(dirs) = SequenceItems::from_value(path, self.heap) else {
+            return Vec::new();
         };
-        dirs.iter()
-            .filter_map(|dir| dir.as_str_heap(self.heap, self.interns))
-            .filter(|dir| !dir.contains('\0'))
-            .take(MAX_SEARCH_DIRS)
-            .map(|dir| posix_join(&self.env.cwd, dir))
-            .collect()
+        dirs.filter_map(|dir| {
+            let dir = dir.as_str_heap(self.heap, self.interns)?;
+            (!dir.contains('\0')).then(|| posix_join(&self.env.cwd, dir))
+        })
+        .take(MAX_SEARCH_DIRS)
+        .collect()
     }
 
     /// The file module on top of the operand stack, where an import pushes it

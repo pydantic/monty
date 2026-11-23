@@ -169,6 +169,8 @@ assert [ref.__resolved_str__ for ref in shapes] == [
     'Missing[::3]',
 ]
 assert ForwardRef('Missing[()]').evaluate(format=Format.FORWARDREF).evaluate(globals={'Missing': dict}) == dict[()]
+call = ForwardRef('Missing([int], (str,))').evaluate(format=Format.FORWARDREF)
+assert call.__resolved_str__ == 'Missing([int], (str,))'
 # a chain of owners recurses in hashing, equality and repr; CPython's message
 # depends on whether its depth counter or its C-stack guard fires first
 deep = ForwardRef('x')

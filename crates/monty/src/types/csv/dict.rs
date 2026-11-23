@@ -433,8 +433,13 @@ impl RowSpec {
             && match fieldnames {
                 Value::Ref(id) => match vm.heap.get(*id) {
                     HeapData::List(list) => {
-                        let items = list.as_slice();
-                        items.len() == self.names.len() && items.iter().zip(&self.names).all(|(a, b)| a.is(b))
+                        let items = list.items();
+                        items.len() == self.names.len()
+                            && self
+                                .names
+                                .iter()
+                                .enumerate()
+                                .all(|(i, name)| items.map_item(i, |item| item.is(name)))
                     }
                     HeapData::Tuple(_)
                     | HeapData::Str(_)
@@ -637,19 +642,10 @@ fn next_row(reader: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
 /// `fieldnames` as owned values: a `list` (what a header read produces) is copied directly,
 /// preflighted as a bulk copy; any other iterable is iterated as `zip` or `list()` would.
 fn fieldnames_items(fieldnames: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
-    match fieldnames {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::List(list) => {
-                let items = list.as_slice();
-                vm.heap
-                    .tracker
-                    .check_allocation(items.len().saturating_mul(VALUE_SIZE))?;
-                Ok(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
-            }
-            _ => collect_iterable(fieldnames, vm),
-        },
-        _ => collect_iterable(fieldnames, vm),
+    if let Some(HeapData::List(list)) = fieldnames.ref_id().map(|id| vm.heap.get(id)) {
+        return list.items().to_vec(vm.heap);
     }
+    collect_iterable(fieldnames, vm)
 }
 
 /// The wrapped reader's `line_num`.

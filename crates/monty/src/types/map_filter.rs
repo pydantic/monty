@@ -173,8 +173,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, MapFilter> {
                 let Some(HeapReadOutput::List(sources)) = iterators.read_heap(vm) else {
                     unreachable!("map owns a private list of source iterators")
                 };
-                if let [source] = sources.get(vm.heap).as_slice()
-                    && let Some(mut iterator) = PyValue::native_iterator(source, vm)
+                let sources = sources.get(vm.heap).items();
+                if sources.len() == 1
+                    && let Some(mut iterator) = sources.map_item(0, |source| PyValue::native_iterator(source, vm))
                 {
                     let function = function.clone_with_heap(vm);
                     defer_drop!(function, vm);

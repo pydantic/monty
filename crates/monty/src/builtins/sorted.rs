@@ -1,7 +1,5 @@
 //! Implementation of the sorted() builtin function.
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::ArgValues,
     bytecode::VM,
@@ -9,25 +7,18 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData},
     resource_checks::check_estimated_size,
     sorting::parse_and_sort,
-    types::{List, iter::collect_owned_iterable},
+    types::{List, iter::collect_owned_iterable, sequence::SequenceItems},
     value::{VALUE_SIZE, Value},
 };
 
-fn clone_slice_with_checks(
-    slice: &[Value],
-    tracker: &ResourceTracker,
-    heap: &Heap,
-) -> Result<Vec<Value>, Box<(Vec<Value>, RunError)>> {
-    let len = slice.len();
-    if let Err(e) = check_estimated_size(len.saturating_mul(VALUE_SIZE), tracker) {
+fn clone_items_with_checks(items: SequenceItems<'_>, heap: &Heap) -> Result<Vec<Value>, Box<(Vec<Value>, RunError)>> {
+    let len = items.len();
+    if let Err(e) = check_estimated_size(len.saturating_mul(VALUE_SIZE), &heap.tracker) {
         return Err(Box::new((Vec::new(), e.into())));
     }
     let mut cloned = Vec::with_capacity(len);
-    for (i, v) in slice.iter().enumerate() {
-        if let Err(e) = tracker.check_time_every(i) {
-            return Err(Box::new((cloned, e.into())));
-        }
-        cloned.push(v.clone_with_heap(heap));
+    if let Err(err) = items.extend_cloned(&mut cloned, heap) {
+        return Err(Box::new((cloned, err)));
     }
     Ok(cloned)
 }
@@ -52,15 +43,8 @@ pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     let iterable = pos_iter.next().expect("checked pos_count == 1");
 
-    let items = if let Value::Ref(id) = &iterable
-        && let slice = match vm.heap.get(*id) {
-            HeapData::List(list) => Some(list.as_slice()),
-            HeapData::Tuple(tuple) => Some(tuple.as_slice()),
-            _ => None,
-        }
-        && let Some(slice) = slice
-    {
-        let res = clone_slice_with_checks(slice, &vm.heap.tracker, vm.heap);
+    let items = if let Some(items) = SequenceItems::from_value(&iterable, vm.heap) {
+        let res = clone_items_with_checks(items, vm.heap);
         iterable.drop_with(vm);
         match res {
             Ok(items) => items,
