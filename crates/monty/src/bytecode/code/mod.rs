@@ -150,9 +150,7 @@ impl Code {
     /// Entries are ordered innermost-first.
     #[must_use]
     pub fn find_exception_handler(&self, offset: u32) -> Option<&ExceptionEntry> {
-        self.exception_table
-            .iter()
-            .find(|entry| entry.contains(offset) && entry.kind != HandlerKind::Iteration)
+        self.exception_table.iter().find(|entry| entry.contains(offset))
     }
 }
 
@@ -236,8 +234,6 @@ pub enum HandlerKind {
     Consuming,
     /// Only re-raises: the VM skips the push, the compiler the matching `Pop`.
     Cleanup,
-    /// Legacy v17 loop entry; new loops handle deferred advancement in a frozen frame.
-    Iteration,
 }
 
 /// Entry in the exception table - maps a protected bytecode range to its handler.
