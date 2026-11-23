@@ -1,7 +1,7 @@
 //! Convert between Python code-point indices and UTF-8 byte offsets using two recent boundaries.
 //! Start and end are implicit anchors; each lookup chooses the closest anchor in its input coordinates.
 //! Skips use scalar iteration, 16-byte SIMD or bulk bytecount according to distance and owner density.
-//! Small owners retain u16 cursors inline; larger owners allocate wider cursors on first use.
+//! Strings below 64 KiB retain u16 cursors inline. Larger strings allocate usize cursors on first use.
 //! Clones and snapshots start without access history. This cache builds no index.
 
 use std::{
@@ -40,27 +40,6 @@ impl Budget for ResourceTracker {
     }
 }
 
-/// Cursor width follows byte length, which bounds both byte offsets and code-point indices.
-trait Coordinate: Copy + Default {
-    fn pack(value: usize) -> Self;
-    fn unpack(self) -> usize;
-}
-
-macro_rules! coordinates {
-    ($($ty:ty),*) => {$(
-        impl Coordinate for $ty {
-            #[inline]
-            fn pack(value: usize) -> Self {
-                Self::try_from(value).expect("cursor width selected by owner byte length")
-            }
-
-            #[inline]
-            fn unpack(self) -> usize { self as usize }
-        }
-    )*};
-}
-coordinates!(u16, u32, usize);
-
 /// One valid UTF-8 boundary expressed in both coordinate systems.
 #[derive(Clone, Copy, Default)]
 struct Cursor<P> {
@@ -73,10 +52,8 @@ struct Cursor<P> {
 enum State {
     /// Owners below 64 KiB need no cursor allocation. Both initial cursors denote the start.
     Inline([Cursor<u16>; 2]),
-    /// Owners through `u32::MAX` bytes allocate only after a nontrivial lookup.
-    Wide(Box<[Cursor<u32>; 2]>),
-    /// Full-width coordinates retain support for owners beyond the u32 byte range.
-    Huge(Box<[Cursor<usize>; 2]>),
+    /// Full-width offsets cover every larger string with one allocation.
+    Wide(Box<[Cursor<usize>; 2]>),
 }
 
 impl Default for State {
@@ -212,19 +189,15 @@ impl AccessCache {
         budget: &B,
     ) -> Result<usize, B::Error> {
         let mut state = self.state.take();
-        if text.len() >= 65_536 && matches!(state, State::Inline(_)) {
-            if u32::try_from(text.len()).is_ok() {
-                if budget.allow_allocation(size_of::<[Cursor<u32>; 2]>()) {
-                    state = State::Wide(Box::default());
-                }
-            } else if budget.allow_allocation(size_of::<[Cursor<usize>; 2]>()) {
-                state = State::Huge(Box::default());
-            }
+        if text.len() >= 65_536
+            && matches!(state, State::Inline(_))
+            && budget.allow_allocation(size_of::<[Cursor<usize>; 2]>())
+        {
+            state = State::Wide(Box::default());
         }
         let result = match &mut state {
             State::Inline(cursors) if text.len() < 65_536 => convert(text, target, hint, cursors, budget),
             State::Wide(cursors) => convert(text, target, hint, cursors.as_mut(), budget),
-            State::Huge(cursors) => convert(text, target, hint, cursors.as_mut(), budget),
             // Optional state must not make an otherwise valid read fail its memory limit.
             State::Inline(_) => convert(text, target, hint, &mut [Cursor::<usize>::default(); 2], budget),
         };
@@ -238,33 +211,27 @@ impl AccessCache {
         let state = self.state.take();
         let populated = match &state {
             State::Inline(cursors) => cursors.iter().any(|c| c.byte != 0),
-            State::Wide(_) | State::Huge(_) => true,
+            State::Wide(_) => true,
         };
         self.state.set(state);
         populated
     }
 }
 
-/// A newly resolved target becomes most recent; exact hits refresh the order in `convert`.
-#[inline]
-fn remember<P: Coordinate>(cursors: &mut [Cursor<P>; 2], character: usize, byte: usize) {
-    cursors[1] = cursors[0];
-    cursors[0] = Cursor {
-        character: P::pack(character),
-        byte: P::pack(byte),
-    };
-}
-
 /// Selects an anchor in the requested coordinate system, walks in either direction, and remembers the result.
 /// Character targets return bytes; byte targets return code-point indices.
 #[inline]
-fn convert<P: Coordinate, B: Budget>(
+fn convert<P, B: Budget>(
     text: &str,
     target: Target,
     hint: Option<Anchor>,
     cursors: &mut [Cursor<P>; 2],
     budget: &B,
-) -> Result<usize, B::Error> {
+) -> Result<usize, B::Error>
+where
+    P: Copy + Into<usize> + TryFrom<usize>,
+    P::Error: fmt::Debug,
+{
     let position = target.position();
     let mut anchor = Anchor { character: 0, byte: 0 };
     if let Some(characters) = target.characters() {
@@ -283,8 +250,8 @@ fn convert<P: Coordinate, B: Budget>(
     }
     for i in 0..2 {
         let saved = Anchor {
-            character: cursors[i].character.unpack(),
-            byte: cursors[i].byte.unpack(),
+            character: cursors[i].character.into(),
+            byte: cursors[i].byte.into(),
         };
         let saved_position = target.coordinate(saved);
         // Refresh even a zero-walk hit so alternating positions remain the two retained anchors.
@@ -316,7 +283,11 @@ fn convert<P: Coordinate, B: Budget>(
             n,
         ),
     };
-    remember(cursors, character, byte);
+    cursors[1] = cursors[0];
+    cursors[0] = Cursor {
+        character: P::try_from(character).expect("cursor width covers the string"),
+        byte: P::try_from(byte).expect("cursor width covers the string"),
+    };
     Ok(match target {
         Target::Character { .. } => byte,
         Target::Byte { .. } => character,
@@ -419,7 +390,10 @@ impl AccessCacheStore {
 mod store_tests {
     use std::ptr;
 
-    use super::{test_budget::Unlimited, *};
+    use super::{
+        test_budget::{AllocationBudget, Unlimited},
+        *,
+    };
 
     #[test]
     fn late_unicode_cache_allocates_only_its_page() {
@@ -446,26 +420,15 @@ mod store_tests {
         assert!(!store.clone().is_initialized());
     }
 
-    struct NoMemory;
-    impl Budget for NoMemory {
-        type Error = ();
-        fn allow_allocation(&self, _: usize) -> bool {
-            false
-        }
-        fn check_time(&self) -> Result<(), ()> {
-            Ok(())
-        }
-    }
-
     #[test]
     fn refused_directory_or_cache_allocation_returns_none() {
         let store = AccessCacheStore::default();
-        assert!(store.get(0, &NoMemory).is_none());
+        assert!(store.get(0, &AllocationBudget(0)).is_none());
         assert!(!store.is_initialized());
         store.get(0, &Unlimited).unwrap();
-        assert!(store.get(1, &NoMemory).is_none());
-        assert!(store.get(PAGE_SIZE, &NoMemory).is_none());
-        assert!(store.get(0, &NoMemory).is_some());
+        assert!(store.get(1, &AllocationBudget(0)).is_none());
+        assert!(store.get(PAGE_SIZE, &AllocationBudget(0)).is_none());
+        assert!(store.get(0, &AllocationBudget(0)).is_some());
     }
 }
 
@@ -474,6 +437,17 @@ pub(crate) mod test_budget {
     use std::convert::Infallible;
 
     use super::Budget;
+
+    pub(super) struct AllocationBudget(pub(super) usize);
+    impl Budget for AllocationBudget {
+        type Error = ();
+        fn allow_allocation(&self, bytes: usize) -> bool {
+            bytes <= self.0
+        }
+        fn check_time(&self) -> Result<(), ()> {
+            Ok(())
+        }
+    }
 
     pub(crate) struct Unlimited;
     impl Budget for Unlimited {
@@ -489,7 +463,11 @@ pub(crate) mod test_budget {
 
 #[cfg(test)]
 mod tests {
-    use super::{test_budget::Unlimited, *};
+    use super::{
+        test_budget::{AllocationBudget, Unlimited},
+        *,
+    };
+    #[cfg(target_pointer_width = "64")]
     use crate::{
         heap::{HeapData, HeapEntry},
         types::str::HeapStr,
@@ -565,39 +543,39 @@ mod tests {
             cache.byte_offset(&text, n, 400, None, &Unlimited).unwrap();
         }
         let state = cache.state.take();
-        let State::Inline(cursors) = &state else {
-            panic!("small cursors must remain inline");
-        };
-        assert_eq!(cursors[0].character, 100);
-        assert_eq!(cursors[1].character, 300);
+        assert!(matches!(
+            &state,
+            State::Inline([Cursor { character: 100, .. }, Cursor { character: 300, .. }])
+        ));
         cache.state.set(state);
+        assert_eq!(format!("{cache:?}"), "AccessCache");
         let cloned = cache.clone();
         assert!(cache.has_cursor());
         assert!(!cloned.has_cursor());
         assert_eq!(cloned.byte_offset(&text, 200, 400, None, &Unlimited), Ok(500));
     }
 
-    struct NoMemory;
-    impl Budget for NoMemory {
-        type Error = ();
-        fn allow_allocation(&self, _: usize) -> bool {
-            false
-        }
-        fn check_time(&self) -> Result<(), ()> {
-            Ok(())
-        }
-    }
-
     #[test]
-    fn denied_wide_state_falls_back_to_scanning() {
+    fn refused_wide_allocation_scans_and_can_be_retried() {
         let text = "aé中🐍".repeat(20_000);
         let cache = AccessCache::default();
+        let cursor_bytes = 4 * size_of::<usize>();
+        let too_small = AllocationBudget(cursor_bytes - 1);
         for n in [1, 17, 30_000, 70_000, 4, 79_999] {
             let byte = text.char_indices().nth(n).unwrap().0;
-            assert_eq!(cache.byte_offset(&text, n, 80_000, None, &NoMemory), Ok(byte));
-            assert_eq!(cache.char_offset(&text, byte, Some(80_000), None, &NoMemory), Ok(n));
+            assert_eq!(cache.byte_offset(&text, n, 80_000, None, &too_small), Ok(byte));
+            assert_eq!(cache.char_offset(&text, byte, Some(80_000), None, &too_small), Ok(n));
         }
         assert!(!cache.has_cursor());
+        assert_eq!(
+            cache.byte_offset(&text, 70_000, 80_000, None, &AllocationBudget(cursor_bytes)),
+            Ok(175_000)
+        );
+        assert!(cache.has_cursor());
+        assert_eq!(
+            cache.char_offset(&text, 175_000, Some(80_000), None, &AllocationBudget(0)),
+            Ok(70_000)
+        );
     }
 
     struct Expired;
@@ -615,6 +593,7 @@ mod tests {
     fn interrupted_walk_restores_retained_cursors() {
         let text = "aé中🐍".repeat(100_000);
         let cache = AccessCache::default();
+        assert_eq!(cache.byte_offset(&text, 200_000, 400_000, None, &Expired), Err(()));
         let saved = cache.byte_offset(&text, 100, 400_000, None, &Unlimited).unwrap();
         assert_eq!(cache.byte_offset(&text, 200_000, 400_000, None, &Expired), Err(()));
         assert_eq!(cache.byte_offset(&text, 100, 400_000, None, &Expired), Ok(saved));
@@ -628,14 +607,13 @@ mod tests {
         );
     }
 
+    #[cfg(target_pointer_width = "64")]
     #[test]
     fn compact_cursors_keep_arena_slots_unchanged() {
-        if cfg!(target_pointer_width = "64") {
-            assert_eq!(size_of::<AccessCache>(), 16);
-            assert_eq!(size_of::<HeapStr>(), 48);
-            assert_eq!(size_of::<HeapData>(), 72);
-            assert_eq!(size_of::<HeapEntry>(), 96);
-            assert_eq!(size_of::<Option<HeapEntry>>(), 104);
-        }
+        assert_eq!(size_of::<AccessCache>(), 16);
+        assert_eq!(size_of::<HeapStr>(), 48);
+        assert_eq!(size_of::<HeapData>(), 72);
+        assert_eq!(size_of::<HeapEntry>(), 96);
+        assert_eq!(size_of::<Option<HeapEntry>>(), 104);
     }
 }

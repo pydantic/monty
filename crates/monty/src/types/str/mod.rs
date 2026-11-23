@@ -2248,6 +2248,45 @@ mod tests {
     }
 
     #[test]
+    fn inline_ranges_use_byte_offsets_through_the_ascii_prefix() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            let text = PyStr::Inline(InlineStr::new("abc🐍x").unwrap());
+            assert!(text.access_cache(vm).is_none());
+            let (start, end) = text.byte_range(0, 3, vm).unwrap();
+            assert_eq!((start.byte, end), (0, 3));
+            let (start, end) = text.byte_range(3, 4, vm).unwrap();
+            assert_eq!((start.byte, end), (3, 7));
+        });
+    }
+
+    #[test]
+    fn interned_offsets_without_cache_memory_respect_deadlines() {
+        let limits = monty_types::ResourceLimits::default()
+            .max_memory(0)
+            .max_feed_duration(Duration::ZERO);
+        let mut heap = Heap::new(16, ResourceTracker::new(limits));
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let id = crate::intern::CompileInterns::direct(&mut tables.interns).intern(&"é".repeat(200_000));
+        heap.tracker.on_execution_start();
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            let text = PyStr::Interned(id);
+            let origin = Anchor { character: 0, byte: 0 };
+            assert_eq!(text.character_at(3, vm).unwrap(), Some('é'));
+            assert!(text.character_at(100_000, vm).is_err());
+            assert_eq!(text.char_index_of(8, origin, vm).unwrap(), 4);
+            assert_eq!(text.char_index_of(399_998, origin, vm).unwrap(), 199_999);
+            assert_eq!(text.char_index_of(400_000, origin, vm).unwrap(), 200_000);
+            assert!(text.char_index_of(200_000, origin, vm).is_err());
+        });
+    }
+
+    #[test]
     fn search_offsets_reuse_known_boundaries() {
         let limits = monty_types::ResourceLimits::default().max_feed_duration(Duration::ZERO);
         let mut heap = Heap::new(16, ResourceTracker::new(limits));
@@ -2261,6 +2300,7 @@ mod tests {
             let text = PyStr::from_value(value, vm).unwrap();
             assert!(!text.is_ascii(vm));
             let origin = Anchor { character: 0, byte: 0 };
+            assert!(text.char_index_of(70_000, origin, vm).is_err());
             assert_eq!(text.char_index_of(60_000, origin, vm).unwrap(), 30_000);
             // The next result is more than a deadline chunk from the origin, but close to the cursor.
             assert_eq!(text.char_index_of(70_000, origin, vm).unwrap(), 35_000);
