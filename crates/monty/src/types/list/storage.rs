@@ -100,6 +100,7 @@ mod tests {
     use monty_types::ResourceTracker;
 
     use super::*;
+    use crate::types::list::packed::IntWidth;
 
     #[test]
     fn packed_lists_match_the_legacy_cbor_encoding() {
@@ -113,17 +114,31 @@ mod tests {
         }
 
         let heap = Heap::new(16, ResourceTracker::default());
-        for items in [
-            vec![],
-            vec![Value::None],
-            vec![Value::Int(255)],
-            vec![Value::Int(255), Value::None],
-            vec![Value::Int(-257)],
-            vec![Value::None, Value::Int(-257)],
-            vec![Value::Bool(false)],
-            vec![Value::Bool(true), Value::None],
-            vec![Value::Float(-0.0), Value::Float(f64::INFINITY)],
-            vec![Value::None, Value::Float(f64::from_bits(0x7ff8_0000_0000_0123))],
+        let bytes = |nullable| Packing::Int {
+            width: IntWidth::Byte,
+            nullable,
+        };
+        let wide = |nullable| Packing::Int {
+            width: IntWidth::Wide,
+            nullable,
+        };
+        for (expected, items) in [
+            (Packing::Empty, vec![]),
+            (Packing::Nones, vec![Value::None]),
+            (bytes(false), vec![Value::Int(255)]),
+            (bytes(true), vec![Value::Int(255), Value::None]),
+            (wide(false), vec![Value::Int(-257)]),
+            (wide(true), vec![Value::None, Value::Int(-257)]),
+            (Packing::Bool { nullable: false }, vec![Value::Bool(false)]),
+            (Packing::Bool { nullable: true }, vec![Value::Bool(true), Value::None]),
+            (
+                Packing::Float { nullable: false },
+                vec![Value::Float(-0.0), Value::Float(f64::INFINITY)],
+            ),
+            (
+                Packing::Float { nullable: true },
+                vec![Value::None, Value::Float(f64::from_bits(0x7ff8_0000_0000_0123))],
+            ),
         ] {
             let legacy = LegacyList {
                 items,
@@ -131,7 +146,7 @@ mod tests {
             };
             let old_bytes = minicbor_serde::to_vec(&legacy).unwrap();
             let list = List::from_values(legacy.items, &heap);
-            assert!(matches!(list.storage, ListStorage::Empty | ListStorage::Packed(_)));
+            assert_eq!(list.storage.packing(), expected);
             let new_bytes = minicbor_serde::to_vec(&list).unwrap();
             assert_eq!(new_bytes, old_bytes);
 

@@ -14,7 +14,7 @@ const COPY_BATCH: usize = 1024;
 const INLINE_SLICE_ITEMS: usize = 8;
 
 /// Nonnegative integers through 255 fit in one byte. Other `i64` values need wide slots.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum IntWidth {
     Byte,
     Wide,
@@ -37,7 +37,7 @@ impl IntWidth {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Packing {
     Empty,
     Nones,
@@ -1034,4 +1034,30 @@ fn reserve_vec<T>(items: &mut Vec<T>, capacity: usize) -> RunResult<()> {
     items
         .try_reserve_exact(capacity.saturating_sub(items.len()))
         .map_err(|_| ExcType::allocation_too_large())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{thread, time::Duration};
+
+    use monty_types::ResourceLimits;
+
+    use super::*;
+    use crate::exception_private::RunError;
+
+    #[test]
+    fn packed_range_fill_checks_the_deadline() {
+        let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::ZERO));
+        tracker.on_execution_start();
+        thread::sleep(Duration::from_millis(1));
+        tracker.on_execution_stop();
+
+        for start in [0, -256] {
+            let range = PythonRange::new(start, start + 256, 1);
+            let result = PackedList::from_range(&range, &tracker);
+            assert!(
+                matches!(result, Err(RunError::UncatchableExc(exc)) if exc.exc.exc_type() == ExcType::TimeoutError)
+            );
+        }
+    }
 }

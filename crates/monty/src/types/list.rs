@@ -1697,7 +1697,7 @@ mod tests {
                 values.push(Value::None);
             }
             let list = List::from_values(values, &heap);
-            assert!(list.storage.packing() == Packing::Float { nullable });
+            assert_eq!(list.storage.packing(), Packing::Float { nullable });
             for (index, expected) in bits.into_iter().enumerate() {
                 let Some(Value::Float(value)) = list.get_cloned(index, &heap) else {
                     panic!("expected a float at {index}");
@@ -1737,7 +1737,7 @@ mod tests {
                 list_clear(&list, &mut vm);
                 do_list_sort(&list, ArgValues::Empty, &mut vm).unwrap();
                 let storage = &list.get(vm.heap).storage;
-                assert!(storage.packing() == packing);
+                assert_eq!(storage.packing(), packing);
                 assert_eq!(storage.capacity(), capacity);
             });
             Value::Ref(id).drop_with(&mut heap);

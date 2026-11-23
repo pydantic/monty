@@ -90,27 +90,41 @@ fn list_storage(c: &mut Criterion) {
     );
 
     for (storage, pattern, replacement) in [
-        ("none", "[None, None]", "None"),
-        ("u8", "[7, 9]", "13"),
-        ("i64", "[-257, 257]", "1024"),
-        ("nullable_u8", "[3, None]", "11"),
-        ("nullable_i64", "[-257, None]", "None"),
-        ("f64", "[1.25, -0.5]", "3.5"),
-        ("nullable_f64", "[1.25, None]", "-0.5"),
-        ("bool", "[True, False]", "True"),
-        ("nullable_bool", "[True, None]", "False"),
-        ("generic", "[1, {'key': 2}]", "{'key': 3}"),
+        ("none", "None, None", "None"),
+        ("u8", "7, 9", "13"),
+        ("i64", "-257, 257", "1024"),
+        ("nullable_u8", "3, None", "11"),
+        ("nullable_i64", "-257, None", "None"),
+        ("f64", "1.25, -0.5", "3.5"),
+        ("nullable_f64", "1.25, None", "-0.5"),
+        ("bool", "True, False", "True"),
+        ("nullable_bool", "True, None", "False"),
+        ("generic", "1, {'key': 2}", "{'key': 3}"),
     ] {
-        let setup = format!("source = {pattern} * 1024\nreplacement = {replacement}");
-        for (operation, batch) in [
+        let setup = format!("source = [{pattern}] * 1024\nreplacement = {replacement}");
+        let read = "for i in range(2048):\n    result = source[i]";
+        let write = "for i in range(2048):\n    source[i] = replacement";
+        for (operation, batch, check) in [
             (
                 "read",
-                "for i in range(2048):\n    result = source[i]\nassert result == source[-1]",
+                read,
+                format!("expected = ({pattern})\n{read}\n    assert result == expected[i % 2]"),
             ),
             (
                 "write",
-                "for i in range(2048):\n    source[i] = replacement\nassert source[-1] == replacement",
+                write,
+                format!("{write}\nassert tuple(source) == (replacement,) * 2048"),
             ),
+        ] {
+            bench_repl_snippet_checked(
+                c,
+                &format!("list_storage_{storage}_{operation}__monty"),
+                &setup,
+                batch,
+                Some(&check),
+            );
+        }
+        for (operation, batch) in [
             (
                 "copy",
                 "for _ in range(64):\n    result = source.copy()\nassert result is not source and len(result) == 2048\nassert result[0] == source[0] and result[-1] == source[-1]",
@@ -249,14 +263,22 @@ fn dictionary_fastpaths_and_snapshots(c: &mut Criterion) {
 
 /// Prepares each sample separately so REPL source history cannot grow between measurements.
 fn bench_repl_snippet(c: &mut Criterion, name: &str, setup: &str, batch: &str) {
+    bench_repl_snippet_checked(c, name, setup, batch, None);
+}
+
+fn bench_repl_snippet_checked(c: &mut Criterion, name: &str, setup: &str, batch: &str, check: Option<&str>) {
+    let new_repl = || {
+        let mut repl = MontyRepl::new("bench.py", ResourceTracker::default(), CompileOptions::default());
+        repl.feed_run(setup, vec![], PrintWriter::Stdout).unwrap();
+        repl
+    };
     c.bench_function(name, |bench| {
+        if let Some(check) = check {
+            new_repl().feed_run(check, vec![], PrintWriter::Stdout).unwrap();
+        }
         // Borrowing the input keeps both source construction and REPL teardown outside timing.
         bench.iter_batched_ref(
-            || {
-                let mut repl = MontyRepl::new("bench.py", ResourceTracker::default(), CompileOptions::default());
-                repl.feed_run(setup, vec![], PrintWriter::Stdout).unwrap();
-                repl
-            },
+            new_repl,
             |repl| {
                 let result = repl.feed_run(black_box(batch), vec![], PrintWriter::Stdout).unwrap();
                 black_box(result);
