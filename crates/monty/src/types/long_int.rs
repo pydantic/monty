@@ -768,7 +768,9 @@ pub(crate) fn int_from_bytes(args: ArgValues, as_bool: bool, vm: &mut VM<'_>) ->
         return Ok(Value::Int(i64::from_le_bytes(le)));
     }
 
-    vm.heap.tracker.check_allocation(slice.len())?;
+    vm.heap
+        .tracker
+        .check_allocation(slice.len().saturating_mul(3).saturating_add(8))?;
     let big = match (order, signed) {
         (ByteOrder::Big, false) => BigInt::from_bytes_be(num_bigint::Sign::Plus, slice),
         (ByteOrder::Little, false) => BigInt::from_bytes_le(num_bigint::Sign::Plus, slice),
