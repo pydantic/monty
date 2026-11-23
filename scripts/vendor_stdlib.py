@@ -5,7 +5,6 @@ Downloads each listed file from `Lib/` at the pinned CPython commit, applies `cr
 file-name order, and writes the result to `crates/monty/stdlib/Lib/`, along with CPython's `LICENSE`.
 It also generates `crates/monty/src/modules/vendored/sources.rs`, the table the interpreter imports them from.
 Test-only sources use the same pin, but are written under `crates/monty-datatest/vendor/cpython/Lib/`.
-The manifest can select individual definitions from test-only dependencies before their patches apply.
 
 - `make vendor-stdlib`: write everything.
 - `make check-stdlib` (`--check`): fail instead of writing if anything differs.
@@ -16,7 +15,6 @@ The manifest can select individual definitions from test-only dependencies befor
 """
 
 import argparse
-import ast
 import difflib
 import os
 import re
@@ -56,10 +54,11 @@ def main() -> None:
     tag: str = manifest['tag']
     commit: str = manifest['commit']
     files: list[str] = sorted(manifest['files'])
+    test_files: list[str] = manifest['tests']['files']
     if args.make_patch:
         if not (args.reason or '').strip():
             sys.exit('--make-patch needs a --reason explaining why the CPython source must change')
-        sources = test_sources(commit, manifest['tests']) if args.test else fetch_sources(commit, files)
+        sources = fetch_sources(commit, test_files if args.test else files)
         make_patch(args.make_patch, args.reason, sources, TEST_VENDOR if args.test else STDLIB)
         return
 
@@ -71,7 +70,7 @@ def main() -> None:
     license_text = fetch(commit, 'LICENSE')
     expected = {LICENSE: license_text, TEST_VENDOR / 'LICENSE': license_text, TABLE: render_table(tag, files)}
     expected |= patched_tree(STDLIB, upstream)
-    expected |= patched_tree(TEST_VENDOR, test_sources(commit, manifest['tests']))
+    expected |= patched_tree(TEST_VENDOR, fetch_sources(commit, test_files))
     stale = [
         path
         for root in (LIB, TEST_VENDOR / 'Lib')
@@ -91,70 +90,12 @@ def main() -> None:
         for path, text in expected.items():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding='utf-8', newline='\n')
-        print(
-            f'vendored {len(files)} runtime modules and {len(manifest["tests"]["files"])} test files from CPython {tag}'
-        )
+        print(f'vendored {len(files)} runtime modules and {len(test_files)} test files from CPython {tag}')
 
 
 def fetch_sources(commit: str, files: list[str]) -> dict[str, str]:
     """Fetch each file by its path relative to `Lib/`."""
     return {file: fetch(commit, f'Lib/{file}') for file in files}
-
-
-def test_sources(commit: str, config: dict[str, list[str] | dict[str, list[str]]]) -> dict[str, str]:
-    """Fetch the test suite and retain only the requested definitions in its dependencies."""
-    files = config['files']
-    extracts = config['extract']
-    assert isinstance(files, list) and isinstance(extracts, dict)
-    sources = fetch_sources(commit, files)
-    for file, names in extracts.items():
-        source = sources[file]
-        sources[file] = extract_definitions(source.splitlines(keepends=True), ast.parse(source).body, names)
-    return sources
-
-
-def extract_definitions(lines: list[str], body: list[ast.stmt], names: list[str]) -> str:
-    """Copy selected statements verbatim; dotted selectors keep only the requested class members."""
-    excerpts: list[str] = []
-    for name, members in group_selectors(names).items():
-        matches = [node for node in body if definition_name(node) == name]
-        if len(matches) != 1:
-            sys.exit(f'expected one upstream definition for {name}, found {len(matches)}')
-        node = matches[0]
-        if members:
-            if not isinstance(node, ast.ClassDef) or node.decorator_list:
-                sys.exit(f'cannot select members of {name}: expected an undecorated class')
-            excerpts.append(''.join(lines[node.lineno - 1 : node.body[0].lineno - 1]))
-            excerpts.append(extract_definitions(lines, node.body, members) + '\n')
-        else:
-            excerpts.append(''.join(lines[node.lineno - 1 : node.end_lineno]) + '\n')
-    return ''.join(excerpts).rstrip() + '\n'
-
-
-def group_selectors(names: list[str]) -> dict[str, list[str]]:
-    """Group class members by their class, in manifest order."""
-    groups: dict[str, list[str]] = {}
-    for selector in names:
-        name, _, member = selector.partition('.')
-        members = groups.setdefault(name, [])
-        if member:
-            members.append(member)
-    return groups
-
-
-def definition_name(node: ast.stmt) -> str | None:
-    """Identify the statements the test manifest can select from upstream."""
-    match node:
-        case ast.FunctionDef(name=name, decorator_list=[]) | ast.ClassDef(name=name):
-            return name
-        case ast.Assign(targets=[ast.Name(id=name)]):
-            return name
-        case ast.ImportFrom(names=[ast.alias(name=name, asname=None)]):
-            return name
-        case ast.Expr(value=ast.Constant(value=str())):
-            return '__doc__'
-        case _:
-            return None
 
 
 def patched_tree(root: Path, sources: dict[str, str]) -> dict[Path, str]:

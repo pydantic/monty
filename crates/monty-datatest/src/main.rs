@@ -50,10 +50,8 @@ const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 const TEST_CASES_RELATIVE_DIR: &str = "crates/monty/test_cases";
 const STDLIB_TESTS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/cpython/Lib/test");
 
-/// The upstream assertions used by the test suites, without exposing `unittest` as a sandbox import.
+/// The patched `unittest` support files run in the suite's namespace, without package discovery.
 const STDLIB_TEST_PREAMBLE: &str = concat!(
-    include_str!("../vendor/cpython/Lib/unittest/__init__.py"),
-    "\n",
     include_str!("../vendor/cpython/Lib/unittest/util.py"),
     "\n",
     include_str!("../vendor/cpython/Lib/unittest/case.py"),

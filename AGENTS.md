@@ -79,11 +79,11 @@ Only list modules that load: `make stdlib-candidates` reports each candidate's f
 blocker in its source and the modules with only one syntax blocker (which may still have import or runtime
 blockers).
 
-The manifest’s `[tests]` tree vendors upstream suites and a subset of `unittest` into
+The manifest’s `[tests]` tree vendors upstream suites and their `unittest` dependencies into
 `crates/monty-datatest/vendor/cpython/`, which is not part of the runtime.
 `make test-cases` runs the adapted suites on Monty and CPython; `make check-stdlib` verifies both trees.
-Use `--test --make-patch NNNN-name --reason '...'` to save adaptations to the test-only tree.
-Preserve the upstream inputs and assertions when changing suite setup or execution.
+Use `--test --make-patch NNNN-name --reason '...'` to save adaptations against the full upstream files.
+Keep definitions unless they block execution, and preserve the upstream inputs and assertions when adapting suite setup.
 
 Keep the CPython change summary in `crates/monty/stdlib/NOTICE` current when patches change.
 `make update-licenses` regenerates the licence bundle shipped with native and WASM workers.

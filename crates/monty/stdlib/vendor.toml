@@ -21,35 +21,11 @@ files = [
 ]
 
 # Test-only files live in monty-datatest, not in the interpreter's module table.
+# They are copied in full before the test-only patches apply.
 [tests]
 files = [
     "test/test_colorsys.py",
     "unittest/__init__.py",
     "unittest/case.py",
     "unittest/util.py",
-]
-
-# Keep the package's notice and just the assertion machinery the tests use.
-[tests.extract]
-"unittest/__init__.py" = ["__doc__"]
-"unittest/case.py" = [
-    "TestCase.failureException",
-    "TestCase.longMessage",
-    "TestCase._formatMessage",
-    "TestCase._getAssertEqualityFunc",
-    "TestCase._baseAssertEqual",
-    "TestCase.assertEqual",
-    "TestCase.assertAlmostEqual",
-]
-"unittest/util.py" = [
-    "commonprefix",
-    "_MAX_LENGTH",
-    "_PLACEHOLDER_LEN",
-    "_MIN_BEGIN_LEN",
-    "_MIN_END_LEN",
-    "_MIN_COMMON_LEN",
-    "_MIN_DIFF_LEN",
-    "_shorten",
-    "_common_shorten_repr",
-    "safe_repr",
 ]
