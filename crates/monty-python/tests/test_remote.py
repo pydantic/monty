@@ -1021,3 +1021,134 @@ async def test_out_of_memory_status_raises_memory_error():
                 with pytest.raises(MontyRuntimeError) as exc_info:
                     await session.feed_run("x = 'a' * 10**9")
     assert exc_info.value.display(format='msg') == snapshot('the worker exceeded its memory limit and was terminated')
+
+
+@asynccontextmanager
+async def _serve_recording() -> AsyncGenerator[tuple[str, list[dict[str, str]], list[int]]]:
+    """Serves the relay's bridge, yielding its URL, the request metadata of each stream
+    as it opens, and the index of each stream once it receives a request."""
+    relay = _load_relay_script()
+    bridge = relay.relay_behaviour(find_monty_binary())
+    opened: list[dict[str, str]] = []
+    used: list[int] = []
+
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        index = len(opened)
+        opened.append({key: value for key, value in context.invocation_metadata() or () if isinstance(value, str)})
+
+        async def recording() -> AsyncIterator[bytes]:
+            async for request in requests:
+                if index not in used:
+                    used.append(index)
+                yield request
+
+        async with aclosing(bridge(recording(), context)) as events:
+            async for event in events:
+                yield event
+
+    async with _reaping_children(relay), _serve_behaviour(behaviour) as url:
+        yield url, opened, used
+
+
+async def _wait_for(condition: Callable[[], bool]) -> None:
+    """Polls `condition` for up to five seconds."""
+    for _ in range(500):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError('condition not met within 5s')
+
+
+async def test_pre_warm_opens_sessions_before_checkout():
+    """`__aenter__` opens the pre-warmed sessions; a checkout takes one, and it is replaced."""
+    async with _serve_recording() as (url, opened, used):
+        async with AsyncMontyRemote(url, request_timeout=30.0, pre_warm=2, max_processes=4) as pool:
+            await _wait_for(lambda: len(opened) == 2)
+            assert used == snapshot([])
+            async with pool.checkout() as session:
+                assert await session.feed_run('1 + 1') == snapshot(2)
+            await _wait_for(lambda: len(opened) == 3)
+            assert len(used) == snapshot(1)
+            assert used[0] in (0, 1)
+
+
+async def test_a_checkout_waits_for_a_pre_warmed_session_still_opening():
+    """Without `pre_warm_wait`, a checkout straight after `__aenter__` takes the session
+    already opening, rather than opening another."""
+    async with _serve_recording() as (url, opened, used):
+        async with AsyncMontyRemote(url, request_timeout=30.0, pre_warm=1, pre_warm_wait=False) as pool:
+            async with pool.checkout() as session:
+                assert await session.feed_run('1 + 1') == snapshot(2)
+            await _wait_for(lambda: len(opened) == 2)
+            assert used == snapshot([0])
+
+
+async def test_pre_warm_calls_metadata_for_each_ready_session():
+    """The pool calls `metadata` for each session it pre-warms, and a checkout whose own
+    call returned the same value takes one."""
+    calls = 0
+
+    def provide_metadata() -> dict[str, str]:
+        nonlocal calls
+        calls += 1
+        return {'authorization': 'Bearer one'}
+
+    async with _serve_recording() as (url, opened, used):
+        async with AsyncMontyRemote(url, request_timeout=30.0, pre_warm=1, metadata=provide_metadata) as pool:
+            async with pool.checkout() as session:
+                assert await session.feed_run('1 + 1') == snapshot(2)
+            await _wait_for(lambda: len(opened) == 2)
+            assert used == snapshot([0])
+    assert [metadata['authorization'] for metadata in opened] == snapshot(['Bearer one', 'Bearer one'])
+    # the two ready sessions, and the checkout's own call
+    assert calls == snapshot(3)
+
+
+async def test_pre_warm_session_is_not_taken_with_other_metadata():
+    """A checkout never runs on a session opened with other metadata: a changed value
+    closes the ready session unused, and the checkout opens its own."""
+    token = 'Bearer one'
+
+    async with _serve_recording() as (url, opened, used):
+        async with AsyncMontyRemote(
+            url, request_timeout=30.0, pre_warm=1, metadata=lambda: {'authorization': token}
+        ) as pool:
+            await _wait_for(lambda: len(opened) == 1)
+            token = 'Bearer two'
+            async with pool.checkout() as session:
+                assert await session.feed_run('1 + 1') == snapshot(2)
+            await _wait_for(lambda: len(opened) == 3)
+            assert [opened[index]['authorization'] for index in used] == snapshot(['Bearer two'])
+    assert [metadata['authorization'] for metadata in opened] == snapshot(['Bearer one', 'Bearer two', 'Bearer two'])
+
+
+async def test_pre_warm_wait_raises_from_aenter_when_the_server_refuses():
+    async def behaviour(
+        _requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, 'server at capacity')
+        yield b''  # pragma: no cover - makes this an async generator
+
+    async with _serve_behaviour(behaviour) as url:
+        with pytest.raises(MontyRefusedError) as exc_info:
+            async with AsyncMontyRemote(url, pre_warm=1):
+                pass
+    assert str(exc_info.value).removeprefix(url) == snapshot(
+        ' refused the session: RESOURCE_EXHAUSTED: server at capacity'
+    )
+
+
+async def test_pre_warm_metadata_failure_raises_from_aenter():
+    with pytest.raises(MontyConfigurationError) as exc_info:
+        async with AsyncMontyRemote('http://127.0.0.1:1', pre_warm=1, metadata=raise_no_token):
+            pass
+    assert str(exc_info.value) == snapshot('metadata callback failed: ValueError: no token available')
+
+
+async def test_pre_warm_above_max_processes_is_refused():
+    with pytest.raises(MontyConfigurationError) as exc_info:
+        async with AsyncMontyRemote('http://127.0.0.1:1', pre_warm=3, max_processes=2):
+            pass
+    assert str(exc_info.value) == snapshot('invalid pool size: pre_warm=3 max_processes=2')

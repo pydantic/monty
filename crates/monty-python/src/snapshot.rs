@@ -148,6 +148,7 @@ pub(crate) fn feed_start_sync(
     script_name: String,
 ) -> PyResult<Py<PyAny>> {
     let FeedArgs {
+        turn,
         code,
         inputs,
         mounts,
@@ -174,7 +175,7 @@ pub(crate) fn feed_start_sync(
             Box::pin(async move {
                 // every call suspends, so each one reaches a snapshot
                 c.set_async_functions(None);
-                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                c.feed_with(code, inputs, mounts, cwd.as_deref(), skip_type_check, turn, p)
                     .await
             })
         }),
@@ -191,6 +192,7 @@ pub(crate) fn feed_start_async(
     script_name: String,
 ) -> PyResult<Bound<'_, PyAny>> {
     let FeedArgs {
+        turn,
         code,
         inputs,
         mounts,
@@ -217,7 +219,7 @@ pub(crate) fn feed_start_async(
                 Box::pin(async move {
                     // every call suspends, so each one reaches a snapshot
                     c.set_async_functions(None);
-                    c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                    c.feed_with(code, inputs, mounts, cwd.as_deref(), skip_type_check, turn, p)
                         .await
                 })
             }),
@@ -297,6 +299,7 @@ pub(crate) fn build_snapshot(
             name,
             object_id,
             position,
+            ..
         } => {
             let snapshot = SnapshotState::new(ctx);
             let lookup = NameLookupSnapshot {
@@ -314,6 +317,7 @@ pub(crate) fn build_snapshot(
         TurnEvent::ResolveFutures {
             pending_call_ids,
             position,
+            ..
         } => {
             let snapshot = SnapshotState::new(ctx);
             let futures = FutureSnapshot {

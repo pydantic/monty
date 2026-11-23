@@ -20,7 +20,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ahash = { workspace = true }
-chrono = { workspace = true }
+jiff = { workspace = true }
 monty-pool = { workspace = true, features = ["telemetry"] }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }

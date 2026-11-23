@@ -247,46 +247,48 @@ impl StandardLib {
 ///
 /// Every dump reaches these through `Value::ModuleFunction`, encoded by variant
 /// name, so renaming a variant needs `#[serde(alias)]` (see `DUMP_VERSION`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+/// Explicit discriminants are permanent module identity codes; never change or reuse them.
+#[monty_macros::explicit_discriminants(checksum = 0x372d_a81d_21f2_6e14)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::EnumDiscriminants)]
+#[repr(u8)]
 pub(crate) enum ModuleFunctions {
-    Asyncio(asyncio::AsyncioFunctions),
-    Collections(collections::CollectionsFunctions),
-    Json(json::JsonFunctions),
-    Math(math::MathFunctions),
-    Os(os::OsFunctions),
-    OsPath(os_path::OsPathFunctions),
-    Re(re::ReFunctions),
-    Unicodedata(unicodedata::UnicodedataFunctions),
-    Itertools(itertools::ItertoolsFunctions),
-    Dataclasses(dataclasses::DataclassesFunctions),
-    Functools(functools::FunctoolsFunctions),
-    Base64(base64::Base64Functions),
-    Binascii(binascii::BinasciiFunctions),
-    Random(random::RandomFunctions),
-    Copy(copy::CopyFunctions),
+    Asyncio(asyncio::AsyncioFunctions) = 0,
+    Collections(collections::CollectionsFunctions) = 1,
+    Json(json::JsonFunctions) = 2,
+    Math(math::MathFunctions) = 3,
+    Os(os::OsFunctions) = 4,
+    OsPath(os_path::OsPathFunctions) = 5,
+    Re(re::ReFunctions) = 6,
+    Unicodedata(unicodedata::UnicodedataFunctions) = 7,
+    Itertools(itertools::ItertoolsFunctions) = 8,
+    Dataclasses(dataclasses::DataclassesFunctions) = 9,
+    Functools(functools::FunctoolsFunctions) = 10,
+    Base64(base64::Base64Functions) = 11,
+    Binascii(binascii::BinasciiFunctions) = 12,
+    Random(random::RandomFunctions) = 13,
+    Copy(copy::CopyFunctions) = 14,
     /// Private primitives passed explicitly to frozen Python implementations.
-    Frozen(FrozenFunctions),
-    Time(time::TimeFunctions),
-    Hashlib(hashlib::HashlibFunctions),
-    Bisect(bisect::BisectFunctions),
-    Csv(csv::CsvFunctions),
-    Tomllib(tomllib::TomllibFunctions),
-    Decimal(decimal::DecimalFunctions),
-    Fnmatch(fnmatch::FnmatchFunctions),
-    Typing(typing::TypingFunctions),
-    Annotationlib(annotationlib::AnnotationlibFunctions),
-    Statistics(statistics::StatisticsFunctions),
+    Frozen(FrozenFunctions) = 15,
+    Time(time::TimeFunctions) = 16,
+    Hashlib(hashlib::HashlibFunctions) = 17,
+    Bisect(bisect::BisectFunctions) = 18,
+    Csv(csv::CsvFunctions) = 19,
+    Tomllib(tomllib::TomllibFunctions) = 20,
+    Decimal(decimal::DecimalFunctions) = 21,
+    Fnmatch(fnmatch::FnmatchFunctions) = 22,
+    Typing(typing::TypingFunctions) = 23,
+    Annotationlib(annotationlib::AnnotationlibFunctions) = 24,
+    Statistics(statistics::StatisticsFunctions) = 25,
     /// `gc` module functions — only present under the `test-hooks` feature.
-    /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
-    /// goes last and new variants are appended ahead of it.
+    /// See [`gc`] for why it is gated; test-only variants are grouped last.
     #[cfg(feature = "test-hooks")]
-    Gc(gc::GcFunctions),
+    Gc(gc::GcFunctions) = 26,
     /// `sys` module functions — only present under the `test-hooks` feature.
     /// Production `sys` is attribute-only; the test feature adds callables
     /// like `setrecursionlimit` that fixtures use to align behavior with
     /// CPython. See [`sys`] for the rationale.
     #[cfg(feature = "test-hooks")]
-    Sys(sys::SysFunctions),
+    Sys(sys::SysFunctions) = 27,
 }
 
 impl fmt::Display for ModuleFunctions {

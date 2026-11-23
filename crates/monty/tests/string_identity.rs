@@ -12,6 +12,14 @@ fn eval(code: &str) -> MontyObject {
 }
 
 #[test]
+fn interned_string_lengths_count_code_points() {
+    assert_eq!(
+        eval("[len(s) for s in ('', 'a', 'ascii literal', 'é', 'aé🦀', 'e\\u0301')]"),
+        MontyObject::list([0, 1, 13, 1, 3, 2].map(MontyObject::int)),
+    );
+}
+
+#[test]
 fn separately_created_inline_strings_share_content_identity() {
     assert_eq!(
         eval("a = 'abcdefghijklmno!'[:-1]\nb = 'abcdefghijklmno!'[:-1]\n(a is b, id(a) == id(b))"),

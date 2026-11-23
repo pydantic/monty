@@ -5,7 +5,10 @@ use std::{
     mem,
 };
 
-use monty_types::{MontyUuid, unstable::ClassTypeNode};
+use monty_types::{
+    MontyUuid,
+    unstable::{ClassEq, ClassHash, ClassTypeNode},
+};
 
 use super::{Dict, LazyHeapSet, PyTrait, list::repr_should_truncate, str::allocate_string};
 use crate::{
@@ -441,6 +444,11 @@ impl HostClassType {
             host_defined: true,
             is_dataclass: self.is_dataclass,
             attrs: Vec::new(),
+            // A host proxy of a host class compares and hashes by identity,
+            // deliberately unlike the sandbox (attrs `==`, unhashable): those
+            // rules approximate a host class whose real `__eq__` it never sees.
+            eq: ClassEq::Identity,
+            hash: ClassHash::Identity,
         }
     }
 }

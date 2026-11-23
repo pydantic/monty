@@ -14,7 +14,14 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import AsyncMonty, Monty, MontyCrashedError, MontyRuntimeError, MontySession
+from pydantic_monty import (
+    AsyncMonty,
+    Monty,
+    MontyConfigurationError,
+    MontyCrashedError,
+    MontyRuntimeError,
+    MontySession,
+)
 
 
 def test_basic_execution(monty_run: RunMonty):
@@ -146,6 +153,30 @@ def test_one_checkout_per_worker_gets_a_fresh_process_each_time():
                 assert session.feed_run(f'{i} * 2') == i * 2
     assert None not in pids
     assert len(pids) == snapshot(4)
+
+
+def test_pre_warm_pool_serves_concurrent_sessions():
+    # what `pre_warm` keeps ready is covered by monty-pool's tests: nothing here can see idle workers
+    with Monty(pre_warm=2, max_processes=3) as pool:
+        with pool.checkout() as first, pool.checkout() as second:
+            assert first.feed_run('1 + 1') == snapshot(2)
+            assert second.feed_run('2 + 2') == snapshot(4)
+            assert first.worker_pid != second.worker_pid
+
+
+async def test_async_pre_warm_pool_serves_concurrent_sessions():
+    async with AsyncMonty(pre_warm=2, max_processes=3) as pool:
+        async with pool.checkout() as first, pool.checkout() as second:
+            assert await first.feed_run('1 + 1') == snapshot(2)
+            assert await second.feed_run('2 + 2') == snapshot(4)
+            assert first.worker_pid != second.worker_pid
+
+
+def test_pre_warm_above_max_processes_is_refused():
+    with pytest.raises(MontyConfigurationError) as exc_info:
+        with Monty(pre_warm=3, max_processes=2):
+            pass
+    assert str(exc_info.value) == snapshot('invalid pool size: pre_warm=3 max_processes=2')
 
 
 @pytest.mark.parametrize(

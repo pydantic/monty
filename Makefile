@@ -111,10 +111,10 @@ format-js: install-js ## Format JS code with prettier
 	cd crates/monty-js && npm run format
 
 # tracked markdown, minus the vendored typeshed, the `.macroscope/` config files that only
-# look like markdown, the AGENTS.md symlink (CLAUDE.md is formatted directly), and the crate
-# READMEs: rustdoc embeds those and clippy's `doc_overindented_list_items` rejects the
+# look like markdown, and the crate READMEs: rustdoc embeds those and clippy's
+# `doc_overindented_list_items` rejects the
 # four-space list continuations mdformat-mkdocs writes
-MD_FILES := $(shell git ls-files '*.md' ':!:crates/monty-typeshed/**' ':!:.macroscope/**' ':!:AGENTS.md' ':!:crates/*/README*.md')
+MD_FILES := $(shell git ls-files '*.md' ':!:crates/monty-typeshed/**' ':!:.macroscope/**' ':!:crates/*/README*.md')
 
 .PHONY: format-md
 format-md: ## Format markdown with mdformat (tables, mkdocs admonitions, frontmatter)
@@ -268,9 +268,18 @@ generate-unicode-type: ## Regenerate the str character-property tables from the 
 check-unicode-type: generate-unicode-type ## Verify the checked-in str character-property tables match the current CPython
 	git diff --exit-code crates/monty/src/types/unicode_type_data.rs
 
+.PHONY: generate-type-check-warm-up
+generate-type-check-warm-up: ## Regenerate the type checker's warm-up snippet from the vendored builtins stub
+	uv run scripts/gen_type_check_warm_up.py
+
+.PHONY: check-type-check-warm-up
+check-type-check-warm-up: generate-type-check-warm-up ## Verify the checked-in type checker warm-up snippet matches the vendored stubs
+	git diff --exit-code crates/monty-type-checking/src/warm_up.py
+
 .PHONY: update-typeshed
 update-typeshed: ## Update vendored typeshed from upstream
 	uv run crates/monty-typeshed/update.py
+	uv run scripts/gen_type_check_warm_up.py
 	uv run ruff format
 	uv run ruff check --fix --fix-only --silent
 
