@@ -141,14 +141,13 @@ impl VM<'_> {
             });
         }
 
-        if let Value::Ref(id) = list_ref {
-            let HeapReadOutput::List(list) = this.heap.read(*id) else {
-                return Err(RunError::internal("ListExtend: expected list on heap"));
-            };
+        {
+            let list = list_ref
+                .ref_id()
+                .and_then(|id| this.heap.read_as::<List>(id))
+                .ok_or_else(|| RunError::internal("ListExtend: expected list on stack"))?;
             let items = collect_iterable(iterable, this)?;
             list.get_mut(this.heap).extend_owned(items);
-        } else {
-            return Err(RunError::internal("ListExtend: expected list ref on stack"));
         }
 
         // Push list_ref back on the stack (don't drop it)

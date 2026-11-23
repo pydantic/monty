@@ -266,6 +266,15 @@ fn a_long_package_path_is_capped() {
 }
 
 #[test]
+fn a_non_sequence_package_path_sends_no_search_directories() {
+    let files = &[("/proj/pkg/__init__.py", "__path__ = 42\n"), ("/proj/pkg/sub.py", "")];
+    let mut imports = Vec::new();
+    let (_, result) = feed_logged(repl(), "import pkg.sub", files, &mut imports);
+    assert_eq!(result.unwrap_err(), "ModuleNotFoundError: No module named 'pkg.sub'");
+    assert_eq!(asked(&imports), [("pkg", vec!["/proj"]), ("pkg.sub", vec![])]);
+}
+
+#[test]
 fn a_missing_submodule_raises_by_statement() {
     let files = &[("/proj/pkg/__init__.py", "")];
     assert_eq!(
