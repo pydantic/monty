@@ -891,6 +891,24 @@ async def test_async_resume_auto_multiple_pending_coroutines():
             assert snap.output == snapshot([10, 20])
 
 
+@pytest.mark.parametrize('automatic', [False, True])
+@pytest.mark.parametrize('is_function', [False, True])
+async def test_unstarted_resume_does_not_claim_snapshot(is_function: bool, automatic: bool):
+    async with AsyncMonty() as pool, pool.checkout() as session:
+        if is_function:
+            snap = await session.feed_start('f()', external_lookup={'f': lambda: 42})
+            assert isinstance(snap, AsyncFunctionSnapshot)
+            pending = snap.resume_auto() if automatic else snap.resume({'return_value': 41})
+        else:
+            snap = await session.feed_start('x', external_lookup={'x': 42})
+            assert isinstance(snap, AsyncNameLookupSnapshot)
+            pending = snap.resume_auto() if automatic else snap.resume(value=41)
+        pending.close()
+        done = await snap.resume_auto()
+        assert isinstance(done, MontyComplete)
+        assert done.output == snapshot(42)
+
+
 async def test_async_resume_auto_name_lookup():
     async with AsyncMonty() as pool:
         async with pool.checkout() as session:
@@ -930,12 +948,9 @@ async def test_async_future_snapshot_resume_auto_rejection_preserves_manual_resu
                 assert str(exc_info.value) == snapshot('No pending async tasks but ResolveFutures requested')
                 retry_blob = loaded.dump()
 
-            # Claiming manual resume takes effect before awaiting its result.
-            pending = loaded.resume({call_id: {'return_value': 40}})
-            with pytest.raises(RuntimeError) as exc_info:
-                await loaded.resume_auto()
-            assert str(exc_info.value) == snapshot('snapshot has already been resumed')
-            done = await pending
+            abandoned = loaded.resume({call_id: {'return_value': 41}})
+            abandoned.close()
+            done = await loaded.resume({call_id: {'return_value': 40}})
             assert isinstance(done, MontyComplete)
             assert done.output == snapshot(40)
             with pytest.raises(RuntimeError) as exc_info:
@@ -971,7 +986,10 @@ async def test_async_future_snapshot_resume_auto_claims_once(competing_auto: boo
             while isinstance(snap, AsyncFunctionSnapshot):
                 snap = await asyncio.wait_for(snap.resume_auto(), timeout=10)
             assert isinstance(snap, AsyncFutureSnapshot)
-            pending = snap.resume_auto()
+            abandoned = snap.resume_auto()
+            abandoned.close()
+            pending = asyncio.create_task(snap.resume_auto())
+            await asyncio.sleep(0)
             try:
                 with pytest.raises(RuntimeError) as exc_info:
                     if competing_auto:

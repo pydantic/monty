@@ -60,33 +60,28 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         dispatch_object_call_or_coroutine(self.py, function_name, object_id, args, self.instances)
     }
 
-    /// Resolves a bare-name lookup (a `NameLookup` event): a plain callable
-    /// becomes a host function proxy invoked on the eventual `FunctionCall`,
-    /// any other value is converted and returned directly, and an absent name
-    /// (or absent dict) yields `None` → the sandbox raises `NameError`.
-    ///
-    /// [`py_to_monty_value`] decides callable-vs-other (notably a type object
-    /// Monty models converts to `MontyNode::Type`, not a proxy); a function
-    /// proxy is renamed to the lookup *key* (not the callable's `__name__`) so
-    /// the `FunctionCall` hits the same dict entry. An unconvertible value
-    /// rejects the turn via [`MontyConversionError::value_conversion_err`] —
-    /// because `external_lookup` may hold untrusted values, an unrepresentable
-    /// type surfaces as the dedicated `MontyConversionError` (a `MontyError`),
-    /// not a masquerading `NameError`.
-    pub fn resolve_name(&self, name: &str) -> PyResult<Option<MontyObject>> {
+    /// Answers a bare-name or lazy-attribute lookup. An undefined name or attribute
+    /// raises in the sandbox; a bare-name value that cannot be converted fails the turn.
+    pub(crate) fn resolve_name(&self, name: &str, object_id: Option<&MontyUuid>) -> PyResult<NameLookupResult> {
+        if let Some(id) = object_id {
+            return Ok(resolve_object_attr(self.py, name, id, self.instances));
+        }
         let Some(lookup) = self.lookup else {
-            return Ok(None);
+            return Ok(NameLookupResult::Undefined);
         };
         let Some(value) = lookup.get_item(name)? else {
-            return Ok(None);
+            return Ok(NameLookupResult::Undefined);
         };
         let value = py_to_monty_value(&value, self.instances)
             .map_err(|exc| MontyConversionError::value_conversion_err(self.py, exc))?;
         let (mut graph, root) = unstable::into_graph_parts(value);
         if let MontyNode::Function { name: proxy_name, .. } = graph.node_mut(root) {
+            // Subsequent calls must use the lookup key, not the callable's __name__.
             name.clone_into(proxy_name);
         }
-        Ok(Some(unstable::object_from_graph(graph, root).expect("root unchanged")))
+        Ok(NameLookupResult::Value(
+            unstable::object_from_graph(graph, root).expect("root unchanged"),
+        ))
     }
 
     /// Calls an external function by name, converting args/kwargs from Monty
@@ -682,7 +677,7 @@ fn result_to_call_result(py: Python<'_>, result: &Bound<'_, PyAny>, instances: &
 /// `AttributeError` from the wrapper's policy — and the sandbox raises
 /// `AttributeError`. Any other exception, or a value that cannot convert, is
 /// raised inside the sandbox exactly as a failing method call would be.
-pub fn resolve_object_attr(
+fn resolve_object_attr(
     py: Python<'_>,
     name: &str,
     object_id: &MontyUuid,

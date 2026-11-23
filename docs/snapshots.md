@@ -405,6 +405,7 @@ Calling a loader after a feed or a previous load is rejected before restoration,
 
 [`AsyncMonty`][pydantic_monty.AsyncMonty] sessions expose the same `feed_start`, `load_session`, `load_snapshot` and `dump`, with awaitable
 `resume(...)` and `resume_auto()`.
+Creating a resume coroutine does not claim the snapshot; the first resume to start running claims it after validation.
 A coroutine host function, or a coroutine answer to `asyncio.sleep()` under `os_policy={'sleep': 'call_host'}`, is awaited directly by `resume_auto()` when the
 snapshot's `allow_eager_await` is true,
 which it is for a call that is awaited immediately while no other sandbox task can run and no external future is pending.
