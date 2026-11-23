@@ -210,9 +210,9 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         Ok(None)
     }
 
-    /// Float conversion (`__float__`), validating the result before unwrapping it.
+    /// Float conversion (`__float__`), returning an owned float with its identity intact.
     /// The caller supplies the `__index__` fallback and string parsing.
-    fn py_float_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<f64>> {
+    fn py_float_impl(&self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 

@@ -244,7 +244,7 @@ pub(crate) fn seed_key_from_value(value: &Value, version: i64, vm: &VM<'_>) -> R
     let key = match value.py_value(vm) {
         PyValue::Bool(value) => vec![u32::from(value)],
         PyValue::Int(value) => value.with_value(vm, |value| key_from_u64(value.unsigned_abs()), key_from_bigint),
-        PyValue::Float(value) => key_from_u64(cpython_float_hash(value)),
+        PyValue::Float(value) => key_from_u64(cpython_float_hash(value.value())),
         PyValue::Str(value) => key_from_text(&SeedText::Str(value.as_str(vm)), version),
         PyValue::Bytes(value) => key_from_text(&SeedText::Bytes(value.as_slice(vm)), version),
         _ => return Err(ExcType::random_seed_type()),

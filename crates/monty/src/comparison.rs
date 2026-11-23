@@ -176,7 +176,7 @@ impl Number<'_> {
         let other = match other {
             Value::Bool(b) => Number::Int(i64::from(*b)),
             Value::Int(i) => Number::Int(*i),
-            Value::Float(f) => Number::Float(*f),
+            value if let Some(f) = value.as_float(vm.heap) => Number::Float(f),
             Value::InternLongInt(id) => Number::BigInt(vm.interns.get_long_int(*id)),
             Value::Ref(id) if let HeapData::LongInt(i) = vm.heap.get(*id) => Number::BigInt(i.inner()),
             _ => return Value::NotImplemented,

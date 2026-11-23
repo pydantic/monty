@@ -123,6 +123,9 @@ macro_rules! heap_payloads {
             /// An arbitrary-precision integer used when a Python `int` does not fit in `i64`.
             #[serde(rename = "G")]
             LongInt(inline $crate::types::LongInt),
+            /// A NaN float with object identity.
+            #[serde(rename = "H")]
+            Float(inline $crate::types::float::HeapFloat),
             /// A `complex` number: two doubles, too wide for an immediate `Value`.
             #[serde(rename = "J")]
             Complex(inline $crate::types::Complex),
@@ -288,6 +291,7 @@ impl HeapData {
             | Self::BytesIterator(_)
             | Self::RangeIterator(_)
             | Self::LongInt(_)
+            | Self::Float(_)
             | Self::Complex(_)
             | Self::Path(_)
             | Self::OpenFile(_)
@@ -374,6 +378,7 @@ impl HeapData {
             Self::DataclassMethod(_) => Type::Function,
             Self::DataclassParams(_) => Type::DataclassParams,
             Self::LongInt(_) => Type::Int,
+            Self::Float(_) => Type::Float,
             Self::Complex(_) => Type::Complex,
             Self::Module(_) => Type::Module,
             Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,

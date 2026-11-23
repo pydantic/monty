@@ -30,6 +30,18 @@ def test_input_list(monty_run: RunMonty):
     assert monty_run('data[0] + data[1]', inputs={'data': [10, 20]}) == snapshot(30)
 
 
+def test_nan_identity_across_inputs_and_outputs(monty_run: RunMonty):
+    a = float('nan')
+    b = float('nan')
+    assert monty_run(
+        '(a is c, a is b, len(set(values)))', inputs={'a': a, 'b': b, 'c': a, 'values': [a, a, b]}
+    ) == snapshot((True, False, 2))
+
+    result = monty_run('a = float("nan"); b = float("nan"); [a, a, b]')
+    assert (result[0] is result[1], result[0] is result[2]) == snapshot((True, False))
+    assert monty_run('(values[0] is values[1], len(set(values)))', inputs={'values': result}) == snapshot((True, 2))
+
+
 def test_input_dict(monty_run: RunMonty):
     assert monty_run('config["a"] * config["b"]', inputs={'config': {'a': 3, 'b': 4}}) == snapshot(12)
 

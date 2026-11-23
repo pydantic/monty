@@ -19,6 +19,7 @@ pub mod dict_view;
 pub mod dir_scan;
 pub mod ext_function;
 pub mod file;
+pub(crate) mod float;
 pub mod forward_ref;
 pub mod generic_alias;
 pub mod hash_table;

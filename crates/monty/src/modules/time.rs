@@ -23,6 +23,7 @@ use smallvec::smallvec;
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
@@ -257,12 +258,12 @@ impl ClockReading {
 /// Resume half of [`suspend_for_clock`]: turns the host's `time.time` answer
 /// (epoch seconds) into the value the suspended function returns.
 pub(crate) fn apply_clock_reading(reading: ClockReading, reply: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    defer_drop!(reply, vm);
     let seconds = match reply {
-        Value::Float(seconds) => Ok(seconds),
-        Value::Int(seconds) => Ok(seconds as f64),
+        value if let Some(seconds) = value.as_float(vm.heap) => Ok(seconds),
+        Value::Int(seconds) => Ok(*seconds as f64),
         other => {
             let type_name = other.py_type_name(vm);
-            other.drop_with(vm);
             Err(ExcType::type_error(format!(
                 "'time.time' must be answered with a float, not {type_name}"
             )))
@@ -358,7 +359,7 @@ fn index_seconds(index: &Value, vm: &VM<'_>) -> f64 {
 /// check turns into the same `OverflowError` CPython raises for it.
 fn sleep_seconds(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
     match value {
-        Value::Float(f) => Ok(*f),
+        value if let Some(f) = value.as_float(vm.heap) => Ok(f),
         _ => match value.py_index_impl(vm)? {
             Some(index) => {
                 let seconds = index_seconds(&index, vm);

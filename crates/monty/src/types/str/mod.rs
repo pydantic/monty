@@ -2041,6 +2041,7 @@ mod tests {
     use crate::{
         defer_drop_mut,
         heap::HeapReader,
+        py_value::PyValue,
         run::{Program, SessionTables},
         types::List,
     };
@@ -2073,7 +2074,7 @@ mod tests {
                     assert!(string.py_is_iterable(vm));
                     if let PyStr::Heap(heap_string) = &string {
                         assert_eq!(heap_string.get(vm.heap).cached_hash.get(), expected_hash);
-                        let mut read = crate::py_value::PyValue::from(vm.heap.read(heap_string.id()));
+                        let mut read = PyValue::from_heap(heap_string.id(), vm.heap);
                         assert_eq!(read.py_len(vm), Some(text.chars().count()));
                         assert_eq!(read.py_hash(vm).unwrap(), expected_hash);
                         assert_eq!(read.py_eq_impl(value, vm).unwrap(), Some(true));
@@ -2085,9 +2086,7 @@ mod tests {
                     }
 
                     let iterator = match &string {
-                        PyStr::Heap(heap_string) => {
-                            crate::py_value::PyValue::from(vm.heap.read(heap_string.id())).py_iter(vm)
-                        }
+                        PyStr::Heap(heap_string) => PyValue::from_heap(heap_string.id(), vm.heap).py_iter(vm),
                         _ => string.py_iter(vm),
                     }
                     .unwrap()

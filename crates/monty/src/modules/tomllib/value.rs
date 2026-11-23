@@ -119,7 +119,7 @@ impl Frame {
             TomlValue::Str(text) => allocate_string(text, vm.heap),
             TomlValue::Int(TomlInt::Small(value)) => Value::Int(value),
             TomlValue::Int(TomlInt::Big(value)) => LongInt::new(value).into_value(vm.heap),
-            TomlValue::Float(value) => Value::Float(value),
+            TomlValue::Float(value) => Value::float(value, vm.heap),
             TomlValue::Bool(value) => Value::Bool(value),
             TomlValue::Date(date) => date::allocate_ymd(date.year, date.month, date.day, vm.heap),
             TomlValue::Time(time) => {

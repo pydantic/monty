@@ -271,6 +271,7 @@ impl GraphExporter {
     ) -> MontyNode {
         match output {
             HeapReadOutput::Str(heap_string) => MontyNode::String(heap_string.get(vm.heap).as_str().to_owned()),
+            HeapReadOutput::Float(value) => MontyNode::Float(value.get(vm.heap).0),
             HeapReadOutput::Bytes(b) => MontyNode::Bytes(b.get(vm.heap).as_slice().to_owned()),
             HeapReadOutput::List(list) => {
                 // Snapshot before recursing: a nested `__repr__` may mutate this list.
@@ -924,7 +925,7 @@ fn import_node(
         MontyNode::Bool(b) => Ok(Value::Bool(b)),
         MontyNode::Int(i) => Ok(Value::Int(i)),
         MontyNode::BigInt(bi) => Ok(LongInt::new(bi).into_value(vm.heap)),
-        MontyNode::Float(f) => Ok(Value::Float(f)),
+        MontyNode::Float(f) => Ok(Value::float(f, vm.heap)),
         MontyNode::Complex(c) => Ok(Complex::new(c.real, c.imag).into_value(vm.heap)),
         MontyNode::String(s) => Ok(allocate_string(s, vm.heap)),
         MontyNode::Bytes(b) => Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b))))),

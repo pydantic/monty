@@ -171,8 +171,6 @@ works on classes; see [classes.md](classes.md#inheritance).
     `(34, 'Numerical result out of range')` (glibc's `strerror(ERANGE)`; CPython
     on macOS and Windows says `(34, 'Result too large')`), and `exc.args` is that
     text as one string rather than CPython's `(34, '...')` tuple.
-- **`sorted()` and `list.sort()`** retain the [float identity limitation](language.md#float-identity)
-    when comparing NaNs inside containers.
 - **`round(n, ndigits)` for an int `n`** — `ndigits` values outside the i64 range are clamped by sign.
     For a hugely negative `ndigits`, CPython tries to materialise `10**-ndigits` and dies with `MemoryError`
     where Monty returns `0` immediately.

@@ -36,7 +36,7 @@ pub(super) fn hypot(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         .iter()
         .map(|value| value_to_float(value, vm).map(f64::abs))
         .collect::<RunResult<SmallVec<[f64; 16]>>>()?;
-    Ok(Value::Float(vector_norm(&mut values)))
+    Ok(Value::float(vector_norm(&mut values), vm.heap))
 }
 
 /// Positional-only points; CPython qualifies only the keyword error.
@@ -70,7 +70,7 @@ pub(super) fn dist(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         .zip(q.iter())
         .map(|(p, q)| Ok((value_to_float(p, vm)? - value_to_float(q, vm)?).abs()))
         .collect::<RunResult<SmallVec<[f64; 16]>>>()?;
-    Ok(Value::Float(vector_norm(&mut differences)))
+    Ok(Value::float(vector_norm(&mut differences), vm.heap))
 }
 
 /// Scales by powers of two, compensates squares and sums, then corrects the square root.
@@ -182,11 +182,11 @@ pub(crate) fn fsum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         }
     }
     if special_sum == 0.0 {
-        Ok(Value::Float(round_partials(&mut partials)))
+        Ok(Value::float(round_partials(&mut partials), vm.heap))
     } else if inf_sum.is_nan() {
         Err(SimpleException::new_msg(ExcType::ValueError, "-inf + inf in fsum").into())
     } else {
-        Ok(Value::Float(special_sum))
+        Ok(Value::float(special_sum, vm.heap))
     }
 }
 
@@ -337,7 +337,9 @@ pub(crate) fn sumprod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             }
             float_total = None;
             if float_used {
-                let next = add(total, &Value::Float(accumulator.to_float()), vm)?;
+                let float = Value::float(accumulator.to_float(), vm.heap);
+                defer_drop!(float, vm);
+                let next = add(total, float, vm)?;
                 mem::replace(total, next).drop_with(vm);
             }
         }
@@ -355,8 +357,8 @@ pub(crate) fn sumprod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// The compensated path accepts float/float and float/int pairs, including booleans.
 fn float_pair(a: &Value, b: &Value, vm: &VM<'_>) -> RunResult<Option<(f64, f64)>> {
-    if (matches!(a, Value::Float(_)) && matches!(b.py_type(vm).native(), Some(Type::Float | Type::Int | Type::Bool)))
-        || (matches!(b, Value::Float(_))
+    if (a.as_float(vm.heap).is_some() && matches!(b.py_type(vm).native(), Some(Type::Float | Type::Int | Type::Bool)))
+        || (b.as_float(vm.heap).is_some()
             && matches!(a.py_type(vm).native(), Some(Type::Float | Type::Int | Type::Bool)))
     {
         Ok(Some((value_to_float(a, vm)?, value_to_float(b, vm)?)))
@@ -368,7 +370,7 @@ fn float_pair(a: &Value, b: &Value, vm: &VM<'_>) -> RunResult<Option<(f64, f64)>
 /// Checks mixed float/integer conversion before multiplication; generic arithmetic permits infinity.
 fn multiply(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     if let Some((a, b)) = float_pair(a, b, vm)? {
-        Ok(Value::Float(a * b))
+        Ok(Value::float(a * b, vm.heap))
     } else {
         a.py_mul(b, vm)
     }
@@ -377,7 +379,7 @@ fn multiply(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 /// Checks mixed float/integer conversion when flushing a dot-product accumulator.
 fn add(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     if let Some((a, b)) = float_pair(a, b, vm)? {
-        Ok(Value::Float(a + b))
+        Ok(Value::float(a + b, vm.heap))
     } else {
         a.py_add(b, vm)
     }
@@ -410,6 +412,6 @@ pub(super) fn fma(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     } else if result.is_infinite() && x.is_finite() && y.is_finite() && z.is_finite() {
         Err(SimpleException::new_msg(ExcType::OverflowError, "overflow in fma").into())
     } else {
-        Ok(Value::Float(result))
+        Ok(Value::float(result, vm.heap))
     }
 }

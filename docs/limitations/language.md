@@ -219,36 +219,14 @@ assert outer() == 1
 
 CPython accepts this code, and `outer()` returns `1`.
 
-## Ordering comparisons
+## Float identity
 
-### Float identity
+Monty identifies non-NaN floats by their IEEE-754 bits rather than by object identity.
+Separately created non-NaN floats with identical bits therefore have the same `id()` and compare identical with `is`.
 
-Monty identifies floats by their IEEE-754 bits rather than by object identity.
-Separately created floats with identical bits therefore have the same `id()` and compare identical with `is`.
-For NaNs, this also changes container operations that check identity before equality.
-
-With `a = float('nan')` and a separate `b = float('nan')`:
-
-| Expression        | CPython      | Monty  |
-| ----------------- | ------------ | ------ |
-| `a is b`          | `False`      | `True` |
-| `id(a) == id(b)`  | `False`      | `True` |
-| `[a] == [b]`      | `False`      | `True` |
-| `a in [b]`        | `False`      | `True` |
-| `[a].count(b)`    | `0`          | `1`    |
-| `[a].index(b)`    | `ValueError` | `0`    |
-| `[a, 0] < [b, 1]` | `False`      | `True` |
-| `[a] <= [b]`      | `False`      | `True` |
-
-Lists, tuples, named tuples and deques can skip distinct NaNs as if they were the same object,
-then decide ordering from later elements or sequence lengths.
-This can also affect `sorted`, `min` and `max` when their operands contain NaNs.
-Distinct same-bit NaN keys likewise collapse to one entry in a dict or set.
-
-`Counter.most_common(n)` differs the same way: CPython ranks equal counts by
-tuple comparison, so the same `NaN` held as several counts can come back in
-another order (`Counter(a=x, b=x, c=x).most_common(2)` is
-`[('a', x), ('b', x)]` in CPython, `[('b', x), ('a', x)]` in Monty).
+Sessions restored from dumps written before dump version 17 can retain bitwise identities for stored NaNs.
+Distinct same-bit NaNs in those sessions can compare identical with `is`, collapse into one dict or set key,
+and be treated as equal by container operations that check identity before equality.
 
 ## What *does* work
 

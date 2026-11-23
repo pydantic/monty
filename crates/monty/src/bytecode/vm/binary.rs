@@ -220,9 +220,9 @@ impl VM<'_> {
                 // Sums, differences and products of two i64 operands fit in i128.
                 None => wide_i128_into_value(wide_op(i128::from(*lhs), i128::from(*rhs)), self.heap),
             }),
-            (Value::Float(lhs), Value::Float(rhs)) => Some(Value::Float(float_op(*lhs, *rhs))),
-            (Value::Int(lhs), Value::Float(rhs)) => Some(Value::Float(float_op(*lhs as f64, *rhs))),
-            (Value::Float(lhs), Value::Int(rhs)) => Some(Value::Float(float_op(*lhs, *rhs as f64))),
+            (Value::Float(lhs), Value::Float(rhs)) => Some(Value::float(float_op(*lhs, *rhs), self.heap)),
+            (Value::Int(lhs), Value::Float(rhs)) => Some(Value::float(float_op(*lhs as f64, *rhs), self.heap)),
+            (Value::Float(lhs), Value::Int(rhs)) => Some(Value::float(float_op(*lhs, *rhs as f64), self.heap)),
             _ => None,
         };
 
@@ -246,9 +246,15 @@ impl VM<'_> {
         let len = self.stack.len();
         let result = match (&self.stack[len - 2], &self.stack[len - 1]) {
             (Value::Int(lhs), Value::Int(rhs)) if *rhs != 0 => int_op(*lhs, *rhs),
-            (Value::Float(lhs), Value::Float(rhs)) if *rhs != 0.0 => Some(Value::Float(float_op(*lhs, *rhs))),
-            (Value::Int(lhs), Value::Float(rhs)) if *rhs != 0.0 => Some(Value::Float(float_op(*lhs as f64, *rhs))),
-            (Value::Float(lhs), Value::Int(rhs)) if *rhs != 0 => Some(Value::Float(float_op(*lhs, *rhs as f64))),
+            (Value::Float(lhs), Value::Float(rhs)) if *rhs != 0.0 => {
+                Some(Value::float(float_op(*lhs, *rhs), self.heap))
+            }
+            (Value::Int(lhs), Value::Float(rhs)) if *rhs != 0.0 => {
+                Some(Value::float(float_op(*lhs as f64, *rhs), self.heap))
+            }
+            (Value::Float(lhs), Value::Int(rhs)) if *rhs != 0 => {
+                Some(Value::float(float_op(*lhs, *rhs as f64), self.heap))
+            }
             _ => None,
         };
 

@@ -302,9 +302,9 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         }
         // CPython's cache wrappers share their state through both copy operations.
         HeapReadOutput::LruCache(_) => Copyability::Shared,
-        // Leaves and immutable containers Monty can never mutate, so a copy
-        // that shared them is indistinguishable from one that rebuilt them.
-        HeapReadOutput::Str(_)
+        // Immutable leaves are shared, preserving their identity through both copy operations.
+        HeapReadOutput::Float(_)
+        | HeapReadOutput::Str(_)
         | HeapReadOutput::Bytes(_)
         | HeapReadOutput::LongInt(_)
         | HeapReadOutput::Complex(_)

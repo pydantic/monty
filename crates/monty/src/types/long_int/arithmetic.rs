@@ -44,9 +44,9 @@ pub(super) trait IntArithmetic {
                 Some(value) => Value::Int(value),
                 None => wide_i128_into_value(i128::from(lhs) - i128::from(rhs), vm.heap),
             }))
-        } else if let Value::Float(rhs) = other {
-            let (lhs, rhs) = ordered(self.float()?, *rhs, reflected);
-            Ok(Some(Value::Float(lhs - rhs)))
+        } else if let Some(rhs) = other.as_float(vm.heap) {
+            let (lhs, rhs) = ordered(self.float()?, rhs, reflected);
+            Ok(Some(Value::float(lhs - rhs, vm.heap)))
         } else if let Some(rhs) = integer_value(other, vm) {
             let lhs = self.big();
             let (lhs, rhs) = ordered(lhs.as_ref(), rhs.as_ref(), reflected);
@@ -65,17 +65,17 @@ pub(super) trait IntArithmetic {
                 return Err(ExcType::zero_division().into());
             }
             if lhs.unsigned_abs() <= 1 << f64::MANTISSA_DIGITS && rhs.unsigned_abs() <= 1 << f64::MANTISSA_DIGITS {
-                return Ok(Some(Value::Float(lhs as f64 / rhs as f64)));
+                return Ok(Some(Value::float(lhs as f64 / rhs as f64, vm.heap)));
             }
         }
-        if let Value::Float(rhs) = other {
-            check_float_divisor(self, *rhs, reflected)?;
-            let (lhs, rhs) = ordered(self.float()?, *rhs, reflected);
-            Ok(Some(Value::Float(lhs / rhs)))
+        if let Some(rhs) = other.as_float(vm.heap) {
+            check_float_divisor(self, rhs, reflected)?;
+            let (lhs, rhs) = ordered(self.float()?, rhs, reflected);
+            Ok(Some(Value::float(lhs / rhs, vm.heap)))
         } else if let Some(rhs) = integer_value(other, vm) {
             let lhs = self.big();
             let (lhs, rhs) = ordered(lhs.as_ref(), rhs.as_ref(), reflected);
-            bigint_true_divide(lhs, rhs, &vm.heap.tracker).map(|value| Some(Value::Float(value)))
+            bigint_true_divide(lhs, rhs, &vm.heap.tracker).map(|value| Some(Value::float(value, vm.heap)))
         } else {
             Ok(None)
         }
@@ -93,10 +93,10 @@ pub(super) trait IntArithmetic {
                 Some((quotient, _)) => Value::Int(quotient),
                 None => wide_i128_into_value(i128::from(lhs).div_euclid(i128::from(rhs)), vm.heap),
             }))
-        } else if let Value::Float(rhs) = other {
-            check_float_divisor(self, *rhs, reflected)?;
-            let (lhs, rhs) = ordered(self.float()?, *rhs, reflected);
-            Ok(Some(Value::Float(py_float_divmod(lhs, rhs).0)))
+        } else if let Some(rhs) = other.as_float(vm.heap) {
+            check_float_divisor(self, rhs, reflected)?;
+            let (lhs, rhs) = ordered(self.float()?, rhs, reflected);
+            Ok(Some(Value::float(py_float_divmod(lhs, rhs).0, vm.heap)))
         } else if let Some(rhs) = integer_value(other, vm) {
             let lhs = self.big();
             let (lhs, rhs) = ordered(lhs.as_ref(), rhs.as_ref(), reflected);
@@ -123,10 +123,10 @@ pub(super) trait IntArithmetic {
                 Some(rem) => rem,
                 None => 0,
             })))
-        } else if let Value::Float(rhs) = other {
-            check_float_divisor(self, *rhs, reflected)?;
-            let (lhs, rhs) = ordered(self.float()?, *rhs, reflected);
-            Ok(Some(Value::Float(py_float_mod(lhs, rhs))))
+        } else if let Some(rhs) = other.as_float(vm.heap) {
+            check_float_divisor(self, rhs, reflected)?;
+            let (lhs, rhs) = ordered(self.float()?, rhs, reflected);
+            Ok(Some(Value::float(py_float_mod(lhs, rhs), vm.heap)))
         } else if let Some(rhs) = integer_value(other, vm) {
             let lhs = self.big();
             let (lhs, rhs) = ordered(lhs.as_ref(), rhs.as_ref(), reflected);
@@ -144,9 +144,9 @@ pub(super) trait IntArithmetic {
         if let (Some(lhs), Some(rhs)) = (self.small(), small_int(other)) {
             let (lhs, rhs) = ordered(lhs, rhs, reflected);
             int_divmod_tuple(lhs, rhs, vm.heap).map(Some)
-        } else if let Value::Float(rhs) = other {
-            check_float_divisor(self, *rhs, reflected)?;
-            let (lhs, rhs) = ordered(self.float()?, *rhs, reflected);
+        } else if let Some(rhs) = other.as_float(vm.heap) {
+            check_float_divisor(self, rhs, reflected)?;
+            let (lhs, rhs) = ordered(self.float()?, rhs, reflected);
             float_divmod_tuple(lhs, rhs, vm.heap).map(Some)
         } else if let Some(rhs) = integer_value(other, vm) {
             let lhs = self.big();
@@ -184,8 +184,8 @@ pub(super) trait IntArithmetic {
                 return Ok(Some(result));
             }
         }
-        if let Value::Float(rhs) = other {
-            let (lhs, rhs) = ordered(self.float()?, *rhs, reflected);
+        if let Some(rhs) = other.as_float(vm.heap) {
+            let (lhs, rhs) = ordered(self.float()?, rhs, reflected);
             float_pow_value(lhs, rhs, vm.heap).map(Some)
         } else if let Some(rhs) = integer_value(other, vm) {
             let lhs = self.big();
@@ -296,7 +296,7 @@ pub(crate) fn float_binary(
     let rhs = match other {
         Value::Int(value) => *value as f64,
         Value::Bool(value) => f64::from(*value),
-        Value::Float(value) => *value,
+        value if let Some(value) = value.as_float(vm.heap) => value,
         Value::InternLongInt(id) => bigint_to_f64_checked(vm.interns.get_long_int(*id))?,
         Value::Ref(id) if let HeapData::LongInt(value) = vm.heap.get(*id) => value.to_f64_checked()?,
         _ => return Ok(None),

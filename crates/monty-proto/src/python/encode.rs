@@ -58,16 +58,16 @@ pub fn py_to_monty_value(obj: &Bound<'_, PyAny>, store: &InstanceStore) -> Resul
 
 /// Builds one message's arena from host values, preserving sharing.
 ///
-/// Containers, wrappers and proxies are memoized by `id()` for the life of the
-/// encoder, so an object pushed twice (in one value, or across a feed's inputs)
-/// is one node and one sandbox object; leaves are re-encoded per reference.
+/// Containers, wrappers, proxies and NaN floats are memoized by `id()` for the life
+/// of the encoder, so an object pushed twice (in one value, or across a feed's inputs)
+/// is one node and one sandbox object; other leaves are re-encoded per reference.
 /// Nesting is walked on an explicit stack, not the native one. A cycle raises
 /// `ValueError`: the arena is post-order, so a node cannot reach itself.
 pub struct GraphEncoder<'a, 'py> {
     py: Python<'py>,
     store: &'a InstanceStore,
     graph: MontyGraph,
-    /// `id()` of every container seen → its node, or a marker while its
+    /// `id()` of every shared object seen → its node, or a marker while its
     /// children are still being pushed (a hit on that marker is a cycle).
     memo: HashMap<usize, MemoEntry>,
     /// Keeps every memoized object alive, so a temporary (a property result in
@@ -78,7 +78,7 @@ pub struct GraphEncoder<'a, 'py> {
     class_types: HashMap<MontyUuid, NodeId>,
 }
 
-/// A memoized container's state.
+/// A memoized object's state.
 enum MemoEntry {
     /// Its children are still being pushed.
     InProgress,
@@ -175,7 +175,12 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
                 Err(_) => Ok(self.leaf(MontyNode::BigInt(int.extract::<BigInt>()?))),
             }
         } else if let Ok(float) = obj.cast::<PyFloat>() {
-            Ok(self.leaf(MontyNode::Float(float.extract()?)))
+            let value: f64 = float.extract()?;
+            Ok(if value.is_nan() {
+                self.shared_leaf(obj, MontyNode::Float(value))
+            } else {
+                self.leaf(MontyNode::Float(value))
+            })
         } else if let Ok(complex) = obj.cast::<PyComplex>() {
             Ok(self.leaf(MontyNode::Complex(MontyComplex {
                 real: complex.real(),
@@ -301,6 +306,19 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
     /// Pushes a leaf node.
     fn leaf(&mut self, node: MontyNode) -> Step<'py> {
         Step::Done(self.graph.push(node))
+    }
+
+    /// Memoizes identity-bearing leaves, keeping their source alive until encoding finishes.
+    fn shared_leaf(&mut self, obj: &Bound<'py, PyAny>, node: MontyNode) -> Step<'py> {
+        let key = obj.as_ptr() as usize;
+        if let Some(MemoEntry::Done(id)) = self.memo.get(&key) {
+            Step::Done(*id)
+        } else {
+            let id = self.graph.push(node);
+            self.memo.insert(key, MemoEntry::Done(id));
+            self.keepalive.push(obj.clone());
+            Step::Done(id)
+        }
     }
 
     /// Opens a frame for a container, unless it is memoized: a finished one

@@ -358,8 +358,8 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
         self.py_pos_impl(vm)
     }
 
-    fn py_float_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<f64>> {
-        self.to_f64_checked(vm).map(Some)
+    fn py_float_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.to_f64_checked(vm).map(|value| Some(Value::Float(value)))
     }
 
     fn py_floor_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -452,7 +452,9 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
                 let rhs = match other {
                     Value::Int(rhs) => *rhs,
                     Value::Bool(rhs) => i64::from(*rhs),
-                    Value::Float(rhs) => return Ok(Some(Value::Float(*lhs as f64 * rhs))),
+                    value if let Some(rhs) = value.as_float(vm.heap) => {
+                        return Ok(Some(Value::float(*lhs as f64 * rhs, vm.heap)));
+                    }
                     _ => return Ok(None),
                 };
                 Ok(Some(match lhs.checked_mul(rhs) {
@@ -480,7 +482,9 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
                 let rhs = match other {
                     Value::Int(rhs) => *rhs,
                     Value::Bool(rhs) => i64::from(*rhs),
-                    Value::Float(rhs) => return Ok(Some(Value::Float(*lhs as f64 + rhs))),
+                    value if let Some(rhs) = value.as_float(vm.heap) => {
+                        return Ok(Some(Value::float(*lhs as f64 + rhs, vm.heap)));
+                    }
                     _ => return Ok(None),
                 };
                 Ok(Some(match lhs.checked_add(rhs) {
@@ -537,7 +541,9 @@ fn multiply_bigint(lhs: &BigInt, other: &Value, vm: &VM<'_>) -> RunResult<Option
         } else {
             Value::Int(0)
         }),
-        Value::Float(rhs) => Some(Value::Float(bigint_to_f64_checked(lhs)? * rhs)),
+        value if let Some(rhs) = value.as_float(vm.heap) => {
+            Some(Value::float(bigint_to_f64_checked(lhs)? * rhs, vm.heap))
+        }
         Value::InternLongInt(id) => {
             let rhs = vm.interns.get_long_int(*id);
             check_mult_size(lhs.bits(), rhs.bits(), &vm.heap.tracker)?;
@@ -557,7 +563,9 @@ fn add_bigint(lhs: &BigInt, other: &Value, vm: &VM<'_>) -> RunResult<Option<Valu
     let result = match other {
         Value::Int(rhs) => lhs + rhs,
         Value::Bool(rhs) => lhs + i64::from(*rhs),
-        Value::Float(rhs) => return Ok(Some(Value::Float(bigint_to_f64_checked(lhs)? + rhs))),
+        value if let Some(rhs) = value.as_float(vm.heap) => {
+            return Ok(Some(Value::float(bigint_to_f64_checked(lhs)? + rhs, vm.heap)));
+        }
         Value::InternLongInt(id) => lhs + vm.interns.get_long_int(*id),
         Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => lhs + rhs.inner(),
         _ => return Ok(None),
@@ -931,8 +939,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
         Ok(Some(self.clone_value(vm.heap)))
     }
 
-    fn py_float_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<f64>> {
-        self.get(vm.heap).to_f64_checked().map(Some)
+    fn py_float_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.get(vm.heap)
+            .to_f64_checked()
+            .map(|value| Some(Value::Float(value)))
     }
 
     fn py_floor_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

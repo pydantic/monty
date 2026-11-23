@@ -27,6 +27,7 @@ use crate::{
     types::{
         BytesIterator, Complex, LazyHeapSet, Property, PyTrait, Type, TypeRef,
         bytes::PyBytes,
+        float::PyFloat,
         instance::{class_defines, instance_getattr, instance_str, subclass_overrides},
         long_int::{PyInt, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64},
         str::{InlineStr, PyStr, allocate_string},
@@ -57,6 +58,8 @@ pub(crate) enum Value {
     Bool(bool),
     #[serde(rename = "I")]
     Int(i64),
+    /// Non-NaN floats stay inline; create floats through `Value::float` to retain NaN identity.
+    /// Older dumps can still contain immediate NaNs with their original bitwise identity.
     #[serde(rename = "F")]
     Float(f64),
     /// An interned string literal. The StringId references the string in the Interns table.
@@ -498,7 +501,7 @@ impl<'h> PyTrait<'h> for Value {
         dispatch_py_value!(self, vm, |view| view.py_int_impl(vm))
     }
 
-    fn py_float_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<f64>> {
+    fn py_float_impl(&self, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
         dispatch_py_value!(self, vm, |view| view.py_float_impl(vm))
     }
 
@@ -753,7 +756,7 @@ impl Value {
             Self::NotImplemented => PyValue::NotImplemented,
             Self::None => PyValue::None,
             Self::Bool(value) => PyValue::Bool(*value),
-            Self::Float(value) => PyValue::Float(*value),
+            Self::Float(value) => PyValue::Float(PyFloat::immediate(*value)),
             Self::Builtin(value) => PyValue::Builtin(*value),
             Self::ModuleFunction(value) => PyValue::ModuleFunction(*value),
             Self::DefFunction(id) => PyValue::DefFunction(*id),
@@ -1164,9 +1167,18 @@ impl Value {
         })
     }
 
-    /// Numeric float conversion, trying `__float__` before `__index__`.
+    /// Numeric float conversion for consumers needing the payload rather than Python identity.
     /// Leaves unsupported-type errors to the consumer and never parses strings.
     pub(crate) fn py_float(&self, vm: &mut VM<'_>) -> RunResult<Option<f64>> {
+        let value = self.py_float_value(vm)?;
+        defer_drop!(value, vm);
+        Ok(value
+            .as_ref()
+            .map(|value| value.as_float(vm.heap).expect("float conversion returns a float")))
+    }
+
+    /// Converts through `__float__`, then `__index__`, retaining a returned float's identity.
+    pub(crate) fn py_float_value(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         if let Some(value) = self.py_float_impl(vm)? {
             Ok(Some(value))
         } else if let Some(index) = self.py_index_impl(vm)? {
@@ -1448,7 +1460,7 @@ impl Value {
         } else if let Some(modulus) = modulus {
             // CPython also offers builtin numeric slots on the third operand
             // the triple. A user modulus does not dispatch its __pow__.
-            if matches!(modulus, Self::Float(_)) {
+            if modulus.as_float(vm.heap).is_some() {
                 Err(ExcType::type_error_pow_modulo())
             } else if modulus.py_type(vm) == Type::Complex
                 && [self, other].iter().all(|value| {
@@ -1802,7 +1814,7 @@ pub(crate) fn eq_i64(a: i64, other: &Value, vm: &VM<'_>) -> Option<bool> {
     match other {
         Value::Int(b) => Some(a == *b),
         Value::Bool(b) => Some(a == i64::from(*b)),
-        Value::Float(f) => Some(i64_cmp_f64(a, *f) == Some(Ordering::Equal)),
+        value if let Some(f) = value.as_float(vm.heap) => Some(i64_cmp_f64(a, f) == Some(Ordering::Equal)),
         Value::InternLongInt(id) => Some(bigint_eq_i64(vm.interns.get_long_int(*id), a)),
         Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => Some(bigint_eq_i64(li.inner(), a)),
         _ => None,
@@ -1812,7 +1824,7 @@ pub(crate) fn eq_i64(a: i64, other: &Value, vm: &VM<'_>) -> Option<bool> {
 /// `f == other`, comparing against ints/bools/big ints *exactly* (no rounding).
 pub(crate) fn eq_f64(f: f64, other: &Value, vm: &VM<'_>) -> Option<bool> {
     match other {
-        Value::Float(o) => Some(f == *o),
+        value if let Some(other) = value.as_float(vm.heap) => Some(f == other),
         Value::Int(o) => Some(i64_cmp_f64(*o, f) == Some(Ordering::Equal)),
         Value::Bool(o) => Some(i64_cmp_f64(i64::from(*o), f) == Some(Ordering::Equal)),
         Value::InternLongInt(id) => Some(bigint_eq_f64(vm.interns.get_long_int(*id), f)),
@@ -1828,7 +1840,7 @@ pub(crate) fn eq_bigint(b: &BigInt, other: &Value, vm: &VM<'_>) -> Option<bool> 
     match other {
         Value::Int(o) => Some(bigint_eq_i64(b, *o)),
         Value::Bool(o) => Some(bigint_eq_i64(b, i64::from(*o))),
-        Value::Float(f) => Some(bigint_eq_f64(b, *f)),
+        value if let Some(f) = value.as_float(vm.heap) => Some(bigint_eq_f64(b, f)),
         Value::InternLongInt(id) => Some(b == vm.interns.get_long_int(*id)),
         Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => Some(b == li.inner()),
         _ => None,
@@ -2088,7 +2100,7 @@ pub(crate) fn float_divmod_tuple(lhs: f64, rhs: f64, heap: &Heap) -> RunResult<V
     } else {
         let (quotient, remainder) = py_float_divmod(lhs, rhs);
         Ok(allocate_tuple(
-            smallvec![Value::Float(quotient), Value::Float(remainder)],
+            smallvec![Value::float(quotient, heap), Value::float(remainder, heap)],
             heap,
         ))
     }
@@ -2144,7 +2156,7 @@ pub(crate) fn float_pow_value(base: f64, exp: f64, heap: &Heap) -> RunResult<Val
     if base < 0.0 && base.is_finite() && exp.is_finite() && exp.fract() != 0.0 {
         Ok(Complex::new(base, 0.0).pow(Complex::new(exp, 0.0))?.into_value(heap))
     } else {
-        float_pow(base, exp).map(Value::Float)
+        float_pow(base, exp).map(|value| Value::float(value, heap))
     }
 }
 

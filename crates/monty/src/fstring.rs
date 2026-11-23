@@ -831,7 +831,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
         // output is charged before any of it is built.
         let finite_parts = match value.py_value(vm) {
             PyValue::Int(_) => 1,
-            PyValue::Float(value) => usize::from(value.is_finite()),
+            PyValue::Float(value) => usize::from(value.value().is_finite()),
             PyValue::Complex(value) => {
                 let value = value.get(vm.heap);
                 usize::from(value.real.is_finite()) + usize::from(value.imag.is_finite())
@@ -858,16 +858,18 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
         // Float formatting. A type-less spec with no precision uses the repr
         // (shortest) digits, *not* `g` — only an explicit `g`/`G` or a type-less
         // spec that carries a precision selects the `g` algorithm.
-        (PyValue::Float(f), None) if spec.precision.is_none() => format_float_default(f, spec, &vm.heap.tracker),
+        (PyValue::Float(f), None) if spec.precision.is_none() => {
+            format_float_default(f.value(), spec, &vm.heap.tracker)
+        }
         // `n` on a float behaves like `g` (locale-aware in CPython; C-locale
         // here, so plain `g`).
         (PyValue::Float(f), None | Some(TypeChar::G | TypeChar::GUpper | TypeChar::N)) => {
-            format_float_g(f, spec, &vm.heap.tracker)
+            format_float_g(f.value(), spec, &vm.heap.tracker)
         }
-        (PyValue::Float(f), Some(TypeChar::F | TypeChar::FUpper)) => format_float_f(f, spec, &vm.heap.tracker),
-        (PyValue::Float(f), Some(TypeChar::E)) => format_float_e(f, spec, false, &vm.heap.tracker),
-        (PyValue::Float(f), Some(TypeChar::EUpper)) => format_float_e(f, spec, true, &vm.heap.tracker),
-        (PyValue::Float(f), Some(TypeChar::Percent)) => format_float_percent(f, spec, &vm.heap.tracker),
+        (PyValue::Float(f), Some(TypeChar::F | TypeChar::FUpper)) => format_float_f(f.value(), spec, &vm.heap.tracker),
+        (PyValue::Float(f), Some(TypeChar::E)) => format_float_e(f.value(), spec, false, &vm.heap.tracker),
+        (PyValue::Float(f), Some(TypeChar::EUpper)) => format_float_e(f.value(), spec, true, &vm.heap.tracker),
+        (PyValue::Float(f), Some(TypeChar::Percent)) => format_float_percent(f.value(), spec, &vm.heap.tracker),
 
         // No type specifier on a non-string value: convert to string and
         // format. (`str` values are handled by the short-circuit above.)

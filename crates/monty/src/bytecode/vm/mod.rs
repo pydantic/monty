@@ -1739,7 +1739,7 @@ impl<'h> VM<'h> {
                         continue;
                     }
 
-                    let mut iter = PyValue::from(iter);
+                    let mut iter = PyValue::from_read(iter, self.heap);
                     match iter.py_next(self) {
                         Ok(Some(value)) => self.push(value),
                         Ok(None) => {

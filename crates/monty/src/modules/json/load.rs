@@ -314,7 +314,7 @@ fn parse_json_number(
     match number {
         NumberAny::Int(NumberInt::Int(value)) => Ok(Value::Int(value)),
         NumberAny::Int(NumberInt::BigInt(value)) => Ok(LongInt::new(value).into_value(vm.heap)),
-        NumberAny::Float(value) => Ok(Value::Float(value)),
+        NumberAny::Float(value) => Ok(Value::float(value, vm.heap)),
     }
 }
 

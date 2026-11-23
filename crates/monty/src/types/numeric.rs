@@ -68,7 +68,7 @@ pub(crate) fn round_bigint(n: &BigInt, k: u64, heap: &Heap) -> Value {
 /// Rounds a float, returning an integer only when precision is omitted or `None`.
 pub(crate) fn round_float(value: f64, digits: Option<i64>, heap: &Heap) -> RunResult<Value> {
     if let Some(digits) = digits {
-        round_float_to_digits(value, digits, heap).map(Value::Float)
+        round_float_to_digits(value, digits, heap).map(|value| Value::float(value, heap))
     } else {
         LongInt::value_from_f64(bankers_round(value), heap)
     }

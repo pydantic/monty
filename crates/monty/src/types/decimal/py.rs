@@ -216,7 +216,7 @@ fn construct(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decima
         PyValue::Int(int) => int.with_value(vm, |small| Ok(Decimal::from_i64(small)), parse::from_int),
         PyValue::Float(f) => with_ctx(vm, ctx_id, |ctx, _| {
             ctx.raise(Condition::FloatOperation);
-            Ok(parse::from_float(f))
+            Ok(parse::from_float(f.value()))
         }),
         PyValue::Tuple(_) | PyValue::List(_) | PyValue::NamedTuple(_) => from_tuple(value, ctx_id, vm),
         _ => Err(ExcType::decimal_conversion(&value.py_type_name(vm))),
@@ -312,7 +312,7 @@ pub(crate) fn class_from_float(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
 /// The conversion behind `from_float` and `create_decimal_from_float`.
 fn from_float_arg(value: &Value, vm: &VM<'_>) -> RunResult<Decimal> {
     match value.py_value(vm) {
-        PyValue::Float(f) => Ok(parse::from_float(f)),
+        PyValue::Float(f) => Ok(parse::from_float(f.value())),
         PyValue::Bool(b) => Ok(Decimal::from_i64(i64::from(b))),
         PyValue::Int(int) => int.with_value(vm, |small| Ok(Decimal::from_i64(small)), parse::from_int),
         _ => Err(ExcType::type_error("argument must be int or float")),
@@ -348,7 +348,7 @@ fn comparison_operand<'a>(
         return Ok(Some((decimal, false)));
     }
     Ok(match value.py_value(vm) {
-        PyValue::Float(f) => Some((Cow::Owned(parse::from_float(f)), true)),
+        PyValue::Float(f) => Some((Cow::Owned(parse::from_float(f.value())), true)),
         PyValue::Complex(c) if equality => {
             let c = *c.get(vm.heap);
             (c.imag == 0.0).then(|| (Cow::Owned(parse::from_float(c.real)), true))
@@ -655,8 +655,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Decimal> {
         self.to_int_value(Rounding::Ceiling, vm).map(Some)
     }
 
-    fn py_float_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<f64>> {
-        self.get(vm.heap).to_f64().map(Some)
+    fn py_float_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.get(vm.heap)
+            .to_f64()
+            .map(|value| Some(Value::float(value, vm.heap)))
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
@@ -843,7 +845,7 @@ impl<'h> HeapObjectRead<'h, Decimal> {
                 let real = d.to_f64()?;
                 Complex::new(real, 0.0).into_value(vm.heap)
             }
-            DecimalMethod::DunderFloat => Value::Float(d.to_f64()?),
+            DecimalMethod::DunderFloat => Value::float(d.to_f64()?, vm.heap),
             DecimalMethod::DunderInt | DecimalMethod::DunderTrunc => self.to_int_value(Rounding::Down, vm)?,
             DecimalMethod::DunderFloor => self.to_int_value(Rounding::Floor, vm)?,
             DecimalMethod::DunderCeil => self.to_int_value(Rounding::Ceiling, vm)?,
@@ -1474,7 +1476,7 @@ pub(crate) fn call_context_method(
                     if let PyValue::Float(f) = num.py_value(vm) {
                         with_ctx(vm, ctx_id, |ctx, _| {
                             ctx.raise(Condition::FloatOperation);
-                            Ok(parse::from_float(f))
+                            Ok(parse::from_float(f.value()))
                         })?
                     } else {
                         construct(num, ctx_id, vm)?
