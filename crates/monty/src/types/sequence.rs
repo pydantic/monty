@@ -39,6 +39,12 @@ impl<'a> SequenceItems<'a> {
         f(&self.0[index])
     }
 
+    /// Returns an owned clone and retains any heap reference held by the element.
+    #[must_use]
+    pub(crate) fn clone_item(self, index: usize, heap: &Heap) -> Value {
+        self.map_item(index, |item| item.clone_with_heap(heap))
+    }
+
     pub(crate) fn map<T>(self, f: impl FnMut(&Value) -> T) -> impl DoubleEndedIterator<Item = T> + ExactSizeIterator {
         self.0.iter().map(f)
     }

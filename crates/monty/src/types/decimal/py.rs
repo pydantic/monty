@@ -7,7 +7,7 @@
 //! Implicit operands follow C `_decimal`: `int` converts exactly, anything else makes
 //! an operator return `NotImplemented` and a method raise `TypeError`.
 
-use std::{borrow::Cow, cmp::Ordering, fmt::Write, mem};
+use std::{array, borrow::Cow, cmp::Ordering, fmt::Write, mem};
 
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -225,32 +225,28 @@ fn construct(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decima
 
 /// `Decimal((sign, digits, exponent))`, with C `_decimal`'s validation.
 fn from_tuple(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decimal> {
-    let items: Vec<_> = SequenceItems::from_value(value, vm.heap)
-        .expect("caller checked for a sequence")
-        .cloned(vm.heap)
-        .collect();
-    defer_drop!(items, vm);
-    let [sign, digits, exponent] = items.as_slice() else {
+    let items = SequenceItems::from_value(value, vm.heap).expect("caller checked for a sequence");
+    if items.len() != 3 {
         return Err(ExcType::value_error("argument must be a sequence of length 3"));
-    };
+    }
+    let fields: [Value; 3] = array::from_fn(|index| items.clone_item(index, vm.heap));
+    defer_drop!(fields, vm);
+    let [sign, digits, exponent] = fields;
     let sign = match sign {
         Value::Int(0) | Value::Bool(false) => false,
         Value::Int(1) | Value::Bool(true) => true,
         _ => return Err(ExcType::value_error("sign must be an integer with the value 0 or 1")),
     };
-    let digit_values: Vec<_> = SequenceItems::from_value(digits, vm.heap)
-        .ok_or_else(|| ExcType::value_error("coefficient must be a tuple of digits"))?
-        .cloned(vm.heap)
-        .collect();
-    defer_drop!(digit_values, vm);
+    let digit_values = SequenceItems::from_value(digits, vm.heap)
+        .ok_or_else(|| ExcType::value_error("coefficient must be a tuple of digits"))?;
     let mut coeff = String::with_capacity(digit_values.len());
-    for digit in digit_values {
-        let digit = match digit {
-            Value::Int(d @ 0..=9) => u8::try_from(*d).expect("single digit"),
-            // Python's tuple constructor accepts bool as an int digit.
-            Value::Bool(b) => u8::from(*b),
-            _ => return Err(ExcType::value_error("coefficient must be a tuple of digits")),
-        };
+    let digits = digit_values.map(|digit| match digit {
+        Value::Int(d @ 0..=9) => Ok(u8::try_from(*d).expect("single digit")),
+        Value::Bool(b) => Ok(u8::from(*b)),
+        _ => Err(ExcType::value_error("coefficient must be a tuple of digits")),
+    });
+    for digit in digits {
+        let digit = digit?;
         if !coeff.is_empty() || digit != 0 {
             coeff.push(char::from(b'0' + digit));
         }

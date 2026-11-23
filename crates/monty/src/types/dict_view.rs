@@ -886,8 +886,5 @@ pub(crate) fn cloned_items_view_candidate(item: &Value, heap: &impl ContainsHeap
     if items.len() != 2 {
         return None;
     }
-    Some((
-        items.map_item(0, |key| key.clone_with_heap(heap)),
-        items.map_item(1, |value| value.clone_with_heap(heap)),
-    ))
+    Some((items.clone_item(0, heap), items.clone_item(1, heap)))
 }
