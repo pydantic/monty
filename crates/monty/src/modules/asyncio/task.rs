@@ -223,11 +223,8 @@ fn start_external_future_task(vm: &mut VM<'_>, future_id: HeapId, handle: HeapId
                 unreachable!("create_task's future disappeared")
             };
 
-            future.get_mut(vm.heap).state = ExternalFutureState::Pending {
-                awaiter: Some(Awaiter::UserTask { task: handle }),
-            };
-
-            vm.heap.inc_ref(handle);
+            let awaiter = Awaiter::user_task(handle, vm.heap);
+            future.get_mut(vm.heap).state = ExternalFutureState::Pending { awaiter: Some(awaiter) };
         }
         ExternalStart::Busy => vm.settle_task_handle(
             handle,

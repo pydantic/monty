@@ -232,6 +232,18 @@ pub(crate) enum Awaiter {
 }
 
 impl Awaiter {
+    /// A [`Self::WaitSlot`] that takes its own reference to `wait`.
+    pub fn wait_slot(wait: HeapId, source: HeapId, heap: &impl ContainsHeap) -> Self {
+        heap.heap().inc_ref(wait);
+        Self::WaitSlot { wait, source }
+    }
+
+    /// A [`Self::UserTask`] that takes its own reference to `task`.
+    pub fn user_task(task: HeapId, heap: &impl ContainsHeap) -> Self {
+        heap.heap().inc_ref(task);
+        Self::UserTask { task }
+    }
+
     /// The heap reference this awaiter owns, if any.
     ///
     /// Every heap-owning variant inc_refs its target when constructed; GC and

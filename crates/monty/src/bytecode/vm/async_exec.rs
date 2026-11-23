@@ -466,8 +466,7 @@ impl<'h> VM<'h> {
             panic!("create_task's wait future disappeared")
         };
 
-        self.heap.inc_ref(handle);
-        let result = self.await_wait_future(&wait, Awaiter::UserTask { task: handle });
+        let result = self.await_wait_future(&wait, Awaiter::user_task(handle, self.heap));
         drop(wait);
         match result {
             Ok(Poll::Ready(value)) => {
@@ -479,12 +478,8 @@ impl<'h> VM<'h> {
                 self.settle_task_handle(handle, TaskFutureState::Failed(error));
                 Ok(())
             }
-            Err(error) => {
-                // `create_task` fails without returning the handle, which still
-                // owns the wait future.
-                self.heap.dec_ref(handle);
-                Err(error)
-            }
+            // A terminal error leaves refcounts undefined, so the handle is not released.
+            Err(error) => Err(error),
         }
     }
 
@@ -667,11 +662,7 @@ impl<'h> VM<'h> {
         let timed_out = timed_out || this.wait_timer_has_fired(args.timer);
 
         for id in &pending {
-            let slot = Awaiter::WaitSlot {
-                wait: wait_id,
-                source: *id,
-            };
-            this.heap.inc_ref(wait_id);
+            let slot = Awaiter::wait_slot(wait_id, *id, this.heap);
             match this.heap.read(*id) {
                 HeapReadOutput::Task(task) => task.get_mut(this.heap).awaiters.push(slot),
                 HeapReadOutput::ExternalFuture(future) => {
@@ -1418,8 +1409,7 @@ impl<'h> VM<'h> {
         drop(timer_future);
 
         if pending {
-            self.heap.inc_ref(wait_id);
-
+            let slot = Awaiter::wait_slot(wait_id, timer_id, self.heap);
             let HeapReadOutput::ExternalFuture(timer_future) = self.heap.read(timer_id) else {
                 panic!("wait timer is not an ExternalFuture")
             };
@@ -1428,10 +1418,7 @@ impl<'h> VM<'h> {
                 unreachable!("the timer was pending a moment ago")
             };
 
-            *awaiter = Some(Awaiter::WaitSlot {
-                wait: wait_id,
-                source: timer_id,
-            });
+            *awaiter = Some(slot);
         }
 
         Value::Ref(wait_id)
@@ -1490,7 +1477,8 @@ impl<'h> VM<'h> {
     /// `None` when every downstream already settled.
     fn deliver_awaiter_success(&mut self, awaiter: Awaiter, value: Value) -> RunResult<Option<TaskId>> {
         let this = self;
-        let mut stack = vec![(awaiter, value)];
+        let stack = vec![(awaiter, value)];
+        defer_drop_mut!(stack, this);
         let mut first = None;
         while let Some((mut awaiter, mut value)) = stack.pop() {
             loop {
@@ -1514,27 +1502,18 @@ impl<'h> VM<'h> {
                         value = Value::Ref(success.list_id);
                     }
                     Awaiter::WaitSlot { wait, source } => {
-                        let resolved = this.resolve_wait_child_success(wait, source, value);
-                        this.heap.dec_ref(wait);
-                        let resolved = match resolved {
-                            Ok(resolved) => resolved,
-                            Err(error) => {
-                                for (awaiter, value) in stack {
-                                    awaiter.drop_with(this);
-                                    value.drop_with(this);
-                                }
-                                return Err(error);
-                            }
-                        };
-                        let Some((next, result)) = resolved else {
+                        let wait_val = Value::Ref(wait);
+                        defer_drop!(wait_val, this);
+                        let Some((next, result)) = this.resolve_wait_child_success(wait, source, value)? else {
                             break;
                         };
                         awaiter = next;
                         value = result;
                     }
                     Awaiter::UserTask { task } => {
+                        let task_val = Value::Ref(task);
+                        defer_drop!(task_val, this);
                         let mut waiters = this.record_task_success(task, &value);
-                        this.heap.dec_ref(task);
                         if waiters.is_empty() {
                             value.drop_with(this);
                             break;
@@ -1586,37 +1565,22 @@ impl<'h> VM<'h> {
                         awaiter = next;
                     }
                     Awaiter::WaitSlot { wait, source } => {
-                        let resolved = self.resolve_wait_child_failure(wait, source, &error);
-                        self.heap.dec_ref(wait);
-                        let resolved = match resolved {
-                            Ok(resolved) => resolved,
-                            Err(error) => {
-                                for (awaiter, _) in stack {
-                                    awaiter.drop_with(self);
-                                }
-                                return Err(error);
-                            }
-                        };
-                        let Some((next, result)) = resolved else {
+                        let wait_val = Value::Ref(wait);
+                        let this = &mut *self;
+                        defer_drop!(wait_val, this);
+                        let Some((next, result)) = this.resolve_wait_child_failure(wait, source, &error)? else {
                             break;
                         };
-                        match self.deliver_awaiter_success(next, result) {
-                            Ok(Some(awakened)) => {
-                                first.get_or_insert(awakened);
-                            }
-                            Ok(None) => {}
-                            Err(error) => {
-                                for (awaiter, _) in stack {
-                                    awaiter.drop_with(self);
-                                }
-                                return Err(error);
-                            }
+                        if let Some(awakened) = this.deliver_awaiter_success(next, result)? {
+                            first.get_or_insert(awakened);
                         }
                         break;
                     }
                     Awaiter::UserTask { task } => {
-                        let mut waiters = self.record_task_failure(task, &error);
-                        self.heap.dec_ref(task);
+                        let task_val = Value::Ref(task);
+                        let this = &mut *self;
+                        defer_drop!(task_val, this);
+                        let mut waiters = this.record_task_failure(task, &error);
                         if waiters.is_empty() {
                             break;
                         }
@@ -1631,16 +1595,9 @@ impl<'h> VM<'h> {
                                     .saturating_add(additional)
                                     .saturating_mul(mem::size_of::<(Awaiter, RunError)>()),
                             );
-                        if let Err(err) = self.heap.tracker.check_allocation(required) {
-                            for waiter in waiters {
-                                waiter.drop_with(self);
-                            }
-                            last.drop_with(self);
-                            for (awaiter, _) in stack {
-                                awaiter.drop_with(self);
-                            }
-                            return Err(err.into());
-                        }
+                        // Refcounts are undefined after a resource error, so the
+                        // awaiters left unreleased here need no cleanup.
+                        this.heap.tracker.check_allocation(required)?;
                         stack.reserve_exact(additional);
                         for waiter in waiters {
                             stack.push((waiter, error.clone()));
