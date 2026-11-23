@@ -482,12 +482,16 @@ fn repl_decimal_context_persists_across_feeds_and_dumps() {
 }
 
 #[test]
-fn repl_dump_load_derives_exact_positional_call_plans() {
-    let (repl, _) = init_repl("def add(a, b):\n    return a + b\n\nasync def async_add(a, b):\n    return a + b");
+fn repl_dump_load_derives_exact_call_plans() {
+    let (repl, _) = init_repl("def sub(a, b):\n    return a - b\n\nasync def async_add(a, b):\n    return a + b");
     let mut loaded = round_trip_repl(&repl);
 
     assert_eq!(
-        feed_run_print(&mut loaded, "add(20, 22)").unwrap(),
+        feed_run_print(&mut loaded, "sub(64, 22)").unwrap(),
+        MontyObject::int(42)
+    );
+    assert_eq!(
+        feed_run_print(&mut loaded, "sub(b=22, a=64)").unwrap(),
         MontyObject::int(42)
     );
     assert_eq!(
@@ -498,8 +502,8 @@ fn repl_dump_load_derives_exact_positional_call_plans() {
     // The fast path's arg-count guard must also survive the round trip: a
     // mismatched call has to fall back to the general binder (and its error),
     // not silently misfire the cached plan.
-    let err = feed_run_print(&mut loaded, "add(1)").unwrap_err();
-    assert_eq!(err.message(), Some("add() missing 1 required positional argument: 'b'"));
+    let err = feed_run_print(&mut loaded, "sub(1)").unwrap_err();
+    assert_eq!(err.message(), Some("sub() missing 1 required positional argument: 'b'"));
 }
 
 /// Default arguments, variadics and nested closure slots survive restoration.

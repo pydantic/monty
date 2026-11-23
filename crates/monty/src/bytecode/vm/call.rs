@@ -4,7 +4,7 @@
 //! functions for executing function calls. The main entry points are the `exec_*`
 //! methods which are called from the VM's main dispatch loop.
 
-use std::mem;
+use std::{array, mem, ops::Range};
 
 use monty_types::{MontyUuid, OsFunctionCall};
 
@@ -13,27 +13,113 @@ use super::{
     recursion::RunReentryGuard,
 };
 use crate::{
-    args::{ArgValues, KwargsValues},
+    args::{ArgValues, ExtendedBinding, KwargsValues, Signature},
     asyncio::Coroutine,
     builtins::{BuiltinsFunctions, BuiltinsFunctionsExt, object::takes_no_arguments},
-    bytecode::FrameExit,
+    bytecode::{FrameExit, Opcode},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     frozen::FrozenFunction,
     function::{ExactPositionalCall, Function},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId},
     heap_data::CellValue,
-    intern::{FunctionId, StaticStrings, StringId},
+    intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::dataclasses,
     os_dispatch::{PendingEffect, release_pending_effect},
     py_value::PyValue,
     resource_checks::check_estimated_size,
     types::{
-        Dict, Instance, PyTrait, Type, TypeRef,
+        Dict, Instance, PyTrait, Tuple, TupleVec, Type, TypeRef, allocate_tuple,
         instance::{class_defines, class_lookup},
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
+
+#[derive(Clone, Copy)]
+enum DirectReceiver {
+    None,
+    Stack,
+    Bound(HeapId),
+}
+
+impl DirectReceiver {
+    fn count(self) -> usize {
+        usize::from(!matches!(self, Self::None))
+    }
+
+    fn place(self, stack: &mut Vec<Value>, index: usize, heap: &Heap) -> Value {
+        match self {
+            Self::None => stack.remove(index),
+            Self::Stack => Value::Undefined,
+            Self::Bound(id) => {
+                heap.inc_ref(id);
+                mem::replace(&mut stack[index], Value::Ref(id))
+            }
+        }
+    }
+
+    fn take(self, owner: &mut Value, heap: &Heap) -> Option<Value> {
+        match self {
+            Self::None => None,
+            Self::Stack => Some(mem::replace(owner, Value::Undefined)),
+            Self::Bound(id) => {
+                heap.inc_ref(id);
+                Some(Value::Ref(id))
+            }
+        }
+    }
+}
+
+struct DirectCallTarget<'a> {
+    func_id: FunctionId,
+    defaults: &'a [Value],
+    globals: Option<HeapId>,
+    receiver: DirectReceiver,
+}
+
+impl<'a> DirectCallTarget<'a> {
+    fn function(value: &Value, receiver: DirectReceiver, heap: &'a Heap) -> Option<Self> {
+        let (func_id, defaults, globals) = match *value {
+            Value::DefFunction(id) => (id, &[][..], None),
+            Value::Ref(id) => match heap.get(id) {
+                HeapData::FunctionDefaults(function) => {
+                    (function.func_id, function.defaults.as_slice(), function.globals)
+                }
+                _ => return None,
+            },
+            _ => return None,
+        };
+        Some(Self {
+            func_id,
+            defaults,
+            globals,
+            receiver,
+        })
+    }
+
+    /// Resolves an ordinary instance method or a previously bound method without running Python.
+    fn method(value: &Value, name: Option<StringId>, heap: &'a Heap, interns: &Interns) -> Option<Self> {
+        match (heap.get(value.ref_id()?), name) {
+            (HeapData::Instance(instance), Some(name)) => {
+                let name = interns.get_str(name);
+                if matches!(name, "__new__" | "__init_subclass__") {
+                    return None;
+                }
+                let (member, from_class) = instance.lookup_call_member(name, heap, interns)?;
+                let receiver = if from_class {
+                    DirectReceiver::Stack
+                } else {
+                    DirectReceiver::None
+                };
+                Self::function(member, receiver, heap)
+            }
+            (HeapData::BoundMethod(bound), None) => {
+                Self::function(&bound.func, DirectReceiver::Bound(bound.instance.ref_id()?), heap)
+            }
+            _ => None,
+        }
+    }
+}
 
 /// Result of executing a call or attribute method.
 ///
@@ -204,9 +290,12 @@ impl<'h> VM<'h> {
     /// and returns the result.
     pub(super) fn exec_call_function(&mut self, arg_count: usize) -> Result<CallResult, RunError> {
         let callable_index = self.stack.len() - arg_count - 1;
-        if let Value::DefFunction(func_id) = self.stack[callable_index]
-            && let Some(result) = self.try_call_exact_def_function(func_id, callable_index, arg_count)
-        {
+        let fast_call = match self.stack[callable_index] {
+            Value::DefFunction(func_id) => self.try_call_exact_def_function(func_id, callable_index, arg_count),
+            Value::Ref(id) => self.try_call_positional_defaults(id, callable_index, arg_count),
+            _ => None,
+        };
+        if let Some(result) = fast_call {
             result
         } else {
             let args = self.pop_n_args(arg_count);
@@ -215,6 +304,38 @@ impl<'h> VM<'h> {
             defer_drop!(callable, this);
             this.call_function(callable, args)
         }
+    }
+
+    /// Copies just the missing defaults into the stack frame while the callable owns them.
+    fn try_call_positional_defaults(
+        &mut self,
+        id: HeapId,
+        callable_index: usize,
+        arg_count: usize,
+    ) -> Option<Result<CallResult, RunError>> {
+        let function = match self.heap.get(id) {
+            HeapData::FunctionDefaults(function) => function,
+            HeapData::BoundMethod(_) => {
+                return self.try_call_stack_method(None, arg_count, 0);
+            }
+            _ => return None,
+        };
+        let func_id = function.func_id;
+        let func = self.interns.get_function(func_id);
+        if func.is_async || !func.cell_var_slots.is_empty() || !func.free_var_slots.is_empty() {
+            return None;
+        }
+        let defaults = func
+            .signature
+            .trailing_positional_defaults(arg_count, &function.defaults)?;
+        let callable = self.stack.remove(callable_index);
+        self.stack.reserve(func.namespace_size - arg_count);
+        self.stack
+            .extend(defaults.iter().map(|value| value.clone_with_heap(self.heap)));
+
+        let frame_namespace = function_namespace(function.globals, self.heap);
+        callable.drop_with(self);
+        Some(self.push_stack_function(func_id, func, callable_index, frame_namespace))
     }
 
     /// Executes `CallBuiltinFunction` opcode.
@@ -251,10 +372,12 @@ impl<'h> VM<'h> {
 
     /// Executes `CallFunctionKw` opcode.
     ///
-    /// Reads `kw_count` keyword name operands from the instruction stream,
-    /// pops the keyword values, positional args, and callable from the stack,
-    /// builds the appropriate `ArgValues`, and calls the function.
+    /// Binds eligible Python calls on the stack. Other calls use `ArgValues`.
     pub(super) fn exec_call_function_kw(&mut self, pos_count: usize, kw_count: usize) -> Result<CallResult, RunError> {
+        if let Some(result) = self.try_call_direct_keywords(pos_count, kw_count) {
+            return result;
+        }
+
         // Pop keyword values (TOS is last kwarg value)
         let kw_values = self.pop_n(kw_count);
 
@@ -288,14 +411,140 @@ impl<'h> VM<'h> {
         this.call_function(callable, args)
     }
 
+    /// Reuses the argument stack slots as locals once all keywords are validated.
+    fn try_call_direct_keywords(&mut self, pos_count: usize, kw_count: usize) -> Option<Result<CallResult, RunError>> {
+        if kw_count == 0 || kw_count > Signature::MAX_DIRECT_KEYWORDS {
+            return None;
+        }
+        let arg_count = pos_count + kw_count;
+        let callable_index = self.stack.len() - arg_count - 1;
+        // Leave the stack and instruction pointer intact for the general binder until every name matches.
+        let ip = self.current_frame.ip;
+        let end = ip + 2 * kw_count;
+        let names = self.current_frame.bytecode.get(ip..end)?.as_chunks::<2>().0;
+        let names = names
+            .iter()
+            .map(|&bytes| StringId::from_index(u16::from_le_bytes(bytes)));
+        let func_id = match self.stack[callable_index] {
+            Value::DefFunction(id) => id,
+            Value::Ref(id) => return self.try_call_keyword_defaults(id, callable_index, pos_count, names, end),
+            _ => return None,
+        };
+        let func = self.interns.get_function(func_id);
+        if func.exact_positional_call() != Some(ExactPositionalCall::Sync(arg_count)) {
+            return self.try_call_variadic_keywords(func_id, func, callable_index, pos_count, names, end);
+        }
+        let mut slots = [0; Signature::MAX_DIRECT_KEYWORDS];
+        let destinations = &mut slots[..kw_count];
+        func.signature.exact_keyword_slots(pos_count, names, destinations)?;
+
+        // Each swap moves one value to its final parameter slot.
+        let values = &mut self.stack[callable_index + 1 + pos_count..];
+        for index in 0..kw_count {
+            while usize::from(destinations[index]) != index {
+                let destination = usize::from(destinations[index]);
+                values.swap(index, destination);
+                destinations.swap(index, destination);
+            }
+        }
+        self.current_frame.ip = end;
+        Some(self.call_exact_sync_function(func_id, func, callable_index))
+    }
+
+    /// Builds the capture dict and optional tuple directly from explicit arguments.
+    fn try_call_variadic_keywords(
+        &mut self,
+        func_id: FunctionId,
+        func: &'h Function,
+        stack_base: usize,
+        pos_count: usize,
+        names: impl ExactSizeIterator<Item = StringId>,
+        end: usize,
+    ) -> Option<Result<CallResult, RunError>> {
+        let (capture_args, capture_kwargs) = func.signature.variadic_only()?;
+        if !capture_kwargs
+            || (!capture_args && pos_count != 0)
+            || func.is_async
+            || !func.cell_var_slots.is_empty()
+            || !func.free_var_slots.is_empty()
+        {
+            return None;
+        }
+        let keyword_base = stack_base + 1 + pos_count;
+        let kwargs = Dict::from_explicit_keywords(names.zip(self.stack.drain(keyword_base..)), self.interns);
+        let items = self.stack.drain(stack_base + 1..).collect();
+        let callable = self.pop();
+        debug_assert_exact_callable(&callable, func_id);
+        if capture_args {
+            let args = allocate_tuple(items, self.heap);
+            self.push(args);
+        } else {
+            debug_assert!(items.is_empty());
+        }
+        let kwargs = Value::Ref(self.heap.allocate(HeapData::Dict(kwargs)));
+        self.push(kwargs);
+        self.current_frame.ip = end;
+        Some(self.push_stack_function(func_id, func, stack_base, None))
+    }
+
+    /// Binds explicit keywords and fills any unoccupied slots from the callable's defaults.
+    fn try_call_keyword_defaults(
+        &mut self,
+        id: HeapId,
+        callable_index: usize,
+        pos_count: usize,
+        names: impl ExactSizeIterator<Item = StringId>,
+        end: usize,
+    ) -> Option<Result<CallResult, RunError>> {
+        const EMPTY: u8 = u8::MAX;
+
+        let function = match self.heap.get(id) {
+            HeapData::FunctionDefaults(function) => function,
+            HeapData::BoundMethod(_) => {
+                return self.try_call_stack_method(None, pos_count, names.len());
+            }
+            _ => return None,
+        };
+        let func_id = function.func_id;
+        let func = self.interns.get_function(func_id);
+        if func.is_async || !func.cell_var_slots.is_empty() || !func.free_var_slots.is_empty() {
+            return None;
+        }
+
+        let kw_count = names.len();
+        let mut destinations = [EMPTY; Signature::MAX_DIRECT_KEYWORDS];
+        let (remaining, missing) =
+            func.signature
+                .keyword_default_slots(pos_count, names, &mut destinations[..kw_count], |name, param| {
+                    *name == param
+                })?;
+
+        let callable = self.stack.remove(callable_index);
+        let keyword_base = callable_index + pos_count;
+        self.stack.resize_with(keyword_base + remaining, || Value::Undefined);
+        let values = &mut self.stack[keyword_base..];
+
+        move_keyword_values(values, &mut destinations, kw_count);
+        fill_default_slots(values, &function.defaults, missing, self.heap);
+
+        let frame_namespace = function_namespace(function.globals, self.heap);
+        callable.drop_with(self);
+        self.current_frame.ip = end;
+        Some(self.push_stack_function(func_id, func, callable_index, frame_namespace))
+    }
+
     /// Executes `CallAttr` opcode.
     ///
     /// Pops the object and arguments from the stack, calls the attribute,
     /// and returns a `CallResult` which may indicate an OS or external call.
     pub(super) fn exec_call_attr(&mut self, name_id: StringId, arg_count: usize) -> Result<CallResult, RunError> {
+        let mut receiver = None;
+        if let Some(result) = self.try_call_instance_attr(name_id, arg_count, 0, &mut receiver) {
+            return result;
+        }
         let args = self.pop_n_args(arg_count);
         let obj = self.pop();
-        self.call_attr(obj, name_id, args)
+        self.call_resolved_attr(obj, name_id, args, receiver)
     }
 
     /// Executes `CallAttrKw` opcode.
@@ -310,6 +559,10 @@ impl<'h> VM<'h> {
         pos_count: usize,
         kw_count: usize,
     ) -> Result<CallResult, RunError> {
+        let mut receiver = None;
+        if let Some(result) = self.try_call_instance_attr(name_id, pos_count, kw_count, &mut receiver) {
+            return result;
+        }
         // Pop keyword values (TOS is last kwarg value)
         let kw_values = self.pop_n(kw_count);
 
@@ -338,13 +591,465 @@ impl<'h> VM<'h> {
             }
         };
 
-        self.call_attr(obj, name_id, args)
+        self.call_resolved_attr(obj, name_id, args, receiver)
+    }
+
+    /// Reuses the receiver's normal dispatch view on the fallback path.
+    fn try_call_instance_attr(
+        &mut self,
+        name_id: StringId,
+        pos_count: usize,
+        kw_count: usize,
+        receiver: &mut Option<PyValue<'h>>,
+    ) -> Option<RunResult<CallResult>> {
+        let stack_base = self.stack.len() - 1 - pos_count - kw_count;
+        let view = self.stack[stack_base].py_value(self);
+        if matches!(view, PyValue::Instance(_)) {
+            // Direct binding can consume the receiver's stack owner.
+            drop(view);
+            self.try_call_stack_method(Some(name_id), pos_count, kw_count)
+        } else {
+            *receiver = Some(view);
+            None
+        }
+    }
+
+    fn try_call_stack_method(
+        &mut self,
+        name: Option<StringId>,
+        pos_count: usize,
+        kw_count: usize,
+    ) -> Option<RunResult<CallResult>> {
+        if kw_count > Signature::MAX_DIRECT_KEYWORDS {
+            return None;
+        }
+        let stack_base = self.stack.len() - 1 - pos_count - kw_count;
+        let DirectCallTarget {
+            func_id,
+            defaults,
+            globals,
+            receiver,
+        } = DirectCallTarget::method(&self.stack[stack_base], name, self.heap, self.interns)?;
+        let func = self.interns.get_function(func_id);
+        if func.is_async || !func.cell_var_slots.is_empty() || !func.free_var_slots.is_empty() {
+            return None;
+        }
+        let pos_count = pos_count + receiver.count();
+        let end = self.current_frame.ip + 2 * kw_count;
+        if kw_count == 0 {
+            let defaults = func.signature.trailing_positional_defaults(pos_count, defaults)?;
+            self.check_argument_stack_growth(stack_base + func.namespace_size)
+                .ok()?;
+            let owner = receiver.place(&mut self.stack, stack_base, self.heap);
+            self.stack
+                .extend(defaults.iter().map(|value| value.clone_with_heap(self.heap)));
+            let namespace = function_namespace(globals, self.heap);
+            owner.drop_with(self);
+            return Some(self.push_stack_function(func_id, func, stack_base, namespace));
+        }
+        let names = self
+            .current_frame
+            .bytecode
+            .get(self.current_frame.ip..end)?
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&bytes| StringId::from_index(u16::from_le_bytes(bytes)));
+        let mut destinations = [u8::MAX; Signature::MAX_DIRECT_KEYWORDS];
+        let (remaining, missing) = func.signature.keyword_default_slots(
+            pos_count,
+            names,
+            &mut destinations[..kw_count],
+            |name, parameter| *name == parameter,
+        )?;
+        self.check_argument_stack_growth(stack_base + func.namespace_size)
+            .ok()?;
+        let owner = receiver.place(&mut self.stack, stack_base, self.heap);
+        let keyword_base = stack_base + pos_count;
+        self.stack.resize_with(keyword_base + remaining, || Value::Undefined);
+        let values = &mut self.stack[keyword_base..];
+        move_keyword_values(values, &mut destinations, kw_count);
+        fill_default_slots(values, defaults, missing, self.heap);
+        let namespace = function_namespace(globals, self.heap);
+        owner.drop_with(self);
+        self.current_frame.ip = end;
+        Some(self.push_stack_function(func_id, func, stack_base, namespace))
+    }
+
+    /// Finishes a positional unpacked call directly from list or tuple storage.
+    /// The last unpack must be immediately followed by the call's tuple conversion
+    /// and call, so no later argument evaluation can mutate the source before copying.
+    pub(super) fn try_call_unpacked_sequence(&mut self) -> Option<Result<CallResult, RunError>> {
+        let ip = self.current_frame.ip;
+        let (method, end) = match self.current_frame.bytecode.get(ip..)? {
+            [convert, call, 0, ..]
+                if *convert == Opcode::ListToTuple as u8 && *call == Opcode::CallFunctionExtended as u8 =>
+            {
+                (None, ip + 3)
+            }
+            [convert, call, low, high, 0, ..]
+                if *convert == Opcode::ListToTuple as u8 && *call == Opcode::CallAttrExtended as u8 =>
+            {
+                (Some(StringId::from_index(u16::from_le_bytes([*low, *high]))), ip + 5)
+            }
+            _ => return None,
+        };
+        let [_, Value::Ref(prefix_id), Value::Ref(source_id)] = self.stack.last_chunk::<3>()? else {
+            return None;
+        };
+        let HeapData::List(prefix) = self.heap.get(*prefix_id) else {
+            return None;
+        };
+        let source = match self.heap.get(*source_id) {
+            HeapData::List(list) => list.as_slice(),
+            HeapData::Tuple(tuple) => tuple.as_slice(),
+            _ => return None,
+        };
+        let arg_count = prefix.len() + source.len();
+        // Larger unpackings use the iterator's cooperative resource checks.
+        if arg_count > usize::from(u8::MAX) {
+            return None;
+        }
+        if let Err(error) = self.check_argument_stack_growth(self.stack.len() - 2 + arg_count) {
+            return Some(Err(error));
+        }
+
+        let source_owner = self.stack.pop().expect("unpack source");
+        let prefix_owner = self.stack.pop().expect("unpack prefix");
+        self.stack.extend(
+            prefix
+                .as_slice()
+                .iter()
+                .chain(source)
+                .map(|item| item.clone_with_heap(self.heap)),
+        );
+        (source_owner, prefix_owner).drop_with(self);
+
+        self.instruction_ip = ip + 1;
+        self.current_frame.ip = end;
+        Some(match method {
+            Some(name) => self.exec_call_attr(name, arg_count),
+            None => self.exec_call_function(arg_count),
+        })
+    }
+
+    /// Binds a final `**dict` and any earlier keywords without constructing a merged dict.
+    /// Validation leaves the inputs intact so the general path reports binding and merge errors.
+    pub(super) fn try_call_unpacked_keywords(&mut self) -> Option<Result<CallResult, RunError>> {
+        let ip = self.current_frame.ip;
+        if !self
+            .current_frame
+            .bytecode
+            .get(ip..)?
+            .starts_with(&[Opcode::CallFunctionExtended as u8, 1])
+        {
+            return None;
+        }
+        let [callable, Value::Ref(args), Value::Ref(merged), Value::Ref(source)] = self.stack.last_chunk::<4>()? else {
+            return None;
+        };
+        let source_id = *source;
+        let HeapData::Dict(merged) = self.heap.get(*merged) else {
+            return None;
+        };
+        let HeapData::Dict(source) = self.heap.get(*source) else {
+            return None;
+        };
+        let kw_count = merged.len() + source.len();
+        if kw_count > Signature::MAX_DIRECT_KEYWORDS {
+            return None;
+        }
+        let HeapData::Tuple(args) = self.heap.get(*args) else {
+            return None;
+        };
+        let pos_args = args.as_slice();
+        if pos_args.len() > usize::from(u8::MAX) {
+            return None;
+        }
+        let (func_id, defaults, globals) = match callable {
+            Value::DefFunction(id) => (*id, &[][..], None),
+            Value::Ref(id) => match self.heap.get(*id) {
+                HeapData::FunctionDefaults(function) => {
+                    (function.func_id, function.defaults.as_slice(), function.globals)
+                }
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let func = self.interns.get_function(func_id);
+        if func.is_async || !func.cell_var_slots.is_empty() || !func.free_var_slots.is_empty() {
+            return None;
+        }
+        if func.signature.has_variadic_parameters() {
+            if func.signature.variadic_only().is_some() {
+                return None;
+            }
+            return self.try_call_bound_extended(Some((source_id, ip)));
+        }
+
+        let pairs = merged.dense_pairs()?.chain(source.dense_pairs()?);
+        let keys = pairs.clone().map(|(key, _)| key.as_str_heap(self.heap, self.interns));
+        let mut slots = [0; Signature::MAX_DIRECT_KEYWORDS];
+        let destinations = &mut slots[..kw_count];
+        let (remaining, missing) =
+            func.signature
+                .keyword_default_slots(pos_args.len(), keys, destinations, |key, param| {
+                    *key == Some(self.interns.get_str(param))
+                })?;
+        let stack_base = self.stack.len() - 4;
+        if let Err(error) = self.check_argument_stack_growth(stack_base + func.namespace_size) {
+            return Some(Err(error));
+        }
+
+        let owners: [Value; 4] = array::from_fn(|_| self.stack.pop().expect("unpacked call operand"));
+        self.stack
+            .extend(pos_args.iter().map(|value| value.clone_with_heap(self.heap)));
+        let keyword_base = self.stack.len();
+        self.stack.resize_with(keyword_base + remaining, || Value::Undefined);
+        let values = &mut self.stack[keyword_base..];
+        for ((_, value), &mut slot) in pairs.zip(destinations) {
+            values[usize::from(slot)] = value.clone_with_heap(self.heap);
+        }
+        fill_default_slots(values, defaults, missing, self.heap);
+        let frame_namespace = function_namespace(globals, self.heap);
+        owners.drop_with(self);
+
+        self.instruction_ip = ip;
+        self.current_frame.ip = ip + 2;
+        Some(self.push_stack_function(func_id, func, stack_base, frame_namespace))
+    }
+
+    fn check_argument_stack_growth(&self, required: usize) -> RunResult<()> {
+        let capacity = self.stack.capacity();
+        if required > capacity {
+            let capacity = capacity.saturating_mul(2).max(required);
+            check_estimated_size(capacity.saturating_mul(VALUE_SIZE), &self.heap.tracker)?;
+        }
+        Ok(())
+    }
+
+    /// Calls with a single local `**dict` without constructing a keyword accumulator.
+    /// At ListExtend the sequence can stay borrowed because the tail only loads a local.
+    pub(super) fn try_call_local_unpack(&mut self, from_sequence: bool) -> Option<Result<CallResult, RunError>> {
+        let code = self.current_frame.bytecode;
+        let mut ip = self.current_frame.ip;
+        if from_sequence {
+            if !code
+                .get(ip..)?
+                .starts_with(&[Opcode::ListToTuple as u8, Opcode::BuildDict as u8, 0, 0])
+            {
+                return None;
+            }
+            ip += 4;
+        }
+        let load = *code.get(ip)?;
+        let (slot, merge_ip) = if (Opcode::LoadLocal0 as u8..=Opcode::LoadLocal3 as u8).contains(&load) {
+            (u16::from(load - Opcode::LoadLocal0 as u8), ip + 1)
+        } else if load == Opcode::LoadLocal as u8 {
+            (u16::from(*code.get(ip + 1)?), ip + 2)
+        } else if load == Opcode::LoadLocalW as u8 {
+            (u16::from_le_bytes(code.get(ip + 1..ip + 3)?.try_into().ok()?), ip + 3)
+        } else {
+            return None;
+        };
+        let call_ip = merge_ip + 3;
+        let (method, end) = match (*code.get(merge_ip)?, code.get(call_ip..)?) {
+            (merge, [call, 1, ..])
+                if merge == Opcode::DictMerge as u8 && *call == Opcode::CallFunctionExtended as u8 =>
+            {
+                (None, call_ip + 2)
+            }
+            (merge, [call, low, high, 1, ..])
+                if merge == Opcode::MethodDictMerge as u8 && *call == Opcode::CallAttrExtended as u8 =>
+            {
+                (
+                    Some(StringId::from_index(u16::from_le_bytes([*low, *high]))),
+                    call_ip + 4,
+                )
+            }
+            _ => return None,
+        };
+
+        let argc = 2 + usize::from(from_sequence);
+        let stack_base = self.stack.len().checked_sub(argc)?;
+        let local = self.current_frame.stack_base() + usize::from(slot);
+        if local >= stack_base {
+            return None;
+        }
+        let Value::Ref(kwargs_id) = self.stack[local] else {
+            return None;
+        };
+        if method.is_some()
+            || matches!(self.stack[stack_base], Value::Ref(id) if matches!(self.heap.get(id), HeapData::BoundMethod(_)))
+        {
+            self.bind_local_unpack::<true>(from_sequence, stack_base, kwargs_id, method, call_ip..end)
+        } else {
+            self.bind_local_unpack::<false>(from_sequence, stack_base, kwargs_id, None, call_ip..end)
+        }
+    }
+
+    fn bind_local_unpack<const METHOD: bool>(
+        &mut self,
+        from_sequence: bool,
+        stack_base: usize,
+        kwargs_id: HeapId,
+        method: Option<StringId>,
+        call: Range<usize>,
+    ) -> Option<RunResult<CallResult>> {
+        let HeapData::Dict(kwargs) = self.heap.get(kwargs_id) else {
+            return None;
+        };
+        let kw_count = kwargs.len();
+        if kw_count > Signature::MAX_DIRECT_KEYWORDS {
+            return None;
+        }
+        let callable = &self.stack[stack_base];
+        let target = if METHOD {
+            DirectCallTarget::method(callable, method, self.heap, self.interns)
+        } else {
+            DirectCallTarget::function(callable, DirectReceiver::None, self.heap)
+        }?;
+        let DirectCallTarget {
+            func_id,
+            defaults,
+            globals,
+            receiver,
+        } = target;
+        let func = self.interns.get_function(func_id);
+        if func.is_async || !func.cell_var_slots.is_empty() || !func.free_var_slots.is_empty() {
+            return None;
+        }
+        let Value::Ref(container_id) = self.stack[stack_base + 1] else {
+            return None;
+        };
+        let pos_args = if from_sequence {
+            let HeapData::List(prefix) = self.heap.get(container_id) else {
+                return None;
+            };
+            if !prefix.as_slice().is_empty() {
+                return None;
+            }
+            let Value::Ref(source_id) = self.stack[stack_base + 2] else {
+                return None;
+            };
+            match self.heap.get(source_id) {
+                HeapData::Tuple(tuple) => tuple.as_slice(),
+                HeapData::List(list) => list.as_slice(),
+                _ => return None,
+            }
+        } else {
+            let HeapData::Tuple(args) = self.heap.get(container_id) else {
+                return None;
+            };
+            args.as_slice()
+        };
+        if pos_args.len() > usize::from(u8::MAX) {
+            return None;
+        }
+        let pos_count = pos_args.len() + receiver.count();
+
+        let pairs = kwargs.dense_pairs()?;
+        let mut slots = [0; Signature::MAX_DIRECT_KEYWORDS];
+        let destinations = &mut slots[..kw_count];
+        let binding = if func.signature.use_hashed_keyword_plan(kw_count, pos_count) {
+            func.signature.planned_extended_binding(
+                pos_count,
+                kwargs.dense_hashed_keys()?,
+                destinations,
+                self.heap,
+                self.interns,
+            )
+        } else {
+            func.signature.bind_compact_keywords(
+                pos_count,
+                pairs.clone().map(|(key, _)| key),
+                destinations,
+                self.heap,
+                self.interns,
+            )
+        }?;
+        #[expect(clippy::naive_bytecount, reason = "At most 32 keyword slots")]
+        let extra_keywords = destinations
+            .iter()
+            .filter(|&&slot| slot == ExtendedBinding::EXTRA_KEYWORD)
+            .count();
+        let entry_bytes = 2 * VALUE_SIZE + size_of::<u64>() + 3 * size_of::<usize>();
+        self.check_argument_stack_growth(stack_base + func.namespace_size)
+            .ok()?;
+        check_estimated_size(extra_keywords * entry_bytes, &self.heap.tracker).ok()?;
+        let extra_positionals = pos_count - binding.positional_bound;
+        let reuse_capture_tuple = !from_sequence && receiver.count() == 0 && binding.positional_bound == 0;
+        let bind_receiver = receiver.count() != 0 && binding.positional_bound != 0;
+        let bound_positionals = binding.positional_bound - usize::from(bind_receiver);
+        if !reuse_capture_tuple {
+            check_estimated_size(extra_positionals * VALUE_SIZE, &self.heap.tracker).ok()?;
+        }
+
+        let source_owner = from_sequence.then(|| self.stack.pop().expect("unpack source"));
+        let mut container_owner = self.stack.pop().expect("positional accumulator");
+        let mut callable = self.stack.pop().expect("unpack callable");
+        let mut receiver = receiver.take(&mut callable, self.heap);
+        if bind_receiver {
+            self.stack.push(receiver.take().expect("bound receiver"));
+        }
+        self.stack.extend(
+            pos_args[..bound_positionals]
+                .iter()
+                .map(|value| value.clone_with_heap(self.heap)),
+        );
+        self.stack
+            .resize_with(stack_base + func.namespace_size, || Value::Undefined);
+        if let Some(slot) = binding.args_slot {
+            self.stack[stack_base + slot] = if reuse_capture_tuple {
+                mem::replace(&mut container_owner, Value::Undefined)
+            } else {
+                let items = receiver
+                    .take()
+                    .into_iter()
+                    .chain(
+                        pos_args[bound_positionals..]
+                            .iter()
+                            .map(|value| value.clone_with_heap(self.heap)),
+                    )
+                    .collect();
+                allocate_tuple(items, self.heap)
+            };
+        }
+        for ((_, value), &mut slot) in pairs.zip(destinations.iter_mut()) {
+            if slot != ExtendedBinding::EXTRA_KEYWORD {
+                self.stack[stack_base + usize::from(slot)] = value.clone_with_heap(self.heap);
+            }
+        }
+        if let Some(slot) = binding.kwargs_slot {
+            let extras = destinations
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &slot)| (slot == ExtendedBinding::EXTRA_KEYWORD).then_some(index));
+            let dict = kwargs.copy_dense_keywords(extras, extra_keywords, self.heap);
+            self.stack[stack_base + slot] = Value::Ref(self.heap.allocate(HeapData::Dict(dict)));
+        }
+        func.signature
+            .fill_extended_defaults(&binding, &mut self.stack[stack_base..], defaults, self.heap);
+        let frame_namespace = function_namespace(globals, self.heap);
+        debug_assert!(receiver.is_none());
+        (source_owner, (container_owner, callable)).drop_with(self);
+
+        self.instruction_ip = call.start;
+        self.current_frame.ip = call.end;
+        Some(self.push_stack_function(func_id, func, stack_base, frame_namespace))
     }
 
     /// Executes `CallFunctionExtended` opcode.
     ///
     /// Handles calls with `*args` and/or `**kwargs` unpacking.
     pub(super) fn exec_call_function_extended(&mut self, has_kwargs: bool) -> Result<CallResult, RunError> {
+        if let Some(result) = self.try_call_variadic_extended(has_kwargs) {
+            return result;
+        }
+        if has_kwargs && let Some(result) = self.try_call_bound_extended(None) {
+            return result;
+        }
+
         // Pop kwargs dict if present
         let kwargs = if has_kwargs { Some(self.pop()) } else { None };
 
@@ -356,6 +1061,209 @@ impl<'h> VM<'h> {
 
         // Unpack and call
         self.call_function_extended(callable, args_tuple, kwargs)
+    }
+
+    /// Binds the compiler's private argument containers directly into a synchronous frame.
+    fn try_call_bound_extended(
+        &mut self,
+        final_merge: Option<(HeapId, usize)>,
+    ) -> Option<Result<CallResult, RunError>> {
+        let stack_base = self.stack.len().checked_sub(3 + usize::from(final_merge.is_some()))?;
+        let [callable, Value::Ref(args_id), Value::Ref(kwargs_id)] = &self.stack[stack_base..stack_base + 3] else {
+            return None;
+        };
+        let (args_id, kwargs_id) = (*args_id, *kwargs_id);
+        let (func_id, globals) = match callable {
+            Value::DefFunction(id) => (*id, None),
+            Value::Ref(id) => match self.heap.get(*id) {
+                HeapData::FunctionDefaults(function) => (function.func_id, function.globals),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let func = self.interns.get_function(func_id);
+        if !func.signature.has_variadic_parameters()
+            || func.is_async
+            || !func.cell_var_slots.is_empty()
+            || !func.free_var_slots.is_empty()
+        {
+            return None;
+        }
+        let HeapData::Tuple(args) = self.heap.get(args_id) else {
+            return None;
+        };
+        let HeapData::Dict(kwargs) = self.heap.get(kwargs_id) else {
+            return None;
+        };
+        let source = match final_merge {
+            Some((id, _)) => match self.heap.get(id) {
+                HeapData::Dict(source) => Some(source),
+                _ => return None,
+            },
+            None => None,
+        };
+        let positional_count = args.as_slice().len();
+        let prefix_count = kwargs.len();
+        let keyword_count = prefix_count + source.map_or(0, Dict::len);
+        if positional_count > usize::from(u8::MAX) || keyword_count > Signature::MAX_DIRECT_KEYWORDS {
+            return None;
+        }
+        let prefix_names = kwargs
+            .dense_pairs()?
+            .map(|(key, _)| key.as_str_heap(self.heap, self.interns));
+        let mut destinations = [0; Signature::MAX_DIRECT_KEYWORDS];
+        let destinations = &mut destinations[..keyword_count];
+        let binding = if let Some(source) = source {
+            let source_names = source
+                .dense_pairs()?
+                .map(|(key, _)| key.as_str_heap(self.heap, self.interns));
+            func.signature.extended_binding(
+                positional_count,
+                prefix_names.chain(source_names),
+                destinations,
+                self.interns,
+            )?
+        } else {
+            func.signature
+                .extended_binding(positional_count, prefix_names, destinations, self.interns)?
+        };
+        let (prefix_slots, source_slots) = destinations.split_at(prefix_count);
+        if let Some(source) = source
+            && prefix_slots.contains(&ExtendedBinding::EXTRA_KEYWORD)
+            && source_slots.contains(&ExtendedBinding::EXTRA_KEYWORD)
+            && kwargs.overlaps_keyword_keys(source, self.heap, self.interns)
+        {
+            return None;
+        }
+        if let Err(error) = self.check_argument_stack_growth(stack_base + func.namespace_size) {
+            return Some(Err(error));
+        }
+
+        let mut items = match self.take_extended_positional(args_id) {
+            Ok(items) => items.into_iter(),
+            Err(error) => return Some(Err(error)),
+        };
+        let source_owner = final_merge.map(|_| self.pop());
+        let kwargs_owner = self.pop();
+        self.pop().drop_with(self);
+        let callable = self.pop();
+        self.stack.extend(items.by_ref().take(binding.positional_bound));
+        self.stack
+            .resize_with(stack_base + func.namespace_size, || Value::Undefined);
+        if let Some(slot) = binding.args_slot {
+            self.stack[stack_base + slot] = allocate_tuple(items.collect(), self.heap);
+        } else {
+            debug_assert_eq!(items.len(), 0);
+        }
+
+        let dict = self.heap.read_as::<Dict>(kwargs_id).expect("validated keyword dict");
+        if binding.kwargs_slot.is_some() {
+            // The accumulator already owns the extras in insertion order.
+            for (index, &slot) in prefix_slots.iter().enumerate() {
+                if slot != ExtendedBinding::EXTRA_KEYWORD {
+                    let (key, value) = dict.get_mut(self.heap).take_keyword_at(index);
+                    key.drop_with(self.heap);
+                    self.stack[stack_base + usize::from(slot)] = value;
+                }
+            }
+        } else {
+            let keywords = mem::take(dict.get_mut(self.heap));
+            for ((key, value), &slot) in keywords.into_iter().zip(prefix_slots) {
+                key.drop_with(self.heap);
+                self.stack[stack_base + usize::from(slot)] = value;
+            }
+        }
+        if let Some((source_id, ip)) = final_merge {
+            let source = self.heap.read_as::<Dict>(source_id).expect("validated keyword source");
+            for (index, &slot) in source_slots.iter().enumerate() {
+                if slot == ExtendedBinding::EXTRA_KEYWORD {
+                    dict.append_dense_keyword(&source, index, self.heap);
+                } else {
+                    let (_, value) = source
+                        .get(self.heap)
+                        .dense_pairs()
+                        .expect("validated keyword dict")
+                        .nth(index)
+                        .expect("validated keyword index");
+                    self.stack[stack_base + usize::from(slot)] = value.clone_with_heap(self.heap);
+                }
+            }
+            self.instruction_ip = ip;
+            self.current_frame.ip = ip + 2;
+        }
+        // Frame admission can release the captured dict on recursion failure.
+        drop(dict);
+        if let Some(slot) = binding.kwargs_slot {
+            self.stack[stack_base + slot] = kwargs_owner;
+        } else {
+            kwargs_owner.drop_with(self);
+        }
+        source_owner.drop_with(self);
+
+        let defaults = match &callable {
+            Value::Ref(id) => match self.heap.get(*id) {
+                HeapData::FunctionDefaults(function) => function.defaults.as_slice(),
+                _ => unreachable!("validated function with defaults"),
+            },
+            _ => &[],
+        };
+        func.signature
+            .fill_extended_defaults(&binding, &mut self.stack[stack_base..], defaults, self.heap);
+        let frame_namespace = function_namespace(globals, self.heap);
+        callable.drop_with(self);
+        Some(self.push_stack_function(func_id, func, stack_base, frame_namespace))
+    }
+
+    /// Installs the private unpacking containers directly for a variadic-only signature.
+    fn try_call_variadic_extended(&mut self, has_kwargs: bool) -> Option<Result<CallResult, RunError>> {
+        let stack_base = self.stack.len() - 2 - usize::from(has_kwargs);
+        let Value::DefFunction(func_id) = self.stack[stack_base] else {
+            return None;
+        };
+        let func = self.interns.get_function(func_id);
+        let (capture_args, capture_kwargs) = func.signature.variadic_only()?;
+        if func.is_async || !func.cell_var_slots.is_empty() || !func.free_var_slots.is_empty() {
+            return None;
+        }
+        if !capture_args {
+            let Value::Ref(id) = self.stack[stack_base + 1] else {
+                return None;
+            };
+            let HeapData::Tuple(args) = self.heap.get(id) else {
+                return None;
+            };
+            if !args.as_slice().is_empty() {
+                return None;
+            }
+        }
+        if has_kwargs && !capture_kwargs {
+            let Value::Ref(id) = self.stack[stack_base + 2] else {
+                return None;
+            };
+            let HeapData::Dict(kwargs) = self.heap.get(id) else {
+                return None;
+            };
+            if !kwargs.is_empty() {
+                return None;
+            }
+        }
+
+        let kwargs = has_kwargs.then(|| self.pop());
+        let args = self.pop();
+        let callable = self.pop();
+        debug_assert_exact_callable(&callable, func_id);
+        if capture_args {
+            self.push(args);
+        } else {
+            args.drop_with(self);
+        }
+        if capture_kwargs {
+            let kwargs = kwargs.unwrap_or_else(|| Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))));
+            self.push(kwargs);
+        } else {
+            kwargs.drop_with(self);
+        }
+        Some(self.push_stack_function(func_id, func, stack_base, None))
     }
 
     /// Executes `CallAttrExtended` opcode.
@@ -415,24 +1323,32 @@ impl<'h> VM<'h> {
     /// arms in their `py_call_attr` body. New dunder methods plug into the
     /// dispatch table here without touching individual types.
     pub(crate) fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<CallResult, RunError> {
+        self.call_resolved_attr(obj, name_id, args, None)
+    }
+
+    fn call_resolved_attr(
+        &mut self,
+        obj: Value,
+        name_id: StringId,
+        args: ArgValues,
+        receiver: Option<PyValue<'h>>,
+    ) -> RunResult<CallResult> {
         let this = self;
-        let attr = EitherStr::Interned(name_id);
-
-        // Centralised dunder dispatch — see `dispatch_dunder`. Wrap `args`
-        // in an `Option` so the helper can `take()` it only when it
-        // actually matches a dunder; on the fall-through path the
-        // original `args` is still owned here and goes into `py_call_attr`.
-        let mut args_slot = Some(args);
-        if let Value::Ref(heap_id) = obj
-            && let Some(result) = dispatch_dunder(name_id, heap_id, this, &mut args_slot)
-        {
-            defer_drop!(obj, this);
-            return result;
-        }
-        let args = args_slot.expect("dispatch_dunder returned None without taking args");
-
         defer_drop!(obj, this);
-        obj.py_value(this).py_call_attr(this, &attr, args)
+        let mut receiver = receiver.unwrap_or_else(|| obj.py_value(this));
+        if matches!(obj, Value::Ref(_)) {
+            match this.interns.static_string(name_id) {
+                Some(StaticStrings::Enter) if !matches!(receiver, PyValue::Instance(_)) => {
+                    args.check_zero_args("__enter__", this.heap)?;
+                    return receiver.py_enter(this);
+                }
+                Some(StaticStrings::Exit) if !matches!(receiver, PyValue::Instance(_)) => {
+                    return dispatch_exit(&mut receiver, this, args);
+                }
+                _ => {}
+            }
+        }
+        receiver.py_call_attr(this, &EitherStr::Interned(name_id), args)
     }
 
     /// Evaluates a function in a synchronous position that cannot suspend to the host.
@@ -592,23 +1508,7 @@ impl<'h> VM<'h> {
         let this = self;
         defer_drop!(args_tuple, this);
         defer_drop!(callable, this);
-        // Building the argument pack is fallible (a refused `*args` clone) and the
-        // kwargs are handed on only once it succeeds, so the guard releases them on
-        // the error paths in between.
-        let mut pending_kwargs = DropGuard::new(kwargs, this);
-        let (pending, this) = pending_kwargs.as_parts_mut();
-
-        // Extract positional args from tuple
-        let copied_args = this.extract_args_tuple(args_tuple)?;
-
-        // Build ArgValues from positional args and optional kwargs
-        let args = if let Some(kwargs_ref) = pending.take() {
-            this.build_args_with_kwargs(copied_args, kwargs_ref)?
-        } else {
-            Self::build_args_positional_only(copied_args)
-        };
-
-        // Call the function (args_tuple guard drops at scope exit)
+        let args = this.take_extended_args(args_tuple, kwargs)?;
         this.call_function(callable, args)
     }
 
@@ -624,147 +1524,68 @@ impl<'h> VM<'h> {
     ) -> Result<CallResult, RunError> {
         let this = self;
         defer_drop!(args_tuple, this);
-        // Building the argument pack is fallible (a refused `*args` clone, a kwargs
-        // dict that cannot grow) and the receiver and kwargs are handed on only once
-        // it succeeds, so the guard releases them on the error paths in between.
-        let mut pending = DropGuard::new((obj, kwargs), this);
-        let (pending_values, this) = pending.as_parts_mut();
-
-        // Extract positional args from tuple
-        let copied_args = this.extract_args_tuple_for_attr(args_tuple)?;
-
-        // Build ArgValues from positional args and optional kwargs
-        let args = if let Some(kwargs_ref) = pending_values.1.take() {
-            this.build_args_with_kwargs_for_attr(copied_args, kwargs_ref)?
-        } else {
-            Self::build_args_positional_only(copied_args)
-        };
-
-        // Call the method (args_tuple guard drops at scope exit)
-        let ((obj, _), this) = pending.into_parts();
+        let mut pending = DropGuard::new(obj, this);
+        let args = pending.ctx().take_extended_args(args_tuple, kwargs)?;
+        let (obj, this) = pending.into_parts();
         this.call_attr(obj, name_id, args)
     }
 
-    /// Extracts arguments from a tuple for `CallFunctionExtended`.
-    ///
-    /// # Panics
-    /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
-    /// the compiler always emits `ListToTuple` before `CallFunctionExtended`.
-    fn extract_args_tuple(&mut self, args_tuple: &Value) -> RunResult<Vec<Value>> {
-        let Value::Ref(id) = args_tuple else {
-            unreachable!("CallFunctionExtended: args_tuple must be a Ref")
+    /// Takes the contents of the compiler's argument containers. Non-empty positional tuples
+    /// and keyword dicts are private to the call, so binding can take their owned values.
+    fn take_extended_args(&mut self, args_tuple: &Value, kwargs: Option<Value>) -> RunResult<ArgValues> {
+        let mut pending = DropGuard::new(kwargs, self);
+        let Value::Ref(args_id) = args_tuple else {
+            unreachable!("unpacked positionals must be a tuple")
         };
-        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
-            unreachable!("CallFunctionExtended: args_tuple must be a Tuple")
-        };
-        clone_args_from_tuple(tuple.as_slice(), self)
-    }
-
-    /// Builds `ArgValues` with kwargs for `CallFunctionExtended`.
-    ///
-    /// # Panics
-    /// Panics if `kwargs_ref` is not a dict. This indicates a compiler bug since
-    /// the compiler always emits `BuildDict` before `CallFunctionExtended` with kwargs.
-    fn build_args_with_kwargs(&mut self, copied_args: Vec<Value>, kwargs_ref: Value) -> Result<ArgValues, RunError> {
-        let this = self;
-        defer_drop!(kwargs_ref, this);
-
-        // Extract kwargs dict items
-        let Value::Ref(id) = kwargs_ref else {
-            unreachable!("CallFunctionExtended: kwargs must be a Ref")
-        };
-        let HeapData::Dict(dict) = this.heap.get(*id) else {
-            unreachable!("CallFunctionExtended: kwargs must be a Dict")
-        };
-        let copied_kwargs: Vec<(Value, Value)> = dict
-            .iter()
-            .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
-            .collect();
-
-        // `copied_args` travels unguarded through this `?`, which is sound only
-        // because `from_pairs` cannot fail here: it sizes both dict buffers to the
-        // pair count up front so the growth preflight is a no-op, and keys taken out
-        // of a dict are already known hashable. Size that dict lazily and this leaks
-        // the args.
-        let kwargs_values = if copied_kwargs.is_empty() {
-            KwargsValues::Empty
-        } else {
-            let kwargs_dict = Dict::from_pairs(copied_kwargs, this)?;
-            KwargsValues::Dict(kwargs_dict)
-        };
-
-        Ok(ArgValues::from_parts(copied_args, kwargs_values))
-    }
-
-    /// Builds `ArgValues` from positional args only.
-    fn build_args_positional_only(copied_args: Vec<Value>) -> ArgValues {
-        match copied_args.len() {
-            0 => ArgValues::Empty,
-            1 => ArgValues::One(copied_args.into_iter().next().unwrap()),
-            2 => {
-                let mut iter = copied_args.into_iter();
-                ArgValues::Two(iter.next().unwrap(), iter.next().unwrap())
+        let items = pending.ctx().take_extended_positional(*args_id)?;
+        let (kwargs, this) = pending.into_parts();
+        let kwargs = kwargs.map_or(KwargsValues::Empty, |value| this.take_extended_keywords(value));
+        Ok(match (items.len(), kwargs) {
+            (0, KwargsValues::Empty) => ArgValues::Empty,
+            (1, KwargsValues::Empty) => ArgValues::One(items.into_iter().next().unwrap()),
+            (2, KwargsValues::Empty) => {
+                let mut items = items.into_iter();
+                ArgValues::Two(items.next().unwrap(), items.next().unwrap())
             }
-            _ => ArgValues::ArgsKargs {
-                args: copied_args,
-                kwargs: KwargsValues::Empty,
-            },
+            (0, kwargs) => ArgValues::Kwargs(kwargs),
+            (_, kwargs) => {
+                let mut args = items.into_vec();
+                // A bound method may prepend its receiver.
+                args.reserve_exact(1);
+                ArgValues::ArgsKargs { args, kwargs }
+            }
+        })
+    }
+
+    fn take_extended_positional(&mut self, id: HeapId) -> RunResult<TupleVec> {
+        let tuple = self
+            .heap
+            .read_as::<Tuple>(id)
+            .expect("unpacked positionals must be a tuple");
+        let len = tuple.get(self.heap).as_slice().len();
+        if len == 0 {
+            // The empty tuple is shared.
+            return Ok(TupleVec::new());
         }
+        check_estimated_size(len.saturating_add(1).saturating_mul(VALUE_SIZE), &self.heap.tracker)?;
+        Ok(tuple.get_mut(self.heap).take_items())
     }
 
-    /// Extracts arguments from a tuple for `CallAttrExtended`.
-    ///
-    /// # Panics
-    /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
-    /// the compiler always emits `ListToTuple` before `CallAttrExtended`.
-    fn extract_args_tuple_for_attr(&mut self, args_tuple: &Value) -> RunResult<Vec<Value>> {
-        let Value::Ref(id) = args_tuple else {
-            unreachable!("CallAttrExtended: args_tuple must be a Ref")
-        };
-        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
-            unreachable!("CallAttrExtended: args_tuple must be a Tuple")
-        };
-        clone_args_from_tuple(tuple.as_slice(), self)
-    }
-
-    /// Builds `ArgValues` with kwargs for `CallAttrExtended`.
-    ///
-    /// # Panics
-    /// Panics if `kwargs_ref` is not a dict. This indicates a compiler bug since
-    /// the compiler always emits `BuildDict` before `CallAttrExtended` with kwargs.
-    fn build_args_with_kwargs_for_attr(
-        &mut self,
-        copied_args: Vec<Value>,
-        kwargs_ref: Value,
-    ) -> Result<ArgValues, RunError> {
+    fn take_extended_keywords(&mut self, kwargs: Value) -> KwargsValues {
         let this = self;
-        defer_drop!(kwargs_ref, this);
-
-        // Extract kwargs dict items
-        let Value::Ref(id) = kwargs_ref else {
-            unreachable!("CallAttrExtended: kwargs must be a Ref")
+        defer_drop!(kwargs, this);
+        let Value::Ref(id) = kwargs else {
+            unreachable!("unpacked keywords must be a dict")
         };
-        let HeapData::Dict(dict) = this.heap.get(*id) else {
-            unreachable!("CallAttrExtended: kwargs must be a Dict")
-        };
-        let copied_kwargs: Vec<(Value, Value)> = dict
-            .iter()
-            .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
-            .collect();
-
-        // `copied_args` travels unguarded through this `?`, which is sound only
-        // because `from_pairs` cannot fail here: it sizes both dict buffers to the
-        // pair count up front so the growth preflight is a no-op, and keys taken out
-        // of a dict are already known hashable. Size that dict lazily and this leaks
-        // the args.
-        let kwargs_values = if copied_kwargs.is_empty() {
+        let dict = this
+            .heap
+            .read_as::<Dict>(*id)
+            .expect("unpacked keywords must be a dict");
+        if dict.get(this.heap).is_empty() {
             KwargsValues::Empty
         } else {
-            let kwargs_dict = Dict::from_pairs(copied_kwargs, this)?;
-            KwargsValues::Dict(kwargs_dict)
-        };
-
-        Ok(ArgValues::from_parts(copied_args, kwargs_values))
+            KwargsValues::Dict(mem::take(dict.get_mut(this.heap)))
+        }
     }
 
     // ========================================================================
@@ -786,8 +1607,45 @@ impl<'h> VM<'h> {
             Some(ExactPositionalCall::Async(count)) if count == arg_count => {
                 Some(Ok(self.create_exact_coroutine(func_id, func, callable_index)))
             }
-            _ => None,
+            _ => self.try_call_variadic_positional(func_id, func, callable_index, arg_count),
         }
+    }
+
+    /// Moves the positional tail directly into the callee's `*args` tuple.
+    fn try_call_variadic_positional(
+        &mut self,
+        func_id: FunctionId,
+        func: &'h Function,
+        callable_index: usize,
+        arg_count: usize,
+    ) -> Option<Result<CallResult, RunError>> {
+        let (capture_args, capture_kwargs) = func.signature.variadic_only()?;
+        if func.is_async
+            || !func.cell_var_slots.is_empty()
+            || !func.free_var_slots.is_empty()
+            || (!capture_args && arg_count != 0)
+        {
+            return None;
+        }
+        let slots = arg_count.checked_next_power_of_two().unwrap_or(usize::MAX);
+        if let Err(error) = check_estimated_size(slots.saturating_mul(VALUE_SIZE), &self.heap.tracker) {
+            return Some(Err(error.into()));
+        }
+
+        let items = self.stack.drain(callable_index + 1..).collect();
+        let callable = self.pop();
+        debug_assert_exact_callable(&callable, func_id);
+        if capture_args {
+            let args = allocate_tuple(items, self.heap);
+            self.push(args);
+        } else {
+            debug_assert!(items.is_empty());
+        }
+        if capture_kwargs {
+            let kwargs = Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new())));
+            self.push(kwargs);
+        }
+        Some(self.push_stack_function(func_id, func, callable_index, None))
     }
 
     /// Pushes a simple function frame using arguments already present on the VM stack.
@@ -800,25 +1658,33 @@ impl<'h> VM<'h> {
         func: &'h Function,
         callable_index: usize,
     ) -> Result<CallResult, RunError> {
+        let callable = self.stack.remove(callable_index);
+        debug_assert_exact_callable(&callable, func_id);
+        self.push_stack_function(func_id, func, callable_index, None)
+    }
+
+    /// Extends the stack's bound argument slots to hold the remaining locals.
+    fn push_stack_function(
+        &mut self,
+        func_id: FunctionId,
+        func: &'h Function,
+        stack_base: usize,
+        frame_namespace: Option<Box<FrameNamespace>>,
+    ) -> Result<CallResult, RunError> {
         let call_offset = self.current_offset();
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
-        let code = &func.code;
-
-        let callable = self.stack.remove(callable_index);
-        debug_assert_exact_callable(&callable, func_id);
-        self.stack
-            .resize_with(callable_index + namespace_size, || Value::Undefined);
+        self.stack.resize_with(stack_base + namespace_size, || Value::Undefined);
 
         let exc_stack_base = self.exception_stack.len();
         self.push_frame(CallFrame::new_function(
-            code,
-            callable_index,
+            &func.code,
+            stack_base,
             locals_count,
             exc_stack_base,
             func_id,
             call_offset,
-            None,
+            frame_namespace,
         ))?;
 
         Ok(CallResult::FramePushed)
@@ -1314,19 +2180,27 @@ impl<'h> VM<'h> {
     }
 }
 
-/// Clones a `*args` tuple's contents into the owned buffer a call needs.
-///
-/// The clone is one allocation the size of the whole tuple, so it is preflighted:
-/// past the allocator's hard-limit headroom that single allocation kills the worker
-/// rather than raising `MemoryError`.
-fn clone_args_from_tuple(items: &[Value], vm: &impl ContainsHeap) -> RunResult<Vec<Value>> {
-    // One spare slot so `ArgValues::prepend` can put `self` in front of a bound
-    // method's arguments without reallocating; that insert has no preflight of its own.
-    let slots = items.len().saturating_add(1);
-    check_estimated_size(slots.saturating_mul(VALUE_SIZE), &vm.heap().tracker)?;
-    let mut args = Vec::with_capacity(slots);
-    args.extend(items.iter().map(|v| v.clone_with_heap(vm)));
-    Ok(args)
+/// Copies the omitted trailing defaults into their vacant parameter slots.
+fn fill_default_slots(values: &mut [Value], defaults: &[Value], mut missing: u32, heap: &impl ContainsHeap) {
+    while missing != 0 {
+        let slot = missing.trailing_zeros() as usize;
+        missing &= missing - 1;
+        let default_index = defaults.len() - (values.len() - slot);
+        values[slot] = defaults[default_index].clone_with_heap(heap);
+    }
+}
+
+/// Moves explicit keyword operands to their validated slots.
+fn move_keyword_values(values: &mut [Value], destinations: &mut [u8], keyword_count: usize) {
+    for index in 0..keyword_count {
+        let mut destination = destinations[index];
+        while destination != u8::MAX && usize::from(destination) != index {
+            let slot = usize::from(destination);
+            values.swap(index, slot);
+            destinations.swap(index, slot);
+            destination = destinations[index];
+        }
+    }
 }
 
 /// Asserts a callable popped off the stack by an exact-positional-call fast
@@ -1337,54 +2211,6 @@ fn clone_args_from_tuple(items: &[Value], vm: &impl ContainsHeap) -> RunResult<V
 /// dispatched on its `FunctionId` in [`VM::try_call_exact_def_function`].
 fn debug_assert_exact_callable(callable: &Value, func_id: FunctionId) {
     debug_assert!(matches!(callable, Value::DefFunction(id) if *id == func_id));
-}
-
-/// Centralised dunder dispatch for `__enter__` / `__exit__` (and, when added,
-/// any other dunder that maps to a [`PyTrait`] method).
-///
-/// Returns `Some(result)` when `name_id` names a recognised dunder — `args`
-/// is taken out of the slot and consumed. Returns `None` when it isn't —
-/// `args` is left untouched in the slot so the caller can hand it off to
-/// the regular `py_call_attr` dispatch.
-///
-/// The `&mut Option<ArgValues>` shape is what keeps "all the recognition
-/// and dispatch logic in one function" honest: `args` is non-`Copy` and
-/// has a `Drop` impl that panics on stray `Ref` values, so it can only be
-/// passed by value once we know we'll consume it.
-///
-/// Adding a new dunder is just a new arm in the inner `match`; type
-/// implementations only need to override the corresponding `PyTrait`
-/// method, never a `StaticStrings::Foo` arm in their `py_call_attr`.
-fn dispatch_dunder(
-    name_id: StringId,
-    heap_id: HeapId,
-    vm: &mut VM<'_>,
-    args: &mut Option<ArgValues>,
-) -> Option<Result<CallResult, RunError>> {
-    let static_str = vm.interns.static_string(name_id)?;
-    // User-defined instances are never intercepted: an explicit
-    // `obj.__enter__()` / `obj.__exit__(a, b, c)` on an instance is an
-    // ordinary method call in CPython — the instance `__dict__` can shadow
-    // the class method and the arguments must reach the user function
-    // verbatim (the trait hooks reduce them to an `Option<HeapId>`, which
-    // is lossy). The `with` statement still uses the trait hooks via the
-    // `BeforeWith`/`WithExit`/`WithExceptStart` opcodes, which perform the
-    // CPython type-level (class-only) lookup.
-    if matches!(vm.heap.get(heap_id), HeapData::Instance(_)) {
-        return None;
-    }
-    Some(match static_str {
-        StaticStrings::Enter => {
-            let args = args.take().expect("dispatch_dunder called with empty args slot");
-            args.check_zero_args("__enter__", vm.heap)
-                .and_then(|()| PyValue::from_heap(heap_id, vm.heap).py_enter(vm))
-        }
-        StaticStrings::Exit => {
-            let args = args.take().expect("dispatch_dunder called with empty args slot");
-            dispatch_exit(heap_id, vm, args)
-        }
-        _ => return None,
-    })
 }
 
 /// Direct `obj.__exit__(typ, val, tb)` invocation.
@@ -1406,7 +2232,7 @@ fn dispatch_dunder(
 /// `typ` and `tb` are discarded: every implementation we have re-derives the
 /// type from `val` and Monty has no traceback objects (see
 /// `limitations/with.md`).
-fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<CallResult, RunError> {
+fn dispatch_exit<'h>(receiver: &mut PyValue<'h>, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
     let positional = args.into_pos_only("__exit__", vm.heap)?;
     defer_drop!(positional, vm);
     let [typ, val, tb] = positional.as_slice() else {
@@ -1417,7 +2243,7 @@ fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<Ca
         Value::Ref(id) => Some(*id),
         _ => None,
     };
-    PyValue::from_heap(heap_id, vm.heap).py_exit(vm, exc)
+    receiver.py_exit(vm, exc)
 }
 
 /// What a Python function value is called with: its id, captured cells, owned

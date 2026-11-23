@@ -30,6 +30,21 @@ assert f_mixed(1, 2, 30) == 37
 assert f_mixed(1, 2, 30, 40) == 73
 
 
+# === Trailing defaults across positional-only parameters ===
+def f_posonly(a, b=2, /, c=3, d=4):
+    return a, b, c, d
+
+
+assert f_posonly(1) == (1, 2, 3, 4)
+assert f_posonly(1, 20, 30) == (1, 20, 30, 4)
+assert f_posonly(1, d=40) == (1, 2, 3, 40)
+try:
+    f_posonly()
+    assert False, 'expected TypeError for a missing required parameter'
+except TypeError as exc:
+    assert str(exc) == "f_posonly() missing 1 required positional argument: 'a'"
+
+
 # === Default with keyword args ===
 def f_kw(a, b=10):
     return a + b
@@ -38,6 +53,34 @@ def f_kw(a, b=10):
 assert f_kw(1, b=20) == 21
 assert f_kw(a=5) == 15
 assert f_kw(a=5, b=3) == 8
+
+
+# === Reordered keywords with omitted and positional-only defaults ===
+def f_sparse(a, b=2, c=3, d=4):
+    return a, b, c, d
+
+
+assert f_sparse(d=40, a=10) == (10, 2, 3, 40)
+assert f_sparse(b=20, c=30, a=10) == (10, 20, 30, 4)
+
+try:
+    f_sparse(d=[], b=[])
+    assert False, 'expected TypeError for a missing required parameter'
+except TypeError as exc:
+    assert str(exc) == "f_sparse() missing 1 required positional argument: 'a'"
+
+try:
+    f_sparse([], d=[], a=[])
+    assert False, 'expected TypeError for a supplied parameter repeated by keyword'
+except TypeError as exc:
+    assert str(exc) == "f_sparse() got multiple values for argument 'a'"
+
+
+def f_omitted_posonly(a=1, /, b=2, c=3):
+    return a, b, c
+
+
+assert f_omitted_posonly(c=30) == (1, 2, 30)
 
 
 # === Default expressions evaluated at definition ===
@@ -66,6 +109,15 @@ assert first_result == [1]
 second_result = f_mutable()
 assert second_result == [1, 1]
 assert first_result is second_result
+
+
+assert (lambda value=[42]: value)() == [42]
+assert (lambda left=[42], right=None: (left, right))(right=[43]) == ([42], [43])
+
+namespace = {'marker': 17}
+exec('def f(value=[42]):\n    return marker, value', namespace)
+assert namespace['f']() == (17, [42])
+assert namespace['f'](value=[43]) == (17, [43])
 
 
 # === Multiple functions with separate defaults ===

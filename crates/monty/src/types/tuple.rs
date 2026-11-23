@@ -109,6 +109,13 @@ impl Tuple {
         &self.items
     }
 
+    /// Takes the elements of a compiler-private argument tuple.
+    pub(crate) fn take_items(&mut self) -> TupleVec {
+        self.contains_refs = false;
+        self.cached_hash.set(None);
+        mem::take(&mut self.items)
+    }
+
     /// Returns whether the tuple contains any heap references.
     ///
     /// When false, `collect_child_ids` and `py_dec_ref_ids` can skip iteration.

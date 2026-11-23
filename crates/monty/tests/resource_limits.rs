@@ -235,6 +235,172 @@ result
     );
 }
 
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn direct_defaults_release_frame_references() {
+    let source = r"
+owner = []
+def f(n, value=owner):
+    if n:
+        return f(n=n + 1)
+    return value
+
+assert f(0) is owner
+assert f(n=0) is owner
+try:
+    f(1)
+except RecursionError:
+    pass
+else:
+    assert False
+
+try:
+    f(value=[])
+except TypeError:
+    pass
+else:
+    assert False
+";
+    let mut run = MontyRun::new(source.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_recursion_depth(6));
+    let output = run.run_ref_counts_with_tracker(vec![], tracker).unwrap();
+    assert_eq!(output.counts.get("owner"), Some(&2));
+    assert!(output.unreachable.is_empty(), "{:?}", output.unreachable);
+}
+
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn unpacked_lists_and_tuples_release_call_references() {
+    let source = r"
+owner = []
+items = [owner, 2]
+pair = (owner, 3)
+
+def first(a, b):
+    return a
+
+def recurse(a, b):
+    return recurse(*[a, b])
+
+assert first(*items) is owner
+assert first(*pair) is owner
+try:
+    first(*[owner])
+except TypeError:
+    pass
+else:
+    assert False
+
+try:
+    recurse(*pair)
+except RecursionError:
+    pass
+else:
+    assert False
+";
+    let mut run = MontyRun::new(source.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_recursion_depth(6));
+    let output = run.run_ref_counts_with_tracker(vec![], tracker).unwrap();
+    assert_eq!(output.counts.get("owner"), Some(&3));
+    assert!(output.unreachable.is_empty(), "{:?}", output.unreachable);
+}
+
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn unpacked_keywords_release_call_references() {
+    let source = r"
+owner = []
+keywords = {'a': owner}
+
+def first(a, b=owner):
+    return a, b
+
+def recurse(a):
+    return recurse(**{'a': a})
+
+def combined(a, *rest, flag=None, **extras):
+    return a, rest, flag, extras
+
+def fixed(a, b, c, d):
+    return a
+
+def mixed_recurse(a, *rest, flag=None, **extras):
+    return mixed_recurse(a, *rest, flag=flag, **extras)
+
+def local_recurse(a, *rest, **extras):
+    seq = (a, a)
+    return local_recurse(*seq, **extras)
+
+def change_after_unpack(items, mapping):
+    items.clear()
+    return mapping
+
+def evaluate_keywords_later(a):
+    items = [a]
+    mapping = {'b': a}
+    return first(*items, **change_after_unpack(items, mapping))
+
+class Relay:
+    def call(self, a, b=None):
+        return a
+
+    def recurse(self, a, *rest, **extras):
+        seq = (a, a)
+        return self.recurse(*seq, **extras)
+
+def call_relay(receiver, items, d):
+    return receiver.call(*items, **d)
+
+relay = Relay()
+assert call_relay(relay, (owner,), {'b': owner}) is owner
+assert first(**keywords)[0] is owner
+assert first(**keywords)[1] is owner
+assert combined(owner, *[owner], flag=owner, **{'extra': owner})[3]['extra'] is owner
+assert fixed(owner, *[owner], d=owner, **{'c': owner}) is owner
+assert evaluate_keywords_later(owner)[0] is owner
+
+try:
+    first(**{'b': owner})
+except TypeError:
+    pass
+else:
+    assert False
+
+try:
+    recurse(**keywords)
+except RecursionError:
+    pass
+else:
+    assert False
+
+try:
+    mixed_recurse(owner, *[owner], flag=owner, **{'extra': owner})
+except RecursionError:
+    pass
+else:
+    assert False
+
+try:
+    local_recurse(owner, extra=owner)
+except RecursionError:
+    pass
+else:
+    assert False
+
+try:
+    relay.recurse(owner, extra=owner)
+except RecursionError:
+    pass
+else:
+    assert False
+";
+    let mut run = MontyRun::new(source.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_recursion_depth(6));
+    let output = run.run_ref_counts_with_tracker(vec![], tracker).unwrap();
+    assert_eq!(output.counts.get("owner"), Some(&3));
+    assert!(output.unreachable.is_empty(), "{:?}", output.unreachable);
+}
+
 /// `map()` must contextually drop earlier heap results when a later callback
 /// raises instead of leaking the native output vector.
 #[test]
@@ -2298,21 +2464,17 @@ fn timeout_in_a85decode_ignorechars() {
 
 /// A refused unpacked call must release the kwargs it never passed on.
 ///
-/// `f(*args, **kwargs)` owns the kwargs dict until the argument pack is built,
-/// and building it became fallible when the `*args` clone gained its size
-/// preflight. Dropping a `Value` does not decrement its refcount, so the kwargs
-/// were stranded on the heap, which `memory-model-checks` turns into a panic.
-/// The limit sits between the tuple's cost and the clone's estimate, so only
-/// the clone is refused.
+/// The named keyword-only parameter sends this call through the general binder.
+/// The limit admits the temporary tuple and refuses the argument buffer's spare slot.
 #[test]
 fn a_refused_unpacked_call_releases_its_kwargs() {
-    let code = "def f(*a, **k):\n    return len(a)\nt = tuple(range(10_000))\nf(*t, **{'a': [1, 2, 3]})";
+    let code = "def f(*a, flag=0, **k):\n    return len(a)\nt = tuple(range(10_000))\nf(*t, **{'a': [1, 2, 3]})";
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let limits = ResourceLimits::default().max_memory(10_000 * 16 + 8);
     let exc = ex
         .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
-        .expect_err("the *args clone should be refused");
+        .expect_err("the positional argument buffer reservation should be refused");
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
 }
 

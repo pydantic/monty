@@ -1549,7 +1549,15 @@ impl<'h> VM<'h> {
                 }
                 Opcode::BuildDict => {
                     let count = self.current_frame.fetch_u16() as usize;
-                    try_catch!(self, self.build_dict(count));
+                    if count == 0
+                        && countdown >= 3
+                        && let Some(result) = self.try_call_local_unpack(false)
+                    {
+                        countdown -= 3;
+                        handle_call_result!(self, result);
+                    } else {
+                        try_catch!(self, self.build_dict(count));
+                    }
                 }
                 Opcode::BuildSet => {
                     let count = self.current_frame.fetch_u16() as usize;
@@ -1567,14 +1575,35 @@ impl<'h> VM<'h> {
                     try_catch!(self, self.build_slice());
                 }
                 Opcode::ListExtend => {
-                    try_catch!(self, self.list_extend());
+                    // The fused call consumes the next two instructions. Leave
+                    // them to normal dispatch if either would run a checkpoint.
+                    if countdown >= 2
+                        && let Some(result) = self.try_call_unpacked_sequence()
+                    {
+                        countdown -= 2;
+                        handle_call_result!(self, result);
+                    } else if countdown >= 5
+                        && let Some(result) = self.try_call_local_unpack(true)
+                    {
+                        countdown -= 5;
+                        handle_call_result!(self, result);
+                    } else {
+                        try_catch!(self, self.list_extend());
+                    }
                 }
                 Opcode::ListToTuple => {
                     try_catch!(self, self.list_to_tuple());
                 }
                 Opcode::DictMerge => {
                     let func_name_id = self.current_frame.fetch_u16();
-                    try_catch!(self, self.dict_merge(func_name_id));
+                    if countdown >= 1
+                        && let Some(result) = self.try_call_unpacked_keywords()
+                    {
+                        countdown -= 1;
+                        handle_call_result!(self, result);
+                    } else {
+                        try_catch!(self, self.dict_merge(func_name_id));
+                    }
                 }
                 Opcode::MethodDictMerge => {
                     let func_name_id = self.current_frame.fetch_u16();
