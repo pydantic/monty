@@ -152,12 +152,12 @@ generate-api-docs: ## Generate the Rust API reference into docs/api/rust/ (gitig
 	cargo run -p monty-apidoc
 
 .PHONY: lint-py
-lint-py: dev-py ## Lint Python code with ruff
+lint-py: dev-py-bindings ## Lint Python code with ruff
 	uv run ruff format --check
 	uv run ruff check
-	# basedpyright type-checks examples/, so it needs that group's packages installed
-	uv run --group examples basedpyright
-	# mypy-stubtest requires a build of the python package, hence dev-py
+	# Type-check examples without pulling in the worker through the metapackage.
+	uv sync --only-group examples --no-install-workspace --inexact
+	uv run --no-sync basedpyright
 	uv run -m mypy.stubtest pydantic_monty._monty --ignore-disjoint-bases
 
 .PHONY: lint

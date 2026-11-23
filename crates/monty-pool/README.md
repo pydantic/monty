@@ -255,8 +255,8 @@ Its child `load` span stays open across any restored suspensions and parents the
 Raw forwarding and automatic recovery do not create snapshot API spans.
 `monty.turn.duration` and `monty.snapshot.bytes` retain the wire timing and size measurements.
 The API spans use standard tracing and OpenTelemetry status. Monty records outcomes under `monty.*`.
-Dump failures include bounded error text. Restore failures use the fixed status message
-`restore failed` to keep host paths and snapshot contents out of the trace.
+Dump failures include bounded error text. The restore API span uses the fixed error status
+`restore failed` so its status contains no host paths or snapshot contents.
 The configured provider owns vendor-specific metadata.
 
 The adapter configures a process-global Rust pipeline and returns a handle that creates each

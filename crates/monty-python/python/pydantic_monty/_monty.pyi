@@ -867,7 +867,8 @@ class MontySession:
 
         Blocks the calling thread (with the GIL released) while the worker
         runs; external functions, the `os` fallback, and print callbacks are
-        invoked in this process. Async external functions are not supported
+        invoked inline on the calling thread. Their context-variable changes
+        persist in the calling context. Async external functions are not supported
         here — use `AsyncMonty`.
 
         Arguments:
@@ -1077,7 +1078,7 @@ class AsyncMonty:
     """
     Async context manager owning a pool of `monty` subprocess workers.
 
-    The async counterpart of `Monty`: worker I/O runs off the event loop, and
+    The async counterpart of `Monty`: worker I/O is non-blocking, and
     external functions may be coroutines.
 
     ```python
@@ -1353,14 +1354,14 @@ class AsyncMontySession:
         """
         Execute one snippet in the worker and return its result.
 
-        Worker I/O runs off the event loop; external functions (the callable
-        entries in `external_lookup`) may be coroutines, awaited concurrently.
+        Synchronous callbacks run inline in the awaiting task and can change its
+        context variables. Host coroutine functions inherit that context in separate
+        tasks. Print callbacks must be synchronous; blocking callback code blocks
+        the event loop.
         See `MontySession.feed_run` for the shared error types.
 
-        Host callbacks run in copies of the caller's Python context. With tracing
-        enabled, telemetry emitted inside callbacks is parented to the corresponding
-        Monty operation: the execution span for prints, or the host-call span for
-        external functions. Async external functions retain that context across awaits.
+        With tracing enabled, callback telemetry is parented to the execution span
+        for prints or to the corresponding host-call span for other callbacks.
 
         Arguments:
             code: The Python snippet to execute; its trailing expression value
@@ -1707,7 +1708,7 @@ class FutureSnapshot:
 
 @final
 class AsyncFunctionSnapshot:
-    """Async sibling of `FunctionSnapshot`; `resume`/`resume_not_handled` are awaitable."""
+    """Async sibling of `FunctionSnapshot`; a resume claims it when the coroutine starts."""
 
     @property
     def allow_eager_await(self) -> bool:
@@ -1746,7 +1747,7 @@ class AsyncFunctionSnapshot:
 
 @final
 class AsyncNameLookupSnapshot:
-    """Async sibling of `NameLookupSnapshot`."""
+    """Async sibling of `NameLookupSnapshot`; a resume claims it when the coroutine starts."""
 
     @property
     def script_name(self) -> str: ...
@@ -1771,7 +1772,7 @@ class AsyncNameLookupSnapshot:
 
 @final
 class AsyncFutureSnapshot:
-    """Async sibling of `FutureSnapshot`."""
+    """Async sibling of `FutureSnapshot`; a resume claims it when the coroutine starts."""
 
     @property
     def script_name(self) -> str: ...
