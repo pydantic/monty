@@ -7,6 +7,7 @@ use super::{
     code::{Code, ExceptionEntry, HandlerKind, LocationEntry},
     compiler::CompileError,
     op::{Opcode, Operand},
+    subscription::{GlobalSubscript, LocalSubscript},
 };
 use crate::{intern::StringId, parse::CodeRange, value::Value};
 
@@ -389,6 +390,70 @@ impl CodeBuilder {
         } else {
             self.emit_u16(Opcode::StoreLocalW, slot)
         }
+    }
+
+    /// These encodings are no wider than the loads and subscript they replace.
+    pub fn emit_subscript_locals(
+        &mut self,
+        operands: LocalSubscript,
+        object_range: CodeRange,
+        key_range: CodeRange,
+    ) -> Result<(), CompileError> {
+        if self.is_dead() {
+            return Ok(());
+        }
+
+        let start = self.bytecode.len();
+        let (opcode, operand) = operands.encode();
+        self.emit_with_operand(opcode, operand)?;
+
+        // Interior source offsets distinguish an unbound operand from a subscription error.
+        for (offset, range) in [(1, object_range), (2, key_range)] {
+            let offset = u32::try_from(start + offset).map_err(|_| self.bytecode_too_large())?;
+            self.location_table.push(LocationEntry::new(offset, range, None));
+        }
+        Ok(())
+    }
+
+    /// Keeps operand-specific locations for errors raised before indexing.
+    pub fn emit_subscript_to_local(
+        &mut self,
+        object: u8,
+        key: u8,
+        destination: u8,
+        object_range: CodeRange,
+        key_range: CodeRange,
+    ) -> Result<(), CompileError> {
+        if self.is_dead() {
+            return Ok(());
+        }
+
+        let start = self.bytecode.len();
+        let operands = u16::from(object) | (u16::from(key) << 8);
+        self.emit_with_operand(Opcode::SubscrToLocal, Operand::U16U8(operands, destination))?;
+
+        for (offset, range) in [(1, object_range), (2, key_range)] {
+            let offset = u32::try_from(start + offset).map_err(|_| self.bytecode_too_large())?;
+            self.location_table.push(LocationEntry::new(offset, range, None));
+        }
+        Ok(())
+    }
+
+    /// Preserves the object-load location when a native global lookup falls back.
+    pub fn emit_subscript_global(
+        &mut self,
+        operand: GlobalSubscript,
+        object_range: CodeRange,
+    ) -> Result<(), CompileError> {
+        if self.is_dead() {
+            return Ok(());
+        }
+
+        let start = self.bytecode.len();
+        self.emit_u16(Opcode::LoadGlobalSubscr, operand.encode())?;
+        let offset = u32::try_from(start + 1).map_err(|_| self.bytecode_too_large())?;
+        self.location_table.push(LocationEntry::new(offset, object_range, None));
+        Ok(())
     }
 
     /// Adds a constant to the pool, returning its index.
