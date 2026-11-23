@@ -770,7 +770,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DequeIterator> {
         Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (deque_id, index, state) = {
             let iterator = self.get(vm.heap);
             (iterator.deque, iterator.index, iterator.state)
@@ -790,7 +790,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DequeIterator> {
         if item.is_some() {
             self.get_mut(vm.heap).index += 1;
         }
-        Ok(item)
+        Ok(item.map(CallResult::Value))
     }
 }
 

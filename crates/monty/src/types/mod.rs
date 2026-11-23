@@ -31,6 +31,7 @@ pub(crate) mod key_hash;
 pub mod list;
 pub mod long_int;
 pub mod lru_cache;
+pub(crate) mod map_filter;
 pub mod module;
 pub mod namedtuple;
 pub(crate) mod native;

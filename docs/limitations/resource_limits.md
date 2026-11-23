@@ -174,13 +174,15 @@ indistinguishable from a stack overflow.
     as one frame, so `await`-chains do not amplify depth.
 - Callbacks evaluated synchronously by the interpreter itself re-enter on the
     native Rust call stack rather than the heap-allocated frame stack used by
-    ordinary function calls. This includes `map()`, `filter()`,
+    ordinary function calls. This includes consuming `map()` or `filter()` through native loops such as `list()`,
     `sorted()`/`list.sort(key=...)`, `min()`/`max(key=...)`, recursive
     `__repr__`/`__str__`, non-plain-function `__init__` values that recurse
     during construction, and calling a `functools.partial`. Native re-entry is
     capped independently at a lower fixed depth than the 1000-frame Python
     limit, so Monty raises `RecursionError` before a native stack overflow would
-    abort the process. See the `__repr__`/`__str__` entry in [classes.md](classes.md) for
+    abort the process. This cap also applies when a `map` callback such as `next` advances another map inline,
+    even if the outer map is driven by a `for` loop.
+    See the `__repr__`/`__str__` entry in [classes.md](classes.md) for
     the main user-visible divergence this causes.
 - Operations that walk a nested container in Rust — `==`, `<`, `repr()`,
     `hash()`, `isinstance()`, `json.dumps()`, `copy.deepcopy()` — charge one

@@ -400,6 +400,8 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     code, cannot be told apart from an `exec()`, and keeps positions that can point a few lines early.
     Otherwise it refuses them as too old, and the session has to be rebuilt by replaying its feeds.
     The same bytes load in-process, in a subprocess and over gRPC.
+- **Restoring a dump does not pin builtin behavior.** For example, `map` and `filter` calls executed after restore now return lazy iterators, even in previously compiled functions.
+    Lists those calls produced before the dump remain lists.
 
 ## Async
 

@@ -49,6 +49,8 @@ pub(crate) enum CallResult {
     /// A defined function became the VM's current frame.
     /// Propagate or require synchronous completion; dropping this result does not pop the frame.
     FramePushed,
+    /// A private continuation finished by restoring its caller without delivering an operand.
+    CallerRestored,
     /// External function call requested - VM should pause and return to caller.
     External {
         /// The external function's name (interned or heap-owned).
@@ -180,7 +182,7 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
             }
             Self::OsCall(call) => call.drop_with(heap),
             Self::AttrLookup { effect, .. } => effect.drop_with(heap),
-            Self::FramePushed => {}
+            Self::FramePushed | Self::CallerRestored => {}
             Self::OsCallWithEffect { call, effect } => {
                 call.drop_with(heap);
                 // Discarded before it ever became a `FrameExit`.
@@ -492,7 +494,9 @@ impl<'h> VM<'h> {
                 return error;
             }
             CallResult::AwaitValue(_) => ExcType::not_implemented("cannot await a value in this synchronous context"),
-            CallResult::Value(_) | CallResult::FramePushed => unreachable!("completed calls are handled above"),
+            CallResult::Value(_) | CallResult::FramePushed | CallResult::CallerRestored => {
+                unreachable!("completed calls are handled above")
+            }
         };
         result.drop_with(self);
         error.into()
@@ -848,17 +852,7 @@ impl<'h> VM<'h> {
         let mut args_guard = DropGuard::new(args, self);
         let (_, vm) = args_guard.as_parts_mut();
         let interns = vm.interns;
-        let (function_id, overlay) = if let Some(id) = interns.frozen_function(function) {
-            (id, None)
-        } else {
-            let (id, overlay) = function.compile(interns)?;
-            (id, Some(overlay))
-        };
-        // No fallible operation or Python execution may intervene between publication and frame installation.
-        if let Some(overlay) = overlay {
-            overlay.commit();
-            interns.set_frozen_function(function, function_id);
-        }
+        let function_id = function.resolve(interns)?;
         let (args, vm) = args_guard.into_parts();
         let func = interns.get_function(function_id);
         assert_eq!(func.signature.exact_positional_count(), Some(N));
