@@ -3,15 +3,14 @@
 # Don't use this module directly. It is only for type checkers to use.
 
 import sys
+import typing_extensions
 from _collections_abc import dict_items, dict_keys, dict_values
 from abc import ABCMeta
 from collections.abc import Awaitable, Generator, Iterable, Mapping
 from typing import Any, ClassVar, Generic, TypeVar, overload
-
-import typing_extensions
 from typing_extensions import Never
 
-_T = TypeVar('_T')
+_T = TypeVar("_T")
 
 # Used for an undocumented mypy feature. Does not exist at runtime.
 promote = object()
@@ -65,7 +64,7 @@ class NamedTupleFallback(tuple[Any, ...]):
     def __init__(self, typename: str, fields: Iterable[tuple[str, Any]], /) -> None: ...
     @overload
     @typing_extensions.deprecated(
-        'Creating a typing.NamedTuple using keyword arguments is deprecated and support will be removed in Python 3.15'
+        "Creating a typing.NamedTuple using keyword arguments is deprecated and support will be removed in Python 3.15"
     )
     def __init__(self, typename: str, fields: None = None, /, **kwargs: Any) -> None: ...
     @classmethod
@@ -76,10 +75,10 @@ class NamedTupleFallback(tuple[Any, ...]):
         def __replace__(self, **kwargs: Any) -> typing_extensions.Self: ...
 
 # Non-default variations to accommodate couroutines, and `AwaitableGenerator` having a 4th type parameter.
-_S = TypeVar('_S')
-_YieldT_co = TypeVar('_YieldT_co', covariant=True)
-_SendT_nd_contra = TypeVar('_SendT_nd_contra', contravariant=True)
-_ReturnT_nd_co = TypeVar('_ReturnT_nd_co', covariant=True)
+_S = TypeVar("_S")
+_YieldT_co = TypeVar("_YieldT_co", covariant=True)
+_SendT_nd_contra = TypeVar("_SendT_nd_contra", contravariant=True)
+_ReturnT_nd_co = TypeVar("_ReturnT_nd_co", covariant=True)
 
 # The parameters correspond to Generator, but the 4th is the original type.
 class AwaitableGenerator(

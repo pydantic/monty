@@ -1,14 +1,15 @@
-//! Rounding helpers shared by immediate and heap-allocated numbers.
+//! Numeric helpers shared by immediate and heap-allocated numbers.
 
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{Pow, ToPrimitive, float::FloatCore};
+use smallvec::smallvec;
 
 use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::Heap,
-    types::{LongInt, long_int::bigint_true_divide},
+    types::{LongInt, allocate_tuple, long_int::bigint_true_divide},
     value::Value,
 };
 
@@ -174,4 +175,67 @@ fn round_float_to_digits_u128(mantissa: u64, exponent: i16, digits: i64) -> Opti
             .then_some(integer as f64)
     };
     Some(exact_float(numerator)? / exact_float(denominator)?)
+}
+
+/// Returns `true` if `value` is finite and has an integral value (`float.is_integer()`).
+#[inline]
+#[expect(
+    clippy::float_cmp,
+    reason = "integral float definition requires exact equality with truncation"
+)]
+pub(crate) fn float_is_integer(value: f64) -> bool {
+    value.is_finite() && value.trunc() == value
+}
+
+/// `abs(f).as_integer_ratio()` as `(n, k)` with denominator `2**k`, in lowest terms.
+///
+/// Caller must ensure `value` is finite and non-negative (`value.abs()`).
+pub(crate) fn float_as_ratio(value: f64) -> (BigInt, u32) {
+    if value == 0.0 {
+        return (BigInt::from(0u8), 0);
+    }
+    let bits = value.to_bits();
+    let exponent = i32::try_from((bits >> 52) & 0x7ff).expect("11-bit field");
+    let fraction = bits & ((1 << 52) - 1);
+    let (mut mantissa, mut exp2) = if exponent == 0 {
+        (fraction, -1074)
+    } else {
+        (fraction | (1 << 52), exponent - 1075)
+    };
+    // Reduce to lowest terms: strip the factors of two the denominator shares.
+    while exp2 < 0 && mantissa & 1 == 0 {
+        mantissa >>= 1;
+        exp2 += 1;
+    }
+    if exp2 >= 0 {
+        (BigInt::from(mantissa) << exp2.unsigned_abs(), 0)
+    } else {
+        (BigInt::from(mantissa), exp2.unsigned_abs())
+    }
+}
+
+/// Computes `float.as_integer_ratio()`, returning `(numerator, denominator)` in lowest terms.
+pub(crate) fn float_as_integer_ratio(value: f64, heap: &Heap) -> RunResult<Value> {
+    if value.is_infinite() {
+        return Err(ExcType::overflow_error("cannot convert Infinity to integer ratio"));
+    }
+    if value.is_nan() {
+        return Err(ExcType::value_error("cannot convert NaN to integer ratio"));
+    }
+    if value == 0.0 {
+        return Ok(allocate_tuple(smallvec![Value::Int(0), Value::Int(1)], heap));
+    }
+    let (mut numerator, k) = float_as_ratio(value.abs());
+    if value.is_sign_negative() {
+        numerator = -numerator;
+    }
+    let num_val = LongInt::new(numerator).into_value(heap);
+    let den_val = if k == 0 {
+        Value::Int(1)
+    } else if k < 63 {
+        Value::Int(1_i64 << k)
+    } else {
+        LongInt::new(BigInt::from(1u8) << k).into_value(heap)
+    };
+    Ok(allocate_tuple(smallvec![num_val, den_val], heap))
 }

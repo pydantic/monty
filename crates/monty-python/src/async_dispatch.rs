@@ -1,7 +1,7 @@
 //! Async-dispatch helpers shared by the `AsyncMonty` drive loop.
 //!
 //! Eligible coroutines are awaited at their call suspension. Other coroutines
-//! are spawned as tokio tasks and resolved in batches when the sandbox blocks.
+//! are collected and resolved in batches when the sandbox blocks.
 //! System sleeps use the same scheduling with tokio timers.
 
 use std::{
@@ -10,55 +10,15 @@ use std::{
     time::Duration,
 };
 
-use futures_util::future::try_join_all;
+use futures_util::{FutureExt, StreamExt, future::try_join_all, stream::FuturesUnordered};
 use monty_pool::ResumeValue;
 use monty_proto::python::InstanceStore;
-use monty_types::{CallArgs, ExtFunctionResult, MontyObject, MontyUuid, OsFunctionCall};
+use monty_types::{ExtFunctionResult, MontyObject, OsFunctionCall};
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
-use pyo3_async_runtimes::{into_future_with_locals, tokio::get_current_locals};
-use tokio::{
-    task::{JoinError, JoinSet},
-    time::sleep,
-};
+use pyo3_async_runtimes::{TaskLocals, into_future_with_locals};
+use tokio::time::sleep;
 
-use crate::external::{
-    AfterModule, CallResult, ExternalLookup, HostNames, Staged, py_err_to_ext_result, py_obj_to_ext_result,
-};
-
-/// Answers an intercepted OS call (see
-/// [`is_intercepted_os_call`](crate::external::is_intercepted_os_call)): imports and stubs
-/// from the host's names and modules, type hints from the named function or the `ClassType`
-/// in `instances`. Returns `CallResult::ModuleCoroutine` when a factory must be awaited first.
-pub(crate) fn dispatch_intercepted_os_call(
-    function_name: &str,
-    args: &CallArgs,
-    names: &HostNames,
-    instances: &InstanceStore,
-) -> CallResult {
-    Python::attach(|py| {
-        ExternalLookup::new(py, names, instances)
-            .intercepted_os_call_or_coroutine(function_name, args)
-            .expect("only an intercepted OS call is dispatched here")
-    })
-}
-
-/// Dispatches an object method or named external function, returning coroutines for
-/// the caller to schedule and module awaitables for it to resolve first.
-pub(crate) fn dispatch_function_call(
-    function_name: &str,
-    object_id: Option<MontyUuid>,
-    args: &CallArgs,
-    names: &HostNames,
-    instances: &InstanceStore,
-) -> CallResult {
-    Python::attach(|py| {
-        let lookup = ExternalLookup::new(py, names, instances);
-        match object_id {
-            Some(object_id) => lookup.call_object_or_coroutine(function_name, &object_id, args),
-            None => lookup.call_or_coroutine(function_name, args),
-        }
-    })
-}
+use crate::external::{AfterModule, ExternalLookup, HostNames, Staged, py_err_to_ext_result, py_obj_to_ext_result};
 
 /// How a host coroutine answers a sandbox call, chosen by whether the sandbox
 /// code `await`s that call and so expects an awaitable rather than a value.
@@ -69,7 +29,7 @@ pub(crate) enum CoroutineMode {
     /// `ResolveFutures` round trip.
     Eager,
     /// The sandbox awaits the call and may run other tasks meanwhile: the
-    /// coroutine is spawned and the call answered with a future, resolved later.
+    /// coroutine is scheduled and the call answered with a future, resolved later.
     Future,
     /// The sandbox does not await the call (`time.sleep`, `Path.read_text`), so a
     /// future would be an error: the host awaits the coroutine now and answers
@@ -95,19 +55,21 @@ impl CoroutineMode {
     }
 }
 
-/// An answer the drive loop can await or spawn.
+/// An answer the drive loop can await directly or collect with other pending calls.
 pub(crate) type AnswerFuture = Pin<Box<dyn Future<Output = ExtFunctionResult> + Send>>;
+
+/// Concurrent host answers polled by the driver, so Python conversion stays on its thread.
+pub(crate) type PendingCalls = FuturesUnordered<Pin<Box<dyn Future<Output = (u32, ExtFunctionResult)> + Send>>>;
 
 /// A module factory's awaitable, scheduled on the caller's event loop.
 type ModuleFuture = Pin<Box<dyn Future<Output = PyResult<Py<PyAny>>> + Send>>;
 
-/// Converts the coroutine a host callback answered `call_id` with, spawning it
-/// into `join_set` or handing it back to await outside the callback context.
+/// Schedules a host coroutine and either collects its answer or awaits it at the call.
 pub(crate) fn dispatch_coroutine(
     coro: Py<PyAny>,
     call_id: u32,
     mode: CoroutineMode,
-    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    join_set: &mut PendingCalls,
     instances: &InstanceStore,
 ) -> PyResult<Dispatched<AnswerFuture>> {
     let future = coroutine_future(coro, instances)?;
@@ -118,15 +80,6 @@ pub(crate) fn dispatch_coroutine(
 /// future; it is already scheduled on the event loop, so it runs unpolled.
 pub(crate) fn coroutine_answer(coro: Py<PyAny>, instances: &InstanceStore) -> PyResult<AnswerFuture> {
     Ok(Box::pin(coroutine_future(coro, instances)?))
-}
-
-/// Schedules module factories for the caller to await; see [`PendingModule`].
-pub(crate) fn dispatch_module_coroutine(
-    names: Vec<String>,
-    coros: Vec<Py<PyAny>>,
-    then: AfterModule,
-) -> PyResult<Dispatched<AnswerFuture>> {
-    pending_module(names, coros, then).map(Dispatched::Module)
 }
 
 /// Schedules module factories, returning them for the caller to settle.
@@ -173,7 +126,7 @@ impl SettledModule {
         py: Python<'_>,
         call_id: u32,
         mode: CoroutineMode,
-        join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+        join_set: &mut PendingCalls,
         names: &HostNames,
         instances: &InstanceStore,
     ) -> PyResult<Dispatched<AnswerFuture>> {
@@ -213,33 +166,34 @@ pub(crate) fn dispatch_system_sleep(
     delay: Duration,
     call_id: u32,
     mode: CoroutineMode,
-    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    join_set: &mut PendingCalls,
 ) -> Dispatched<AnswerFuture> {
+    let timer = sleep(delay);
     let wait = async move {
-        sleep(delay).await;
+        timer.await;
         ExtFunctionResult::Return(MontyObject::none())
     };
     dispatch_future(Box::pin(wait), call_id, mode, join_set)
 }
 
-/// Spawns deferred answers; returns other futures for awaiting outside the callback context.
+/// Collects deferred answers; returns eager answers for awaiting outside the span guard.
 fn dispatch_future(
     future: AnswerFuture,
     call_id: u32,
     mode: CoroutineMode,
-    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    join_set: &mut PendingCalls,
 ) -> Dispatched<AnswerFuture> {
     match mode {
         CoroutineMode::Eager => Dispatched::Eager(future),
         CoroutineMode::Future => {
-            join_set.spawn(async move { (call_id, future.await) });
+            join_set.push(Box::pin(async move { (call_id, future.await) }));
             Dispatched::Done(ResumeValue::Future)
         }
         CoroutineMode::AsValue => Dispatched::AsValue(future),
     }
 }
 
-/// Converts a coroutine under the current asyncio task-locals, for awaiting or spawning.
+/// Converts a scheduled host coroutine's return value on the driver's thread.
 fn coroutine_future(
     coro: Py<PyAny>,
     instances: &InstanceStore,
@@ -257,11 +211,10 @@ fn coroutine_future(
     })
 }
 
-/// Schedules `coro` on the caller's event loop, under the task-locals the
-/// current `future_into_py` scope established.
+/// Schedules `coro` on the running loop with a copy of the current Python context.
 pub(crate) fn python_future(coro: Py<PyAny>) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>> + Send + use<>> {
     Python::attach(|py| {
-        let locals = get_current_locals(py)?.copy_context(py)?;
+        let locals = TaskLocals::with_running_loop(py)?.copy_context(py)?;
         into_future_with_locals(&locals, coro.into_bound(py))
     })
 }
@@ -279,33 +232,16 @@ pub(crate) enum Dispatched<F> {
     Module(PendingModule),
 }
 
-/// Waits for at least one `JoinSet` task to complete, then drains any other
-/// immediately-ready results to batch them into one worker resume. Delivering
-/// any completed task is sound: the sandbox resolves futures by `call_id` and
-/// re-emits `ResolveFutures` if it still needs a different one.
-pub(crate) async fn wait_for_futures(
-    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
-) -> PyResult<Vec<(u32, ExtFunctionResult)>> {
-    let mut results = Vec::new();
-
-    // Wait for at least one task to complete
+/// Waits for one host answer, then batches every other immediately-ready answer.
+/// The sandbox resolves by `call_id` and asks again if it still needs a different call.
+pub(crate) async fn wait_for_futures(join_set: &mut PendingCalls) -> PyResult<Vec<(u32, ExtFunctionResult)>> {
     let first = join_set
-        .join_next()
+        .next()
         .await
-        .ok_or_else(|| PyRuntimeError::new_err("No pending async tasks but ResolveFutures requested"))?
-        .map_err(join_error_to_py)?;
-    results.push(first);
-
-    // Drain any other immediately-ready results
-    while let Some(result) = join_set.try_join_next() {
-        results.push(result.map_err(join_error_to_py)?);
+        .ok_or_else(|| PyRuntimeError::new_err("No pending async tasks but ResolveFutures requested"))?;
+    let mut results = vec![first];
+    while let Some(Some(result)) = join_set.next().now_or_never() {
+        results.push(result);
     }
-
     Ok(results)
-}
-
-/// Converts a `tokio::task::JoinError` to a `PyErr`.
-#[expect(clippy::needless_pass_by_value)]
-pub(crate) fn join_error_to_py(err: JoinError) -> PyErr {
-    PyRuntimeError::new_err(format!("Async task failed: {err}"))
 }

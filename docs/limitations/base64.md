@@ -10,14 +10,8 @@ types and error messages match CPython 3.14 subject to the divergences below.
 
 ## Not implemented
 
-- `base64.encode(input, output)` and `base64.decode(input, output)`, which read
-    and write binary file objects. These are pure Python in CPython, so they call
-    `read`/`readline`/`write` on whatever they are handed; a Monty builtin
-    reaching back into Python runs the call to completion and cannot pause, and
-    reading a real file is a suspension out to the host. They would therefore
-    work on a duck-typed object and fail on the file `open()` returns — the same
-    restriction `filter` and `sorted(key=)` carry. Accessing them raises
-    `AttributeError`.
+- `base64.encode(input, output)` and `base64.decode(input, output)`, which read and write binary file objects.
+    Accessing them raises `AttributeError`.
 - The `python -m base64` command line interface.
 
 ## `a85encode` / `a85decode`

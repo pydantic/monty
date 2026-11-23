@@ -633,6 +633,21 @@ assert list(itertools.starmap(pow, [(2, 5), (3, 2)])) == [32, 9]
 assert list(itertools.starmap(lambda a, b: a + b, ['ab', 'cd'])) == ['ab', 'cd']
 assert list(itertools.starmap(max, [[1, 5, 3]])) == [5]
 assert list(itertools.starmap(pow, [])) == []
+
+
+def stop_star():
+    raise StopIteration('starmap callback')
+
+
+star = itertools.starmap(stop_star, [(), (), (), ()])
+try:
+    next(star)
+    assert False, 'expected callback exhaustion'
+except StopIteration as exc:
+    assert str(exc) == 'starmap callback'
+assert next(star, 23) == 23
+assert [x for x in star] == []
+assert list(star) == []
 # Items are spread, so a single-element item calls a single-argument function.
 assert list(itertools.starmap(abs, [(-2,), (3,)])) == [2, 3]
 

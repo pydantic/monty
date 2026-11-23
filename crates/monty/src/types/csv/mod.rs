@@ -141,7 +141,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
         }
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         match self.get(vm.heap).kind() {
             Kind::Reader => reader::next(self, vm),
             Kind::DictReader => dict::reader_next(self, vm),
@@ -149,6 +149,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
                 Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
             }
         }
+        .map(|item| item.map(CallResult::Value))
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {

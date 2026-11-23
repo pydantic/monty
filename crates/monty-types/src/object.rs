@@ -1314,6 +1314,10 @@ pub enum MontyType {
     ListIterator,
     #[strum(serialize = "callable_iterator")]
     CallableIterator,
+    /// The lazy builtin `map` iterator type.
+    Map,
+    /// The lazy builtin `filter` iterator type.
+    Filter,
     Tuple,
     NamedTuple,
     Dict,

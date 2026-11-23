@@ -85,9 +85,7 @@ partial = itertools.repeat(5, 4)
 next(partial)
 assert list(partial) == [5, 5, 5]
 assert list(itertools.repeat(1, 0)) == []
-# `zip` stops at the shortest input, so it is the one builder that can safely
-# take an infinite adaptor — `map`/`filter`/`enumerate` are eager in Monty and
-# would never return (see limitations/itertools.md).
+# Eager `zip` stays bounded when one input is finite; `enumerate` would not.
 assert list(zip(itertools.count(10), 'ab')) == [(10, 'a'), (11, 'b')]
 assert list(zip(itertools.repeat('z'), [1, 2])) == [('z', 1), ('z', 2)]
 gc.collect()

@@ -12,7 +12,7 @@ use pyo3::{exceptions::PyRuntimeError, prelude::*};
 
 use crate::{
     async_dispatch::python_future,
-    callback_context::CallbackContext,
+    callback_context,
     external::{py_err_to_ext_result, py_obj_to_ext_result},
     get_not_handled,
     pool::{OsDispatch, SharedCheckout, block_on_sync, dispatch_os_parts, pool_err_to_py},
@@ -39,7 +39,7 @@ pub(crate) fn import_search(function_name: &str, args: &CallArgs) -> Option<Impo
 
 /// Searches for `search`'s file for the sync `Monty` drives. An async `os=`
 /// handler raises, as for any other OS call outside `AsyncMonty`.
-/// Call with the callback context entered, as for `os=` calls.
+/// Call with the suspension's span activated, as for `os=` calls.
 pub(crate) fn find_import_file_sync(
     py: Python<'_>,
     search: &ImportArgs,
@@ -69,18 +69,17 @@ pub(crate) fn find_import_file_sync(
 
 /// Searches for `search`'s file for the `AsyncMonty` drives, awaiting an
 /// async `os=` handler's answer in place. Each handler call runs under
-/// `callback_context`; the awaits and mount reads run outside it.
+/// the suspension's span; the awaits and mount reads run outside its guard.
 pub(crate) async fn find_import_file_async(
     search: &ImportArgs,
     os: Option<&Py<PyAny>>,
     instances: &InstanceStore,
     checkout: &SharedCheckout,
-    callback_context: &CallbackContext,
     native: &opentelemetry::Context,
 ) -> PyResult<ResumeValue> {
     for path in search.candidates() {
         let dispatched = Python::attach(|py| {
-            let _guard = callback_context.enter(py, native)?;
+            let _guard = callback_context::enter(py, native);
             PyResult::Ok(dispatch_os_parts(
                 py,
                 READ_TEXT,

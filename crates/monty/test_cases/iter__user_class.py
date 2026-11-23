@@ -35,6 +35,48 @@ for x in Countdown(2):
     collected.append(x)
 assert collected == [2, 1]
 
+
+# === Only advancement consumes StopIteration ===
+def stop():
+    raise StopIteration('not exhaustion')
+
+
+class NoStart:
+    def __iter__(self):
+        return stop()
+
+
+for action in (
+    lambda: [x for x in NoStart()],
+    lambda: [x for x, y in [NoStart()]],
+    lambda: [stop() for x in Countdown(1)],
+    lambda: [x for x in Countdown(1) if stop()],
+):
+    try:
+        action()
+        assert False, 'expected StopIteration outside advancement'
+    except StopIteration as exc:
+        assert str(exc) == 'not exhaustion'
+
+try:
+    for x in Countdown(1):
+        stop()
+    assert False, 'expected StopIteration from loop body'
+except StopIteration as exc:
+    assert str(exc) == 'not exhaustion'
+
+# Exhaustion is a branch, not an except suite: a bare raise still sees the outer exception.
+try:
+    try:
+        raise ValueError('outer')
+    except ValueError:
+        for x in Countdown(0):
+            assert False, 'empty iterator yielded'
+        else:
+            raise
+except ValueError as exc:
+    assert str(exc) == 'outer'
+
 # === iter() interposes no wrapper ===
 c = Countdown(2)
 assert iter(c) is c

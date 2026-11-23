@@ -1,4 +1,5 @@
 import json
+from collections import namedtuple
 
 # === indent edge cases ===
 assert json.dumps([1, 2], indent=False) == '[\n1,\n2\n]'
@@ -20,6 +21,8 @@ assert json.dumps([1, 2], separators=(' , ', ' : ')) == '[1 , 2]'
 
 # === separators as list ===
 assert json.dumps({'a': 1}, separators=[',', ':']) == '{"a":1}'
+Separators = namedtuple('Separators', 'item key')
+assert json.dumps({'a': 1}, separators=Separators(',', ':')) == '{"a":1}'
 
 # === indent with explicit separators ===
 assert json.dumps({'a': 1}, indent=2, separators=(',', ': ')) == '{\n  "a": 1\n}'

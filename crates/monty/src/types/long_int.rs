@@ -225,6 +225,16 @@ impl<'h> PyInt<'h> {
             },
         )
     }
+    /// Computes `int.as_integer_ratio()`, returning `(self, 1)`.
+    pub(crate) fn as_integer_ratio(&self, vm: &VM<'h>) -> Value {
+        let num = match self {
+            Self::Small(value) => Value::Int(*value),
+            Self::Interned(id) => Value::InternLongInt(*id),
+            Self::Heap(value) => value.clone_value(vm.heap),
+        };
+        allocate_tuple(smallvec![num, Value::Int(1)], vm.heap)
+    }
+
     /// Implements `int.to_bytes(length=1, byteorder='big', *, signed=False)`.
     pub(crate) fn to_bytes(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let IntToBytesArgs {
@@ -575,6 +585,14 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
             Some(StaticStrings::BitCount) => {
                 args.check_zero_args("int.bit_count", vm.heap)?;
                 Ok(CallResult::Value(self.bit_count(vm)))
+            }
+            Some(StaticStrings::AsIntegerRatio) => {
+                args.check_zero_args("int.as_integer_ratio", vm.heap)?;
+                Ok(CallResult::Value(self.as_integer_ratio(vm)))
+            }
+            Some(StaticStrings::IsInteger) => {
+                args.check_zero_args("int.is_integer", vm.heap)?;
+                Ok(CallResult::Value(Value::Bool(true)))
             }
             Some(StaticStrings::ToBytes) => self.to_bytes(args, vm).map(CallResult::Value),
             Some(StaticStrings::FromBytes) => int_from_bytes(args, false, vm).map(CallResult::Value),

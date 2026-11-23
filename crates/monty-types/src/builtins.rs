@@ -54,6 +54,7 @@ pub enum BuiltinsFunctions {
     // Dir,
     Divmod = 5,
     Enumerate = 6,
+    // Legacy bytecode operand; new programs resolve filter as a type.
     Filter = 7,
     // float - handled by Type enum
     // Format - appended below
@@ -71,6 +72,7 @@ pub enum BuiltinsFunctions {
     // Iter - handled by Type enum
     Len = 14,
     // list - handled by Type enum
+    // Legacy bytecode operand; new programs resolve map as a type.
     Map = 15,
     Max = 16,
     // memoryview - handled by Type enum

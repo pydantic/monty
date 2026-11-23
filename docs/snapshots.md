@@ -400,11 +400,14 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     code, cannot be told apart from an `exec()`, and keeps positions that can point a few lines early.
     Otherwise it refuses them as too old, and the session has to be rebuilt by replaying its feeds.
     The same bytes load in-process, in a subprocess and over gRPC.
+- **Restoring a dump does not pin builtin behavior.** For example, `map` and `filter` calls executed after restore now return lazy iterators, even in previously compiled functions.
+    Lists those calls produced before the dump remain lists.
 
 ## Async
 
 [`AsyncMonty`][pydantic_monty.AsyncMonty] sessions expose the same `feed_start`, `load_session`, `load_snapshot` and `dump`, with awaitable
 `resume(...)` and `resume_auto()`.
+Creating a resume coroutine does not claim the snapshot; the first resume to start running claims it after validation.
 A coroutine host function, or a coroutine answer to `asyncio.sleep()` under `os_policy={'sleep': 'call_host'}`, is awaited directly by `resume_auto()` when the
 snapshot's `allow_eager_await` is true,
 which it is for a call that is awaited immediately while no other sandbox task can run and no external future is pending.
