@@ -2704,7 +2704,8 @@ pub(crate) fn bytes_maketrans(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Val
     }
 
     let mut table: [u8; 256] = array::from_fn(|i| u8::try_from(i).unwrap_or(0));
-    for (&f, &t) in frm.iter().zip(to.iter()) {
+    for (i, (&f, &t)) in frm.iter().zip(to.iter()).enumerate() {
+        vm.heap.tracker.check_time_every(i)?;
         table[usize::from(f)] = t;
     }
 
