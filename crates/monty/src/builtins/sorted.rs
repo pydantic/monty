@@ -12,15 +12,14 @@ use crate::{
 };
 
 fn clone_items_with_checks(items: SequenceItems<'_>, heap: &Heap) -> Result<Vec<Value>, Box<(Vec<Value>, RunError)>> {
-    let tracker = &heap.tracker;
     let len = items.len();
-    if let Err(e) = check_estimated_size(len.saturating_mul(VALUE_SIZE), tracker) {
+    if let Err(e) = check_estimated_size(len.saturating_mul(VALUE_SIZE), &heap.tracker) {
         return Err(Box::new((Vec::new(), e.into())));
     }
     let mut cloned = Vec::with_capacity(len);
     for (i, item) in items.cloned(heap).enumerate() {
         cloned.push(item);
-        if let Err(e) = tracker.check_time_every(i) {
+        if let Err(e) = heap.tracker.check_time_every(i) {
             return Err(Box::new((cloned, e.into())));
         }
     }
@@ -47,7 +46,10 @@ pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     let iterable = pos_iter.next().expect("checked pos_count == 1");
 
-    let items = if let Some(items) = SequenceItems::list_or_tuple(&iterable, vm.heap) {
+    let direct = SequenceItems::from_value_if(&iterable, vm.heap, |data| {
+        matches!(data, HeapData::List(_) | HeapData::Tuple(_))
+    });
+    let items = if let Some(items) = direct {
         let res = clone_items_with_checks(items, vm.heap);
         iterable.drop_with(vm);
         match res {

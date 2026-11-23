@@ -13,10 +13,25 @@ impl<'a> SequenceItems<'a> {
         Self(items)
     }
 
-    pub(crate) fn list_or_tuple(value: &Value, heap: &'a Heap) -> Option<Self> {
-        match heap.get(value.ref_id()?) {
+    /// Borrows list, tuple, and named tuple elements without invoking Python iteration.
+    pub(crate) fn from_value(value: &Value, heap: &'a Heap) -> Option<Self> {
+        Self::from_value_if(value, heap, |_| true)
+    }
+
+    /// Applies the caller's type restriction before borrowing sequence elements.
+    pub(crate) fn from_value_if(
+        value: &Value,
+        heap: &'a Heap,
+        accepts: impl FnOnce(&HeapData) -> bool,
+    ) -> Option<Self> {
+        let data = heap.get(value.ref_id()?);
+        if !accepts(data) {
+            return None;
+        }
+        match data {
             HeapData::List(list) => Some(list.items()),
             HeapData::Tuple(tuple) => Some(Self::from_slice(tuple.as_slice())),
+            HeapData::NamedTuple(tuple) => Some(Self::from_slice(tuple.items())),
             _ => None,
         }
     }

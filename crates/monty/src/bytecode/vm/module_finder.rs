@@ -333,7 +333,9 @@ impl VM<'_> {
     /// working directory, skipping anything that is not a `str` or that holds
     /// a NUL byte (the host skips those too), up to the [`MAX_SEARCH_DIRS`] it searches.
     fn search_path(&self, path: &Value) -> Vec<String> {
-        let Some(dirs) = SequenceItems::list_or_tuple(path, self.heap) else {
+        let Some(dirs) = SequenceItems::from_value_if(path, self.heap, |data| {
+            matches!(data, HeapData::List(_) | HeapData::Tuple(_))
+        }) else {
             return Vec::new();
         };
         dirs.filter_map(|dir| {

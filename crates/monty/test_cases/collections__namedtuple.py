@@ -56,6 +56,13 @@ assert repr(Point('a', 'b')) == "Point(x='a', y='b')", 'repr uses element repr'
 # === Tuple semantics ===
 assert p == (11, 22), 'namedtuple equals equivalent plain tuple'
 assert (11, 22) == p, 'plain tuple equals equivalent namedtuple'
+assert p in {11: 22}.items()
+assert [11, 22] not in {11: 22}.items()
+try:
+    first, = p
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'too many values to unpack (expected 1)'
 assert Point(1, 2) == Point(1, 2), 'namedtuples with equal fields are equal'
 assert Point(1, 2) != Point(1, 3), 'namedtuples with differing fields are unequal'
 assert len(p) == 2, 'len is the field count'

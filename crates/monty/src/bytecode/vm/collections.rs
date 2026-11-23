@@ -4,7 +4,7 @@ use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
     intern::StringId,
     resource_checks::check_estimated_size,
     types::{
@@ -477,7 +477,7 @@ impl VM<'_> {
         defer_drop!(value, this);
 
         // Fast path: tuple, list, push onto stack without a temporary vector.
-        if let Some(items) = SequenceItems::list_or_tuple(value, this.heap) {
+        if let Some(items) = exact_sequence_items(value, this.heap) {
             if items.len() != count {
                 return Err(ExcType::unpack_size_error(count, items.len()));
             }
@@ -579,7 +579,7 @@ fn unpack_ex_too_few_error(min_needed: usize, actual: usize) -> RunError {
 /// endless iterable still fails.
 pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
     // Fast path: tuple, list; unpack without iterator.
-    if let Some(items) = SequenceItems::list_or_tuple(value, vm.heap) {
+    if let Some(items) = exact_sequence_items(value, vm.heap) {
         if items.len() != count {
             return Err(ExcType::unpack_size_error(count, items.len()));
         }
@@ -617,6 +617,13 @@ pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunR
         items.drop_with(vm);
         Err(err)
     }
+}
+
+/// Only exact lists and tuples report the known length when unpacking too many items.
+fn exact_sequence_items<'a>(value: &Value, heap: &'a Heap) -> Option<SequenceItems<'a>> {
+    SequenceItems::from_value_if(value, heap, |data| {
+        matches!(data, HeapData::List(_) | HeapData::Tuple(_))
+    })
 }
 
 /// Creates the "too many values" ValueError when the total is unknown.

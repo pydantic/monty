@@ -235,9 +235,8 @@ fn from_tuple(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decim
         Value::Int(1) | Value::Bool(true) => true,
         _ => return Err(ExcType::value_error("sign must be an integer with the value 0 or 1")),
     };
-    let digit_values = sequence_items(digits, vm)
-        .filter(|_| !matches!(digits, Value::InternString(_)))
-        .ok_or_else(|| ExcType::value_error("coefficient must be a tuple of digits"))?;
+    let digit_values =
+        sequence_items(digits, vm).ok_or_else(|| ExcType::value_error("coefficient must be a tuple of digits"))?;
     defer_drop!(digit_values, vm);
     let mut coeff = String::with_capacity(digit_values.len());
     for digit in digit_values {
@@ -287,12 +286,7 @@ fn from_tuple(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decim
 }
 
 fn sequence_items(value: &Value, vm: &VM<'_>) -> Option<Vec<Value>> {
-    let items = match vm.heap.get(value.ref_id()?) {
-        HeapData::Tuple(tuple) => SequenceItems::from_slice(tuple.as_slice()),
-        HeapData::List(list) => list.items(),
-        HeapData::NamedTuple(tuple) => SequenceItems::from_slice(tuple.items()),
-        _ => return None,
-    };
+    let items = SequenceItems::from_value(value, vm.heap)?;
     Some(items.cloned(vm.heap).collect())
 }
 
