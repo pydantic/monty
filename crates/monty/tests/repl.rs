@@ -918,6 +918,20 @@ fn repl_frozen_function_dump_bytes_are_stable() {
     }
 }
 
+/// Native map callbacks share a bounded dispatch stack; unwinding releases the budget for later calls.
+#[test]
+fn repl_nested_native_map_callbacks() {
+    let (mut repl, _) = init_repl(
+        "def nested(depth):\n    it = iter([42])\n    for _ in range(depth):\n        it = map(next, [it])\n    return next(it)",
+    );
+    for _ in 0..2 {
+        let error = feed_run_print(&mut repl, "nested(16)").unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::RecursionError);
+        assert_eq!(error.message().unwrap(), "maximum recursion depth exceeded");
+        assert_eq!(feed_run_print(&mut repl, "nested(3)").unwrap(), MontyObject::int(42));
+    }
+}
+
 /// A frozen frame is published even when the recursion limit rejects its first user callback.
 #[test]
 fn repl_frozen_admission_survives_callback_recursion_error() {

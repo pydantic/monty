@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::{Builtins, BuiltinsFunctions},
-    bytecode::{CallResult, VM},
+    bytecode::{CallResult, RunReentryGuard, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     frozen::{FrozenFunction, FrozenFunctions},
@@ -178,11 +178,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, MapFilter> {
                 {
                     let function = function.clone_with_heap(vm);
                     defer_drop!(function, vm);
-                    // There is no work after the callback, so it can suspend without a map frame.
-                    return iterator
-                        .next_sync(vm)?
-                        .map(|item| vm.call_function(function, ArgValues::One(item)))
-                        .transpose();
+                    let Some(item) = iterator.next_sync(vm)? else {
+                        return Ok(None);
+                    };
+                    // A builtin callback can re-enter map without pushing a frame. Charge dispatch only:
+                    // a pushed frame or host call will resume after the native stack has unwound.
+                    let mut item = DropGuard::new(item, vm);
+                    item.ctx().enter_run_reentry()?;
+                    let (item, vm) = item.into_parts();
+                    return RunReentryGuard::new(vm)
+                        .call_function(function, ArgValues::One(item))
+                        .map(Some);
                 }
                 let args = [
                     function.clone_with_heap(vm),
