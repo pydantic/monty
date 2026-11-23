@@ -1,11 +1,11 @@
 //! Resource limits: the [`ResourceTracker`] used by the interpreter heap/VM
 //! and its [`ResourceLimits`] configuration.
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use std::hint;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use std::thread;
-#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+#[cfg(all(target_family = "wasm", not(target_os = "unknown")))]
 use std::time::Instant;
 use std::{
     cell::Cell,
@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(target_family = "wasm", target_os = "unknown"))]
 use web_time::Instant;
 
 mod execution_clock;
@@ -850,7 +850,7 @@ fn probe_memory() -> usize {
         .saturating_sub(BASELINE_MEMORY.load(Ordering::Relaxed))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn block_for(duration: Duration) {
     thread::sleep(duration);
 }
@@ -859,7 +859,7 @@ fn block_for(duration: Duration) {
 /// `std::thread::sleep` needs `wasi:io/poll`, which a browser host serves
 /// only asynchronously. Only standard execution waits here; the wasm worker
 /// suspends its sleeps to the JavaScript host instead.
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn block_for(duration: Duration) {
     let started = Instant::now();
     while started.elapsed() < duration {
