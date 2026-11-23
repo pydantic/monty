@@ -225,7 +225,10 @@ fn construct(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decima
 
 /// `Decimal((sign, digits, exponent))`, with C `_decimal`'s validation.
 fn from_tuple(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decimal> {
-    let items = sequence_items(value, vm).expect("caller checked for a sequence");
+    let items: Vec<_> = SequenceItems::from_value(value, vm.heap)
+        .expect("caller checked for a sequence")
+        .cloned(vm.heap)
+        .collect();
     defer_drop!(items, vm);
     let [sign, digits, exponent] = items.as_slice() else {
         return Err(ExcType::value_error("argument must be a sequence of length 3"));
@@ -235,8 +238,10 @@ fn from_tuple(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decim
         Value::Int(1) | Value::Bool(true) => true,
         _ => return Err(ExcType::value_error("sign must be an integer with the value 0 or 1")),
     };
-    let digit_values =
-        sequence_items(digits, vm).ok_or_else(|| ExcType::value_error("coefficient must be a tuple of digits"))?;
+    let digit_values: Vec<_> = SequenceItems::from_value(digits, vm.heap)
+        .ok_or_else(|| ExcType::value_error("coefficient must be a tuple of digits"))?
+        .cloned(vm.heap)
+        .collect();
     defer_drop!(digit_values, vm);
     let mut coeff = String::with_capacity(digit_values.len());
     for digit in digit_values {
@@ -283,11 +288,6 @@ fn from_tuple(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decim
         Ok(exp) => Ok(Decimal::from_triple(sign, Coeff::from_digits(&coeff), exp)),
         Err(condition) => with_ctx(vm, ctx_id, |ctx, _| Ok(ctx.invalid(condition))),
     }
-}
-
-fn sequence_items(value: &Value, vm: &VM<'_>) -> Option<Vec<Value>> {
-    let items = SequenceItems::from_value(value, vm.heap)?;
-    Some(items.cloned(vm.heap).collect())
 }
 
 /// `Decimal.from_number(...)` and `Decimal.from_float(...)`.

@@ -879,17 +879,10 @@ pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_>) -> Result<S
     Ok(set_guard.into_inner())
 }
 
-/// Extracts and clones the `(key, value)` probe accepted by `dict_items.__contains__`.
-///
-/// CPython treats only 2-tuples as valid probes for items-view membership. Monty
-/// also accepts namedtuples of length two so tuple-like runtime values behave
-/// sensibly even though namedtuples are not modeled as a true tuple subclass.
+/// Clones the key and value of a two-element tuple or named tuple for item membership.
 pub(crate) fn cloned_items_view_candidate(item: &Value, heap: &impl ContainsHeap) -> Option<(Value, Value)> {
     let heap = heap.heap();
-    let data @ (HeapData::Tuple(_) | HeapData::NamedTuple(_)) = heap.get(item.ref_id()?) else {
-        return None;
-    };
-    let items = SequenceItems::from_heap_data(data)?;
+    let items = SequenceItems::from_tuple(heap.get(item.ref_id()?))?;
     if items.len() != 2 {
         return None;
     }

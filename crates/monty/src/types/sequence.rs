@@ -15,13 +15,15 @@ impl<'a> SequenceItems<'a> {
 
     /// Borrows list, tuple, and named tuple elements without invoking Python iteration.
     pub(crate) fn from_value(value: &Value, heap: &'a Heap) -> Option<Self> {
-        Self::from_heap_data(heap.get(value.ref_id()?))
+        match heap.get(value.ref_id()?) {
+            HeapData::List(list) => Some(list.items()),
+            data => Self::from_tuple(data),
+        }
     }
 
-    /// Borrows elements from a payload the caller already looked up.
-    pub(crate) fn from_heap_data(data: &'a HeapData) -> Option<Self> {
+    /// Borrows the elements of a plain or named tuple.
+    pub(crate) fn from_tuple(data: &'a HeapData) -> Option<Self> {
         match data {
-            HeapData::List(list) => Some(list.items()),
             HeapData::Tuple(tuple) => Some(Self::from_slice(tuple.as_slice())),
             HeapData::NamedTuple(tuple) => Some(Self::from_slice(tuple.items())),
             _ => None,
