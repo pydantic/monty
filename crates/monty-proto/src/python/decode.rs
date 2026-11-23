@@ -21,11 +21,12 @@ use pyo3::{
 use super::{
     class_instance::{ClassHeader, InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy},
     convert::{
-        PyMontyFileHandle, get_decimal_type, get_monty_namedtuple, get_pure_posix_path, host_type_object,
-        import_builtins, monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py,
+        PyMontyFileHandle, get_decimal_type, get_pure_posix_path, host_type_object, import_builtins,
+        monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py,
     },
     exceptions::exc_monty_to_py,
     external_module::PyExternalModule,
+    named_tuple::monty_named_tuple_type,
     std_type_proxy::{PyMontyStdTypeProxy, StdTypeRef},
 };
 
@@ -167,7 +168,7 @@ impl<'a> Decoder<'a, '_> {
                 // type, so the sandbox cannot make the host build classes
                 let (type_name, field_names) = self.namedtuple_header(type_name, field_names)?;
                 let values = PyTuple::new(py, self.children(values))?;
-                let instance = get_monty_namedtuple(py)?.call1((type_name, field_names, values))?;
+                let instance = monty_named_tuple_type(py)?.call1((type_name, field_names, values))?;
                 Ok(instance.unbind())
             }
             MontyNode::Dict(pairs) => {

@@ -20,6 +20,7 @@ mod decode;
 mod encode;
 mod exceptions;
 mod external_module;
+mod named_tuple;
 mod std_type_proxy;
 
 pub use class_instance::{
@@ -31,4 +32,5 @@ pub use decode::{DecodedArena, monty_to_py};
 pub use encode::{GraphEncoder, py_to_monty, py_to_monty_value};
 pub use exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_node};
 pub use external_module::PyExternalModule;
+pub use named_tuple::monty_named_tuple_type;
 pub use std_type_proxy::PyMontyStdTypeProxy;
