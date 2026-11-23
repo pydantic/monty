@@ -123,6 +123,8 @@ macro_rules! heap_payloads {
             SetIterator(inline $crate::types::SetIterator),
             /// A `callable_iterator` object from `iter(callable, sentinel)`.
             CallableIterator(inline $crate::types::callable_iterator::CallableIterator),
+            /// A lazy `map` or `filter`, retaining its callback and source iterators.
+            MapFilter(boxed $crate::types::map_filter::MapFilter),
             /// An arbitrary-precision integer used when a Python `int` does not fit in `i64`.
             #[serde(rename = "G")]
             LongInt(inline $crate::types::LongInt),
@@ -273,6 +275,7 @@ impl HeapData {
             | Self::DictValueIterator(_)
             | Self::SetIterator(_)
             | Self::CallableIterator(_)
+            | Self::MapFilter(_)
             | Self::Module(_)
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
@@ -408,6 +411,7 @@ impl HeapData {
             Self::DictValueIterator(_) => Type::DictValueIterator,
             Self::SetIterator(_) => Type::SetIterator,
             Self::CallableIterator(_) => Type::CallableIterator,
+            Self::MapFilter(iter) => iter.py_type(),
             Self::Itertools(i) => i.py_type(),
             Self::DirScan(scan) => scan.py_type(),
             Self::Csv(csv) => csv.py_type(),

@@ -1,6 +1,51 @@
 use super::*;
 
 #[test]
+fn ascii_detection_polls_until_classified() {
+    let ascii = HeapStr::new("a".repeat(128 * 1024).into_boxed_str());
+    let checks = Cell::new(0);
+    assert_eq!(
+        ascii.checked_is_ascii(|| {
+            checks.set(checks.get() + 1);
+            if checks.get() == 2 { Err("deadline") } else { Ok(()) }
+        }),
+        Err("deadline")
+    );
+    assert_eq!(ascii.known_char_len(), None);
+    assert_eq!(ascii.checked_is_ascii(|| Ok::<_, ()>(())), Ok(true));
+    assert_eq!(ascii.checked_is_ascii(|| Err("already classified")), Ok(true));
+    assert_eq!(ascii.known_char_len(), Some(128 * 1024));
+
+    let unicode = HeapStr::new("é".repeat(128 * 1024).into_boxed_str());
+    let checks = Cell::new(0);
+    assert!(
+        !unicode
+            .checked_is_ascii(|| {
+                checks.set(checks.get() + 1);
+                Ok::<_, ()>(())
+            })
+            .unwrap()
+    );
+    assert_eq!(checks.get(), 1);
+    assert_eq!(unicode.known_char_len(), None);
+    assert_eq!(unicode.checked_is_ascii(|| Err("already classified")), Ok(false));
+}
+
+#[test]
+fn interrupted_character_count_is_retried_before_caching() {
+    let value = HeapStr::new("a中".repeat(40_000).into_boxed_str());
+    let checks = Cell::new(0);
+    let interrupted = value.checked_char_len(|| {
+        checks.set(checks.get() + 1);
+        if checks.get() == 2 { Err("deadline") } else { Ok(()) }
+    });
+    assert_eq!(interrupted, Err("deadline"));
+    assert_eq!(value.known_char_len(), None);
+    assert_eq!(value.checked_char_len(|| Ok::<_, ()>(())), Ok(80_000));
+    assert_eq!(value.checked_char_len(|| Err("unexpected scan")), Ok(80_000));
+}
+
+#[test]
 fn ascii_checks_do_not_force_unicode_character_counts() {
     let text = "é".repeat(4096);
     let value = HeapStr::new(text.into_boxed_str());

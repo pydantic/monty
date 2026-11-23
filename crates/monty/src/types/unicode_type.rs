@@ -2,47 +2,95 @@
 //! `unicode_type_data.rs` (CPython's `unicodectype.c` in miniature) so results, and the Unicode
 //! version, follow the target CPython rather than Rust std.
 
+use monty_types::{LARGE_RESULT_THRESHOLD, ResourceError, ResourceTracker};
+
 use super::unicode_type_data::{
     ALPHA, CASE_IGNORABLE, CASED, DECIMAL, DIGIT, EXTENDED, EXTENDED_CASE, ID_CONTINUE, ID_START, INDEX1, INDEX2,
     LOWER, NUMERIC, PRINTABLE, RECORDS, SHIFT, SPACE, TITLE, TypeRecord, UPPER,
 };
+use crate::resource_checks::check_estimated_size;
 
 /// Full lowercase of `s` with `Final_Sigma` applied; ASCII input takes the bulk path.
-pub(super) fn lowercase(s: &str) -> String {
+pub(super) fn lowercase(s: &str, tracker: &ResourceTracker) -> Result<String, ResourceError> {
     if s.is_ascii() {
-        s.to_ascii_lowercase()
+        check_estimated_size(s.len(), tracker)?;
+        Ok(s.to_ascii_lowercase())
     } else {
-        let mut out = String::with_capacity(s.len());
-        for (i, c) in s.char_indices() {
-            type_record(c).push_lower(&mut out, s, i, c);
-        }
-        out
+        map_case(s, tracker, |out, i, c| type_record(c).push_lower(out, s, i, c))
     }
 }
 
 /// Full uppercase of `s`; ASCII input takes the bulk path.
-pub(super) fn uppercase(s: &str) -> String {
+pub(super) fn uppercase(s: &str, tracker: &ResourceTracker) -> Result<String, ResourceError> {
     if s.is_ascii() {
-        s.to_ascii_uppercase()
+        check_estimated_size(s.len(), tracker)?;
+        Ok(s.to_ascii_uppercase())
     } else {
-        let mut out = String::with_capacity(s.len());
-        for c in s.chars() {
-            type_record(c).push_upper(&mut out, c);
-        }
-        out
+        map_case(s, tracker, |out, _, c| type_record(c).push_upper(out, c))
     }
 }
 
 /// Full default case folding of `s`, without normalization or locale tailoring; ASCII input takes the bulk path.
-pub(super) fn casefold(s: &str) -> String {
+pub(super) fn casefold(s: &str, tracker: &ResourceTracker) -> Result<String, ResourceError> {
     if s.is_ascii() {
-        s.to_ascii_lowercase()
+        check_estimated_size(s.len(), tracker)?;
+        Ok(s.to_ascii_lowercase())
     } else {
+        map_case(s, tracker, |out, _, c| type_record(c).push_fold(out, c))
+    }
+}
+
+/// Most bytes one char's full case mapping can append: at most three code points, each at most 4 bytes.
+const MAX_MAPPING_LEN: usize = 12;
+
+/// Builds a case mapping of `s`, calling `push(out, byte_offset, char)` for each char.
+///
+/// A mapping can outgrow its input (`'ɐ'.upper()` is 3 bytes from 2), so for large inputs each
+/// growth of the buffer is checked against `tracker` before it happens. The buffer starts with
+/// room for one extra mapping, so a mapping that keeps the input's length never grows it. Inputs
+/// below `LARGE_RESULT_THRESHOLD / MAX_MAPPING_LEN` bytes, a conservative bound, skip the checks.
+pub(super) fn map_case(
+    s: &str,
+    tracker: &ResourceTracker,
+    mut push: impl FnMut(&mut String, usize, char),
+) -> Result<String, ResourceError> {
+    if s.len().saturating_mul(MAX_MAPPING_LEN) <= LARGE_RESULT_THRESHOLD {
         let mut out = String::with_capacity(s.len());
-        for c in s.chars() {
-            type_record(c).push_fold(&mut out, c);
+        for (i, c) in s.char_indices() {
+            push(&mut out, i, c);
         }
-        out
+        Ok(out)
+    } else {
+        let capacity = s.len().saturating_add(MAX_MAPPING_LEN);
+        tracker.check_allocation(capacity)?;
+        let mut out = String::with_capacity(capacity);
+        let mut start = 0;
+        while start < s.len() {
+            let room = out.capacity() - out.len();
+            if room < MAX_MAPPING_LEN {
+                // Room for the rest at 1:1, but at least an eighth more so that expanding input
+                // reallocates only a few times. The allocator charges a reallocation for its growth.
+                let rest = s.len() - start;
+                let additional = rest
+                    .max(out.capacity() / 8)
+                    .min(rest.saturating_mul(MAX_MAPPING_LEN))
+                    .saturating_add(MAX_MAPPING_LEN);
+                tracker.check_allocation(additional)?;
+                out.reserve_exact(additional);
+                continue;
+            }
+            // Map in chunks that fit without reallocating: no more chars start in the chunk than it
+            // has bytes, and widening it to a char boundary only completes a char that starts inside.
+            let mut end = (start + room / MAX_MAPPING_LEN).min(s.len());
+            while !s.is_char_boundary(end) {
+                end += 1;
+            }
+            for (j, c) in s[start..end].char_indices() {
+                push(&mut out, start + j, c);
+            }
+            start = end;
+        }
+        Ok(out)
     }
 }
 

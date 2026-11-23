@@ -32,6 +32,7 @@ use crate::{
     types::{
         Dict, LazyHeapSet, PyTrait, Type, TypeRef, Union,
         generic_alias::repr_type_arg,
+        sequence::SequenceItems,
         str::{StringRepr, allocate_string},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -693,7 +694,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
             // A tuple key lists its items bare, as `ast.unparse` writes a subscript,
             // keeping the `()` and trailing comma that make `Later[()]` and `Later[int,]` tuples.
             Value::Ref(id) if let HeapData::Tuple(tuple) = vm.heap.get(*id) => {
-                let items = clone_items(tuple.as_slice(), vm)?;
+                let items = SequenceItems::from_slice(tuple.as_slice()).to_vec(vm.heap)?;
                 defer_drop!(items, vm);
                 if items.is_empty() {
                     text.push_str("()");
@@ -831,8 +832,8 @@ fn render_operand(value: &Value, demanded: Precedence, vm: &mut VM<'_>, text: &m
                 }
                 return Ok(());
             }
-            HeapData::Tuple(tuple) => Container::Tuple(clone_items(tuple.as_slice(), vm)?),
-            HeapData::List(list) => Container::List(clone_items(list.as_slice(), vm)?),
+            HeapData::Tuple(tuple) => Container::Tuple(SequenceItems::from_slice(tuple.as_slice()).to_vec(vm.heap)?),
+            HeapData::List(list) => Container::List(list.items().to_vec(vm.heap)?),
             HeapData::Set(set) => {
                 let items: Vec<&Value> = set.iter().collect();
                 vm.heap
@@ -910,14 +911,6 @@ impl<C: ContainsHeap> DropWithContext<C> for Container {
             Self::Dict(pairs) => pairs.drop_with(ctx),
         }
     }
-}
-
-/// Owned clones of `items`, preflighted against the memory limit.
-fn clone_items(items: &[Value], vm: &VM<'_>) -> RunResult<Vec<Value>> {
-    vm.heap
-        .tracker
-        .check_allocation(items.len().saturating_mul(VALUE_SIZE))?;
-    Ok(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
 }
 
 /// The `Format` member `value` names, `None` for anything else. CPython compares

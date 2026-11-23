@@ -19,7 +19,9 @@ use strum::VariantNames;
 
 use crate::{
     args::ArgValues,
-    builtins::{iter::builtin_iter, object::object_class_attr, type_::builtin_type},
+    builtins::{
+        filter::builtin_filter, iter::builtin_iter, map::builtin_map, object::object_class_attr, type_::builtin_type,
+    },
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, exc_new},
     modules::{collections, csv, hashlib, itertools},
@@ -435,8 +437,10 @@ impl Type {
             Self::DecimalUnderflow => 160,
             Self::DecimalFloatOperation => 161,
             Self::StatisticsError => 162,
-            Self::Task => 163,
-            Self::InvalidStateError => 164,
+            Self::Map => 163,
+            Self::Filter => 164,
+            Self::Task => 165,
+            Self::InvalidStateError => 166,
         }
     }
 
@@ -1158,6 +1162,8 @@ native_types! {
     /// `statistics.StatisticsError`, raised for empty or too-small data sets.
     StatisticsError("statistics.StatisticsError", ValueError)
         .exc(ExcType::StatisticsError),
+    Map("map").builtin().iterator().ctor(Constructor::Call(builtin_map)),
+    Filter("filter").builtin().iterator().ctor(Constructor::Call(builtin_filter)),
     /// `asyncio.Task`, whose `tp_name` is `_asyncio.Task`. Monty builds tasks only
     /// through `create_task`; calling the class directly is unsupported.
     Task("_asyncio.Task"),
@@ -1288,6 +1294,6 @@ mod tests {
                 assert_eq!(Type::callable_from_u8(operand), Some(ty));
             }
         }
-        assert_eq!(Type::callable_from_u8(15), None);
+        assert_eq!(Type::callable_from_u8(17), None);
     }
 }

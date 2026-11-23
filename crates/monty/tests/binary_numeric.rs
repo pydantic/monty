@@ -273,3 +273,84 @@ fn test_int_bit_methods_arguments() {
         assert_eq!(err.exc_type(), ExcType::AttributeError, "failed for code: {code}");
     }
 }
+
+#[test]
+fn test_as_integer_ratio_errors() {
+    for (code, expected_exc, expected_msg) in [
+        (
+            "float('inf').as_integer_ratio()",
+            ExcType::OverflowError,
+            "cannot convert Infinity to integer ratio",
+        ),
+        (
+            "float('-inf').as_integer_ratio()",
+            ExcType::OverflowError,
+            "cannot convert Infinity to integer ratio",
+        ),
+        (
+            "float('nan').as_integer_ratio()",
+            ExcType::ValueError,
+            "cannot convert NaN to integer ratio",
+        ),
+        (
+            "(1.5).as_integer_ratio(1)",
+            ExcType::TypeError,
+            "float.as_integer_ratio() takes no arguments (1 given)",
+        ),
+        (
+            "(1.5).as_integer_ratio(x=1)",
+            ExcType::TypeError,
+            "float.as_integer_ratio() takes no keyword arguments",
+        ),
+        (
+            "(1).as_integer_ratio(1)",
+            ExcType::TypeError,
+            "int.as_integer_ratio() takes no arguments (1 given)",
+        ),
+        (
+            "(1).as_integer_ratio(x=1)",
+            ExcType::TypeError,
+            "int.as_integer_ratio() takes no keyword arguments",
+        ),
+        (
+            "True.as_integer_ratio(1)",
+            ExcType::TypeError,
+            "int.as_integer_ratio() takes no arguments (1 given)",
+        ),
+        (
+            "(1.5).is_integer(1)",
+            ExcType::TypeError,
+            "float.is_integer() takes no arguments (1 given)",
+        ),
+        (
+            "(1.5).is_integer(x=1)",
+            ExcType::TypeError,
+            "float.is_integer() takes no keyword arguments",
+        ),
+        (
+            "(1).is_integer(1)",
+            ExcType::TypeError,
+            "int.is_integer() takes no arguments (1 given)",
+        ),
+        (
+            "(1).is_integer(x=1)",
+            ExcType::TypeError,
+            "int.is_integer() takes no keyword arguments",
+        ),
+        (
+            "False.is_integer(1)",
+            ExcType::TypeError,
+            "int.is_integer() takes no arguments (1 given)",
+        ),
+        (
+            "False.is_integer(x=1)",
+            ExcType::TypeError,
+            "int.is_integer() takes no keyword arguments",
+        ),
+    ] {
+        let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let err = ex.run_no_limits(vec![]).unwrap_err();
+        assert_eq!(err.exc_type(), expected_exc, "wrong exception type for code: {code}");
+        assert_eq!(err.message(), Some(expected_msg), "wrong message for code: {code}");
+    }
+}

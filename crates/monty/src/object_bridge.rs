@@ -274,12 +274,7 @@ impl GraphExporter {
             HeapReadOutput::Bytes(b) => MontyNode::Bytes(b.get(vm.heap).as_slice().to_owned()),
             HeapReadOutput::List(list) => {
                 // Snapshot before recursing: a nested `__repr__` may mutate this list.
-                let children: Vec<Value> = list
-                    .get(vm.heap)
-                    .as_slice()
-                    .iter()
-                    .map(|item| item.clone_with_heap(vm.heap))
-                    .collect();
+                let children: Vec<Value> = list.get(vm.heap).items().cloned(vm.heap).collect();
                 defer_drop!(children, vm);
                 MontyNode::List(self.push_all(children, vm))
             }
@@ -454,6 +449,9 @@ impl GraphExporter {
             HeapReadOutput::DictValueIterator(_) => MontyNode::Repr("<dict_valueiterator object>".to_owned()),
             HeapReadOutput::SetIterator(_) => MontyNode::Repr("<set_iterator object>".to_owned()),
             HeapReadOutput::CallableIterator(_) => MontyNode::Repr("<callable_iterator object>".to_owned()),
+            HeapReadOutput::MapFilter(iter) => {
+                MontyNode::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.interns)))
+            }
             HeapReadOutput::DirScan(scan) => MontyNode::Repr(scan.get(vm.heap).boundary_repr()),
             // A placeholder despite the real in-sandbox repr (`count(0)`),
             // which would recurse into `repeat`'s arbitrary object.
@@ -735,6 +733,8 @@ impl MontyTypeExt for MontyType {
             Self::DictValueIterator => Type::DictValueIterator,
             Self::SetIterator => Type::SetIterator,
             Self::CallableIterator => Type::CallableIterator,
+            Self::Map => Type::Map,
+            Self::Filter => Type::Filter,
             Self::ItertoolsPairwise => Type::ItertoolsPairwise,
             Self::ItertoolsCompress => Type::ItertoolsCompress,
             Self::ItertoolsIslice => Type::ItertoolsIslice,
@@ -832,6 +832,8 @@ impl MontyTypeExt for MontyType {
             Type::DictValueIterator => Self::DictValueIterator,
             Type::SetIterator => Self::SetIterator,
             Type::CallableIterator => Self::CallableIterator,
+            Type::Map => Self::Map,
+            Type::Filter => Self::Filter,
             Type::ItertoolsPairwise => Self::ItertoolsPairwise,
             Type::ItertoolsCompress => Self::ItertoolsCompress,
             Type::ItertoolsIslice => Self::ItertoolsIslice,

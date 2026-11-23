@@ -100,8 +100,7 @@ impl PendingEffect {
             // The reading still has to become a `struct_time` or a string, which
             // a future defers past the point the sandbox needs it.
             Self::Post(PostConversionEffect::ClockReading { .. }) => Some("time.time"),
-            // The load answers a `ForIter` or `next()` that is waiting for the
-            // buffer; a future would land on the stack where the file is expected.
+            // Advancing the iterator needs a line, not a future for the raw buffer.
             Self::Post(PostConversionEffect::BufferLoad { .. } | PostConversionEffect::FileNext { .. }) => {
                 Some("file iteration")
             }
@@ -332,13 +331,14 @@ pub(crate) enum PostConversionEffect {
     /// [`BufferStore`](Self::BufferStore), then parse the rest of the file as
     /// JSON: `json.load(fp)` on a file whose buffer is not loaded yet.
     JsonLoad { file_id: HeapId },
-    /// Store a full-file read result into the file buffer and push nothing:
-    /// the `ForIter` that found the file unloaded re-dispatches against it.
+    /// Pre-v17 file loops replay the saved `ForIter` after installing the buffer, without pushing an item.
     BufferLoad { file_id: HeapId },
-    /// Store a full-file read result into the file buffer, then answer
-    /// `next(file, default)`: the first line, `default` at EOF, or
-    /// `StopIteration`. Owns `default`'s reference across the yield.
-    FileNext { file_id: HeapId, default: Option<Value> },
+    /// Answer a file advancement; only pre-v17 `next(file, default)` stores its default here.
+    FileNext {
+        file_id: HeapId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default: Option<Value>,
+    },
     /// Refresh a write-only file's unknown length before seeking from EOF.
     FileSeekEnd { file_id: HeapId, offset: i64 },
     /// Advance the file's logical position by the successful write result.
@@ -420,16 +420,16 @@ impl PostConversionEffect {
     /// and a sleep's result. The single place that knows which variants carry a refcount.
     pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
         match self {
+            Self::FileNext { file_id, default } => {
+                heap.heap_mut().dec_ref(file_id);
+                default.drop_with(heap);
+            }
             Self::BufferStore { file_id }
             | Self::JsonLoad { file_id }
             | Self::BufferLoad { file_id }
             | Self::FileSeekEnd { file_id, .. }
             | Self::WritePosition { file_id, .. } => {
                 heap.heap_mut().dec_ref(file_id);
-            }
-            Self::FileNext { file_id, default } => {
-                heap.heap_mut().dec_ref(file_id);
-                default.drop_with(heap);
             }
             Self::LoadThenCall {
                 file_id,
