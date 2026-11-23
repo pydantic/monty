@@ -886,9 +886,10 @@ pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_>) -> Result<S
 /// sensibly even though namedtuples are not modeled as a true tuple subclass.
 pub(crate) fn cloned_items_view_candidate(item: &Value, heap: &impl ContainsHeap) -> Option<(Value, Value)> {
     let heap = heap.heap();
-    let items = SequenceItems::from_value_if(item, heap, |data| {
-        matches!(data, HeapData::Tuple(_) | HeapData::NamedTuple(_))
-    })?;
+    let data @ (HeapData::Tuple(_) | HeapData::NamedTuple(_)) = heap.get(item.ref_id()?) else {
+        return None;
+    };
+    let items = SequenceItems::from_heap_data(data)?;
     if items.len() != 2 {
         return None;
     }

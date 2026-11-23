@@ -329,13 +329,11 @@ impl VM<'_> {
         })
     }
 
-    /// A package's `__path__` (a list or tuple) as directories joined to the
+    /// A package's `__path__` as directories joined to the
     /// working directory, skipping anything that is not a `str` or that holds
     /// a NUL byte (the host skips those too), up to the [`MAX_SEARCH_DIRS`] it searches.
     fn search_path(&self, path: &Value) -> Vec<String> {
-        let Some(dirs) = SequenceItems::from_value_if(path, self.heap, |data| {
-            matches!(data, HeapData::List(_) | HeapData::Tuple(_))
-        }) else {
+        let Some(dirs) = SequenceItems::from_value(path, self.heap) else {
             return Vec::new();
         };
         dirs.filter_map(|dir| {

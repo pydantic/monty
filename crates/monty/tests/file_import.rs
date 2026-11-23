@@ -228,7 +228,10 @@ fn a_submodule_is_asked_with_the_package_path() {
         ("/proj/pkg/__init__.py", ""),
         ("/proj/pkg/sub.py", "value = 3\n"),
         ("/proj/pkg/other.py", "value = 4\n"),
-        ("/proj/far/__init__.py", "__path__ = ['elsewhere']\n"),
+        (
+            "/proj/far/__init__.py",
+            "from collections import namedtuple\n__path__ = namedtuple('SearchPath', 'directory')('elsewhere')\n",
+        ),
         ("/proj/elsewhere/mod.py", "value = 5\n"),
     ];
     let mut imports = Vec::new();

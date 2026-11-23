@@ -381,7 +381,7 @@ fn check_separators_shape(value: &Value, vm: &VM<'_>) -> RunResult<bool> {
     if matches!(value, Value::None) {
         return Ok(false);
     }
-    let items = separator_items(value, vm.heap).ok_or_else(|| separators_not_iterable(value, vm))?;
+    let items = SequenceItems::from_value(value, vm.heap).ok_or_else(|| separators_not_iterable(value, vm))?;
     check_separators_length(items.len())?;
     Ok(true)
 }
@@ -391,17 +391,10 @@ fn separators_not_iterable(value: &Value, vm: &VM<'_>) -> RunError {
     ExcType::type_error(format!("cannot unpack non-iterable {} object", value.py_type_name(vm)))
 }
 
-/// Returns the sequence types accepted by the encoder's separators parser.
-fn separator_items<'a>(value: &Value, heap: &'a Heap) -> Option<SequenceItems<'a>> {
-    SequenceItems::from_value_if(value, heap, |data| {
-        matches!(data, HeapData::List(_) | HeapData::Tuple(_))
-    })
-}
-
 /// Converts the `separators=` pair for the encoder, after
 /// [`check_separators_shape`] has accepted it; `None` keeps the defaults.
 fn parse_separators_value(value: &Value, vm: &VM<'_>) -> RunResult<Option<(String, String)>> {
-    let Some(items) = separator_items(value, vm.heap) else {
+    let Some(items) = SequenceItems::from_value(value, vm.heap) else {
         return Ok(None);
     };
     Ok(Some((

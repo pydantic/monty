@@ -402,8 +402,9 @@ fn is_file(value: &Value, vm: &VM<'_>) -> bool {
 /// `_csv.Error`, unlike `writerows`' plain `TypeError`. A `list` or `tuple`, the usual row,
 /// is copied without an iterator.
 fn row_items(row: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
-    let direct = SequenceItems::from_value_if(row, vm.heap, |data| {
-        matches!(data, HeapData::List(_) | HeapData::Tuple(_))
+    let direct = row.ref_id().and_then(|id| match vm.heap.get(id) {
+        data @ (HeapData::List(_) | HeapData::Tuple(_)) => SequenceItems::from_heap_data(data),
+        _ => None,
     });
     if let Some(items) = direct {
         items.to_vec(vm.heap)

@@ -1130,8 +1130,9 @@ pub(crate) fn cmp_item_seqs(a: Vec<Value>, b: Vec<Value>, vm: &mut VM<'_>) -> Ru
 /// Shared by named-tuple concatenation (`+`), whose result is always a plain
 /// tuple regardless of which operand is the namedtuple.
 fn cloned_tuple_like_items(value: &Value, vm: &VM<'_>) -> RunResult<Option<Vec<Value>>> {
-    let items = SequenceItems::from_value_if(value, vm.heap, |data| {
-        matches!(data, HeapData::Tuple(_) | HeapData::NamedTuple(_))
+    let items = value.ref_id().and_then(|id| match vm.heap.get(id) {
+        data @ (HeapData::Tuple(_) | HeapData::NamedTuple(_)) => SequenceItems::from_heap_data(data),
+        _ => None,
     });
     items.map(|items| items.to_vec(vm.heap)).transpose()
 }

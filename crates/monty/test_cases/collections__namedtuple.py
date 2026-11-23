@@ -67,6 +67,7 @@ assert Point(1, 2) != Point(1, 3), 'namedtuples with differing fields are unequa
 assert len(p) == 2, 'len is the field count'
 assert list(p) == [11, 22], 'iteration yields values in field order'
 assert tuple(p) == (11, 22), 'tuple() round-trips the values'
+assert sorted(Point(22, 11)) == [11, 22]
 Empty = namedtuple('Empty', [])
 assert bool(Empty()) is False, 'empty namedtuple is falsey'
 assert bool(p) is True, 'non-empty namedtuple is truthy'

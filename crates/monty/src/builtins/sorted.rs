@@ -46,10 +46,7 @@ pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     let iterable = pos_iter.next().expect("checked pos_count == 1");
 
-    let direct = SequenceItems::from_value_if(&iterable, vm.heap, |data| {
-        matches!(data, HeapData::List(_) | HeapData::Tuple(_))
-    });
-    let items = if let Some(items) = direct {
+    let items = if let Some(items) = SequenceItems::from_value(&iterable, vm.heap) {
         let res = clone_items_with_checks(items, vm.heap);
         iterable.drop_with(vm);
         match res {
