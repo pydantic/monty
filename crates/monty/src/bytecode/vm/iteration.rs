@@ -13,7 +13,7 @@ use crate::{
     expressions::Identifier,
     frozen::{FrozenFunction, FrozenFunctions},
     function::Function,
-    heap::DropWithContext,
+    heap::DropGuard,
     intern::{CompileInterns, FunctionId},
     modules::ModuleFunctions,
     parse::CodeRange,
@@ -25,44 +25,45 @@ impl VM<'_> {
     /// Insert a catcher *below* the advancement so its own exception handlers see errors first.
     /// The zero-local frame shares the caller's operand boundary, including across snapshots.
     pub(super) fn catch_deferred_iteration(&mut self, call: CallResult, stack_base: usize) -> RunResult<CallResult> {
+        let mut guard = DropGuard::new(call, self);
+        let (call, vm) = guard.as_parts();
         let pushed = matches!(call, CallResult::FramePushed);
-        let id = match FrozenFunction::ForIter.resolve(self.interns) {
+        let id = match FrozenFunction::ForIter.resolve(vm.interns) {
             Ok(id) => id,
             Err(error) => {
                 if pushed {
-                    let call_site = self.current_frame.call_offset.expect("advancement has a caller");
-                    self.pop_frame();
-                    self.instruction_ip = call_site as usize;
+                    let call_site = vm.current_frame.call_offset.expect("advancement has a caller");
+                    vm.pop_frame();
+                    vm.instruction_ip = call_site as usize;
                     // A constructor may have placed its pending instance below the callee's locals.
-                    for value in self.stack.drain(stack_base..) {
-                        value.drop_with(self.heap);
+                    for value in vm.stack.drain(stack_base..) {
+                        value.drop_with(vm.heap);
                     }
                 }
-                call.drop_with(self);
                 return Err(error);
             }
         };
         let call_site = if pushed {
-            self.current_frame.call_offset.replace(0)
+            vm.current_frame.call_offset.replace(0)
         } else {
-            self.current_offset()
+            vm.current_offset()
         };
         let catcher = CallFrame::new_function(
-            &self.interns.get_function(id).code,
+            &vm.interns.get_function(id).code,
             stack_base,
             0,
-            self.exception_stack.len(),
+            vm.exception_stack.len(),
             id,
             call_site,
             None,
         );
         if pushed {
-            self.suspended_frames.push(catcher);
+            vm.suspended_frames.push(catcher);
         } else {
-            self.push_admitted_frame(catcher);
-            self.instruction_ip = 0;
+            vm.push_admitted_frame(catcher);
+            vm.instruction_ip = 0;
         }
-        Ok(call)
+        Ok(guard.into_inner())
     }
 
     /// Non-returning tail of the catcher's `except StopIteration` suite. Its caller is a loop,
