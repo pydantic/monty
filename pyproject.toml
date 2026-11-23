@@ -352,6 +352,7 @@ skip = [
 
     "crates/monty-typeshed/vendor/typeshed/stdlib/*",
     "crates/monty/stdlib/*",
+    "crates/monty-datatest/vendor/cpython/Lib/*",
     "crates/monty/src/types/str.rs",
 ]
 

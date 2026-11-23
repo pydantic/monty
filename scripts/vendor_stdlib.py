@@ -21,10 +21,12 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import urllib.request
 from collections import Counter
 from pathlib import Path
+from urllib.error import HTTPError
 
 REPO = Path(__file__).parent.parent
 STDLIB = REPO / 'crates' / 'monty' / 'stdlib'
@@ -107,9 +109,20 @@ def patched_tree(root: Path, sources: dict[str, str]) -> dict[Path, str]:
 
 
 def fetch(commit: str, path: str) -> str:
-    """One file from the CPython repository at `commit`, which unlike a tag cannot be moved to other content."""
-    with urllib.request.urlopen(RAW_URL.format(commit=commit, path=path), timeout=30) as response:
-        return response.read().decode('utf-8')
+    """Fetch a file at the pinned CPython commit, retrying transient HTTP failures."""
+    url = RAW_URL.format(commit=commit, path=path)
+    delay = 1
+    while True:
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:
+                return response.read().decode('utf-8')
+        except HTTPError as error:
+            if error.code not in (429, 500, 502, 503, 504) or delay > 4:
+                raise
+            error.close()
+            print(f'CPython download for {path} returned HTTP {error.code}; retrying in {delay}s', file=sys.stderr)
+            time.sleep(delay)
+            delay *= 2
 
 
 def read(path: Path) -> str | None:
