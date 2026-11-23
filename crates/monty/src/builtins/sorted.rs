@@ -23,11 +23,11 @@ fn clone_items_with_checks(
         return Err(Box::new((Vec::new(), e.into())));
     }
     let mut cloned = Vec::with_capacity(len);
-    for i in 0..len {
+    for (i, item) in items.cloned(heap).enumerate() {
+        cloned.push(item);
         if let Err(e) = tracker.check_time_every(i) {
             return Err(Box::new((cloned, e.into())));
         }
-        cloned.push(items.with_item(i, |item| item.clone_with_heap(heap)));
     }
     Ok(cloned)
 }

@@ -26,7 +26,7 @@ impl<'a> SequenceItems<'a> {
     }
 
     /// The borrow ends before the result is returned, so an element can be materialized on demand.
-    pub(crate) fn with_item<T>(self, index: usize, f: impl FnOnce(&Value) -> T) -> T {
+    pub(crate) fn map_item<T>(self, index: usize, f: impl FnOnce(&Value) -> T) -> T {
         f(&self.0[index])
     }
 

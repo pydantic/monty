@@ -91,6 +91,7 @@ impl List {
         }
     }
 
+    #[must_use]
     pub(crate) fn items(&self) -> SequenceItems<'_> {
         SequenceItems::from_slice(&self.items)
     }

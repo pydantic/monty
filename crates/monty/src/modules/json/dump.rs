@@ -398,8 +398,8 @@ fn parse_separators_value(value: &Value, vm: &VM<'_>) -> RunResult<Option<(Strin
         return Ok(None);
     };
     Ok(Some((
-        items.with_item(0, |item| json_separator_to_string(item, "item_separator", vm))?,
-        items.with_item(1, |item| json_separator_to_string(item, "key_separator", vm))?,
+        items.map_item(0, |item| json_separator_to_string(item, "item_separator", vm))?,
+        items.map_item(1, |item| json_separator_to_string(item, "key_separator", vm))?,
     )))
 }
 

@@ -438,7 +438,7 @@ impl RowSpec {
                                 .names
                                 .iter()
                                 .enumerate()
-                                .all(|(i, name)| list.items().with_item(i, |item| item.is(name)))
+                                .all(|(i, name)| list.items().map_item(i, |item| item.is(name)))
                     }
                     HeapData::Tuple(_)
                     | HeapData::Str(_)
