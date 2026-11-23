@@ -260,7 +260,7 @@ def test_small_operations_within_limit(monty_run: RunMonty):
     'code',
     [
         'sum(range(10**18))',
-        'list(range(10**18))',
+        'list(iter(range(10**18)))',
         'sorted(range(10**18))',
         'min(range(10**18))',
         'max(range(10**18))',
