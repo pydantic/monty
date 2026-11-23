@@ -197,8 +197,32 @@ impl VM<'_> {
     /// Uses `defer_drop!` for `mapping` (always dropped) and `DropGuard` for
     /// `dict_ref` (pushed back on success, dropped on error).
     pub(super) fn dict_merge(&mut self, func_name_id: u16) -> Result<(), RunError> {
-        let func_name = func_name_for_dict_merge(func_name_id, self);
+        // CPython names the function object being called, not the expression that called it:
+        // after `g = f`, `g(a=1, **{'a': 2})` reports `f()`, and a lambda reports `<lambda>()`.
+        // The callable sits 4 slots below TOS: `[callable, args_tuple, kwargs_dict, mapping]`.
+        let callable_name = self
+            .stack
+            .len()
+            .checked_sub(4)
+            .and_then(|index| self.def_function_name(&self.stack[index]));
+        let func_name = callable_name.unwrap_or_else(|| func_name_for_dict_merge(func_name_id, self));
         self.dict_merge_inner(&func_name)
+    }
+
+    /// The `def`/`lambda` name of a Python function value (`<lambda>` for a lambda);
+    /// `None` for any other callable (builtin, class, bound method, ...).
+    fn def_function_name(&self, value: &Value) -> Option<String> {
+        let func_id = match value {
+            Value::DefFunction(func_id) => *func_id,
+            Value::Ref(id) => match self.heap.get(*id) {
+                HeapData::FunctionDefaults(function) => function.func_id,
+                HeapData::Closure(closure) => closure.func_id,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let name_id = self.interns.get_function(func_id).name.name_id;
+        Some(self.interns.get_str(name_id).to_string())
     }
 
     /// Method-call variant of [`Self::dict_merge`]. Qualifies the error wording
