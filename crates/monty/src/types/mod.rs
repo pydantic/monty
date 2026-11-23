@@ -44,6 +44,7 @@ pub mod range;
 pub mod re_match;
 pub mod re_pattern;
 mod re_syntax;
+pub(crate) mod sequence;
 pub mod set;
 pub mod slice;
 pub mod str;

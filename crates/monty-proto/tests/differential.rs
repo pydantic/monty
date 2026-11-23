@@ -18,7 +18,7 @@
 use std::time::Instant;
 
 use monty::{MontyRun, RunProgress};
-use monty_proto::{WireArena, WireFunctionCall, decode_frame, os_call_to_proto, pb};
+use monty_proto::{Traceparent, WireArena, WireFunctionCall, decode_frame, os_call_to_proto, pb};
 use monty_types::{
     CallArgs, CompileOptions, CreateExclusiveCallArgs, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle,
     MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, OsFunctionCall, PrintWriter,
@@ -578,18 +578,25 @@ fn hand_call_payloads_match_generated_encoding() {
     let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&call);
 
     // Both receiver states: a routed call (method / `__call__`) and a plain
-    // external call (absent field).
+    // external call (absent field); with and without a streamed call's trace context.
     let receivers = [Some(MontyUuid::from_u128(7)), None];
-    for (object_id, allow_eager_await) in receivers.into_iter().flat_map(|id| [(id, false), (id, true)]) {
+    let traceparent = Traceparent::parse("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+    let cases = receivers
+        .into_iter()
+        .flat_map(|id| [(id, false, None), (id, true, None), (id, false, traceparent)]);
+    for (object_id, allow_eager_await, traceparent) in cases {
         let oracle_object_id = object_id.map(|uuid| oracle_uuid(&uuid));
-        let hand_call = WireFunctionCall::new(
-            "external".to_owned(),
-            call.clone(),
-            42,
-            object_id,
-            allow_eager_await,
-            position(),
-        );
+        let hand_call = WireFunctionCall {
+            traceparent,
+            ..WireFunctionCall::new(
+                "external".to_owned(),
+                call.clone(),
+                42,
+                object_id,
+                allow_eager_await,
+                position(),
+            )
+        };
         let generated_call = oracle::FunctionCall {
             function_name: "external".to_owned(),
             args: arg_ids.iter().map(|id| id.0).collect(),
@@ -599,6 +606,7 @@ fn hand_call_payloads_match_generated_encoding() {
             allow_eager_await,
             values: Some(to_oracle(graph)),
             position: Some(oracle_position()),
+            traceparent: traceparent.map(|traceparent| traceparent.to_string()),
         };
         assert_eq!(hand_call.encode_to_vec(), generated_call.encode_to_vec());
         assert_eq!(
@@ -1315,6 +1323,7 @@ fn repeated_position_fields_merge_like_the_oracle() {
             start: 30,
             end: 0,
         }),
+        traceparent: None,
     }
     .encode_to_vec();
     // the second occurrence carries only the end
@@ -1349,6 +1358,7 @@ fn repeated_position_fields_merge_like_the_oracle() {
             start: 0,
             end: 1,
         }),
+        traceparent: None,
     }
     .encode_to_vec();
     for _ in 0..100_000 {

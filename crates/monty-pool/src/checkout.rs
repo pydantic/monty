@@ -16,7 +16,7 @@ use std::{
 
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
 use monty_proto::{
-    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, import_stubs_from_answer,
+    FrameError, PROTOCOL_VERSION, Traceparent, ext_result_to_proto, future_results_to_proto, import_stubs_from_answer,
     named_values_to_proto, os_call_from_proto, pb, validate_requirement,
 };
 use monty_types::{
@@ -30,7 +30,7 @@ use opentelemetry::trace::{FutureExt, TraceContextExt};
 use tokio::{task::spawn_blocking, time::Instant as DeadlineInstant};
 
 #[cfg(feature = "telemetry")]
-use crate::telemetry::{TelemetryContext, metrics::outcome};
+use crate::telemetry::{TelemetryContext, metrics::outcome, suspension_context};
 use crate::{
     CrashCause, PoolConfig, PoolError, RemoteCause, cpu,
     pool::{CapacityGuard, PoolInner},
@@ -263,6 +263,25 @@ pub enum MountSpecMode {
     Overlay,
 }
 
+/// Options for one turn-starting request: a feed or a restore.
+#[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
+pub struct TurnOptions {
+    /// The span current where the caller started the turn, sent as the
+    /// request's `traceparent` so a server recording the session parents the
+    /// turn's spans to it. Advisory: execution never depends on it.
+    pub traceparent: Option<Traceparent>,
+}
+
+impl TurnOptions {
+    /// Sets the caller's span for the turn.
+    #[must_use]
+    pub fn with_traceparent(mut self, traceparent: Option<Traceparent>) -> Self {
+        self.traceparent = traceparent;
+        self
+    }
+}
+
 /// How a protocol turn ended: a suspension that needs an answer from the
 /// caller, or completion of the fed snippet.
 #[derive(Debug)]
@@ -282,6 +301,9 @@ pub enum TurnEvent {
         allow_eager_await: bool,
         /// Where the call expression is in the source.
         position: SourceRange,
+        /// The span a server recording the session opened for this suspension;
+        /// [`Checkout::callback_context`] carries it to the host callback.
+        traceparent: Option<Traceparent>,
     },
     /// The sandbox performed an OS operation (e.g. `"Path.read_text"`).
     /// Answer it from this feed's mounts with
@@ -313,6 +335,8 @@ pub enum TurnEvent {
         system_sleep: Option<Duration>,
         /// Where the call expression is in the source.
         position: SourceRange,
+        /// As on [`FunctionCall`](Self::FunctionCall).
+        traceparent: Option<Traceparent>,
     },
     /// The sandbox read an undefined name, or — when `object_id` is set — a
     /// lazy attribute on the host-backed object with that uuid (a class
@@ -325,6 +349,8 @@ pub enum TurnEvent {
         object_id: Option<MontyUuid>,
         /// Where the name (or attribute access) is in the source.
         position: SourceRange,
+        /// As on [`FunctionCall`](Self::FunctionCall).
+        traceparent: Option<Traceparent>,
     },
     /// Every sandbox task is blocked on external futures — answer with
     /// [`Checkout::resume_futures`].
@@ -332,6 +358,8 @@ pub enum TurnEvent {
         pending_call_ids: Vec<u32>,
         /// Where the main task's blocked `await` is in the source.
         position: SourceRange,
+        /// As on [`FunctionCall`](Self::FunctionCall).
+        traceparent: Option<Traceparent>,
     },
     /// The fed snippet completed with this value; the session is ready for
     /// the next [`Checkout::feed`].
@@ -353,8 +381,11 @@ pub struct StreamedCall {
     pub call_id: u32,
     /// Where the call expression is in the source.
     pub position: SourceRange,
+    /// The span a server recording the session opened for this call.
+    pub traceparent: Option<Traceparent>,
     /// The telemetry context for the host callback running this call: the
-    /// call's own span, open until the `ResumeFutures` carrying its result.
+    /// call's own span, open until the `ResumeFutures` carrying its result,
+    /// else the remote span `traceparent` names.
     #[cfg(feature = "telemetry")]
     pub callback_context: opentelemetry::Context,
 }
@@ -453,6 +484,8 @@ pub struct Checkout {
     pending_configure: Option<Box<pb::Configure>>,
     /// The suspension awaiting an answer, when mid-feed.
     pending: Option<Pending>,
+    /// The span the peer named for that suspension; cleared once it is answered.
+    suspension_traceparent: Option<Traceparent>,
     /// Set while a turn's I/O is in flight; still set on the next call only
     /// if the previous turn future was cancelled mid-I/O (see the type docs).
     turn_in_flight: bool,
@@ -871,7 +904,7 @@ impl PendingKey {
 pub(crate) struct Redial {
     /// Re-sent as the new worker's `Configure`.
     pub(crate) repl: ReplConfig,
-    /// The request metadata the checkout first dialed with.
+    /// The caller's request metadata the checkout first dialed with.
     pub(crate) metadata: Vec<(String, String)>,
     /// Parents the new worker's session span as the first one was.
     #[cfg(feature = "telemetry")]
@@ -896,6 +929,7 @@ impl Checkout {
             pool,
             pending_configure: Some(Box::new(configure)),
             pending: None,
+            suspension_traceparent: None,
             turn_in_flight: false,
             abort_in_flight: false,
             budget,
@@ -959,6 +993,17 @@ impl Checkout {
         mounts: Vec<MountSpec>,
         on_print: OnPrint<'_>,
     ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
+        self.restore_with(state, mounts, TurnOptions::default(), on_print).await
+    }
+
+    /// [`Checkout::restore`] with per-turn [`TurnOptions`].
+    pub async fn restore_with(
+        &mut self,
+        state: Vec<u8>,
+        mounts: Vec<MountSpec>,
+        options: TurnOptions,
+        on_print: OnPrint<'_>,
+    ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
         self.ensure_ready()?;
         let feed_mounts = Self::build_feed_mounts(mounts)?;
         // the dump carries its own limits/consumed time/script name — forget
@@ -970,7 +1015,10 @@ impl Checkout {
         // a load names a new session; a storing relay's reply supplies its ID
         let session_id = self.session_id.take();
         self.feed_mounts = feed_mounts;
-        let request = request(pb::client_request::Kind::Load(pb::Load { state: state.into() }));
+        let request = traced_request(
+            pb::client_request::Kind::Load(pb::Load { state: state.into() }),
+            options,
+        );
         let outcome = self
             .request_turn(&request, self.pool.config.request_timeout, on_print)
             .await;
@@ -1037,6 +1085,30 @@ impl Checkout {
         skip_type_check: bool,
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
+        self.feed_with(
+            code,
+            inputs,
+            mounts,
+            cwd,
+            skip_type_check,
+            TurnOptions::default(),
+            on_print,
+        )
+        .await
+    }
+
+    /// [`Checkout::feed_with_cwd`] with per-turn [`TurnOptions`].
+    #[expect(clippy::too_many_arguments)]
+    pub async fn feed_with(
+        &mut self,
+        code: impl Into<String>,
+        inputs: impl Into<NamedValues>,
+        mounts: Vec<MountSpec>,
+        cwd: Option<&str>,
+        skip_type_check: bool,
+        options: TurnOptions,
+        on_print: OnPrint<'_>,
+    ) -> Result<TurnEvent, PoolError> {
         self.ensure_ready()?;
         if self.pending.is_some()
             || (self.budget.execution_clock == ExecutionClock::Cpu && self.budget.cpu_feed_suspended)
@@ -1064,15 +1136,18 @@ impl Checkout {
         let handler = self.next_streamed_call_handler.take();
         // a session that does not accept streamed calls never asks the worker for them
         self.feed_handler = handler.filter(|_| self.accepts_streamed_calls && self.async_functions.is_some());
-        let request = request(pb::client_request::Kind::Feed(pb::Feed {
-            code: code.into(),
-            inputs,
-            values: Some(values),
-            skip_type_check,
-            cwd,
-            async_functions: self.async_functions.clone().unwrap_or_default().into(),
-            stream_async_calls: self.feed_handler.is_some(),
-        }));
+        let request = traced_request(
+            pb::client_request::Kind::Feed(pb::Feed {
+                code: code.into(),
+                inputs,
+                values: Some(values),
+                skip_type_check,
+                cwd,
+                async_functions: self.async_functions.clone().unwrap_or_default().into(),
+                stream_async_calls: self.feed_handler.is_some(),
+            }),
+            options,
+        );
         let outcome = self.expect_turn(&request, on_print).await;
         // The worker adopts the directory as the request arrives, before the
         // stubs ask and type checking, so once the request reached it every
@@ -1858,7 +1933,14 @@ impl Checkout {
     /// same reason the feed's streamed-call handler and held arguments survive the `Load`.
     async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
         let configure = configure_request(&redial.repl, &self.pool.config);
-        let worker = self.pool.acquire_worker(&redial.metadata).await?;
+        #[cfg(feature = "telemetry")]
+        let trace = redial
+            .telemetry
+            .as_ref()
+            .map_or_else(Vec::new, TelemetryContext::propagation_headers);
+        #[cfg(not(feature = "telemetry"))]
+        let trace = Vec::new();
+        let worker = self.pool.acquire_worker(&trace, &redial.metadata).await?;
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(redial.telemetry.clone());
         self.worker = Some(worker);
@@ -2055,6 +2137,7 @@ impl Checkout {
             {
                 // A raw advance invalidates the earlier typed resume token.
                 self.pending = None;
+                self.suspension_traceparent = None;
             }
             // as the typed path: calls past the suspension limit are not forwarded
             if let Some(pb::worker_event::Kind::StreamedCalls(started)) = &mut event.kind {
@@ -2117,12 +2200,17 @@ impl Checkout {
         }
     }
 
-    /// The innermost telemetry context for host callbacks answering this checkout.
+    /// The innermost telemetry context for host callbacks answering this checkout:
+    /// the recorded span when this checkout records, else the remote span the
+    /// peer named for the pending suspension, which [`remote_suspension`](crate::telemetry::remote_suspension)
+    /// also reads behind a recorded span.
     #[cfg(feature = "telemetry")]
     pub fn callback_context(&self) -> opentelemetry::Context {
-        self.worker
+        let recorded = self
+            .worker
             .as_ref()
-            .map_or_else(opentelemetry::Context::new, Worker::callback_context)
+            .map_or_else(opentelemetry::Context::new, Worker::callback_context);
+        suspension_context(recorded, self.suspension_traceparent)
     }
 
     /// One request/reply exchange: send the request, stream prints, classify
@@ -2134,6 +2222,8 @@ impl Checkout {
         mut opening: Option<&pb::Configure>,
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
+        // sending an answer clears it, but a rejected answer leaves the suspension pending
+        let answered = self.suspension_traceparent;
         self.send_request(request, opening).await?;
         loop {
             let mut event = match self.worker.as_mut().expect("checked by send_request").recv().await {
@@ -2179,6 +2269,13 @@ impl Checkout {
             // dump's script name without parsing the opaque dump bytes.
             if let Some(name) = &event.restored_script_name {
                 self.restored_script_name = Some(name.clone());
+            }
+            let traceparent = event.parsed_traceparent().filter(|_| is_suspension(&event));
+            // a `Dump` reply ends its turn with the suspension still pending
+            if ends_turn(&event) && !matches!(request.kind, Some(pb::client_request::Kind::Dump(_))) {
+                let rejected =
+                    event.feed_suspended == Some(true) && matches!(event.kind, Some(pb::worker_event::Kind::Error(_)));
+                self.suspension_traceparent = if rejected { answered } else { traceparent };
             }
             match event.kind {
                 // answered by the remote transport's reader task before it
@@ -2228,6 +2325,7 @@ impl Checkout {
                         let position = suspension_position(call.position.take());
                         let function_name = mem::take(&mut call.function_name);
                         let call_id = call.call_id;
+                        let traceparent = call.traceparent;
                         let args = match call.into_call_args() {
                             Ok(args) => args,
                             Err(err) => {
@@ -2238,11 +2336,14 @@ impl Checkout {
                         let context = self.worker.as_ref().map_or_else(opentelemetry::Context::new, |worker| {
                             worker.streamed_call_context(call_id)
                         });
+                        #[cfg(feature = "telemetry")]
+                        let context = suspension_context(context, traceparent);
                         let call = StreamedCall {
                             function_name,
                             args,
                             call_id,
                             position,
+                            traceparent,
                             #[cfg(feature = "telemetry")]
                             callback_context: context.clone(),
                         };
@@ -2279,6 +2380,7 @@ impl Checkout {
                             allow_eager_await: call.allow_eager_await,
                             args: call.into_call_args()?,
                             position,
+                            traceparent,
                         })
                     });
                 }
@@ -2323,6 +2425,7 @@ impl Checkout {
                         allow_eager_await,
                         system_sleep,
                         position,
+                        traceparent,
                     }));
                 }
                 Some(pb::worker_event::Kind::NameLookup(lookup)) => {
@@ -2346,6 +2449,7 @@ impl Checkout {
                         name: lookup.name,
                         object_id,
                         position,
+                        traceparent,
                     }));
                 }
                 Some(pb::worker_event::Kind::ResolveFutures(futures)) => {
@@ -2357,6 +2461,7 @@ impl Checkout {
                     return Ok(ControlEvent::Turn(TurnEvent::ResolveFutures {
                         pending_call_ids,
                         position,
+                        traceparent,
                     }));
                 }
                 Some(pb::worker_event::Kind::Complete(complete)) => {
@@ -2504,6 +2609,10 @@ impl Checkout {
         match worker.send(request, opening).await {
             Ok(()) => {
                 self.request_sent = true;
+                // prints in the turn an answer starts are not part of the answered suspension
+                if is_execution_turn(request) {
+                    self.suspension_traceparent = None;
+                }
                 // a new turn starts only once its request is out, so a refused
                 // request leaves the previous feed's state as it was
                 // the host is done with these calls' arguments once their results are out
@@ -2824,7 +2933,8 @@ fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::Configure {
 /// (no pool capacity), `disconnected` (the new connection failed), `refused`
 /// (the relay rejected the load), `shutdown` (the new relay is shutting down
 /// too), `mismatch` (the reloaded state is not the one shut down), `configuration`
-/// (the new server is incompatible with the client settings) or `timeout`.
+/// (the new server is incompatible with the client settings), `timeout`,
+/// `cpu_limit` or `error`.
 #[cfg(feature = "telemetry")]
 fn resume_failure(err: &PoolError) -> &'static str {
     match err {
@@ -2872,16 +2982,20 @@ enum ControlEvent {
 /// on a turn that has already failed.
 const FATAL_EXIT_GRACE: Duration = Duration::from_millis(100);
 
-/// Wraps a request kind in a `ClientRequest`.
-///
-/// The one place the pool builds a request, so `ClientRequest`'s
-/// message-level fields are decided here rather than at every callsite.
-/// `trace_parent` is left unset: the pool does not propagate a tracing
-/// context yet, and an absent one just means the worker starts its own trace.
+/// Wraps a request kind that starts no turn in a `ClientRequest`, which
+/// carries no `traceparent`: its spans belong to the turn already running.
 pub(crate) fn request(kind: pb::client_request::Kind) -> pb::ClientRequest {
+    traced_request(kind, TurnOptions::default())
+}
+
+/// Wraps a turn-starting request kind in a `ClientRequest` naming the caller's span.
+///
+/// With [`request`], the one place the pool builds a request, so `ClientRequest`'s
+/// message-level fields are decided here rather than at every callsite.
+fn traced_request(kind: pb::client_request::Kind, options: TurnOptions) -> pb::ClientRequest {
     pb::ClientRequest {
         kind: Some(kind),
-        trace_parent: None,
+        traceparent: options.traceparent.map(|traceparent| traceparent.to_string()),
     }
 }
 

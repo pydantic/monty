@@ -97,6 +97,16 @@ impl HeapStr {
         }
     }
 
+    /// Polls during a first offset lookup. An interrupted count leaves the cache untouched.
+    pub(super) fn checked_char_len<E>(&self, check_time: impl Fn() -> Result<(), E>) -> Result<usize, E> {
+        if let Some(count) = self.known_char_len() {
+            return Ok(count);
+        }
+        let count = super::fast_offsets::count_chars(self.as_str(), check_time)?;
+        self.cache_char_len(count);
+        Ok(count)
+    }
+
     /// Returns a reference to the inner string.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -119,6 +129,27 @@ impl HeapStr {
             1 => false,
             count => count == self.text.len(),
         }
+    }
+
+    /// ASCII search results can use byte offsets as character indices.
+    /// A single non-ASCII byte settles the classification while leaving the character count lazy.
+    pub(super) fn checked_is_ascii<E>(&self, check_time: impl Fn() -> Result<(), E>) -> Result<bool, E> {
+        const CHUNK: usize = 64 * 1024;
+        // Cached metadata answers in O(1), and a short scan fits between deadline polls.
+        if self.char_len.get() != 0 || self.text.len() < CHUNK {
+            return Ok(self.is_ascii());
+        }
+        // An uncached ASCII string can take a full pass to classify. Poll before each chunk.
+        for chunk in self.text.as_bytes().chunks(CHUNK) {
+            check_time()?;
+            if !chunk.is_ascii() {
+                self.char_len.set(1);
+                return Ok(false);
+            }
+        }
+        // Each ASCII byte is one character, so the same pass establishes the exact count.
+        self.cache_char_len(self.text.len());
+        Ok(true)
     }
 
     /// Counts Unicode code points on first use, then reuses counts of at least two.

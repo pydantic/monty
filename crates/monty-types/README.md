@@ -28,6 +28,9 @@ implementation**.
   provides the lexical POSIX normalization shared by the interpreter, mounts, and `OsFunctionCall::to_args()` callbacks.
   It borrows canonical paths and resolves relative inputs from `/`.
   Validate NUL bytes and path limits before calling it; it does not confine filesystem access.
+- `OsPolicy` — session clocks, timezone, sleeps and initial random state.
+  `DateTimeSource::read`, `SandboxTimeZone`'s conversions and `local_wall_clock` use `jiff::civil::DateTime`.
+  `unix_seconds` converts those UTC civil components to epoch seconds without a timezone lookup.
 - `ResourceTracker` / `ResourceLimits` — the resource tracker the
   interpreter uses to enforce time/memory/recursion limits, plus the
   `max_suspensions` budget hosts enforce themselves.

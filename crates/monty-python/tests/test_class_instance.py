@@ -1691,7 +1691,7 @@ def test_deep_proxy_chain_hash_raises_recursion_error(monty_run: RunMonty):
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run(DATACLASS_IMPORT + code)
     assert repr(exc_info.value) == snapshot(
-        'MontyRuntimeError(RecursionError: cannot convert the result to a Python value: maximum recursion depth exceeded while hashing a MontyClassProxy)'
+        'MontyRuntimeError(RecursionError: cannot convert the result to a Python value: maximum recursion depth exceeded while hashing a dict or set key)'
     )
 
 

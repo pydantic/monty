@@ -221,6 +221,16 @@ impl<'h> PyInt<'h> {
             },
         )
     }
+
+    /// Computes `int.as_integer_ratio()`, returning `(self, 1)`.
+    pub(crate) fn as_integer_ratio(&self, vm: &VM<'h>) -> Value {
+        let num = match self {
+            Self::Small(value) => Value::Int(*value),
+            Self::Interned(id) => Value::InternLongInt(*id),
+            Self::Heap(value) => value.clone_value(vm.heap),
+        };
+        allocate_tuple(smallvec![num, Value::Int(1)], vm.heap)
+    }
 }
 
 /// Keeps storage selection here; a heap integer forwards to its concrete protocol.
@@ -492,6 +502,14 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
             Some(StaticStrings::BitCount) => {
                 args.check_zero_args("int.bit_count", vm.heap)?;
                 Ok(CallResult::Value(self.bit_count(vm)))
+            }
+            Some(StaticStrings::AsIntegerRatio) => {
+                args.check_zero_args("int.as_integer_ratio", vm.heap)?;
+                Ok(CallResult::Value(self.as_integer_ratio(vm)))
+            }
+            Some(StaticStrings::IsInteger) => {
+                args.check_zero_args("int.is_integer", vm.heap)?;
+                Ok(CallResult::Value(Value::Bool(true)))
             }
             _ => {
                 args.drop_with(vm.heap);

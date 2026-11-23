@@ -7,13 +7,14 @@ until `update.py` runs. Drift fails silently rather than loudly: a member the
 stale stub does not describe is reported as `unresolved-attribute`, and a
 module missing from `VERSIONS` is treated as not existing at all.
 
-Everything except `builtins.pyi` (whose filtering needs the upstream clone) is
-verified offline against the constants in `update.py`.
+The tree, pinned licence and modification notice are checked offline.
+Re-deriving the body of `builtins.pyi` requires the upstream clone.
 
 Usage:
     python crates/monty-typeshed/check.py
 """
 
+import hashlib
 import sys
 
 # `update.py` is this script's sibling, so the interpreter's script directory
@@ -21,13 +22,17 @@ import sys
 # importing it keeps the two from drifting the way the tree itself can.
 import update
 
-# Filtered from the upstream clone, so its contents cannot be re-derived
-# offline — only its presence is checked.
-GENERATED_FROM_UPSTREAM = 'stdlib/builtins.pyi'
+FILTERED_BUILTINS = 'stdlib/builtins.pyi'
 
 
 def main() -> int:
-    problems = [*check_tree_contents(), *check_custom_stubs(), *check_generated_files(), *check_versions()]
+    problems = [
+        *check_tree_contents(),
+        *check_custom_stubs(),
+        *check_generated_files(),
+        *check_notices(),
+        *check_versions(),
+    ]
     if problems:
         print('vendored typeshed is out of sync:', file=sys.stderr)
         for problem in problems:
@@ -56,9 +61,10 @@ def check_tree_contents() -> list[str]:
 def expected_files() -> set[str]:
     """Vendor-relative paths of every file `update.py` writes."""
     return {
+        'LICENSE',
         'source_commit.txt',
         'stdlib/VERSIONS',
-        GENERATED_FROM_UPSTREAM,
+        FILTERED_BUILTINS,
         *(f'stdlib/{name}' for name in update.COPY_FILES),
         *(f'stdlib/{stub}' for stub in custom_stubs()),
     }
@@ -98,6 +104,18 @@ def check_generated_files() -> list[str]:
         for name, constant, expected in generated
         if (vendored := read_vendored(name)) is not None and vendored != expected
     ]
+
+
+def check_notices() -> list[str]:
+    """Check the pinned licence and the notice on the filtered upstream stub."""
+    problems: list[str] = []
+    if (license_text := read_vendored('LICENSE')) is not None:
+        if hashlib.sha256(license_text).hexdigest() != update.LICENSE_SHA256:
+            problems.append('LICENSE does not match the pinned typeshed licence')
+    if (builtins := read_vendored(FILTERED_BUILTINS)) is not None:
+        if builtins.splitlines()[:1] != update.BUILTINS_NOTICE.encode().splitlines():
+            problems.append(f'{FILTERED_BUILTINS} is missing its modification notice')
+    return problems
 
 
 def check_versions() -> list[str]:

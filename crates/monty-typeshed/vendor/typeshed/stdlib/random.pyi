@@ -1,3 +1,4 @@
+# Modified from python/typeshed's stdlib/random.pyi to declare only the sandbox's random API.
 from collections.abc import Iterable, Sequence
 from typing import Any, TypeVar
 

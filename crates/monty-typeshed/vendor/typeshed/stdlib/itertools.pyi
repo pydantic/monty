@@ -1,26 +1,25 @@
 import sys
+from _typeshed import MaybeNone
 from collections.abc import Callable, Iterable, Iterator
 from types import GenericAlias
 from typing import Any, Generic, Literal, SupportsComplex, SupportsFloat, SupportsIndex, SupportsInt, TypeVar, overload
-
-from _typeshed import MaybeNone
 from typing_extensions import Self, TypeAlias, disjoint_base
 
-_T = TypeVar('_T')
-_S = TypeVar('_S')
-_N = TypeVar('_N', int, float, SupportsFloat, SupportsInt, SupportsIndex, SupportsComplex)
-_T_co = TypeVar('_T_co', covariant=True)
-_S_co = TypeVar('_S_co', covariant=True)
-_T1 = TypeVar('_T1')
-_T2 = TypeVar('_T2')
-_T3 = TypeVar('_T3')
-_T4 = TypeVar('_T4')
-_T5 = TypeVar('_T5')
-_T6 = TypeVar('_T6')
-_T7 = TypeVar('_T7')
-_T8 = TypeVar('_T8')
-_T9 = TypeVar('_T9')
-_T10 = TypeVar('_T10')
+_T = TypeVar("_T")
+_S = TypeVar("_S")
+_N = TypeVar("_N", int, float, SupportsFloat, SupportsInt, SupportsIndex, SupportsComplex)
+_T_co = TypeVar("_T_co", covariant=True)
+_S_co = TypeVar("_S_co", covariant=True)
+_T1 = TypeVar("_T1")
+_T2 = TypeVar("_T2")
+_T3 = TypeVar("_T3")
+_T4 = TypeVar("_T4")
+_T5 = TypeVar("_T5")
+_T6 = TypeVar("_T6")
+_T7 = TypeVar("_T7")
+_T8 = TypeVar("_T8")
+_T9 = TypeVar("_T9")
+_T10 = TypeVar("_T10")
 
 _Step: TypeAlias = SupportsFloat | SupportsInt | SupportsIndex | SupportsComplex
 
@@ -123,7 +122,6 @@ class takewhile(Generic[_T]):
     def __next__(self) -> _T: ...
 
 def tee(iterable: Iterable[_T], n: int = 2, /) -> tuple[Iterator[_T], ...]: ...
-
 @disjoint_base
 class zip_longest(Generic[_T_co]):
     # one iterable (fillvalue doesn't matter)
@@ -134,9 +132,7 @@ class zip_longest(Generic[_T_co]):
     # In the overloads without fillvalue, all of the tuple members could theoretically be None,
     # but we return Any instead to avoid false positives for code where we know one of the iterables
     # is longer.
-    def __new__(
-        cls, iter1: Iterable[_T1], iter2: Iterable[_T2], /
-    ) -> zip_longest[tuple[_T1 | MaybeNone, _T2 | MaybeNone]]: ...
+    def __new__(cls, iter1: Iterable[_T1], iter2: Iterable[_T2], /) -> zip_longest[tuple[_T1 | MaybeNone, _T2 | MaybeNone]]: ...
     @overload
     def __new__(
         cls, iter1: Iterable[_T1], iter2: Iterable[_T2], /, *, fillvalue: _T
@@ -162,13 +158,7 @@ class zip_longest(Generic[_T_co]):
     # five iterables
     @overload
     def __new__(
-        cls,
-        iter1: Iterable[_T1],
-        iter2: Iterable[_T2],
-        iter3: Iterable[_T3],
-        iter4: Iterable[_T4],
-        iter5: Iterable[_T5],
-        /,
+        cls, iter1: Iterable[_T1], iter2: Iterable[_T2], iter3: Iterable[_T3], iter4: Iterable[_T4], iter5: Iterable[_T5], /
     ) -> zip_longest[tuple[_T1 | MaybeNone, _T2 | MaybeNone, _T3 | MaybeNone, _T4 | MaybeNone, _T5 | MaybeNone]]: ...
     @overload
     def __new__(
@@ -218,22 +208,14 @@ class product(Generic[_T_co]):
     @overload
     def __new__(cls, iter1: Iterable[_T1], iter2: Iterable[_T2], /) -> product[tuple[_T1, _T2]]: ...
     @overload
-    def __new__(
-        cls, iter1: Iterable[_T1], iter2: Iterable[_T2], iter3: Iterable[_T3], /
-    ) -> product[tuple[_T1, _T2, _T3]]: ...
+    def __new__(cls, iter1: Iterable[_T1], iter2: Iterable[_T2], iter3: Iterable[_T3], /) -> product[tuple[_T1, _T2, _T3]]: ...
     @overload
     def __new__(
         cls, iter1: Iterable[_T1], iter2: Iterable[_T2], iter3: Iterable[_T3], iter4: Iterable[_T4], /
     ) -> product[tuple[_T1, _T2, _T3, _T4]]: ...
     @overload
     def __new__(
-        cls,
-        iter1: Iterable[_T1],
-        iter2: Iterable[_T2],
-        iter3: Iterable[_T3],
-        iter4: Iterable[_T4],
-        iter5: Iterable[_T5],
-        /,
+        cls, iter1: Iterable[_T1], iter2: Iterable[_T2], iter3: Iterable[_T3], iter4: Iterable[_T4], iter5: Iterable[_T5], /
     ) -> product[tuple[_T1, _T2, _T3, _T4, _T5]]: ...
     @overload
     def __new__(
@@ -344,9 +326,7 @@ class combinations_with_replacement(Generic[_T_co]):
     @overload
     def __new__(cls, iterable: Iterable[_T], r: Literal[4]) -> combinations_with_replacement[tuple[_T, _T, _T, _T]]: ...
     @overload
-    def __new__(
-        cls, iterable: Iterable[_T], r: Literal[5]
-    ) -> combinations_with_replacement[tuple[_T, _T, _T, _T, _T]]: ...
+    def __new__(cls, iterable: Iterable[_T], r: Literal[5]) -> combinations_with_replacement[tuple[_T, _T, _T, _T, _T]]: ...
     @overload
     def __new__(cls, iterable: Iterable[_T], r: int) -> combinations_with_replacement[tuple[_T, ...]]: ...
     def __iter__(self) -> Self: ...
@@ -366,13 +346,9 @@ if sys.version_info >= (3, 12):
             @overload
             def __new__(cls, iterable: Iterable[_T], n: Literal[1], *, strict: Literal[True]) -> batched[tuple[_T]]: ...
             @overload
-            def __new__(
-                cls, iterable: Iterable[_T], n: Literal[2], *, strict: Literal[True]
-            ) -> batched[tuple[_T, _T]]: ...
+            def __new__(cls, iterable: Iterable[_T], n: Literal[2], *, strict: Literal[True]) -> batched[tuple[_T, _T]]: ...
             @overload
-            def __new__(
-                cls, iterable: Iterable[_T], n: Literal[3], *, strict: Literal[True]
-            ) -> batched[tuple[_T, _T, _T]]: ...
+            def __new__(cls, iterable: Iterable[_T], n: Literal[3], *, strict: Literal[True]) -> batched[tuple[_T, _T, _T]]: ...
             @overload
             def __new__(
                 cls, iterable: Iterable[_T], n: Literal[4], *, strict: Literal[True]
