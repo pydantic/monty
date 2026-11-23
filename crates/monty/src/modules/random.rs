@@ -47,33 +47,34 @@ use crate::{
 };
 
 /// `random` module functions, each also a method of `random.Random`.
+#[monty_macros::explicit_discriminants(checksum = 0xd4e4_a18d_730b_1274)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, Serialize, Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum RandomFunctions {
-    Random,
-    Seed,
-    Getstate,
-    Setstate,
-    Getrandbits,
-    Randbytes,
-    Randrange,
-    Randint,
-    Choice,
-    Choices,
-    Shuffle,
-    Sample,
-    Uniform,
-    Triangular,
-    Normalvariate,
-    Gauss,
-    Lognormvariate,
-    Expovariate,
-    Vonmisesvariate,
-    Gammavariate,
-    Betavariate,
-    Paretovariate,
-    Weibullvariate,
-    Binomialvariate,
+    Random = 0,
+    Seed = 1,
+    Getstate = 2,
+    Setstate = 3,
+    Getrandbits = 4,
+    Randbytes = 5,
+    Randrange = 6,
+    Randint = 7,
+    Choice = 8,
+    Choices = 9,
+    Shuffle = 10,
+    Sample = 11,
+    Uniform = 12,
+    Triangular = 13,
+    Normalvariate = 14,
+    Gauss = 15,
+    Lognormvariate = 16,
+    Expovariate = 17,
+    Vonmisesvariate = 18,
+    Gammavariate = 19,
+    Betavariate = 20,
+    Paretovariate = 21,
+    Weibullvariate = 22,
+    Binomialvariate = 23,
 }
 
 /// Every function with the interned name it is bound to, for the module
@@ -766,9 +767,7 @@ fn shuffle(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
             for i in (1..len).rev() {
                 vm.heap.tracker.check_time_every(i)?;
                 let j = index_value(random.rng().randbelow(i as u128 + 1, &vm.heap.tracker)?);
-                list.get_mut(vm.heap)
-                    .as_vec_mut()
-                    .swap(i, usize::try_from(j).expect("j <= i"));
+                list.get_mut(vm.heap).swap(i, usize::try_from(j).expect("j <= i"));
             }
             Ok(Value::None)
         });

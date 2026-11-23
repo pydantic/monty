@@ -274,12 +274,7 @@ impl GraphExporter {
             HeapReadOutput::Bytes(b) => MontyNode::Bytes(b.get(vm.heap).as_slice().to_owned()),
             HeapReadOutput::List(list) => {
                 // Snapshot before recursing: a nested `__repr__` may mutate this list.
-                let children: Vec<Value> = list
-                    .get(vm.heap)
-                    .as_slice()
-                    .iter()
-                    .map(|item| item.clone_with_heap(vm.heap))
-                    .collect();
+                let children: Vec<Value> = list.get(vm.heap).items().cloned(vm.heap).collect();
                 defer_drop!(children, vm);
                 MontyNode::List(self.push_all(children, vm))
             }

@@ -18,7 +18,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use chrono::{NaiveDate, NaiveTime, format::StrftimeItems};
+use jiff::civil::{self, Time as CivilTime};
 use monty_types::ResourceTracker;
 
 use crate::{
@@ -311,9 +311,7 @@ fn from_components(hour: i32, minute: i32, second: i32, microsecond: i32, fold: 
         );
     }
     if !(0..=59).contains(&second) {
-        return Err(
-            SimpleException::new_msg(ExcType::ValueError, format!("second must be in 0..59, not {second}")).into(),
-        );
+        return Err(ExcType::second_out_of_range(second));
     }
     if !(0..=999_999).contains(&microsecond) {
         return Err(SimpleException::new_msg(
@@ -469,27 +467,23 @@ pub(crate) fn format_time_strftime(
     format: &str,
     tracker: &ResourceTracker,
 ) -> RunResult<String> {
-    let anchored = NaiveDate::from_ymd_opt(1900, 1, 1)
-        .expect("1900-01-01 is a valid date")
-        .and_time(naive_time(time));
+    let anchored = civil::date(1900, 1, 1).to_datetime(naive_time(time));
     let format = date::rewrite_zone_directives(
         format,
         tz.map(|tz| tz.offset_seconds),
         tz.and_then(|tz| tz.name.as_deref()),
         tracker,
     )?;
-    let format = date::rewrite_microsecond_directive(&format);
-    date::render_strftime(anchored.format_with_items(StrftimeItems::new_lenient(&format)))
-        .ok_or_else(date::invalid_strftime_error)
+    date::render_strftime(anchored, &format, tracker)
 }
 
-/// The validated wall-clock components as a `chrono::NaiveTime`.
-fn naive_time(time: &Time) -> NaiveTime {
-    NaiveTime::from_hms_micro_opt(
-        u32::from(time.hour),
-        u32::from(time.minute),
-        u32::from(time.second),
-        time.microsecond,
+/// The validated wall-clock components as a Jiff civil time.
+fn naive_time(time: &Time) -> CivilTime {
+    CivilTime::new(
+        i8::try_from(time.hour).expect("validated hour"),
+        i8::try_from(time.minute).expect("validated minute"),
+        i8::try_from(time.second).expect("validated second"),
+        i32::try_from(time.microsecond * 1_000).expect("validated microsecond"),
     )
     .expect("time components are validated on construction")
 }

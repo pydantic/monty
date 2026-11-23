@@ -18,7 +18,7 @@ use std::{
 };
 
 use logfire::{Logfire, set_local_logfire};
-use monty_proto::{WireArena, WireFunctionCall, pb, pb::os_call::Call};
+use monty_proto::{Traceparent, WireArena, WireFunctionCall, pb, pb::os_call::Call};
 use monty_types::{
     DEFAULT_MAX_SUSPENSIONS, MontyUuid, SourceRange, bytes_repr,
     unstable::{MontyNode, NodeId},
@@ -31,7 +31,7 @@ use tracing::{Span, field::Empty};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::telemetry::{
-    TelemetryContext,
+    TelemetryContext, context_from_traceparent, traceparent_of,
     tracing_json::{
         nonfinite_str, serialize_capped, serialize_dict_capped, serialize_named_iter_capped, serialize_seq_capped,
         serialize_value_capped,
@@ -120,6 +120,8 @@ pub(crate) struct Recorder {
     dump_turn: bool,
     /// One-shot host context consumed when `Configure` starts the root span.
     adapter_context: Option<TelemetryContext>,
+    /// Maps this recorder's spans to the ones a peer can name; see [`Self::exported`].
+    exporter: Option<TelemetryContext>,
     /// Scoped dispatcher installed only while this recorder emits telemetry.
     logfire: Option<Logfire>,
 }
@@ -139,6 +141,7 @@ impl Recorder {
             session: None,
             dump_turn: false,
             adapter_context: None,
+            exporter: None,
             logfire: None,
         }
     }
@@ -146,6 +149,7 @@ impl Recorder {
     /// Assigns the one-shot host context before checkout sends `Configure`.
     pub(crate) fn set_adapter_context(&mut self, context: TelemetryContext) {
         self.logfire = Some(context.logfire());
+        self.exporter = Some(context.clone());
         self.adapter_context = Some(context);
     }
 
@@ -158,10 +162,12 @@ impl Recorder {
     }
 
     /// Starts a snapshot API span before the checkout sends any frames.
-    pub(crate) fn snapshot_span(&self, operation: SnapshotOperation) -> SnapshotSpan {
+    pub(crate) fn snapshot_span(&self, operation: SnapshotOperation, traceparent: Option<Traceparent>) -> SnapshotSpan {
         let _logfire = self.logfire.clone().map(set_local_logfire);
         let context = Context::current();
-        let context = if context.span().span_context().is_valid() {
+        let context = if let Some(traceparent) = traceparent {
+            context_from_traceparent(traceparent, false)
+        } else if context.span().span_context().is_valid() {
             context
         } else {
             let parent = self.context_span();
@@ -259,20 +265,23 @@ impl Recorder {
         match &request.kind {
             Some(pb::client_request::Kind::Configure(c)) => self.begin_session(c),
             Some(pb::client_request::Kind::Load(l)) => {
-                let load = logfire::span!(
-                    parent: self.context_span(),
+                // Keep only the OTel parent so restore can end before a suspended load.
+                let parent = match restore_parent {
+                    Some(restore) => SpanParent {
+                        local: Span::none(),
+                        remote: Some(restore.context()),
+                    },
+                    None => self.parent(request.parsed_traceparent()),
+                };
+                self.turn = Some(parent.start(logfire::span!(
+                    parent: &parent.local,
                     "load",
                     state_bytes = l.state.len(),
                     // filled in by the reply, which announces the name the
                     // restored session runs under
                     script_name = Empty,
                     length_limit_exceeded = Empty,
-                );
-                // An OTel parent lets the API span close before a suspended load ends.
-                if let Some(restore) = restore_parent {
-                    let _ = load.set_parent(restore.context());
-                }
-                self.turn = Some(start_span(load));
+                )));
             }
             // ends the session: closing the spans is the whole record, since
             // the bare `Ok` it is answered with would say nothing. A reset can
@@ -301,8 +310,9 @@ impl Recorder {
                 self.clear_streamed_calls();
                 self.feed = None;
                 let cut = code_cut | inputs_cut;
-                let span = start_span(logfire::span!(
-                    parent: self.context_span(),
+                let parent = self.parent(request.parsed_traceparent());
+                let span = parent.start(logfire::span!(
+                    parent: &parent.local,
                     "run code",
                     code = &code,
                     code.language = "python",
@@ -312,6 +322,8 @@ impl Recorder {
                     sandbox.execution.language = "python",
                     inputs = inputs,
                     skip_type_check = f.skip_type_check,
+                    // the session span is not this span's parent when the caller named one
+                    checkout_span_id = parent.remote.as_ref().and_then(|_| self.checkout_span_id()),
                     length_limit_exceeded = cut.then_some(true),
                     // declared empty here, filled in by the `Complete` event
                     // that closes this span
@@ -459,7 +471,7 @@ impl Recorder {
                         ((None, None, true), 0)
                     };
                     self.streamed_arg_bytes += kept;
-                    let mut span = self.call_span(c, arguments, micros, max_feed_duration);
+                    let mut span = self.call_span(c, c.traceparent, arguments, micros, max_feed_duration);
                     span.arg_bytes = kept;
                     if let Some(replaced) = self.streamed_calls.insert(c.call_id, span) {
                         self.streamed_arg_bytes -= replaced.arg_bytes;
@@ -467,20 +479,23 @@ impl Recorder {
                 }
             }
             Some(pb::worker_event::Kind::FunctionCall(c)) => {
-                let mut pending = self.call_span(c, render_call_arguments(c), micros, max_feed_duration);
+                let traceparent = event.parsed_traceparent();
+                let mut pending = self.call_span(c, traceparent, render_call_arguments(c), micros, max_feed_duration);
                 pending.eager_call_id = c.allow_eager_await.then_some(c.call_id);
                 self.pending = Some(pending);
             }
             Some(pb::worker_event::Kind::OsCall(c)) => {
-                self.pending = Some(os_call_span(c, micros, max_feed_duration, &self.context_span()));
+                let parent = self.parent(event.parsed_traceparent());
+                self.pending = Some(os_call_span(c, micros, max_feed_duration, &parent));
             }
             Some(pb::worker_event::Kind::NameLookup(n)) => {
                 let (name, name_cut) = truncate_str(&n.name);
                 let range = n.position.as_ref().map(SourceRange::from);
                 let position = PositionAttrs::new(range.as_ref());
                 let cut = name_cut | position.cut;
-                let span = start_span(logfire::span!(
-                    parent: self.context_span(),
+                let parent = self.parent(event.parsed_traceparent());
+                let span = parent.start(logfire::span!(
+                    parent: &parent.local,
                     "name lookup {name}",
                     name = name,
                     sandbox.code.file.path = position.file,
@@ -500,8 +515,9 @@ impl Recorder {
                 let range = r.position.as_ref().map(SourceRange::from);
                 let position = PositionAttrs::new(range.as_ref());
                 let cut = ids_cut | position.cut;
-                let span = start_span(logfire::span!(
-                    parent: self.context_span(),
+                let parent = self.parent(event.parsed_traceparent());
+                let span = parent.start(logfire::span!(
+                    parent: &parent.local,
                     "resolve futures",
                     pending_call_ids = pending_call_ids,
                     sandbox.code.file.path = position.file,
@@ -635,6 +651,7 @@ impl Recorder {
     fn call_span(
         &self,
         c: &WireFunctionCall,
+        traceparent: Option<Traceparent>,
         arguments: (Option<String>, Option<String>, bool),
         micros: u64,
         max_feed_duration: Option<u64>,
@@ -643,8 +660,9 @@ impl Recorder {
         let (function_name, name_cut) = truncate_str(&c.function_name);
         let position = PositionAttrs::new(c.position.as_ref());
         let cut = args_cut | name_cut | position.cut;
-        let span = start_span(logfire::span!(
-            parent: self.context_span(),
+        let parent = self.parent(traceparent);
+        let span = parent.start(logfire::span!(
+            parent: &parent.local,
             "call {function_name}",
             function_name = function_name,
             args = args,
@@ -667,6 +685,83 @@ impl Recorder {
     /// Uses the API span for a dump event and the recorder's span for other events.
     fn event_parent(&self, dump_parent: Option<&Span>) -> Span {
         dump_parent.cloned().unwrap_or_else(|| self.context_span())
+    }
+
+    /// The span the turn `request` started, for the peer running it to parent
+    /// its own spans to: the feed's, or a `Load`'s.
+    pub(crate) fn turn_traceparent(&self, request: &pb::ClientRequest) -> Option<Traceparent> {
+        let span = match request.kind {
+            Some(pb::client_request::Kind::Feed(_)) => self.feed.as_ref().map(OpenSpan::span),
+            Some(pb::client_request::Kind::Load(_)) => self.turn.as_ref(),
+            _ => None,
+        }?;
+        self.exported(span)
+    }
+
+    /// Names this recorder's suspension spans on `event`, so the host answering
+    /// it parents its work to them. Leaves a span it cannot name as the peer set it.
+    pub(crate) fn stamp(&self, event: &mut pb::WorkerEvent) {
+        // a host bridging to its own SDK answers the event itself, under the recorded span
+        if self.exporter.as_ref().is_none_or(TelemetryContext::has_adapter) {
+            return;
+        }
+        match &mut event.kind {
+            Some(
+                pb::worker_event::Kind::FunctionCall(_)
+                | pb::worker_event::Kind::OsCall(_)
+                | pb::worker_event::Kind::NameLookup(_)
+                | pb::worker_event::Kind::ResolveFutures(_),
+            ) => {
+                let pending = self.pending.as_ref().and_then(|pending| self.exported(pending.span()));
+                if let Some(traceparent) = pending {
+                    event.traceparent = Some(traceparent.to_string());
+                }
+            }
+            Some(pb::worker_event::Kind::StreamedCalls(started)) => {
+                for call in &mut started.calls {
+                    let span = self.streamed_calls.get(&call.call_id);
+                    if let Some(traceparent) = span.and_then(|call| self.exported(call.span())) {
+                        call.traceparent = Some(traceparent);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The parent for a turn or suspension span: the span a peer named in
+    /// `traceparent`, else the innermost open span.
+    fn parent(&self, traceparent: Option<Traceparent>) -> SpanParent {
+        match traceparent {
+            Some(traceparent) => SpanParent {
+                local: Span::none(),
+                remote: Some(context_from_traceparent(traceparent, true)),
+            },
+            None => SpanParent {
+                local: self.context_span(),
+                remote: None,
+            },
+        }
+    }
+
+    /// The `traceparent` a peer can use to parent its spans to `span`; `None`
+    /// when the span is not recorded or its exported identity is unknown.
+    fn exported(&self, span: &Span) -> Option<Traceparent> {
+        let context = span.context();
+        let span = context.span();
+        let span = span.span_context();
+        let span = if span.is_valid() {
+            self.exporter.as_ref()?.exported_span_context(span)
+        } else {
+            None
+        }?;
+        traceparent_of(&span)
+    }
+
+    /// The session span's exported ID, as hex.
+    fn checkout_span_id(&self) -> Option<String> {
+        let session = self.exported(self.session.as_ref()?)?;
+        Some(format!("{:016x}", session.span_id()))
     }
 
     fn context_span(&self) -> Span {
@@ -716,6 +811,23 @@ impl Drop for Recorder {
         let _logfire = self.logfire.clone().map(set_local_logfire);
         self.end_feed();
         self.session = None;
+    }
+}
+
+/// Where a new span hangs: under a span this recorder holds, or under one a peer named.
+struct SpanParent {
+    /// The explicit `tracing` parent; none when `remote` is the parent.
+    local: Span,
+    remote: Option<opentelemetry::Context>,
+}
+
+impl SpanParent {
+    /// Starts `span`, which was created with `parent: &self.local`.
+    fn start(&self, span: Span) -> Span {
+        if let Some(remote) = &self.remote {
+            let _ = span.set_parent(remote.clone());
+        }
+        start_span(span)
     }
 }
 
@@ -922,7 +1034,7 @@ fn capped_filename(filename: Option<&str>) -> (Option<String>, bool) {
 /// Each call shape gets its own macro invocation because the attribute set is
 /// baked into the span's `logfire.json_schema` at compile time — a union-shaped
 /// call would surface every unused argument as `null` in the UI.
-fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64>, parent: &Span) -> OpenSpan {
+fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64>, parent: &SpanParent) -> OpenSpan {
     let call_id = os_call.call_id;
     let range = os_call.position.as_ref().map(SourceRange::from);
     let position = PositionAttrs::new(range.as_ref());
@@ -933,7 +1045,7 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64
     macro_rules! os_call {
         ($function:expr $(, $($key:ident).+ = $value:expr)* $(,)?) => {
             logfire::span!(
-                parent: parent,
+                parent: &parent.local,
                 "os call {function}",
                 function = $function,
                 $($($key).+ = $value,)*
@@ -957,7 +1069,7 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64
             value
         }};
     }
-    let span = start_span(match os_call.call.as_ref() {
+    let span = parent.start(match os_call.call.as_ref() {
         Some(Call::Exists(p)) => os_call!("exists", args.path = string_arg!(p)),
         Some(Call::IsFile(p)) => os_call!("is_file", args.path = string_arg!(p)),
         Some(Call::IsDir(p)) => os_call!("is_dir", args.path = string_arg!(p)),
@@ -1336,7 +1448,7 @@ mod tests {
     use std::sync::{Mutex, PoisonError};
 
     use logfire::{Logfire, config::AdvancedOptions, set_local_logfire};
-    use monty_proto::{WireFunctionCall, future_results_to_proto, pb, pb::os_call::Call};
+    use monty_proto::{Traceparent, WireFunctionCall, future_results_to_proto, pb, pb::os_call::Call};
     use monty_types::{CallArgs, ExtFunctionResult, MontyObject, NameLookupResult, SourceRange};
     use opentelemetry::{
         logs::AnyValue,
@@ -1434,12 +1546,13 @@ mod tests {
     fn request(kind: pb::client_request::Kind) -> pb::ClientRequest {
         pb::ClientRequest {
             kind: Some(kind),
-            trace_parent: None,
+            traceparent: None,
         }
     }
 
     fn event(kind: pb::worker_event::Kind) -> pb::WorkerEvent {
         pb::WorkerEvent {
+            traceparent: None,
             kind: Some(kind),
             total_execution_micros: 42,
             max_suspensions: None,
@@ -1529,6 +1642,155 @@ mod tests {
         assert_eq!(attr(call, "sandbox.code.offset.start"), Some(0.into()));
         assert_eq!(attr(call, "sandbox.code.offset.end"), Some(7.into()));
         assert!(logs.get_emitted_logs().unwrap().is_empty());
+    }
+
+    fn feed(traceparent: Option<&str>) -> pb::ClientRequest {
+        pb::ClientRequest {
+            traceparent: traceparent.map(str::to_owned),
+            ..request(pb::client_request::Kind::Feed(pb::Feed {
+                code: "fetch()".to_owned(),
+                cwd: "/".to_owned(),
+                ..Default::default()
+            }))
+        }
+    }
+
+    fn call(call_id: u32) -> WireFunctionCall {
+        WireFunctionCall::new(
+            "fetch".to_owned(),
+            CallArgs::default(),
+            call_id,
+            None,
+            false,
+            position(),
+        )
+    }
+
+    /// The span `traceparent` names, as the exported parent of its children.
+    fn named(traceparent: &str) -> (TraceId, SpanId) {
+        let traceparent = Traceparent::parse(traceparent).unwrap();
+        (traceparent.trace_id().into(), traceparent.span_id().into())
+    }
+
+    fn parent_of(span: &SpanData) -> (TraceId, SpanId) {
+        (span.span_context.trace_id(), span.parent_span_id)
+    }
+
+    const FIRST_CALLER: &str = "00-000000000000000000000000000000a1-00000000000000b1-01";
+    const SECOND_CALLER: &str = "00-000000000000000000000000000000a2-00000000000000b2-01";
+    const SERVER_CALL: &str = "00-000000000000000000000000000000a1-00000000000000c1-01";
+    const SERVER_STREAMED: &str = "00-000000000000000000000000000000a1-00000000000000c2-01";
+
+    /// Each feed is a child of the span its request names, never of the session,
+    /// and the request it sends names its own span in turn. A feed whose request
+    /// names none keeps the session as its parent.
+    #[test]
+    fn a_feed_nests_under_the_span_its_request_names() {
+        let (logfire, spans, _logs) = test_logfire();
+        let mut recorder = Recorder::new(None);
+        recorder.set_adapter_context(TelemetryContext::for_logfire(logfire));
+        recorder.begin_session(&pb::Configure::default());
+        let mut sent = Vec::new();
+        for caller in [Some(FIRST_CALLER), Some(SECOND_CALLER), None] {
+            let request = feed(caller);
+            recorder.begin_turn(&request);
+            sent.push(recorder.turn_traceparent(&request).unwrap());
+            recorder.event(&event(pb::worker_event::Kind::Complete(pb::Complete::from(
+                MontyObject::none(),
+            ))));
+        }
+        recorder.begin_turn(&request(pb::client_request::Kind::Reset(pb::Reset {})));
+
+        let spans = spans.get_finished_spans().unwrap();
+        let session = spans.iter().find(|s| s.name == "session {script_name}").unwrap();
+        let session_id = session.span_context.span_id();
+        let feeds: Vec<&SpanData> = spans.iter().filter(|s| s.name == "run code").collect();
+        assert_eq!(
+            feeds.iter().map(|feed| parent_of(feed)).collect::<Vec<_>>(),
+            [
+                named(FIRST_CALLER),
+                named(SECOND_CALLER),
+                (session.span_context.trace_id(), session_id)
+            ]
+        );
+        // only a feed whose parent is not the session names it
+        let session_named = [
+            Some(session_id.to_string().into()),
+            Some(session_id.to_string().into()),
+            None,
+        ];
+        for ((feed, sent), session_named) in feeds.iter().zip(sent).zip(session_named) {
+            assert_eq!(SpanId::from(sent.span_id()), feed.span_context.span_id());
+            assert_eq!(TraceId::from(sent.trace_id()), feed.span_context.trace_id());
+            let checkout_span_id = feed.attributes.iter().find(|kv| kv.key.as_str() == "checkout_span_id");
+            assert_eq!(checkout_span_id.map(|kv| kv.value.clone()), session_named);
+        }
+    }
+
+    /// A suspension span is a child of the span its event names, a streamed
+    /// call's of the span the call names; `stamp` then names the recorder's own
+    /// spans on the event. Without a name the feed span is the parent.
+    #[test]
+    fn a_suspension_nests_under_the_span_its_event_names() {
+        let (logfire, spans, _logs) = test_logfire();
+        let mut recorder = Recorder::new(None);
+        recorder.set_adapter_context(TelemetryContext::for_logfire(logfire));
+        recorder.begin_session(&pb::Configure::default());
+        recorder.begin_turn(&feed(Some(FIRST_CALLER)));
+
+        let mut streamed = event(pb::worker_event::Kind::StreamedCalls(pb::StreamedCalls {
+            calls: vec![
+                WireFunctionCall {
+                    traceparent: Traceparent::parse(SERVER_STREAMED),
+                    ..call(1)
+                },
+                call(2),
+            ]
+            .into(),
+        }));
+        recorder.event(&streamed);
+        recorder.stamp(&mut streamed);
+        let mut suspension = pb::WorkerEvent {
+            traceparent: Some(SERVER_CALL.to_owned()),
+            ..event(pb::worker_event::Kind::FunctionCall(call(3)))
+        };
+        recorder.event(&suspension);
+        recorder.stamp(&mut suspension);
+        recorder.begin_turn(&request(pb::client_request::Kind::Reset(pb::Reset {})));
+
+        let spans = spans.get_finished_spans().unwrap();
+        let feed = spans.iter().find(|s| s.name == "run code").unwrap();
+        let call_span = |call_id: u32| {
+            let span = spans.iter().find(|s| {
+                s.attributes
+                    .iter()
+                    .any(|kv| kv.key.as_str() == "call_id" && kv.value.to_string() == call_id.to_string())
+            });
+            span.unwrap()
+        };
+        assert_eq!(parent_of(call_span(1)), named(SERVER_STREAMED));
+        assert_eq!(
+            parent_of(call_span(2)),
+            (named(FIRST_CALLER).0, feed.span_context.span_id())
+        );
+        assert_eq!(parent_of(call_span(3)), named(SERVER_CALL));
+
+        let stamped = |traceparent: Option<Traceparent>| SpanId::from(traceparent.unwrap().span_id());
+        let Some(pb::worker_event::Kind::StreamedCalls(started)) = &streamed.kind else {
+            panic!("expected streamed calls");
+        };
+        assert_eq!(
+            stamped(started.calls[0].traceparent),
+            call_span(1).span_context.span_id()
+        );
+        assert_eq!(
+            stamped(started.calls[1].traceparent),
+            call_span(2).span_context.span_id()
+        );
+        assert_eq!(
+            stamped(suspension.parsed_traceparent()),
+            call_span(3).span_context.span_id()
+        );
     }
 
     /// Open streamed-call spans share one argument budget: past it a call's span
@@ -1696,6 +1958,7 @@ mod tests {
             state: vec![0; 8].into(),
         })));
         recorder.event(&pb::WorkerEvent {
+            traceparent: None,
             kind: Some(pb::worker_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 42,
             max_suspensions: None,
@@ -1751,6 +2014,7 @@ mod tests {
             state: vec![].into(),
         })));
         recorder.event(&pb::WorkerEvent {
+            traceparent: None,
             kind: Some(pb::worker_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 42,
             max_suspensions: None,

@@ -35,19 +35,20 @@ use crate::{
 };
 
 /// Module-level `csv` functions; `DictReader` and `DictWriter` are types.
+#[monty_macros::explicit_discriminants(checksum = 0x761e_5c0a_a9b7_9c94)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum CsvFunctions {
     /// `csv.reader(csvfile, dialect='excel', **fmtparams)`.
-    Reader,
+    Reader = 0,
     /// `csv.writer(csvfile, dialect='excel', **fmtparams)`.
-    Writer,
+    Writer = 1,
     /// `csv.get_dialect(name)`.
-    GetDialect,
+    GetDialect = 2,
     /// `csv.list_dialects()`.
-    ListDialects,
+    ListDialects = 3,
     /// `csv.field_size_limit([new_limit])`.
-    FieldSizeLimit,
+    FieldSizeLimit = 4,
 }
 
 /// Creates the `csv` module.

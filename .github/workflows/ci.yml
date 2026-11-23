@@ -98,6 +98,9 @@ jobs:
       - name: Check vendored typeshed stubs are in sync
         run: make check-typeshed
 
+      - name: Check vendored CPython stdlib and test sources are in sync
+        run: make check-stdlib
+
       # packaging resolves every crate's dependencies against crates.io, which
       # catches manifests that only break at release time (e.g. a versioned
       # path dependency on a crate that is not published yet)
@@ -107,6 +110,10 @@ jobs:
       # the str character-property tables are generated from the pinned CPython
       - name: Check generated str Unicode tables are in sync
         run: make check-unicode-type
+
+      # the type checker's warm-up snippet is generated from the vendored builtins stub
+      - name: Check the type checker warm-up snippet is in sync
+        run: make check-type-check-warm-up
 
       # rustdoc JSON is nightly-only and format-unstable, so the API reference
       # is generated with the exact nightly matching monty-apidoc's pinned
@@ -232,6 +239,10 @@ jobs:
       # real `monty` binary: build it plainly first (outside the llvm-cov
       # target dir) and point the tests at it explicitly.
       - run: cargo build -p monty-runtime
+      # a vendored CPython module whose test case passes unpatched no longer needs its patches;
+      # this rebuilds only `monty` (with the unpatched source embedded) and the datatest harness
+      - name: Check every vendored CPython stdlib patch is still needed
+        run: python3 scripts/vendor_stdlib.py --check-patches
       - run: cargo build -p monty-pool --example cpu-test-worker --target-dir target/llvm-cov-target
       - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool -p monty-pgo --features monty-pool/telemetry
         env:
@@ -398,6 +409,9 @@ jobs:
       - run: make install-py
       - name: Build runtime wheel
         run: uv run maturin build -m crates/monty-runtime/Cargo.toml --profile ${{ matrix.profile }} --out runtime-wheels
+
+      - name: Check runtime wheel licences
+        run: uv run --no-sync scripts/check_licenses.py --wheels runtime-wheels/*.whl
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -1067,6 +1081,7 @@ jobs:
         run: |
           for whl in dist/*.whl; do unzip -qt "$whl"; done
           uv run --no-sync twine check --strict dist/*
+          uv run --no-sync scripts/check_licenses.py --sdist dist/pydantic_monty_runtime-*.tar.gz --wheels dist/pydantic_monty_runtime-*.whl
 
   # Release to PyPI
   release-python:

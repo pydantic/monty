@@ -13,8 +13,10 @@ use logfire::{
     config::{AdvancedOptions, LogfireConfigBuilder},
     set_local_logfire,
 };
-use monty_pool::{CheckoutOptions, Pool, PoolError, PrintFuture, ReplConfig, TurnEvent, telemetry::TelemetryContext};
-use monty_proto::{decode_frame, pb};
+use monty_pool::{
+    CheckoutOptions, Pool, PoolError, PrintFuture, ReplConfig, TurnEvent, TurnOptions, telemetry::TelemetryContext,
+};
+use monty_proto::{Traceparent, decode_frame, pb};
 use monty_types::{MontyObject, NameLookupResult};
 use opentelemetry::{
     Value,
@@ -404,6 +406,7 @@ async fn restore_span_scenario() {
     );
     let options = CheckoutOptions::default()
         .with_telemetry(Some(TelemetryContext::for_logfire(logfire).with_parent(parent.clone())));
+    let caller = Traceparent::new(31, 32, TraceFlags::SAMPLED.to_u8()).unwrap();
     let (loading, load_request) = oneshot::channel();
     let (loaded, load_reply) = mpsc::channel();
     let (cancelling, cancel_request) = oneshot::channel();
@@ -412,11 +415,12 @@ async fn restore_span_scenario() {
         let mut socket = mock.accept();
         let request = socket.read_unsplit().expect("the first request");
         let request = decode_frame::<pb::ClientRequest>(request.as_ref()).expect("decode request");
+        let wire_parent = request.parsed_traceparent().expect("opening load carries its span");
         let Some(pb::client_request::Kind::Configure(configure)) = request.kind else {
             panic!("expected Configure carrying Load");
         };
         assert!(matches!(configure.first, Some(pb::configure::First::Load(_))));
-        loading.send(SystemTime::now()).unwrap();
+        loading.send((SystemTime::now(), wire_parent)).unwrap();
         load_reply.recv().unwrap();
         send_event(
             &mut socket,
@@ -460,10 +464,15 @@ async fn restore_span_scenario() {
     let pool = Pool::new(config).await.unwrap();
     let mut checkout = pool.checkout_with(&ReplConfig::default(), options).await.unwrap();
     let mut ignore_print = no_print;
-    {
-        let restore = checkout.restore(vec![1, 2, 3], vec![], &mut ignore_print);
+    let load_wire_parent = {
+        let restore = checkout.restore_with(
+            vec![1, 2, 3],
+            vec![],
+            TurnOptions::default().with_traceparent(Some(caller)),
+            &mut ignore_print,
+        );
         tokio::pin!(restore);
-        let sent_at = tokio::select! {
+        let (sent_at, wire_parent) = tokio::select! {
             result = &mut restore => panic!("restore completed before the load reply: {result:?}"),
             sent = load_request => sent.unwrap(),
         };
@@ -483,13 +492,14 @@ async fn restore_span_scenario() {
         let span = spans.iter().find(|span| span.name == "restore").unwrap();
         assert!(span.start_time <= sent_at);
         assert!(span.end_time >= replied_at);
-        assert_eq!(span.span_context.trace_id(), parent.trace_id());
-        assert_eq!(span.parent_span_id, parent.span_id());
+        assert_eq!(span.span_context.trace_id(), TraceId::from(caller.trace_id()));
+        assert_eq!(span.parent_span_id, SpanId::from(caller.span_id()));
         assert_eq!(attribute(span, "monty.outcome"), Some("ok".into()));
         assert!(spans.iter().all(|span| span.name != "load"));
-    }
+        wire_parent
+    };
     let callback = checkout.callback_context().span().span_context().clone();
-    assert_eq!(callback.trace_id(), parent.trace_id());
+    assert_eq!(callback.trace_id(), TraceId::from(caller.trace_id()));
     let result = checkout
         .resume_name_lookup(NameLookupResult::from(MontyObject::int(42)), &mut no_print)
         .await
@@ -500,6 +510,8 @@ async fn restore_span_scenario() {
     let load = spans.iter().find(|span| span.name == "load").unwrap();
     let call = spans.iter().find(|span| span.name == "name lookup {name}").unwrap();
     assert_eq!(load.parent_span_id, restore.span_context.span_id());
+    assert_eq!(TraceId::from(load_wire_parent.trace_id()), load.span_context.trace_id());
+    assert_eq!(SpanId::from(load_wire_parent.span_id()), load.span_context.span_id());
     assert_eq!(call.parent_span_id, load.span_context.span_id());
     assert_eq!(callback.span_id(), load.span_context.span_id());
     assert_eq!(attribute(load, "state_bytes"), Some("3".into()));

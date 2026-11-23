@@ -1,0 +1,5 @@
+---
+source: crates/monty/tests/identity_encoding.rs
+expression: result.to_string()
+---
+[2310155, 2310187, 2310219, 2318347]

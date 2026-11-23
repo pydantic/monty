@@ -21,7 +21,7 @@ use bytes::Bytes;
 use h2::Reason;
 use http::{Response, StatusCode, uri::PathAndQuery};
 use monty_proto::{
-    FrameError, MAX_FRAME_LEN, OpeningRequest, encode_to_capped_vec,
+    FrameError, MAX_FRAME_LEN, encode_to_capped_vec,
     grpc::{BytesCodec, Cause, SESSION_PATH},
     pb,
 };
@@ -32,6 +32,7 @@ use tokio::{
     sync::{
         Notify, Semaphore,
         mpsc::{self, WeakSender},
+        oneshot,
     },
     task::JoinHandle,
     time::{Instant, timeout, timeout_at},
@@ -236,7 +237,9 @@ impl Remote {
         };
         let (events_tx, events) = mpsc::channel(EVENT_CHANNEL_DEPTH);
         let disconnect = Arc::new(OnceLock::new());
+        let (reader_alive, ended) = oneshot::channel();
         let reader = tokio::spawn(read_events(
+            reader_alive,
             response.into_inner(),
             events_tx,
             requests.downgrade(),
@@ -249,6 +252,7 @@ impl Remote {
             events,
             disconnect,
             reader: Some(reader),
+            ended: Some(ended),
             runtime: Handle::current(),
             closing: Arc::clone(&self.closing),
             closing_complete: Arc::clone(&self.closing_complete),
@@ -327,6 +331,9 @@ pub(crate) struct RemoteWorker {
     disconnect: Arc<OnceLock<RemoteDisconnect>>,
     /// The task owning the response stream; `None` once `close` detached it.
     reader: Option<JoinHandle<()>>,
+    /// Resolves when the reader task exits, i.e. the stream has ended;
+    /// `None` once [`Self::take_ended`] handed it out.
+    ended: Option<oneshot::Receiver<()>>,
     /// The runtime the reader runs on, which carries it through a close even
     /// when the worker is dropped outside any runtime.
     runtime: Handle,
@@ -336,23 +343,14 @@ pub(crate) struct RemoteWorker {
 }
 
 impl RemoteWorker {
-    /// Sends one request, returning its encoded size. An oversize request is
-    /// rejected before any I/O so the stream stays in sync; a torn-down
-    /// worker fails as [`FrameError::Truncated`].
+    /// Sends one encoded request, returning its size. A torn-down worker
+    /// fails as [`FrameError::Truncated`].
     ///
     /// A stream the server ended under the request is not a failure here:
     /// what it ended with — a final event such as a deadline's exception, then
     /// its status — is on the read side, so the turn goes on to [`Self::recv`]
     /// and reports the server's last word rather than a bare send failure.
-    pub(crate) async fn send(
-        &mut self,
-        request: &pb::ClientRequest,
-        opening: Option<&OpeningRequest<'_>>,
-    ) -> Result<usize, FrameError> {
-        let body = match opening {
-            Some(opening) => encode_to_capped_vec(opening)?,
-            None => encode_to_capped_vec(request)?,
-        };
+    pub(crate) async fn send(&mut self, body: Vec<u8>) -> Result<usize, FrameError> {
         let len = body.len();
         match &self.requests {
             Some(requests) => {
@@ -375,6 +373,11 @@ impl RemoteWorker {
             Some(result) => result,
             None => Err(FrameError::Truncated),
         }
+    }
+
+    /// What resolves when the stream ends, for the pool to evict a ready session.
+    pub(crate) const fn take_ended(&mut self) -> Option<oneshot::Receiver<()>> {
+        self.ended.take()
     }
 
     /// Copies the first recorded failure before teardown can add a local one.
@@ -509,8 +512,10 @@ const EVENT_CHANNEL_DEPTH: usize = 1;
 ///
 /// Reserving the slot before polling keeps the reader polling (and ponging)
 /// rather than blocked holding an event. `pongs` is weak so this task never
-/// keeps the request body open after the worker half-closed it.
+/// keeps the request body open after the worker half-closed it. `_alive` is
+/// dropped as the task exits, which is how an idle session's end is noticed.
 async fn read_events(
+    _alive: oneshot::Sender<()>,
     mut stream: Streaming<Bytes>,
     events: mpsc::Sender<Result<(pb::WorkerEvent, usize), FrameError>>,
     pongs: WeakSender<Bytes>,
@@ -662,7 +667,7 @@ fn oversized_message(status: &Status) -> Option<FrameError> {
 fn pong_body() -> Bytes {
     let pong = pb::ClientRequest {
         kind: Some(pb::client_request::Kind::Pong(pb::Pong {})),
-        trace_parent: None,
+        traceparent: None,
     };
     Bytes::from(encode_to_capped_vec(&pong).expect("a Pong is far below the frame cap"))
 }

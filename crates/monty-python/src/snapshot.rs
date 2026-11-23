@@ -37,7 +37,6 @@ use std::{
 use monty_pool::{Checkout, OnPrint, PoolError, ResumeValue, TurnEvent};
 use monty_proto::python::{InstanceStore, exc_py_to_monty, py_to_monty_value, uuid_to_py};
 use monty_types::{CallArgs, ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult, SourceRange};
-use opentelemetry::trace::FutureExt as _;
 use pyo3::{
     Borrowed,
     exceptions::{PyBaseException, PyRuntimeError, PyTypeError},
@@ -70,7 +69,7 @@ use crate::{
         turn_fn,
     },
     print_target::PrintTarget,
-    telemetry::{capture_otel_context, snapshot_operation_context, snapshot_trace_context},
+    telemetry::{capture_otel_context, capture_turn_options, snapshot_trace_context},
 };
 
 /// Shared context threaded across a `feed_start` drive so each `resume` can
@@ -168,6 +167,7 @@ pub(crate) fn feed_start_sync(
         checkout,
         instances,
         callback_context: _,
+        turn,
     } = args;
     let ctx = DriveContext::new(
         checkout,
@@ -185,7 +185,7 @@ pub(crate) fn feed_start_sync(
             Box::pin(async move {
                 // every call suspends, so each one reaches a snapshot
                 c.set_async_functions(None);
-                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                c.feed_with(code, inputs, mounts, cwd.as_deref(), skip_type_check, turn, p)
                     .await
             })
         }),
@@ -212,6 +212,7 @@ pub(crate) fn feed_start_async(
         checkout,
         instances,
         callback_context: _,
+        turn,
     } = args;
     let ctx = DriveContext::new(
         checkout,
@@ -229,7 +230,7 @@ pub(crate) fn feed_start_async(
                 Box::pin(async move {
                     // every call suspends, so each one reaches a snapshot
                     c.set_async_functions(None);
-                    c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                    c.feed_with(code, inputs, mounts, cwd.as_deref(), skip_type_check, turn, p)
                         .await
                 })
             }),
@@ -296,6 +297,7 @@ pub(crate) fn build_snapshot(
         )
         .map(Py::into_any),
         TurnEvent::FunctionCall {
+            traceparent: _,
             function_name,
             args,
             call_id,
@@ -334,6 +336,7 @@ pub(crate) fn build_snapshot(
             function_snapshot_py(py, ctx, call, is_async)
         }
         TurnEvent::NameLookup {
+            traceparent: _,
             name,
             object_id,
             position,
@@ -352,6 +355,7 @@ pub(crate) fn build_snapshot(
             }
         }
         TurnEvent::ResolveFutures {
+            traceparent: _,
             pending_call_ids,
             position,
         } => {
@@ -455,7 +459,7 @@ impl SnapshotState {
         // Check resumed only under the checkout lock
         let checkout = SharedCheckout::clone(&self.ctx.checkout);
         let resumed = &self.resumed;
-        let parent = snapshot_operation_context(py);
+        let turn = capture_turn_options(py);
         let state = py
             .detach(|| {
                 block_on_sync(async {
@@ -464,7 +468,7 @@ impl SnapshotState {
                         return Ok(None);
                     }
                     match guard.as_mut() {
-                        Some(checkout) => checkout.dump().with_context(parent).await.map(Some),
+                        Some(checkout) => checkout.dump_with(turn).await.map(Some),
                         None => Err(PoolError::Finished),
                     }
                 })

@@ -3,7 +3,9 @@
 # https://github.com/python/mypy/issues/16744
 import collections  # noqa: F401  # pyright: ignore[reportUnusedImport]
 import sys
+import typing_extensions
 from _collections_abc import dict_items, dict_keys, dict_values
+from _typeshed import IdentityFunction, ReadableBuffer, SupportsGetItem, SupportsGetItemViewable, SupportsKeysAndGetItem, Viewable
 from abc import ABCMeta, abstractmethod
 from re import Match as Match, Pattern as Pattern
 from types import (
@@ -18,141 +20,124 @@ from types import (
     TracebackType,
     WrapperDescriptorType,
 )
-
-import typing_extensions
-from _typeshed import (
-    IdentityFunction,
-    ReadableBuffer,
-    SupportsGetItem,
-    SupportsGetItemViewable,
-    SupportsKeysAndGetItem,
-    Viewable,
-)
 from typing_extensions import Never as _Never, ParamSpec as _ParamSpec, deprecated
 
 if sys.version_info >= (3, 14):
     from _typeshed import EvaluateFunc
+
     from annotationlib import Format
 
 if sys.version_info >= (3, 10):
     from types import UnionType
 
 __all__ = [
-    'AbstractSet',
-    'Annotated',
-    'Any',
-    'AnyStr',
-    'AsyncContextManager',
-    'AsyncGenerator',
-    'AsyncIterable',
-    'AsyncIterator',
-    'Awaitable',
-    'BinaryIO',
-    'ByteString',
-    'Callable',
-    'ChainMap',
-    'ClassVar',
-    'Collection',
-    'Container',
-    'ContextManager',
-    'Coroutine',
-    'Counter',
-    'DefaultDict',
-    'Deque',
-    'Dict',
-    'Final',
-    'ForwardRef',
-    'FrozenSet',
-    'Generator',
-    'Generic',
-    'Hashable',
-    'IO',
-    'ItemsView',
-    'Iterable',
-    'Iterator',
-    'KeysView',
-    'List',
-    'Literal',
-    'Mapping',
-    'MappingView',
-    'Match',
-    'MutableMapping',
-    'MutableSequence',
-    'MutableSet',
-    'NamedTuple',
-    'NewType',
-    'NoReturn',
-    'Optional',
-    'OrderedDict',
-    'Pattern',
-    'Protocol',
-    'Reversible',
-    'Sequence',
-    'Set',
-    'Sized',
-    'SupportsAbs',
-    'SupportsBytes',
-    'SupportsComplex',
-    'SupportsFloat',
-    'SupportsIndex',
-    'SupportsInt',
-    'SupportsRound',
-    'Text',
-    'TextIO',
-    'Tuple',
-    'Type',
-    'TypeVar',
-    'TypedDict',
-    'Union',
-    'ValuesView',
-    'TYPE_CHECKING',
-    'cast',
-    'final',
-    'get_args',
-    'get_origin',
-    'get_type_hints',
-    'no_type_check',
-    'no_type_check_decorator',
-    'overload',
-    'runtime_checkable',
+    "AbstractSet",
+    "Annotated",
+    "Any",
+    "AnyStr",
+    "AsyncContextManager",
+    "AsyncGenerator",
+    "AsyncIterable",
+    "AsyncIterator",
+    "Awaitable",
+    "BinaryIO",
+    "ByteString",
+    "Callable",
+    "ChainMap",
+    "ClassVar",
+    "Collection",
+    "Container",
+    "ContextManager",
+    "Coroutine",
+    "Counter",
+    "DefaultDict",
+    "Deque",
+    "Dict",
+    "Final",
+    "ForwardRef",
+    "FrozenSet",
+    "Generator",
+    "Generic",
+    "Hashable",
+    "IO",
+    "ItemsView",
+    "Iterable",
+    "Iterator",
+    "KeysView",
+    "List",
+    "Literal",
+    "Mapping",
+    "MappingView",
+    "Match",
+    "MutableMapping",
+    "MutableSequence",
+    "MutableSet",
+    "NamedTuple",
+    "NewType",
+    "NoReturn",
+    "Optional",
+    "OrderedDict",
+    "Pattern",
+    "Protocol",
+    "Reversible",
+    "Sequence",
+    "Set",
+    "Sized",
+    "SupportsAbs",
+    "SupportsBytes",
+    "SupportsComplex",
+    "SupportsFloat",
+    "SupportsIndex",
+    "SupportsInt",
+    "SupportsRound",
+    "Text",
+    "TextIO",
+    "Tuple",
+    "Type",
+    "TypeVar",
+    "TypedDict",
+    "Union",
+    "ValuesView",
+    "TYPE_CHECKING",
+    "cast",
+    "final",
+    "get_args",
+    "get_origin",
+    "get_type_hints",
+    "no_type_check",
+    "no_type_check_decorator",
+    "overload",
+    "runtime_checkable",
 ]
 
 if sys.version_info >= (3, 14):
-    __all__ += ['evaluate_forward_ref']
+    __all__ += ["evaluate_forward_ref"]
 
 if sys.version_info >= (3, 10):
-    __all__ += [
-        'Concatenate',
-        'ParamSpec',
-        'ParamSpecArgs',
-        'ParamSpecKwargs',
-        'TypeAlias',
-        'TypeGuard',
-        'is_typeddict',
-    ]
+    __all__ += ["Concatenate", "ParamSpec", "ParamSpecArgs", "ParamSpecKwargs", "TypeAlias", "TypeGuard", "is_typeddict"]
 
 if sys.version_info >= (3, 11):
     __all__ += [
-        'LiteralString',
-        'Never',
-        'NotRequired',
-        'Required',
-        'Self',
-        'TypeVarTuple',
-        'Unpack',
-        'assert_never',
-        'assert_type',
-        'clear_overloads',
-        'dataclass_transform',
-        'get_overloads',
-        'reveal_type',
+        "LiteralString",
+        "Never",
+        "NotRequired",
+        "Required",
+        "Self",
+        "TypeVarTuple",
+        "Unpack",
+        "assert_never",
+        "assert_type",
+        "clear_overloads",
+        "dataclass_transform",
+        "get_overloads",
+        "reveal_type",
     ]
 
 if sys.version_info >= (3, 12):
-    __all__ += ['TypeAliasType', 'override']
+    __all__ += ["TypeAliasType", "override"]
 
 if sys.version_info >= (3, 13):
-    __all__ += ['get_protocol_members', 'is_protocol', 'NoDefault', 'TypeIs', 'ReadOnly']
+    __all__ += ["get_protocol_members", "is_protocol", "NoDefault", "TypeIs", "ReadOnly"]
 
 # We can't use this name here because it leads to issues with mypy, likely
 # due to an import cycle. Below instead we use Any with a comment.
@@ -161,10 +146,9 @@ if sys.version_info >= (3, 13):
 class Any: ...
 
 class _Final:
-    __slots__ = ('__weakref__',)
+    __slots__ = ("__weakref__",)
 
 def final(f: _T) -> _T: ...
-
 @final
 class TypeVar:
     @property
@@ -241,7 +225,7 @@ class TypeVar:
 # N.B. Keep this definition in sync with typing_extensions._SpecialForm
 @final
 class _SpecialForm(_Final):
-    __slots__ = ('_name', '__doc__', '_getitem')
+    __slots__ = ("_name", "__doc__", "_getitem")
     def __getitem__(self, parameters: Any) -> object: ...
     if sys.version_info >= (3, 10):
         def __or__(self, other: Any) -> _SpecialForm: ...
@@ -408,26 +392,26 @@ if sys.version_info >= (3, 10):
 else:
     def NewType(name: str, tp: Any) -> Any: ...
 
-_F = TypeVar('_F', bound=Callable[..., Any])
-_P = _ParamSpec('_P')
-_T = TypeVar('_T')
+_F = TypeVar("_F", bound=Callable[..., Any])
+_P = _ParamSpec("_P")
+_T = TypeVar("_T")
 
-_FT = TypeVar('_FT', bound=Callable[..., Any] | type)
+_FT = TypeVar("_FT", bound=Callable[..., Any] | type)
 
 # These type variables are used by the container types.
-_S = TypeVar('_S')
-_KT = TypeVar('_KT')  # Key type.
-_VT = TypeVar('_VT')  # Value type.
-_T_co = TypeVar('_T_co', covariant=True)  # Any type covariant containers.
-_KT_co = TypeVar('_KT_co', covariant=True)  # Key type covariant containers.
-_VT_co = TypeVar('_VT_co', covariant=True)  # Value type covariant containers.
-_TC = TypeVar('_TC', bound=type[object])
+_S = TypeVar("_S")
+_KT = TypeVar("_KT")  # Key type.
+_VT = TypeVar("_VT")  # Value type.
+_T_co = TypeVar("_T_co", covariant=True)  # Any type covariant containers.
+_KT_co = TypeVar("_KT_co", covariant=True)  # Key type covariant containers.
+_VT_co = TypeVar("_VT_co", covariant=True)  # Value type covariant containers.
+_TC = TypeVar("_TC", bound=type[object])
 
 def overload(func: _F) -> _F: ...
 def no_type_check(arg: _F) -> _F: ...
 
 if sys.version_info >= (3, 13):
-    @deprecated('Deprecated since Python 3.13; removed in Python 3.15.')
+    @deprecated("Deprecated since Python 3.13; removed in Python 3.15.")
     def no_type_check_decorator(decorator: Callable[_P, _T]) -> Callable[_P, _T]: ...
 
 else:
@@ -457,7 +441,7 @@ OrderedDict = _Alias()
 Annotated: _SpecialForm
 
 # Predefined type variables.
-AnyStr = TypeVar('AnyStr', str, bytes)  # noqa: Y001
+AnyStr = TypeVar("AnyStr", str, bytes)  # noqa: Y001
 
 @type_check_only
 class _Generic:
@@ -480,7 +464,6 @@ class _ProtocolMeta(ABCMeta):
 # Abstract base classes.
 
 def runtime_checkable(cls: _TC) -> _TC: ...
-
 @runtime_checkable
 class SupportsInt(Protocol, metaclass=ABCMeta):
     __slots__ = ()
@@ -556,9 +539,9 @@ class Reversible(Iterable[_T_co], Protocol[_T_co]):
     @abstractmethod
     def __reversed__(self) -> Iterator[_T_co]: ...
 
-_YieldT_co = TypeVar('_YieldT_co', covariant=True)
-_SendT_contra = TypeVar('_SendT_contra', contravariant=True, default=None)
-_ReturnT_co = TypeVar('_ReturnT_co', covariant=True, default=None)
+_YieldT_co = TypeVar("_YieldT_co", covariant=True)
+_SendT_contra = TypeVar("_SendT_contra", contravariant=True, default=None)
+_ReturnT_co = TypeVar("_ReturnT_co", covariant=True, default=None)
 
 @runtime_checkable
 class Generator(Iterator[_YieldT_co], Protocol[_YieldT_co, _SendT_contra, _ReturnT_co]):
@@ -598,8 +581,8 @@ class Awaitable(Protocol[_T_co]):
     def __await__(self) -> Generator[Any, Any, _T_co]: ...
 
 # Non-default variations to accommodate coroutines, and `AwaitableGenerator` having a 4th type parameter.
-_SendT_nd_contra = TypeVar('_SendT_nd_contra', contravariant=True)
-_ReturnT_nd_co = TypeVar('_ReturnT_nd_co', covariant=True)
+_SendT_nd_contra = TypeVar("_SendT_nd_contra", contravariant=True)
+_ReturnT_nd_co = TypeVar("_ReturnT_nd_co", covariant=True)
 
 class Coroutine(Awaitable[_ReturnT_nd_co], Generic[_YieldT_co, _SendT_nd_contra, _ReturnT_nd_co]):
     __name__: str
@@ -657,7 +640,7 @@ class AsyncGenerator(AsyncIterator[_YieldT_co], Protocol[_YieldT_co, _SendT_cont
     ) -> Coroutine[Any, Any, _YieldT_co]: ...
     def aclose(self) -> Coroutine[Any, Any, None]: ...
 
-_ContainerT_contra = TypeVar('_ContainerT_contra', contravariant=True, default=Any)
+_ContainerT_contra = TypeVar("_ContainerT_contra", contravariant=True, default=Any)
 
 @runtime_checkable
 class Container(Protocol[_ContainerT_contra]):
@@ -749,7 +732,7 @@ class MutableSet(AbstractSet[_T]):
     def __isub__(self, it: AbstractSet[Any], /) -> typing_extensions.Self: ...
 
 class MappingView(Sized):
-    __slots__ = ('_mapping',)
+    __slots__ = ("_mapping",)
     def __init__(self, mapping: Sized) -> None: ...  # undocumented
     def __len__(self) -> int: ...
 
@@ -1038,9 +1021,7 @@ class NamedTuple(tuple[Any, ...]):
     @overload
     def __init__(self, typename: str, fields: Iterable[tuple[str, Any]], /) -> None: ...
     @overload
-    @deprecated(
-        'Creating a typing.NamedTuple using keyword arguments is deprecated and support will be removed in Python 3.15'
-    )
+    @deprecated("Creating a typing.NamedTuple using keyword arguments is deprecated and support will be removed in Python 3.15")
     def __init__(self, typename: str, fields: None = None, /, **kwargs: Any) -> None: ...
     @classmethod
     def _make(cls, iterable: Iterable[Any]) -> typing_extensions.Self: ...
@@ -1104,13 +1085,13 @@ else:
     @final
     class ForwardRef(_Final):
         __slots__ = (
-            '__forward_arg__',
-            '__forward_code__',
-            '__forward_evaluated__',
-            '__forward_value__',
-            '__forward_is_argument__',
-            '__forward_is_class__',
-            '__forward_module__',
+            "__forward_arg__",
+            "__forward_code__",
+            "__forward_evaluated__",
+            "__forward_value__",
+            "__forward_is_argument__",
+            "__forward_is_class__",
+            "__forward_module__",
         )
         __forward_arg__: str
         __forward_code__: CodeType
@@ -1120,23 +1101,17 @@ else:
         __forward_is_class__: bool
         __forward_module__: Any | None
 
-        def __init__(
-            self, arg: str, is_argument: bool = True, module: Any | None = None, *, is_class: bool = False
-        ) -> None: ...
+        def __init__(self, arg: str, is_argument: bool = True, module: Any | None = None, *, is_class: bool = False) -> None: ...
 
         if sys.version_info >= (3, 13):
             @overload
             @deprecated(
                 "Failing to pass a value to the 'type_params' parameter of ForwardRef._evaluate() is deprecated, "
-                'as it leads to incorrect behaviour when evaluating a stringified annotation '
-                'that references a PEP 695 type parameter. It will be disallowed in Python 3.15.'
+                "as it leads to incorrect behaviour when evaluating a stringified annotation "
+                "that references a PEP 695 type parameter. It will be disallowed in Python 3.15."
             )
             def _evaluate(
-                self,
-                globalns: dict[str, Any] | None,
-                localns: Mapping[str, Any] | None,
-                *,
-                recursive_guard: frozenset[str],
+                self, globalns: dict[str, Any] | None, localns: Mapping[str, Any] | None, *, recursive_guard: frozenset[str]
             ) -> Any | None: ...  # AnnotationForm
             @overload
             def _evaluate(
@@ -1158,10 +1133,7 @@ else:
             ) -> Any | None: ...  # AnnotationForm
         else:
             def _evaluate(
-                self,
-                globalns: dict[str, Any] | None,
-                localns: Mapping[str, Any] | None,
-                recursive_guard: frozenset[str],
+                self, globalns: dict[str, Any] | None, localns: Mapping[str, Any] | None, recursive_guard: frozenset[str]
             ) -> Any | None: ...  # AnnotationForm
 
         def __eq__(self, other: object) -> bool: ...
