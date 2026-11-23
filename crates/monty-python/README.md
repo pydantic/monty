@@ -17,6 +17,10 @@ uv add pydantic-monty-client
 pip install pydantic-monty-client
 ```
 
+The client wheel does not contain the worker, vendored CPython modules, or typeshed stubs.
+The client source distribution contains the `monty` and `monty-typeshed` crates with their upstream licences and notices,
+but not `monty-runtime`.
+
 ## Usage with a remote monty server
 
 You can use this library alone to connect to a remote monty server over gRPC: one HTTP/2 connection per pool, one

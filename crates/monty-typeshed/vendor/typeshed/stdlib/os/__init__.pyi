@@ -1,3 +1,4 @@
+# Modified from python/typeshed's stdlib/os/__init__.pyi for Monty's os module.
 from abc import ABC, abstractmethod
 from typing import AnyStr, Callable, Protocol, TypeAlias, TypeVar, final, overload, runtime_checkable
 

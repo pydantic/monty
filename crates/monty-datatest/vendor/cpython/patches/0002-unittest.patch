@@ -1,0 +1,390 @@
+Load unittest assertion helpers in the fixture namespace without running discovery or collecting TestResults.
+Monty lacks generators, contextlib, ChainMap, exception subclassing, object(), classmethod, and super().
+Use a context manager that propagates subtest failures and leave unsupported class fixtures out.
+The fixture has no unittest package, so it shares util.py globals with case.py and uses absolute lazy log imports.
+Guard optional imports: without difflib and pprint, assertion failures still raise without a detailed diff;
+without traceback or warnings, skip frame cleanup and reject warning assertions. Avoid the types dependency.
+
+--- a/unittest/case.py
++++ b/unittest/case.py
+@@ -2,44 +2,36 @@
+ 
+ import sys
+ import functools
+-import difflib
+-import pprint
+ import re
+-import warnings
+ import collections
+-import contextlib
+-import traceback
+ import time
+-import types
+-
+-from . import result
+-from .util import (strclass, safe_repr, _count_diff_all_purpose,
+-                   _count_diff_hashable, _common_shorten_repr)
++
++try:
++    import difflib
++    import pprint
++except ImportError:
++    difflib = None
++
++try:
++    import traceback
++except ImportError:
++    traceback = None
++
++try:
++    import warnings
++except ImportError:
++    warnings = None
+ 
+ __unittest = True
+ 
+-_subtest_msg_sentinel = object()
++_subtest_msg_sentinel = []
+ 
+ DIFF_OMITTED = ('\nDiff is %s characters long. '
+                  'Set self.maxDiff to None to see it.')
+ 
+-class SkipTest(Exception):
+-    """
+-    Raise this exception in a test to skip it.
+-
+-    Usually you can use TestCase.skipTest() or one of the skipping decorators
+-    instead of raising this directly.
+-    """
+-
+-class _ShouldStop(Exception):
+-    """
+-    The test should stop.
+-    """
+-
+-class _UnexpectedSuccess(Exception):
+-    """
+-    The test was supposed to fail, but it didn't!
+-    """
++def SkipTest(reason):
++    """Fail rather than report a skip when running test methods directly."""
++    return NotImplementedError(f'Cannot skip a stdlib fixture: {reason}')
+ 
+ 
+ class _Outcome(object):
+@@ -50,37 +42,8 @@
+         self.success = True
+         self.expectedFailure = None
+ 
+-    @contextlib.contextmanager
+     def testPartExecutor(self, test_case, subTest=False):
+-        old_success = self.success
+-        self.success = True
+-        try:
+-            yield
+-        except KeyboardInterrupt:
+-            raise
+-        except SkipTest as e:
+-            self.success = False
+-            _addSkip(self.result, test_case, str(e))
+-        except _ShouldStop:
+-            pass
+-        except:
+-            exc_info = sys.exc_info()
+-            if self.expecting_failure:
+-                self.expectedFailure = exc_info
+-            else:
+-                self.success = False
+-                if subTest:
+-                    self.result.addSubTest(test_case.test_case, test_case, exc_info)
+-                else:
+-                    _addError(self.result, test_case, exc_info)
+-            # explicitly break a reference cycle:
+-            # exc_info -> frame -> exc_info
+-            exc_info = None
+-        else:
+-            if subTest and self.success:
+-                self.result.addSubTest(test_case.test_case, test_case, None)
+-        finally:
+-            self.success = self.success and old_success
++        raise NotImplementedError('The fixture runner calls test methods directly')
+ 
+ 
+ def _addSkip(result, test_case, reason):
+@@ -168,7 +131,7 @@
+         test_item.__unittest_skip__ = True
+         test_item.__unittest_skip_why__ = reason
+         return test_item
+-    if isinstance(reason, types.FunctionType):
++    if isinstance(reason, type(_id)):
+         test_item = reason
+         reason = ''
+         return decorator(test_item)
+@@ -227,6 +190,8 @@
+         If args is not empty, call a callable passing positional and keyword
+         arguments.
+         """
++        if self._base_type is None:
++            raise NotImplementedError('The warnings module is not available')
+         try:
+             if not _is_subtype(self.expected, self._base_type):
+                 raise TypeError('%s() arg 1 must be %s' %
+@@ -270,7 +235,7 @@
+                                                                 self.obj_name))
+             else:
+                 self._raiseFailure("{} not raised".format(exc_name))
+-        else:
++        elif traceback is not None and tb is not None:
+             traceback.clear_frames(tb)
+         if not issubclass(exc_type, self.expected):
+             # let unexpected exceptions pass through
+@@ -286,13 +251,11 @@
+                      expected_regex.pattern, str(exc_value)))
+         return True
+ 
+-    __class_getitem__ = classmethod(types.GenericAlias)
+-
+ 
+ class _AssertWarnsContext(_AssertRaisesBaseContext):
+     """A context manager used to implement TestCase.assertWarns* methods."""
+ 
+-    _base_type = Warning
++    _base_type = Warning if warnings is not None else None
+     _base_type_str = 'a warning type or tuple of warning types'
+ 
+     def __enter__(self):
+@@ -358,14 +321,14 @@
+                 self._raiseFailure(f"{exc_name} triggered")
+ 
+ 
+-class _OrderedChainMap(collections.ChainMap):
+-    def __iter__(self):
+-        seen = set()
+-        for mapping in self.maps:
+-            for k in mapping:
+-                if k not in seen:
+-                    seen.add(k)
+-                    yield k
++class _DirectSubTest:
++    """Let a failed subtest propagate when there is no TestResult."""
++
++    def __enter__(self):
++        return None
++
++    def __exit__(self, exc_type, exc_value, tb):
++        return False
+ 
+ 
+ class TestCase(object):
+@@ -411,12 +374,6 @@
+     # of difflib.  See #11763.
+     _diffThreshold = 2**16
+ 
+-    def __init_subclass__(cls, *args, **kwargs):
+-        # Attribute used by TestSuite for classSetUp
+-        cls._classSetupFailed = False
+-        cls._class_cleanups = []
+-        super().__init_subclass__(*args, **kwargs)
+-
+     def __init__(self, methodName='runTest'):
+         """Create an instance of the class that will use the named test
+            method when executed. Raises a ValueError if the instance does
+@@ -480,17 +437,6 @@
+         """
+         return _enter_context(cm, self.addCleanup)
+ 
+-    @classmethod
+-    def addClassCleanup(cls, function, /, *args, **kwargs):
+-        """Same as addCleanup, except the cleanup items are called even if
+-        setUpClass fails (unlike tearDownClass)."""
+-        cls._class_cleanups.append((function, args, kwargs))
+-
+-    @classmethod
+-    def enterClassContext(cls, cm):
+-        """Same as enterContext, but class-wide."""
+-        return _enter_context(cm, cls.addClassCleanup)
+-
+     def setUp(self):
+         "Hook method for setting up the test fixture before exercising it."
+         pass
+@@ -499,19 +445,11 @@
+         "Hook method for deconstructing the test fixture after testing it."
+         pass
+ 
+-    @classmethod
+-    def setUpClass(cls):
+-        "Hook method for setting up class fixture before running tests in the class."
+-
+-    @classmethod
+-    def tearDownClass(cls):
+-        "Hook method for deconstructing the class fixture after running all tests in the class."
+-
+     def countTestCases(self):
+         return 1
+ 
+     def defaultTestResult(self):
+-        return result.TestResult()
++        raise NotImplementedError('The fixture runner does not collect TestResults')
+ 
+     def shortDescription(self):
+         """Returns a one-line description of the test, or None if no
+@@ -543,36 +481,9 @@
+         return "<%s testMethod=%s>" % \
+                (strclass(self.__class__), self._testMethodName)
+ 
+-    @contextlib.contextmanager
+     def subTest(self, msg=_subtest_msg_sentinel, **params):
+-        """Return a context manager that will return the enclosed block
+-        of code in a subtest identified by the optional message and
+-        keyword parameters.  A failure in the subtest marks the test
+-        case as failed but resumes execution at the end of the enclosed
+-        block, allowing further test code to be executed.
+-        """
+-        if self._outcome is None or not self._outcome.result_supports_subtests:
+-            yield
+-            return
+-        parent = self._subtest
+-        if parent is None:
+-            params_map = _OrderedChainMap(params)
+-        else:
+-            params_map = parent.params.new_child(params)
+-        self._subtest = _SubTest(self, msg, params_map)
+-        try:
+-            with self._outcome.testPartExecutor(self._subtest, subTest=True):
+-                yield
+-            if not self._outcome.success:
+-                result = self._outcome.result
+-                if result is not None and result.failfast:
+-                    raise _ShouldStop
+-            elif self._outcome.expectedFailure:
+-                # If the test is expecting a failure, we really want to
+-                # stop now and register the expected failure.
+-                raise _ShouldStop
+-        finally:
+-            self._subtest = parent
++        """Return the context manager for suites run without a TestResult."""
++        return _DirectSubTest()
+ 
+     def _addExpectedFailure(self, result, exc_info):
+         try:
+@@ -593,8 +504,8 @@
+             # We need to pass an actual exception and traceback to addFailure,
+             # otherwise the legacy result can choke.
+             try:
+-                raise _UnexpectedSuccess from None
+-            except _UnexpectedSuccess:
++                raise AssertionError('Unexpected success') from None
++            except AssertionError:
+                 result.addFailure(self, sys.exc_info())
+         else:
+             addUnexpectedSuccess(self)
+@@ -709,18 +620,6 @@
+         # even though we no longer use it internally
+         return outcome.success
+ 
+-    @classmethod
+-    def doClassCleanups(cls):
+-        """Execute all class cleanup functions. Normally called for you after
+-        tearDownClass."""
+-        cls.tearDown_exceptions = []
+-        while cls._class_cleanups:
+-            function, args, kwargs = cls._class_cleanups.pop()
+-            try:
+-                function(*args, **kwargs)
+-            except Exception:
+-                cls.tearDown_exceptions.append(sys.exc_info())
+-
+     def __call__(self, *args, **kwds):
+         return self.run(*args, **kwds)
+ 
+@@ -872,7 +771,7 @@
+                                          'ERROR:foo.bar:second message'])
+         """
+         # Lazy import to avoid importing logging if it is not needed.
+-        from ._log import _AssertLogsContext
++        from unittest._log import _AssertLogsContext
+         return _AssertLogsContext(self, logger, level, no_logs=False)
+ 
+     def assertNoLogs(self, logger=None, level=None):
+@@ -881,7 +780,7 @@
+ 
+         This method must be used as a context manager.
+         """
+-        from ._log import _AssertLogsContext
++        from unittest._log import _AssertLogsContext
+         return _AssertLogsContext(self, logger, level, no_logs=True)
+ 
+     def _getAssertEqualityFunc(self, first, second):
+@@ -1104,11 +1003,11 @@
+                     differing += ('Unable to index element %d '
+                                   'of second %s\n' % (len1, seq_type_name))
+         standardMsg = differing
+-        diffMsg = '\n' + '\n'.join(
+-            difflib.ndiff(pprint.pformat(seq1).splitlines(),
+-                          pprint.pformat(seq2).splitlines()))
+-
+-        standardMsg = self._truncateMessage(standardMsg, diffMsg)
++        if difflib is not None:
++            diffMsg = '\n' + '\n'.join(
++                difflib.ndiff(pprint.pformat(seq1).splitlines(),
++                              pprint.pformat(seq2).splitlines()))
++            standardMsg = self._truncateMessage(standardMsg, diffMsg)
+         msg = self._formatMessage(msg, standardMsg)
+         self.fail(msg)
+ 
+@@ -1217,10 +1116,11 @@
+ 
+         if d1 != d2:
+             standardMsg = '%s != %s' % _common_shorten_repr(d1, d2)
+-            diff = ('\n' + '\n'.join(difflib.ndiff(
+-                           pprint.pformat(d1).splitlines(),
+-                           pprint.pformat(d2).splitlines())))
+-            standardMsg = self._truncateMessage(standardMsg, diff)
++            if difflib is not None:
++                diff = ('\n' + '\n'.join(difflib.ndiff(
++                               pprint.pformat(d1).splitlines(),
++                               pprint.pformat(d2).splitlines())))
++                standardMsg = self._truncateMessage(standardMsg, diff)
+             self.fail(self._formatMessage(msg, standardMsg))
+ 
+     def assertCountEqual(self, first, second, msg=None):
+@@ -1261,8 +1161,8 @@
+         self.assertIsInstance(second, str, "Second argument is not a string")
+ 
+         if first != second:
+-            # Don't use difflib if the strings are too long
+-            if (len(first) > self._diffThreshold or
++            # Don't use difflib if it is unavailable or the strings are too long.
++            if (difflib is None or len(first) > self._diffThreshold or
+                 len(second) > self._diffThreshold):
+                 self._baseAssertEqual(first, second, msg)
+ 
+@@ -1379,7 +1279,7 @@
+ 
+     def assertHasAttr(self, obj, name, msg=None):
+         if not hasattr(obj, name):
+-            if isinstance(obj, types.ModuleType):
++            if isinstance(obj, type(sys)):
+                 standardMsg = f'module {obj.__name__!r} has no attribute {name!r}'
+             elif isinstance(obj, type):
+                 standardMsg = f'type object {obj.__name__!r} has no attribute {name!r}'
+@@ -1389,7 +1289,7 @@
+ 
+     def assertNotHasAttr(self, obj, name, msg=None):
+         if hasattr(obj, name):
+-            if isinstance(obj, types.ModuleType):
++            if isinstance(obj, type(sys)):
+                 standardMsg = f'module {obj.__name__!r} has unexpected attribute {name!r}'
+             elif isinstance(obj, type):
+                 standardMsg = f'type object {obj.__name__!r} has unexpected attribute {name!r}'
+--- a/unittest/util.py
++++ b/unittest/util.py
+@@ -123,7 +123,7 @@
+     # elements need not be hashable
+     s, t = list(actual), list(expected)
+     m, n = len(s), len(t)
+-    NULL = object()
++    NULL = []
+     result = []
+     for i, elem in enumerate(s):
+         if elem is NULL:
