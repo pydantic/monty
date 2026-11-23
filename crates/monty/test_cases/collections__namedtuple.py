@@ -6,6 +6,7 @@
 # `__new__` (e.g. `Point.__new__() missing ...`), matching CPython 3.14 (see
 # the `=== Construction errors ===` section).
 
+import sys
 from collections import namedtuple
 
 Point = namedtuple('Point', ['x', 'y'])
@@ -61,7 +62,8 @@ try:
     (first,) = p
     assert False, 'expected ValueError'
 except ValueError as exc:
-    assert str(exc).startswith('too many values to unpack')
+    counts = 'expected 1, got 2' if sys.platform == 'monty' else 'expected 1'
+    assert str(exc) == f'too many values to unpack ({counts})'
 assert Point(1, 2) == Point(1, 2), 'namedtuples with equal fields are equal'
 assert Point(1, 2) != Point(1, 3), 'namedtuples with differing fields are unequal'
 assert len(p) == 2, 'len is the field count'

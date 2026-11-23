@@ -26,14 +26,14 @@ note: this call may capture more lifetimes than intended, because Rust 2024 has 
 142 | |             })
     | |______________^
 note: you could use a `use<...>` bound to explicitly specify captures, but argument-position `impl Trait`s are not nameable
-   --> crates/monty/src/types/sequence.rs:33:35
+   --> crates/monty/src/types/sequence.rs:48:35
     |
- 33 |     pub(crate) fn map<T>(self, f: impl FnMut(&Value) -> T) -> impl DoubleEndedIterator<Item = T> + ExactSizeIterator {
+ 48 |     pub(crate) fn map<T>(self, f: impl FnMut(&Value) -> T) -> impl DoubleEndedIterator<Item = T> + ExactSizeIterator {
     |                                   ^^^^^^^^^^^^^^^^^^^^^^^
 help: use the precise capturing `use<...>` syntax to make the captures explicit
-   --> crates/monty/src/types/sequence.rs:33:24
+   --> crates/monty/src/types/sequence.rs:48:24
     |
- 33 -     pub(crate) fn map<T>(self, f: impl FnMut(&Value) -> T) -> impl DoubleEndedIterator<Item = T> + ExactSizeIterator {
- 33 +     pub(crate) fn map<T, U: FnMut(&Value) -> T>(self, f: U) -> impl DoubleEndedIterator<Item = T> + ExactSizeIterator + use<T, U> {
+ 48 -     pub(crate) fn map<T>(self, f: impl FnMut(&Value) -> T) -> impl DoubleEndedIterator<Item = T> + ExactSizeIterator {
+ 48 +     pub(crate) fn map<T, U: FnMut(&Value) -> T>(self, f: U) -> impl DoubleEndedIterator<Item = T> + ExactSizeIterator + use<T, U> {
     |
 For more information about this error, try `rustc --explain E0500`.
