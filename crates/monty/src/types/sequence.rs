@@ -50,6 +50,15 @@ impl<'a> SequenceItems<'a> {
         Ok(self.cloned(heap).collect())
     }
 
+    /// Appends clones with deadline checks. The caller owns the partial copy on error.
+    pub(crate) fn extend_cloned(self, output: &mut Vec<Value>, heap: &Heap) -> RunResult<()> {
+        for (index, item) in self.cloned(heap).enumerate() {
+            output.push(item);
+            heap.tracker.check_time_every(index)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn cloned(self, heap: &Heap) -> impl DoubleEndedIterator<Item = Value> + ExactSizeIterator {
         self.map(|item| item.clone_with_heap(heap))
     }

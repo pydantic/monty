@@ -17,11 +17,8 @@ fn clone_items_with_checks(items: SequenceItems<'_>, heap: &Heap) -> Result<Vec<
         return Err(Box::new((Vec::new(), e.into())));
     }
     let mut cloned = Vec::with_capacity(len);
-    for (i, item) in items.cloned(heap).enumerate() {
-        cloned.push(item);
-        if let Err(e) = heap.tracker.check_time_every(i) {
-            return Err(Box::new((cloned, e.into())));
-        }
+    if let Err(err) = items.extend_cloned(&mut cloned, heap) {
+        return Err(Box::new((cloned, err)));
     }
     Ok(cloned)
 }

@@ -16,7 +16,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     fstring::FormatFloat,
-    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapRead},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapRead},
     intern::StaticStrings,
     os_dispatch::{PendingEffect, PostConversionEffect},
     string_builder::StringBuilder,
@@ -28,7 +28,7 @@ use crate::{
         sequence::SequenceItems,
         str::allocate_string,
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// A `_csv.writer`: the target, its `write` callable and the dialect.
@@ -398,29 +398,29 @@ fn is_file(value: &Value, vm: &VM<'_>) -> bool {
     matches!(value, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::OpenFile(_)))
 }
 
-/// The fields of one row, as `writerow`'s `iter(row)` sees them: a non-iterable row is
-/// `_csv.Error`, unlike `writerows`' plain `TypeError`. A `list` or `tuple`, the usual row,
-/// is copied without an iterator.
+/// Copies the row before field formatting can call Python. A non-iterable row raises `_csv.Error`.
 fn row_items(row: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
-    let direct = row.ref_id().and_then(|id| match vm.heap.get(id) {
-        data @ (HeapData::List(_) | HeapData::Tuple(_)) => SequenceItems::from_heap_data(data),
-        _ => None,
-    });
-    if let Some(items) = direct {
-        items.to_vec(vm.heap)
-    } else {
-        let iterator = match row.py_iter(vm).and_then(|call| call.require_synchronous(vm)) {
-            Ok(iterator) => iterator,
-            Err(err) if err.is_catchable(ExcType::TypeError) => {
-                return Err(ExcType::csv_error(format!(
-                    "iterable expected, not {}",
-                    row.py_type_name(vm)
-                )));
-            }
-            Err(err) => return Err(err),
-        };
-        collect_owned_iterable(iterator, vm)
+    let mut fields = DropGuard::new(Vec::new(), vm);
+    let (output, vm) = fields.as_parts_mut();
+    if let Some(items) = SequenceItems::from_value(row, vm.heap) {
+        vm.heap
+            .tracker
+            .check_allocation(items.len().saturating_mul(VALUE_SIZE))?;
+        output.reserve_exact(items.len());
+        items.extend_cloned(output, vm.heap)?;
+        return Ok(fields.into_inner());
     }
+    let iterator = match row.py_iter(vm).and_then(|call| call.require_synchronous(vm)) {
+        Ok(iterator) => iterator,
+        Err(err) if err.is_catchable(ExcType::TypeError) => {
+            return Err(ExcType::csv_error(format!(
+                "iterable expected, not {}",
+                row.py_type_name(vm)
+            )));
+        }
+        Err(err) => return Err(err),
+    };
+    collect_owned_iterable(iterator, vm)
 }
 
 /// `write(line)`: the host call of a file target, otherwise the bound `write`.
