@@ -117,12 +117,15 @@ pub(crate) fn task_call_method<'h>(
             let message = args.get_zero_one_arg("Task.cancel", vm.heap)?;
             message.drop_with(vm);
 
-            // Returning `False` would claim the request was refused. Monty cannot
-            // stop a running task at all, so report the missing feature instead.
-            return Err(ExcType::not_implemented(
-                "Task.cancel() is not implemented: Monty does not support cancelling tasks",
-            )
-            .into());
+            // CPython refuses to cancel a finished task. Monty cannot stop a
+            // pending one at all, and `False` would claim it had refused.
+            if !task.get(vm.heap).is_done() {
+                return Err(ExcType::not_implemented(
+                    "Task.cancel() is not implemented: Monty does not support cancelling tasks",
+                )
+                .into());
+            }
+            Value::Bool(false)
         }
         StaticStrings::GetName => {
             args.check_zero_args("Task.get_name", vm.heap)?;
@@ -195,11 +198,10 @@ fn start_coroutine_task(vm: &mut VM<'_>, coro_id: HeapId, handle: HeapId) {
 
         task.get_mut(vm.heap).task_id = Some(task_id);
     } else {
-        let HeapReadOutput::Task(task) = vm.heap.read(handle) else {
-            unreachable!("create_task allocated a non-task handle")
-        };
-
-        task.get_mut(vm.heap).state = TaskFutureState::Failed(ExcType::cannot_reuse_already_awaited_coroutine());
+        vm.settle_task_handle(
+            handle,
+            TaskFutureState::Failed(ExcType::cannot_reuse_already_awaited_coroutine()),
+        );
     }
 }
 
@@ -227,27 +229,12 @@ fn start_external_future_task(vm: &mut VM<'_>, future_id: HeapId, handle: HeapId
 
             vm.heap.inc_ref(handle);
         }
-        ExternalStart::Busy => {
-            let HeapReadOutput::Task(task) = vm.heap.read(handle) else {
-                unreachable!("create_task allocated a non-task handle")
-            };
-
-            task.get_mut(vm.heap).state = TaskFutureState::Failed(ExcType::cannot_reuse_already_awaited_future());
-        }
-        ExternalStart::Resolved(value) => {
-            let HeapReadOutput::Task(task) = vm.heap.read(handle) else {
-                unreachable!("create_task allocated a non-task handle")
-            };
-
-            task.get_mut(vm.heap).state = TaskFutureState::Completed(value);
-        }
-        ExternalStart::Failed(error) => {
-            let HeapReadOutput::Task(task) = vm.heap.read(handle) else {
-                unreachable!("create_task allocated a non-task handle")
-            };
-
-            task.get_mut(vm.heap).state = TaskFutureState::Failed(error);
-        }
+        ExternalStart::Busy => vm.settle_task_handle(
+            handle,
+            TaskFutureState::Failed(ExcType::cannot_reuse_already_awaited_future()),
+        ),
+        ExternalStart::Resolved(value) => vm.settle_task_handle(handle, TaskFutureState::Completed(value)),
+        ExternalStart::Failed(error) => vm.settle_task_handle(handle, TaskFutureState::Failed(error)),
     }
 }
 
@@ -299,12 +286,8 @@ fn exception_value(error: &RunError, vm: &mut VM<'_>) -> Value {
 /// Renders a value with `str()` and extracts the resulting text.
 fn value_to_string(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
     let rendered = value.py_str(vm)?;
+    defer_drop!(rendered, vm);
     let text = rendered.as_str(vm).unwrap_or_default();
-    if let Err(error) = vm.heap.tracker.check_allocation(text.len()) {
-        rendered.drop_with(vm);
-        return Err(error.into());
-    }
-    let text = text.to_owned();
-    rendered.drop_with(vm);
-    Ok(text)
+    vm.heap.tracker.check_allocation(text.len())?;
+    Ok(text.to_owned())
 }

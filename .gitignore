@@ -23,7 +23,6 @@
 /scripts/json_files/
 .DS_Store
 /.codex/
-/.agent-shell/
 
 # Python virtualenvs
 .venv/

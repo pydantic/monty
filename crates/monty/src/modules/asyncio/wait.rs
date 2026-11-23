@@ -11,7 +11,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     asyncio::{UnawaitedWait, WaitFuture, WaitFutureState},
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapData,
     heap_traits::DropGuard,
     modules::time::{HostSleep, host_sleep},
@@ -77,8 +77,7 @@ fn resolve_wait_timeout(timeout: &Value, vm: &mut VM<'_>) -> RunResult<(bool, Op
         return Ok((true, None));
     }
 
-    let delay =
-        sleep_duration_saturating(seconds).map_err(|_| ExcType::value_error("Invalid delay: NaN (not a number)"))?;
+    let delay = sleep_duration_saturating(seconds).expect("NaN timeouts expired above");
 
     Ok(match host_sleep(vm, delay) {
         Some(HostSleep::CallHost(delay)) => (false, Some(OsFunctionCall::AsyncSleep(delay))),

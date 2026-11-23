@@ -259,6 +259,24 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited future").into()
     }
 
+    /// `ValueError: Set of Tasks/Futures is empty.` — `asyncio.wait` given no inputs.
+    #[must_use]
+    fn wait_empty_input() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "Set of Tasks/Futures is empty.").into()
+    }
+
+    /// `AttributeError: '<type>' object has no attribute 'add_done_callback'` —
+    /// an `asyncio.wait` input that is neither a task nor a future. CPython
+    /// fails on the first callback it tries to attach.
+    #[must_use]
+    fn wait_input_not_future(type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::AttributeError,
+            format!("'{type_name}' object has no attribute 'add_done_callback'"),
+        )
+        .into()
+    }
+
     /// `ValueError: generator already executing` — a generator advanced from
     /// inside its own step, e.g. by an `os.walk` `onerror` callback.
     #[must_use]

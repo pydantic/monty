@@ -74,7 +74,11 @@ task returns its cached result (or re-raises its cached exception).
 `repr()` follows CPython's `<Task pending name='...'>` /
 `<Task finished name='...'>` shape. `done()`, `result()`, `exception()` and
 `cancelled()` exist. `cancelled()` is always `False`: Monty never cancels a
-task. `cancel()` raises `NotImplementedError` instead of stopping the task.
+task. `cancel()` on a pending task raises `NotImplementedError` instead of
+stopping it.
+Each `exception()` call builds a new exception object, so
+`task.exception() is task.exception()` is `False`, and neither is the object an
+`await task` raises.
 
 `context=` and `eager_start=` are rejected as unexpected keyword arguments;
 `create_task` accepts only `name`.
@@ -102,7 +106,14 @@ the task commits the wait immediately, and the wait result completes the
 when the task is awaited, not from `create_task`; a terminal error such as a
 resource limit aborts `create_task` instead.
 
-Constructing `asyncio.Task(...)` directly is unsupported.
+Because the wait is committed by `create_task`, its result is computed before
+any queued task runs: `create_task(wait(tasks, timeout=0))` reports every
+not-yet-finished input as pending, where CPython's task would first let the
+already-ready tasks step.
+
+Constructing `asyncio.Task(...)` directly is unsupported, and `asyncio.Task[int]`
+raises `TypeError: type '_asyncio.Task' is not subscriptable` where CPython
+returns a generic alias.
 
 ## `asyncio.wait`
 
@@ -132,11 +143,20 @@ Zero, negative and NaN timeouts expire immediately. Under the `'system'` sleep
 setting the timeout is capped like a sleep: ten seconds by default, so
 `timeout=3600` fires after ten seconds unless the host raises the cap.
 
+Because the timer starts at the call, a host that answers sleeps inline (standard
+Rust execution, the CLI, sync `call_host` handlers) blocks inside `wait()` for
+the whole timeout before any task runs, even when the inputs would finish at
+once. The timer is a sleep like any other: it counts against `max_suspensions`
+when it suspends and, under `'system'`, against `max_total_sleep` for its full
+length, even if the wait completes early.
+
 A host rejection of the timeout timer counts as an elapsed timeout whether the
 host answers with a future or an inline sleep result.
 
 The returned value is a single-use wait future, like CPython's `wait` coroutine:
 awaiting it twice raises `RuntimeError: cannot reuse already awaited coroutine`.
+Unlike a CPython coroutine it is unhashable: `hash(asyncio.wait(...))` raises
+`TypeError: unhashable type: 'coroutine'`.
 Tasks in the `fs` list may be waited again in later `wait` calls.
 
 Completion sets can differ when several inputs become ready before the waiter
@@ -158,7 +178,7 @@ The session's `sleep` setting determines concurrency (see [time.md](time.md)):
 - `'call_host'`: async handlers in `AsyncMonty` and JavaScript allow gathered sleeps to overlap.
     `OSAccess` is async by default under `AsyncMonty`.
     Sync handlers, including `Monty` callbacks, wait sequentially; results are unchanged.
-- `'zero'`: the awaitable settles immediately without yielding to sibling tasks, unlike CPython's `sleep(0)`.
+- `'zero'`: the awaitable settles immediately; awaiting it still lets ready sibling tasks run once.
     Zero-delay system sleeps also settle without a round trip.
     Under `'call_host'`, a handler returning a pending future allows sibling tasks to run even for zero delay.
 

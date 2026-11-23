@@ -989,7 +989,7 @@ pub(crate) fn resume_with_result(
                     let wait = vm.install_wait_timer(wait, timer);
 
                     vm.push(wait);
-                    vm.resume_after_async_wait()
+                    vm.run_external()
                 }
                 effect => {
                     // Other effects have rollback in `resume_with_exception`.

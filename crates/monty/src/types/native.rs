@@ -1158,7 +1158,8 @@ native_types! {
     /// `statistics.StatisticsError`, raised for empty or too-small data sets.
     StatisticsError("statistics.StatisticsError", ValueError)
         .exc(ExcType::StatisticsError),
-    /// `asyncio.Task`, whose `tp_name` is `_asyncio.Task`; it cannot be constructed directly.
+    /// `asyncio.Task`, whose `tp_name` is `_asyncio.Task`. Monty builds tasks only
+    /// through `create_task`; calling the class directly is unsupported.
     Task("_asyncio.Task"),
     /// `asyncio.InvalidStateError`, raised by `Task.result()` / `Task.exception()` on a pending task.
     InvalidStateError("asyncio.exceptions.InvalidStateError", Exception)

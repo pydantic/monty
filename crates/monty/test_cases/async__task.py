@@ -75,14 +75,24 @@ assert type(task).__name__ == 'Task'
 assert isinstance(task, asyncio.Task)
 assert repr(task).startswith('<Task ')
 assert task.cancelled() is False
+# A finished task refuses cancellation.
+assert task.cancel() is False
+assert task.cancel('reason') is False
+assert task.cancelled() is False
+
+
+async def not_started():
+    return 'not-started'
+
+
+pending_task = asyncio.create_task(not_started())
 if is_monty:
     try:
-        task.cancel()
+        pending_task.cancel()
         assert False, 'expected NotImplementedError'
     except NotImplementedError as exc:
         assert str(exc) == 'Task.cancel() is not implemented: Monty does not support cancelling tasks'
-else:
-    assert task.cancel() is False
+assert await pending_task == 'not-started'  # pyright: ignore
 assert task.get_name().startswith('Task-')
 assert task.set_name('renamed') is None
 assert task.get_name() == 'renamed'

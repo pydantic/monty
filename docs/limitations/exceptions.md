@@ -22,7 +22,9 @@ these built-ins; `raise MyClass()` on a plain user class raises
 Module-specific: `json.JSONDecodeError` and `tomllib.TOMLDecodeError` (subclasses of `ValueError`),
 `re.PatternError` / `re.error`, `io.UnsupportedOperation` (catchable as
 both `OSError` and `ValueError`, matching CPython's dual parentage), and
-`dataclasses.FrozenInstanceError` (a subclass of `AttributeError`).
+`dataclasses.FrozenInstanceError` (a subclass of `AttributeError`), and
+`asyncio.InvalidStateError` (a subclass of `Exception`). Hosts see the last one
+under CPython's defining-module name, `asyncio.exceptions.InvalidStateError`.
 
 ## Exception classes NOT implemented
 
@@ -66,8 +68,8 @@ not supported; passing more than one argument raises an internal error.
     `repr()` uses the generic single-message form instead.
 
 - The dotted exception classes — `json.JSONDecodeError`, `tomllib.TOMLDecodeError`, `re.PatternError`,
-    `binascii.Error`, `binascii.Incomplete`, `_csv.Error`, `statistics.StatisticsError` — repr under their qualified
-    name:
+    `binascii.Error`, `binascii.Incomplete`, `_csv.Error`, `statistics.StatisticsError`,
+    `asyncio.exceptions.InvalidStateError` — repr under their qualified name:
     `binascii.Error('bad')` where CPython gives `Error('bad')`.
     `type(exc).__name__` and `str(type(exc))` match CPython.
 

@@ -1248,7 +1248,7 @@ impl<'h> VM<'h> {
             CallResult::AwaitValue(value) => {
                 // Push the value and implicitly await it (used by asyncio.run())
                 self.push(value);
-                return match self.exec_get_awaitable()? {
+                return match self.exec_get_awaitable(false)? {
                     AwaitResult::ValueReady(value) => {
                         self.push(value);
                         Ok(None)
@@ -2043,7 +2043,7 @@ impl<'h> VM<'h> {
                 }
                 // Async/Await
                 Opcode::Await => {
-                    let result = self.exec_get_awaitable();
+                    let result = self.exec_get_awaitable(true);
                     match result {
                         Ok(AwaitResult::ValueReady(value)) => {
                             self.push(value);
@@ -2173,7 +2173,7 @@ impl<'h> VM<'h> {
             Some(PendingEffect::Post(PostConversionEffect::SleepResult { result, destination })) => {
                 match destination {
                     SleepDestination::Value => {
-                        let settled = self.settled_awaitable(result);
+                        let settled = self.settled_sleep(result);
                         self.push(settled);
                     }
                     SleepDestination::Wait(wait) => {
@@ -2188,7 +2188,7 @@ impl<'h> VM<'h> {
                         self.push(wait);
                     }
                 }
-                return self.resume_after_async_wait();
+                return self.run_external();
             }
             Some(PendingEffect::Post(PostConversionEffect::FileSeekEnd { file_id, offset })) => {
                 return match apply_file_seek_end(file_id, offset, &obj, self) {

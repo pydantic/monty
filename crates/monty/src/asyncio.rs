@@ -148,6 +148,11 @@ pub(crate) struct ExternalFuture {
     /// the host's, which is only the wake-up signal. Owned; taken on
     /// resolution and released on failure or when the entry is freed.
     pub sleep_result: Option<Value>,
+    /// Whether this is an `asyncio.sleep` awaitable. Awaiting one lets the
+    /// other ready tasks run first even once it has settled, as a CPython
+    /// sleep always gives up the event loop.
+    #[serde(default)]
+    pub is_sleep: bool,
 }
 
 /// State machine for [`ExternalFuture`].
@@ -169,6 +174,7 @@ impl ExternalFuture {
         Self {
             call_id,
             state: ExternalFutureState::Pending { awaiter: None },
+            is_sleep: sleep_result.is_some(),
             sleep_result,
         }
     }
@@ -373,6 +379,23 @@ pub(crate) struct WaitPending {
     pub timer: Option<HeapId>,
     /// Whether the timer fired before every child settled.
     pub timed_out: bool,
+    /// Turns the awaiting task has yielded to ready tasks before its first
+    /// result read; it has no `awaiter` until it stops yielding.
+    #[serde(default)]
+    pub turns_given: u8,
+}
+
+impl WaitPending {
+    /// Whether the wait can return: its timer fired or `return_when` holds.
+    pub fn is_complete(&self) -> bool {
+        self.timed_out
+            || match self.return_when {
+                WaitCondition::AllCompleted => self.pending.is_empty(),
+                WaitCondition::FirstCompleted => !self.done.is_empty(),
+                // CPython falls back to ALL_COMPLETED when nothing raises.
+                WaitCondition::FirstException => self.failed_any || self.pending.is_empty(),
+            }
+    }
 }
 
 /// `asyncio.wait` completion conditions.

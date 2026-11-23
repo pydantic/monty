@@ -195,6 +195,11 @@ impl Scheduler {
         self.ready_queue.is_empty() && self.pending_externals.is_empty()
     }
 
+    /// Whether another task is queued to run.
+    pub fn has_ready_tasks(&self) -> bool {
+        !self.ready_queue.is_empty()
+    }
+
     /// Returns the main task, whose context is saved here whenever another
     /// task is loaded; `None` once it has been cancelled.
     pub fn main_task(&self) -> Option<&Task> {
@@ -349,8 +354,8 @@ impl Scheduler {
     /// Requeues the current task so another ready task can take the next turn.
     ///
     /// The current task stays runnable; its context is saved when the next task
-    /// activates. Used after an asynchronous host wait, where the waiting task
-    /// is ready again but should not starve tasks created while it waited.
+    /// activates. Used when a `sleep` or `wait` await could finish at once but
+    /// must still give the other ready tasks a turn, as in CPython.
     pub fn requeue_current(&mut self) {
         if let Some(task_id) = self.current_task {
             self.ready_queue.push_back(task_id);

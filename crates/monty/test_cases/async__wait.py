@@ -43,6 +43,10 @@ assert {task.result() for task in done} == set(range(500))
 
 # === FIRST_COMPLETED returns once one task is done ===
 async def slow_value(x):
+    # Several loop turns before any real time passes: Monty's default host
+    # blocks inside the sleep, so time alone does not keep the task pending.
+    for _ in range(3):
+        await asyncio.sleep(0)
     await asyncio.sleep(0.05)
     return x
 
@@ -190,6 +194,29 @@ done, pending = await asyncio.wait([timed], timeout=0)  # pyright: ignore
 assert done == set()
 assert pending == {timed}
 assert await timed == 'timed'  # pyright: ignore
+
+
+# === timeout zero lets ready tasks step before reading the result ===
+# CPython resumes the waiter two loop turns after its await, so a task needing
+# one more step after a sleep(0) is already done.
+async def one_yield(x):
+    await asyncio.sleep(0)
+    return x
+
+
+polled = [asyncio.create_task(one_yield(i)) for i in range(3)]
+rounds = 0
+still_pending = set(polled)
+while still_pending and rounds < 100:
+    rounds += 1
+    done, still_pending = await asyncio.wait(still_pending, timeout=0)  # pyright: ignore
+assert rounds == 1
+assert done == set(polled)
+
+# The same turns are given when every input was already done.
+done, pending = await asyncio.wait(polled, timeout=0)  # pyright: ignore
+assert done == set(polled)
+assert pending == set()
 
 
 # === a short positive timeout also returns the pending task ===
@@ -421,6 +448,24 @@ try:
     raise AssertionError('expected ValueError')
 except ValueError as exc:
     assert str(exc) == 'Invalid return_when value: FIRST_COMPLETED'
+
+
+# === validation order matches CPython ===
+# return_when is checked before the elements are.
+try:
+    await asyncio.wait([42], return_when='INVALID')  # pyright: ignore
+    raise AssertionError('expected ValueError')
+except ValueError as exc:
+    assert str(exc) == 'Invalid return_when value: INVALID'
+
+# A coroutine anywhere in the set wins over an earlier non-future element.
+late_coro = value('late-coro')
+try:
+    await asyncio.wait([42, late_coro])  # pyright: ignore
+    raise AssertionError('expected TypeError')
+except TypeError as exc:
+    assert str(exc) == 'Passing coroutines is forbidden, use tasks explicitly.'
+assert await late_coro == 'late-coro'  # pyright: ignore
 
 
 # === wait future repr and identity comparison ===
