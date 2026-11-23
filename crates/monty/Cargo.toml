@@ -2,7 +2,7 @@
 name = "monty"
 readme = "README.md"
 version = { workspace = true }
-license = { workspace = true }
+license = "MIT AND Python-2.0.1"
 rust-version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }

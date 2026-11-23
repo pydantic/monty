@@ -20,6 +20,10 @@ This crate is the pure-Rust core. Most users want one of the bindings built on t
 
 See the [documentation](https://pydantic.dev/docs/monty/) for the motivation, latency measurements, comparison to alternatives and the supported Python subset.
 
+Monty's code is MIT-licensed.
+The crate also includes selected CPython standard library modules under the upstream licence.
+See `stdlib/LICENSE` and `stdlib/NOTICE` in the crate archive.
+
 ## Basic usage
 
 `MontyRun` parses and compiles code once; `run` executes it with input values and returns the value of the final expression as a `MontyObject`:
