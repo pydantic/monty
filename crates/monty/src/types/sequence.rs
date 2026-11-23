@@ -25,7 +25,7 @@ impl<'a> SequenceItems<'a> {
         self.0.len()
     }
 
-    /// The borrow ends before the result is returned, so an element can be materialized on demand.
+    /// The callback's element reference cannot escape, so compact storage can materialize a value on demand.
     pub(crate) fn map_item<T>(self, index: usize, f: impl FnOnce(&Value) -> T) -> T {
         f(&self.0[index])
     }

@@ -714,12 +714,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
                 .try_reserve_exact(source_len)
                 .map_err(|_| ExcType::allocation_too_large())?;
             let source_items = source_list.clone_all_items(vm)?;
-            // GC skips lists without heap references; newly appended references must enable scanning.
-            let has_new_refs = source_items.iter().any(|v| matches!(v, Value::Ref(_)));
-            self.get_mut(vm.heap).items.extend(source_items);
-            if has_new_refs {
-                self.get_mut(vm.heap).contains_refs = true;
-            }
+            self.get_mut(vm.heap).extend_owned(source_items);
         }
 
         Ok(true)

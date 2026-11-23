@@ -1,7 +1,5 @@
 //! Implementation of the sorted() builtin function.
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::ArgValues,
     bytecode::VM,
@@ -13,11 +11,8 @@ use crate::{
     value::{VALUE_SIZE, Value},
 };
 
-fn clone_items_with_checks(
-    items: SequenceItems<'_>,
-    tracker: &ResourceTracker,
-    heap: &Heap,
-) -> Result<Vec<Value>, Box<(Vec<Value>, RunError)>> {
+fn clone_items_with_checks(items: SequenceItems<'_>, heap: &Heap) -> Result<Vec<Value>, Box<(Vec<Value>, RunError)>> {
+    let tracker = &heap.tracker;
     let len = items.len();
     if let Err(e) = check_estimated_size(len.saturating_mul(VALUE_SIZE), tracker) {
         return Err(Box::new((Vec::new(), e.into())));
@@ -53,7 +48,7 @@ pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let iterable = pos_iter.next().expect("checked pos_count == 1");
 
     let items = if let Some(items) = SequenceItems::list_or_tuple(&iterable, vm.heap) {
-        let res = clone_items_with_checks(items, &vm.heap.tracker, vm.heap);
+        let res = clone_items_with_checks(items, vm.heap);
         iterable.drop_with(vm);
         match res {
             Ok(items) => items,

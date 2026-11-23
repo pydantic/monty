@@ -34,7 +34,7 @@ use crate::{
     py_value::PyValue,
     types::{
         CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, TypeRef, allocate_string,
-        str::allocate_string_no_interning, tuple::allocate_tuple,
+        sequence::SequenceItems, str::allocate_string_no_interning, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };
@@ -286,16 +286,14 @@ fn from_tuple(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decim
     }
 }
 
-/// Clones the items of a `tuple` or `list` value.
 fn sequence_items(value: &Value, vm: &VM<'_>) -> Option<Vec<Value>> {
-    let Value::Ref(id) = value else { return None };
-    let items = match vm.heap.get(*id) {
-        HeapData::Tuple(tuple) => tuple.as_slice(),
-        HeapData::List(list) => return Some(list.items().cloned(vm.heap).collect()),
-        HeapData::NamedTuple(tuple) => tuple.items(),
+    let items = match vm.heap.get(value.ref_id()?) {
+        HeapData::Tuple(tuple) => SequenceItems::from_slice(tuple.as_slice()),
+        HeapData::List(list) => list.items(),
+        HeapData::NamedTuple(tuple) => SequenceItems::from_slice(tuple.items()),
         _ => return None,
     };
-    Some(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
+    Some(items.cloned(vm.heap).collect())
 }
 
 /// `Decimal.from_number(...)` and `Decimal.from_float(...)`.
