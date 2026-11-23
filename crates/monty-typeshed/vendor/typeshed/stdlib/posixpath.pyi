@@ -1,4 +1,5 @@
 import sys
+from _typeshed import AnyOrLiteralStr, BytesPath, FileDescriptorOrPath, StrOrBytesPath, StrPath
 from collections.abc import Iterable
 from genericpath import (
     ALLOW_MISSING as ALLOW_MISSING,
@@ -16,60 +17,57 @@ from genericpath import (
     samestat as samestat,
 )
 
-from _typeshed import AnyOrLiteralStr, BytesPath, FileDescriptorOrPath, StrOrBytesPath, StrPath
-
 if sys.version_info >= (3, 13):
     from genericpath import isdevdrive as isdevdrive
 from os import PathLike
 from typing import AnyStr, overload
-
 from typing_extensions import LiteralString
 
 __all__ = [
-    'normcase',
-    'isabs',
-    'join',
-    'splitdrive',
-    'split',
-    'splitext',
-    'basename',
-    'dirname',
-    'commonprefix',
-    'getsize',
-    'getmtime',
-    'getatime',
-    'getctime',
-    'islink',
-    'exists',
-    'lexists',
-    'isdir',
-    'isfile',
-    'ismount',
-    'expanduser',
-    'expandvars',
-    'normpath',
-    'abspath',
-    'samefile',
-    'sameopenfile',
-    'samestat',
-    'curdir',
-    'pardir',
-    'sep',
-    'pathsep',
-    'defpath',
-    'altsep',
-    'extsep',
-    'devnull',
-    'realpath',
-    'supports_unicode_filenames',
-    'relpath',
-    'commonpath',
+    "normcase",
+    "isabs",
+    "join",
+    "splitdrive",
+    "split",
+    "splitext",
+    "basename",
+    "dirname",
+    "commonprefix",
+    "getsize",
+    "getmtime",
+    "getatime",
+    "getctime",
+    "islink",
+    "exists",
+    "lexists",
+    "isdir",
+    "isfile",
+    "ismount",
+    "expanduser",
+    "expandvars",
+    "normpath",
+    "abspath",
+    "samefile",
+    "sameopenfile",
+    "samestat",
+    "curdir",
+    "pardir",
+    "sep",
+    "pathsep",
+    "defpath",
+    "altsep",
+    "extsep",
+    "devnull",
+    "realpath",
+    "supports_unicode_filenames",
+    "relpath",
+    "commonpath",
 ]
-__all__ += ['ALLOW_MISSING']
+__all__ += ["ALLOW_MISSING"]
 if sys.version_info >= (3, 12):
-    __all__ += ['isjunction', 'splitroot']
+    __all__ += ["isjunction", "splitroot"]
 if sys.version_info >= (3, 13):
-    __all__ += ['isdevdrive']
+    __all__ += ["isdevdrive"]
 
 supports_unicode_filenames: bool
 # aliases (also in os)

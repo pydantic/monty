@@ -1,6 +1,8 @@
 //! Imports of modules from `.py` files.
 //!
-//! An import the sandbox neither bundles nor caches is one `import` OS call
+//! A vendored CPython module (see `modules::vendored`) is compiled from the
+//! source embedded in the binary, with no OS call.
+//! Any other import the sandbox neither provides nor caches is one `import` OS call
 //! carrying the module's dotted name and the directories its file may be in:
 //! the working directory for a top-level name, the package's `__path__` for a
 //! submodule. The host does the whole search, checking its own modules first
@@ -10,7 +12,9 @@
 
 use std::sync::Arc;
 
-use monty_types::{ExcType, ExtFunctionResult, ImportArgs, MAX_SEARCH_DIRS, ModuleFile, OsFunctionCall};
+use monty_types::{
+    ExcType, ExtFunctionResult, ImportArgs, MAX_SEARCH_DIRS, ModuleFile, OsFunctionCall, SANDBOX_MODULE_NAMES,
+};
 
 use super::{
     FrameExit, FrameNamespace, VM,
@@ -22,9 +26,10 @@ use crate::{
     exception_private::{ExcTypeExt, ExceptionRaise, RunError, RunResult, SimpleException},
     heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StringId,
+    modules::vendored::{VENDORED_PREFIX, VendoredSource},
     os_dispatch::PendingEffect,
     prepare::SnippetNames,
-    types::{Dict, List, Module, str::allocate_string},
+    types::{Dict, List, Module, sequence::SequenceItems, str::allocate_string},
     value::Value,
     virtual_path::posix_join,
 };
@@ -92,25 +97,26 @@ struct FileParent {
     origin: String,
     /// Whether its body is still running, as in a circular import.
     initializing: bool,
+    /// Whether it is a vendored CPython module, whose submodules are all vendored too.
+    vendored: bool,
     /// The package's `__path__`; `None` for a plain module, which has no submodules.
     search_path: Option<Vec<String>>,
 }
 
 impl VM<'_> {
-    /// `import name` for a name that is not bundled: the cached file module,
-    /// else the host's `import` call, searching [`SEARCH_PATH`].
-    pub(super) fn import_top_level(&mut self, name: &str) -> CallResult {
-        if let Some(module) = self.modules.get(name, self.heap) {
-            CallResult::Value(module)
-        } else {
-            let search_path = SEARCH_PATH
-                .iter()
-                .map(|entry| match entry {
-                    SearchEntry::Cwd => self.env.cwd.to_string(),
-                })
-                .collect();
-            PendingImport::top_level(name.to_owned()).suspend(search_path)
-        }
+    /// `import name` for a name that is not a native module: the cached or
+    /// vendored module, else the host's `import` call, searching [`SEARCH_PATH`].
+    pub(super) fn import_top_level(&mut self, name: &str) -> RunResult<CallResult> {
+        self.find_module(name.to_owned(), OnMiss::ModuleNotFound, |vm| {
+            Some(
+                SEARCH_PATH
+                    .iter()
+                    .map(|entry| match entry {
+                        SearchEntry::Cwd => vm.env.cwd.to_string(),
+                    })
+                    .collect(),
+            )
+        })
     }
 
     /// `import pkg.sub` past a file module: the cached submodule, else the
@@ -121,9 +127,8 @@ impl VM<'_> {
         let name = self.interns.get_str(path_id);
         Some(match parent.search_path {
             None => Err(ExcType::module_not_found_error(name, Some(&parent.name))),
-            Some(dirs) => Ok(match self.modules.get(name, self.heap) {
-                Some(module) => CallResult::Value(module),
-                None => PendingImport::top_level(name.to_owned()).suspend(dirs),
+            Some(dirs) => self.find_module(name.to_owned(), OnMiss::ModuleNotFound, |_| {
+                (!parent.vendored).then_some(dirs)
             }),
         })
     }
@@ -137,17 +142,36 @@ impl VM<'_> {
             None => Err(cannot_import(attr, &parent.name, &parent.origin, parent.initializing)),
             Some(dirs) => {
                 let name = format!("{}.{attr}", parent.name);
-                Ok(if let Some(module) = self.modules.get(&name, self.heap) {
-                    CallResult::Value(module)
-                } else {
-                    let on_miss = OnMiss::CannotImport {
-                        origin: parent.origin,
-                        partial: parent.initializing,
-                    };
-                    PendingImport { name, on_miss }.suspend(dirs)
-                })
+                let on_miss = OnMiss::CannotImport {
+                    origin: parent.origin,
+                    partial: parent.initializing,
+                };
+                self.find_module(name, on_miss, |_| (!parent.vendored).then_some(dirs))
             }
         })
+    }
+
+    /// Looks up a cached or vendored module before asking the host.
+    /// Reserved names and a `None` search path never reach the host.
+    fn find_module(
+        &mut self,
+        name: String,
+        on_miss: OnMiss,
+        search_path: impl FnOnce(&Self) -> Option<Vec<String>>,
+    ) -> RunResult<CallResult> {
+        if let Some(module) = self.modules.get(&name, self.heap) {
+            Ok(CallResult::Value(module))
+        } else if let Some(vendored) = VendoredSource::find(&name) {
+            // TODO(#1275): compile vendored modules once rather than in every session.
+            self.run_file_module(name, &vendored.path(), &Arc::from(vendored.source()))?;
+            Ok(CallResult::FramePushed)
+        } else if !SANDBOX_MODULE_NAMES.contains(&name.as_str())
+            && let Some(dirs) = search_path(self)
+        {
+            Ok(PendingImport { name, on_miss }.suspend(dirs))
+        } else {
+            Err(missed_import(&name, on_miss))
+        }
     }
 
     /// Takes the armed `import` call, if the paused OS call is one.
@@ -321,29 +345,29 @@ impl VM<'_> {
             .get_by_str("__path__", self.heap, self.interns)
             .map(|path| self.search_path(path));
         let name = module.name_str(self.interns);
+        let origin = module.origin().unwrap_or_default();
         Some(FileParent {
             initializing: self.modules.is_initializing(name, id),
+            vendored: origin.starts_with(VENDORED_PREFIX),
             name: name.to_owned(),
-            origin: module.origin().unwrap_or_default().to_owned(),
+            origin: origin.to_owned(),
             search_path,
         })
     }
 
-    /// A package's `__path__` (a list or tuple) as directories joined to the
+    /// A package's `__path__` as directories joined to the
     /// working directory, skipping anything that is not a `str` or that holds
     /// a NUL byte (the host skips those too), up to the [`MAX_SEARCH_DIRS`] it searches.
     fn search_path(&self, path: &Value) -> Vec<String> {
-        let dirs = match path.ref_id().map(|id| self.heap.get(id)) {
-            Some(HeapData::List(list)) => list.as_slice(),
-            Some(HeapData::Tuple(tuple)) => tuple.as_slice(),
-            _ => return Vec::new(),
+        let Some(dirs) = SequenceItems::from_value(path, self.heap) else {
+            return Vec::new();
         };
-        dirs.iter()
-            .filter_map(|dir| dir.as_str_heap(self.heap, self.interns))
-            .filter(|dir| !dir.contains('\0'))
-            .take(MAX_SEARCH_DIRS)
-            .map(|dir| posix_join(&self.env.cwd, dir))
-            .collect()
+        dirs.filter_map(|dir| {
+            let dir = dir.as_str_heap(self.heap, self.interns)?;
+            (!dir.contains('\0')).then(|| posix_join(&self.env.cwd, dir))
+        })
+        .take(MAX_SEARCH_DIRS)
+        .collect()
     }
 
     /// The file module on top of the operand stack, where an import pushes it

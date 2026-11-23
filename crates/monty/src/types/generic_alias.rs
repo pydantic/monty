@@ -763,9 +763,11 @@ fn callable_params(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     let params = pair.clone_item(0, vm);
     defer_drop!(params, vm);
     let mut flattened = if let Some(HeapReadOutput::List(list)) = params.read_heap(vm) {
-        let count = list.get(vm.heap).as_slice().len();
-        vm.heap.tracker.check_allocation(count.saturating_mul(VALUE_SIZE))?;
-        (0..count).map(|index| list.clone_item(index, vm)).collect::<TupleVec>()
+        let items = list.get(vm.heap).items();
+        vm.heap
+            .tracker
+            .check_allocation(items.len().saturating_mul(VALUE_SIZE))?;
+        items.cloned(vm.heap).collect::<TupleVec>()
     } else {
         smallvec![params.clone_with_heap(vm)]
     };
@@ -895,7 +897,7 @@ fn repr_list_arg(item: &Value, f: &mut impl Write, vm: &mut VM<'_>, heap_ids: &m
         return Ok(false);
     };
     f.write_char('[')?;
-    for index in 0..list.get(vm.heap).as_slice().len() {
+    for index in 0..list.get(vm.heap).len() {
         if index > 0 {
             if repr_should_truncate(index, vm)? {
                 f.write_str(", ...[timeout]")?;

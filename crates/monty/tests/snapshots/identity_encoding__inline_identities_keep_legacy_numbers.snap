@@ -126,6 +126,8 @@ type(iter(range(1))): 2115274
 type(iter({})): 2115306
 type(iter(b'')): 2115242
 type(iter('')): 2115178
+type(map(abs, ())): 542400554
+type(filter(None, ())): 542408746
 datetime.date: 2113866
 datetime.datetime: 2113898
 datetime.time: 2115978

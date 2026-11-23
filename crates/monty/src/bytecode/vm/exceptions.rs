@@ -7,6 +7,7 @@ use monty_types::ResourceError;
 use super::VM;
 use crate::{
     builtins::Builtins,
+    bytecode::code::HandlerKind,
     defer_drop,
     exception_private::{
         ExcType, ExcTypeExt, ExceptionArgs, ExceptionRaise, PyException, RawStackFrame, RunError, RunResult,
@@ -537,7 +538,7 @@ impl VM<'_> {
                 let target_stack_depth =
                     frame.stack_base() + frame.locals_count as usize + entry.stack_depth() as usize;
                 let target_exc_stack_depth = frame.exception_stack_base() + entry.exception_stack_count() as usize;
-                let pushes_exception = entry.pushes_exception();
+                let kind = entry.kind();
 
                 // Unwind stack to target depth (drop excess values)
                 for value in this.stack.drain(target_stack_depth..).rev() {
@@ -551,9 +552,8 @@ impl VM<'_> {
                     value.drop_with(this);
                 }
 
-                // Push the exception only for handlers that read it; cleanup
-                // handlers re-raise straight from `exception_stack`.
-                if pushes_exception {
+                this.current_frame_mut().ip = handler_offset;
+                if kind == HandlerKind::Consuming {
                     let exc_for_stack = exc_value.clone_with_heap(this);
                     this.push(exc_for_stack);
                 }
@@ -576,9 +576,6 @@ impl VM<'_> {
                     CaughtException::Value(exc_value)
                 };
                 this.exception_stack.push(caught);
-
-                // Jump to handler
-                this.current_frame_mut().ip = handler_offset;
 
                 return ExceptionHandlingResult::Caught;
             }
@@ -682,6 +679,11 @@ impl VM<'_> {
                     exc_value.drop_with(this);
                 }
                 return ExceptionHandlingResult::Unhandled(error);
+            }
+            // Look up the caller's handler at the faulting call, not its return IP
+            // (which may already be outside the protected region).
+            if let Some(offset) = call_offset {
+                this.instruction_ip = offset as usize;
             }
         }
     }

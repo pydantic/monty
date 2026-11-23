@@ -1,3 +1,5 @@
+# Modified from python/typeshed: Monty removes unsupported builtins.
+
 import _sitebuiltins
 import sys
 import types

@@ -767,9 +767,7 @@ fn shuffle(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
             for i in (1..len).rev() {
                 vm.heap.tracker.check_time_every(i)?;
                 let j = index_value(random.rng().randbelow(i as u128 + 1, &vm.heap.tracker)?);
-                list.get_mut(vm.heap)
-                    .as_vec_mut()
-                    .swap(i, usize::try_from(j).expect("j <= i"));
+                list.get_mut(vm.heap).swap(i, usize::try_from(j).expect("j <= i"));
             }
             Ok(Value::None)
         });
