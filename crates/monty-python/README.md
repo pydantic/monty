@@ -58,7 +58,7 @@ Disconnect messages include the server's status, cause and message, or the trans
 nothing ran.
 It subclasses `MontyError`, not `RuntimeError`, so a retry loop around `checkout()` must catch it by name.
 Its `retryable` attribute identifies temporary refusals, and `retry_after` gives the server's suggested delay in seconds, when present.
-The client retries a temporary capacity or throttling refusal once before admission when the server gives a valid delay of at most two seconds.
+The client retries a refused checkout once when the server sends a single valid `Retry-After` of at most two seconds.
 The wait and retry share a five-second budget and respect the original checkout and dial deadlines.
 Remote connection failures raise `MontyConnectError`, a `MontyError` subclass with `status_code`,
 `status_message`, `cause` and `transport_error` attributes.

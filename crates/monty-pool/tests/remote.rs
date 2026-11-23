@@ -542,11 +542,8 @@ async fn a_refused_stream_fails_the_checkout() {
     join_server(server).await;
 }
 
-fn refusal_with_hint(cause: Cause, reason: &'static str, delay: &'static str, message: &'static str) -> Status {
-    let mut status = cause.status(message);
-    status
-        .metadata_mut()
-        .insert("x-monty-refusal-reason", reason.parse().unwrap());
+fn refusal_with_hint(code: Code, delay: &'static str, message: &'static str) -> Status {
+    let mut status = Status::new(code, message);
     status.metadata_mut().insert("retry-after", delay.parse().unwrap());
     status
 }
@@ -555,12 +552,7 @@ fn refusal_with_hint(cause: Cause, reason: &'static str, delay: &'static str, me
 async fn checkout_retries_worker_capacity_after_the_server_delay() {
     let (mock, mut config) = mock_pool_config().await;
     config.checkout_timeout = Some(Duration::MAX);
-    mock.refuse_next(refusal_with_hint(
-        Cause::WorkerUnavailable,
-        "worker_capacity",
-        "1",
-        "worker full",
-    ));
+    mock.refuse_next(refusal_with_hint(Code::Unavailable, "1", "worker full"));
     let server = thread::spawn(move || serve_mock_worker(&mock));
     let pool = Pool::new(config).await.unwrap();
     let started = Instant::now();
@@ -579,45 +571,23 @@ async fn checkout_retries_worker_capacity_after_the_server_delay() {
 }
 
 #[tokio::test]
-async fn checkout_retries_each_temporary_refusal_at_most_once() {
-    for (cause, reason) in [
-        (Cause::Capacity, "authentication_admission"),
-        (Cause::Capacity, "relay_sessions"),
-        (Cause::CallerCap, "assignment_attempt_rate"),
-        (Cause::CallerCap, "caller_cap"),
-        (Cause::WorkerUnavailable, "claim_readiness"),
-        (Cause::WorkerUnavailable, "worker_capacity"),
-        (Cause::WorkerUnavailable, "worker_unavailable"),
-        (Cause::WorkerUnavailable, "assignment_unavailable"),
+async fn checkout_retries_a_hinted_admission_refusal_at_most_once() {
+    for code in [
+        Code::ResourceExhausted,
+        Code::Unavailable,
+        Code::FailedPrecondition,
+        Code::PermissionDenied,
+        Code::Unauthenticated,
     ] {
         let (mock, config) = mock_pool_config().await;
-        mock.refuse_next(refusal_with_hint(cause, reason, "0", "first refusal"));
-        mock.refuse_next(refusal_with_hint(cause, reason, "0", "second refusal"));
+        mock.refuse_next(refusal_with_hint(code, "0", "first refusal"));
+        mock.refuse_next(refusal_with_hint(code, "1", "second refusal"));
         let pool = Pool::new(config).await.unwrap();
         let Err(PoolError::Refused { refusal, .. }) = pool.checkout(&ReplConfig::default()).await else {
-            panic!("the second refusal must be returned for {reason}");
+            panic!("expected the second refusal for {code:?}");
         };
-        assert_eq!(refusal.status_message.as_deref(), Some("second refusal"), "{reason}");
-        assert_eq!(refusal.retry_after, Some(Duration::ZERO), "{reason}");
-    }
-}
-
-#[tokio::test]
-async fn checkout_leaves_other_refusals_to_the_caller() {
-    for (cause, reason, delay) in [
-        (Cause::WorkerUnavailable, "unknown_reason", "0"),
-        (Cause::CallerCap, "tenant_allowance", "0"),
-        (Cause::Unauthenticated, "authentication", "0"),
-        (Cause::WorkerUnavailable, "worker_capacity", "invalid"),
-        (Cause::WorkerUnavailable, "worker_capacity", "3601"),
-    ] {
-        let (mock, config) = mock_pool_config().await;
-        mock.refuse_next(refusal_with_hint(cause, reason, delay, "original refusal"));
-        let pool = Pool::new(config).await.unwrap();
-        let Err(PoolError::Refused { refusal, .. }) = pool.checkout(&ReplConfig::default()).await else {
-            panic!("the original refusal must be returned for {reason} with delay {delay}");
-        };
-        assert_eq!(refusal.status_message.as_deref(), Some("original refusal"));
+        assert_eq!(refusal.status_message.as_deref(), Some("second refusal"));
+        assert_eq!(refusal.retry_after, Some(Duration::from_secs(1)));
     }
 }
 
@@ -629,12 +599,7 @@ async fn checkout_skips_retries_that_cannot_fit_either_deadline() {
         let (mock, mut config) = mock_pool_config().await;
         config.checkout_timeout = checkout_timeout;
         config.request_timeout = request_timeout;
-        mock.refuse_next(refusal_with_hint(
-            Cause::WorkerUnavailable,
-            "worker_capacity",
-            "1",
-            "retry later",
-        ));
+        mock.refuse_next(refusal_with_hint(Code::Unavailable, "1", "retry later"));
         let pool = Pool::new(config).await.unwrap();
         let Err(PoolError::Refused { refusal, .. }) = pool.checkout(&ReplConfig::default()).await else {
             panic!("the hint exceeds the deadline");

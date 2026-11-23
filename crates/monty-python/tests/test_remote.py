@@ -818,15 +818,7 @@ async def test_refused_stream_fails_the_checkout():
     )
 
 
-def _worker_capacity_trailers(*hints: str) -> tuple[tuple[str, str], ...]:
-    return (
-        ('monty-cause', 'worker_unavailable'),
-        ('x-monty-refusal-reason', 'worker_capacity'),
-        *(('retry-after', hint) for hint in hints),
-    )
-
-
-async def test_checkout_retries_worker_capacity_once():
+async def test_checkout_retries_once_with_only_retry_after():
     attempts = 0
     metadata_calls = 0
     seen_headers: list[str] = []
@@ -847,7 +839,7 @@ async def test_checkout_retries_worker_capacity_once():
         await context.abort(
             grpc.StatusCode.UNAVAILABLE,
             f'worker full on attempt {attempts}',
-            trailing_metadata=_worker_capacity_trailers('0'),
+            trailing_metadata=(('retry-after', '0'),),
         )
         yield b''
 
@@ -862,10 +854,10 @@ async def test_checkout_retries_worker_capacity_once():
     assert caught.value.retry_after == snapshot(0.0)
 
 
-@pytest.mark.parametrize('hints,expected_delay', [(('3',), 3.0), (('0', '3'), None)])
-async def test_checkout_does_not_wait_on_long_or_conflicting_hints(
-    hints: tuple[str, ...], expected_delay: float | None
-):
+@pytest.mark.parametrize(
+    'hints,expected_delay', [((), None), (('invalid',), None), (('3',), 3.0), (('0', '3'), None), (('0', '0'), None)]
+)
+async def test_checkout_requires_one_valid_short_hint(hints: tuple[str, ...], expected_delay: float | None):
     attempts = 0
 
     async def behaviour(
@@ -876,7 +868,7 @@ async def test_checkout_does_not_wait_on_long_or_conflicting_hints(
         await context.abort(
             grpc.StatusCode.UNAVAILABLE,
             'worker capacity',
-            trailing_metadata=_worker_capacity_trailers(*hints),
+            trailing_metadata=tuple(('retry-after', hint) for hint in hints),
         )
         yield b''
 
@@ -901,7 +893,7 @@ async def test_checkout_retry_timeout_returns_the_original_refusal(checkout_time
             await context.abort(
                 grpc.StatusCode.UNAVAILABLE,
                 'try again later',
-                trailing_metadata=_worker_capacity_trailers('0'),
+                trailing_metadata=(('retry-after', '0'),),
             )
         await asyncio.Event().wait()  # the retry never receives response headers
         yield b''
@@ -932,7 +924,7 @@ async def test_cancelling_checkout_during_backoff_frees_the_only_pool_slot():
                 await context.abort(
                     grpc.StatusCode.UNAVAILABLE,
                     'try again later',
-                    trailing_metadata=_worker_capacity_trailers('1'),
+                    trailing_metadata=(('retry-after', '1'),),
                 )
             finally:
                 refused.set()
@@ -974,7 +966,7 @@ async def test_admitted_feed_with_retryable_status_is_never_replayed():
         await context.abort(
             grpc.StatusCode.UNAVAILABLE,
             'capacity changed',
-            trailing_metadata=_worker_capacity_trailers('0'),
+            trailing_metadata=(('retry-after', '0'),),
         )
         yield b''
 
@@ -1014,13 +1006,17 @@ async def test_refusal_retry_details(code: grpc.StatusCode, retryable: bool, hea
 
 
 async def test_unexpected_server_status_is_a_connect_error():
+    attempts = 0
+
     async def behaviour(
         requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
     ) -> AsyncIterator[bytes]:
+        nonlocal attempts
+        attempts += 1
         await context.abort(
             grpc.StatusCode.UNIMPLEMENTED,
             'unknown service',
-            trailing_metadata=(('monty-cause', 'protocol_violation'),),
+            trailing_metadata=(('monty-cause', 'protocol_violation'), ('retry-after', '0')),
         )
         yield b''
 
@@ -1028,6 +1024,7 @@ async def test_unexpected_server_status_is_a_connect_error():
         with pytest.raises(MontyConnectError) as caught:
             async with pool.checkout():
                 pass
+    assert attempts == 1
     assert caught.value.status_code == snapshot('UNIMPLEMENTED')
     assert caught.value.status_message == snapshot('unknown service')
     assert caught.value.cause == snapshot('protocol_violation')

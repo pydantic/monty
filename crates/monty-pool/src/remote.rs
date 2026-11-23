@@ -24,7 +24,7 @@ use h2::Reason;
 use http::{Response, StatusCode, uri::PathAndQuery};
 use monty_proto::{
     FrameError, MAX_FRAME_LEN, encode_to_capped_vec,
-    grpc::{BytesCodec, CAUSE_METADATA_KEY, Cause, SESSION_PATH},
+    grpc::{BytesCodec, Cause, SESSION_PATH},
     pb,
 };
 use rustls::crypto::{CryptoProvider, aws_lc_rs::default_provider};
@@ -228,7 +228,7 @@ impl Remote {
                 Ok(Err(status)) if Error::source(&status).is_none() && refuses_admission(status.code()) => {
                     let refusal = RemoteDisconnect::from_refusal(&status);
                     if retry.is_none()
-                        && let Some(delay) = admission_retry_delay(&status, &refusal, admission_retry_jitter)
+                        && let Some(delay) = admission_retry_delay(refusal.retry_after, admission_retry_jitter)
                     {
                         let now = Instant::now();
                         let retry_deadline = dial_deadline
@@ -313,50 +313,22 @@ fn refuses_admission(code: Code) -> bool {
     )
 }
 
+/// Give the server time to recover even when its hint is zero or in the past.
 const MIN_ADMISSION_RETRY_WAIT: Duration = Duration::from_millis(100);
+/// Leave longer waits to the caller so backoff does not tie up a pool slot.
 const MAX_ADMISSION_RETRY_AFTER: Duration = Duration::from_secs(2);
+/// Spread clients that receive the same hint across a short extra interval.
 const MAX_ADMISSION_RETRY_JITTER_MS: u64 = 250;
+/// Bound the backoff and second dial together even without a caller deadline.
 const MAX_ADMISSION_RETRY_TIME: Duration = Duration::from_secs(5);
 
 fn admission_retry_jitter() -> Duration {
     Duration::from_millis(RandomState::new().hash_one(0_u8) % (MAX_ADMISSION_RETRY_JITTER_MS + 1))
 }
 
-/// Pace retries even for a zero or past Retry-After. Leave longer waits to
-/// the caller so the automatic retry cannot hold a pool slot indefinitely.
-fn admission_retry_delay(
-    status: &Status,
-    refusal: &RemoteDisconnect,
-    jitter: impl FnOnce() -> Duration,
-) -> Option<Duration> {
-    let delay = refusal
-        .retry_after
-        .filter(|&delay| delay <= MAX_ADMISSION_RETRY_AFTER)?;
-    let metadata = status.metadata();
-    for name in [CAUSE_METADATA_KEY, "x-monty-refusal-reason"] {
-        if metadata.get_all(name).iter().nth(1).is_some() {
-            return None;
-        }
-    }
-    let reason = metadata
-        .get("x-monty-refusal-reason")
-        .map(MetadataValue::to_str)
-        .transpose()
-        .ok()?;
-    match (status.code(), refusal.cause, reason) {
-        (
-            Code::ResourceExhausted,
-            Some(Cause::Capacity),
-            None | Some("authentication_admission" | "relay_sessions" | "worker_session_capacity"),
-        )
-        | (Code::ResourceExhausted, Some(Cause::CallerCap), Some("assignment_attempt_rate" | "caller_cap"))
-        | (
-            Code::Unavailable,
-            Some(Cause::WorkerUnavailable),
-            Some("worker_capacity" | "claim_readiness" | "worker_unavailable" | "assignment_unavailable"),
-        ) => Some(delay.max(MIN_ADMISSION_RETRY_WAIT) + jitter()),
-        _ => None,
-    }
+fn admission_retry_delay(retry_after: Option<Duration>, jitter: impl FnOnce() -> Duration) -> Option<Duration> {
+    let delay = retry_after.filter(|&delay| delay <= MAX_ADMISSION_RETRY_AFTER)?;
+    Some(delay.max(MIN_ADMISSION_RETRY_WAIT) + jitter())
 }
 
 /// Whether a response's headers are a gRPC server's: the protocol requires a

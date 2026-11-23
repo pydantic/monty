@@ -286,9 +286,9 @@ export interface RefusalDetails {
  * The server gives details in `statusCode`,
  * `statusMessage` and `remoteCause`. No session existed, so
  * nothing ran. `retryable` identifies temporary refusals. `retryAfter` is
- * the server's suggested delay. The pool retries selected temporary capacity
- * and throttling refusals once when the server gives a delay of at most two
- * seconds. Waiting and redialing share a five-second budget and the checkout
+ * the server's suggested delay. The pool retries a refused checkout once
+ * when the server sends a single valid `Retry-After` of at most two seconds.
+ * Waiting and redialing share a five-second budget and the checkout
  * and dial deadlines. A retry timeout rejects with the original refusal.
  * An unreachable server, an unexpected status such as
  * `UNIMPLEMENTED`, or a non-gRPC response raises `MontyConnectError`.

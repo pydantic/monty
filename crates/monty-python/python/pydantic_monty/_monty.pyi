@@ -662,9 +662,8 @@ class MontyRefusedError(MontyError):
     def retryable(self) -> bool:
         """`True` for `RESOURCE_EXHAUSTED` or `UNAVAILABLE`, not for credential errors.
 
-        The pool retries some checkout refusals once when the server supplies
-        a valid delay of at most two seconds and the retry fits the checkout
-        and dial deadlines.
+        This property classifies the status code. The server requests an
+        automatic checkout retry with `Retry-After`.
         """
 
     @property
@@ -673,7 +672,9 @@ class MontyRefusedError(MontyError):
 
         Both delay-seconds and HTTP dates are accepted. Past dates give zero;
         delays are capped at one hour.
-        A retry delay does not make a permanent refusal retryable.
+        The pool retries a refused checkout once for a delay of at most two
+        seconds, within the five-second retry budget and the original
+        checkout and dial deadlines.
         """
 
 @final
