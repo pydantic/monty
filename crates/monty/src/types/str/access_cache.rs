@@ -1,7 +1,8 @@
 //! Convert between Python code-point indices and UTF-8 byte offsets using two recent boundaries.
 //! Start and end are implicit anchors; each lookup chooses the closest anchor in its input coordinates.
 //! Skips use scalar iteration, 16-byte SIMD or bulk bytecount according to distance and owner density.
-//! Strings below 64 KiB retain u16 cursors inline. Larger strings allocate usize cursors on first use.
+//! Strings below 64 KiB store u16 cursors inline. Larger strings can allocate usize cursors on first use.
+//! If the memory budget refuses the allocation, lookups scan without caching.
 //! Clones and snapshots start without access history. This cache builds no index.
 
 use std::{
