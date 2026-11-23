@@ -21,8 +21,8 @@ these built-ins; `raise MyClass()` on a plain user class raises
 
 Module-specific: `json.JSONDecodeError` and `tomllib.TOMLDecodeError` (subclasses of `ValueError`),
 `re.PatternError` / `re.error`, `io.UnsupportedOperation` (catchable as
-both `OSError` and `ValueError`, matching CPython's dual parentage), and
-`dataclasses.FrozenInstanceError` (a subclass of `AttributeError`), and
+both `OSError` and `ValueError`, matching CPython's dual parentage),
+`dataclasses.FrozenInstanceError` (a subclass of `AttributeError`) and
 `asyncio.InvalidStateError` (a subclass of `Exception`). Hosts see the last one
 under CPython's defining-module name, `asyncio.exceptions.InvalidStateError`.
 

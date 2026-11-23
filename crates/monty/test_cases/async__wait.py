@@ -312,6 +312,25 @@ except RuntimeError as exc:
     assert str(exc) == 'cannot reuse already awaited coroutine'
 
 
+# === another task cannot take over a wait that is still being awaited ===
+shared_task = asyncio.create_task(immediate('shared'))
+shared_wait = asyncio.wait([shared_task], timeout=0)
+
+
+async def steal_wait():
+    try:
+        await shared_wait
+        return 'stole'
+    except RuntimeError as exc:
+        return str(exc)
+
+
+thief = asyncio.create_task(steal_wait())
+done, pending = await shared_wait  # pyright: ignore
+assert done == {shared_task}
+assert await thief == 'coroutine is being awaited already'  # pyright: ignore
+
+
 # === empty inputs ===
 try:
     await asyncio.wait([])  # pyright: ignore

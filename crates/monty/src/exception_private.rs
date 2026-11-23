@@ -259,6 +259,13 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited future").into()
     }
 
+    /// `RuntimeError: coroutine is being awaited already` — a second task
+    /// awaiting a coroutine-like awaitable that another await is still driving.
+    #[must_use]
+    fn coroutine_being_awaited_already() -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, "coroutine is being awaited already").into()
+    }
+
     /// `ValueError: Set of Tasks/Futures is empty.` — `asyncio.wait` given no inputs.
     #[must_use]
     fn wait_empty_input() -> RunError {

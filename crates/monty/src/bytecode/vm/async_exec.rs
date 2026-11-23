@@ -544,6 +544,7 @@ impl<'h> VM<'h> {
         let yields = pending.turns_given < WAIT_TURNS;
         if yields {
             pending.turns_given += 1;
+            pending.retry_owner = self.scheduler.current_task_id();
         }
         Ok(yields)
     }
@@ -552,23 +553,28 @@ impl<'h> VM<'h> {
     /// awaiter yet.
     ///
     /// A pending wait without an awaiter is one whose first `Await` is being
-    /// re-run after yielding to ready tasks, so it is accepted again; any
-    /// other repeat await raises as a reused coroutine would.
+    /// re-run after yielding to ready tasks; only the task that yielded may
+    /// pick it up. Any other await of an in-progress wait raises as CPython
+    /// does for a coroutine another task is awaiting.
     fn begin_wait(&mut self, wait: &HeapObjectRead<'h, WaitFuture>) -> RunResult<()> {
-        let old = mem::replace(&mut wait.get_mut(self.heap).state, WaitFutureState::Consumed);
-        match old {
-            WaitFutureState::Consumed => Err(ExcType::cannot_reuse_already_awaited_coroutine()),
+        let current = self.scheduler.current_task_id();
+        match &wait.get(self.heap).state {
+            WaitFutureState::Consumed => return Err(ExcType::cannot_reuse_already_awaited_coroutine()),
             WaitFutureState::Pending(pending) => {
-                let reentered = pending.awaiter.is_none();
-                wait.get_mut(self.heap).state = WaitFutureState::Pending(pending);
-                if reentered {
+                return if pending.awaiter.is_none() && current.is_some() && pending.retry_owner == current {
                     Ok(())
                 } else {
-                    Err(ExcType::cannot_reuse_already_awaited_coroutine())
-                }
+                    Err(ExcType::coroutine_being_awaited_already())
+                };
             }
-            WaitFutureState::Unawaited(unawaited) => self.commit_wait_unawaited(wait.id(), unawaited),
+            WaitFutureState::Unawaited(_) => {}
         }
+        let WaitFutureState::Unawaited(unawaited) =
+            mem::replace(&mut wait.get_mut(self.heap).state, WaitFutureState::Consumed)
+        else {
+            unreachable!("the wait was unawaited a moment ago")
+        };
+        self.commit_wait_unawaited(wait.id(), unawaited)
     }
 
     /// Preflights the temporary and result storage for a wait over `inputs` entries.
@@ -688,6 +694,7 @@ impl<'h> VM<'h> {
             timer: args.timer.take(),
             timed_out,
             turns_given: 0,
+            retry_owner: None,
         });
 
         Ok(())

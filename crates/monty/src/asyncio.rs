@@ -383,6 +383,9 @@ pub(crate) struct WaitPending {
     /// result read; it has no `awaiter` until it stops yielding.
     #[serde(default)]
     pub turns_given: u8,
+    /// The task whose yield is in progress; only it may re-run the await.
+    #[serde(default)]
+    pub retry_owner: Option<TaskId>,
 }
 
 impl WaitPending {
