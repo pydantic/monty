@@ -155,6 +155,7 @@ fn native_overrides_init(ty: Type) -> bool {
                 | Type::Dict
                 | Type::DefaultDict
                 | Type::Counter
+                | Type::OrderedDict
                 | Type::Set
                 | Type::Deque
                 | Type::Property

@@ -1,12 +1,12 @@
 //! Implementation of the `collections` module.
 //!
 //! The module surface (the factories and their argument handling) lives here;
-//! the runtime behaviour of the two dict-backed types lives in the [`counter`]
+//! the runtime behaviour of the dict-backed types lives in the [`counter`]
 //! and [`defaultdict`] submodules, keeping it out of `types/dict.rs`.
 //!
 //! Monty exposes only the subset of CPython's `collections` that it actually
-//! implements — currently `deque` (a type) and the factory functions
-//! `namedtuple`, `defaultdict`, and `Counter`. `OrderedDict`, `ChainMap` and
+//! implements — currently `deque`, `defaultdict`, `Counter` and `OrderedDict`
+//! (types) and the factory function `namedtuple`. `ChainMap` and
 //! the `User*` classes are not (see `limitations/collections.md`).
 //!
 //! `deque` lives entirely in its runtime type (`crate::types::Deque`).
@@ -15,7 +15,8 @@
 //! are ordinary [`NamedTuple`](crate::types::NamedTuple)s. `defaultdict` and
 //! `Counter` reuse the `dict` runtime type: [`defaultdict`] and [`counter`]
 //! build a `dict` and tag it via `Dict::make_defaultdict` / `make_counter`
-//! rather than introducing a new heap type.
+//! rather than introducing a new heap type; `OrderedDict` does the same through
+//! `Dict::init_as`.
 
 pub(crate) mod counter;
 pub(crate) mod defaultdict;
@@ -66,6 +67,12 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
         vm,
     );
 
+    module.set_attr(
+        StaticStrings::OrderedDict,
+        Value::Builtin(Builtins::Type(Type::OrderedDict)),
+        vm,
+    );
+
     module
 }
 
@@ -110,6 +117,19 @@ pub(crate) fn defaultdict_class_method(
 ) -> Result<RunResult<CallResult>, ArgValues> {
     if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
         Ok(dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value))
+    } else {
+        Err(args)
+    }
+}
+
+/// `OrderedDict.fromkeys(...)` builds `cls()`, an OrderedDict.
+pub(crate) fn ordereddict_class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
+        Ok(dict_fromkeys(args, DictKind::ordered(), vm).map(CallResult::Value))
     } else {
         Err(args)
     }
@@ -207,6 +227,23 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
     };
     dict.get_mut(vm.heap).make_defaultdict(factory);
     Ok(dict_value)
+}
+
+/// The `collections.OrderedDict(*args, **kwargs)` constructor: exactly the
+/// `dict(...)` constructor, tagged as an OrderedDict. Insertion order is what
+/// every `dict` keeps already, so no extra state is needed.
+///
+/// Reached via [`Type::call`](crate::types::Type::call) — `collections.OrderedDict`
+/// is exposed as the type object, so `type(od) is OrderedDict` holds.
+pub(crate) fn ordereddict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    // CPython's own arity message carries no type name (`dict(1, 2)` says
+    // `dict expected at most 1 argument`).
+    let total = args.count();
+    if total > 1 {
+        args.drop_with(vm);
+        return Err(ExcType::type_error(format!("expected at most 1 argument, got {total}")));
+    }
+    Dict::init_as(vm, args, DictKind::ordered())
 }
 
 /// Arguments for `collections.namedtuple`.

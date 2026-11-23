@@ -1937,7 +1937,7 @@ pub(crate) trait ExcTypeExt: Sized {
                 | Type::Deque
                 | Type::Counter,
             ) => None,
-            Some(Type::Dict | Type::DefaultDict) => Some(SimpleException::new_msg(
+            Some(Type::Dict | Type::DefaultDict | Type::OrderedDict) => Some(SimpleException::new_msg(
                 ExcType::TypeError,
                 format!("{} is not a sequence", value.py_type_name(vm)),
             )),
@@ -2353,6 +2353,14 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn index_error_pop_out_of_range() -> RunError {
         SimpleException::new_msg(ExcType::IndexError, "pop index out of range").into()
+    }
+
+    /// Creates a KeyError for `OrderedDict.popitem()` on an empty mapping.
+    ///
+    /// Matches CPython's format: `KeyError: 'dictionary is empty'`
+    #[must_use]
+    fn key_error_ordereddict_empty() -> RunError {
+        SimpleException::new_msg(ExcType::KeyError, "dictionary is empty").into()
     }
 
     /// Creates a KeyError for popping from an empty dict.

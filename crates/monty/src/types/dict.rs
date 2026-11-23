@@ -128,6 +128,10 @@ enum DictSpecial {
     /// inserting), and it adds `most_common`/`elements`/arithmetic on top of
     /// the dict surface.
     Counter,
+    /// A `collections.OrderedDict`; adds `move_to_end`, `popitem(last=...)`,
+    /// order-sensitive equality against another OrderedDict and the
+    /// `OrderedDict(...)` repr on top of the dict surface.
+    Ordered,
 }
 
 impl DictKind {
@@ -147,6 +151,12 @@ impl DictKind {
     #[must_use]
     pub fn counter() -> Self {
         Self(Some(Box::new(DictSpecial::Counter)))
+    }
+
+    /// An `OrderedDict` kind.
+    #[must_use]
+    pub fn ordered() -> Self {
+        Self(Some(Box::new(DictSpecial::Ordered)))
     }
 
     /// Whether its factory retains an object in the interpreter heap.
@@ -199,6 +209,18 @@ impl TableEntry for DictEntry {
     #[inline]
     fn is_live(&self) -> bool {
         !matches!(self.key, Value::Undefined)
+    }
+
+    /// A tombstone's hash is never read, so it carries the record.
+    fn dead_prefix_tombstone(end: usize) -> Self {
+        Self {
+            hash: end as u64,
+            ..Self::tombstone()
+        }
+    }
+
+    fn dead_prefix_end(&self) -> usize {
+        usize::try_from(self.hash).unwrap_or(usize::MAX)
     }
 
     fn changed_size_error() -> RunError {
@@ -269,6 +291,12 @@ impl Dict {
         matches!(self.kind.0.as_deref(), Some(DictSpecial::Counter))
     }
 
+    /// Returns whether this dict is an `OrderedDict`.
+    #[must_use]
+    pub fn is_ordered(&self) -> bool {
+        matches!(self.kind.0.as_deref(), Some(DictSpecial::Ordered))
+    }
+
     /// Clones this dict's kind for a derived dict, taking a counted reference to
     /// a `defaultdict` factory.
     ///
@@ -284,6 +312,7 @@ impl Dict {
                 DictKind::defaultdict(factory.as_ref().map(|f| f.clone_with_heap(heap)))
             }
             Some(DictSpecial::Counter) => DictKind::counter(),
+            Some(DictSpecial::Ordered) => DictKind::ordered(),
         }
     }
 
@@ -302,6 +331,7 @@ impl Dict {
             None => Type::Dict,
             Some(DictSpecial::Default(_)) => Type::DefaultDict,
             Some(DictSpecial::Counter) => Type::Counter,
+            Some(DictSpecial::Ordered) => Type::OrderedDict,
         }
     }
 
@@ -311,7 +341,7 @@ impl Dict {
     pub fn default_factory(&self) -> Option<&Value> {
         match self.kind.0.as_deref() {
             Some(DictSpecial::Default(factory)) => factory.as_ref(),
-            None | Some(DictSpecial::Counter) => None,
+            None | Some(DictSpecial::Counter | DictSpecial::Ordered) => None,
         }
     }
 
@@ -326,7 +356,7 @@ impl Dict {
         // defaultdict; the other arms are defensive.
         match self.kind.0.as_deref_mut() {
             Some(DictSpecial::Default(slot)) => mem::replace(slot, factory),
-            None | Some(DictSpecial::Counter) => {
+            None | Some(DictSpecial::Counter | DictSpecial::Ordered) => {
                 self.kind = DictKind::defaultdict(factory);
                 None
             }
@@ -507,6 +537,28 @@ impl<'h> HeapRead<'h, Dict> {
             defer_drop!(other_value, vm);
             if !value.py_eq(other_value, vm)? {
                 return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Order-sensitive equality between two OrderedDicts: the same pairs
+    /// (as [`eq_dict`](Self::eq_dict)) *and* the same key order.
+    ///
+    /// Applies ONLY between two OrderedDicts; against a plain dict the
+    /// comparison stays order-insensitive.
+    pub(crate) fn eq_ordered(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<bool> {
+        if !self.eq_dict(other, vm)? {
+            return Ok(false);
+        }
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        let other_iter = other.iter(vm)?;
+        defer_drop_mut!(other_iter, vm);
+        while let Some(key) = iter.next_key(vm)? {
+            match other_iter.next_key(vm)? {
+                Some(other_key) if key.py_eq(other_key, vm)? => {}
+                _ => return Ok(false),
             }
         }
         Ok(true)
@@ -812,6 +864,12 @@ impl Dict {
     /// For now, only real `dict` values use mapping-copy semantics; other values
     /// are interpreted as iterables of pairs.
     pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+        Self::init_as(vm, args, DictKind::plain())
+    }
+
+    /// [`init`](Self::init) for a `dict` subclass that shares its constructor
+    /// (`OrderedDict`), tagged with `kind` before it is allocated.
+    pub(crate) fn init_as(vm: &mut VM<'_>, args: ArgValues, kind: DictKind) -> RunResult<Value> {
         let DictInitArgs { source, extras } = DictInitArgs::from_args(args, vm)?;
         let dict = Self::new();
         let mut dict_guard = DropGuard::new(dict, vm);
@@ -837,7 +895,8 @@ impl Dict {
             dict_merge_from_kwargs(dict, kwargs, vm)?;
         }
 
-        let dict = dict_guard.into_inner();
+        let mut dict = dict_guard.into_inner();
+        dict.set_kind(kind);
         let heap_id = vm.heap.allocate(HeapData::Dict(dict));
         Ok(Value::Ref(heap_id))
     }
@@ -1376,6 +1435,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
                 // other pairing is plain dict equality.
                 if self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter() {
                     Ok(Some(self.eq_counter(&other, vm)?))
+                } else if self.get(vm.heap).is_ordered() && other.get(vm.heap).is_ordered() {
+                    Ok(Some(self.eq_ordered(&other, vm)?))
                 } else {
                     Ok(Some(self.eq_dict(&other, vm)?))
                 }
@@ -1487,6 +1548,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
             }
             f.write_str("Counter(")?;
             self.write_counter_map_repr(f, vm, heap_ids)?;
+            return Ok(f.write_char(')')?);
+        }
+        // An OrderedDict renders as `OrderedDict({<items>})` (3.12+), or
+        // `OrderedDict()` when empty.
+        if self.get(vm.heap).is_ordered() {
+            if self.get(vm.heap).is_empty() {
+                return Ok(f.write_str("OrderedDict()")?);
+            }
+            f.write_str("OrderedDict(")?;
+            self.write_map_repr(f, vm, heap_ids)?;
             return Ok(f.write_char(')')?);
         }
         self.write_map_repr(f, vm, heap_ids)
@@ -1620,6 +1691,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
             }
             StaticStrings::Update => dict_update(self, args, vm),
             StaticStrings::Setdefault => dict_setdefault(self, args, vm),
+            StaticStrings::Popitem if self.get(vm.heap).is_ordered() => ordered_popitem(self, args, vm),
+            StaticStrings::MoveToEnd if self.get(vm.heap).is_ordered() => ordered_move_to_end(self, args, vm),
             StaticStrings::Popitem => {
                 args.check_zero_args("dict.popitem", vm.heap)?;
                 dict_popitem(self, vm)
@@ -1630,6 +1703,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
             StaticStrings::Fromkeys => {
                 let kind = if self.get(vm.heap).is_defaultdict() {
                     DictKind::defaultdict(None)
+                } else if self.get(vm.heap).is_ordered() {
+                    DictKind::ordered()
                 } else {
                     DictKind::plain()
                 };
@@ -1775,9 +1850,9 @@ fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value>
 /// `left | right` for two dicts: a new dict of `left`'s pairs updated with
 /// `right`'s, or `None` when `right` is not a dict.
 ///
-/// A defaultdict on either side wins the result's kind (its `__or__` and
-/// `__ror__` both build a defaultdict with its own factory, the left one
-/// first); otherwise the result is a plain dict, as `PyDict_Copy` of a
+/// A defaultdict or OrderedDict on either side wins the result's kind (their
+/// `__or__` and `__ror__` both build their own kind, the left one first, a
+/// defaultdict keeping its own factory); otherwise the result is a plain dict, as `PyDict_Copy` of a
 /// Counter is, so `Counter | dict` and `dict | Counter` are plain dicts.
 fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let Some(HeapReadOutput::Dict(right_dict)) = right.read_heap(vm) else {
@@ -1793,9 +1868,10 @@ fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> Run
     let (mut merged, vm) = merged_guard.into_parts();
     // Cloned after the merge, the only step that can fail, so the factory
     // reference a defaultdict kind holds needs no guard of its own.
-    let kind = if left.get(vm.heap).is_defaultdict() {
+    let inherits = |dict: &Dict| dict.is_defaultdict() || dict.is_ordered();
+    let kind = if inherits(left.get(vm.heap)) {
         left.get(vm.heap).cloned_kind(vm.heap)
-    } else if right_dict.get(vm.heap).is_defaultdict() {
+    } else if inherits(right_dict.get(vm.heap)) {
         right_dict.get(vm.heap).cloned_kind(vm.heap)
     } else {
         DictKind::plain()
@@ -2014,6 +2090,70 @@ fn dict_popitem<'h>(dict: &HeapReadMut<'h, Dict>, vm: &mut VM<'h>) -> RunResult<
 
     // Create tuple (key, value)
     Ok(allocate_tuple(smallvec![entry.key, entry.value], vm.heap))
+}
+
+/// `OrderedDict.popitem(last=True)`: removes and returns the last (or, with
+/// `last=False`, the first) pair as a tuple.
+fn ordered_popitem<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let OrderedPopitemArgs { last } = OrderedPopitemArgs::from_args(args, vm)?;
+    defer_drop!(last, vm);
+    let last = last.py_bool(vm)?;
+    let this = dict.get_mut(vm.heap);
+    let entry = if last {
+        this.table.pop_last()
+    } else {
+        this.table.pop_first()
+    };
+    // Unlike `dict.popitem`, the message carries no `popitem():` prefix.
+    let Some(entry) = entry else {
+        return Err(ExcType::key_error_ordereddict_empty());
+    };
+    Ok(allocate_tuple(smallvec![entry.key, entry.value], vm.heap))
+}
+
+/// `popitem(last=True)`.
+#[derive(FromArgs)]
+#[from_args(name = "popitem")]
+struct OrderedPopitemArgs {
+    #[from_args(default = Value::Bool(true))]
+    last: Value,
+}
+
+/// `OrderedDict.move_to_end(key, last=True)`: moves an existing key to the
+/// end (or, with `last=False`, the beginning) of the order.
+fn ordered_move_to_end<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let OrderedMoveToEndArgs { key, last } = OrderedMoveToEndArgs::from_args(args, vm)?;
+    defer_drop!(key, vm);
+    defer_drop!(last, vm);
+    let last = last.py_bool(vm)?;
+    let (found, _hash) = dict.find_index_hash(key, vm)?;
+    let Some(slot) = found else {
+        return Err(ExcType::key_error(key, vm));
+    };
+    let table = &dict.get(vm.heap).table;
+    if last {
+        // The tombstone left by the move keeps the entry vector at its length, so
+        // appending can still double it; preflight that before the hard limit.
+        table.check_growth(&vm.heap.tracker)?;
+    } else {
+        table.check_move_to_front(&slot, &vm.heap.tracker)?;
+    }
+    let table = &mut dict.get_mut(vm.heap).table;
+    if last {
+        table.move_to_back(slot);
+    } else {
+        table.move_to_front(slot);
+    }
+    Ok(Value::None)
+}
+
+/// `move_to_end(key, last=True)`.
+#[derive(FromArgs)]
+#[from_args(name = "move_to_end")]
+struct OrderedMoveToEndArgs {
+    key: Value,
+    #[from_args(default = Value::Bool(true))]
+    last: Value,
 }
 
 // Custom serde implementation for Dict.

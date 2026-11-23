@@ -61,7 +61,7 @@ IMPLEMENTED = [
             'z85encode',
         ],
     ),
-    ('collections', collections, ['Counter', 'defaultdict', 'deque', 'namedtuple']),
+    ('collections', collections, ['Counter', 'OrderedDict', 'defaultdict', 'deque', 'namedtuple']),
     ('copy', copy, ['copy', 'deepcopy']),
     (
         'csv',
