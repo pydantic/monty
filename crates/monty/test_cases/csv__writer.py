@@ -1,5 +1,6 @@
 import csv
 import sys
+from collections import namedtuple
 
 is_monty = sys.platform == 'monty'
 
@@ -228,7 +229,9 @@ assert writer.writerow(['a', 'b']) == 5
 assert writer.writerows([['c'], ['d']]) is None
 assert writer.writerows([]) is None
 assert writer.writerows(x for x in [['e']]) is None
-assert sink.lines == ['a,b\r\n', 'c\r\n', 'd\r\n', 'e\r\n']
+Row = namedtuple('Row', 'left right')
+assert writer.writerow(Row('f', 'g')) == 5
+assert sink.lines == ['a,b\r\n', 'c\r\n', 'd\r\n', 'e\r\n', 'f,g\r\n']
 # Each row is written as it arrives, so the rows before a failing one stay written.
 sink = Sink()
 writer = csv.writer(sink)

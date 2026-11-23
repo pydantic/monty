@@ -505,23 +505,21 @@ fn descend_into_dirnames<'h>(
     };
     // Each name is copied, then joined onto the directory and spelled for its
     // step; charged first, since a list can repeat one long name many times.
-    let mut total = 0_usize;
-    for item in list.as_slice() {
-        let Some(name) = value_as_path_str(item, vm.heap, vm.interns) else {
-            return Err(ExcType::type_error(format!(
-                "join() argument must be str, bytes, or os.PathLike object, not '{}'",
-                item.py_type_name_heap(vm.heap, vm.interns)
-            )));
-        };
-        let step = name.len() * 3 + relative.len() + spelled.len() + size_of::<WalkStep>();
-        total = total.saturating_add(step);
-    }
+    let items = list.items();
+    let total = items
+        .map(|item| {
+            let Some(name) = value_as_path_str(item, vm.heap, vm.interns) else {
+                return Err(ExcType::type_error(format!(
+                    "join() argument must be str, bytes, or os.PathLike object, not '{}'",
+                    item.py_type_name_heap(vm.heap, vm.interns)
+                )));
+            };
+            Ok(name.len() * 3 + relative.len() + spelled.len() + size_of::<WalkStep>())
+        })
+        .try_fold(0_usize, |total, size| size.map(|size| total.saturating_add(size)))?;
     vm.heap.tracker.check_allocation(total)?;
-    let names: Vec<String> = list
-        .as_slice()
-        .iter()
-        .filter_map(|item| value_as_path_str(item, vm.heap, vm.interns))
-        .map(str::to_owned)
+    let names: Vec<String> = items
+        .filter_map(|item| value_as_path_str(item, vm.heap, vm.interns).map(str::to_owned))
         .collect();
     let walk = walk_mut(this, vm);
     for name in names.iter().rev() {
