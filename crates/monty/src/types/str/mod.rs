@@ -1,5 +1,6 @@
 //! Python string views, operations and allocation.
 
+mod access_cache;
 mod fast_offsets;
 mod heap_str;
 mod inline_str;
@@ -7,6 +8,7 @@ mod iterator;
 
 use std::{fmt::Write, str};
 
+pub(crate) use access_cache::AccessCache;
 pub(crate) use heap_str::HeapStr;
 pub(crate) use inline_str::InlineStr;
 pub(crate) use iterator::StringIterator;
@@ -41,6 +43,10 @@ use crate::{
     },
     value::{EitherStr, VALUE_SIZE, Value, eq_str},
 };
+
+/// One-off slices and searches on short strings pay for a cursor update they never reuse.
+/// A cutoff in UTF-8 bytes bounds the direct scan for every character width.
+const SHORT_SCAN_BYTES: usize = 64;
 
 /// A string view that preserves Python identity.
 ///
@@ -106,6 +112,14 @@ impl<'h> PyStr<'h> {
             Value::InlineString(text) => Some(Self::Inline(*text)),
             Value::Ref(id) => vm.heap.read_as(*id).map(Self::Heap),
             _ => None,
+        }
+    }
+
+    fn access_cache<'s>(&'s self, vm: &'s VM<'h>) -> Option<&'s AccessCache> {
+        match self {
+            Self::Heap(string) => Some(&string.get(vm.heap).access_cache),
+            Self::Interned(id) => vm.interns.str_access_cache(*id, &vm.heap.tracker),
+            Self::Inline(_) => None,
         }
     }
 
@@ -184,8 +198,36 @@ impl<'h> PyStr<'h> {
         if matches!(self, Self::Inline(_)) {
             return Ok(text.chars().nth(index));
         }
-        let byte = fast_offsets::byte_offset(text, characters, None, index, || vm.heap.tracker.check_time())?;
+        let byte = self.byte_offset(text, index, characters, None, vm)?;
         Ok(text[byte..].chars().next())
+    }
+
+    /// Resolves a Unicode boundary, optionally starting from a bound computed by the same operation.
+    fn byte_offset(
+        &self,
+        text: &str,
+        index: usize,
+        characters: usize,
+        hint: Option<Anchor>,
+        vm: &VM<'h>,
+    ) -> RunResult<usize> {
+        if index == 0 {
+            return Ok(0);
+        }
+        if index == characters {
+            return Ok(text.len());
+        }
+        if text.len() <= SHORT_SCAN_BYTES {
+            // The character index is a byte offset if just its prefix is ASCII.
+            if text.as_bytes()[..index].is_ascii() {
+                return Ok(index);
+            }
+        } else if let Some(cache) = self.access_cache(vm) {
+            return Ok(cache.byte_offset(text, index, characters, hint, &vm.heap.tracker)?);
+        }
+        Ok(fast_offsets::byte_offset(text, characters, hint, index, || {
+            vm.heap.tracker.check_time()
+        })?)
     }
 
     /// Converts normalized character bounds to bytes and retains the start coordinate for search results.
@@ -207,15 +249,14 @@ impl<'h> PyStr<'h> {
                 end,
             ));
         }
-        let check_time = || vm.heap.tracker.check_time();
-        let start_byte = fast_offsets::byte_offset(text, characters, None, start, check_time)?;
+        let start_byte = self.byte_offset(text, start, characters, None, vm)?;
         let start = Anchor {
             character: start,
             byte: start_byte,
         };
         // Nearby bounds can reuse the start lookup. A distant end may be closer to a string endpoint.
         let anchor = (end - start.character <= end.min(characters - end)).then_some(start);
-        let end_byte = fast_offsets::byte_offset(text, characters, anchor, end, check_time)?;
+        let end_byte = self.byte_offset(text, end, characters, anchor, vm)?;
         Ok((start, end_byte))
     }
 
@@ -227,6 +268,10 @@ impl<'h> PyStr<'h> {
             return Ok(start.character);
         }
         let text = self.as_str(vm);
+        if text.len() <= SHORT_SCAN_BYTES {
+            // The search already resolved its start, so count only the gap to the match.
+            return Ok(start.character + text[start.byte..byte_offset].chars().count());
+        }
         let check_time = || vm.heap.tracker.check_time();
         let ascii = match self {
             Self::Heap(value) => value.get(vm.heap).checked_is_ascii(check_time)?,
@@ -235,9 +280,17 @@ impl<'h> PyStr<'h> {
         if ascii {
             return Ok(byte_offset);
         }
-        // The shorter suffix saves work only when we can subtract it from a cached total.
+        let characters = self.known_char_len(vm);
+        if byte_offset == text.len()
+            && let Some(characters) = characters
+        {
+            return Ok(characters);
+        }
+        if let Some(cache) = self.access_cache(vm) {
+            return Ok(cache.char_offset(text, byte_offset, characters, Some(start), &vm.heap.tracker)?);
+        }
         if text.len() - byte_offset < byte_offset - start.byte
-            && let Some(characters) = self.known_char_len(vm)
+            && let Some(characters) = characters
         {
             return Ok(characters - fast_offsets::count_chars(&text[byte_offset..], check_time)?);
         }
@@ -2195,6 +2248,45 @@ mod tests {
     }
 
     #[test]
+    fn inline_ranges_use_byte_offsets_through_the_ascii_prefix() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            let text = PyStr::Inline(InlineStr::new("abc🐍x").unwrap());
+            assert!(text.access_cache(vm).is_none());
+            let (start, end) = text.byte_range(0, 3, vm).unwrap();
+            assert_eq!((start.byte, end), (0, 3));
+            let (start, end) = text.byte_range(3, 4, vm).unwrap();
+            assert_eq!((start.byte, end), (3, 7));
+        });
+    }
+
+    #[test]
+    fn interned_offsets_without_cache_memory_respect_deadlines() {
+        let limits = monty_types::ResourceLimits::default()
+            .max_memory(0)
+            .max_feed_duration(Duration::ZERO);
+        let mut heap = Heap::new(16, ResourceTracker::new(limits));
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let id = crate::intern::CompileInterns::direct(&mut tables.interns).intern(&"é".repeat(200_000));
+        heap.tracker.on_execution_start();
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            let text = PyStr::Interned(id);
+            let origin = Anchor { character: 0, byte: 0 };
+            assert_eq!(text.character_at(3, vm).unwrap(), Some('é'));
+            assert!(text.character_at(100_000, vm).is_err());
+            assert_eq!(text.char_index_of(8, origin, vm).unwrap(), 4);
+            assert_eq!(text.char_index_of(399_998, origin, vm).unwrap(), 199_999);
+            assert_eq!(text.char_index_of(400_000, origin, vm).unwrap(), 200_000);
+            assert!(text.char_index_of(200_000, origin, vm).is_err());
+        });
+    }
+
+    #[test]
     fn search_offsets_reuse_known_boundaries() {
         let limits = monty_types::ResourceLimits::default().max_feed_duration(Duration::ZERO);
         let mut heap = Heap::new(16, ResourceTracker::new(limits));
@@ -2208,7 +2300,10 @@ mod tests {
             let text = PyStr::from_value(value, vm).unwrap();
             assert!(!text.is_ascii(vm));
             let origin = Anchor { character: 0, byte: 0 };
+            assert!(text.char_index_of(70_000, origin, vm).is_err());
             assert_eq!(text.char_index_of(60_000, origin, vm).unwrap(), 30_000);
+            // The next result is more than a deadline chunk from the origin, but close to the cursor.
+            assert_eq!(text.char_index_of(70_000, origin, vm).unwrap(), 35_000);
             assert_eq!(text.known_char_len(vm), None);
 
             let value = allocate_string_on_heap("é".repeat(80_000), vm.heap);
@@ -2267,7 +2362,7 @@ mod tests {
     fn heap_string_metadata_survives_text_only_serialization() {
         assert_eq!(
             size_of::<HeapStr>(),
-            size_of::<(Box<str>, Cell<Option<HashValue>>, Cell<Option<bool>>)>()
+            size_of::<(Box<str>, Cell<Option<HashValue>>, Cell<usize>, AccessCache)>()
         );
         for text in ["", "abcdefghijklmnop", "aé🐍e\u{301}", "éééééééééééééééé"] {
             let value = HeapStr::new(text.into());

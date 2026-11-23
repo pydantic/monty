@@ -352,7 +352,7 @@ skip = [
     "crates/monty-bench/benches/data/string_corpus.json",
 
     "crates/monty-typeshed/vendor/typeshed/stdlib/*",
-    "crates/monty/src/types/str.rs",
+    "crates/monty/src/types/str/mod.rs",
 ]
 
 [tool.inline-snapshot]
