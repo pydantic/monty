@@ -291,7 +291,7 @@ fn sequence_items(value: &Value, vm: &VM<'_>) -> Option<Vec<Value>> {
     let Value::Ref(id) = value else { return None };
     let items = match vm.heap.get(*id) {
         HeapData::Tuple(tuple) => tuple.as_slice(),
-        HeapData::List(list) => list.as_slice(),
+        HeapData::List(list) => return Some(list.items().cloned(vm.heap).collect()),
         HeapData::NamedTuple(tuple) => tuple.items(),
         _ => return None,
     };

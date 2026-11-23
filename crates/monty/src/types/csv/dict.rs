@@ -433,8 +433,12 @@ impl RowSpec {
             && match fieldnames {
                 Value::Ref(id) => match vm.heap.get(*id) {
                     HeapData::List(list) => {
-                        let items = list.as_slice();
-                        items.len() == self.names.len() && items.iter().zip(&self.names).all(|(a, b)| a.is(b))
+                        list.len() == self.names.len()
+                            && self
+                                .names
+                                .iter()
+                                .enumerate()
+                                .all(|(i, name)| list.items().with_item(i, |item| item.is(name)))
                     }
                     HeapData::Tuple(_)
                     | HeapData::Str(_)
@@ -639,13 +643,7 @@ fn next_row(reader: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
 fn fieldnames_items(fieldnames: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
     match fieldnames {
         Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::List(list) => {
-                let items = list.as_slice();
-                vm.heap
-                    .tracker
-                    .check_allocation(items.len().saturating_mul(VALUE_SIZE))?;
-                Ok(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
-            }
+            HeapData::List(list) => list.items().to_vec(vm.heap),
             _ => collect_iterable(fieldnames, vm),
         },
         _ => collect_iterable(fieldnames, vm),

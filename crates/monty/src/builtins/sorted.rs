@@ -9,25 +9,25 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData},
     resource_checks::check_estimated_size,
     sorting::parse_and_sort,
-    types::{List, iter::collect_owned_iterable},
+    types::{List, iter::collect_owned_iterable, sequence::SequenceItems},
     value::{VALUE_SIZE, Value},
 };
 
-fn clone_slice_with_checks(
-    slice: &[Value],
+fn clone_items_with_checks(
+    items: SequenceItems<'_>,
     tracker: &ResourceTracker,
     heap: &Heap,
 ) -> Result<Vec<Value>, Box<(Vec<Value>, RunError)>> {
-    let len = slice.len();
+    let len = items.len();
     if let Err(e) = check_estimated_size(len.saturating_mul(VALUE_SIZE), tracker) {
         return Err(Box::new((Vec::new(), e.into())));
     }
     let mut cloned = Vec::with_capacity(len);
-    for (i, v) in slice.iter().enumerate() {
+    for i in 0..len {
         if let Err(e) = tracker.check_time_every(i) {
             return Err(Box::new((cloned, e.into())));
         }
-        cloned.push(v.clone_with_heap(heap));
+        cloned.push(items.with_item(i, |item| item.clone_with_heap(heap)));
     }
     Ok(cloned)
 }
@@ -52,15 +52,8 @@ pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     let iterable = pos_iter.next().expect("checked pos_count == 1");
 
-    let items = if let Value::Ref(id) = &iterable
-        && let slice = match vm.heap.get(*id) {
-            HeapData::List(list) => Some(list.as_slice()),
-            HeapData::Tuple(tuple) => Some(tuple.as_slice()),
-            _ => None,
-        }
-        && let Some(slice) = slice
-    {
-        let res = clone_slice_with_checks(slice, &vm.heap.tracker, vm.heap);
+    let items = if let Some(items) = SequenceItems::list_or_tuple(&iterable, vm.heap) {
+        let res = clone_items_with_checks(items, &vm.heap.tracker, vm.heap);
         iterable.drop_with(vm);
         match res {
             Ok(items) => items,

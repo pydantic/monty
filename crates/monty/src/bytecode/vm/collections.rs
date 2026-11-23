@@ -4,12 +4,12 @@ use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
     intern::StringId,
     resource_checks::check_estimated_size,
     types::{
         Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
-        instance::instance_defines_iter, slice::value_to_option_i64,
+        instance::instance_defines_iter, sequence::SequenceItems, slice::value_to_option_i64,
     },
     value::{VALUE_SIZE, Value},
 };
@@ -141,25 +141,14 @@ impl VM<'_> {
             });
         }
 
-        {
-            let copied_items: Vec<Value> = collect_iterable(iterable, this)?;
-            defer_drop_mut!(copied_items, this);
-
-            // Check if any copied items are refs (for updating contains_refs)
-            let has_refs = copied_items.iter().any(|v| matches!(v, Value::Ref(_)));
-
-            // Extend the list
-            if let Value::Ref(id) = list_ref {
-                let HeapReadOutput::List(list) = this.heap.read(*id) else {
-                    panic!("list_extend: expected List on heap");
-                };
-                let list = list.get_mut(this.heap);
-                // Update contains_refs before extending
-                if has_refs {
-                    list.set_contains_refs();
-                }
-                list.as_vec_mut().append(copied_items);
-            }
+        let copied_items: Vec<Value> = collect_iterable(iterable, this)?;
+        if let Value::Ref(id) = list_ref {
+            let HeapReadOutput::List(list) = this.heap.read(*id) else {
+                panic!("list_extend: expected List on heap");
+            };
+            list.get_mut(this.heap).extend_owned(copied_items);
+        } else {
+            copied_items.drop_with(this);
         }
 
         // Push list_ref back on the stack (don't drop it)
@@ -183,7 +172,7 @@ impl VM<'_> {
         let HeapData::List(list) = this.heap.get(*id) else {
             return Err(RunError::internal("ListToTuple: expected list"));
         };
-        let items = list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect();
+        let items = list.items().cloned(this.heap).collect();
         let value = allocate_tuple(items, this.heap);
         this.push(value);
         Ok(())
@@ -489,7 +478,7 @@ impl VM<'_> {
         defer_drop!(value, this);
 
         // Fast path: tuple, list, push onto stack without a temporary vector.
-        if let Some(items) = exact_sequence_items(value, this.heap) {
+        if let Some(items) = SequenceItems::list_or_tuple(value, this.heap) {
             if items.len() != count {
                 return Err(ExcType::unpack_size_error(count, items.len()));
             }
@@ -500,8 +489,7 @@ impl VM<'_> {
                     .check_allocation(capacity.saturating_mul(VALUE_SIZE))?;
                 this.stack.reserve_exact(count);
             }
-            this.stack
-                .extend(items.iter().rev().map(|item| item.clone_with_heap(this.heap)));
+            this.stack.extend(items.cloned(this.heap).rev());
             return Ok(());
         }
         let items = unpack_exact(value, count, this)?;
@@ -592,12 +580,11 @@ fn unpack_ex_too_few_error(min_needed: usize, actual: usize) -> RunError {
 /// endless iterable still fails.
 pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
     // Fast path: tuple, list; unpack without iterator.
-    if let Some(items) = exact_sequence_items(value, vm.heap) {
+    if let Some(items) = SequenceItems::list_or_tuple(value, vm.heap) {
         if items.len() != count {
             return Err(ExcType::unpack_size_error(count, items.len()));
         }
-        vm.heap.tracker.check_allocation(count.saturating_mul(VALUE_SIZE))?;
-        return Ok(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect());
+        return items.to_vec(vm.heap);
     }
     if !value.py_is_iterable(vm) {
         return Err(unpack_type_error(value, vm));
@@ -630,18 +617,6 @@ pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunR
         };
         items.drop_with(vm);
         Err(err)
-    }
-}
-
-/// Returns borrowed items for built-in tuples and lists so unpacking can bypass the iterator protocol.
-fn exact_sequence_items<'a>(value: &Value, heap: &'a Heap) -> Option<&'a [Value]> {
-    let Value::Ref(id) = value else {
-        return None;
-    };
-    match heap.get(*id) {
-        HeapData::Tuple(tuple) => Some(tuple.as_slice()),
-        HeapData::List(list) => Some(list.as_slice()),
-        _ => None,
     }
 }
 

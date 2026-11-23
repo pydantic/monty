@@ -25,9 +25,10 @@ use crate::{
         csv::dialect::{Dialect, Quoting},
         instance,
         iter::collect_owned_iterable,
+        sequence::SequenceItems,
         str::allocate_string,
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{EitherStr, Value},
 };
 
 /// A `_csv.writer`: the target, its `write` callable and the dialect.
@@ -401,17 +402,8 @@ fn is_file(value: &Value, vm: &VM<'_>) -> bool {
 /// `_csv.Error`, unlike `writerows`' plain `TypeError`. A `list` or `tuple`, the usual row,
 /// is copied without an iterator.
 fn row_items(row: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
-    let direct = match row {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::List(list) => Some(list.as_slice()),
-            HeapData::Tuple(tuple) => Some(tuple.as_slice()),
-            _ => None,
-        },
-        _ => None,
-    };
-    if let Some(items) = direct {
-        vm.heap.tracker.check_allocation(items.len() * VALUE_SIZE)?;
-        Ok(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
+    if let Some(items) = SequenceItems::list_or_tuple(row, vm.heap) {
+        items.to_vec(vm.heap)
     } else {
         let iterator = match row.py_iter(vm).and_then(|call| call.require_synchronous(vm)) {
             Ok(iterator) => iterator,
