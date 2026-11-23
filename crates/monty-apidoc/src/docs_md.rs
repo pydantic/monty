@@ -267,7 +267,7 @@ fn split_definition(line: &str) -> Option<(&str, &str)> {
     let close = rest.find("]:")?;
     let mut tokens = rest[close + 2..].trim().splitn(2, char::is_whitespace);
     let target = tokens.next().filter(|target| !target.is_empty())?;
-    let title = tokens.next().map(str::trim_start).unwrap_or_default();
+    let title = tokens.next().map_or_default(str::trim_start);
     let is_title = title.is_empty() || title.starts_with(['"', '\'', '(']);
     is_title.then_some((&rest[..close], target))
 }

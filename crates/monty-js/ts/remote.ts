@@ -1,12 +1,12 @@
 // The remote pool: `MontyRemote` holds one HTTP/2 connection to a gRPC
 // server and opens a session stream per checkout instead of spawning local
-// `monty subprocess` children. Dialing, framing, auto-resume after a server
+// `monty subprocess` workers. Dialing, framing, auto-resume after a server
 // drain and the per-turn watchdog all live in the native `monty-pool` crate
 // (shared with pydantic_monty's AsyncMontyRemote); sessions are the same
 // `MontySession` a local pool hands out.
 
 import { NativePool } from '../native-addon.js'
-import { type CheckoutOptions, graceMs, nativeCheckoutOptions } from './pool.js'
+import { type CheckoutOptions, graceMs, nativeCheckoutOptions, startPool } from './pool.js'
 import { enterSession, HostModules, MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
 
@@ -26,14 +26,21 @@ export interface MontyRemoteOptions {
    * the stream but never answers blocks the turn until the far end ends it.
    * It also bounds opening the stream, including the server's admission (30s
    * when `null`). `installDependencies` is a turn too, and a real install can exceed 10s.
-   * CPU-mode servers require a finite `requestTimeout`.
+   * CPU-mode servers require a finite `requestTimeout`, otherwise checkout
+   * throws `MontyConfigurationError`.
+   * This deadline does not set the sleep cap. System sleeps return normally
+   * after at most `sleepSystemMax` (default ten seconds), even when sandbox
+   * code asks for longer, unless the capped delay would exceed `maxTotalSleepSecs`.
+   * Set `osPolicy.sleepSystemMax: Infinity` on checkout
+   * to request uncapped sleeps, subject to the server's policy.
    */
   requestTimeout?: number | null
   /**
    * Called at each checkout for extra request metadata on that session's
    * stream, e.g. a short-lived auth token: lowercase ASCII names, ASCII
    * values. May return a promise. A resume after a server shutdown reuses
-   * the metadata of the original checkout.
+   * the metadata of the original checkout. With `preWarm` it is also called
+   * for each session the pool opens ahead of a checkout.
    */
   metadata?: () => Record<string, string> | Promise<Record<string, string>>
   /**
@@ -55,6 +62,28 @@ export interface MontyRemoteOptions {
    * sessions can be resumed; see `MontyShutdown`.
    */
   autoResume?: boolean
+  /**
+   * Let a call to an `async` host function that the sandbox does not await at
+   * once go to the host without suspending the worker, saving a network round
+   * trip per call; errors from such calls are raised at the `await`. On by
+   * default, unlike the subprocess `Monty`. See [starting calls without waiting](https://pydantic.dev/docs/monty/host-functions#starting-calls-without-waiting).
+   */
+  streamAsyncCalls?: boolean
+  /**
+   * Sessions kept open and ready (default 0), so a checkout takes one instead
+   * of opening a stream; each one taken is replaced in the background. They
+   * share `maxProcesses` with checked-out sessions, and a larger `preWarm`
+   * rejects `create()`. A checkout takes one only
+   * if `metadata` returned the same value for both; otherwise the ready
+   * sessions are closed and the checkout opens its own.
+   */
+  preWarm?: number
+  /**
+   * Whether `create()` waits for the `preWarm` sessions to open, rejecting if
+   * one cannot (default `true`). `false` opens them in the background, where
+   * a failed open is retried with a backoff and not raised.
+   */
+  preWarmWait?: boolean
 }
 
 /** Options for [`MontyRemote.checkout`]: the local options plus the server's session settings. */
@@ -71,8 +100,8 @@ export interface RemoteCheckoutOptions extends CheckoutOptions {
 /**
  * An async pool of remote `monty` workers reached over gRPC — the intended
  * peer is `monty-server`. The pool keeps one HTTP/2 connection to `url` and
- * each checkout opens a session stream on it; streams are never pre-warmed
- * or reused. The transport provides no isolation of its own: the server is
+ * each checkout opens a session stream on it, or takes one `preWarm` keeps
+ * ready; streams are never reused. The transport provides no isolation of its own: the server is
  * responsible for sandboxing. Also exported as `MontyWebsocket`, its deprecated former name.
  *
  * ```ts
@@ -96,7 +125,7 @@ export class MontyRemote {
    * Creates the pool. `url` is the server's `http://` or `https://` URL
    * (`ws://` and `wss://` are read as those two); an `https://` certificate
    * is verified against the operating system's trust store. Nothing is
-   * dialed until the first checkout.
+   * dialed until the first checkout, unless `preWarm` opens sessions here.
    */
   static async create(url: string, options: MontyRemoteOptions = {}): Promise<MontyRemote> {
     if (options.connectHeaders !== undefined && options.metadata !== undefined) {
@@ -118,18 +147,25 @@ export class MontyRemote {
       ...graceMs('feedDurationLimitGraceMs', options.feedDurationLimitGrace),
       ...graceMs('turnDurationLimitGraceMs', options.turnDurationLimitGrace),
       autoResume: options.autoResume ?? true,
+      streamAsyncCalls: options.streamAsyncCalls ?? true,
+      ...(options.preWarm !== undefined ? { preWarm: options.preWarm } : {}),
+      ...(options.preWarmWait !== undefined ? { preWarmWait: options.preWarmWait } : {}),
     })
-    await native.start()
+    // the pool calls this itself for each session it pre-warms
+    const preWarmMetadata =
+      metadata !== undefined && (options.preWarm ?? 0) > 0 ? async () => headerList(await metadata()) : undefined
+    await startPool(native, preWarmMetadata)
     return new MontyRemote(native, metadata)
   }
 
   /**
    * Opens a session stream to the server and creates a REPL session there.
-   * Rejects with a plain `Error` when the connection fails;
+   * Rejects with `MontyConnectError` when the connection fails;
    * `MontyRefusedError` when the server refuses the stream, e.g. one at
-   * capacity; `MontyRuntimeError` when the server refuses the session; and
-   * `MontyDisconnectError` / `MontyShutdown` when it is lost while being
-   * created. Release the stream with `session.close()` (or `await using`).
+   * capacity; and `MontyDisconnectError` / `MontyShutdown` when it is lost
+   * while being created. A server refusing the session's configuration
+   * fails its first request with `MontyConfigurationError`. Release the
+   * stream with `session.close()` (or `await using`).
    */
   async checkout(options: RemoteCheckoutOptions = {}): Promise<MontySession> {
     if (this.closing !== undefined) {

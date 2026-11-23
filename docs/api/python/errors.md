@@ -21,6 +21,8 @@ answering a snapshot with an exception.
             - MontyCrashedError
             - MontyDisconnectError
             - MontyRefusedError
+            - MontyConnectError
+            - MontyConfigurationError
             - MontyShutdown
             - Frame
             - ExcType

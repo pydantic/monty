@@ -99,10 +99,7 @@ pub(crate) fn task_call_method<'h>(
     let Some(name) = attr.static_string(vm.interns) else {
         args.drop_with(vm);
 
-        return Err(ExcType::attribute_error(
-            Type::Task.name(vm.heap, vm.interns),
-            attr.as_str(vm.interns),
-        ));
+        return Err(ExcType::attribute_error(Type::Task.name(), attr.as_str(vm.interns)));
     };
 
     let value = match name {
@@ -182,10 +179,7 @@ pub(crate) fn task_call_method<'h>(
         }
         _ => {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(
-                Type::Task.name(vm.heap, vm.interns),
-                attr.as_str(vm.interns),
-            ));
+            return Err(ExcType::attribute_error(Type::Task.name(), attr.as_str(vm.interns)));
         }
     };
     Ok(CallResult::Value(value))

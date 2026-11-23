@@ -1,7 +1,15 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 
-import { MontyError, MontySyntaxError, MontyRuntimeError, MontyTypingError } from '@pydantic/monty'
+import {
+  MontyError,
+  MontySyntaxError,
+  MontyRuntimeError,
+  MontyTypingError,
+  MontyDisconnectError,
+  MontyConnectError,
+  MontyRefusedError,
+} from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { run } = setupPool()
@@ -9,6 +17,31 @@ const { run } = setupPool()
 const isRuntimeError = { instanceOf: MontyRuntimeError }
 const isSyntaxError = { instanceOf: MontySyntaxError }
 const isTypingError = { instanceOf: MontyTypingError }
+
+test('remote policy reasons do not occupy Error.cause', () => {
+  const disconnected = new MontyDisconnectError('connection closed', { remoteCause: 'idle_timeout' })
+  const refused = new MontyRefusedError('session refused', { remoteCause: 'capacity' })
+  const connect = new MontyConnectError('connection failed', { remoteCause: 'protocol_violation' })
+  t.is(disconnected.remoteCause, 'idle_timeout')
+  t.is(refused.remoteCause, 'capacity')
+  t.is(connect.remoteCause, 'protocol_violation')
+  for (const error of [disconnected, refused, connect]) {
+    t.is(Object.hasOwn(error, 'cause'), false)
+    const cause = new Error('transport failure')
+    error.cause = cause
+    t.is(error.cause, cause)
+  }
+  t.is(disconnected.message, 'connection closed')
+  t.is(refused.message, 'session refused')
+})
+
+test('MontyRefusedError derives retryable from the status code by default', () => {
+  t.is(new MontyRefusedError('refused', { statusCode: 'RESOURCE_EXHAUSTED' }).retryable, true)
+  t.is(new MontyRefusedError('refused', { statusCode: 'UNAVAILABLE' }).retryable, true)
+  t.is(new MontyRefusedError('refused', { statusCode: 'UNAUTHENTICATED' }).retryable, false)
+  t.is(new MontyRefusedError('refused').retryable, false)
+  t.is(new MontyRefusedError('refused', { statusCode: 'UNAVAILABLE', retryable: false }).retryable, false)
+})
 
 // =============================================================================
 // MontyRuntimeError tests

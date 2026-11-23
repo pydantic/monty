@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use monty_types::{
-    CodeLoc, ExcData, JsonErrorData, MontyException, SourceRange, StackFrame, UnicodeErrorData, UnicodeErrorObject,
+    CodeLoc, ExcData, ExcType, JsonErrorData, MontyException, SourceRange, StackFrame, UnicodeErrorData,
+    UnicodeErrorObject,
 };
 
 use crate::{convert::ProtoConvertError, pb};
@@ -25,29 +26,51 @@ impl TryFrom<pb::RaisedException> for MontyException {
     type Error = ProtoConvertError;
 
     fn try_from(err: pb::RaisedException) -> Result<Self, ProtoConvertError> {
-        let exc_type = err
-            .exc_type
-            .parse()
-            .map_err(|_| ProtoConvertError::UnknownExcType(err.exc_type))?;
+        let (exc_type, message) = exc_type_from_wire(err.exc_type, err.message, |_| Ok::<_, ProtoConvertError>(()))?;
         let traceback = err
             .traceback
             .into_iter()
             .map(StackFrame::try_from)
             .collect::<Result<Vec<_>, _>>()?;
-        // The payload comes from a possibly-compromised child, so it is
+        // The payload comes from an untrusted peer, so it is
         // dropped rather than trusted when malformed (see `sanitize_unicode_data`);
         // the worst a bogus-but-well-formed payload can do is put odd
-        // attribute values on a host-side exception.
+        // attribute values on the receiver's exception.
         let data = match err.data.and_then(|data| data.kind) {
             Some(pb::exc_data::Kind::Unicode(unicode)) => {
                 sanitize_unicode_data(unicode).map_or(ExcData::None, ExcData::Unicode)
             }
             Some(pb::exc_data::Kind::Json(json)) => {
-                sanitize_json_data(json, err.message.as_deref()).map_or(ExcData::None, ExcData::Json)
+                sanitize_json_data(json, message.as_deref()).map_or(ExcData::None, ExcData::Json)
             }
             None => ExcData::None,
         };
-        Ok(Self::with_traceback(exc_type, err.message, traceback).with_data(data))
+        Ok(Self::with_traceback(exc_type, message, traceback).with_data(data))
+    }
+}
+
+/// Resolves a wire exception name, falling back to `Exception` for one this build does not know.
+///
+/// A newer peer can send a type this build predates, and failing the frame would end the session.
+/// The fallback's message leads with the original name; `charge` pays for that new message first.
+pub(crate) fn exc_type_from_wire<E>(
+    name: String,
+    message: Option<String>,
+    charge: impl FnOnce(usize) -> Result<(), E>,
+) -> Result<(ExcType, Option<String>), E> {
+    if let Ok(exc_type) = name.parse() {
+        Ok((exc_type, message))
+    } else if let Some(message) = message {
+        let len = name.len().saturating_add(2).saturating_add(message.len());
+        charge(len)?;
+        // Sized once: `format!` would grow by doubling past what was charged.
+        let mut combined = String::with_capacity(len);
+        combined.push_str(&name);
+        combined.push_str(": ");
+        combined.push_str(&message);
+        Ok((ExcType::Exception, Some(combined)))
+    } else {
+        Ok((ExcType::Exception, Some(name)))
     }
 }
 
@@ -80,8 +103,8 @@ impl From<&JsonErrorData> for pb::JsonErrorData {
 }
 
 /// Validates an untrusted wire `JsonErrorData`, returning `None` when any
-/// field is out of range. As with [`sanitize_unicode_data`], size caps stop a
-/// compromised child pinning large amounts of parent memory: `msg` normally
+/// field is out of range. As with [`sanitize_unicode_data`], size caps stop an
+/// untrusted peer pinning large amounts of the receiver's memory: `msg` normally
 /// prefixes the exception's `message`, so it may be no longer (a TOML key can make
 /// both long), or [`JsonErrorData::MAX_DOC_LEN`] without a message; legitimate
 /// senders drop `doc` above that cap.
@@ -139,8 +162,8 @@ impl From<&UnicodeErrorData> for pb::UnicodeErrorData {
 /// field is missing or out of range. Enforces the same size cap the sender
 /// applies to `object` ([`UnicodeErrorData::MAX_OBJECT_LEN`]) on all three
 /// string fields — legitimate senders only ever fill `encoding`/`reason` with
-/// short static codec names and reason phrases — so a compromised child
-/// cannot pin large amounts of parent memory through an exception payload.
+/// short static codec names and reason phrases — so an untrusted peer
+/// cannot pin large amounts of the receiver's memory through an exception payload.
 fn sanitize_unicode_data(data: pb::UnicodeErrorData) -> Option<Box<UnicodeErrorData>> {
     // Real `encoding`/`reason` values are tiny ("utf-8", "invalid start
     // byte", ...), so anything near the object cap is bogus; reusing that cap

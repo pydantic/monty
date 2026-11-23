@@ -167,6 +167,7 @@ pub(crate) fn feed_start_sync(
         checkout,
         instances,
         callback_context: _,
+        turn,
     } = args;
     let ctx = DriveContext::new(
         checkout,
@@ -182,7 +183,9 @@ pub(crate) fn feed_start_sync(
         ctx,
         turn_fn(move |c, p| {
             Box::pin(async move {
-                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                // every call suspends, so each one reaches a snapshot
+                c.set_async_functions(None);
+                c.feed_with(code, inputs, mounts, cwd.as_deref(), skip_type_check, turn, p)
                     .await
             })
         }),
@@ -209,6 +212,7 @@ pub(crate) fn feed_start_async(
         checkout,
         instances,
         callback_context: _,
+        turn,
     } = args;
     let ctx = DriveContext::new(
         checkout,
@@ -224,7 +228,9 @@ pub(crate) fn feed_start_async(
             ctx,
             turn_fn(move |c, p| {
                 Box::pin(async move {
-                    c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                    // every call suspends, so each one reaches a snapshot
+                    c.set_async_functions(None);
+                    c.feed_with(code, inputs, mounts, cwd.as_deref(), skip_type_check, turn, p)
                         .await
                 })
             }),
@@ -291,6 +297,7 @@ pub(crate) fn build_snapshot(
         )
         .map(Py::into_any),
         TurnEvent::FunctionCall {
+            traceparent: _,
             function_name,
             args,
             call_id,
@@ -329,6 +336,7 @@ pub(crate) fn build_snapshot(
             function_snapshot_py(py, ctx, call, is_async)
         }
         TurnEvent::NameLookup {
+            traceparent: _,
             name,
             object_id,
             position,
@@ -347,6 +355,7 @@ pub(crate) fn build_snapshot(
             }
         }
         TurnEvent::ResolveFutures {
+            traceparent: _,
             pending_call_ids,
             position,
         } => {
@@ -740,8 +749,7 @@ impl PyFunctionSnapshot {
                         .lock()
                         .await
                         .as_ref()
-                        .map(Checkout::callback_context)
-                        .unwrap_or_default()
+                        .map_or_default(Checkout::callback_context)
                 })
             })?;
             context.enter(py, &native)
@@ -917,8 +925,7 @@ impl PyAsyncFunctionSnapshot {
                 .lock()
                 .await
                 .as_ref()
-                .map(Checkout::callback_context)
-                .unwrap_or_default();
+                .map_or_default(Checkout::callback_context);
             let mut eager = false;
             // Dispatch inside the future: a coroutine's `into_future` needs the
             // asyncio task-locals that `future_into_py`'s scope establishes.
@@ -1162,8 +1169,7 @@ impl PyNameLookupSnapshot {
                         .lock()
                         .await
                         .as_ref()
-                        .map(Checkout::callback_context)
-                        .unwrap_or_default()
+                        .map_or_default(Checkout::callback_context)
                 })
             })?;
             context.enter(py, &native)
@@ -1243,8 +1249,7 @@ impl PyAsyncNameLookupSnapshot {
                 .lock()
                 .await
                 .as_ref()
-                .map(Checkout::callback_context)
-                .unwrap_or_default();
+                .map_or_default(Checkout::callback_context);
             let value = match Python::attach(|py| {
                 let _guard = context.enter(py, &native)?;
                 resolve_captured_name(py, &ctx, &name, object_id)

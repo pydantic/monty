@@ -23,8 +23,5 @@ test.each(['requestTimeout', 'checkoutTimeout', 'feedDurationLimitGrace', 'turnD
 test('component initialization failures reject pool creation', async () => {
   const error = await t.throwsAsync(() => createWorkerPool({}), { instanceOf: MontyCrashedError })
   t.false(error.timedOut)
-  t.is(
-    error.message,
-    'RuntimeError: worker initialization failed: component core module is missing: monty.component.core.wasm',
-  )
+  t.is(error.message, 'worker initialization failed: component core module is missing: monty.component.core.wasm')
 })

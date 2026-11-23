@@ -1,9 +1,9 @@
 # Exceptions
 
 Monty implements a fixed set of exception classes, listed below. Sandboxed
-code **cannot define new exception classes**: the `class` statement exists
-(see [classes.md](classes.md)) but classes cannot inherit, so there is no way
-to subclass `BaseException`/`Exception`. `raise` must therefore use one of
+code **cannot define new exception classes**: classes can inherit only from
+classes defined in Python and `object` (see [classes.md](classes.md#inheritance)), so there
+is no way to subclass `BaseException`/`Exception`. `raise` must therefore use one of
 these built-ins; `raise MyClass()` on a plain user class raises
 `TypeError: exceptions must derive from BaseException`, as in CPython.
 
@@ -12,7 +12,7 @@ these built-ins; `raise MyClass()` on a plain user class raises
 `BaseException`, `Exception`, `SystemExit`, `KeyboardInterrupt`,
 `ArithmeticError`, `OverflowError`, `ZeroDivisionError`, `LookupError`,
 `IndexError`, `KeyError`, `RuntimeError`, `NotImplementedError`,
-`RecursionError`, `AttributeError`, `FrozenInstanceError`, `NameError`,
+`RecursionError`, `AttributeError`, `NameError`,
 `UnboundLocalError`, `ValueError`, `UnicodeDecodeError`, `UnicodeEncodeError`,
 `ImportError`, `ModuleNotFoundError`, `OSError`, `FileNotFoundError`, `FileExistsError`,
 `IsADirectoryError`, `NotADirectoryError`, `PermissionError`,
@@ -21,7 +21,8 @@ these built-ins; `raise MyClass()` on a plain user class raises
 
 Module-specific: `json.JSONDecodeError` and `tomllib.TOMLDecodeError` (subclasses of `ValueError`),
 `re.PatternError` / `re.error`, `io.UnsupportedOperation` (catchable as
-both `OSError` and `ValueError`, matching CPython's dual parentage).
+both `OSError` and `ValueError`, matching CPython's dual parentage), and
+`dataclasses.FrozenInstanceError` (a subclass of `AttributeError`).
 
 ## Exception classes NOT implemented
 
@@ -65,7 +66,8 @@ not supported; passing more than one argument raises an internal error.
     `repr()` uses the generic single-message form instead.
 
 - The dotted exception classes — `json.JSONDecodeError`, `tomllib.TOMLDecodeError`, `re.PatternError`,
-    `binascii.Error`, `binascii.Incomplete`, `_csv.Error` — repr under their qualified name:
+    `binascii.Error`, `binascii.Incomplete`, `_csv.Error`, `statistics.StatisticsError` — repr under their qualified
+    name:
     `binascii.Error('bad')` where CPython gives `Error('bad')`.
     `type(exc).__name__` and `str(type(exc))` match CPython.
 
@@ -85,10 +87,9 @@ not supported; passing more than one argument raises an internal error.
 
 ## Custom subclasses
 
-User `class` definitions are supported, but classes cannot inherit
-(`class Foo(Exception):` raises `NotImplementedError: ... class inheritance and metaclasses`), so there is no way to
-create a new exception class inside
-the sandbox. Raising a plain user class instance (`raise MyClass()`) fails
+User `class` definitions are supported, but a class cannot derive from an
+exception type (`class Foo(Exception):` raises `TypeError: Monty does not support subclassing 'Exception': ...`),
+so there is no way to create a new exception class inside the sandbox. Raising a plain user class instance (`raise MyClass()`) fails
 with `TypeError: exceptions must derive from BaseException`. Define custom
 exception types on the host side if needed, or use the built-in subclass
 that best fits.

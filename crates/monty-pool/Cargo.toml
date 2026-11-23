@@ -9,7 +9,6 @@ authors = { workspace = true }
 description = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
-homepage = { workspace = true }
 repository = { workspace = true }
 
 [lib]
@@ -54,6 +53,8 @@ monty-proto = { workspace = true, features = ["grpc"] }
 bytes = { workspace = true }
 tokio-stream = { workspace = true }
 http = { workspace = true }
+httpdate = "1"
+tower = { version = "0.5", default-features = false, features = ["util"] }
 # `join_all` for concurrent worker teardown.
 futures-util = { workspace = true }
 # Pulled in only so the pool can install a process-level rustls `CryptoProvider`
@@ -66,15 +67,15 @@ num-traits = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 # Typed values used when recording attributes; version must match logfire's.
-opentelemetry = { version = "0.32", optional = true }
+opentelemetry = { workspace = true, optional = true }
 # Aggregated metrics cross language-extension boundaries as standard OTLP protobuf.
 opentelemetry-proto = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
 # Span construction and eager OTel context creation; versions must match Logfire.
 tracing = { version = "0.1", optional = true }
-tracing-opentelemetry = { version = "0.33", optional = true }
+tracing-opentelemetry = { version = "0.34", optional = true }
 # Host-neutral processors used by Python, Node, and third-party adapters.
-opentelemetry_sdk = { version = "0.32", optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
 
 # CPU supervision is Linux-only: `nix` reads the child's CPU clock without `unsafe`.
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -87,18 +88,19 @@ path = "tests/support/cpu_worker.rs"
 [dev-dependencies]
 serde_json = { workspace = true }
 cpu-time = { workspace = true }
+# Huge integers for the telemetry encoder's byte-cap tests.
+num-bigint = { workspace = true }
 # Snapshots of the error messages the pool reports to a host.
 insta = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
-# In-process scripted gRPC servers standing in for a remote child.
+# In-process scripted gRPC servers standing in for a remote worker.
 tonic = { workspace = true, features = ["server", "router"] }
 # A self-signed certificate for the server the trust-store test dials.
 rcgen = { workspace = true }
 tokio-stream = { workspace = true, features = ["net"] }
-tower = { version = "0.5", default-features = false }
 # In-memory exporters for the telemetry recorder's structural tests.
-opentelemetry_sdk = { version = "0.32", features = ["testing"] }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

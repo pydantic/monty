@@ -29,7 +29,7 @@ import {
   _montyVersion as montyVersion,
   _setTelemetryMetricsEnabled as setNativeMetricsEnabled,
 } from '../native-addon.js'
-import { setCallbackContextHandlers } from './callbackContext.js'
+import { remoteCallbackSpan, setCallbackContextHandlers } from './callbackContext.js'
 
 const OTEL_SCOPE = '@pydantic/monty'
 const OTEL_VERSION = montyVersion()
@@ -139,6 +139,9 @@ setCallbackContextHandlers({
       withCallbackContext(parent ?? undefined, () => callback(stream, text)),
     )
   },
+  bindStreamedCall(callback) {
+    return AsyncResource.bind((callId, parent) => withCallbackContext(parent ?? undefined, () => callback(callId)))
+  },
   run: withCallbackContext,
   span: callbackSpan,
 })
@@ -164,9 +167,20 @@ function withCallbackContext<T>(parent: string | undefined, callback: () => T): 
   }
 }
 
-/** Resolves a live suspension or print callback's parent to its host span. */
+/**
+ * Resolves a live suspension or print callback's parent to its host span: the span
+ * Monty recorded here, else the span a server named, which is all a host without a
+ * tracer can resolve. The key is `[<recorded>] [<traceparent>]`, space-separated.
+ */
 function callbackSpan(parent: string | undefined): Span | undefined {
-  return parent === undefined || spansDisabled ? undefined : spans.get(parent)?.span
+  if (parent === undefined) {
+    return undefined
+  }
+  const keys = parent.split(' ')
+  const recorded = spansDisabled
+    ? undefined
+    : keys.map((key) => spans.get(key)?.span).find((span) => span !== undefined)
+  return recorded ?? keys.map(remoteCallbackSpan).find((span) => span !== undefined)
 }
 
 /**

@@ -20,18 +20,47 @@ A remote peer may be CPython rather than a Monty sandbox; the transport does not
 The client sends the name to the server unchecked; what a profile means is the server's choice, and the `monty` worker
 ignores it.
 
+## Pre-warmed sessions
+
+`AsyncMontyRemote(url, pre_warm=2)` keeps two sessions open and ready, so a checkout takes one instead of opening a
+stream.
+`__aenter__` waits for them to open and raises if one cannot.
+`pre_warm_wait=False` opens them in the background instead: a failed open is not raised but retried with a backoff, and
+a checkout that finds none ready opens its own stream.
+Each one a checkout takes is replaced in the background.
+One checkout per session already opening waits for it; further concurrent checkouts open their own.
+They share `max_processes` with checked-out sessions, so `pre_warm` above it raises
+[`MontyConfigurationError`][pydantic_monty.MontyConfigurationError], and each is a session to the server from the moment
+it opens.
+`metadata` is called for each pre-warmed session as the pool opens it, from a pool thread without the caller's
+contextvars.
+A checkout takes a ready session only if its own `metadata` call returned the same value.
+Otherwise it closes the ready sessions unused and opens its own, so `pre_warm` helps only while `metadata` is stable.
+Leave it off when one pool's checkouts send different metadata, such as per-user credentials.
+
 ## Connection loss and shutdown
 
 [`MontyRefusedError`][pydantic_monty.MontyRefusedError] means the server refused to open the session's stream: at
 capacity, with no worker to serve it, or rejecting the caller; its `status_code`, `status_message` and `cause` say
-why, no session existed, and retrying is safe.
-It subclasses `MontyError`, not `RuntimeError`, so a retry loop around `checkout()` must catch it by name.
+why, and no session existed.
+`retryable` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not for credential errors.
+`retry_after` is the suggested delay in seconds from `Retry-After`, capped at one hour, or `None` if absent or invalid.
+The client accepts delay-seconds and HTTP dates but does not retry automatically.
 A server that cannot be reached, that answers with any other status (such as `UNIMPLEMENTED` from a URL that is
-no Monty server), or that is no gRPC server at all (such as a web server's page), raises `RuntimeError`.
+no Monty server), or that is no gRPC server at all (such as a web server's page), raises
+[`MontyConnectError`][pydantic_monty.MontyConnectError].
+It retains `status_code`, `status_message` and `cause` when the server sent a status, or `transport_error` otherwise.
+Both errors subclass [`MontyError`][pydantic_monty.MontyError].
+If a CPU-mode server requires a finite `request_timeout`, an incompatible client setting raises
+[`MontyConfigurationError`][pydantic_monty.MontyConfigurationError].
+Malformed request metadata names or values raise the same error before any connection attempt.
 [`MontyDisconnectError`][pydantic_monty.MontyDisconnectError] means the stream ended mid-session.
 A server that ended it by policy says so in the error's status and cause (see
 [disconnect diagnostics](#disconnect-diagnostics)); a transport failure says nothing about the worker's fate.
 Either way the session is lost; check out a new one.
+The error text includes the recorded code, cause and message, or the transport error.
+For example: `monty worker connection closed while waiting for a reply: DEADLINE_EXCEEDED (turn_timeout): turn expired`.
+This does not establish whether the request ran, so do not replay it automatically.
 
 [`MontyShutdown`][pydantic_monty.MontyShutdown] means the server declined the next request because it is shutting down.
 That request did not run.
@@ -43,20 +72,47 @@ Restoring a suspended call re-announces it even if the host already executed the
 can happen twice.
 Neither exception occurs on the local subprocess transport.
 
+## Trace context
+
+Each [`feed_run()`][pydantic_monty.AsyncMontySession.feed_run],
+[`feed_start()`][pydantic_monty.AsyncMontySession.feed_start] and load sends the W3C `traceparent` of the
+OpenTelemetry span current where it was called, so a server that records the session parents that feed's spans to it.
+A server that records spans names its span for each external call, OS call and name lookup, and the host callback
+answering it runs with that span current: a span the callback starts is its child.
+With `instrument_telemetry()` the callback runs under Monty's own span for the call instead, which is a child of the
+server's.
+[`trace_context()`][pydantic_monty.FunctionSnapshot.trace_context] returns the same span for a manual handler.
+If the server's spans are not exported to your tracing backend, spans started in host callbacks appear there without
+their parent.
+
+This needs only `opentelemetry-api`, not `instrument_telemetry()`.
+Nothing is sent when `opentelemetry-api` is not installed or no span is current, and a server that names no span
+leaves callbacks in the caller's context.
+
+Against a server that records the session, a tracer passed to `instrument_telemetry()` records every span twice, once
+on each side.
+Pass only `meter=` (and `logger=`, if you want Monty's logs) to keep client-side metrics without the duplicate spans.
+`logfire.instrument_monty()` always installs a tracer, so it records the duplicates.
+
 ## Stored sessions
 
 A server that stores sessions gives each one an opaque ID instead of sending its state back.
-[`session_id`][pydantic_monty.AsyncMontySession.session_id] holds it; it is `None` against a server that stores nothing.
+[`get_session_id()`][pydantic_monty.AsyncMontySession.get_session_id] returns it; it returns `None` against a server
+that stores nothing.
+The session's configuration normally travels with its first request, so called before any request,
+`get_session_id()` sends the configuration on its own and waits for the reply, which costs one round trip.
+The `session_id` property is deprecated: it is `None` until the server has accepted the configuration, whose reply
+comes back with the first request's, even when that request fails.
 `monty-server` run without a store also refuses `dump()`, `load_session()` and `load_snapshot()` with
 `MontyRuntimeError`, and the session carries on; the development relay in `scripts/grpc_relay.py` instead passes
 them to its worker, which dumps and loads bytes as a local session does.
 Against a storing server [`dump()`][pydantic_monty.AsyncMontySession.dump] writes the session's current state to a
-record that never changes and returns that record's ID; the session continues under its `session_id`.
-The server also writes the session's state under `session_id` whenever it parks the session: idle for its
+record that never changes and returns that record's ID; the session continues under its own ID.
+The server also writes the session's state under the session's ID whenever it parks the session: idle for its
 `--park-after`, the client gone, or a drain.
 Passing either ID to the loader matching the stored state, [`load_session()`][pydantic_monty.AsyncMontySession.load_session]
 for an idle session or [`load_snapshot()`][pydantic_monty.AsyncMontySession.load_snapshot] for one suspended mid-feed, on
-a fresh session, from any process, starts a new session with its own ID: a `session_id` gives the state as of that
+a fresh session, from any process, starts a new session with its own ID: a session's ID gives the state as of that
 session's last park, a `dump()` ID the state dumped.
 The record is unchanged and the session that wrote it is never resumed in place, so loading one ID twice gives two
 independent sessions, and a session still running elsewhere is unaffected.
@@ -68,8 +124,8 @@ session can carry on as well.
 `dump()` is the server's choice.
 
 When such a server drains a session, the client opens a new stream, loads the state the server named into a new session and
-re-sends the request, so the caller sees the result rather than `MontyShutdown`; `session_id` then names the new
-session, and the session's suspension and sleep totals carry over.
+re-sends the request, so the caller sees the result rather than `MontyShutdown`; `get_session_id()` then returns the new
+session's ID, and the session's suspension and sleep totals carry over.
 `MontyShutdown` is still raised if the server named nothing to load, if the reload fails, if `auto_resume=False` is
 passed to [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote], or if the session has no ID.
 The new stream uses the metadata returned when the session was entered, so an expired token makes

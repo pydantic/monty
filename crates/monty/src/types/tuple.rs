@@ -37,7 +37,8 @@ use crate::{
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     resource_checks::{check_repeat_size, repeated_len},
     types::{
-        LazyHeapSet, Type,
+        LazyHeapSet, Type, TypeRef,
+        key_hash::hash_or_culprit,
         list::repr_sequence_fmt,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
     },
@@ -128,6 +129,8 @@ impl Tuple {
                 // Use empty tuple singleton
                 Ok(vm.heap.get_empty_tuple())
             }
+            // Named tuples still need conversion to a plain tuple.
+            Some(v @ Value::Ref(id)) if matches!(vm.heap.get(id), HeapData::Tuple(_)) => Ok(v),
             Some(v) => {
                 let items = collect_owned_iterable(v, vm)?;
                 Ok(allocate_tuple(items, vm.heap))
@@ -196,6 +199,29 @@ impl<'h> HeapRead<'h, Tuple> {
     #[expect(clippy::iter_not_returning_iterator)]
     pub(crate) fn iter(&self, vm: &mut VM<'h>) -> RunResult<TupleIter<'_, 'h>> {
         TupleIter::new(self, vm)
+    }
+
+    /// Hashes the tuple, or returns the type name of the innermost item that
+    /// will not hash, as CPython's `TypeError` names it.
+    ///
+    /// Finding the culprit in the same pass keeps a user `__hash__` on an
+    /// earlier item from running twice. Only a successful hash is cached.
+    pub(crate) fn hash_or_culprit(&self, vm: &mut VM<'h>) -> RunResult<Result<HashValue, String>> {
+        if let Some(cached) = self.get(vm.heap).cached_hash.get() {
+            return Ok(Ok(cached));
+        }
+        let mut hasher = DefaultHasher::new();
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some(item) = iter.next(vm)? {
+            match hash_or_culprit(item, vm)? {
+                Ok(hash) => hash.hash(&mut hasher),
+                Err(culprit) => return Ok(Err(culprit)),
+            }
+        }
+        let hash = HashValue::new(hasher.finish());
+        self.get(vm.heap).cached_hash.set(Some(hash));
+        Ok(Ok(hash))
     }
 }
 
@@ -300,8 +326,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
         Ok(Some(false))
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Tuple
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Tuple.into()
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -363,25 +389,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
     /// the same elements hash equally — required because they compare equal
     /// (matching CPython, where `NamedTuple` is a `tuple` subclass).
     ///
-    /// Caches the computed hash on first call. We only cache the `Some(_)`
-    /// outcome — `None` (unhashable child) is uncommon and skipping it
-    /// keeps the cache slot free of a 3-state encoding.
+    /// See [`HeapRead::hash_or_culprit`], which also names an unhashable item.
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        if let Some(cached) = self.get(vm.heap).cached_hash.get() {
-            return Ok(Some(cached));
-        }
-        let mut hasher = DefaultHasher::new();
-        let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
-        while let Some(item) = iter.next(vm)? {
-            match item.py_hash(vm)? {
-                Some(h) => h.hash(&mut hasher),
-                None => return Ok(None),
-            }
-        }
-        let hash = HashValue::new(hasher.finish());
-        self.get(vm.heap).cached_hash.set(Some(hash));
-        Ok(Some(hash))
+        Ok(self.hash_or_culprit(vm)?.ok())
     }
 
     /// Lexicographic comparison for tuples.
@@ -566,14 +576,19 @@ fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>
         other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
     };
 
-    let iter = tuple.iter(vm)?;
+    // Nested short offset searches may never reach an iterator checkpoint.
+    vm.heap.tracker.check_time()?;
+
+    let mut iter = tuple.iter(vm)?;
+    // Excluded prefix entries need neither equality calls nor reference-count traffic.
+    iter.index = start;
     defer_drop_mut!(iter, vm);
     while let Some((idx, item)) = iter.next_with_index(vm)? {
         if idx >= end {
             // No further matches possible inside [start, end).
             break;
         }
-        if idx >= start && value.py_eq(item, vm)? {
+        if value.py_eq(item, vm)? {
             let idx_i64 = i64::try_from(idx).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx_i64));
         }
@@ -671,8 +686,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TupleIterator> {
         true
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::TupleIterator
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::TupleIterator.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {

@@ -24,7 +24,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData},
     heap_traits::DropGuard,
     intern::StaticStrings,
     modules::{
@@ -32,27 +32,28 @@ use crate::{
         time::{HostSleep, host_sleep},
     },
     os_dispatch::{PostConversionEffect, SleepDestination},
-    types::{BuiltinType, Module, str::allocate_string},
+    types::{Module, Type, str::allocate_string},
     value::Value,
 };
 
 /// Async Functions.
+#[monty_macros::explicit_discriminants(checksum = 0x65f2_f29a_e7d7_b38e)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum AsyncioFunctions {
+    Gather = 0,
+    Run = 1,
+    Sleep = 2,
     #[strum(serialize = "create_task")]
-    CreateTask,
-    Gather,
-    Run,
-    Sleep,
-    Wait,
+    CreateTask = 3,
+    Wait = 4,
 }
 
-/// Creates the `asyncio` module and allocates it on the heap.
+/// Creates the `asyncio` module.
 ///
 /// The module exposes `run`, `gather`, `sleep`, `create_task`, `wait`, `Task`,
 /// `InvalidStateError` and the `wait` completion constants.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Asyncio, vm.interns);
 
     module.set_attr(
@@ -80,14 +81,10 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::ModuleFunction(ModuleFunctions::Asyncio(AsyncioFunctions::Wait)),
         vm,
     );
-    module.set_attr(
-        StaticStrings::Task,
-        Value::Builtin(Builtins::Type(BuiltinType::Task)),
-        vm,
-    );
+    module.set_attr(StaticStrings::Task, Value::Builtin(Builtins::Type(Type::Task)), vm);
     module.set_attr(
         StaticStrings::InvalidStateError,
-        Value::Builtin(Builtins::ExcType(ExcType::InvalidStateError)),
+        Value::Builtin(Builtins::Type(Type::InvalidStateError)),
         vm,
     );
     module.set_attr(
@@ -106,7 +103,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues) -> RunResult<CallResult> {
     match functions {

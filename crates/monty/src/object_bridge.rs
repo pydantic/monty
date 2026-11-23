@@ -13,7 +13,7 @@ use ahash::{AHashMap, AHashSet};
 use monty_types::{
     CallArgs, InvalidInputError, MontyComplex, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
     MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
-    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+    unstable::{self, ClassEq, ClassHash, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 
 use crate::{
@@ -22,6 +22,7 @@ use crate::{
     defer_drop,
     exception_private::{RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
+    intern::StringId,
     modules::dataclasses,
     types::{
         Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type,
@@ -30,7 +31,7 @@ use crate::{
         date as date_type, datetime as datetime_type, decimal as decimal_type,
         decimal::py as py_decimal,
         dict::Dict,
-        instance::class_name,
+        instance::{class_defines, class_defines_not_none, class_name},
         list::List,
         set::{FrozenSet, Set},
         str::allocate_string,
@@ -200,11 +201,10 @@ impl GraphExporter {
             Value::InternBytes(bytes_id) => MontyNode::Bytes(interns.get_bytes(*bytes_id).to_owned()),
             Value::InternLongInt(li_id) => MontyNode::BigInt(interns.get_long_int(*li_id).clone()),
             Value::Ref(id) => return self.push_ref(*id, value, vm),
-            Value::Builtin(Builtins::Type(t)) => match MontyType::from_internal_static(Type::from(*t)) {
+            Value::Builtin(Builtins::Type(t)) => match MontyType::from_internal_static(*t) {
                 Some(ty) => MontyNode::Type(ty),
                 None => self.repr_node(value, vm),
             },
-            Value::Builtin(Builtins::ExcType(e)) => MontyNode::Type(MontyType::Exception(*e)),
             Value::Builtin(Builtins::Function(f)) => MontyNode::BuiltinFunction(*f),
             #[cfg(feature = "memory-model-checks")]
             Value::Dereferenced => panic!("Dereferenced found while exporting a value"),
@@ -270,7 +270,7 @@ impl GraphExporter {
         vm: &mut VM<'h>,
     ) -> MontyNode {
         match output {
-            HeapReadOutput::Str(s) => MontyNode::String(s.get(vm.heap).as_str().to_owned()),
+            HeapReadOutput::Str(heap_string) => MontyNode::String(heap_string.get(vm.heap).as_str().to_owned()),
             HeapReadOutput::Bytes(b) => MontyNode::Bytes(b.get(vm.heap).as_slice().to_owned()),
             HeapReadOutput::List(list) => {
                 // Snapshot before recursing: a nested `__repr__` may mutate this list.
@@ -505,10 +505,14 @@ impl GraphExporter {
                     position: file.position(),
                 })
             }
-            HeapReadOutput::ExtFunction(function) => MontyNode::Function {
-                name: function.get(vm.heap).as_str().to_owned(),
-                docstring: None,
-            },
+            HeapReadOutput::ExtFunction(function) => {
+                let function = function.get(vm.heap);
+                MontyNode::Function {
+                    name: function.as_str().to_owned(),
+                    docstring: None,
+                    is_async: function.is_async(),
+                }
+            }
             _ => self.repr_node(value, vm),
         }
     }
@@ -525,7 +529,7 @@ impl GraphExporter {
                 Ok(s) => {
                     // `py_repr` yields a heap `str` `Value`; extract its text and drop it.
                     defer_drop!(s, vm);
-                    MontyNode::Repr(s.try_to_str(vm).map(str::to_owned).unwrap_or_default())
+                    MontyNode::Repr(s.try_to_str(vm).map_or_default(str::to_owned))
                 }
                 Err(err @ RunError::UncatchableExc(_)) => {
                     self.error = Some(err);
@@ -561,6 +565,8 @@ impl GraphExporter {
             host_defined: false,
             is_dataclass: dataclasses::is_dataclass_class(class_id, vm),
             attrs: Vec::new(),
+            eq: class_eq(class_id, vm),
+            hash: class_hash(class_id, vm),
         }));
         let node_id = self.push_node(node);
         self.memoize(class_id, node_id, vm);
@@ -596,6 +602,8 @@ impl GraphExporter {
             host_defined: true,
             is_dataclass: class_type.is_dataclass,
             attrs,
+            eq: class_type.eq,
+            hash: class_type.hash,
         })));
         if !self.in_progress.contains(&type_id) {
             self.memoize(type_id, node_id, vm);
@@ -621,6 +629,39 @@ impl GraphExporter {
             })
             .collect()
     }
+}
+
+/// How instances of sandbox class `class_id` compare, read the way
+/// `instance_user_eq` dispatches: a generated `__eq__` names its fields, any
+/// other `__eq__` is user code the host cannot replay.
+fn class_eq(class_id: HeapId, vm: &VM<'_>) -> ClassEq {
+    if let Some(fields) = dataclasses::generated_fields(class_id, "__eq__", vm) {
+        ClassEq::Fields(field_strings(&fields, vm))
+    } else if class_defines(class_id, "__eq__", vm) {
+        ClassEq::Custom
+    } else {
+        ClassEq::Identity
+    }
+}
+
+/// How instances of sandbox class `class_id` hash, following the precedence of
+/// `Instance::py_hash`: generated `__hash__`, then `__hash__`, then the
+/// implicit opt-out a defined `__eq__` makes, then identity.
+fn class_hash(class_id: HeapId, vm: &VM<'_>) -> ClassHash {
+    if let Some(fields) = dataclasses::generated_fields(class_id, "__hash__", vm) {
+        ClassHash::Fields(field_strings(&fields, vm))
+    } else if class_defines_not_none(class_id, "__hash__", vm) {
+        ClassHash::Custom
+    } else if class_defines(class_id, "__hash__", vm) || class_defines(class_id, "__eq__", vm) {
+        ClassHash::Unhashable
+    } else {
+        ClassHash::Identity
+    }
+}
+
+/// Resolves interned field names to the strings the wire carries.
+fn field_strings(fields: &[StringId], vm: &VM<'_>) -> Vec<String> {
+    fields.iter().map(|name| vm.interns.get_str(*name).to_owned()).collect()
 }
 
 /// Crate-internal export of call arguments: one arena for every argument.
@@ -728,7 +769,7 @@ impl MontyTypeExt for MontyType {
             Self::DictValues => Type::DictValues,
             Self::Set => Type::Set,
             Self::FrozenSet => Type::FrozenSet,
-            Self::Exception(exc_type) => Type::Exception(*exc_type),
+            Self::Exception(exc_type) => Type::from(*exc_type),
             Self::Function => Type::Function,
             Self::BuiltinFunction => Type::BuiltinFunction,
             Self::Cell => Type::Cell,
@@ -753,11 +794,10 @@ impl MontyTypeExt for MontyType {
 
     /// Mirrors a runtime [`Type`] without heap access; a type with no boundary
     /// form returns `None` and crosses as a repr.
-    ///
-    /// # Panics
-    /// On `Instance` and `HostClass`, which have no `MontyType`: the exporter
-    /// routes a sandbox class to [`GraphExporter::sandbox_class_node`] first.
     fn from_internal_static(ty: Type) -> Option<Self> {
+        if let Some(exc_type) = ty.exc_type() {
+            return Some(Self::Exception(exc_type));
+        }
         Some(match ty {
             Type::Ellipsis => Self::Ellipsis,
             Type::NotImplementedType => Self::NotImplementedType,
@@ -849,13 +889,6 @@ impl MontyTypeExt for MontyType {
             Type::DictValues => Self::DictValues,
             Type::Set => Self::Set,
             Type::FrozenSet => Self::FrozenSet,
-            Type::Instance(_) => unreachable!("Type::Instance requires heap access — exported as a class node"),
-            // The interpreter-internal placeholder never becomes a value:
-            // `type(x)` on a host instance materializes a `HostClassType`.
-            Type::HostClass => {
-                unreachable!("Type::HostClass has no boundary mirror — host instances cross as class nodes")
-            }
-            Type::Exception(exc_type) => Self::Exception(exc_type),
             Type::Function => Self::Function,
             Type::BuiltinFunction => Self::BuiltinFunction,
             Type::Cell => Self::Cell,
@@ -874,6 +907,8 @@ impl MontyTypeExt for MontyType {
             Type::ReMatch => Self::ReMatch,
             Type::DataclassField => Self::Field,
             Type::DataclassParams => Self::DataclassParams,
+            // Exception classes were mirrored above.
+            _ => return None,
         })
     }
 }
@@ -1104,11 +1139,9 @@ fn import_node(
             let file = OpenFile::with_state(handle.path, handle.mode, handle.position);
             Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(Box::new(file)))))
         }
-        MontyNode::Type(t) => Ok(Value::Builtin(Builtins::Type(
-            t.to_internal().try_into().expect("host types are static"),
-        ))),
+        MontyNode::Type(t) => Ok(Value::Builtin(Builtins::Type(t.to_internal()))),
         MontyNode::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
-        MontyNode::Function { name, .. } => Ok(vm.heap.get_ext_function(&name)),
+        MontyNode::Function { name, is_async, .. } => Ok(vm.heap.get_ext_function(&name, is_async)),
         MontyNode::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
         MontyNode::Cycle(_) => Err(InvalidInputError::invalid_type("'Cycle' is not a valid input value")),
     }

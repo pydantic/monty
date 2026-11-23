@@ -24,6 +24,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
     mem,
+    num::NonZeroU32,
     slice::from_ref,
     str::FromStr,
     sync::{Arc, LazyLock},
@@ -66,6 +67,18 @@ impl StringId {
     #[inline]
     pub fn index(self) -> usize {
         self.0 as usize
+    }
+
+    /// The raw ID, for compact encodings that persist it (the dumped location table).
+    #[inline]
+    pub(crate) fn raw(self) -> u32 {
+        self.0
+    }
+
+    /// Rebuilds an ID persisted with [`Self::raw`].
+    #[inline]
+    pub(crate) fn from_raw(raw: u32) -> Self {
+        Self(raw)
     }
 
     /// Returns the StringId for an ASCII byte.
@@ -611,6 +624,10 @@ pub enum StaticStrings {
     Asin,
     /// `math.asinh()` function.
     Asinh,
+    /// `typing.assert_never()` function.
+    AssertNever,
+    /// `typing.assert_type()` function.
+    AssertType,
     /// `datetime.astimezone()` method.
     Astimezone,
     /// Module name for `import asyncio`.
@@ -691,6 +708,10 @@ pub enum StaticStrings {
     Binascii,
     /// `random.binomialvariate()` function.
     Binomialvariate,
+    /// `int.bit_count()` method.
+    BitCount,
+    /// `int.bit_length()` method.
+    BitLength,
     /// `bisect` in the bisect module.
     Bisect,
     /// `bisect_left` in the bisect module.
@@ -740,6 +761,8 @@ pub enum StaticStrings {
     CaseSensitive,
     /// `str.casefold()` method.
     Casefold,
+    /// `typing.cast()` function.
+    Cast,
     /// `unicodedata.category()` function.
     Category,
     /// `math.cbrt()` function.
@@ -1009,6 +1032,9 @@ pub enum StaticStrings {
     Dump,
     /// `json.dumps()` function.
     Dumps,
+    /// `__all__` — the names `from m import *` binds from a module.
+    #[strum(serialize = "__all__")]
+    DunderAll,
     /// `__annotate__` — a function's PEP 649 annotate function, and the key a
     /// namespace handed to `type()` may store a class's under.
     #[strum(serialize = "__annotate__")]
@@ -1028,6 +1054,12 @@ pub enum StaticStrings {
     /// `__cause__` of an exception, set by `raise ... from`.
     #[strum(serialize = "__cause__")]
     DunderCause,
+    /// `__class__` — implicit closure cell synthesized in class bodies for methods using `super()` or `__class__`.
+    #[strum(serialize = "__class__")]
+    DunderClass,
+    /// `__classcell__` — class-namespace entry carrying the implicit `__class__` cell to `type.__new__`.
+    #[strum(serialize = "__classcell__")]
+    DunderClasscell,
     /// `__context__` of an exception: the one being handled when it was raised.
     #[strum(serialize = "__context__")]
     DunderContext,
@@ -1056,7 +1088,7 @@ pub enum StaticStrings {
     /// `__getnewargs__` — the copy/pickle hook on named tuples.
     #[strum(serialize = "__getnewargs__")]
     DunderGetnewargs,
-    /// `__hash__` — written into a class namespace by `@dataclass`.
+    /// `__hash__` — written into a class namespace by `@dataclass`, or synthesized for classes with `__eq__`.
     #[strum(serialize = "__hash__")]
     DunderHash,
     /// `__init__` — written into a class namespace by `@dataclass`.
@@ -1275,6 +1307,8 @@ pub enum StaticStrings {
     Flush,
     /// `math.fma()` function.
     Fma,
+    /// `statistics.fmean()` function.
+    Fmean,
     /// `math.fmod()` function.
     Fmod,
     /// Module name for `import fnmatch`, and its `fnmatch()` function.
@@ -1474,6 +1508,8 @@ pub enum StaticStrings {
     Indent,
     /// `index()` method, shared by `str`, `bytes`, `list`, `tuple` and `deque`.
     Index,
+    /// `slice.indices()` method.
+    Indices,
     /// `decimal.Inexact` signal.
     #[strum(serialize = "Inexact")]
     Inexact,
@@ -1770,10 +1806,20 @@ pub enum StaticStrings {
     Maxunicode,
     /// `hashlib.md5()` function and hash name.
     Md5,
+    /// `statistics.mean()` function.
+    Mean,
+    /// `statistics.median()` function.
+    Median,
+    /// `statistics.median_high()` function.
+    MedianHigh,
+    /// `statistics.median_low()` function.
+    MedianLow,
     /// `memo` parameter of `copy.deepcopy()`.
     Memo,
     /// `field(metadata=...)`.
     Metadata,
+    /// `method` parameter of `statistics.quantiles()`.
+    Method,
     /// `sys.version_info.micro` field.
     Micro,
     /// `datetime` / `time` `microsecond` attribute and constructor kwarg.
@@ -1847,6 +1893,8 @@ pub enum StaticStrings {
     /// `re.MULTILINE` flag
     #[strum(serialize = "MULTILINE")]
     MultilineFlag,
+    /// `statistics.multimode()` function.
+    Multimode,
     /// `Path.name` property; also `file.name`, `os.name` and `unicodedata.name()`.
     Name,
     /// The `collections.namedtuple` factory function.
@@ -2051,8 +2099,14 @@ pub enum StaticStrings {
     /// `typing.Protocol` marker.
     #[strum(serialize = "Protocol")]
     Protocol,
+    /// `statistics.pstdev()` function.
+    Pstdev,
+    /// `statistics.pvariance()` function.
+    Pvariance,
     /// `sys.pycache_prefix` attribute.
     PycachePrefix,
+    /// `statistics.quantiles()` function.
+    Quantiles,
     /// `sys.flags.quiet` field.
     Quiet,
     /// `csv.QUOTE_ALL` constant.
@@ -2388,8 +2442,15 @@ pub enum StaticStrings {
     StatMethod,
     /// `state` parameter of `Random.setstate()`.
     State,
+    /// Module name for `import statistics`.
+    Statistics,
+    /// `statistics.StatisticsError` exception class.
+    #[strum(serialize = "StatisticsError")]
+    StatisticsError,
     /// `sys.stderr` attribute and the marker it holds.
     Stderr,
+    /// `statistics.stdev()` function.
+    Stdev,
     /// `sys.stdout` attribute and the marker it holds.
     Stdout,
     /// `Path.stem` property.
@@ -2554,6 +2615,8 @@ pub enum StaticStrings {
     /// `typing.Tuple` marker.
     #[strum(serialize = "Tuple")]
     TupleType,
+    /// `typ` parameter of `typing.cast()`.
+    Typ,
     /// `typing.Type` marker.
     #[strum(serialize = "Type")]
     Type,
@@ -2642,6 +2705,8 @@ pub enum StaticStrings {
     /// `sys.flags.utf8_mode` field.
     #[strum(serialize = "utf8_mode")]
     Utf8Mode,
+    /// `val` parameter of `typing.cast()` and `typing.assert_type()`.
+    Val,
     /// `validate` parameter of `base64.b64decode()`.
     #[strum(serialize = "validate")]
     Validate,
@@ -2655,6 +2720,8 @@ pub enum StaticStrings {
     ValueWithFakeGlobals,
     /// `dict.values()` method.
     Values,
+    /// `statistics.variance()` function.
+    Variance,
     /// `sys.flags.verbose` field.
     Verbose,
     /// `sys.version` attribute.
@@ -2704,6 +2771,8 @@ pub enum StaticStrings {
     Writerow,
     /// `writerows()` method of the `csv` writers.
     Writerows,
+    /// `xbar` parameter of `statistics.variance()`.
+    Xbar,
     /// `date` / `datetime` `year` attribute and constructor kwarg.
     Year,
     /// `base64.z85decode()` function.
@@ -2719,13 +2788,13 @@ pub enum StaticStrings {
 }
 
 /// One immutable interned string with directly accessible dispatch metadata.
-/// Snapshots store only text; loading reconstructs the tag and cached hash.
+/// Snapshots store only text; loading reconstructs the tag, character length and cached hash.
 #[derive(Debug, Clone)]
 struct InternedString {
     /// Runtime classification, independent of the string's executor-local ID.
     static_tag: Option<StaticStrings>,
-    // Immutable text needs only one ASCII scan, including after snapshot loading.
-    ascii: bool,
+    /// Cached code-point count; empty strings and counts above `u32::MAX` are recounted.
+    char_len: Option<NonZeroU32>,
     /// Text and its eagerly computed Python hash.
     text: WithHash<InternedText>,
 }
@@ -2749,11 +2818,21 @@ impl AsRef<str> for InternedText {
 }
 
 impl InternedString {
+    /// Fits the count beside the static tag without enlarging each storage slot.
+    fn count_chars(text: &str) -> Option<NonZeroU32> {
+        let char_len = if text.is_ascii() {
+            text.len()
+        } else {
+            bytecount::num_chars(text.as_bytes())
+        };
+        u32::try_from(char_len).ok().and_then(NonZeroU32::new)
+    }
+
     /// Creates an entry for compile-time-known text.
     fn static_string(value: StaticStrings) -> Self {
         Self {
             static_tag: Some(value),
-            ascii: <&str>::from(value).is_ascii(),
+            char_len: Self::count_chars(value.into()),
             text: WithHash::for_str(InternedText::Static(value.into())),
         }
     }
@@ -2762,7 +2841,7 @@ impl InternedString {
     fn owned(value: String) -> Self {
         Self {
             static_tag: None,
-            ascii: value.is_ascii(),
+            char_len: Self::count_chars(&value),
             text: WithHash::for_str(InternedText::Owned(value.into_boxed_str())),
         }
     }
@@ -2770,6 +2849,15 @@ impl InternedString {
     /// Returns the interned text.
     fn as_str(&self) -> &str {
         self.text.value().as_ref()
+    }
+
+    /// Recounts when the code-point count does not fit the cache.
+    #[inline]
+    fn char_len(&self) -> usize {
+        self.char_len.map_or_else(
+            || bytecount::num_chars(self.as_str().as_bytes()),
+            |len| len.get() as usize,
+        )
     }
 
     /// Returns the cached Python hash.
@@ -3082,6 +3170,24 @@ impl Interns {
         intern_static(&self.static_string_ids, &self.strings, value)
     }
 
+    /// Interns a name only known at runtime, reusing its ID if already interned.
+    ///
+    /// For `from m import *` binding a module global slot, which code compiled
+    /// later must find by this same ID. Existing string borrows stay valid.
+    pub(crate) fn intern_runtime(&self, text: &str) -> StringId {
+        assert!(!self.compiling.get(), "runtime interning during compilation");
+        if let Some(id) = self.get_string_id_by_name(text) {
+            id
+        } else if let Ok(value) = text.parse::<StaticStrings>() {
+            intern_static(&self.static_string_ids, &self.strings, value)
+        } else {
+            let id = next_string_id(self.strings.len());
+            self.strings.push(InternedString::owned(text.to_owned()));
+            self.string_id_by_name.borrow_mut().insert(text.to_owned(), id);
+            id
+        }
+    }
+
     /// Looks up a Python string; filename identities use `get_filename` instead.
     #[inline]
     pub fn get_str(&self, id: StringId) -> &str {
@@ -3159,10 +3265,20 @@ impl Interns {
             .map(|file| &*file.source)
     }
 
-    /// Returns ASCII status without rescanning immutable literal text.
+    /// Compares character and byte lengths, using the cached count when available.
     #[inline]
     pub fn str_is_ascii(&self, id: StringId) -> bool {
-        id.index() < RESERVED_STRS.len() || self.strings[id.index() - INTERN_STRING_ID_OFFSET].ascii
+        self.str_char_len(id) == self.get_str(id).len()
+    }
+
+    /// Returns the Unicode code-point count, recounting when it does not fit the cache.
+    #[inline]
+    pub fn str_char_len(&self, id: StringId) -> usize {
+        if id.index() < RESERVED_STRS.len() {
+            RESERVED_STRS[id.index()].len()
+        } else {
+            self.strings[id.index() - INTERN_STRING_ID_OFFSET].char_len()
+        }
     }
 
     /// Returns the same hash as an equal heap string.
@@ -3217,3 +3333,7 @@ impl Interns {
         get_string_id_by_name(&self.string_id_by_name.borrow(), &self.static_string_ids, s)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/string_metadata.rs"]
+mod string_metadata_tests;

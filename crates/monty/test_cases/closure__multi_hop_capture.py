@@ -118,3 +118,83 @@ def selective_capture():
 
 
 assert selective_capture() == 'captured:unrelated'
+
+
+# === Deep pass-through nesting ===
+# Scope analysis once re-walked every deeper function per level, so 24 levels took hours to compile.
+def deep_0():
+    x = 'deep'
+
+    def deep_1():
+        def deep_2():
+            def deep_3():
+                def deep_4():
+                    def deep_5():
+                        def deep_6():
+                            def deep_7():
+                                def deep_8():
+                                    def deep_9():
+                                        def deep_10():
+                                            def deep_11():
+                                                def deep_12():
+                                                    def deep_13():
+                                                        def deep_14():
+                                                            def deep_15():
+                                                                def deep_16():
+                                                                    def deep_17():
+                                                                        def deep_18():
+                                                                            def deep_19():
+                                                                                def deep_20():
+                                                                                    def deep_21():
+                                                                                        def deep_22():
+                                                                                            def deep_23():
+                                                                                                return x
+
+                                                                                            return deep_23()
+
+                                                                                        return deep_22()
+
+                                                                                    return deep_21()
+
+                                                                                return deep_20()
+
+                                                                            return deep_19()
+
+                                                                        return deep_18()
+
+                                                                    return deep_17()
+
+                                                                return deep_16()
+
+                                                            return deep_15()
+
+                                                        return deep_14()
+
+                                                    return deep_13()
+
+                                                return deep_12()
+
+                                            return deep_11()
+
+                                        return deep_10()
+
+                                    return deep_9()
+
+                                return deep_8()
+
+                            return deep_7()
+
+                        return deep_6()
+
+                    return deep_5()
+
+                return deep_4()
+
+            return deep_3()
+
+        return deep_2()
+
+    return deep_1()
+
+
+assert deep_0() == 'deep'

@@ -46,15 +46,15 @@ Monty enforces hard limits on memory, execution time and recursion depth, config
 
 ## Settings
 
-| Key                      | Meaning                                                                                                               |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `max_memory`             | Maximum heap memory in bytes                                                                                          |
-| `max_feed_duration_secs` | Maximum execution time per `feed_run`, in seconds                                                                     |
-| `max_turn_duration_secs` | Maximum execution time per host round trip, in seconds                                                                |
-| `max_recursion_depth`    | Maximum function call stack depth (default 1000)                                                                      |
-| `gc_interval`            | Run garbage collection every N allocations                                                                            |
-| `max_suspensions`        | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000) |
-| `max_total_sleep_secs`   | Maximum cumulative time the host waits on `time.sleep()` and `asyncio.sleep()`, in seconds                            |
+| Key                      | Meaning                                                                                                                                                                           |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `max_memory`             | Maximum heap memory in bytes                                                                                                                                                      |
+| `max_feed_duration_secs` | Maximum execution time per `feed_run`, in seconds                                                                                                                                 |
+| `max_turn_duration_secs` | Maximum execution time per host round trip, in seconds                                                                                                                            |
+| `max_recursion_depth`    | Maximum function call stack depth (default 1000)                                                                                                                                  |
+| `gc_interval`            | Run garbage collection every N allocations                                                                                                                                        |
+| `max_suspensions`        | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000), counting calls to async host functions started without one |
+| `max_total_sleep_secs`   | Maximum cumulative time the host waits on `time.sleep()` and `asyncio.sleep()`, in seconds                                                                                        |
 
 Every key is optional.
 Omit `max_memory`, either duration key or `max_total_sleep_secs`, or set them to `None`, to disable that limit.
@@ -68,11 +68,39 @@ In JavaScript the same fields are `maxMemory`, `maxFeedDurationSecs`, `maxTurnDu
 In Rust they are the fields of [`monty_types::ResourceLimits`](api/rust/monty-types.md#resourcelimits), where the
 durations are `Duration`s named `max_feed_duration`, `max_turn_duration` and `max_total_sleep`.
 
+## Cooperative checks
+
+The worker's allocator ceiling and the pool's time backstops bound pathological execution.
+Cooperative checks aim to give ordinary workloads graceful errors rather than worker termination; they are not the
+safety boundary.
+The following policy guides checks in native operations.
+
+### Memory checks
+
+Soft memory checks target multi-MiB allocation bursts in ordinary builtin calls.
+Rare oversized results bounded by a constant multiple of an already-tracked input are permitted to rely on the hard limit.
+Unbounded or amplifying string construction requires resource-tracked buffers.
+
+### Time checks
+
+Roughly linear native operations over existing, memory-bounded inputs are permitted to run without clock polling.
+Where practical, superlinear algorithms and work not bounded by input size use amortized clock polling.
+This includes caller-chosen iteration counts and potentially endless iterators.
+Polling is not required where runtime overhead or implementation complexity outweighs the benefit.
+In particular, replacing an uninterruptible library call solely to add checkpoints is not required; the duration
+backstop may terminate the worker instead.
+Algorithmic inefficiency is a separate concern from cooperative limit enforcement.
+
 ## Memory
 
 `max_memory` budgets the bytes a worker requests from its global allocator, counted from the leanest the worker process
 has been.
 Everything the session allocates counts against it, including retained compiled code and interpreter internals.
+That includes the type checker: the first check in a type-checked session builds its database, about 7 MiB, most of
+it the resolved builtins.
+A Rust pool of subprocess workers with [`PoolConfig::prewarm_type_checker`](api/rust/monty-pool.md#poolconfig) builds a checker with the builtins
+resolved, about 6 MiB, between checkouts and charges it to the worker instead, so only what the session's own checks add
+counts.
 It is not a ceiling on process RSS.
 Allocations are counted as requested, so per-allocation overhead and fragmentation sit outside the count, as does memory
 obtained without the allocator: thread stacks, the binary's mapped image, a direct `mmap`.
@@ -165,12 +193,19 @@ Discard the session rather than feeding it again; see
 ### Host-side backstops
 
 The in-sandbox check runs at interpreter checkpoints, so it cannot catch code that wedges the interpreter itself.
-Host-side deadlines cover that:
+Native operations are not guaranteed to poll the clock and can exceed a duration budget without stopping cooperatively.
+If a host-side deadline expires first, the worker is terminated instead of raising a cooperative `TimeoutError`,
+and the session is lost.
+Host-side deadlines cover these cases:
 
 - **`request_timeout`** on the pool is a hard per-turn deadline.
     A worker that exceeds it is killed and the call raises [`MontyCrashedError`][pydantic_monty.MontyCrashedError] with `timed_out=True`.
     Each resume after a host-function or mount call starts a new deadline, so a program that suspends often can outlive
     any single timeout.
+    This deadline does not set the sleep cap: default system sleeps return normally after at most ten seconds,
+    without a warning, even when sandbox code asks for longer, unless the capped delay would exceed `max_total_sleep_secs`.
+    Configure `sleep_system_max` (`sleepSystemMax` in JavaScript) in the session's OS policy to change that cap.
+    See [waiting](security.md#waiting).
 - **A duration backstop per limit.** For each duration budget a session sets, the worker reports its consumed time on
     every protocol turn. The host uses the selected execution clock for the remaining budget plus grace.
     Local CPU supervision reads the child's OS counter rather than trusting its reported time.
@@ -224,7 +259,7 @@ Python and Node remote clients default to 10 seconds. Rust clients have no defau
 Choose this wall deadline for the expected budgets and scheduling delays.
 It can expire before a CPU budget under severe contention. CPU accounting does not extend it.
 A missing clock means a legacy wall-time server. Unknown clock values fail configuration.
-Local CPU pools require the child to acknowledge CPU mode before executing code.
+Local CPU pools require the worker to acknowledge CPU mode before executing code.
 A remote client cannot independently measure a remote process.
 See [`PoolConfig`](api/rust/monty-pool.md#poolconfig) for the pool settings.
 
@@ -247,6 +282,15 @@ could abort the process.
 `max_suspensions` counts external calls, host-object method calls and construction, lazy attribute lookups, `os`
 callbacks (the sleeps among them in every mode but `'zero'`, the clock only under `'call_host'`), name lookups and
 future-resolution events.
+Each call to an [async host function](host-functions.md#starting-calls-without-waiting) counts too, though it starts
+without a suspension.
+Once a session has started `max_suspensions` such calls, the next one suspends, so the limit still ends a loop that
+never awaits them.
+When those calls start without suspending, the pool also caps the arguments they hold on the host: within a feed,
+calls whose results it has not yet sent back may hold at most a quarter of its per-frame decode budget between them
+(256 MiB by default; `max_decode_bytes` sets the budget on [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote]).
+A call past that never reaches the host: the pool discards the worker, so unlike a `MemoryError` from `max_memory`,
+the session cannot run later feeds.
 These host round trips are outside `max_memory`; each [`ClassType`](host-objects.md) construction with `init=True` also
 adds an instance-store entry.
 Because the duration limits pause during suspensions, a snippet could otherwise retry rejected calls indefinitely.

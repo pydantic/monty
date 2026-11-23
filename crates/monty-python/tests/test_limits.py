@@ -11,7 +11,15 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import AsyncMonty, FunctionSnapshot, Monty, MontyComplete, MontyRuntimeError, ResourceLimits
+from pydantic_monty import (
+    AsyncMonty,
+    FunctionSnapshot,
+    Monty,
+    MontyComplete,
+    MontyConfigurationError,
+    MontyRuntimeError,
+    ResourceLimits,
+)
 
 
 def test_resource_limits_typed_dict():
@@ -362,19 +370,17 @@ def test_execution_clock_cannot_be_overridden_per_session():
 
 @cpu_clock
 def test_cpu_clock_requires_a_pool_wall_deadline():
-    with pytest.raises(RuntimeError, match='finite request_timeout'):
+    with pytest.raises(MontyConfigurationError, match='finite request_timeout'):
         with Monty(execution_clock='cpu', request_timeout=None):
             pytest.fail('CPU pool succeeded without a wall deadline')
 
 
 @pytest.mark.skipif(sys.platform == 'linux', reason='the CPU execution clock is supported on Linux')
 def test_cpu_clock_is_rejected_off_linux():
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(MontyConfigurationError) as exc_info:
         with Monty(execution_clock='cpu', request_timeout=2.0):
             pytest.fail('CPU pool succeeded off Linux')
-    assert exc_info.value.args[0] == snapshot(
-        'failed to spawn monty worker: CPU execution clock is only supported for subprocess workers on Linux'
-    )
+    assert str(exc_info.value) == snapshot('CPU execution clock is only supported for subprocess workers on Linux')
 
 
 @cpu_clock

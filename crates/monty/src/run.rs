@@ -270,6 +270,9 @@ pub(crate) struct Program {
     pub(crate) options: CompileOptions,
     /// OS-call policies shared with the REPL session; see [`MontyRun::with_os_policy`].
     pub(crate) os_policy: Arc<OsPolicy>,
+    /// Restricts binary file writes to the original write/append host operations.
+    #[serde(default)]
+    pub(crate) legacy_binary_writes: bool,
     /// The user-facing script name (`main.py`), whose final component
     /// `__file__` is derived from. For REPL snippets this is the session's
     /// name (shared with it, not copied per feed), not the `<python-input-N>`
@@ -301,6 +304,7 @@ pub(crate) struct VmEnv<'h> {
     pub(crate) options: CompileOptions,
     /// Clock, sleep and random initialization policies.
     pub(crate) os_policy: &'h OsPolicy,
+    pub(crate) legacy_binary_writes: bool,
 }
 
 impl VmEnv<'_> {
@@ -332,6 +336,7 @@ impl Default for VmEnv<'static> {
             assert_repr_max_bytes: AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             options: CompileOptions::default(),
             os_policy: &DEFAULT_OS_POLICY,
+            legacy_binary_writes: false,
         }
     }
 }
@@ -353,6 +358,7 @@ pub(crate) struct ReplSession<'a> {
     pub(crate) cwd: &'a Arc<str>,
     /// Clock, sleep and random initialization policies.
     pub(crate) os_policy: &'a Arc<OsPolicy>,
+    pub(crate) legacy_binary_writes: bool,
     /// Whether an earlier feed ran `from __future__ import annotations`, which
     /// persists for the rest of the session as in CPython's interactive mode.
     pub(crate) future_annotations: bool,
@@ -393,6 +399,7 @@ impl Executor {
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
                 options,
                 os_policy: Arc::new(OsPolicy::default()),
+                legacy_binary_writes: false,
                 script_name: Arc::from(script_name),
                 cwd: Arc::from(DEFAULT_CWD),
             },
@@ -449,6 +456,7 @@ impl Executor {
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
                 options,
                 os_policy: Arc::clone(session.os_policy),
+                legacy_binary_writes: session.legacy_binary_writes,
                 script_name: Arc::clone(session.script_name),
                 cwd: Arc::clone(session.cwd),
             },
@@ -531,6 +539,7 @@ impl Executor {
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
                 options,
                 os_policy: Arc::clone(session.os_policy),
+                legacy_binary_writes: session.legacy_binary_writes,
                 script_name: Arc::clone(session.script_name),
                 cwd: Arc::clone(session.cwd),
             },
@@ -701,6 +710,7 @@ impl Program {
             assert_repr_max_bytes: self.assert_repr_max_bytes,
             options: self.options,
             os_policy: &self.os_policy,
+            legacy_binary_writes: self.legacy_binary_writes,
         }
     }
 
@@ -714,6 +724,7 @@ impl Program {
             assert_repr_max_bytes: AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             options: CompileOptions::default(),
             os_policy: Arc::new(OsPolicy::default()),
+            legacy_binary_writes: false,
             script_name: Arc::from(""),
             cwd: Arc::from(DEFAULT_CWD),
         }

@@ -145,7 +145,7 @@ fn session_checkout_run(bench: &mut Bencher) {
 
 /// Calls an undefined name (which becomes an external-function suspension)
 /// 1,000 times in a loop. Each call is a full round trip — the worker
-/// suspends and frames the call, the parent answers with a framed reply —
+/// suspends and frames the call, the client answers with a framed reply —
 /// so this isolates the per-message protobuf encode/decode + framing cost.
 const EXT_CALL_LOOP: &str = include_str!("python/pool/ext_call_loop.py");
 

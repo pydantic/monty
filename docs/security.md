@@ -16,7 +16,7 @@ because the interpreter implements no such operation.
 
 !!! note
 
-    If you want Monty combined with OS-level isolation, see [Full Monty](server.md), the commercial version of Monty.
+    If you want Monty combined with OS-level isolation, see [Commercial Support](server.md), the commercial version of Monty.
 
 In practice that means:
 
@@ -337,6 +337,8 @@ See [random](limitations/random.md).
 
 Default system sleeps bypass your `os=` handler.
 The sandbox caps each delay at `sleep_system_max`, ten seconds by default (`--max-sleep` in the CLI).
+A longer sleep returns normally at the cap without a warning, unless the capped delay would exceed `max_total_sleep_secs`.
+This cap is independent of `PoolConfig::request_timeout` (`request_timeout` in Python, `requestTimeout` in JavaScript).
 The pool waits on the calling thread under `Monty`, or with a timer under `AsyncMonty` and JavaScript, including browsers.
 All pools answer `asyncio.sleep()` with futures, so gathered sleeps overlap and other sandbox tasks can run meanwhile.
 Manual suspension drivers receive capped `system.sleep` or `system.async_sleep` calls.
@@ -424,11 +426,11 @@ Two more properties of the subprocess worker boundary matter:
 
 - **Workers spawn with an empty environment** (Windows keeps only `SystemRoot`), so host secrets are never in a worker's
     memory to begin with.
-- **The parent treats every frame from a worker as untrusted input.** A worker could in principle be compromised.
+- **The client treats every frame from a worker as untrusted input.** A worker could in principle be compromised.
     Wire decoding validates values and enforces allocation budgets before growing decoded buffers.
     Generated repeated fields, including empty traceback entries and print segments, share the value decoder's budget.
     A worker that violates the protocol is discarded.
-    See the [protocol allocation budget](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#children-are-untrusted)
+    See the [protocol allocation budget](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#workers-are-untrusted)
     for what the per-frame budget counts and excludes.
 - **Workers are reused, then recycled.** A compromised worker could see later sessions until it is replaced, after
     1000 checkouts by default.

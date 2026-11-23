@@ -16,8 +16,8 @@ endif
 
 .PHONY: install-py
 install-py: .uv ## Install python dependencies
-	# --only-dev avoids building the python packages; --inexact preserves builds installed by make dev-py
-	uv sync --all-packages --only-dev --inexact
+	# --only-group avoids building the python packages; --inexact preserves builds installed by make dev-py
+	uv sync --all-packages --only-group dev --only-group grpc --inexact
 
 .PHONY: install-js
 install-js: ## Install JS package dependencies
@@ -67,11 +67,16 @@ test-js: build-js ## Test the JS package (builds the monty binary the workers ru
 build-wasm: install-js ## Build the WASI 0.2 worker component (requires the wasm32-wasip1 target)
 	cd crates/monty-js && npm run build:wasm && npm run build:ts
 
+WASM_GENERATED_SOURCES := \
+	crates/monty-js/ts/worker/component \
+	crates/monty-js/ts/worker/componentModules.ts \
+	crates/monty-js/ts/worker/loadModule.browser.ts
+
 .PHONY: check-wasm-types
-check-wasm-types: build-wasm ## Verify checked-in component declarations match the WIT interface
-	git diff --exit-code -- crates/monty-js/ts/worker/component
-	@untracked=$$(git ls-files --others --exclude-standard -- crates/monty-js/ts/worker/component); \
-		test -z "$$untracked" || { echo "Untracked generated component declarations:"; echo "$$untracked"; exit 1; }
+check-wasm-types: build-wasm ## Verify checked-in component declarations and asset loaders match Jco output
+	git diff --exit-code -- $(WASM_GENERATED_SOURCES)
+	@untracked=$$(git ls-files --others --exclude-standard -- $(WASM_GENERATED_SOURCES)); \
+		test -z "$$untracked" || { echo "Untracked generated component files:"; echo "$$untracked"; exit 1; }
 	@# the published `dist` has to type-check for a strict consumer, and the
 	@# build cannot see that because it compiles from `ts`
 	cd crates/monty-js && npm run check:dist-types
@@ -106,10 +111,10 @@ format-js: install-js ## Format JS code with prettier
 	cd crates/monty-js && npm run format
 
 # tracked markdown, minus the vendored typeshed, the `.macroscope/` config files that only
-# look like markdown, the AGENTS.md symlink (CLAUDE.md is formatted directly), and the crate
-# READMEs: rustdoc embeds those and clippy's `doc_overindented_list_items` rejects the
+# look like markdown, and the crate READMEs: rustdoc embeds those and clippy's
+# `doc_overindented_list_items` rejects the
 # four-space list continuations mdformat-mkdocs writes
-MD_FILES := $(shell git ls-files '*.md' ':!:crates/monty-typeshed/**' ':!:.macroscope/**' ':!:AGENTS.md' ':!:crates/*/README*.md')
+MD_FILES := $(shell git ls-files '*.md' ':!:crates/monty-typeshed/**' ':!:.macroscope/**' ':!:crates/*/README*.md')
 
 .PHONY: format-md
 format-md: ## Format markdown with mdformat (tables, mkdocs admonitions, frontmatter)
@@ -190,7 +195,7 @@ test-type-checking: ## Run rust tests on monty-type-checking
 	cargo test -p monty-type-checking -p monty-typeshed
 
 .PHONY: test-subprocess
-test-subprocess: ## Run subprocess protocol, child-mode, and worker-pool tests
+test-subprocess: ## Run subprocess protocol, worker-mode, and worker-pool tests
 	cargo build -p monty-runtime
 	cargo test -p monty-proto -p monty-runtime -p monty-pool --features monty-pool/telemetry
 
@@ -263,9 +268,18 @@ generate-unicode-type: ## Regenerate the str character-property tables from the 
 check-unicode-type: generate-unicode-type ## Verify the checked-in str character-property tables match the current CPython
 	git diff --exit-code crates/monty/src/types/unicode_type_data.rs
 
+.PHONY: generate-type-check-warm-up
+generate-type-check-warm-up: ## Regenerate the type checker's warm-up snippet from the vendored builtins stub
+	uv run scripts/gen_type_check_warm_up.py
+
+.PHONY: check-type-check-warm-up
+check-type-check-warm-up: generate-type-check-warm-up ## Verify the checked-in type checker warm-up snippet matches the vendored stubs
+	git diff --exit-code crates/monty-type-checking/src/warm_up.py
+
 .PHONY: update-typeshed
 update-typeshed: ## Update vendored typeshed from upstream
 	uv run crates/monty-typeshed/update.py
+	uv run scripts/gen_type_check_warm_up.py
 	uv run ruff format
 	uv run ruff check --fix --fix-only --silent
 
@@ -287,7 +301,7 @@ bench-pool: ## Run subprocess pool benchmarks (spawn, checkout, wire round-trips
 	MONTY_TEST_BIN=$(CURDIR)/target/release/monty cargo bench -p monty-bench --bench pool
 
 .PHONY: bench-decode
-bench-decode: ## Run child-frame protobuf decode benchmarks
+bench-decode: ## Run worker-frame protobuf decode benchmarks
 	cargo bench -p monty-bench --bench decode
 
 .PHONY: dev-bench

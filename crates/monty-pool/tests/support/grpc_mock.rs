@@ -1,4 +1,4 @@
-//! An in-process gRPC server standing in for a remote child, scripted from a
+//! An in-process gRPC server standing in for a remote worker, scripted from a
 //! plain thread: each session stream the pool opens becomes a [`MockStream`]
 //! with blocking `read` / `send` / `close`, so a test spells out the server
 //! side of a conversation step by step while the pool under test runs on the
@@ -8,6 +8,7 @@
 use std::{
     convert::Infallible,
     future::Future,
+    mem,
     pin::Pin,
     sync::{
         Arc, Mutex,
@@ -20,8 +21,9 @@ use std::{
 
 use bytes::Bytes;
 use monty_proto::{
-    MAX_FRAME_LEN,
+    MAX_FRAME_LEN, decode_frame, encode_to_capped_vec,
     grpc::{BytesCodec, SESSION_PATH},
+    pb,
 };
 use rcgen::generate_simple_self_signed;
 use tokio::{
@@ -199,6 +201,11 @@ struct Proxy {
 
 /// The server side of one session stream, driven synchronously. Dropping it
 /// ends the stream with an `OK` status, as a server that simply finished.
+///
+/// A `Configure` carrying a first request reads as the `Configure` and then
+/// the request alone, so a script answers the two in turn: an `Ok` to the
+/// `Configure` is held back and merged into the request's reply, while any
+/// other answer is the refusal and drops the request (see [`Opening`]).
 pub struct MockStream {
     /// Request messages from the pool; `None` once the pool half-closed or
     /// cancelled the stream.
@@ -208,12 +215,52 @@ pub struct MockStream {
     /// The request metadata the stream was opened with.
     pub metadata: MetadataMap,
     read_timeout: Duration,
+    /// A `Configure` carrying a first request, as it is presented to the script.
+    opening: Mutex<Opening>,
+}
+
+/// The split of a `Configure` carrying a first request into the `Configure`
+/// and the request, and the merge of their two answers into one reply.
+#[derive(Default)]
+struct Opening {
+    /// The request behind a handed-out `Configure`, for the next `read`.
+    request: Option<Bytes>,
+    /// Set from handing out the `Configure` until the script answers it.
+    awaiting_reply: bool,
+    /// The `Configure`'s `Ok`, whose fields the request's reply takes on.
+    ack: Option<pb::WorkerEvent>,
 }
 
 impl MockStream {
     /// Blocks for the next request message; `None` once the pool ended its
     /// side. Panics after the read timeout (see [`Self::set_read_timeout`]).
     pub fn read(&mut self) -> Option<Bytes> {
+        if let Some(request) = self.opening.get_mut().unwrap().request.take() {
+            return Some(request);
+        }
+        let message = self.read_unsplit()?;
+        let opening = self.opening.get_mut().unwrap();
+        let mut request = decode_frame::<pb::ClientRequest>(message.as_ref()).expect("decode request");
+        let Some(pb::client_request::Kind::Configure(configure)) = &mut request.kind else {
+            return Some(message);
+        };
+        let first = match configure.first.take() {
+            Some(pb::configure::First::Feed(feed)) => pb::client_request::Kind::Feed(feed),
+            Some(pb::configure::First::Load(load)) => pb::client_request::Kind::Load(load),
+            None => return Some(message),
+        };
+        let first = pb::ClientRequest {
+            kind: Some(first),
+            ..pb::ClientRequest::default()
+        };
+        opening.request = Some(encode_to_capped_vec(&first).expect("encode request").into());
+        opening.awaiting_reply = true;
+        Some(encode_to_capped_vec(&request).expect("encode Configure").into())
+    }
+
+    /// Blocks for the next request message as the pool sent it, a `Configure`
+    /// carrying a first request included; `None` once the pool ended its side.
+    pub fn read_unsplit(&mut self) -> Option<Bytes> {
         match self.requests.recv_timeout(self.read_timeout) {
             Ok(message) => message,
             Err(RecvTimeoutError::Disconnected) => None,
@@ -231,7 +278,41 @@ impl MockStream {
     /// Runtime-agnostic (a script may run inside its own `block_on`), so a
     /// full channel is retried rather than awaited.
     pub fn send(&self, body: Bytes) -> Result<(), ()> {
-        self.deliver(Ok(body))
+        let mut opening = self.opening.lock().unwrap();
+        if !opening.awaiting_reply && opening.ack.is_none() {
+            drop(opening);
+            return self.deliver(Ok(body));
+        }
+        let mut event = decode_frame::<pb::WorkerEvent>(body.as_ref()).expect("decode event");
+        if matches!(
+            event.kind,
+            Some(
+                pb::worker_event::Kind::Print(_)
+                    | pb::worker_event::Kind::Ping(_)
+                    | pb::worker_event::Kind::StreamedCalls(_)
+            )
+        ) {
+            // not a reply: sent as written, since re-encoding drops unknown fields
+            drop(opening);
+            return self.deliver(Ok(body));
+        }
+        if mem::take(&mut opening.awaiting_reply) {
+            if matches!(event.kind, Some(pb::worker_event::Kind::Ok(_))) {
+                opening.ack = Some(event);
+                return Ok(());
+            }
+            // the `Configure` was refused, so the request behind it never runs
+            opening.request = None;
+        } else if let Some(ack) = opening.ack.take() {
+            event.execution_clock = event.execution_clock.or(ack.execution_clock);
+            event.session_id = event.session_id.or(ack.session_id);
+            event.max_suspensions = event.max_suspensions.or(ack.max_suspensions);
+            event.max_feed_duration_micros = event.max_feed_duration_micros.or(ack.max_feed_duration_micros);
+            event.max_turn_duration_micros = event.max_turn_duration_micros.or(ack.max_turn_duration_micros);
+            event.max_total_sleep_micros = event.max_total_sleep_micros.or(ack.max_total_sleep_micros);
+        }
+        drop(opening);
+        self.deliver(Ok(encode_to_capped_vec(&event).expect("encode event").into()))
     }
 
     /// Queues one item for the response stream, retrying a full channel until
@@ -315,6 +396,7 @@ impl StreamingService<Bytes> for MockService {
                 events,
                 metadata,
                 read_timeout: WAIT_TIMEOUT,
+                opening: Mutex::new(Opening::default()),
             };
             // a dropped server means the test is over; the stream then just
             // sits unanswered until the pool gives up on it

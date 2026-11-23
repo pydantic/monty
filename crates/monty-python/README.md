@@ -1,6 +1,7 @@
 # pydantic-monty-client
 
 Python client for the Monty sandbox.
+Requires Python 3.11 or newer.
 
 Most users want [`pydantic-monty`](https://pypi.org/project/pydantic-monty/)
 instead, which pulls in this package plus
@@ -39,13 +40,30 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
+`AsyncMontyRemote(url, pre_warm=2)` keeps two sessions open and ready, so a checkout takes one, or waits for one still
+dialing, instead of dialing; a checkout that finds neither dials for itself.
+`__aenter__` waits for them to open, raising if one cannot (`pre_warm_wait=False` opens them in the background
+instead, retrying a failed open with a backoff); they are replaced in the background as checkouts take them, and count
+against `max_processes`.
+`metadata` is called for each of these sessions as the pool dials it, from a pool thread; a checkout takes one only if
+its own `metadata` call returned the same value, and otherwise closes the ready sessions and dials for itself.
+Leave `pre_warm` off when one pool's checkouts send different metadata, such as per-user credentials.
+
 `MontyDisconnectError` exposes `status_code`, `status_message`, `cause` and `transport_error` when available.
 These fields preserve the status the server ended the stream with, or the transport or protocol failure, not proof that
 the request did or did not run.
 The client does not automatically replay a disconnected request.
+Disconnect messages include the server's status, cause and message, or the transport error.
 `MontyRefusedError`, with `status_code`, `status_message` and `cause`, is a server refusing to open the session at all;
-nothing ran, so retrying is safe.
+nothing ran.
 It subclasses `MontyError`, not `RuntimeError`, so a retry loop around `checkout()` must catch it by name.
+Its `retryable` attribute identifies temporary refusals, and `retry_after` gives the server's suggested delay in seconds, when present.
+Remote connection failures raise `MontyConnectError`, a `MontyError` subclass with `status_code`,
+`status_message`, `cause` and `transport_error` attributes.
+A CPU-mode remote server requires a finite client `request_timeout`; without one, checkout raises `MontyConfigurationError`.
+Malformed request metadata also raises `MontyConfigurationError` before any connection attempt.
+Creating a pool with invalid settings raises it too: `min_processes` (or `pre_warm`) above `max_processes`, or a local CPU clock
+off Linux or without a finite `request_timeout`.
 
 ## Host decode budget
 
@@ -70,12 +88,23 @@ first import, and a factory runs once, when a feed first needs it, and may be as
 An `ExternalModule` copies its `attrs` dict at construction and imports as a `module` object: callables become host
 functions, nested `ExternalModule` values become importable submodules, and other values are converted normally.
 Its `id` identifies the module when it crosses back out of the sandbox.
+With `stream_async_calls` (on by default for `AsyncMontyRemote`, off for `AsyncMonty`), a `feed_run` call to a
+coroutine function (by `inspect.iscoroutinefunction`) in `external_lookup`
+or an `ExternalModule` that is not awaited at once starts without suspending the worker: the call returns an awaitable
+at once, and the host's result or error arrives at the `await`.
+`feed_start()` and the sync `Monty` suspend at every call.
 The optional `.pyi` source in `stubs` is requested at the first type-checked import and retained for the session.
 An import of a non-bundled name the mapping does not answer reads `<cwd>/name/__init__.py` (or `name.py`) through the
 `os` handler, then the feed's mounts, and runs it as the module, once per session.
 
 This requires the `pydantic-monty-runtime` package, which is generally
 installed as part of the `pydantic-monty` meta-package.
+
+`Monty(pre_warm=2)` and `AsyncMonty(pre_warm=2)` keep two idle workers ready beyond those checked out: each one a
+checkout takes is replaced in the background, and a checkout that finds none waits for one already spawning, or spawns
+its own when every spawning one is already claimed.
+They count against `max_processes`, alongside `min_processes`, which stays a floor on live workers, so a `pre_warm`
+above `max_processes` raises `MontyConfigurationError`.
 
 ```python
 from pydantic_monty import Monty
@@ -135,6 +164,17 @@ with Monty() as pool:
         #> greet(x)
 ```
 
+## Trace context for remote sessions
+
+Each `feed_run`, `feed_start` and load on an `AsyncMontyRemote` session sends the W3C `traceparent` of the current
+OpenTelemetry span, so a server that records the session parents that feed's spans to it.
+When the server names its span for a call, the host callback runs with that span current, or with
+`instrument_telemetry()` under Monty's own span for the call, a child of the server's.
+If the server's spans are not exported to your tracing backend, spans started in host callbacks appear there without
+their parent.
+This needs `opentelemetry-api` only, not `instrument_telemetry()`; without the package, or without a current span,
+nothing is sent.
+
 ## Tracing snapshot handlers
 
 All sync and async snapshot types provide `snapshot.trace_context()` for manual handlers.
@@ -163,7 +203,8 @@ with Monty() as pool:
 
 The returned context preserves baggage and other entries captured at `feed_start` / `load_snapshot`, with the
 suspension's span when Monty tracing is enabled.
-Without Monty tracing it returns the captured context unchanged.
+Without Monty tracing, the span is the one a remote server named for the suspension, if it named one; otherwise the
+captured context is returned unchanged.
 Context is not serialized: restoring captures the restoring caller's context instead.
 The method does not activate the context or resume execution.
 It raises `ImportError` without `opentelemetry-api`, or `RuntimeError` after resume.
@@ -204,6 +245,9 @@ Every `time` module clock then reaches `AbstractOS.time(caller)` as the one OS f
 naming the function that asked (`'time.monotonic'`, `'time.localtime'`, ...).
 A subclass that overrides `def time(self)` without the `caller` parameter raises `TypeError` on any clock read.
 `OSAccess` answers from the host process and caps each wait at `max_sleep`.
+When either cap shortens a sleep, the call returns normally without a warning.
+System sleeps that exceed `max_total_sleep_secs` instead raise an uncatchable `TimeoutError`.
+These caps are independent of `request_timeout`.
 
 A `random.Random` instance or the `random.Random` class returned from the sandbox converts to its repr string.
 Return the generated values or `rng.getstate()` instead.
@@ -217,7 +261,7 @@ Execution duration limits use wall time by default.
 Both clocks charge bytecode and native builtin execution, excluding host suspension.
 Enable CPU mode with `Monty(execution_clock='cpu', request_timeout=2)` or the same options on `AsyncMonty`.
 CPU mode needs Linux workers: on macOS or Windows, entering a CPU-mode `Monty` (`with`) or `AsyncMonty`
-(`async with`) raises `RuntimeError`.
+(`async with`) raises `MontyConfigurationError`.
 Remote clients on any platform adopt the server's clock.
 The clock applies to the whole pool; checkouts cannot override it.
 CPU mode uses the executing thread's CPU time, sampled with a cache of up to 1 ms.

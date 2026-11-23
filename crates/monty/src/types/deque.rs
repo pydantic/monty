@@ -17,7 +17,7 @@ use crate::{
         check_estimated_size, check_repeat_size, check_value_buffer_growth, repeated_len, try_vec_with_capacity,
     },
     types::{
-        LazyHeapSet, Type,
+        LazyHeapSet, Type, TypeRef,
         list::repr_items_fmt,
         slice::{normalize_sequence_index, value_to_i64_bound},
     },
@@ -403,8 +403,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         Ok(Some(false))
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Deque
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Deque.into()
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
@@ -754,8 +754,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DequeIterator> {
         true
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::DequeIterator
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::DequeIterator.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
@@ -1134,11 +1134,14 @@ fn deque_push<'h>(deque: &HeapReadMut<'h, Deque>, item: Value, end: ExtendEnd, v
 /// surviving suffix rather than the full product — `deque([1,2], maxlen=2) *
 /// 10**9` must not materialize two billion `Value`s before truncating. The
 /// pattern is periodic with period `len`, so the kept window of `L = min(len*
-/// count, maxlen)` starts at `(len - L % len) % len`. An unbounded deque has no
-/// shortcut and materializes the full product (may hit resource limits, like
-/// CPython's `MemoryError`).
+/// count, maxlen)` starts at `(len - L % len) % len`. An unbounded deque
+/// materializes the full product (may hit resource limits, like CPython's
+/// `MemoryError`), except that an empty source builds nothing.
 fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mut VM<'_>) -> RunResult<Deque> {
     let len = source.len();
+    // An empty source yields an empty deque however large `count` is; clamping
+    // keeps the unbounded branch from spinning `count` times over nothing.
+    let count = if len == 0 { 0 } else { count };
     // `source` is an owned copy of the deque's items; release it on every exit.
     defer_drop!(source, vm);
     let result = if let Some(max) = maxlen {

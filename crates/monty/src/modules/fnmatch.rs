@@ -16,7 +16,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, HeapData, HeapId},
+    heap::{DropGuard, HeapData},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::{value_as_bytes, value_as_path_str},
@@ -25,17 +25,18 @@ use crate::{
 };
 
 /// The module's four functions.
+#[monty_macros::explicit_discriminants(checksum = 0x8df6_9c0c_fee5_fc83)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum FnmatchFunctions {
-    Fnmatch,
-    Fnmatchcase,
-    Filter,
-    Translate,
+    Fnmatch = 0,
+    Fnmatchcase = 1,
+    Filter = 2,
+    Translate = 3,
 }
 
 /// Creates the `fnmatch` module.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Fnmatch, vm.interns);
     for (name, function) in [
         (StaticStrings::Fnmatch, FnmatchFunctions::Fnmatch),
@@ -45,7 +46,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     ] {
         module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Fnmatch(function)), vm);
     }
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to one of the module's functions.

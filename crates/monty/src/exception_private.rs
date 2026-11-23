@@ -18,7 +18,7 @@ use crate::{
     py_value::PyValue,
     source_map::{SourceMap, StackFrameExt},
     types::{
-        PyTrait, Type, allocate_tuple,
+        PyTrait, Type, TypeRef, allocate_tuple,
         long_int::INT_MAX_STR_DIGITS,
         str::{StringRepr, allocate_string, string_repr_fmt},
     },
@@ -110,14 +110,16 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates an AttributeError for a missing module attribute.
     ///
-    /// Matches CPython's format: `AttributeError: module 'name' has no attribute 'attr'`
+    /// Matches CPython's format: `AttributeError: module 'name' has no attribute 'attr'`,
+    /// or `module has no attribute 'attr'` when `__name__` is not a `str`.
     /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
     #[must_use]
-    fn attribute_error_module(module_name: &str, attr_name: &str) -> RunError {
-        let exc = SimpleException::new_msg(
-            ExcType::AttributeError,
-            format!("module '{module_name}' has no attribute '{attr_name}'"),
-        );
+    fn attribute_error_module(module_name: Option<&str>, attr_name: &str) -> RunError {
+        let msg = match module_name {
+            Some(module_name) => format!("module '{module_name}' has no attribute '{attr_name}'"),
+            None => format!("module has no attribute '{attr_name}'"),
+        };
+        let exc = SimpleException::new_msg(ExcType::AttributeError, msg);
         RunError::Exc(ExceptionRaise {
             exc,
             frame: None,
@@ -174,6 +176,25 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn isinstance_parameterized_generic() -> RunError {
         Self::type_error("isinstance() argument 2 cannot be a parameterized generic")
+    }
+
+    /// Creates the TypeError `issubclass()` raises for a `types.GenericAlias`
+    /// second argument.
+    #[must_use]
+    fn issubclass_parameterized_generic() -> RunError {
+        Self::type_error("issubclass() argument 2 cannot be a parameterized generic")
+    }
+
+    /// Creates the TypeError `issubclass()` raises when its first argument is not a class.
+    #[must_use]
+    fn issubclass_arg1_error() -> RunError {
+        Self::type_error("issubclass() arg 1 must be a class")
+    }
+
+    /// Creates the TypeError `issubclass()` raises for an invalid second argument.
+    #[must_use]
+    fn issubclass_arg2_error() -> RunError {
+        Self::type_error("issubclass() arg 2 must be a class, a tuple of classes, or a union")
     }
 
     /// Creates the TypeError `typing.get_type_hints()` raises for an object that
@@ -262,28 +283,31 @@ pub(crate) trait ExcTypeExt: Sized {
     /// This matches Python 3.14's error message: `TypeError: unhashable type: 'list'`
     #[must_use]
     fn type_error_unhashable(type_: &str) -> RunError {
-        SimpleException::new_msg(ExcType::TypeError, format!("unhashable type: '{type_}'")).into()
+        SimpleException::new_msg(ExcType::TypeError, unhashable_type_message(type_)).into()
     }
 
-    /// Creates a TypeError for unhashable types used as dict keys.
+    /// Creates CPython's TypeError for a dict key that will not hash, e.g.
+    /// `cannot use 'tuple' as a dict key (unhashable type: 'list')`.
     ///
-    /// This matches Python 3.14's error message:
-    /// `TypeError: cannot use 'list' as a dict key (unhashable type: 'list')`
+    /// `reason` is the message of the hashing `TypeError`; see [`unhashable_type_message`].
     #[must_use]
-    fn type_error_unhashable_dict_key(type_: &str) -> RunError {
+    fn type_error_unhashable_dict_key(key_type: &str, reason: &str) -> RunError {
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("cannot use '{type_}' as a dict key (unhashable type: '{type_}')"),
+            format!("cannot use '{key_type}' as a dict key ({reason})"),
         )
         .into()
     }
 
-    /// Creates a TypeError for an unhashable value used as a set element.
+    /// Creates CPython's TypeError for a set element that will not hash, e.g.
+    /// `cannot use 'tuple' as a set element (unhashable type: 'list')`.
+    ///
+    /// `reason` is the message of the hashing `TypeError`; see [`unhashable_type_message`].
     #[must_use]
-    fn type_error_unhashable_set_element(element_type: &str, unhashable_type: &str) -> RunError {
+    fn type_error_unhashable_set_element(element_type: &str, reason: &str) -> RunError {
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("cannot use '{element_type}' as a set element (unhashable type: '{unhashable_type}')"),
+            format!("cannot use '{element_type}' as a set element ({reason})"),
         )
         .into()
     }
@@ -1119,6 +1143,11 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, msg).into()
     }
 
+    /// A datetime or time component outside Python's non-leap-second range.
+    fn second_out_of_range(second: impl fmt::Display) -> RunError {
+        Self::value_error(format_args!("second must be in 0..59, not {second}"))
+    }
+
     /// Creates a generic `IndexError` with a custom message.
     fn index_error(msg: impl fmt::Display) -> RunError {
         SimpleException::new_msg(ExcType::IndexError, msg).into()
@@ -1157,6 +1186,27 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn mktime_out_of_range() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "mktime argument out of range").into()
+    }
+
+    /// `strptime()`'s `ValueError` for a directive missing from its table, quoted
+    /// with bare `'` as CPython does: `'{directive}' is a bad directive in format '{format}'`.
+    #[must_use]
+    fn strptime_bad_directive(directive: &str, format: &str) -> RunError {
+        Self::value_error(format_args!("'{directive}' is a bad directive in format '{format}'"))
+    }
+
+    /// `strptime()`'s `ValueError` for a `%` with nothing, or only whitespace,
+    /// after it: `stray % in format '{format}'`.
+    #[must_use]
+    fn strptime_stray_percent(format: &str) -> RunError {
+        Self::value_error(format_args!("stray % in format '{format}'"))
+    }
+
+    /// The `ValueError` the `time` conversion functions raise for a time tuple
+    /// field outside its range: `{field} out of range`.
+    #[must_use]
+    fn time_field_out_of_range(field: &str) -> RunError {
+        Self::value_error(format_args!("{field} out of range"))
     }
 
     /// The `TypeError` the `time` conversion functions raise for a time tuple of
@@ -1429,6 +1479,14 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, "negative count").into()
     }
 
+    /// Creates a ValueError when an integer in a bytes iterable is outside 0..=255.
+    ///
+    /// Matches CPython's format: `ValueError: bytes must be in range(0, 256)`
+    #[must_use]
+    fn value_error_bytes_range() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "bytes must be in range(0, 256)").into()
+    }
+
     /// Creates the `ValueError` CPython's float-to-string conversion raises for a
     /// precision above `MAX_FLOAT_PRECISION` (`INT_MAX - 1024`).
     ///
@@ -1554,6 +1612,16 @@ pub(crate) trait ExcTypeExt: Sized {
     /// The `_csv.Error` for a dialect name that is not registered.
     fn csv_unknown_dialect() -> RunError {
         Self::csv_error("unknown dialect")
+    }
+
+    /// A `statistics.StatisticsError` with the given message.
+    fn statistics_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::StatisticsError, msg).into()
+    }
+
+    /// The `ValueError` `math.isqrt` raises for a negative argument; `statistics.stdev` reaches it too.
+    fn isqrt_negative_error() -> RunError {
+        Self::value_error("isqrt() argument must be nonnegative")
     }
 
     /// A trapped `decimal` signal: the class plus C `_decimal`'s list of conditions,
@@ -1829,6 +1897,71 @@ pub(crate) trait ExcTypeExt: Sized {
         ))
     }
 
+    /// The `TypeError` for a non-`str` name `from module import *` would bind:
+    /// an item of `__all__`, or a key of the module's namespace without one.
+    /// Like every star-import error, CPython shows it without carets.
+    #[must_use]
+    fn import_star_name_type(module_name: &str, from_all: bool, type_name: &str) -> RunError {
+        let source = if from_all { "Item in" } else { "Key in" };
+        let container = if from_all { "__all__" } else { "__dict__" };
+        without_caret(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{source} {module_name}.{container} must be str, not {type_name}"),
+        ))
+    }
+
+    /// The `TypeError` for a module `__all__` that is not a sequence (see
+    /// [`sequence_index_error`](Self::sequence_index_error)), shown without carets.
+    #[must_use]
+    fn import_star_all_not_sequence(error: SimpleException) -> RunError {
+        without_caret(error)
+    }
+
+    /// The `TypeError` for a non-`str` name `from module import *` would bind,
+    /// when the module has set `__name__` to a non-`str`.
+    #[must_use]
+    fn import_star_module_name_type(type_name: &str) -> RunError {
+        without_caret(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("module __name__ must be a string, not {type_name}"),
+        ))
+    }
+
+    /// CPython's `PySequence_GetItem` `TypeError` for a built-in value it
+    /// cannot index, or `None` when its type has `sq_item`. Mappings are "not
+    /// a sequence". `Counter` indexes since, being a Python subclass of
+    /// `dict` in CPython, it gains `sq_item`. Instances are the caller's to check.
+    #[must_use]
+    fn sequence_index_error(value: &Value, vm: &VM<'_>) -> Option<SimpleException> {
+        match value.py_type(vm).native() {
+            Some(
+                Type::List
+                | Type::Tuple
+                | Type::NamedTuple
+                | Type::Str
+                | Type::Bytes
+                | Type::Range
+                | Type::Deque
+                | Type::Counter,
+            ) => None,
+            Some(Type::Dict | Type::DefaultDict) => Some(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("{} is not a sequence", value.py_type_name(vm)),
+            )),
+            _ => Some(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("'{}' object does not support indexing", value.py_type_name(vm)),
+            )),
+        }
+    }
+
+    /// The `ImportError` for `from x import *` when the import produced a value
+    /// that is not a module, so has no namespace to list.
+    #[must_use]
+    fn import_star_without_namespace() -> RunError {
+        import_error_without_caret("from-import-* object has no __dict__ and no __all__".to_owned())
+    }
+
     /// Creates a ValueError when an integer is too large to convert to a decimal string.
     ///
     /// Matches CPython 3.11+'s `sys.int_max_str_digits` error message.
@@ -1939,6 +2072,18 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "Python int too large to convert to C long").into()
     }
 
+    /// CPython's `i` format for an `i64` outside a C `int`:
+    /// `signed integer is less than minimum` / `signed integer is greater than maximum`.
+    #[must_use]
+    fn overflow_signed_c_int(value: i64) -> RunError {
+        let msg = if value < 0 {
+            "signed integer is less than minimum"
+        } else {
+            "signed integer is greater than maximum"
+        };
+        SimpleException::new_msg(ExcType::OverflowError, msg).into()
+    }
+
     /// `OverflowError: Python int too large for C unsigned long`, from Argument
     /// Clinic's `unsigned_long` converter on an int beyond `u64`.
     #[must_use]
@@ -1970,12 +2115,12 @@ pub(crate) trait ExcTypeExt: Sized {
     /// For other cases, uses the generic format:
     /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
     #[must_use]
-    fn binary_type_error(op: &str, lhs_type: Type, lhs_name: impl Display, rhs_name: impl Display) -> RunError {
-        let message = if (op == "+" || op == "+=") && matches!(lhs_type, Type::Deque) {
+    fn binary_type_error(op: &str, lhs_type: TypeRef, lhs_name: impl Display, rhs_name: impl Display) -> RunError {
+        let message = if (op == "+" || op == "+=") && lhs_type == Type::Deque {
             // CPython hardcodes the bare "deque" here even though tp_name is the
             // qualified "collections.deque", so this can't share the branch below.
             format!("can only concatenate deque (not \"{rhs_name}\") to deque")
-        } else if (op == "+" || op == "+=") && matches!(lhs_type, Type::Str | Type::List) {
+        } else if (op == "+" || op == "+=") && matches!(lhs_type.native(), Some(Type::Str | Type::List)) {
             format!("can only concatenate {lhs_name} (not \"{rhs_name}\") to {lhs_name}")
         } else {
             format!("unsupported operand type(s) for {op}: '{lhs_name}' and '{rhs_name}'")
@@ -2655,6 +2800,13 @@ pub(crate) trait ExcTypeExt: Sized {
     }
 }
 
+/// The constructor of every native exception class, for the native type table.
+pub(crate) fn exc_new(ty: Type, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    ty.exc_type()
+        .expect("exception types carry their ExcType")
+        .call(vm, args)
+}
+
 impl ExcTypeExt for ExcType {
     /// Allocates an exception for constructors like `ValueError('message')`.
     /// Currently supports zero or one string argument.
@@ -2852,16 +3004,6 @@ impl SimpleException {
         f.write_char(')')
     }
 
-    /// Records a position in committed code; propagation supplies the frame name.
-    pub(crate) fn with_position(self, position: CodeRange) -> ExceptionRaise {
-        ExceptionRaise {
-            exc: self,
-            frame: Some(RawStackFrame::from_position(position)),
-            snippet_frame: None,
-            hide_caret: false,
-        }
-    }
-
     /// Resolves a rejected snippet's location before its provisional intern IDs are discarded.
     /// Caller frames are still collected from the VM as the error propagates.
     pub(crate) fn with_snippet_position(self, position: CodeRange, source: &str) -> ExceptionRaise {
@@ -2876,8 +3018,8 @@ impl SimpleException {
 }
 
 impl<'h> HeapRead<'h, SimpleException> {
-    pub(crate) fn py_type(&self, vm: &VM<'h>) -> Type {
-        Type::Exception(self.get(vm.heap).exc_type)
+    pub(crate) fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        Type::from(self.get(vm.heap).exc_type).into()
     }
 
     /// Gets an attribute from this exception: `args` (a tuple of the message, if
@@ -2978,21 +3120,10 @@ impl ExceptionRaise {
     /// The new frame becomes the ultimate parent (displayed first in traceback,
     /// since tracebacks show "most recent call last").
     ///
-    /// Special case: If the innermost frame has no name yet (created with `with_position`),
-    /// this sets its name instead of creating a new parent. This happens when the error
-    /// is raised from a namespace lookup - the initial frame has the position but not
-    /// the function name, which gets filled in as the error propagates.
-    ///
     /// `hide_caret` omits the added frame's carets, as CPython does under an
-    /// `import` whose module body raised; a nameless frame keeps its own.
+    /// `import` whose module body raised.
     pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: StringId, hide_caret: bool) {
         if let Some(ref mut frame) = self.frame {
-            // If innermost frame has no name, set it instead of adding a parent
-            // This handles errors from namespace lookups which create nameless frames
-            if frame.frame_name.is_none() {
-                frame.frame_name = Some(name);
-                return;
-            }
             // Find the outermost frame (the one with no parent) and add the new frame as its parent
             let mut current = frame;
             while current.parent.is_some() {
@@ -3036,39 +3167,36 @@ impl ExceptionRaise {
         // filenames so a tiny `Vec` beats a HashMap on both allocations and
         // lookup cost.
         let mut cache: Vec<(StringId, SourceMap<'s>)> = Vec::new();
-        let mut traceback = self
-            .frame
-            .map(|frame| {
-                let mut frames = Vec::new();
-                let mut current = Some(&frame);
-                while let Some(f) = current {
-                    let fname_id = f.position.filename;
-                    // An `eval()` / `exec()` snippet resolves against its own
-                    // recorded source, never the host's, and prints no source
-                    // line: CPython has nothing to read back for `<string>`.
-                    let eval_source = interns.eval_source(fname_id);
-                    let sm_idx = if let Some(i) = cache.iter().position(|(k, _)| *k == fname_id) {
-                        i
-                    } else {
-                        // An imported file also carries its own source, but shows its lines.
-                        let src = eval_source
-                            .or_else(|| interns.file_source(fname_id))
-                            .unwrap_or_else(|| source_for(interns.get_filename(fname_id)).unwrap_or(""));
-                        cache.push((fname_id, SourceMap::new(src)));
-                        cache.len() - 1
-                    };
-                    let mut stack_frame = StackFrame::from_raw(f, interns, &mut cache[sm_idx].1);
-                    if eval_source.is_some() {
-                        stack_frame.preview_line = None;
-                    }
-                    frames.push(stack_frame);
-                    current = f.parent.as_deref();
+        let mut traceback = self.frame.map_or_default(|frame| {
+            let mut frames = Vec::new();
+            let mut current = Some(&frame);
+            while let Some(f) = current {
+                let fname_id = f.position.filename;
+                // An `eval()` / `exec()` snippet resolves against its own
+                // recorded source, never the host's, and prints no source
+                // line: CPython has nothing to read back for `<string>`.
+                let eval_source = interns.eval_source(fname_id);
+                let sm_idx = if let Some(i) = cache.iter().position(|(k, _)| *k == fname_id) {
+                    i
+                } else {
+                    // An imported file also carries its own source, but shows its lines.
+                    let src = eval_source
+                        .or_else(|| interns.file_source(fname_id))
+                        .unwrap_or_else(|| source_for(interns.get_filename(fname_id)).unwrap_or(""));
+                    cache.push((fname_id, SourceMap::new(src)));
+                    cache.len() - 1
+                };
+                let mut stack_frame = StackFrame::from_raw(f, interns, &mut cache[sm_idx].1);
+                if eval_source.is_some() {
+                    stack_frame.preview_line = None;
                 }
-                // Reverse so outermost frame is first (Python's "most recent call last" ordering)
-                frames.reverse();
-                frames
-            })
-            .unwrap_or_default();
+                frames.push(stack_frame);
+                current = f.parent.as_deref();
+            }
+            // Reverse so outermost frame is first (Python's "most recent call last" ordering)
+            frames.reverse();
+            frames
+        });
         if let Some(frame) = self.snippet_frame {
             traceback.push(*frame);
         }
@@ -3101,7 +3229,7 @@ fn exc_data_clone_size(data: &ExcData) -> usize {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RawStackFrame {
     pub position: CodeRange,
-    /// The name of the frame (function name StringId, or None for module-level code).
+    /// The frame's function name, or `<module>` for module-level code; always set.
     pub frame_name: Option<StringId>,
     pub parent: Option<Box<Self>>,
     /// Whether to hide the caret marker in the traceback for this frame.
@@ -3123,15 +3251,6 @@ impl RawStackFrame {
             position,
             frame_name: Some(frame_name),
             parent: parent.map(|p| Box::new(p.clone())),
-            hide_caret: false,
-        }
-    }
-
-    fn from_position(position: CodeRange) -> Self {
-        Self {
-            position,
-            frame_name: None,
-            parent: None,
             hide_caret: false,
         }
     }
@@ -3265,6 +3384,12 @@ impl RunError {
     }
 }
 
+/// CPython's `unhashable type: 'T'` message, raised by `hash()` and wrapped by
+/// the set element and dict key errors.
+pub(crate) fn unhashable_type_message(type_: &str) -> String {
+    format!("unhashable type: '{type_}'")
+}
+
 /// CPython's `ModuleNotFoundError` message for `module_name`.
 fn no_module_named(module_name: &str) -> String {
     format!("No module named '{module_name}'")
@@ -3272,8 +3397,13 @@ fn no_module_named(module_name: &str) -> String {
 
 /// An `ImportError` shown without carets, as CPython shows import errors.
 fn import_error_without_caret(msg: String) -> RunError {
+    without_caret(SimpleException::new_msg(ExcType::ImportError, msg))
+}
+
+/// Raises `exc` with its traceback line shown without carets.
+fn without_caret(exc: SimpleException) -> RunError {
     RunError::Exc(ExceptionRaise {
-        exc: SimpleException::new_msg(ExcType::ImportError, msg),
+        exc,
         frame: None,
         snippet_frame: None,
         hide_caret: true,
