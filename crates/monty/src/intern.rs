@@ -19,6 +19,7 @@
 
 mod compile;
 mod storage;
+mod string_access_cache;
 
 use std::{
     cell::{Cell, RefCell},
@@ -35,6 +36,7 @@ pub(crate) use compile::CompileInterns;
 use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 use storage::Entries;
+use string_access_cache::AccessCacheStore;
 use strum::{EnumString, FromRepr, IntoStaticStr};
 
 use crate::{
@@ -42,7 +44,7 @@ use crate::{
     function::Function,
     hash::{HashValue, RESERVED_STRING_HASHES, WithHash, hash_python_str},
     prepare::SnippetNames,
-    types::str::{AccessCache, AccessCacheStore},
+    types::str::AccessCache,
 };
 
 /// Index into the string interner's storage.

@@ -8,7 +8,7 @@ mod iterator;
 
 use std::{fmt::Write, str};
 
-pub(crate) use access_cache::{AccessCache, AccessCacheStore};
+pub(crate) use access_cache::AccessCache;
 pub(crate) use heap_str::HeapStr;
 pub(crate) use inline_str::InlineStr;
 pub(crate) use iterator::StringIterator;
