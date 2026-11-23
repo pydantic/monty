@@ -4,14 +4,15 @@ use super::*;
 use crate::MontyRepl;
 
 #[test]
-fn interned_endpoint_reads_do_not_allocate_cache() {
+fn short_interned_strings_and_long_endpoint_reads_skip_the_cache() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
-    repl.feed_run(
-        "text = '中é🐍'\nclass First:\n    def __index__(self):\n        return 0\nlen(text)\ntext[0]\ntext[-1]\ntext[First()]\ntext.startswith('中')\ntext.endswith('🐍')",
-        vec![],
-        PrintWriter::Disabled,
-    )
-    .unwrap();
+    let short = "é".repeat(32);
+    let code = format!(
+        "short = '{short}'\ntext = '{short}🐍'\nclass First:\n    def __index__(self):\n        return 0\n\
+         assert short[1] == 'é'\nassert short[8:10] == 'éé'\nassert short.rfind('é', 8) == 31\n\
+         len(text)\ntext[0]\ntext[-1]\ntext[First()]\ntext.startswith('é')\ntext.endswith('🐍')"
+    );
+    repl.feed_run(&code, vec![], PrintWriter::Disabled).unwrap();
     assert!(!repl.heap_and_interns().1.string_access_caches.is_initialized());
 
     repl.feed_run("text[1]", vec![], PrintWriter::Disabled).unwrap();

@@ -44,6 +44,10 @@ use crate::{
     value::{EitherStr, VALUE_SIZE, Value, eq_str},
 };
 
+/// One-off slices and searches on short strings pay for a cursor update they never reuse.
+/// A cutoff in UTF-8 bytes bounds the direct scan for every character width.
+const SHORT_SCAN_BYTES: usize = 64;
+
 /// A string view that preserves Python identity.
 ///
 /// Heap reads keep the receiver available across calls such as `__index__` without
@@ -194,20 +198,31 @@ impl<'h> PyStr<'h> {
         if matches!(self, Self::Inline(_)) {
             return Ok(text.chars().nth(index));
         }
-        let byte = self.byte_offset(index, characters, None, vm)?;
+        let byte = self.byte_offset(text, index, characters, None, vm)?;
         Ok(text[byte..].chars().next())
     }
 
     /// Resolves a Unicode boundary, optionally starting from a bound computed by the same operation.
-    fn byte_offset(&self, index: usize, characters: usize, hint: Option<Anchor>, vm: &VM<'h>) -> RunResult<usize> {
-        let text = self.as_str(vm);
+    fn byte_offset(
+        &self,
+        text: &str,
+        index: usize,
+        characters: usize,
+        hint: Option<Anchor>,
+        vm: &VM<'h>,
+    ) -> RunResult<usize> {
         if index == 0 {
             return Ok(0);
         }
         if index == characters {
             return Ok(text.len());
         }
-        if let Some(cache) = self.access_cache(vm) {
+        if text.len() <= SHORT_SCAN_BYTES {
+            // The character index is a byte offset if just its prefix is ASCII.
+            if text.as_bytes()[..index].is_ascii() {
+                return Ok(index);
+            }
+        } else if let Some(cache) = self.access_cache(vm) {
             return Ok(cache.byte_offset(text, index, characters, hint, &vm.heap.tracker)?);
         }
         Ok(fast_offsets::byte_offset(text, characters, hint, index, || {
@@ -234,14 +249,14 @@ impl<'h> PyStr<'h> {
                 end,
             ));
         }
-        let start_byte = self.byte_offset(start, characters, None, vm)?;
+        let start_byte = self.byte_offset(text, start, characters, None, vm)?;
         let start = Anchor {
             character: start,
             byte: start_byte,
         };
         // Nearby bounds can reuse the start lookup. A distant end may be closer to a string endpoint.
         let anchor = (end - start.character <= end.min(characters - end)).then_some(start);
-        let end_byte = self.byte_offset(end, characters, anchor, vm)?;
+        let end_byte = self.byte_offset(text, end, characters, anchor, vm)?;
         Ok((start, end_byte))
     }
 
@@ -253,6 +268,10 @@ impl<'h> PyStr<'h> {
             return Ok(start.character);
         }
         let text = self.as_str(vm);
+        if text.len() <= SHORT_SCAN_BYTES {
+            // The search already resolved its start, so count only the gap to the match.
+            return Ok(start.character + text[start.byte..byte_offset].chars().count());
+        }
         let check_time = || vm.heap.tracker.check_time();
         let ascii = match self {
             Self::Heap(value) => value.get(vm.heap).checked_is_ascii(check_time)?,
