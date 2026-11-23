@@ -364,7 +364,7 @@ assert (1.5).hex() == '0x1.8000000000000p+0'
 assert float.fromhex('0x1.8p+0') == 1.5
 assert (0.0).fromhex('0x1.8p+0') == 1.5
 assert float.fromhex('ff') == 255.0
-assert float.fromhex('-0x1p-2000') == 0.0
+assert float.fromhex('-0x1p-2000').hex() == '-0x0.0p+0'
 ";
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     ex.run_no_limits(vec![]).unwrap();
