@@ -94,3 +94,51 @@ impl<'de> Deserialize<'de> for List {
         Ok(Self { storage, contains_refs })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use monty_types::ResourceTracker;
+
+    use super::*;
+
+    #[test]
+    fn packed_lists_match_the_legacy_cbor_encoding() {
+        #[derive(Serialize, Deserialize)]
+        #[serde(rename = "List")]
+        struct LegacyList {
+            #[serde(rename = "I")]
+            items: Vec<Value>,
+            #[serde(rename = "C")]
+            contains_refs: bool,
+        }
+
+        let heap = Heap::new(16, ResourceTracker::default());
+        for items in [
+            vec![],
+            vec![Value::None],
+            vec![Value::Int(255)],
+            vec![Value::Int(255), Value::None],
+            vec![Value::Int(-257)],
+            vec![Value::None, Value::Int(-257)],
+            vec![Value::Bool(false)],
+            vec![Value::Bool(true), Value::None],
+            vec![Value::Float(-0.0), Value::Float(f64::INFINITY)],
+            vec![Value::None, Value::Float(f64::from_bits(0x7ff8_0000_0000_0123))],
+        ] {
+            let legacy = LegacyList {
+                items,
+                contains_refs: false,
+            };
+            let old_bytes = minicbor_serde::to_vec(&legacy).unwrap();
+            let list = List::from_values(legacy.items, &heap);
+            assert!(matches!(list.storage, ListStorage::Empty | ListStorage::Packed(_)));
+            let new_bytes = minicbor_serde::to_vec(&list).unwrap();
+            assert_eq!(new_bytes, old_bytes);
+
+            let old_reader: LegacyList = minicbor_serde::from_slice(&new_bytes).unwrap();
+            let new_reader: List = minicbor_serde::from_slice(&old_bytes).unwrap();
+            assert_eq!(minicbor_serde::to_vec(&old_reader).unwrap(), old_bytes);
+            assert_eq!(minicbor_serde::to_vec(&new_reader).unwrap(), new_bytes);
+        }
+    }
+}

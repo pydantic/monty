@@ -64,8 +64,69 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("repl_feed_after_2k_snippets__monty", repl_feed_after_2k_snippets);
     c.bench_function("session_dump__monty", session_dump);
     c.bench_function("session_load__monty", session_load);
+    list_storage(c);
     container_copy_and_lookup(c);
     dictionary_fastpaths_and_snapshots(c);
+}
+
+fn list_storage(c: &mut Criterion) {
+    for (operation, expression) in [
+        ("copy", "source.copy()"),
+        ("list", "list(source)"),
+        ("slice", "source[:]"),
+    ] {
+        bench_repl_snippet(
+            c,
+            &format!("list_storage_empty_{operation}__monty"),
+            "source = []",
+            &format!("for _ in range(1000):\n    result = {expression}\nassert result == [] and result is not source"),
+        );
+    }
+    bench_repl_snippet(
+        c,
+        "list_storage_empty_append_pop__monty",
+        "source = []",
+        "for _ in range(1000):\n    source.append(1)\n    result = source.pop()\nassert result == 1 and not source",
+    );
+
+    for (storage, pattern, replacement) in [
+        ("none", "[None, None]", "None"),
+        ("u8", "[7, 9]", "13"),
+        ("i64", "[-257, 257]", "1024"),
+        ("nullable_u8", "[3, None]", "11"),
+        ("nullable_i64", "[-257, None]", "None"),
+        ("f64", "[1.25, -0.5]", "3.5"),
+        ("nullable_f64", "[1.25, None]", "-0.5"),
+        ("bool", "[True, False]", "True"),
+        ("nullable_bool", "[True, None]", "False"),
+        ("generic", "[1, {'key': 2}]", "{'key': 3}"),
+    ] {
+        let setup = format!("source = {pattern} * 1024\nreplacement = {replacement}");
+        for (operation, batch) in [
+            (
+                "read",
+                "for i in range(2048):\n    result = source[i]\nassert result == source[-1]",
+            ),
+            (
+                "write",
+                "for i in range(2048):\n    source[i] = replacement\nassert source[-1] == replacement",
+            ),
+            (
+                "copy",
+                "for _ in range(64):\n    result = source.copy()\nassert result is not source and len(result) == 2048\nassert result[0] == source[0] and result[-1] == source[-1]",
+            ),
+            (
+                "list",
+                "for _ in range(64):\n    result = list(source)\nassert result is not source and len(result) == 2048\nassert result[0] == source[0] and result[-1] == source[-1]",
+            ),
+            (
+                "slice",
+                "for _ in range(64):\n    result = source[1:-1]\nassert len(result) == 2046 and result[0] == source[1] and result[-1] == source[-2]",
+            ),
+        ] {
+            bench_repl_snippet(c, &format!("list_storage_{storage}_{operation}__monty"), &setup, batch);
+        }
+    }
 }
 
 /// Builds the source once so retained capacity and tombstone scans stay visible in copy timings.

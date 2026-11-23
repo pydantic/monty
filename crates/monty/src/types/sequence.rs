@@ -1,3 +1,4 @@
+use monty_types::ResourceTracker;
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 
 use super::list::PackedView;
@@ -100,6 +101,13 @@ impl<'a> SequenceItems<'a> {
 
     /// Appends clones with deadline checks. The caller owns the partial copy on error.
     pub(crate) fn extend_cloned(self, output: &mut Vec<Value>, heap: &Heap) -> RunResult<()> {
+        if let Self::Values(items) = self {
+            for chunk in items.chunks(ResourceTracker::LOOP_CHECK_INTERVAL) {
+                output.extend(chunk.iter().map(|item| item.clone_with_heap(heap)));
+                heap.tracker.check_time_every(chunk.len() - 1)?;
+            }
+            return Ok(());
+        }
         for (index, item) in self.cloned(heap).enumerate() {
             output.push(item);
             heap.tracker.check_time_every(index)?;

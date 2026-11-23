@@ -41,10 +41,23 @@ fn packed_lists_and_iterators_round_trip_through_the_existing_dump_format() {
     )
     .unwrap();
 
+    repl.feed_run(
+        "floats = [1.25, -0.0]\nnullable = [None, 0.5]\nfloat_it = iter(nullable)\nnext(float_it)",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
     let bytes = dump("test.py", None, &[], SessionRef::Idle(&repl)).unwrap();
     let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
         panic!("expected an idle session");
     };
+    restored
+        .feed_run(
+            "assert str(floats[1]) == '-0.0' and nullable[0] is None and next(float_it) == 0.5",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
     let result = restored
         .feed_run(
             "items.append(True)\nalias is items and list(it) == [None, 0, 256, True] and small == [0, 255] and nullable_small == [255, None, 0] and type(items[2]) is int and items[-1] is True and flags[0] is True and flags[1] is None and flags[2] is False and empty_slots[-1] is None",

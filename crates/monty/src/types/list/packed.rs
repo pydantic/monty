@@ -1,14 +1,17 @@
 use std::{mem, ops::Range};
 
 use monty_types::ResourceTracker;
+use smallvec::SmallVec;
 
 use super::bitmap::Bitmap;
 use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
+    types::range::Range as PythonRange,
     value::Value,
 };
 
 const COPY_BATCH: usize = 1024;
+const INLINE_SLICE_ITEMS: usize = 8;
 
 /// Nonnegative integers through 255 fit in one byte. Other `i64` values need wide slots.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -39,6 +42,7 @@ pub(super) enum Packing {
     Empty,
     Nones,
     Int { width: IntWidth, nullable: bool },
+    Float { nullable: bool },
     Bool { nullable: bool },
     Generic,
 }
@@ -52,6 +56,7 @@ impl Packing {
                 nullable: false,
             },
             Value::Bool(_) => Self::Bool { nullable: false },
+            Value::Float(_) => Self::Float { nullable: false },
             _ => Self::Generic,
         }
     }
@@ -69,6 +74,8 @@ impl Packing {
                 nullable: a || b,
             },
             (Self::Bool { nullable: a }, Self::Bool { nullable: b }) => Self::Bool { nullable: a || b },
+            (Self::Nones, Self::Float { .. }) | (Self::Float { .. }, Self::Nones) => Self::Float { nullable: true },
+            (Self::Float { nullable: a }, Self::Float { nullable: b }) => Self::Float { nullable: a || b },
             _ => Self::Generic,
         }
     }
@@ -86,14 +93,51 @@ impl Packing {
     }
 }
 
+pub(super) enum NumericSliceSnapshot {
+    Bytes(SmallVec<[u8; INLINE_SLICE_ITEMS]>),
+    Wide(SmallVec<[i64; INLINE_SLICE_ITEMS]>),
+    Floats(SmallVec<[f64; INLINE_SLICE_ITEMS]>),
+}
+
+impl NumericSliceSnapshot {
+    pub(super) fn take(source: &PackedList, tracker: &ResourceTracker) -> RunResult<Self> {
+        match source {
+            PackedList::ByteInts(values) => Ok(Self::Bytes(snapshot_slots(values, tracker)?)),
+            PackedList::Ints(values) => Ok(Self::Wide(snapshot_slots(values, tracker)?)),
+            PackedList::Floats(values) => Ok(Self::Floats(snapshot_slots(values, tracker)?)),
+            _ => unreachable!("checked for a numeric buffer"),
+        }
+    }
+
+    pub(super) fn write(self, target: &mut PackedList, start: i64, step: i64, count: usize) {
+        match (target, self) {
+            (PackedList::ByteInts(target), Self::Bytes(values)) => {
+                replace_slots(target, start, step, count, values.iter().copied());
+            }
+            (PackedList::Ints(target), Self::Bytes(values)) => {
+                replace_slots(target, start, step, count, values.iter().copied().map(i64::from));
+            }
+            (PackedList::Ints(target), Self::Wide(values)) => {
+                replace_slots(target, start, step, count, values.iter().copied());
+            }
+            (PackedList::Floats(target), Self::Floats(values)) => {
+                replace_slots(target, start, step, count, values.iter().copied());
+            }
+            _ => unreachable!("reserved compatible numeric storage"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) enum PackedList {
     Empty,
     Nones(Box<Nones>),
     ByteInts(Vec<u8>),
     Ints(Vec<i64>),
-    NullableBytes(Box<NullableInts<u8>>),
-    NullableInts(Box<NullableInts<i64>>),
+    Floats(Vec<f64>),
+    NullableBytes(Box<NullableSlots<u8>>),
+    NullableInts(Box<NullableSlots<i64>>),
+    NullableFloats(Box<NullableSlots<f64>>),
     Bools(Box<Bools>),
 }
 
@@ -118,10 +162,31 @@ impl PackedList {
         Ok(Self::ByteInts(values))
     }
 
+    pub(super) fn from_range(range: &PythonRange, tracker: &ResourceTracker) -> RunResult<Self> {
+        let length = range.len_i128();
+        if length == 0 {
+            return Ok(Self::Empty);
+        }
+        let capacity = usize::try_from(length).map_err(|_| ExcType::allocation_too_large())?;
+        let last = i128::from(range.start) + (length - 1) * i128::from(range.step);
+        let last = i64::try_from(last).expect("range endpoint fits in an i64");
+        let width = IntWidth::of(range.start).max(IntWidth::of(last));
+
+        let mut result = Self::new(capacity, Packing::Int { width, nullable: false }, tracker)?;
+        match &mut result {
+            Self::ByteInts(values) => fill_range(values, range, capacity, tracker)?,
+            Self::Ints(values) => fill_range(values, range, capacity, tracker)?,
+            _ => unreachable!("range requires integer storage"),
+        }
+        Ok(result)
+    }
+
     pub(super) fn packing(&self) -> Packing {
         match self {
             Self::Empty => Packing::Empty,
             Self::Nones(_) => Packing::Nones,
+            Self::Floats(_) => Packing::Float { nullable: false },
+            Self::NullableFloats(_) => Packing::Float { nullable: true },
             Self::ByteInts(_) => Packing::Int {
                 width: IntWidth::Byte,
                 nullable: false,
@@ -150,8 +215,10 @@ impl PackedList {
             Self::Nones(items) => items.len,
             Self::ByteInts(items) => items.len(),
             Self::Ints(items) => items.len(),
+            Self::Floats(items) => items.len(),
             Self::NullableBytes(items) => items.values.len(),
             Self::NullableInts(items) => items.values.len(),
+            Self::NullableFloats(items) => items.values.len(),
             Self::Bools(items) => items.len,
         }
     }
@@ -162,8 +229,10 @@ impl PackedList {
             Self::Nones(items) => items.slots.capacity(),
             Self::ByteInts(items) => items.capacity(),
             Self::Ints(items) => items.capacity(),
+            Self::Floats(items) => items.capacity(),
             Self::NullableBytes(items) => items.values.capacity(),
             Self::NullableInts(items) => items.values.capacity(),
+            Self::NullableFloats(items) => items.values.capacity(),
             Self::Bools(items) => items.values.capacity(),
         }
     }
@@ -175,35 +244,15 @@ impl PackedList {
                 Self::Nones(items) => items.slots.growth_bytes(capacity),
                 _ => Bitmap::allocation_bytes(capacity).saturating_add(size_of::<Nones>()),
             },
-            Packing::Int { width, nullable } => {
-                if self.needs_wider_ints(packing) {
-                    return Self::Empty.growth_bytes(capacity, packing);
-                }
-                let (current, nulls) = match self {
-                    Self::ByteInts(items) => (items.capacity(), None),
-                    Self::Ints(items) => (items.capacity(), None),
-                    Self::NullableBytes(items) => (items.values.capacity(), Some(&items.nulls)),
-                    Self::NullableInts(items) => (items.values.capacity(), Some(&items.nulls)),
-                    _ => (0, None),
-                };
-                let values = capacity.saturating_sub(current).saturating_mul(width.size());
-                let bitmap = if let Some(nulls) = nulls {
-                    nulls.growth_bytes(capacity)
-                } else if nullable {
-                    let allocation = match self {
-                        Self::Nones(items) => items.slots.growth_bytes(capacity),
-                        _ => Bitmap::allocation_bytes(capacity),
-                    };
-                    let layout = match width {
-                        IntWidth::Byte => size_of::<NullableInts<u8>>(),
-                        IntWidth::Wide => size_of::<NullableInts<i64>>(),
-                    };
-                    allocation.saturating_add(layout)
-                } else {
-                    0
-                };
-                values.saturating_add(bitmap)
-            }
+            Packing::Int {
+                width: IntWidth::Byte,
+                nullable,
+            } => self.slot_growth::<u8>(capacity, nullable),
+            Packing::Int {
+                width: IntWidth::Wide,
+                nullable,
+            } => self.slot_growth::<i64>(capacity, nullable),
+            Packing::Float { nullable } => self.slot_growth::<f64>(capacity, nullable),
             Packing::Bool { nullable } => match self {
                 Self::Bools(items) => items.values.growth_bytes(capacity).saturating_add(match &items.nulls {
                     Some(nulls) => nulls.growth_bytes(capacity),
@@ -219,6 +268,31 @@ impl PackedList {
             },
             Packing::Generic => unreachable!("generic storage has its own buffer"),
         }
+    }
+
+    fn slot_growth<T>(&self, capacity: usize, nullable: bool) -> usize {
+        let (current, nulls) = match self {
+            Self::ByteInts(items) if size_of::<T>() == 1 => (items.capacity(), None),
+            Self::NullableBytes(items) if size_of::<T>() == 1 => (items.values.capacity(), Some(&items.nulls)),
+            Self::Ints(items) => (items.capacity(), None),
+            Self::Floats(items) => (items.capacity(), None),
+            Self::NullableInts(items) => (items.values.capacity(), Some(&items.nulls)),
+            Self::NullableFloats(items) => (items.values.capacity(), Some(&items.nulls)),
+            _ => (0, None),
+        };
+        let values = capacity.saturating_sub(current).saturating_mul(size_of::<T>());
+        let bitmap = if let Some(nulls) = nulls {
+            nulls.growth_bytes(capacity)
+        } else if nullable {
+            let allocation = match self {
+                Self::Nones(items) => items.slots.growth_bytes(capacity),
+                _ => Bitmap::allocation_bytes(capacity),
+            };
+            allocation.saturating_add(size_of::<NullableSlots<T>>())
+        } else {
+            0
+        };
+        values.saturating_add(bitmap)
     }
 
     pub(super) fn needs_wider_ints(&self, packing: Packing) -> bool {
@@ -259,11 +333,13 @@ impl PackedList {
                     Packing::Int {
                         width: IntWidth::Byte,
                         nullable: true,
-                    } => Self::NullableBytes(Box::new(NullableInts::new(capacity)?)),
+                    } => Self::NullableBytes(Box::new(NullableSlots::new(capacity)?)),
                     Packing::Int {
                         width: IntWidth::Wide,
                         nullable: true,
-                    } => Self::NullableInts(Box::new(NullableInts::new(capacity)?)),
+                    } => Self::NullableInts(Box::new(NullableSlots::new(capacity)?)),
+                    Packing::Float { nullable: false } => Self::Floats(new_slots(capacity, 0)?),
+                    Packing::Float { nullable: true } => Self::NullableFloats(Box::new(NullableSlots::new(capacity)?)),
                     Packing::Bool { nullable } => {
                         let mut items = Bools::default();
                         items.reserve(capacity, nullable)?;
@@ -279,11 +355,14 @@ impl PackedList {
                     Packing::Int {
                         width: IntWidth::Byte,
                         nullable: true,
-                    } => *self = Self::NullableBytes(Box::new(items.with_ints(capacity)?)),
+                    } => *self = Self::NullableBytes(Box::new(items.with_slots(capacity)?)),
                     Packing::Int {
                         width: IntWidth::Wide,
                         nullable: true,
-                    } => *self = Self::NullableInts(Box::new(items.with_ints(capacity)?)),
+                    } => *self = Self::NullableInts(Box::new(items.with_slots(capacity)?)),
+                    Packing::Float { nullable: true } => {
+                        *self = Self::NullableFloats(Box::new(items.with_slots(capacity)?));
+                    }
                     Packing::Bool { nullable: true } => {
                         let mut values = Bitmap::default();
                         values.reserve(capacity)?;
@@ -300,20 +379,28 @@ impl PackedList {
             }
             Self::ByteInts(values) => {
                 if matches!(packing, Packing::Int { nullable: true, .. }) {
-                    *self = Self::NullableBytes(Box::new(NullableInts::from_ints(values, capacity)?));
+                    *self = Self::NullableBytes(Box::new(NullableSlots::from_slots(values, capacity)?));
                 } else {
                     reserve_vec(values, capacity)?;
                 }
             }
             Self::Ints(values) => {
                 if matches!(packing, Packing::Int { nullable: true, .. }) {
-                    *self = Self::NullableInts(Box::new(NullableInts::from_ints(values, capacity)?));
+                    *self = Self::NullableInts(Box::new(NullableSlots::from_slots(values, capacity)?));
+                } else {
+                    reserve_vec(values, capacity)?;
+                }
+            }
+            Self::Floats(values) => {
+                if matches!(packing, Packing::Float { nullable: true }) {
+                    *self = Self::NullableFloats(Box::new(NullableSlots::from_slots(values, capacity)?));
                 } else {
                     reserve_vec(values, capacity)?;
                 }
             }
             Self::NullableBytes(items) => items.reserve(capacity)?,
             Self::NullableInts(items) => items.reserve(capacity)?,
+            Self::NullableFloats(items) => items.reserve(capacity)?,
             Self::Bools(items) => items.reserve(capacity, packing == (Packing::Bool { nullable: true }))?,
         }
         Ok(())
@@ -323,14 +410,17 @@ impl PackedList {
         PackedView(self)
     }
 
+    #[inline]
     pub(super) fn get(&self, index: usize) -> Option<Value> {
         match self {
             Self::Empty => None,
             Self::Nones(items) => (index < items.len).then_some(Value::None),
             Self::ByteInts(items) => items.get(index).map(|&item| Value::Int(i64::from(item))),
             Self::Ints(items) => items.get(index).copied().map(Value::Int),
+            Self::Floats(items) => items.get(index).copied().map(Value::Float),
             Self::NullableBytes(items) => items.get(index),
             Self::NullableInts(items) => items.get(index),
+            Self::NullableFloats(items) => items.get(index),
             Self::Bools(items) => (index < items.len).then(|| items.get(index)),
         }
     }
@@ -345,8 +435,10 @@ impl PackedList {
             Self::Nones(items) => items.len += 1,
             Self::ByteInts(items) => items.insert(index, u8::from_value(value)),
             Self::Ints(items) => items.insert(index, i64::from_value(value)),
+            Self::Floats(items) => items.insert(index, f64::from_value(value)),
             Self::NullableBytes(items) => items.insert(index, value),
             Self::NullableInts(items) => items.insert(index, value),
+            Self::NullableFloats(items) => items.insert(index, value),
             Self::Bools(items) => {
                 items.move_within(index, index + 1, items.len - index);
                 items.set(index, value);
@@ -362,12 +454,16 @@ impl PackedList {
         match self {
             Self::ByteInts(values) => return Ok(Self::ByteInts(slice_slots(values, start, step, count, tracker)?)),
             Self::Ints(values) => return Ok(Self::Ints(slice_slots(values, start, step, count, tracker)?)),
+            Self::Floats(values) => return Ok(Self::Floats(slice_slots(values, start, step, count, tracker)?)),
             _ => {}
         }
 
         let mut result = Self::new(count, self.packing(), tracker)?;
         if let Self::Nones(items) = &mut result {
             items.len = count;
+        } else if step == 1 {
+            let start = usize::try_from(start).expect("slice index is within the list");
+            result.copy_range(self, start..start + count, tracker)?;
         } else {
             for (offset, index) in slice_indices(start, step, count).enumerate() {
                 tracker.check_time_every(offset)?;
@@ -385,8 +481,10 @@ impl PackedList {
             Self::Nones(items) => items.len = items.len - range.len() + values.len(),
             Self::ByteInts(items) => splice_slots(items, range, values),
             Self::Ints(items) => splice_slots(items, range, values),
+            Self::Floats(items) => splice_slots(items, range, values),
             Self::NullableBytes(items) => items.splice(range, values),
             Self::NullableInts(items) => items.splice(range, values),
+            Self::NullableFloats(items) => items.splice(range, values),
             Self::Bools(items) => {
                 items.move_within(range.end, dst, items.len - range.end);
                 items.len = items.len - range.len() + values.len();
@@ -398,20 +496,38 @@ impl PackedList {
     }
 
     pub(super) fn set(&mut self, index: usize, value: &Value) {
-        match self {
-            Self::Empty | Self::Nones(_) => {}
-            Self::ByteInts(items) => items[index] = u8::from_value(value),
-            Self::Ints(items) => items[index] = i64::from_value(value),
-            Self::NullableBytes(items) => items.set(index, value),
-            Self::NullableInts(items) => items.set(index, value),
-            Self::Bools(items) => items.set(index, value),
+        assert!(self.try_set(index, value), "incompatible packed list assignment");
+    }
+
+    /// Returns `false` without mutating the list if `value` requires a storage change.
+    #[inline]
+    pub(super) fn try_set(&mut self, index: usize, value: &Value) -> bool {
+        match (self, value) {
+            (Self::Nones(_), Value::None) => {}
+            (Self::ByteInts(items), Value::Int(value)) if let Ok(byte) = u8::try_from(*value) => {
+                items[index] = byte;
+            }
+            (Self::Ints(items), Value::Int(value)) => items[index] = *value,
+            (Self::Floats(items), Value::Float(value)) => items[index] = *value,
+            (Self::NullableBytes(items), Value::Int(value)) if let Ok(byte) = u8::try_from(*value) => {
+                items.set_slot(index, byte, false);
+            }
+            (Self::NullableInts(items), Value::Int(value)) => items.set_slot(index, *value, false),
+            (Self::NullableFloats(items), Value::Float(value)) => items.set_slot(index, *value, false),
+            (Self::NullableBytes(items), Value::None) => items.set_slot(index, 0, true),
+            (Self::NullableInts(items), Value::None) => items.set_slot(index, 0, true),
+            (Self::NullableFloats(items), Value::None) => items.set_slot(index, 0.0, true),
+            (Self::Bools(items), value) => return items.try_set(index, value),
+            _ => return false,
         }
+        true
     }
 
     pub(super) fn remove(&mut self, index: usize) -> Value {
         match self {
             Self::ByteInts(items) => return Value::Int(i64::from(items.remove(index))),
             Self::Ints(items) => return Value::Int(items.remove(index)),
+            Self::Floats(items) => return Value::Float(items.remove(index)),
             _ => {}
         }
         let value = self.get(index).expect("checked list index");
@@ -424,8 +540,10 @@ impl PackedList {
             Self::Empty | Self::Nones(_) => {}
             Self::ByteInts(items) => items.swap(a, b),
             Self::Ints(items) => items.swap(a, b),
+            Self::Floats(items) => items.swap(a, b),
             Self::NullableBytes(items) => items.swap(a, b),
             Self::NullableInts(items) => items.swap(a, b),
+            Self::NullableFloats(items) => items.swap(a, b),
             Self::Bools(items) => {
                 items.values.swap(a, b);
                 if let Some(nulls) = &mut items.nulls {
@@ -440,8 +558,10 @@ impl PackedList {
             Self::Empty | Self::Nones(_) => {}
             Self::ByteInts(items) => items.reverse(),
             Self::Ints(items) => items.reverse(),
+            Self::Floats(items) => items.reverse(),
             Self::NullableBytes(items) => items.reverse(),
             Self::NullableInts(items) => items.reverse(),
+            Self::NullableFloats(items) => items.reverse(),
             Self::Bools(items) => {
                 items.values.reverse(items.len);
                 if let Some(nulls) = &mut items.nulls {
@@ -457,8 +577,10 @@ impl PackedList {
             Self::Nones(items) => items.len += range.len(),
             Self::ByteInts(items) => items.extend_from_within(range),
             Self::Ints(items) => items.extend_from_within(range),
+            Self::Floats(items) => items.extend_from_within(range),
             Self::NullableBytes(items) => items.extend_from_within(range),
             Self::NullableInts(items) => items.extend_from_within(range),
+            Self::NullableFloats(items) => items.extend_from_within(range),
             Self::Bools(items) => {
                 items.move_within(range.start, items.len, range.len());
                 items.len += range.len();
@@ -468,19 +590,26 @@ impl PackedList {
 
     /// Requires space for `total` elements to be reserved first.
     pub(super) fn repeat_prefix(&mut self, total: usize, tracker: &ResourceTracker) -> RunResult<()> {
-        if let Self::Nones(items) = self {
-            items.len = total;
-            return Ok(());
-        }
         let prefix = self.len();
-        while self.len() < total {
+        let mut filled = prefix;
+        while filled < total {
             tracker.check_time()?;
-            let len = self.len();
-            let start = len % prefix;
-            let count = (total - len).min(len - start).min(COPY_BATCH);
-            self.extend_from_within(start..start + count);
+            filled = self.repeat_chunk(prefix, total);
         }
         Ok(())
+    }
+
+    /// Appends one chunk from the original prefix. The caller reserves `total` slots.
+    pub(super) fn repeat_chunk(&mut self, prefix: usize, total: usize) -> usize {
+        if let Self::Nones(items) = self {
+            items.len = total;
+            return total;
+        }
+        let len = self.len();
+        let start = len % prefix;
+        let count = (total - len).min(len - start).min(COPY_BATCH);
+        self.extend_from_within(start..start + count);
+        len + count
     }
 
     pub(super) fn copy_range(
@@ -508,9 +637,11 @@ impl PackedList {
             (Self::Nones(dst), Self::Nones(_)) => dst.len += range.len(),
             (Self::ByteInts(dst), Self::ByteInts(src)) => dst.extend_from_slice(&src[range]),
             (Self::Ints(dst), Self::Ints(src)) => dst.extend_from_slice(&src[range]),
+            (Self::Floats(dst), Self::Floats(src)) => dst.extend_from_slice(&src[range]),
             (Self::Ints(dst), Self::ByteInts(src)) => dst.extend(src[range].iter().copied().map(i64::from)),
             (Self::NullableBytes(dst), Self::Nones(_)) => dst.append_nones(range.len()),
             (Self::NullableInts(dst), Self::Nones(_)) => dst.append_nones(range.len()),
+            (Self::NullableFloats(dst), Self::Nones(_)) => dst.append_nones(range.len()),
             (Self::Bools(dst), Self::Nones(_)) => {
                 dst.nulls
                     .as_mut()
@@ -518,14 +649,16 @@ impl PackedList {
                     .fill(dst.len, range.len(), true);
                 dst.len += range.len();
             }
-            (Self::NullableBytes(dst), Self::ByteInts(src)) => dst.append_ints(&src[range]),
-            (Self::NullableInts(dst), Self::Ints(src)) => dst.append_ints(&src[range]),
+            (Self::NullableBytes(dst), Self::ByteInts(src)) => dst.append_slots(&src[range]),
+            (Self::NullableInts(dst), Self::Ints(src)) => dst.append_slots(&src[range]),
+            (Self::NullableFloats(dst), Self::Floats(src)) => dst.append_slots(&src[range]),
             (Self::NullableInts(dst), Self::ByteInts(src)) => {
                 dst.nulls.fill(dst.values.len(), range.len(), false);
                 dst.values.extend(src[range].iter().copied().map(i64::from));
             }
             (Self::NullableBytes(dst), Self::NullableBytes(src)) => dst.append_nullable(src, range),
             (Self::NullableInts(dst), Self::NullableInts(src)) => dst.append_nullable(src, range),
+            (Self::NullableFloats(dst), Self::NullableFloats(src)) => dst.append_nullable(src, range),
             (Self::NullableInts(dst), Self::NullableBytes(src)) => {
                 dst.nulls
                     .copy_from(dst.values.len(), &src.nulls, range.start, range.len());
@@ -568,7 +701,7 @@ impl PackedView<'_> {
     }
 }
 
-/// Reserves the null bitmap before the list gains an integer or boolean.
+/// Reserves the null bitmap before the list gains its first non-null value.
 #[derive(Debug, Default)]
 pub(super) struct Nones {
     len: usize,
@@ -576,10 +709,10 @@ pub(super) struct Nones {
 }
 
 impl Nones {
-    fn with_ints<T: IntegerSlot>(&mut self, capacity: usize) -> RunResult<NullableInts<T>> {
+    fn with_slots<T: NumericSlot>(&mut self, capacity: usize) -> RunResult<NullableSlots<T>> {
         let values = new_slots(capacity, self.len)?;
         self.slots.fill(0, self.len, true);
-        Ok(NullableInts {
+        Ok(NullableSlots {
             values,
             nulls: mem::take(&mut self.slots),
         })
@@ -587,17 +720,17 @@ impl Nones {
 }
 
 #[derive(Debug)]
-pub(super) struct NullableInts<T> {
+pub(super) struct NullableSlots<T> {
     values: Vec<T>,
     nulls: Bitmap,
 }
 
-impl<T: IntegerSlot> NullableInts<T> {
+impl<T: NumericSlot> NullableSlots<T> {
     fn new(capacity: usize) -> RunResult<Self> {
-        Self::from_ints(&mut Vec::new(), capacity)
+        Self::from_slots(&mut Vec::new(), capacity)
     }
 
-    fn from_ints(values: &mut Vec<T>, capacity: usize) -> RunResult<Self> {
+    fn from_slots(values: &mut Vec<T>, capacity: usize) -> RunResult<Self> {
         let mut nulls = Bitmap::default();
         nulls.reserve(capacity)?;
         reserve_vec(values, capacity)?;
@@ -617,7 +750,7 @@ impl<T: IntegerSlot> NullableInts<T> {
         Some(if self.nulls.get(index) {
             Value::None
         } else {
-            Value::Int(value.as_i64())
+            value.into_value()
         })
     }
 
@@ -637,9 +770,9 @@ impl<T: IntegerSlot> NullableInts<T> {
         }
     }
 
-    fn set(&mut self, index: usize, value: &Value) {
-        self.values[index] = T::from_nullable(value);
-        self.nulls.set(index, matches!(value, Value::None));
+    fn set_slot(&mut self, index: usize, value: T, is_null: bool) {
+        self.values[index] = value;
+        self.nulls.set(index, is_null);
     }
 
     fn swap(&mut self, a: usize, b: usize) {
@@ -662,7 +795,7 @@ impl<T: IntegerSlot> NullableInts<T> {
         self.values.resize(self.values.len() + len, T::default());
     }
 
-    fn append_ints(&mut self, values: &[T]) {
+    fn append_slots(&mut self, values: &[T]) {
         self.nulls.fill(self.values.len(), values.len(), false);
         self.values.extend_from_slice(values);
     }
@@ -704,15 +837,24 @@ impl Bools {
     }
 
     fn set(&mut self, index: usize, value: &Value) {
-        let boolean = match value {
-            Value::Bool(value) => *value,
-            Value::None => false,
-            _ => unreachable!("boolean storage accepts booleans and None"),
-        };
-        self.values.set(index, boolean);
-        if let Some(nulls) = &mut self.nulls {
-            nulls.set(index, matches!(value, Value::None));
+        assert!(self.try_set(index, value), "incompatible boolean list assignment");
+    }
+
+    fn try_set(&mut self, index: usize, value: &Value) -> bool {
+        match *value {
+            Value::Bool(boolean) => {
+                self.values.set(index, boolean);
+                if let Some(nulls) = &mut self.nulls {
+                    nulls.set(index, false);
+                }
+            }
+            Value::None if let Some(nulls) = &mut self.nulls => {
+                self.values.set(index, false);
+                nulls.set(index, true);
+            }
+            _ => return false,
         }
+        true
     }
 
     fn move_within(&mut self, src: usize, dst: usize, count: usize) {
@@ -723,16 +865,9 @@ impl Bools {
     }
 }
 
-pub(super) trait IntegerSlot: Copy + Default {
-    fn from_i64(value: i64) -> Self;
-    fn as_i64(self) -> i64;
-
-    fn from_value(value: &Value) -> Self {
-        let Value::Int(value) = value else {
-            unreachable!("integer storage requires an integer");
-        };
-        Self::from_i64(*value)
-    }
+pub(super) trait NumericSlot: Copy + Default {
+    fn from_value(value: &Value) -> Self;
+    fn into_value(self) -> Value;
 
     fn from_nullable(value: &Value) -> Self {
         if matches!(value, Value::None) {
@@ -743,34 +878,67 @@ pub(super) trait IntegerSlot: Copy + Default {
     }
 }
 
-impl IntegerSlot for i64 {
-    fn from_i64(value: i64) -> Self {
-        value
+impl NumericSlot for i64 {
+    fn from_value(value: &Value) -> Self {
+        let Value::Int(value) = value else {
+            unreachable!("expected an integer")
+        };
+        *value
     }
 
-    fn as_i64(self) -> i64 {
-        self
-    }
-}
-
-impl IntegerSlot for u8 {
-    fn from_i64(value: i64) -> Self {
-        Self::try_from(value).expect("byte-sized list integer")
-    }
-
-    fn as_i64(self) -> i64 {
-        i64::from(self)
+    fn into_value(self) -> Value {
+        Value::Int(self)
     }
 }
 
-fn new_slots<T: IntegerSlot>(capacity: usize, len: usize) -> RunResult<Vec<T>> {
+impl NumericSlot for u8 {
+    fn from_value(value: &Value) -> Self {
+        Self::try_from(i64::from_value(value)).expect("byte-sized list integer")
+    }
+
+    fn into_value(self) -> Value {
+        Value::Int(i64::from(self))
+    }
+}
+
+impl NumericSlot for f64 {
+    fn from_value(value: &Value) -> Self {
+        let Value::Float(value) = value else {
+            unreachable!("expected a float")
+        };
+        *value
+    }
+
+    fn into_value(self) -> Value {
+        Value::Float(self)
+    }
+}
+
+fn fill_range<T: TryFrom<i64>>(
+    values: &mut Vec<T>,
+    range: &PythonRange,
+    len: usize,
+    tracker: &ResourceTracker,
+) -> RunResult<()> {
+    let mut next = i128::from(range.start);
+    let step = i128::from(range.step);
+    for index in 0..len {
+        tracker.check_time_every(index)?;
+        let value = i64::try_from(next).expect("range element fits in an i64");
+        values.push(T::try_from(value).unwrap_or_else(|_| unreachable!("range element fits the selected slot")));
+        next += step;
+    }
+    Ok(())
+}
+
+fn new_slots<T: NumericSlot>(capacity: usize, len: usize) -> RunResult<Vec<T>> {
     let mut values = Vec::new();
     reserve_vec(&mut values, capacity)?;
     values.resize(len, T::default());
     Ok(values)
 }
 
-fn slice_indices(start: i64, step: i64, count: usize) -> impl Iterator<Item = usize> {
+pub(super) fn slice_indices(start: i64, step: i64, count: usize) -> impl Iterator<Item = usize> {
     let mut index = i128::from(start);
     (0..count).map(move |_| {
         let current = index;
@@ -779,7 +947,7 @@ fn slice_indices(start: i64, step: i64, count: usize) -> impl Iterator<Item = us
     })
 }
 
-fn slice_slots<T: IntegerSlot>(
+fn slice_slots<T: NumericSlot>(
     source: &[T],
     start: i64,
     step: i64,
@@ -812,7 +980,47 @@ fn slice_slots<T: IntegerSlot>(
     Ok(target)
 }
 
-fn splice_slots<T: IntegerSlot>(target: &mut Vec<T>, range: Range<usize>, values: &[Value]) {
+fn snapshot_slots<T: Copy>(source: &[T], tracker: &ResourceTracker) -> RunResult<SmallVec<[T; INLINE_SLICE_ITEMS]>> {
+    let mut snapshot = SmallVec::new();
+    if source.len() > INLINE_SLICE_ITEMS {
+        tracker.check_allocation(source.len().saturating_mul(size_of::<T>()))?;
+        snapshot
+            .try_reserve_exact(source.len())
+            .map_err(|_| ExcType::allocation_too_large())?;
+    }
+    for chunk in source.chunks(COPY_BATCH) {
+        tracker.check_time()?;
+        snapshot.extend_from_slice(chunk);
+    }
+    Ok(snapshot)
+}
+
+fn replace_slots<T>(
+    target: &mut Vec<T>,
+    start: i64,
+    step: i64,
+    count: usize,
+    values: impl ExactSizeIterator<Item = T>,
+) {
+    if step == 1 {
+        let start = usize::try_from(start).expect("positive slice start is non-negative");
+        let range = start..start + count;
+        if count == values.len() {
+            target[range]
+                .iter_mut()
+                .zip(values)
+                .for_each(|(slot, value)| *slot = value);
+        } else {
+            drop(target.splice(range, values));
+        }
+    } else {
+        for (index, value) in slice_indices(start, step, count).zip(values) {
+            target[index] = value;
+        }
+    }
+}
+
+fn splice_slots<T: NumericSlot>(target: &mut Vec<T>, range: Range<usize>, values: &[Value]) {
     if range.len() == values.len() {
         for (slot, value) in target[range].iter_mut().zip(values) {
             *slot = T::from_value(value);

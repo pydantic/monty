@@ -133,3 +133,79 @@ small.extend([-1, 0])
 assert small == [255, None, -1, 0]
 small.append(True)
 assert type(small[-1]) is bool
+
+# Exercise self-assignment on packed slices.
+small = [0, 1, 2, 3, 4, 5]
+small[::-1] = small
+assert small == [5, 4, 3, 2, 1, 0]
+small[1:2] = [30, 31, 32]
+assert small == [5, 30, 31, 32, 3, 2, 1, 0]
+small[1:4] = [4]
+assert small == [5, 4, 3, 2, 1, 0]
+
+wide = [256, 300, 400, 512]
+wide[1::2] = [3, 4]
+assert wide == [256, 3, 400, 4]
+wide[::-1] = wide
+assert wide == [4, 400, 3, 256]
+empty = []
+empty[:] = wide
+assert empty == wide and empty is not wide
+
+for pattern in [(None, 7, 0), (None, -257, 258), (None, True, False), (True, False, True)]:
+    expected = pattern * 90
+    source = list(expected)
+    assert tuple(source[17:214]) == expected[17:214]
+
+assert list(range(0)) == []
+assert list(range(3, 3, -1)) == []
+assert list(range(255, -1, -17)) == [255 - i * 17 for i in range(16)]
+assert list(range(1, 258, 127)) == [1, 128, 255]
+assert list(range(-(2**63), -(2**63) + 4, 2)) == [-(2**63), -(2**63) + 2]
+assert list(range(2**63 - 1, 2**63 - 5, -2)) == [2**63 - 1, 2**63 - 3]
+
+flags = [None, False, True]
+flags_copy = list(flags)
+flags_copy[0] = True
+assert flags == [None, False, True] and flags_copy == [True, False, True]
+flags_copy *= 701
+assert all(item is True for item in flags_copy[::3])
+assert all(item is False for item in flags_copy[1::3])
+assert all(item is True for item in flags_copy[2::3])
+
+nones = [None] * 129
+alias = nones
+nones *= 23
+assert alias is nones and len(alias) == 129 * 23 and alias[-1] is None
+
+shared = {}
+mixed = [shared, 1] * 100
+for copied in (list(mixed), mixed[2:150], mixed[-2::-2]):
+    assert copied is not mixed and copied[0] is shared
+    copied.pop()
+assert len(mixed) == 200 and mixed[170:10] == []
+
+stack = []
+for value in (255, -1, 0, 256, True, shared):
+    stack.append(value)
+    result = stack.pop()
+    assert result == value and type(result) is type(value) and stack == []
+
+for pattern in ((-1, None), (0, None), (True, None), (shared, 0)):
+    items = list(pattern * 40)
+    alias = items
+    items[:] = []
+    items.extend(pattern)
+    assert items == list(pattern)
+    items *= 0
+    items += [False, True]
+    assert alias == [False, True] and alias[0] is False
+
+drained = list(range(80))
+drained.clear()
+fresh = []
+fresh[:] = drained
+assert fresh == []
+drained[:] = drained
+drained.extend([True, None])
+assert drained == [True, None] and drained[0] is True

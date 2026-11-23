@@ -679,12 +679,10 @@ fn timeout_in_three_arg_pow() {
     );
 }
 
-/// Test that `list(range(huge))` respects the time limit.
-///
-/// The `list()` constructor drains its concrete Python iterator.
+/// The list constructor polls while draining an iterator.
 #[test]
 fn timeout_in_list_constructor() {
-    assert_timeout_in_builtin("list(range(10**18))", "list(range(10**18))");
+    assert_timeout_in_builtin("list(iter(range(10**18)))", "list(iter(range(10**18)))");
 }
 
 /// Calibrate parsing separately so this measures traversal polling, not host speed.
