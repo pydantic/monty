@@ -225,9 +225,12 @@ impl<'h> VM<'h> {
             panic!("gather commit frame id is not a GatherFuture")
         };
         let gather_id = frame.gather;
+        let return_exceptions = gather.get(self.heap).return_exceptions;
 
         while frame.next < frame.results.len() {
             let idx = frame.next;
+            // This loop can build many exception copies in one VM step.
+            self.heap.tracker.check_memory_time_every(idx)?;
             let item_id = gather.get(self.heap).items[idx];
             if let Some(slots) = frame.pending_children.get_mut(&item_id) {
                 // Dedup: We've already registered this item in this commit pass —
@@ -256,10 +259,18 @@ impl<'h> VM<'h> {
                         gather: gather_id,
                         source: item_id,
                     };
-                    self.await_external_future(&fut, sub_awaiter)?
+                    match self.await_external_future(&fut, sub_awaiter) {
+                        Ok(poll) => poll,
+                        Err(err) if return_exceptions => Poll::Ready(self.exception_as_result(err)?),
+                        Err(err) => return Err(err),
+                    }
                 }
                 HeapReadOutput::GatherFuture(child_gather) => {
-                    if let Some(value) = poll_settled_gather(&child_gather, self.heap)? {
+                    let settled = match poll_settled_gather(&child_gather, self.heap) {
+                        Err(err) if return_exceptions => Some(self.exception_as_result(err)?),
+                        other => other?,
+                    };
+                    if let Some(value) = settled {
                         Poll::Ready(value)
                     } else {
                         drop(child_gather);
@@ -770,10 +781,34 @@ impl<'h> VM<'h> {
         }
     }
 
+    /// Charges the memory a `return_exceptions` gather will keep for `err`: the
+    /// message bytes of a copy cloned out of a cached failure plus its heap entry.
+    /// A catchable error can thereby be refused with a resource error.
+    fn charge_exception(&self, err: &RunError) -> Result<(), RunError> {
+        if let RunError::Exc(exc) = err {
+            let len = exc.exc.arg().map_or(0, String::len);
+            self.heap
+                .tracker
+                .check_allocation(len.saturating_add(size_of::<HeapData>()))?;
+        }
+        Ok(())
+    }
+
+    /// Turns a catchable failure into the exception object a `return_exceptions`
+    /// gather stores as that item's result; resource and internal errors still
+    /// propagate.
+    fn exception_as_result(&mut self, err: RunError) -> Result<Value, RunError> {
+        self.charge_exception(&err)?;
+        match err {
+            RunError::Exc(exc) => Ok(Value::Ref(self.heap.allocate(HeapData::Exception(exc.exc)))),
+            err @ (RunError::UncatchableExc(_) | RunError::Internal(_)) => Err(err),
+        }
+    }
+
     /// Fails each gather in the awaiter chain and queues its terminal task to raise `error`.
     /// Returns that task's ID, or `None` if the task is gone or a gather already settled.
     /// The task raises the exception on activation; its own gather is notified only if it escapes.
-    fn deliver_awaiter_failure(&mut self, awaiter: Awaiter, error: RunError) -> Option<TaskId> {
+    fn deliver_awaiter_failure(&mut self, awaiter: Awaiter, mut error: RunError) -> Option<TaskId> {
         let this = self;
         defer_drop_mut!(awaiter, this);
         let target = loop {
@@ -783,6 +818,23 @@ impl<'h> VM<'h> {
                     let HeapReadOutput::GatherFuture(gather) = this.heap.read(*gather) else {
                         panic!("Awaiter::GatherSlot gather id is not a GatherFuture")
                     };
+                    // `return_exceptions`: the failure is this item's result and
+                    // the gather carries on, so deliver it as a success.
+                    if gather.get(this.heap).return_exceptions && matches!(error, RunError::Exc(_)) {
+                        match this.charge_exception(&error) {
+                            Ok(()) => {
+                                drop(gather);
+                                let RunError::Exc(exc) = error else {
+                                    unreachable!("matched as Exc above")
+                                };
+                                let value = Value::Ref(this.heap.allocate(HeapData::Exception(exc.exc)));
+                                let awaiter = mem::replace(awaiter, Awaiter::Task(TaskId::default()));
+                                return this.deliver_awaiter_success(awaiter, value);
+                            }
+                            // Too big to keep: fail the gather with the resource error instead.
+                            Err(refused) => error = refused,
+                        }
+                    }
                     // A gather that already settled has handed its waiter on;
                     // this failure arrives after the fact and stops here.
                     gather.fail(this.heap, &error)?
