@@ -19,6 +19,8 @@ assert (-1024).to_bytes(4, 'big', signed=True) == b'\xff\xff\xfc\x00'
 assert (-1024).to_bytes(4, 'little', signed=True) == b'\x00\xfc\xff\xff'
 assert (-128).to_bytes(4, 'big', signed=True) == b'\xff\xff\xff\x80'
 assert (-128).to_bytes(4, 'little', signed=True) == b'\x80\xff\xff\xff'
+assert (-(1 << 79)).to_bytes(10, 'big', signed=True) == b'\x80' + b'\x00' * 9
+assert (-(1 << 79)).to_bytes(10, 'little', signed=True) == b'\x00' * 9 + b'\x80'
 
 # === Boundary i64 and LongInt values ===
 for val in [
@@ -94,6 +96,8 @@ for bad_val, length, signed in [
     (1, 0, False),
     (-1, 0, True),
     (1 << 80, 10, False),
+    (1 << 79, 10, True),
+    (-(1 << 79) - 1, 10, True),
     (-(1 << 80) - 1, 10, True),
 ]:
     try:

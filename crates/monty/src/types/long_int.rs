@@ -290,8 +290,7 @@ impl<'h> PyInt<'h> {
                     } else if big.is_positive() {
                         big.bits() < max_bits
                     } else {
-                        big.bits() < max_bits
-                            || (big.bits() == max_bits && big.trailing_zeros() == Some(max_bits - 1))
+                        big.bits() < max_bits || (big.bits() == max_bits && big.trailing_zeros() == Some(max_bits - 1))
                     }
                 } else {
                     big.bits() <= max_bits
