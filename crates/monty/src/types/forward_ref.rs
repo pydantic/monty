@@ -128,7 +128,7 @@ pub(crate) struct ForwardRef {
 
 /// Arguments of `ForwardRef(arg, *, module=None, owner=None, is_argument=True, is_class=False)`.
 #[derive(FromArgs)]
-#[from_args(name = "ForwardRef.__init__", style = def)]
+#[from_args(name = "ForwardRef.__init__")]
 struct ForwardRefArgs {
     #[from_args(static_string = "Arg")]
     arg: Value,
@@ -144,7 +144,7 @@ struct ForwardRefArgs {
 
 /// Arguments of `ForwardRef.evaluate(*, globals=None, locals=None, type_params=None, owner=None, format=Format.VALUE)`.
 #[derive(FromArgs)]
-#[from_args(name = "ForwardRef.evaluate", style = def)]
+#[from_args(name = "ForwardRef.evaluate")]
 struct EvaluateArgs {
     #[from_args(kw_only, default = Value::None)]
     globals: Value,

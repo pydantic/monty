@@ -1,4 +1,11 @@
 # === Basic values ===
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 assert format(3) == '3'
 assert format(3, '') == '3'
 assert format(12.5, '>8.1f') == '    12.5'
@@ -28,13 +35,19 @@ try:
     format()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'format expected at least 1 argument, got 0'
+    assert str(e) == _error_message(
+        monty='format() takes at least 1 argument (0 given)',
+        cpython='format expected at least 1 argument, got 0',
+    )
 
 try:
     format(1, '', 3)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'format expected at most 2 arguments, got 3'
+    assert str(e) == _error_message(
+        monty='format() takes at most 2 arguments (3 given)',
+        cpython='format expected at most 2 arguments, got 3',
+    )
 
 try:
     format(1, 2)

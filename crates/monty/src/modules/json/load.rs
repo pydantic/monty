@@ -92,16 +92,9 @@ struct NumberHooks<'a> {
     parse_int: Option<&'a Value>,
 }
 
-/// Argument shape for `json.loads(s)`.
-///
-/// CPython's `loads` is a pure-Python `def loads(s, *, cls=None, …)`, so `s`
-/// is positional-or-keyword (`json.loads(s='1')` works) and signature errors
-/// use `style = def` wording. The additional CPython kwargs (`cls`, `object_hook`,
-/// …) are intentionally not implemented; leaving them off this struct means
-/// the macro emits the "unexpected keyword" error for them, naming
-/// `JSONDecoder.__init__` as CPython does for a keyword the decoder rejects.
+/// `json.loads(s)`.
 #[derive(FromArgs)]
-#[from_args(name = "loads", style = def, kwarg_error_name = "JSONDecoder.__init__")]
+#[from_args(name = "json.loads")]
 struct JsonLoadsArgs {
     s: Value,
     #[from_args(kw_only, default = Value::None)]
@@ -157,7 +150,7 @@ fn parse_owned(text: Value, vm: &mut VM<'_>) -> RunResult<Value> {
 /// Argument shape for `json.load(fp)`, a pure-Python `def` like [`JsonLoadsArgs`]
 /// with the same keyword policy.
 #[derive(FromArgs)]
-#[from_args(name = "load", style = def, kwarg_error_name = "JSONDecoder.__init__")]
+#[from_args(name = "json.load")]
 struct JsonLoadArgs {
     fp: Value,
 }

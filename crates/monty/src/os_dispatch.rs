@@ -646,11 +646,7 @@ pub(crate) fn build_path_os_call(
         StaticStrings::ReadText => path_only!("read_text", ReadText),
         StaticStrings::ReadBytes => path_only!("read_bytes", ReadBytes),
         StaticStrings::StatMethod => {
-            let PathStatArgs {
-                receiver,
-                follow_symlinks,
-            } = PathStatArgs::from_args(args.prepend(Value::None), vm)?;
-            receiver.drop_with(vm);
+            let PathStatArgs { follow_symlinks } = PathStatArgs::from_args(args, vm)?;
             if !follow_symlinks.bool() {
                 return Err(ExcType::not_implemented_os_arg(Some("stat"), "follow_symlinks"));
             }
@@ -671,17 +667,21 @@ pub(crate) fn build_path_os_call(
         StaticStrings::Absolute => path_only!("absolute", Absolute),
         StaticStrings::Rmdir => path_only!("rmdir", Rmdir),
         StaticStrings::WriteText => {
-            OsFunctionCall::WriteText(extract_str_data("write_text", path, args, vm.heap, vm.interns)?)
+            OsFunctionCall::WriteText(extract_str_data("Path.write_text", path, args, vm.heap, vm.interns)?)
         }
         StaticStrings::AppendText => {
-            OsFunctionCall::AppendText(extract_str_data("append_text", path, args, vm.heap, vm.interns)?)
+            OsFunctionCall::AppendText(extract_str_data("Path.append_text", path, args, vm.heap, vm.interns)?)
         }
         StaticStrings::WriteBytes => {
-            OsFunctionCall::WriteBytes(extract_bytes_data("write_bytes", path, args, vm.heap, vm.interns)?)
+            OsFunctionCall::WriteBytes(extract_bytes_data("Path.write_bytes", path, args, vm.heap, vm.interns)?)
         }
-        StaticStrings::AppendBytes => {
-            OsFunctionCall::AppendBytes(extract_bytes_data("append_bytes", path, args, vm.heap, vm.interns)?)
-        }
+        StaticStrings::AppendBytes => OsFunctionCall::AppendBytes(extract_bytes_data(
+            "Path.append_bytes",
+            path,
+            args,
+            vm.heap,
+            vm.interns,
+        )?),
         StaticStrings::Mkdir => OsFunctionCall::Mkdir(extract_mkdir_args(path, args, vm)?),
         StaticStrings::Rename | StaticStrings::Replace => {
             let args = extract_rename_args(path, args, method == StaticStrings::Replace, vm)?;
@@ -705,8 +705,7 @@ pub(crate) fn build_path_os_call(
     Ok(CallResult::OsCall(call))
 }
 
-/// Extracts the `data` arg for `write_text` / `append_text`. Error wording
-/// matches the legacy `fs/` dispatcher so existing tests stay green.
+/// Extracts the text to write or append.
 fn extract_str_data(
     method: &'static str,
     path: MontyPath,
@@ -714,7 +713,7 @@ fn extract_str_data(
     heap: &mut Heap,
     interns: &Interns,
 ) -> RunResult<PathStringDataArgs> {
-    let data = arg_or_missing_data(method, args, heap)?;
+    let data = args.get_one_arg(method, heap)?;
     // Only `str`: a path-like is not text, so CPython refuses `Path` and `DirEntry` here.
     let data_str = data.try_as_str_heap(heap, interns).ok().map(str::to_owned);
 
@@ -742,7 +741,7 @@ fn extract_bytes_data(
     heap: &mut Heap,
     interns: &Interns,
 ) -> RunResult<PathBytesDataArgs> {
-    let data = arg_or_missing_data(method, args, heap)?;
+    let data = args.get_one_arg(method, heap)?;
     let bytes = data.as_bytes_heap(heap, interns).map(<[u8]>::to_vec);
 
     let py_type = data.py_type_name_heap(heap, interns);
@@ -756,12 +755,9 @@ fn extract_bytes_data(
     }
 }
 
-/// Path.mkdir binds a receiver slot so arity errors include self.
 #[derive(FromArgs)]
-#[from_args(name = "Path.mkdir", style = def)]
+#[from_args(name = "Path.mkdir")]
 struct PathMkdirArgs {
-    #[from_args(pos_only)]
-    receiver: Value,
     #[from_args(default = Value::Int(0o777))]
     mode: Value,
     #[from_args(default = LaxBool::new(false))]
@@ -774,12 +770,10 @@ struct PathMkdirArgs {
 /// excessive arguments before the host sees the OS call.
 fn extract_mkdir_args(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunResult<MkdirCallArgs> {
     let PathMkdirArgs {
-        receiver,
         mode,
         parents,
         exist_ok,
-    } = PathMkdirArgs::from_args(args.prepend(Value::None), vm)?;
-    receiver.drop_with(vm);
+    } = PathMkdirArgs::from_args(args, vm)?;
     defer_drop!(mode, vm);
     check_mode(mode, vm)?;
     Ok(MkdirCallArgs {
@@ -791,39 +785,20 @@ fn extract_mkdir_args(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunR
 
 /// Keyword-only options shared with os.stat.
 #[derive(FromArgs)]
-#[from_args(name = "Path.stat", style = def)]
+#[from_args(name = "Path.stat")]
 struct PathStatArgs {
-    #[from_args(pos_only)]
-    receiver: Value,
     #[from_args(kw_only, default = LaxBool::new(true))]
     follow_symlinks: LaxBool,
 }
 
 #[derive(FromArgs)]
-#[from_args(name = "Path.rename", style = def)]
 struct PathRenameArgs {
-    #[from_args(pos_only)]
-    receiver: Value,
-    target: Value,
-}
-
-#[derive(FromArgs)]
-#[from_args(name = "Path.replace", style = def)]
-struct PathReplaceArgs {
-    #[from_args(pos_only)]
-    receiver: Value,
     target: Value,
 }
 
 fn extract_rename_args(src: MontyPath, args: ArgValues, replace: bool, vm: &mut VM<'_>) -> RunResult<RenameCallArgs> {
-    let (receiver, target) = if replace {
-        let PathReplaceArgs { receiver, target } = PathReplaceArgs::from_args(args.prepend(Value::None), vm)?;
-        (receiver, target)
-    } else {
-        let PathRenameArgs { receiver, target } = PathRenameArgs::from_args(args.prepend(Value::None), vm)?;
-        (receiver, target)
-    };
-    receiver.drop_with(vm);
+    let name = if replace { "Path.replace" } else { "Path.rename" };
+    let PathRenameArgs { target } = PathRenameArgs::from_args(name, args, vm)?;
     defer_drop!(target, vm);
     if let Some(dst) = value_to_owned_string(target, vm.heap, vm.interns) {
         Ok(RenameCallArgs {
@@ -847,17 +822,14 @@ fn extract_rename_args(src: MontyPath, args: ArgValues, replace: bool, vm: &mut 
 }
 
 #[derive(FromArgs)]
-#[from_args(name = "Path.unlink", style = def)]
+#[from_args(name = "Path.unlink")]
 struct PathUnlinkArgs {
-    #[from_args(pos_only)]
-    receiver: Value,
     #[from_args(default = LaxBool::new(false))]
     missing_ok: LaxBool,
 }
 
 fn build_path_unlink(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    let PathUnlinkArgs { receiver, missing_ok } = PathUnlinkArgs::from_args(args.prepend(Value::None), vm)?;
-    receiver.drop_with(vm);
+    let PathUnlinkArgs { missing_ok } = PathUnlinkArgs::from_args(args, vm)?;
     Ok(CallResult::OsCallWithEffect {
         call: OsFunctionCall::Unlink(path),
         effect: PreConversionEffect::Unlink {
@@ -865,17 +837,6 @@ fn build_path_unlink(path: MontyPath, args: ArgValues, vm: &mut VM<'_>) -> RunRe
         }
         .into(),
     })
-}
-
-/// Pulls the single `data` arg out of `args`, raising the CPython-style
-/// `missing 1 required positional argument: 'data'` error when absent.
-fn arg_or_missing_data(method: &'static str, args: ArgValues, heap: &mut Heap) -> RunResult<Value> {
-    if matches!(args, ArgValues::Empty) {
-        return Err(ExcType::type_error(format!(
-            "Path.{method}() missing 1 required positional argument: 'data'"
-        )));
-    }
-    args.get_one_arg(method, heap)
 }
 
 /// Owned `String` if `value` is a `str`, `Path` or `DirEntry`, else `None`. Caller drops

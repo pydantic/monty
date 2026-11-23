@@ -286,7 +286,7 @@ pub(crate) fn get(value: &Value, instance: Option<HeapId>, owner: HeapId, vm: &m
 
 /// Arguments passed by frozen attribute wrappers; validate them like any callable boundary.
 #[derive(FromArgs)]
-#[from_args(name = "attribute lookup", style = unpack)]
+#[from_args(name = "attribute lookup")]
 struct LookupArgs {
     #[from_args(pos_only)]
     object: Value,
@@ -360,7 +360,7 @@ pub(crate) fn bind_descriptor(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Cal
 
 /// Explicit frozen-helper arguments, with no references supplied through user globals.
 #[derive(FromArgs)]
-#[from_args(name = "descriptor binding", style = unpack)]
+#[from_args(name = "descriptor binding")]
 struct BindingArgs {
     #[from_args(pos_only)]
     member: Value,
@@ -544,7 +544,7 @@ pub(crate) fn lookup_set_name(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Cal
 
 /// The next namespace descriptor and the caller's unique missing sentinel.
 #[derive(FromArgs)]
-#[from_args(name = "descriptor name hook", style = unpack)]
+#[from_args(name = "descriptor name hook")]
 struct NameHookArgs {
     #[from_args(pos_only)]
     descriptor: Value,

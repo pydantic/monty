@@ -61,7 +61,7 @@ pub(crate) struct StringIo {
 
 /// `StringIO(initial_value='', newline='\n')`.
 #[derive(FromArgs)]
-#[from_args(name = "StringIO", at_most_total)]
+#[from_args(name = "StringIO")]
 struct StringIoArgs {
     #[from_args(default = Value::None)]
     initial_value: Value,
@@ -513,8 +513,7 @@ impl<'h> HeapObjectRead<'h, StringIo> {
 
     /// `read(size=-1, /)`: a negative or `None` size reads to the end.
     fn read(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let size = args.reject_kwargs("StringIO.read", vm.heap)?;
-        let size = optional_size(size.get_zero_one_arg("read", vm.heap)?, vm)?;
+        let size = optional_size(args.get_zero_one_arg("StringIO.read", vm.heap)?, vm)?;
         let stream = self.get_mut(vm.heap);
         ensure_open(stream)?;
         let text = stream.read(non_negative(size));
@@ -523,8 +522,7 @@ impl<'h> HeapObjectRead<'h, StringIo> {
 
     /// `readline(size=-1, /)`.
     fn readline(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let size = args.reject_kwargs("StringIO.readline", vm.heap)?;
-        let size = optional_size(size.get_zero_one_arg("readline", vm.heap)?, vm)?;
+        let size = optional_size(args.get_zero_one_arg("StringIO.readline", vm.heap)?, vm)?;
         let stream = self.get_mut(vm.heap);
         ensure_open(stream)?;
         let line = stream.readline(non_negative(size));
@@ -534,8 +532,7 @@ impl<'h> HeapObjectRead<'h, StringIo> {
     /// `readlines(hint=-1, /)`, `IOBase`'s: with a positive hint it stops
     /// after the line that takes the total past `hint`.
     fn readlines(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let hint = args.reject_kwargs("_IOBase.readlines", vm.heap)?;
-        let hint = optional_size(hint.get_zero_one_arg("readlines", vm.heap)?, vm)?.unwrap_or(-1);
+        let hint = optional_size(args.get_zero_one_arg("_IOBase.readlines", vm.heap)?, vm)?.unwrap_or(-1);
         if self.get(vm.heap).closed {
             return Err(ExcType::value_error_closed_file());
         }
@@ -568,9 +565,7 @@ impl<'h> HeapObjectRead<'h, StringIo> {
 
     /// `write(s, /)`: returns the length of `s`, before any newline translation.
     fn write(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let text = args
-            .reject_kwargs("StringIO.write", vm.heap)?
-            .get_one_arg("StringIO.write", vm.heap)?;
+        let text = args.get_one_arg("StringIO.write", vm.heap)?;
         defer_drop!(text, vm);
         self.write_value(text, vm)
     }
@@ -595,9 +590,7 @@ impl<'h> HeapObjectRead<'h, StringIo> {
 
     /// `writelines(lines, /)`, `IOBase`'s: `write()` for each item.
     fn writelines(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let lines = args
-            .reject_kwargs("_IOBase.writelines", vm.heap)?
-            .get_one_arg("_IOBase.writelines", vm.heap)?;
+        let lines = args.get_one_arg("_IOBase.writelines", vm.heap)?;
         if self.get(vm.heap).closed {
             lines.drop_with(vm);
             return Err(ExcType::value_error_closed_file());
@@ -632,8 +625,7 @@ impl<'h> HeapObjectRead<'h, StringIo> {
 
     /// `truncate(size=None, /)`: `None` truncates at the position.
     fn truncate(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let size = args.reject_kwargs("StringIO.truncate", vm.heap)?;
-        let size = optional_size(size.get_zero_one_arg("truncate", vm.heap)?, vm)?;
+        let size = optional_size(args.get_zero_one_arg("StringIO.truncate", vm.heap)?, vm)?;
         let stream = self.get_mut(vm.heap);
         ensure_open(stream)?;
         let size = match size {

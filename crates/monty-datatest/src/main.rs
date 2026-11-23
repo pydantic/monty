@@ -207,10 +207,22 @@ impl Expectation {
 /// """
 /// ```
 ///
+/// A final `# Monty.Error=...` line overrides the exception for Monty. With `# Raise=`
+/// it replaces the exception repr. With `TRACEBACK` it replaces the final exception line.
+///
 /// If no expectation comment is present, the test just verifies the code runs without exception.
 ///
 /// Panics on a malformed header: headers are author-controlled, so that's a test bug.
-fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
+fn parse_fixture(content: &str, interpreter: Interpreter) -> (String, Expectation, TestConfig) {
+    let (content, monty_error) = content
+        .trim_end()
+        .rsplit_once('\n')
+        .and_then(|(code, last)| {
+            last.strip_prefix("# Monty.Error=")
+                .map(|error| (code.strip_suffix('\r').unwrap_or(code), Some(error)))
+        })
+        .unwrap_or((content, None));
+    let monty_error = monty_error.filter(|_| matches!(interpreter, Interpreter::Monty));
     let lines: Vec<&str> = content.lines().collect();
 
     assert!(!lines.is_empty(), "Empty fixture file");
@@ -239,12 +251,21 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
 
     // Check for TRACEBACK expectation (triple-quoted string at end of file)
     // Format: """TRACEBACK:\n...\n"""
-    if let Some((code, traceback)) = parse_traceback_expectation(content) {
+    if let Some((code, mut traceback)) = parse_traceback_expectation(content) {
+        if let Some(error) = monty_error {
+            let line = traceback.rfind('\n').expect("missing traceback frames");
+            traceback.truncate(line + 1);
+            traceback.push_str(error);
+        }
         return (code, Expectation::Traceback(traceback), config);
     }
 
     // Get the last line and check if it's an expectation comment
     let last_line = lines.last().unwrap();
+    assert!(
+        monty_error.is_none() || last_line.starts_with("# Raise="),
+        "# Monty.Error= requires a traceback or # Raise= expectation"
+    );
 
     // Parse expectation from comment line if present
     // Note: Check more specific patterns first (Return.str, Return.type, ref-counts) before general Return
@@ -260,7 +281,10 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
     } else if let Some(expected) = last_line.strip_prefix("# Return=") {
         (Expectation::Return(expected.to_string()), &lines[..lines.len() - 1])
     } else if let Some(expected) = last_line.strip_prefix("# Raise=") {
-        (Expectation::Raise(expected.to_string()), &lines[..lines.len() - 1])
+        (
+            Expectation::Raise(monty_error.unwrap_or(expected).to_string()),
+            &lines[..lines.len() - 1],
+        )
     } else {
         // No expectation comment - just run and check it doesn't raise
         (Expectation::NoException, &lines[..])
@@ -2972,7 +2996,7 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
     // the harness never changes directory, so a CPython fixture that calls
     // `os.chdir` cannot race another thread's fixture read.
     let path = CANONICAL_WS_DIR.join(path).canonicalize()?;
-    let (code, expectation, config) = parse_fixture(&fs::read_to_string(&path)?);
+    let (code, expectation, config) = parse_fixture(&fs::read_to_string(&path)?, Interpreter::Monty);
     run_monty_case(&path, config.xfail_monty, move |path| {
         if config.mount_fs {
             try_run_mount_fs_test(path, &code, &expectation, &config)
@@ -3047,7 +3071,7 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
     let path = path.strip_prefix(CANONICAL_WS_DIR.as_path())?;
 
     let content = fs::read_to_string(CANONICAL_WS_DIR.join(path))?;
-    let (code, expectation, config) = parse_fixture(&content);
+    let (code, expectation, config) = parse_fixture(&content, Interpreter::Cpython);
     let test_name = path
         .strip_prefix(TEST_CASES_RELATIVE_DIR)
         .unwrap_or(path)
@@ -3092,3 +3116,18 @@ datatest_stable::harness! {
 #[cfg(test)]
 #[path = "../tests/units/create_exclusive.rs"]
 mod create_exclusive_tests;
+
+#[cfg(test)]
+mod fixture_tests {
+    use super::{Expectation, Interpreter, parse_fixture};
+
+    #[test]
+    fn crlf_error_override() {
+        let content = "len()\r\n# Raise=TypeError('CPython')\r\n# Monty.Error=TypeError('Monty')\r\n";
+        for (interpreter, message) in [(Interpreter::Monty, "Monty"), (Interpreter::Cpython, "CPython")] {
+            let (code, expectation, _) = parse_fixture(content, interpreter);
+            assert_eq!(code, "len()");
+            assert!(matches!(expectation, Expectation::Raise(s) if s == format!("TypeError('{message}')")));
+        }
+    }
+}

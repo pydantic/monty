@@ -9,11 +9,9 @@ their `(at line N, column M)` / `(at end of document)` suffix, match CPython 3.1
 
 - `s` must be a `str`; anything else raises `TypeError: Expected str object, not '<type>'`,
     as in CPython.
-- `parse_float` is not accepted: passing it raises `TypeError: loads() got an unexpected keyword argument 'parse_float'`.
+- `parse_float` raises `TypeError: loads() got an unexpected keyword argument 'parse_float'`.
     Floats are always `float`, so a document whose values need `decimal.Decimal` precision cannot be
     parsed losslessly.
-- Passing `s` by keyword raises `loads() got an unexpected keyword argument 's'` where CPython reports
-    `got some positional-only arguments passed as keyword arguments: 's'`.
 - Inline arrays and inline tables may nest 100 levels deep; deeper input raises
     `RecursionError: maximum recursion depth exceeded`. CPython's limit depends on the interpreter
     recursion limit: at the default, nested arrays fail just under 500 levels and nested inline tables

@@ -89,7 +89,7 @@ fn resolve_wait_timeout(timeout: &Value, vm: &mut VM<'_>) -> RunResult<(bool, Op
 /// `asyncio.wait(fs, *, timeout=None, return_when=...)` — a pure-Python `def`,
 /// so no argument is type-checked while binding.
 #[derive(FromArgs)]
-#[from_args(name = "wait", style = def)]
+#[from_args(name = "wait")]
 struct WaitArgs {
     fs: Value,
     #[from_args(kw_only, default = None)]

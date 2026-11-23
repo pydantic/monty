@@ -2,6 +2,11 @@ import copy
 import functools
 import sys
 
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 # === cache: values and counters ===
 calls = []
 
@@ -489,7 +494,10 @@ try:
     functools.cache(user_function=int)
     assert False, 'expected cache to reject keyword arguments'
 except TypeError as exc:
-    assert str(exc) == "cache() got some positional-only arguments passed as keyword arguments: 'user_function'"
+    assert str(exc) == _error_message(
+        monty='cache() takes no keyword arguments',
+        cpython="cache() got some positional-only arguments passed as keyword arguments: 'user_function'",
+    )
 
 try:
     functools.lru_cache(5.0)
@@ -507,7 +515,10 @@ try:
     functools.lru_cache(1, 2, 3)
     assert False, 'expected lru_cache to fail'
 except TypeError as exc:
-    assert str(exc) == 'lru_cache() takes from 0 to 2 positional arguments but 3 were given'
+    assert str(exc) == _error_message(
+        monty='lru_cache() takes at most 2 arguments (3 given)',
+        cpython='lru_cache() takes from 0 to 2 positional arguments but 3 were given',
+    )
 
 try:
     functools.lru_cache(bogus=1)
@@ -519,7 +530,10 @@ try:
     functools.cache()
     assert False, 'expected cache to fail'
 except TypeError as exc:
-    assert str(exc) == "cache() missing 1 required positional argument: 'user_function'"
+    assert str(exc) == _error_message(
+        monty='cache() takes exactly 1 argument (0 given)',
+        cpython="cache() missing 1 required positional argument: 'user_function'",
+    )
 
 try:
     functools.cache(5)
@@ -531,7 +545,10 @@ try:
     functools.cache(int, 5)
     assert False, 'expected cache to fail'
 except TypeError as exc:
-    assert str(exc) == 'cache() takes 1 positional argument but 2 were given'
+    assert str(exc) == _error_message(
+        monty='cache() takes exactly 1 argument (2 given)',
+        cpython='cache() takes 1 positional argument but 2 were given',
+    )
 
 try:
     functools.lru_cache(maxsize=2)()
@@ -551,7 +568,10 @@ try:
     functools.lru_cache(maxsize=2)(int, str)
     assert False, 'expected the decorator to fail'
 except TypeError as exc:
-    assert str(exc) == 'lru_cache.<locals>.decorating_function() takes 1 positional argument but 2 were given'
+    assert str(exc) == _error_message(
+        monty='lru_cache.<locals>.decorating_function() takes at most 1 argument (2 given)',
+        cpython='lru_cache.<locals>.decorating_function() takes 1 positional argument but 2 were given',
+    )
 
 try:
     double.cache_info(1)

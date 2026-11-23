@@ -204,7 +204,7 @@ fn dataclass_decorator(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Raw `Value` fields because CPython's `def` type-checks nothing; the body
 /// takes each option's truthiness instead.
 #[derive(FromArgs)]
-#[from_args(name = "dataclass", style = def)]
+#[from_args(name = "dataclass")]
 struct DataclassArgs {
     #[from_args(pos_only, default = Value::None)]
     cls: Value,
@@ -238,7 +238,7 @@ struct DataclassArgs {
 /// type-checks nothing, and `apply_dataclass` makes the class check the body
 /// would.
 #[derive(FromArgs)]
-#[from_args(name = "dataclass.<locals>.wrap", style = def)]
+#[from_args(name = "dataclass.<locals>.wrap")]
 struct ConfiguredArgs {
     cls: Value,
 }

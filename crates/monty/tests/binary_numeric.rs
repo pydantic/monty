@@ -383,12 +383,12 @@ assert float.fromhex('-0x1p-2000').hex() == '-0x0.0p+0'
         (
             "float.fromhex()",
             ExcType::TypeError,
-            "float.fromhex() takes exactly one argument (0 given)",
+            "float.fromhex() takes exactly 1 argument (0 given)",
         ),
         (
             "float.fromhex('1', '2')",
             ExcType::TypeError,
-            "float.fromhex() takes exactly one argument (2 given)",
+            "float.fromhex() takes exactly 1 argument (2 given)",
         ),
         (
             "float.fromhex(string='0x1p0')",

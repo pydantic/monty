@@ -7,3 +7,4 @@ Traceback (most recent call last):
     ~~~~~~~~~~~~~~~~~~~~~~
 TypeError: slice.indices() takes exactly one argument (2 given)
 """
+# Monty.Error=TypeError: slice.indices() takes exactly 1 argument (2 given)

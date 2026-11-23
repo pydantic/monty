@@ -587,7 +587,7 @@ impl HeapItem for RePattern {
 /// is taken by the `re.Pattern.string` attribute name in CPython's class
 /// hierarchy).
 #[derive(FromArgs)]
-#[from_args(name = "sub", style = c_named, at_most_total)]
+#[from_args(name = "sub")]
 struct PatternSubArgs {
     repl: Value,
     #[from_args(static_string = "StringAttr")]
@@ -600,7 +600,7 @@ struct PatternSubArgs {
 ///
 /// See `PatternSubArgs` for why `string` uses `static_string`.
 #[derive(FromArgs)]
-#[from_args(name = "split", style = c_named, at_most_total)]
+#[from_args(name = "split")]
 struct PatternSplitArgs {
     #[from_args(static_string = "StringAttr")]
     string: Value,

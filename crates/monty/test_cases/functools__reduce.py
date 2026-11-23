@@ -1,4 +1,10 @@
 import functools
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === reduce ===
 assert functools.reduce(lambda a, b: a + b, [1, 2, 3, 4]) == 10
@@ -151,7 +157,10 @@ try:
     functools.reduce(lambda a, b: a)
     assert False, 'expected reduce to fail'
 except TypeError as exc:
-    assert str(exc) == 'reduce() takes at least 2 positional arguments (1 given)'
+    assert str(exc) == _error_message(
+        monty="reduce() missing 1 required positional argument: 'iterable'",
+        cpython='reduce() takes at least 2 positional arguments (1 given)',
+    )
 
 try:
     functools.reduce(lambda a, b: a, [1], 2, 3)
@@ -165,9 +174,12 @@ try:
 except TypeError as exc:
     assert str(exc) == "reduce() got an unexpected keyword argument 'bogus'"
 
-# `function` and `iterable` are positional-only, so the arity error comes first
+# CPython checks arity first. Monty reports that `function` is positional-only.
 try:
     functools.reduce(function=lambda a, b: a, iterable=[1])
     assert False, 'expected reduce to fail'
 except TypeError as exc:
-    assert str(exc) == 'reduce() takes at least 2 positional arguments (0 given)'
+    assert str(exc) == _error_message(
+        monty="reduce() got some positional-only arguments passed as keyword arguments: 'function'",
+        cpython='reduce() takes at least 2 positional arguments (0 given)',
+    )

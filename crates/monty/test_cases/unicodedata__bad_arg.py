@@ -9,3 +9,4 @@ Traceback (most recent call last):
     ~~~~~~~~~~~~~~~~~~~~~~~~~~
 TypeError: category(): argument must be a unicode character, not a string of length 2
 """
+# Monty.Error=TypeError: unicodedata.category(): argument must be a unicode character, not a string of length 2

@@ -70,7 +70,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: IoFunctions, args: ArgValues) -> R
 
 /// `open_code(path)`.
 #[derive(FromArgs)]
-#[from_args(name = "open_code", style = c_named, bad_arg_named)]
+#[from_args(name = "open_code", bad_arg_named)]
 struct OpenCodeArgs {
     path: StrArg,
 }
@@ -87,9 +87,7 @@ fn open_code(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `_io.text_encoding(encoding, stacklevel=2, /)`: `encoding` unless it is
 /// `None`, then `'locale'`, which `open()` accepts as Monty's UTF-8.
 fn text_encoding(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (encoding, stacklevel) = args
-        .reject_kwargs("_io.text_encoding", vm.heap)?
-        .get_one_two_args("text_encoding", vm.heap)?;
+    let (encoding, stacklevel) = args.get_one_two_args("_io.text_encoding", vm.heap)?;
     let mut encoding_guard = DropGuard::new(encoding, vm);
     if let Some(stacklevel) = stacklevel {
         let (_, vm) = encoding_guard.as_parts_mut();

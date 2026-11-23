@@ -17,6 +17,12 @@ from decimal import (
     localcontext,
     setcontext,
 )
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # CPython runs cases on shared threads, so start from a fresh default context.
 setcontext(Context())
@@ -68,12 +74,18 @@ try:
     D(1).quantize()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "function missing required argument 'exp' (pos 1)"
+    assert str(e) == _error_message(
+        monty="Decimal.quantize() missing 1 required positional argument: 'exp'",
+        cpython="function missing required argument 'exp' (pos 1)",
+    )
 try:
     D(1).quantize(D(1), None, None, None)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'function takes at most 3 arguments (4 given)'
+    assert str(e) == _error_message(
+        monty='Decimal.quantize() takes at most 3 arguments (4 given)',
+        cpython='function takes at most 3 arguments (4 given)',
+    )
 try:
     D(1).quantize(D(1), context=5)
     assert False, 'expected TypeError'
@@ -304,7 +316,10 @@ try:
     D(1).compare()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "function missing required argument 'other' (pos 1)"
+    assert str(e) == _error_message(
+        monty="Decimal.compare() missing 1 required positional argument: 'other'",
+        cpython="function missing required argument 'other' (pos 1)",
+    )
 try:
     D(1).sqrt(1)
     assert False, 'expected TypeError'
@@ -395,7 +410,10 @@ try:
     D(1, 2, 3)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'function takes at most 2 arguments (3 given)'
+    assert str(e) == _error_message(
+        monty='Decimal() takes at most 2 arguments (3 given)',
+        cpython='function takes at most 2 arguments (3 given)',
+    )
 try:
     D('1', 5)
     assert False, 'expected TypeError'

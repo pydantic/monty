@@ -184,15 +184,9 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::allocate(date, vm.heap))
 }
 
-/// Argument shape for `date(year, month, day)`.
-///
-/// CPython's `date()` is C-implemented (`PyArg_ParseTupleAndKeywords`), hence
-/// `style = c` — "function takes at most N arguments", "function missing
-/// required argument 'X' (pos N)", etc. Unlike `datetime()` it has no
-/// keyword-only fields, so the derive keeps the plain (non-"positional")
-/// at-most wording automatically.
+/// `date(year, month, day)`.
 #[derive(FromArgs)]
-#[from_args(name = "function", style = c, at_most_total)]
+#[from_args(name = "date")]
 struct DateInitArgs {
     year: i32,
     month: i32,
@@ -215,9 +209,7 @@ pub(crate) fn class_today(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRes
 /// Classmethod `date.fromtimestamp(timestamp)`: the session-local date of a Unix
 /// timestamp, read in the session zone as CPython reads it in the host's.
 pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args
-        .reject_kwargs("date.fromtimestamp", vm.heap)?
-        .get_one_arg("date.fromtimestamp", vm.heap)?;
+    let value = args.get_one_arg("date.fromtimestamp", vm.heap)?;
     defer_drop!(value, vm);
     // `date` floors to whole seconds and uses `__index__`-style wording, where
     // `datetime` rounds to microseconds and names both numeric types.
@@ -255,9 +247,7 @@ pub(crate) fn class_fromordinal(vm: &mut VM<'_>, args: ArgValues) -> RunResult<V
 /// Parses ISO 8601 date strings in the formats `YYYY-MM-DD` and `YYYYMMDD`,
 /// matching CPython 3.11+ behavior.
 pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let value = args
-        .reject_kwargs("date.fromisoformat", heap)?
-        .get_one_arg("date.fromisoformat", heap)?;
+    let value = args.get_one_arg("date.fromisoformat", heap)?;
     let s = extract_str_arg(&value, "fromisoformat", heap, interns);
     value.drop_with(heap);
     let s = s?;
@@ -542,27 +532,16 @@ pub(crate) fn invalid_strftime_error() -> RunError {
     SimpleException::new_msg(ExcType::ValueError, "Invalid format string".to_owned()).into()
 }
 
-/// Argument shape for `date.strftime(format)` and `datetime.strftime(format)`.
-///
-/// CPython implements `strftime` as a C method and reports errors with the
-/// bare method name (no class prefix), so we use `style = c_named` + the
-/// `"strftime"` descriptor — matching wordings like
-/// `strftime() missing required argument 'format' (pos 1)` and
-/// `strftime() takes at most 1 argument (2 given)`.
-///
-/// `bad_arg` opts the wrong-type wording into CPython's `_PyArg_BadArgument`
-/// form (`strftime() argument 1 must be str, not <type>`), including the
-/// `None`-vs-`NoneType` special case — so the type-check logic lives in
-/// the derive rather than a hand-written extract helper.
+/// `date.strftime(format)`.
 #[derive(FromArgs)]
-#[from_args(name = "strftime", style = c_named, at_most_total, bad_arg)]
+#[from_args(name = "strftime", bad_arg)]
 pub(crate) struct StrftimeArgs {
     pub(crate) format: StrArg,
 }
 
 /// Optional positional-or-keyword date components; omitted fields keep their original values.
 #[derive(FromArgs)]
-#[from_args(name = "replace", style = c_named, at_most_total)]
+#[from_args(name = "replace")]
 struct DateReplaceArgs {
     #[from_args(default)]
     year: Option<i32>,
@@ -742,7 +721,7 @@ impl<'heap> PyAttrs<'heap> for PyDateImpl {
 
 /// Argument shape for `date.fromordinal(ordinal)` and `datetime.fromordinal(ordinal)`.
 #[derive(FromArgs)]
-#[from_args(name = "fromordinal", style = parse_tuple)]
+#[from_args(name = "fromordinal")]
 pub(crate) struct FromOrdinalArgs {
     #[from_args(pos_only)]
     pub(crate) ordinal: i32,

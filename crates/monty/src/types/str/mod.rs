@@ -351,15 +351,9 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
     }
 }
 
-/// Argument shape for `str(object='', encoding='utf-8', errors='strict')`.
-///
-/// `encoding`/`errors` are raw `Value`s validated in the body: CPython's
-/// `unicode_new` names a wrong type by its `tp_name` (`must be str, not
-/// NoneType`), not `_PyArg_BadArgument`'s `None` special case, so the macro's
-/// `bad_arg_named` wording can't be used. `vectorcall` + `at_most_total`
-/// model `unicode_vectorcall`'s dual arity wording.
+/// `str(object='', encoding='utf-8', errors='strict')`.
 #[derive(FromArgs)]
-#[from_args(name = "str", at_most_total, vectorcall)]
+#[from_args(name = "str")]
 struct StrInitArgs {
     #[from_args(default)]
     object: Option<Value>,
@@ -1882,7 +1876,7 @@ fn parse_splitlines_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<bool> {
 /// `keepends` for truthiness rather than strict-typing, so the field stays as
 /// a raw `Value` for `value_is_truthy` to inspect.
 #[derive(FromArgs)]
-#[from_args(name = "splitlines", at_most_total)]
+#[from_args(name = "splitlines")]
 struct SplitlinesArgs {
     #[from_args(default)]
     keepends: Option<Value>,
@@ -1974,7 +1968,7 @@ fn parse_justify_args(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResu
 /// so callers can distinguish "absent" (default 8) from any explicit value
 /// without forcing the macro into a type-checked default.
 #[derive(FromArgs)]
-#[from_args(name = "expandtabs", at_most_total)]
+#[from_args(name = "expandtabs")]
 struct ExpandtabsArgs {
     #[from_args(default)]
     tabsize: Option<Value>,
@@ -1990,7 +1984,7 @@ struct ExpandtabsArgs {
 /// out naturally because `Option<StrArg>::from_value` delegates to
 /// `StrArg::from_value` and rejects `Value::None`.
 #[derive(FromArgs)]
-#[from_args(name = "encode", at_most_total, bad_arg_named)]
+#[from_args(name = "encode", bad_arg_named)]
 struct EncodeArgs {
     #[from_args(default)]
     encoding: Option<StrArg>,

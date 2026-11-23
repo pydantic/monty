@@ -415,14 +415,14 @@ pub(crate) fn hex_string(data: &[u8]) -> String {
 
 /// `digest(length)` of a `_hashlib.HASHXOF`.
 #[derive(FromArgs)]
-#[from_args(name = "digest", style = c_named, at_most_total)]
+#[from_args(name = "digest")]
 struct XofDigestArgs {
     length: u64,
 }
 
 /// `hexdigest(length)` of a `_hashlib.HASHXOF`.
 #[derive(FromArgs)]
-#[from_args(name = "hexdigest", style = c_named, at_most_total)]
+#[from_args(name = "hexdigest")]
 struct XofHexdigestArgs {
     length: u64,
 }

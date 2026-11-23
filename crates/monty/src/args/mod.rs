@@ -4,7 +4,7 @@ mod from_value;
 
 use std::{mem, slice, vec::IntoIter};
 
-pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
+pub(crate) use bind_native::{Bound, Param, ParamSpec};
 pub(crate) use bind_python::Signature;
 pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg};
 pub(crate) use monty_macros::FromArgs;
@@ -40,25 +40,13 @@ pub(crate) enum ArgValues {
 }
 
 impl ArgValues {
-    /// Checks that zero arguments were passed.
-    ///
-    /// On error, properly drops all contained values to maintain reference counts.
+    #[inline]
     pub fn check_zero_args(self, name: &str, heap: &mut Heap) -> RunResult<()> {
-        match self {
-            Self::Empty => Ok(()),
-            other => {
-                // CPython checks keywords first and reports them separately, so a
-                // stray kwarg is never described as `(0 given)`.
-                let has_kwargs = other.has_kwargs();
-                let count = other.count();
-                other.drop_with(heap);
-                if has_kwargs {
-                    Err(ExcType::type_error_no_kwargs(name))
-                } else {
-                    Err(ExcType::type_error_no_args(name, count))
-                }
-            }
+        if matches!(self, Self::Empty) {
+            return Ok(());
         }
+        let [] = const { ParamSpec::<0>::positional_only(0) }.unpack_positional(name, self, heap)?;
+        Ok(())
     }
 
     /// Whether any keyword argument was passed.
@@ -87,85 +75,70 @@ impl ArgValues {
         }
     }
 
-    /// Rejects keywords before a positional-only function's arity or conversion checks.
-    pub(crate) fn reject_kwargs(self, name: &str, heap: &mut Heap) -> RunResult<Self> {
-        if self.has_kwargs() {
-            self.drop_with(heap);
-            Err(ExcType::type_error_no_kwargs(name))
-        } else {
-            Ok(self)
-        }
-    }
-
-    /// Checks that exactly one positional argument was passed, returning it.
-    ///
-    /// On error, properly drops all contained values to maintain reference counts.
+    #[inline]
     pub fn get_one_arg(self, name: &str, heap: &mut Heap) -> RunResult<Value> {
-        match self {
-            Self::One(a) => Ok(a),
-            other => {
-                let count = other.count();
-                other.drop_with(heap);
-                Err(ExcType::type_error_arg_count(name, 1, count))
-            }
+        if let Self::One(value) = self {
+            return Ok(value);
         }
+        let [value] = self.get_args::<1>(name, heap)?;
+        Ok(value)
     }
 
-    /// Checks that exactly two positional arguments were passed, returning them as a tuple.
-    ///
-    /// On error, properly drops all contained values to maintain reference counts.
+    #[inline]
     pub fn get_two_args(self, name: &str, heap: &mut Heap) -> RunResult<(Value, Value)> {
-        match self {
-            Self::Two(a1, a2) => Ok((a1, a2)),
-            other => {
-                let count = other.count();
-                other.drop_with(heap);
-                Err(ExcType::type_error_arg_count(name, 2, count))
-            }
+        if let Self::Two(first, second) = self {
+            return Ok((first, second));
         }
+        let [first, second] = self.get_args::<2>(name, heap)?;
+        Ok((first, second))
     }
 
-    /// Checks that one or two arguments were passed, returning them as a tuple.
-    ///
-    /// On error, properly drops all contained values to maintain reference counts.
+    pub fn get_args<const N: usize>(self, name: &str, heap: &mut Heap) -> RunResult<[Value; N]> {
+        let other = match self {
+            Self::ArgsKargs {
+                args,
+                kwargs: KwargsValues::Empty,
+            } if N >= 3 && args.len() == N => {
+                return Ok(args
+                    .try_into()
+                    .unwrap_or_else(|_| unreachable!("argument count checked")));
+            }
+            other => other,
+        };
+        let spec = const { ParamSpec::<N>::positional_only(N) };
+        Ok(spec
+            .unpack_positional(name, other, heap)?
+            .map(|slot| slot.expect("required positional argument")))
+    }
+
+    #[inline]
     pub fn get_one_two_args(self, name: &str, heap: &mut Heap) -> RunResult<(Value, Option<Value>)> {
         match self {
-            Self::One(a) => Ok((a, None)),
-            Self::Two(a1, a2) => Ok((a1, Some(a2))),
+            Self::One(value) => Ok((value, None)),
+            Self::Two(first, second) => Ok((first, Some(second))),
             other => {
-                let count = other.count();
-                other.drop_with(heap);
-                if count == 0 {
-                    Err(ExcType::type_error_at_least(name, 1, count))
-                } else {
-                    Err(ExcType::type_error_at_most(name, 2, count))
-                }
+                let spec = const { ParamSpec::<2>::positional_only(1) };
+                let [first, second] = spec.unpack_positional(name, other, heap)?;
+                Ok((first.expect("required positional argument"), second))
             }
         }
     }
 
-    /// Checks that zero or one argument was passed, returning the optional value.
-    ///
-    /// On error, properly drops all contained values to maintain reference counts.
+    #[inline]
     pub fn get_zero_one_arg(self, name: &str, heap: &mut Heap) -> RunResult<Option<Value>> {
         match self {
             Self::Empty => Ok(None),
-            Self::One(a) => Ok(Some(a)),
+            Self::One(value) => Ok(Some(value)),
             other => {
-                let count = other.count();
-                other.drop_with(heap);
-                Err(ExcType::type_error_at_most(name, 1, count))
+                let spec = const { ParamSpec::<1>::positional_only(0) };
+                let [value] = spec.unpack_positional(name, other, heap)?;
+                Ok(value)
             }
         }
     }
 
     /// Builds an `ArgValues` from split parts, collapsing to the small-arity
     /// variants the way [`VM::pop_n_args`](crate::bytecode::VM) does.
-    ///
-    /// Anything assembling arguments itself rather than popping them off the
-    /// stack must go through this. `get_one_arg` and its siblings match only
-    /// `Empty`/`One`/`Two`, so a hand-built `ArgsKargs` carrying empty kwargs
-    /// makes every builtin using them report a bogus arity error.
     pub(crate) fn from_parts(mut args: Vec<Value>, kwargs: KwargsValues) -> Self {
         match args.len() {
             _ if !kwargs.is_empty() => Self::ArgsKargs { args, kwargs },

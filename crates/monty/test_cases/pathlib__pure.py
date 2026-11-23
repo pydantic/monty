@@ -2,6 +2,7 @@
 # skip-cpython-windows = true  # pathlib uses POSIX paths in Monty's sandbox, Windows CPython resolves differently
 # ///
 # === Path constructor ===
+import sys
 from pathlib import Path
 
 p = Path('/usr/local/bin/python')
@@ -314,7 +315,10 @@ try:
     Path('a').match('*.py', 'extra')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'positional argument' in str(e) and 'were given' in str(e)
+    if sys.platform == 'monty':
+        assert str(e) == 'Path.match() takes at most 1 positional argument (2 given)'
+    else:
+        assert str(e) == 'PurePath.match() takes 2 positional arguments but 3 were given'
 
 try:
     Path('a').match('*.py', extra=1)

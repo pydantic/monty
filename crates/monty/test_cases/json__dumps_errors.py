@@ -1,4 +1,10 @@
 import json
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === allow_nan=False errors ===
 try:
@@ -97,22 +103,28 @@ try:
     json.dumps(None, foobar_not_static=True)
     assert False, 'unexpected kwarg should raise TypeError'
 except TypeError as exc:
-    assert str(exc) == "JSONEncoder.__init__() got an unexpected keyword argument 'foobar_not_static'"
+    assert str(exc) == _error_message(
+        monty="json.dumps() got an unexpected keyword argument 'foobar_not_static'",
+        cpython="JSONEncoder.__init__() got an unexpected keyword argument 'foobar_not_static'",
+    )
 
 try:
     json.dumps(1, 2)
     assert False, 'json.dumps with too many positional args should raise TypeError'
 except TypeError as exc:
-    assert str(exc) == 'dumps() takes 1 positional argument but 2 were given', f'dumps-arity: {exc}'
+    assert str(exc) == _error_message(
+        monty='json.dumps() takes at most 1 positional argument (2 given)',
+        cpython='dumps() takes 1 positional argument but 2 were given',
+    ), f'dumps-arity: {exc}'
 
 # the keyword-only suffix composes into the arity message like CPython
 try:
     json.dumps(1, 2, skipkeys=True)
     assert False, 'json.dumps with extra positional + kwonly should raise TypeError'
 except TypeError as exc:
-    assert (
-        str(exc)
-        == 'dumps() takes 1 positional argument but 2 positional arguments (and 1 keyword-only argument) were given'
+    assert str(exc) == _error_message(
+        monty='json.dumps() takes at most 1 positional argument (2 given)',
+        cpython='dumps() takes 1 positional argument but 2 positional arguments (and 1 keyword-only argument) were given',
     ), f'dumps-kwonly-arity: {exc}'
 
 # === circular reference errors ===

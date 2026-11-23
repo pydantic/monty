@@ -24,22 +24,9 @@ use crate::{
 /// object.__setattr__(point, 'x', 1)
 /// ```
 pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    // CPython reaches this as a slot wrapper bound to `obj`, so its messages
-    // name the wrapper and count `obj` as the receiver rather than an argument.
-    let positional = args.into_pos_only("wrapper __setattr__", vm.heap)?;
-    defer_drop!(positional, vm);
-
-    let (object, name, value) = match positional.as_slice() {
-        [object, name, value] => (object, name, value),
-        // With nothing to bind as the receiver, CPython fails in the descriptor
-        // rather than in the arity check.
-        [] => {
-            return Err(ExcType::type_error(
-                "descriptor '__setattr__' of 'object' object needs an argument".to_owned(),
-            ));
-        }
-        other => return Err(ExcType::type_error_arg_count("__setattr__", 2, other.len() - 1)),
-    };
+    let values = args.get_args::<3>("object.__setattr__", vm.heap)?;
+    defer_drop!(values, vm);
+    let [object, name, value] = values;
 
     let Some(name) = name.as_either_str(vm.heap) else {
         return Err(SimpleException::new_msg(

@@ -4,6 +4,11 @@
 import datetime
 import sys
 
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 _monty = 'Monty' in sys.version
 
 # === now/today from deterministic OS callback ===
@@ -202,7 +207,10 @@ try:
     _aware.astimezone(tz=datetime.timezone.utc, x=1)
     assert False, 'astimezone with an unknown kwarg should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'astimezone() takes at most 1 keyword argument (2 given)'
+    assert str(e) == _error_message(
+        monty="astimezone() got an unexpected keyword argument 'x'",
+        cpython='astimezone() takes at most 1 keyword argument (2 given)',
+    )
 
 # === timezone validations and constant ===
 assert datetime.timezone.utc == datetime.timezone(datetime.timedelta(0))
@@ -230,25 +238,37 @@ try:
     datetime.datetime(2024, 1, 1, 1, hour=2)
     assert False, 'datetime constructor should reject positional+keyword duplicate hour'
 except TypeError as e:
-    assert str(e) == "argument for function given by name ('hour') and position (4)"
+    assert str(e) == _error_message(
+        monty="datetime() got multiple values for argument 'hour'",
+        cpython="argument for function given by name ('hour') and position (4)",
+    )
 
 try:
     datetime.datetime(2024, 1, 1, 0, 0, 0, 0, datetime.timezone.utc, tzinfo=datetime.timezone.utc)
     assert False, 'datetime constructor should reject positional+keyword duplicate tzinfo'
 except TypeError as e:
-    assert str(e) == "argument for function given by name ('tzinfo') and position (8)"
+    assert str(e) == _error_message(
+        monty="datetime() got multiple values for argument 'tzinfo'",
+        cpython="argument for function given by name ('tzinfo') and position (8)",
+    )
 
 try:
     datetime.timezone(datetime.timedelta(hours=1), offset=datetime.timedelta(hours=1))
     assert False, 'timezone constructor should reject positional+keyword duplicate offset'
 except TypeError as e:
-    assert str(e) == "argument for timezone() given by name ('offset') and position (1)"
+    assert str(e) == _error_message(
+        monty="timezone() got multiple values for argument 'offset'",
+        cpython="argument for timezone() given by name ('offset') and position (1)",
+    )
 
 try:
     datetime.timezone(datetime.timedelta(hours=1), 'A', name='B')
     assert False, 'timezone constructor should reject 3 arguments even when name is also provided by keyword'
 except TypeError as e:
-    assert str(e) == 'timezone() takes at most 2 arguments (3 given)', f'timezone 3-arg error: {e}'
+    assert str(e) == _error_message(
+        monty="timezone() got multiple values for argument 'name'",
+        cpython='timezone() takes at most 2 arguments (3 given)',
+    ), f'timezone 3-arg error: {e}'
 
 # === constructor arguments too wide for the C parameter type ===
 # CPython's `i` format converts to C long first ("too large to convert"), then
@@ -480,7 +500,14 @@ for _args, _kwargs, _msg in [
     (('T', 5), {}, 'isoformat() argument 2 must be str, not int'),
     (('T', 'minutes', 'x'), {}, 'isoformat() takes at most 2 arguments (3 given)'),
     # a duplicate counts towards the total rather than reporting the conflict
-    (('T',), {'timespec': 'minutes', 'sep': 'x'}, 'isoformat() takes at most 2 arguments (3 given)'),
+    (
+        ('T',),
+        {'timespec': 'minutes', 'sep': 'x'},
+        _error_message(
+            monty="isoformat() got multiple values for argument 'sep'",
+            cpython='isoformat() takes at most 2 arguments (3 given)',
+        ),
+    ),
     ((), {'bogus': 1}, "isoformat() got an unexpected keyword argument 'bogus'"),
 ]:
     try:
@@ -614,13 +641,19 @@ try:
     datetime.date(2024, 1, 1, 1)
     assert False, 'date should reject too many positional args'
 except TypeError as e:
-    assert str(e) == 'function takes at most 3 arguments (4 given)', f'date too many args message: {e}'
+    assert str(e) == _error_message(
+        monty='date() takes at most 3 arguments (4 given)',
+        cpython='function takes at most 3 arguments (4 given)',
+    ), f'date too many args message: {e}'
 
 try:
     datetime.date(2024, 1, 1, foo=1)
     assert False, 'date should reject unknown keyword arg'
 except TypeError as e:
-    assert str(e) == 'function takes at most 3 arguments (4 given)', f'date unknown kwarg message: {e}'
+    assert str(e) == _error_message(
+        monty="date() got an unexpected keyword argument 'foo'",
+        cpython='function takes at most 3 arguments (4 given)',
+    ), f'date unknown kwarg message: {e}'
 
 # === missing positional arguments for date ===
 
@@ -628,19 +661,28 @@ try:
     datetime.date()
     assert False, 'date() with no args should raise TypeError'
 except TypeError as e:
-    assert str(e) == "function missing required argument 'year' (pos 1)", f'date() no args message: {e}'
+    assert str(e) == _error_message(
+        monty="date() missing 3 required positional arguments: 'year', 'month', and 'day'",
+        cpython="function missing required argument 'year' (pos 1)",
+    ), f'date() no args message: {e}'
 
 try:
     datetime.date(2024)
     assert False, 'date() with 1 arg should raise TypeError'
 except TypeError as e:
-    assert str(e) == "function missing required argument 'month' (pos 2)", f'date(year) message: {e}'
+    assert str(e) == _error_message(
+        monty="date() missing 2 required positional arguments: 'month' and 'day'",
+        cpython="function missing required argument 'month' (pos 2)",
+    ), f'date(year) message: {e}'
 
 try:
     datetime.date(2024, 1)
     assert False, 'date() with 2 args should raise TypeError'
 except TypeError as e:
-    assert str(e) == "function missing required argument 'day' (pos 3)", f'date(year, month) message: {e}'
+    assert str(e) == _error_message(
+        monty="date() missing 1 required positional argument: 'day'",
+        cpython="function missing required argument 'day' (pos 3)",
+    ), f'date(year, month) message: {e}'
 
 # === keyword-only construction for datetime ===
 
@@ -650,7 +692,10 @@ try:
     datetime.datetime(2024, 1, 1, foo=1)
     assert False, 'datetime should reject unknown keyword arg'
 except TypeError as e:
-    assert str(e) == "this function got an unexpected keyword argument 'foo'", f'datetime unknown kwarg message: {e}'
+    assert str(e) == _error_message(
+        monty="datetime() got an unexpected keyword argument 'foo'",
+        cpython="this function got an unexpected keyword argument 'foo'",
+    ), f'datetime unknown kwarg message: {e}'
 
 # === missing positional arguments for datetime ===
 
@@ -658,19 +703,28 @@ try:
     datetime.datetime()
     assert False, 'datetime() with no args should raise TypeError'
 except TypeError as e:
-    assert str(e) == "function missing required argument 'year' (pos 1)", f'datetime() no args message: {e}'
+    assert str(e) == _error_message(
+        monty="datetime() missing 3 required positional arguments: 'year', 'month', and 'day'",
+        cpython="function missing required argument 'year' (pos 1)",
+    ), f'datetime() no args message: {e}'
 
 try:
     datetime.datetime(2024)
     assert False, 'datetime() with 1 arg should raise TypeError'
 except TypeError as e:
-    assert str(e) == "function missing required argument 'month' (pos 2)", f'datetime(year) message: {e}'
+    assert str(e) == _error_message(
+        monty="datetime() missing 2 required positional arguments: 'month' and 'day'",
+        cpython="function missing required argument 'month' (pos 2)",
+    ), f'datetime(year) message: {e}'
 
 try:
     datetime.datetime(2024, 1)
     assert False, 'datetime() with 2 args should raise TypeError'
 except TypeError as e:
-    assert str(e) == "function missing required argument 'day' (pos 3)", f'datetime(year, month) message: {e}'
+    assert str(e) == _error_message(
+        monty="datetime() missing 1 required positional argument: 'day'",
+        cpython="function missing required argument 'day' (pos 3)",
+    ), f'datetime(year, month) message: {e}'
 
 # === aware datetime arithmetic ===
 
@@ -831,7 +885,10 @@ try:
     datetime.timezone()
     assert False, 'timezone() with no args should raise TypeError'
 except TypeError as e:
-    assert str(e) == "timezone() missing required argument 'offset' (pos 1)", f'timezone() no args message: {e}'
+    assert str(e) == _error_message(
+        monty="timezone() missing 1 required positional argument: 'offset'",
+        cpython="timezone() missing required argument 'offset' (pos 1)",
+    ), f'timezone() no args message: {e}'
 
 # === timezone repr and str ===
 
@@ -869,7 +926,10 @@ try:
     datetime.datetime(2024, 1, 1, 0, 0, 0, 0, datetime.timezone.utc, 'extra')
     assert False, 'datetime with 9 positional args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'function takes at most 8 positional arguments (9 given)', f'datetime too many args: {e}'
+    assert str(e) == _error_message(
+        monty='datetime() takes at most 8 positional arguments (9 given)',
+        cpython='function takes at most 8 positional arguments (9 given)',
+    ), f'datetime too many args: {e}'
 
 # === datetime constructor error: duplicate keyword args (lines 244-286) ===
 
@@ -877,37 +937,55 @@ try:
     datetime.datetime(2024, 1, 1, year=2024)
     assert False, 'positional+keyword year should raise TypeError'
 except TypeError as e:
-    assert str(e) == "argument for function given by name ('year') and position (1)", f'dup year: {e}'
+    assert str(e) == _error_message(
+        monty="datetime() got multiple values for argument 'year'",
+        cpython="argument for function given by name ('year') and position (1)",
+    ), f'dup year: {e}'
 
 try:
     datetime.datetime(2024, 1, 1, day=1)
     assert False, 'positional+keyword day should raise TypeError'
 except TypeError as e:
-    assert str(e) == "argument for function given by name ('day') and position (3)", f'dup day: {e}'
+    assert str(e) == _error_message(
+        monty="datetime() got multiple values for argument 'day'",
+        cpython="argument for function given by name ('day') and position (3)",
+    ), f'dup day: {e}'
 
 try:
     datetime.datetime(2024, 1, 1, 0, 30, minute=30)
     assert False, 'positional+keyword minute should raise TypeError'
 except TypeError as e:
-    assert str(e) == "argument for function given by name ('minute') and position (5)", f'dup minute: {e}'
+    assert str(e) == _error_message(
+        monty="datetime() got multiple values for argument 'minute'",
+        cpython="argument for function given by name ('minute') and position (5)",
+    ), f'dup minute: {e}'
 
 try:
     datetime.datetime(2024, 1, 1, 0, 0, 30, second=30)
     assert False, 'positional+keyword second should raise TypeError'
 except TypeError as e:
-    assert str(e) == "argument for function given by name ('second') and position (6)", f'dup second: {e}'
+    assert str(e) == _error_message(
+        monty="datetime() got multiple values for argument 'second'",
+        cpython="argument for function given by name ('second') and position (6)",
+    ), f'dup second: {e}'
 
 try:
     datetime.datetime(2024, 1, 1, 0, 0, 0, 500, microsecond=500)
     assert False, 'positional+keyword microsecond should raise TypeError'
 except TypeError as e:
-    assert str(e) == "argument for function given by name ('microsecond') and position (7)", f'dup microsecond: {e}'
+    assert str(e) == _error_message(
+        monty="datetime() got multiple values for argument 'microsecond'",
+        cpython="argument for function given by name ('microsecond') and position (7)",
+    ), f'dup microsecond: {e}'
 
 try:
     datetime.datetime(2024, 1, 1, 0, 0, 0, 0, datetime.timezone.utc, tzinfo=datetime.timezone.utc)
     assert False, 'positional+keyword tzinfo should raise TypeError'
 except TypeError as e:
-    assert str(e) == "argument for function given by name ('tzinfo') and position (8)", f'dup tzinfo: {e}'
+    assert str(e) == _error_message(
+        monty="datetime() got multiple values for argument 'tzinfo'",
+        cpython="argument for function given by name ('tzinfo') and position (8)",
+    ), f'dup tzinfo: {e}'
 
 # === datetime.now() error: too many positional args (lines 350-357) ===
 
@@ -929,7 +1007,10 @@ try:
     datetime.datetime.now(datetime.timezone.utc, badkw=1)
     assert False, 'datetime.now(utc, badkw=1) should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'now() takes at most 1 argument (2 given)'
+    assert str(e) == _error_message(
+        monty="now() got an unexpected keyword argument 'badkw'",
+        cpython='now() takes at most 1 argument (2 given)',
+    )
 
 # === datetime.now() error: bad keyword argument (lines 370-374) ===
 
@@ -953,7 +1034,10 @@ try:
     datetime.datetime.now(datetime.timezone.utc, tz=datetime.timezone.utc)
     assert False, 'datetime.now(utc, tz=utc) should raise TypeError for duplicate tz'
 except TypeError as e:
-    assert str(e) == 'now() takes at most 1 argument (2 given)', f'datetime.now dup tz message: {e}'
+    assert str(e) == _error_message(
+        monty="now() got multiple values for argument 'tz'",
+        cpython='now() takes at most 1 argument (2 given)',
+    ), f'datetime.now dup tz message: {e}'
 
 # === datetime.now() with tz=None ===
 
@@ -1134,7 +1218,10 @@ try:
     datetime.date(2024, 1, 1, foo=1)
     assert False, 'date with extra kwarg should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'function takes at most 3 arguments (4 given)', f'date too many args: {e}'
+    assert str(e) == _error_message(
+        monty="date() got an unexpected keyword argument 'foo'",
+        cpython='function takes at most 3 arguments (4 given)',
+    ), f'date too many args: {e}'
 
 # === date constructor: duplicate year kwarg (date.rs init) ===
 # A kwarg naming an already-positional parameter is a *leftover* in CPython's
@@ -1146,7 +1233,10 @@ try:
     datetime.date(2024, year=2024)
     assert False, 'date with duplicate year should raise TypeError'
 except TypeError as e:
-    assert str(e) == "function missing required argument 'month' (pos 2)", f'date dup year: {e}'
+    assert str(e) == _error_message(
+        monty="date() got multiple values for argument 'year'",
+        cpython="function missing required argument 'month' (pos 2)",
+    ), f'date dup year: {e}'
 
 # === date constructor: duplicate month kwarg (date.rs init) ===
 
@@ -1154,7 +1244,10 @@ try:
     datetime.date(2024, 1, month=1)
     assert False, 'date with duplicate month should raise TypeError'
 except TypeError as e:
-    assert str(e) == "function missing required argument 'day' (pos 3)", f'date dup month: {e}'
+    assert str(e) == _error_message(
+        monty="date() got multiple values for argument 'month'",
+        cpython="function missing required argument 'day' (pos 3)",
+    ), f'date dup month: {e}'
 
 # === date.replace() unexpected keyword (date.rs extract_date_replace_kwargs) ===
 
@@ -1188,7 +1281,10 @@ try:
     assert False, 'timedelta with duplicate days should raise TypeError'
 except TypeError as e:
     if _monty:
-        assert str(e) == "argument for timedelta() given by name ('days') and position (1)", f'td dup days: {e}'
+        assert str(e) == _error_message(
+            monty="timedelta() got multiple values for argument 'days'",
+            cpython="argument for timedelta() given by name ('days') and position (1)",
+        ), f'td dup days: {e}'
     else:
         assert str(e) == "argument for __new__() given by name ('days') and position (1)", f'td dup days: {e}'
 
@@ -1197,7 +1293,10 @@ try:
     assert False, 'timedelta with duplicate seconds should raise TypeError'
 except TypeError as e:
     if _monty:
-        assert str(e) == "argument for timedelta() given by name ('seconds') and position (2)", f'td dup seconds: {e}'
+        assert str(e) == _error_message(
+            monty="timedelta() got multiple values for argument 'seconds'",
+            cpython="argument for timedelta() given by name ('seconds') and position (2)",
+        ), f'td dup seconds: {e}'
     else:
         assert str(e) == "argument for __new__() given by name ('seconds') and position (2)", f'td dup seconds: {e}'
 
@@ -1206,9 +1305,10 @@ try:
     assert False, 'timedelta with duplicate microseconds should raise TypeError'
 except TypeError as e:
     if _monty:
-        assert str(e) == "argument for timedelta() given by name ('microseconds') and position (3)", (
-            f'td dup micro: {e}'
-        )
+        assert str(e) == _error_message(
+            monty="timedelta() got multiple values for argument 'microseconds'",
+            cpython="argument for timedelta() given by name ('microseconds') and position (3)",
+        ), f'td dup micro: {e}'
     else:
         assert str(e) == "argument for __new__() given by name ('microseconds') and position (3)", f'td dup micro: {e}'
 
@@ -1277,7 +1377,10 @@ try:
     datetime.datetime(year=2024, month=6)
     assert False, 'datetime missing day should raise TypeError'
 except TypeError as e:
-    assert str(e) == "function missing required argument 'day' (pos 3)", f'dt missing day: {e}'
+    assert str(e) == _error_message(
+        monty="datetime() missing 1 required positional argument: 'day'",
+        cpython="function missing required argument 'day' (pos 3)",
+    ), f'dt missing day: {e}'
 
 # datetime constructor: wrong type for required positional
 try:
@@ -1383,7 +1486,10 @@ try:
     datetime.datetime(2024, 1, 1, month=1)
     assert False, 'datetime with duplicate month should raise TypeError'
 except TypeError as e:
-    assert str(e) == "argument for function given by name ('month') and position (2)", f'dt dup month: {e}'
+    assert str(e) == _error_message(
+        monty="datetime() got multiple values for argument 'month'",
+        cpython="argument for function given by name ('month') and position (2)",
+    ), f'dt dup month: {e}'
 
 
 # === reprs and error messages carry the `datetime.` prefix, `__name__` does not ===
@@ -1544,19 +1650,28 @@ try:
     _tz_p1.utcoffset()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'timezone.utcoffset() takes exactly one argument (0 given)'
+    assert str(e) == _error_message(
+        monty='timezone.utcoffset() takes exactly 1 argument (0 given)',
+        cpython='timezone.utcoffset() takes exactly one argument (0 given)',
+    )
 
 try:
     _tz_p1.tzname()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'timezone.tzname() takes exactly one argument (0 given)'
+    assert str(e) == _error_message(
+        monty='timezone.tzname() takes exactly 1 argument (0 given)',
+        cpython='timezone.tzname() takes exactly one argument (0 given)',
+    )
 
 try:
     _tz_p1.dst()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'timezone.dst() takes exactly one argument (0 given)'
+    assert str(e) == _error_message(
+        monty='timezone.dst() takes exactly 1 argument (0 given)',
+        cpython='timezone.dst() takes exactly one argument (0 given)',
+    )
 
 try:
     _tz_p1.utcoffset(5)
@@ -1594,7 +1709,13 @@ assert datetime.datetime.combine(datetime.datetime(2020, 5, 6, 7, 8), datetime.t
 )
 
 for _args, _msg in [
-    ((_d,), "combine() missing required argument 'time' (pos 2)"),
+    (
+        (_d,),
+        _error_message(
+            monty="combine() missing 1 required positional argument: 'time'",
+            cpython="combine() missing required argument 'time' (pos 2)",
+        ),
+    ),
     ((_d, _t, utc, 1), 'combine() takes at most 3 arguments (4 given)'),
     (('x', _t), 'combine() argument 1 must be datetime.date, not str'),
     ((_d, 'x'), 'combine() argument 2 must be datetime.time, not str'),
@@ -1694,7 +1815,14 @@ for _bad, _exc, _msg in [
     ((float('inf'),), OverflowError, 'timestamp out of range for platform time_t'),
     ((float('nan'),), ValueError, 'Invalid value NaN (not a number)'),
     ((1, 5), TypeError, "tzinfo argument must be None or of a tzinfo subclass, not type 'int'"),
-    ((), TypeError, "fromtimestamp() missing required argument 'timestamp' (pos 1)"),
+    (
+        (),
+        TypeError,
+        _error_message(
+            monty="fromtimestamp() missing 1 required positional argument: 'timestamp'",
+            cpython="fromtimestamp() missing required argument 'timestamp' (pos 1)",
+        ),
+    ),
     ((1, 2, 3), TypeError, 'fromtimestamp() takes at most 2 arguments (3 given)'),
 ]:
     try:
@@ -1707,13 +1835,30 @@ try:
     datetime.datetime.fromtimestamp(1, datetime.timezone.utc, tz=datetime.timezone.utc)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'fromtimestamp() takes at most 2 arguments (3 given)'
+    assert str(e) == _error_message(
+        monty="fromtimestamp() got multiple values for argument 'tz'",
+        cpython='fromtimestamp() takes at most 2 arguments (3 given)',
+    )
 
 for _bad, _exc, _msg in [
     (('x',), TypeError, "'str' object cannot be interpreted as an integer"),
     ((1e20,), OverflowError, 'timestamp out of range for platform time_t'),
-    ((), TypeError, 'date.fromtimestamp() takes exactly one argument (0 given)'),
-    ((1, 2), TypeError, 'date.fromtimestamp() takes exactly one argument (2 given)'),
+    (
+        (),
+        TypeError,
+        _error_message(
+            monty='date.fromtimestamp() takes exactly 1 argument (0 given)',
+            cpython='date.fromtimestamp() takes exactly one argument (0 given)',
+        ),
+    ),
+    (
+        (1, 2),
+        TypeError,
+        _error_message(
+            monty='date.fromtimestamp() takes exactly 1 argument (2 given)',
+            cpython='date.fromtimestamp() takes exactly one argument (2 given)',
+        ),
+    ),
 ]:
     try:
         datetime.date.fromtimestamp(*_bad)

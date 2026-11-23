@@ -305,7 +305,6 @@ pub(crate) fn float_hex(value: f64) -> String {
 
 /// Implements `float.fromhex(string)` (both classmethod and instance method).
 pub(crate) fn float_fromhex(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let args = args.reject_kwargs("float.fromhex", vm.heap)?;
     let arg = args.get_one_arg("float.fromhex", vm.heap)?;
     defer_drop!(arg, vm);
     let Some(s) = arg.as_str(vm) else {

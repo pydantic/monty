@@ -5,7 +5,6 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
-    py_value::PyValue,
     value::Value,
 };
 
@@ -16,8 +15,7 @@ pub fn builtin_ord(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("ord", vm.heap)?;
     defer_drop!(value, vm);
 
-    if let PyValue::Str(string) = value.py_value(vm) {
-        let s = string.as_str(vm);
+    if let Some(s) = value.as_str_heap(vm.heap, vm.interns) {
         let mut chars = s.chars();
         if let (Some(c), None) = (chars.next(), chars.next()) {
             Ok(Value::Int(c as i64))

@@ -3,6 +3,13 @@
 # ///
 # Test setattr() builtin function
 
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 mut_point = make_mutable_point()
 
 setattr(mut_point, 'x', 100)
@@ -32,25 +39,37 @@ try:
     setattr()
     assert False, 'setattr() with no args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'setattr expected 3 arguments, got 0', str(e)
+    assert str(e) == _error_message(
+        monty='setattr() takes exactly 3 arguments (0 given)',
+        cpython='setattr expected 3 arguments, got 0',
+    ), str(e)
 
 try:
     setattr(mut_point)
     assert False, 'setattr() with 1 arg should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'setattr expected 3 arguments, got 1', str(e)
+    assert str(e) == _error_message(
+        monty='setattr() takes exactly 3 arguments (1 given)',
+        cpython='setattr expected 3 arguments, got 1',
+    ), str(e)
 
 try:
     setattr(mut_point, 'x')
     assert False, 'setattr() with 2 args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'setattr expected 3 arguments, got 2', str(e)
+    assert str(e) == _error_message(
+        monty='setattr() takes exactly 3 arguments (2 given)',
+        cpython='setattr expected 3 arguments, got 2',
+    ), str(e)
 
 try:
     setattr(mut_point, 'x', 10, 'extra')
     assert False, 'setattr() with 4 args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'setattr expected 3 arguments, got 4', str(e)
+    assert str(e) == _error_message(
+        monty='setattr() takes exactly 3 arguments (4 given)',
+        cpython='setattr expected 3 arguments, got 4',
+    ), str(e)
 
 try:
     setattr(mut_point, 123, 'value')

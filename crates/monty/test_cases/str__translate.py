@@ -1,3 +1,10 @@
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 # === maketrans: dict form ===
 assert str.maketrans({'a': 'b', 98: None, 'c': 100}) == {97: 'b', 98: None, 99: 100}
 assert str.maketrans({}) == {}
@@ -52,13 +59,17 @@ try:
     str.maketrans()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'maketrans expected at least 1 argument, got 0'
+    assert str(e) == _error_message(
+        monty='maketrans() takes at least 1 argument (0 given)', cpython='maketrans expected at least 1 argument, got 0'
+    )
 
 try:
     str.maketrans('a', 'b', 'c', 'd')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'maketrans expected at most 3 arguments, got 4'
+    assert str(e) == _error_message(
+        monty='maketrans() takes at most 3 arguments (4 given)', cpython='maketrans expected at most 3 arguments, got 4'
+    )
 
 try:
     str.maketrans({1.5: 'a'})
@@ -70,7 +81,9 @@ try:
     str.maketrans(x='a')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'str.maketrans() takes no keyword arguments'
+    assert str(e) == _error_message(
+        monty='maketrans() takes no keyword arguments', cpython='str.maketrans() takes no keyword arguments'
+    )
 
 # === translate: mappings ===
 assert 'hello'.translate({104: 'J', 101: None, 108: 'LL'}) == 'JLLLLo'
@@ -125,7 +138,10 @@ try:
     'abc'.translate()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'str.translate() takes exactly one argument (0 given)'
+    assert str(e) == _error_message(
+        monty='str.translate() takes exactly 1 argument (0 given)',
+        cpython='str.translate() takes exactly one argument (0 given)',
+    )
 
 try:
     'abc'.translate(table={})

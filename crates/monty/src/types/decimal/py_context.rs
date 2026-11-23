@@ -179,7 +179,7 @@ pub(crate) fn setcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// Arguments of `decimal.localcontext(ctx=None, **kwargs)`.
 #[derive(FromArgs)]
-#[from_args(name = "localcontext", style = c)]
+#[from_args(name = "localcontext")]
 struct LocalContextArgs {
     #[from_args(default = Value::None)]
     ctx: Value,
@@ -233,7 +233,7 @@ pub(crate) fn localcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 
 /// Arguments of `decimal.Context(...)`.
 #[derive(FromArgs)]
-#[from_args(name = "Context", style = c)]
+#[from_args(name = "Context")]
 struct ContextArgs {
     #[from_args(default = Value::None)]
     prec: Value,

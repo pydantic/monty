@@ -6,7 +6,8 @@ The base64, base32, base16, base85 and ascii85 codecs plus the MIME helpers
 `urlsafe_b64decode`, `b32encode`, `b32decode`, `b32hexencode`, `b32hexdecode`,
 `b16encode`, `b16decode`, `b85encode`, `b85decode`, `z85encode`, `z85decode`,
 `a85encode`, `a85decode`, `encodebytes`, `decodebytes`. Output bytes, error
-types and error messages match CPython 3.14 subject to the divergences below.
+types match CPython 3.14 subject to the divergences below.
+Native signature errors can differ in wording and precedence. See [exceptions.md](exceptions.md#native-call-signatures).
 
 ## Not implemented
 
@@ -44,8 +45,7 @@ raise `AttributeError`. They are not documented API.
 
 ## `binascii`
 
-Every name CPython's `binascii` exposes is implemented, so the divergence below
-is all that separates the two.
+Every name CPython's `binascii` exposes is implemented.
 
 `repr()` of a `binascii.Error` or `binascii.Incomplete` uses the qualified name:
 `binascii.Error('Non-hexadecimal digit found')` where CPython gives

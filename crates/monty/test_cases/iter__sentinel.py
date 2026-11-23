@@ -1,4 +1,11 @@
 # The two-argument iter(callable, sentinel) form.
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 assert type(iter(lambda: 1, 1)).__name__ == 'callable_iterator'
 
 # === drive until sentinel ===
@@ -49,12 +56,18 @@ try:
     iter()
     assert False, 'expected TypeError for no args'
 except TypeError as e:
-    assert str(e) == 'iter expected at least 1 argument, got 0'
+    assert str(e) == _error_message(
+        monty='iter() takes at least 1 argument (0 given)',
+        cpython='iter expected at least 1 argument, got 0',
+    )
 try:
     iter([1], 2, 3)
     assert False, 'expected TypeError for three args'
 except TypeError as e:
-    assert str(e) == 'iter expected at most 2 arguments, got 3'
+    assert str(e) == _error_message(
+        monty='iter() takes at most 2 arguments (3 given)',
+        cpython='iter expected at most 2 arguments, got 3',
+    )
 try:
     iter(x=[1])
     assert False, 'expected TypeError for a keyword argument'

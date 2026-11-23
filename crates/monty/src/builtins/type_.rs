@@ -4,7 +4,7 @@ use std::mem;
 
 use super::object::builtin_object_init_subclass;
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues},
+    args::{ArgValues, KwargsValues},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -279,26 +279,9 @@ pub(crate) fn run_init_subclass(class_id: HeapId, kwargs: KwargsValues, vm: &mut
     Ok(())
 }
 
-/// Arguments of `type.mro(cls, /)`.
-#[derive(FromArgs)]
-#[from_args(name = "type.mro")]
-struct TypeMroArgs {
-    #[from_args(pos_only, default)]
-    cls: Option<Value>,
-    #[from_args(varargs)]
-    extra: Vec<Value>,
-}
-
 /// `type.mro(cls)`: the class's method resolution order, as a fresh list.
 pub(crate) fn builtin_type_mro(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    // CPython's `METH_NOARGS` wording comes before any arity check.
-    let args = args.reject_kwargs("type.mro", vm.heap)?;
-    let TypeMroArgs { cls, extra } = TypeMroArgs::from_args(args, vm)?;
-    let given = extra.len();
-    extra.drop_with(vm);
-    let Some(cls) = cls else {
-        return Err(ExcType::type_error("unbound method type.mro() needs an argument"));
-    };
+    let cls = args.get_one_arg("type.mro", vm.heap)?;
     defer_drop!(cls, vm);
     let Some(ty) = TypeRef::from_value(cls, vm.heap) else {
         let got = cls.py_type_name(vm);
@@ -306,12 +289,6 @@ pub(crate) fn builtin_type_mro(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
             "descriptor 'mro' for 'type' objects doesn't apply to a '{got}' object"
         )));
     };
-    if given > 0 {
-        let name = ty.dunder_name(vm.heap, vm.interns);
-        return Err(ExcType::type_error(format!(
-            "{name}.mro() takes no arguments ({given} given)"
-        )));
-    }
     let items: Vec<Value> = ty.mro(vm.heap).map(|ty| ty.to_value(vm.heap)).collect();
     Ok(Value::allocate(List::new(items), vm.heap))
 }

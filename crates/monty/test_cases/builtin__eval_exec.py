@@ -1,4 +1,11 @@
 # === eval of expressions ===
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 x = 10
 assert eval('x + 1') == 11
 assert eval('  \t 2 + 2') == 4
@@ -121,7 +128,10 @@ try:
     eval()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'eval() takes at least 1 positional argument (0 given)'
+    assert str(e) == _error_message(
+        monty="eval() missing 1 required positional argument: 'source'",
+        cpython='eval() takes at least 1 positional argument (0 given)',
+    )
 try:
     eval('1', {}, {}, {})
     assert False, 'expected TypeError'

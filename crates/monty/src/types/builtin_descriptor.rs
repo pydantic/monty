@@ -97,16 +97,6 @@ struct StaticMethodArgs {
     function: Value,
 }
 
-/// Receiver and replacement callable after the accessor-specific arity check.
-#[derive(FromArgs)]
-#[from_args(name = "property accessor")]
-struct AccessorArgs {
-    #[from_args(pos_only)]
-    receiver: Value,
-    #[from_args(pos_only)]
-    function: Value,
-}
-
 /// Construct a property and initialize its name from the getter, when available.
 pub(crate) fn property_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let PropertyArgs { fget, fset, fdel, doc } = PropertyArgs::from_args(args, vm)?;
@@ -278,16 +268,14 @@ impl DescriptorMethod {
             self.protocol_call(vm, args)
         } else {
             let method = self.to_string();
-            let args = args.reject_kwargs(&method, vm.heap)?;
-            let given = args.count().saturating_sub(1);
-            let guard = DropGuard::new(args, vm);
-            if given != 1 {
-                return Err(ExcType::type_error_arg_count(&method, 1, given));
-            }
-            let (args, vm) = guard.into_parts();
-            let AccessorArgs { receiver, function } = AccessorArgs::from_args(args, vm)?;
-            defer_drop!(receiver, vm);
-            defer_drop!(function, vm);
+            let args = args.into_pos_only(&method, vm.heap)?;
+            defer_drop!(args, vm);
+            let [receiver, function] = args.as_slice() else {
+                let given = args.len().saturating_sub(1);
+                return Err(ExcType::type_error(format!(
+                    "{method}() takes exactly one argument ({given} given)"
+                )));
+            };
             if let Value::Ref(id) = receiver
                 && let HeapData::BuiltinDescriptor(descriptor) = vm.heap.get(*id)
                 && let BuiltinDescriptor::Property {
@@ -340,7 +328,7 @@ impl DescriptorMethod {
             _ => Err(match self {
                 Self::Get if given < 1 => ExcType::type_error_at_least("__get__", 1, given),
                 Self::Get => ExcType::type_error_at_most("__get__", 2, given),
-                Self::Set => ExcType::type_error_arg_count("__set__", 2, given),
+                Self::Set => ExcType::type_error(format!("__set__ expected 2 arguments, got {given}")),
                 Self::Delete => ExcType::type_error(format!("expected 1 argument, got {given}")),
                 Self::SetName => ExcType::type_error_too_many_positional_range("__set_name__", 2, 2, given, 0),
                 _ => ExcType::type_error("invalid descriptor method"),

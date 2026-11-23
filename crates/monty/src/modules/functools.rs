@@ -88,14 +88,9 @@ pub(super) fn call(vm: &mut VM<'_>, function: FunctoolsFunctions, args: ArgValue
     }
 }
 
-/// Argument shape for `reduce(function, iterable, /[, initial])`.
-///
-/// CPython's Argument Clinic signature makes the first two positional-only
-/// while `initial` is also accepted by keyword, and counts positionals plus
-/// keywords together for the maximum (`at_most_total`): `reduce(f, x, 0,
-/// initial=1)` reports four arguments.
+/// `reduce(function, iterable, /[, initial])`.
 #[derive(FromArgs)]
-#[from_args(name = "reduce", at_most_total)]
+#[from_args(name = "reduce")]
 struct ReduceArgs {
     #[from_args(pos_only)]
     function: Value,
@@ -135,9 +130,9 @@ fn call_reduce(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// Arguments to the unbounded caching decorator.
 #[derive(FromArgs)]
-#[from_args(name = "cache", style = def)]
+#[from_args(name = "cache")]
 struct CacheArgs {
-    #[from_args(pos_only, static_string = "UserFunction")]
+    #[from_args(pos_only)]
     user_function: Value,
 }
 
@@ -149,7 +144,7 @@ fn call_cache(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// Arguments to the configurable caching decorator; the first may itself be callable.
 #[derive(FromArgs)]
-#[from_args(name = "lru_cache", style = def)]
+#[from_args(name = "lru_cache")]
 struct LruCacheArgs {
     #[from_args(default = Value::Int(128))]
     maxsize: Value,

@@ -1,6 +1,12 @@
 # `itertools.groupby`: runs of equal keys, each yielded as `(key, group)` where
 # the group is a sub-iterator sharing the parent's position in the source.
 import itertools
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === Basics ===
 assert [(k, list(g)) for k, g in itertools.groupby('AAAABBBCCDAABBB')] == [
@@ -182,7 +188,10 @@ try:
     itertools.groupby()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "groupby() missing required argument 'iterable' (pos 1)"
+    assert str(exc) == _error_message(
+        monty="groupby() missing 1 required positional argument: 'iterable'",
+        cpython="groupby() missing required argument 'iterable' (pos 1)",
+    )
 
 try:
     itertools.groupby([1], None, 1)
@@ -195,7 +204,10 @@ try:
     itertools.groupby([1, 2], key=None, x=1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'groupby() takes at most 2 arguments (3 given)'
+    assert str(exc) == _error_message(
+        monty="groupby() got an unexpected keyword argument 'x'",
+        cpython='groupby() takes at most 2 arguments (3 given)',
+    )
 
 # ...and only within it is a keyword checked by name.
 try:

@@ -7,3 +7,4 @@ Traceback (most recent call last):
     ~~~~~~~~~~
 TypeError: str.join() takes exactly one argument (0 given)
 """
+# Monty.Error=TypeError: str.join() takes exactly 1 argument (0 given)

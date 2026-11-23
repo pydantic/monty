@@ -134,7 +134,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) 
 
 /// Arguments of `typing.cast(typ, val)`.
 #[derive(FromArgs)]
-#[from_args(name = "cast", style = def)]
+#[from_args(name = "cast")]
 struct CastArgs {
     typ: Value,
     val: Value,
@@ -149,11 +149,11 @@ fn cast(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// Arguments of `typing.assert_type(val, typ, /)`.
 #[derive(FromArgs)]
-#[from_args(name = "assert_type", style = def)]
+#[from_args(name = "assert_type")]
 struct AssertTypeArgs {
-    #[from_args(pos_only, static_string = "Val")]
+    #[from_args(pos_only)]
     val: Value,
-    #[from_args(pos_only, static_string = "Typ")]
+    #[from_args(pos_only)]
     typ: Value,
 }
 
@@ -166,9 +166,9 @@ fn assert_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// Arguments of `typing.assert_never(arg, /)`.
 #[derive(FromArgs)]
-#[from_args(name = "assert_never", style = def)]
+#[from_args(name = "assert_never")]
 struct AssertNeverArgs {
-    #[from_args(pos_only, static_string = "Arg")]
+    #[from_args(pos_only)]
     arg: Value,
 }
 
@@ -412,7 +412,7 @@ def __monty_get_annotations(owner, annotate, stored, classdict, scopes, format_,
 
 /// Arguments of `typing.get_type_hints(obj, globalns=None, localns=None, include_extras=False, *, format=None)`.
 #[derive(FromArgs)]
-#[from_args(name = "get_type_hints", style = def)]
+#[from_args(name = "get_type_hints")]
 struct GetTypeHintsArgs {
     obj: Value,
     #[from_args(default = Value::None)]

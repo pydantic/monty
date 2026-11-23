@@ -156,7 +156,7 @@ impl Random {
 
 /// `Random(x=None)` — `random.Random.__init__` is a plain Python `def`.
 #[derive(FromArgs)]
-#[from_args(name = "Random", style = def)]
+#[from_args(name = "Random")]
 struct RandomInitArgs {
     #[from_args(default = Value::None)]
     x: Value,

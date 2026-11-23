@@ -27,28 +27,17 @@ use crate::{
     value::Value,
 };
 
-/// Argument shape for `list.sort(*, key=None, reverse=False)` and, by
-/// extension, the kwargs accepted by the `sorted()` builtin. Both fields
-/// are keyword-only (CPython rejects positional `key`/`reverse`). `key` is
-/// held as a raw `Option<Value>` so callers can normalise `key=None` to
-/// "no key"; `reverse` uses [`LaxBool`] to match CPython's `bool()`-style
-/// truth test (so `reverse=[]` is `False`, not a `TypeError`).
 #[derive(FromArgs)]
-#[from_args(name = "sort")]
-struct ListSortArgs {
+struct SortOptions {
     #[from_args(kw_only, default)]
     key: Option<Value>,
     #[from_args(kw_only, default = LaxBool::new(false))]
     reverse: LaxBool,
 }
 
-/// Parses `key`/`reverse` kwargs and sorts `items` in place. The single
-/// entry point for sorting used by both `list.sort` and the `sorted()`
-/// builtin — sharing here is what makes unknown-kwarg errors uniformly
-/// read `sort() got an unexpected keyword argument 'X'` (matching
-/// CPython, whose `sorted` delegates to `list.sort` internally).
-pub fn parse_and_sort(items: &mut [Value], args: ArgValues, vm: &mut VM<'_>) -> RunResult<()> {
-    let ListSortArgs { key, reverse } = ListSortArgs::from_args(args, vm)?;
+/// Sorts collected items using the keyword options shared by `list.sort` and `sorted`.
+pub fn parse_and_sort(name: &'static str, items: &mut [Value], args: ArgValues, vm: &mut VM<'_>) -> RunResult<()> {
+    let SortOptions { key, reverse } = SortOptions::from_args(name, args, vm)?;
     let key_fn = match key {
         Some(v) if matches!(v, Value::None) => {
             v.drop_with(vm);

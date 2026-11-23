@@ -20,7 +20,7 @@ use monty::args::FromArgs;
 use monty::value::Value;
 
 #[derive(FromArgs)]
-#[from_args(name = "function", style = c)]
+#[from_args(name = "datetime")]
 struct DatetimeArgs {
     year: i32,
     month: i32,
@@ -37,7 +37,7 @@ let DatetimeArgs { year, month, day, hour, tzinfo } =
 
 Fields must appear in Python signature order:
 `[pos_only…] [pos_or_keyword…] [varargs] [kw_only…] [varkwargs]`, with
-required fields before optional ones in each region. Field types must
+required positional fields before optional positional fields. Field types must
 implement `FromValue` (impls live in `monty::args::from_value`). Coercion
 failures are structured (`FromValueFail`): wrong-type failures get their
 wording from the extraction site (`bad_arg`/`bad_arg_named`, or the impl's
@@ -46,73 +46,55 @@ surface unchanged. `str` arguments the function only reads should use
 `StrArg`, which validates without copying the text and lends `&str` via
 `as_str(vm)`.
 
-### `style` — pick the CPython parser family
+### Signature checks
 
-The `style` attribute names the argument parser the target function uses in
-CPython. It selects both the error *wording* and the error *ordering*
-(binding errors vs conversion errors — see `ErrorFamily` in
-`crates/monty/src/args/bind_native.rs` for the exact contracts). Pick it by
-looking at how the function is implemented in CPython:
+The derive builds a constant signature from the fields.
+Binding fills the positional and keyword slots, checks required arguments, then converts the supplied values.
+A mismatch raises `TypeError` describing the binding error. For example, `enumerate(start=1)` reports
+`enumerate() missing 1 required positional argument: 'iterable'`.
 
-| CPython implementation | `style` | tell-tale error wording |
-|---|---|---|
-| pure-Python `def` (`re` module, `json.dumps`, `Path.mkdir`) | `def` | `f() takes from 1 to 2 positional arguments but 3 were given` |
-| Argument Clinic — most modern builtins/methods (look for clinic blocks / `*.c.h` includes in the CPython source) | `clinic` (the default — omit it) | `replace() takes at least 2 positional arguments (1 given)` |
-| `PyArg_ParseTupleAndKeywords`, no `:name` in the format string | `c` | `function missing required argument 'day' (pos 3)` |
-| `PyArg_ParseTupleAndKeywords` with `:name` | `c_named` | `timezone() missing required argument 'offset' (pos 1)` |
-| `PyArg_UnpackTuple` (positional-only, fixed `min..max`) | `unpack` | `name expected at most 2 arguments, got 3` (`expected N …` when min == max) |
+Specify the callable name with `#[from_args(name = "...")]`.
+When several callables share a struct, omit the name and pass it as the first argument to `from_args`.
 
-Style-derived behaviour that used to be separate flags: the C
-"… positional arguments …" overflow pivot turns on automatically for
-`style = c` and `style = c_named` structs with `kw_only` fields (CPython's
-`vgetargskeywords` / `_PyArg_UnpackKeywords` behave the same way; the named
-variant additionally says `takes exactly N positional argument(s)` when every
-positional param is required, e.g. `os.stat`), and `unpack` collapses to the
-exact-arity `expected N argument(s)` wording when no positional field has a
-default.
+Handlers that take positional values directly can use the same signature checks without declaring a struct.
+Pass the callable name to the extraction helper.
 
-Since CPython's `def` binding never type-checks, `style = def` structs
-should declare fields as raw `Value` (or `StrArg`-in-body) and coerce in the
-function body, so type errors carry the message the CPython function body
-would produce. `bad_arg` is rejected under `style = def` for the same
-reason. `varargs` is allowed: a `*args` signature never overflows, but a
-missing required parameter still wants the `def` wording.
+```rust
+let value = args.get_one_arg("len", vm.heap)?;
+// In the list.insert handler:
+let (index, item) = args.get_two_args("list.insert", vm.heap)?;
+```
 
-`style = unpack` models `PyArg_UnpackTuple`'s fixed positional `min..max`
-range, so the derive rejects anything outside that shape: every positional
-field must be `pos_only`, and `varargs`, `varkwargs`, and `at_most_total`
-are all incompatible.
+### Error patterns
 
-### Modifiers
+Positional-only callables report argument counts. Callables that accept keywords can identify individual parameters.
 
-- `at_most_total` — pre-count positionals + kwargs against all named parameters,
-  including keyword-only parameters, before dispatch (`{name}() takes at most N arguments (M given)`).
-  This is a per-function empirical fact, not derivable from the fields or
-  the style. Litmus test: call the CPython function with valid positionals
-  plus one bogus kwarg — if it reports `takes at most N arguments (M
-  given)`, set the flag; if it reports `unexpected keyword argument`,
-  don't. Only meaningful for the C-parser families (`clinic`/`c`/`c_named`)
-  on signatures with a fixed maximum — rejected under `style = def` /
-  `style = unpack` and with `varargs`/`varkwargs`.
-- `vectorcall` — kwarg-free calls check positional arity first with
-  `_PyArg_CheckPositional` wording (`{name} expected at most N arguments,
-  got M`), modeling `tp_vectorcall` fast paths (`int`, `str`) that only
-  fall back to the clinic parser when keywords are present. Requires the
-  default `clinic` style plus `at_most_total` (which supplies the
-  parenthesised wording for the kwargs path).
+| Binding error | Message pattern |
+| --- | --- |
+| Arguments passed to a zero-argument callable | `f() takes no arguments (M given)` |
+| Wrong count for a fixed positional-only signature | `f() takes exactly N arguments (M given)` |
+| Too few for a positional-only signature with optional or variadic arguments | `f() takes at least N arguments (M given)` |
+| Too many positional arguments | `f() takes at most N arguments (M given)` |
+| Too many positional arguments with keyword-only parameters or `**kwargs` | `f() takes at most N positional arguments (M given)` |
+| Keyword passed to a positional-only callable | `f() takes no keyword arguments` |
+| Required parameter missing from a keyword-capable call | `f() missing N required positional arguments: 'a' and 'b'`, or `required keyword-only arguments` |
+| Positional-only parameter passed by keyword to a callable that accepts other keywords | `f() got some positional-only arguments passed as keyword arguments: 'a'` |
+| Unknown keyword | `f() got an unexpected keyword argument 'name'` |
+| Parameter filled twice | `f() got multiple values for argument 'name'` |
+| Non-string keyword key | `keywords must be strings` |
+| Keyword support is unimplemented (`NotImplementedError`) | `f() does not yet support keyword arguments` |
+
+The count messages use `argument` for a count of one.
+
+### Conversion and keyword options
+
 - `bad_arg` / `bad_arg_named` — report `FromValue` wrong-type failures in
   CPython's `_PyArg_BadArgument` wording (`{name}() argument {pos|'arg'}
   must be {expected}, not {got}`).
-- `kwarg_error_name = "..."` — override the function name in the
-  unknown-kwarg error only (`json.dumps` reports `JSONEncoder.__init__`).
-  Under `style = unpack` it instead names the function in the blanket
-  `takes no keyword arguments` rejection (`unicodedata.name()`).
 - `kwargs_not_supported_yet` — reject every kwarg with a
   `NotImplementedError`; a Monty TODO marker.
 
-Field-level attributes: `pos_only`, `kw_only` (must carry a `default` — the
-runtime binder's fast paths skip the missing-keyword check, so required
-keyword-only params are rejected at derive time), `varargs` (must be
+Field-level attributes: `pos_only`, `kw_only`, `varargs` (must be
 `Vec<Value>` — elements are handed over unconverted), `varkwargs`,
 `default[ = expr]`, `static_string = "..."` (override the `StaticStrings`
 variant used for kwarg matching; neither applies to `varargs`/`varkwargs`

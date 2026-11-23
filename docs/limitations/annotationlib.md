@@ -51,8 +51,6 @@ Divergences:
     `sys.modules`.
 - **`NotImplementedError` for an unsupported `format` carries the text**, so `repr(exc)` is
     `NotImplementedError('2')` where CPython's is `NotImplementedError(2)`; `str(exc)` agrees.
-- **Arity errors do not count `self`**: `ForwardRef('a', 'b')` raises
-    `TypeError: ForwardRef.__init__() takes 1 positional argument but 2 were given` where CPython counts 2 and 3.
 - **`copy.deepcopy()` shares a reference** rather than rebuilding it.
 
 ## `get_annotations`

@@ -152,7 +152,7 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `asyncio.sleep(delay, result=None)` — a pure-Python `def` in CPython, so
 /// both parameters bind by keyword and neither is type-checked while binding.
 #[derive(FromArgs)]
-#[from_args(name = "sleep", style = def)]
+#[from_args(name = "sleep")]
 struct SleepArgs {
     #[from_args(static_string = "Delay")]
     delay: Value,

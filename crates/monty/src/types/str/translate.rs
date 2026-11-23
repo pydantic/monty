@@ -21,10 +21,8 @@ use crate::{
 
 /// Argument shape for `str.maketrans(x, y=None, z=None, /)`.
 ///
-/// CPython parses it with `PyArg_UnpackTuple` (the arity wording) after clinic-converting `y` and `z` to `str`
-/// (the `bad_arg` wording). It is a static method, so `kwarg_error_name` reports `str.maketrans()`.
 #[derive(FromArgs)]
-#[from_args(name = "maketrans", style = unpack, bad_arg, kwarg_error_name = "str.maketrans")]
+#[from_args(name = "maketrans", bad_arg)]
 struct MaketransArgs {
     #[from_args(pos_only)]
     x: Value,

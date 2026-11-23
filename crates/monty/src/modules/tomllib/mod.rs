@@ -82,13 +82,9 @@ pub(super) fn call(vm: &mut VM<'_>, function: TomllibFunctions, args: ArgValues)
     }
 }
 
-/// Argument shape for `tomllib.loads(s, /, *, parse_float=float)`.
-///
-/// CPython's `loads` is a pure-Python `def`, so signature errors use
-/// `style = def` wording. `parse_float` is not implemented: leaving it off the
-/// struct makes the macro reject it as an unexpected keyword.
+/// `tomllib.loads(s, /)`. Monty does not support `parse_float`.
 #[derive(FromArgs)]
-#[from_args(name = "loads", style = def)]
+#[from_args(name = "loads")]
 struct TomlLoadsArgs {
     #[from_args(pos_only)]
     s: Value,
@@ -111,7 +107,7 @@ fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Argument shape for `tomllib.load(fp, /, *, parse_float=float)`; see
 /// [`TomlLoadsArgs`] for why `parse_float` is absent.
 #[derive(FromArgs)]
-#[from_args(name = "load", style = def)]
+#[from_args(name = "load")]
 struct TomlLoadArgs {
     #[from_args(pos_only)]
     fp: Value,

@@ -3,6 +3,11 @@
 import re
 import sys
 
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 _monty = 'Monty' in sys.version
 
 # === Constant ===
@@ -264,7 +269,10 @@ try:
     re.sub(r'\d+', 'X', 'a1', 0, 0, 'extra')
     assert False, 're.sub with 6 args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'sub() takes from 3 to 5 positional arguments but 6 were given', f're.sub too many: {e}'
+    assert str(e) == _error_message(
+        monty='sub() takes at most 5 arguments (6 given)',
+        cpython='sub() takes from 3 to 5 positional arguments but 6 were given',
+    ), f're.sub too many: {e}'
 
 # === re.sub() error: count is not an integer ===
 try:
@@ -342,14 +350,20 @@ try:
     pattern.sub()
     assert False, 'Pattern.sub() with no args should raise TypeError'
 except TypeError as e:
-    assert str(e) == "sub() missing required argument 'repl' (pos 1)"
+    assert str(e) == _error_message(
+        monty="sub() missing 2 required positional arguments: 'repl' and 'string'",
+        cpython="sub() missing required argument 'repl' (pos 1)",
+    )
 
 # === Pattern.sub() error: missing string ===
 try:
     pattern.sub('X')
     assert False, 'Pattern.sub(repl) should raise TypeError'
 except TypeError as e:
-    assert str(e) == "sub() missing required argument 'string' (pos 2)"
+    assert str(e) == _error_message(
+        monty="sub() missing 1 required positional argument: 'string'",
+        cpython="sub() missing required argument 'string' (pos 2)",
+    )
 
 # === re.sub() with count=0 (replace all) ===
 result = re.sub(r'\d', 'X', '1a2b3c', 0)
@@ -434,14 +448,20 @@ try:
     re.search(123, 'x', 0, 'extra')
     assert False, 're.search with 4 args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'search() takes from 2 to 3 positional arguments but 4 were given', f're.search 4 args: {e}'
+    assert str(e) == _error_message(
+        monty='search() takes at most 3 arguments (4 given)',
+        cpython='search() takes from 2 to 3 positional arguments but 4 were given',
+    ), f're.search 4 args: {e}'
 
 # === re.escape() arity (single fixed positional) ===
 try:
     re.escape('a', 'b')
     assert False, 're.escape with 2 args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'escape() takes 1 positional argument but 2 were given', f're.escape 2 args: {e}'
+    assert str(e) == _error_message(
+        monty='escape() takes at most 1 argument (2 given)',
+        cpython='escape() takes 1 positional argument but 2 were given',
+    ), f're.escape 2 args: {e}'
 
 # === keyword arguments are accepted like CPython's pure-Python functions ===
 assert re.search(pattern='h', string='hello') is not None
@@ -670,7 +690,10 @@ try:
     p.sub('X', 'a1b2', 0, count=1)
     assert False, 'Pattern.sub with positional and keyword count should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'sub() takes at most 3 arguments (4 given)'
+    assert str(e) == _error_message(
+        monty="sub() got multiple values for argument 'count'",
+        cpython='sub() takes at most 3 arguments (4 given)',
+    )
 
 try:
     p.sub('X', 'a1b2', bogus=1)

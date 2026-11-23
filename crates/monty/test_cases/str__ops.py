@@ -1,4 +1,11 @@
 # === String concatenation (+) ===
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 assert 'hello' + ' ' + 'world' == 'hello world'
 assert '' + 'test' == 'test'
 assert 'test' + '' == 'test'
@@ -309,7 +316,10 @@ try:
     str(42, object=42)
     assert False, 'str pos + kwarg should raise'
 except TypeError as e:
-    assert str(e) == "argument for str() given by name ('object') and position (1)", f'dup: {e}'
+    assert str(e) == _error_message(
+        monty="str() got multiple values for argument 'object'",
+        cpython="argument for str() given by name ('object') and position (1)",
+    ), f'dup: {e}'
 
 # === str() decoding bytes with encoding/errors ===
 assert str(b'x', 'utf-8') == 'x'
@@ -386,20 +396,29 @@ try:
     str(b'x', 'utf-8', 'strict', 1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'str expected at most 3 arguments, got 4'
+    assert str(e) == _error_message(
+        monty='str() takes at most 3 arguments (4 given)',
+        cpython='str expected at most 3 arguments, got 4',
+    )
 
 # with kwargs: the clinic parser's parenthesised total-count wording
 try:
     str(b'x', 'utf-8', 'strict', 'x', bogus=1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'str() takes at most 3 arguments (5 given)'
+    assert str(e) == _error_message(
+        monty="str() got an unexpected keyword argument 'bogus'",
+        cpython='str() takes at most 3 arguments (5 given)',
+    )
 
 try:
     str(b'x', 'utf-8', encoding='q')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "argument for str() given by name ('encoding') and position (2)"
+    assert str(e) == _error_message(
+        monty="str() got multiple values for argument 'encoding'",
+        cpython="argument for str() given by name ('encoding') and position (2)",
+    )
 
 # === `in` / `not in` ===
 assert 'bc' in 'abc'

@@ -443,7 +443,7 @@ fn group_index(n: i64) -> usize {
 /// Argument shape for `re.Match.groupdict(default=None)` — one optional
 /// pos-or-keyword `default` value used to fill groups that didn't match.
 #[derive(FromArgs)]
-#[from_args(name = "groupdict", at_most_total)]
+#[from_args(name = "groupdict")]
 struct GroupdictArgs {
     #[from_args(default)]
     default: Option<Value>,

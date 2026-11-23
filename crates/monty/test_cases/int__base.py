@@ -1,4 +1,11 @@
 # === int() with explicit base ===
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 assert int('ff', 16) == 255
 assert int('ff', base=16) == 255
 assert int('0xff', 16) == 255
@@ -216,7 +223,10 @@ try:
     int(x='5')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "int() got an unexpected keyword argument 'x'"
+    assert str(e) == _error_message(
+        monty="int() got some positional-only arguments passed as keyword arguments: 'x'",
+        cpython="int() got an unexpected keyword argument 'x'",
+    )
 
 try:
     int(base=16)
@@ -242,14 +252,20 @@ try:
     int('5', 10, 3)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'int expected at most 2 arguments, got 3'
+    assert str(e) == _error_message(
+        monty='int() takes at most 2 arguments (3 given)',
+        cpython='int expected at most 2 arguments, got 3',
+    )
 
 # with kwargs: the clinic parser's parenthesised total-count wording
 try:
     int('5', 10, base=16)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'int() takes at most 2 arguments (3 given)'
+    assert str(e) == _error_message(
+        monty="int() got multiple values for argument 'base'",
+        cpython='int() takes at most 2 arguments (3 given)',
+    )
 
 # === digit limit applies only to non-power-of-two bases ===
 assert int('1' * 5000, 16) > 0

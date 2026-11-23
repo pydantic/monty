@@ -104,9 +104,9 @@ pub(super) fn call(vm: &mut VM<'_>, function: UnicodedataFunctions, args: ArgVal
 /// Returns e.g. `"Lu"` (uppercase letter), `"Nd"` (decimal digit), or `"Cn"`
 /// for unassigned code points.
 fn uni_category(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("category", vm.heap)?;
+    let value = args.get_one_arg("unicodedata.category", vm.heap)?;
     defer_drop!(value, vm);
-    let c = single_char(value, "category", None, vm)?;
+    let c = single_char(value, "unicodedata.category", None, vm)?;
     Ok(allocate_string(category_abbrev(get_general_category(c)), vm.heap))
 }
 
@@ -122,7 +122,7 @@ fn uni_name(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(chr_val, vm);
     let mut default_guard = DropGuard::new(default_val, vm);
     let vm = default_guard.ctx();
-    let c = single_char(chr_val, "name", Some(1), vm)?;
+    let c = single_char(chr_val, "unicodedata.name", Some(1), vm)?;
 
     match unicode_names2::name(c) {
         Some(name) => Ok(allocate_string(name.to_string(), vm.heap)),
@@ -138,7 +138,7 @@ fn uni_name(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Raises `KeyError("undefined character name '<name>'")` when no character has
 /// that name. Unlike CPython, named sequences are not resolved.
 fn uni_lookup(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("lookup", vm.heap)?;
+    let value = args.get_one_arg("unicodedata.lookup", vm.heap)?;
     defer_drop!(value, vm);
     let name = value.try_as_str(vm)?;
     match unicode_names2::character(name) {
@@ -151,9 +151,9 @@ fn uni_lookup(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// Returns `0` for characters with no combining class (the common case).
 fn uni_combining(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("combining", vm.heap)?;
+    let value = args.get_one_arg("unicodedata.combining", vm.heap)?;
     defer_drop!(value, vm);
-    let c = single_char(value, "combining", None, vm)?;
+    let c = single_char(value, "unicodedata.combining", None, vm)?;
     Ok(Value::Int(i64::from(canonical_combining_class(c))))
 }
 
@@ -180,16 +180,9 @@ fn uni_is_normalized(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Bool(normalized))
 }
 
-/// Argument shape for `name(chr, default=..., /)`.
-///
-/// Both arguments are positional-only (matching CPython's C signature). `chr`
-/// stays a raw `Value` because it needs the bespoke single-character coercion
-/// in [`single_char`] (CPython's "must be a unicode character" wording has no
-/// `FromArgs` equivalent); `default` is any object returned verbatim when the
-/// character has no name. `style = unpack` gives the `PyArg_UnpackTuple` arity
-/// wording CPython uses here (`name expected at most 2 arguments, got 3`).
+/// `name(chr, default=..., /)`.
 #[derive(FromArgs)]
-#[from_args(name = "name", style = unpack, kwarg_error_name = "unicodedata.name")]
+#[from_args(name = "unicodedata.name")]
 struct NameArgs {
     #[from_args(pos_only)]
     chr: Value,
@@ -197,17 +190,9 @@ struct NameArgs {
     default: Option<Value>,
 }
 
-/// Argument shape for `normalize(form, unistr, /)`.
-///
-/// Both arguments are positional-only, zero-copy [`StrArg`]s: `bad_arg` gives
-/// the exact `normalize() argument N must be str, not <type>` type error for
-/// both. The form's *value* is validated by [`NormForm::parse`] in the body —
-/// CPython type-checks every argument before rejecting an unknown form name,
-/// so `normalize('XYZ', 123)` must raise the arg-2 `TypeError`, not the
-/// `ValueError`. `style = unpack` (with min == max here) reproduces CPython's
-/// `normalize expected 2 arguments, got N` arity error.
+/// `normalize(form, unistr, /)`.
 #[derive(FromArgs)]
-#[from_args(name = "normalize", style = unpack, bad_arg, kwarg_error_name = "unicodedata.normalize")]
+#[from_args(name = "unicodedata.normalize", bad_arg)]
 struct NormalizeArgs {
     #[from_args(pos_only)]
     form: StrArg,
@@ -217,7 +202,7 @@ struct NormalizeArgs {
 
 /// Argument shape for `is_normalized(form, unistr, /)` — see [`NormalizeArgs`].
 #[derive(FromArgs)]
-#[from_args(name = "is_normalized", style = unpack, bad_arg, kwarg_error_name = "unicodedata.is_normalized")]
+#[from_args(name = "unicodedata.is_normalized", bad_arg)]
 struct IsNormalizedArgs {
     #[from_args(pos_only)]
     form: StrArg,

@@ -342,11 +342,9 @@ fn value_error_could_not_convert_string_to_float(value: impl fmt::Display) -> Ru
     .into()
 }
 
-/// Argument shape for `int(x=..., /, base=...)`. `x` is positional-only with
-/// no kwarg id, so `int(x=1)` reports an unknown keyword exactly like CPython;
-/// `vectorcall` + `at_most_total` model `long_vectorcall`'s dual arity wording.
+/// `int(x=..., /, base=...)`.
 #[derive(FromArgs)]
-#[from_args(name = "int", at_most_total, vectorcall)]
+#[from_args(name = "int")]
 struct IntArgs {
     #[from_args(pos_only, default)]
     x: Option<Value>,

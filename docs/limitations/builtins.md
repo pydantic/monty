@@ -142,14 +142,6 @@ works on classes; see [classes.md](classes.md#inheritance).
 - **`map` and `filter` callbacks cannot suspend through synchronous consumers**, such as `list(map(f, xs))`.
     Use a comprehension or explicit `next()` when the callback needs to call the host.
     Their iterator attributes have the restrictions listed in [iter.md](iter.md).
-- **Arity-error wording for some str/bytes methods** — a handful of
-    keyword-accepting methods (e.g. `str.split`, `str.rsplit` and the `bytes`
-    equivalents) report too-many-arguments as `split expected at most 2 arguments, got 3`, where CPython 3.14's Argument
-    Clinic pre-counts
-    positionals *plus* kwargs and says `split() takes at most 2 arguments (3 given)`. Methods audited against CPython
-    (`encode`, `decode`,
-    `expandtabs`, `splitlines`, `replace`, …) already match; the remainder
-    need a per-function `at_most_total` audit.
 - **`int(x, base=10)`** — string/bytes parsing accepts ASCII digits only;
     CPython also accepts non-ASCII Unicode decimal digits (`int('١٢')` == 12),
     which Monty rejects with `invalid literal for int() with base 10`.
@@ -170,8 +162,6 @@ works on classes; see [classes.md](classes.md#inheritance).
     `(34, 'Numerical result out of range')` (glibc's `strerror(ERANGE)`; CPython
     on macOS and Windows says `(34, 'Result too large')`), and `exc.args` is that
     text as one string rather than CPython's `(34, '...')` tuple.
-- **`sorted(iterable, *, key=None, reverse=False)`** — `key` and `reverse`
-    must be passed by keyword; positional forms raise `TypeError`.
 - **`round(n, ndigits)` for an int `n`** — `ndigits` values outside the i64 range are clamped by sign.
     For a hugely negative `ndigits`, CPython tries to materialise `10**-ndigits` and dies with `MemoryError`
     where Monty returns `0` immediately.

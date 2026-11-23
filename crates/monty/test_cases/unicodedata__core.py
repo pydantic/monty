@@ -1,4 +1,10 @@
 import unicodedata as u
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # Precomposed vs decomposed forms are visually identical, so use explicit
 # escapes: NFC_E is U+00E9 (é), NFD_E is 'e' + U+0301 (combining acute).
@@ -75,46 +81,77 @@ try:
     u.normalize('XYZ', 123)
     assert False, 'expected non-str unistr to win over invalid form'
 except TypeError as exc:
-    assert str(exc) == 'normalize() argument 2 must be str, not int'
+    assert str(exc) == _error_message(
+        monty='unicodedata.normalize() argument 2 must be str, not int',
+        cpython='normalize() argument 2 must be str, not int',
+    )
 try:
     u.is_normalized('XYZ', 123)
     assert False, 'expected non-str unistr to win over invalid form'
 except TypeError as exc:
-    assert str(exc) == 'is_normalized() argument 2 must be str, not int'
+    assert str(exc) == _error_message(
+        monty='unicodedata.is_normalized() argument 2 must be str, not int',
+        cpython='is_normalized() argument 2 must be str, not int',
+    )
 
 # A non-str form/string is a type error, numbered by argument position.
 try:
     u.normalize(123, 'abc')
     assert False, 'expected non-str form to raise'
 except TypeError as exc:
-    assert str(exc) == 'normalize() argument 1 must be str, not int'
+    assert str(exc) == _error_message(
+        monty='unicodedata.normalize() argument 1 must be str, not int',
+        cpython='normalize() argument 1 must be str, not int',
+    )
 try:
     u.normalize('NFC', 123)
     assert False, 'expected non-str unistr to raise'
 except TypeError as exc:
-    assert str(exc) == 'normalize() argument 2 must be str, not int'
+    assert str(exc) == _error_message(
+        monty='unicodedata.normalize() argument 2 must be str, not int',
+        cpython='normalize() argument 2 must be str, not int',
+    )
 
 # Single-character functions distinguish wrong-type from wrong-length.
 try:
     u.category(123)
     assert False, 'expected non-str to raise'
 except TypeError as exc:
-    assert str(exc) == 'category() argument must be a unicode character, not int'
+    assert str(exc) == _error_message(
+        monty='unicodedata.category() argument must be a unicode character, not int',
+        cpython='category() argument must be a unicode character, not int',
+    )
 try:
     u.combining('ab')
     assert False, 'expected multi-char string to raise'
 except TypeError as exc:
-    assert str(exc) == 'combining(): argument must be a unicode character, not a string of length 2'
+    assert str(exc) == _error_message(
+        monty='unicodedata.combining(): argument must be a unicode character, not a string of length 2',
+        cpython='combining(): argument must be a unicode character, not a string of length 2',
+    )
+try:
+    u.name(123)
+    assert False, 'expected non-str to raise'
+except TypeError as exc:
+    assert str(exc) == _error_message(
+        monty='unicodedata.name() argument 1 must be a unicode character, not int',
+        cpython='name() argument 1 must be a unicode character, not int',
+    )
 
-# name() uses PyArg_UnpackTuple arity wording: a min..max range, so too-few and
-# too-many report "at least"/"at most" rather than an exact count.
+# name() accepts one or two positional arguments.
 try:
     u.name()
     assert False, 'expected name() with no args to raise'
 except TypeError as exc:
-    assert str(exc) == 'name expected at least 1 argument, got 0'
+    assert str(exc) == _error_message(
+        monty='unicodedata.name() takes at least 1 argument (0 given)',
+        cpython='name expected at least 1 argument, got 0',
+    )
 try:
     u.name('a', 'b', 'c')
     assert False, 'expected name() with 3 args to raise'
 except TypeError as exc:
-    assert str(exc) == 'name expected at most 2 arguments, got 3'
+    assert str(exc) == _error_message(
+        monty='unicodedata.name() takes at most 2 arguments (3 given)',
+        cpython='name expected at most 2 arguments, got 3',
+    )

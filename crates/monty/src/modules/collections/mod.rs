@@ -168,7 +168,7 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
 /// CPython's `namedtuple` is a pure-Python `def`, so fields stay raw `Value`
 /// (`def` binding never type-checks) and coercion happens in the body.
 #[derive(FromArgs)]
-#[from_args(name = "namedtuple", style = def)]
+#[from_args(name = "namedtuple")]
 struct NamedtupleArgs {
     #[from_args(static_string = "Typename")]
     typename: Value,

@@ -11,6 +11,12 @@ from datetime import date
 from os import path as os_path_alias
 from os.path import join, splitext
 from pathlib import Path
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === import forms ===
 assert os.path is not None
@@ -159,7 +165,10 @@ try:
     os.path.split('a', 'b')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'split() takes 1 positional argument but 2 were given'
+    assert str(e) == _error_message(
+        monty='split() takes at most 1 argument (2 given)',
+        cpython='split() takes 1 positional argument but 2 were given',
+    )
 try:
     os.path.basename(None)
     assert False, 'expected TypeError'
@@ -215,7 +224,10 @@ try:
     os.path.splitroot()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "_path_splitroot_ex() missing required argument 'p' (pos 1)"
+    assert str(e) == _error_message(
+        monty="_path_splitroot_ex() missing 1 required positional argument: 'p'",
+        cpython="_path_splitroot_ex() missing required argument 'p' (pos 1)",
+    )
 try:
     os.path.splitroot('a', 'b')
     assert False, 'expected TypeError'
@@ -286,17 +298,26 @@ try:
     os.path.normpath()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "_path_normpath() missing required argument 'path' (pos 1)"
+    assert str(e) == _error_message(
+        monty="os.path.normpath() missing 1 required positional argument: 'path'",
+        cpython="_path_normpath() missing required argument 'path' (pos 1)",
+    )
 try:
     os.path.normpath('a', 'b')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == '_path_normpath() takes at most 1 argument (2 given)'
+    assert str(e) == _error_message(
+        monty='os.path.normpath() takes at most 1 argument (2 given)',
+        cpython='_path_normpath() takes at most 1 argument (2 given)',
+    )
 try:
     os.path.normpath(path='a', x='b')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == '_path_normpath() takes at most 1 keyword argument (2 given)'
+    assert str(e) == _error_message(
+        monty="os.path.normpath() got an unexpected keyword argument 'x'",
+        cpython='_path_normpath() takes at most 1 keyword argument (2 given)',
+    )
 
 # === abspath ===
 # relative inputs resolve against the working directory on both engines
@@ -375,7 +396,10 @@ try:
     os.path.relpath('a', 'b', 'c')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'relpath() takes from 1 to 2 positional arguments but 3 were given'
+    assert str(e) == _error_message(
+        monty='relpath() takes at most 2 arguments (3 given)',
+        cpython='relpath() takes from 1 to 2 positional arguments but 3 were given',
+    )
 
 # === commonpath ===
 assert os.path.commonpath(['/a/b/c', '/a/b/d']) == '/a/b'
@@ -579,7 +603,10 @@ try:
     os.path.expanduser('~', 1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'expanduser() takes 1 positional argument but 2 were given'
+    assert str(e) == _error_message(
+        monty='expanduser() takes at most 1 argument (2 given)',
+        cpython='expanduser() takes 1 positional argument but 2 were given',
+    )
 
 # === expandvars ===
 # the virtual environment holds VIRTUAL_HOME, VIRTUAL_USER and VIRTUAL_EMPTY
@@ -627,7 +654,10 @@ try:
     os.path.realpath('x', True)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'realpath() takes 1 positional argument but 2 were given'
+    assert str(e) == _error_message(
+        monty='realpath() takes at most 1 positional argument (2 given)',
+        cpython='realpath() takes 1 positional argument but 2 were given',
+    )
 
 # === host-backed predicates: type errors and the empty path need no host ===
 assert os.path.exists('') == False

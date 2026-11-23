@@ -1,6 +1,12 @@
 # Tests for the re (regular expression) module - capture groups and grouping
 
 import re
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === Capture groups ===
 m = re.search(r'(\w+)@(\w+)', 'user@host')
@@ -285,7 +291,10 @@ try:
     m.groupdict('N/A', default='N/A')
     assert False, 'groupdict pos + kwarg should raise'
 except TypeError as e:
-    assert str(e) == 'groupdict() takes at most 1 argument (2 given)', f'dup: {e}'
+    assert str(e) == _error_message(
+        monty="groupdict() got multiple values for argument 'default'",
+        cpython='groupdict() takes at most 1 argument (2 given)',
+    ), f'dup: {e}'
 
 # === Named group repeated zero times ===
 # fancy-regex before 0.19.2 panicked building a match for this pattern

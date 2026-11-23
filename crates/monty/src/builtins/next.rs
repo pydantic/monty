@@ -24,7 +24,7 @@ def __monty_next_default(iterator, default, next_, stop_iteration):
 
 /// Positional-only `next(iterator[, default])`, preserving an explicitly supplied `None`.
 #[derive(FromArgs)]
-#[from_args(name = "next", style = unpack)]
+#[from_args(name = "next")]
 struct NextArgs {
     #[from_args(pos_only)]
     iterator: Value,

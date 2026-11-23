@@ -1,6 +1,12 @@
 # The `itertools` adaptors that wrap a source iterator, as opposed to the
 # self-contained infinite ones in `itertools__count_repeat.py`.
 import itertools
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === pairwise ===
 assert list(itertools.pairwise([1, 2, 3, 4])) == [(1, 2), (2, 3), (3, 4)]
@@ -47,13 +53,19 @@ try:
     itertools.pairwise()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'pairwise expected 1 argument, got 0'
+    assert str(exc) == _error_message(
+        monty='pairwise() takes exactly 1 argument (0 given)',
+        cpython='pairwise expected 1 argument, got 0',
+    )
 
 try:
     itertools.pairwise([1], [2])
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'pairwise expected 1 argument, got 2'
+    assert str(exc) == _error_message(
+        monty='pairwise() takes exactly 1 argument (2 given)',
+        cpython='pairwise expected 1 argument, got 2',
+    )
 
 try:
     itertools.pairwise(5)
@@ -84,20 +96,29 @@ try:
     itertools.compress()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "compress() missing required argument 'data' (pos 1)"
+    assert str(exc) == _error_message(
+        monty="compress() missing 2 required positional arguments: 'data' and 'selectors'",
+        cpython="compress() missing required argument 'data' (pos 1)",
+    )
 
 try:
     itertools.compress([1])
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "compress() missing required argument 'selectors' (pos 2)"
+    assert str(exc) == _error_message(
+        monty="compress() missing 1 required positional argument: 'selectors'",
+        cpython="compress() missing required argument 'selectors' (pos 2)",
+    )
 
 # Arity counts positionals and keywords together.
 try:
     itertools.compress([1], [1], data=[1])
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'compress() takes at most 2 arguments (3 given)'
+    assert str(exc) == _error_message(
+        monty="compress() got multiple values for argument 'data'",
+        cpython='compress() takes at most 2 arguments (3 given)',
+    )
 
 try:
     itertools.compress(5, [1])
@@ -129,13 +150,19 @@ try:
     itertools.islice([1])
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'islice expected at least 2 arguments, got 1'
+    assert str(exc) == _error_message(
+        monty='islice() takes at least 2 arguments (1 given)',
+        cpython='islice expected at least 2 arguments, got 1',
+    )
 
 try:
     itertools.islice([1], 1, 2, 3, 4)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'islice expected at most 4 arguments, got 5'
+    assert str(exc) == _error_message(
+        monty='islice() takes at most 4 arguments (5 given)',
+        cpython='islice expected at most 4 arguments, got 5',
+    )
 
 # The two-argument form names the stop argument...
 try:
@@ -302,13 +329,19 @@ try:
     itertools.chain.from_iterable()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'chain.from_iterable() takes exactly one argument (0 given)'
+    assert str(exc) == _error_message(
+        monty='chain.from_iterable() takes exactly 1 argument (0 given)',
+        cpython='chain.from_iterable() takes exactly one argument (0 given)',
+    )
 
 try:
     itertools.chain.from_iterable([[1]], [[2]])
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'chain.from_iterable() takes exactly one argument (2 given)'
+    assert str(exc) == _error_message(
+        monty='chain.from_iterable() takes exactly 1 argument (2 given)',
+        cpython='chain.from_iterable() takes exactly one argument (2 given)',
+    )
 
 try:
     itertools.chain.from_iterable(iterable=[[1]])
@@ -346,13 +379,19 @@ try:
     itertools.cycle()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'cycle expected 1 argument, got 0'
+    assert str(exc) == _error_message(
+        monty='cycle() takes exactly 1 argument (0 given)',
+        cpython='cycle expected 1 argument, got 0',
+    )
 
 try:
     itertools.cycle([1], [2])
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'cycle expected 1 argument, got 2'
+    assert str(exc) == _error_message(
+        monty='cycle() takes exactly 1 argument (2 given)',
+        cpython='cycle expected 1 argument, got 2',
+    )
 
 # Unlike chain, cycle resolves its argument eagerly.
 try:
@@ -696,17 +735,41 @@ for name, builder in (
         builder()
         assert False, 'expected TypeError'
     except TypeError as exc:
-        assert str(exc) == name + ' expected 2 arguments, got 0'
+        assert str(exc) == _error_message(
+            monty={
+                'takewhile expected 2 arguments, got 0': 'takewhile() takes exactly 2 arguments (0 given)',
+                'dropwhile expected 2 arguments, got 0': 'dropwhile() takes exactly 2 arguments (0 given)',
+                'filterfalse expected 2 arguments, got 0': 'filterfalse() takes exactly 2 arguments (0 given)',
+                'starmap expected 2 arguments, got 0': 'starmap() takes exactly 2 arguments (0 given)',
+            }.get(name + ' expected 2 arguments, got 0', name + ' expected 2 arguments, got 0'),
+            cpython=name + ' expected 2 arguments, got 0',
+        )
     try:
         builder(bool)
         assert False, 'expected TypeError'
     except TypeError as exc:
-        assert str(exc) == name + ' expected 2 arguments, got 1'
+        assert str(exc) == _error_message(
+            monty={
+                'takewhile expected 2 arguments, got 1': 'takewhile() takes exactly 2 arguments (1 given)',
+                'dropwhile expected 2 arguments, got 1': 'dropwhile() takes exactly 2 arguments (1 given)',
+                'filterfalse expected 2 arguments, got 1': 'filterfalse() takes exactly 2 arguments (1 given)',
+                'starmap expected 2 arguments, got 1': 'starmap() takes exactly 2 arguments (1 given)',
+            }.get(name + ' expected 2 arguments, got 1', name + ' expected 2 arguments, got 1'),
+            cpython=name + ' expected 2 arguments, got 1',
+        )
     try:
         builder(bool, [], [])
         assert False, 'expected TypeError'
     except TypeError as exc:
-        assert str(exc) == name + ' expected 2 arguments, got 3'
+        assert str(exc) == _error_message(
+            monty={
+                'takewhile expected 2 arguments, got 3': 'takewhile() takes exactly 2 arguments (3 given)',
+                'dropwhile expected 2 arguments, got 3': 'dropwhile() takes exactly 2 arguments (3 given)',
+                'filterfalse expected 2 arguments, got 3': 'filterfalse() takes exactly 2 arguments (3 given)',
+                'starmap expected 2 arguments, got 3': 'starmap() takes exactly 2 arguments (3 given)',
+            }.get(name + ' expected 2 arguments, got 3', name + ' expected 2 arguments, got 3'),
+            cpython=name + ' expected 2 arguments, got 3',
+        )
     try:
         builder(bool, iterable=[])
         assert False, 'expected TypeError'
@@ -889,31 +952,46 @@ try:
     itertools.accumulate([1], None, 9, initial=1)
     assert False, 'expected accumulate to reject a third positional with a keyword'
 except TypeError as exc:
-    assert str(exc) == 'accumulate() takes at most 3 arguments (4 given)'
+    assert str(exc) == _error_message(
+        monty='accumulate() takes at most 2 positional arguments (3 given)',
+        cpython='accumulate() takes at most 3 arguments (4 given)',
+    )
 
 try:
     itertools.batched([1], 2, 3)
     assert False, 'expected batched to reject a third positional'
 except TypeError as exc:
-    assert str(exc) == 'batched() takes exactly 2 positional arguments (3 given)'
+    assert str(exc) == _error_message(
+        monty='batched() takes at most 2 positional arguments (3 given)',
+        cpython='batched() takes exactly 2 positional arguments (3 given)',
+    )
 
 try:
     itertools.accumulate()
     assert False, 'expected accumulate to reject a missing iterable'
 except TypeError as exc:
-    assert str(exc) == "accumulate() missing required argument 'iterable' (pos 1)"
+    assert str(exc) == _error_message(
+        monty="accumulate() missing 1 required positional argument: 'iterable'",
+        cpython="accumulate() missing required argument 'iterable' (pos 1)",
+    )
 
 try:
     itertools.batched([1])
     assert False, 'expected batched to reject a missing n'
 except TypeError as exc:
-    assert str(exc) == "batched() missing required argument 'n' (pos 2)"
+    assert str(exc) == _error_message(
+        monty="batched() missing 1 required positional argument: 'n'",
+        cpython="batched() missing required argument 'n' (pos 2)",
+    )
 
 try:
     itertools.accumulate([1], None, func=abs)
     assert False, 'expected accumulate to reject a duplicated func'
 except TypeError as exc:
-    assert str(exc) == "argument for accumulate() given by name ('func') and position (2)"
+    assert str(exc) == _error_message(
+        monty="accumulate() got multiple values for argument 'func'",
+        cpython="argument for accumulate() given by name ('func') and position (2)",
+    )
 
 for bad_n in (0, -1):
     try:

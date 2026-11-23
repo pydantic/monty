@@ -74,13 +74,6 @@ whether each call is permitted.
     for any *falsy* value. CPython truth-tests the argument, so `False`,
     `None` and `0` all mean "lstat", which Monty has no behavior for.
     `os.lstat` itself is not implemented.
-- **All-keyword calls that overflow the signature** are not always reported
-    the way CPython reports them. `os.fspath(path='a', foo=1)` and
-    `os.listdir(path='.', foo=1)` match (`takes at most 1 keyword argument (2 given)`), but functions with keyword-only
-    slots (`os.stat`, `os.mkdir`,
-    `os.remove`, `os.rmdir`, `os.rename`) report the first unknown keyword
-    (`stat() got an unexpected keyword argument 'foo'`) where CPython reports
-    the arity (`stat() takes at most 3 keyword arguments (4 given)`).
 - **The working directory is virtual and belongs to the session.** A
     session's first feed sets it (an explicit `cwd`, else that feed's first
     mount's virtual path, else `/`); it then persists across feeds, including
@@ -136,6 +129,9 @@ whether each call is permitted.
 - **Error side-effects differ slightly for `os.makedirs`**: Monty validates
     `mode` up front, while CPython only fails when it reaches the final
     `mkdir`, after creating parent directories.
+
+- `os.fspath(path='a', foo=1)` and `os.listdir(path='.', foo=1)` report the unknown keyword in Monty.
+  CPython reports the total number of keyword arguments.
 
 ## `os.path`
 

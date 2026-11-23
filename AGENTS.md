@@ -669,13 +669,8 @@ reference-count leaks, divergent error messages, and duplicated
 boilerplate. `FromArgs` emits a static param spec driven by the runtime
 binder (`crates/monty/src/args/bind_native.rs`), which handles dispatch,
 conflict detection, default handling, and refcount cleanup mechanically.
-Pick `style = def | clinic | c | c_named | unpack` by the CPython parser
-family the target function uses — see
-[`crates/monty-macros/README.md`](crates/monty-macros/README.md) for the
-family table and the full attribute surface (`style`, `at_most_total`,
-`bad_arg[_named]`, `pos_only`, `kw_only`, `varargs`, `varkwargs`,
-`default`, `static_string`, …) and how to extend the macro or add new
-`FromValue` impls.
+Describe the Python signature in the fields. The native binder reports that signature on a mismatch.
+See [the macro reference](crates/monty-macros/README.md) for field attributes and conversions.
 
 If a callsite needs custom per-argument coercion (e.g. `value_to_float`
 for math, a `TimeDelta` type check, a `bytes`-or-`str` union), declare

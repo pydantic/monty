@@ -1,6 +1,11 @@
 import math
 import sys
 
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 # === float.hex() ===
 assert (0.0).hex() == '0x0.0p+0'
 assert (-0.0).hex() == '-0x0.0p+0'
@@ -97,13 +102,19 @@ try:
     float.fromhex()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'float.fromhex() takes exactly one argument (0 given)'
+    assert str(e) == _error_message(
+        monty='float.fromhex() takes exactly 1 argument (0 given)',
+        cpython='float.fromhex() takes exactly one argument (0 given)',
+    )
 
 try:
     float.fromhex('0x1p0', '0x2p0')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'float.fromhex() takes exactly one argument (2 given)'
+    assert str(e) == _error_message(
+        monty='float.fromhex() takes exactly 1 argument (2 given)',
+        cpython='float.fromhex() takes exactly one argument (2 given)',
+    )
 
 try:
     float.fromhex(string='0x1p0')

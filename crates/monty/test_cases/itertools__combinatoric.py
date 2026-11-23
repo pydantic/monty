@@ -3,6 +3,11 @@
 # its input up front and then steps indices into it, so the input is consumed
 # once, at construction.
 import itertools
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
 
 
 # === combinations ===
@@ -63,13 +68,19 @@ try:
     itertools.combinations()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "combinations() missing required argument 'iterable' (pos 1)"
+    assert str(exc) == _error_message(
+        monty="combinations() missing 2 required positional arguments: 'iterable' and 'r'",
+        cpython="combinations() missing required argument 'iterable' (pos 1)",
+    )
 
 try:
     itertools.combinations([1])
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "combinations() missing required argument 'r' (pos 2)"
+    assert str(exc) == _error_message(
+        monty="combinations() missing 1 required positional argument: 'r'",
+        cpython="combinations() missing required argument 'r' (pos 2)",
+    )
 
 try:
     itertools.combinations([1], 1, 1)
@@ -82,7 +93,10 @@ try:
     itertools.combinations([1, 2, 3], 2, r=2)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'combinations() takes at most 2 arguments (3 given)'
+    assert str(exc) == _error_message(
+        monty="combinations() got multiple values for argument 'r'",
+        cpython='combinations() takes at most 2 arguments (3 given)',
+    )
 
 try:
     itertools.combinations([1], 'a')
@@ -152,7 +166,10 @@ try:
     itertools.combinations_with_replacement()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "combinations_with_replacement() missing required argument 'iterable' (pos 1)"
+    assert str(exc) == _error_message(
+        monty="combinations_with_replacement() missing 2 required positional arguments: 'iterable' and 'r'",
+        cpython="combinations_with_replacement() missing required argument 'iterable' (pos 1)",
+    )
 
 try:
     itertools.combinations_with_replacement([1], 1, 1)
@@ -220,7 +237,10 @@ try:
     itertools.permutations()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "permutations() missing required argument 'iterable' (pos 1)"
+    assert str(exc) == _error_message(
+        monty="permutations() missing 1 required positional argument: 'iterable'",
+        cpython="permutations() missing required argument 'iterable' (pos 1)",
+    )
 
 try:
     itertools.permutations([1], 1, 1)

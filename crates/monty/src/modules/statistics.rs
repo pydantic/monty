@@ -119,7 +119,7 @@ macro_rules! data_args {
     ($name:ident, $func:literal) => {
         #[doc = concat!("The arguments of `statistics.", $func, "(data)`.")]
         #[derive(FromArgs)]
-        #[from_args(name = $func, style = def)]
+        #[from_args(name = $func)]
         struct $name {
             data: Value,
         }
@@ -152,7 +152,7 @@ fn fmean(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// The arguments of `statistics.fmean(data, weights=None)`.
 #[derive(FromArgs)]
-#[from_args(name = "fmean", style = def)]
+#[from_args(name = "fmean")]
 struct FmeanArgs {
     data: Value,
     #[from_args(default = Value::None)]
@@ -251,7 +251,7 @@ fn spread(vm: &mut VM<'_>, args: ArgValues, kind: Spread) -> RunResult<Value> {
 
 /// The arguments of `statistics.variance(data, xbar=None)`.
 #[derive(FromArgs)]
-#[from_args(name = "variance", style = def)]
+#[from_args(name = "variance")]
 struct VarianceArgs {
     data: Value,
     #[from_args(default = Value::None)]
@@ -260,7 +260,7 @@ struct VarianceArgs {
 
 /// The arguments of `statistics.stdev(data, xbar=None)`.
 #[derive(FromArgs)]
-#[from_args(name = "stdev", style = def)]
+#[from_args(name = "stdev")]
 struct StdevArgs {
     data: Value,
     #[from_args(default = Value::None)]
@@ -269,7 +269,7 @@ struct StdevArgs {
 
 /// The arguments of `statistics.pvariance(data, mu=None)`.
 #[derive(FromArgs)]
-#[from_args(name = "pvariance", style = def)]
+#[from_args(name = "pvariance")]
 struct PvarianceArgs {
     data: Value,
     #[from_args(default = Value::None)]
@@ -278,7 +278,7 @@ struct PvarianceArgs {
 
 /// The arguments of `statistics.pstdev(data, mu=None)`.
 #[derive(FromArgs)]
-#[from_args(name = "pstdev", style = def)]
+#[from_args(name = "pstdev")]
 struct PstdevArgs {
     data: Value,
     #[from_args(default = Value::None)]
@@ -457,7 +457,7 @@ fn quantiles(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// The arguments of `statistics.quantiles(data, *, n=4, method='exclusive')`.
 #[derive(FromArgs)]
-#[from_args(name = "quantiles", style = def)]
+#[from_args(name = "quantiles")]
 struct QuantilesArgs {
     data: Value,
     #[from_args(kw_only, default = Value::Int(4))]

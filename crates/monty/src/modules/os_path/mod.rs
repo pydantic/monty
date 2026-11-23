@@ -224,7 +224,7 @@ fn join(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `os.path.split(p)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "split", style = def)]
+#[from_args(name = "split")]
 struct SplitArgs {
     p: Value,
 }
@@ -240,7 +240,7 @@ fn split(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `os.path.splitext(p)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "splitext", style = def)]
+#[from_args(name = "splitext")]
 struct SplitextArgs {
     p: Value,
 }
@@ -256,7 +256,7 @@ fn splitext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `os.path.splitdrive(p)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "splitdrive", style = def)]
+#[from_args(name = "splitdrive")]
 struct SplitdriveArgs {
     p: Value,
 }
@@ -272,7 +272,7 @@ fn splitdrive(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `os.path.splitroot(p)` argument shape — CPython's is the C
 /// `posix._path_splitroot_ex`, whose clinic wording the errors keep.
 #[derive(FromArgs)]
-#[from_args(name = "_path_splitroot_ex", style = c_named, at_most_total)]
+#[from_args(name = "_path_splitroot_ex")]
 struct SplitrootArgs {
     p: Value,
 }
@@ -296,7 +296,7 @@ fn splitroot(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `os.path.basename(p)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "basename", style = def)]
+#[from_args(name = "basename")]
 struct BasenameArgs {
     p: Value,
 }
@@ -311,7 +311,7 @@ fn basename(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `os.path.dirname(p)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "dirname", style = def)]
+#[from_args(name = "dirname")]
 struct DirnameArgs {
     p: Value,
 }
@@ -326,7 +326,7 @@ fn dirname(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `os.path.isabs(s)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "isabs", style = def)]
+#[from_args(name = "isabs")]
 struct IsabsArgs {
     s: Value,
 }
@@ -341,7 +341,7 @@ fn isabs(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `os.path.normcase(s)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "normcase", style = def)]
+#[from_args(name = "normcase")]
 struct NormcaseArgs {
     s: Value,
 }
@@ -354,10 +354,9 @@ fn normcase(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(text.into_value(vm.heap))
 }
 
-/// `os.path.normpath(path)` argument shape — CPython's is the C
-/// `posix._path_normpath`, whose clinic wording the errors keep.
+/// `os.path.normpath(path)`.
 #[derive(FromArgs)]
-#[from_args(name = "_path_normpath", style = c_named, at_most_total)]
+#[from_args(name = "os.path.normpath")]
 struct NormpathArgs {
     path: Value,
 }
@@ -378,7 +377,7 @@ const C_PATH_ACCEPTS: &str = "string, bytes or os.PathLike";
 
 /// `os.path.abspath(path)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "abspath", style = def)]
+#[from_args(name = "abspath")]
 struct AbspathArgs {
     path: Value,
 }
@@ -394,7 +393,7 @@ fn abspath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `os.path.relpath(path, start=None)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "relpath", style = def)]
+#[from_args(name = "relpath")]
 struct RelpathArgs {
     path: Value,
     #[from_args(default = Value::None)]
@@ -429,7 +428,7 @@ fn relpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `os.path.commonpath(paths)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "commonpath", style = def)]
+#[from_args(name = "commonpath")]
 struct CommonpathArgs {
     paths: Value,
 }
@@ -459,7 +458,7 @@ fn commonpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `os.path.commonprefix(m)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "commonprefix", style = def)]
+#[from_args(name = "commonprefix")]
 struct CommonprefixArgs {
     m: Value,
 }
@@ -558,7 +557,7 @@ fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Va
 
 /// `os.path.isjunction(path)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "isjunction", style = def)]
+#[from_args(name = "isjunction")]
 struct IsjunctionArgs {
     path: Value,
 }
@@ -574,7 +573,7 @@ fn isjunction(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `os.path.isdevdrive(path)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "isdevdrive", style = def)]
+#[from_args(name = "isdevdrive")]
 struct IsdevdriveArgs {
     path: Value,
 }
@@ -590,7 +589,7 @@ fn isdevdrive(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `os.path.samestat(s1, s2)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "samestat", style = def)]
+#[from_args(name = "samestat")]
 struct SamestatArgs {
     s1: Value,
     s2: Value,
@@ -631,7 +630,7 @@ fn data_attribute(value: &Value, attr: StaticStrings, vm: &mut VM<'_>) -> RunRes
 
 /// `os.path.exists(path)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "exists", style = def)]
+#[from_args(name = "exists")]
 struct ExistsArgs {
     path: Value,
 }
@@ -645,7 +644,7 @@ fn exists(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `os.path.isfile(path)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "isfile", style = def)]
+#[from_args(name = "isfile")]
 struct IsfileArgs {
     path: Value,
 }
@@ -659,7 +658,7 @@ fn isfile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `os.path.isdir(s)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "isdir", style = def)]
+#[from_args(name = "isdir")]
 struct IsdirArgs {
     s: Value,
 }
@@ -673,7 +672,7 @@ fn isdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `os.path.islink(path)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "islink", style = def)]
+#[from_args(name = "islink")]
 struct IslinkArgs {
     path: Value,
 }
@@ -688,7 +687,7 @@ fn islink(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `os.path.ismount(path)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "ismount", style = def)]
+#[from_args(name = "ismount")]
 struct IsmountArgs {
     path: Value,
 }
@@ -705,7 +704,7 @@ fn ismount(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `os.path.lexists(path)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "lexists", style = def)]
+#[from_args(name = "lexists")]
 struct LexistsArgs {
     path: Value,
 }
@@ -747,7 +746,7 @@ pub(crate) fn lexists_reply(value: &MontyObject, path: String) -> Result<Reshape
 
 /// `os.path.samefile(f1, f2)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "samefile", style = def)]
+#[from_args(name = "samefile")]
 struct SamefileArgs {
     f1: Value,
     f2: Value,
@@ -857,7 +856,7 @@ fn predicate(
 
 /// `os.path.getsize(filename)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "getsize", style = def)]
+#[from_args(name = "getsize")]
 struct GetsizeArgs {
     filename: Value,
 }
@@ -871,7 +870,7 @@ fn getsize(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `os.path.getmtime(filename)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "getmtime", style = def)]
+#[from_args(name = "getmtime")]
 struct GetmtimeArgs {
     filename: Value,
 }
@@ -885,7 +884,7 @@ fn getmtime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `os.path.getatime(filename)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "getatime", style = def)]
+#[from_args(name = "getatime")]
 struct GetatimeArgs {
     filename: Value,
 }
@@ -899,7 +898,7 @@ fn getatime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `os.path.getctime(filename)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "getctime", style = def)]
+#[from_args(name = "getctime")]
 struct GetctimeArgs {
     filename: Value,
 }
@@ -978,7 +977,7 @@ pub(crate) fn stat_field_reply(value: &MontyObject, field: StatField) -> Result<
 /// `os.path.realpath(filename, *, strict=False)` argument shape. `strict` is
 /// truth-tested like CPython's, hence [`LaxBool`].
 #[derive(FromArgs)]
-#[from_args(name = "realpath", style = def)]
+#[from_args(name = "realpath")]
 struct RealpathArgs {
     filename: Value,
     #[from_args(kw_only, default = LaxBool::new(false))]
@@ -1048,7 +1047,7 @@ pub(crate) fn realpath_strict_reply(value: &MontyObject, resolved: String) -> Re
 
 /// `os.path.expanduser(path)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "expanduser", style = def)]
+#[from_args(name = "expanduser")]
 struct ExpanduserArgs {
     path: Value,
 }
@@ -1093,7 +1092,7 @@ pub(crate) fn expand_user_reply(value: &MontyObject, tail: &[u8], is_bytes: bool
 
 /// `os.path.expandvars(path)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "expandvars", style = def)]
+#[from_args(name = "expandvars")]
 struct ExpandvarsArgs {
     path: Value,
 }

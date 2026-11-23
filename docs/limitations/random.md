@@ -88,9 +88,5 @@ The session's `random_start` is not restored: a restored session takes the resto
     `binomialvariate` uses the `libm` crate's `lgamma` where CPython has its own implementation, which can change the
     outcome of a borderline acceptance test.
     Float-power overflow messages use glibc's `(34, 'Numerical result out of range')` on every platform.
-- **Arity errors do not count `self`.** `random.seed(1, 2, 3)` reports
-    `takes from 0 to 2 positional arguments but 3 were given` where CPython, calling a bound method, says
-    `from 1 to 3 ... but 4`.
-    `getstate(1)` reports `takes no arguments (1 given)`.
 - `randrange(start, None, 1)` treats an explicit `1` step as the default, as CPython does through small-int identity,
     so it succeeds; `True` is not `1` there and raises `Missing a non-None stop argument` in both.

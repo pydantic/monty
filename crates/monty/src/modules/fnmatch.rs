@@ -85,7 +85,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: FnmatchFunctions, args: ArgValues)
 
 /// Argument shape for `fnmatch(name, pat)`.
 #[derive(FromArgs)]
-#[from_args(name = "fnmatch", style = def)]
+#[from_args(name = "fnmatch")]
 struct FnmatchArgs {
     name: Value,
     pat: Value,
@@ -93,7 +93,7 @@ struct FnmatchArgs {
 
 /// Argument shape for `fnmatchcase(name, pat)`.
 #[derive(FromArgs)]
-#[from_args(name = "fnmatchcase", style = def)]
+#[from_args(name = "fnmatchcase")]
 struct FnmatchcaseArgs {
     name: Value,
     pat: Value,
@@ -101,7 +101,7 @@ struct FnmatchcaseArgs {
 
 /// Argument shape for `filter(names, pat)`.
 #[derive(FromArgs)]
-#[from_args(name = "filter", style = def)]
+#[from_args(name = "filter")]
 struct FilterArgs {
     names: Value,
     pat: Value,
@@ -109,7 +109,7 @@ struct FilterArgs {
 
 /// Argument shape for `translate(pat)`.
 #[derive(FromArgs)]
-#[from_args(name = "translate", style = def)]
+#[from_args(name = "translate")]
 struct TranslateArgs {
     pat: Value,
 }

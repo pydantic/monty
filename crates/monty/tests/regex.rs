@@ -170,31 +170,31 @@ import re
 try:
     re.compile('a').search()
 except (TypeError, ValueError) as exc:
-    assert str(exc) == 'Pattern.search() takes exactly one argument (0 given)'
+    assert str(exc) == 'Pattern.search() takes exactly 1 argument (0 given)'
 else:
     assert False, 'expected argument error'
 try:
     re.compile('a').match()
 except (TypeError, ValueError) as exc:
-    assert str(exc) == 'Pattern.match() takes exactly one argument (0 given)'
+    assert str(exc) == 'Pattern.match() takes exactly 1 argument (0 given)'
 else:
     assert False, 'expected argument error'
 try:
     re.compile('a').fullmatch()
 except (TypeError, ValueError) as exc:
-    assert str(exc) == 'Pattern.fullmatch() takes exactly one argument (0 given)'
+    assert str(exc) == 'Pattern.fullmatch() takes exactly 1 argument (0 given)'
 else:
     assert False, 'expected argument error'
 try:
     re.compile('a').findall()
 except (TypeError, ValueError) as exc:
-    assert str(exc) == 'Pattern.findall() takes exactly one argument (0 given)'
+    assert str(exc) == 'Pattern.findall() takes exactly 1 argument (0 given)'
 else:
     assert False, 'expected argument error'
 try:
     re.compile('a').finditer()
 except (TypeError, ValueError) as exc:
-    assert str(exc) == 'Pattern.finditer() takes exactly one argument (0 given)'
+    assert str(exc) == 'Pattern.finditer() takes exactly 1 argument (0 given)'
 else:
     assert False, 'expected argument error'
 'ok'

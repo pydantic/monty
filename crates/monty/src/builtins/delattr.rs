@@ -13,11 +13,9 @@ use crate::{
 
 /// Delete instance storage or dispatch its type's data-descriptor hook.
 pub(crate) fn builtin_delattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let args = args.into_pos_only("delattr", vm.heap)?;
+    let args = args.get_two_args("delattr", vm.heap)?;
     defer_drop!(args, vm);
-    let [object, name] = args.as_slice() else {
-        return Err(ExcType::type_error_arg_count("delattr", 2, args.len()));
-    };
+    let (object, name) = args;
     let Some(attr) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
         return Err(ExcType::type_error(format!(
             "attribute name must be string, not '{}'",

@@ -1,6 +1,11 @@
 import csv
 import sys
 
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 is_monty = sys.platform == 'monty'
 
 
@@ -217,14 +222,23 @@ try:
     csv.reader()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'reader expected at least 1 argument, got 0'
+    assert str(exc) == _error_message(
+        monty="reader() missing 1 required positional argument: 'f'",
+        cpython='reader expected at least 1 argument, got 0',
+    )
 try:
     csv.reader([], 'excel', 'x')
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'reader expected at most 2 arguments, got 3'
+    assert str(exc) == _error_message(
+        monty='reader() takes at most 2 positional arguments (3 given)',
+        cpython='reader expected at most 2 arguments, got 3',
+    )
 try:
     csv.reader([], foo=1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "this function got an unexpected keyword argument 'foo'"
+    assert str(exc) == _error_message(
+        monty="reader() got an unexpected keyword argument 'foo'",
+        cpython="this function got an unexpected keyword argument 'foo'",
+    )

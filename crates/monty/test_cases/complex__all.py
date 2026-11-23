@@ -1,4 +1,11 @@
 # === Literals and construction ===
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 assert 1j == complex(0, 1)
 assert 2.5j == complex(0, 2.5)
 assert 1 + 2j == complex(1, 2)
@@ -121,7 +128,10 @@ try:
     complex.from_number(1, 2)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'complex.from_number() takes exactly one argument (2 given)'
+    assert str(exc) == _error_message(
+        monty='complex.from_number() takes exactly 1 argument (2 given)',
+        cpython='complex.from_number() takes exactly one argument (2 given)',
+    )
 
 # === repr and str ===
 inf, nan = float('inf'), float('nan')

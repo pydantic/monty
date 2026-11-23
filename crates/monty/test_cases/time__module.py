@@ -4,6 +4,11 @@
 # The `time` stdlib module's clocks and `sleep()`. The conversion functions are in
 # time__struct_time.py; the zone-dependent ones in datetime__zone_*.py.
 import time
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
 
 
 def check(fn, expected):
@@ -67,8 +72,20 @@ assert time.time() >= start
 # === signature errors ===
 check(lambda: time.time(1), 'TypeError: time.time() takes no arguments (1 given)')
 check(lambda: time.time(x=1), 'TypeError: time.time() takes no keyword arguments')
-check(lambda: time.sleep(), 'TypeError: time.sleep() takes exactly one argument (0 given)')
-check(lambda: time.sleep(0, 1), 'TypeError: time.sleep() takes exactly one argument (2 given)')
+check(
+    lambda: time.sleep(),
+    _error_message(
+        monty='TypeError: time.sleep() takes exactly 1 argument (0 given)',
+        cpython='TypeError: time.sleep() takes exactly one argument (0 given)',
+    ),
+)
+check(
+    lambda: time.sleep(0, 1),
+    _error_message(
+        monty='TypeError: time.sleep() takes exactly 1 argument (2 given)',
+        cpython='TypeError: time.sleep() takes exactly one argument (2 given)',
+    ),
+)
 check(lambda: time.sleep(secs=0), 'TypeError: time.sleep() takes no keyword arguments')
 # every other clock takes nothing at all, and says so the same way
 for name, zero_arg in (

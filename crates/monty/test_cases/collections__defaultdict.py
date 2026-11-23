@@ -1,7 +1,7 @@
 # Tests for `collections.defaultdict`.
 #
 # Every expectation here is derived from CPython 3.14. This file is dual-run
-# against CPython and Monty, so both must agree exactly.
+# against CPython and Monty, with exact messages for each runtime.
 #
 # NOT tested here, and why:
 # - `type(d).__name__`: CPython gives the bare 'defaultdict'; Monty gives the
@@ -11,6 +11,12 @@
 #   trade. Same divergence as deque, see limitations/collections.md.
 
 from collections import defaultdict
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === Missing-key access invokes the factory and inserts ===
 d = defaultdict(int)
@@ -166,12 +172,18 @@ try:
     defaultdict.fromkeys()
     assert False, 'expected fromkeys with no args to raise'
 except TypeError as e:
-    assert str(e) == 'fromkeys expected at least 1 argument, got 0', 'fromkeys arity message'
+    assert str(e) == _error_message(
+        monty='fromkeys() takes at least 1 argument (0 given)',
+        cpython='fromkeys expected at least 1 argument, got 0',
+    ), 'fromkeys arity message'
 try:
     defaultdict.fromkeys('ab', 0, 9)
     assert False, 'expected fromkeys with too many args to raise'
 except TypeError as e:
-    assert str(e) == 'fromkeys expected at most 2 arguments, got 3', 'fromkeys too-many message'
+    assert str(e) == _error_message(
+        monty='fromkeys() takes at most 2 arguments (3 given)',
+        cpython='fromkeys expected at most 2 arguments, got 3',
+    ), 'fromkeys too-many message'
 
 # === Iteration ===
 # defaultdict inherits dict's __iter__, so iteration yields keys in insertion

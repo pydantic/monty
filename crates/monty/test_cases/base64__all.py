@@ -4,6 +4,10 @@ import sys
 
 memoryview_prefix = '' if sys.platform == 'monty' else 'memoryview: '
 
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 # === b64encode / b64decode ===
 assert base64.b64encode(b'') == b''
 assert base64.b64encode(b'a') == b'YQ=='
@@ -528,7 +532,10 @@ try:
     base64.a85encode(b'x', True)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'a85encode() takes 1 positional argument but 2 were given'
+    assert str(exc) == _error_message(
+        monty='a85encode() takes at most 1 positional argument (2 given)',
+        cpython='a85encode() takes 1 positional argument but 2 were given',
+    )
 
 try:
     base64.a85decode(b'x', nope=1)

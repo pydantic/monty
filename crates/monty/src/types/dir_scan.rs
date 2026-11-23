@@ -311,7 +311,7 @@ impl DirScan {
 
 /// `DirEntry.is_dir(*, follow_symlinks=True)`.
 #[derive(FromArgs)]
-#[from_args(name = "is_dir", style = c_named)]
+#[from_args(name = "is_dir")]
 struct IsDirArgs {
     #[from_args(kw_only, default = LaxBool::new(true))]
     follow_symlinks: LaxBool,
@@ -319,7 +319,7 @@ struct IsDirArgs {
 
 /// `DirEntry.is_file(*, follow_symlinks=True)`.
 #[derive(FromArgs)]
-#[from_args(name = "is_file", style = c_named)]
+#[from_args(name = "is_file")]
 struct IsFileArgs {
     #[from_args(kw_only, default = LaxBool::new(true))]
     follow_symlinks: LaxBool,
@@ -327,7 +327,7 @@ struct IsFileArgs {
 
 /// `DirEntry.stat(*, follow_symlinks=True)`.
 #[derive(FromArgs)]
-#[from_args(name = "stat", style = c_named)]
+#[from_args(name = "stat")]
 struct StatArgs {
     #[from_args(kw_only, default = LaxBool::new(true))]
     follow_symlinks: LaxBool,

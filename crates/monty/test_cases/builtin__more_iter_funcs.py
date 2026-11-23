@@ -1,5 +1,12 @@
 # === min() ===
 # Basic min operations
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 assert min([1, 2, 3]) == 1
 assert min([3, 1, 2]) == 1
 assert min([5]) == 5
@@ -244,13 +251,19 @@ try:
     sorted(1, 2)
     assert False, 'sorted() with too many positional arguments should raise TypeError'
 except TypeError as e:
-    assert e.args == ('sorted expected 1 argument, got 2',)
+    assert e.args == _error_message(
+        monty=('sorted() takes exactly 1 argument (2 given)',),
+        cpython=('sorted expected 1 argument, got 2',),
+    )
 
 try:
     sorted([1], nope=1)
     assert False, 'sorted() with invalid keyword should raise TypeError'
 except TypeError as e:
-    assert str(e) == "sort() got an unexpected keyword argument 'nope'", f'sorted unknown kw: {e}'
+    assert str(e) == _error_message(
+        monty="sorted() got an unexpected keyword argument 'nope'",
+        cpython="sort() got an unexpected keyword argument 'nope'",
+    ), f'sorted unknown kw: {e}'
 
 # === sorted() with reverse ===
 assert sorted([3, 1, 2], reverse=True) == [3, 2, 1]

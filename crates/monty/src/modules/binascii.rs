@@ -6,13 +6,6 @@
 //! (`b2a_uu`/`a2b_uu`), the quoted-printable pair (`b2a_qp`/`a2b_qp`) and the
 //! two checksums `crc32` and `crc_hqx`.
 //!
-//! These are C functions in CPython, not the pure Python of [`super::base64`],
-//! so each argument struct names the parser family CPython's own definition
-//! uses: `hexlify` is `PyArg_ParseTupleAndKeywords`, the base64 and uuencode
-//! pairs are Argument Clinic with keyword-only flags, `crc32` and `crc_hqx`
-//! are `PyArg_UnpackTuple`, and `unhexlify` and `a2b_uu` are `METH_O`, which
-//! [`ArgValues::get_one_arg`] already words correctly.
-//!
 //! The byte-level codecs live in [`super::base64`], where they were written
 //! first; `binascii` re-exposes them under the names CPython puts them at.
 
@@ -24,7 +17,6 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::DropWithContext,
     intern::StaticStrings,
     modules::{
         ModuleFunctions,
@@ -111,8 +103,8 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
 /// All functions are pure computations and return `Value` directly.
 pub(super) fn call(vm: &mut VM<'_>, function: BinasciiFunctions, args: ArgValues) -> RunResult<Value> {
     match function {
-        BinasciiFunctions::Hexlify => call_hexlify(vm, args, "hexlify"),
-        BinasciiFunctions::B2aHex => call_hexlify(vm, args, "b2a_hex"),
+        BinasciiFunctions::Hexlify => call_hexlify(vm, args, "binascii.hexlify"),
+        BinasciiFunctions::B2aHex => call_hexlify(vm, args, "binascii.b2a_hex"),
         BinasciiFunctions::Unhexlify => call_unhexlify(vm, args, "binascii.unhexlify"),
         BinasciiFunctions::A2bHex => call_unhexlify(vm, args, "binascii.a2b_hex"),
         BinasciiFunctions::B2aBase64 => call_b2a_base64(vm, args),
@@ -128,22 +120,12 @@ pub(super) fn call(vm: &mut VM<'_>, function: BinasciiFunctions, args: ArgValues
 
 /// `binascii.hexlify(data, sep, bytes_per_sep=1)` and its `b2a_hex` alias,
 /// which differ only in the name their signature errors carry.
-fn call_hexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value> {
-    let (data, sep, bytes_per_sep) = if name == "hexlify" {
-        let HexlifyArgs {
-            data,
-            sep,
-            bytes_per_sep,
-        } = HexlifyArgs::from_args(args, vm)?;
-        (data, sep, bytes_per_sep)
-    } else {
-        let B2aHexArgs {
-            data,
-            sep,
-            bytes_per_sep,
-        } = B2aHexArgs::from_args(args, vm)?;
-        (data, sep, bytes_per_sep)
-    };
+fn call_hexlify(vm: &mut VM<'_>, args: ArgValues, name: &'static str) -> RunResult<Value> {
+    let HexlifyArgs {
+        data,
+        sep,
+        bytes_per_sep,
+    } = HexlifyArgs::from_args(name, args, vm)?;
     defer_drop!(data, vm);
     defer_drop!(sep, vm);
 
@@ -156,12 +138,7 @@ fn call_hexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value
 /// keywords are rejected wholesale before the arity is even counted, both
 /// under the module-qualified `name`.
 fn call_unhexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value> {
-    let mut positional = args.into_pos_only(name, vm.heap)?;
-    let count = positional.len();
-    let Some(hexstr) = positional.next().filter(|_| count == 1) else {
-        positional.drop_with(vm.heap);
-        return Err(ExcType::type_error_arg_count(name, 1, count));
-    };
+    let hexstr = args.get_one_arg(name, vm.heap)?;
     defer_drop!(hexstr, vm);
 
     let decoded = hex_decode(decode_input_described(hexstr, vm, "bytes, buffer or ASCII string")?)?;
@@ -247,12 +224,7 @@ fn call_b2a_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `binascii.a2b_uu(data)` — the inverse, tolerant of either padding
 /// convention and of a line truncated before its length byte promised.
 fn call_a2b_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let mut positional = args.into_pos_only("binascii.a2b_uu", vm.heap)?;
-    let count = positional.len();
-    let Some(data) = positional.next().filter(|_| count == 1) else {
-        positional.drop_with(vm.heap);
-        return Err(ExcType::type_error_arg_count("binascii.a2b_uu", 1, count));
-    };
+    let data = args.get_one_arg("binascii.a2b_uu", vm.heap)?;
     defer_drop!(data, vm);
 
     let decoded = uu_decode(decode_input_described(data, vm, "bytes, buffer or ASCII string")?)?;
@@ -297,24 +269,9 @@ fn call_a2b_qp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
-/// Argument shape for `hexlify(data, sep, bytes_per_sep=1)`.
-///
-/// `PyArg_ParseTupleAndKeywords` with a `:name`, plus the up-front count that
-/// reports `takes at most 3 arguments` rather than an unexpected keyword.
+/// `hexlify(data, sep, bytes_per_sep=1)`.
 #[derive(FromArgs)]
-#[from_args(name = "hexlify", style = c_named, at_most_total)]
 struct HexlifyArgs {
-    data: Value,
-    #[from_args(default)]
-    sep: Option<Value>,
-    #[from_args(default = 1)]
-    bytes_per_sep: i32,
-}
-
-/// The same shape under the `b2a_hex` name, which its signature errors report.
-#[derive(FromArgs)]
-#[from_args(name = "b2a_hex", style = c_named, at_most_total)]
-struct B2aHexArgs {
     data: Value,
     #[from_args(default)]
     sep: Option<Value>,
@@ -324,7 +281,7 @@ struct B2aHexArgs {
 
 /// Argument shape for `b2a_base64(data, *, newline=True)`.
 #[derive(FromArgs)]
-#[from_args(name = "b2a_base64", style = c_named)]
+#[from_args(name = "binascii.b2a_base64")]
 struct B2aBase64Args {
     #[from_args(pos_only)]
     data: Value,
@@ -334,7 +291,7 @@ struct B2aBase64Args {
 
 /// Argument shape for `a2b_base64(data, *, strict_mode=False)`.
 #[derive(FromArgs)]
-#[from_args(name = "a2b_base64", style = c_named)]
+#[from_args(name = "binascii.a2b_base64")]
 struct A2bBase64Args {
     #[from_args(pos_only)]
     data: Value,
@@ -342,10 +299,9 @@ struct A2bBase64Args {
     strict_mode: Value,
 }
 
-/// Argument shape for `crc32(data, crc=0)` — positional-only, so keywords are
-/// rejected outright with the module-qualified name.
+/// `binascii.crc32(data, crc=0, /)`.
 #[derive(FromArgs)]
-#[from_args(name = "crc32", style = unpack, kwarg_error_name = "binascii.crc32")]
+#[from_args(name = "binascii.crc32")]
 struct Crc32Args {
     #[from_args(pos_only)]
     data: Value,
@@ -358,7 +314,7 @@ struct Crc32Args {
 /// Argument shape for `crc_hqx(data, crc)` — like `crc32`, but with `crc`
 /// required rather than defaulted.
 #[derive(FromArgs)]
-#[from_args(name = "crc_hqx", style = unpack, kwarg_error_name = "binascii.crc_hqx")]
+#[from_args(name = "binascii.crc_hqx")]
 struct CrcHqxArgs {
     #[from_args(pos_only)]
     data: Value,
@@ -368,7 +324,7 @@ struct CrcHqxArgs {
 
 /// Argument shape for `b2a_uu(data, *, backtick=False)`.
 #[derive(FromArgs)]
-#[from_args(name = "b2a_uu", style = c_named)]
+#[from_args(name = "binascii.b2a_uu")]
 struct B2aUuArgs {
     #[from_args(pos_only)]
     data: Value,
@@ -379,7 +335,7 @@ struct B2aUuArgs {
 /// Argument shape for `b2a_qp(data, quotetabs=False, istext=True, header=False)`,
 /// whose three flags are all positional-or-keyword.
 #[derive(FromArgs)]
-#[from_args(name = "b2a_qp", style = c_named, at_most_total)]
+#[from_args(name = "binascii.b2a_qp")]
 struct B2aQpArgs {
     data: Value,
     #[from_args(default = Value::Bool(false))]
@@ -392,7 +348,7 @@ struct B2aQpArgs {
 
 /// Argument shape for `a2b_qp(data, header=False)`.
 #[derive(FromArgs)]
-#[from_args(name = "a2b_qp", style = c_named, at_most_total)]
+#[from_args(name = "binascii.a2b_qp")]
 struct A2bQpArgs {
     data: Value,
     #[from_args(default = Value::Bool(false))]

@@ -35,3 +35,8 @@ below.
     multiply-add (CPython on Apple Silicon does; Linux x86-64 and Windows
     builds do not). For example `math.log(3**700)` is `769.0286020676768` in
     Monty and `769.0286020676767` in CPython on macOS arm64.
+
+## Argument diagnostics
+
+`math.dist()` raises `TypeError` for an invalid positional count and names `math.dist` in the message.
+CPython uses the bare name `dist`. See [native call signatures](exceptions.md#native-call-signatures).

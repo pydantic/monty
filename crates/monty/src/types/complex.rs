@@ -398,7 +398,7 @@ fn init_single(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
 /// Argument shape for `complex(real=0, imag=0)`; a string is only accepted
 /// through the single-positional form handled by [`init`].
 #[derive(FromArgs)]
-#[from_args(name = "complex", at_most_total, bad_arg_named)]
+#[from_args(name = "complex", bad_arg_named)]
 struct ComplexArgs {
     #[from_args(default)]
     real: Option<Part>,

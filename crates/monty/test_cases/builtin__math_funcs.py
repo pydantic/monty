@@ -1,5 +1,10 @@
 import sys
 
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 is_monty = sys.platform == 'monty'
 
 # === abs() ===
@@ -412,8 +417,20 @@ for compute, message in [
     (lambda: pow('a', 2, 3), "unsupported operand type(s) for ** or pow(): 'str', 'int', 'int'"),
     (lambda: pow(2, 3, 'a'), "unsupported operand type(s) for ** or pow(): 'int', 'int', 'str'"),
     (lambda: pow(True, 2, 'a'), "unsupported operand type(s) for ** or pow(): 'bool', 'int', 'str'"),
-    (lambda: pow(2), "pow() missing required argument 'exp' (pos 2)"),
-    (lambda: pow(), "pow() missing required argument 'base' (pos 1)"),
+    (
+        lambda: pow(2),
+        _error_message(
+            monty='pow() takes at least 2 arguments (1 given)',
+            cpython="pow() missing required argument 'exp' (pos 2)",
+        ),
+    ),
+    (
+        lambda: pow(),
+        _error_message(
+            monty='pow() takes at least 2 arguments (0 given)',
+            cpython="pow() missing required argument 'base' (pos 1)",
+        ),
+    ),
     (lambda: pow(2, 3, 4, 5), 'pow() takes at most 3 arguments (4 given)'),
 ]:
     try:

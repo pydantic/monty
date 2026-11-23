@@ -385,7 +385,7 @@ pub(crate) fn class_cwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `Path.glob(pattern, *, case_sensitive=None, recurse_symlinks=False)`.
 #[derive(FromArgs)]
-#[from_args(name = "Path.glob", style = def)]
+#[from_args(name = "Path.glob")]
 struct PathGlobArgs {
     #[from_args(static_string = "PatternAttr")]
     pattern: Value,
@@ -397,7 +397,7 @@ struct PathGlobArgs {
 
 /// `Path.rglob(pattern, *, case_sensitive=None, recurse_symlinks=False)`.
 #[derive(FromArgs)]
-#[from_args(name = "Path.rglob", style = def)]
+#[from_args(name = "Path.rglob")]
 struct PathRglobArgs {
     #[from_args(static_string = "PatternAttr")]
     pattern: Value,
@@ -409,7 +409,7 @@ struct PathRglobArgs {
 
 /// `Path.match(path_pattern, *, case_sensitive=None)`.
 #[derive(FromArgs)]
-#[from_args(name = "Path.match", style = def)]
+#[from_args(name = "Path.match")]
 struct PathMatchArgs {
     #[from_args(static_string = "PathPattern")]
     path_pattern: Value,
@@ -419,7 +419,7 @@ struct PathMatchArgs {
 
 /// `Path.walk(top_down=True, on_error=None, follow_symlinks=False)`.
 #[derive(FromArgs)]
-#[from_args(name = "Path.walk", style = def)]
+#[from_args(name = "Path.walk")]
 struct PathWalkArgs {
     #[from_args(default = LaxBool::new(true))]
     top_down: LaxBool,

@@ -36,6 +36,12 @@ from decimal import (
     localcontext,
     setcontext,
 )
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # CPython runs cases on shared threads, so start from a fresh default context.
 setcontext(Context())
@@ -139,7 +145,10 @@ try:
     setcontext()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == '_decimal.setcontext() takes exactly one argument (0 given)'
+    assert str(e) == _error_message(
+        monty='_decimal.setcontext() takes exactly 1 argument (0 given)',
+        cpython='_decimal.setcontext() takes exactly one argument (0 given)',
+    )
 try:
     setcontext(5)
     assert False, 'expected TypeError'
@@ -174,7 +183,10 @@ try:
     Context(1, 2, 3, 4, 5, 6, 7, 8, 9)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'function takes at most 8 arguments (9 given)'
+    assert str(e) == _error_message(
+        monty='Context() takes at most 8 arguments (9 given)',
+        cpython='function takes at most 8 arguments (9 given)',
+    )
 try:
     Context(rounding='x')
     assert False, 'expected TypeError'
@@ -527,19 +539,75 @@ assert str(c.create_decimal()) == '0'
 assert str(c.create_decimal_from_float(0.1)) == '0.10000'
 assert str(c._apply(D('3.14159265'))) == '3.1416'
 for call, kind, message in [
-    (lambda: c.abs(), TypeError, 'Context.abs() takes exactly one argument (0 given)'),
-    (lambda: c.abs(1, 2), TypeError, 'Context.abs() takes exactly one argument (2 given)'),
+    (
+        lambda: c.abs(),
+        TypeError,
+        _error_message(
+            monty='Context.abs() takes exactly 1 argument (0 given)',
+            cpython='Context.abs() takes exactly one argument (0 given)',
+        ),
+    ),
+    (
+        lambda: c.abs(1, 2),
+        TypeError,
+        _error_message(
+            monty='Context.abs() takes exactly 1 argument (2 given)',
+            cpython='Context.abs() takes exactly one argument (2 given)',
+        ),
+    ),
     (lambda: c.abs(a=1), TypeError, 'Context.abs() takes no keyword arguments'),
-    (lambda: c.add(1), TypeError, 'function takes exactly 2 arguments (1 given)'),
-    (lambda: c.add(a=1, b=2), TypeError, 'add() takes no keyword arguments'),
-    (lambda: c.fma(1, 2), TypeError, 'function takes exactly 3 arguments (2 given)'),
-    (lambda: c.power(1), TypeError, "function missing required argument 'b' (pos 2)"),
+    (
+        lambda: c.add(1),
+        TypeError,
+        _error_message(
+            monty='Context.add() takes exactly 2 arguments (1 given)',
+            cpython='function takes exactly 2 arguments (1 given)',
+        ),
+    ),
+    (
+        lambda: c.add(a=1, b=2),
+        TypeError,
+        _error_message(
+            monty='Context.add() takes no keyword arguments',
+            cpython='add() takes no keyword arguments',
+        ),
+    ),
+    (
+        lambda: c.fma(1, 2),
+        TypeError,
+        _error_message(
+            monty='Context.fma() takes exactly 3 arguments (2 given)',
+            cpython='function takes exactly 3 arguments (2 given)',
+        ),
+    ),
+    (
+        lambda: c.power(1),
+        TypeError,
+        _error_message(
+            monty="Context.power() missing 1 required positional argument: 'b'",
+            cpython="function missing required argument 'b' (pos 2)",
+        ),
+    ),
     (lambda: c.add('1', 2), TypeError, 'conversion from str to Decimal is not supported'),
     (lambda: c.add(1.5, 2), TypeError, 'conversion from float to Decimal is not supported'),
     (lambda: c.canonical(1), TypeError, 'argument must be a Decimal'),
     (lambda: c.Etiny(1), TypeError, 'Context.Etiny() takes no arguments (1 given)'),
-    (lambda: c.create_decimal(1, 2), TypeError, 'function takes at most 1 argument (2 given)'),
-    (lambda: c.create_decimal(num=5), TypeError, 'create_decimal() takes no keyword arguments'),
+    (
+        lambda: c.create_decimal(1, 2),
+        TypeError,
+        _error_message(
+            monty='Context.create_decimal() takes at most 1 argument (2 given)',
+            cpython='function takes at most 1 argument (2 given)',
+        ),
+    ),
+    (
+        lambda: c.create_decimal(num=5),
+        TypeError,
+        _error_message(
+            monty='Context.create_decimal() takes no keyword arguments',
+            cpython='create_decimal() takes no keyword arguments',
+        ),
+    ),
     (lambda: c.create_decimal_from_float('a'), TypeError, 'argument must be int or float'),
     (lambda: c.apply(1), AttributeError, "'decimal.Context' object has no attribute 'apply'"),
 ]:

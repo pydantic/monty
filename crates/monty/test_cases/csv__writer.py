@@ -2,6 +2,11 @@ import csv
 import sys
 from collections import namedtuple
 
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 is_monty = sys.platform == 'monty'
 
 
@@ -256,12 +261,18 @@ try:
     writer.writerow()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'writer.writerow() takes exactly one argument (0 given)'
+    assert str(exc) == _error_message(
+        monty='writer.writerow() takes exactly 1 argument (0 given)',
+        cpython='writer.writerow() takes exactly one argument (0 given)',
+    )
 try:
     writer.writerow([], [])
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'writer.writerow() takes exactly one argument (2 given)'
+    assert str(exc) == _error_message(
+        monty='writer.writerow() takes exactly 1 argument (2 given)',
+        cpython='writer.writerow() takes exactly one argument (2 given)',
+    )
 
 
 # === A write attribute can be a callable user instance ===
@@ -311,7 +322,10 @@ try:
     csv.writer()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'writer expected at least 1 argument, got 0'
+    assert str(exc) == _error_message(
+        monty="writer() missing 1 required positional argument: 'f'",
+        cpython='writer expected at least 1 argument, got 0',
+    )
 for quoting in (2**31, 2**40):
     try:
         csv.writer(sink, quoting=quoting)
@@ -322,12 +336,18 @@ try:
     csv.writer(sink, 'excel', 'x')
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'writer expected at most 2 arguments, got 3'
+    assert str(exc) == _error_message(
+        monty='writer() takes at most 2 positional arguments (3 given)',
+        cpython='writer expected at most 2 arguments, got 3',
+    )
 try:
     csv.writer(sink, nope=1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "this function got an unexpected keyword argument 'nope'"
+    assert str(exc) == _error_message(
+        monty="writer() got an unexpected keyword argument 'nope'",
+        cpython="this function got an unexpected keyword argument 'nope'",
+    )
 try:
     csv.writer(sink, delimiter='ab')
     assert False, 'expected TypeError'
