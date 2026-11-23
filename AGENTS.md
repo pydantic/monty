@@ -1,1 +1,1197 @@
-CLAUDE.md
+# Agent instructions
+
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before making changes.
+Its contribution, documentation and resource-check policies apply to agent-authored changes too.
+This file provides architecture, implementation guidance and agent-specific instructions.
+Before editing files in a subdirectory, read any `AGENTS.md` files along its path.
+
+DON'T COMMIT UNLESS EXPLICITLY ASKED TO DO SO BY THE USER! Previous commit requests do not matter - don't commit unless you've just been explicitly asked to do so.
+
+## Project Overview
+
+Monty is a sandboxed Python interpreter written in Rust. It parses Python code using Ruff's `ruff_python_parser` but implements its own runtime execution model for safety and performance. It supports a subset of Python features.
+
+Project goals:
+
+- **Safety**: Execute untrusted Python code safely without FFI or C dependencies, instead sandbox will call back to host to run foreign/external functions.
+- **Performance**: Fast execution through compile-time optimizations and efficient memory layout
+- **Simplicity**: Clean, understandable implementation focused on a Python subset
+- **Snapshotting and iteration**: Plan is to allow code to be iteratively executed and snapshotted at each function call
+- **Cross-platform**: Runs on Linux, macOS, and Windows (and any other OS that can run Rust)
+- Targets the latest stable version of Python, currently Python 3.14
+
+## `monty-types` — shared boundary types
+
+The public data types (the `MontyGraph`/`MontyNode` value graph and the `MontyObject`/`CallArgs`/`NamedValues`
+built on it, `MontyException`/`ExcType`, `OsFunctionCall` +
+its arg structs, `ResourceLimits`/`ResourceTracker`, `PrintStream`/`PrintWriter`,
+`CompileOptions`, `ExtFunctionResult`, `FileMode`, ...) live in `crates/monty-types`,
+which depends on no other monty crate except the `monty-macros` proc macros. `monty`
+depends on `monty-types` but does not blanket re-export it — only a few types
+are re-exported inline where they appear in `monty`'s public API (e.g.
+`run::CompileOptions`, `run_progress::{ExtFunctionResult, NameLookupResult}`).
+Code needing `MontyObject`, `MontyException`, `OsFunctionCall`, etc. must
+depend on `monty-types` directly.
+
+Host-side crates (`monty-fs`, `monty-pool`, `monty-proto` without its `worker`
+feature, `monty-python`, `monty-js`) MUST depend on `monty-types`, NOT `monty` —
+this keeps the interpreter out of their binaries. Only the worker side
+(`monty-runtime`, `monty-wasm-runtime`, `monty-proto` with `worker`) links the
+interpreter. Don't add a `monty` dependency to a host-side crate; if it needs a
+type, that type belongs in `monty-types`.
+
+Interpreter-coupled methods on these types live in `monty` as `pub(crate)`
+extension traits (`ExcTypeExt`, `MontyObjectExt`, `MontyGraphExt`, `CallArgsExt`,
+`MontyTypeExt`, `StackFrameExt`, `FileModeExt`, `BuiltinsFunctionsExt`,
+`ExtFunctionResultExt`) — import the trait to call e.g. `ExcType::type_error(...)` or
+`MontyObject::export(value, vm)`.
+`object_bridge::GraphExporter` builds one `MontyGraph` per outgoing message, so a sub-object shared in the sandbox
+crosses once; `MontyGraphExt::to_values` converts an incoming graph back into interpreter values.
+`MontyObject` is one owned value, a graph plus its root node: hosts build inputs with it and read results through its
+`ObjectRef` accessors. These types, along with `CallArgs` and `NamedValues`, have private fields; carrier builders accept
+`MontyObject` values rather than exposing node IDs.
+Graph types (`MontyGraph`, `MontyNode`, `NodeId`, `ClassTypeNode`, `GraphError`), `PushValue`, raw node inspection and
+borrowed/owned storage access are exported only through `monty_types::unstable`.
+These representation APIs carry no API compatibility guarantee; prefer value constructors and accessors elsewhere.
+The unstable `object_from_graph`, `call_args_from_parts` and `named_values_from_parts` constructors check the roots.
+
+## Cross-Platform Requirements
+
+Monty must work identically on Linux, macOS, and Windows. Within the Monty sandbox,
+paths always use POSIX/Linux-style forward slashes (`/`) regardless of the host OS.
+The `MountTable` handles translating between virtual POSIX paths and host-native paths.
+
+Key rules:
+
+- **Virtual paths** are always POSIX-style (`/mnt/data/file.txt`), never Windows-style
+- **Host paths** use `std::path::Path`/`PathBuf` which handles OS differences automatically
+- Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms.
+    The one exception is the CPU execution clock, which is Linux-only so that it needs no `unsafe`.
+- Tests in `crates/*/tests/` should be cross-platform; use helper functions for
+    OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in
+    `crates/monty-fs/tests/common/mod.rs`, shared via `mod common;` — each
+    `tests/*.rs` is its own crate, so helpers used by more than one belong there)
+- CI runs `cargo test -p monty --features memory-model-checks` and `cargo test -p monty-fs`
+    on Linux, macOS, and Windows
+
+## Important Security Notice
+
+It's ABSOLUTELY CRITICAL that there's no way for code run in a Monty sandbox to access the host filesystem, or environment or to in any way "escape the sandbox".
+
+**Monty will be used to run untrusted, potentially malicious code.**
+
+Make sure there's no risk of this, either in the implementation, or in the public API that makes it more like that a developer using the pydantic_monty package might make such a mistake.
+
+Possible security risks to consider:
+
+- filesystem access
+- path traversal to access files the users did not intend to expose to the monty sandbox
+- memory errors - use of unsafe memory operations
+- excessive memory usage - evading monty's resource limits
+- infinite loops - evading monty's resource limits
+- network access - sockets, HTTP requests
+- subprocess/shell execution - os.system, subprocess, etc.
+- import system abuse - importing modules with side effects or accessing `__import__`
+- external function/callback misuse - callbacks run in host environment
+- deserialization attacks - worker frames are untrusted; snapshots follow the trust contract below
+- regex/string DoS - catastrophic backtracking or operations bypassing limits
+- information leakage via timing or error messages
+- Python/Javascript/Rust APIs that accidentally allow developers to expose their host to monty code
+
+### Snapshot trust
+
+Snapshots and direct serde-serialized interpreter state must be unmodified output from a trusted, compatible Monty producer.
+The caller is responsible for establishing provenance and integrity before loading; the interpreter does not authenticate
+snapshots or fully validate their contents.
+Invalid snapshots have no correctness or availability guarantees: loading or using them may panic, abort, hang, or produce
+incorrect results, but MUST NOT cause undefined behaviour.
+Successful deserialization is not proof of validity.
+Genuine snapshots produced while running untrusted Python remain supported.
+
+Do not add semantic validation or graceful error paths solely for tampered snapshots.
+Keep memory-safety checks (including rejecting transient Gray/White GC states), reconstruction needed by valid snapshots,
+format/version checks, and transport compatibility checks.
+Worker frames, host values, callbacks and filesystem mounts remain untrusted boundaries independently of snapshot trust.
+
+## Filesystem Mounts (`crates/monty-fs/`)
+
+The `MountTable` allows mounting real host directories into the sandbox at virtual paths,
+with configurable access modes (ReadWrite, ReadOnly, OverlayMemory).
+
+Mounts are HOST-side code: the `monty` interpreter crate performs no filesystem
+I/O and does not depend on `monty-fs`. Sandboxed code suspends with an
+`OsFunctionCall`, which a host holding a `MountTable` (the pool, the CLI,
+bindings) services via `MountTable::handle_os_call`.
+
+**CRITICAL SECURITY INVARIANT:** The monty runtime MUST NEVER read, write, or
+obtain any information about any file or directory outside the specific directory
+that is mounted. This is enforced by:
+
+- A `cap_std::fs::Dir` descriptor opened once at mount time, which every
+    operation runs relative to — so `..`, symlinks and intermediate directories
+    swapped mid-operation cannot reach out
+- Virtual-space normalization that prevents `..` escape in the sandbox namespace
+- `Resolve` and `Absolute` returning virtual paths, never host paths
+- Null byte rejection in all paths
+
+Path confinement is **structural**, not a check: `Mount::dir` (in
+`crates/monty-fs/src/mount_table.rs`) is the boundary; `path_security.rs` is
+now only path policy. The cost is that an absolute symlink target is never
+followed, even inside the mount (see `limitations/filesystem.md`) — do not
+"fix" that by comparing against the mount's host path, which restores the
+check-then-use this removes.
+
+**Changes to `mount_table.rs` or `path_security.rs` require careful security
+review.** The `crates/monty/src/heap/` module and the mount boundary are the most security-critical
+code in the codebase.
+
+## Subprocess isolation (`monty-proto`, `monty subprocess`, `monty-pool`)
+
+A monty process can never be made fully crash-proof against memory errors
+(stack overflow aborts, allocator aborts), so monty can run as isolated worker
+subprocesses:
+
+- `crates/monty-proto` — the wire protocol: a protobuf schema
+    (`proto/monty/v1/monty.proto`), checked-in prost-generated code (regenerate
+    with `make generate-proto`; CI enforces sync via `make check-proto`),
+    4-byte LE length-prefixed framing, and fallible conversions between wire
+    types and `MontyException`/etc. Values cross as one flat post-order `MontyGraph` per message (`monty.v1.Arena`):
+    every child index is lower than its holder's, an index used twice is a shared object, and the message names its
+    roots by index, so a shared sub-object crosses once and the wire imposes no nesting limit.
+    prost `extern_path` maps the message onto `WireArena` (`src/wire.rs`), a hand-written `prost::Message` impl that
+    encodes borrowed `MontyNode`s without cloning. Decoding parses one generated protobuf node at a time, then
+    validates and converts it into the domain arena; temporary buffers and conversions share the frame budget.
+    `wire/references.rs` maps index, pair and named-tuple messages onto domain reference buffers so node conversion
+    can transfer them without allocating or copying.
+    `tests/differential.rs` proves it
+    byte-compatible against a fully prost-generated oracle (`tests/oracle/`,
+    regenerated and CI-checked together with the main codegen). Clients must
+    treat frames from a (possibly compromised) worker as untrusted — wire
+    decoding and proto→Rust conversions validate everything and never panic.
+    Generated decoders use `budgeted_prost` via `prost_path`: generated vectors
+    and byte buffers use `BudgetVec`, whose decode growth is fallible and shares
+    a cumulative per-frame allocation budget with hand-written boxed payloads.
+    Decode through `decode_frame` or `FrameReader::read`, which scope the budget;
+    decoding these protocol types cannot allocate payload storage outside a frame.
+    Integration tests enable the internal `test-util` feature for smaller budgets
+    and accounting checks.
+    New allocation forms must extend the adapter and its tests; codegen rejects
+    unsupported maps, groups, generated boxes, `Bytes` fields and repeated enums
+    (prost's enum accessors require infallible `push`).
+    `monty-proto` depends only on `monty-types` by default; its `worker` feature
+    (enabled by `monty-runtime`/`monty-wasm-runtime`) pulls in the full `monty`
+    interpreter for the `worker` state machine.
+    Its `grpc` feature (`monty_proto::grpc`, enabled by `monty-pool`) holds the remote transport's vocabulary:
+    the `MontySession.Session` path, the opaque-bytes codec, and `Cause`, the `monty-cause` trailer a server ends a
+    stream with. The remote transport is one HTTP/2 connection per pool and one bidirectional stream per session,
+    carrying the same messages with no length prefix; a server sends its response headers as soon as it admits a
+    stream (the client sends nothing until it sees them), refuses one with a trailers-only status, and probes
+    liveness with in-band `Ping` events the client's transport answers with `Pong` (HTTP/2 PING frames are
+    hop-local and stop at a proxy). `PROTOCOL_VERSION` is the maintainer's to bump, at most once per release, when a new client
+    could not work with an old worker; `MIN_SUPPORTED_PROTOCOL_VERSION` rises only when a new worker can no longer
+    serve old clients (see their doc comments). Never bump either on your own.
+    Its `python` feature (`monty_proto::python`, PyO3 value conversion) serves `monty-python` and also
+    `monty-cpython`, an embedded-CPython worker in the private `monty-private` repository, so keep shared
+    conversion there and host-only binding logic in `monty-python`.
+    `monty-private`'s crates (`monty-cpython`, `monty-relay`, `monty-server`, ...) also consume the wire
+    protocol: check them before changing `monty_proto::python`'s API or the `OsCall` arms, which
+    `monty-relay` scans by field number.
+- `monty subprocess` (in `crates/monty-runtime/src/subprocess.rs`) — the worker:
+    reads framed requests on stdin, writes framed events on stdout, serving one
+    REPL session per checkout. Strict alternation: one request in, zero or more
+    streamed `Print` and `StreamedCalls` events out, then exactly one turn-ending event.
+    `StreamedCalls` carries calls to async host functions the worker started
+    without suspending; it is sent only to a client that set
+    `Configure.accepts_streamed_calls`, since forwarders may drop a session on an event
+    tag they do not know, and only in a feed that set `Feed.stream_async_calls`. The
+    session's `Configure` carries its first `Feed` or `Load` (`Configure.first`),
+    so one round trip opens the session and runs it; a refused `Configure` is
+    answered `SessionRefused`, and the request does not run. The worker
+    arms the session's memory ceiling (`EventSink::session_opened`) before
+    running the request.
+- `PoolConfig::execution_clock` selects wall time (default) or native thread CPU time for all local sessions.
+    A remote gRPC server selects its own clock and reports it to clients; session limits cannot override it.
+    CPU mode needs Linux workers, so it needs no `unsafe`: `Pool::new` rejects it for subprocess pools elsewhere and
+    the worker refuses it. Remote clients on any platform can adopt a Linux server's CPU clock.
+    Local subprocess pools supervise CPU with the child's OS process clock.
+    CPU mode requires a finite `PoolConfig::request_timeout`; remote clients do not supervise CPU locally.
+    WebAssembly workers accept wall mode only.
+    Snapshots retain their clock; the worker rejects a load configured with another clock.
+- `crates/monty-pool` — the client: an async (tokio) elastic pool of workers
+    with crash detection/replacement and a hard per-turn timeout. Frame reads
+    are cancel-safe (partial-frame state lives in the worker, no pump task),
+    and turn deadlines are tokio timers rather than a watchdog thread.
+- `crates/monty-alloc` — the `#[global_allocator]` both workers run under: it
+    exposes live-byte usage for the interpreter's soft-limit checks and enforces
+    the hard ceiling selected from `Worker::session_budget` after every request.
+    Crossing the hard limit ends the process rather than letting Rust abort. Its
+    `exit-code` feature picks how:
+    `monty-runtime` enables it and exits with `OOM_EXIT_CODE` for the pool to
+    classify, `monty-wasm-runtime` leaves it off and traps, having no exit status
+    to offer. Only a binary or a wasm module may declare a global allocator, so
+    the crate provides the type and each declares its own. Direct interpreter use
+    must install and arm this allocator before configuring `max_memory`.
+- `pydantic_monty.Monty` / `pydantic_monty.AsyncMonty` — the ONLY Python
+    execution surface (there is no in-process Python API): sync and async pools
+    of workers (`with Monty() as pool: with pool.checkout() as session: session.feed_run(...)`, and the `async with` / `await feed_run` equivalents).
+
+The contract for crash detection: a worker that exits or EOFs *without* a
+`FatalError` event crashed hard; the client discards it and replaces it.
+Pool and protocol design belong in their crate READMEs; host-API contracts belong in the relevant
+`docs/` topic and binding reference. Value-conversion divergences belong in `limitations/host-values.md`.
+
+## Bytecode VM Architecture
+
+Monty is implemented as a bytecode VM, same as CPython.
+
+### Opcode space is scarce
+
+Opcodes serialize as a single byte, so the `Opcode` enum (`crates/monty/src/bytecode/op.rs`)
+is hard-capped at 256 variants and roughly half are already taken. Use slots sparingly:
+prefer a flags/operand encoding on one opcode (e.g. `Assert`/`FormatValue`) over a family
+of near-identical opcodes, unless the instruction is hot enough that decoding the
+discriminating operand would cost measurable dispatch time.
+
+### Code owns its instruction and constant buffers
+
+Each `Code` (`crates/monty/src/bytecode/code/mod.rs`) owns its bytecode, constants and metadata.
+A `CallFrame` borrows the `Code` and caches its bytecode slice so instruction fetches avoid an extra dereference.
+Its `usize` instruction pointer, source locations and exception handlers all use body-relative offsets.
+
+Committed functions have stable addresses and their code is immutable, so runtime compilation can publish new
+functions without invalidating active frames.
+Module code is held in an `Arc<Code>` so runner clones share it; frames borrow it from the running `Program`.
+`eval()` / `exec()` bodies are stored as functions in `Interns`.
+Snapshots store function IDs and offsets, rebuilding code borrows on restore.
+
+### Session dump compatibility
+
+Published releases with the same dump version MUST read and resume each other's dumps.
+This guarantee does not extend to unreleased Git revisions.
+Bump `DUMP_VERSION` on the first incompatible change since the last published release, even for a patch release.
+Further bumps before the next release are allowed but not required.
+Check both directions: a decoder that reads older dumps does not make a new encoding readable by older releases.
+
+Dumps (`crates/monty/src/dump_format.rs`) use CBOR through Serde.
+By default, named structs are maps keyed by field name and externally tagged enums are encoded by variant name.
+Untagged enums, transparent newtypes and custom serializers can use other layouts.
+Adding a named field is compatible if newer readers accept its absence (e.g. with `#[serde(default)]`) and older
+readers ignore it when present.
+Removing a field requires older readers to tolerate its absence; writing a new variant or renaming a serialized field
+is not automatically compatible.
+An alias only lets newer readers accept an older name; preserve the serialized name if older readers still need it.
+Tuple structs and tuple variants are positional, so appending fields also requires compatibility in both directions.
+`#[serde(deny_unknown_fields)]` must never go on a dumped type.
+Persisted `Vec<u8>` / `[u8; N]` data takes `#[serde(with = "serde_bytes")]` so it is written as one byte string.
+Types written many times (`Value`, `HeapEntry`, `CcColor`, the hot `HeapData` variants, `List`, `Tuple`, `Dict`,
+`DictEntry`, `SetEntry`, `CodeRange`, `CodeLoc`, `Instance`, `Closure`, `FunctionDefaults`,
+`SerializedFrame`) or once per function (`Function`, `Signature`, `Identifier`, `NameScope`, `Code`, `ExceptionEntry`)
+rename every field and variant to one upper-case letter, since key strings otherwise dominate the dump; a new field
+or variant on them takes an unused letter.
+`Code`'s location table is the exception: `bytecode/code/location_table.rs` writes it as one byte string of
+delta-encoded varints led by a format byte, which serde attributes cannot evolve. A layout change takes a new format
+byte and keeps the old decoder.
+If an older release cannot read the new encoding, apply the dump version policy above.
+`LocationEntry`'s derived `Deserialize` only reads the per-entry maps of older dumps.
+Changes to the *meaning* of stored data can also break compatibility: opcodes, `BuiltinsFunctions` discriminants
+(bytecode operands), `CmpOperator` values, the compiler's constant layout, how a key hashes (dict and set entries
+persist their hash, which is why keys without a heap identity hash by name or a persisted id such as a `FunctionId`,
+never by discriminant), or a semantic change to a stored value.
+A `sha1` / `sha2` crate upgrade that changes their `SerializableState` layout also affects compatibility because
+`hashlib`'s SHA-1 and SHA-2 objects persist it verbatim.
+`crates/monty/tests/dump_compat.rs` loads a checked-in fixture written at the current version.
+If it fails, check compatibility in both directions before using `UPDATE_DUMP_FIXTURE=1` to update the fixture.
+Do not overwrite a fixture for a published dump version to make the test pass.
+Frozen function code is also persisted: Rust calls its captured entry signature, and that code calls private native helpers.
+Incompatible changes to either calling convention require compatibility handling or a version bump, including changes
+to argument order or meaning.
+Compatible source-body changes do not require a bump; restored sessions retain their captured implementations.
+Numeric identities are also observable state: a dump may contain a saved `id()` alongside its object.
+Fieldless builtin-function, exception-type, module-function and property-operation enums use explicit discriminants, enforced by
+`#[monty_macros::explicit_discriminants(checksum = ...)]`.
+The checksum pins sorted name/code pairs; existing codes must never change or be reused.
+Missing or stale checksums report a copyable attribute; review the mappings before copying it.
+Place the attribute before derives: it checks all declared variants, including inactive ones, with one checksum for every configuration.
+The payload-carrying `ModuleFunctions` also assigns explicit codes; `strum::EnumDiscriminants` exposes them to the encoder.
+Native `Type` uses fixed codes in `legacy_index`, independently of its dense table indices.
+Keep existing numeric identity expectations unchanged when adding variants.
+Incompatible numeric identity changes need compatibility handling or a dump-version boundary that excludes affected dumps.
+When an incompatible change needs a new dump version but the old data still holds everything the new meaning needs,
+keep `MIN_SUPPORTED_DUMP_VERSION` and convert in one of two places so the live heap never carries a legacy form:
+a `#[serde(from = "Dumped…")]` shim when one value's stored shape changed (see `TableCursor`), or an upgrade in
+`dump_upgrade.rs`, which `Dump::load` runs over an older dump's heap and interns; its module docs list the rules.
+The first upgrade is `modules/dataclasses/legacy.rs` (version 13), tested against the `dataclasses_v13*.bin` fixtures
+the 1.1.0 release wrote, which must never be regenerated.
+
+### Compilation overlays and stable intern entries
+
+The VM holds `&Interns`, never `&mut Interns`.
+Committed strings, literals and functions have stable addresses in append-only storage.
+For REPL feeds and runtime compilation, `CompileInterns` owns pending entries and deduplicates strings against both tables.
+Fresh programs use `CompileInterns::direct(&mut Interns)` and discard the entire interner if compilation fails.
+Do not use direct mode for an existing session: only the overlay supports rejection without retaining products.
+New IDs start at the committed table lengths, so bytecode uses final IDs without relocation.
+An active overlay blocks runtime interning and other compilations from consuming those IDs.
+
+Compiled function bodies remain owned by the overlay until publication.
+Only an admitted snippet publishes its intern entries and code; dropping a rejected overlay frees its products.
+For `eval()` / `exec()`, reserve the frame's recursion level before publication, then construct its frame from the
+committed code.
+No fallible operation or Python execution may intervene between admission and installing the frame.
+Preparation's provisional global slots are restored on rejection.
+Never roll back a snippet after execution starts: its definitions may already be reachable from globals.
+
+Snippet source IDs occupy a separate range from canonical string IDs.
+They display as `<string>` without allowing duplicate entries in the string-deduplication maps.
+Resolve filenames with `Interns::get_filename`; ordinary `get_str` only accepts canonical string IDs.
+
+### HeapReader API — Safe Heap Access
+
+All heap-allocated Python objects (lists, dicts, strings, etc.) are stored in a paged arena (`Heap`). The `HeapReader` API provides **compile-time safe** access to heap data. This is the primary mechanism for reading and mutating heap objects throughout the codebase.
+
+**The `crates/monty/src/heap/` module is a critical safety boundary.** Its `mod.rs`, `stable_heap.rs` and `free_list.rs` contain `unsafe` code that underpins the soundness of the entire `HeapReader`/`HeapRead` system (pointer arithmetic, `UnsafeCell` access, reader-count invariants).
+Do NOT modify files under `crates/monty/src/heap/` without explicit user approval.
+Changes to this module require careful review of the safety invariants documented in the code comments.
+
+#### Core concepts
+
+- **`HeapReader<'a>`** — A scoped borrow created exclusively by `HeapReader::with`. Its `for<'a>` closure gives handles an invariant brand that cannot escape the closure.
+- **`HeapObjectRead<'a, T>`** — A typed heap-object guard holding its identity and reader count. `heap.read(id)` returns a `HeapReadOutput<'a>` variant containing one.
+- **`HeapReadMut<'a, T>`** — A mutable-access capability exposed only by shared reference from object guards and `protect_mut` wrappers. Its `get_mut(&self, &mut HeapReader)` serializes payload access through the reader.
+- **`HeapRead<'a, T>`** — A read-only capability exposed by shared dereference from mutable capabilities and `protect` wrappers. Capabilities must never be extracted, cloned or exposed via `DerefMut`: swapping them would detach their pointers from their owners.
+- **`HeapView<'a, T>`** — Shared payload access for generic helpers. Slice projections resolve their current storage on each access rather than cache pointers invalidated by parent mutation.
+
+#### Reading and mutating heap data
+
+```rust
+// Scoped heap access.
+// The second argument allows for extra data to be
+// passed into the closure, will be rebranded as
+// `&'a mut ...` to match the `'a` lifetime of the
+// `HeapRead` handle, so the closure can have additional
+// context while still having the `for <'a>` safety guarantee.
+HeapReader::with(heap, &mut (), |heap, ()| {
+    let output = heap.read(some_id);  // returns HeapReadOutput<'a>
+    match output {
+        HeapReadOutput::List(list) => {
+            let items = list.get(heap);           // &List, borrows heap immutably
+            let items_mut = list.get_mut(heap);   // &mut List, borrows heap mutably
+        }
+        _ => { /* ... */ }
+    }
+})
+```
+
+Key borrowing rules:
+
+- `get(&self, &HeapReader)` → `&T` — immutable access, prevents heap mutation while reference lives
+- `get_mut(&self, &mut HeapReader)` → `&mut T` — mutable access through `HeapReadMut`, exclusive via the reader
+- Both accessors borrow the capability and reader for the returned reference's lifetime, retaining the owner or protected source
+- Multiple capability aliases can coexist; their payload borrows cannot conflict
+- `dec_ref()` panics if any reader is active — prevents use-after-free
+
+#### Implementing type methods with HeapRead
+
+Read-only helpers live on `HeapRead`; mutation helpers live on `HeapReadMut` and take `&self`.
+`PyTrait` remains implemented once per type on `HeapObjectRead`, which also supplies Python identity:
+
+```rust
+// Methods on a heap type
+impl<'h> HeapReadMut<'h, List> {
+    pub fn append(&self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
+        self.get_mut(vm.heap).items.push(item);
+        Ok(())
+    }
+}
+
+// PyTrait implementation
+impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
+    fn py_type(&self, vm: &VM<'h>) -> Type { Type::List }
+    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
+        Some(self.get(vm.heap).items.len())
+    }
+    // ...
+}
+```
+
+### Reference Count Safety
+
+All types that implement `DropWithContext<C>` hold heap (and possibly VM-side) references and **must** be cleaned up correctly on every code path — not just the happy path, but also early returns via `?`, `continue`, conditional branches, etc. A missed `drop_with` on any branch leaks reference counts.
+
+`DropWithContext<C>` is generic over the *cleanup context* `C` — whatever borrow the caller has on hand: a `Heap`, a `HeapReader`, the `VM`, or the json `Encoder`. The bound on each impl states the capability the value needs: heap-only values bound `C` by `ContainsHeap` (one impl then covers all four contexts), while values holding a `RecursionToken` (the container iterators) bound `C` by `ContainsVM` — satisfied only by `VM`/`Encoder`, since the recursion counter is unreachable through a bare heap. The same `drop_with` / `DropGuard` / `defer_drop!` machinery serves both. There are three mechanisms for ensuring cleanup, listed in order of preference:
+
+#### 1. `defer_drop!` macro (preferred)
+
+The simplest and safest approach. Use `defer_drop!` (or `defer_drop_mut!` when mutable access to the value is needed) to bind a value into a guard that automatically drops it when scope exits — whether that's normal completion, early return via `?`, `continue`, or any other branch. The macro rebinds the value and heap variables as borrows from the guard, so you keep using them by name as before:
+
+```rust
+let value = self.pop();
+defer_drop!(value, heap);          // value is now &Value, heap is now &mut Heap
+let result = value.py_repr(heap)?; // guard handles cleanup on all paths
+```
+
+Beyond safety, `defer_drop!` is often much more concise than inserting `drop_with` calls in every branch of complex control flow.
+
+`defer_drop!` gives you an immutable reference to the value. Use `defer_drop_mut!` when you need a mutable reference (e.g. iterators, values you may swap):
+
+```rust
+let iter = vm.heap.get_iter(iter_ref);
+defer_drop_mut!(iter, vm);
+while let Some(item) = iter.for_next(vm)? { ... }
+```
+
+**Limitation:** because the macro rebinds the context, it cannot be used inside `&mut self` methods on the VM where `self` owns the heap — first assign `let this = self;` and pass `this` instead.
+
+#### 2. `DropGuard` (when you need control over the value's fate)
+
+Use `DropGuard` directly when `defer_drop!` is too restrictive — specifically when you need to conditionally extract the value instead of dropping it. `DropGuard` provides `into_inner()` and `into_parts()` to reclaim ownership, while its `Drop` impl still guarantees cleanup on all other paths.
+
+Do not use `DropGuard` when the value is never moved back out of it. A guard used only through `as_parts()` or `as_parts_mut()` must be replaced with `defer_drop!` or `defer_drop_mut!`; explicit guards are reserved for code that later calls `into_inner()` or `into_parts()`. This keeps the ownership intent visible and avoids unnecessary guard bookkeeping:
+
+```rust
+// DropGuard needed here because on success we push lhs back onto the stack
+// instead of dropping it
+let mut lhs_guard = DropGuard::new(self.pop(), self);
+let (lhs, this) = lhs_guard.as_parts_mut();
+
+if lhs.py_iadd(rhs, this.heap)? {
+    let (lhs, this) = lhs_guard.into_parts(); // reclaim lhs, don't drop
+    this.push(lhs);
+    return Ok(());
+}
+// otherwise lhs_guard drops lhs automatically at scope exit
+```
+
+#### 3. Manual `drop_with` (for trivially simple cases)
+
+For very simple cases with a single linear code path and no branching between acquiring and releasing the value, a direct `drop_with` call is acceptable as long as it produces more concise code than `defer_drop!`:
+
+```rust
+let iter = self.pop();
+iter.drop_with(self); // single path, no branching
+```
+
+`drop_with` should be used **only** when it is genuinely simpler than `defer_drop!` or `DropGuard`. The latter two are safer and more maintainable, especially in complex control flow. Multiple manual cleanup calls for the same owned value are a poor substitute for a guard.
+
+**Do not use `drop_with` if any of the following are true:**
+
+- The same value has `drop_with` called in multiple places (e.g. a loop with `continue` or `?` in the middle). This implies `defer_drop!` or `DropGuard` will be easier to read.
+- The explicit call to `drop_with` produces more lines of code than `defer_drop!` or `DropGuard` would. The latter often avoid rightward drift and make the cleanup logic easier.
+- The value is part of a container (e.g. `Vec<Value>`). Ideally the container itself implements `DropWithContext` and so `defer_drop` or `DropGuard` can be used on the whole container. Consider if a `DropWithContext` implementation for the container might be missing.
+
+### `#[strum(use_phf)]` only on large `EnumString` enums
+
+Add `use_phf` only to `EnumString` enums with more than ~100 variants, or ones that will clearly grow past that.
+Its SipHash costs ~11 ns per lookup however small the enum, while strum's default `match` costs 3–6 ns on enums of
+40–80 variants, and less still on misses whose length no variant shares.
+At ~970 variants (`StaticStrings`), `match` costs ~100 ns and PHF wins about 7×.
+
+### Resource-tracked string construction (`StringBuilder`)
+
+Any code that builds a `String` whose final size is not already bounded by an existing input **must** use `StringBuilder` (in `crates/monty/src/string_builder.rs`) rather than `String::with_capacity(...).push(...)`. A loop-built string can otherwise jump past both allocator limits before an execution checkpoint — this is exactly the class of bug that hit `str.expandtabs` (huge `tabsize` amplifying a single tab into a multi-gigabyte allocation).
+
+`StringBuilder` preflights capacity growth against allocator-backed usage. The in-progress buffer is itself visible to the allocator, so nested builders share the same real-byte budget. Growth is amortized via 2× doubling:
+
+```rust
+// Bounded size known up front (padding to a given width):
+let mut builder = StringBuilder::with_capacity(width * fillchar.len_utf8(), &vm.heap.tracker)?;
+builder.push_str(s)?;
+for _ in 0..pad { builder.push(fillchar)?; }
+builder.finish(vm.heap)
+
+// Size not bounded up front (e.g. attacker-controlled multiplier):
+let mut builder = StringBuilder::new(&vm.heap.tracker);
+for c in input.chars() { builder.push(c)?; }
+builder.finish(vm.heap)
+```
+
+`StringBuilder` also implements `fmt::Write`, so `write!(builder, ...)`, `format_args!`, and the existing `py_repr_fmt(f, ...)` machinery work against a tracker-protected buffer. `fmt::Error` is payload-free, so any `ResourceError` raised by a write is stashed on the builder and surfaced by `finish(heap)` — callers using `write!` don't need to thread the tracker error themselves.
+
+When the input *is* already bounded (e.g. `s.to_lowercase()`, slicing, `to_owned()` of an existing tracked string), passing a plain `String` / `&str` to `allocate_string` is fine — the result is bounded by a known multiple of an already-tracked input, so no amplification is possible.
+
+### Soft memory-limit checks — when and why
+
+Follow the [cooperative-check policy](docs/resource-limits.md#cooperative-checks), including its guidance on when native
+operations should poll the clock.
+The mechanisms below apply when a memory check is justified:
+
+- Known-size bulk allocation: one up-front `tracker.check_allocation(n * VALUE_SIZE)`
+    (container clone/copy, e.g. `clone_all_items`, `list_copy`) or
+    `check_repeat_size`-style estimate (`resource_checks.rs`).
+- Iterator collection: `collect_python_iterator` / `checked_preallocation_hint`
+    already handle it; for push-loops that bypass them, a one-shot size-hint
+    preflight (see `deque_extend`) — never a per-item poll.
+- Unbounded/amplifying string building: `StringBuilder` (above).
+- Incremental growth of a buffer of interpreter values: `tracker.check_growth`
+    before the push (`List::append`, `parse_json_array`, `re_pattern`'s match
+    loops) — it only reaches the tracker at a capacity boundary. It models one
+    push; a bulk reservation wants `check_allocation` sized for the whole result.
+
+Do not use per-iteration `check_time()` polls for memory accounting.
+For loops allocating per item, a preflight on the result buffer cannot see what the items themselves cost.
+`tracker.check_memory_time_every(i)` is the amortized poll for that, as in
+`parse_json_array` and `re_pattern`'s match and split loops. `*args`, parsed
+JSON arrays, `str`/`bytes` split pieces and `re.findall` with at most one capture
+group are preflighted now — each killed the worker on ordinary code while listed
+as bounded-by-input above. `re.finditer` scans spans under growth and time checks,
+then preflights the whole build pass with a per-match estimate, since it cannot
+stop part way; a wider `findall` allocates per match between the checks and is
+still open. Test each graceful path in
+`large_allocations_are_rejected_before_the_hard_limit`
+(`crates/monty-runtime/tests/subprocess.rs`) — the interpreter's own tests
+never arm the allocator, so only subprocess tests exercise `max_memory`.
+
+## Dev Commands
+
+**IMPORTANT**: before running `cargo build` or `cargo run`, it is likely necessary to run `make install-py` to ensure that the Python virtual environment is available for build.
+
+Instead use the following `make` commands:
+
+```bash
+make install-py           Install python dependencies
+make install-js           Install JS package dependencies
+make install              Install the package, dependencies, and pre-commit for local development
+make dev-py               Install the python package for development
+make build-js             Build the JS package (compile TypeScript)
+make lint-js              Lint JS code with oxlint
+make test-js              Test the JS package (builds the monty binary the workers run)
+make dev-py-release       Install the python package for development with a release build
+make build-wasm           Build the WASI 0.2 worker component (requires the wasm32-wasip1 target)
+make check-wasm-types     Verify checked-in component declarations and asset loaders match Jco output
+make test-wasm            Test the wasm worker component from Node, with no browser
+make test-browser         Build and test the wasm worker path in headless Chromium
+make dev-py-pgo           Install the Python package with a PGO-optimized Monty runtime
+make format-rs            Format Rust code with fmt
+make format-py            Format Python code - WARNING be careful about this command as it may modify code and break tests silently!
+make format-js            Format JS code with prettier
+make format-md            Format markdown with mdformat (tables, mkdocs admonitions, frontmatter)
+make format               Format Rust code, this does not format Python code as we have to be careful with that
+make lint-rs              Lint Rust code with clippy and import checks
+make clippy-fix           Fix Rust code with clippy
+make generate-proto       Regenerate monty-proto's checked-in code from the .proto schema
+make check-proto          Verify monty-proto's checked-in code matches the .proto schema
+make check-publish        Package and verify-build every publishable crate as `cargo publish` would, without uploading
+make generate-api-docs    Generate the Rust API reference into docs/api/rust/ (gitignored) from rustdoc JSON
+make docs-dev             Preview this checkout in a sibling pydantic/unified-docs checkout (../unified-docs)
+make lint-py              Lint Python code with ruff
+make lint-md              Check markdown formatting with mdformat
+make lint                 Lint the code with ruff, clippy and mdformat
+make test-no-features     Run rust tests without any features enabled
+make test-memory-model-checks Run rust tests with memory-model-checks enabled - THIS IS EXTREMELY SLOW, SHOULD MOSTLY BE RUN IN CI OR IF ABSOLUTELY NECESSARY
+make test-ref-count-return Run rust tests with ref-count-return enabled
+make test-cases           Run tests cases only
+make test-type-checking   Run rust tests on monty-type-checking
+make pytest               Run Python tests with pytest
+make test-py              Build the python package (debug profile) and run tests
+make test-docs            Test docs examples only
+make test                 Run rust tests
+make testcov              Run Rust tests with coverage, print table, and generate HTML report
+make complete-tests       Fill in incomplete test expectations using CPython
+make generate-unicode-type Regenerate the str character-property tables from the current CPython
+make check-unicode-type   Verify the checked-in str character-property tables match the current CPython
+make update-typeshed      Update vendored typeshed from upstream
+make bench                Run benchmarks
+make bench-pool           Run subprocess pool benchmarks (spawn, checkout, wire round-trips)
+make dev-bench            Run benchmarks to test with dev profile
+make profile              Profile the code with pprof and generate flamegraphs
+make type-sizes           Write type sizes for the crate to ./type-sizes.txt (requires nightly and top-type-sizes)
+make main                 run linting and the most important tests
+make help                 Show this help (usage: make help)
+```
+
+Use the /python-playground skill to check cpython and monty behavior.
+
+## Releasing
+
+See [RELEASING.md](RELEASING.md) for the release process.
+
+## Exception
+
+It's important that exceptions raised/returned by this library match those raised by Python.
+
+Wherever you see an Exception with a repeated message, create a dedicated method to create that exception `crates/monty/src/exception_private.rs`.
+
+When writing exception messages, always check `crates/monty/src/exception_private.rs` for existing methods to generate that message.
+
+## Argument extraction — ALWAYS use `#[derive(FromArgs)]`
+
+**Whenever you add or modify a Rust-side function, method, type
+constructor, or `OsFunction` handler that takes anything beyond the
+trivial 0/1/2-positional shapes already covered by
+`ArgValues::check_zero_args` / `get_one_arg` / `get_two_args` /
+`get_zero_one_arg` / `into_pos_only`, you MUST use
+`#[derive(FromArgs)]` (re-exported as `monty::args::FromArgs`).**
+
+Hand-written `args.into_parts()` loops are not acceptable for any
+signature that has multiple positionals with defaults, keyword
+arguments, `*args`, or `**kwargs` — they are a known source of
+reference-count leaks, divergent error messages, and duplicated
+boilerplate. `FromArgs` emits a static param spec driven by the runtime
+binder (`crates/monty/src/args/bind_native.rs`), which handles dispatch,
+conflict detection, default handling, and refcount cleanup mechanically.
+Pick `style = def | clinic | c | c_named | unpack` by the CPython parser
+family the target function uses — see
+[`crates/monty-macros/README.md`](crates/monty-macros/README.md) for the
+family table and the full attribute surface (`style`, `at_most_total`,
+`bad_arg[_named]`, `pos_only`, `kw_only`, `varargs`, `varkwargs`,
+`default`, `static_string`, …) and how to extend the macro or add new
+`FromValue` impls.
+
+If a callsite needs custom per-argument coercion (e.g. `value_to_float`
+for math, a `TimeDelta` type check, a `bytes`-or-`str` union), declare
+the field as `Value` and run the coercion in the function body *after*
+the `from_args` call — the macro still handles the parsing, your code
+just adds the final validation step.
+
+## Code style
+
+Match the surrounding code and keep changes focused.
+Extract helpers when functions become too complex or logic is duplicated, and put them in the module that owns the
+behaviour.
+Place primary functions before their private helpers.
+Keep Rust and Python imports at the top of the file.
+
+Avoid `fn my_func<T: MyTrait>(..., param: T)` style function definitions, STRONGLY prefer `fn my_func(param: impl MyTrait)` syntax since changes are more localized. This includes in trait definitions and implementations.
+
+Also avoid using functions and structs via a path like `std::borrow::Cow::Owned(...)`, instead import `Cow` globally with `use std::borrow::Cow;`.
+
+STRONGLY prefer expression-oriented style: use `if`/`match` as expressions with a trailing (tail) expression rather than early `return` with a guard clause. E.g. prefer
+
+```rs
+if cond { a } else { b }
+```
+
+over
+
+```rs
+if cond {
+    return a;
+}
+b
+```
+
+This applies to function bodies and block expressions alike. Only use early `return` when it genuinely simplifies control flow (e.g. several guard clauses at the top of a function).
+
+This applies even more strongly to long `if cond { ... } else if cond2 { ... } ... else { ... }` chains — keep them as a single expression yielding a value, rather than scattering `return` statements through each branch.
+
+NEVER use `allow()` in rust lint markers, instead use `expect()` so any unnecessary markers are removed. E.g. use
+
+```rs
+#[expect(clippy::too_many_arguments)]
+```
+
+NOT!
+
+```rs
+#[allow(clippy::too_many_arguments)]
+```
+
+### Docstrings and comments
+
+Document structs, enums and functions with concise explanations of their purpose, usage and non-obvious constraints.
+Self-explanatory trait implementation methods do not need their own docstrings.
+Explain complex code without narrating trivial operations, and correct outdated comments when you encounter them.
+Keep comments and field docstrings to three lines where possible, and function and type docstrings to five.
+Docstring examples belong on public items, should be at most eight lines, and must run in tests rather than be ignored.
+Python docstrings use Markdown, with single backticks rather than reStructuredText markup.
+
+## Tests
+
+Include a regression test for behaviour changes.
+Core interpreter behaviour belongs in `crates/monty/test_cases/` or `crates/monty/tests/`, not binding tests.
+Prefer Python cases for language behaviour; use binding tests for the public host APIs.
+Rust tests belong in the relevant `tests/` directory, not inline modules.
+Consolidate related Python cases in feature-level files rather than creating a file for each variation.
+Check CPython compatibility, including exact exception messages; do not merely assert that a message contains a substring.
+Do not mark tests as xfail: fix the behaviour or discuss the incompatibility with the maintainers.
+
+Run the relevant tests before submitting a PR.
+Run `make format-rs` and `make lint-rs` after Rust changes, `make lint-py` after Python changes, and
+`make format-md` and `make lint-md` after Markdown changes.
+The sections below cover commands, test formats and binding-specific workflows.
+
+Commands:
+
+```bash
+# Build the project
+cargo build
+
+# Run tests
+cargo test -p monty
+
+# Run crates/monty/test_cases tests only
+make test-cases
+
+# Run a specific test
+cargo test -p monty --test TEST str__ops
+cargo run -p monty-datatest str__ops
+
+# Run the interpreter on a Python file
+cargo run -- <file.py>
+```
+
+The `memory-model-checks` feature (`make test-memory-model-checks`, or
+`--features memory-model-checks` on the commands above) is VERY SLOW — it is
+run in CI, so do NOT enable it by default. Only reach for it when a change
+specifically touches refcount/heap/GC behavior (e.g. new opcodes that retain
+values, `drop_with` paths, cycle collection) and then run just the relevant
+test binary, e.g. `cargo test -p monty --test TEST --features memory-model-checks`.
+
+See more test commands above.
+
+### Experimentation and Playground
+
+Read `Makefile` for other useful commands.
+
+You can use the `./playground` directory (excluded from git, create with `mkdir -p playground`) to write files
+when you want to experiment by running a file with cpython or monty, e.g.:
+
+- `python3 playground/test.py` to run the file with cpython
+- `cargo run -- playground/test.py` to run the file with monty
+
+DO NOT use `/tmp` or pipe code to the interpreter, or use `python3 -c ...` as it requires extra permissions and can slow you down!
+
+More details in the "python-playground" skill.
+
+### Test File Structure
+
+Follow `crates/monty/test_cases/fstring__all.py` for consolidated Python cases:
+
+```python
+# === Section name ===
+# brief comment if needed
+assert condition
+assert another_condition
+
+# === Next section ===
+x = setup_value
+assert x == expected
+```
+
+Do NOT add messages to `assert` statements — Monty's assert message annotations
+(see `limitations/assert.md`) already show the failing values, so a hand-written
+message is clutter. The ONE exception: tests whose failure would show nothing,
+i.e. `assert False` sentinels in try/except blocks (`assert False, 'expected TypeError'`) and tests that evaluate to a bare bool (`not` expressions, chained
+comparisons, boolean ops) — there a message is required since introspection
+shows nothing.
+
+### When to Create Separate Test Files
+
+Only create a separate test file when you MUST use one of these special expectation formats:
+
+- `"""TRACEBACK:..."""` - Test expects an exception with full traceback (PREFERRED for error tests)
+- `# Raise=Exception('message')` - Test expects an exception without traceback verification - NOT RECOMMENDED, use `TRACEBACK` instead
+- `# ref-counts={...}` - Test checks reference counts (special mode)
+- you're writing tests for a different behavior or section of the language
+
+For everything else, **add asserts to an existing test file** or create ONE consolidated file for the feature.
+
+### File Naming
+
+Name files by feature, not by micro-variant:
+
+- ✅ `str__ops.py` - all string operations (add, iadd, len, etc.)
+- ✅ `list__methods.py` - all list method tests
+- ❌ `str__add_basic.py`, `str__add_empty.py`, `str__add_multiple.py` - TOO GRANULAR
+
+### Expectation Formats (use sparingly)
+
+Only use these when `assert` won't work (on last line of file):
+
+- `# Return=value` - Check `repr()` output (prefer assert instead)
+- `# Return.str=value` - Check `str()` output (prefer assert instead)
+- `# Return.type=typename` - Check `type()` output (prefer assert instead)
+- `# Raise=Exception('message')` - Expect exception without traceback (REQUIRES separate file)
+- `"""TRACEBACK:..."""` - Expect exception with full traceback (PREFERRED over `# Raise=`)
+- `# ref-counts={...}` - Check reference counts (REQUIRES separate file)
+- No expectation comment - Assert-based test (PREFERRED)
+
+Do NOT use `# Return=` when you could use `assert` instead
+
+### Traceback Tests (Preferred for Errors)
+
+For tests that expect exceptions, **prefer traceback tests over `# Raise=` or `try` / `except`** because they verify:
+
+- The full traceback with all stack frames
+- Correct line numbers for each frame
+- Function names in the traceback
+- The caret markers (`~`) pointing to the error location
+
+Traceback test format - add a triple-quoted string at the end of the file starting with `\nTRACEBACK:`:
+
+```python
+def foo():
+    raise ValueError('oops')
+
+foo()
+"""
+TRACEBACK:
+Traceback (most recent call last):
+  File "my_test.py", line 4, in <module>
+    foo()
+    ~~~~~
+  File "my_test.py", line 2, in foo
+    raise ValueError('oops')
+ValueError: oops
+"""
+```
+
+Key points:
+
+- The filename in the traceback should match the test file name (just the basename, not the full path)
+- Use `~` for caret markers (the test runner normalizes CPython's `^` to `~`)
+- The `<module>` frame name is used for top-level code
+- Tests run against both Monty and CPython, so the traceback must match both
+
+If you don't care about the traceback or it intentionally differs from cpython (e.g. for `json`) and you want to test
+multiple cases in the same file, use this style
+
+```py
+try:
+    ...
+    assert False, 'expected <task> to fail'
+except <ErrorType> as exc:
+    assert str(exc) = '<expected exception message>'
+```
+
+Only use `# Raise=` when you only care about the exception type/message and not the traceback and you can't use a try/except block.
+
+### Python fixture headers
+
+Configure a case with a `# /// monty` header: a [PEP 723](https://peps.python.org/pep-0723/) comment block of TOML,
+on the first lines of the file.
+`monty_fixture::Header` (`crates/monty-fixture`) parses it for both the datatest harness and `monty-bench`.
+Unknown keys, wrong types and malformed blocks are errors, and every key defaults to off:
+
+```python
+# /// monty
+# call-external = true
+# run-async = true
+# ///
+```
+
+- `call-external = true` to support calling external functions
+- `run-async = true` to support running async code
+- `mount-fs = true` to mount a fixture directory: `/mnt` for Monty, a real temp dir for CPython, `root` in both;
+    modules written there import on both sides (it is first on CPython's `sys.path`; write every file before the first import)
+- `skip-cpython-windows = true` to skip the CPython side on Windows (POSIX path semantics)
+- `cpython-main-module = true` to set `__name__ = '__main__'` on CPython only
+- `gc-interval = <N>` to override the GC interval
+- `timezone = 'Europe/London'` to run the case in an IANA zone rather than the UTC default:
+    it sets `OsPolicy::timezone` for Monty and `TZ` for CPython, so `astimezone()`,
+    a naive `timestamp()`, `%Z`/`%z` and the `time` zone constants can be compared.
+    The CPython side is skipped on Windows, which has no `time.tzset`.
+    Without the key both sides run in UTC — except on Windows, where the harness
+    cannot move CPython, so a case asserting zone values needs `skip-cpython-windows`
+    (see `datetime__zone_default.py`).
+- `[bench]` table: options for `bench__*.py` cases and `monty-bench` scripts (see `crates/monty-bench/benches/main.rs`)
+
+The header shifts line numbers, so `TRACEBACK` expectations count its lines.
+
+### Other Notes
+
+- Prefer single quotes for strings in Python tests
+- Do NOT add `# noqa` or `# pyright: ignore` comments to test code, instead add the failing code to `pyproject.toml`
+- The ONLY exception is `await` expressions outside of async functions, where you should add `# pyright: ignore`
+- Run `make lint-py` after adding tests
+- Use `make complete-tests` to fill in blank expectations
+- Regression tests run via `datatest-stable` harness in `crates/monty-datatest/src/main.rs`, use `make test-cases` to run them
+- The CPython side of each case runs under a 30s watchdog (`CpythonWatchdog` in the harness): a hanging case fails on its own instead of stalling the whole run, and one stuck in C code aborts the run naming the test
+
+### Rust integration tests and `insta` snapshots
+
+In `crates/*/tests/*.rs` (but **not** `crates/monty/test_cases/`), use [`insta`](https://insta.rs) `assert_snapshot!` for multi-line strings, serialized output, error messages otherwise fuzz-checked via `.contains(...)`, and any fixture currently compared via a hand-rolled `UPDATE_EXPECT` helper (use external snapshots under `tests/snapshots/`).
+
+Keep `assert_eq!` for scalars, enums, and structural values (`MontyObject`, `Vec`, etc.), and for principled membership checks like `vec.contains(...)`.
+
+Workflow: write `assert_snapshot!(value, @"");`, then `cargo insta test --accept` to populate (plain `INSTA_UPDATE=always` does **not** update inline `@"..."` snapshots — you need the `cargo insta` subcommand, installed via `cargo install cargo-insta`). Add `insta = { workspace = true }` to `[dev-dependencies]` when introducing it to a new crate.
+
+## Python Package (`pydantic-monty`)
+
+Three PyPI distributions are built from this repo:
+
+- `pydantic-monty-client` (`crates/monty-python/`, Cargo package
+    `pydantic-monty-client`) — the PyO3 bindings, i.e. the `pydantic_monty`
+    module. It deliberately does **not** depend on the runtime, so it can be
+    installed where the `monty` binary comes from a base image or system package.
+- `pydantic-monty-runtime` (`crates/monty-runtime/`) — the `monty` worker binary.
+- `pydantic-monty` (`packages/pydantic-monty/`) — a hatchling metapackage with
+    no code, exactly pinning the other two. This is what users install. Its
+    version and both pins are rewritten from the Cargo workspace version by
+    `crates/monty-python/build.rs`; never edit them by hand.
+
+Execution always happens in `monty` worker subprocesses — there is no in-process execution API.
+The surface is `Monty` (sync pool) and `AsyncMonty` (async pool), each with
+`pool.checkout(...)` sessions driven by `feed_run` (a coroutine on async sessions).
+
+### Structure
+
+- `crates/monty-python/src/` - Rust source for PyO3 bindings
+- `crates/monty-python/python/pydantic_monty/_monty.pyi` - Type stubs for the Python module
+- `crates/monty-python/tests/` - Python tests using pytest
+- `crates/monty-python/README.md` - the `pydantic-monty-client` readme (binary
+    resolution); the full user-facing docs live in `packages/pydantic-monty/README.md`
+
+### Building and Testing
+
+Dependencies needed for python testing are installed in `crates/monty-python/pyproject.toml`.
+To install these dependencies, use `make install-py`.
+
+```bash
+# Build the Python package for development (required before running tests)
+make dev-py
+
+# Run Python tests
+make test-py
+
+# Or run pytest directly (after dev-py)
+uv run pytest
+
+# Run a specific test file
+uv run pytest crates/monty-python/tests/test_basic.py
+
+# Run a specific test
+uv run pytest crates/monty-python/tests/test_basic.py::test_simple_expression
+```
+
+### Python Test Guidelines
+
+Check and follow the style of other python tests.
+
+Make sure you put tests in the correct file.
+
+**DO NOT use python/pytest tests for `monty` core functionality!** When testing core functionality, add tests to `crates/monty/test_cases/` or `crates/monty/tests/`. Only use python/pytest tests for `pydantic_monty` functionality testing.
+
+**NEVER use class-based tests.** All tests should be simple functions.
+
+Use `@pytest.mark.parametrize` whenever testing multiple similar cases.
+
+Use `snapshot` from `inline-snapshot` for all test asserts.
+
+NEVER do the lazy `assert '...' in ...` instead always do `assert value == snapshot()`,
+then run the test and inline-snapshot will fill in the missing value in the `snapshot()` call.
+
+Use `pytest.raises` for expected exceptions, like this
+
+```py
+with pytest.raises(ValueError) as exc_info:
+    session.feed_run(code, print_callback=callback)
+assert exc_info.value.args[0] == snapshot('stopped at 3')
+```
+
+## Reference Counting
+
+Heap-allocated values (`Value::Ref`) use manual reference counting. Key rules:
+
+- **Cloning**: Use `clone_with_heap(heap)` which increments refcounts for `Ref` variants.
+- **Dropping**: Call `drop_with(ctx)` (the \[`DropWithContext`\] method) when discarding a `Value` that may be a `Ref`.
+
+Container types (`List`, `Tuple`, `Dict`) also have `clone_with_heap()` methods.
+
+### Raw `HeapId` ownership
+
+`HeapId` does not encode whether a reference is owned or borrowed. Locally owned IDs should typically be wrapped in `Value::Ref` immediately so `defer_drop!` and `DropGuard` can manage cleanup; a local raw `HeapId` should otherwise be presumed borrowed.
+
+Owned `HeapId` fields remain the preferred representation where a structure needs the raw ID, such as `ListIterator::list`. Such fields must be documented as owned and cleaned up exactly once:
+
+- Heap-stored `HeapItem` implementations must push every owned ID from `py_dec_ref_ids`; this is preferred to calling `Heap::dec_ref` directly because destruction uses the heap's iterative cleanup stack.
+- Non-`HeapItem` owners should release owned IDs through their `DropWithContext` implementation, where a direct `dec_ref` is acceptable.
+- Direct `dec_ref` in ordinary control flow is discouraged. As with `drop_with`, never scatter cleanup for the same owned reference across branches; use an owning `Value` and a guard instead.
+
+Raw ownership is also acceptable when immediately transferred into a documented owned field or across an API whose contract explicitly transfers ownership.
+
+**Mutability of the heap parameter is asymmetric** — do not assume the two methods take the same kind of borrow:
+
+- `clone_with_heap` takes `&impl ContainsHeap` (immutable). The refcount field lives behind interior mutability, so `inc_ref` is `&self` on `Heap`. This means you can call `clone_with_heap` while other immutable borrows of the heap (e.g. a `HeapRead` handle obtained via `.get(heap)`) are still live.
+- `Heap::allocate` is also `&self` because entry storage is behind interior mutability. New heap entries can be created without a `&mut Heap`.
+- `drop_with` takes `&mut C` (the cleanup context — `Heap` / `HeapReader` / `VM` / `Encoder`), because dropping may free entries and run destructors, which mutates the heap.
+
+If you find yourself fighting the borrow checker around `clone_with_heap` or `allocate`, the fix is almost never `&mut` — it is more likely that you are passing the wrong receiver (e.g. `vm` instead of `vm.heap`) or holding a `&mut` borrow elsewhere that should be `&`.
+
+### Cycle collection — Bacon–Rajan trial deletion
+
+Reference counting alone cannot reclaim cycles. Monty uses **Bacon–Rajan trial deletion**
+(`Heap::collect_cycles` in `crates/monty/src/heap/mod.rs`).
+
+**Resource limits**: When a memory or time limit is exceeded, execution terminates with a `ResourceError`. No guarantees are made about the state of the heap or reference counts after a resource limit is exceeded. The heap may contain orphaned objects with incorrect refcounts. This is acceptable because resource exhaustion is a terminal error - the execution context should be discarded.
+
+## JavaScript Package (`@pydantic/monty`, `crates/monty-js/`)
+
+Public API documentation belongs in [the JavaScript guide](docs/quickstart/javascript.md) and its linked concept pages.
+The package README is an npm introduction, not a second reference.
+
+- `src/` implements the native napi binding over `monty-pool`; `ts/pool.ts` wraps it.
+- `ts/shared.ts` defines common public exports; `ts/session.ts` drives both native and WASM transports.
+- `ts/worker/` implements WASM pooling, channels and value conversion. These are internal, not package exports.
+    `index.ts` is the browser/default entry; `index.node.ts` selects Node worker threads. No in-process fallback.
+- `crates/monty-wasm-runtime` wraps the shared Rust protocol worker as a WIT component with flat value arenas.
+    `make build-wasm` builds `wasm32-wasip1`, applies Jco's reactor adapter, and regenerates `ts/worker/component/`,
+    `ts/worker/componentModules.ts` and `ts/worker/loadModule.browser.ts` from Jco output.
+    Never edit those generated files manually.
+- `native-addon.js` and `native-addon.generated.d.ts` are generated by `npm run build:napi`.
+    Platform packages contain both the `.node` addon and the `monty` binary.
+
+Use `make test-js`, `make test-wasm` and `make test-browser` for native Node, WASM Node and Chromium respectively.
+Vitest runs `__test__/` against public entries in `dist/`; `make test-js` sets `MONTY_BIN` to the debug worker build.
+Use `setupPool` from `__test__/helpers.ts` and put portable behavior in the shared specs, not duplicate WASM files.
+Gate only backend-specific capabilities; reserve `node_*` / `wasm_*` specs for those.
+`make lint-js` runs oxlint and test type-checking; `make format-js` runs Prettier.
+See the documentation rules below for executable examples.
+
+## Documentation surfaces that must stay in sync
+
+Monty has four hand-maintained documentation surfaces. They serve different readers and
+none is generated from another, so a change that updates one and not the others leaves
+the project describing behaviour it no longer has.
+
+| Surface                                                                                        | Reader                                                         | Contains                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `README.md`                                                                                    | GitHub, PyPI, npm landing page                                 | A short pitch with the latency numbers, install commands, one example, links into `docs/`, plus badges, community bindings and the Pydantic Stack footer; no can/cannot lists, quickstarts or alternatives                                                                                                                                                                           |
+| `docs/`                                                                                        | the docs site (`pydantic.dev/docs/monty`), nav in `mkdocs.yml` | The landing page (`index.md`: numbers, why, example), commercial support (`server.md`), getting started per language (install then examples), concepts (security model, host functions, resource limits, filesystem, snapshots, type checking), reference (comparison to alternatives, examples, CLI), limitations (the subset on `limitations/index.md`, then one page per feature) |
+| `limitations/` (a symlink to `docs/limitations/`, published as the site's Limitations section) | agents and contributors chasing a specific behaviour           | `index.md` gives the shape of the subset; the other pages are the exhaustive per-feature record of CPython divergences (see the section below)                                                                                                                                                                                                                                       |
+| `crates/*/README.md`                                                                           | crates.io, and PyPI/npm for the binding crates                 | Per-crate API documentation; `monty-python/README.md` is the Python binding reference, while `monty-js/README.md` is an npm introduction linking to the JavaScript guide                                                                                                                                                                                                             |
+
+**`docs/` does not duplicate `limitations/`.** `docs/` describes the *shape* of what Monty
+implements and links out; `limitations/` owns every divergence. A divergence written into
+a `docs/` page instead of `limitations/` is a defect — move it and link.
+
+### What a change obliges you to update
+
+Follow the [contributor documentation policy](CONTRIBUTING.md#documentation).
+The specific references to update are:
+
+- **Changes to the supported subset:** `docs/limitations/index.md` and the owning limitations page.
+- **Python binding APIs:** the `_monty.pyi` docstrings, `crates/monty-python/README.md` and the relevant `docs/` topic.
+- **JavaScript binding APIs:** TypeScript declarations and the relevant `docs/` topic.
+    Update the package README only when its introduction changes.
+- **Rust APIs:** the owning crate's README and `docs/quickstart/rust.md`.
+- **Resource limits, mount options or sandbox invariants:** `docs/resource-limits.md`, `docs/filesystem.md` or
+    `docs/security.md`, respectively, plus any affected limitations pages.
+- **CLI flags:** `crates/monty-runtime/README.md` and `docs/cli.md`.
+
+The sections below cover duplicated facts and documentation tooling.
+
+### Named duplication points
+
+These facts are stated in more than one place on purpose, because a reader needs them
+where they are. Change one and you must change all of them:
+
+- **The importable stdlib module list** — `limitations/modules.md` (authoritative),
+    `docs/limitations/index.md`.
+- **The start-latency numbers** — `ROWS` in `scripts/startup_latency_chart.py` (which renders
+    `docs/img/startup-latency.svg`), `docs/index.md`, `docs/alternatives.md`, `README.md`.
+    Re-measure with `scripts/startup_performance.py`, then update all four.
+- **Default resource limits** (1000 recursion frames, 1000 suspensions, 10 MiB
+    print collectors, 1s duration grace) — `limitations/resource_limits.md`,
+    `docs/resource-limits.md`, and the binding docstrings.
+    The per-mount memory default is the exception: its value is stated only in
+    `monty_fs::DEFAULT_MEMORY_USAGE_LIMIT`, and everything else refers to that name.
+- **`OsPolicy` defaults** (system clock, UTC zone, host-serviced sleeps capped at 10 s, a zero `process_time`,
+    OS entropy for `random`)
+    and `call_host` — `limitations/time.md`, `limitations/datetime.md`,
+    `limitations/random.md`, `docs/security.md` (the clock / entropy / waiting), `docs/cli.md` and
+    `crates/monty-runtime/README.md` (`--max-sleep`, `--max-total-sleep`), the `checkout()` docstrings in
+    `_monty.pyi` and `crates/monty-js/ts/pool.ts`.
+- **The default `max_checkouts_per_worker`** (1000) — `monty_pool::DEFAULT_MAX_CHECKOUTS_PER_WORKER` (authoritative;
+    compile- and test-time checks pin the JS constant and Python `text_signature`s to it), `_monty.pyi`, `crates/monty-js/ts/options.ts`,
+    `crates/monty-js/ts/pool.ts`, the `monty-pool` README, `docs/resource-limits.md`, `docs/security.md` and `docs/quickstart/`.
+- **Mount modes and their defaults** — `limitations/filesystem.md`, `docs/filesystem.md`,
+    the `MountDir` docstrings in `_monty.pyi` and `crates/monty-js/ts/mount.ts`.
+
+### Reviewer Notes
+
+Monty implements a limited subset of CPython.
+Its behaviour should match CPython 3.14 except where documented in `limitations`.
+
+The list of stdlib modules in `docs/limitations/index.md` must be updated if a new standard library module is implemented.
+
+### Rules for `docs/`
+
+- `make test-docs` checks every Python snippet in `docs/`, `README.md`,
+    `packages/pydantic-monty/README.md`, and `crates/monty-python/README.md`.
+    It executes each snippet unless marked ```` ```python test="skip" ````; skipped snippets are still ruff-linted.
+    This includes `docs/limitations/`, whose snippets are all sandbox-side and so all `test="skip"`.
+- `make test-js` runs every ```` ```ts ```` snippet in `docs/`, `README.md` and `crates/monty-js/README.md` as its own module
+    (`crates/monty-js/__test__/node_docs.spec.ts`: type-checked with tsc, then imported). A snippet must be
+    self-contained — its own imports, `await using pool = await Monty.create()`, no leaked pool, no `process.exit` —
+    and ```` ```ts test="skip" ```` skips running it but not type-checking it. Printed output is not compared.
+- Every example outside `docs/index.md` and `docs/quickstart/` is a `=== "Python"` / `=== "TypeScript"` tab pair,
+    Python first; both runners find fences inside tabs. Rust examples stay on `docs/quickstart/rust.md`, the only page
+    `monty-doctest` compiles: rustdoc ignores a fence indented inside a tab.
+- Sandbox-side Python (code fed to Monty, not host code) belongs inside a host snippet as
+    a string, or in a `test="skip"` block. It must never be a runnable top-level block —
+    CPython would execute it.
+- Link the first mention of a `pydantic_monty` type, method or attribute in each section to its API page with the
+    autorefs form `[`Monty`][pydantic_monty.Monty]` / `[`MountDir.close()`][pydantic_monty.MountDir.close]`;
+    mkdocs-autorefs resolves it locally and the pydantic.dev pipeline resolves it from the `::: pydantic_monty` blocks
+    under `docs/api/python/`, so `make docs` fails on a name neither page documents (add it to a `:::` block first);
+    `.mdformat.toml` sets `ignore_missing_references` so `make format-md` leaves the syntax alone.
+    Rust items have no symbol map: link them explicitly as `[`Pool`](api/rust/monty-pool.md#pool)` (the anchor is
+    the lowercased top-level item name; methods, fields and variants share their parent's anchor).
+    JavaScript types have no API pages, so leave them as plain code spans.
+- New pages go in the `mkdocs.yml` `nav:`; the nav is what orders the docs site.
+    That includes a new `limitations/` file, which goes in the flat Limitations section (nested groups would change
+    the page URLs and break the relative links between limitations pages).
+- Prose style follows [`.agents/skills/writing-style`](.agents/skills/writing-style/SKILL.md):
+    one sentence per line, claims traceable to source, no hype.
+    Do not state a behaviour you have not read in the code, the tests or `limitations/`.
+- `make format-md` normalises every tracked markdown file except the crate READMEs, which rustdoc embeds and
+    clippy lints for two-space list continuations, with mdformat (table alignment, four-space list
+    continuations, admonitions and frontmatter kept; style in `.mdformat.toml`); pre-commit runs it, and `make lint`
+    checks it with `make lint-md`.
+    It never rewraps prose.
+
+### Enforcement
+
+- `make test-docs` applies the Python checks above and compiles Rust snippets in `docs/quickstart/rust.md`.
+    `make test-js` applies the TypeScript check.
+- `make docs` builds the site with `--strict`, which fails on a broken internal link or a
+    page missing from the nav. `make docs-serve` previews it. Both first run
+    `make generate-api-docs`, which writes the gitignored `docs/api/rust/` pages; CI's
+    `publish-docs` job publishes those with `docs/` to the `docs-source` branch that
+    pydantic.dev reads, and `make docs-dev` previews this checkout in a sibling
+    `unified-docs` checkout.
+- The `docs-parity-reviewer` subagent (`.agents/agents/docs-parity-reviewer.md`) is the
+    documentation gate before merge. It reports; it does not edit.
+- The `review-general` skill treats a missing `docs/` or `limitations/` update as a
+    finding.
+
+## Limitations documentation (`./limitations/`)
+
+`./limitations/` is a symlink to `docs/limitations/`, so the files are published verbatim as the
+Limitations section of the docs site (`docs/limitations/index.md` is the subset overview) while every
+`limitations/<file>.md` path in this file, the skills and the agents keeps working.
+Directory-specific guidance is in `docs/limitations/AGENTS.md`, which is excluded from the build.
+
+Follow the [contributor documentation policy](CONTRIBUTING.md#documentation) for what belongs in limitations pages
+and when they must be updated.
+
+One file per feature, named after the builtin / module / construct it
+covers (e.g. `limitations/open.md`, `limitations/asyncio.md`,
+`limitations/bytecode_interpretter.md`). Add new sections to an existing file when the feature
+is already documented; only create a new file when there is no fit.
+
+Keep entries concise but comprehensive — list every known divergence,
+including ones that "feel obvious". A divergence that is not written down
+is one that future readers (and future Claude) will assume does not exist.
+Reviewers should reject PRs that change behavior without updating
+`./limitations/` if necessary.
+
+Structure each file around what a Python user would actually try:
+
+- Arguments/options that are rejected or ignored.
+- Methods/attributes that raise `AttributeError`.
+- Behaviour that differs from CPython even when the API exists.
+- Error types / messages that differ from CPython.
+
+Avoid implementation detail unless it explains a user-visible quirk.
+
+Refer to other limitations pages with relative markdown links (`see [classes.md](classes.md)`),
+never a bare file name in prose, so the reference resolves on the site as well as on GitHub.
+`mkdocs build --strict` fails on a link to a page that does not exist.
+
+## Agent interaction
+
+Keep this file up to date when its guidance becomes stale.
+If a change needs `unsafe` code, ask the user for approval before implementing it.
+When the user asks a question, answer it rather than treating it as an instruction to change code.

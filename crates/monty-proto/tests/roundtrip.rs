@@ -900,7 +900,7 @@ fn deep_values_cross_the_wire() {
             async_functions: Vec::new().into(),
             stream_async_calls: false,
         })),
-        trace_parent: None,
+        traceparent: None,
     };
     let back = decode_frame::<pb::ClientRequest>(request.encode_to_vec().as_slice()).expect("deep feed decodes");
     let Some(pb::client_request::Kind::Feed(feed)) = back.kind else {
