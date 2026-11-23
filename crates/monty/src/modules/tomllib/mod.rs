@@ -38,13 +38,14 @@ use crate::{
 ///
 /// The display form matches the Python-visible function name so reprs look
 /// like normal builtins.
+#[monty_macros::explicit_discriminants(checksum = 0x3352_6042_0d7d_3205)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum TomllibFunctions {
     /// `tomllib.loads(s)` parses TOML text into a dict.
-    Loads,
+    Loads = 0,
     /// `tomllib.load(fp)` parses a binary file object into a dict.
-    Load,
+    Load = 1,
 }
 
 /// Creates the `tomllib` module.

@@ -28,7 +28,6 @@ ahash = { workspace = true }
 indexmap = { workspace = true }
 itoa = { workspace = true }
 serde = { workspace = true }
-postcard = { workspace = true }
 minicbor-serde = { workspace = true }
 serde_bytes = { workspace = true }
 strum = { workspace = true }
@@ -41,6 +40,7 @@ unicode-general-category = { workspace = true }
 unicode_names2 = "4"
 unicode-normalization = "0.1"
 memchr = { workspace = true }
+bytecount = "0.6.9"
 # `union` keeps `Tuple` within `HeapData`'s 56-byte 32-bit limit (heap_data.rs);
 # without it wasm32 builds that do not also link ty fail that assert
 smallvec = { version = "1.13", features = ["serde", "union"] }
@@ -53,7 +53,7 @@ libm = "0.2"
 # `random.seed(str | bytes)`, which extends the seed with a SHA-512 digest as CPython does
 sha1 = { version = "0.11", default-features = false }
 sha2 = { workspace = true }
-chrono = { workspace = true }
+jiff = { workspace = true }
 speedate = "0.18.0"
 jiter = { version = "0.19.0", features = ["num-bigint"] }
 

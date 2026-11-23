@@ -128,6 +128,40 @@ assert sum(Counter(0)) == 0
 assert sum(Counter(2), 1000) == 1203
 assert sum(Counter(2), start=-3) == 200
 
+
+class Items:
+    """Yields `items` one by one, calling the host before each."""
+
+    def __init__(self, items):
+        self.items = list(items)
+        self.i = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        add_ints(0, 0)
+        if self.i == len(self.items):
+            raise StopIteration
+        self.i += 1
+        return self.items[self.i - 1]
+
+
+# floats and complex use CPython's compensated summation even across suspensions
+assert sum(Items([0.1] * 10)) == 1.0
+assert sum(Items([0.1] * 10)) == sum([0.1] * 10)
+assert sum(Items([1e100, 1.0, -1e100])) == 1.0
+assert sum(Items([0.1j] * 10)) == 1j
+assert sum(Items([1, 0.1, 0.2, True])) == sum([1, 0.1, 0.2, True])
+assert sum(Items([1, 2.5, 1j, 3])) == sum([1, 2.5, 1j, 3])
+assert sum(Items([[1], [2]]), []) == [1, 2]
+
+try:
+    sum(Items([0.5, 'x']), 1.0)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "unsupported operand type(s) for +: 'float' and 'str'"
+
 try:
     sum(Counter(2), [])
     assert False, 'expected TypeError'

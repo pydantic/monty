@@ -9,6 +9,18 @@ assert sum(range(5)) == 10
 assert sum([1.5, 2.5, 3.0], 0.0) == 7.0
 # Note: sum of floats without start requires py_add to support int+float
 
+# float and complex totals are compensated, as in CPython
+assert sum([0.1] * 10) == 1.0
+assert sum([0.1, 0.2, 0.3]) == 0.6
+assert sum([0.1, 0.2, 0.3], 1) == 1.6
+assert sum([1e100, 1.0, -1e100, 1.0]) == 2.0
+assert sum([1e100, 1, -1e100, 1]) == 2.0
+assert sum([0.1j] * 10) == 1j
+assert sum([0.1, 0.1j, 0.2, 0.3]) == 0.6 + 0.1j
+assert str(sum([-0.0], -0.0)) == '-0.0'
+assert sum([float('inf'), 0.1]) == float('inf')
+assert sum([0.5, True]) == 1.5
+
 # str/bytes start values are rejected, pointing at join() instead
 try:
     sum([], 'x')

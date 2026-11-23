@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{CallResult, VM};
 use crate::{
+    builtins::SumPhase,
     exception_private::{RunError, RunResult},
     heap::{ContainsHeap, DropWithContext, HeapData, HeapReadOutput},
     types::{List, TupleVec, allocate_tuple},
@@ -38,7 +39,13 @@ pub(crate) enum NativeCont {
         kind: CollectKind,
     },
     /// `sum()` folding a user iterator into `total`.
-    Sum { iterator: Value, total: Value },
+    Sum {
+        iterator: Value,
+        /// Stale while `phase` holds a compensated float or complex total.
+        total: Value,
+        /// CPython's fast path, so floats from a suspending iterator sum exactly as from a list.
+        phase: SumPhase,
+    },
 }
 
 /// The collection a [`NativeCont::Collect`] builds once its iterator is exhausted.
@@ -125,14 +132,18 @@ impl NativeCont {
                 items.push(item);
                 Ok(Step::Next(Self::Collect { iterator, items, kind }))
             }
-            Self::Sum { iterator, total } => {
-                let added = total.py_add(&item, vm);
+            Self::Sum {
+                iterator,
+                mut total,
+                mut phase,
+            } => {
+                let folded = phase.fold(&mut total, &item, vm);
                 item.drop_with(vm);
-                total.drop_with(vm);
-                match added {
-                    Ok(total) => Ok(Step::Next(Self::Sum { iterator, total })),
+                match folded {
+                    Ok(()) => Ok(Step::Next(Self::Sum { iterator, total, phase })),
                     Err(error) => {
                         iterator.drop_with(vm);
+                        total.drop_with(vm);
                         Err(error)
                     }
                 }
@@ -159,8 +170,13 @@ impl NativeCont {
                     CollectKind::Tuple => allocate_tuple(TupleVec::from_vec(items), vm.heap),
                 })
             }
-            Self::Sum { iterator, total } => {
+            Self::Sum {
+                iterator,
+                mut total,
+                phase,
+            } => {
                 iterator.drop_with(vm);
+                phase.store(&mut total, vm);
                 Step::Value(total)
             }
         }
@@ -175,7 +191,7 @@ impl<C: ContainsHeap> DropWithContext<C> for NativeCont {
                 iterator.drop_with(heap);
                 items.drop_with(heap);
             }
-            Self::Sum { iterator, total } => {
+            Self::Sum { iterator, total, .. } => {
                 iterator.drop_with(heap);
                 total.drop_with(heap);
             }

@@ -26,6 +26,7 @@ mod locals;
 mod map;
 mod min_max; // min and max share implementation
 pub(crate) use min_max::candidate_wins;
+pub(crate) use sum::Phase as SumPhase;
 pub(crate) mod next;
 pub(crate) mod object;
 pub(crate) mod object_setattr;
@@ -125,29 +126,6 @@ impl Builtins {
             Self::Type(_) => Type::Type,
         }
     }
-
-    /// The bytes `id()` encodes: the postcard form of the pre-table enum, which
-    /// had `Function`, `ExcType` and `Type` variants, with `type` a function, so
-    /// `id(len)`, `id(type)`, `id(ValueError)` and `id(int)` survive a restore.
-    pub(crate) fn identity_key(self) -> (u32, IdentityPayload) {
-        match self {
-            Self::Function(function) => (0, IdentityPayload::Function(function)),
-            Self::Type(Type::Type) => (0, IdentityPayload::Function(BuiltinsFunctions::Type)),
-            Self::Type(ty) => match ty.exc_type() {
-                Some(exc_type) => (1, IdentityPayload::ExcType(exc_type)),
-                None => (2, IdentityPayload::Type(ty)),
-            },
-        }
-    }
-}
-
-/// The payload half of [`Builtins::identity_key`].
-#[derive(serde::Serialize)]
-#[serde(untagged)]
-pub(crate) enum IdentityPayload {
-    Function(BuiltinsFunctions),
-    ExcType(ExcType),
-    Type(Type),
 }
 
 impl FromStr for Builtins {

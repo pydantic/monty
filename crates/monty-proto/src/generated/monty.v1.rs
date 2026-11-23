@@ -763,7 +763,7 @@ pub struct ClientRequest {
     /// from. Purely additive context: the worker's execution of the request must
     /// not depend on it, and it is absent whenever the client is not tracing.
     #[prost(string, optional, tag = "20")]
-    pub trace_parent: ::core::option::Option<
+    pub traceparent: ::core::option::Option<
         crate::budgeted_prost::alloc::string::String,
     >,
     #[prost(
@@ -1128,6 +1128,15 @@ pub struct WorkerEvent {
     /// reply, when it carries one). Local CPU-mode clients require this.
     #[prost(enumeration = "ExecutionClock", optional, tag = "30")]
     pub execution_clock: ::core::option::Option<i32>,
+    /// W3C `traceparent` of the sender's span for this suspension, set by a
+    /// server that exports its own telemetry on `FunctionCall`, `OsCall`,
+    /// `NameLookup` and `ResolveFutures`, so the host's work answering it joins
+    /// that span. Purely additive context: handling of the event must not depend
+    /// on it, a malformed value is ignored, and a worker never sets it.
+    #[prost(string, optional, tag = "31")]
+    pub traceparent: ::core::option::Option<
+        crate::budgeted_prost::alloc::string::String,
+    >,
     #[prost(
         oneof = "worker_event::Kind",
         tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"

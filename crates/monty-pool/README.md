@@ -18,7 +18,10 @@ This is the recommended way to run Monty from Rust. It is also the engine undern
 A `Pool` keeps an elastic set of workers (`min_processes` prewarmed, up to `max_processes`).
 Until it is closed, a subprocess pool replaces any worker that is recycled, crashes or is
 discarded in the background until `min_processes` workers are live again; a replacement that
-fails to spawn is retried with a doubling backoff. Remote pools never refill.
+fails to spawn is retried with a doubling backoff. `pre_warm` (0 by default) is a further floor,
+on ready workers and on either transport: each one a checkout takes is replaced the same
+way, up to `max_processes`. It is the only floor a remote pool has, since a checked-out
+session is never reused.
 `Pool::checkout` dedicates one worker to one REPL session: the caller feeds snippets of code
 and answers suspension events (`TurnEvent` — external function calls, OS calls, name lookups,
 async futures) until the snippet completes, then `Checkout::finish` returns the worker to the
@@ -104,6 +107,8 @@ The default `SleepMode::System` sets `system_sleep` to the capped delay for the 
 `Checkout::feed` accepts inputs exposed as sandbox globals and per-feed filesystem mounts (`MountSpec`); mounts that
 overlap on the host or repeat a virtual path fail the feed with a session-preserving `PoolError::Runtime`.
 `Checkout::feed_with_cwd` also changes the working directory, which defaults to the first feed's first mount and persists.
+`Checkout::feed_with` and `Checkout::restore_with` also take `TurnOptions`, whose `traceparent` names the span the
+turn was started under (see [trace context](#trace-context)).
 `Checkout::worker_id` identifies a worker within its pool independently of PID reuse, for either transport.
 It returns `None` after the worker is released or discarded; `Checkout::pid` remains the subprocess-only OS diagnostic.
 
@@ -142,6 +147,12 @@ Invalid snapshots have no correctness or availability guarantees.
   `Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER)` (1000); `None` never recycles. With the
   subprocess transport, `Some(1)` runs every session in a fresh process, which with
   `min_processes > 0` the background refill has usually spawned before the checkout asks.
+- **Prewarmed type checker** — `prewarm_type_checker` has each worker build a type checker with
+  the builtins resolved at startup and between checkouts, so a session's first type-checked feed skips that
+  work; a checkout arriving mid-build waits for it. It costs
+  about 6 MiB of allocator-tracked memory per worker, added to the worker's baseline rather than any session's
+  `max_memory`; it is not an RSS figure, so cap process memory with OS or cgroup limits. It
+  is wasted when sessions do not type-check. Off by default; subprocess transport only.
 - **Memory limits** — a session's `max_memory` also caps the worker's live allocations,
   enforced in the worker's own global allocator
   ([`monty-alloc`](https://crates.io/crates/monty-alloc)) plus 4 MB of headroom (32 MB with
@@ -229,7 +240,7 @@ choices and its final flush/shutdown.
 
 Recording happens in the host process, which builds every request and decodes every event
 anyway, so both transports are covered and the workers stay uninstrumented. Each instrumented checkout
-becomes one session span; each feed is a nested span held across suspension round-trips, with
+becomes one session span; each feed is a span held across suspension round-trips, with
 a child span per suspension whose duration is the host round-trip. Fed code, inputs, call
 arguments and results, exceptions and `print` output are recorded in full — values encoded
 the way the Python logfire SDK encodes attributes, capped at 64KB per value — while
@@ -242,6 +253,32 @@ checkout's serialized parent context. Span and log records are emitted through
 the Rust pipeline or receive each raw measurement for aggregation by its native SDK. Python,
 Node, and third-party bindings retain ownership of their native SDK and exporter. Without the
 feature, workers contain no telemetry recorder or telemetry hot path.
+
+### Trace context
+
+The session span is a child of the span in `CheckoutOptions::telemetry`, the one current at checkout.
+A feed or restore started with `TurnOptions::traceparent` is a child of the span that names, not of the session span;
+without one it is a child of the session span.
+A feed parented that way carries the session span's ID as `checkout_span_id`, when the session span's exported ID
+is known (see `TelemetryAdapter::exported_span_context` below).
+A remote stream's `traceparent` metadata still names the checkout-time span.
+
+The request the pool sends names the recorder's own span for the turn (the feed's, or a restore's `load`) when
+there is one, else the caller's `TurnOptions::traceparent`, so a server that records the session nests its spans under the right one.
+A foreign SDK assigns its own span IDs, so an adapter reports them through `TelemetryAdapter::exported_span_context`;
+an adapter that cannot, such as one that creates spans asynchronously, leaves the caller's value on the request.
+
+A peer that records spans names its span for each suspension in `WorkerEvent.traceparent`.
+The pool surfaces it as `traceparent` on `TurnEvent::FunctionCall`, `OsCall`, `NameLookup` and `ResolveFutures`, and on
+each `StreamedCall`.
+`Checkout::callback_context` and `StreamedCall::callback_context` return the recorder's suspension span, which is then a
+child of the peer's, or without a recorder the peer's span as a remote context.
+`telemetry::remote_suspension` reads the peer's span from either, for a host that cannot resolve the recorded span
+(one recording logs without a tracer).
+A pool recording without a `TelemetryAdapter` (`TelemetryContext::for_logfire`) sets the field on the events it
+returns, `Checkout::turn_raw`'s included, which is how a server built on the pool names its spans to its clients.
+A pool recording through an adapter answers the event itself, so it leaves the peer's value in place.
+A malformed value from a peer is dropped, as is any value from a subprocess worker, which never records spans.
 
 ### Metrics
 
@@ -300,7 +337,14 @@ input so adapters that do not support metrics continue to work.
   revocation; a Linux host with no CA bundle cannot make an `https://` pool. A stream the server never took
   — it sent `GOAWAY` as it drained, refused the stream, or closed the connection before
   the stream was sent — is opened again, up to twice, within the same `request_timeout`. These workers are single-use:
-  a fresh stream per checkout, never prewarmed or returned to the pool. `finish` half-closes
+  a fresh stream per checkout, never returned to the pool. `pre_warm` (0 by default) keeps that many
+  open and ready, sharing `max_processes` with those checked out: `Pool::new` opens them, failing if
+  one cannot open (in the background when `pre_warm_wait` is off, where a failed open is retried with
+  the refill backoff), and each is replaced when a checkout takes it. One checkout per session already
+  dialing waits for it rather than dialing. The pool calls `pre_warm_metadata` for each one it dials,
+  and a checkout takes one only if it was dialed with that checkout's `CheckoutOptions::metadata`
+  (the trace metadata below aside); otherwise it closes the ready sessions unused and dials for
+  itself (at `max_processes`, after waiting for the server to end one of them). `finish` half-closes
   the stream and returns at once, but its `max_processes` slot is freed only when the server
   ends the stream (or after a second), so a full pool does not open its next stream while the
   server still counts the last one. At most `max_processes` closed streams wait like this;
@@ -311,7 +355,8 @@ input so adapters that do not support metrics continue to work.
   stream carries `user-agent: monty-pool/<version>` (tonic appends its own), and with the
   `telemetry` feature the `traceparent` (and `tracestate`) of `CheckoutOptions::telemetry`,
   so server-side spans join the caller's trace; a `metadata` entry replaces the
-  trace metadata and is put in front of the user agent. A `Ping` event from the server is
+  trace metadata and is put in front of the user agent. That metadata names the span current
+  at checkout; each feed and restore names its own span in the request (see [trace context](#trace-context)). A `Ping` event from the server is
   answered with a `Pong` request by the transport, even while the checkout sits idle, so a
   relay behind a proxy can tell a quiet client from a vanished one; the answer follows the
   events read before the ping, so a server pings between turns, where a slow host callback

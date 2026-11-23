@@ -24,15 +24,16 @@ use crate::{
 /// from Python — no observation/tuning APIs (`gc.get_objects`, `gc.set_threshold`,
 /// ...) since those would let test code peer at heap internals in ways that
 /// aren't stable across Monty versions.
+#[monty_macros::explicit_discriminants(checksum = 0xaa19_7e20_3618_31c7)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum GcFunctions {
     /// `gc.collect()` — forces a full garbage collection cycle.
-    Collect,
+    Collect = 0,
     /// `gc.disable()` — suppresses automatic GC until `gc.enable()` is called.
-    Disable,
+    Disable = 1,
     /// `gc.enable()` — resumes automatic GC after a prior `gc.disable()`.
-    Enable,
+    Enable = 2,
 }
 
 /// Creates the `gc` module.

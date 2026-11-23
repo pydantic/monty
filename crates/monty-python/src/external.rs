@@ -17,7 +17,7 @@ use pyo3::{
     exceptions::{PyAttributeError, PyKeyError, PyRuntimeError, PyTypeError, PyValueError},
     intern,
     prelude::*,
-    types::{PyDict, PyMapping, PyTuple, PyType},
+    types::{PyDict, PyMapping, PyString, PyTuple, PyType},
 };
 
 use crate::{
@@ -641,6 +641,9 @@ fn validate_host_method_name(function_name: &str) -> PyResult<()> {
 
 /// Converts a call's arguments into the Python tuple/dict a host call needs.
 /// The arena is decoded once, so an object passed twice is one Python object.
+///
+/// Keyword names must be `str`, as the sandbox itself enforces: a forged frame's
+/// other keys could collide in CPython's hash outside the decoder's budget.
 pub(crate) fn wire_call_arguments<'py>(
     py: Python<'py>,
     args: &CallArgs,
@@ -651,7 +654,11 @@ pub(crate) fn wire_call_arguments<'py>(
     let py_args_tuple = PyTuple::new(py, arg_ids.iter().map(|id| arena.get(py, *id)))?;
     let py_kwargs = PyDict::new(py);
     for (key, value) in kwarg_ids {
-        py_kwargs.set_item(arena.get(py, *key), arena.get(py, *value))?;
+        let key = arena.get(py, *key);
+        if !key.bind(py).is_exact_instance_of::<PyString>() {
+            return Err(PyTypeError::new_err("keywords must be strings"));
+        }
+        py_kwargs.set_item(key, arena.get(py, *value))?;
     }
     Ok((py_args_tuple, py_kwargs))
 }

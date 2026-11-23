@@ -2251,7 +2251,7 @@ wheels = [
 
 [[package]]
 name = "pydantic-monty"
-version = "1.6.0"
+version = "1.7.0b1"
 source = { editable = "packages/pydantic-monty" }
 dependencies = [
     { name = "pydantic-monty-client" },

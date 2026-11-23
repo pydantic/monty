@@ -25,6 +25,22 @@ These consumers now park a serializable Rust continuation on the `__next__` fram
     `Constructor::Call`), and `sum()` (now returns `CallResult`).
 - Docs: `limitations/iter.md` and `limitations/classes.md` say which consumers can now suspend.
 
+## Merge with upstream (2026-11-23)
+
+The fork's `main` was fast-forwarded to upstream `5f4a3dfc` (v1.7.0-beta.1), and that was merged into this
+branch. The only textual conflict was `builtins/sum.rs`, but it hid a semantic one. Upstream #1386 switched
+`sum()` to CPython's compensated float summation, while `NativeCont::Sum` still added items one by one with
+plain `+`. After the merge, `sum()` over a suspending user iterator of floats would have differed from CPython
+(`0.9999999999999999` instead of `1.0` for ten `0.1`s).
+
+- The per-item step is now `Phase::fold` (`builtins/sum.rs`), shared by the normal loop and the continuation.
+- `NativeCont::Sum` carries the `phase` (re-exported as `SumPhase`), so a compensated total survives a dump.
+    `Phase` and `CompensatedSum` became `Serialize`/`Deserialize`, so their variant names are now dump format.
+- New differential cases sum floats, complex numbers, mixed numbers, lists, and a float sum interrupted by a
+    `str`, all from a suspending iterator.
+- `native_continuations_v16_suspended.bin` was regenerated, since `phase` is a required field. Only this
+    unmerged branch had ever written that fixture, so no released dump has the old shape.
+
 ## Tests
 
 ### Differential tests (CPython vs Monty)
@@ -45,16 +61,16 @@ suspension inside a continuation goes through the serialized format.
 - `dump_compat.rs::native_continuations_fixture_loads_and_resumes`: a checked-in dump suspended three
     continuations deep (`sum` → `for` → `list`) loads and finishes, and is re-dumped at each later suspension.
 
-### Results (macOS, 2026-11-19)
+### Results (macOS, after the upstream merge, 2026-11-23)
 
 | Suite                                                                            | Result                            |
 | -------------------------------------------------------------------------------- | --------------------------------- |
 | `make lint-rs` (clippy + import check), `make lint-py`                           | clean                             |
-| `cargo run -p monty-datatest` (all test_cases, CPython and Monty)                | 1580 passed, 0 failed             |
+| `cargo run -p monty-datatest` (all test_cases, CPython and Monty)                | 1582 passed, 0 failed             |
 | `cargo test -p monty` (every binary except `heap_reader_compile_fail`)           | all pass                          |
 | `cargo test -p monty --test heap_reader_compile_fail`                            | 3 fail, toolchain only: see below |
 | `memory-model-checks`: native-continuation test_cases (4 files × 2 interpreters) | 8 passed                          |
-| `memory-model-checks`: `--test dump_compat`, `--test main`                       | 16 and 30 passed                  |
+| `memory-model-checks`: `--test dump_compat`, `--test main`                       | 18 and 30 passed                  |
 
 I did **not** run the full `make test-memory-model-checks` (CLAUDE.md: very slow, CI runs it). One background run
 of a subset exceeded the 1-hour limit, because a panic-in-panic left the process hung (see "Fixed during
@@ -122,13 +138,14 @@ caused by this branch:
 
 Nothing blocked the step-1 scope. These need a decision from you:
 
-1. **Forward compatibility of dumps (no `DUMP_VERSION` bump).** `K` is optional and skipped when empty, so old
-    dumps load and dumps without a live continuation are byte-identical. But a dump written by this build *while
-    suspended inside a continuation*, loaded by an older build that is also at version 16, loads without error:
-    serde ignores the unknown `K`. The old build then drops the continuation and continues the program with wrong
-    results. CLAUDE.md does not say whether new-producer → old-consumer loading must be safe. If it must, bump
-    `DUMP_VERSION` to 17 (keeping `MIN_SUPPORTED_DUMP_VERSION`) and rename the fixture. I left the version alone
-    because version bumps are the maintainer's call.
+1. **Bump `DUMP_VERSION` to 17? (recommended; upstream policy now requires it.)** `K` is optional and skipped when
+    empty, so old dumps load and dumps without a live continuation are byte-identical. But a dump written while
+    suspended inside a continuation, loaded by a release at version 16 (such as v1.7.0-beta.1), loads without
+    error: serde ignores the unknown `K`. That release then drops the continuation and resumes with wrong results.
+    Upstream #1336 (merged in) now says releases with the same dump version must read each other's dumps in both
+    directions, and to "bump for the first incompatible change since the last published release". That makes
+    this a required bump to 17 (keeping `MIN_SUPPORTED_DUMP_VERSION`), plus regenerating the current-version
+    fixtures. I have not done it yet, because it rewrites shared fixtures; say the word and I will.
 1. **Pre-existing traceback bug found (not fixed, out of scope).** When an exception passes through an `except`
     that does not match it, Monty reports the frame at the handler's last line rather than where the exception
     was raised. It reproduces on plain code with no continuation:
@@ -137,6 +154,9 @@ Nothing blocked the step-1 scope. These need a decision from you:
 
 ## Needs careful human review
 
+- **`sum()` phase inside the continuation.** While a float or complex phase is active, the `total` stored in
+    `NativeCont::Sum` is stale and the real value is in `phase`. `exhausted` stores it back and the error path
+    drops `total`. Check that no path reads `total` without `store` first.
 - **Refcount ownership in `native_cont.rs`.** `NativeCont` owns its `iterator`, `items` and `total` across
     frames, dumps and Rust-stack hand-offs. Every error branch in `next_item` / `resume` / `run_native` drops it
     manually. Check that no branch drops twice or leaks, especially `Sum` when `py_add` fails, and `Collect` when
