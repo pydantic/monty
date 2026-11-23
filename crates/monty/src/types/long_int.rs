@@ -768,6 +768,8 @@ pub(crate) fn int_from_bytes(args: ArgValues, as_bool: bool, vm: &mut VM<'_>) ->
         return Ok(Value::Int(i64::from_le_bytes(le)));
     }
 
+    // Preflight peak allocation: big-endian and signed decode allocate temporary
+    // reversed and negated byte buffers alongside the BigInt digit vector.
     vm.heap
         .tracker
         .check_allocation(slice.len().saturating_mul(3).saturating_add(8))?;
