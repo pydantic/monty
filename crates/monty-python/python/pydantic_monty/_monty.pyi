@@ -1,3 +1,4 @@
+import sys
 import uuid
 from collections.abc import Awaitable, Iterable, Mapping
 from pathlib import Path
@@ -531,7 +532,9 @@ class MontyNamedTuple(tuple[Any, ...]):
     def _replace(self, /, **kwds: Any) -> Self:
         """A new namedtuple of the same type with the given fields replaced."""
 
-    def __replace__(self, /, **kwds: Any) -> Self: ...
+    if sys.version_info >= (3, 13):
+        def __replace__(self, /, **kwds: Any) -> Self: ...
+
     def _asdict(self) -> dict[str, Any]:
         """A new dict mapping field names to values."""
 
