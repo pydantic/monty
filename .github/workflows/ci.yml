@@ -868,12 +868,34 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: build Python wheels
+      - name: build version-specific Python wheels
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'manylinux_2_28' }}
-          args: --release --out dist -i 3.11 3.12 3.13 3.14 3.14t 3.15 3.15t
+          args: --release --out dist -i 3.11 3.14t
+          rust-toolchain: stable
+          docker-options: -e CI
+          working-directory: crates/monty-python
+
+      - name: build abi3 wheel for CPython 3.12+
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || 'manylinux_2_28' }}
+          maturin-version: v1.15.0
+          args: --release --out dist -i 3.12 --features pyo3/extension-module,pyo3/abi3-py312
+          rust-toolchain: stable
+          docker-options: -e CI
+          working-directory: crates/monty-python
+
+      - name: build abi3t wheel for both CPython 3.15+ builds
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || 'manylinux_2_28' }}
+          maturin-version: v1.15.0
+          args: --release --out dist -i 3.15t --features pyo3/extension-module,pyo3/abi3t-py315
           rust-toolchain: stable
           docker-options: -e CI
           working-directory: crates/monty-python
@@ -994,13 +1016,15 @@ jobs:
 
   # Test wheels on main OS platforms
   test-builds-os:
-    name: test build on ${{ matrix.os }}
+    name: test build on ${{ matrix.os }} (Python ${{ matrix.python-version }})
     needs: [build]
     runs-on: ${{ matrix.runs-on }}
 
     strategy:
       fail-fast: false
       matrix:
+        os: [linux, macos, windows]
+        python-version: ['3.12', '3.15', '3.15t']
         include:
           - os: linux
             runs-on: ubuntu-latest
@@ -1016,7 +1040,7 @@ jobs:
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python-version }}
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -1024,18 +1048,22 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - run: pip install typing_extensions
-      - run: pip install pydantic-monty-client --no-index --no-deps --find-links dist --force-reinstall
-      - run: python -c "import pydantic_monty; print(pydantic_monty.__version__)"
-
-      # the cli wheel built for this platform must serve the worker pools
-      - run: pip install pydantic-monty-runtime --no-index --no-deps --find-links dist --force-reinstall
+      - name: upgrade pip for abi3t tag support
+        if: matrix.python-version == '3.15t'
+        run: python -m pip install --upgrade 'pip>=26.1'
+      - run: python -m pip install typing_extensions
+      - run: python -m pip install pydantic-monty-client pydantic-monty-runtime --no-index --no-deps --find-links dist --force-reinstall
       - name: smoke test worker pools
         shell: bash
         run: |
           python - <<'EOF'
           import asyncio
+          import sys
+          import sysconfig
           from pydantic_monty import AsyncMonty, Monty
+
+          if sysconfig.get_config_var('Py_GIL_DISABLED'):
+              assert not sys._is_gil_enabled(), 'importing pydantic_monty enabled the GIL'
 
           with Monty() as pool:
               with pool.checkout() as session:
@@ -1069,8 +1097,8 @@ jobs:
         run: |
           ls -lhR dist/
           count=$(find dist/ -maxdepth 1 -type f | wc -l)
-          echo "Found $count files; expected 100 (7 Python variants × 12 platforms + 12 runtime wheels + 2 sdists + 2 metapackage files)"
-          test "$count" -eq 100
+          echo "Found $count files; expected 64 (4 client wheels × 12 platforms + 12 runtime wheels + 2 sdists + 2 metapackage files)"
+          test "$count" -eq 64
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
