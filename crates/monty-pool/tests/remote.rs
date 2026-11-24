@@ -542,6 +542,73 @@ async fn a_refused_stream_fails_the_checkout() {
     join_server(server).await;
 }
 
+fn refusal_with_hint(code: Code, delay: &'static str, message: &'static str) -> Status {
+    let mut status = Status::new(code, message);
+    status.metadata_mut().insert("retry-after", delay.parse().unwrap());
+    status
+}
+
+#[tokio::test]
+async fn checkout_retries_worker_capacity_after_the_server_delay() {
+    let (mock, mut config) = mock_pool_config().await;
+    config.checkout_timeout = Some(Duration::MAX);
+    mock.refuse_next(refusal_with_hint(Code::Unavailable, "1", "worker full"));
+    let server = thread::spawn(move || serve_mock_worker(&mock));
+    let pool = Pool::new(config).await.unwrap();
+    let started = Instant::now();
+    let mut checkout = pool
+        .checkout(&ReplConfig::default())
+        .await
+        .expect("retry opens session");
+    assert!(started.elapsed() >= Duration::from_secs(1));
+    let turn = checkout
+        .feed("6 * 7", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert!(matches!(turn, TurnEvent::Complete(value) if value == MontyObject::int(42)));
+    checkout.finish().await.unwrap();
+    join_server(server).await;
+}
+
+#[tokio::test]
+async fn checkout_retries_a_hinted_admission_refusal_at_most_once() {
+    for code in [
+        Code::ResourceExhausted,
+        Code::Unavailable,
+        Code::FailedPrecondition,
+        Code::PermissionDenied,
+        Code::Unauthenticated,
+    ] {
+        let (mock, config) = mock_pool_config().await;
+        mock.refuse_next(refusal_with_hint(code, "0", "first refusal"));
+        mock.refuse_next(refusal_with_hint(code, "1", "second refusal"));
+        let pool = Pool::new(config).await.unwrap();
+        let Err(PoolError::Refused { refusal, .. }) = pool.checkout(&ReplConfig::default()).await else {
+            panic!("expected the second refusal for {code:?}");
+        };
+        assert_eq!(refusal.status_message.as_deref(), Some("second refusal"));
+        assert_eq!(refusal.retry_after, Some(Duration::from_secs(1)));
+    }
+}
+
+#[tokio::test]
+async fn checkout_skips_retries_that_cannot_fit_either_deadline() {
+    let short = Some(Duration::from_millis(600));
+    let long = Some(Duration::from_secs(5));
+    for (checkout_timeout, request_timeout) in [(short, long), (long, short)] {
+        let (mock, mut config) = mock_pool_config().await;
+        config.checkout_timeout = checkout_timeout;
+        config.request_timeout = request_timeout;
+        mock.refuse_next(refusal_with_hint(Code::Unavailable, "1", "retry later"));
+        let pool = Pool::new(config).await.unwrap();
+        let Err(PoolError::Refused { refusal, .. }) = pool.checkout(&ReplConfig::default()).await else {
+            panic!("the hint exceeds the deadline");
+        };
+        assert_eq!(refusal.status_message.as_deref(), Some("retry later"));
+        assert_eq!(refusal.retry_after, Some(Duration::from_secs(1)));
+    }
+}
+
 /// Retry hints are independent of the text and never make credential errors retryable.
 #[tokio::test]
 async fn refusal_retry_details_are_preserved() {

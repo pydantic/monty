@@ -39,7 +39,7 @@ use tokio::{
     runtime::{Handle, RuntimeFlavor},
     sync::oneshot,
     task::block_in_place,
-    time::timeout,
+    time::{Instant, timeout},
 };
 
 #[cfg(feature = "telemetry")]
@@ -105,6 +105,7 @@ impl Worker {
         config: &PoolConfig,
         remote: Option<&Remote>,
         metadata: &[(String, String)],
+        checkout_deadline: Option<Instant>,
     ) -> Result<Self, PoolError> {
         let worker = match &config.transport {
             MontyTransport::Subprocess(binary_path) => {
@@ -113,7 +114,7 @@ impl Worker {
             MontyTransport::Remote(_) => {
                 let remote = remote.expect("a remote pool holds its channel");
                 remote
-                    .open(metadata, config.max_decode_bytes)
+                    .open(metadata, config.max_decode_bytes, checkout_deadline)
                     .await
                     .map(|worker| Self::from_kind(WorkerKind::Remote(Box::new(worker))))
             }

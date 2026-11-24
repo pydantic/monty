@@ -346,7 +346,10 @@ impl PoolInner {
         // the next refill would differ too, so it dials rather than wait for one
         let mut mismatched = false;
         let mut waited = false;
-        let deadline = self.config.checkout_timeout.map(|t| Instant::now() + t);
+        let deadline = self
+            .config
+            .checkout_timeout
+            .and_then(|timeout| Instant::now().checked_add(timeout));
         loop {
             // Register for wakeups BEFORE checking state: a release landing
             // between the check and the await below is then still observed
@@ -439,7 +442,7 @@ impl PoolInner {
                 // remote dial — spawn must release it or the pool shrinks
                 let capacity = CapacityGuard::new(self);
                 let dial = [trace, metadata].concat();
-                let mut worker = Worker::new(&self.config, self.remote.as_deref(), &dial).await?;
+                let mut worker = Worker::new(&self.config, self.remote.as_deref(), &dial, deadline).await?;
                 worker.id = id;
                 capacity.disarm();
                 return Ok(worker);
@@ -718,7 +721,7 @@ async fn new_idle_worker(config: &PoolConfig, remote: Option<&Remote>) -> Result
         }
         _ => Vec::new(),
     };
-    let mut worker = Worker::new(config, remote, &metadata).await?;
+    let mut worker = Worker::new(config, remote, &metadata, None).await?;
     worker.dial_metadata = metadata;
     Ok(worker)
 }

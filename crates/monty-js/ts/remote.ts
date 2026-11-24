@@ -16,7 +16,8 @@ export interface MontyRemoteOptions {
   maxProcesses?: number
   /**
    * Seconds `checkout()` waits for capacity before rejecting (default: wait
-   * forever).
+   * forever). This deadline also bounds the wait and stream open for an
+   * automatic admission retry.
    */
   checkoutTimeout?: number
   /**

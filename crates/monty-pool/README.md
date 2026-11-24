@@ -378,7 +378,9 @@ Disconnect messages include the server's status, `RemoteCause` and message, or t
 Refusal messages include the server's status, `RemoteCause` and message.
 Refusal details include `retry_after`, parsed from `Retry-After` delay-seconds or an HTTP date and capped at one hour.
 `retryable()` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not credential errors.
-No automatic retry is performed.
+The pool retries checkout once before admission when the server sends a single valid `Retry-After` of at most two seconds.
+The wait is the greater of the server delay and 100 ms, plus up to 250 ms of jitter.
+The wait and retry share a five-second budget and respect the original checkout and dial deadlines. A retry timeout returns the original refusal.
 An incompatible CPU-mode server configuration returns `PoolError::Configuration`, naming `request_timeout`.
 Malformed request metadata names or values also return `PoolError::Configuration` before any connection attempt,
 as does `Pool::new` for an invalid pool size or an unusable local CPU-clock setting.
