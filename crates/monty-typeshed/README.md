@@ -21,20 +21,27 @@ Modified upstream stubs identify the changes in their source.
 
 ## Layout
 
-- `vendor/typeshed/` — the vendored stubs, derived from upstream typeshed at
-  the commit recorded in `vendor/typeshed/source_commit.txt` (exposed as
-  `SOURCE_COMMIT`). The update script copies upstream files verbatim except
-  for the filtered `builtins.pyi` and the `custom/` overrides. Repository-wide
-  Ruff checks skip this directory; edit the sources instead.
-- `custom/` — hand-written stubs that override or supplement upstream files
-  where Monty's surface intentionally differs (e.g. `asyncio`, `os`, `sys`,
-  `unicodedata`). The update script copies them into `vendor/typeshed/stdlib`.
-- `update.py` — clones upstream typeshed, filters the stubs down to the
-  builtins and modules Monty supports (whitelists in the script mirror
-  `crates/monty/src/builtins/`), and applies the `custom/` overrides. Run it
-  via `make update-typeshed` from the workspace root.
-- `build.rs` — zips the vendored stubs into the compiled binary at build time,
-  so Monty ships type checking with no files on disk.
+- `vendor.toml` pins the upstream commit, lists the selected stubs and declares any files added by patches.
+- `patches/` contains the ordered changes to the upstream files, including builtin pruning and the module list in `stdlib/VERSIONS`.
+- `vendor/typeshed/` is the generated tree. Its `source_commit.txt` is exposed as `SOURCE_COMMIT`.
+- `build.rs` zips the vendored stubs into the compiled binary at build time, so Monty ships type checking with no files on disk.
+
+## Updating stubs
+
+Run `make update-typeshed` from the workspace root to download the pinned files, apply the patches in file-name order and refresh the type-checker warm-up snippet and worker licence bundle.
+`make check-typeshed` downloads the same pinned files and compares the result with the checked-in tree without rewriting it.
+
+To add a patch, edit the stubs under `vendor/typeshed/stdlib/` and save the edits with:
+
+```sh
+uv run scripts/vendor_typeshed.py --make-patch NNNN-name --reason 'Why Monty needs this change'
+make update-typeshed
+```
+
+The name must sort last; using the last patch's name replaces it.
+To change an earlier patch, edit it directly and check that the patches after it still apply.
+List new upstream files in `vendor.toml` and declare Monty-only files in its `additions` list before saving their patch.
+Update the `VERSIONS` patch for modules the type checker should resolve.
 
 ## API
 

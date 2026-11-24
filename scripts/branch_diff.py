@@ -95,8 +95,6 @@ RULES: list[tuple[str, Category]] = [
     ('crates/monty-proto/proto/buf.yaml', OTHER),
     ('crates/monty-python/example.py', OTHER),
     ('crates/monty-python/exercise.py', OTHER),
-    ('crates/monty-typeshed/check.py', OTHER),
-    ('crates/monty-typeshed/update.py', OTHER),
     ('scripts/**', OTHER),
     # docs: the site, every readme and the examples the site links to; agent instructions are tooling
     ('**/AGENTS.md', OTHER),
@@ -114,7 +112,7 @@ RULES: list[tuple[str, Category]] = [
     ('crates/monty-python/python/**', PRODUCTION),
     ('crates/monty-proto/proto/**/*.proto', PRODUCTION),
     ('crates/monty-wasm-runtime/wit/**', PRODUCTION),
-    ('crates/monty-typeshed/custom/**', PRODUCTION),
+    ('crates/monty-typeshed/patches/**', PRODUCTION),
     ('crates/monty-typeshed/vendor/**', PRODUCTION),
     # vendored CPython stdlib modules and their patches, embedded in the interpreter
     ('crates/monty/stdlib/Lib/**', PRODUCTION),
