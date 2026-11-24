@@ -2888,6 +2888,22 @@ fn expanding_codecs_fail_softly() {
     }
 }
 
+/// A custom ignorechars needs a copy of the input while the decoder holds its output buffer.
+#[test]
+fn a85decode_budgets_for_custom_ignorechars() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(2_400_000));
+    child.feed_complete("import base64\nsrc = b'!' * 1_000_000");
+    assert_eq!(
+        child.feed_complete("len(base64.a85decode(src))"),
+        MontyObject::int(800_000)
+    );
+
+    let (_, event) = child.feed("len(base64.a85decode(src, ignorechars=b''))");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    child.shutdown();
+}
+
 /// A conversion that appends to, or frames, a buffer it filled exactly must
 /// reserve that room before filling it. `Vec` doubles when it grows, so one
 /// appended byte charges the session a second copy of the encoded output —

@@ -473,7 +473,8 @@ fn call_a85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let fold = foldspaces.py_bool(vm)?;
     let data = &input.as_slice(vm)[body];
     let capacity = a85_decoded_size(data, fold);
-    check_estimated_size(capacity, &vm.heap.tracker)?;
+    let input_copy_size = if ignorechars.is_some() { data.len() } else { 0 };
+    check_estimated_size(capacity.saturating_add(input_copy_size), &vm.heap.tracker)?;
     let decoded = if let Some(ignore) = ignorechars.as_ref() {
         // Python membership may re-enter the VM while the decoder scans its input.
         let owned = data.to_vec();
