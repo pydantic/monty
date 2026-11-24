@@ -945,6 +945,8 @@ pub enum StaticStrings {
     Degrees,
     /// `delay` parameter of `asyncio.sleep()`.
     Delay,
+    /// `delete` parameter of `bytes.translate()`.
+    Delete,
     /// `delimiter` dialect attribute and `csv` format parameter.
     Delimiter,
     /// `depth` parameter of `hashlib.blake2b()`.
@@ -1726,6 +1728,8 @@ pub enum StaticStrings {
     Major,
     /// `os.makedirs()` function.
     Makedirs,
+    /// `bytes.maketrans()` staticmethod.
+    Maketrans,
     /// `sys.float_info.mant_dig` field.
     MantDig,
     /// `map01` parameter of `base64.b32decode()`.
