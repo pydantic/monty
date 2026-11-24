@@ -877,7 +877,7 @@ Key points:
 - Use `~` for caret markers (the test runner normalizes CPython's `^` to `~`)
 - The `<module>` frame name is used for top-level code
 - Both interpreters check every untagged line. If the wording differs, label the expected lines inside the traceback
-  as in this example from `args__len_no_args.py`.
+    as in this example from `args__len_no_args.py`.
 
 ```text
 [monty] TypeError: len() takes exactly 1 argument (0 given)
