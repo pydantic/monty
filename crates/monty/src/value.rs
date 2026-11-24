@@ -1492,11 +1492,6 @@ impl Value {
         converted
     }
 
-    /// Returns true for negative interned or heap-allocated long integers.
-    pub(crate) fn long_int_is_negative(&self, vm: &VM<'_>) -> bool {
-        self.as_long_int(vm).is_some_and(|n| n.sign() == Sign::Minus)
-    }
-
     /// Saturating `i64` view of a `LongInt`-valued int (interned or
     /// heap-allocated), for the consumers that clamp rather than raise on
     /// overflow — slice bounds, where CPython clamps to the sequence so
@@ -1948,6 +1943,16 @@ impl Value {
             Self::InternBytes(id) => Some(interns.get_bytes(*id)),
             _ => self.get_as::<Bytes>(heap).map(Bytes::as_slice),
         }
+    }
+
+    /// Borrows a bytes argument or raises the buffer protocol's type error.
+    pub(crate) fn try_to_bytes<'a>(&self, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
+        self.as_bytes(vm).ok_or_else(|| {
+            ExcType::type_error(format!(
+                "a bytes-like object is required, not '{}'",
+                self.py_type_name(vm)
+            ))
+        })
     }
 
     /// Borrows string contents without allocating, or returns `None` for non-strings.

@@ -513,9 +513,9 @@ pub(crate) fn blake2_init(kind: Blake2Kind, vm: &mut VM<'_>, args: ArgValues) ->
         .digest_size
         .as_ref()
         .map_or(Ok(i32::from(max_digest)), |v| c_int(v, vm))?;
-    let key = args.key.as_ref().map_or(Ok(&[][..]), |v| buffer(v, vm))?;
-    let salt = args.salt.as_ref().map_or(Ok(&[][..]), |v| buffer(v, vm))?;
-    let person = args.person.as_ref().map_or(Ok(&[][..]), |v| buffer(v, vm))?;
+    let key = args.key.as_ref().map_or(Ok(&[][..]), |v| v.try_to_bytes(vm))?;
+    let salt = args.salt.as_ref().map_or(Ok(&[][..]), |v| v.try_to_bytes(vm))?;
+    let person = args.person.as_ref().map_or(Ok(&[][..]), |v| v.try_to_bytes(vm))?;
     let fanout = args.fanout.as_ref().map_or(Ok(1), |v| c_int(v, vm))?;
     let depth = args.depth.as_ref().map_or(Ok(1), |v| c_int(v, vm))?;
     let leaf_size = args
@@ -596,20 +596,6 @@ pub(crate) fn blake2_init(kind: Blake2Kind, vm: &mut VM<'_>, args: ArgValues) ->
     Ok(hash.allocate(vm.heap))
 }
 
-/// Borrows a `bytes` argument with the `Py_buffer` converter's message, which
-/// differs from the data argument's (see [`hash_input`]).
-fn buffer<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
-    value.as_bytes(vm).ok_or_else(|| not_bytes_like(value, vm))
-}
-
-/// `TypeError: a bytes-like object is required, not 'X'`.
-fn not_bytes_like(value: &Value, vm: &VM<'_>) -> RunError {
-    ExcType::type_error(format!(
-        "a bytes-like object is required, not '{}'",
-        value.py_type_name(vm)
-    ))
-}
-
 /// Argument Clinic's `int` converter: a C `int`, overflowing with
 /// `PyLong_AsInt`'s message.
 fn c_int(value: &Value, vm: &VM<'_>) -> RunResult<i32> {
@@ -687,8 +673,8 @@ fn call_pbkdf2_hmac(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(salt, vm);
     defer_drop!(iterations, vm);
     defer_drop!(dklen, vm);
-    let password = buffer(password, vm)?;
-    let salt = buffer(salt, vm)?;
+    let password = password.try_to_bytes(vm)?;
+    let salt = salt.try_to_bytes(vm)?;
     let iterations = c_long(iterations, vm)?;
     let name = hash_name.as_str(vm);
     let algorithm = HashAlgorithm::from_name(name).ok_or_else(|| unsupported_hash_type(name))?;

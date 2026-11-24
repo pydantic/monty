@@ -28,13 +28,11 @@ use crate::{
     intern::StaticStrings,
     modules::{
         ModuleFunctions,
-        base64::{
-            allocate_bytes, b64_decode, b64_encode_reserving, binascii_error, decode_input_described, encode_input,
-        },
+        base64::{b64_decode, b64_encode_reserving, binascii_error, decode_input_described, encode_input},
     },
     py_value::PyValue,
     resource_checks::check_estimated_size,
-    types::{Module, PyTrait, Type},
+    types::{Module, PyTrait, Type, bytes::allocate_bytes},
     value::Value,
 };
 

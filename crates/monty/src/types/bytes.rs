@@ -2664,25 +2664,6 @@ pub(crate) fn bytes_contains(container: &[u8], item: &Value, vm: &VM<'_>) -> Run
 // maketrans and translate methods
 // =============================================================================
 
-/// Extracts a byte slice from a `Value`, raising CPython's
-/// `TypeError: a bytes-like object is required, not '<type>'` on any non-bytes value.
-fn extract_bytes_like<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
-    match value {
-        Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(b) => Ok(b.as_slice()),
-            _ => Err(ExcType::type_error(format!(
-                "a bytes-like object is required, not '{}'",
-                value.py_type_name(vm)
-            ))),
-        },
-        _ => Err(ExcType::type_error(format!(
-            "a bytes-like object is required, not '{}'",
-            value.py_type_name(vm)
-        ))),
-    }
-}
-
 /// Implements Python's `bytes.maketrans(frm, to)` staticmethod.
 pub(crate) fn bytes_maketrans(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     let args = args.reject_kwargs("bytes.maketrans", vm.heap)?;
@@ -2690,8 +2671,8 @@ pub(crate) fn bytes_maketrans(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Val
     defer_drop!(frm_val, vm);
     defer_drop!(to_val, vm);
 
-    let frm = extract_bytes_like(frm_val, vm)?;
-    let to = extract_bytes_like(to_val, vm)?;
+    let frm = frm_val.try_to_bytes(vm)?;
+    let to = to_val.try_to_bytes(vm)?;
 
     if frm.len() != to.len() {
         return Err(ExcType::value_error("maketrans arguments must have same length"));
@@ -2725,7 +2706,7 @@ fn bytes_translate<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mu
     let table_arr: Option<[u8; 256]> = match table {
         Value::None => None,
         v => {
-            let slice = extract_bytes_like(v, vm)?;
+            let slice = v.try_to_bytes(vm)?;
             let Ok(arr) = <[u8; 256]>::try_from(slice) else {
                 return Err(ExcType::value_error("translation table must be 256 characters long"));
             };
@@ -2737,7 +2718,7 @@ fn bytes_translate<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mu
     let has_delete = match delete {
         None => false,
         Some(v) => {
-            let slice = extract_bytes_like(v, vm)?;
+            let slice = v.try_to_bytes(vm)?;
             for &b in slice {
                 delete_mask[usize::from(b)] = true;
             }

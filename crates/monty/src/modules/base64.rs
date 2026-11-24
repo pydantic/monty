@@ -22,11 +22,14 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{Heap, HeapData},
+    heap::HeapData,
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
-    types::{Bytes, CmpOrder, Module, PyTrait, bytes::bytes_repr},
+    types::{
+        CmpOrder, Module, PyTrait,
+        bytes::{allocate_bytes, bytes_repr},
+    },
     value::Value,
 };
 
@@ -1321,14 +1324,6 @@ fn assertion_error(value: &Value, vm: &mut VM<'_>) -> RunResult<RunError> {
     defer_drop!(repr, vm);
     let message = repr.as_str(vm).expect("py_repr returns str").to_owned();
     Ok(SimpleException::new_msg(ExcType::AssertionError, message).into())
-}
-
-/// Allocates a decoded/encoded byte string on the heap.
-///
-/// No resource preflight: every result here is bounded by a small constant
-/// multiple of an input that the heap already accounts for.
-pub(super) fn allocate_bytes(data: Vec<u8>, heap: &Heap) -> Value {
-    Value::allocate(Bytes::from(data), heap)
 }
 
 /// `binascii.Error("Incorrect padding")` — shared by the base64 and base32
