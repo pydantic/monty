@@ -1,6 +1,9 @@
 import math
 
 values = [0.25, -0.0, float('inf'), float('-inf'), float('nan')]
+fraction, signed_zero, positive_inf, negative_inf, nan = values
+assert fraction == 0.25 and math.copysign(1.0, signed_zero) == -1.0
+assert positive_inf == float('inf') and negative_inf == float('-inf') and math.isnan(nan)
 copies = values.copy() + values[::-1]
 assert copies[0] == 0.25 and math.copysign(1.0, copies[1]) == -1.0
 assert copies[2] == float('inf') and copies[3] == float('-inf')

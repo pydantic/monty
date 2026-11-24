@@ -6,7 +6,7 @@ mod storage;
 
 use monty_types::ResourceError;
 use num_traits::ToPrimitive;
-pub(super) use packed::PackedView;
+pub(super) use packed::{BoolView, PackedView};
 use packed::{NumericSliceSnapshot, PackedList, Packing};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -475,7 +475,15 @@ impl<'h> HeapReadMut<'h, List> {
     /// Clamps the index to the list length and consumes the item on every path.
     #[inline]
     pub fn insert(&self, vm: &mut VM<'h>, index: usize, item: Value) -> RunResult<()> {
-        match (&item, &mut self.get_mut(vm.heap).storage) {
+        let list = self.get_mut(vm.heap);
+        match (&item, &mut list.storage) {
+            (_, ListStorage::Generic(items))
+                if items.len() < items.capacity() && (!items.is_empty() || Packing::of(&item) == Packing::Generic) =>
+            {
+                list.contains_refs |= matches!(item, Value::Ref(_));
+                insert_slot(items, index, item);
+                return Ok(());
+            }
             (Value::Int(integer), ListStorage::Packed(PackedList::ByteInts(items)))
                 if items.len() < items.capacity()
                     && let Ok(byte) = u8::try_from(*integer) =>
@@ -1698,6 +1706,10 @@ mod tests {
             }
             let list = List::from_values(values, &heap);
             assert_eq!(list.storage.packing(), Packing::Float { nullable });
+            assert!(matches!(
+                (nullable, list.items()),
+                (true, SequenceItems::Packed(_)) | (false, SequenceItems::Floats(_))
+            ));
             for (index, expected) in bits.into_iter().enumerate() {
                 let Some(Value::Float(value)) = list.get_cloned(index, &heap) else {
                     panic!("expected a float at {index}");
@@ -1742,6 +1754,24 @@ mod tests {
             });
             Value::Ref(id).drop_with(&mut heap);
         }
+    }
+
+    #[test]
+    fn drained_generic_list_can_switch_to_packed_storage() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let id = heap.allocate(HeapData::List(List::new(vec![Value::Ellipsis])));
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            let HeapReadOutput::List(list) = vm.heap.read(id) else {
+                panic!("expected list");
+            };
+            list_clear(&list, &mut vm);
+            list.append(&mut vm, Value::Float(0.5)).unwrap();
+            assert_eq!(list.get(vm.heap).storage.packing(), Packing::Float { nullable: false });
+        });
+        Value::Ref(id).drop_with(&mut heap);
     }
 
     /// Creates a heap with a list and a LongInt index, bypassing into_value() demotion.

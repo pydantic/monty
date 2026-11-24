@@ -1,7 +1,7 @@
 use monty_types::ResourceTracker;
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 
-use super::list::PackedView;
+use super::list::{BoolView, PackedView};
 use crate::{
     exception_private::RunResult,
     heap::{Heap, HeapData},
@@ -15,6 +15,8 @@ pub(crate) enum SequenceItems<'a> {
     Ints(&'a [i64]),
     ByteInts(&'a [u8]),
     Packed(PackedView<'a>),
+    Floats(&'a [f64]),
+    Bools(BoolView<'a>),
 }
 
 impl<'a> SequenceItems<'a> {
@@ -45,6 +47,8 @@ impl<'a> SequenceItems<'a> {
             Self::Ints(items) => items.len(),
             Self::ByteInts(items) => items.len(),
             Self::Packed(items) => items.len(),
+            Self::Floats(items) => items.len(),
+            Self::Bools(items) => items.len(),
         }
     }
 
@@ -55,6 +59,8 @@ impl<'a> SequenceItems<'a> {
             Self::Ints(items) => f(&Value::Int(items[index])),
             Self::ByteInts(items) => f(&Value::Int(i64::from(items[index]))),
             Self::Packed(items) => f(&items.get(index).expect("checked list index")),
+            Self::Floats(items) => f(&Value::Float(items[index])),
+            Self::Bools(items) => f(&items.get(index)),
         }
     }
 
@@ -75,6 +81,8 @@ impl<'a> SequenceItems<'a> {
                 MappedItems::ByteInts(items.iter().map(move |&item| f(&Value::Int(i64::from(item)))))
             }
             Self::Packed(items) => MappedItems::Packed(items.iter().map(move |item| f(&item))),
+            Self::Floats(items) => MappedItems::Floats(items.iter().map(move |&item| f(&Value::Float(item)))),
+            Self::Bools(items) => MappedItems::Bools(items.iter().map(move |item| f(&item))),
         }
     }
 
@@ -86,6 +94,8 @@ impl<'a> SequenceItems<'a> {
                 MappedItems::ByteInts(items.iter().filter_map(move |&item| f(&Value::Int(i64::from(item)))))
             }
             Self::Packed(items) => MappedItems::Packed(items.iter().filter_map(move |item| f(&item))),
+            Self::Floats(items) => MappedItems::Floats(items.iter().filter_map(move |&item| f(&Value::Float(item)))),
+            Self::Bools(items) => MappedItems::Bools(items.iter().filter_map(move |item| f(&item))),
         }
     }
 
@@ -96,6 +106,8 @@ impl<'a> SequenceItems<'a> {
             Self::Ints(items) => items.iter().copied().map(Value::Int).collect(),
             Self::ByteInts(items) => items.iter().map(|&item| Value::Int(i64::from(item))).collect(),
             Self::Packed(items) => items.iter().collect(),
+            Self::Floats(items) => items.iter().copied().map(Value::Float).collect(),
+            Self::Bools(items) => items.iter().collect(),
         })
     }
 
@@ -113,6 +125,17 @@ impl<'a> SequenceItems<'a> {
             heap.tracker.check_time_every(index)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn extend_cloned_reversed(self, output: &mut Vec<Value>, heap: &Heap) {
+        match self {
+            Self::Values(items) => output.extend(items.iter().rev().map(|item| item.clone_with_heap(heap))),
+            Self::Ints(items) => output.extend(items.iter().rev().copied().map(Value::Int)),
+            Self::ByteInts(items) => output.extend(items.iter().rev().map(|&item| Value::Int(i64::from(item)))),
+            Self::Packed(items) => output.extend(items.iter().rev()),
+            Self::Floats(items) => output.extend(items.iter().rev().copied().map(Value::Float)),
+            Self::Bools(items) => output.extend(items.iter().rev()),
+        }
     }
 
     pub(crate) fn cloned(self, heap: &Heap) -> impl DoubleEndedIterator<Item = Value> + ExactSizeIterator {
@@ -133,19 +156,30 @@ impl Serialize for SequenceItems<'_> {
             }
             Self::ByteInts(items) => serializer.collect_seq(items.iter().map(|&item| Value::Int(i64::from(item)))),
             Self::Packed(items) => serializer.collect_seq(items.iter()),
+            Self::Floats(items) => serializer.collect_seq(items.iter().copied().map(Value::Float)),
+            Self::Bools(items) => serializer.collect_seq(items.iter()),
         }
     }
 }
 
-enum MappedItems<V, I, B, P> {
+enum MappedItems<V, I, B, P, F, O> {
     Values(V),
     Ints(I),
     ByteInts(B),
     Packed(P),
+    Floats(F),
+    Bools(O),
 }
 
-impl<T, V: Iterator<Item = T>, I: Iterator<Item = T>, B: Iterator<Item = T>, P: Iterator<Item = T>> Iterator
-    for MappedItems<V, I, B, P>
+impl<
+    T,
+    V: Iterator<Item = T>,
+    I: Iterator<Item = T>,
+    B: Iterator<Item = T>,
+    P: Iterator<Item = T>,
+    F: Iterator<Item = T>,
+    O: Iterator<Item = T>,
+> Iterator for MappedItems<V, I, B, P, F, O>
 {
     type Item = T;
 
@@ -155,6 +189,8 @@ impl<T, V: Iterator<Item = T>, I: Iterator<Item = T>, B: Iterator<Item = T>, P: 
             Self::Ints(items) => items.next(),
             Self::ByteInts(items) => items.next(),
             Self::Packed(items) => items.next(),
+            Self::Floats(items) => items.next(),
+            Self::Bools(items) => items.next(),
         }
     }
 
@@ -164,6 +200,8 @@ impl<T, V: Iterator<Item = T>, I: Iterator<Item = T>, B: Iterator<Item = T>, P: 
             Self::Ints(items) => items.size_hint(),
             Self::ByteInts(items) => items.size_hint(),
             Self::Packed(items) => items.size_hint(),
+            Self::Floats(items) => items.size_hint(),
+            Self::Bools(items) => items.size_hint(),
         }
     }
 }
@@ -174,7 +212,9 @@ impl<
     I: DoubleEndedIterator<Item = T>,
     B: DoubleEndedIterator<Item = T>,
     P: DoubleEndedIterator<Item = T>,
-> DoubleEndedIterator for MappedItems<V, I, B, P>
+    F: DoubleEndedIterator<Item = T>,
+    O: DoubleEndedIterator<Item = T>,
+> DoubleEndedIterator for MappedItems<V, I, B, P, F, O>
 {
     fn next_back(&mut self) -> Option<T> {
         match self {
@@ -182,6 +222,8 @@ impl<
             Self::Ints(items) => items.next_back(),
             Self::ByteInts(items) => items.next_back(),
             Self::Packed(items) => items.next_back(),
+            Self::Floats(items) => items.next_back(),
+            Self::Bools(items) => items.next_back(),
         }
     }
 }
@@ -192,6 +234,8 @@ impl<
     I: ExactSizeIterator<Item = T>,
     B: ExactSizeIterator<Item = T>,
     P: ExactSizeIterator<Item = T>,
-> ExactSizeIterator for MappedItems<V, I, B, P>
+    F: ExactSizeIterator<Item = T>,
+    O: ExactSizeIterator<Item = T>,
+> ExactSizeIterator for MappedItems<V, I, B, P, F, O>
 {
 }

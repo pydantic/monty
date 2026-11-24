@@ -701,6 +701,24 @@ impl PackedView<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct BoolView<'a>(pub(super) &'a Bools);
+
+impl BoolView<'_> {
+    pub(crate) fn len(self) -> usize {
+        self.0.len
+    }
+
+    pub(crate) fn get(self, index: usize) -> Value {
+        assert!(index < self.0.len, "boolean list index out of bounds");
+        self.0.get(index)
+    }
+
+    pub(crate) fn iter(self) -> impl DoubleEndedIterator<Item = Value> + ExactSizeIterator {
+        (0..self.len()).map(move |index| self.0.get(index))
+    }
+}
+
 /// Reserves the null bitmap before the list gains its first non-null value.
 #[derive(Debug, Default)]
 pub(super) struct Nones {

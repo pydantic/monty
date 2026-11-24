@@ -512,7 +512,7 @@ impl VM<'_> {
                     .check_allocation(capacity.saturating_mul(VALUE_SIZE))?;
                 this.stack.reserve_exact(count);
             }
-            this.stack.extend(items.cloned(this.heap).rev());
+            items.extend_cloned_reversed(&mut this.stack, this.heap);
             return Ok(());
         }
         let items = unpack_exact(value, count, this)?;

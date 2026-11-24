@@ -2,7 +2,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeStru
 
 use super::{
     List,
-    packed::{PackedList, Packing},
+    packed::{BoolView, PackedList, Packing},
 };
 use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -27,6 +27,8 @@ impl ListStorage {
             Self::Empty => SequenceItems::from_slice(&[]),
             Self::Packed(PackedList::ByteInts(items)) => SequenceItems::ByteInts(items),
             Self::Packed(PackedList::Ints(items)) => SequenceItems::Ints(items),
+            Self::Packed(PackedList::Floats(items)) => SequenceItems::Floats(items),
+            Self::Packed(PackedList::Bools(items)) => SequenceItems::Bools(BoolView(items)),
             Self::Packed(items) => SequenceItems::Packed(items.view()),
             Self::Generic(items) => SequenceItems::from_slice(items),
         }
@@ -147,6 +149,9 @@ mod tests {
             let old_bytes = minicbor_serde::to_vec(&legacy).unwrap();
             let list = List::from_values(legacy.items, &heap);
             assert_eq!(list.storage.packing(), expected);
+            if matches!(expected, Packing::Bool { .. }) {
+                assert!(matches!(list.items(), SequenceItems::Bools(_)));
+            }
             let new_bytes = minicbor_serde::to_vec(&list).unwrap();
             assert_eq!(new_bytes, old_bytes);
 

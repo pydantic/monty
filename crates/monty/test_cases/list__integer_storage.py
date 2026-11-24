@@ -164,7 +164,12 @@ assert list(range(1, 258, 127)) == [1, 128, 255]
 assert list(range(-(2**63), -(2**63) + 4, 2)) == [-(2**63), -(2**63) + 2]
 assert list(range(2**63 - 1, 2**63 - 5, -2)) == [2**63 - 1, 2**63 - 3]
 
+bool_pair = [False, True]
+off, on = bool_pair
+assert off is False and on is True
 flags = [None, False, True]
+missing, off, on = flags
+assert missing is None and off is False and on is True
 flags_copy = list(flags)
 flags_copy[0] = True
 assert flags == [None, False, True] and flags_copy == [True, False, True]
