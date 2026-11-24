@@ -423,7 +423,7 @@ fn check_separators_length(len: usize) -> RunResult<()> {
 /// 5 for `key_separator`) so the error message matches CPython exactly.
 fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_>) -> RunResult<String> {
     let arg_num = if role == "item_separator" { 6 } else { 5 };
-    value.try_to_str(vm).map(str::to_owned).map_err(|_| {
+    value.try_as_str(vm).map(str::to_owned).map_err(|_| {
         ExcType::type_error(format!(
             "make_encoder() argument {arg_num} must be str, not {}",
             value.py_type_name(vm)

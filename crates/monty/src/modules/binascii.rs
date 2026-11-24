@@ -148,7 +148,7 @@ fn call_hexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value
     defer_drop!(sep, vm);
 
     let separator = hex_separator(sep.as_ref(), vm)?;
-    let encoded = hex_encode(data.try_to_bytes(vm)?, separator, bytes_per_sep, &vm.heap.tracker)?;
+    let encoded = hex_encode(data.try_as_bytes(vm)?, separator, bytes_per_sep, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -178,7 +178,7 @@ fn call_b2a_base64(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Resolved before encoding so the newline is reserved with the rest, which
     // is also where CPython's Argument Clinic `p` converter reads it.
     let newline = newline.py_bool(vm)?;
-    let mut encoded = b64_encode_reserving(data.try_to_bytes(vm)?, usize::from(newline), &vm.heap.tracker)?;
+    let mut encoded = b64_encode_reserving(data.try_as_bytes(vm)?, usize::from(newline), &vm.heap.tracker)?;
     if newline {
         encoded.push(b'\n');
     }
@@ -214,7 +214,7 @@ fn call_crc32(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         None => 0,
         Some(value) => wrapping_u32(value, vm)?,
     };
-    let checksum = crc32(data.try_to_bytes(vm)?, seed);
+    let checksum = crc32(data.try_as_bytes(vm)?, seed);
     Ok(Value::Int(i64::from(checksum)))
 }
 
@@ -228,7 +228,7 @@ fn call_crc_hqx(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // The `I` format takes the seed modulo 2**32, then the body narrows it to
     // the 16 bits the register holds — so `-1` and `0xffff` seed alike.
     let seed = u16::try_from(wrapping_u32(crc, vm)? & 0xffff).expect("masked below 2**16");
-    let checksum = crc_hqx(data.try_to_bytes(vm)?, seed);
+    let checksum = crc_hqx(data.try_as_bytes(vm)?, seed);
     Ok(Value::Int(i64::from(checksum)))
 }
 
@@ -240,7 +240,7 @@ fn call_b2a_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(backtick, vm);
 
     let backtick = backtick.py_bool(vm)?;
-    let encoded = uu_encode(data.try_to_bytes(vm)?, backtick)?;
+    let encoded = uu_encode(data.try_as_bytes(vm)?, backtick)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -278,7 +278,7 @@ fn call_b2a_qp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         istext: istext.py_bool(vm)?,
         header: header.py_bool(vm)?,
     };
-    let encoded = qp_encode(data.try_to_bytes(vm)?, options, &vm.heap.tracker)?;
+    let encoded = qp_encode(data.try_as_bytes(vm)?, options, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 

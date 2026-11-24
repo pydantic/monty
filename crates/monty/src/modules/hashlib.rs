@@ -513,9 +513,9 @@ pub(crate) fn blake2_init(kind: Blake2Kind, vm: &mut VM<'_>, args: ArgValues) ->
         .digest_size
         .as_ref()
         .map_or(Ok(i32::from(max_digest)), |v| c_int(v, vm))?;
-    let key = args.key.as_ref().map_or(Ok(&[][..]), |v| v.try_to_bytes(vm))?;
-    let salt = args.salt.as_ref().map_or(Ok(&[][..]), |v| v.try_to_bytes(vm))?;
-    let person = args.person.as_ref().map_or(Ok(&[][..]), |v| v.try_to_bytes(vm))?;
+    let key = args.key.as_ref().map_or(Ok(&[][..]), |v| v.try_as_bytes(vm))?;
+    let salt = args.salt.as_ref().map_or(Ok(&[][..]), |v| v.try_as_bytes(vm))?;
+    let person = args.person.as_ref().map_or(Ok(&[][..]), |v| v.try_as_bytes(vm))?;
     let fanout = args.fanout.as_ref().map_or(Ok(1), |v| c_int(v, vm))?;
     let depth = args.depth.as_ref().map_or(Ok(1), |v| c_int(v, vm))?;
     let leaf_size = args
@@ -673,8 +673,8 @@ fn call_pbkdf2_hmac(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(salt, vm);
     defer_drop!(iterations, vm);
     defer_drop!(dklen, vm);
-    let password = password.try_to_bytes(vm)?;
-    let salt = salt.try_to_bytes(vm)?;
+    let password = password.try_as_bytes(vm)?;
+    let salt = salt.try_as_bytes(vm)?;
     let iterations = c_long(iterations, vm)?;
     let name = hash_name.as_str(vm);
     let algorithm = HashAlgorithm::from_name(name).ok_or_else(|| unsupported_hash_type(name))?;

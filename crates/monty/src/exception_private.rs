@@ -1151,7 +1151,7 @@ pub(crate) trait ExcTypeExt: Sized {
             Ok(repr_value) => {
                 defer_drop!(repr_value, vm);
                 repr_value
-                    .try_to_str(vm)
+                    .try_as_str(vm)
                     .map_or_else(|_| format!("<{}>", key.py_type_name(vm)), str::to_owned)
             }
             Err(err) => return err,

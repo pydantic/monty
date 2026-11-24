@@ -272,7 +272,7 @@ pub(crate) fn format_offset_timedelta_repr(offset_seconds: i32) -> String {
 
 fn extract_name(name_arg: &Value, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
     name_arg
-        .try_to_str_heap(heap, interns)
+        .try_as_str_heap(heap, interns)
         .map(|name| Some(name.to_owned()))
         .map_err(|_| bad_name_arg(name_arg, heap, interns))
 }

@@ -394,7 +394,7 @@ fn str_ctor_arg_check(arg: Option<&Value>, name: &str, vm: &VM<'_>) -> RunResult
 fn ctor_str_arg<'a>(arg: Option<&'a Value>, default: &'a str, vm: &'a VM<'_>) -> RunResult<&'a str> {
     match arg {
         None => Ok(default),
-        Some(v) => v.try_to_str(vm),
+        Some(v) => v.try_as_str(vm),
     }
 }
 

@@ -227,7 +227,7 @@ fn merge_keywords(bound: &mut Vec<(Value, Value)>, keywords: impl Iterator<Item 
         }
         let position = match &index {
             Some(index) => name
-                .try_to_str_heap(vm.heap, vm.interns)
+                .try_as_str_heap(vm.heap, vm.interns)
                 .ok()
                 .and_then(|name| index.get(name).copied()),
             None => keyword_index(bound, &name, vm),
@@ -238,7 +238,7 @@ fn merge_keywords(bound: &mut Vec<(Value, Value)>, keywords: impl Iterator<Item 
             old_value.drop_with(vm);
         } else {
             if let Some(index) = &mut index
-                && let Ok(name) = name.try_to_str_heap(vm.heap, vm.interns)
+                && let Ok(name) = name.try_as_str_heap(vm.heap, vm.interns)
             {
                 index.insert(name.to_owned(), bound.len());
             }
@@ -394,7 +394,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
                 // CPython writes the name unquoted, as keyword syntax rather than
                 // as a dict key. The `repr` fallback is for a non-`str` name, which
                 // Monty rejects at the `**` unpack before it can reach a partial.
-                if let Ok(name) = name.try_to_str_heap(vm.heap, vm.interns) {
+                if let Ok(name) = name.try_as_str_heap(vm.heap, vm.interns) {
                     write!(f, ", {name}=")?;
                 } else {
                     f.write_str(", ")?;

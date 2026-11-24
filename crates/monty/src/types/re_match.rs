@@ -147,7 +147,7 @@ impl ReMatch {
             let (start, end) = if self.all_ascii {
                 (self.start, self.end)
             } else {
-                let text = self.subject.try_to_str(vm).expect("subject is always a str");
+                let text = self.subject.try_as_str(vm).expect("subject is always a str");
                 let start = byte_to_char_offset(text, self.start);
                 // Count only the matched slice for `end` instead of rescanning from zero.
                 (start, start + text[self.start..self.end].chars().count())
@@ -165,7 +165,7 @@ impl ReMatch {
         let char_offset = if self.all_ascii {
             byte_offset
         } else {
-            let text = self.subject.try_to_str(vm).expect("subject is always a str");
+            let text = self.subject.try_as_str(vm).expect("subject is always a str");
             byte_to_char_offset(text, byte_offset)
         };
         position_i64(char_offset)

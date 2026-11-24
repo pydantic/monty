@@ -255,7 +255,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         name
     } else {
         let as_str = typename.py_str(vm)?;
-        let owned = as_str.try_to_str(vm).map(str::to_owned);
+        let owned = as_str.try_as_str(vm).map(str::to_owned);
         as_str.drop_with(vm);
         EitherStr::from(owned?)
     };

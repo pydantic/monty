@@ -1946,7 +1946,7 @@ impl Value {
     }
 
     /// Borrows a bytes argument or raises the buffer protocol's type error.
-    pub(crate) fn try_to_bytes<'a>(&self, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
+    pub(crate) fn try_as_bytes<'a>(&self, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
         self.as_bytes(vm).ok_or_else(|| {
             ExcType::type_error(format!(
                 "a bytes-like object is required, not '{}'",
@@ -1970,15 +1970,15 @@ impl Value {
     }
 
     /// Borrows string contents, or raises `TypeError` with `expected string, not <type>`.
-    pub(crate) fn try_to_str<'a>(&'a self, vm: &'a VM<'_>) -> RunResult<&'a str> {
-        self.try_to_str_heap(vm.heap, vm.interns)
+    pub(crate) fn try_as_str<'a>(&'a self, vm: &'a VM<'_>) -> RunResult<&'a str> {
+        self.try_as_str_heap(vm.heap, vm.interns)
     }
 
-    /// [`try_to_str`](Self::try_to_str) for contexts without a `&VM` — takes `heap` and
+    /// [`try_as_str`](Self::try_as_str) for contexts without a `&VM` — takes `heap` and
     /// `interns` separately so callers can keep a disjoint `&mut` borrow of
     /// another `VM` field alive (e.g. resolving a `str` `Value` produced by
     /// `py_str` while writing it to `vm.print_writer`).
-    pub(crate) fn try_to_str_heap<'a>(&'a self, heap: &'a Heap, interns: &'a Interns) -> RunResult<&'a str> {
+    pub(crate) fn try_as_str_heap<'a>(&'a self, heap: &'a Heap, interns: &'a Interns) -> RunResult<&'a str> {
         self.as_str_heap(heap, interns).ok_or_else(|| {
             ExcType::type_error(format!(
                 "expected string, not {}",

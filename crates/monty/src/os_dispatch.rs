@@ -744,7 +744,7 @@ fn extract_str_data(
 ) -> RunResult<PathStringDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
     // Only `str`: a path-like is not text, so CPython refuses `Path` and `DirEntry` here.
-    let data_str = data.try_to_str_heap(heap, interns).ok().map(str::to_owned);
+    let data_str = data.try_as_str_heap(heap, interns).ok().map(str::to_owned);
 
     // CPython names the type by its `__name__`: no module (`DirEntry`, not
     // `posix.DirEntry`), but a class's own name (`Point` for a named tuple).

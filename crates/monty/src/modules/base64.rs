@@ -188,12 +188,12 @@ fn call_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(s, vm);
     defer_drop!(altchars, vm);
 
-    let mut encoded = b64_encode(s.try_to_bytes(vm)?, &vm.heap.tracker)?;
+    let mut encoded = b64_encode(s.try_as_bytes(vm)?, &vm.heap.tracker)?;
     if !matches!(altchars, Value::None) {
         // CPython asserts on the raw object's length before `bytes.maketrans`
         // type-checks it, so a 1-byte `str` is an AssertionError, not a TypeError.
         assert_len(altchars, 2, vm)?;
-        let alt = altchars.try_to_bytes(vm)?;
+        let alt = altchars.try_as_bytes(vm)?;
         translate(&mut encoded, b"+/", alt);
     }
     Ok(allocate_bytes(encoded, vm.heap))
@@ -224,7 +224,7 @@ fn call_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_standard_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let StandardB64EncodeArgs { s } = StandardB64EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let encoded = b64_encode(s.try_to_bytes(vm)?, &vm.heap.tracker)?;
+    let encoded = b64_encode(s.try_as_bytes(vm)?, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -241,7 +241,7 @@ fn call_standard_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 fn call_urlsafe_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let UrlsafeB64EncodeArgs { s } = UrlsafeB64EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let mut encoded = b64_encode(s.try_to_bytes(vm)?, &vm.heap.tracker)?;
+    let mut encoded = b64_encode(s.try_as_bytes(vm)?, &vm.heap.tracker)?;
     translate(&mut encoded, b"+/", b"-_");
     Ok(allocate_bytes(encoded, vm.heap))
 }
@@ -314,7 +314,7 @@ fn call_b32hexdecode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_b16encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let B16EncodeArgs { s } = B16EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let encoded = b16_encode(s.try_to_bytes(vm)?, &vm.heap.tracker)?;
+    let encoded = b16_encode(s.try_as_bytes(vm)?, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
