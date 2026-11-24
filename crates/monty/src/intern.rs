@@ -21,6 +21,7 @@ mod compile;
 mod storage;
 
 use std::{
+    borrow::Cow,
     cell::{Cell, RefCell},
     collections::BTreeMap,
     mem,
@@ -30,7 +31,7 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 pub(crate) use compile::CompileInterns;
 use num_bigint::BigInt;
 use storage::Entries;
@@ -2826,8 +2827,8 @@ struct InternedString {
 enum InternedText {
     /// Text recognized by this build, requiring no owned allocation.
     Static(&'static str),
-    /// Source or snapshot text unknown to the static registry.
-    Owned(Box<str>),
+    /// Source or snapshot text shared with its reverse lookup key.
+    Owned(Arc<str>),
 }
 
 impl AsRef<str> for InternedText {
@@ -2860,12 +2861,20 @@ impl InternedString {
     }
 
     /// Creates an entry owning text not present in the static registry.
-    fn owned(value: String) -> Self {
+    fn owned(value: Arc<str>) -> Self {
         Self {
             static_tag: None,
             char_len: Self::count_chars(&value),
-            text: WithHash::for_str(InternedText::Owned(value.into_boxed_str())),
+            text: WithHash::for_str(InternedText::Owned(value)),
         }
+    }
+
+    /// Returns the shared lookup key for a non-static entry.
+    fn owned_text(&self) -> &Arc<str> {
+        let InternedText::Owned(text) = self.text.value() else {
+            unreachable!("static entries are indexed by tag");
+        };
+        text
     }
 
     /// Returns the interned text.
@@ -2901,10 +2910,15 @@ impl serde::Serialize for InternedString {
 
 impl<'de> serde::Deserialize<'de> for InternedString {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        // Borrow the CBOR text until it resolves to a static tag or its final allocation.
+        #[derive(serde::Deserialize)]
+        #[serde(transparent)]
+        struct Text<'a>(#[serde(borrow)] Cow<'a, str>);
+
+        let Text(value) = Text::deserialize(deserializer)?;
         Ok(match StaticStrings::from_str(&value) {
             Ok(static_string) => Self::static_string(static_string),
-            Err(_) => Self::owned(value),
+            Err(_) => Self::owned(Arc::from(value.as_ref())),
         })
     }
 }
@@ -3001,7 +3015,7 @@ fn next_string_id(strings_len: usize) -> StringId {
 
 /// Reverse of [`get_str`]: the `StringId` for `s`, or `None` if never interned.
 fn get_string_id_by_name(
-    string_map: &AHashMap<String, StringId>,
+    string_map: &AHashMap<Arc<str>, StringId>,
     static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
     s: &str,
 ) -> Option<StringId> {
@@ -3058,7 +3072,7 @@ pub(crate) struct Interns {
     #[serde(default)]
     file_sources: Entries<FileSource>,
     #[serde(skip)]
-    string_id_by_name: RefCell<AHashMap<String, StringId>>,
+    string_id_by_name: RefCell<AHashMap<Arc<str>, StringId>>,
     #[serde(skip)]
     static_string_ids: RefCell<AHashMap<StaticStrings, StringId>>,
     /// Prevents runtime insertion or a second compiler from consuming provisional IDs.
@@ -3093,21 +3107,29 @@ impl TryFrom<InternsWire> for Interns {
     type Error = String;
 
     fn try_from(wire: InternsWire) -> Result<Self, Self::Error> {
-        let mut string_id_by_name = AHashMap::new();
-        let mut static_string_ids = AHashMap::new();
-        let mut seen = AHashSet::new();
-        for (index, entry) in wire.strings.iter().enumerate() {
+        let strings = &wire.strings;
+        let static_count = strings.iter().filter(|entry| entry.static_value().is_some()).count();
+        let mut string_id_by_name = AHashMap::with_capacity(strings.len() - static_count);
+        let mut static_string_ids = AHashMap::with_capacity(static_count);
+
+        for (index, entry) in strings.iter().enumerate() {
             let text = entry.as_str();
-            if text.is_empty() || text.len() == 1 || !seen.insert(text) {
-                return Err(format!("duplicate or reserved interned string {text:?}"));
+            let invalid_entry = || format!("duplicate or reserved interned string {text:?}");
+            if text.len() <= 1 {
+                return Err(invalid_entry());
             }
+
             let id = next_string_id(index);
-            if let Some(value) = entry.static_value() {
-                static_string_ids.insert(value, id);
-            } else {
-                string_id_by_name.insert(text.to_owned(), id);
+            // The decoded tag partitions the text, so duplicates hit the same map.
+            let previous = match entry.static_value() {
+                Some(value) => static_string_ids.insert(value, id),
+                None => string_id_by_name.insert(Arc::clone(entry.owned_text()), id),
+            };
+            if previous.is_some() {
+                return Err(invalid_entry());
             }
         }
+
         Ok(Self {
             strings: wire.strings,
             bytes: wire.bytes,
@@ -3204,8 +3226,9 @@ impl Interns {
             intern_static(&self.static_string_ids, &self.strings, value)
         } else {
             let id = next_string_id(self.strings.len());
-            self.strings.push(InternedString::owned(text.to_owned()));
-            self.string_id_by_name.borrow_mut().insert(text.to_owned(), id);
+            let text: Arc<str> = Arc::from(text);
+            self.strings.push(InternedString::owned(Arc::clone(&text)));
+            self.string_id_by_name.borrow_mut().insert(text, id);
             id
         }
     }
