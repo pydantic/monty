@@ -1843,9 +1843,7 @@ fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_>) -
     let mut other_value_guard = DropGuard::new(other_value, vm);
     {
         let (other_value, vm) = other_value_guard.as_parts();
-        if let Value::Ref(id) = other_value
-            && let HeapData::Dict(src_dict) = vm.heap.get(*id)
-        {
+        if let Some(src_dict) = other_value.get_as::<Dict>(vm.heap) {
             // The snapshot stays live while the pairs are applied, so charge it
             // up front. Only the snapshot: how much the target grows depends on
             // how many of these keys it already holds, and charging for all of

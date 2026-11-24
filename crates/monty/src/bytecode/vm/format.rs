@@ -11,11 +11,11 @@ use crate::{
         ParseFormatSpecReason, ParsedFormatSpec, decode_format_spec, format_string, format_with_spec,
         validate_string_spec,
     },
-    heap::{HeapData, HeapReadOutput},
+    heap::HeapReadOutput,
     intern::StringId,
     string_builder::StringBuilder,
     types::{
-        PyTrait, Type,
+        ForwardRef, PyTrait, Type,
         date::format_date_strftime,
         datetime::format_datetime_strftime,
         decimal,
@@ -168,7 +168,9 @@ impl VM<'_> {
     /// A `!r` / `!s` / `!a` conversion goes through the stringifier's repr instead,
     /// which is its text, so only the unconverted paths check this.
     fn reject_stringifier(&self, value: &Value) -> Result<(), RunError> {
-        if matches!(value, Value::Ref(id) if matches!(self.heap.get(*id), HeapData::ForwardRef(r) if r.is_stringifier()))
+        if value
+            .get_as::<ForwardRef>(self.heap)
+            .is_some_and(ForwardRef::is_stringifier)
             && self.in_forward_ref_evaluation()
         {
             Err(ExcType::type_error(

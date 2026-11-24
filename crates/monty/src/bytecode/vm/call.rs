@@ -29,7 +29,7 @@ use crate::{
     py_value::PyValue,
     resource_checks::check_estimated_size,
     types::{
-        Dict, Instance, PyTrait, Type, TypeRef,
+        Dict, Instance, PyTrait, Tuple, Type, TypeRef,
         instance::{class_defines, class_lookup},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -655,10 +655,7 @@ impl<'h> VM<'h> {
     /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
     /// the compiler always emits `ListToTuple` before `CallFunctionExtended`.
     fn extract_args_tuple(&mut self, args_tuple: &Value) -> RunResult<Vec<Value>> {
-        let Value::Ref(id) = args_tuple else {
-            unreachable!("CallFunctionExtended: args_tuple must be a Ref")
-        };
-        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
+        let Some(tuple) = args_tuple.get_as::<Tuple>(self.heap) else {
             unreachable!("CallFunctionExtended: args_tuple must be a Tuple")
         };
         clone_args_from_tuple(tuple.as_slice(), self)
@@ -674,10 +671,7 @@ impl<'h> VM<'h> {
         defer_drop!(kwargs_ref, this);
 
         // Extract kwargs dict items
-        let Value::Ref(id) = kwargs_ref else {
-            unreachable!("CallFunctionExtended: kwargs must be a Ref")
-        };
-        let HeapData::Dict(dict) = this.heap.get(*id) else {
+        let Some(dict) = kwargs_ref.get_as::<Dict>(this.heap) else {
             unreachable!("CallFunctionExtended: kwargs must be a Dict")
         };
         let copied_kwargs: Vec<(Value, Value)> = dict
@@ -722,10 +716,7 @@ impl<'h> VM<'h> {
     /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
     /// the compiler always emits `ListToTuple` before `CallAttrExtended`.
     fn extract_args_tuple_for_attr(&mut self, args_tuple: &Value) -> RunResult<Vec<Value>> {
-        let Value::Ref(id) = args_tuple else {
-            unreachable!("CallAttrExtended: args_tuple must be a Ref")
-        };
-        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
+        let Some(tuple) = args_tuple.get_as::<Tuple>(self.heap) else {
             unreachable!("CallAttrExtended: args_tuple must be a Tuple")
         };
         clone_args_from_tuple(tuple.as_slice(), self)
@@ -745,10 +736,7 @@ impl<'h> VM<'h> {
         defer_drop!(kwargs_ref, this);
 
         // Extract kwargs dict items
-        let Value::Ref(id) = kwargs_ref else {
-            unreachable!("CallAttrExtended: kwargs must be a Ref")
-        };
-        let HeapData::Dict(dict) = this.heap.get(*id) else {
+        let Some(dict) = kwargs_ref.get_as::<Dict>(this.heap) else {
             unreachable!("CallAttrExtended: kwargs must be a Dict")
         };
         let copied_kwargs: Vec<(Value, Value)> = dict

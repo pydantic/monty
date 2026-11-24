@@ -21,9 +21,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{
-        ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput,
-    },
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
     types::{Dict, LazyHeapSet, PyTrait, Type, TypeRef, list::repr_should_truncate, tuple::allocate_tuple},
@@ -130,8 +128,7 @@ impl Partial {
             self.keywords.is_empty(),
             "flatten() overwrites keywords rather than merging"
         );
-        let Value::Ref(inner_id) = self.func else { return Ok(()) };
-        let HeapData::Partial(inner) = vm.heap.get(inner_id) else {
+        let Some(inner) = self.func.get_as::<Self>(vm.heap) else {
             return Ok(());
         };
         let (func, mut args, keywords) = inner.clone_parts(vm)?;

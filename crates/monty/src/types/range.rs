@@ -17,8 +17,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
-    types::{LazyHeapSet, PyTrait, Type, TypeRef},
+    heap::{Heap, HeapId, HeapItem, HeapObjectRead},
+    types::{LazyHeapSet, PyTrait, Slice, Type, TypeRef},
     value::Value,
 };
 
@@ -231,9 +231,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Range> {
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
-        if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = vm.heap.get(*id)
-        {
+        if let Some(slice) = key.get_as::<Slice>(vm.heap) {
             let range = *self.get(vm.heap);
             return range.getitem_slice(slice, vm.heap);
         }

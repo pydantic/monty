@@ -23,7 +23,7 @@ use crate::{
         reject_leading_bom,
     },
     prepare::{SnippetNames, prepare_snippet},
-    types::{Type, py_trait::PyTrait},
+    types::{Bytes, Type, py_trait::PyTrait},
     value::Value,
 };
 
@@ -380,10 +380,7 @@ fn snippet_source(name: &str, source: &Value, vm: &mut VM<'_>) -> RunResult<Arc<
 
     let bytes: &[u8] = match source {
         Value::InternBytes(id) => vm.interns.get_bytes(*id),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(b) => b.as_slice(),
-            _ => return Err(source_type_error(name)),
-        },
+        _ if let Some(b) = source.get_as::<Bytes>(vm.heap) => b.as_slice(),
         _ => return Err(source_type_error(name)),
     };
     match str::from_utf8(bytes) {

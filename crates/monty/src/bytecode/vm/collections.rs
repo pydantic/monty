@@ -238,15 +238,10 @@ impl VM<'_> {
         let (dict_ref, this) = dict_ref_guard.as_parts();
 
         // Check that mapping is a dict (Ref pointing to Dict) and clone key-value pairs
-        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
-            if let HeapData::Dict(dict) = this.heap.get(*id) {
-                dict.iter()
-                    .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
-                    .collect()
-            } else {
-                let type_name = mapping.py_type_name(this).to_string();
-                return Err(ExcType::type_error_kwargs_not_mapping(func_name, &type_name));
-            }
+        let copied_items: Vec<(Value, Value)> = if let Some(dict) = mapping.get_as::<Dict>(this.heap) {
+            dict.iter()
+                .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
+                .collect()
         } else {
             let type_name = mapping.py_type_name(this).to_string();
             return Err(ExcType::type_error_kwargs_not_mapping(func_name, &type_name));
@@ -312,15 +307,10 @@ impl VM<'_> {
         defer_drop!(mapping, this);
 
         // Clone all key/value pairs out of the mapping before mutating the target dict
-        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
-            if let HeapData::Dict(dict) = this.heap.get(*id) {
-                dict.iter()
-                    .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
-                    .collect()
-            } else {
-                let type_ = mapping.py_type_name(this);
-                return Err(ExcType::type_error_not_mapping(&type_));
-            }
+        let copied_items: Vec<(Value, Value)> = if let Some(dict) = mapping.get_as::<Dict>(this.heap) {
+            dict.iter()
+                .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
+                .collect()
         } else {
             let type_ = mapping.py_type_name(this);
             return Err(ExcType::type_error_not_mapping(&type_));
@@ -608,13 +598,7 @@ pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunR
     }
     // Dicts also report their total size in the "too many" error; other
     // iterables stop at the first surplus item without reporting a total.
-    let total = match value {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Dict(dict) => Some(dict.len()),
-            _ => None,
-        },
-        _ => None,
-    };
+    let total = value.get_as::<Dict>(vm.heap).map(Dict::len);
     // Pull one past `count` so a too-long iterable is detected without
     // draining it — CPython stops consuming there too, which is why every
     // other type has no total to report.

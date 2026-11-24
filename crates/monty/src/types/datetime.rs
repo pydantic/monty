@@ -777,13 +777,9 @@ fn combine_date_part(date: &Value, vm: &mut VM<'_>) -> RunResult<(i32, i32, i32)
 /// it, so it is only safe while the caller's guard keeps the source `time`
 /// alive — which is exactly how long [`class_combine`] uses it.
 fn combine_time_part(time: &Value, vm: &mut VM<'_>) -> RunResult<Time> {
-    match time {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Time(t) => Ok(t.clone()),
-            _ => Err(combine_bad_time_arg(time, vm)),
-        },
-        _ => Err(combine_bad_time_arg(time, vm)),
-    }
+    time.get_as::<Time>(vm.heap)
+        .cloned()
+        .ok_or_else(|| combine_bad_time_arg(time, vm))
 }
 
 /// The `combine() argument 2 must be datetime.time, not X` error.

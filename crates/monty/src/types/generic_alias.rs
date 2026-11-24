@@ -91,10 +91,7 @@ impl GenericAlias {
         debug_assert!(form.is_generic_form(), "{form:?} is not subscriptable");
         let mut key_guard = DropGuard::new(key, vm);
         let (key, vm) = key_guard.as_parts();
-        let count = match key {
-            Value::Ref(id) if let HeapData::Tuple(items) = vm.heap.get(*id) => items.as_slice().len(),
-            _ => 1,
-        };
+        let count = key.get_as::<Tuple>(vm.heap).map_or(1, |items| items.as_slice().len());
         match form.0 {
             StaticStrings::Annotated if count < 2 => {
                 return Err(ExcType::type_error(
@@ -175,10 +172,7 @@ impl GenericAlias {
 
     /// The `T` of `Annotated[T, *metadata]`, owned.
     fn annotated_type(&self, heap: &Heap) -> Value {
-        let Value::Ref(id) = self.args else {
-            unreachable!("GenericAlias::args is always a tuple")
-        };
-        let HeapData::Tuple(items) = heap.get(id) else {
+        let Some(items) = self.args.get_as::<Tuple>(heap) else {
             unreachable!("GenericAlias::args is always a tuple")
         };
         items.as_slice()[0].clone_with_heap(heap)
@@ -655,19 +649,14 @@ fn literal_params(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
 /// How many values a nested `Literal` contributes when flattened; `None` for
 /// any other value, which contributes itself.
 fn nested_literal_len(value: &Value, vm: &VM<'_>) -> Option<usize> {
-    let Value::Ref(id) = value else { return None };
-    let HeapData::GenericAlias(alias) = vm.heap.get(*id) else {
-        return None;
-    };
+    let alias = value.get_as::<GenericAlias>(vm.heap)?;
     if alias.origin != LITERAL {
         return None;
     }
-    let Value::Ref(args) = alias.args else {
-        unreachable!("GenericAlias::args is always a tuple")
-    };
-    let HeapData::Tuple(items) = vm.heap.get(args) else {
-        unreachable!("GenericAlias::args is always a tuple")
-    };
+    let items = alias
+        .args
+        .get_as::<Tuple>(vm.heap)
+        .expect("GenericAlias::args is always a tuple");
     Some(items.as_slice().len())
 }
 

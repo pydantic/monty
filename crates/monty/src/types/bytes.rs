@@ -1,3 +1,11 @@
+use std::{array, cell::Cell, ffi::c_int, fmt::Write, ops, str};
+
+use memchr::memmem::{Finder, FinderRev};
+use monty_types::{ResourceError, ResourceTracker};
+pub use monty_types::{bytes_repr, bytes_repr_fmt};
+use smallvec::smallvec;
+
+use super::{CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef};
 /// Python bytes type, wrapping a `Vec<u8>`.
 ///
 /// This type provides Python bytes semantics with operations on ASCII bytes only.
@@ -65,14 +73,7 @@
 ///
 /// # Unimplemented Methods
 /// - `expandtabs(tabsize=8)` - Tab expansion
-use std::{array, cell::Cell, ffi::c_int, fmt::Write, ops, str};
-
-use memchr::memmem::{Finder, FinderRev};
-use monty_types::{ResourceError, ResourceTracker};
-pub use monty_types::{bytes_repr, bytes_repr_fmt};
-use smallvec::smallvec;
-
-use super::{CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef};
+use crate::types::Slice;
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
@@ -576,9 +577,7 @@ fn bytes_add(bytes: &[u8], other: &Value, vm: &VM<'_>) -> RunResult<Option<Value
 
 /// Indexes a protected buffer, allowing `__index__` to run before borrowing it.
 fn bytes_getitem<'h>(bytes: &impl HeapView<'h, [u8]>, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
-    if let Value::Ref(id) = key
-        && let HeapData::Slice(slice) = vm.heap.get(*id)
-    {
+    if let Some(slice) = key.get_as::<Slice>(vm.heap) {
         let result = slice_collect_iterator(vm, slice, bytes.get(vm.heap).iter(), |b| *b)?;
         Ok(Value::allocate(Bytes::new(result), vm.heap))
     } else {

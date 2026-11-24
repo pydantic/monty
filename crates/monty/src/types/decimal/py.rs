@@ -46,13 +46,7 @@ pub(crate) fn decimal_value(decimal: Decimal, vm: &VM<'_>) -> Value {
 
 /// The `Decimal` a value refers to, if it is one.
 pub(crate) fn as_decimal<'a>(value: &Value, vm: &'a VM<'_>) -> Option<&'a Decimal> {
-    match value {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Decimal(decimal) => Some(decimal),
-            _ => None,
-        },
-        _ => None,
-    }
+    value.get_as::<Decimal>(vm.heap)
 }
 
 /// Converts an operand as the arithmetic operators do: a `Decimal` as is, an `int`

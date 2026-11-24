@@ -7,6 +7,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData},
     intern::StringId,
+    types::Module,
     value::{EitherStr, Value},
 };
 
@@ -206,13 +207,7 @@ impl VM<'_> {
 /// `Some(is_package)` when `value` is a module: a host module is a package
 /// (its submodules are module attributes), a bundled one is not.
 fn module_package(value: &Value, heap: &Heap) -> Option<bool> {
-    match value {
-        Value::Ref(id) => match heap.get(*id) {
-            HeapData::Module(module) => Some(module.id().is_some()),
-            _ => None,
-        },
-        _ => None,
-    }
+    value.get_as::<Module>(heap).map(|module| module.id().is_some())
 }
 
 /// Builds a missing-submodule error using the import's spelling of a built-in parent (`os.path`).

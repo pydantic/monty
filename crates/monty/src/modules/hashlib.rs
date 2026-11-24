@@ -23,11 +23,11 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropWithContext},
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
-        Module, Set, Type, allocate_string,
+        Bytes, Module, Set, Type, allocate_string,
         bytes::allocate_bytes,
         hashlib::{Blake2Params, Blake2b, Blake2s, DigestBytes, HashAlgorithm, HashObject, hash_input},
     },
@@ -601,10 +601,7 @@ pub(crate) fn blake2_init(kind: Blake2Kind, vm: &mut VM<'_>, args: ArgValues) ->
 fn buffer<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
     match value {
         Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(bytes) => Ok(bytes.as_slice()),
-            _ => Err(not_bytes_like(value, vm)),
-        },
+        _ if let Some(bytes) = value.get_as::<Bytes>(vm.heap) => Ok(bytes.as_slice()),
         _ => Err(not_bytes_like(value, vm)),
     }
 }

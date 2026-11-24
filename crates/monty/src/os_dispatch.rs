@@ -44,7 +44,7 @@ use crate::{
         random::RandomRetry,
         time::ClockReading,
     },
-    types::{Path, Type, dir_scan::ScanEffect, file::FileName, random::RandomTarget},
+    types::{Bytes, Path, Type, dir_scan::ScanEffect, file::FileName, random::RandomTarget},
     value::Value,
     virtual_path::posix_join,
 };
@@ -939,10 +939,6 @@ pub(crate) fn value_to_owned_bytes(value: &Value, heap: &Heap, interns: &Interns
 pub(crate) fn value_as_bytes<'a>(value: &Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a [u8]> {
     match value {
         Value::InternBytes(id) => Some(interns.get_bytes(*id)),
-        Value::Ref(id) => match heap.get(*id) {
-            HeapData::Bytes(b) => Some(b.as_slice()),
-            _ => None,
-        },
-        _ => None,
+        _ => value.get_as::<Bytes>(heap).map(Bytes::as_slice),
     }
 }

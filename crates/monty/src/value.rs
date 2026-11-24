@@ -28,7 +28,7 @@ use crate::{
     modules::ModuleFunctions,
     py_value::PyValue,
     types::{
-        BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, Type, TypeRef,
+        BytesIterator, CmpOrder, Complex, HeapStr, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef,
         bytes::PyBytes,
         decimal,
         instance::{class_defines, instance_getattr, instance_str, instance_user_eq, subclass_overrides},
@@ -1197,6 +1197,11 @@ impl Value {
         }
     }
 
+    /// Borrows the referenced payload for the lifetime of the heap borrow.
+    pub(crate) fn get_as<'a, T: HeapPayload>(&self, heap: &'a Heap) -> Option<&'a T> {
+        T::from_heap_data(heap.get(self.ref_id()?))
+    }
+
     /// Opens a typed reader when this value references a heap object of type `T`.
     pub(crate) fn read_as<'h, T: HeapPayload>(&self, heap: &HeapReader<'h>) -> Option<HeapObjectRead<'h, T>> {
         heap.read_as::<T>(self.ref_id()?)
@@ -1494,11 +1499,7 @@ impl Value {
     /// [`is_long_int`](crate::args::is_long_int) rather than using it alone to
     /// classify an int.
     pub(crate) fn long_int_is_negative(&self, vm: &VM<'_>) -> bool {
-        match self {
-            Self::InternLongInt(id) => vm.interns.get_long_int(*id).sign() == Sign::Minus,
-            Self::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(li) if li.is_negative()),
-            _ => false,
-        }
+        self.as_long_int(vm).is_some_and(|n| n.sign() == Sign::Minus)
     }
 
     /// Saturating `i64` view of a `LongInt`-valued int (interned or
@@ -1511,14 +1512,7 @@ impl Value {
     /// must reject out-of-range ints — [`Self::as_int`] and [`Self::as_index`]
     /// raise there instead.
     pub(crate) fn long_int_to_i64_saturating(&self, vm: &VM<'_>) -> Option<i64> {
-        match self {
-            Self::InternLongInt(id) => Some(saturating_i64(vm.interns.get_long_int(*id))),
-            Self::Ref(id) => match vm.heap.get(*id) {
-                HeapData::LongInt(li) => Some(saturating_i64(li.inner())),
-                _ => None,
-            },
-            _ => None,
-        }
+        self.as_long_int(vm).map(saturating_i64)
     }
 
     /// Borrows the arbitrary-precision value of a `LongInt`-valued int (interned
@@ -1527,11 +1521,7 @@ impl Value {
     pub(crate) fn as_long_int<'a>(&self, vm: &'a VM<'_>) -> Option<&'a BigInt> {
         match self {
             Self::InternLongInt(id) => Some(vm.interns.get_long_int(*id)),
-            Self::Ref(id) => match vm.heap.get(*id) {
-                HeapData::LongInt(li) => Some(li.inner()),
-                _ => None,
-            },
-            _ => None,
+            _ => self.get_as::<LongInt>(vm.heap).map(LongInt::inner),
         }
     }
 
@@ -1946,11 +1936,9 @@ impl Value {
         match self {
             Self::InternString(id) => Some(EitherStr::Interned(*id)),
             Self::InlineString(text) => Some(EitherStr::Inline(*text)),
-            Self::Ref(heap_id) => match heap.get(*heap_id) {
-                HeapData::Str(s) => Some(EitherStr::Heap(s.as_str().to_owned())),
-                _ => None,
-            },
-            _ => None,
+            _ => self
+                .get_as::<HeapStr>(heap)
+                .map(|s| EitherStr::Heap(s.as_str().to_owned())),
         }
     }
 
@@ -1964,11 +1952,7 @@ impl Value {
         match self {
             Self::InternString(string_id) => Some(interns.get_str(*string_id)),
             Self::InlineString(text) => Some(text.as_str()),
-            Self::Ref(heap_id) => match heap.get(*heap_id) {
-                HeapData::Str(s) => Some(s.as_str()),
-                _ => None,
-            },
-            _ => None,
+            _ => self.get_as::<HeapStr>(heap).map(HeapStr::as_str),
         }
     }
 
@@ -2691,3 +2675,7 @@ mod tests {
         value.drop_with(&mut heap);
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/value_get_as.rs"]
+mod get_as_tests;

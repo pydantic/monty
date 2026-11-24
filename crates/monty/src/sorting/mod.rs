@@ -23,8 +23,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{RunError, RunResult},
     expressions::CmpOperator,
-    heap::HeapData,
-    types::{CmpOrder, PyTrait, long_int::i64_cmp_f64},
+    types::{CmpOrder, HeapStr, PyTrait, long_int::i64_cmp_f64},
     value::Value,
 };
 
@@ -318,11 +317,7 @@ impl Number {
 fn str_of<'a>(value: &Value, vm: &'a VM<'_>) -> Option<&'a str> {
     match value {
         Value::InternString(id) => Some(vm.interns.get_str(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Str(s) => Some(s.as_str()),
-            _ => None,
-        },
-        _ => None,
+        _ => value.get_as::<HeapStr>(vm.heap).map(HeapStr::as_str),
     }
 }
 
