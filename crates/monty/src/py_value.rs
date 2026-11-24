@@ -31,7 +31,7 @@ use crate::{
         file::unloaded_iteration_error,
         float::PyFloat,
         long_int::{PyInt, arithmetic::float_binary},
-        numeric::{float_as_integer_ratio, float_is_integer, round_digits, round_float},
+        numeric::{float_as_integer_ratio, float_fromhex, float_hex, float_is_integer, round_digits, round_float},
         py_trait::PyObjectIdentity,
         str::PyStr,
     },
@@ -869,6 +869,11 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                         args.check_zero_args("float.is_integer", vm.heap)?;
                         Ok(CallResult::Value(Value::Bool(float_is_integer(value.value()))))
                     }
+                    Some(StaticStrings::Hex) => {
+                        args.check_zero_args("float.hex", vm.heap)?;
+                        Ok(CallResult::Value(allocate_string(float_hex(*value), vm.heap)))
+                    }
+                    Some(StaticStrings::Fromhex) => float_fromhex(args, vm).map(CallResult::Value),
                     _ => {
                         args.drop_with(vm);
                         Err(ExcType::attribute_error("float", attr.as_str(vm.interns)))
