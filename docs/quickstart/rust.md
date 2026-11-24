@@ -151,6 +151,7 @@ it returns `None` after the worker is released or discarded.
 are `feed_with_cwd` and `restore` plus [`TurnOptions`](../api/rust/monty-pool.md#turnoptions), whose `traceparent` names the caller's span for the turn,
 so a remote server that records the session parents the turn's spans to it.
 A suspension the server named a span for carries it as `traceparent` on the `TurnEvent`.
+[`Checkout::dump_with`](../api/rust/monty-pool.md#checkout) uses the same options to parent the local dump span.
 
 [`Checkout::dump`](../api/rust/monty-pool.md#checkout) and [`Checkout::restore`](../api/rust/monty-pool.md#checkout) snapshot and restore a session, including onto a different worker or machine.
 Restore only unmodified snapshots whose provenance and integrity the caller has established;

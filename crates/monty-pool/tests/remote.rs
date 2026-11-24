@@ -7,6 +7,9 @@
 mod binary;
 #[path = "support/grpc_mock.rs"]
 mod grpc_mock;
+#[cfg(feature = "telemetry")]
+#[path = "remote/snapshot_telemetry.rs"]
+mod snapshot_telemetry;
 
 #[cfg(feature = "telemetry")]
 use std::sync::{Arc, OnceLock};

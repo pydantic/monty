@@ -20,7 +20,7 @@ use tokio::{
 use crate::telemetry::TelemetryContext;
 use crate::{
     MontyTransport, PoolConfig, PoolError,
-    checkout::{Checkout, CheckoutOptions, Redial, ReplConfig, request},
+    checkout::{Checkout, CheckoutOptions, Redial, ReplConfig, TurnRequest, request},
     remote::Remote,
     worker::Worker,
 };
@@ -253,7 +253,10 @@ impl Pool {
                 .collect();
             for (worker, _) in &mut idle {
                 let _ = worker
-                    .send(&request(pb::client_request::Kind::Shutdown(pb::Shutdown {})), None)
+                    .send(
+                        TurnRequest::new(&request(pb::client_request::Kind::Shutdown(pb::Shutdown {}))),
+                        None,
+                    )
                     .await;
             }
             // Reap concurrently: a *nonresponsive* worker costs the full grace, so

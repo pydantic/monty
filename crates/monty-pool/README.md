@@ -244,8 +244,20 @@ becomes one session span; each feed is a span held across suspension round-trips
 a child span per suspension whose duration is the host round-trip. Fed code, inputs, call
 arguments and results, exceptions and `print` output are recorded in full — values encoded
 the way the Python logfire SDK encodes attributes, capped at 64KB per value — while
-`Load`/`Dump` snapshot blobs are recorded by size only. Supplying an SDK is therefore an
+snapshot blob contents are never recorded. Load and shutdown spans record only their byte counts.
+Supplying an SDK is therefore an
 explicit opt-in to recording potentially sensitive values.
+
+The `dump` and `restore` API spans cover the awaited snapshot call, including any initial session configuration and the relay response.
+Each API span uses the app context active at the call, or the checkout context if no app span is active.
+The `restore` span ends when the call returns, even if the restored execution is suspended.
+Its child `load` span stays open across any restored suspensions and parents their callback spans.
+Raw forwarding and automatic recovery do not create snapshot API spans.
+`monty.turn.duration` and `monty.snapshot.bytes` retain the wire timing and size measurements.
+The API spans use standard tracing and OpenTelemetry status. Monty records outcomes under `monty.*`.
+Dump failures include bounded error text. The restore API span uses the fixed error status
+`restore failed` so its status contains no host paths or snapshot contents.
+The configured provider owns vendor-specific metadata.
 
 The adapter configures a process-global Rust pipeline and returns a handle that creates each
 checkout's serialized parent context. Span and log records are emitted through
@@ -257,8 +269,8 @@ feature, workers contain no telemetry recorder or telemetry hot path.
 ### Trace context
 
 The session span is a child of the span in `CheckoutOptions::telemetry`, the one current at checkout.
-A feed or restore started with `TurnOptions::traceparent` is a child of the span that names, not of the session span;
-without one it is a child of the session span.
+A feed, restore, or dump started with `TurnOptions::traceparent` is a child of the span it names.
+The checkout supplies the fallback parent. Resume calls extend the existing run and suspension spans.
 A feed parented that way carries the session span's ID as `checkout_span_id`, when the session span's exported ID
 is known (see `TelemetryAdapter::exported_span_context` below).
 A remote stream's `traceparent` metadata still names the checkout-time span.

@@ -43,9 +43,14 @@ use tokio::{
 };
 
 #[cfg(feature = "telemetry")]
-use crate::telemetry::{TelemetryContext, metrics::TurnMetrics, tracing::Recorder};
+use crate::telemetry::{
+    TelemetryContext,
+    metrics::TurnMetrics,
+    tracing::{Recorder, SnapshotOperation, SnapshotSpan},
+};
 use crate::{
     MontyTransport, PoolConfig, PoolError, RemoteDisconnect,
+    checkout::TurnRequest,
     cpu_clock::Clock,
     remote::{Remote, RemoteWorker},
 };
@@ -207,6 +212,18 @@ impl Worker {
         }
     }
 
+    /// Starts a span for an explicit snapshot API call.
+    #[cfg(feature = "telemetry")]
+    pub(crate) fn snapshot_span(
+        &self,
+        operation: SnapshotOperation,
+        traceparent: Option<Traceparent>,
+    ) -> Option<SnapshotSpan> {
+        self.recorder
+            .as_ref()
+            .map(|recorder| recorder.snapshot_span(operation, traceparent))
+    }
+
     #[cfg(feature = "telemetry")]
     pub(crate) fn callback_context(&self) -> opentelemetry::Context {
         self.recorder
@@ -231,13 +248,14 @@ impl Worker {
     /// session, which carries `request`, a `Feed` or `Load` (see [`OpeningRequest`]).
     pub(crate) async fn send(
         &mut self,
-        request: &pb::ClientRequest,
+        turn: TurnRequest<'_>,
         opening: Option<&pb::Configure>,
     ) -> Result<(), FrameError> {
+        let request = turn.message;
         let frame = opening
             .map(|configure| OpeningRequest::new(configure, request).expect("only a `Feed` or `Load` opens a session"));
         #[cfg(feature = "telemetry")]
-        let recorded = self.record_turn_start(request, opening, frame.as_ref());
+        let recorded = self.record_turn_start(turn, opening, frame.as_ref());
         // the recorder's span for the turn, which the request names instead of its caller's
         #[cfg(feature = "telemetry")]
         let replacement = self
@@ -293,7 +311,14 @@ impl Worker {
                 if let Some(opening) = opening {
                     recorder.begin_session(opening);
                 }
-                recorder.begin_turn(request);
+                if let Some(parent) = turn
+                    .snapshot
+                    .and_then(|span| span.parent_for(SnapshotOperation::Restore))
+                {
+                    recorder.begin_turn_with_parent(request, Some(parent));
+                } else {
+                    recorder.begin_turn(request);
+                }
             }
             if let Some(metrics) = &mut self.metrics {
                 metrics.frame("sent", len);
@@ -318,10 +343,11 @@ impl Worker {
     #[cfg(feature = "telemetry")]
     fn record_turn_start(
         &mut self,
-        request: &pb::ClientRequest,
+        turn: TurnRequest<'_>,
         opening: Option<&pb::Configure>,
         frame: Option<&OpeningRequest<'_>>,
     ) -> bool {
+        let request = turn.message;
         let starts_turn = matches!(
             request.kind,
             Some(pb::client_request::Kind::Feed(_) | pb::client_request::Kind::Load(_))
@@ -337,7 +363,10 @@ impl Worker {
                 if let Some(opening) = opening {
                     recorder.begin_session(opening);
                 }
-                recorder.begin_turn(request);
+                let parent = turn
+                    .snapshot
+                    .and_then(|span| span.parent_for(SnapshotOperation::Restore));
+                recorder.begin_turn_with_parent(request, parent);
                 true
             }
             _ => false,
@@ -381,7 +410,9 @@ impl Worker {
     /// Cancel-safe: partial-frame state persists in the worker (see the
     /// module docs), which is what lets `Checkout` race a turn against its
     /// deadline.
-    pub(crate) async fn recv(&mut self) -> Result<pb::WorkerEvent, FrameError> {
+    pub(crate) async fn recv(&mut self, turn: TurnRequest<'_>) -> Result<pb::WorkerEvent, FrameError> {
+        #[cfg(not(feature = "telemetry"))]
+        let _ = turn;
         #[cfg_attr(not(feature = "telemetry"), expect(unused_mut))]
         let (mut event, len) = match &mut self.kind {
             WorkerKind::Subprocess(w) => match w.recv.recv(self.max_decode_bytes).await? {
@@ -399,7 +430,11 @@ impl Worker {
         // (deadline race) records nothing — cancel-safety intact
         #[cfg(feature = "telemetry")]
         if let Some(recorder) = &mut self.recorder {
-            recorder.event(&event);
+            if let Some(parent) = turn.snapshot.and_then(|span| span.parent_for(SnapshotOperation::Dump)) {
+                recorder.event_with_parent(&event, Some(parent));
+            } else {
+                recorder.event(&event);
+            }
             recorder.stamp(&mut event);
         }
         #[cfg(feature = "telemetry")]
