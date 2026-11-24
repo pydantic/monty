@@ -1,25 +1,13 @@
-use monty_types::{PrintWriter, ResourceTracker};
+use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 
 use super::*;
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues},
-    bytecode::VM,
-    heap::{Heap, HeapData, HeapReader},
+    args::{ArgValues, FromArgs, KwargsValues, tests::with_test_vm},
+    heap::{Heap, HeapData},
     intern::{CompileInterns, Interns, StaticStrings},
-    run::{Program, SessionTables},
     types::{Bytes, List, LongInt, NamedTuple, str::allocate_string},
 };
-
-fn with_test_vm<R>(f: impl for<'h> FnOnce(&mut VM<'h>) -> R) -> R {
-    let mut heap = Heap::new(16, ResourceTracker::default());
-    let mut tables = SessionTables::default();
-    let program = Program::for_tests();
-    HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-        let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-        f(&mut vm)
-    })
-}
 
 #[test]
 fn access_allocated_payload_by_type() {

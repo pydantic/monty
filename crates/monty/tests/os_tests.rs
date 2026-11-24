@@ -190,6 +190,44 @@ fn path_append_methods_forward_the_path_and_data() {
 }
 
 #[test]
+fn path_append_text() {
+    let (func, args) = run_to_oscall("from pathlib import Path; Path('/log').append_text('hello')");
+    assert_eq!(func, "Path.append_text");
+    assert_eq!(
+        args,
+        [
+            MontyObject::path("/log".to_owned()),
+            MontyObject::string("hello".to_owned())
+        ]
+    );
+}
+
+#[test]
+fn path_append_bytes() {
+    let (func, args) = run_to_oscall(r"from pathlib import Path; Path('/log').append_bytes(b'\xff')");
+    assert_eq!(func, "Path.append_bytes");
+    assert_eq!(
+        args,
+        [MontyObject::path("/log".to_owned()), MontyObject::bytes(vec![0xff])]
+    );
+}
+
+#[test]
+fn path_append_requires_data_before_dispatch() {
+    for method in ["append_text", "append_bytes"] {
+        let code = format!("from pathlib import Path\nPath('/log').{method}()");
+        let error = host_runner(&code)
+            .start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
+            .unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::TypeError);
+        assert_eq!(
+            error.message().unwrap(),
+            format!("Path.{method}() takes exactly 1 argument (0 given)")
+        );
+    }
+}
+
+#[test]
 fn path_stat() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/file.txt').stat()");
     assert_eq!(func, "Path.stat");

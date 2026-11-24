@@ -768,3 +768,7 @@ impl ArgExprs {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/args.rs"]
+mod tests;
