@@ -341,9 +341,12 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
 
     /// Writes one `bytes` value, returning its length; the type is checked first.
     fn write_value(&self, data: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
-        let data = bytes_payload(data, vm)?;
+        let PyValue::Bytes(bytes) = data.py_value(vm) else {
+            return Err(ExcType::type_error_bytes_like_required(&data.py_type_name(vm)));
+        };
+        ensure_open(self.get(vm.heap))?;
+        let data = copy_payload(bytes.as_slice(vm), vm)?;
         let stream = self.get(vm.heap);
-        ensure_open(stream)?;
         vm.heap.tracker.check_pending_allocation(stream.write_growth(&data)?)?;
         self.get_mut(vm.heap).write(&data);
         Ok(position_value(data.len()))
@@ -415,13 +418,15 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
 /// A copy of a `bytes` value's data, or CPython's bytes-like `TypeError`.
 fn bytes_payload(value: &Value, vm: &VM<'_>) -> RunResult<Vec<u8>> {
     match value.py_value(vm) {
-        PyValue::Bytes(bytes) => {
-            let data = bytes.as_slice(vm);
-            vm.heap.tracker.check_allocation(data.len())?;
-            Ok(data.to_vec())
-        }
+        PyValue::Bytes(bytes) => copy_payload(bytes.as_slice(vm), vm),
         _ => Err(ExcType::type_error_bytes_like_required(&value.py_type_name(vm))),
     }
+}
+
+/// A copy of `data`, preflighted since a payload can be most of the budget.
+fn copy_payload(data: &[u8], vm: &VM<'_>) -> RunResult<Vec<u8>> {
+    vm.heap.tracker.check_allocation(data.len())?;
+    Ok(data.to_vec())
 }
 
 /// The `ValueError` every `BytesIO` method raises once it is closed.

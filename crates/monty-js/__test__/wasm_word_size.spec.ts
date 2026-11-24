@@ -15,10 +15,13 @@ import { test } from 'vitest'
 import { t } from './assertions.js'
 import { Monty, MontyRuntimeError } from '@pydantic/monty/wasm'
 
-// each case is `(2**40)`: over a 32-bit `usize`, under `i64::MAX`
+// each case is over a 32-bit `ssize_t` but under `i64::MAX`: `2**40`, or an io write ending past `2**31 - 1`
 const OVER_32_BIT = [
   ['deque maxlen', 'from collections import deque\ndeque([], 2**40)', 'Python int too large to convert to C ssize_t'],
   ['bytes count', 'bytes(2**40)', "cannot fit 'int' into an index-sized integer"],
+  ['BytesIO seek', 'import io\nio.BytesIO().seek(2**40)', 'Python int too large to convert to C ssize_t'],
+  ['BytesIO write end', "import io\nb = io.BytesIO()\nb.seek(2**31 - 1)\nb.write(b'xx')", 'new buffer size too large'],
+  ['StringIO write end', "import io\ns = io.StringIO()\ns.seek(2**31 - 1)\ns.write('xx')", 'new position too large'],
 ] as const
 
 for (const [name, code, message] of OVER_32_BIT) {

@@ -2793,6 +2793,19 @@ fn translate_checks_args_before_copying_receiver() {
     child.shutdown();
 }
 
+/// A write to a closed `BytesIO` reports the closure even when copying its payload would cross
+/// `max_memory`, as CPython checks closure before it copies.
+#[test]
+fn closed_bytes_io_write_reports_closure_before_memory() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let (_, event) = child.feed("import io\nb = io.BytesIO()\nb.close()\nb.write(b'x' * 600_000)");
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "ValueError");
+    assert_eq!(error.message.as_deref(), Some("I/O operation on closed file."));
+    child.shutdown();
+}
+
 /// Assert a `memory limit exceeded` message reports roughly `expected` bytes
 /// used against a 1 MiB limit.
 ///
