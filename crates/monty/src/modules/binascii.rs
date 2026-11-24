@@ -196,6 +196,7 @@ fn call_a2b_base64(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let decoded = b64_decode(
         decode_input_described(data, vm, "bytes, buffer or ASCII string")?,
         strict,
+        None,
     )?;
     Ok(allocate_bytes(decoded, vm.heap))
 }

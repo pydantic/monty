@@ -26,6 +26,17 @@ assert base64.b64decode(b'--8=', altchars=b'-_') == b'\xfb\xef'
 assert base64.b64decode('--8=', altchars='-_') == b'\xfb\xef'
 assert base64.b64encode(b'\xfb\xef', b'-_') == b'--8='
 
+# Translation runs before strict padding checks. Duplicate altchars use the last mapping.
+assert base64.b64decode(b'!!!!', altchars=b'!!', validate=True) == b'\xff' * 3
+assert base64.b64decode(b'====', altchars=b'!=', validate=True) == b'\xff' * 3
+
+# The invalid input wins before the decoder truth-tests its validate flag.
+try:
+    base64.b64decode('é', validate=NotImplemented)
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'string argument should contain only ASCII characters'
+
 # === standard_b64 / urlsafe_b64 ===
 assert base64.standard_b64encode(b'\xfb\xef') == b'++8='
 assert base64.standard_b64decode(b'++8=') == b'\xfb\xef'
@@ -202,6 +213,9 @@ assert base64.b32decode(base64.b32encode(every_byte)) == every_byte
 assert base64.b32decode(b'mFrGgZdF', casefold=True) == b'abcde'
 assert base64.b32decode(b'MFRGG0DF', map01=b'L') == base64.b32decode(b'MFRGGODF')
 assert base64.b32decode(b'MFRGG1DF', map01=b'L') == base64.b32decode(b'MFRGGLDF')
+
+assert base64.b32decode(b'ME111111', map01=b'=') == b'a'
+assert base64.b32decode(b'M1======', map01=b'e', casefold=True) == b'a'
 
 try:
     base64.b32decode(b'mfrggzdf')
@@ -411,6 +425,7 @@ assert base64.a85decode(b'<~BOu!rD]j7BEbo7~>', adobe=True) == b'hello world'
 # only the terminator is required, so a PDF stream without `<~` still decodes
 assert base64.a85decode(b'BOu!rD]j7BEbo7~>', adobe=True) == b'hello world'
 assert base64.a85decode(b'<~~>', adobe=True) == b''
+assert base64.a85decode(b'<~>', adobe=True) == b''
 
 # === a85 line wrapping ===
 assert base64.a85encode(b'hello world foo bar', wrapcol=5) == b'BOu!r\nD]j7B\nEbo8/\nAoDT1\n@UX9'
