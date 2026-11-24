@@ -47,7 +47,7 @@ why, and no session existed.
 `retry_after` is the suggested delay in seconds from `Retry-After`, capped at one hour.
 It is `None` if the hint is absent, invalid or repeated.
 The client accepts delay-seconds and HTTP dates.
-The client retries a refused checkout once when the server sends a single valid `Retry-After` of at most two seconds.
+The client retries a refused checkout once when the server sends a single valid `Retry-After` of at most two seconds, whatever the refusal's status, including when `retryable` is false.
 It waits at least 100 ms or the server's delay, whichever is longer, plus up to 250 ms of jitter.
 The wait and retry share a five-second budget and respect the original checkout and dial deadlines.
 If the retry times out, the client returns the original refusal.
