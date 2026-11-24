@@ -186,13 +186,13 @@ fn call_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(s, vm);
     defer_drop!(altchars, vm);
 
-    let mut encoded = b64_encode(encode_input(s, vm)?.as_ref(), &vm.heap.tracker)?;
+    let mut encoded = b64_encode(s.try_to_bytes(vm)?, &vm.heap.tracker)?;
     if !matches!(altchars, Value::None) {
         // CPython asserts on the raw object's length before `bytes.maketrans`
         // type-checks it, so a 1-byte `str` is an AssertionError, not a TypeError.
         assert_len(altchars, 2, vm)?;
-        let alt = encode_input(altchars, vm)?.into_owned();
-        translate(&mut encoded, b"+/", &alt);
+        let alt = altchars.try_to_bytes(vm)?;
+        translate(&mut encoded, b"+/", alt);
     }
     Ok(allocate_bytes(encoded, vm.heap))
 }
@@ -207,12 +207,12 @@ fn call_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(altchars, vm);
     defer_drop!(validate, vm);
 
-    let mut data = decode_input(s, vm)?.into_owned();
+    let mut data = decode_input(s, vm)?.to_vec();
     if !matches!(altchars, Value::None) {
         // Unlike the encode path, CPython coerces before asserting the length.
-        let alt = decode_input(altchars, vm)?.into_owned();
-        assert_len_bytes(&alt, 2)?;
-        translate(&mut data, &alt, b"+/");
+        let alt = decode_input(altchars, vm)?;
+        assert_len_bytes(alt, 2)?;
+        translate(&mut data, alt, b"+/");
     }
     let strict = validate.py_bool(vm)?;
     let decoded = b64_decode(&data, strict)?;
@@ -223,7 +223,7 @@ fn call_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_standard_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let StandardB64EncodeArgs { s } = StandardB64EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let encoded = b64_encode(encode_input(s, vm)?.as_ref(), &vm.heap.tracker)?;
+    let encoded = b64_encode(s.try_to_bytes(vm)?, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -231,7 +231,7 @@ fn call_standard_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 fn call_standard_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let StandardB64DecodeArgs { s } = StandardB64DecodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let decoded = b64_decode(decode_input(s, vm)?.as_ref(), false)?;
+    let decoded = b64_decode(decode_input(s, vm)?, false)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -240,7 +240,7 @@ fn call_standard_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 fn call_urlsafe_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let UrlsafeB64EncodeArgs { s } = UrlsafeB64EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let mut encoded = b64_encode(encode_input(s, vm)?.as_ref(), &vm.heap.tracker)?;
+    let mut encoded = b64_encode(s.try_to_bytes(vm)?, &vm.heap.tracker)?;
     translate(&mut encoded, b"+/", b"-_");
     Ok(allocate_bytes(encoded, vm.heap))
 }
@@ -249,7 +249,7 @@ fn call_urlsafe_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 fn call_urlsafe_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let UrlsafeB64DecodeArgs { s } = UrlsafeB64DecodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let mut data = decode_input(s, vm)?.into_owned();
+    let mut data = decode_input(s, vm)?.to_vec();
     translate(&mut data, b"-_", b"+/");
     let decoded = b64_decode(&data, false)?;
     Ok(allocate_bytes(decoded, vm.heap))
@@ -259,7 +259,7 @@ fn call_urlsafe_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 fn call_b32encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let B32EncodeArgs { s } = B32EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let encoded = b32_encode(memoryview_input(s, vm)?.as_ref(), B32_ALPHABET, &vm.heap.tracker)?;
+    let encoded = b32_encode(memoryview_input(s, vm)?, B32_ALPHABET, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -273,13 +273,13 @@ fn call_b32decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(casefold, vm);
     defer_drop!(map01, vm);
 
-    let mut data = decode_input(s, vm)?.into_owned();
+    let mut data = decode_input(s, vm)?.to_vec();
     if !data.len().is_multiple_of(8) {
         return Err(incorrect_padding());
     }
     if !matches!(map01, Value::None) {
-        let map = decode_input(map01, vm)?.into_owned();
-        assert_len_bytes(&map, 1)?;
+        let map = decode_input(map01, vm)?;
+        assert_len_bytes(map, 1)?;
         translate(&mut data, b"01", &[b'O', map[0]]);
     }
     let decoded = b32_decode(&data, B32_ALPHABET, casefold.py_bool(vm)?)?;
@@ -290,7 +290,7 @@ fn call_b32decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_b32hexencode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let B32HexEncodeArgs { s } = B32HexEncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let encoded = b32_encode(memoryview_input(s, vm)?.as_ref(), B32HEX_ALPHABET, &vm.heap.tracker)?;
+    let encoded = b32_encode(memoryview_input(s, vm)?, B32HEX_ALPHABET, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -301,7 +301,7 @@ fn call_b32hexdecode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(s, vm);
     defer_drop!(casefold, vm);
 
-    let data = decode_input(s, vm)?.into_owned();
+    let data = decode_input(s, vm)?.to_vec();
     if !data.len().is_multiple_of(8) {
         return Err(incorrect_padding());
     }
@@ -313,7 +313,7 @@ fn call_b32hexdecode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_b16encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let B16EncodeArgs { s } = B16EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let encoded = b16_encode(encode_input(s, vm)?.as_ref(), &vm.heap.tracker)?;
+    let encoded = b16_encode(s.try_to_bytes(vm)?, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -324,7 +324,7 @@ fn call_b16decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(s, vm);
     defer_drop!(casefold, vm);
 
-    let data = decode_input(s, vm)?.into_owned();
+    let data = decode_input(s, vm)?.to_vec();
     let decoded = b16_decode(&data, casefold.py_bool(vm)?)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
@@ -357,7 +357,7 @@ fn call_encodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_decodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let DecodebytesArgs { s } = DecodebytesArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let decoded = b64_decode(input_type_check(s, vm)?.as_ref(), false)?;
+    let decoded = b64_decode(input_type_check(s, vm)?, false)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -371,7 +371,7 @@ fn call_b85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(pad, vm);
 
     let pad = pad.py_bool(vm)?;
-    let encoded = b85_encode(memoryview_input(b, vm)?.as_ref(), B85_ALPHABET, pad, &vm.heap.tracker)?;
+    let encoded = b85_encode(memoryview_input(b, vm)?, B85_ALPHABET, pad, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -380,7 +380,7 @@ fn call_b85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let B85DecodeArgs { b } = B85DecodeArgs::from_args(args, vm)?;
     defer_drop!(b, vm);
 
-    let decoded = b85_decode(decode_input(b, vm)?.as_ref(), B85_ALPHABET, "base85")?;
+    let decoded = b85_decode(decode_input(b, vm)?, B85_ALPHABET, "base85")?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -389,7 +389,7 @@ fn call_z85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let Z85EncodeArgs { s } = Z85EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
 
-    let encoded = b85_encode(memoryview_input(s, vm)?.as_ref(), Z85_ALPHABET, false, &vm.heap.tracker)?;
+    let encoded = b85_encode(memoryview_input(s, vm)?, Z85_ALPHABET, false, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -398,7 +398,7 @@ fn call_z85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let Z85DecodeArgs { s } = Z85DecodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
 
-    let decoded = b85_decode(decode_input(s, vm)?.as_ref(), Z85_ALPHABET, "z85")?;
+    let decoded = b85_decode(decode_input(s, vm)?, Z85_ALPHABET, "z85")?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -426,7 +426,7 @@ fn call_a85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // `__bool__` goes undispatched (`limitations/classes.md`), but this order
     // holds once it lands. Owned as `tobytes()` is: a dispatched `__bool__`
     // re-enters the interpreter and could mutate a `bytearray`.
-    let data = memoryview_input(b, vm)?.into_owned();
+    let data = memoryview_input(b, vm)?.to_vec();
     let fold = foldspaces.py_bool(vm)?;
     let keep_padding = data.len() % 4 != 0 && pad.py_bool(vm)?;
     let adobe = adobe.py_bool(vm)?;
@@ -471,7 +471,7 @@ fn call_a85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     // Owned so the decode loop can re-enter the interpreter for a caller-given
     // `ignorechars`, which the borrowed input would rule out.
-    let data = decode_input(b, vm)?.into_owned();
+    let data = decode_input(b, vm)?.to_vec();
     let framed = a85_strip_adobe(&data, adobe.py_bool(vm)?)?;
     let fold = foldspaces.py_bool(vm)?;
     let ignore = match ignorechars.as_ref() {
@@ -1224,26 +1224,13 @@ fn translate(data: &mut [u8], from: &[u8], to: &[u8]) {
     }
 }
 
-/// Borrows the bytes of an encoder input.
-///
-/// Encoders reach `binascii` without a coercion step, so a `str` fails the
-/// buffer protocol with CPython's `a bytes-like object is required` wording.
-pub(super) fn encode_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [u8]>> {
-    encode_input_prefixed(value, vm, "")
-}
-
 /// Borrows the bytes of an encoder that coerces with `memoryview(s).tobytes()`
 /// first — the base32 and base85 pair — whose `TypeError` is prefixed as a
 /// result. The base64 and base16 encoders reach `binascii` directly instead.
-fn memoryview_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [u8]>> {
-    encode_input_prefixed(value, vm, "memoryview: ")
-}
-
-/// Shared body of the encoder coercions, where `prefix` selects the wording.
-fn encode_input_prefixed<'a>(value: &'a Value, vm: &'a VM<'_>, prefix: &str) -> RunResult<Cow<'a, [u8]>> {
-    value.as_bytes(vm).map(Cow::Borrowed).ok_or_else(|| {
+fn memoryview_input<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
+    value.as_bytes(vm).ok_or_else(|| {
         ExcType::type_error(format!(
-            "{prefix}a bytes-like object is required, not '{}'",
+            "memoryview: a bytes-like object is required, not '{}'",
             value.py_type_name(vm)
         ))
     })
@@ -1252,16 +1239,16 @@ fn encode_input_prefixed<'a>(value: &'a Value, vm: &'a VM<'_>, prefix: &str) -> 
 /// Borrows the bytes of a decoder input — CPython's `_bytes_from_decode_data`.
 ///
 /// Decoders additionally accept `str`, provided it is pure ASCII.
-pub(super) fn decode_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [u8]>> {
+pub(super) fn decode_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
     decode_input_described(value, vm, "a bytes-like object or ASCII string")
 }
 
 /// The same coercion with `expected` naming the accepted types, which
 /// `binascii`'s own functions word differently from `base64`'s.
-pub(super) fn decode_input_described<'a>(value: &'a Value, vm: &'a VM<'_>, expected: &str) -> RunResult<Cow<'a, [u8]>> {
+pub(super) fn decode_input_described<'a>(value: &'a Value, vm: &'a VM<'_>, expected: &str) -> RunResult<&'a [u8]> {
     if let Some(text) = value.as_str(vm) {
         if text.is_ascii() {
-            Ok(Cow::Borrowed(text.as_bytes()))
+            Ok(text.as_bytes())
         } else {
             Err(SimpleException::new_msg(
                 ExcType::ValueError,
@@ -1270,7 +1257,7 @@ pub(super) fn decode_input_described<'a>(value: &'a Value, vm: &'a VM<'_>, expec
             .into())
         }
     } else {
-        value.as_bytes(vm).map(Cow::Borrowed).ok_or_else(|| {
+        value.as_bytes(vm).ok_or_else(|| {
             ExcType::type_error(format!(
                 "argument should be {expected}, not '{}'",
                 value.py_type_name(vm)
@@ -1283,10 +1270,9 @@ pub(super) fn decode_input_described<'a>(value: &'a Value, vm: &'a VM<'_>, expec
 ///
 /// These two go through `base64._input_type_check`, whose message differs from
 /// both other paths.
-fn input_type_check<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [u8]>> {
+fn input_type_check<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
     value
         .as_bytes(vm)
-        .map(Cow::Borrowed)
         .ok_or_else(|| ExcType::type_error(format!("expected bytes-like object, not {}", value.py_type_name(vm))))
 }
 
