@@ -952,13 +952,13 @@ impl fmt::LowerHex for PythonIdDisplay<'_> {
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{CompileOptions, PrintWriter, ResourceTracker};
+    use monty_types::{CompileOptions, ResourceTracker};
 
     use super::*;
     use crate::{
         builtins::BuiltinsFunctions,
         defer_drop_mut,
-        heap::{DropGuard, HeapReader},
+        heap::DropGuard,
         heap_data::CellValue,
         intern::{BytesId, CompileInterns, LongIntId, StringId},
         modules::math::MathFunctions,
@@ -995,14 +995,7 @@ mod tests {
             }
         };
         let mut heap = Heap::new(16, ResourceTracker::default());
-        HeapReader::with(&mut heap, &mut executor, |reader, executor| {
-            let vm = &mut VM::new(
-                Vec::new(),
-                &mut executor.tables,
-                &executor.program,
-                reader,
-                PrintWriter::Disabled,
-            );
+        executor.program.with_test_vm(&mut heap, &mut executor.tables, |vm| {
             test(vm, ids);
         });
     }

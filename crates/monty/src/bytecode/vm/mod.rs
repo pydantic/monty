@@ -11,6 +11,7 @@ mod collections;
 mod compare;
 mod context_manager;
 mod exceptions;
+mod execution_state;
 mod format;
 mod import_star;
 mod iteration;
@@ -21,13 +22,15 @@ mod namespace;
 mod pattern;
 mod recursion;
 mod scheduler;
+mod snapshot_dump;
 
-use std::{borrow::Cow, mem};
+use std::{mem, sync::Arc};
 
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 pub(crate) use collections::unpack_exact;
 use exceptions::CaughtException;
+pub(crate) use execution_state::ExecutionState;
 pub(crate) use module_cache::ModuleCache;
 pub(crate) use module_finder::PendingImport;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
@@ -35,6 +38,7 @@ pub(crate) use namespace::{FrameGlobals, FrameNamespace, MissingNames, function_
 use recursion::frame_recursion_depth;
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
 use scheduler::Scheduler;
+pub(crate) use snapshot_dump::{SnapshotDumpRef, SuspendedExecution};
 
 use crate::{
     args::ArgValues,
@@ -647,27 +651,16 @@ impl CallFrame<'_> {
     }
 }
 
-/// VM state for pause/resume at external function calls.
-///
-/// **Ownership:** This struct OWNS the values (refcounts were already incremented).
-/// Must be used with the serialized Heap - HeapId values are indices into that heap.
-///
-/// **Usage:** When the VM pauses for an external call, call `into_snapshot()` to
-/// create this snapshot. The snapshot can be serialized and stored. On resume,
-/// use `restore()` to reconstruct the VM and continue execution.
-///
-/// Note: This struct does not implement `Clone` because `Value` uses manual
-/// reference counting. Snapshots transfer ownership - they are not copied.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+/// In-flight state of a suspended turn, including its owned heap references.
+/// Restore it with the same heap and execution state, or abandon it to release
+/// the turn's references while keeping its completed changes.
+#[derive(Debug)]
 pub struct VMSnapshot {
     /// Operand stack — locals and operands interleaved per frame.
     ///
     /// Each function frame's locals occupy `stack[frame.stack_base..frame.stack_base + frame.locals_count]`,
     /// with operands pushed above.
     pub(crate) stack: Vec<Value>,
-
-    /// Module-level (global) variable storage.
-    pub(crate) globals: Vec<Value>,
 
     /// Call frames (serializable form — stores FunctionId, not &Code).
     frames: Vec<SerializedFrame>,
@@ -693,44 +686,21 @@ pub struct VMSnapshot {
     /// In-flight resume effect for the paused lazy attribute lookup, if any.
     /// See [`VM::pending_lookup_effect`].
     pending_lookup_effect: Option<PendingLookupEffect>,
-
-    /// Working directory at the pause, including any `os.chdir` so far.
-    cwd: String,
-    /// The session's `random` state at the pause.
-    random: SessionRandom,
-    /// The session's file modules at the pause.
-    #[serde(default)]
-    modules: ModuleCache,
-}
-
-/// What an abandoned snapshot hands back to its REPL session: the state that
-/// outlives a snippet.
-pub(crate) struct AbandonedState {
-    pub globals: Vec<Value>,
-    pub cwd: String,
-    pub random: SessionRandom,
-    pub modules: ModuleCache,
 }
 
 impl VMSnapshot {
     /// Discards the in-flight execution state of a snapshot that will never be
     /// restored, releasing every heap reference it holds (operand and exception
-    /// stacks, scheduler tasks, pending resume effects), and returns the
-    /// globals, working directory, `random` generator and file modules so an
-    /// abandoned REPL snippet keeps its namespace, any `os.chdir` it made, any
-    /// seed it set and any module it finished importing. Mirrors `VM::drop`.
-    pub(crate) fn abandon(self, heap: &mut Heap) -> AbandonedState {
+    /// stacks, scheduler tasks, pending resume effects). Only unfinished
+    /// imports are removed from the session's state.
+    pub(crate) fn abandon(self, state: &mut ExecutionState, heap: &mut Heap) {
         let Self {
             stack,
-            globals,
             frames,
             exception_stack,
             mut scheduler,
             pending_effect,
             pending_lookup_effect,
-            cwd,
-            random,
-            mut modules,
             ..
         } = self;
         HeapReader::with(heap, &mut (), |heap, ()| {
@@ -742,15 +712,8 @@ impl VMSnapshot {
                 frame.namespace.drop_with(heap);
             }
             scheduler.cleanup(heap);
-            // a module body interrupted here must run again at the next import
-            modules.remove_unfinished(heap);
+            state.modules.remove_unfinished(heap);
         });
-        AbandonedState {
-            globals,
-            cwd,
-            random,
-            modules,
-        }
     }
 
     /// Number of tasks the scheduler held when this snapshot was taken.
@@ -785,7 +748,7 @@ pub struct VM<'h> {
     /// Indexed by slot number from `LoadGlobal`/`StoreGlobal` opcodes.
     /// Separated from the stack because globals persist across function calls
     /// and are accessed via dedicated opcodes.
-    pub(crate) globals: Vec<Value>,
+    pub(crate) globals: &'h mut Vec<Value>,
 
     /// Frame currently executing, or a placeholder while no task is active.
     current_frame: CallFrame<'h>,
@@ -890,16 +853,19 @@ pub struct VM<'h> {
 
     /// Module generator and state for initializing unseeded generators.
     /// Preserved across snapshots and REPL feeds, including `random.seed()` changes.
-    pub(crate) random: SessionRandom,
+    pub(crate) random: &'h mut SessionRandom,
 
     /// Modules imported from files, preserved across snapshots and REPL feeds.
-    pub(crate) modules: ModuleCache,
+    pub(crate) modules: &'h mut ModuleCache,
 
-    /// Working directory, `__file__` inputs and the assert-repr cap for this
-    /// run. Rebuilt from the executor on restore, except the working
-    /// directory, which travels in the snapshot because `os.chdir` may have
-    /// moved it.
+    /// Current sandbox working directory, shared across turns.
+    pub(crate) cwd: &'h mut Arc<str>,
+
+    /// Per-snippet environment, rebuilt from the program on restore.
     pub(crate) env: VmEnv<'h>,
+
+    /// Whether this turn might leave an unfinished import behind when dropped.
+    may_have_unfinished_imports: bool,
 }
 
 impl<'h> VM<'h> {
@@ -908,7 +874,7 @@ impl<'h> VM<'h> {
     /// The global-name map is borrowed mutably; committed intern entries and
     /// `program` remain shared while runtime compilation appends new entries.
     pub fn new(
-        globals: Vec<Value>,
+        state: &'h mut ExecutionState,
         tables: &'h mut SessionTables,
         program: &'h Program,
         heap: &'h mut HeapReader<'h>,
@@ -917,7 +883,7 @@ impl<'h> VM<'h> {
         let SessionTables { global_names, interns } = tables;
         Self {
             stack: Vec::with_capacity(64),
-            globals,
+            globals: &mut state.globals,
             current_frame: CallFrame::new_module(&program.module_code, 0),
             suspended_frames: Vec::with_capacity(16),
             heap,
@@ -936,9 +902,11 @@ impl<'h> VM<'h> {
             namespace_scratch: Vec::new(),
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
-            random: SessionRandom::default(),
-            modules: ModuleCache::default(),
+            random: &mut state.random,
+            modules: &mut state.modules,
+            cwd: &mut state.cwd,
             env: program.vm_env(),
+            may_have_unfinished_imports: false,
         }
     }
 
@@ -946,10 +914,10 @@ impl<'h> VM<'h> {
     ///
     /// The heap must already be deserialized. `FunctionId` values in frames
     /// are used to look up pre-compiled `Code` objects from the intern table;
-    /// `program.module_code` serves frames with `function_id = None`. The
-    /// snapshot's working directory overrides the program's.
+    /// `program.module_code` serves frames with `function_id = None`.
     pub fn restore(
         snapshot: VMSnapshot,
+        state: &'h mut ExecutionState,
         tables: &'h mut SessionTables,
         program: &'h Program,
         heap: &'h mut HeapReader<'h>,
@@ -988,7 +956,7 @@ impl<'h> VM<'h> {
 
         Self {
             stack: snapshot.stack,
-            globals: snapshot.globals,
+            globals: &mut state.globals,
             current_frame,
             suspended_frames: frames,
             heap,
@@ -1008,24 +976,18 @@ impl<'h> VM<'h> {
             // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
-            random: snapshot.random,
-            modules: snapshot.modules,
-            env: {
-                let mut env = program.vm_env();
-                env.cwd = Cow::Owned(snapshot.cwd);
-                env
-            },
+            random: &mut state.random,
+            modules: &mut state.modules,
+            cwd: &mut state.cwd,
+            env: program.vm_env(),
+            may_have_unfinished_imports: true,
         }
     }
 
     /// Consumes the VM and creates a snapshot for pause/resume.
     ///
-    /// **Ownership transfer:** This method takes `self` by value, consuming the VM.
-    /// The snapshot owns all Values (refcounts already correct from the live VM).
-    /// The heap and namespaces must be serialized alongside this snapshot.
-    ///
-    /// This is NOT a clone - it's a transfer. After calling this, the original VM
-    /// is gone and only the snapshot (+ serialized heap/namespaces) represents the state.
+    /// Transfers in-flight references to the snapshot and releases the borrow
+    /// of the execution state. Both are needed to resume the run.
     pub fn snapshot(mut self) -> VMSnapshot {
         // Always fully released (== MAX) here — see the field doc. Asserted to
         // catch a future `run()` call site that can suspend mid-re-entry.
@@ -1043,11 +1005,12 @@ impl<'h> VM<'h> {
         // included in the snapshot and their refcounts must be decremented.
         self.json_string_cache.drop_all(self.heap);
 
+        // An unfinished import must keep its cache entry while its frame is suspended.
+        self.may_have_unfinished_imports = false;
         VMSnapshot {
             // Move values directly — no clone, no refcount increment needed
             // (the VM owned them, now the snapshot owns them)
             stack: mem::take(&mut self.stack),
-            globals: mem::take(&mut self.globals),
             frames: if self.current_frame.is_parked {
                 Vec::new()
             } else {
@@ -1062,11 +1025,6 @@ impl<'h> VM<'h> {
             scheduler: mem::take(&mut self.scheduler),
             pending_effect: self.pending_effect.take(),
             pending_lookup_effect: self.pending_lookup_effect.take(),
-            // Reset to the starting directory rather than `take` (an empty
-            // string), so a later `take_changed_cwd` on this VM stays honest.
-            cwd: mem::replace(&mut self.env.cwd, Cow::Borrowed(self.env.initial_cwd)).into_owned(),
-            random: mem::take(&mut self.random),
-            modules: mem::take(&mut self.modules),
         }
     }
 
@@ -1076,25 +1034,6 @@ impl<'h> VM<'h> {
     /// resolved values into when the lookup originated from a function scope.
     pub fn current_stack_base(&self) -> usize {
         self.current_frame.stack_base()
-    }
-
-    /// Takes ownership of the globals vector, replacing it with an empty vec.
-    ///
-    /// Used by the REPL to reclaim globals after VM execution completes.
-    /// Must be called before the VM is dropped, since `Drop` will clean up
-    /// any remaining globals with `drop_with`.
-    pub fn take_globals(&mut self) -> Vec<Value> {
-        mem::take(&mut self.globals)
-    }
-
-    /// Takes the working directory if this run owns one: after an `os.chdir`,
-    /// or always for a restored VM (its snapshot carried the directory). The
-    /// REPL writes it back so a directory change persists into later feeds.
-    pub fn take_changed_cwd(&mut self) -> Option<String> {
-        match mem::replace(&mut self.env.cwd, Cow::Borrowed(self.env.initial_cwd)) {
-            Cow::Owned(cwd) => Some(cwd),
-            Cow::Borrowed(_) => None,
-        }
     }
 
     /// Rejects NUL-byte and empty paths, then joins the rest to cwd before yielding an OS call.
@@ -1113,7 +1052,7 @@ impl<'h> VM<'h> {
                 Err(err)
             }
         } else {
-            resolve_call_paths(&mut call, &self.env.cwd);
+            resolve_call_paths(&mut call, self.cwd);
             // The effect is armed only after this exit is accepted for dispatch.
             Ok(Some(FrameExit::OsCall {
                 function_call: call,
@@ -2970,18 +2909,17 @@ impl ContainsHeap for VM<'_> {
 
 /// Ensures proper reference-counting cleanup when the VM goes out of scope.
 ///
-/// Drains exception stack, operand stack, globals, scheduler state, and JSON
-/// string cache — all of which may hold heap references that need their
-/// ref-counts decremented. Fields that were already emptied (e.g. by
-/// `take_globals`) are harmlessly drained as empty.
+/// Releases in-flight heap references. The execution state owner releases
+/// globals and completed modules at the end of the run or session.
 impl Drop for VM<'_> {
     fn drop(&mut self) {
         release_pending_effect(self.pending_effect.take(), self.heap);
         self.pending_lookup_effect.take().drop_with(self.heap);
         self.cleanup_current_task();
         self.scheduler.cleanup(self.heap);
-        self.globals.drain(..).drop_with(self.heap);
-        mem::take(&mut self.modules).drop_with(self.heap);
+        if self.may_have_unfinished_imports {
+            self.modules.remove_unfinished(self.heap);
+        }
         self.json_string_cache.drop_all(self.heap);
     }
 }

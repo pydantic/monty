@@ -1,11 +1,11 @@
-use monty_types::{PrintWriter, ResourceTracker};
+use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 
 use super::*;
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
-    heap::{Heap, HeapData, HeapReader},
+    heap::{Heap, HeapData},
     run::{Program, SessionTables},
     types::{LongInt, str::allocate_string},
 };
@@ -14,10 +14,7 @@ fn with_test_vm<R>(f: impl for<'h> FnOnce(&mut VM<'h>) -> R) -> R {
     let mut heap = Heap::new(16, ResourceTracker::default());
     let mut tables = SessionTables::default();
     let program = Program::for_tests();
-    HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-        let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-        f(&mut vm)
-    })
+    program.with_test_vm(&mut heap, &mut tables, |vm| f(vm))
 }
 
 #[test]

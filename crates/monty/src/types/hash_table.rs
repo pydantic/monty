@@ -1032,13 +1032,13 @@ impl TableCursor {
 mod tests {
     use std::{thread, time::Duration};
 
-    use monty_types::{PrintWriter, ResourceLimits, ResourceTracker};
+    use monty_types::{ResourceLimits, ResourceTracker};
 
     use super::{CloneTableEntry, PyHashTable, TableCursor, TableEntry, TableSource};
     use crate::{
         bytecode::VM,
         exception_private::{RunError, RunResult},
-        heap::{ContainsHeap, DropWithContext, Heap, HeapReader},
+        heap::{ContainsHeap, DropWithContext, Heap},
         run::{Program, SessionTables},
         types::set::SetEntry,
         value::Value,
@@ -1060,10 +1060,7 @@ mod tests {
     {
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
-        HeapReader::with(heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-            source.copy_table(&mut vm)
-        })
+        program.with_test_vm(heap, &mut tables, |vm| source.copy_table(vm))
     }
 
     /// Compact output must not renumber the source or a cursor restored alongside it.

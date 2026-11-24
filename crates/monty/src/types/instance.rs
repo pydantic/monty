@@ -1219,25 +1219,30 @@ mod tests {
         )
         .unwrap();
         let mut heap = Heap::new(16, ResourceTracker::default());
-        let globals = executor.empty_globals();
+        let mut state = executor.execution_state();
 
-        HeapReader::with(&mut heap, &mut executor, |reader, executor| {
-            let vm = &mut VM::new(
-                globals,
-                &mut executor.tables,
-                &executor.program,
-                reader,
-                PrintWriter::Disabled,
-            );
-            let FrameExit::Return(value) = vm.run_external().unwrap() else {
-                unreachable!("the program returns its instance")
-            };
-            defer_drop!(value, vm);
-            assert!(
-                value
-                    .py_repr_fmt(&mut FailingWriter, vm, &mut LazyHeapSet::default())
-                    .is_err()
-            );
-        });
+        HeapReader::with(
+            &mut heap,
+            &mut (&mut executor, &mut state),
+            |reader, (executor, state)| {
+                let vm = &mut VM::new(
+                    state,
+                    &mut executor.tables,
+                    &executor.program,
+                    reader,
+                    PrintWriter::Disabled,
+                );
+                let FrameExit::Return(value) = vm.run_external().unwrap() else {
+                    unreachable!("the program returns its instance")
+                };
+                defer_drop!(value, vm);
+                assert!(
+                    value
+                        .py_repr_fmt(&mut FailingWriter, vm, &mut LazyHeapSet::default())
+                        .is_err()
+                );
+            },
+        );
+        state.clear_heap_values(&mut heap);
     }
 }

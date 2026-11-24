@@ -2305,12 +2305,11 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Dict> {
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{PrintWriter, ResourceTracker};
+    use monty_types::ResourceTracker;
 
     use super::{Dict, DictKind};
     use crate::{
-        bytecode::VM,
-        heap::{DropWithContext, Heap, HeapData, HeapReader},
+        heap::{DropWithContext, Heap, HeapData},
         run::{Program, SessionTables},
         types::List,
         value::Value,
@@ -2325,16 +2324,11 @@ mod tests {
         let source = Dict::new();
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
-        HeapReader::with(
-            &mut heap,
-            &mut (&program, &mut tables, &source),
-            |reader, (program, tables, source)| {
-                let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-                let copy = vm.heap.protect(*source).copy_as(kind, &mut vm).unwrap();
-                assert!(copy.contains_refs);
-                assert!(copy.is_defaultdict());
-                copy.drop_with(&mut vm);
-            },
-        );
+        program.with_test_vm(&mut heap, &mut tables, |vm| {
+            let copy = vm.heap.protect(&source).copy_as(kind, vm).unwrap();
+            assert!(copy.contains_refs);
+            assert!(copy.is_defaultdict());
+            copy.drop_with(vm);
+        });
     }
 }

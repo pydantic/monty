@@ -112,7 +112,7 @@ impl VM<'_> {
                 SEARCH_PATH
                     .iter()
                     .map(|entry| match entry {
-                        SearchEntry::Cwd => vm.env.cwd.to_string(),
+                        SearchEntry::Cwd => vm.cwd.to_string(),
                     })
                     .collect(),
             )
@@ -274,6 +274,7 @@ impl VM<'_> {
         let module = Module::file(name.clone(), namespace, path.to_owned());
         let module_id = self.heap.allocate(HeapData::Module(Box::new(module)));
         self.modules.insert(name, module_id, self.heap);
+        self.may_have_unfinished_imports = true;
         self.push(Value::Ref(module_id));
 
         self.heap.inc_ref(namespace);
@@ -364,7 +365,7 @@ impl VM<'_> {
         };
         dirs.filter_map(|dir| {
             let dir = dir.as_str_heap(self.heap, self.interns)?;
-            (!dir.contains('\0')).then(|| posix_join(&self.env.cwd, dir))
+            (!dir.contains('\0')).then(|| posix_join(self.cwd, dir))
         })
         .take(MAX_SEARCH_DIRS)
         .collect()

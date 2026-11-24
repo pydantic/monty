@@ -1,6 +1,5 @@
 //! Public interface for running Monty code.
 use std::{
-    borrow::Cow,
     mem,
     sync::{Arc, LazyLock},
 };
@@ -13,7 +12,7 @@ pub use monty_types::{CompileOptions, OsPolicy};
 use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
-    bytecode::{Code, CodeBuilder, Compiler, FrameExit, Opcode, VM},
+    bytecode::{Code, CodeBuilder, Compiler, ExecutionState, FrameExit, Opcode, VM},
     exception_private::{ExcTypeExt, RunError, RunResult},
     heap::{DropWithContext, Heap, HeapReader},
     intern::{CompileInterns, Interns, StringId},
@@ -202,16 +201,12 @@ impl MontyRun {
 
         // Create heap and VM with empty globals, then populate inputs with VM alive
         let mut heap = Heap::new(executor.namespace_size(), resource_tracker);
-        let globals = executor.empty_globals();
-        let (converted, vm_state) =
-            HeapReader::with(&mut heap, &mut (&mut executor, print), |reader, (executor, print)| {
-                let mut vm = VM::new(
-                    globals,
-                    &mut executor.tables,
-                    &executor.program,
-                    reader,
-                    print.reborrow(),
-                );
+        let mut state = executor.execution_state();
+        let result = HeapReader::with(
+            &mut heap,
+            &mut (&mut executor, &mut state, print),
+            |reader, (executor, state, print)| {
+                let mut vm = VM::new(state, &mut executor.tables, &executor.program, reader, print.reborrow());
                 populate_inputs(inputs, &mut vm)?;
 
                 // Start execution
@@ -221,8 +216,15 @@ impl MontyRun {
                 let converted = convert_frame_exit(vm_result, &mut vm);
                 let vm_state = check_snapshot_from_converted(&converted, vm);
                 Ok((converted, vm_state))
-            })?;
-        build_run_progress(converted, vm_state, executor, heap)
+            },
+        );
+        match result {
+            Ok((converted, vm_state)) => build_run_progress(converted, vm_state, state, executor, heap),
+            Err(error) => {
+                state.drop_with(&mut heap);
+                Err(error)
+            }
+        }
     }
 }
 
@@ -284,15 +286,11 @@ pub(crate) struct Program {
     pub(crate) cwd: Arc<str>,
 }
 
-/// Per-run environment handed to a fresh VM: the sandbox working directory,
-/// what `__file__` derives from and the assert-repr cap. Built by
+/// Fixed per-run environment: what `__file__` derives from and the assert-repr cap. Built by
 /// [`Program::vm_env`] so every `VM::new` call site agrees on how the
 /// values derive from the executor. Borrows rather than clones: a VM is
 /// built per run, so this must not allocate.
 pub(crate) struct VmEnv<'h> {
-    /// Working directory `os.getcwd()` reports and relative paths resolve
-    /// against. Borrowed from the executor until `os.chdir` replaces it.
-    pub(crate) cwd: Cow<'h, str>,
     /// Working directory the run started in; `__file__` is `script_name`'s
     /// final component placed under it, unaffected by a later `os.chdir`.
     pub(crate) initial_cwd: &'h str,
@@ -330,7 +328,6 @@ impl Default for VmEnv<'static> {
     /// root working directory, no script.
     fn default() -> Self {
         Self {
-            cwd: Cow::Borrowed(DEFAULT_CWD),
             initial_cwd: DEFAULT_CWD,
             script_name: "",
             assert_repr_max_bytes: AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
@@ -565,21 +562,20 @@ impl Executor {
     ) -> Result<MontyObject, MontyException> {
         let heap_capacity = self.heap_capacity;
         let mut heap = Heap::new(heap_capacity, resource_tracker);
-        let globals = self.empty_globals();
+        let mut state = self.execution_state();
 
         // Create VM first, then populate inputs with VM alive
-        let result = HeapReader::with(&mut heap, &mut (&mut *self, print), |reader, (executor, print)| {
-            let mut vm = VM::new(
-                globals,
-                &mut executor.tables,
-                &executor.program,
-                reader,
-                print.reborrow(),
-            );
-            populate_inputs(inputs, &mut vm)?;
-            Program::run_to_completion(&mut vm)
-        });
+        let result = HeapReader::with(
+            &mut heap,
+            &mut (&mut *self, &mut state, print),
+            |reader, (executor, state, print)| {
+                let mut vm = VM::new(state, &mut executor.tables, &executor.program, reader, print.reborrow());
+                populate_inputs(inputs, &mut vm)?;
+                Program::run_to_completion(&mut vm)
+            },
+        );
 
+        state.drop_with(&mut heap);
         if heap.size() > heap_capacity {
             self.heap_capacity = heap.size();
         }
@@ -614,19 +610,19 @@ impl Executor {
         resource_tracker: ResourceTracker,
     ) -> Result<RefCountOutput, MontyException> {
         let mut heap = Heap::new(self.namespace_size(), resource_tracker);
-        let globals = self.empty_globals();
+        let mut state = self.execution_state();
 
-        HeapReader::with(&mut heap, self, |reader, executor| {
+        let result = HeapReader::with(&mut heap, &mut (self, &mut state), |reader, (executor, state)| {
             // Create VM, populate inputs, and run
             let mut vm = VM::new(
-                globals,
+                state,
                 &mut executor.tables,
                 &executor.program,
                 reader,
                 PrintWriter::Stdout,
             );
             populate_inputs(inputs, &mut vm)?;
-            // Lookups are answered before the globals are taken below: an
+            // Lookups are answered before inspecting refcounts below: an
             // armed `hasattr()` / `getattr()` effect runs the module on.
             let frame_exit_result = answer_unserved_lookups(vm.run_external(), &mut vm);
 
@@ -637,10 +633,6 @@ impl Executor {
             vm.__finalize_tasks_for_tests();
             vm.__force_gc_for_tests();
 
-            // Take globals out of the VM so we can inspect them, but keep VM alive
-            // for heap access and later conversion.
-            let globals = vm.take_globals();
-
             // Read refcounts BEFORE converting the return value, because
             // `frame_exit_to_object` drops the return value (decrementing its refcount).
             let mut counts = ahash::AHashMap::new();
@@ -648,8 +640,8 @@ impl Executor {
 
             for (namespace_id, name_id) in vm.global_names.iter() {
                 let idx = namespace_id.index();
-                if idx < globals.len()
-                    && let Value::Ref(id) = &globals[idx]
+                if idx < vm.globals.len()
+                    && let Value::Ref(id) = &vm.globals[idx]
                 {
                     counts.insert(vm.interns.get_str(name_id).to_owned(), vm.heap.get_refcount(*id));
                     roots.push(*id);
@@ -675,9 +667,6 @@ impl Executor {
             let value = frame_exit_to_object(frame_exit_result, &mut vm)
                 .map_err(|e| e.into_python_exception(vm.interns, |_| Some(&*executor.program.code)))?;
 
-            // Drop globals with proper ref counting
-            globals.drop_with(vm.heap);
-
             let allocations_since_gc = vm.heap.get_allocations_since_gc();
 
             Ok(RefCountOutput {
@@ -687,24 +676,43 @@ impl Executor {
                 heap_count,
                 allocations_since_gc,
             })
-        })
+        });
+        state.drop_with(&mut heap);
+        result
     }
 
-    /// Creates an empty globals vector with all slots set to `Undefined`.
-    ///
-    /// Used to initialize global storage before input population. The VM is created
-    /// with these empty globals, then [`populate_inputs`] fills
-    /// the input slots while the VM is alive.
-    pub(crate) fn empty_globals(&self) -> Vec<Value> {
-        (0..self.namespace_size()).map(|_| Value::Undefined).collect()
+    /// Creates turn-persistent state for a fresh execution of this program.
+    pub(crate) fn execution_state(&self) -> ExecutionState {
+        let globals = (0..self.namespace_size()).map(|_| Value::Undefined).collect();
+        ExecutionState::new(globals, Arc::clone(&self.program.cwd))
     }
 }
 
 impl Program {
+    /// Gives unit tests a VM without a module namespace for calling runtime helpers.
+    #[cfg(test)]
+    pub(crate) fn with_test_vm<R>(
+        &self,
+        heap: &mut Heap,
+        tables: &mut SessionTables,
+        test: impl for<'h> FnOnce(&mut VM<'h>) -> R,
+    ) -> R {
+        let mut state = ExecutionState::new(Vec::new(), Arc::clone(&self.cwd));
+        let result = HeapReader::with(
+            heap,
+            &mut (self, tables, &mut state),
+            |reader, (program, tables, state)| {
+                let mut vm = VM::new(state, tables, program, reader, PrintWriter::Disabled);
+                test(&mut vm)
+            },
+        );
+        state.drop_with(heap);
+        result
+    }
+
     /// Builds the [`VmEnv`] a VM run from this program starts with.
     pub(crate) fn vm_env(&self) -> VmEnv<'_> {
         VmEnv {
-            cwd: Cow::Borrowed(&self.cwd),
             initial_cwd: &self.cwd,
             script_name: &self.script_name,
             assert_repr_max_bytes: self.assert_repr_max_bytes,
@@ -791,7 +799,7 @@ impl Program {
 /// Converts `MontyObject` inputs to `Value`s and writes them into the VM's globals.
 ///
 /// This runs with the VM alive so that `to_value` has access to the full VM context.
-/// On error partway through, the VM's `Drop` impl will drain globals and
+/// On error partway through, the execution state owner will drain globals and
 /// properly decrement refcounts for any already-converted values.
 fn populate_inputs(inputs: Vec<MontyObject>, vm: &mut VM<'_>) -> Result<(), MontyException> {
     if inputs.len() > vm.globals.len() {

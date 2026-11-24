@@ -151,6 +151,7 @@ fn mutation_in_map_closure(list_id: HeapId, other_id: HeapId, heap: &mut Heap) {
 /// quantified. Returning a value containing `'h` would require it to satisfy any
 /// caller-chosen lifetime — in particular `'static`, as in this test — which is
 /// impossible because the heap reader is bound to the with-call's stack frame.
+/// The other VM inputs come from outside the closure.
 ///
 /// Expected: a borrow-check error preventing the VM from escaping.
 #[cfg(heap_reader_compile_fail_test_smuggle_vm)]
@@ -158,12 +159,11 @@ fn smuggle_vm(
     heap: &mut Heap,
     tables: &'static mut crate::run::SessionTables,
     program: &'static crate::run::Program,
+    state: &'static mut crate::bytecode::ExecutionState,
 ) -> VM<'static> {
-    HeapReader::with(
-        heap,
-        &mut (tables, monty_types::PrintWriter::Disabled),
-        |reader, (tables, print)| VM::new(Vec::new(), tables, program, reader, print.reborrow()),
-    )
+    HeapReader::with(heap, &mut (tables, state), |reader, (tables, state)| {
+        VM::new(state, tables, program, reader, monty_types::PrintWriter::Disabled)
+    })
 }
 
 /// Must not compile: smuggling an outer `HeapReader` into an inner

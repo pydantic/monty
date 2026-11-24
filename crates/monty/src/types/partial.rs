@@ -568,11 +568,11 @@ fn deep_copy_keywords<'h>(
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{PrintWriter, ResourceTracker};
+    use monty_types::ResourceTracker;
 
     use super::*;
     use crate::{
-        heap::{Heap, HeapReader},
+        heap::Heap,
         run::{Program, SessionTables},
         types::str::allocate_string,
     };
@@ -583,8 +583,7 @@ mod tests {
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
 
-        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+        program.with_test_vm(&mut heap, &mut tables, |vm| {
             let bound = vec![
                 (Value::Int(1), Value::Int(10)),
                 (allocate_string("key", vm.heap), Value::Int(20)),

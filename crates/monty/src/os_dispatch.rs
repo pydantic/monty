@@ -19,7 +19,7 @@
 //! conversions, then wire the new variant into the fs/ dispatcher and any
 //! host backends.
 
-use std::{borrow::Cow, mem};
+use std::{mem, sync::Arc};
 
 use ahash::AHashSet;
 use monty_types::{
@@ -229,7 +229,7 @@ impl PreConversionEffect {
             Self::UrandomLength { size } => urandom_reply(value, size),
             Self::Chdir { path, spelled } => {
                 check_chdir_stat(&value, &spelled)?;
-                vm.env.cwd = Cow::Owned(normalize_virtual_path(&path).into_owned());
+                *vm.cwd = Arc::from(normalize_virtual_path(&path));
                 Ok(MontyObject::none())
             }
             Self::StatField(field) => stat_field_reply(&value, field),
@@ -241,7 +241,7 @@ impl PreConversionEffect {
                 first,
                 first_identity,
                 second,
-            } => samefile_second_reply(&value, &first, &first_identity, &second, &vm.env.cwd),
+            } => samefile_second_reply(&value, &first, &first_identity, &second, vm.cwd),
             Self::ExpandUser { tail, is_bytes } => expand_user_reply(&value, &tail, is_bytes),
             Self::ExpandVars { path, is_bytes } => expand_vars_reply(&value, &path, is_bytes, &vm.heap.tracker),
         };
