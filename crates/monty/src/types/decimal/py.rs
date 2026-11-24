@@ -44,15 +44,10 @@ pub(crate) fn decimal_value(decimal: Decimal, vm: &VM<'_>) -> Value {
     Value::allocate(decimal, vm.heap)
 }
 
-/// The `Decimal` a value refers to, if it is one.
-pub(crate) fn as_decimal<'a>(value: &Value, vm: &'a VM<'_>) -> Option<&'a Decimal> {
-    value.get_as::<Decimal>(vm.heap)
-}
-
 /// Converts an operand as the arithmetic operators do: a `Decimal` as is, an `int`
 /// (or `bool`) exactly, anything else `None` for `NotImplemented`.
 fn implicit<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<Option<Cow<'a, Decimal>>> {
-    if let Some(decimal) = as_decimal(value, vm) {
+    if let Some(decimal) = value.get_as::<Decimal>(vm.heap) {
         return Ok(Some(Cow::Borrowed(decimal)));
     }
     Ok(match value.py_value(vm) {
@@ -185,7 +180,7 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if matches!(value, Value::Undefined) {
         return Ok(decimal_value(Decimal::zero(false, 0), vm));
     }
-    if as_decimal(&value, vm).is_some() {
+    if value.get_as::<Decimal>(vm.heap).is_some() {
         return Ok(value);
     }
     defer_drop!(value, vm);
@@ -195,7 +190,7 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// Converts any value `Decimal()` accepts, raising conversion conditions on `ctx_id`.
 fn construct(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decimal> {
-    if let Some(decimal) = as_decimal(value, vm) {
+    if let Some(decimal) = value.get_as::<Decimal>(vm.heap) {
         return Ok(decimal.clone());
     }
     if let Some(text) = value.as_either_str(vm.heap) {
@@ -316,7 +311,7 @@ fn from_float_arg(value: &Value, vm: &VM<'_>) -> RunResult<Decimal> {
 /// `Decimal.from_number(number)`: an `int`, `float` or `Decimal`, exactly.
 pub(crate) fn class_from_number(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("Decimal.from_number", vm.heap)?;
-    if as_decimal(&value, vm).is_some() {
+    if value.get_as::<Decimal>(vm.heap).is_some() {
         return Ok(value);
     }
     defer_drop!(value, vm);
@@ -1440,7 +1435,7 @@ pub(crate) fn call_context_method(
             let args = args.reject_kwargs(&qualname, vm.heap)?;
             let a = args.get_one_arg(&qualname, vm.heap)?;
             defer_drop!(a, vm);
-            if op == UnaryOp::Canonical && as_decimal(a, vm).is_none() {
+            if op == UnaryOp::Canonical && a.get_as::<Decimal>(vm.heap).is_none() {
                 return Err(ExcType::type_error("argument must be a Decimal"));
             }
             let result = with_ctx(vm, ctx_id, |ctx, vm| unary_op(op, &*convert(a, vm)?, ctx))?;

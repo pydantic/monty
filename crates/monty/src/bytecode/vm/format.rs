@@ -151,7 +151,7 @@ impl VM<'_> {
             self.reject_stringifier(value)?;
             // Only a `Decimal` needs the spec back as text; checking first keeps the
             // render off every other value's path.
-            if decimal::py::as_decimal(value, self).is_some()
+            if value.get_as::<decimal::Decimal>(self.heap).is_some()
                 && let Some(formatted) = self.try_format_decimal(value, &spec.to_spec_string())?
             {
                 return Ok(formatted);
@@ -256,10 +256,11 @@ impl VM<'_> {
     /// Formats a `Decimal` with its own spec grammar (`Decimal.__format__`), under the
     /// current context's rounding and capitals; `None` for any other value.
     fn try_format_decimal(&mut self, value: &Value, spec: &str) -> Result<Option<String>, RunError> {
-        if decimal::py::as_decimal(value, self).is_some() {
+        if value.get_as::<decimal::Decimal>(self.heap).is_some() {
             let ctx_id = decimal::py_context::current_context(self);
             decimal::py::with_ctx(self, ctx_id, |ctx, vm| {
-                decimal::py::as_decimal(value, vm)
+                value
+                    .get_as::<decimal::Decimal>(vm.heap)
                     .expect("checked above")
                     .format_spec(spec, ctx)
             })

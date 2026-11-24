@@ -36,7 +36,7 @@ use crate::{
     modules::ModuleFunctions,
     os_dispatch::{PostConversionEffect, urandom_reply_error},
     types::{
-        Bytes, List, LongInt, Module, PyTrait, Tuple, Type,
+        List, LongInt, Module, PyTrait, Tuple, Type,
         bytes::allocate_bytes,
         iter::collect_owned_iterable,
         long_int::bigint_to_f64_checked,
@@ -217,7 +217,7 @@ fn seed_from_reply(
     vm: &mut VM<'_>,
 ) -> RunResult<Value> {
     defer_drop!(reply, vm);
-    let seeded = match value_as_bytes(reply, vm) {
+    let seeded = match reply.as_bytes(vm) {
         Some(bytes) if bytes.len() == SEED_BYTES => Ok(Mt19937::from_entropy(bytes)),
         Some(bytes) => Err(urandom_reply_error(Ok(bytes.len()), SEED_BYTES)),
         None => Err(urandom_reply_error(Err(&reply.py_type_name(vm)), SEED_BYTES)),
@@ -239,14 +239,6 @@ fn seed_from_reply(
                 unreachable!("a seeded generator never suspends")
             }
         },
-    }
-}
-
-/// Borrows the bytes behind a `bytes` value, interned or heap-allocated.
-fn value_as_bytes<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<&'a [u8]> {
-    match value {
-        Value::InternBytes(id) => Some(vm.interns.get_bytes(*id)),
-        _ => value.get_as::<Bytes>(vm.heap).map(Bytes::as_slice),
     }
 }
 

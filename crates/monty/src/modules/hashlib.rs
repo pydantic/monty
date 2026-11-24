@@ -18,7 +18,7 @@ use num_bigint::Sign;
 use num_traits::ToPrimitive;
 
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues, LaxBool, StrArg, long_int},
+    args::{ArgValues, FromArgs, KwargsValues, LaxBool, StrArg},
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
@@ -27,7 +27,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
-        Bytes, Module, Set, Type, allocate_string,
+        Module, Set, Type, allocate_string,
         bytes::allocate_bytes,
         hashlib::{Blake2Params, Blake2b, Blake2s, DigestBytes, HashAlgorithm, HashObject, hash_input},
     },
@@ -599,11 +599,7 @@ pub(crate) fn blake2_init(kind: Blake2Kind, vm: &mut VM<'_>, args: ArgValues) ->
 /// Borrows a `bytes` argument with the `Py_buffer` converter's message, which
 /// differs from the data argument's (see [`hash_input`]).
 fn buffer<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
-    match value {
-        Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
-        _ if let Some(bytes) = value.get_as::<Bytes>(vm.heap) => Ok(bytes.as_slice()),
-        _ => Err(not_bytes_like(value, vm)),
-    }
+    value.as_bytes(vm).ok_or_else(|| not_bytes_like(value, vm))
 }
 
 /// `TypeError: a bytes-like object is required, not 'X'`.
@@ -620,7 +616,7 @@ fn c_int(value: &Value, vm: &VM<'_>) -> RunResult<i32> {
     match value {
         Value::Bool(b) => Ok(i32::from(*b)),
         Value::Int(i) => i32::try_from(*i).map_err(|_| overflow_error("Python int too large to convert to C int")),
-        _ if long_int(value, vm).is_some() => Err(overflow_error("Python int too large to convert to C int")),
+        _ if value.as_long_int(vm).is_some() => Err(overflow_error("Python int too large to convert to C int")),
         _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
     }
 }
@@ -631,7 +627,7 @@ fn c_long(value: &Value, vm: &VM<'_>) -> RunResult<i64> {
     match value {
         Value::Bool(b) => Ok(i64::from(*b)),
         Value::Int(i) => Ok(*i),
-        _ if long_int(value, vm).is_some() => Err(ExcType::overflow_c_long()),
+        _ if value.as_long_int(vm).is_some() => Err(ExcType::overflow_c_long()),
         _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
     }
 }
@@ -642,7 +638,7 @@ fn c_unsigned(value: &Value, c_type: &str, vm: &VM<'_>) -> RunResult<u64> {
     match value {
         Value::Bool(b) => Ok(u64::from(*b)),
         Value::Int(i) => u64::try_from(*i).map_err(|_| ExcType::value_error_negative_int()),
-        _ => match long_int(value, vm) {
+        _ => match value.as_long_int(vm) {
             Some(big) if big.sign() == Sign::Minus => Err(ExcType::value_error_negative_int()),
             Some(big) => big
                 .to_u64()

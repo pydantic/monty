@@ -15,7 +15,7 @@
 //! `WrongType` lets the extraction site pick CPython's wording, `Raise`
 //! surfaces a fully-formed error unchanged.
 
-use num_bigint::{BigInt, Sign};
+use num_bigint::Sign;
 use num_traits::ToPrimitive;
 
 use crate::{
@@ -295,13 +295,7 @@ fn resolve_index_dunder(value: Value, vm: &mut VM<'_>) -> Result<Value, FromValu
 /// rewrite would produce the absurd "must be int, not int". Also used by
 /// consumer-specific int impls (e.g. `timedelta`'s component extraction).
 pub(crate) fn is_long_int(value: &Value, vm: &VM<'_>) -> bool {
-    long_int(value, vm).is_some()
-}
-
-/// The big integer behind an `int` too wide for `Value::Int`, if that is
-/// what `value` is; the one lookup for every C-width converter.
-pub(crate) fn long_int<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<&'a BigInt> {
-    value.as_long_int(vm)
+    value.as_long_int(vm).is_some()
 }
 
 impl FromValue for u64 {
@@ -315,7 +309,7 @@ impl FromValue for u64 {
         match value {
             Value::Bool(b) => Ok(Self::from(b)),
             Value::Int(i) => Self::try_from(i).map_err(|_| FromValueFail::Raise(ExcType::value_error_negative_int())),
-            _ => match long_int(&value, vm) {
+            _ => match value.as_long_int(vm) {
                 Some(big) if big.sign() == Sign::Minus => {
                     value.drop_with(vm);
                     Err(FromValueFail::Raise(ExcType::value_error_negative_int()))

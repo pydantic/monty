@@ -6,8 +6,9 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     heap::{Heap, HeapData, HeapReader},
+    intern::{CompileInterns, Interns},
     run::{Program, SessionTables},
-    types::{LongInt, str::allocate_string},
+    types::{Bytes, List, LongInt, NamedTuple, str::allocate_string},
 };
 
 fn with_test_vm<R>(f: impl for<'h> FnOnce(&mut VM<'h>) -> R) -> R {
@@ -18,6 +19,42 @@ fn with_test_vm<R>(f: impl for<'h> FnOnce(&mut VM<'h>) -> R) -> R {
         let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
         f(&mut vm)
     })
+}
+
+#[test]
+fn access_allocated_payload_by_type() {
+    with_test_vm(|vm| {
+        let bytes = Value::allocate(Bytes::new(vec![1, 2]), vm.heap);
+        let point = Value::allocate(NamedTuple::new("Point".to_owned(), vec![], vec![]), vm.heap);
+
+        assert_eq!(
+            bytes.read_as::<Bytes>(vm.heap).unwrap().get(vm.heap).as_slice(),
+            &[1, 2]
+        );
+        assert!(bytes.read_as::<List>(vm.heap).is_none());
+        assert!(Value::None.read_as::<Bytes>(vm.heap).is_none());
+
+        assert_eq!(bytes.get_as::<Bytes>(vm.heap).unwrap().as_slice(), &[1, 2]);
+        assert_eq!(point.get_as::<NamedTuple>(vm.heap).unwrap().name(vm.interns), "Point");
+        assert!(point.get_as::<Bytes>(vm.heap).is_none());
+        assert!(Value::None.get_as::<Bytes>(vm.heap).is_none());
+
+        point.drop_with(vm);
+        bytes.drop_with(vm);
+    });
+}
+
+#[test]
+fn borrow_bytes_from_intern_table_or_heap() {
+    let mut interns = Interns::default();
+    let id = CompileInterns::direct(&mut interns).intern_bytes(b"literal");
+    let mut heap = Heap::new(16, ResourceTracker::default());
+    let literal = Value::InternBytes(id);
+    let allocated = Value::allocate(Bytes::from(&b"allocated"[..]), &heap);
+    assert_eq!(literal.as_bytes_heap(&heap, &interns), Some(&b"literal"[..]));
+    assert_eq!(allocated.as_bytes_heap(&heap, &interns), Some(&b"allocated"[..]));
+    assert_eq!(Value::None.as_bytes_heap(&heap, &interns), None);
+    allocated.drop_with(&mut heap);
 }
 
 #[test]
@@ -334,9 +371,9 @@ fn long_int_and_index_dunder_edge_cases() {
         // non-LongInt heap value
         let s = allocate_string("not_long", vm.heap);
         assert!(!is_long_int(&s, vm));
-        assert!(long_int(&s, vm).is_none());
+        assert!(s.as_long_int(vm).is_none());
         assert!(!is_long_int(&Value::None, vm));
-        assert!(long_int(&Value::None, vm).is_none());
+        assert!(Value::None.as_long_int(vm).is_none());
 
         // resolve_index_dunder with None and Str
         assert!(matches!(resolve_index_dunder(Value::None, vm), Ok(Value::None)));

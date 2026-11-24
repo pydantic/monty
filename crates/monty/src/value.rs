@@ -28,7 +28,7 @@ use crate::{
     modules::ModuleFunctions,
     py_value::PyValue,
     types::{
-        BytesIterator, CmpOrder, Complex, HeapStr, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef,
+        Bytes, BytesIterator, CmpOrder, Complex, HeapStr, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef,
         bytes::PyBytes,
         decimal,
         instance::{class_defines, instance_getattr, instance_str, instance_user_eq, subclass_overrides},
@@ -1942,6 +1942,19 @@ impl Value {
         }
     }
 
+    /// Borrows the contents of interned or heap-allocated bytes.
+    pub(crate) fn as_bytes<'a>(&self, vm: &'a VM<'_>) -> Option<&'a [u8]> {
+        self.as_bytes_heap(vm.heap, vm.interns)
+    }
+
+    /// [`as_bytes`](Self::as_bytes) for callers with a separate heap and intern table.
+    pub(crate) fn as_bytes_heap<'a>(&self, heap: &'a Heap, interns: &'a Interns) -> Option<&'a [u8]> {
+        match self {
+            Self::InternBytes(id) => Some(interns.get_bytes(*id)),
+            _ => self.get_as::<Bytes>(heap).map(Bytes::as_slice),
+        }
+    }
+
     /// Borrows string contents without allocating, or returns `None` for non-strings.
     pub(crate) fn as_str<'a>(&'a self, vm: &'a VM<'_>) -> Option<&'a str> {
         self.as_str_heap(vm.heap, vm.interns)
@@ -2062,11 +2075,7 @@ pub(crate) fn eq_str(s: &str, other: &Value, vm: &VM<'_>) -> Option<bool> {
 
 /// `b == other`, resolving the other operand from interned or heap bytes.
 pub(crate) fn eq_bytes(b: &[u8], other: &Value, vm: &VM<'_>) -> Option<bool> {
-    match other {
-        Value::InternBytes(id) => Some(b == vm.interns.get_bytes(*id)),
-        Value::Ref(id) if let HeapData::Bytes(o) = vm.heap.get(*id) => Some(b == o.as_slice()),
-        _ => None,
-    }
+    other.as_bytes(vm).map(|bytes| b == bytes)
 }
 
 /// A string name that can outlive a heap borrow.
@@ -2409,7 +2418,7 @@ mod tests {
     use crate::{
         run::{Program, SessionTables},
         types::{
-            Bytes, List, LongInt,
+            LongInt,
             str::{allocate_string_no_interning, allocate_string_on_heap},
         },
     };
@@ -2417,18 +2426,6 @@ mod tests {
     #[test]
     fn value_size_is_16_bytes() {
         assert_eq!(mem::size_of::<Value>(), 16);
-    }
-
-    #[test]
-    fn read_allocated_payload_by_type() {
-        let mut heap = Heap::new(16, ResourceTracker::default());
-        HeapReader::with(&mut heap, &mut (), |heap, ()| {
-            let value = Value::allocate(Bytes::new(vec![1, 2]), heap);
-            assert_eq!(value.read_as::<Bytes>(heap).unwrap().get(heap).as_slice(), &[1, 2]);
-            assert!(value.read_as::<List>(heap).is_none());
-            assert!(Value::None.read_as::<Bytes>(heap).is_none());
-            value.drop_with(heap);
-        });
     }
 
     #[test]
@@ -2675,7 +2672,3 @@ mod tests {
         value.drop_with(&mut heap);
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/unit/value_get_as.rs"]
-mod get_as_tests;

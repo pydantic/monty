@@ -1238,7 +1238,7 @@ fn memoryview_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [
 
 /// Shared body of the encoder coercions, where `prefix` selects the wording.
 fn encode_input_prefixed<'a>(value: &'a Value, vm: &'a VM<'_>, prefix: &str) -> RunResult<Cow<'a, [u8]>> {
-    value_as_bytes(value, vm).ok_or_else(|| {
+    value.as_bytes(vm).map(Cow::Borrowed).ok_or_else(|| {
         ExcType::type_error(format!(
             "{prefix}a bytes-like object is required, not '{}'",
             value.py_type_name(vm)
@@ -1267,7 +1267,7 @@ pub(super) fn decode_input_described<'a>(value: &'a Value, vm: &'a VM<'_>, expec
             .into())
         }
     } else {
-        value_as_bytes(value, vm).ok_or_else(|| {
+        value.as_bytes(vm).map(Cow::Borrowed).ok_or_else(|| {
             ExcType::type_error(format!(
                 "argument should be {expected}, not '{}'",
                 value.py_type_name(vm)
@@ -1281,18 +1281,10 @@ pub(super) fn decode_input_described<'a>(value: &'a Value, vm: &'a VM<'_>, expec
 /// These two go through `base64._input_type_check`, whose message differs from
 /// both other paths.
 fn input_type_check<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [u8]>> {
-    value_as_bytes(value, vm)
+    value
+        .as_bytes(vm)
+        .map(Cow::Borrowed)
         .ok_or_else(|| ExcType::type_error(format!("expected bytes-like object, not {}", value.py_type_name(vm))))
-}
-
-/// Borrows the bytes behind a `bytes` value, interned or heap-allocated.
-///
-/// `None` for anything else — each caller supplies its own error message.
-fn value_as_bytes<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<Cow<'a, [u8]>> {
-    match value {
-        Value::InternBytes(bytes_id) => Some(Cow::Borrowed(vm.interns.get_bytes(*bytes_id))),
-        _ => value.get_as::<Bytes>(vm.heap).map(|b| Cow::Borrowed(b.as_slice())),
-    }
 }
 
 /// Reproduces `assert len(value) == expected, repr(value)` on a raw argument.

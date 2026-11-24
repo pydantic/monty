@@ -88,11 +88,9 @@ impl<'h> PyStr<'h> {
         if object.is_str(vm.heap) {
             return Err(ExcType::type_error_decoding_str_not_supported());
         }
-        let bytes: &[u8] = match object {
-            Value::InternBytes(bytes_id) => vm.interns.get_bytes(*bytes_id),
-            _ if let Some(b) = object.get_as::<Bytes>(vm.heap) => b.as_slice(),
-            _ => return Err(ExcType::type_error_decoding_need_bytes(object.py_type_name(vm))),
-        };
+        let bytes = object
+            .as_bytes(vm)
+            .ok_or_else(|| ExcType::type_error_decoding_need_bytes(object.py_type_name(vm)))?;
         let encoding = ctor_str_arg(encoding.as_ref(), "utf-8", vm)?;
         let errors = ctor_str_arg(errors.as_ref(), "strict", vm)?;
         let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;

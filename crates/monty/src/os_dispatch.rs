@@ -44,7 +44,7 @@ use crate::{
         random::RandomRetry,
         time::ClockReading,
     },
-    types::{Bytes, Path, Type, dir_scan::ScanEffect, file::FileName, random::RandomTarget},
+    types::{Path, Type, dir_scan::ScanEffect, file::FileName, random::RandomTarget},
     value::Value,
     virtual_path::posix_join,
 };
@@ -771,7 +771,7 @@ fn extract_bytes_data(
     interns: &Interns,
 ) -> RunResult<PathBytesDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
-    let bytes = value_to_owned_bytes(&data, heap, interns);
+    let bytes = data.as_bytes_heap(heap, interns).map(<[u8]>::to_vec);
 
     let py_type = data.py_type_name_heap(heap, interns);
     data.drop_with(heap);
@@ -927,18 +927,5 @@ pub(crate) fn value_as_path_str<'a>(value: &'a Value, heap: &'a Heap, interns: &
             _ => None,
         },
         _ => None,
-    }
-}
-
-/// Owned `Vec<u8>` if `value` is a `bytes` (interned or heap), else `None`.
-pub(crate) fn value_to_owned_bytes(value: &Value, heap: &Heap, interns: &Interns) -> Option<Vec<u8>> {
-    value_as_bytes(value, heap, interns).map(<[u8]>::to_vec)
-}
-
-/// The bytes of a `bytes` `value` (interned or heap), borrowed, else `None`.
-pub(crate) fn value_as_bytes<'a>(value: &Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a [u8]> {
-    match value {
-        Value::InternBytes(id) => Some(interns.get_bytes(*id)),
-        _ => value.get_as::<Bytes>(heap).map(Bytes::as_slice),
     }
 }

@@ -23,7 +23,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{RunError, RunResult},
     expressions::CmpOperator,
-    types::{CmpOrder, HeapStr, PyTrait, long_int::i64_cmp_f64},
+    types::{CmpOrder, PyTrait, long_int::i64_cmp_f64},
     value::Value,
 };
 
@@ -177,7 +177,7 @@ impl TotalOrder {
             let is_ordered = |v: &Value| Number::of(v).is_some_and(|n| !n.is_nan());
             values.iter().all(is_ordered).then_some(Self::Numbers)
         } else {
-            let is_short = |v: &Value| str_of(v, vm).is_some_and(|s| s.len() <= MAX_FAST_STR_LEN);
+            let is_short = |v: &Value| v.as_str(vm).is_some_and(|s| s.len() <= MAX_FAST_STR_LEN);
             values.iter().all(is_short).then_some(Self::Strs)
         }
     }
@@ -192,7 +192,7 @@ impl TotalOrder {
         // The `None`s cannot happen: `of` checked every element.
         let ordering = match self {
             Self::Numbers => Number::of(a).zip(Number::of(b)).and_then(|(a, b)| a.partial_cmp(b)),
-            Self::Strs => str_of(a, vm).zip(str_of(b, vm)).map(|(a, b)| a.cmp(b)),
+            Self::Strs => a.as_str(vm).zip(b.as_str(vm)).map(|(a, b)| a.cmp(b)),
         };
         ordering.unwrap_or(Ordering::Equal)
     }
@@ -259,7 +259,7 @@ pub(crate) fn py_lt(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
         (Value::Float(a), Value::Float(b)) => Ok(a < b),
         // A `NaN` operand is unordered, so `<` is `False`.
         _ if let (Some(a), Some(b)) = (Number::of(a), Number::of(b)) => Ok(a.partial_cmp(b) == Some(Ordering::Less)),
-        _ if let (Some(a), Some(b)) = (str_of(a, vm), str_of(b, vm)) => Ok(a < b),
+        _ if let (Some(a), Some(b)) = (a.as_str(vm), b.as_str(vm)) => Ok(a < b),
         (Value::Ref(_), _) | (_, Value::Ref(_)) => vm.cmp_values(CmpOperator::Lt, a, b),
         _ => match a.py_cmp(b, vm)? {
             CmpOrder::Ordered(ordering) => Ok(ordering.is_lt()),
@@ -310,14 +310,6 @@ impl Number {
             (Self::Int(a), Self::Float(b)) => i64_cmp_f64(a, b),
             (Self::Float(a), Self::Int(b)) => i64_cmp_f64(b, a).map(Ordering::reverse),
         }
-    }
-}
-
-/// The text of a `str` value, interned or on the heap.
-fn str_of<'a>(value: &Value, vm: &'a VM<'_>) -> Option<&'a str> {
-    match value {
-        Value::InternString(id) => Some(vm.interns.get_str(*id)),
-        _ => value.get_as::<HeapStr>(vm.heap).map(HeapStr::as_str),
     }
 }
 
