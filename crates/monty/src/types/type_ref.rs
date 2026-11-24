@@ -6,7 +6,7 @@
 
 use std::{borrow::Cow, iter::FusedIterator, slice};
 
-use monty_types::ResourceTracker;
+use monty_types::{ExcType, ResourceTracker};
 
 use crate::{
     builtins::Builtins,
@@ -131,6 +131,15 @@ impl TypeRef {
     #[must_use]
     pub(crate) fn is_iterator(self) -> bool {
         self.native().is_some_and(Type::is_iterator)
+    }
+
+    /// The nearest native exception type in this type's MRO, if any.
+    #[must_use]
+    pub(crate) fn nearest_exc_type(self, heap: &Heap) -> Option<ExcType> {
+        self.mro(heap).find_map(|t| match t {
+            TypeRef::Native(ty) => ty.exc_type(),
+            TypeRef::Class(_) => None,
+        })
     }
 
     /// This type then its ancestors, in method resolution order, ending at `object`.

@@ -56,7 +56,23 @@ pub(crate) fn builtin_object_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<
     };
     defer_drop!(cls, vm);
     let class_id = match TypeRef::from_value(cls, vm.heap) {
-        Some(TypeRef::Class(id)) if matches!(vm.heap.get(id), HeapData::Class(_)) => id,
+        Some(TypeRef::Class(id)) if matches!(vm.heap.get(id), HeapData::Class(_)) => {
+            if TypeRef::Class(id).nearest_exc_type(vm.heap).is_some() {
+                let name = TypeRef::Class(id).dunder_name(vm.heap, vm.interns);
+                let base = TypeRef::Class(id)
+                    .mro(vm.heap)
+                    .find(|ancestor| match ancestor {
+                        TypeRef::Class(anc_id) => !class_defines(*anc_id, "__new__", vm),
+                        TypeRef::Native(_) => true,
+                    })
+                    .unwrap_or(TypeRef::Native(Type::BaseException))
+                    .dunder_name(vm.heap, vm.interns);
+                return Err(ExcType::type_error(format!(
+                    "object.__new__({name}) is not safe, use {base}.__new__()"
+                )));
+            }
+            id
+        }
         Some(TypeRef::Native(Type::Object)) => {
             return Err(ExcType::type_error("cannot create 'object' instances"));
         }

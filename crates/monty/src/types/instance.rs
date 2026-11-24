@@ -195,6 +195,14 @@ impl<'h> HeapReadMut<'h, Instance> {
             Value::Ref(id) if matches!(vm.heap.get(id), HeapData::Class(_)) => {
                 // The instance takes over `value`'s reference to the new class.
                 let class_id = value.into_ref_id().expect("matched a reference");
+                if TypeRef::Class(class_id).nearest_exc_type(vm.heap).is_some() {
+                    let new = TypeRef::Class(class_id).name(vm.heap, vm.interns);
+                    let old = class_name(self.get(vm.heap).class, vm.heap, vm.interns);
+                    Value::Ref(class_id).drop_with(vm);
+                    return Err(ExcType::type_error(format!(
+                        "__class__ assignment: '{new}' object layout differs from '{old}'"
+                    )));
+                }
                 let previous = mem::replace(&mut self.get_mut(vm.heap).class, class_id);
                 Value::Ref(previous).drop_with(vm);
                 Ok(())

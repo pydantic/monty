@@ -1144,6 +1144,10 @@ impl<'h> VM<'h> {
     /// on external/OS calls; the `is_initializer` flag is threaded through frame
     /// serialization so a suspended initializer resumes correctly.
     pub(crate) fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
+        if TypeRef::Class(class_id).nearest_exc_type(self.heap).is_some() {
+            args.drop_with(self);
+            return Err(ExcType::not_implemented("custom exceptions are not yet supported").into());
+        }
         if let Some(new_func) = class_lookup(class_id, "__new__", self.heap, self.interns) {
             let new_func = new_func.clone_with_heap(self.heap);
             return self.instantiate_with_new(class_id, new_func, args);

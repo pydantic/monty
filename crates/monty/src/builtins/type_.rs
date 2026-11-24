@@ -8,7 +8,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     types::{Class, Dict, List, PyTrait, Type, TypeRef, type_ref::c3_merge},
     value::Value,
@@ -177,10 +177,42 @@ fn create_class(
     Ok(class_guard.into_inner())
 }
 
+/// The CPython instance layout an exception type adds beyond `BaseException`'s,
+/// or `None` if it adds none. Two bases with different `Some` groups cannot be combined.
+fn exception_layout_group(ty: Type) -> Option<Type> {
+    match ty {
+        Type::OSError
+        | Type::FileExistsError
+        | Type::FileNotFoundError
+        | Type::IsADirectoryError
+        | Type::NotADirectoryError
+        | Type::PermissionError
+        | Type::TimeoutError
+        | Type::UnsupportedOperation => Some(Type::OSError),
+        Type::AttributeError | Type::FrozenInstanceError => Some(Type::AttributeError),
+        Type::ImportError | Type::ModuleNotFoundError => Some(Type::ImportError),
+        Type::NameError | Type::UnboundLocalError => Some(Type::NameError),
+        Type::StopIteration
+        | Type::SyntaxError
+        | Type::SystemExit
+        | Type::UnicodeDecodeError
+        | Type::UnicodeEncodeError => Some(ty),
+        _ => None,
+    }
+}
+
+/// The layout group a base brings, found from its MRO so indirect bases count
+/// (`class A(OSError)`, `class B(SyntaxError)`, `class X(A, B)` conflicts).
+fn base_layout_group(base: TypeRef, heap: &Heap) -> Option<Type> {
+    base.mro(heap)
+        .filter_map(TypeRef::native)
+        .find_map(exception_layout_group)
+}
+
 /// Validates the `bases` tuple of a new class, returning the bases it names.
 ///
-/// Monty classes derive only from other classes and `object`: the native
-/// types CPython lets a class subclass are rejected (see `limitations/classes.md`).
+/// Monty classes derive from other classes, native exception types, and `object`:
+/// other native types CPython lets a class subclass are rejected (see `limitations/classes.md`).
 fn class_bases(bases: &Value, vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
     let tuple = match bases {
         Value::Ref(id) if let HeapData::Tuple(tuple) = vm.heap.get(*id) => tuple,
@@ -190,6 +222,7 @@ fn class_bases(bases: &Value, vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
         }
     };
     let mut out: Vec<TypeRef> = Vec::with_capacity(tuple.as_slice().len());
+    let mut seen_layout_group: Option<Type> = None;
     for (index, base) in tuple.as_slice().iter().enumerate() {
         vm.heap.tracker.check_time_every(index)?;
         let Some(base) = TypeRef::from_value(base, vm.heap) else {
@@ -207,6 +240,7 @@ fn class_bases(bases: &Value, vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
                     ty.name()
                 )));
             }
+            TypeRef::Native(ty) if ty.exc_type().is_some() => {}
             TypeRef::Class(id) if matches!(vm.heap.get(id), HeapData::Class(_)) => {}
             _ => {
                 return Err(ExcType::type_error(format!(
@@ -217,6 +251,15 @@ fn class_bases(bases: &Value, vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
         }
         if out.contains(&base) {
             return Err(ExcType::type_error(format!("duplicate base class {name}")));
+        }
+        if let Some(group) = base_layout_group(base, vm.heap) {
+            if let Some(existing) = seen_layout_group {
+                if existing != group {
+                    return Err(ExcType::type_error("multiple bases have instance lay-out conflict"));
+                }
+            } else {
+                seen_layout_group = Some(group);
+            }
         }
         out.push(base);
     }
