@@ -27,7 +27,7 @@ use crate::{
     modules::{collections, csv, hashlib, itertools},
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
-        bytes, complex, date, datetime, decimal, dict, path,
+        bytes, complex, date, datetime, decimal, dict, numeric, path,
         str::PyStr,
         time, timedelta, timezone,
         r#type::{bool_init, float_init, int_init, union_init},
@@ -604,7 +604,8 @@ native_types! {
     Float("float")
         .builtin()
         .basetype()
-        .ctor(Constructor::Value(float_init)),
+        .ctor(Constructor::Value(float_init))
+        .class_method(numeric::float_class_method),
     Complex("complex")
         .builtin()
         .basetype()
