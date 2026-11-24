@@ -776,6 +776,11 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_getitem(&self, key: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+        if let (Self::Ref(id), Self::Int(index)) = (self, key)
+            && let HeapData::List(list) = vm.heap.get(*id)
+        {
+            return list.getitem_int(*index, vm.heap);
+        }
         self.py_value(vm).subscript(key, vm)
     }
 

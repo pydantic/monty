@@ -1309,7 +1309,7 @@ fn booleans_and_nulls_fit_in_bitmaps() {
     child.create_repl_with(configure_with_max_memory(1024 * 1024));
     assert_eq!(
         child.feed_complete(
-            "flags = [1]\nflags.pop()\nflags.append(True)\nflags *= 1_000_000\nflags.append(None)\nflags[64] = False\nflags.extend(flags)\nlen(flags) == 2_000_002 and flags[65] is True and flags[64] is False and flags[-1] is None"
+            "flags = [1]\nflags.pop()\nflags.append(True)\nflags *= 1_000_000\nflags.append(None)\nflags[64] = False\nflags[::-1] = flags\nassert flags[0] is None and flags[-65] is False\nflags.reverse()\nflags.extend(flags)\nlen(flags) == 2_000_002 and flags[65] is True and flags[64] is False and flags[-1] is None"
         ),
         MontyObject::bool(true),
     );
@@ -1318,6 +1318,19 @@ fn booleans_and_nulls_fit_in_bitmaps() {
     assert_eq!(
         child.feed_complete(
             "values = [None] * 1_000_000\nvalues[0] = True\nlen(values) == 1_000_000 and values[0] is True and values[-1] is None and flags[-1] is None"
+        ),
+        MontyObject::bool(true),
+    );
+    child.shutdown();
+}
+
+#[test]
+fn packed_slice_assignment_fits_with_just_the_two_lists() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(2_500_000));
+    assert_eq!(
+        child.feed_complete(
+            "src = [7] * 1_000_000\ndst = [0] * 1_000_000\nalias = dst\ndst[:] = src\nsrc[0] = 3\nalias is dst and dst[0] == dst[-1] == 7"
         ),
         MontyObject::bool(true),
     );

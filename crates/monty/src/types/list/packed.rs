@@ -1,9 +1,8 @@
 use std::{mem, ops::Range};
 
 use monty_types::ResourceTracker;
-use smallvec::SmallVec;
 
-use super::bitmap::Bitmap;
+use super::{SequenceItems, bitmap::Bitmap};
 use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     types::range::Range as PythonRange,
@@ -11,7 +10,6 @@ use crate::{
 };
 
 const COPY_BATCH: usize = 1024;
-const INLINE_SLICE_ITEMS: usize = 8;
 
 /// Nonnegative integers through 255 fit in one byte. Other `i64` values need wide slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -93,41 +91,6 @@ impl Packing {
     }
 }
 
-pub(super) enum NumericSliceSnapshot {
-    Bytes(SmallVec<[u8; INLINE_SLICE_ITEMS]>),
-    Wide(SmallVec<[i64; INLINE_SLICE_ITEMS]>),
-    Floats(SmallVec<[f64; INLINE_SLICE_ITEMS]>),
-}
-
-impl NumericSliceSnapshot {
-    pub(super) fn take(source: &PackedList, tracker: &ResourceTracker) -> RunResult<Self> {
-        match source {
-            PackedList::ByteInts(values) => Ok(Self::Bytes(snapshot_slots(values, tracker)?)),
-            PackedList::Ints(values) => Ok(Self::Wide(snapshot_slots(values, tracker)?)),
-            PackedList::Floats(values) => Ok(Self::Floats(snapshot_slots(values, tracker)?)),
-            _ => unreachable!("checked for a numeric buffer"),
-        }
-    }
-
-    pub(super) fn write(self, target: &mut PackedList, start: i64, step: i64, count: usize) {
-        match (target, self) {
-            (PackedList::ByteInts(target), Self::Bytes(values)) => {
-                replace_slots(target, start, step, count, values.iter().copied());
-            }
-            (PackedList::Ints(target), Self::Bytes(values)) => {
-                replace_slots(target, start, step, count, values.iter().copied().map(i64::from));
-            }
-            (PackedList::Ints(target), Self::Wide(values)) => {
-                replace_slots(target, start, step, count, values.iter().copied());
-            }
-            (PackedList::Floats(target), Self::Floats(values)) => {
-                replace_slots(target, start, step, count, values.iter().copied());
-            }
-            _ => unreachable!("reserved compatible numeric storage"),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub(super) enum PackedList {
     Empty,
@@ -152,6 +115,9 @@ impl PackedList {
     }
 
     pub(super) fn from_bytes(bytes: &[u8], tracker: &ResourceTracker) -> RunResult<Self> {
+        if bytes.is_empty() {
+            return Ok(Self::Empty);
+        }
         tracker.check_pending_allocation(bytes.len())?;
         let mut values = Vec::new();
         reserve_vec(&mut values, bytes.len())?;
@@ -473,11 +439,30 @@ impl PackedList {
         Ok(result)
     }
 
-    pub(super) fn splice(&mut self, range: Range<usize>, values: &[Value]) {
+    pub(super) fn replace_slice(&mut self, start: i64, step: i64, count: usize, values: SequenceItems<'_>) {
+        if let SequenceItems::Packed(source) = values {
+            match (&mut *self, source.0) {
+                (Self::ByteInts(dst), Self::ByteInts(src)) => return replace_slots(dst, start, step, count, src),
+                (Self::Ints(dst), Self::Ints(src)) => return replace_slots(dst, start, step, count, src),
+                (Self::Floats(dst), Self::Floats(src)) => return replace_slots(dst, start, step, count, src),
+                _ => {}
+            }
+        }
+        if step == 1 {
+            let start = usize::try_from(start).expect("positive slice start is non-negative");
+            self.splice(start..start + count, values);
+        } else {
+            for (offset, index) in slice_indices(start, step, count).enumerate() {
+                values.map_item(offset, |value| self.set(index, value));
+            }
+        }
+    }
+
+    pub(super) fn splice(&mut self, range: Range<usize>, values: SequenceItems<'_>) {
         let start = range.start;
         let dst = start + values.len();
         match self {
-            Self::Empty => debug_assert!(range.is_empty() && values.is_empty()),
+            Self::Empty => debug_assert!(range.is_empty() && values.len() == 0),
             Self::Nones(items) => items.len = items.len - range.len() + values.len(),
             Self::ByteInts(items) => splice_slots(items, range, values),
             Self::Ints(items) => splice_slots(items, range, values),
@@ -488,8 +473,8 @@ impl PackedList {
             Self::Bools(items) => {
                 items.move_within(range.end, dst, items.len - range.end);
                 items.len = items.len - range.len() + values.len();
-                for (index, value) in values.iter().enumerate() {
-                    items.set(start + index, value);
+                for index in 0..values.len() {
+                    values.map_item(index, |value| items.set(start + index, value));
                 }
             }
         }
@@ -531,7 +516,7 @@ impl PackedList {
             _ => {}
         }
         let value = self.get(index).expect("checked list index");
-        self.splice(index..index + 1, &[]);
+        self.splice(index..index + 1, SequenceItems::from_slice(&[]));
         value
     }
 
@@ -610,6 +595,10 @@ impl PackedList {
         let count = (total - len).min(len - start).min(COPY_BATCH);
         self.extend_from_within(start..start + count);
         len + count
+    }
+
+    pub(super) fn copy(&self, tracker: &ResourceTracker) -> RunResult<Self> {
+        self.slice(0, 1, self.len(), tracker)
     }
 
     pub(super) fn copy_range(
@@ -699,23 +688,15 @@ impl PackedView<'_> {
     pub(crate) fn iter(self) -> impl DoubleEndedIterator<Item = Value> + ExactSizeIterator {
         (0..self.len()).map(move |index| self.get(index).expect("checked list index"))
     }
-}
 
-#[derive(Clone, Copy)]
-pub(crate) struct BoolView<'a>(pub(super) &'a Bools);
-
-impl BoolView<'_> {
-    pub(crate) fn len(self) -> usize {
-        self.0.len
-    }
-
-    pub(crate) fn get(self, index: usize) -> Value {
-        assert!(index < self.0.len, "boolean list index out of bounds");
-        self.0.get(index)
-    }
-
-    pub(crate) fn iter(self) -> impl DoubleEndedIterator<Item = Value> + ExactSizeIterator {
-        (0..self.len()).map(move |index| self.0.get(index))
+    pub(crate) fn extend_reversed(self, output: &mut Vec<Value>) {
+        match self.0 {
+            PackedList::ByteInts(items) => output.extend(items.iter().rev().map(|&item| Value::Int(i64::from(item)))),
+            PackedList::Ints(items) => output.extend(items.iter().rev().copied().map(Value::Int)),
+            PackedList::Floats(items) => output.extend(items.iter().rev().copied().map(Value::Float)),
+            PackedList::Bools(items) => output.extend((0..items.len).rev().map(|i| items.get(i))),
+            _ => output.extend(self.iter().rev()),
+        }
     }
 }
 
@@ -778,13 +759,13 @@ impl<T: NumericSlot> NullableSlots<T> {
         self.nulls.set(index, matches!(value, Value::None));
     }
 
-    fn splice(&mut self, range: Range<usize>, values: &[Value]) {
+    fn splice(&mut self, range: Range<usize>, values: SequenceItems<'_>) {
         let start = range.start;
         self.nulls
             .move_within(range.end, start + values.len(), self.values.len() - range.end);
-        drop(self.values.splice(range, values.iter().map(T::from_nullable)));
-        for (index, value) in values.iter().enumerate() {
-            self.nulls.set(start + index, matches!(value, Value::None));
+        drop(self.values.splice(range, values.map(T::from_nullable)));
+        for (index, is_null) in values.map(|value| matches!(value, Value::None)).enumerate() {
+            self.nulls.set(start + index, is_null);
         }
     }
 
@@ -998,53 +979,29 @@ fn slice_slots<T: NumericSlot>(
     Ok(target)
 }
 
-fn snapshot_slots<T: Copy>(source: &[T], tracker: &ResourceTracker) -> RunResult<SmallVec<[T; INLINE_SLICE_ITEMS]>> {
-    let mut snapshot = SmallVec::new();
-    if source.len() > INLINE_SLICE_ITEMS {
-        tracker.check_allocation(source.len().saturating_mul(size_of::<T>()))?;
-        snapshot
-            .try_reserve_exact(source.len())
-            .map_err(|_| ExcType::allocation_too_large())?;
-    }
-    for chunk in source.chunks(COPY_BATCH) {
-        tracker.check_time()?;
-        snapshot.extend_from_slice(chunk);
-    }
-    Ok(snapshot)
-}
-
-fn replace_slots<T>(
-    target: &mut Vec<T>,
-    start: i64,
-    step: i64,
-    count: usize,
-    values: impl ExactSizeIterator<Item = T>,
-) {
+fn replace_slots<T: Copy>(target: &mut Vec<T>, start: i64, step: i64, count: usize, source: &[T]) {
     if step == 1 {
         let start = usize::try_from(start).expect("positive slice start is non-negative");
         let range = start..start + count;
-        if count == values.len() {
-            target[range]
-                .iter_mut()
-                .zip(values)
-                .for_each(|(slot, value)| *slot = value);
+        if count == source.len() {
+            target[range].copy_from_slice(source);
         } else {
-            drop(target.splice(range, values));
+            drop(target.splice(range, source.iter().copied()));
         }
     } else {
-        for (index, value) in slice_indices(start, step, count).zip(values) {
+        for (index, &value) in slice_indices(start, step, count).zip(source) {
             target[index] = value;
         }
     }
 }
 
-fn splice_slots<T: NumericSlot>(target: &mut Vec<T>, range: Range<usize>, values: &[Value]) {
+fn splice_slots<T: NumericSlot>(target: &mut Vec<T>, range: Range<usize>, values: SequenceItems<'_>) {
     if range.len() == values.len() {
-        for (slot, value) in target[range].iter_mut().zip(values) {
-            *slot = T::from_value(value);
+        for (slot, value) in target[range].iter_mut().zip(values.map(T::from_value)) {
+            *slot = value;
         }
     } else {
-        drop(target.splice(range, values.iter().map(T::from_value)));
+        drop(target.splice(range, values.map(T::from_value)));
     }
 }
 

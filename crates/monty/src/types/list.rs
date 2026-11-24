@@ -6,8 +6,8 @@ mod storage;
 
 use monty_types::ResourceError;
 use num_traits::ToPrimitive;
-pub(super) use packed::{BoolView, PackedView};
-use packed::{NumericSliceSnapshot, PackedList, Packing};
+pub(super) use packed::PackedView;
+use packed::{PackedList, Packing};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use storage::ListStorage;
@@ -27,6 +27,7 @@ use crate::{
     },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
+    py_value::PyValue,
     resource_checks::{check_repeat_size, repeated_len, try_vec_with_capacity},
     sorting::parse_and_sort,
     types::{
@@ -80,9 +81,6 @@ impl List {
     }
 
     fn from_packed(items: PackedList) -> Self {
-        if items.len() == 0 {
-            return Self::default();
-        }
         Self {
             storage: ListStorage::Packed(items),
             contains_refs: false,
@@ -96,7 +94,6 @@ impl List {
 
     pub(crate) fn swap(&mut self, i: usize, j: usize) {
         match &mut self.storage {
-            ListStorage::Empty => unreachable!("cannot swap items in an empty list"),
             ListStorage::Packed(items) => items.swap(i, j),
             ListStorage::Generic(items) => items.swap(i, j),
         }
@@ -112,7 +109,7 @@ impl List {
     }
 
     fn generic_mut(&mut self) -> &mut Vec<Value> {
-        if matches!(self.storage, ListStorage::Empty) {
+        if matches!(self.storage, ListStorage::Packed(PackedList::Empty)) {
             self.storage = ListStorage::Generic(Vec::new());
         }
         let ListStorage::Generic(items) = &mut self.storage else {
@@ -129,7 +126,6 @@ impl List {
     #[inline(always)]
     fn get_cloned(&self, index: usize, heap: &Heap) -> Option<Value> {
         match &self.storage {
-            ListStorage::Empty => None,
             ListStorage::Packed(items) => items.get(index),
             ListStorage::Generic(items) => items.get(index).map(|item| item.clone_with_heap(heap)),
         }
@@ -157,13 +153,11 @@ impl List {
                 mem::swap(&mut items[index], value);
                 true
             }
-            ListStorage::Empty => unreachable!("assignment index is in bounds"),
         }
     }
 
     fn remove_at(&mut self, index: usize) -> Value {
         match &mut self.storage {
-            ListStorage::Empty => unreachable!("cannot remove an item from an empty list"),
             ListStorage::Packed(items) => items.remove(index),
             ListStorage::Generic(items) => items.remove(index),
         }
@@ -172,7 +166,6 @@ impl List {
     #[must_use]
     pub fn len(&self) -> usize {
         match &self.storage {
-            ListStorage::Empty => 0,
             ListStorage::Packed(items) => items.len(),
             ListStorage::Generic(items) => items.len(),
         }
@@ -212,7 +205,7 @@ impl<'h> HeapReadMut<'h, List> {
             previous = Packing::Empty;
         }
         let packing = previous.merge(incoming);
-        if matches!(list.storage, ListStorage::Packed(_)) && packing == Packing::Generic {
+        if previous != Packing::Empty && previous != Packing::Generic && packing == Packing::Generic {
             return self.promote(vm, additional);
         }
 
@@ -234,8 +227,7 @@ impl<'h> HeapReadMut<'h, List> {
             required.max(current.saturating_mul(2)).max(INITIAL_INT_CAPACITY)
         };
         let growth_bytes = |capacity: usize| match &list.storage {
-            ListStorage::Packed(items) => items.growth_bytes(capacity, packing),
-            ListStorage::Empty if packing != Packing::Generic => PackedList::Empty.growth_bytes(capacity, packing),
+            ListStorage::Packed(items) if packing != Packing::Generic => items.growth_bytes(capacity, packing),
             _ => (capacity - current).saturating_mul(VALUE_SIZE),
         };
         let tracker = &vm.heap.tracker;
@@ -254,12 +246,9 @@ impl<'h> HeapReadMut<'h, List> {
 
         let storage = &mut self.get_mut(vm.heap).storage;
         match storage {
-            ListStorage::Empty if packing != Packing::Generic => {
-                let mut items = PackedList::Empty;
-                items.reserve(capacity, packing)?;
-                *storage = ListStorage::Packed(items);
+            ListStorage::Packed(PackedList::Empty) if packing == Packing::Generic => {
+                *storage = ListStorage::Generic(try_vec_with_capacity(capacity)?);
             }
-            ListStorage::Empty => *storage = ListStorage::Generic(try_vec_with_capacity(capacity)?),
             ListStorage::Packed(items) => items.reserve(capacity, packing)?,
             ListStorage::Generic(items) => items
                 .try_reserve_exact(capacity - len)
@@ -290,9 +279,7 @@ impl<'h> HeapReadMut<'h, List> {
             };
             target.extend_from_within(0..additional);
         } else {
-            let tracker = &vm.heap.tracker;
-            let mut snapshot = PackedList::new(additional, packing, tracker)?;
-            snapshot.copy_range(items, 0..additional, tracker)?;
+            let snapshot = items.copy(&vm.heap.tracker)?;
             // Finish fallible work before writing to the target.
             self.reserve_bulk(vm, additional, packing)?;
             let ListStorage::Packed(target) = &mut self.get_mut(vm.heap).storage else {
@@ -332,51 +319,55 @@ impl<'h> HeapReadMut<'h, List> {
                 values.extend(items);
                 list.contains_refs |= values[start..].iter().any(|item| matches!(item, Value::Ref(_)));
             }
-            ListStorage::Empty => unreachable!("reserved space for a nonempty batch"),
         }
         Ok(())
     }
 
-    fn try_set_numeric_slice(
+    fn try_set_packed_slice(
         &self,
         vm: &mut VM<'h>,
         source: &HeapRead<'h, List>,
         (start, stop, step): (i64, i64, i64),
     ) -> RunResult<bool> {
-        let ListStorage::Packed(source) = &source.get(vm.heap).storage else {
+        let ListStorage::Packed(values) = &source.get(vm.heap).storage else {
             return Ok(false);
         };
-        let target = &self.get(vm.heap).storage;
-        let compatible = match source {
-            PackedList::ByteInts(_) => matches!(
-                target,
-                ListStorage::Empty | ListStorage::Packed(PackedList::ByteInts(_) | PackedList::Ints(_))
-            ),
-            PackedList::Ints(_) => matches!(target, ListStorage::Empty | ListStorage::Packed(PackedList::Ints(_))),
-            PackedList::Floats(_) => matches!(target, ListStorage::Empty | ListStorage::Packed(PackedList::Floats(_))),
-            _ => false,
-        };
-        if !compatible {
+        let packing = values.packing();
+        let target = self.get(vm.heap);
+        // When the storage types differ, inspect the actual replacements before widening.
+        let current = target.storage.packing();
+        if current != packing && target.len() != 0 && (current == Packing::Generic || current.merge(packing) != current)
+        {
             return Ok(false);
         }
 
         let count = slice_item_count(start, stop, step);
-        check_slice_replacement(step, count, source.len())?;
-        if count == 0 && source.len() == 0 {
+        let len = values.len();
+        check_slice_replacement(step, count, len)?;
+        if count == 0 && len == 0 {
             return Ok(true);
         }
-        let growth = source.len().saturating_sub(count);
-        let packing = source.packing();
-        // Snapshot before mutation so `a[...] = a` reads the original list.
-        let snapshot = NumericSliceSnapshot::take(source, &vm.heap.tracker)?;
-        if growth != 0 {
-            self.reserve_bulk(vm, growth, packing)?;
-        }
-        let target = self.get_mut(vm.heap);
-        let ListStorage::Packed(items) = &mut target.storage else {
-            unreachable!("reserved numeric storage");
+
+        let snapshot = if ptr::eq(target, source.get(vm.heap)) {
+            Some(values.copy(&vm.heap.tracker)?)
+        } else {
+            vm.heap.tracker.check_time()?;
+            None
         };
-        snapshot.write(items, start, step, count);
+        if len > count {
+            self.reserve_bulk(vm, len - count, packing)?;
+        }
+        // Detach the destination so we can borrow a distinct source directly during the write.
+        let mut storage = mem::take(&mut self.get_mut(vm.heap).storage);
+        let ListStorage::Packed(items) = &mut storage else {
+            unreachable!("reserved packed storage");
+        };
+        let replacements = match &snapshot {
+            Some(copy) => SequenceItems::Packed(copy.view()),
+            None => source.get(vm.heap).items(),
+        };
+        items.replace_slice(start, step, count, replacements);
+        self.get_mut(vm.heap).storage = storage;
         Ok(true)
     }
 
@@ -391,7 +382,7 @@ impl<'h> HeapReadMut<'h, List> {
 
         let items = match value.read_heap(vm) {
             Some(HeapReadOutput::List(list)) => {
-                if self.try_set_numeric_slice(vm, &list, indices)? {
+                if self.try_set_packed_slice(vm, &list, indices)? {
                     return Ok(());
                 }
                 list.clone_all_items(vm)?
@@ -426,16 +417,7 @@ impl<'h> HeapReadMut<'h, List> {
         let growth = items.len().saturating_sub(count);
         self.reserve_bulk(vm, growth, packing)?;
         if let ListStorage::Packed(target) = &mut self.get_mut(vm.heap).storage {
-            if step == 1 {
-                let start = usize::try_from(start).expect("positive slice start is non-negative");
-                target.splice(start..start + count, items);
-            } else {
-                let mut index = i128::from(start);
-                for item in items.iter() {
-                    target.set(usize::try_from(index).expect("slice index is within the list"), item);
-                    index += i128::from(step);
-                }
-            }
+            target.replace_slice(start, step, count, SequenceItems::from_slice(items));
         } else if items.len() == count {
             let list = self.get_mut(vm.heap);
             list.contains_refs |= items.iter().any(|item| matches!(item, Value::Ref(_)));
@@ -538,14 +520,10 @@ impl List {
             Some(value) => {
                 let mut value = DropGuard::new(value, vm);
                 let (pending, vm) = value.as_parts();
-                let packed = match pending.read_heap(vm) {
-                    Some(HeapReadOutput::Bytes(bytes)) => {
-                        Some(PackedList::from_bytes(bytes.get(vm.heap).as_slice(), &vm.heap.tracker)?)
-                    }
-                    Some(HeapReadOutput::Range(range)) => {
-                        Some(PackedList::from_range(range.get(vm.heap), &vm.heap.tracker)?)
-                    }
-                    Some(HeapReadOutput::List(list)) => return list.copy_for_constructor(vm),
+                let packed = match pending.py_value(vm) {
+                    PyValue::Bytes(bytes) => Some(PackedList::from_bytes(bytes.as_slice(vm), &vm.heap.tracker)?),
+                    PyValue::Range(range) => Some(PackedList::from_range(range.get(vm.heap), &vm.heap.tracker)?),
+                    PyValue::List(list) => return list.copy_for_constructor(vm),
                     _ => None,
                 };
                 if let Some(items) = packed {
@@ -594,7 +572,6 @@ impl<'h> HeapRead<'h, List> {
 
     fn getitem_slice(&self, start: i64, step: i64, count: usize, vm: &mut VM<'h>) -> RunResult<Value> {
         let list = match &self.get(vm.heap).storage {
-            ListStorage::Empty => List::default(),
             ListStorage::Packed(items) => List::from_packed(items.slice(start, step, count, &vm.heap.tracker)?),
             ListStorage::Generic(_) => List::new(self.clone_generic_slice(start, step, count, vm)?),
         };
@@ -1153,7 +1130,6 @@ fn call_list_method<'h>(
         StaticStrings::Reverse => {
             args.check_zero_args("list.reverse", heap)?;
             match &mut list.get_mut(vm.heap).storage {
-                ListStorage::Empty => {}
                 ListStorage::Packed(items) => items.reverse(),
                 ListStorage::Generic(items) => items.reverse(),
             }
@@ -1281,8 +1257,7 @@ fn list_clear<'h>(list: &HeapReadMut<'h, List>, vm: &mut VM<'h>) {
     let this = list.get_mut(vm.heap);
     this.contains_refs = false;
     match &mut this.storage {
-        ListStorage::Empty => {}
-        ListStorage::Packed(items) => items.splice(0..items.len(), &[]),
+        ListStorage::Packed(items) => items.splice(0..items.len(), SequenceItems::from_slice(&[])),
         ListStorage::Generic(items) => {
             let mut detached = mem::take(items);
             for item in detached.drain(..) {
@@ -1299,13 +1274,7 @@ fn list_clear<'h>(list: &HeapReadMut<'h, List>, vm: &mut VM<'h>) {
 /// `clone_all_items` so a huge copy fails with a graceful `MemoryError`.
 fn list_copy(list: &List, heap: &Heap) -> RunResult<Value> {
     let copy = match &list.storage {
-        ListStorage::Empty => List::default(),
-        ListStorage::Packed(items) => {
-            let tracker = &heap.tracker;
-            let mut result = PackedList::new(items.len(), items.packing(), tracker)?;
-            result.copy_range(items, 0..items.len(), tracker)?;
-            List::from_packed(result)
-        }
+        ListStorage::Packed(items) => List::from_packed(items.copy(&heap.tracker)?),
         ListStorage::Generic(_) => List::new(list.items().to_vec(heap)?),
     };
     let heap_id = heap.allocate(HeapData::List(copy));
@@ -1414,7 +1383,7 @@ fn do_list_sort<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'
     let mut sorted = mem::take(list.get_mut(vm.heap));
     let sort_result = match &mut sorted.storage {
         ListStorage::Generic(items) => parse_and_sort(items, args, vm),
-        _ => parse_and_sort(&mut [], args, vm),
+        ListStorage::Packed(_) => parse_and_sort(&mut [], args, vm),
     };
     if repack {
         let ListStorage::Generic(items) = sorted.storage else {
@@ -1469,12 +1438,11 @@ fn check_slice_replacement(step: i64, count: usize, replacements: usize) -> RunR
 }
 
 fn slice_item_count(start: i64, stop: i64, step: i64) -> usize {
-    let count = if step > 0 && start < stop {
-        (stop - start - 1).unsigned_abs() / step.unsigned_abs() + 1
-    } else if step < 0 && start > stop {
-        (start - stop - 1).unsigned_abs() / step.unsigned_abs() + 1
-    } else {
-        0
+    let span = if step > 0 { stop - start } else { start - stop };
+    let distance = u64::try_from(span).unwrap_or(0);
+    let count = match step {
+        1 | -1 => distance,
+        _ => distance.div_ceil(step.unsigned_abs()),
     };
     usize::try_from(count).expect("slice length fits usize")
 }
@@ -1706,10 +1674,6 @@ mod tests {
             }
             let list = List::from_values(values, &heap);
             assert_eq!(list.storage.packing(), Packing::Float { nullable });
-            assert!(matches!(
-                (nullable, list.items()),
-                (true, SequenceItems::Packed(_)) | (false, SequenceItems::Floats(_))
-            ));
             for (index, expected) in bits.into_iter().enumerate() {
                 let Some(Value::Float(value)) = list.get_cloned(index, &heap) else {
                     panic!("expected a float at {index}");

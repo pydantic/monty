@@ -246,7 +246,6 @@ impl<'h> PyValue<'h> {
     /// Includes the mutating `defaultdict.__missing__` path outside `PyTrait`.
     pub(crate) fn subscript(self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         match self {
-            Self::List(list) if let Value::Int(index) = key => list.get(vm.heap).getitem_int(*index, vm.heap),
             Self::Dict(mut dict) if dict.get(vm.heap).is_defaultdict() => match dict.dict_get(key, vm)? {
                 Some(value) => Ok(value),
                 None => defaultdict_missing(&mut dict, key, vm),

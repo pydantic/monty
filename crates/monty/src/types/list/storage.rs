@@ -2,7 +2,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeStru
 
 use super::{
     List,
-    packed::{BoolView, PackedList, Packing},
+    packed::{PackedList, Packing},
 };
 use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -13,22 +13,21 @@ use crate::{
 };
 
 /// The garbage collector only needs to scan generic storage.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) enum ListStorage {
-    #[default]
-    Empty,
     Packed(PackedList),
     Generic(Vec<Value>),
+}
+
+impl Default for ListStorage {
+    fn default() -> Self {
+        Self::Packed(PackedList::Empty)
+    }
 }
 
 impl ListStorage {
     pub(super) fn view(&self) -> SequenceItems<'_> {
         match self {
-            Self::Empty => SequenceItems::from_slice(&[]),
-            Self::Packed(PackedList::ByteInts(items)) => SequenceItems::ByteInts(items),
-            Self::Packed(PackedList::Ints(items)) => SequenceItems::Ints(items),
-            Self::Packed(PackedList::Floats(items)) => SequenceItems::Floats(items),
-            Self::Packed(PackedList::Bools(items)) => SequenceItems::Bools(BoolView(items)),
             Self::Packed(items) => SequenceItems::Packed(items.view()),
             Self::Generic(items) => SequenceItems::from_slice(items),
         }
@@ -36,7 +35,6 @@ impl ListStorage {
 
     pub(super) fn packing(&self) -> Packing {
         match self {
-            Self::Empty => Packing::Empty,
             Self::Packed(items) => items.packing(),
             Self::Generic(_) => Packing::Generic,
         }
@@ -44,7 +42,6 @@ impl ListStorage {
 
     pub(super) fn capacity(&self) -> usize {
         match self {
-            Self::Empty => 0,
             Self::Packed(items) => items.capacity(),
             Self::Generic(items) => items.capacity(),
         }
@@ -89,7 +86,7 @@ impl<'de> Deserialize<'de> for List {
 
         let Fields { items, contains_refs } = Fields::deserialize(deserializer)?;
         let storage = if items.is_empty() {
-            ListStorage::Empty
+            ListStorage::default()
         } else {
             ListStorage::Generic(items)
         };
@@ -149,9 +146,6 @@ mod tests {
             let old_bytes = minicbor_serde::to_vec(&legacy).unwrap();
             let list = List::from_values(legacy.items, &heap);
             assert_eq!(list.storage.packing(), expected);
-            if matches!(expected, Packing::Bool { .. }) {
-                assert!(matches!(list.items(), SequenceItems::Bools(_)));
-            }
             let new_bytes = minicbor_serde::to_vec(&list).unwrap();
             assert_eq!(new_bytes, old_bytes);
 
