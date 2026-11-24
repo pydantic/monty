@@ -32,6 +32,31 @@ fn character_lengths_survive_text_only_serialization() {
 }
 
 #[test]
+fn interner_restore_rejects_duplicate_and_reserved_strings() {
+    let cases: &[(&[&str], &str)] = &[
+        (&[""], ""),
+        (&["x"], "x"),
+        (&["splitlines", "splitlines"], "splitlines"),
+        (&["ordinary_name", "ordinary_name"], "ordinary_name"),
+    ];
+    let mut state = serde_json::to_value(Interns::new("")).unwrap();
+    for &(strings, rejected) in cases {
+        state["strings"] = serde_json::json!(strings);
+        let error = serde_json::from_value::<Interns>(state.clone()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("duplicate or reserved interned string {rejected:?}")
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "static entries are indexed by tag")]
+fn static_string_has_no_owned_lookup_key() {
+    InternedString::static_string(StaticStrings::Module).owned_text();
+}
+
+#[test]
 fn uncached_character_lengths_are_recounted() {
     // Exercise the overflow fallback without allocating a multi-gigabyte string.
     for text in ["", "ascii", "aé🦀", "e\u{301}"] {
