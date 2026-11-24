@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use chrono::NaiveDate;
+use jiff::civil::{self, DateTime};
 use monty_types::{
     DateTimeSource, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, OsPolicy, ProcessTime, RandomSeed,
     RandomStart, SandboxTimeZone, SleepMode,
@@ -121,21 +121,19 @@ fn fixed_datetime(datetime: &Bound<'_, PyDateTime>) -> PyResult<(DateTimeSource,
                 .extract::<Option<String>>()?,
         ),
     };
-    let wall = NaiveDate::from_ymd_opt(
-        datetime.get_year(),
-        u32::from(datetime.get_month()),
-        u32::from(datetime.get_day()),
+    let out_of_range = || PyValueError::new_err("datetime is out of range");
+    let wall = DateTime::new(
+        i16::try_from(datetime.get_year()).map_err(|_| out_of_range())?,
+        i8::try_from(datetime.get_month()).map_err(|_| out_of_range())?,
+        i8::try_from(datetime.get_day()).map_err(|_| out_of_range())?,
+        i8::try_from(datetime.get_hour()).map_err(|_| out_of_range())?,
+        i8::try_from(datetime.get_minute()).map_err(|_| out_of_range())?,
+        i8::try_from(datetime.get_second()).map_err(|_| out_of_range())?,
+        0,
     )
-    .and_then(|date| {
-        date.and_hms_opt(
-            u32::from(datetime.get_hour()),
-            u32::from(datetime.get_minute()),
-            u32::from(datetime.get_second()),
-        )
-    })
-    .ok_or_else(|| PyValueError::new_err("datetime is out of range"))?;
+    .map_err(|_| out_of_range())?;
     let source = DateTimeSource::Fixed {
-        unix_seconds: wall.and_utc().timestamp() - i64::from(offset_seconds),
+        unix_seconds: wall.duration_since(civil::date(1970, 1, 1).at(0, 0, 0, 0)).as_secs() - i64::from(offset_seconds),
         microsecond: datetime.get_microsecond(),
     };
     Ok((source, SandboxTimeZone::Fixed { offset_seconds, name }))

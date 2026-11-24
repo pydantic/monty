@@ -56,6 +56,11 @@ include = [
 # Exclude files with intentional syntax errors or special formatting requirements
 extend-exclude = [
     "crates/monty-bench/benches/python",
+    # CPython source, vendored by `make vendor-stdlib` with documented patches
+    "crates/monty/stdlib",
+    "crates/monty-datatest/vendor/cpython",
+    # Generated copies; lint the source overrides in `custom/` instead.
+    "crates/monty-typeshed/vendor/typeshed",
     "crates/monty/test_cases/function__err_duplicate_param.py",
     "crates/monty/test_cases/function__err_repeated_keyword.py",
     "crates/monty/test_cases/nonlocal__error_module_level.py",
@@ -155,13 +160,7 @@ known-first-party = ["pydantic_monty"]
     "F722", # `e: "it's"` is a string literal under test, not a forward reference
 ]
 
-"crates/monty-typeshed/vendor/typeshed/stdlib/**/*.pyi" = [
-    "F403", # unable to detect undefined names
-    "F821", # Undefined name
-]
-# Monty's narrowed replacement stubs keep upstream typeshed's structure verbatim
-# (e.g. the `from _collections_abc import *` fallback branch), so mirror the
-# vendored exemptions rather than diverging from upstream.
+# Narrowed stubs retain upstream star imports and their implicit names.
 "crates/monty-typeshed/custom/**/*.pyi" = [
     "F403", # unable to detect undefined names
     "F821", # Undefined name
@@ -183,8 +182,12 @@ typeCheckingMode = "strict"
 reportUnnecessaryTypeIgnoreComment = true
 include = ["scripts", "crates/monty/test_cases", "crates/monty-python", "crates/monty-type-checking", "examples"]
 exclude = [
+    # setting `exclude` drops pyright's default, which covers this
+    "**/node_modules",
     "crates/monty-type-checking/tests/bad_types.py",
     "crates/monty-type-checking/tests/reveal_types.py",
+    # the type-check warm-up is bare expression statements, unused by design
+    "crates/monty-type-checking/src/warm_up.py",
     # duplicate parameter name test intentionally has a syntax error
     "crates/monty/test_cases/function__err_duplicate_param.py",
     # repeated keyword argument test intentionally has a syntax error
@@ -348,6 +351,8 @@ skip = [
     "crates/monty-bench/benches/data/string_corpus.json",
 
     "crates/monty-typeshed/vendor/typeshed/stdlib/*",
+    "crates/monty/stdlib/*",
+    "crates/monty-datatest/vendor/cpython/Lib/*",
     "crates/monty/src/types/str.rs",
 ]
 

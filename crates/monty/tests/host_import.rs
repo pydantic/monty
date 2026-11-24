@@ -64,6 +64,23 @@ fn an_unknown_import_suspends_and_binds_the_answer() {
     assert_eq!(done.into_complete(), Some(MontyObject::int(42)));
 }
 
+/// `stat` uses its Python implementation without asking the host for an accelerator.
+#[test]
+fn stat_import_does_not_suspend() {
+    let done = start("import stat\nstat.filemode(0o100644)");
+    assert_eq!(done.into_complete(), Some(MontyObject::string("-rw-r--r--")));
+}
+
+/// A reserved accelerator is unavailable even when the host can answer imports.
+#[test]
+fn stat_accelerator_import_fails_without_suspending() {
+    let done = start("try:\n    import _stat\nexcept ModuleNotFoundError as exc:\n    message = str(exc)\nmessage");
+    assert_eq!(
+        done.into_complete(),
+        Some(MontyObject::string("No module named '_stat'"))
+    );
+}
+
 #[test]
 fn a_host_module_is_a_module_object() {
     let code = "import tools\n(type(tools).__name__, repr(tools), hasattr(tools, '__name__'))";

@@ -42,6 +42,8 @@ fn inline_identities_keep_legacy_numbers() {
             "type(iter({}))",
             "type(iter(b''))",
             "type(iter(''))",
+            "type(map(abs, ()))",
+            "type(filter(None, ()))",
             "datetime.date",
             "datetime.datetime",
             "datetime.time",
@@ -120,7 +122,11 @@ fn inline_identities_keep_legacy_numbers() {
     );
     for name in names {
         let expression = match name {
+            // Old bytecode can still name the builtin function rather than the constructor type.
+            "map" => "legacy_map",
+            "filter" => "legacy_filter",
             "FrozenInstanceError" => "dataclasses.FrozenInstanceError",
+            "asyncio.exceptions.InvalidStateError" => "asyncio.InvalidStateError",
             "io.UnsupportedOperation" => "unsupported_operation",
             _ => name,
         };
@@ -131,13 +137,19 @@ fn inline_identities_keep_legacy_numbers() {
     let result = MontyRun::new(
         code,
         "identity.py",
-        vec!["unsupported_operation".to_owned()],
+        vec![
+            "unsupported_operation".to_owned(),
+            "legacy_map".to_owned(),
+            "legacy_filter".to_owned(),
+        ],
         CompileOptions::default(),
     )
     .unwrap()
-    .run_no_limits(vec![MontyObject::type_object(MontyType::Exception(
-        ExcType::UnsupportedOperation,
-    ))])
+    .run_no_limits(vec![
+        MontyObject::type_object(MontyType::Exception(ExcType::UnsupportedOperation)),
+        MontyObject::builtin_function(BuiltinsFunctions::Map),
+        MontyObject::builtin_function(BuiltinsFunctions::Filter),
+    ])
     .unwrap();
     assert_snapshot!(result.to_string());
 }

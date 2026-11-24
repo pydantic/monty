@@ -34,7 +34,22 @@ is_monty = sys.platform == 'monty'
 # the names Monty implements: Monty's `__all__` is exactly these, CPython's holds them and more
 IMPLEMENTED = [
     ('annotationlib', annotationlib, ['Format', 'ForwardRef', 'get_annotations']),
-    ('asyncio', asyncio, ['gather', 'run', 'sleep']),
+    (
+        'asyncio',
+        asyncio,
+        [
+            'ALL_COMPLETED',
+            'FIRST_COMPLETED',
+            'FIRST_EXCEPTION',
+            'InvalidStateError',
+            'Task',
+            'create_task',
+            'gather',
+            'run',
+            'sleep',
+            'wait',
+        ],
+    ),
     (
         'base64',
         base64,
@@ -308,6 +323,9 @@ IMPLEMENTED = [
             'Type',
             'TypeVar',
             'Union',
+            'assert_never',
+            'assert_type',
+            'cast',
             'get_type_hints',
         ],
     ),

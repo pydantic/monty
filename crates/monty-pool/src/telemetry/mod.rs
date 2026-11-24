@@ -28,6 +28,7 @@ use logfire::{
     config::{AdvancedOptions, MetricsOptions},
 };
 pub use metrics::{Measurement, MetricKind, MetricValue, Metrics};
+use monty_proto::Traceparent;
 use opentelemetry::{
     Context, InstrumentationScope,
     trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState},
@@ -51,6 +52,7 @@ pub struct TelemetryAdapterHandle {
     /// The one instrument set every pool built from this handle shares, so
     /// worker counters total over all of them.
     metrics: Metrics,
+    adapter: Arc<dyn TelemetryAdapter>,
 }
 
 /// Distributed parent context and recorder for one checkout root.
@@ -58,6 +60,8 @@ pub struct TelemetryAdapterHandle {
 pub struct TelemetryContext {
     parent: Option<SpanContext>,
     logfire: Logfire,
+    /// The bridge re-creating spans in a foreign SDK, which assigns its own span IDs.
+    adapter: Option<Arc<dyn TelemetryAdapter>>,
 }
 
 impl TelemetryAdapterHandle {
@@ -108,6 +112,7 @@ impl TelemetryAdapterHandle {
                 trace_state,
             )),
             logfire: self.logfire.clone(),
+            adapter: Some(Arc::clone(&self.adapter)),
         })
     }
 
@@ -117,6 +122,7 @@ impl TelemetryAdapterHandle {
         TelemetryContext {
             parent: None,
             logfire: self.logfire.clone(),
+            adapter: Some(Arc::clone(&self.adapter)),
         }
     }
 
@@ -148,7 +154,11 @@ impl TelemetryContext {
     /// in-process ambient span attaches through `tracing`, not W3C fields.
     #[must_use]
     pub fn for_logfire(logfire: Logfire) -> Self {
-        Self { parent: None, logfire }
+        Self {
+            parent: None,
+            logfire,
+            adapter: None,
+        }
     }
 
     /// Parents this checkout's session to `parent` while retaining its recorder.
@@ -164,6 +174,20 @@ impl TelemetryContext {
     /// Returns the configured recorder used while processing this checkout.
     pub(crate) fn logfire(&self) -> Logfire {
         self.logfire.clone()
+    }
+
+    /// Whether a foreign SDK re-creates this checkout's spans.
+    pub(crate) fn has_adapter(&self) -> bool {
+        self.adapter.is_some()
+    }
+
+    /// Maps a recorded span to the one a peer can name as a parent: itself
+    /// without an adapter, else whatever the adapter's SDK exported it as.
+    pub(crate) fn exported_span_context(&self, span: &SpanContext) -> Option<SpanContext> {
+        match &self.adapter {
+            Some(adapter) => adapter.exported_span_context(span),
+            None => Some(span.clone()),
+        }
     }
 
     /// W3C `traceparent` (and `tracestate`, when non-empty) headers naming the
@@ -192,6 +216,52 @@ impl TelemetryContext {
         self.parent
             .map(|parent| Context::new().with_remote_span_context(parent))
     }
+}
+
+/// The context whose current span is the remote span `traceparent` names.
+pub(crate) fn context_from_traceparent(traceparent: Traceparent, is_remote: bool) -> Context {
+    Context::new().with_remote_span_context(SpanContext::new(
+        TraceId::from(traceparent.trace_id()),
+        SpanId::from(traceparent.span_id()),
+        TraceFlags::new(traceparent.flags()),
+        is_remote,
+        TraceState::default(),
+    ))
+}
+
+/// The span a server named for a suspension, kept on a callback context whose
+/// current span is the recorder's, for a host that cannot resolve that span.
+#[derive(Debug, Clone, Copy)]
+struct RemoteSuspension(Traceparent);
+
+/// A callback context for the suspension a server named `traceparent` for:
+/// `recorded` when it holds a span, keeping `traceparent` as a fallback, else the remote span.
+pub(crate) fn suspension_context(recorded: Context, traceparent: Option<Traceparent>) -> Context {
+    match traceparent {
+        Some(traceparent) if recorded.has_active_span() => recorded.with_value(RemoteSuspension(traceparent)),
+        Some(traceparent) => context_from_traceparent(traceparent, true),
+        None => recorded,
+    }
+}
+
+/// The span a server named for the suspension a callback `context` answers,
+/// for a host that cannot resolve the context's recorded span (one without a tracer).
+#[must_use]
+pub fn remote_suspension(context: &Context) -> Option<Traceparent> {
+    context.get::<RemoteSuspension>().map(|remote| remote.0).or_else(|| {
+        let span = context.span();
+        let span = span.span_context();
+        if span.is_remote() { traceparent_of(span) } else { None }
+    })
+}
+
+/// The `traceparent` naming `span`; `None` for an invalid span.
+pub(crate) fn traceparent_of(span: &SpanContext) -> Option<Traceparent> {
+    Traceparent::new(
+        u128::from_be_bytes(span.trace_id().to_bytes()),
+        u64::from_be_bytes(span.span_id().to_bytes()),
+        span.trace_flags().to_u8(),
+    )
 }
 
 /// Receives Monty records without owning exporters or credentials.
@@ -226,6 +296,13 @@ pub trait TelemetryAdapter: Send + Sync + 'static {
     fn export_metrics(&self, payload: &[u8]) {
         let _ = payload;
     }
+    /// The context the host SDK exported the open span `span` under, for a
+    /// peer to parent its own spans to. A host SDK assigns its own span IDs,
+    /// so the default names none and nothing is propagated.
+    fn exported_span_context(&self, span: &SpanContext) -> Option<SpanContext> {
+        let _ = span;
+        None
+    }
 }
 
 /// Configures the statically linked Logfire pipeline used by a language binding.
@@ -250,6 +327,7 @@ fn configure_adapter(
     host_owns_metrics: bool,
 ) -> Result<TelemetryAdapterHandle, ConfigureError> {
     let processor = AdapterProcessor::new(Arc::clone(&adapter));
+    let context_adapter = Arc::clone(&adapter);
     let config = logfire::configure()
         .send_to_logfire(false)
         .with_console(None)
@@ -269,7 +347,11 @@ fn configure_adapter(
     } else {
         Metrics::for_logfire(logfire.clone())
     };
-    Ok(TelemetryAdapterHandle { logfire, metrics })
+    Ok(TelemetryAdapterHandle {
+        logfire,
+        metrics,
+        adapter: context_adapter,
+    })
 }
 
 /// Exports aggregated SDK metrics through a foreign-language adapter.

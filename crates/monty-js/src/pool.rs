@@ -35,9 +35,10 @@ use std::{
 };
 
 use monty_pool::{
-    telemetry::{TelemetryAdapterHandle, TelemetryContext},
-    Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnStreamedCall, Persistence, Pool, PoolConfig,
-    PoolError, PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, StreamedCall, TurnEvent,
+    telemetry::{remote_suspension, TelemetryAdapterHandle, TelemetryContext},
+    Checkout, CheckoutOptions, MetadataFn, MountSpec, MountSpecMode, OnPrint, OnStreamedCall, Persistence, Pool,
+    PoolConfig, PoolError, PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, StreamedCall, Traceparent,
+    TurnEvent, TurnOptions,
 };
 use monty_types::{
     unstable::{self, NodeId},
@@ -46,8 +47,8 @@ use monty_types::{
 };
 use napi::{
     bindgen_prelude::{
-        Array, BigInt, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw,
-        Unknown,
+        Array, BigInt, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, Promise,
+        PromiseRaw, Unknown,
     },
     threadsafe_function::UnknownReturnValue,
     Env, Error, Result,
@@ -75,15 +76,29 @@ type SharedCheckout = Arc<AsyncMutex<Option<Checkout>>>;
 /// threadsafe function.
 type PrintCallback<'env> = Function<'env, FnArgs<(String, String, Option<String>)>, UnknownReturnValue>;
 
+/// The JS callback producing the request metadata of one pre-warmed session.
+type MetadataCallback<'env> = Function<'env, (), Promise<Vec<NativeHeader>>>;
+
 /// The per-feed JS callback announcing a streamed call: its call ID and the
 /// span key of its telemetry context.
 type StreamedCallCallback<'env> = Function<'env, FnArgs<(u32, Option<String>)>, UnknownReturnValue>;
 
+/// The key the TypeScript side resolves to a callback's parent span:
+/// `<trace>:<span>` for a recorded span, then the `traceparent` of the span a
+/// server named for the suspension, space-separated when there are both.
 fn callback_span_key(context: &Context) -> Option<String> {
     let span = context.span();
     let span = span.span_context();
-    span.is_valid()
-        .then(|| format!("{}:{}", span.trace_id(), span.span_id()))
+    let recorded = (span.is_valid() && !span.is_remote()).then(|| format!("{}:{}", span.trace_id(), span.span_id()));
+    match (recorded, remote_suspension(context)) {
+        (Some(recorded), Some(remote)) => Some(format!("{recorded} {remote}")),
+        (recorded, remote) => recorded.or_else(|| remote.map(|remote| remote.to_string())),
+    }
+}
+
+/// The per-turn options for a feed or restore called under the span `traceparent` names.
+fn turn_options(traceparent: Option<&str>) -> TurnOptions {
+    TurnOptions::default().with_traceparent(traceparent.and_then(Traceparent::parse))
 }
 
 /// The boxed future a turn closure returns: one computation borrowing the
@@ -113,6 +128,9 @@ pub struct NativePoolOptions {
     pub min_processes: u32,
     /// Hard cap on live workers; checkouts beyond it wait.
     pub max_processes: u32,
+    /// Idle workers kept ready beyond those checked out (see
+    /// `PoolConfig::pre_warm`). Absent: none.
+    pub pre_warm: Option<u32>,
     /// How long `enter()` waits for a free worker (ms). Absent: forever.
     pub checkout_timeout_ms: Option<f64>,
     /// Client-side hard deadline per protocol turn (ms).
@@ -152,6 +170,11 @@ pub struct NativeRemotePoolOptions {
     pub auto_resume: bool,
     /// As [`NativePoolOptions::stream_async_calls`]. Absent: on.
     pub stream_async_calls: Option<bool>,
+    /// Sessions kept open and ready (see `PoolConfig::pre_warm`). Absent: none.
+    pub pre_warm: Option<u32>,
+    /// Whether `start()` opens them itself, failing if one cannot open, rather
+    /// than in the background. Absent: on.
+    pub pre_warm_wait: Option<bool>,
 }
 
 /// One request-metadata entry for a remote checkout's stream.
@@ -244,6 +267,8 @@ pub struct NativeFeedOptions<'env> {
     /// Receives the feed's streamed calls through all its turns; only `feedRun`
     /// passes one, and without it every call suspends.
     pub on_streamed_call: Option<StreamedCallCallback<'env>>,
+    /// W3C `traceparent` of the span active where the feed was called.
+    pub traceparent: Option<String>,
 }
 
 /// One mount entry for a feed, pre-validated by the TypeScript `MountDir`.
@@ -327,6 +352,7 @@ impl NativePool {
         };
         config.min_processes = options.min_processes as usize;
         config.max_processes = options.max_processes as usize;
+        config.pre_warm = options.pre_warm.unwrap_or(0) as usize;
         apply_timeouts(
             &mut config,
             options.checkout_timeout_ms,
@@ -343,7 +369,8 @@ impl NativePool {
     }
 
     /// Configures a pool of remote workers: each checkout opens a stream to
-    /// `url` over the pool's one connection, and no stream is pre-warmed or reused.
+    /// `url` over the pool's one connection, or takes one `pre_warm` keeps
+    /// ready; no stream is reused.
     #[napi(factory)]
     pub fn remote(options: NativeRemotePoolOptions) -> Result<Self> {
         let mut config = PoolConfig::remote(options.url);
@@ -359,14 +386,37 @@ impl NativePool {
         )?;
         config.auto_resume = options.auto_resume;
         config.stream_async_calls = options.stream_async_calls.unwrap_or(true);
+        config.pre_warm = options.pre_warm.unwrap_or(0) as usize;
+        config.pre_warm_wait = options.pre_warm_wait.unwrap_or(true);
         Self::from_config(config, "MontyRemote")
     }
 
     /// Spawns the prewarmed workers off the event loop. Resolves to an `ok`
-    /// turn, or a `connect` / `configuration` / `protocol` turn saying why not.
+    /// turn, or a `connect` / `configuration` / `protocol` / `refused` turn saying why not.
+    /// `pre_warm_metadata` supplies the metadata of each session a remote pool
+    /// pre-warms; it is held weakly, so an open pool does not keep Node alive.
     #[napi]
-    pub fn start<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, Object<'env>>> {
-        let config = self.config.clone();
+    pub fn start<'env>(
+        &self,
+        env: &'env Env,
+        pre_warm_metadata: Option<MetadataCallback<'_>>,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        let mut config = self.config.clone();
+        if let Some(callback) = pre_warm_metadata {
+            let tsfn = Arc::new(callback.build_threadsafe_function().weak::<true>().build()?);
+            config.pre_warm_metadata = Some(MetadataFn::new(move || {
+                let tsfn = Arc::clone(&tsfn);
+                async move {
+                    let headers = match tsfn.call_async(()).await {
+                        Ok(promise) => promise.await,
+                        Err(err) => Err(err),
+                    };
+                    headers
+                        .map(|headers| headers.into_iter().map(|h| (h.name, h.value)).collect())
+                        .map_err(|err| format!("metadata callback failed: {}", err.reason))
+                }
+            }));
+        }
         let slot = Arc::clone(&self.pool);
         env.spawn_future_with_callback(
             async move {
@@ -604,7 +654,9 @@ impl NativeSession {
             skip_type_check,
             async_functions,
             on_streamed_call,
+            traceparent,
         } = options;
+        let turn = turn_options(traceparent.as_deref());
         let handler = on_streamed_call
             .map(|callback| self.streamed_call_handler(callback))
             .transpose()?;
@@ -616,7 +668,7 @@ impl NativeSession {
                     checkout.set_async_functions(async_functions);
                     checkout.set_streamed_call_handler(handler);
                     let outcome = checkout
-                        .feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, on_print)
+                        .feed_with(code, inputs, mounts, cwd.as_deref(), skip_type_check, turn, on_print)
                         .await;
                     // a refused feed never adopted its handler; drop it, as monty-python does
                     checkout.set_streamed_call_handler(None);
@@ -896,16 +948,18 @@ impl NativeSession {
         state: Buffer,
         mounts: Vec<ClassInstance<'env, NativeMountDir>>,
         on_print: PrintCallback<'env>,
+        traceparent: Option<String>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let mounts = mount_specs(&mounts)?;
         let state = state.to_vec();
+        let turn = turn_options(traceparent.as_deref());
         self.run_outcome(
             env,
             on_print,
             outcome_fn(move |checkout, on_print| {
                 Box::pin(async move {
                     // JS snapshots expose no script name, so the restored name is unused
-                    match checkout.restore(state, mounts, on_print).await {
+                    match checkout.restore_with(state, mounts, turn, on_print).await {
                         Ok((Some(event), _)) => TurnOutcome::Event(event),
                         Ok((None, _)) => TurnOutcome::LoadedIdle,
                         Err(err) => TurnOutcome::from(Err(err)),
@@ -921,13 +975,19 @@ impl NativeSession {
     /// Resolves to `{kind:'dumped', state}` or a failure turn object; takes
     /// `on_print` to share the turn machinery, never invoking it.
     #[napi]
-    pub fn dump<'env>(&self, env: &'env Env, on_print: PrintCallback<'env>) -> Result<PromiseRaw<'env, Object<'env>>> {
+    pub fn dump<'env>(
+        &self,
+        env: &'env Env,
+        on_print: PrintCallback<'env>,
+        traceparent: Option<String>,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        let turn = turn_options(traceparent.as_deref());
         self.run_outcome(
             env,
             on_print,
-            outcome_fn(|checkout, _on_print| {
+            outcome_fn(move |checkout, _on_print| {
                 Box::pin(async move {
-                    match checkout.dump().await {
+                    match checkout.dump_with(turn).await {
                         Ok(state) => TurnOutcome::Dumped(state),
                         Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
                     }
@@ -1156,8 +1216,8 @@ enum TurnOutcome {
         details: Option<Box<RemoteDisconnect>>,
     },
     /// The remote server refused to open the session's stream, so no session
-    /// existed; `details` is the status it refused with. Only produced by
-    /// [`NativeSession::enter`].
+    /// existed; `details` is the status it refused with. Produced by
+    /// [`NativeSession::enter`], and by [`NativePool::start`] for a pre-warmed session.
     Refused {
         message: String,
         details: Box<RemoteDisconnect>,
@@ -1260,6 +1320,7 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("value", monty_to_js(&value, env)?)?;
         }
         TurnOutcome::Event(TurnEvent::FunctionCall {
+            traceparent: _,
             function_name,
             args,
             call_id,
@@ -1280,6 +1341,7 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("objectId", object_id.map(|uuid| uuid.to_string()))?;
         }
         TurnOutcome::Event(TurnEvent::OsCall {
+            traceparent: _,
             function_name,
             args,
             call_id,
@@ -1301,6 +1363,7 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("allowEagerAwait", allow_eager_await)?;
         }
         TurnOutcome::Event(TurnEvent::NameLookup {
+            traceparent: _,
             name,
             object_id,
             position,
@@ -1312,6 +1375,7 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("position", source_range_to_js(env, &position)?)?;
         }
         TurnOutcome::Event(TurnEvent::ResolveFutures {
+            traceparent: _,
             pending_call_ids,
             position,
         }) => {

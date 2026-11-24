@@ -985,7 +985,8 @@ fn math_atanh(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         )
         .into());
     }
-    Ok(Value::Float(f.atanh()))
+    // `f64::atanh` is a Rust std formula that loses most digits near -1.
+    Ok(Value::Float(libm::atanh(f)))
 }
 
 // ==========================

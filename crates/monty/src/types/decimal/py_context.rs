@@ -449,7 +449,7 @@ fn signal_set_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<Conditions> {
         return Err(ExcType::type_error("argument must be a signal dict"));
     };
     let items: Option<Vec<Value>> = match vm.heap.get(*id) {
-        HeapData::List(list) => Some(list.as_slice().iter().map(|v| v.clone_with_heap(vm.heap)).collect()),
+        HeapData::List(list) => Some(list.items().cloned(vm.heap).collect()),
         _ => None,
     };
     if let Some(items) = items {

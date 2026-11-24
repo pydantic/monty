@@ -10,7 +10,7 @@ use tonic::Status;
 
 use super::{
     MAX_WINDOW_BYTES, MIN_CONNECTION_WINDOW_BYTES, MIN_STREAM_WINDOW_BYTES, RemoteDisconnect, STREAM_WINDOW_BYTES,
-    connection_window, retry_after, stream_window,
+    admission_retry_delay, connection_window, retry_after, stream_window,
 };
 
 /// Every stream a pool can hold, live and closing, stalled on a full stream
@@ -54,6 +54,28 @@ fn retry_after_accepts_delay_seconds_and_http_dates() {
         ("not a date", None),
     ] {
         assert_eq!(retry_after(value, now), expected.map(Duration::from_secs));
+    }
+}
+
+#[test]
+fn admission_retry_wait_preserves_the_server_delay_and_bounds_slot_occupancy() {
+    for (hint, expected_ms) in [
+        ("0", Some(350)),
+        ("Wed, 21 Oct 2015 07:27:00 GMT", Some(350)),
+        ("1", Some(1250)),
+        ("2", Some(2250)),
+        ("3", None),
+        ("3600", None),
+        ("garbage", None),
+    ] {
+        let mut status = Status::unavailable("retry later");
+        status.metadata_mut().insert("retry-after", hint.parse().unwrap());
+        let refusal = RemoteDisconnect::from_refusal(&status);
+        assert_eq!(
+            admission_retry_delay(refusal.retry_after, || Duration::from_millis(250)),
+            expected_ms.map(Duration::from_millis),
+            "{hint}",
+        );
     }
 }
 

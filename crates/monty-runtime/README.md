@@ -4,6 +4,7 @@ The `monty` command-line binary for the
 [Monty](https://github.com/pydantic/monty) sandbox.
 
 Installing the wheel puts the compiled binary in the environment's scripts directory.
+The wheel includes the MIT licence for Monty and the upstream licences and notices for the embedded CPython modules and typeshed stubs.
 
 You normally don't install this directly — the
 [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) metapackage pulls
@@ -64,6 +65,11 @@ Rust embedders can change these defaults with `MontyRun::with_os_policy`; the CL
 requests on stdin, framed events on stdout. This is how `pydantic-monty` runs
 sandboxed code with crash isolation, and is meant to be driven by a client,
 not by hand.
+
+`monty subprocess --prewarm-type-checker` has the worker build a type checker
+with the builtins resolved at startup and between sessions, so a session's first type check
+skips that work; a request arriving mid-build waits for it. It costs about 6 MiB per worker, counted in the worker's
+baseline rather than any session's `max_memory`.
 
 The wheels are built from the
 [`monty-runtime`](https://crates.io/crates/monty-runtime) crate; see its

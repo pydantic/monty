@@ -1,16 +1,15 @@
 import builtins
 import codecs
 import sys
+from _typeshed import FileDescriptorOrPath, MaybeNone, ReadableBuffer, WriteableBuffer
 from collections.abc import Callable, Iterable, Iterator
 from io import BufferedIOBase, RawIOBase, TextIOBase, UnsupportedOperation as UnsupportedOperation
 from os import _Opener
 from types import TracebackType
 from typing import IO, Any, BinaryIO, Final, Generic, Literal, Protocol, TextIO, TypeVar, overload, type_check_only
-
-from _typeshed import FileDescriptorOrPath, MaybeNone, ReadableBuffer, WriteableBuffer
 from typing_extensions import Self, disjoint_base
 
-_T = TypeVar('_T')
+_T = TypeVar("_T")
 
 if sys.version_info >= (3, 14):
     DEFAULT_BUFFER_SIZE: Final = 131072
@@ -104,7 +103,7 @@ class FileIO(RawIOBase, _RawIOBase, BinaryIO):  # type: ignore[misc]  # incompat
     # "name" is a str. In the future, making FileIO generic might help.
     name: Any
     def __init__(
-        self, file: FileDescriptorOrPath, mode: str = 'r', closefd: bool = True, opener: _Opener | None = None
+        self, file: FileDescriptorOrPath, mode: str = "r", closefd: bool = True, opener: _Opener | None = None
     ) -> None: ...
     @property
     def closefd(self) -> bool: ...
@@ -113,7 +112,7 @@ class FileIO(RawIOBase, _RawIOBase, BinaryIO):  # type: ignore[misc]  # incompat
 
 @disjoint_base
 class BytesIO(BufferedIOBase, _BufferedIOBase, BinaryIO):  # type: ignore[misc]  # incompatible definitions of methods in the base classes
-    def __init__(self, initial_bytes: ReadableBuffer = b'') -> None: ...
+    def __init__(self, initial_bytes: ReadableBuffer = b"") -> None: ...
     # BytesIO does not contain a "name" field. This workaround is necessary
     # to allow BytesIO sub-classes to add this field, as it is defined
     # as a read-only property on IO[].
@@ -150,7 +149,7 @@ class _BufferedReaderStream(Protocol):
     # def fileno(self) -> int: ...
     # def isatty(self) -> bool: ...
 
-_BufferedReaderStreamT = TypeVar('_BufferedReaderStreamT', bound=_BufferedReaderStream, default=_BufferedReaderStream)
+_BufferedReaderStreamT = TypeVar("_BufferedReaderStreamT", bound=_BufferedReaderStream, default=_BufferedReaderStream)
 
 @disjoint_base
 class BufferedReader(BufferedIOBase, _BufferedIOBase, BinaryIO, Generic[_BufferedReaderStreamT]):  # type: ignore[misc]  # incompatible definitions of methods in the base classes
@@ -235,7 +234,7 @@ class _WrappedBuffer(Protocol):
     # def seek(self, offset: Literal[0], whence: Literal[2]) -> int: ...
     # def tell(self) -> int: ...
 
-_BufferT_co = TypeVar('_BufferT_co', bound=_WrappedBuffer, default=_WrappedBuffer, covariant=True)
+_BufferT_co = TypeVar("_BufferT_co", bound=_WrappedBuffer, default=_WrappedBuffer, covariant=True)
 
 @disjoint_base
 class TextIOWrapper(TextIOBase, _TextIOBase, TextIO, Generic[_BufferT_co]):  # type: ignore[misc]  # incompatible definitions of write in the base classes
@@ -274,7 +273,7 @@ class TextIOWrapper(TextIOBase, _TextIOBase, TextIO, Generic[_BufferT_co]):  # t
 
 @disjoint_base
 class StringIO(TextIOBase, _TextIOBase, TextIO):  # type: ignore[misc]  # incompatible definitions of write in the base classes
-    def __init__(self, initial_value: str | None = '', newline: str | None = '\n') -> None: ...
+    def __init__(self, initial_value: str | None = "", newline: str | None = "\n") -> None: ...
     # StringIO does not contain a "name" field. This workaround is necessary
     # to allow StringIO sub-classes to add this field, as it is defined
     # as a read-only property on IO[].
@@ -287,7 +286,7 @@ class StringIO(TextIOBase, _TextIOBase, TextIO):  # type: ignore[misc]  # incomp
 
 @disjoint_base
 class IncrementalNewlineDecoder:
-    def __init__(self, decoder: codecs.IncrementalDecoder | None, translate: bool, errors: str = 'strict') -> None: ...
+    def __init__(self, decoder: codecs.IncrementalDecoder | None, translate: bool, errors: str = "strict") -> None: ...
     def decode(self, input: ReadableBuffer | str, final: bool = False) -> str: ...
     @property
     def newlines(self) -> str | tuple[str, ...] | None: ...
@@ -297,6 +296,6 @@ class IncrementalNewlineDecoder:
 
 if sys.version_info >= (3, 10):
     @overload
-    def text_encoding(encoding: None, stacklevel: int = 2, /) -> Literal['locale', 'utf-8']: ...
+    def text_encoding(encoding: None, stacklevel: int = 2, /) -> Literal["locale", "utf-8"]: ...
     @overload
     def text_encoding(encoding: _T, stacklevel: int = 2, /) -> _T: ...

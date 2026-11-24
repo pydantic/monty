@@ -1,5 +1,3 @@
-use std::{cell::Cell, ffi::c_int, fmt::Write, ops, str};
-
 /// Python bytes type, wrapping a `Vec<u8>`.
 ///
 /// This type provides Python bytes semantics with operations on ASCII bytes only.
@@ -62,11 +60,13 @@ use std::{cell::Cell, ffi::c_int, fmt::Write, ops, str};
 ///
 /// ## Other Methods
 /// - `join(iterable)` - Join bytes sequences
+/// - `maketrans(frm, to)` - Create translation table (staticmethod)
+/// - `translate(table[, delete])` - Character translation
 ///
 /// # Unimplemented Methods
 /// - `expandtabs(tabsize=8)` - Tab expansion
-/// - `translate(table[, delete])` - Character translation
-/// - `maketrans(frm, to)` - Create translation table (staticmethod)
+use std::{array, cell::Cell, ffi::c_int, fmt::Write, ops, str};
+
 use memchr::memmem::{Finder, FinderRev};
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{bytes_repr, bytes_repr_fmt};
@@ -696,8 +696,10 @@ fn call_bytes_method_impl<'h>(
         }
         // Hex method
         StaticStrings::Hex => bytes_hex(bytes, args, vm),
-        // fromhex is a classmethod but also accessible on instances
+        // fromhex is a classmethod and maketrans is a staticmethod, both accessible on instances
         StaticStrings::Fromhex => bytes_fromhex(args, vm),
+        StaticStrings::Maketrans => bytes_maketrans(args, vm),
+        StaticStrings::Translate => bytes_translate(bytes, args, vm),
         _ => {
             args.drop_with(vm.heap);
             Err(ExcType::attribute_error(Type::Bytes, method.into()))
@@ -2414,19 +2416,19 @@ struct BytesHexArgs {
 }
 
 // =============================================================================
-// fromhex classmethod
+// Class and static methods on bytes type
 // =============================================================================
 
-/// `bytes.fromhex(...)` called on the type.
+/// Class and static methods on `bytes` (`fromhex`, `maketrans`).
 pub(crate) fn bytes_class_method(
     attr: &EitherStr,
     args: ArgValues,
     vm: &mut VM<'_>,
 ) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::Fromhex) {
-        Ok(bytes_fromhex(args, vm).map(CallResult::Value))
-    } else {
-        Err(args)
+    match attr.static_string(vm.interns) {
+        Some(StaticStrings::Fromhex) => Ok(bytes_fromhex(args, vm).map(CallResult::Value)),
+        Some(StaticStrings::Maketrans) => Ok(bytes_maketrans(args, vm).map(CallResult::Value)),
+        _ => Err(args),
     }
 }
 
@@ -2618,14 +2620,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIterator> {
         Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let byte = {
             let iter = self.get(vm.heap);
             iter.as_slice(vm).get(iter.index).copied()
         };
         if let Some(byte) = byte {
             self.get_mut(vm.heap).index += 1;
-            Ok(Some(Value::Int(i64::from(byte))))
+            Ok(Some(CallResult::Value(Value::Int(i64::from(byte)))))
         } else {
             Ok(None)
         }
@@ -2662,4 +2664,122 @@ pub(crate) fn bytes_contains(container: &[u8], item: &Value, vm: &VM<'_>) -> Run
         Some(b) => Ok(container.contains(&b)),
         None => Err(ExcType::value_error("byte must be in range(0, 256)")),
     }
+}
+
+// =============================================================================
+// maketrans and translate methods
+// =============================================================================
+
+/// Extracts a byte slice from a `Value`, raising CPython's
+/// `TypeError: a bytes-like object is required, not '<type>'` on any non-bytes value.
+fn extract_bytes_like<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
+    match value {
+        Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Bytes(b) => Ok(b.as_slice()),
+            _ => Err(ExcType::type_error(format!(
+                "a bytes-like object is required, not '{}'",
+                value.py_type_name(vm)
+            ))),
+        },
+        _ => Err(ExcType::type_error(format!(
+            "a bytes-like object is required, not '{}'",
+            value.py_type_name(vm)
+        ))),
+    }
+}
+
+/// Implements Python's `bytes.maketrans(frm, to)` staticmethod.
+pub(crate) fn bytes_maketrans(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
+    let args = args.reject_kwargs("bytes.maketrans", vm.heap)?;
+    let (frm_val, to_val) = args.get_two_args("maketrans", vm.heap)?;
+    defer_drop!(frm_val, vm);
+    defer_drop!(to_val, vm);
+
+    let frm = extract_bytes_like(frm_val, vm)?;
+    let to = extract_bytes_like(to_val, vm)?;
+
+    if frm.len() != to.len() {
+        return Err(ExcType::value_error("maketrans arguments must have same length"));
+    }
+
+    let mut table: [u8; 256] = array::from_fn(|i| u8::try_from(i).unwrap_or(0));
+    for (i, (&f, &t)) in frm.iter().zip(to.iter()).enumerate() {
+        vm.heap.tracker.check_time_every(i)?;
+        table[usize::from(f)] = t;
+    }
+
+    Ok(allocate_bytes(table.to_vec(), vm.heap))
+}
+
+/// Argument shape for `bytes.translate(table, /, delete=b'')`.
+#[derive(FromArgs)]
+#[from_args(name = "translate", at_most_total)]
+struct BytesTranslateArgs {
+    #[from_args(pos_only)]
+    table: Value,
+    #[from_args(default)]
+    delete: Option<Value>,
+}
+
+/// Implements Python's `bytes.translate(table, /, delete=b'')` method.
+fn bytes_translate<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let BytesTranslateArgs { table, delete } = BytesTranslateArgs::from_args(args, vm)?;
+    defer_drop!(table, vm);
+    defer_drop!(delete, vm);
+
+    let table_arr: Option<[u8; 256]> = match table {
+        Value::None => None,
+        v => {
+            let slice = extract_bytes_like(v, vm)?;
+            let Ok(arr) = <[u8; 256]>::try_from(slice) else {
+                return Err(ExcType::value_error("translation table must be 256 characters long"));
+            };
+            Some(arr)
+        }
+    };
+
+    let mut delete_mask = [false; 256];
+    let has_delete = match delete {
+        None => false,
+        Some(v) => {
+            let slice = extract_bytes_like(v, vm)?;
+            for &b in slice {
+                delete_mask[usize::from(b)] = true;
+            }
+            !slice.is_empty()
+        }
+    };
+
+    let src = bytes.get(vm.heap);
+    check_repeat_size(src.len(), 1, &vm.heap.tracker)?;
+    let mut result = Vec::with_capacity(src.len());
+
+    for chunk in src.chunks(SCAN_CHUNK) {
+        vm.heap.tracker.check_time()?;
+        match (&table_arr, has_delete) {
+            (None, false) => result.extend_from_slice(chunk),
+            (None, true) => {
+                for &b in chunk {
+                    if !delete_mask[usize::from(b)] {
+                        result.push(b);
+                    }
+                }
+            }
+            (Some(tab), false) => {
+                for &b in chunk {
+                    result.push(tab[usize::from(b)]);
+                }
+            }
+            (Some(tab), true) => {
+                for &b in chunk {
+                    if !delete_mask[usize::from(b)] {
+                        result.push(tab[usize::from(b)]);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(allocate_bytes(result, vm.heap))
 }

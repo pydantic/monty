@@ -34,3 +34,18 @@ We generally only accept new feature PRs from recognised contributors: people wh
 collaboration are known to the maintainers.
 If that doesn't describe you, get a maintainer's agreement before starting feature work.
 An open feature request is not, by itself, an invitation to submit an implementation.
+
+## Documentation
+
+Changes to CPython divergences must update the owning page under [`limitations/`](limitations/), including changed
+error types and messages.
+Only divergences belong there, not migration history or general architecture notes.
+Update the [subset overview](docs/limitations/index.md) when the supported language or module set changes.
+
+Public API changes need updates to the relevant guide in [`docs/`](docs/) and the binding or crate reference.
+Implementation rationale belongs in crate READMEs or code comments.
+Update existing explanations rather than duplicating them.
+
+## Resource-limit checks
+
+Follow the [cooperative-check policy](docs/resource-limits.md#cooperative-checks) when changing native operations.
