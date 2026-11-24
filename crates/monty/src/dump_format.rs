@@ -66,7 +66,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// source-body changes do not require one; restored sessions retain their captured code.
 /// Older releases reject dumps with newer versions, and this build rejects dumps
 /// below [`MIN_SUPPORTED_DUMP_VERSION`].
-pub const DUMP_VERSION: u16 = 17;
+pub const DUMP_VERSION: u16 = 18;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.
