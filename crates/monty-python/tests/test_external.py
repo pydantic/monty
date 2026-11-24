@@ -1,3 +1,4 @@
+import asyncio
 import binascii
 import datetime
 import io
@@ -454,6 +455,7 @@ def test_external_function_json_decode_error_missing_attributes(monty_run: RunMo
         (binascii.Error, 'binascii.Error'),
         (binascii.Incomplete, 'binascii.Incomplete'),
         (statistics.StatisticsError, 'statistics.StatisticsError'),
+        (asyncio.InvalidStateError, 'asyncio.exceptions.InvalidStateError'),
     ],
 )
 def test_external_function_exception_hierarchy(
@@ -551,6 +553,7 @@ caught
         (json.JSONDecodeError, 'json.JSONDecodeError', ValueError),
         (re.error, 're.PatternError', Exception),
         (statistics.StatisticsError, 'statistics.StatisticsError', ValueError),
+        (asyncio.InvalidStateError, 'asyncio.InvalidStateError', Exception),
     ],
 )
 def test_external_function_dotted_exception_caught_by_own_name(
