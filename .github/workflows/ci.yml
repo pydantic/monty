@@ -811,14 +811,13 @@ jobs:
           name: pypi_files-meta
           path: packages/pydantic-monty/dist
 
-  # Build extension wheels and one runtime wheel for every supported platform
-  build:
-    name: build on ${{ matrix.os }} (${{ matrix.target }} - ${{ matrix.manylinux || 'auto' }})
+  build-client-wheels:
+    name: build client wheels on ${{ matrix.os }} (${{ matrix.target }} - ${{ matrix.manylinux || 'auto' }})
     # only run on push to main, on tags, or if 'Full Build' label is present
     if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)
     strategy:
       fail-fast: false
-      matrix:
+      matrix: &wheel-platforms
         include:
           - os: linux
             target: x86_64
@@ -905,6 +904,20 @@ jobs:
           name: pypi_files-python-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}
           path: crates/monty-python/dist
 
+  build-runtime-wheels:
+    name: build runtime wheel on ${{ matrix.os }} (${{ matrix.target }} - ${{ matrix.manylinux || 'auto' }})
+    # only run on push to main, on tags, or if 'Full Build' label is present
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)
+    strategy:
+      fail-fast: false
+      matrix: *wheel-platforms
+
+    runs-on: ${{ matrix.runs-on || (matrix.os == 'linux' && 'ubuntu-latest') || (matrix.os == 'macos' && 'macos-latest') || (matrix.os == 'windows' && 'windows-latest') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         if: matrix.os != 'linux' && matrix.pgo-runtime
         with:
@@ -971,7 +984,7 @@ jobs:
   # Test wheels on exotic architectures via QEMU
   test-builds-arch:
     name: test build on ${{ matrix.target }}
-    needs: [build]
+    needs: [build-client-wheels, build-runtime-wheels]
     runs-on: ubuntu-latest
 
     strategy:
@@ -1017,7 +1030,7 @@ jobs:
   # Test wheels on main OS platforms
   test-builds-os:
     name: test build on ${{ matrix.os }} (Python ${{ matrix.python-version }})
-    needs: [build]
+    needs: [build-client-wheels, build-runtime-wheels]
     runs-on: ${{ matrix.runs-on }}
 
     strategy:
@@ -1080,7 +1093,7 @@ jobs:
 
   # Inspect built artifacts
   inspect-python-assets:
-    needs: [build, build-sdist]
+    needs: [build-client-wheels, build-runtime-wheels, build-sdist]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1426,7 +1439,7 @@ jobs:
   assemble-js-packages:
     name: assemble JS packages
     needs:
-      - build
+      - build-runtime-wheels
       - build-js-binaries
       - build-wasm
     runs-on: ubuntu-latest
