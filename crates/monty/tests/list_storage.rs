@@ -1,24 +1,25 @@
+//! Session-level tests for packed lists under memory limits and across dump and restore.
+//!
+//! Aliases and iterators created before a failed promotion or a dump must still observe the same list.
+
 use monty::{Dump, MontyRepl, Session, SessionRef, dump};
 use monty_types::{CompileOptions, ExcType, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
 
 #[test]
 fn bytes_literal_fits_without_a_temporary_value_buffer() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
-    let code = format!("raw = b'{}'", "x".repeat(32_768));
+    let code = format!("raw = b'{}'", "xy".repeat(16_384));
     repl.feed_run(&code, vec![], PrintWriter::Disabled).unwrap();
 
     *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(128 * 1024));
     let result = repl
         .feed_run(
-            "items = list(raw)\nlen(items), items[-1]",
+            "items = list(raw)\nitems == [120, 121] * 16_384",
             vec![],
             PrintWriter::Disabled,
         )
         .unwrap();
-    assert_eq!(
-        result,
-        MontyObject::tuple(vec![MontyObject::int(32_768), MontyObject::int(120)])
-    );
+    assert_eq!(result, MontyObject::bool(true));
 }
 
 #[test]

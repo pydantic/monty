@@ -1,3 +1,10 @@
+//! Compact list buffers for integers, floats, booleans, and `None`.
+//!
+//! [`Packing`] determines whether incoming values fit the current layout or require a wider
+//! or generic buffer. [`PackedList`] owns the slots and implements operations on them.
+//! Nullable buffers mark `None` in a separate bitmap. A list containing only `None` can
+//! reserve that bitmap before it needs any value slots.
+
 use std::{mem, ops::Range};
 
 use monty_types::ResourceTracker;
@@ -439,43 +446,69 @@ impl PackedList {
         Ok(result)
     }
 
-    pub(super) fn replace_slice(&mut self, start: i64, step: i64, count: usize, values: SequenceItems<'_>) {
-        if let SequenceItems::Packed(source) = values {
+    pub(super) fn replace_slice(
+        &mut self,
+        start: i64,
+        step: i64,
+        count: usize,
+        values: SequenceItems<'_>,
+        tracker: &ResourceTracker,
+    ) -> RunResult<()> {
+        let len = values.len();
+        if let Self::Nones(items) = self {
+            items.len = items.len - count + len;
+            return Ok(());
+        }
+        if len != count {
+            // Only unit-step slices can change length. Move the suffix backwards when growing
+            // and forwards when shrinking so overlapping slots are read before they are overwritten.
+            let start = usize::try_from(start).expect("unit-step slice start is non-negative");
+            let old_len = self.len();
+            let tail = old_len - (start + count);
+            for index in count..len {
+                tracker.check_time_every(index)?;
+                values.map_item(index, |value| self.push(value));
+            }
+            for offset in 0..tail {
+                tracker.check_time_every(offset)?;
+                let i = if len > count { tail - 1 - offset } else { offset };
+                self.swap(start + count + i, start + len + i);
+            }
+            if len < count {
+                self.delete_range(old_len - (count - len)..old_len);
+            }
+        }
+        if step == 1
+            && let SequenceItems::Packed(source) = values
+        {
+            let start = usize::try_from(start).expect("unit-step slice start is non-negative");
             match (&mut *self, source.0) {
-                (Self::ByteInts(dst), Self::ByteInts(src)) => return replace_slots(dst, start, step, count, src),
-                (Self::Ints(dst), Self::Ints(src)) => return replace_slots(dst, start, step, count, src),
-                (Self::Floats(dst), Self::Floats(src)) => return replace_slots(dst, start, step, count, src),
+                (Self::ByteInts(dst), Self::ByteInts(src)) => return copy_slots(dst, start, src, tracker),
+                (Self::Ints(dst), Self::Ints(src)) => return copy_slots(dst, start, src, tracker),
+                (Self::Floats(dst), Self::Floats(src)) => return copy_slots(dst, start, src, tracker),
                 _ => {}
             }
         }
-        if step == 1 {
-            let start = usize::try_from(start).expect("positive slice start is non-negative");
-            self.splice(start..start + count, values);
-        } else {
-            for (offset, index) in slice_indices(start, step, count).enumerate() {
-                values.map_item(offset, |value| self.set(index, value));
-            }
+        for (offset, index) in slice_indices(start, step, len).enumerate() {
+            tracker.check_time_every(offset)?;
+            values.map_item(offset, |value| self.set(index, value));
         }
+        Ok(())
     }
 
-    pub(super) fn splice(&mut self, range: Range<usize>, values: SequenceItems<'_>) {
-        let start = range.start;
-        let dst = start + values.len();
+    pub(super) fn delete_range(&mut self, range: Range<usize>) {
         match self {
-            Self::Empty => debug_assert!(range.is_empty() && values.len() == 0),
-            Self::Nones(items) => items.len = items.len - range.len() + values.len(),
-            Self::ByteInts(items) => splice_slots(items, range, values),
-            Self::Ints(items) => splice_slots(items, range, values),
-            Self::Floats(items) => splice_slots(items, range, values),
-            Self::NullableBytes(items) => items.splice(range, values),
-            Self::NullableInts(items) => items.splice(range, values),
-            Self::NullableFloats(items) => items.splice(range, values),
+            Self::Empty => debug_assert!(range.is_empty()),
+            Self::Nones(items) => items.len -= range.len(),
+            Self::ByteInts(items) => drop(items.drain(range)),
+            Self::Ints(items) => drop(items.drain(range)),
+            Self::Floats(items) => drop(items.drain(range)),
+            Self::NullableBytes(items) => items.delete_range(range),
+            Self::NullableInts(items) => items.delete_range(range),
+            Self::NullableFloats(items) => items.delete_range(range),
             Self::Bools(items) => {
-                items.move_within(range.end, dst, items.len - range.end);
-                items.len = items.len - range.len() + values.len();
-                for index in 0..values.len() {
-                    values.map_item(index, |value| items.set(start + index, value));
-                }
+                items.move_within(range.end, range.start, items.len - range.end);
+                items.len -= range.len();
             }
         }
     }
@@ -516,7 +549,7 @@ impl PackedList {
             _ => {}
         }
         let value = self.get(index).expect("checked list index");
-        self.splice(index..index + 1, SequenceItems::from_slice(&[]));
+        self.delete_range(index..index + 1);
         value
     }
 
@@ -759,14 +792,10 @@ impl<T: NumericSlot> NullableSlots<T> {
         self.nulls.set(index, matches!(value, Value::None));
     }
 
-    fn splice(&mut self, range: Range<usize>, values: SequenceItems<'_>) {
-        let start = range.start;
+    fn delete_range(&mut self, range: Range<usize>) {
         self.nulls
-            .move_within(range.end, start + values.len(), self.values.len() - range.end);
-        drop(self.values.splice(range, values.map(T::from_nullable)));
-        for (index, is_null) in values.map(|value| matches!(value, Value::None)).enumerate() {
-            self.nulls.set(start + index, is_null);
-        }
+            .move_within(range.end, range.start, self.values.len() - range.end);
+        drop(self.values.drain(range));
     }
 
     fn set_slot(&mut self, index: usize, value: T, is_null: bool) {
@@ -979,30 +1008,17 @@ fn slice_slots<T: NumericSlot>(
     Ok(target)
 }
 
-fn replace_slots<T: Copy>(target: &mut Vec<T>, start: i64, step: i64, count: usize, source: &[T]) {
-    if step == 1 {
-        let start = usize::try_from(start).expect("positive slice start is non-negative");
-        let range = start..start + count;
-        if count == source.len() {
-            target[range].copy_from_slice(source);
-        } else {
-            drop(target.splice(range, source.iter().copied()));
-        }
+fn copy_slots<T: Copy>(target: &mut [T], start: usize, source: &[T], tracker: &ResourceTracker) -> RunResult<()> {
+    let target = &mut target[start..start + source.len()];
+    if source.len() < COPY_BATCH {
+        target.copy_from_slice(source);
     } else {
-        for (index, &value) in slice_indices(start, step, count).zip(source) {
-            target[index] = value;
+        for (dst, src) in target.chunks_mut(COPY_BATCH).zip(source.chunks(COPY_BATCH)) {
+            dst.copy_from_slice(src);
+            tracker.check_time()?;
         }
     }
-}
-
-fn splice_slots<T: NumericSlot>(target: &mut Vec<T>, range: Range<usize>, values: SequenceItems<'_>) {
-    if range.len() == values.len() {
-        for (slot, value) in target[range].iter_mut().zip(values.map(T::from_value)) {
-            *slot = value;
-        }
-    } else {
-        drop(target.splice(range, values.map(T::from_value)));
-    }
+    Ok(())
 }
 
 fn reserve_vec<T>(items: &mut Vec<T>, capacity: usize) -> RunResult<()> {
@@ -1019,6 +1035,29 @@ mod tests {
 
     use super::*;
     use crate::exception_private::RunError;
+
+    #[test]
+    fn packed_slice_replacement_polls_during_the_copy() {
+        let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::ZERO));
+        tracker.on_execution_start();
+        thread::sleep(Duration::from_millis(1));
+        tracker.on_execution_stop();
+
+        let len = COPY_BATCH * 3;
+        let source = PackedList::ByteInts(vec![1; len]);
+        for (start, step) in [(0, 1), (i64::try_from(len).unwrap() - 1, -1)] {
+            let mut target = PackedList::ByteInts(vec![0; len]);
+            let result = target.replace_slice(start, step, len, SequenceItems::Packed(source.view()), &tracker);
+            assert!(
+                matches!(result, Err(RunError::UncatchableExc(exc)) if exc.exc.exc_type() == ExcType::TimeoutError)
+            );
+            let PackedList::ByteInts(slots) = target else {
+                unreachable!()
+            };
+            assert!(slots.contains(&0));
+            assert!(slots.contains(&1));
+        }
+    }
 
     #[test]
     fn packed_range_fill_checks_the_deadline() {

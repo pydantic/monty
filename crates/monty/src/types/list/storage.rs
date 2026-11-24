@@ -1,3 +1,9 @@
+//! The backing storage of a Python list and its representation in session dumps.
+//!
+//! [`ListStorage`] exposes either buffer through the same element view and expands packed
+//! elements into owned `Value` slots when needed. Dumps record the logical elements and the
+//! heap-reference flag. Nonempty lists restore into generic storage regardless of their original layout.
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeStruct};
 
 use super::{
@@ -26,6 +32,13 @@ impl Default for ListStorage {
 }
 
 impl ListStorage {
+    pub(super) fn swap(&mut self, i: usize, j: usize) {
+        match self {
+            Self::Packed(items) => items.swap(i, j),
+            Self::Generic(items) => items.swap(i, j),
+        }
+    }
+
     pub(super) fn view(&self) -> SequenceItems<'_> {
         match self {
             Self::Packed(items) => SequenceItems::Packed(items.view()),

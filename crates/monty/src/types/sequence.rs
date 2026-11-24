@@ -1,3 +1,9 @@
+//! Borrowed element access for built-in lists, tuples, and named tuples.
+//!
+//! VM operations such as unpacking can read these sequences without invoking Python iteration.
+//! [`SequenceItems::map_item`] lends the callback an existing `Value` slot or materializes one
+//! packed element for the duration of the call.
+
 use monty_types::ResourceTracker;
 use serde::{Serialize, Serializer};
 

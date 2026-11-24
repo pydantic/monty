@@ -1,3 +1,9 @@
+//! Python's mutable `list` type, its methods, and its iterators.
+//!
+//! Mutations can widen a buffer or replace it with generic storage. Aliases and live iterators
+//! keep referring to the same heap object. [`packed`] implements the compact buffers, and
+//! [`storage`] reads either layout and handles list snapshots.
+
 use std::{cmp::Ordering, fmt::Write, mem, ptr};
 
 mod bitmap;
@@ -93,10 +99,7 @@ impl List {
     }
 
     pub(crate) fn swap(&mut self, i: usize, j: usize) {
-        match &mut self.storage {
-            ListStorage::Packed(items) => items.swap(i, j),
-            ListStorage::Generic(items) => items.swap(i, j),
-        }
+        self.storage.swap(i, j);
     }
 
     /// Moves owned items into a generic list without a resource check, for heap fixtures.
@@ -348,10 +351,10 @@ impl<'h> HeapReadMut<'h, List> {
             return Ok(true);
         }
 
+        vm.heap.tracker.check_time()?;
         let snapshot = if ptr::eq(target, source.get(vm.heap)) {
             Some(values.copy(&vm.heap.tracker)?)
         } else {
-            vm.heap.tracker.check_time()?;
             None
         };
         if len > count {
@@ -366,8 +369,9 @@ impl<'h> HeapReadMut<'h, List> {
             Some(copy) => SequenceItems::Packed(copy.view()),
             None => source.get(vm.heap).items(),
         };
-        items.replace_slice(start, step, count, replacements);
+        let result = items.replace_slice(start, step, count, replacements, &vm.heap.tracker);
         self.get_mut(vm.heap).storage = storage;
+        result?;
         Ok(true)
     }
 
@@ -417,8 +421,12 @@ impl<'h> HeapReadMut<'h, List> {
         let growth = items.len().saturating_sub(count);
         self.reserve_bulk(vm, growth, packing)?;
         if let ListStorage::Packed(target) = &mut self.get_mut(vm.heap).storage {
-            target.replace_slice(start, step, count, SequenceItems::from_slice(items));
-        } else if items.len() == count {
+            let mut packed = mem::replace(target, PackedList::Empty);
+            let result = packed.replace_slice(start, step, count, SequenceItems::from_slice(items), &vm.heap.tracker);
+            self.get_mut(vm.heap).storage = ListStorage::Packed(packed);
+            return result;
+        }
+        if items.len() == count {
             let list = self.get_mut(vm.heap);
             list.contains_refs |= items.iter().any(|item| matches!(item, Value::Ref(_)));
             let target = list.generic_mut();
@@ -1257,7 +1265,7 @@ fn list_clear<'h>(list: &HeapReadMut<'h, List>, vm: &mut VM<'h>) {
     let this = list.get_mut(vm.heap);
     this.contains_refs = false;
     match &mut this.storage {
-        ListStorage::Packed(items) => items.splice(0..items.len(), SequenceItems::from_slice(&[])),
+        ListStorage::Packed(items) => items.delete_range(0..items.len()),
         ListStorage::Generic(items) => {
             let mut detached = mem::take(items);
             for item in detached.drain(..) {

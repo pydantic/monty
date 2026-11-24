@@ -1,3 +1,9 @@
+//! Bit storage for boolean list elements and for the positions of `None` in nullable lists.
+//!
+//! Each list index addresses one bit. Insertion and slice replacement can shift overlapping
+//! ranges across word boundaries. The caller supplies the logical length because the last
+//! allocated word can contain padding.
+
 use crate::exception_private::{ExcType, ExcTypeExt, RunResult};
 
 const BITS: usize = u64::BITS as usize;
