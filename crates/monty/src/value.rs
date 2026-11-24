@@ -1492,12 +1492,7 @@ impl Value {
         converted
     }
 
-    /// True when this is a `LongInt`-valued int (interned or heap-allocated)
-    /// that is negative — lets fixed-width consumers pick the right overflow
-    /// direction/message (`round`'s i64 clamp, `os`'s fd converter). False for
-    /// every other value, `Int`/`Bool` included: pair it with
-    /// [`is_long_int`](crate::args::is_long_int) rather than using it alone to
-    /// classify an int.
+    /// Returns true for negative interned or heap-allocated long integers.
     pub(crate) fn long_int_is_negative(&self, vm: &VM<'_>) -> bool {
         self.as_long_int(vm).is_some_and(|n| n.sign() == Sign::Minus)
     }

@@ -204,7 +204,7 @@ impl FromValue for i32 {
             // so a bad-arg rewrite ("must be int, not int") would be wrong.
             // CPython's `i` format range-checks with sign-aware wording.
             Value::Int(i) => Self::try_from(i).map_err(|_| FromValueFail::Raise(ExcType::overflow_signed_c_int(i))),
-            _ if is_long_int(&value, vm) => {
+            _ if value.as_long_int(vm).is_some() => {
                 value.drop_with(vm);
                 Err(FromValueFail::Raise(ExcType::overflow_c_long()))
             }
@@ -226,7 +226,7 @@ impl FromValue for i64 {
         match value {
             Value::Bool(b) => Ok(Self::from(b)),
             Value::Int(i) => Ok(i),
-            _ if is_long_int(&value, vm) => {
+            _ if value.as_long_int(vm).is_some() => {
                 value.drop_with(vm);
                 Err(FromValueFail::Raise(ExcType::overflow_c_long()))
             }
@@ -251,7 +251,7 @@ impl FromValue for isize {
                 value.drop_with(vm);
                 FromValueFail::Raise(ExcType::overflow_c_ssize_t())
             }),
-            _ if is_long_int(&value, vm) => {
+            _ if value.as_long_int(vm).is_some() => {
                 value.drop_with(vm);
                 Err(FromValueFail::Raise(ExcType::overflow_c_ssize_t()))
             }
@@ -287,15 +287,6 @@ fn resolve_index_dunder(value: Value, vm: &mut VM<'_>) -> Result<Value, FromValu
             Err(FromValueFail::Raise(err))
         }
     }
-}
-
-/// True when `value` is a Python int wider than i64 (heap or interned
-/// `LongInt`). Such values are genuine ints, so fixed-width int impls
-/// must raise `OverflowError` rather than report `WrongType` — a bad-arg
-/// rewrite would produce the absurd "must be int, not int". Also used by
-/// consumer-specific int impls (e.g. `timedelta`'s component extraction).
-pub(crate) fn is_long_int(value: &Value, vm: &VM<'_>) -> bool {
-    value.as_long_int(vm).is_some()
 }
 
 impl FromValue for u64 {

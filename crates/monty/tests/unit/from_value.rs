@@ -369,10 +369,8 @@ fn default_trait_impls_and_unconstrained() {
 fn long_int_and_index_dunder_edge_cases() {
     with_test_vm(|vm| {
         // non-LongInt heap value
-        let s = allocate_string("not_long", vm.heap);
-        assert!(!is_long_int(&s, vm));
+        let s = allocate_string("a heap-allocated string", vm.heap);
         assert!(s.as_long_int(vm).is_none());
-        assert!(!is_long_int(&Value::None, vm));
         assert!(Value::None.as_long_int(vm).is_none());
 
         // resolve_index_dunder with None and Str
