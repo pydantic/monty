@@ -302,20 +302,24 @@ impl<'h> PyInt<'h> {
         }
 
         check_repeat_size(length, 1, &vm.heap.tracker)?;
-        let fill = if is_neg { 0xff_u8 } else { 0x00_u8 };
         let mut buf = try_vec_with_capacity(length)?;
-        buf.resize(length, fill);
 
         if length > 0 {
             match self {
-                Self::Small(v) => copy_small_to_buf(*v, order, length, &mut buf),
+                Self::Small(v) => {
+                    let fill = if *v < 0 { 0xff_u8 } else { 0x00_u8 };
+                    buf.resize(length, fill);
+                    copy_small_to_buf(*v, order, length, &mut buf);
+                }
                 Self::Interned(id) => {
+                    buf.resize(length, 0x00_u8);
                     let big = vm.interns.get_long_int(*id);
-                    copy_bigint_to_buf(big, signed, order, length, &mut buf);
+                    copy_bigint_to_buf(big, is_neg, order, &mut buf);
                 }
                 Self::Heap(value) => {
+                    buf.resize(length, 0x00_u8);
                     let big = value.get(vm.heap).inner();
-                    copy_bigint_to_buf(big, signed, order, length, &mut buf);
+                    copy_bigint_to_buf(big, is_neg, order, &mut buf);
                 }
             }
         }
@@ -617,20 +621,29 @@ fn copy_small_to_buf(v: i64, order: ByteOrder, length: usize, buf: &mut [u8]) {
     }
 }
 
-fn copy_bigint_to_buf(big: &BigInt, signed: bool, order: ByteOrder, length: usize, buf: &mut [u8]) {
-    let raw = if signed {
-        big.to_signed_bytes_le()
-    } else {
-        big.to_bytes_le().1
-    };
-    let copy_len = length.min(raw.len());
-    match order {
-        ByteOrder::Little => buf[..copy_len].copy_from_slice(&raw[..copy_len]),
-        ByteOrder::Big => {
-            for i in 0..copy_len {
-                buf[length - 1 - i] = raw[i];
+fn copy_bigint_to_buf(big: &BigInt, is_neg: bool, order: ByteOrder, buf: &mut [u8]) {
+    let mut offset = 0;
+    for digit in big.magnitude().iter_u64_digits() {
+        let le = digit.to_le_bytes();
+        let copy_len = (buf.len() - offset).min(8);
+        buf[offset..offset + copy_len].copy_from_slice(&le[..copy_len]);
+        offset += copy_len;
+        if offset >= buf.len() {
+            break;
+        }
+    }
+    if is_neg {
+        let mut carry = true;
+        for d in buf.iter_mut() {
+            *d = !*d;
+            if carry {
+                *d = d.wrapping_add(1);
+                carry = *d == 0;
             }
         }
+    }
+    if order == ByteOrder::Big {
+        buf.reverse();
     }
 }
 
