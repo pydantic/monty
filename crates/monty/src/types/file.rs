@@ -1829,3 +1829,7 @@ fn is_bytes(data: &Value, heap: &Heap) -> bool {
 fn unsupported_operation(message: &'static str) -> RunError {
     SimpleException::new_msg(ExcType::UnsupportedOperation, message).into()
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/file.rs"]
+mod tests;

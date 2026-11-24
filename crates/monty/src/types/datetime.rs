@@ -1479,3 +1479,7 @@ struct DatetimeReplaceArgs {
     #[from_args(kw_only, default)]
     tzinfo: Option<Value>,
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/datetime.rs"]
+mod tests;
