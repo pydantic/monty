@@ -1,11 +1,11 @@
 # Exceptions
 
-Monty implements a fixed set of exception classes, listed below. Sandboxed
-code **cannot define new exception classes**: classes can inherit only from
-classes defined in Python and `object` (see [classes.md](classes.md#inheritance)), so there
-is no way to subclass `BaseException`/`Exception`. `raise` must therefore use one of
-these built-ins; `raise MyClass()` on a plain user class raises
-`TypeError: exceptions must derive from BaseException`, as in CPython.
+Monty implements a fixed set of built-in exception classes, listed below. Sandboxed
+code can define custom exception classes by subclassing `BaseException` or any of its
+derived types (see [classes.md](classes.md#inheritance)). Multiple inheritance between exception
+bases is subject to CPython's instance layout conflict rules. `raise` must use an exception
+class or instance; `raise MyClass()` on a plain user class that does not derive from `BaseException`
+raises `TypeError: exceptions must derive from BaseException`, as in CPython.
 
 ## Implemented exception classes
 
@@ -61,12 +61,18 @@ A traceback printed for an exception with a `__cause__` or `__context__` shows t
 
 ## Custom subclasses
 
-User `class` definitions are supported, but a class cannot derive from an
-exception type (`class Foo(Exception):` raises `TypeError: Monty does not support subclassing 'Exception': ...`),
-so there is no way to create a new exception class inside the sandbox. Raising a plain user class instance (`raise MyClass()`) fails
-with `TypeError: exceptions must derive from BaseException`. Define custom
-exception types on the host side if needed, or use the built-in subclass
-that best fits.
+User `class` definitions can subclass `BaseException` or any built-in exception type (`class MyError(Exception): ...`).
+Custom exception instances inherit standard exception attributes (`args`, `__cause__`, `__context__`, `__suppress_context__`), can define
+methods, attributes, and custom `__init__`, `__str__`, or `__repr__`, and participate in `except` matching via their MRO.
+
+When an unhandled custom exception reaches the host boundary, its `exc_type` is reported as the nearest built-in
+exception base (e.g., `ExcType::ValueError` for `class MyValError(ValueError)`), while its class name is preserved
+in formatted traceback displays (`MyValError: message`).
+
+Multiple inheritance across different native layout groups (e.g. `class Multiple(SystemExit, ValueError): ...`)
+raises `TypeError: multiple bases have instance lay-out conflict`, matching CPython.
+Instantiating via `object.__new__(CustomError)` is rejected with
+`TypeError: object.__new__(CustomError) is not safe, use BaseException.__new__()`.
 
 ## Control flow in `finally`
 

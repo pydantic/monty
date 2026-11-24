@@ -10,6 +10,17 @@ for exc_cls in (BaseException, Exception, ValueError, KeyError):
         assert str(err) == f'object.__new__({exc_cls.__name__}) is not safe, use {exc_cls.__name__}.__new__()'
 
 
+class CustomErr(ValueError):
+    pass
+
+
+try:
+    object.__new__(CustomErr)
+    assert False, 'expected TypeError for CustomErr'
+except TypeError as err:
+    assert str(err) == 'object.__new__(CustomErr) is not safe, use CustomErr.__new__()'
+
+
 # === object.__new__ excess-argument rules ===
 class Bare:
     pass
@@ -152,6 +163,30 @@ class DcWithNew:
 
 dwn = DcWithNew(7)
 assert dwn.a == 7 and dwn.b == 'ok' and dwn.from_new is True
+
+
+class ExcWithNew(ValueError):
+    def __new__(cls, *args, **kwargs):
+        return ValueError.__new__(cls, *args)
+
+
+assert ExcWithNew().args == ()
+assert ExcWithNew('a').args == ('a',)
+assert ExcWithNew('a', 'b').args == ('a', 'b')
+assert ExcWithNew('a', 'b', 'c').args == ('a', 'b', 'c')
+for bad_kw in [lambda: ExcWithNew(k=1), lambda: ExcWithNew('a', k=1)]:
+    try:
+        bad_kw()
+        assert False, 'expected TypeError'
+    except TypeError as err:
+        assert str(err) == 'ExcWithNew() takes no keyword arguments'
+
+try:
+    object.__new__(ExcWithNew)
+    assert False, 'expected TypeError'
+except TypeError as err:
+    assert str(err) == 'object.__new__(ExcWithNew) is not safe, use ValueError.__new__()'
+
 
 # === object.__init__ ignores extra arguments for types built in __new__ ===
 for immutable in (1, 'a', (1,), decimal.Decimal(1), frozenset()):

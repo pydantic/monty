@@ -54,13 +54,14 @@ subclass-first rule for reflected operators and `==` all follow CPython.
 
 ## Inheritance
 
-- **Only classes and `object` can be bases.** Subclassing a native type CPython
-    allows (`int`, `list`, `dict`, `Exception`, `ValueError`, `datetime.date`, a
+- **Only classes, built-in exception types, and `object` can be bases.** Subclassing a native type CPython
+    allows (`int`, `list`, `dict`, `datetime.date`, a
     `namedtuple` class, a host class, ...) raises
     `TypeError: Monty does not support subclassing 'int': classes can only inherit from classes defined in Python and object`.
     Types CPython refuses (`bool`, `range`, ...) raise CPython's
-    `type 'bool' is not an acceptable base type`. In particular there are no
-    user-defined exception classes yet (see [exceptions.md](exceptions.md)).
+    `type 'bool' is not an acceptable base type`. Built-in exception types
+    can be subclassed (see [exceptions.md](exceptions.md)), subject to CPython's
+    instance layout conflict rules.
 - **No `super()`**: the name is undefined, so `super().__init__()` raises
     `NameError: name 'super' is not defined`. Call the base class explicitly
     (`Base.__init__(self, ...)`, `object.__init_subclass__(**kwargs)`).

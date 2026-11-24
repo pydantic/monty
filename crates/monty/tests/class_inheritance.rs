@@ -1813,3 +1813,204 @@ Base(*args)
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
 }
+
+#[test]
+fn custom_exception_subclasses_and_matching() {
+    run(r#"
+class AppError(Exception):
+    pass
+
+class DatabaseError(AppError):
+    def __init__(self, code, message):
+        BaseException.__init__(self)
+        self.code = code
+        self.message = message
+
+class QueryError(DatabaseError):
+    pass
+
+assert issubclass(QueryError, DatabaseError)
+assert issubclass(QueryError, AppError)
+assert issubclass(QueryError, Exception)
+assert issubclass(QueryError, BaseException)
+assert QueryError.__mro__ == (QueryError, DatabaseError, AppError, Exception, BaseException, object)
+
+# Raise and catch
+caught = None
+try:
+    raise QueryError(1001, "table not found")
+except AppError as e:
+    caught = e
+    assert isinstance(e, QueryError)
+    assert isinstance(e, DatabaseError)
+    assert isinstance(e, AppError)
+    assert isinstance(e, Exception)
+    assert e.code == 1001
+    assert e.message == "table not found"
+
+assert caught is not None
+
+# ExcType.mro() and custom exception .mro()
+assert ValueError.mro() == [ValueError, Exception, BaseException, object]
+assert QueryError.mro() == [QueryError, DatabaseError, AppError, Exception, BaseException, object]
+
+try:
+    ValueError.mro(1)
+    assert False, "expected TypeError"
+except TypeError as e:
+    assert "ValueError.mro() takes no arguments (1 given)" in str(e)
+"#);
+}
+
+#[test]
+fn custom_exception_super_init_and_args() {
+    run(r#"
+class AppError(Exception):
+    def __init__(self, message, code):
+        BaseException.__init__(self, message)
+        self.code = code
+
+err = AppError("bad request", 400)
+assert err.args == ("bad request",)
+assert err.code == 400
+
+err2 = AppError(message="bad", code=400)
+assert err2.args == ("bad",)
+assert err2.code == 400
+
+try:
+    AppError("bad", 400, unknown=1)
+except TypeError:
+    pass
+else:
+    assert False
+
+class EmptyError(Exception):
+    pass
+
+try:
+    EmptyError(code=123)
+except TypeError:
+    pass
+else:
+    assert False
+"#);
+}
+
+#[test]
+fn custom_exception_formatting_and_identity() {
+    let code = "class MyError(Exception): pass\nraise MyError('failed')";
+    let res = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
+        .unwrap()
+        .run_no_limits(vec![]);
+    assert!(res.is_err());
+    let exc = res.unwrap_err();
+    assert_eq!(exc.custom_type_name(), Some("MyError"));
+    assert_eq!(exc.message(), Some("failed"));
+    assert!(exc.to_string().contains("MyError: failed"));
+
+    let code_none = "class MyError(Exception): pass\nraise MyError()";
+    let res_none = MontyRun::new(code_none.to_owned(), "test.py", vec![], CompileOptions::default())
+        .unwrap()
+        .run_no_limits(vec![]);
+    assert!(res_none.is_err());
+    let exc_none = res_none.unwrap_err();
+    assert_eq!(exc_none.custom_type_name(), Some("MyError"));
+    assert_eq!(exc_none.message(), None);
+    assert!(exc_none.to_string().ends_with("MyError"));
+}
+
+#[test]
+fn custom_exception_formatting_terminal_error_propagates() {
+    let code = r"
+class InfiniteFormatError(Exception):
+    def __str__(self):
+        while True:
+            pass
+
+raise InfiniteFormatError()
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    assert!(result.is_err());
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+#[test]
+fn custom_exception_has_custom_type_name_and_summary() {
+    let code = r"
+class SpecialFailure(ValueError):
+    pass
+
+raise SpecialFailure('bad value')
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::ValueError);
+    assert_eq!(err.custom_type_name(), Some("SpecialFailure"));
+    assert_eq!(err.summary(), "SpecialFailure: bad value");
+}
+
+#[test]
+fn custom_exception_chaining_and_context_helpers() {
+    run(r#"
+class E(Exception):
+    pass
+
+# Default exception attributes on custom exception instance
+e = E()
+assert e.__context__ is None
+assert e.__cause__ is None
+assert e.__suppress_context__ is False
+
+# Implicit chaining inside except handler
+try:
+    raise ValueError("orig")
+except ValueError:
+    try:
+        raise E("custom")
+    except E as caught:
+        assert repr(caught.__context__) == "ValueError('orig')"
+        assert caught.__cause__ is None
+        assert caught.__suppress_context__ is False
+
+# Explicit chaining via raise ... from ...
+try:
+    raise E("custom2") from KeyError("cause")
+except E as caught:
+    assert repr(caught.__cause__) == "KeyError('cause')"
+    assert caught.__suppress_context__ is True
+
+# Custom exception chaining to another custom exception
+class E1(Exception): pass
+class E2(Exception): pass
+
+try:
+    raise E1("first")
+except E1:
+    try:
+        raise E2("second")
+    except E2 as caught:
+        assert repr(caught.__context__) == "E1('first')"
+"#);
+}
+
+#[test]
+fn custom_exception_repr_large_args_streaming() {
+    run(r#"
+class BigErr(Exception):
+    pass
+
+e = BigErr()
+e.args = ("a", "b", "c")
+assert repr(e) == "BigErr('a', 'b', 'c')"
+
+# Large args formatting works safely and does not blow up memory
+e.args = ("item",) * 1000
+r = repr(e)
+assert r.startswith("BigErr('item', 'item',")
+assert r.endswith("'item')")
+"#);
+}
