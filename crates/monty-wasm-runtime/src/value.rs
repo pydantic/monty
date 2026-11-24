@@ -13,7 +13,7 @@ use monty_proto::DEFAULT_MAX_DECODE_BYTES;
 use monty_types::{
     BuiltinsFunctions, FileMode, MontyComplex, MontyDate, MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta,
     MontyTimeZone, MontyType, MontyUuid,
-    unstable::{ClassTypeNode as MontyClassTypeNode, MontyGraph, MontyNode, NodeId},
+    unstable::{ClassEq, ClassHash, ClassTypeNode as MontyClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 
 use crate::bindings::exports::pydantic::monty::worker::{
@@ -223,6 +223,10 @@ fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
             host_defined: value.host_defined,
             is_dataclass: value.is_dataclass,
             attrs: id_pairs(value.attrs),
+            // The WIT record carries no equality rule: JS proxies compare by
+            // reference, and the sandbox reads none for a class it receives.
+            eq: ClassEq::Identity,
+            hash: ClassHash::Identity,
         })),
         ValueNode::BuiltinFunction(value) => MontyNode::BuiltinFunction(
             value
@@ -244,6 +248,8 @@ fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
         ValueNode::Function(value) => MontyNode::Function {
             name: value.name,
             docstring: value.docstring,
+            // the component interface cannot mark a function async yet
+            is_async: false,
         },
         ValueNode::Repr(value) => MontyNode::Repr(value),
         ValueNode::Cycle(value) => MontyNode::Cycle(value),
@@ -348,7 +354,7 @@ fn node_into_component(node: MontyNode) -> ValueNode {
             instance_id: instance_id.to_string(),
             attrs: raw_pairs(attrs),
         }),
-        MontyNode::Function { name, docstring } => ValueNode::Function(FunctionNode { name, docstring }),
+        MontyNode::Function { name, docstring, .. } => ValueNode::Function(FunctionNode { name, docstring }),
         MontyNode::Repr(value) => ValueNode::Repr(value),
         MontyNode::Cycle(placeholder) => ValueNode::Cycle(placeholder),
         MontyNode::Module { name, id, attrs } => ValueNode::Module(ModuleNode {

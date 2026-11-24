@@ -25,7 +25,7 @@ cargo add monty monty-types --features monty-types/tzdb
 | [`monty-fs`](https://crates.io/crates/monty-fs)                       | Host-side filesystem mounts                                 |
 | [`monty-runtime`](https://crates.io/crates/monty-runtime)             | The `monty` binary: REPL, file runner, subprocess worker    |
 | [`monty-pool`](https://crates.io/crates/monty-pool)                   | Elastic pool of crash-isolated worker subprocesses          |
-| [`monty-proto`](https://crates.io/crates/monty-proto)                 | The protobuf wire protocol between pool parents and workers |
+| [`monty-proto`](https://crates.io/crates/monty-proto)                 | The protobuf wire protocol between clients and workers      |
 | [`monty-type-checking`](https://crates.io/crates/monty-type-checking) | Type checking, powered by ty                                |
 | [`monty-typeshed`](https://crates.io/crates/monty-typeshed)           | Trimmed typeshed stubs for Monty's stdlib subset            |
 
@@ -39,6 +39,8 @@ It shares the mounts' lexical POSIX normalization; see [filesystem callbacks](..
 for validation order and access checks.
 
 Build inputs with [`MontyObject`](../api/rust/monty-types.md#montyobject) constructors and inspect them with `as_ref()`.
+Builtin type objects use `MontyObject::type_object`, including `MontyType::Map` and `MontyType::Filter` for the lazy
+iterator constructors; `MontyObject::builtin_function` represents functions, not constructors.
 The builders on [`CallArgs`](../api/rust/monty-types.md#callargs) and [`NamedValues`](../api/rust/monty-types.md#namedvalues)
 accept owned values; their iterators return [`ObjectRef`](../api/rust/monty-types.md#objectref) views.
 Representation APIs under [`monty_types::unstable`](../api/rust/monty-types.md#unstable)
@@ -122,6 +124,20 @@ It returns a [`TurnEvent`](../api/rust/monty-pool.md#turnevent):
 Every suspension variant also carries `position`, a `SourceRange` locating the suspending expression: the call, the
 name, or the `await` the main task is blocked on.
 
+With [`PoolConfig::stream_async_calls`](../api/rust/monty-pool.md#poolconfig) (on by default for remote pools, off by
+default for subprocess pools) and a handler passed to
+[`Checkout::set_streamed_call_handler`](../api/rust/monty-pool.md#checkout), calls to async host functions that the
+sandbox does not await at once do not suspend: a `MontyObject::async_function` value, or a name passed to
+[`Checkout::set_async_functions`](../api/rust/monty-pool.md#checkout) for the feeds that follow.
+The worker sends them mid-turn and keeps running, and the turn hands each to the handler in order with prints.
+Start the call there, and settle it with `resume_futures` once `ResolveFutures` names it.
+Each counts against `max_suspensions`: once that budget is spent, the next call suspends instead and the feed is
+aborted there.
+Without a handler, or after `set_async_functions(None)`, calls suspend like any other call.
+Calls whose results the host has not sent may hold at most a quarter of
+[`PoolConfig::max_decode_bytes`](../api/rust/monty-pool.md#poolconfig) of arguments; past that the session ends with a
+`MemoryError`.
+
 A [`Checkout`](../api/rust/monty-pool.md#checkout) dropped without `finish()` kills its worker rather than returning it — mid-execution state cannot be
 trusted back into the pool.
 
@@ -131,6 +147,12 @@ A host module's `.pyi` reaches the checker through the `import_stubs` OS call be
 it returns `None` after the worker is released or discarded.
 `Checkout::pid()` is the subprocess-only OS diagnostic.
 
+[`Checkout::feed_with`](../api/rust/monty-pool.md#checkout) and [`Checkout::restore_with`](../api/rust/monty-pool.md#checkout)
+are `feed_with_cwd` and `restore` plus [`TurnOptions`](../api/rust/monty-pool.md#turnoptions), whose `traceparent` names the caller's span for the turn,
+so a remote server that records the session parents the turn's spans to it.
+A suspension the server named a span for carries it as `traceparent` on the `TurnEvent`.
+[`Checkout::dump_with`](../api/rust/monty-pool.md#checkout) uses the same options to parent the local dump span.
+
 [`Checkout::dump`](../api/rust/monty-pool.md#checkout) and [`Checkout::restore`](../api/rust/monty-pool.md#checkout) snapshot and restore a session, including onto a different worker or machine.
 Restore only unmodified snapshots whose provenance and integrity the caller has established;
 see [snapshot security](../security.md#deserializing-snapshots).
@@ -139,20 +161,23 @@ see [snapshot security](../security.md#deserializing-snapshots).
 
 - **Crash isolation** — a segfault, stack-overflow abort or allocator abort in the sandbox becomes [`PoolError::Crashed`](../api/rust/monty-pool.md#poolerror);
     the pool discards the worker and spawns a replacement.
-- **Hard timeouts** — a parent-side deadline kills any worker whose turn exceeds `request_timeout`
+- **Hard timeouts** — a client-side deadline kills any worker whose turn exceeds `request_timeout`
     ([`PoolError::Timeout`](../api/rust/monty-pool.md#poolerror)), catching hangs the in-sandbox limits cannot see.
     With a `max_feed_duration` or `max_turn_duration` budget the deadline also enforces that from
-    outside the child, each plus its own grace (`feed_duration_limit_grace`, `turn_duration_limit_grace`).
+    outside the worker, each plus its own grace (`feed_duration_limit_grace`, `turn_duration_limit_grace`).
     [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) sets neither `request_timeout` nor `checkout_timeout` by default; set `request_timeout`
     yourself for untrusted code.
 - **Suspension limits** — the pool counts external calls, OS calls, name lookups and future-resolution turns against
     [`ResourceLimits::max_suspensions`](../api/rust/monty-types.md#resourcelimits).
     The first suspension over the limit ends the feed with an uncatchable `RuntimeError`.
-- **Untrusted children** — every frame from a possibly compromised worker is validated; wire decoding never panics, and
+- **Untrusted workers** — every frame from a possibly compromised worker is validated; wire decoding never panics, and
     a protocol violation discards the worker.
 - **Worker recycling** — `max_checkouts_per_worker` replaces a worker after [`DEFAULT_MAX_CHECKOUTS_PER_WORKER`](../api/rust/monty-pool.md#default_max_checkouts_per_worker) (1000) checkouts; `None` never recycles, and with `PoolConfig::subprocess` `Some(1)` gives every session a fresh process.
     Remote checkouts are single-use, so the setting does not apply to them.
     While a subprocess pool is open, recycled, crashed and discarded workers are replaced in the background until `min_processes` are live again, so checkouts usually find a warm worker.
+    `PoolConfig::pre_warm` also keeps that many idle workers ready beyond those checked out, replacing each one a checkout takes.
+- **Prewarmed type checker** — `prewarm_type_checker` has subprocess workers resolve the builtins between checkouts, ahead of
+    a session's first type check, at about 6 MiB per worker outside every session's `max_memory`.
 
 Runtime errors inside the sandbox ([`PoolError::Runtime`](../api/rust/monty-pool.md#poolerror)) are not crashes: the worker and its session stay alive and
 usable.
@@ -174,15 +199,23 @@ Raw `prost::Message::decode` calls fail if they attempt an allocation without a 
 Protocol repeated fields and byte buffers use [`BudgetVec`](../api/rust/monty-proto.md#budgetvec); convert standard vectors with `.into()` and recover them with `.into_inner()` without copying.
 Reference containers use [`WireIndexes`](../api/rust/monty-proto.md#wireindexes), [`WireNodePairs`](../api/rust/monty-proto.md#wirenodepairs) and [`WireNamedTuple`](../api/rust/monty-proto.md#wirenamedtuple), with domain `NodeId`s rather than raw protobuf integers.
 Host construction and cloning do not use the decode budget.
-See the [monty-proto README](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#children-are-untrusted)
+See the [monty-proto README](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#workers-are-untrusted)
 for the budget's scope.
 
-[`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) spawns local `monty subprocess` children over framed stdio.
+[`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) spawns local `monty subprocess` workers over framed stdio.
 These are the poolable workers: prewarmed, reused across checkouts, replaced on crash.
 
-[`PoolConfig::remote`](../api/rust/monty-pool.md#poolconfig) reaches a remote child over gRPC at an `http://`/`https://` URL: one HTTP/2 connection per pool, one `MontySession.Session` stream per checkout.
-Those workers are single-use, never prewarmed or returned to the pool, and isolation becomes the remote host's
-responsibility.
+[`PoolConfig::remote`](../api/rust/monty-pool.md#poolconfig) reaches a remote worker over gRPC at an `http://`/`https://` URL: one HTTP/2 connection per pool, one `MontySession.Session` stream per checkout.
+Those workers are single-use, never returned to the pool, and isolation becomes the remote host's responsibility.
+On a remote pool `PoolConfig::pre_warm` (0 by default) keeps that many sessions open and ready, sharing `max_processes`
+with those checked out; a value above `max_processes` is a `PoolError::Configuration`.
+`Pool::new` opens them and fails if one cannot open; with `pre_warm_wait` off they open in the background, where a
+failed open is retried with a backoff.
+Each is replaced when a checkout takes it; one checkout per session already opening waits for it, and a checkout that
+finds none dials for itself.
+The pool calls `pre_warm_metadata` for each one it dials, and a checkout takes one only if it was dialed with that
+checkout's `CheckoutOptions::metadata`; otherwise it closes the ready sessions unused and dials for itself.
+Leave `pre_warm` at 0 when one pool's checkouts send different metadata, such as per-user credentials.
 See [the security model](../security.md#remote-workers) before using it.
 
 ### Host decode budget
@@ -260,6 +293,9 @@ assert!(year.as_ref().as_int().is_some_and(|y| y >= 2026));
 ```
 
 `with_os_policy` configures each operation.
+`DateTimeSource::read()` returns `Option<jiff::civil::DateTime>` containing UTC components.
+It returns `None` for `CallHost` or a fixed instant that Python's `datetime` cannot represent.
+The zone conversion helpers also use `jiff::civil::DateTime`.
 `DateTimeSource::Fixed` freezes the clock, `SandboxTimeZone::Fixed` sets the local UTC offset, `SandboxTimeZone::named` takes an IANA zone name, and
 `RandomStart::Seed` seeds `random` for reproducible runs.
 `named` needs a tz database, which is a `monty-types` feature: `tzdb` reads the OS copy (`TZDIR`, `/usr/share/zoneinfo`)
@@ -420,6 +456,9 @@ assert_eq!(result, MontyObject::int(42));
 The peer reason is unverified text, and a disconnect does not establish whether the request ran.
 The display text includes that reason.
 `PoolError::Refused` identifies a server refusal before a session exists.
-Its details provide `retryable()` and `retry_after` (a `Duration` from `Retry-After`, capped at one hour), with no automatic retry.
+Its details provide `retryable()` and `retry_after` (a `Duration` from `Retry-After`, capped at one hour).
+The pool retries a refused checkout once when the server sends a single valid `Retry-After` of at most two seconds, whether or not the refusal is `retryable()`.
+The wait and retry dial share a five-second budget and respect the checkout and dial deadlines.
+A retry timeout returns the original `PoolError::Refused`.
 `PoolError::Connect` retains the status or transport error for other connection failures.
 `PoolError::Configuration` identifies invalid or incompatible settings, such as no finite `request_timeout` for a CPU-mode pool or server.

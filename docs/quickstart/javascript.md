@@ -2,6 +2,8 @@
 
 ## Installation
 
+Requires Node.js 22.18 or later when running under Node.
+
 ```bash
 npm install @pydantic/monty
 ```
@@ -72,6 +74,11 @@ const data = await session.feedRun('await fetch_data()', {
 })
 console.log(data) // data
 ```
+
+With `streamAsyncCalls: true` (off by default for `Monty`, on by default for `MontyRemote`), native and remote
+workers start calls to an `async` host function without waiting for the host when the sandbox does not await them at once (the WebAssembly worker suspends at
+each), so a `gather` over many calls costs one round trip; see [starting calls without
+waiting](../host-functions.md#starting-calls-without-waiting).
 
 Keyword arguments from the sandbox arrive as a trailing object on the call.
 An error thrown by a host function crosses into the sandbox as a Python exception, using the error's `name` when it
@@ -220,6 +227,13 @@ Call `flushTelemetry()` before flushing providers directly.
 Worker threads wait for span creation; other records use bounded queues whose overflow disables the affected telemetry path.
 This instrumentation is native-only; WASM still preserves caller context through `snapshot.traceContext()`.
 
+Without instrumentation, a `MontyRemote` session still sends the `traceparent` of the span active at each `feedRun`,
+`feedStart` and load, and runs a host callback under the span the server named for its suspension.
+If the server's spans are not exported to your tracing backend, spans started in host callbacks appear there without
+their parent.
+With instrumentation the request names the caller's span rather than Monty's own feed span, so a recording server's
+spans are siblings of Monty's.
+
 ## Errors
 
 ```ts
@@ -254,10 +268,14 @@ which ignores any argument:
 
 `MontyCrashedError` adds `timedOut` and `exitStatus`; `MontyShutdown` adds `dump`; `MontyRefusedError` adds
 `statusCode`, `statusMessage`, `remoteCause`, `retryable` and `retryAfter`.
-`retryAfter` is the server's suggested delay in seconds, capped at one hour, or `null` if absent or invalid.
+`retryAfter` is the server's suggested delay in seconds, capped at one hour, or `null` if the hint is absent, invalid or repeated.
 `retryable` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not for credential errors.
-`checkout()` rejects with the same classes when the session cannot be created, e.g. `MontyRuntimeError` for a server
-rejecting the session's configuration.
+`checkout()` rejects with the same classes when the session cannot be created.
+Options the binding can check, such as `osPolicy`, are rejected by `checkout()` itself.
+A worker or server rejecting the rest of the session's configuration (deeply nested `typeCheckStubs`, an unknown
+profile) raises `MontyConfigurationError` from the session's first request, which did not run, or from `getSessionId()`
+when it opens the session alone.
+On the WASM worker it is raised from `checkout()`, which configures the session there.
 When no worker becomes free within `checkoutTimeout` it rejects with a `DOMException` named `TimeoutError`; a worker
 that fails to spawn rejects with a plain `Error`.
 A remote connection failure raises `MontyConnectError`, with `statusCode`, `statusMessage` and `remoteCause` when the server sent a status, or `transportError` otherwise.
@@ -360,6 +378,7 @@ import { Monty } from '@pydantic/monty'
 await using pool = await Monty.create({
   binaryPath: undefined, // explicit path to the `monty` worker binary
   minProcesses: 1, // workers spawned up front, and replaced in the background as they leave
+  preWarm: 0, // idle workers kept ready; they share maxProcesses with checked-out ones
   maxProcesses: 8, // cap on live workers; defaults to the CPU count
   checkoutTimeout: 5, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline; kills the worker
@@ -398,8 +417,12 @@ See [snapshots](../snapshots.md) for manual handlers, restoration and OpenTeleme
 
 ## Remote workers
 
-`MontyRemote` is a pool of remote workers, usually [Full Monty](../server.md): the pool holds one HTTP/2 connection to the URL, each checkout opens a gRPC stream on it, and no
-connection is pre-warmed or reused.
+`MontyRemote` is a pool of remote workers, usually the [Commercial Support](../server.md) server: the pool holds one HTTP/2 connection to the URL, each checkout opens a gRPC stream on it, and no
+stream is reused.
+`preWarm` keeps that many sessions open and ready so a checkout takes one instead of opening a stream; `create()` waits
+for them unless `preWarmWait` is `false`.
+The pool calls `metadata` for each one it opens, and a checkout takes one only if `metadata` returned the same value for
+both, so leave `preWarm` off when one pool's checkouts send different metadata, such as per-user credentials.
 Sessions are the same `MontySession` a local pool returns:
 
 ```ts test="skip"
@@ -416,14 +439,20 @@ console.log(await session.feedRun('1 + 1')) // 2
 A server that refuses the stream rejects `checkout()` with `MontyRefusedError`; one that cannot be reached, with a
 `MontyConnectError`.
 Use `MontyRefusedError.retryable` and `MontyRefusedError.retryAfter` to decide whether and when to try a new checkout.
-No automatic retry is performed for these errors.
+The pool retries a refused checkout once when the server sends a single valid `Retry-After` of at most two seconds.
+The wait and retry dial share a five-second budget and respect the checkout and dial deadlines.
+A retry timeout rejects `checkout()` with the original `MontyRefusedError`.
 
 A dropped connection raises `MontyDisconnectError`, and a draining server raises `MontyShutdown`; both lose the session.
 Disconnect text includes the server's code, `remoteCause` and message, or the transport error.
 It does not establish whether the request ran, so do not replay a disconnected request automatically.
-Either can also reject `checkout()` itself, while the session is being created.
-Against a server that stores sessions, `session.sessionId` names the session, `session.dump()` returns the ID of a
-stored record, and both load into a fresh session with `loadSession` / `loadSnapshot`.
+A connection that cannot be opened rejects `checkout()` itself; the session's configuration travels with its first
+request, so a server refusing it fails that first `feedRun`, `feedStart` or `load*` call with
+`MontyConfigurationError`.
+Against a server that stores sessions, `await session.getSessionId()` names the session, sending the configuration
+alone if no request has yet (one round trip); the `sessionId` getter is deprecated, since it is unset until then.
+`session.dump()` returns the ID of a stored record, and either ID loads into a fresh session with the loader matching
+the stored state: `loadSession` for an idle session, `loadSnapshot` for one suspended mid-feed.
 When such a server drains, the pool resumes the session on a new connection instead of raising `MontyShutdown`,
 unless `autoResume: false` is passed to `MontyRemote.create()`.
 These behave as in the Python client; see [stored sessions](../api/python/remote.md#stored-sessions).
@@ -449,6 +478,41 @@ A bundler resolving the `browser` condition on the main entry point gets this bu
 [`examples/antigravity`](https://github.com/pydantic/monty/tree/main/examples/antigravity) is a worked browser example,
 built with Vite.
 
+For a browser with Trusted Types enforcement, pass `createWorker` to `Monty.create()` or `createWorkerPool()`.
+The callback must return a fresh module worker on each call.
+Monty initializes and terminates each returned worker, including replacements after a crash or recycle.
+The callback takes precedence over `workerUrl`. Node ignores both options.
+
+The public `@pydantic/monty/wasm/worker` entry lets a bundler emit the worker separately.
+For example, Vite accepts a `@pydantic/monty/wasm/worker?worker&url` import.
+Pass that URL through your application's Trusted Types policy before constructing the module worker.
+Monty does not create a policy or change the application's CSP.
+Without `createWorker`, Monty keeps its default worker construction and optional `workerUrl` override.
+
+```ts test="skip"
+/// <reference types="vite/client" />
+import { Monty } from '@pydantic/monty/wasm'
+import workerUrl from '@pydantic/monty/wasm/worker?worker&url'
+
+// TypeScript's DOM types omit Trusted Types; `@types/trusted-types` has the full declarations
+declare const trustedTypes: {
+  createPolicy(name: string, rules: { createScriptURL(url: string): string }): { createScriptURL(url: string): unknown }
+}
+
+// the CSP's `trusted-types` directive must allow this policy name
+const policy = trustedTypes.createPolicy('monty-worker', {
+  createScriptURL: (url) => {
+    if (url !== workerUrl) throw new TypeError(`unexpected worker URL: ${url}`)
+    return url
+  },
+})
+
+await using pool = await Monty.create({
+  // TypeScript's DOM types reject a TrustedScriptURL here, but browsers accept it
+  createWorker: () => new Worker(policy.createScriptURL(workerUrl) as unknown as string, { type: 'module' }),
+})
+```
+
 Differences from the native path:
 
 - **Filesystem mounts are unsupported** — a non-empty `mount` list is rejected, because there is no host filesystem.
@@ -460,6 +524,7 @@ Differences from the native path:
 - **`minProcesses` only prewarms.** A worker that is recycled, crashes or is discarded is replaced only when a checkout
     is already waiting for it, so the pool can fall below `minProcesses` and a checkout that finds no idle worker
     spawns a cold one.
+- **`preWarm` is ignored.** Only `minProcesses` workers are started ahead of a checkout.
 - **`binaryPath` is ignored.** The bundled WASM asset is used instead.
 - **OS diagnostics are backend-specific.** Browser crashes have no OS exit status.
     A hard allocator limit traps WASM and raises `MontyCrashedError`, not the native worker's classified `MemoryError`;

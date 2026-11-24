@@ -113,8 +113,7 @@ f.readline()
 }
 
 // ---------------------------------------------------------------------------
-// Iteration loads the buffer through its own effects (`BufferLoad` for the
-// `ForIter` opcode, `FileNext` for the `next()` builtin). A host failure must
+// Iteration loads the buffer through `FileNext` for both `for` and `next()`. A host failure must
 // surface at the loop / call and leave the file ready to retry, and the
 // empty-file reply (interned `""`) must exhaust the iterator cleanly.
 // ---------------------------------------------------------------------------
@@ -166,6 +165,46 @@ except OSError as exc:
             ]),
         ])
     );
+}
+
+/// v16 (2a0ba89d) suspended during a comprehension or `next(f, ['fallback'])` on an unread file.
+/// Both programs then exhaust a Python iterator in a comprehension compiled by that same producer.
+#[test]
+fn v16_pending_file_iteration() {
+    let lines = MontyObject::list([MontyObject::string("a\n"), MontyObject::string("b")]);
+    for (bytes, nonempty, empty) in [
+        (
+            include_bytes!("fixtures/iteration_v16_loop.bin").as_slice(),
+            lines,
+            MontyObject::list([]),
+        ),
+        (
+            include_bytes!("fixtures/iteration_v16_default.bin").as_slice(),
+            MontyObject::string("a\n"),
+            MontyObject::list([MontyObject::string("fallback")]),
+        ),
+    ] {
+        for (reply, expected) in [
+            (MontyObject::string("a\nb").into(), nonempty),
+            (MontyObject::string("").into(), empty),
+            (
+                ExtFunctionResult::Error(MontyException::new(ExcType::OSError, Some("transient".into()))),
+                MontyObject::string("transient"),
+            ),
+        ] {
+            let Session::Running(progress) = Dump::load(bytes).unwrap().state else {
+                panic!("expected running session")
+            };
+            let call = progress.into_os_call().unwrap();
+            assert_eq!(call.function_call.name(), "Path.read_text");
+            let result = call
+                .resume(reply, PrintWriter::Disabled)
+                .unwrap()
+                .into_complete()
+                .unwrap();
+            assert_eq!(result, expected);
+        }
+    }
 }
 
 #[test]
@@ -292,8 +331,13 @@ except OSError:
 f.tell()
 ";
     let host_exc = MontyException::new(ExcType::OSError, Some("io".to_owned()));
-    let result = run_with_open_then_io(code, "Path.append_bytes", file_handle("/x.bin", "wb"), host_exc.into())
-        .expect("script should complete");
+    let result = run_with_open_then_io(
+        code,
+        "Path.write_bytes_at",
+        file_handle("/x.bin", "wb"),
+        host_exc.into(),
+    )
+    .expect("script should complete");
     assert_eq!(result, MontyObject::int(0));
 }
 

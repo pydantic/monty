@@ -20,7 +20,7 @@ use crate::{
     heap::{DropWithContext, Heap, HeapReader},
     intern::Interns,
     object_bridge::MontyObjectExt,
-    os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect},
+    os_dispatch::{PendingEffect, PostConversionEffect, SleepDestination, release_pending_effect},
     run::Executor,
     value::Value,
 };
@@ -147,27 +147,6 @@ pub struct FunctionCall {
 }
 
 impl FunctionCall {
-    /// Creates a new `FunctionCall` from its parts.
-    fn new(
-        function_name: String,
-        args: CallArgs,
-        call_id: u32,
-        object_id: Option<MontyUuid>,
-        allow_eager_await: bool,
-        position: SourceRange,
-        snapshot: Snapshot,
-    ) -> Self {
-        Self {
-            function_name,
-            args,
-            call_id,
-            object_id,
-            allow_eager_await,
-            position,
-            snapshot,
-        }
-    }
-
     /// Returns a mutable reference to the resource tracker.
     ///
     /// This allows modifying resource limits between execution phases,
@@ -330,6 +309,15 @@ impl OsCall {
     /// file effects roll back. Always returns `Err`.
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
         self.snapshot.abort(exc, print)
+    }
+
+    /// Returns a mutable reference to the resource tracker.
+    ///
+    /// Exposed only under `test-hooks` for integration tests that adjust limits
+    /// while the VM is suspended at an OS call.
+    #[cfg(feature = "test-hooks")]
+    pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
+        &mut self.snapshot.heap.tracker
     }
 
     /// Returns the resource tracker while execution is suspended.
@@ -958,11 +946,23 @@ pub(crate) fn resume_with_result(
                     .into(),
                 );
             }
-            // `asyncio.sleep` hands its result to the awaitable; no other
+            // The sleeps hand their host answer to the awaitable; no other
             // effect survives a future answer.
             match vm.pending_effect.take() {
-                Some(PendingEffect::Post(PostConversionEffect::SleepResult { result })) => {
+                Some(PendingEffect::Post(PostConversionEffect::SleepResult {
+                    result,
+                    destination: SleepDestination::Value,
+                })) => {
                     vm.add_pending_sleep(CallId::new(call_id), result);
+                }
+                Some(PendingEffect::Post(PostConversionEffect::SleepResult {
+                    result,
+                    destination: SleepDestination::Wait(wait),
+                })) => {
+                    result.drop_with(vm);
+                    let timer = vm.allocate_pending_future(CallId::new(call_id), None);
+                    let wait = vm.install_wait_timer(wait, timer);
+                    vm.push(wait);
                 }
                 effect => {
                     release_pending_effect(effect, vm.heap);
@@ -975,7 +975,29 @@ pub(crate) fn resume_with_result(
             vm.run_external()
         }
         (ExtFunctionResult::Return(obj), None) => vm.resume(obj),
-        (ExtFunctionResult::Error(exc), None) => vm.resume_with_exception(exc.into()),
+        (ExtFunctionResult::Error(exc), None) => {
+            // A rejected timer counts as a fired timer, not an exception: the
+            // wait's timer answer is a wake-up signal on either outcome.
+            match vm.pending_effect.take() {
+                Some(PendingEffect::Post(PostConversionEffect::SleepResult {
+                    result,
+                    destination: SleepDestination::Wait(wait),
+                })) => {
+                    result.drop_with(vm);
+
+                    let timer = vm.settled_awaitable(Value::None);
+                    let wait = vm.install_wait_timer(wait, timer);
+
+                    vm.push(wait);
+                    vm.run_external()
+                }
+                effect => {
+                    // Other effects have rollback in `resume_with_exception`.
+                    vm.pending_effect = effect;
+                    vm.resume_with_exception(exc.into())
+                }
+            }
+        }
         (ExtFunctionResult::NotFound(function_name), None) => {
             vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
         }
@@ -1018,8 +1040,7 @@ pub use monty_types::{ExtFunctionResult, NameLookupResult};
 pub(crate) trait ExtFunctionResultExt {
     /// The `NameError` raised when the host reports the function isn't defined.
     fn not_found_exc(function_name: &str) -> RunError {
-        let msg = format!("name '{function_name}' is not defined");
-        MontyException::new(ExcType::NameError, Some(msg)).into()
+        ExtFunctionResult::not_found_exception(function_name).into()
     }
 }
 
@@ -1045,6 +1066,8 @@ pub(crate) enum ConvertedExit {
         call_id: u32,
         object_id: Option<MontyUuid>,
         allow_eager_await: bool,
+        /// See [`ReplFunctionCall::is_async`](crate::ReplFunctionCall::is_async).
+        is_async: bool,
         /// The call expression.
         position: SourceRange,
     },
@@ -1103,6 +1126,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             function_name,
             args,
             call_id,
+            is_async,
             ..
         }) => {
             let position = vm.suspension_position();
@@ -1114,6 +1138,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                     call_id: call_id.raw(),
                     object_id: None,
                     allow_eager_await: vm.allow_eager_await(),
+                    is_async,
                     position,
                 },
                 Err(err) => ConvertedExit::Error(err),
@@ -1152,6 +1177,8 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                     call_id: call_id.raw(),
                     object_id: Some(object_id),
                     allow_eager_await: vm.allow_eager_await(),
+                    // host methods have no async marker yet
+                    is_async: false,
                     position,
                 },
                 Err(err) => ConvertedExit::Error(err),
@@ -1242,16 +1269,18 @@ pub(crate) fn build_run_progress(
             call_id,
             object_id,
             allow_eager_await,
+            // only REPL hosts start calls without waiting (`ReplFunctionCall::is_async`)
+            is_async: _,
             position,
-        } => Ok(RunProgress::FunctionCall(FunctionCall::new(
+        } => Ok(RunProgress::FunctionCall(FunctionCall {
             function_name,
             args,
             call_id,
             object_id,
             allow_eager_await,
             position,
-            new_snapshot!(),
-        ))),
+            snapshot: new_snapshot!(),
+        })),
         ConvertedExit::OsCall {
             function_call,
             call_id,

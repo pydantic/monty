@@ -14,14 +14,19 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 
+import { COMPONENT_MODULE_NAMES } from '../dist/worker/componentModules.js'
+
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const artifacts = resolve(process.argv[2] ?? join(root, 'artifacts'))
 const output = resolve(process.argv[3] ?? join(root, 'package-tarballs'))
+const workerLicense = join(root, '../monty-runtime/LICENSE')
 const runtimeArtifacts = {
   'darwin-x64': 'pypi_files-runtime-macos-x86_64-manylinux',
   'darwin-arm64': 'pypi_files-runtime-macos-aarch64-manylinux',
   'linux-x64-gnu': 'pypi_files-runtime-linux-x86_64-manylinux',
+  'linux-x64-musl': 'pypi_files-runtime-linux-x86_64-musllinux_1_1',
   'linux-arm64-gnu': 'pypi_files-runtime-linux-aarch64-manylinux',
+  'linux-arm64-musl': 'pypi_files-runtime-linux-aarch64-musllinux_1_1',
   'win32-x64-msvc': 'pypi_files-runtime-windows-x86_64-manylinux',
 }
 const triples = Object.keys(runtimeArtifacts)
@@ -97,7 +102,8 @@ for (const triple of triples) {
   const installedBinary = join(platformDirectory, binary)
   extractRuntime(triple, installedBinary)
   if (!triple.startsWith('win32')) chmodSync(installedBinary, 0o755)
-  packAndValidate(platformDirectory, `monty-${triple}.tgz`, ['package.json', `monty.${triple}.node`, binary])
+  cpSync(workerLicense, join(platformDirectory, 'LICENSE'))
+  packAndValidate(platformDirectory, `monty-${triple}.tgz`, ['package.json', `monty.${triple}.node`, binary, 'LICENSE'])
 }
 
 const component = join(root, 'dist', 'worker', 'component', 'monty.component.js')
@@ -111,12 +117,10 @@ packAndValidate(mainDirectory, 'monty-main.tgz', [
   'dist/worker/index.js',
   'dist/worker/index.node.js',
   'dist/worker/component/monty.component.js',
-  'dist/worker/component/monty.component.core.wasm',
-  'dist/worker/component/monty.component.core2.wasm',
-  'dist/worker/component/monty.component.core3.wasm',
-  'dist/worker/component/monty.component.core4.wasm',
+  ...COMPONENT_MODULE_NAMES.map((name) => `dist/worker/component/${name}`),
   'native-addon.js',
   'native-addon.d.ts',
+  'LICENSE',
 ])
 
 /** Stages npm's publishable files with exact platform pins, leaving the development manifest unchanged. */
@@ -140,5 +144,6 @@ function stageMainPackage(destination) {
     mkdirSync(dirname(target), { recursive: true })
     cpSync(join(root, path), target)
   }
+  cpSync(workerLicense, join(destination, 'LICENSE'))
   writeFileSync(join(destination, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`)
 }

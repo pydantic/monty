@@ -35,7 +35,7 @@ use pyo3::{
 
 /// Base exception for all Monty interpreter errors; catching it catches any
 /// exception raised by Monty.
-#[pyclass(extends=exceptions::PyException, module="pydantic_monty", subclass, skip_from_py_object)]
+#[pyclass(extends=exceptions::PyException, module="pydantic_monty", subclass)]
 #[derive(Clone)]
 pub struct MontyError {
     /// The underlying Monty exception.
@@ -188,7 +188,7 @@ impl MontyTypingError {
 ///
 /// As with [`MontyRuntimeError`], the traceback `PyFrame` list is materialized
 /// lazily on the first `traceback()` call and cached for subsequent calls.
-#[pyclass(extends=MontyError, module="pydantic_monty", skip_from_py_object)]
+#[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontySyntaxError {
     traceback: PyOnceLock<Py<PyList>>,
 }
@@ -338,7 +338,7 @@ impl MontyRuntimeError {
 }
 
 /// Raised when the sandbox is gone: the worker process died (segfault, abort,
-/// external kill), the pool killed it at a parent-side time limit, or it
+/// external kill), the pool killed it at a client-side time limit, or it
 /// announced a fatal error and exited — which a serving server also uses to
 /// report that it could not start a worker at all.
 ///
@@ -349,7 +349,7 @@ impl MontyRuntimeError {
 /// which happened.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyCrashedError {
-    /// `True` when a parent-side elapsed-time or CPU watchdog killed the worker.
+    /// `True` when a client-side elapsed-time or CPU watchdog killed the worker.
     #[pyo3(get)]
     timed_out: bool,
     /// Exit code of the dead worker, when the OS reported one (signal deaths
@@ -678,7 +678,7 @@ fn build_traceback_list(py: Python<'_>, exc: &MontyException) -> PyResult<Py<PyL
 /// `source_line` is a `Py<PyString>` so frames sharing one underlying source
 /// line in a single `traceback()` call share one Python string object, turning
 /// `O(depth × line_len)` peak memory into a single allocation for deep recursion.
-#[pyclass(name = "Frame", module = "pydantic_monty", frozen, skip_from_py_object)]
+#[pyclass(name = "Frame", module = "pydantic_monty", frozen)]
 #[derive(Debug)]
 pub struct PyFrame {
     /// The filename where the code is located.
@@ -735,7 +735,7 @@ impl PyFrame {
 /// Where the expression that suspended execution is in the source, exposed as
 /// `snapshot.position`. `start` and `end` are UTF-8 byte offsets, `end`
 /// exclusive: slice `source.encode()`, not the string.
-#[pyclass(name = "SourceRange", module = "pydantic_monty", frozen, eq, skip_from_py_object)]
+#[pyclass(name = "SourceRange", module = "pydantic_monty", frozen, eq)]
 #[derive(Debug, PartialEq, Eq)]
 pub struct PySourceRange {
     /// The source the range indexes, named as in a traceback frame:

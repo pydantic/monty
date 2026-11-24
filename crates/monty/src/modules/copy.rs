@@ -19,12 +19,13 @@ use crate::{
 };
 
 /// `copy` module functions, one variant per Python-visible function.
+#[monty_macros::explicit_discriminants(checksum = 0x17db_11bd_e96f_cd0c)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 pub(crate) enum CopyFunctions {
     #[strum(serialize = "copy")]
-    Copy,
+    Copy = 0,
     #[strum(serialize = "deepcopy")]
-    Deepcopy,
+    Deepcopy = 1,
 }
 
 /// Static mapping of attribute names to functions for module creation.
@@ -33,15 +34,15 @@ const COPY_FUNCTIONS: &[(StaticStrings, CopyFunctions)] = &[
     (StaticStrings::Deepcopy, CopyFunctions::Deepcopy),
 ];
 
-/// Creates the `copy` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `copy` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Copy, vm.interns);
 
     for (name, func) in COPY_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Copy(*func)), vm);
     }
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `copy` module function.
@@ -117,7 +118,7 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
                 release_on_error(Value::Ref(copy_id), filled, vm)
             }
             HeapReadOutput::Set(set) => {
-                let copy = set.copy(vm);
+                let copy = set.copy(vm)?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Set(copy))))
             }
             HeapReadOutput::Deque(deque) => {
@@ -296,7 +297,9 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::DecimalContext(_) => Copyability::Rebuilt,
         // A shallow copy of an immutable container holds the same items, so
         // CPython hands back the original; only `deepcopy` rebuilds these.
-        HeapReadOutput::Tuple(_) | HeapReadOutput::FrozenSet(_) => Copyability::ImmutableContainer,
+        HeapReadOutput::Tuple(_) | HeapReadOutput::FrozenSet(_) => {
+            Copyability::ImmutableContainer
+        }
         // CPython's cache wrappers share their state through both copy operations.
         HeapReadOutput::LruCache(_) => Copyability::Shared,
         // Leaves and immutable containers Monty can never mutate, so a copy
@@ -358,6 +361,7 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::DictValueIterator(_)
         | HeapReadOutput::SetIterator(_)
         | HeapReadOutput::CallableIterator(_)
+        | HeapReadOutput::MapFilter(_)
         | HeapReadOutput::DirScan(_)
         | HeapReadOutput::Itertools(_)
         | HeapReadOutput::Csv(_)
@@ -365,6 +369,8 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::Coroutine(_)
         | HeapReadOutput::GatherFuture(_)
         | HeapReadOutput::ExternalFuture(_)
+        | HeapReadOutput::Task(_)
+        | HeapReadOutput::WaitFuture(_)
         | HeapReadOutput::OpenFile(_)
         | HeapReadOutput::ExtFunction(_)
         | HeapReadOutput::Cell(_)

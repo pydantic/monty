@@ -18,7 +18,7 @@ use monty_types::{
     unstable::{self, MontyGraph, NodeId},
 };
 use ruff_python_ast::token::TokenKind;
-use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
+use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, Mode, ParseErrorType};
 
 use crate::{
     args::{ArgValues, KwargsValues},
@@ -26,16 +26,16 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, RunError},
     heap::{DropWithContext, Heap, HeapData, HeapReader},
-    intern::Interns,
+    intern::{Interns, StringId},
     name_map::NameMap,
     object_bridge::{MontyGraphExt, MontyObjectExt},
-    parse::source_nesting_exception,
+    parse::{check_source_length, source_nesting_exception},
     run::{CompileOptions, DEFAULT_CWD, Executor, Program, ReplSession, SessionTables},
     run_progress::{
         ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
         resume_lookup, resume_with_result,
     },
-    source_nesting::source_within_nesting_bound,
+    source_nesting::{parse_shallow, source_within_nesting_bound},
     types::{SessionRandom, tuple::allocate_tuple},
     value::Value,
     virtual_path::canonical_cwd,
@@ -82,6 +82,9 @@ pub struct MontyRepl {
     /// OS-call policies shared with each snippet's executor.
     /// See [`with_os_policy`](Self::with_os_policy).
     os_policy: Arc<OsPolicy>,
+    /// Host capability for binary file writes; replaced by the restoring host on load.
+    #[serde(default)]
+    legacy_binary_writes: bool,
     /// Sandbox working directory the next snippet starts in: what
     /// [`set_cwd`](Self::set_cwd) chose, then whatever `os.chdir` left the
     /// last snippet in — the directory is session state, like the globals.
@@ -130,6 +133,7 @@ impl MontyRepl {
             sources: AHashMap::new(),
             options,
             os_policy: Arc::new(OsPolicy::default()),
+            legacy_binary_writes: false,
             cwd: Arc::from(DEFAULT_CWD),
             random: SessionRandom::default(),
             modules: ModuleCache::default(),
@@ -145,16 +149,12 @@ impl MontyRepl {
         self.options
     }
 
-    /// Rejects a snippet whose nesting would let the parser grow its stack past
-    /// the limit, with the `SyntaxError` compiling it would raise.
-    ///
-    /// For hosts that want the verdict before doing other work on the snippet
-    /// (the worker type-checks after it); the returned [`CheckedSource`] lets
-    /// [`feed_start_checked`](Self::feed_start_checked) skip the scan. Plain
-    /// feeds scan for themselves (see `limitations/language.md`).
+    /// Checks source length and parser nesting before a host type-checks or compiles a snippet.
+    /// The returned [`CheckedSource`] lets [`feed_start_checked`](Self::feed_start_checked) skip the scan.
+    /// Plain feeds perform these checks themselves.
     ///
     /// # Errors
-    /// The `SyntaxError: Source is too deeply nested` located in the snippet.
+    /// A located `SyntaxError` if source exceeds `u32::MAX` UTF-8 bytes or its nesting bound.
     pub fn check_source<'a>(&self, code: &'a str) -> Result<CheckedSource<'a>, MontyException> {
         source_nesting_exception(code, &self.script_name, self.options.source_scan_threshold)?;
         Ok(CheckedSource(code))
@@ -167,6 +167,11 @@ impl MontyRepl {
     pub fn with_os_policy(mut self, os_policy: OsPolicy) -> Self {
         self.set_os_policy(os_policy);
         self
+    }
+
+    /// Selects write/append-only file I/O for a host without positional writes.
+    pub fn set_legacy_binary_writes(&mut self, legacy: bool) {
+        self.legacy_binary_writes = legacy;
     }
 
     /// Replaces the session's OS-call policies in place, for a host restoring
@@ -274,6 +279,7 @@ impl MontyRepl {
             script_name: &this.script_name,
             cwd: &this.cwd,
             os_policy: &this.os_policy,
+            legacy_binary_writes: this.legacy_binary_writes,
             future_annotations: this.future_annotations,
         };
         let mut executor = match Executor::new_repl_snippet(
@@ -384,6 +390,7 @@ impl MontyRepl {
             script_name: &self.script_name,
             cwd: &self.cwd,
             os_policy: &self.os_policy,
+            legacy_binary_writes: self.legacy_binary_writes,
             future_annotations: self.future_annotations,
         };
         let mut executor = Executor::new_repl_snippet(
@@ -502,6 +509,7 @@ impl MontyRepl {
                 script_name: &self.script_name,
                 cwd: &self.cwd,
                 os_policy: &self.os_policy,
+                legacy_binary_writes: self.legacy_binary_writes,
                 future_annotations: self.future_annotations,
             },
         )?;
@@ -664,7 +672,7 @@ impl MontyRepl {
     }
 }
 
-/// A snippet [`MontyRepl::check_source`] found within the nesting bound,
+/// A snippet [`MontyRepl::check_source`] found within the source-length and nesting bounds,
 /// which [`MontyRepl::feed_start_checked`] therefore need not scan again.
 ///
 /// The verdict used the checking REPL's `source_scan_threshold`, so feed it
@@ -826,6 +834,17 @@ impl ReplProgress {
         }
     }
 
+    /// Applies the restoring host's binary-write capability to every resumed execution path.
+    pub fn set_legacy_binary_writes(&mut self, legacy: bool) {
+        match self {
+            Self::FunctionCall(call) => call.snapshot.set_legacy_binary_writes(legacy),
+            Self::OsCall(call) => call.snapshot.set_legacy_binary_writes(legacy),
+            Self::ResolveFutures(state) => state.set_legacy_binary_writes(legacy),
+            Self::NameLookup(lookup) => lookup.snapshot.set_legacy_binary_writes(legacy),
+            Self::Complete { repl, .. } => repl.set_legacy_binary_writes(legacy),
+        }
+    }
+
     /// Replaces the OS-call policies of the session and of a suspended snippet.
     ///
     /// A dump carries the policy it was taken under; hosts restoring it call this
@@ -865,6 +884,10 @@ pub struct ReplFunctionCall {
     pub object_id: Option<MontyUuid>,
     /// The host may await a coroutine and answer with [`Self::resume_eager`].
     pub allow_eager_await: bool,
+    /// The callee is an async host function: the host may answer with
+    /// [`Self::resume_pending`] without running it first.
+    #[serde(default)]
+    pub is_async: bool,
     /// Where the call expression is in the source.
     pub position: SourceRange,
     /// Internal REPL execution snapshot.
@@ -896,6 +919,23 @@ impl ReplFunctionCall {
         self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
     }
 
+    /// [`Self::resume_pending`] without starting a new turn, for a call the sandbox
+    /// starts without suspending: sandbox execution time so far keeps counting
+    /// against `max_turn_duration`. Host time is never counted.
+    pub fn resume_pending_in_turn(self, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.snapshot
+            .run_inner(ExtFunctionResult::Future(self.call_id), None, Turn::Continue, print)
+    }
+
+    /// [`Self::resume`] without starting a new turn; see [`Self::resume_pending_in_turn`].
+    pub fn resume_in_turn(
+        self,
+        result: impl Into<ExtFunctionResult>,
+        print: PrintWriter<'_>,
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.snapshot.run_inner(result.into(), None, Turn::Continue, print)
+    }
+
     /// Resumes with a settled coroutine, preserving its awaitable value and exception timing.
     /// Only use when [`Self::allow_eager_await`] is true; synchronous returns use [`Self::resume`].
     pub fn resume_eager(
@@ -906,6 +946,7 @@ impl ReplFunctionCall {
         self.snapshot.run_inner(
             result.map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return),
             Some(self.call_id),
+            Turn::New,
             print,
         )
     }
@@ -981,6 +1022,7 @@ impl ReplOsCall {
         self.snapshot.run_inner(
             result.map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return),
             Some(self.call_id),
+            Turn::New,
             print,
         )
     }
@@ -1116,6 +1158,12 @@ pub struct ReplResolveFutures {
 }
 
 impl ReplResolveFutures {
+    /// Updates both the session and its suspended snippet.
+    fn set_legacy_binary_writes(&mut self, legacy: bool) {
+        self.repl.legacy_binary_writes = legacy;
+        self.executor.program.legacy_binary_writes = legacy;
+    }
+
     /// Points the session and the blocked snippet's program at `os_policy`,
     /// as [`ReplSnapshot`] does for the other suspensions.
     fn set_os_policy(&mut self, os_policy: Arc<OsPolicy>) {
@@ -1282,11 +1330,17 @@ pub enum ReplContinuationMode {
 ///   syntax error that should be shown immediately).
 #[must_use]
 pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
-    // Complete because feeding it raises the SyntaxError; parsing it here would grow the stack unguarded.
-    if !source_within_nesting_bound(source, SOURCE_SCAN_THRESHOLD) {
+    // Feeding invalid source reports SyntaxError; do not pass it to Ruff here.
+    if check_source_length(source.len(), StringId::default()).is_err()
+        || !source_within_nesting_bound(source, SOURCE_SCAN_THRESHOLD)
+    {
         return ReplContinuationMode::Complete;
     }
-    let Err(error) = parse_module(source) else {
+    // Complete for the same reason when its AST is too deep to drop.
+    let Ok(parsed) = parse_shallow(source, Mode::Module) else {
+        return ReplContinuationMode::Complete;
+    };
+    let Some(error) = parsed.errors().first() else {
         return ReplContinuationMode::Complete;
     };
     let error_is_at_end = error.location.is_empty() && error.location.start().to_usize() == source.len();
@@ -1294,7 +1348,7 @@ pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
         .get(error.location.start().to_usize()..error.location.end().to_usize())
         .unwrap_or_default();
 
-    match error.error {
+    match &error.error {
         ParseErrorType::OtherError(msg) => {
             if msg.starts_with("Expected an indented block after ") {
                 ReplContinuationMode::IncompleteBlock
@@ -1341,6 +1395,15 @@ fn starts_with_triple_quote(source: &str) -> bool {
 // ---------------------------------------------------------------------------
 // ReplSnapshot — internal execution state for suspend/resume
 // ---------------------------------------------------------------------------
+
+/// Whether a resume starts a new turn, resetting the `max_turn_duration` clock of sandbox execution time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Turn {
+    /// The sandbox suspended and the host answered.
+    New,
+    /// The sandbox started a call without suspending, so the turn goes on.
+    Continue,
+}
 
 /// Restores the REPL VM and aborts uncatchably, preserving its globals.
 ///
@@ -1394,6 +1457,12 @@ pub(crate) struct ReplSnapshot {
 }
 
 impl ReplSnapshot {
+    /// Updates both the session and its suspended snippet.
+    fn set_legacy_binary_writes(&mut self, legacy: bool) {
+        self.repl.legacy_binary_writes = legacy;
+        self.executor.program.legacy_binary_writes = legacy;
+    }
+
     /// Points both the session and the suspended snippet's program at `os_policy`,
     /// which a resumed VM reads from the program.
     fn set_os_policy(&mut self, os_policy: Arc<OsPolicy>) {
@@ -1438,15 +1507,16 @@ impl ReplSnapshot {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
-        self.run_inner(result.into(), None, print)
+        self.run_inner(result.into(), None, Turn::New, print)
     }
 
-    /// Shared body of [`Self::run`] and [`ReplFunctionCall::resume_eager`];
-    /// `eager_call_id` is set only for the latter.
+    /// Shared body of [`Self::run`], the eager resumes and the in-turn resumes;
+    /// `eager_call_id` is set only for an eager resume.
     fn run_inner(
         self,
         ext_result: ExtFunctionResult,
         eager_call_id: Option<u32>,
+        turn: Turn,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
@@ -1455,7 +1525,9 @@ impl ReplSnapshot {
             vm_state,
         } = self;
 
-        repl.heap.tracker.on_turn_start();
+        if turn == Turn::New {
+            repl.heap.tracker.on_turn_start();
+        }
         let (converted, vm_state) = HeapReader::with(
             &mut repl.heap,
             &mut (&mut executor, print),
@@ -1571,6 +1643,7 @@ fn build_repl_progress(
             call_id,
             object_id,
             allow_eager_await,
+            is_async,
             position,
         } => Ok(ReplProgress::FunctionCall(ReplFunctionCall {
             function_name,
@@ -1578,6 +1651,7 @@ fn build_repl_progress(
             call_id,
             object_id,
             allow_eager_await,
+            is_async,
             position,
             snapshot: new_repl_snapshot!(),
         })),

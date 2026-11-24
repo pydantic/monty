@@ -10,6 +10,8 @@ implementation**.
 - `MontyObject` / `MontyType` — Python values and their types at the host
   boundary, including the `datetime` family (`MontyDate`, `MontyDateTime`,
   `MontyTimeDelta`, `MontyTimeZone`) and `MontyFileHandle`.
+  Builtin constructor values such as `map` and `filter` use `MontyObject::type_object` with `MontyType::Map` or
+  `MontyType::Filter`, not `MontyObject::builtin_function`.
 - `ObjectRef` — a borrowed value, with typed accessors (`as_int`, `as_str`, `items`, `pairs`).
   `MontyObject::as_ref()` borrows a value for inspection.
 - `CallArgs` / `NamedValues` — the arguments or inputs of one message.
@@ -19,6 +21,8 @@ implementation**.
   They may change or disappear in any release; prefer value constructors and typed accessors when possible.
 - `MontyException` / `ExcType` — exceptions with tracebacks (`StackFrame`,
   `CodeLoc`) and structured payloads (`ExcData`).
+  `ExcType`'s explicit discriminants are permanent exception-class identity codes, checked at compile time;
+  existing codes must never change or be reused.
 - `OsFunctionCall` — the typed OS-call payloads sandboxed code suspends with
   (file reads/writes, `open()`, `os.getenv`, ...), plus the `stat_result`
   builders hosts use to answer them.
@@ -26,6 +30,9 @@ implementation**.
   provides the lexical POSIX normalization shared by the interpreter, mounts, and `OsFunctionCall::to_args()` callbacks.
   It borrows canonical paths and resolves relative inputs from `/`.
   Validate NUL bytes and path limits before calling it; it does not confine filesystem access.
+- `OsPolicy` — session clocks, timezone, sleeps and initial random state.
+  `DateTimeSource::read`, `SandboxTimeZone`'s conversions and `local_wall_clock` use `jiff::civil::DateTime`.
+  `unix_seconds` converts those UTC civil components to epoch seconds without a timezone lookup.
 - `ResourceTracker` / `ResourceLimits` — the resource tracker the
   interpreter uses to enforce time/memory/recursion limits, plus the
   `max_suspensions` budget hosts enforce themselves.
@@ -63,7 +70,7 @@ assert_eq!(value.py_repr(), "[1, 'x']");
 - [`monty-fs`](https://crates.io/crates/monty-fs) — host-side filesystem mounts: maps virtual sandbox paths to real host directories.
 - [`monty-runtime`](https://crates.io/crates/monty-runtime) — the `monty` binary: REPL, file runner, and subprocess worker mode.
 - [`monty-pool`](https://crates.io/crates/monty-pool) — an elastic pool of crash-isolated `monty` worker subprocesses.
-- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between pool parents and workers.
+- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between clients and workers.
 - [`monty-type-checking`](https://crates.io/crates/monty-type-checking) — type checking of sandboxed code, powered by [ty](https://docs.astral.sh/ty/).
 - [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
 - [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing.

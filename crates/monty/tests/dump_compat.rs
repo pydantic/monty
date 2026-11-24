@@ -115,6 +115,13 @@ next(di_it)
 s_it = iter(st)
 next(s_it)
 call_it = iter(lambda: 7, 0)
+rows = map(next, [iter([3]), iter([]), iter([5])])
+
+
+def consume_rows():
+    return [value for value in rows]
+
+
 joined = '-'.join(['x', 'y'])
 str_it = iter('abc')
 next(str_it)
@@ -188,6 +195,7 @@ assert rnd.random() == fresh.random()
 assert list(dq_it) == [2, 3] and list(t_it) == ['two'] and list(b_it) == [8, 9]
 assert list(di_it) == [('b', [2, 3]), (3, 'int key')] and len(list(s_it)) == 2
 assert next(call_it) == 7
+assert consume_rows() == [3] and consume_rows() == [5]
 assert pending_log == ['finally']
 assert joined == 'x-y' and list(str_it) == ['b', 'c'] and list(range_it) == [1, 2]
 assert list(dk_it) == ['b', 3] and list(dv_it) == [[2, 3], 'int key'] and next(counter) == 6
@@ -198,10 +206,10 @@ assert add5(2) == 7
 (result, c.value)
 ";
 
-/// A dump written by an earlier build at this `DUMP_VERSION` still loads and
-/// runs. Failing here means a data-layout change broke older dumps: add a
-/// `#[serde(alias)]` or `#[serde(default)]`, or bump `DUMP_VERSION` and
-/// regenerate with `UPDATE_DUMP_FIXTURE=1 cargo test -p monty --test dump_compat`.
+/// Checks that the current-version fixture still loads and runs.
+/// If the format changed, check both compatibility directions against published releases
+/// before updating the fixture with `UPDATE_DUMP_FIXTURE=1 cargo test -p monty --test dump_compat`.
+/// Do not overwrite a fixture for a published dump version to make this test pass.
 #[test]
 fn fixture_dump_loads_and_resumes() {
     let path = fixture_path();
@@ -276,19 +284,21 @@ fn fixture_dump_loads_and_resumes() {
     );
 }
 
-/// Main's version-14 dump format remains readable after inline strings bump it to 15.
+/// Older fixtures remain readable after adding inline strings and the star-import opcode.
 #[test]
-fn version_14_fixture_loads_after_inline_string_bump() {
-    let bytes = fs::read(fixture_path_for(14)).expect("main's version-14 fixture exists");
-    let loaded = Dump::load(&bytes).expect("version-14 dumps remain supported");
-    assert_eq!(loaded.script_name, "fixture.py");
-    let Session::Suspended(progress) = loaded.state else {
-        panic!("fixture was dumped suspended on a host call");
-    };
-    let call = progress.into_function_call().expect("suspended on host_call");
-    let progress = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
-    let (_, value) = progress.into_complete().expect("host_call resumed to completion");
-    assert_eq!(value, MontyObject::int(42));
+fn older_version_fixtures_load_and_resume() {
+    for version in [14, 15, 16] {
+        let bytes = fs::read(fixture_path_for(version)).expect("older fixture exists");
+        let loaded = Dump::load(&bytes).expect("older dumps remain supported");
+        assert_eq!(loaded.script_name, "fixture.py");
+        let Session::Suspended(progress) = loaded.state else {
+            panic!("fixture was dumped suspended on a host call");
+        };
+        let call = progress.into_function_call().expect("suspended on host_call");
+        let progress = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
+        let (_, value) = progress.into_complete().expect("host_call resumed to completion");
+        assert_eq!(value, MontyObject::int(42));
+    }
 }
 
 /// The class definitions in `dataclasses_v13.bin`, kept for reference: the
@@ -561,6 +571,109 @@ assert F.__delattr__ is deleter",
     .unwrap();
 }
 
+/// Type objects as the pre-refactor build stored them: dict and set keys hashed
+/// by type name, a generic alias, a chained exception, types held in class
+/// bodies and constants, and `id(int)`. Written once by the build before the
+/// native type table and never regenerated, so it checks those shims.
+#[expect(
+    dead_code,
+    reason = "records the source of the pinned fixture, which is never regenerated"
+)]
+const TYPES_FIXTURE_STATE: &str = r"
+import datetime
+import json
+from collections import Counter
+
+by_type = {int: 'int', datetime.date: 'date', Counter: 'counter', ValueError: 'value', json.JSONDecodeError: 'json'}
+type_set = {int, datetime.date, Counter, ValueError, json.JSONDecodeError}
+alias = list[int]
+
+try:
+    try:
+        raise KeyError('inner')
+    except KeyError as inner:
+        raise ValueError('outer') from inner
+except ValueError as exc:
+    chained = exc
+
+
+class Holder:
+    kind = int
+    err = ValueError
+
+
+Dynamic = type('Dynamic', (), {'x': 1})
+int_id = id(int)
+type_tuple = (int, str, ValueError, KeyError)
+
+
+def suspended(n):
+    got = host_call(n)
+    t = type(got)
+    if t is int:
+        raise ValueError(f'got {got}')
+    return t
+";
+
+/// The call the types fixture is suspended on.
+#[expect(
+    dead_code,
+    reason = "records the source of the pinned fixture, which is never regenerated"
+)]
+const TYPES_FIXTURE_CALL: &str = "suspended(1)";
+
+/// Fed after restoring the types fixture and resuming it into its `ValueError`.
+const TYPES_FIXTURE_CHECK: &str = r"
+assert by_type[int] == 'int' and by_type[datetime.date] == 'date' and by_type[Counter] == 'counter'
+assert by_type[ValueError] == 'value' and by_type[json.JSONDecodeError] == 'json'
+assert int in type_set and ValueError in type_set and json.JSONDecodeError in type_set
+assert datetime.date in type_set and Counter in type_set and str not in type_set
+assert alias == list[int] and repr(alias) == 'list[int]'
+assert isinstance(chained, ValueError) and isinstance(chained, Exception)
+assert repr(chained) == 'ValueError(\'outer\')'
+assert isinstance(chained.__cause__, KeyError) and isinstance(chained.__cause__, LookupError)
+assert Holder.kind is int and Holder.err is ValueError and Holder.kind(3) == 3
+assert repr(Holder.err) == '<class \'ValueError\'>' and repr(Holder.kind) == '<class \'int\'>'
+assert Dynamic.x == 1 and Dynamic().x == 1 and Dynamic.__name__ == 'Dynamic'
+assert int_id == id(int)
+assert type_tuple == (int, str, ValueError, KeyError)
+try:
+    raise json.JSONDecodeError
+except ValueError:
+    pass
+caught = []
+for t in type_tuple[2:]:
+    try:
+        raise t('x')
+    except LookupError:
+        caught.append('lookup')
+    except Exception:
+        caught.append('exception')
+assert caught == ['exception', 'lookup']
+'done'
+";
+
+/// The pre-refactor types fixture loads, resumes into the `ValueError` its
+/// function raises, and every type-keyed value behaves as before.
+#[test]
+fn types_fixture_loads_and_resumes() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/types_v15.bin");
+    let bytes = fs::read(&path).unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+    let loaded = Dump::load(&bytes).expect("the pre-refactor types fixture loads");
+    let Session::Suspended(progress) = loaded.state else {
+        panic!("the types fixture was dumped suspended on a host call");
+    };
+    let call = progress.into_function_call().expect("suspended on host_call");
+    assert_eq!(call.function_name, "host_call");
+    let err = call
+        .resume(MontyObject::int(7), PrintWriter::Stdout)
+        .expect_err("the suspended function raises after calling type()");
+    assert_snapshot!(err.error.summary(), @"ValueError: got 7");
+    let mut repl = err.repl;
+    let checked = repl.feed_run(TYPES_FIXTURE_CHECK, vec![], PrintWriter::Stdout).unwrap();
+    assert_eq!(checked, MontyObject::string("done"));
+}
+
 /// Dict and set entries persist their hash, so the hash of every kind of key
 /// without a heap identity is part of the dump contract: a change here needs a
 /// `DUMP_VERSION` bump.
@@ -576,6 +689,92 @@ fn persisted_key_hashes_are_stable() {
         )
         .unwrap();
     assert_snapshot!(hashes.py_repr(), @"(-7376904247260835724, -8418895208483869890, -7578619387304540654, -6751866591645121981, -8097107109803033201, 2456456309100923238, -5014982954702616963, 2858064283329581446)");
+}
+
+/// `id()` of an object without a heap identity is derived from its value, so a
+/// session that stored one before a dump must see the same id after restoring.
+#[test]
+fn builtin_ids_are_stable() {
+    let mut repl = MontyRepl::new("ids.py", ResourceTracker::default(), CompileOptions::default());
+    let ids = repl
+        .feed_run(
+            "(id(len), id(type), id(ValueError), id(KeyError), id(int), id(list))",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_snapshot!(ids.py_repr(), @"(2097610, 2098122, 2105898, 2105642, 2113706, 2114058)");
+}
+
+/// Date and timedelta hashes must survive the storage-library migration because
+/// dicts and sets persist them. Expected values come from the former storage types.
+#[test]
+fn persisted_calendar_hashes_are_stable() {
+    let mut repl = MontyRepl::new("hashes.py", ResourceTracker::default(), CompileOptions::default());
+    let hashes = repl
+        .feed_run(
+            "from datetime import date, timedelta\n\
+         values = [date(1, 1, 1), date(1900, 3, 1), date(2000, 2, 29), date(2024, 6, 15), date.max, \
+         timedelta(), timedelta(microseconds=-1), timedelta(days=-2, seconds=86399, microseconds=1), \
+         timedelta(days=1, microseconds=1), timedelta.max]\n\
+         tuple(hash(value) for value in values)",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_snapshot!(hashes.py_repr(), @"(5726848817805768197, -5905029044664614831, 8287707130111363081, -7491674403021461934, -4854198610469465321, 2435999049025295583, -7668848667738911443, 8954133621882991626, 1789700847611459173, -7132049192933483870)");
+    repl.feed_run(
+        "values.append(timedelta.min)\nby_value = {value: index for index, value in enumerate(values)}",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("hashes.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("dump was idle");
+    };
+    let lookups = restored
+        .feed_run(
+            "tuple(by_value[value + timedelta(0)] for value in values)",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_snapshot!(lookups.py_repr(), @"(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)");
+}
+
+/// Parsed timezones retain their Python identity and ownership across a dump.
+#[test]
+fn parsed_datetime_retains_timezone_identity() {
+    let mut repl = MontyRepl::new("zones.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "from datetime import datetime, timedelta\n\
+         parsed = [datetime.strptime('2024-01-01 ' + offset, '%Y-%m-%d %z') \
+         for offset in ['+0100', '-0530', '+0000']]\n\
+         zones = [value.tzinfo for value in parsed]\n\
+         identities = [id(zone) for zone in zones]",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("zones.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("dump was idle");
+    };
+    let checked = restored
+        .feed_run(
+            r"for value, zone, identity in zip(parsed, zones, identities):
+    assert value.tzinfo is zone
+    assert id(value.tzinfo) == identity
+    assert value.replace().tzinfo is zone
+    assert value.timetz().tzinfo is zone
+    assert (value + timedelta(days=1)).tzinfo is zone
+True",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(checked, MontyObject::bool(true));
 }
 
 /// The fixture for the current `DUMP_VERSION`; the name carries the version so

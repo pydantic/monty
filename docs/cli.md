@@ -96,10 +96,14 @@ See [`limitations/datetime.md`](https://github.com/pydantic/monty/blob/main/limi
 
 ## Worker mode
 
-`monty subprocess` runs the binary as a wire-protocol child: framed protobuf requests on stdin, framed events on stdout.
+`monty subprocess` runs the binary as a wire-protocol worker: framed protobuf requests on stdin, framed events on stdout.
 This is how [`monty-pool`](https://crates.io/crates/monty-pool) — and through it the Python and JavaScript packages —
 runs Monty with crash isolation.
 
-It is meant to be driven by a parent process, not by hand.
+It is meant to be driven by a client, not by hand.
 Normal execution flags are rejected alongside it, because a subprocess worker reads all its configuration from the
 protocol.
+Its one flag, `--prewarm-type-checker`, has the worker build a type checker with the builtins resolved at startup and between sessions,
+so a session's first type check skips that work, at about 6 MiB per worker.
+A request arriving mid-build waits for it.
+`monty-pool` passes it to subprocess workers when [`PoolConfig::prewarm_type_checker`](api/rust/monty-pool.md#poolconfig) is set.

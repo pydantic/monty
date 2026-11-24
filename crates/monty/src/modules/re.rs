@@ -41,11 +41,12 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData},
     intern::StaticStrings,
     modules::ModuleFunctions,
+    resource_checks::check_estimated_size,
     types::{
-        BoundedCompileError, BuiltinType, Module, RePattern, Type,
+        BoundedCompileError, Module, RePattern, Type,
         re_pattern::{extract_count, extract_maxsplit, translate_replacement},
         str::allocate_string,
     },
@@ -68,32 +69,33 @@ pub(crate) const ASCII: u16 = 256;
 /// Module-level `re` functions (`re.search(pattern, string)`, …), as opposed to the
 /// methods on a compiled `re.Pattern`. String patterns go through
 /// [`RePatternCache`], so repeated calls usually avoid recompiling.
+#[monty_macros::explicit_discriminants(checksum = 0xc297_04ae_1a6d_8963)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum ReFunctions {
     /// `re.compile(pattern, flags=0)` — compile a pattern into a `re.Pattern` object.
-    Compile,
+    Compile = 0,
     /// `re.search(pattern, string, flags=0)` — find first match anywhere in the string.
-    Search,
+    Search = 1,
     /// `re.match(pattern, string, flags=0)` — match anchored at the start.
-    Match,
+    Match = 2,
     /// `re.fullmatch(pattern, string, flags=0)` — match the entire string.
-    Fullmatch,
+    Fullmatch = 3,
     /// `re.findall(pattern, string, flags=0)` — return all non-overlapping matches.
-    Findall,
+    Findall = 4,
     /// `re.sub(pattern, repl, string, count=0, flags=0)` — substitute matches.
-    Sub,
+    Sub = 5,
     /// `re.split(pattern, string, maxsplit=0, flags=0)` — split string by pattern.
-    Split,
+    Split = 6,
     /// `re.finditer(pattern, string, flags=0)` — return a list of all matches.
-    Finditer,
+    Finditer = 7,
     /// `re.escape(pattern)` — escape all non-alphanumeric characters in pattern.
-    Escape,
+    Escape = 8,
 }
 
-/// Allocates the `re` module — every [`ReFunctions`] variant plus the flag
-/// constants — and returns its `HeapId`.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `re` module: every [`ReFunctions`] variant plus the flag
+/// constants.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Re, vm.interns);
 
     // Functions
@@ -159,29 +161,29 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     // Exception types
     module.set_attr(
         StaticStrings::PatternError,
-        Value::Builtin(Builtins::ExcType(ExcType::RePatternError)),
+        Value::Builtin(Builtins::Type(Type::RePatternError)),
         vm,
     );
     // `re.error` is the historical alias for `re.PatternError` (still widely used)
     module.set_attr(
         StaticStrings::Error,
-        Value::Builtin(Builtins::ExcType(ExcType::RePatternError)),
+        Value::Builtin(Builtins::Type(Type::RePatternError)),
         vm,
     );
 
     // Constructed types
     module.set_attr(
         StaticStrings::PatternClass,
-        Value::Builtin(Builtins::Type(BuiltinType::RePattern)),
+        Value::Builtin(Builtins::Type(Type::RePattern)),
         vm,
     );
     module.set_attr(
         StaticStrings::MatchClass,
-        Value::Builtin(Builtins::Type(BuiltinType::ReMatch)),
+        Value::Builtin(Builtins::Type(Type::ReMatch)),
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `re` module function. Always `CallResult::Value` — regex
@@ -759,7 +761,10 @@ fn call_escape(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         )));
     };
 
-    let mut result = String::with_capacity(text.len() * 2);
+    // At most one backslash per char, so the reservation is the result's upper bound.
+    let capacity = text.len().saturating_mul(2);
+    check_estimated_size(capacity, &vm.heap.tracker)?;
+    let mut result = String::with_capacity(capacity);
     for c in text.chars() {
         if should_escape(c) {
             result.push('\\');

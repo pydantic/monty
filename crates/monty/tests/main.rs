@@ -4,7 +4,7 @@ use insta::assert_snapshot;
 use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid, PrintWriter, ResourceTracker,
-    unstable::{self, MontyNode},
+    unstable::{self, ClassEq, ClassHash, MontyNode},
 };
 
 /// Test we can reuse exec without borrow checker issues.
@@ -324,20 +324,32 @@ fn external_function_in_deepcopy_raises_not_implemented() {
     "#);
 }
 
-/// `for` still requires synchronous advancement, so an external call in
-/// `__next__` raises at that call site rather than suspending the loop.
+/// A loop can suspend inside `__next__`; host errors retain both user traceback frames.
 #[test]
-fn external_function_in_next_raises_not_implemented() {
+fn external_function_in_next_suspends() {
     let code = "class Foo:\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        return ext_fn()\n\nfor _x in Foo():\n    pass";
-    let mut ex = MontyRun::new(
+    let runner = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["ext_fn".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let err = ex
-        .run_no_limits(vec![MontyObject::function("ext_fn".to_owned(), None)])
+    let progress = runner
+        .start(
+            vec![MontyObject::function("ext_fn", None)],
+            ResourceTracker::default(),
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    let RunProgress::FunctionCall(call) = progress else {
+        panic!("expected iterator callback")
+    };
+    let err = call
+        .resume(
+            ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("host failed".to_owned()))),
+            PrintWriter::Disabled,
+        )
         .unwrap_err();
     assert_snapshot!(err.to_string(), @r#"
     Traceback (most recent call last):
@@ -347,7 +359,7 @@ fn external_function_in_next_raises_not_implemented() {
       File "test.py", line 6, in __next__
         return ext_fn()
                ~~~~~~~~
-    NotImplementedError: external function 'ext_fn' cannot suspend in this synchronous context
+    ValueError: host failed
     "#);
 }
 
@@ -423,6 +435,16 @@ for _ in range(3):
         assert False, 'expected synchronous advancement to fail'
     except NotImplementedError as exc:
         assert str(exc) == "external function 'ext_fn' cannot suspend in this synchronous context"
+    for constructor in (map, filter):
+        for callback in (ext_fn, lambda item: ext_fn(item)):
+            source = iter([['owned'], ['remaining']])
+            adapted = constructor(callback, source)
+            try:
+                list(adapted)
+                assert False, 'expected synchronous callback to fail'
+            except NotImplementedError as exc:
+                assert str(exc) == "external function 'ext_fn' cannot suspend in this synchronous context"
+            assert next(source) == ['remaining']
     assert list(RecoverIter()) == [1, 2]
 42
 "#;
@@ -621,19 +643,37 @@ fn external_function_as_itertools_callable_raises_not_implemented() {
     "#);
 }
 
-/// The 3-arg `type()` form rejects non-empty bases because Monty classes
-/// cannot inherit (documented in `limitations/classes.md`). Kept as a
-/// Rust-side test because CPython accepts bases, so the comparative
-/// test-case suite cannot cover the divergence.
+/// Monty classes inherit only from classes and `object`, so a native base
+/// CPython accepts is a `TypeError` (see `limitations/classes.md`). Kept as a
+/// Rust-side test because the comparative test-case suite cannot cover it.
 #[test]
-fn dynamic_type_with_bases_raises_type_error() {
-    let code = "type('A', (int,), {})";
+fn class_with_native_base_raises_type_error() {
+    for (code, base) in [
+        ("type('A', (int,), {})", "int"),
+        ("class E(ValueError):\n    pass", "ValueError"),
+    ] {
+        let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let err = ex.run_no_limits(vec![]).unwrap_err();
+        assert_eq!(
+            err.message(),
+            Some(
+                format!(
+                    "Monty does not support subclassing '{base}': classes can only inherit from classes defined in \
+                     Python and object"
+                )
+                .as_str()
+            )
+        );
+    }
+}
+
+/// A user class and `object` are valid bases for the 3-arg `type()` form.
+#[test]
+fn dynamic_type_with_user_class_base_succeeds() {
+    let code =
+        "A = type('A', (), {'x': 1})\nB = type('B', (A, object), {'y': 2})\nb = B()\nassert b.x == 1\nassert b.y == 2";
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let err = ex.run_no_limits(vec![]).unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    type('A', (int,), {})\n    ~~~~~~~~~~~~~~~~~~~~~\nTypeError: type() bases are not supported"
-    );
+    ex.run_no_limits(vec![]).unwrap();
 }
 
 /// The 3-arg `type()` form rejects non-string namespace keys with a
@@ -742,6 +782,116 @@ d";
         result,
         MontyObject::list([evil_instance(), MontyObject::int(1), MontyObject::int(2)])
     );
+}
+
+/// Each exported class carries the `==` / `hash` rule the sandbox applies to
+/// its instances, so a host proxy can follow it.
+#[test]
+fn output_class_types_carry_eq_and_hash_rules() {
+    let code = "\
+from dataclasses import dataclass
+
+class Plain:
+    pass
+
+class EqOnly:
+    def __eq__(self, other):
+        return True
+
+class EqHash:
+    def __eq__(self, other):
+        return True
+    def __hash__(self):
+        return 1
+
+class NoHash:
+    __hash__ = None
+
+@dataclass
+class Data:
+    a: int
+    b: int
+
+@dataclass(frozen=True)
+class Frozen:
+    a: int
+
+@dataclass(eq=False)
+class NoEq:
+    a: int
+
+@dataclass
+class OwnHash:
+    a: int
+    def __hash__(self):
+        return 1
+
+@dataclass
+class OwnEq:
+    a: int
+    def __eq__(self, other):
+        return True
+
+(Plain(), EqOnly(), EqHash(), NoHash(), Data(1, 2), Frozen(1), NoEq(1), OwnHash(1), OwnEq(1))";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let result = ex.run_no_limits(vec![]).unwrap();
+    let fields = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
+    assert_eq!(
+        class_rules(result),
+        vec![
+            ("Plain".to_owned(), ClassEq::Identity, ClassHash::Identity),
+            ("EqOnly".to_owned(), ClassEq::Custom, ClassHash::Unhashable),
+            ("EqHash".to_owned(), ClassEq::Custom, ClassHash::Custom),
+            ("NoHash".to_owned(), ClassEq::Identity, ClassHash::Unhashable),
+            (
+                "Data".to_owned(),
+                ClassEq::Fields(fields(&["a", "b"])),
+                ClassHash::Unhashable
+            ),
+            (
+                "Frozen".to_owned(),
+                ClassEq::Fields(fields(&["a"])),
+                ClassHash::Fields(fields(&["a"]))
+            ),
+            ("NoEq".to_owned(), ClassEq::Identity, ClassHash::Identity),
+            ("OwnHash".to_owned(), ClassEq::Fields(fields(&["a"])), ClassHash::Custom),
+            ("OwnEq".to_owned(), ClassEq::Custom, ClassHash::Unhashable),
+        ]
+    );
+}
+
+/// A host class sent in and returned compares by identity: the sandbox never
+/// learns how the host's class compares.
+#[test]
+fn output_host_class_type_compares_by_identity() {
+    let instance = MontyObject::class_instance(
+        MontyObject::class_type("Point", MontyUuid::from_u128(1), true, true, []),
+        MontyUuid::from_u128(2),
+        [],
+    );
+    let mut ex = MontyRun::new(
+        "p".to_owned(),
+        "test.py",
+        vec!["p".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let result = ex.run_no_limits(vec![instance]).unwrap();
+    assert_eq!(
+        class_rules(result),
+        vec![("Point".to_owned(), ClassEq::Identity, ClassHash::Identity)]
+    );
+}
+
+/// The name and `==` / `hash` rules of every class node in `obj`, in graph order.
+fn class_rules(obj: MontyObject) -> Vec<(String, ClassEq, ClassHash)> {
+    let (graph, _) = unstable::into_graph_parts(obj);
+    (graph.nodes().iter())
+        .filter_map(|node| match node {
+            MontyNode::ClassType(class) => Some((class.name.clone(), class.eq.clone(), class.hash.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A `groupby` key comparison that steps the same `groupby` and consumes the

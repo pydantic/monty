@@ -1,6 +1,6 @@
-# Full Monty
+# Commercial Support
 
-Full Monty is a gRPC server that hosts Monty sandbox workers: a client holds one HTTP/2 connection and each session
+The commercial support server is a gRPC server that hosts Monty sandbox workers: a client holds one HTTP/2 connection and each session
 is one stream on it, served by its own `monty` worker subprocess from an elastic pool.
 A worker serves one session at a time and is reset or replaced between sessions, so no sandbox state crosses from one
 client to another.
@@ -8,17 +8,17 @@ client to another.
 `@pydantic/monty`; the package's WebAssembly build cannot dial a remote server.
 The server adds capacity limits, timeouts, per-caller quotas, health probes, graceful drain and tracing to [Pydantic
 Logfire](https://pydantic.dev/logfire). The `monty` worker provides the sandboxing.
-Additionally, Full Monty can act as a reverse proxy, forwarding requests to a full sandbox running CPython.
+Additionally, the server can act as a reverse proxy, forwarding requests to a full sandbox running CPython.
 
 The server is closed-source and distributed as a container image.
 
 !!! tip "Design partners"
 
-    If you're interested in being an early design partner for Full Monty, please
-    [contact us](https://pydantic.dev/contact). We're currently offering Full Monty free to a select set of
+    If you're interested in being an early design partner for commercial support, please
+    [contact us](https://pydantic.dev/contact). We're currently offering it free to a select set of
     organizations while we finalize the commercial platform.
 
-## Why Full Monty over OSS Monty
+## Why Commercial Support over OSS Monty
 
 Running Monty on a remote server provides:
 

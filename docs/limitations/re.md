@@ -52,7 +52,7 @@ match CPython's, with these divergences:
 ## Flags
 
 Supported: `NOFLAG`, `IGNORECASE` / `I`, `MULTILINE` / `M`, `DOTALL` / `S`,
-`ASCII` / `A`.
+`VERBOSE` / `X`, `ASCII` / `A`.
 
 `ASCII` is accepted but has no effect: `\w`, `\d` and `\s` stay Unicode-aware, with or without `(?a)`.
 

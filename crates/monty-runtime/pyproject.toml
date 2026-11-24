@@ -6,18 +6,19 @@ build-backend = "maturin"
 name = "pydantic-monty-runtime"
 description = "The monty CLI binary — spawned as worker subprocesses by pydantic-monty"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
+license = "MIT AND Python-2.0.1 AND Apache-2.0"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Programming Language :: Rust",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: Unix",
     "Operating System :: POSIX :: Linux",
     "Operating System :: Microsoft :: Windows",
     "Environment :: MacOS X",
 ]
-dynamic = ["license", "version"]
+dynamic = ["version"]
 
 [project.urls]
 Homepage = "https://github.com/pydantic/monty"
@@ -30,4 +31,4 @@ Source = "https://github.com/pydantic/monty"
 [tool.maturin]
 bindings = "bin"
 strip = true
-pgo-command = "cargo run --release -p monty-datatest --bin pgo-exercise"
+pgo-command = "cargo run --profile pgo-training -p monty-pgo"

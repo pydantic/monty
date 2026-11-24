@@ -2,55 +2,54 @@ import enum
 import sre_compile
 import sre_constants
 import sys
+from _typeshed import MaybeNone, ReadableBuffer
 from collections.abc import Callable, Iterator, Mapping
 from types import GenericAlias
 from typing import Any, AnyStr, Final, Generic, Literal, TypeVar, final, overload
-
-from _typeshed import MaybeNone, ReadableBuffer
 from typing_extensions import TypeAlias, deprecated
 
 __all__ = [
-    'match',
-    'fullmatch',
-    'search',
-    'sub',
-    'subn',
-    'split',
-    'findall',
-    'finditer',
-    'compile',
-    'purge',
-    'escape',
-    'error',
-    'A',
-    'I',
-    'L',
-    'M',
-    'S',
-    'X',
-    'U',
-    'ASCII',
-    'IGNORECASE',
-    'LOCALE',
-    'MULTILINE',
-    'DOTALL',
-    'VERBOSE',
-    'UNICODE',
-    'Match',
-    'Pattern',
+    "match",
+    "fullmatch",
+    "search",
+    "sub",
+    "subn",
+    "split",
+    "findall",
+    "finditer",
+    "compile",
+    "purge",
+    "escape",
+    "error",
+    "A",
+    "I",
+    "L",
+    "M",
+    "S",
+    "X",
+    "U",
+    "ASCII",
+    "IGNORECASE",
+    "LOCALE",
+    "MULTILINE",
+    "DOTALL",
+    "VERBOSE",
+    "UNICODE",
+    "Match",
+    "Pattern",
 ]
 if sys.version_info < (3, 13):
-    __all__ += ['template']
+    __all__ += ["template"]
 
 if sys.version_info >= (3, 11):
-    __all__ += ['NOFLAG', 'RegexFlag']
+    __all__ += ["NOFLAG", "RegexFlag"]
 
 if sys.version_info >= (3, 13):
-    __all__ += ['PatternError']
+    __all__ += ["PatternError"]
 
     PatternError = sre_constants.error
 
-_T = TypeVar('_T')
+_T = TypeVar("_T")
 
 # The implementation defines this in re._constants (version_info >= 3, 11) or
 # sre_constants. Typeshed has it here because its __module__ attribute is set to "re".
@@ -131,17 +130,13 @@ class Pattern(Generic[AnyStr]):
     @overload
     def search(self: Pattern[str], string: str, pos: int = 0, endpos: int = sys.maxsize) -> Match[str] | None: ...
     @overload
-    def search(
-        self: Pattern[bytes], string: ReadableBuffer, pos: int = 0, endpos: int = sys.maxsize
-    ) -> Match[bytes] | None: ...
+    def search(self: Pattern[bytes], string: ReadableBuffer, pos: int = 0, endpos: int = sys.maxsize) -> Match[bytes] | None: ...
     @overload
     def search(self, string: AnyStr, pos: int = 0, endpos: int = sys.maxsize) -> Match[AnyStr] | None: ...
     @overload
     def match(self: Pattern[str], string: str, pos: int = 0, endpos: int = sys.maxsize) -> Match[str] | None: ...
     @overload
-    def match(
-        self: Pattern[bytes], string: ReadableBuffer, pos: int = 0, endpos: int = sys.maxsize
-    ) -> Match[bytes] | None: ...
+    def match(self: Pattern[bytes], string: ReadableBuffer, pos: int = 0, endpos: int = sys.maxsize) -> Match[bytes] | None: ...
     @overload
     def match(self, string: AnyStr, pos: int = 0, endpos: int = sys.maxsize) -> Match[AnyStr] | None: ...
     @overload
@@ -185,9 +180,7 @@ class Pattern(Generic[AnyStr]):
     @overload
     def sub(self, repl: AnyStr | Callable[[Match[AnyStr]], AnyStr], string: AnyStr, count: int = 0) -> AnyStr: ...
     @overload
-    def subn(
-        self: Pattern[str], repl: str | Callable[[Match[str]], str], string: str, count: int = 0
-    ) -> tuple[str, int]: ...
+    def subn(self: Pattern[str], repl: str | Callable[[Match[str]], str], string: str, count: int = 0) -> tuple[str, int]: ...
     @overload
     def subn(
         self: Pattern[bytes],
@@ -196,9 +189,7 @@ class Pattern(Generic[AnyStr]):
         count: int = 0,
     ) -> tuple[bytes, int]: ...
     @overload
-    def subn(
-        self, repl: AnyStr | Callable[[Match[AnyStr]], AnyStr], string: AnyStr, count: int = 0
-    ) -> tuple[AnyStr, int]: ...
+    def subn(self, repl: AnyStr | Callable[[Match[AnyStr]], AnyStr], string: AnyStr, count: int = 0) -> tuple[AnyStr, int]: ...
     def __copy__(self) -> Pattern[AnyStr]: ...
     def __deepcopy__(self, memo: Any, /) -> Pattern[AnyStr]: ...
     def __eq__(self, value: object, /) -> bool: ...
@@ -273,13 +264,9 @@ def match(pattern: bytes | Pattern[bytes], string: ReadableBuffer, flags: _Flags
 @overload
 def fullmatch(pattern: str | Pattern[str], string: str, flags: _FlagsType = 0) -> Match[str] | None: ...
 @overload
-def fullmatch(
-    pattern: bytes | Pattern[bytes], string: ReadableBuffer, flags: _FlagsType = 0
-) -> Match[bytes] | None: ...
+def fullmatch(pattern: bytes | Pattern[bytes], string: ReadableBuffer, flags: _FlagsType = 0) -> Match[bytes] | None: ...
 @overload
-def split(
-    pattern: str | Pattern[str], string: str, maxsplit: int = 0, flags: _FlagsType = 0
-) -> list[str | MaybeNone]: ...
+def split(pattern: str | Pattern[str], string: str, maxsplit: int = 0, flags: _FlagsType = 0) -> list[str | MaybeNone]: ...
 @overload
 def split(
     pattern: bytes | Pattern[bytes], string: ReadableBuffer, maxsplit: int = 0, flags: _FlagsType = 0
@@ -291,16 +278,10 @@ def findall(pattern: bytes | Pattern[bytes], string: ReadableBuffer, flags: _Fla
 @overload
 def finditer(pattern: str | Pattern[str], string: str, flags: _FlagsType = 0) -> Iterator[Match[str]]: ...
 @overload
-def finditer(
-    pattern: bytes | Pattern[bytes], string: ReadableBuffer, flags: _FlagsType = 0
-) -> Iterator[Match[bytes]]: ...
+def finditer(pattern: bytes | Pattern[bytes], string: ReadableBuffer, flags: _FlagsType = 0) -> Iterator[Match[bytes]]: ...
 @overload
 def sub(
-    pattern: str | Pattern[str],
-    repl: str | Callable[[Match[str]], str],
-    string: str,
-    count: int = 0,
-    flags: _FlagsType = 0,
+    pattern: str | Pattern[str], repl: str | Callable[[Match[str]], str], string: str, count: int = 0, flags: _FlagsType = 0
 ) -> str: ...
 @overload
 def sub(
@@ -312,11 +293,7 @@ def sub(
 ) -> bytes: ...
 @overload
 def subn(
-    pattern: str | Pattern[str],
-    repl: str | Callable[[Match[str]], str],
-    string: str,
-    count: int = 0,
-    flags: _FlagsType = 0,
+    pattern: str | Pattern[str], repl: str | Callable[[Match[str]], str], string: str, count: int = 0, flags: _FlagsType = 0
 ) -> tuple[str, int]: ...
 @overload
 def subn(
@@ -331,7 +308,7 @@ def purge() -> None: ...
 
 if sys.version_info < (3, 13):
     if sys.version_info >= (3, 11):
-        @deprecated('Deprecated since Python 3.11; removed in Python 3.13. Use `re.compile()` instead.')
+        @deprecated("Deprecated since Python 3.11; removed in Python 3.13. Use `re.compile()` instead.")
         def template(pattern: AnyStr | Pattern[AnyStr], flags: _FlagsType = 0) -> Pattern[AnyStr]: ...  # undocumented
     else:
         def template(pattern: AnyStr | Pattern[AnyStr], flags: _FlagsType = 0) -> Pattern[AnyStr]: ...  # undocumented

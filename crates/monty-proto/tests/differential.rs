@@ -18,12 +18,12 @@
 use std::time::Instant;
 
 use monty::{MontyRun, RunProgress};
-use monty_proto::{WireArena, WireFunctionCall, decode_frame, os_call_to_proto, pb};
+use monty_proto::{Traceparent, WireArena, WireFunctionCall, decode_frame, os_call_to_proto, pb};
 use monty_types::{
     CallArgs, CompileOptions, CreateExclusiveCallArgs, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle,
     MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, OsFunctionCall, PrintWriter,
     ResourceTracker, SourceRange,
-    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+    unstable::{self, ClassEq, ClassHash, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
 use prost::{
@@ -224,6 +224,7 @@ fn corpus() -> Vec<MontyObject> {
         ),
         MontyObject::function("f".to_owned(), None),
         MontyObject::function("fetch".to_owned(), Some(String::new())),
+        MontyObject::async_function("fetch".to_owned(), Some("Fetches.".to_owned())),
         // an empty name is an implicit-presence default; id and attrs always encode
         MontyObject::module(String::new(), MontyUuid::from_u128(0), []),
         MontyObject::module(
@@ -269,6 +270,8 @@ fn graphs() -> Vec<MontyGraph> {
         host_defined: true,
         is_dataclass: true,
         attrs: vec![],
+        eq: ClassEq::Fields(vec!["x".to_owned(), "y".to_owned()]),
+        hash: ClassHash::Unhashable,
     })));
     let one = shared_class.push(MontyNode::Int(1));
     let key = shared_class.push(MontyNode::String("x".to_owned()));
@@ -284,6 +287,27 @@ fn graphs() -> Vec<MontyGraph> {
     });
     shared_class.push(MontyNode::List(vec![first, second, class]));
     graphs.push(shared_class);
+    // Every other rule kind, including the frozen-dataclass field hash.
+    let rules = [
+        (ClassEq::Custom, ClassHash::Custom),
+        (ClassEq::Identity, ClassHash::Identity),
+        (
+            ClassEq::Fields(vec!["a".to_owned()]),
+            ClassHash::Fields(vec!["a".to_owned()]),
+        ),
+    ];
+    let classes = rules.into_iter().enumerate().map(|(i, (eq, hash))| {
+        MontyNode::ClassType(Box::new(ClassTypeNode {
+            name: format!("C{i}"),
+            id: MontyUuid::from_u128(0xF20 + i as u128),
+            host_defined: false,
+            is_dataclass: false,
+            attrs: vec![],
+            eq,
+            hash,
+        }))
+    });
+    graphs.push(MontyGraph::from_nodes(classes.collect()).unwrap());
     graphs
 }
 
@@ -393,9 +417,14 @@ fn node_to_oracle(node: &MontyNode) -> oracle::MontyNode {
             instance_id: Some(oracle_uuid(instance_id)),
             attrs: Some(oracle_pairs(attrs)),
         }),
-        MontyNode::Function { name, docstring } => Kind::Function(oracle::Function {
+        MontyNode::Function {
+            name,
+            docstring,
+            is_async,
+        } => Kind::Function(oracle::Function {
             name: name.clone(),
             docstring: docstring.clone(),
+            is_async: *is_async,
         }),
         MontyNode::Module { name, id, attrs } => Kind::Module(oracle::ModuleNode {
             name: name.clone(),
@@ -426,6 +455,29 @@ fn oracle_class_type(class: &ClassTypeNode) -> oracle::Type {
         origin: origin as i32,
         is_dataclass: class.is_dataclass,
         attrs,
+        eq: oracle_class_eq(&class.eq) as i32,
+        eq_fields: class.eq.field_names().to_vec(),
+        hash: oracle_class_hash(&class.hash) as i32,
+        hash_fields: class.hash.field_names().to_vec(),
+    }
+}
+
+/// Oracle mirror of a [`ClassEq`] rule's kind.
+fn oracle_class_eq(eq: &ClassEq) -> oracle::ClassEq {
+    match eq {
+        ClassEq::Identity => oracle::ClassEq::Identity,
+        ClassEq::Fields(_) => oracle::ClassEq::Fields,
+        ClassEq::Custom => oracle::ClassEq::Custom,
+    }
+}
+
+/// Oracle mirror of a [`ClassHash`] rule's kind.
+fn oracle_class_hash(hash: &ClassHash) -> oracle::ClassHash {
+    match hash {
+        ClassHash::Identity => oracle::ClassHash::Identity,
+        ClassHash::Fields(_) => oracle::ClassHash::Fields,
+        ClassHash::Unhashable => oracle::ClassHash::Unhashable,
+        ClassHash::Custom => oracle::ClassHash::Custom,
     }
 }
 
@@ -526,18 +578,25 @@ fn hand_call_payloads_match_generated_encoding() {
     let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&call);
 
     // Both receiver states: a routed call (method / `__call__`) and a plain
-    // external call (absent field).
+    // external call (absent field); with and without a streamed call's trace context.
     let receivers = [Some(MontyUuid::from_u128(7)), None];
-    for (object_id, allow_eager_await) in receivers.into_iter().flat_map(|id| [(id, false), (id, true)]) {
+    let traceparent = Traceparent::parse("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+    let cases = receivers
+        .into_iter()
+        .flat_map(|id| [(id, false, None), (id, true, None), (id, false, traceparent)]);
+    for (object_id, allow_eager_await, traceparent) in cases {
         let oracle_object_id = object_id.map(|uuid| oracle_uuid(&uuid));
-        let hand_call = WireFunctionCall::new(
-            "external".to_owned(),
-            call.clone(),
-            42,
-            object_id,
-            allow_eager_await,
-            position(),
-        );
+        let hand_call = WireFunctionCall {
+            traceparent,
+            ..WireFunctionCall::new(
+                "external".to_owned(),
+                call.clone(),
+                42,
+                object_id,
+                allow_eager_await,
+                position(),
+            )
+        };
         let generated_call = oracle::FunctionCall {
             function_name: "external".to_owned(),
             args: arg_ids.iter().map(|id| id.0).collect(),
@@ -547,6 +606,7 @@ fn hand_call_payloads_match_generated_encoding() {
             allow_eager_await,
             values: Some(to_oracle(graph)),
             position: Some(oracle_position()),
+            traceparent: traceparent.map(|traceparent| traceparent.to_string()),
         };
         assert_eq!(hand_call.encode_to_vec(), generated_call.encode_to_vec());
         assert_eq!(
@@ -670,15 +730,29 @@ fn rejected_nodes(nodes: Vec<oracle::MontyNode>) -> String {
     decode_wire(&bytes).expect_err("hostile frame must be rejected")
 }
 
+/// An exception name a newer peer added decodes as `Exception`, its message led by the name.
+#[test]
+fn unknown_exception_names_fall_back_to_exception() {
+    let bytes = oracle::Arena {
+        node_count: 1,
+        nodes: vec![oracle::MontyNode {
+            kind: Some(Kind::Exception(oracle::Exception {
+                exc_type: "statistics.FutureError".to_owned(),
+                arg: Some("boom".to_owned()),
+            })),
+        }],
+    }
+    .encode_to_vec();
+    let mut expected = MontyGraph::new();
+    expected.push(MontyNode::Exception {
+        exc_type: ExcType::Exception,
+        arg: Some("statistics.FutureError: boom".to_owned()),
+    });
+    assert_eq!(decode_wire(&bytes).expect("unknown names decode"), expected);
+}
+
 #[test]
 fn invalid_values_are_rejected_during_decode() {
-    assert_eq!(
-        rejected(Kind::Exception(oracle::Exception {
-            exc_type: "NotARealError".to_owned(),
-            arg: None,
-        })),
-        "frame decode error: failed to decode Protobuf message: unknown exception type \"NotARealError\""
-    );
     assert_eq!(
         rejected(Kind::Type(oracle::Type {
             name: "NotAType".to_owned(),
@@ -886,6 +960,8 @@ fn present_but_empty_class_attrs_decode_as_absent() {
         host_defined: false,
         is_dataclass: false,
         attrs: vec![],
+        eq: ClassEq::Identity,
+        hash: ClassHash::Identity,
     }));
     let with_empty_attrs = oracle::Type {
         attrs: Some(oracle::NodePairs::default()),
@@ -917,6 +993,48 @@ fn present_but_empty_class_attrs_decode_as_absent() {
                 attrs: vec![],
             },
         ]
+    );
+}
+
+/// An equality rule this build does not know reads as custom, so a newer
+/// worker's rule degrades to identity on the host; field names only survive
+/// on a `FIELDS` rule.
+#[test]
+fn unknown_class_rules_decode_as_custom() {
+    let class = |eq: i32, hash: i32| oracle::Type {
+        eq,
+        eq_fields: vec!["x".to_owned()],
+        hash,
+        hash_fields: vec!["x".to_owned()],
+        ..class_type("Foo")
+    };
+    let decode_rules = |ty: oracle::Type| {
+        let bytes = oracle::Arena {
+            node_count: 1,
+            nodes: vec![oracle::MontyNode {
+                kind: Some(Kind::Type(ty)),
+            }],
+        }
+        .encode_to_vec();
+        match &decode_wire(&bytes).unwrap().nodes()[0] {
+            MontyNode::ClassType(class) => (class.eq.clone(), class.hash.clone()),
+            other => panic!("expected a class node, got {other:?}"),
+        }
+    };
+    assert_eq!(decode_rules(class(99, 99)), (ClassEq::Custom, ClassHash::Custom));
+    assert_eq!(
+        decode_rules(class(oracle::ClassEq::Fields as i32, oracle::ClassHash::Fields as i32)),
+        (
+            ClassEq::Fields(vec!["x".to_owned()]),
+            ClassHash::Fields(vec!["x".to_owned()])
+        )
+    );
+    assert_eq!(
+        decode_rules(class(
+            oracle::ClassEq::Identity as i32,
+            oracle::ClassHash::Unhashable as i32
+        )),
+        (ClassEq::Identity, ClassHash::Unhashable)
     );
 }
 
@@ -1205,6 +1323,7 @@ fn repeated_position_fields_merge_like_the_oracle() {
             start: 30,
             end: 0,
         }),
+        traceparent: None,
     }
     .encode_to_vec();
     // the second occurrence carries only the end
@@ -1239,6 +1358,7 @@ fn repeated_position_fields_merge_like_the_oracle() {
             start: 0,
             end: 1,
         }),
+        traceparent: None,
     }
     .encode_to_vec();
     for _ in 0..100_000 {
@@ -1271,6 +1391,33 @@ fn exclusive_creation_is_byte_compatible_with_generated_oracle() {
     assert_eq!(args.path, "/data/new");
     assert_eq!(args.mode, "wb");
     assert_eq!(args.permissions, 0o600);
+    assert_eq!(oracle.encode_to_vec(), hand.encode_to_vec());
+    assert_eq!(
+        decode_frame::<pb::OsCall>(oracle.encode_to_vec().as_slice()).unwrap(),
+        hand
+    );
+}
+
+#[test]
+fn positional_writes_are_byte_compatible_with_generated_oracle() {
+    let hand = os_call_to_proto(
+        42,
+        OsFunctionCall::WriteBytesAt(monty_types::WriteBytesAtArgs {
+            path: "/data/file".into(),
+            offset: 7,
+            data: b"abc".to_vec(),
+        }),
+        false,
+        &SourceRange::unknown(),
+    );
+    let oracle = oracle::OsCall::decode(hand.encode_to_vec().as_slice()).unwrap();
+    let Some(oracle::os_call::Call::WriteBytesAt(args)) = &oracle.call else {
+        panic!("missing positional write")
+    };
+    assert_eq!(
+        (&*args.path, args.offset, args.data.as_slice()),
+        ("/data/file", 7, b"abc".as_slice())
+    );
     assert_eq!(oracle.encode_to_vec(), hand.encode_to_vec());
     assert_eq!(
         decode_frame::<pb::OsCall>(oracle.encode_to_vec().as_slice()).unwrap(),

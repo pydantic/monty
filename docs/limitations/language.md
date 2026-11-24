@@ -9,10 +9,11 @@ any code runs.
 
 - **`class` definitions** — simple classes are supported (instance methods,
     `__init__`/`__repr__`/`__str__`, class variables of arbitrary expressions).
-    Rejected at parse time: base classes / metaclasses (`class Foo(Bar):`) and
-    class-body statements other than `def`, a simple `name [: T] = <expr>`
-    assignment, `pass`, or a docstring. There is no inheritance and no general
-    dunder protocol. See [classes.md](classes.md).
+    Rejected at parse time: metaclasses (`class Foo(metaclass=M):`), `**kwargs`
+    in a class statement, and class-body statements other than `def`, a simple
+    `name [: T] = <expr>` assignment, `pass`, or a docstring. Classes can inherit
+    from other classes and `object` but not from native types, and there is no
+    general dunder protocol. See [classes.md](classes.md).
 - **Decorators** (`@deco`) — supported on classes and on top-level or nested
     `def`/`async def`, taking any callable in scope, evaluated in the enclosing
     scope and applied bottom-up. Rejected at parse time on **methods**, so
@@ -27,29 +28,30 @@ any code runs.
 - **`try*` / `except*` exception groups** — PEP 654 syntax rejected.
 - **`type` aliases** (PEP 695 `type Foo = int`).
 - **`async for` loops** and **async comprehensions**.
-- **Wildcard imports** (`from m import *`) — raises
-    `` NotImplementedError: "Wildcard imports (`from ... import *`) are not supported" ``.
 
 ## Expressions rejected at parse time
 
 - **Template strings (t-strings)** — PEP 750.
 
-## Starred unpacking
+## Unpacking
 
 Anything Monty can iterate may follow a `*`, matching CPython: `[*xs]`,
 `(*xs,)`, `{*xs}`, `f(*xs)`, `a, b = xs` and `a, *b = xs` all accept whatever
 `list(xs)` accepts.
 
-One message divergence: passing a non-iterable to a call, `f(*1)`, reports
+Passing a non-iterable to a call, `f(*1)`, reports
 `TypeError: Value after * must be an iterable, not int`, the same wording as a
 list literal. CPython instead names the callable by its module-qualified
 `__qualname__`: `__main__.f() argument after * must be an iterable, not int`,
 and correspondingly `__main__.C.m()`, `__main__.<lambda>()` or
 `__main__.outer.<locals>.inner()`. Monty has neither function `__qualname__`
 nor module-qualified names (see the class-name note in [collections.md](collections.md)), so
-it reports the generic form. Every other unpacking form matches CPython
-exactly, except for the comprehension target restriction in
-[comprehensions.md](comprehensions.md).
+it reports the generic form.
+
+Unpacking a named tuple into too few targets reports its total length, for example
+`ValueError: too many values to unpack (expected 1, got 2)`. CPython omits `got 2` for named tuples.
+
+See [comprehensions.md](comprehensions.md) for the comprehension target restriction.
 
 ## Source nesting depth
 
@@ -75,11 +77,23 @@ exactly, except for the comprehension target restriction in
 - The scan also enters string literals, because the type checker parses a forward-reference annotation such as
     `x: "list[int]"` from the text between the quotes; a string longer than 200 bytes holding more than 200 unbalanced
     brackets is rejected the same way even when it is plain data.
+- A source longer than 2,000 bytes whose AST nests more than 2,000 levels deep (300 in debug builds) is rejected with
+    the same `SyntaxError` as soon as it is parsed.
+    A flat chain such as `1 + 1 + ...` or `a.b.b...` nests one level per link without tripping the scan, and so does
+    source the parser recovers from a syntax error in, such as a repeated `not a <`.
+    That check runs before any syntax error is reported, so such a source raises
+    `Source is too deeply nested` where CPython reports the syntax error.
+    It also covers parts of the AST the cap above never reaches, such as an annotation the compiler discards.
 - With type checking on, the whole AST is checked against the cap before the type checker runs, whatever the source's
     length.
     That includes function parameter and return annotations.
     Every string literal longer than the remaining budget is parsed as a forward-reference annotation and counted
     from the depth it sits at, so a string that parses as a deeply nested expression is rejected even when it is data.
+    A string that does not parse is rejected only when the AST recovered from it nests more than 20,000 levels deep
+    (3,000 in debug builds), which takes data that lexes as one long operator chain, such as several thousand absolute
+    paths on consecutive lines.
+    A string over the remaining budget that sits inside eight enclosing string literals is rejected without being
+    parsed.
 - Only Rust hosts can change the threshold, with `CompileOptions { source_scan_threshold: n, ..CompileOptions::default() }`
     (`0` scans every source, `usize::MAX` never scans); Python and JavaScript sessions use the default.
 

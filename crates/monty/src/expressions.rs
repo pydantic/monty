@@ -1,8 +1,5 @@
-#[cfg(test)]
-use strum::IntoEnumIterator;
-
 use crate::{
-    args::{ArgExprs, Signature},
+    args::{ArgExprs, Kwarg, Signature},
     builtins::Builtins,
     fstring::FStringPart,
     intern::{BytesId, LongIntId, StringId},
@@ -821,13 +818,18 @@ pub enum Node<F> {
     /// executes the class statements top-to-bottom into its own scope, then
     /// assembles the namespace and returns a `Class`. Methods are ordinary
     /// `FunctionDef`s in that body (with `self` as the first parameter); class
-    /// variables are `Assign`s. Class decorators are supported (see
-    /// [`decorators`](Self::ClassDef::decorators)); inheritance, metaclasses and
-    /// decorators on a `def` — including `classmethod`/`staticmethod`/`property`
-    /// — are rejected at parse time. See `limitations/classes.md`.
+    /// variables are `Assign`s. Class decorators and single/multiple inheritance
+    /// are supported (see [`bases`](Self::ClassDef::bases) and
+    /// [`decorators`](Self::ClassDef::decorators)); metaclasses and decorators on
+    /// methods — including `classmethod`/`staticmethod`/`property` — are
+    /// rejected at parse time. See `limitations/classes.md`.
     ClassDef {
         /// The class name identifier (resolved to an enclosing-scope slot at prepare time).
         name: Identifier,
+        /// The base classes to inherit from (may include `*unpack` items).
+        bases: Vec<SequenceItem>,
+        /// Keyword arguments passed to the class definition (e.g. `class Sub(Base, extra="val"):`).
+        keywords: Vec<Kwarg>,
         /// The synthetic class-body function: its body is the class statements
         /// in source order. Prepared and compiled exactly like a function; its
         /// emitted code ends by building the namespace `Dict` and returning the
@@ -921,6 +923,22 @@ pub enum Node<F> {
         names: Vec<(StringId, Identifier)>,
         /// Source position for error reporting.
         position: CodeRange,
+    },
+    /// Wildcard import (`from m import *`), binding the names in `m.__all__`,
+    /// or every public name of `m` when it has none.
+    ///
+    /// The names are only known at runtime, so the compiler emits a loop that
+    /// binds each one by name; see `Opcode::ImportStar`. Only allowed at module
+    /// level: preparation rejects it in a function or class body.
+    ImportStar {
+        /// The top-level module to load (`a` for `from a.b import *`).
+        module_name: StringId,
+        /// The further components of a dotted module name, in order.
+        submodules: Vec<Submodule>,
+        /// Source position of the whole statement, for runtime errors.
+        position: CodeRange,
+        /// Position of the `*`, where CPython anchors the module-level `SyntaxError`.
+        star_position: CodeRange,
     },
 }
 
@@ -1032,7 +1050,9 @@ pub enum Operator {
 ///
 /// The strum `serialize` attribute on each variant is the source-level symbol,
 /// and drives both `Display` and [`as_str`](Self::as_str).
+#[monty_macros::explicit_discriminants(checksum = 0xd46b_2244_bab2_8bcb)]
 #[repr(u8)]
+#[cfg_attr(test, derive(strum::EnumIter))]
 #[derive(
     Clone,
     Copy,
@@ -1041,7 +1061,6 @@ pub enum Operator {
     serde::Serialize,
     serde::Deserialize,
     strum::Display,
-    strum::EnumIter,
     strum::FromRepr,
     strum::IntoStaticStr,
 )]
@@ -1082,39 +1101,4 @@ impl CmpOperator {
     pub const fn as_operand(self) -> u8 {
         self as u8
     }
-}
-
-/// Computes an FNV-1a hash over comparison-operator identities and serialization.
-#[cfg(test)]
-pub(crate) fn comparison_operators_fingerprint() -> u64 {
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0100_0000_01b3;
-
-    fn update(hash: &mut u64, bytes: &[u8]) {
-        for byte in u32::try_from(bytes.len())
-            .expect("fingerprint field length fits u32")
-            .to_le_bytes()
-        {
-            *hash ^= u64::from(byte);
-            *hash = hash.wrapping_mul(PRIME);
-        }
-        for byte in bytes {
-            *hash ^= u64::from(*byte);
-            *hash = hash.wrapping_mul(PRIME);
-        }
-    }
-
-    let mut operators = CmpOperator::iter().collect::<Vec<_>>();
-    operators.sort_unstable_by_key(|operator| *operator as u8);
-    let mut hash = OFFSET_BASIS;
-    for operator in operators {
-        update(&mut hash, &[operator as u8]);
-        update(&mut hash, format!("{operator:?}").as_bytes());
-        update(&mut hash, operator.as_str().as_bytes());
-        update(
-            &mut hash,
-            &postcard::to_allocvec(&operator).expect("CmpOperator serialization cannot fail"),
-        );
-    }
-    hash
 }

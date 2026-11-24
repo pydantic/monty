@@ -15,7 +15,7 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     heap::{DropGuard, HeapId, HeapItem, HeapObjectRead},
-    types::{PyTrait, Type},
+    types::{PyTrait, Type, TypeRef},
     value::Value,
 };
 
@@ -71,8 +71,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CallableIterator> {
         true
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::CallableIterator
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::CallableIterator.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
@@ -93,7 +93,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CallableIterator> {
     /// `callable` re-enters Python and may reach this same iterator through a
     /// nested `next()`, which would alias the `UnsafeCell` if a borrow were held
     /// across it (`iter__reentrant.py` covers exactly that).
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let resolved = {
             let this = self.get(vm.heap);
             if this.done {
@@ -126,7 +126,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CallableIterator> {
             callable.drop_with(vm);
             sentinel.drop_with(vm);
         }
-        Ok(next)
+        Ok(next.map(CallResult::Value))
     }
 }
 

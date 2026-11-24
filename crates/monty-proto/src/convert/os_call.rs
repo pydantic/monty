@@ -8,7 +8,8 @@ use std::{collections::HashSet, time::Duration};
 use monty_types::{
     CreateExclusiveCallArgs, GetenvArgs, ImportArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS,
     MkdirCallArgs, MontyPath, MontyTimeZone, MontyUuid, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
-    PathStringDataArgs, RenameCallArgs, ScanArgs, SourceRange, TypeHintsTarget, UrandomArgs, sleep_duration, unstable,
+    PathStringDataArgs, RenameCallArgs, ScanArgs, SourceRange, TypeHintsTarget, UrandomArgs, WriteBytesAtArgs,
+    sleep_duration, unstable,
 };
 
 use crate::{
@@ -74,6 +75,11 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
         OsFunctionCall::AppendText(a) => Call::AppendText(text_write(a)),
         OsFunctionCall::WriteBytes(a) => Call::WriteBytes(bytes_write(a)),
         OsFunctionCall::AppendBytes(a) => Call::AppendBytes(bytes_write(a)),
+        OsFunctionCall::WriteBytesAt(a) => Call::WriteBytesAt(os_call::WriteBytesAt {
+            path: a.path.into_string(),
+            offset: a.offset,
+            data: a.data.into(),
+        }),
         OsFunctionCall::Open(a) => Call::Open(os_call::Open {
             path: a.path.into_string(),
             mode: a.mode.as_str().to_owned(),
@@ -169,6 +175,18 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             os_call::Call::AppendText(a) => Self::AppendText(text_args(a)),
             os_call::Call::WriteBytes(a) => Self::WriteBytes(bytes_args(a)),
             os_call::Call::AppendBytes(a) => Self::AppendBytes(bytes_args(a)),
+            os_call::Call::WriteBytesAt(a) => {
+                let args = WriteBytesAtArgs {
+                    path: MontyPath::new(a.path),
+                    offset: a.offset,
+                    data: a.data.into(),
+                };
+                args.validate().map_err(|reason| ProtoConvertError::InvalidValue {
+                    field: "WriteBytesAt.offset",
+                    reason: reason.to_owned(),
+                })?;
+                Self::WriteBytesAt(args)
+            }
             os_call::Call::Open(o) => Self::Open(OpenCallArgs {
                 mode: o.mode.parse().map_err(|_| ProtoConvertError::InvalidFileMode(o.mode))?,
                 path: MontyPath::new(o.path),
@@ -271,8 +289,8 @@ fn timezone_to_proto(tz: MontyTimeZone) -> TimeZone {
     }
 }
 
-/// Validates a child-supplied fixed offset into the range `datetime.timezone`
-/// accepts, so a compromised child cannot hand the host an impossible zone.
+/// Validates a worker-supplied fixed offset into the range `datetime.timezone`
+/// accepts, so a compromised worker cannot hand the host an impossible zone.
 fn timezone_from_proto(tz: TimeZone) -> Result<MontyTimeZone, ProtoConvertError> {
     if !(MIN_TIMEZONE_OFFSET_SECONDS..=MAX_TIMEZONE_OFFSET_SECONDS).contains(&tz.offset_seconds) {
         return Err(ProtoConvertError::InvalidValue {
@@ -291,7 +309,7 @@ fn timezone_from_proto(tz: TimeZone) -> Result<MontyTimeZone, ProtoConvertError>
 
 /// Validates wire seconds into a `Duration`.
 ///
-/// A child may be compromised, so a NaN, negative or unrepresentable delay is
+/// A worker may be compromised, so a NaN, negative or unrepresentable delay is
 /// refused here rather than reaching a host that would convert it — and panic
 /// doing so.
 fn field_sleep_duration(seconds: f64, field: &'static str) -> Result<Duration, ProtoConvertError> {

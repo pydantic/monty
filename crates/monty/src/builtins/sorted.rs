@@ -3,12 +3,25 @@
 use crate::{
     args::ArgValues,
     bytecode::VM,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    heap::{DropGuard, DropWithContext, Heap, HeapData},
+    resource_checks::check_estimated_size,
     sorting::parse_and_sort,
-    types::{List, iter::collect_owned_iterable},
-    value::Value,
+    types::{List, iter::collect_owned_iterable, sequence::SequenceItems},
+    value::{VALUE_SIZE, Value},
 };
+
+fn clone_items_with_checks(items: SequenceItems<'_>, heap: &Heap) -> Result<Vec<Value>, Box<(Vec<Value>, RunError)>> {
+    let len = items.len();
+    if let Err(e) = check_estimated_size(len.saturating_mul(VALUE_SIZE), &heap.tracker) {
+        return Err(Box::new((Vec::new(), e.into())));
+    }
+    let mut cloned = Vec::with_capacity(len);
+    if let Err(err) = items.extend_cloned(&mut cloned, heap) {
+        return Err(Box::new((cloned, err)));
+    }
+    Ok(cloned)
+}
 
 /// Implementation of the sorted() builtin function.
 ///
@@ -30,7 +43,27 @@ pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     let iterable = pos_iter.next().expect("checked pos_count == 1");
 
-    let items: Vec<_> = collect_owned_iterable(iterable, vm)?;
+    let items = if let Some(items) = SequenceItems::from_value(&iterable, vm.heap) {
+        let res = clone_items_with_checks(items, vm.heap);
+        iterable.drop_with(vm);
+        match res {
+            Ok(items) => items,
+            Err(boxed) => {
+                let (partial, err) = *boxed;
+                partial.drop_with(vm);
+                kwargs.drop_with(vm);
+                return Err(err);
+            }
+        }
+    } else {
+        match collect_owned_iterable(iterable, vm) {
+            Ok(items) => items,
+            Err(err) => {
+                kwargs.drop_with(vm);
+                return Err(err);
+            }
+        }
+    };
     let mut items_guard = DropGuard::new(items, vm);
     let (items, vm) = items_guard.as_parts_mut();
 

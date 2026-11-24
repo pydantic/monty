@@ -1,12 +1,11 @@
 import sys
+from _typeshed import SupportsMul, SupportsRMul
 from collections.abc import Iterable
 from typing import Any, Final, Literal, Protocol, SupportsFloat, SupportsIndex, TypeVar, overload, type_check_only
-
-from _typeshed import SupportsMul, SupportsRMul
 from typing_extensions import TypeAlias
 
-_T = TypeVar('_T')
-_T_co = TypeVar('_T_co', covariant=True)
+_T = TypeVar("_T")
+_T_co = TypeVar("_T_co", covariant=True)
 
 _SupportsFloatOrIndex: TypeAlias = SupportsFloat | SupportsIndex
 
@@ -51,7 +50,6 @@ if sys.version_info >= (3, 11):
 def expm1(x: _SupportsFloatOrIndex, /) -> float: ...
 def fabs(x: _SupportsFloatOrIndex, /) -> float: ...
 def factorial(x: SupportsIndex, /) -> int: ...
-
 @type_check_only
 class _SupportsFloor(Protocol[_T_co]):
     def __floor__(self) -> _T_co: ...
@@ -87,9 +85,7 @@ def log2(x: _SupportsFloatOrIndex, /) -> float: ...
 def modf(x: _SupportsFloatOrIndex, /) -> tuple[float, float]: ...
 
 if sys.version_info >= (3, 12):
-    def nextafter(
-        x: _SupportsFloatOrIndex, y: _SupportsFloatOrIndex, /, *, steps: SupportsIndex | None = None
-    ) -> float: ...
+    def nextafter(x: _SupportsFloatOrIndex, y: _SupportsFloatOrIndex, /, *, steps: SupportsIndex | None = None) -> float: ...
 
 else:
     def nextafter(x: _SupportsFloatOrIndex, y: _SupportsFloatOrIndex, /) -> float: ...
@@ -97,21 +93,17 @@ else:
 def perm(n: SupportsIndex, k: SupportsIndex | None = None, /) -> int: ...
 def pow(x: _SupportsFloatOrIndex, y: _SupportsFloatOrIndex, /) -> float: ...
 
-_PositiveInteger: TypeAlias = Literal[
-    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25
-]
-_NegativeInteger: TypeAlias = Literal[
-    -1, -2, -3, -4, -5, -6, -7, -8, -9, -10, -11, -12, -13, -14, -15, -16, -17, -18, -19, -20
-]
+_PositiveInteger: TypeAlias = Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+_NegativeInteger: TypeAlias = Literal[-1, -2, -3, -4, -5, -6, -7, -8, -9, -10, -11, -12, -13, -14, -15, -16, -17, -18, -19, -20]
 _LiteralInteger = _PositiveInteger | _NegativeInteger | Literal[0]  # noqa: Y026  # TODO: Use TypeAlias once mypy bugs are fixed
 
-_MultiplicableT1 = TypeVar('_MultiplicableT1', bound=SupportsMul[Any, Any])
-_MultiplicableT2 = TypeVar('_MultiplicableT2', bound=SupportsMul[Any, Any])
+_MultiplicableT1 = TypeVar("_MultiplicableT1", bound=SupportsMul[Any, Any])
+_MultiplicableT2 = TypeVar("_MultiplicableT2", bound=SupportsMul[Any, Any])
 
 @type_check_only
 class _SupportsProdWithNoDefaultGiven(SupportsMul[Any, Any], SupportsRMul[int, Any], Protocol): ...
 
-_SupportsProdNoDefaultT = TypeVar('_SupportsProdNoDefaultT', bound=_SupportsProdWithNoDefaultGiven)
+_SupportsProdNoDefaultT = TypeVar("_SupportsProdNoDefaultT", bound=_SupportsProdWithNoDefaultGiven)
 
 # This stub is based on the type stub for `builtins.sum`.
 # Like `builtins.sum`, it cannot be precisely represented in a type stub
@@ -123,9 +115,7 @@ def prod(iterable: Iterable[bool | _LiteralInteger], /, *, start: int = 1) -> in
 @overload
 def prod(iterable: Iterable[_SupportsProdNoDefaultT], /) -> _SupportsProdNoDefaultT | Literal[1]: ...
 @overload
-def prod(
-    iterable: Iterable[_MultiplicableT1], /, *, start: _MultiplicableT2
-) -> _MultiplicableT1 | _MultiplicableT2: ...
+def prod(iterable: Iterable[_MultiplicableT1], /, *, start: _MultiplicableT2) -> _MultiplicableT1 | _MultiplicableT2: ...
 def radians(x: _SupportsFloatOrIndex, /) -> float: ...
 def remainder(x: _SupportsFloatOrIndex, y: _SupportsFloatOrIndex, /) -> float: ...
 def sin(x: _SupportsFloatOrIndex, /) -> float: ...

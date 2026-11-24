@@ -7,7 +7,7 @@
 //! Implicit operands follow C `_decimal`: `int` converts exactly, anything else makes
 //! an operator return `NotImplemented` and a method raise `TypeError`.
 
-use std::{borrow::Cow, cmp::Ordering, fmt::Write, mem};
+use std::{array, borrow::Cow, cmp::Ordering, fmt::Write, mem};
 
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -33,8 +33,8 @@ use crate::{
     intern::StaticStrings,
     py_value::PyValue,
     types::{
-        BuiltinType, CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, allocate_string,
-        str::allocate_string_no_interning, tuple::allocate_tuple,
+        CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, TypeRef, allocate_string,
+        sequence::SequenceItems, str::allocate_string_no_interning, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };
@@ -225,29 +225,30 @@ fn construct(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decima
 
 /// `Decimal((sign, digits, exponent))`, with C `_decimal`'s validation.
 fn from_tuple(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decimal> {
-    let items = sequence_items(value, vm).expect("caller checked for a sequence");
-    defer_drop!(items, vm);
-    let [sign, digits, exponent] = items.as_slice() else {
+    let items = SequenceItems::from_value(value, vm.heap).expect("caller checked for a sequence");
+    if items.len() != 3 {
         return Err(ExcType::value_error("argument must be a sequence of length 3"));
-    };
+    }
+    let fields: [Value; 3] = array::from_fn(|index| items.clone_item(index, vm.heap));
+    defer_drop!(fields, vm);
+    let [sign, digits, exponent] = fields;
     let sign = match sign {
         Value::Int(0) | Value::Bool(false) => false,
         Value::Int(1) | Value::Bool(true) => true,
         _ => return Err(ExcType::value_error("sign must be an integer with the value 0 or 1")),
     };
-    let digit_values = sequence_items(digits, vm)
-        .filter(|_| !matches!(digits, Value::InternString(_)))
+    let digit_values = SequenceItems::from_value(digits, vm.heap)
         .ok_or_else(|| ExcType::value_error("coefficient must be a tuple of digits"))?;
-    defer_drop!(digit_values, vm);
     let mut coeff = String::with_capacity(digit_values.len());
-    for digit in digit_values {
-        match digit {
-            Value::Int(d @ 0..=9) => {
-                if !coeff.is_empty() || *d != 0 {
-                    coeff.push(char::from(b'0' + u8::try_from(*d).expect("single digit")));
-                }
-            }
-            _ => return Err(ExcType::value_error("coefficient must be a tuple of digits")),
+    let digits = digit_values.map(|digit| match digit {
+        Value::Int(d @ 0..=9) => Ok(u8::try_from(*d).expect("single digit")),
+        Value::Bool(b) => Ok(u8::from(*b)),
+        _ => Err(ExcType::value_error("coefficient must be a tuple of digits")),
+    });
+    for digit in digits {
+        let digit = digit?;
+        if !coeff.is_empty() || digit != 0 {
+            coeff.push(char::from(b'0' + digit));
         }
     }
     parse::check_digit_count(coeff.len())?;
@@ -285,16 +286,19 @@ fn from_tuple(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decim
     }
 }
 
-/// Clones the items of a `tuple` or `list` value.
-fn sequence_items(value: &Value, vm: &VM<'_>) -> Option<Vec<Value>> {
-    let Value::Ref(id) = value else { return None };
-    let items = match vm.heap.get(*id) {
-        HeapData::Tuple(tuple) => tuple.as_slice(),
-        HeapData::List(list) => list.as_slice(),
-        HeapData::NamedTuple(tuple) => tuple.items(),
-        _ => return None,
-    };
-    Some(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
+/// `Decimal.from_number(...)` and `Decimal.from_float(...)`.
+pub(crate) fn class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    if attr.static_string(vm.interns) == Some(StaticStrings::FromNumber) {
+        Ok(class_from_number(vm, args).map(CallResult::Value))
+    } else if attr.as_str(vm.interns) == "from_float" {
+        Ok(class_from_float(vm, args).map(CallResult::Value))
+    } else {
+        Err(args)
+    }
 }
 
 /// `Decimal.from_float(f)`: exact; an `int` is accepted too.
@@ -542,8 +546,8 @@ fn exact_fraction_float(coeff: &Coeff, exp: i64) -> Option<f64> {
 // ============================================================================
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Decimal> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Decimal
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Decimal.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -858,10 +862,7 @@ impl<'h> HeapObjectRead<'h, Decimal> {
             DecimalMethod::DunderReduce => {
                 let text = allocate_string(d.to_sci_string(false, true), vm.heap);
                 let args = allocate_tuple(smallvec![text], vm.heap);
-                allocate_tuple(
-                    smallvec![Value::Builtin(Builtins::Type(BuiltinType::Decimal)), args],
-                    vm.heap,
-                )
+                allocate_tuple(smallvec![Value::Builtin(Builtins::Type(Type::Decimal)), args], vm.heap)
             }
             DecimalMethod::DunderComplex => {
                 let real = d.to_f64()?;

@@ -7,11 +7,11 @@ repos:
       - id: no-commit-to-branch # prevent direct commits to the `main` branch
       - id: check-yaml
       - id: check-toml
-      # vendored CPython files and their patches must stay byte-for-byte (`make check-stdlib`)
+      # Keep vendored upstream files and patches byte-for-byte.
       - id: end-of-file-fixer
-        exclude: ^crates/monty/stdlib/(Lib|patches)/
+        exclude: ^crates/((monty/stdlib|monty-datatest/vendor/cpython)/((Lib|patches)/|LICENSE$)|monty-typeshed/vendor/typeshed/)
       - id: trailing-whitespace
-        exclude: ^crates/monty/stdlib/(Lib|patches)/
+        exclude: ^crates/((monty/stdlib|monty-datatest/vendor/cpython)/((Lib|patches)/|LICENSE$)|monty-typeshed/vendor/typeshed/)
       - id: check-added-large-files
 
   - repo: https://github.com/codespell-project/codespell

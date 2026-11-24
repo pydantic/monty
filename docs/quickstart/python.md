@@ -12,7 +12,7 @@ Or with pip:
 pip install pydantic-monty
 ```
 
-Requires Python 3.10 or newer.
+Requires Python 3.11 or newer.
 The download is about 4.5 MB and there is nothing else to run: no daemon, no image, no API key.
 
 `pydantic-monty` is a metapackage with no code of its own; it pins two distributions:
@@ -112,6 +112,8 @@ See [importing host modules](../host-functions.md#importing-host-modules).
 `Ellipsis`, `NotImplemented`, `datetime.date`, `datetime.datetime`, `datetime.timedelta`, `datetime.timezone`,
 `decimal.Decimal` (exactly, as its string form), named tuples, exception instances, and the type objects of the data types Monty models (`int`, `str`, `datetime.date`, ...)
 all convert in both directions.
+Named tuples come out as [`MontyNamedTuple`][pydantic_monty.MontyNamedTuple], one tuple class shared by every
+sandbox named-tuple type, with the type name in `_type_name`.
 Builtin functions and other type objects come out as a read-only [`MontyStdTypeProxy`][pydantic_monty.MontyStdTypeProxy]
 carrying the name; see [host-value limitations](../limitations/host-values.md#lossy-outputs).
 Class instances differ in each direction: a host instance enters only wrapped in [`ClassInstance`][pydantic_monty.ClassInstance], and a sandbox-defined
@@ -422,6 +424,7 @@ from pydantic_monty import Monty
 pool = Monty(
     binary_path=None,  # explicit path to the `monty` worker binary
     min_processes=1,  # workers spawned eagerly and kept warm
+    pre_warm=0,  # idle workers kept ready beyond those checked out
     max_processes=None,  # cap on live workers; defaults to the CPU count
     checkout_timeout=None,  # seconds `checkout()` waits for a free worker
     request_timeout=None,  # hard per-turn deadline; kills the worker

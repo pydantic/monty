@@ -372,15 +372,7 @@ export interface OsPolicy {
  * ## `"github"`
  */
 export type TypeCheckFormat =
-  | 'full'
-  | 'concise'
-  | 'azure'
-  | 'json'
-  | 'json-lines'
-  | 'rdjson'
-  | 'pylint'
-  | 'gitlab'
-  | 'github'
+  'full' | 'concise' | 'azure' | 'json' | 'json-lines' | 'rdjson' | 'pylint' | 'gitlab' | 'github'
 export interface ConfigureRequest {
   scriptName: string
   limits?: ResourceLimits
@@ -582,6 +574,7 @@ export type Event =
   | EventOk
   | EventFatalError
   | EventShutdown
+  | EventSessionRefused
 export interface EventPrint {
   tag: 'print'
   val: PrintEvent
@@ -628,6 +621,10 @@ export interface EventFatalError {
 export interface EventShutdown {
   tag: 'shutdown'
   val: Uint8Array | undefined
+}
+export interface EventSessionRefused {
+  tag: 'session-refused'
+  val: string
 }
 export interface DispatchResult {
   status: Status

@@ -4,8 +4,11 @@ use monty_types::{ModuleStub, TypeCheckingConfig, TypeCheckingFormat};
 use ruff_db::{
     Db as _,
     diagnostic::{
-        Annotation, Diagnostic, DiagnosticFormat, DiagnosticId, DisplayDiagnosticConfig, DisplayDiagnostics,
-        UnifiedFile,
+        Annotation, Diagnostic, DiagnosticId, DisplayDiagnosticConfig, UnifiedFile,
+        render::{
+            AzureRenderer, ConciseRenderer, FullRenderer, GithubRenderer, GitlabRenderer, JsonLinesRenderer,
+            JsonRenderer, PylintRenderer, RdjsonRenderer, Renderer,
+        },
     },
     file_revision::FileRevision,
     files::{File, system_path_to_file},
@@ -17,6 +20,11 @@ use salsa::Setter as _;
 use ty_python_semantic::{Db as _, check_file_unwrap};
 
 use crate::db::{MemoryDb, SRC_ROOT};
+
+/// Snippet checked by [`TypeChecker::warm_up`].
+const WARM_UP_SOURCE: &str = include_str!("warm_up.py");
+/// The hyphen makes it an invalid module name, so checked code cannot import the warm-up snippet.
+const WARM_UP_PATH: &str = "monty-warm-up.py";
 
 /// Definition of a source file.
 #[derive(Debug, Clone, Copy)]
@@ -76,6 +84,19 @@ impl TypeChecker {
             ..TypeCheckContext::default()
         };
         self.run_with(python_source, &context, config)
+    }
+
+    /// Type checks a snippet touching every builtin, so the database already holds what any later check resolves.
+    ///
+    /// Use it to build a checker ahead of a session; it adds roughly 6 MiB to the checker.
+    /// The snippet is written under a path no import can name, so it stays invisible to checked code.
+    /// `Err` means the snippet no longer type-checks clean against the stubs; the checker is still usable.
+    pub fn warm_up(&mut self) -> Result<(), String> {
+        let source = SourceFile::new(WARM_UP_SOURCE, WARM_UP_PATH);
+        match self.run(&source, None, TypeCheckingConfig::default())? {
+            None => Ok(()),
+            Some(diagnostics) => Err(diagnostics.to_string()),
+        }
     }
 
     /// [`run`](Self::run) with host module stubs and committed imports.
@@ -243,22 +264,20 @@ pub struct TypeCheckingDiagnostics<'a> {
 
 impl fmt::Display for TypeCheckingDiagnostics<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let format = match self.config.format {
-            TypeCheckingFormat::Full => DiagnosticFormat::Full,
-            TypeCheckingFormat::Concise => DiagnosticFormat::Concise,
-            TypeCheckingFormat::Azure => DiagnosticFormat::Azure,
-            TypeCheckingFormat::Json => DiagnosticFormat::Json,
-            TypeCheckingFormat::JsonLines => DiagnosticFormat::JsonLines,
-            TypeCheckingFormat::Rdjson => DiagnosticFormat::Rdjson,
-            TypeCheckingFormat::Pylint => DiagnosticFormat::Pylint,
-            TypeCheckingFormat::Gitlab => DiagnosticFormat::Gitlab,
-            TypeCheckingFormat::Github => DiagnosticFormat::Github,
-        };
-
-        let config = DisplayDiagnosticConfig::new("monty")
-            .format(format)
-            .color(self.config.color);
-        DisplayDiagnostics::new(&self.type_checker.db, &config, &self.diagnostics).fmt(f)
+        let config = DisplayDiagnosticConfig::new("monty").color(self.config.color);
+        let db = &self.type_checker.db;
+        let diagnostics = &self.diagnostics;
+        match self.config.format {
+            TypeCheckingFormat::Full => FullRenderer::new(db, &config).render(f, diagnostics),
+            TypeCheckingFormat::Concise => ConciseRenderer::new(db, &config).render(f, diagnostics),
+            TypeCheckingFormat::Azure => AzureRenderer::new(db, &config).render(f, diagnostics),
+            TypeCheckingFormat::Json => JsonRenderer::new(db, &config).render(f, diagnostics),
+            TypeCheckingFormat::JsonLines => JsonLinesRenderer::new(db, &config).render(f, diagnostics),
+            TypeCheckingFormat::Rdjson => RdjsonRenderer::new(db, &config).render(f, diagnostics),
+            TypeCheckingFormat::Pylint => PylintRenderer::new(db, &config).render(f, diagnostics),
+            TypeCheckingFormat::Gitlab => GitlabRenderer::new(db, &config).render(f, diagnostics),
+            TypeCheckingFormat::Github => GithubRenderer::new(db, &config).render(f, diagnostics),
+        }
     }
 }
 

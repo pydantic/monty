@@ -26,21 +26,22 @@ use smallvec::smallvec;
 
 use self::arithmetic::IntArithmetic;
 use crate::{
-    bytecode::VM,
+    args::ArgValues,
+    bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_long_int},
-    heap::{Heap, HeapData, HeapObjectRead},
+    heap::{DropWithContext, Heap, HeapData, HeapObjectRead},
     identity::Identity,
-    intern::LongIntId,
+    intern::{LongIntId, StaticStrings},
     resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size},
     types::{
-        LazyHeapSet, PyTrait, Type,
+        LazyHeapSet, PyTrait, Type, TypeRef,
         numeric::{round_bigint, round_digits, round_int},
         py_trait::PyObjectIdentity,
         str::allocate_string,
         tuple::allocate_tuple,
     },
-    value::{Value, eq_bigint, float_pow_value},
+    value::{EitherStr, Value, eq_bigint, float_pow_value},
 };
 
 /// Maximum number of decimal digits allowed for integer-string conversion.
@@ -179,6 +180,56 @@ impl<'h> PyInt<'h> {
             Self::Heap(value) => big(value.get(vm.heap).inner()),
         }
     }
+
+    /// Computes `int.bit_length()`.
+    pub(crate) fn bit_length(&self, vm: &VM<'h>) -> Value {
+        self.with_value(
+            vm,
+            |value| {
+                if value == 0 {
+                    Value::Int(0)
+                } else {
+                    let bits = 64 - value.unsigned_abs().leading_zeros();
+                    Value::Int(i64::from(bits))
+                }
+            },
+            |value| {
+                let bits = value.bits();
+                match i64::try_from(bits) {
+                    Ok(small) => Value::Int(small),
+                    Err(_) => LongInt::new(BigInt::from(bits)).into_value(vm.heap),
+                }
+            },
+        )
+    }
+
+    /// Computes `int.bit_count()`.
+    pub(crate) fn bit_count(&self, vm: &VM<'h>) -> Value {
+        self.with_value(
+            vm,
+            |value| {
+                let count = value.unsigned_abs().count_ones();
+                Value::Int(i64::from(count))
+            },
+            |value| {
+                let ones = value.magnitude().count_ones();
+                match i64::try_from(ones) {
+                    Ok(small) => Value::Int(small),
+                    Err(_) => LongInt::new(BigInt::from(ones)).into_value(vm.heap),
+                }
+            },
+        )
+    }
+
+    /// Computes `int.as_integer_ratio()`, returning `(self, 1)`.
+    pub(crate) fn as_integer_ratio(&self, vm: &VM<'h>) -> Value {
+        let num = match self {
+            Self::Small(value) => Value::Int(*value),
+            Self::Interned(id) => Value::InternLongInt(*id),
+            Self::Heap(value) => value.clone_value(vm.heap),
+        };
+        allocate_tuple(smallvec![num, Value::Int(1)], vm.heap)
+    }
 }
 
 /// Keeps storage selection here; a heap integer forwards to its concrete protocol.
@@ -228,8 +279,8 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
         }
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Int
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Int.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -432,6 +483,31 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
             Self::Heap(value) => value.py_add_impl(other, vm),
         }
     }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::BitLength) => {
+                args.check_zero_args("int.bit_length", vm.heap)?;
+                Ok(CallResult::Value(self.bit_length(vm)))
+            }
+            Some(StaticStrings::BitCount) => {
+                args.check_zero_args("int.bit_count", vm.heap)?;
+                Ok(CallResult::Value(self.bit_count(vm)))
+            }
+            Some(StaticStrings::AsIntegerRatio) => {
+                args.check_zero_args("int.as_integer_ratio", vm.heap)?;
+                Ok(CallResult::Value(self.as_integer_ratio(vm)))
+            }
+            Some(StaticStrings::IsInteger) => {
+                args.check_zero_args("int.is_integer", vm.heap)?;
+                Ok(CallResult::Value(Value::Bool(true)))
+            }
+            _ => {
+                args.drop_with(vm.heap);
+                Err(ExcType::attribute_error("int", attr.as_str(vm.interns)))
+            }
+        }
+    }
 }
 
 /// Formats large integers consistently across interned and heap storage.
@@ -596,6 +672,11 @@ impl LongInt {
     /// highest set bit plus one.
     pub fn bits(&self) -> u64 {
         self.0.bits()
+    }
+
+    /// Returns the number of ones in the binary representation of the absolute value.
+    pub fn bit_count(&self) -> u64 {
+        self.0.magnitude().count_ones()
     }
 
     /// Checks whether converting this LongInt to a decimal string would exceed
@@ -780,8 +861,8 @@ fn int_max_str_digits_threshold() -> &'static BigInt {
 // === Trait Implementations ===
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Int
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Int.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -977,6 +1058,33 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
 
     fn py_rrshift_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         IntArithmetic::rshift(self.get(vm.heap).inner(), other, vm, true)
+    }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::BitLength) => {
+                args.check_zero_args("int.bit_length", vm.heap)?;
+                let bits = self.get(vm.heap).bits();
+                let result = match i64::try_from(bits) {
+                    Ok(small) => Value::Int(small),
+                    Err(_) => LongInt::new(BigInt::from(bits)).into_value(vm.heap),
+                };
+                Ok(CallResult::Value(result))
+            }
+            Some(StaticStrings::BitCount) => {
+                args.check_zero_args("int.bit_count", vm.heap)?;
+                let ones = self.get(vm.heap).bit_count();
+                let result = match i64::try_from(ones) {
+                    Ok(small) => Value::Int(small),
+                    Err(_) => LongInt::new(BigInt::from(ones)).into_value(vm.heap),
+                };
+                Ok(CallResult::Value(result))
+            }
+            _ => {
+                args.drop_with(vm.heap);
+                Err(ExcType::attribute_error("int", attr.as_str(vm.interns)))
+            }
+        }
     }
 }
 

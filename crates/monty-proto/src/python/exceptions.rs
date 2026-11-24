@@ -9,7 +9,7 @@
 
 use monty_types::{ExcData, ExcType, JsonErrorData, MontyException, UnicodeErrorObject, unstable::MontyNode};
 use pyo3::{
-    PyTypeCheck,
+    PyTypeCheck, PyTypeInfo,
     exceptions::{self},
     prelude::*,
     sync::PyOnceLock,
@@ -37,6 +37,15 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
         ExcType::IndexError => exceptions::PyIndexError::new_err(msg),
         ExcType::KeyError => exceptions::PyKeyError::new_err(msg),
         ExcType::RuntimeError => exceptions::PyRuntimeError::new_err(msg),
+        ExcType::InvalidStateError => {
+            if let Ok(exc_cls) = get_asyncio_invalid_state_error(py)
+                && let Ok(exc_instance) = exc_cls.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                exceptions::PyException::new_err(msg)
+            }
+        }
         ExcType::NotImplementedError => exceptions::PyNotImplementedError::new_err(msg),
         ExcType::RecursionError => exceptions::PyRecursionError::new_err(msg),
         ExcType::AssertionError => exceptions::PyAssertionError::new_err(msg),
@@ -75,7 +84,7 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
             {
                 PyErr::from_value(exc_instance)
             } else {
-                // Fall back to OSError — the parent we model in `is_subclass_of`.
+                // Fall back to OSError, its first base.
                 exceptions::PyOSError::new_err(msg)
             }
         }
@@ -94,7 +103,17 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
             {
                 PyErr::from_value(exc_instance)
             } else {
-                // Fall back to ValueError — the parent we model in `is_subclass_of`.
+                // Fall back to ValueError, its base.
+                exceptions::PyValueError::new_err(msg)
+            }
+        }
+        ExcType::StatisticsError => {
+            if let Ok(statistics_error) = get_statistics_error(py)
+                && let Ok(exc_instance) = statistics_error.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                // Fall back to ValueError, the parent we model in `is_subclass_of`.
                 exceptions::PyValueError::new_err(msg)
             }
         }
@@ -165,6 +184,24 @@ fn get_decimal_module(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
         .map(|m| m.bind(py))
 }
 
+/// Returns the cached host `asyncio.InvalidStateError` class.
+fn get_asyncio_invalid_state_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static INVALID_STATE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    INVALID_STATE
+        .get_or_try_init(py, || {
+            py.import("asyncio.exceptions")?
+                .getattr("InvalidStateError")
+                .map(pyo3::Bound::unbind)
+        })
+        .map(|cls| cls.bind(py))
+}
+
+/// Whether a host exception is an `asyncio.InvalidStateError` instance (an
+/// isinstance check, so subclasses match).
+fn is_asyncio_invalid_state_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    get_asyncio_invalid_state_error(exc.py()).is_ok_and(|cls| exc.is_instance(cls).unwrap_or(false))
+}
+
 /// The `ExcType` of a host `decimal` exception: its nearest class in the MRO that
 /// is one of the `decimal` module's signal classes (by identity, not by name), so a
 /// subclass maps to the signal it extends.
@@ -189,8 +226,7 @@ fn decimal_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> Option<ExcT
 pub(super) fn exc_class_to_py(py: Python<'_>, exc_type: ExcType) -> PyResult<Py<PyAny>> {
     match exc_type {
         ExcType::JsonDecodeError => get_json_decode_error(py).map(|b| b.clone().unbind()),
-        // A host Python without `tomllib` (3.10) gets the `ValueError` parent,
-        // matching the instance fallback.
+        // If importing the class fails, match the instance fallback.
         ExcType::TomlDecodeError => Ok(get_toml_decode_error(py).map_or_else(
             |_| py.get_type::<exceptions::PyValueError>().into_any().unbind(),
             |cls| cls.clone().unbind(),
@@ -260,8 +296,7 @@ fn json_decode_error_to_py(py: Python<'_>, exc_data: ExcData, msg: String) -> Py
 /// payload, which it shares with `json.JSONDecodeError`. Every attribute is
 /// set explicitly: before Python 3.14 the constructor stores only `args`, and
 /// on 3.14 it derives `lineno` / `colno` from `doc`, which is wrong for a
-/// dropped (oversized) document, as is the message it formats. Absent the
-/// module (Python 3.10) this degrades to the `ValueError` parent.
+/// dropped (oversized) document, as is the message it formats.
 fn toml_decode_error_to_py(py: Python<'_>, exc_data: ExcData, msg: String) -> PyErr {
     if let ExcData::Json(data) = exc_data
         && let Ok(exc_cls) = get_toml_decode_error(py)
@@ -325,10 +360,22 @@ fn exception_arg(exc: &Bound<'_, exceptions::PyBaseException>) -> Option<String>
 /// (matching the cap Monty applies when raising) while the rest is kept.
 fn json_data_from_py(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcData {
     let extract = || -> PyResult<JsonErrorData> {
-        let doc: String = exc.getattr("doc")?.extract()?;
+        let doc = exc.getattr("doc")?.cast_into::<PyString>()?;
+        // The cap counts UTF-8 bytes, which are never fewer than code points, so a
+        // document over the cap in code points is dropped without being copied.
+        // `str.__len__` is called unbound because a `str` subclass may override `__len__`.
+        // TODO: switch to `PyStringMethods::code_point_len` once on PyO3 0.30.
+        let code_points: usize = PyString::type_object(exc.py())
+            .call_method1("__len__", (&doc,))?
+            .extract()?;
+        let doc = if code_points <= JsonErrorData::MAX_DOC_LEN {
+            Some(doc.extract::<String>()?).filter(|doc| doc.len() <= JsonErrorData::MAX_DOC_LEN)
+        } else {
+            None
+        };
         Ok(JsonErrorData {
             msg: exc.getattr("msg")?.extract()?,
-            doc: (doc.len() <= JsonErrorData::MAX_DOC_LEN).then_some(doc),
+            doc,
             pos: exc.getattr("pos")?.extract()?,
             lineno: exc.getattr("lineno")?.extract()?,
             colno: exc.getattr("colno")?.extract()?,
@@ -368,6 +415,8 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
                 ExcType::TomlDecodeError
             } else if is_binascii_error(exc) {
                 ExcType::BinasciiError
+            } else if is_statistics_error(exc) {
+                ExcType::StatisticsError
             } else if exceptions::PyUnicodeDecodeError::type_check(exc) {
                 ExcType::UnicodeDecodeError
             } else if exceptions::PyUnicodeEncodeError::type_check(exc) {
@@ -461,6 +510,8 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
         // last as it needs a python isinstance call against an imported class
         } else if is_re_pattern_error(exc) {
             ExcType::RePatternError
+        } else if is_asyncio_invalid_state_error(exc) {
+            ExcType::InvalidStateError
         } else if is_csv_error(exc) {
             ExcType::CsvError
         } else {
@@ -528,6 +579,22 @@ fn is_binascii_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
 fn get_binascii_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static BINASCII_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
     BINASCII_ERROR.import(py, "binascii", "Error")
+}
+
+/// Checks if an exception is a `statistics.StatisticsError` (a stdlib class,
+/// looked up lazily and cached).
+fn is_statistics_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(statistics_error_cls) = get_statistics_error(exc.py()) {
+        exc.is_instance(statistics_error_cls).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Returns the cached `statistics.StatisticsError` class, a `ValueError` subclass.
+fn get_statistics_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static STATISTICS_ERROR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    STATISTICS_ERROR.import(py, "statistics", "StatisticsError")
 }
 
 /// Checks if an exception is a `binascii.Incomplete`, which hangs off
@@ -600,7 +667,7 @@ fn get_json_decode_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
 /// is a subclass of both `OSError` and `ValueError` in CPython. Monty raises
 /// the real CPython class here so user code can `isinstance(e,
 /// io.UnsupportedOperation)`; both parents are modelled by
-/// [`ExcType::is_subclass_of`], so `except OSError:` and `except ValueError:`
+/// the interpreter's type table, so `except OSError:` and `except ValueError:`
 /// catch it just like in CPython.
 fn get_unsupported_operation(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static UNSUPPORTED_OPERATION: PyOnceLock<Py<PyAny>> = PyOnceLock::new();

@@ -170,7 +170,7 @@ fn invalid_path(path: &str, part: &str) -> ModuleStubError {
 pub enum ModuleStubError {
     /// Not a Python identifier, or a keyword.
     InvalidName(String),
-    /// A module the sandbox provides itself, or one its type stubs rely on.
+    /// A name reserved by the sandbox or its type checker.
     ReservedName(String),
 }
 
@@ -188,10 +188,11 @@ impl Display for ModuleStubError {
 
 impl Error for ModuleStubError {}
 
-/// Sandbox module names, excluding the dotted name `os.path`.
-/// Imports of these modules never reach the host, so host modules cannot use these names.
+/// Module names reserved by the sandbox, excluding the dotted name `os.path`.
+/// Imports of these names never reach the host, even when the runtime does not provide the module.
 /// Keep in sync with the runtime's `StandardLib` and the vendored modules in `crates/monty/stdlib/vendor.toml`.
 pub const SANDBOX_MODULE_NAMES: &[&str] = &[
+    "_stat",
     "annotationlib",
     "asyncio",
     "base64",
@@ -218,6 +219,7 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "random",
     "re",
     "stat",
+    "statistics",
     "sys",
     "textwrap",
     "time",
@@ -234,7 +236,6 @@ pub const CHECKER_MODULE_NAMES: &[&str] = &[
     "__main__",
     "_collections_abc",
     "_io",
-    "_stat",
     "_typeshed",
     "abc",
     "builtins",

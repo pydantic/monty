@@ -9,7 +9,6 @@ authors = { workspace = true }
 description = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
-homepage = { workspace = true }
 repository = { workspace = true }
 
 [lib]
@@ -20,7 +19,6 @@ monty-macros = { workspace = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }
 strum = { workspace = true }
-chrono = { workspace = true }
 jiff = { workspace = true }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
@@ -36,7 +34,7 @@ nix = { workspace = true, features = ["time"], optional = true }
 # tracker uses `web_time::Instant` (a `performance.now()`-backed drop-in) there
 # to keep the duration limits working when `monty` is embedded directly in a browser
 # wasm module. Only that target needs it; every other target uses std directly.
-[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
 web-time = "1.1"
 
 [dev-dependencies]

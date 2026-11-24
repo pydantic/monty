@@ -106,8 +106,8 @@ async def storing_url() -> AsyncIterator[str]:
     """Serves a fake of a server that stores sessions, bridging each stream to a
     real `monty subprocess` child.
 
-    It names the session on the reply to `Configure` and to `Load`, and the third
-    request of the first stream is not run: the child is dumped, its state kept
+    It names the session on the reply to its first request and to `Load`, and the
+    second request of the first stream is not run: the child is dumped, its state kept
     under the session's ID, and the request answered with `ShutdownDump` naming
     that ID. A later `Load` of the ID gives the child the stored state.
     """
@@ -201,10 +201,12 @@ async def _reaping_children(relay: ModuleType) -> AsyncGenerator[list[asyncio.su
 
 
 _LENGTH_PREFIX = struct.Struct('<I')
-# `ParentRequest.kind` and `ChildEvent.kind` field numbers, from `monty.proto`
-_REQUEST_DUMP, _REQUEST_LOAD = 7, 8
+# `ClientRequest.kind` and `WorkerEvent.kind` field numbers, from `monty.proto`
+_REQUEST_CONFIGURE, _REQUEST_DUMP, _REQUEST_LOAD = 1, 7, 8
+# `Configure.first`'s `Load` arm
+_CONFIGURE_LOAD = 16
 _EVENT_PRINT, _EVENT_DUMP_RESULT, _EVENT_OK, _EVENT_SHUTDOWN = 1, 9, 10, 12
-# `ChildEvent.kind` arms own the tags below this; the message-level fields start here
+# `WorkerEvent.kind` arms own the tags below this; the message-level fields start here
 _FIRST_EVENT_FIELD = 20
 _EVENT_SESSION_ID = 28
 
@@ -228,7 +230,8 @@ class _StoringServer:
     ) -> AsyncIterator[bytes]:
         await context.send_initial_metadata(())  # admit the stream; see `admit` in the relay script
         self.streams += 1
-        drain_at = 3 if self.streams == 1 else None
+        # request 1 is the `Configure`, carrying the first feed; the first stream parks the next
+        drain_at = 2 if self.streams == 1 else None
         child = await self.relay.spawn_child(self.monty_bin)
         assert child.stdin is not None and child.stdout is not None
         stdin, stdout = child.stdin, child.stdout
@@ -256,11 +259,20 @@ class _StoringServer:
                     self.records[session_id] = _proto_fields(reply[_EVENT_DUMP_RESULT])[1]
                     yield _bytes_field(_EVENT_SHUTDOWN, _bytes_field(1, session_id))
                     return
-                names = request_count == 1 or _REQUEST_LOAD in fields
-                if _REQUEST_LOAD in fields:
+                # a `Load` comes alone or as the first request a `Configure` carries
+                configure = fields.get(_REQUEST_CONFIGURE)
+                load = fields.get(_REQUEST_LOAD)
+                if load is None and configure is not None:
+                    load = _proto_fields(configure).get(_CONFIGURE_LOAD)
+                names = request_count == 1 or load is not None
+                if load is not None:
                     # the child loads the stored bytes the ID stands for
-                    state = self.records[_proto_fields(fields[_REQUEST_LOAD])[1]]
-                    message = _bytes_field(_REQUEST_LOAD, _bytes_field(1, state))
+                    stored = _bytes_field(1, self.records[_proto_fields(load)[1]])
+                    if configure is None:
+                        message = _bytes_field(_REQUEST_LOAD, stored)
+                    else:
+                        # a repeated message field merges into the first, so this `Load` replaces its state
+                        message = _bytes_field(_REQUEST_CONFIGURE, configure + _bytes_field(_CONFIGURE_LOAD, stored))
                 await to_child(message)
                 while True:
                     reply = await from_child()
@@ -591,7 +603,7 @@ async def test_plain_relay_names_no_session(relay_url: str):
     async with AsyncMontyRemote(relay_url, request_timeout=30.0) as pool:
         for ephemeral in (None, True, False):
             async with pool.checkout(ephemeral=ephemeral) as session:
-                assert session.session_id is None
+                assert await session.get_session_id() is None
                 assert await session.feed_run('1 + 1') == snapshot(2)
 
 
@@ -611,7 +623,7 @@ async def test_loaded_session_has_no_id_on_a_plain_relay(relay_url: str):
             dump = await session.dump()
         async with pool.checkout() as session:
             await session.load_session(dump)
-            assert session.session_id is None
+            assert await session.get_session_id() is None
             assert await session.feed_run('x + 1') == snapshot(21)
 
 
@@ -625,14 +637,41 @@ async def test_auto_resume_can_be_disabled(relay_url: str):
 async def test_storing_server_names_the_session_and_resumes_a_shutdown(storing_url: str):
     async with AsyncMontyRemote(storing_url, request_timeout=30.0) as pool:
         async with pool.checkout() as session:
-            assert session.session_id == snapshot(b'sess-1')
             await session.feed_run('x = 20')
+            assert await session.get_session_id() == snapshot(b'sess-1')
             # the fake parks the session instead of running this feed; the
             # client reloads the ID on a new stream and re-sends it
             assert await session.feed_run('x + 1') == snapshot(21)
         # the ID the resume adopted outlives the checkout, even when nothing
         # read it while the checkout was live
-        assert session.session_id == snapshot(b'sess-3')
+        assert await session.get_session_id() == snapshot(b'sess-2')
+
+
+async def test_get_session_id_opens_the_session(storing_url: str):
+    """Before any request, `get_session_id()` sends the configuration alone and waits for the ID."""
+    async with AsyncMontyRemote(storing_url, request_timeout=30.0) as pool:
+        async with pool.checkout() as session:
+            assert await session.get_session_id() == snapshot(b'sess-1')
+            assert await session.feed_run('x = 20') == snapshot(None)
+
+
+async def test_get_session_id_needs_an_entered_session(storing_url: str):
+    async with AsyncMontyRemote(storing_url, request_timeout=30.0) as pool:
+        with pytest.raises(RuntimeError) as exc_info:
+            await pool.checkout().get_session_id()
+    assert exc_info.value.args[0] == snapshot(
+        'get_session_id() needs an entered session: use `async with pool.checkout() as session`'
+    )
+
+
+async def test_session_id_property_is_deprecated(storing_url: str):
+    """The property races the first request, so it warns; it still reads the ID once known."""
+    async with AsyncMontyRemote(storing_url, request_timeout=30.0) as pool:
+        async with pool.checkout() as session:
+            await session.feed_run('x = 20')
+            with pytest.warns(DeprecationWarning) as record:
+                assert session.session_id == snapshot(b'sess-1')  # pyright: ignore[reportDeprecated]
+    assert str(record[0].message) == snapshot('session_id is deprecated, use `await session.get_session_id()`')
 
 
 async def test_auto_resume_disabled_raises_shutdown_naming_the_session(storing_url: str):
@@ -644,7 +683,7 @@ async def test_auto_resume_disabled_raises_shutdown_naming_the_session(storing_u
             assert exc_info.value.dump == snapshot(b'sess-1')
         async with pool.checkout() as session:
             await session.load_session(b'sess-1')
-            assert session.session_id == snapshot(b'sess-3')
+            assert await session.get_session_id() == snapshot(b'sess-2')
             assert await session.feed_run('x + 1') == snapshot(21)
 
 
@@ -727,13 +766,13 @@ async def test_disconnect_details(status: grpc.StatusCode | None, message: str |
         requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
     ) -> AsyncIterator[bytes]:
         await context.send_initial_metadata(())
-        await anext(requests)  # Configure
-        yield _bytes_field(_EVENT_OK, b'')
-        await anext(requests)  # Feed
+        await anext(requests)  # Configure, carrying the first feed
         if status is not None:
             assert message is not None
             trailers = () if cause is None else (('monty-cause', cause),)
             await context.abort(status, message, trailing_metadata=trailers)
+        return
+        yield b''
 
     async with _serve_behaviour(behaviour) as url:
         async with AsyncMontyRemote(url, auto_resume=False) as pool:
@@ -779,6 +818,166 @@ async def test_refused_stream_fails_the_checkout():
     )
 
 
+async def test_checkout_retries_once_with_only_retry_after():
+    attempts = 0
+    metadata_calls = 0
+    seen_headers: list[str] = []
+
+    def metadata():
+        nonlocal metadata_calls
+        metadata_calls += 1
+        return {'x-checkout-id': f'checkout-{metadata_calls}'}
+
+    async def behaviour(
+        _requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        nonlocal attempts
+        attempts += 1
+        checkout_id = dict(context.invocation_metadata() or ())['x-checkout-id']
+        assert isinstance(checkout_id, str)
+        seen_headers.append(checkout_id)
+        await context.abort(
+            grpc.StatusCode.UNAVAILABLE,
+            f'worker full on attempt {attempts}',
+            trailing_metadata=(('retry-after', '0'),),
+        )
+        yield b''
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url, metadata=metadata) as pool:
+        with pytest.raises(MontyRefusedError) as caught:
+            async with pool.checkout():
+                pass
+    assert metadata_calls == 1
+    assert seen_headers == ['checkout-1', 'checkout-1']
+    assert attempts == snapshot(2)
+    assert caught.value.status_message == snapshot('worker full on attempt 2')
+    assert caught.value.retry_after == snapshot(0.0)
+
+
+@pytest.mark.parametrize(
+    'hints,expected_delay', [((), None), (('invalid',), None), (('3',), 3.0), (('0', '3'), None), (('0', '0'), None)]
+)
+async def test_checkout_requires_one_valid_short_hint(hints: tuple[str, ...], expected_delay: float | None):
+    attempts = 0
+
+    async def behaviour(
+        _requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        nonlocal attempts
+        attempts += 1
+        await context.abort(
+            grpc.StatusCode.UNAVAILABLE,
+            'worker capacity',
+            trailing_metadata=tuple(('retry-after', hint) for hint in hints),
+        )
+        yield b''
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url, request_timeout=10) as pool:
+        with pytest.raises(MontyRefusedError) as caught:
+            async with asyncio.timeout(2), pool.checkout():
+                pass
+    assert attempts == 1
+    assert caught.value.retry_after == expected_delay
+
+
+@pytest.mark.parametrize('checkout_timeout,request_timeout', [(1, 10), (10, 1), (None, 10)])
+async def test_checkout_retry_timeout_returns_the_original_refusal(checkout_timeout: int | None, request_timeout: int):
+    attempts = 0
+
+    async def behaviour(
+        _requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            await context.abort(
+                grpc.StatusCode.UNAVAILABLE,
+                'try again later',
+                trailing_metadata=(('retry-after', '0'),),
+            )
+        await asyncio.Event().wait()  # the retry never receives response headers
+        yield b''
+
+    async with (
+        _serve_behaviour(behaviour) as url,
+        AsyncMontyRemote(url, checkout_timeout=checkout_timeout, request_timeout=request_timeout) as pool,
+    ):
+        with pytest.raises(MontyRefusedError) as caught:
+            async with asyncio.timeout(8), pool.checkout():
+                pass
+    assert attempts == 2
+    assert caught.value.status_message == 'try again later'
+    assert caught.value.retry_after == 0
+
+
+async def test_cancelling_checkout_during_backoff_frees_the_only_pool_slot():
+    attempts = 0
+    refused = asyncio.Event()
+
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            try:
+                await context.abort(
+                    grpc.StatusCode.UNAVAILABLE,
+                    'try again later',
+                    trailing_metadata=(('retry-after', '1'),),
+                )
+            finally:
+                refused.set()
+        await context.send_initial_metadata(())
+        async for _frame in requests:
+            pass
+        yield b''  # keeps this an async generator
+
+    async def checkout(pool: AsyncMontyRemote):
+        async with pool.checkout():
+            pass
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url, max_processes=1) as pool:
+        task = asyncio.create_task(checkout(pool))
+        try:
+            await asyncio.wait_for(refused.wait(), timeout=3)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(checkout(pool), timeout=0.1)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        await asyncio.wait_for(checkout(pool), timeout=3)
+        assert attempts == 2
+
+
+async def test_admitted_feed_with_retryable_status_is_never_replayed():
+    attempts = 0
+    input_frames = 0
+
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        nonlocal attempts, input_frames
+        attempts += 1
+        await context.send_initial_metadata(())
+        await anext(requests)  # Configure carries the first feed.
+        input_frames += 1
+        await context.abort(
+            grpc.StatusCode.UNAVAILABLE,
+            'capacity changed',
+            trailing_metadata=(('retry-after', '0'),),
+        )
+        yield b''
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url) as pool:
+        async with pool.checkout() as session:
+            with pytest.raises(MontyDisconnectError) as caught:
+                await session.feed_run('21 * 2')
+    assert caught.value.status_code == 'UNAVAILABLE'
+    assert attempts == input_frames == 1
+
+
 @pytest.mark.parametrize(
     'code,retryable',
     [
@@ -807,13 +1006,17 @@ async def test_refusal_retry_details(code: grpc.StatusCode, retryable: bool, hea
 
 
 async def test_unexpected_server_status_is_a_connect_error():
+    attempts = 0
+
     async def behaviour(
         requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
     ) -> AsyncIterator[bytes]:
+        nonlocal attempts
+        attempts += 1
         await context.abort(
             grpc.StatusCode.UNIMPLEMENTED,
             'unknown service',
-            trailing_metadata=(('monty-cause', 'protocol_violation'),),
+            trailing_metadata=(('monty-cause', 'protocol_violation'), ('retry-after', '0')),
         )
         yield b''
 
@@ -821,6 +1024,7 @@ async def test_unexpected_server_status_is_a_connect_error():
         with pytest.raises(MontyConnectError) as caught:
             async with pool.checkout():
                 pass
+    assert attempts == 1
     assert caught.value.status_code == snapshot('UNIMPLEMENTED')
     assert caught.value.status_message == snapshot('unknown service')
     assert caught.value.cause == snapshot('protocol_violation')
@@ -842,9 +1046,9 @@ async def test_cpu_server_requires_a_finite_request_timeout():
             extra_requests.append(request)
 
     async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url, request_timeout=None) as pool:
-        with pytest.raises(MontyConfigurationError) as caught:
-            async with pool.checkout():
-                pass
+        async with pool.checkout() as session:
+            with pytest.raises(MontyConfigurationError) as caught:
+                await session.feed_run('1 + 1')
     assert str(caught.value) == snapshot('CPU execution clock requires a finite client request_timeout')
     assert repr(caught.value) == snapshot(
         'MontyConfigurationError(CPU execution clock requires a finite client request_timeout)'
@@ -882,9 +1086,11 @@ async def test_child_exiting_with_a_status_ends_the_stream_with_internal(tmp_pat
     server, url = await relay.start_relay(str(script), '127.0.0.1', 0)
     try:
         async with AsyncMontyRemote(url, auto_resume=False) as pool:
-            with pytest.raises(MontyDisconnectError) as caught:
-                async with pool.checkout():
-                    pass
+            # the session's first request carries its configuration out, so
+            # that is where the child's death surfaces
+            async with pool.checkout() as session:
+                with pytest.raises(MontyDisconnectError) as caught:
+                    await session.feed_run('1 + 1')
         assert caught.value.status_code == 'INTERNAL'
         assert caught.value.status_message == 'monty subprocess exited with status 3'
     finally:
@@ -966,14 +1172,13 @@ async def test_out_of_memory_status_raises_memory_error():
         requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
     ) -> AsyncIterator[bytes]:
         await context.send_initial_metadata(())
-        await anext(requests)  # Configure
-        yield _bytes_field(_EVENT_OK, b'')
-        await anext(requests)  # Feed
+        await anext(requests)  # Configure, carrying the first feed
         await context.abort(
             grpc.StatusCode.RESOURCE_EXHAUSTED,
             'worker exceeded its memory limit',
             trailing_metadata=(('monty-cause', 'out_of_memory'),),
         )
+        yield b''
 
     async with _serve_behaviour(behaviour) as url:
         async with AsyncMontyRemote(url) as pool:
@@ -981,3 +1186,134 @@ async def test_out_of_memory_status_raises_memory_error():
                 with pytest.raises(MontyRuntimeError) as exc_info:
                     await session.feed_run("x = 'a' * 10**9")
     assert exc_info.value.display(format='msg') == snapshot('the worker exceeded its memory limit and was terminated')
+
+
+@asynccontextmanager
+async def _serve_recording() -> AsyncGenerator[tuple[str, list[dict[str, str]], list[int]]]:
+    """Serves the relay's bridge, yielding its URL, the request metadata of each stream
+    as it opens, and the index of each stream once it receives a request."""
+    relay = _load_relay_script()
+    bridge = relay.relay_behaviour(find_monty_binary())
+    opened: list[dict[str, str]] = []
+    used: list[int] = []
+
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        index = len(opened)
+        opened.append({key: value for key, value in context.invocation_metadata() or () if isinstance(value, str)})
+
+        async def recording() -> AsyncIterator[bytes]:
+            async for request in requests:
+                if index not in used:
+                    used.append(index)
+                yield request
+
+        async with aclosing(bridge(recording(), context)) as events:
+            async for event in events:
+                yield event
+
+    async with _reaping_children(relay), _serve_behaviour(behaviour) as url:
+        yield url, opened, used
+
+
+async def _wait_for(condition: Callable[[], bool]) -> None:
+    """Polls `condition` for up to five seconds."""
+    for _ in range(500):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError('condition not met within 5s')
+
+
+async def test_pre_warm_opens_sessions_before_checkout():
+    """`__aenter__` opens the pre-warmed sessions; a checkout takes one, and it is replaced."""
+    async with _serve_recording() as (url, opened, used):
+        async with AsyncMontyRemote(url, request_timeout=30.0, pre_warm=2, max_processes=4) as pool:
+            await _wait_for(lambda: len(opened) == 2)
+            assert used == snapshot([])
+            async with pool.checkout() as session:
+                assert await session.feed_run('1 + 1') == snapshot(2)
+            await _wait_for(lambda: len(opened) == 3)
+            assert len(used) == snapshot(1)
+            assert used[0] in (0, 1)
+
+
+async def test_a_checkout_waits_for_a_pre_warmed_session_still_opening():
+    """Without `pre_warm_wait`, a checkout straight after `__aenter__` takes the session
+    already opening, rather than opening another."""
+    async with _serve_recording() as (url, opened, used):
+        async with AsyncMontyRemote(url, request_timeout=30.0, pre_warm=1, pre_warm_wait=False) as pool:
+            async with pool.checkout() as session:
+                assert await session.feed_run('1 + 1') == snapshot(2)
+            await _wait_for(lambda: len(opened) == 2)
+            assert used == snapshot([0])
+
+
+async def test_pre_warm_calls_metadata_for_each_ready_session():
+    """The pool calls `metadata` for each session it pre-warms, and a checkout whose own
+    call returned the same value takes one."""
+    calls = 0
+
+    def provide_metadata() -> dict[str, str]:
+        nonlocal calls
+        calls += 1
+        return {'authorization': 'Bearer one'}
+
+    async with _serve_recording() as (url, opened, used):
+        async with AsyncMontyRemote(url, request_timeout=30.0, pre_warm=1, metadata=provide_metadata) as pool:
+            async with pool.checkout() as session:
+                assert await session.feed_run('1 + 1') == snapshot(2)
+            await _wait_for(lambda: len(opened) == 2)
+            assert used == snapshot([0])
+    assert [metadata['authorization'] for metadata in opened] == snapshot(['Bearer one', 'Bearer one'])
+    # the two ready sessions, and the checkout's own call
+    assert calls == snapshot(3)
+
+
+async def test_pre_warm_session_is_not_taken_with_other_metadata():
+    """A checkout never runs on a session opened with other metadata: a changed value
+    closes the ready session unused, and the checkout opens its own."""
+    token = 'Bearer one'
+
+    async with _serve_recording() as (url, opened, used):
+        async with AsyncMontyRemote(
+            url, request_timeout=30.0, pre_warm=1, metadata=lambda: {'authorization': token}
+        ) as pool:
+            await _wait_for(lambda: len(opened) == 1)
+            token = 'Bearer two'
+            async with pool.checkout() as session:
+                assert await session.feed_run('1 + 1') == snapshot(2)
+            await _wait_for(lambda: len(opened) == 3)
+            assert [opened[index]['authorization'] for index in used] == snapshot(['Bearer two'])
+    assert [metadata['authorization'] for metadata in opened] == snapshot(['Bearer one', 'Bearer two', 'Bearer two'])
+
+
+async def test_pre_warm_wait_raises_from_aenter_when_the_server_refuses():
+    async def behaviour(
+        _requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, 'server at capacity')
+        yield b''  # pragma: no cover - makes this an async generator
+
+    async with _serve_behaviour(behaviour) as url:
+        with pytest.raises(MontyRefusedError) as exc_info:
+            async with AsyncMontyRemote(url, pre_warm=1):
+                pass
+    assert str(exc_info.value).removeprefix(url) == snapshot(
+        ' refused the session: RESOURCE_EXHAUSTED: server at capacity'
+    )
+
+
+async def test_pre_warm_metadata_failure_raises_from_aenter():
+    with pytest.raises(MontyConfigurationError) as exc_info:
+        async with AsyncMontyRemote('http://127.0.0.1:1', pre_warm=1, metadata=raise_no_token):
+            pass
+    assert str(exc_info.value) == snapshot('metadata callback failed: ValueError: no token available')
+
+
+async def test_pre_warm_above_max_processes_is_refused():
+    with pytest.raises(MontyConfigurationError) as exc_info:
+        async with AsyncMontyRemote('http://127.0.0.1:1', pre_warm=3, max_processes=2):
+            pass
+    assert str(exc_info.value) == snapshot('invalid pool size: pre_warm=3 max_processes=2')

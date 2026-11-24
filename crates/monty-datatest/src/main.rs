@@ -1,7 +1,8 @@
 //! Data-driven test harness: runs every Python file in
 //! `crates/monty/test_cases/` against both Monty and CPython (via pyo3) and
-//! diffs the results, so any behavioural divergence fails the suite. Run via
-//! `make test-cases`; see CLAUDE.md for the test-case file conventions.
+//! compares the results. It also runs selected CPython stdlib suites from
+//! `vendor/cpython/` on both. Run via `make test-cases`; see `AGENTS.md` for
+//! the test-case file conventions.
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
@@ -47,6 +48,15 @@ const SCRIPTS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts");
 const TEST_CASES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../monty/test_cases");
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 const TEST_CASES_RELATIVE_DIR: &str = "crates/monty/test_cases";
+const STDLIB_TESTS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/cpython/Lib/test");
+
+/// The patched `unittest` support files run in the suite's namespace, without package discovery.
+const STDLIB_TEST_PREAMBLE: &str = concat!(
+    include_str!("../vendor/cpython/Lib/unittest/util.py"),
+    "\n",
+    include_str!("../vendor/cpython/Lib/unittest/case.py"),
+    "\n",
+);
 
 static CANONICAL_WS_DIR: LazyLock<PathBuf> =
     LazyLock::new(|| canonicalize(WORKSPACE_ROOT).expect("Failed to canonicalize workspace root"));
@@ -1300,6 +1310,44 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
             });
             MontyObject::int(byte_count as i64).into()
         }
+        OsFunctionCall::WriteBytesAt(args) => {
+            if let Err(message) = args.validate() {
+                return MontyException::new(ExcType::ValueError, Some(message.to_owned())).into();
+            }
+            let path = args.path.as_str();
+            let Some(mut file) = get_virtual_file(path) else {
+                let exc = if is_virtual_dir(path) {
+                    ExcType::IsADirectoryError
+                } else {
+                    ExcType::FileNotFoundError
+                };
+                return MontyException::new(exc, Some(path.to_owned())).into();
+            };
+            if !args.data.is_empty() {
+                let Some(end) = usize::try_from(args.offset)
+                    .ok()
+                    .and_then(|offset| offset.checked_add(args.data.len()))
+                else {
+                    return MontyException::new(ExcType::ValueError, Some("write range is too large".to_owned()))
+                        .into();
+                };
+                if end > 50_000_000 {
+                    return MontyException::new(
+                        ExcType::MemoryError,
+                        Some("virtual fixture file is too large".to_owned()),
+                    )
+                    .into();
+                }
+                file.content.resize(file.content.len().max(end), 0);
+                file.content[end - args.data.len()..end].copy_from_slice(&args.data);
+                MUTABLE_VFS.with(|vfs| {
+                    vfs.borrow_mut()
+                        .files
+                        .insert(path.to_owned(), (file.content, file.mode));
+                });
+            }
+            MontyObject::int(args.data.len() as i64).into()
+        }
         OsFunctionCall::AppendText(args) => {
             let path = args.path.as_str().to_owned();
             let text = args.data.as_str();
@@ -1342,8 +1390,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
 
             let parent = Path::new(&path)
                 .parent()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
+                .map_or_default(|p| p.to_string_lossy().to_string());
             if !parent.is_empty() && !is_virtual_dir(&parent) {
                 if parents {
                     create_parent_dirs(&parent);
@@ -2256,6 +2303,7 @@ fn wrap_code_for_async(code: &str, need_return_value: bool) -> (String, Option<S
 /// file's globals before execution.
 ///
 /// When `async_mode` is true, code is wrapped in an async context before execution.
+/// A `mount-fs` case gets a fresh temp directory as `root`, as in the non-traceback path.
 fn run_traceback_script(path: &Path, test_name: &str, config: &TestConfig) -> Result<String, TestFailure> {
     // Serialize CPython work across the whole process; see [`CPYTHON_TEST_LOCK`].
     let _cpython_guard = CPYTHON_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
@@ -2271,13 +2319,24 @@ fn run_traceback_script(path: &Path, test_name: &str, config: &TestConfig) -> Re
             .canonicalize()
             .expect("Failed to get absolute path");
         let path_str = abs_path.to_str().expect("Invalid UTF-8 in path");
+        // A mount-fs case writes its modules under `root`; the directory must outlive the run.
+        let mount_tmpdir = config.mount_fs.then(create_mount_fs_tempdir);
+        let mount_root = mount_tmpdir
+            .as_ref()
+            .map(|tmpdir| tmpdir.path().to_string_lossy().into_owned());
 
         // Call run_file_and_get_traceback with the recursion limit, iter_mode, and async_mode flags.
         // Only `CPythonTestTimeout` escapes the script's own `except BaseException`; its
         // traceback becomes the actual output so the case fails naming the watchdog.
-        match run_traceback.call_method1(
+        let traceback = match run_traceback.call_method1(
             "run_file_and_get_traceback",
-            (path_str, TEST_RECURSION_LIMIT, config.iter_mode, config.async_mode),
+            (
+                path_str,
+                TEST_RECURSION_LIMIT,
+                config.iter_mode,
+                config.async_mode,
+                mount_root,
+            ),
         ) {
             Err(err) => format_traceback(py, &err),
             // None means no exception was raised
@@ -2285,7 +2344,11 @@ fn run_traceback_script(path: &Path, test_name: &str, config: &TestConfig) -> Re
             Ok(result) => result
                 .extract()
                 .expect("Failed to extract string from return value of run_file_and_get_traceback"),
+        };
+        if let Some(tmpdir) = &mount_tmpdir {
+            forget_mount_imports(py, tmpdir.path());
         }
+        traceback
     });
     watchdog.check(test_name).map(|()| traceback)
 }
@@ -2901,6 +2964,16 @@ where
 /// Handles xfail with strict semantics: if a test's header sets `xfail = ['monty']`, it must fail.
 /// If an xfail test passes unexpectedly, that's an error.
 fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
+    run_monty_fixture(path, "")
+}
+
+/// Runs a vendored CPython suite in Monty with the test-only `TestCase` subset in scope.
+fn run_test_cases_monty_stdlib(path: &Path) -> Result<(), Box<dyn Error>> {
+    run_monty_fixture(path, STDLIB_TEST_PREAMBLE)
+}
+
+/// Runs a Monty fixture, optionally with assertion helpers before its body.
+fn run_monty_fixture(path: &Path, preamble: &str) -> Result<(), Box<dyn Error>> {
     // Joined onto the workspace rather than read relative to the process cwd:
     // the harness never changes directory, so a CPython fixture that calls
     // `os.chdir` cannot race another thread's fixture read.
@@ -2915,7 +2988,7 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
         .display()
         .to_string();
 
-    // Move data into the closure since it needs 'static lifetime
+    let code = prepend_fixture_code(code, preamble);
     let path_owned = path.to_owned();
     let iter_mode = config.iter_mode;
     let mount_fs = config.mount_fs;
@@ -2972,6 +3045,16 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
 /// Handles xfail with strict semantics: if a test's header sets `xfail = ['cpython']`, it must fail.
 /// If an xfail test passes unexpectedly, that's an error.
 fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
+    run_cpython_fixture(path, "")
+}
+
+/// Runs the same adapted suite and assertions in CPython without changing `sys.modules`.
+fn run_test_cases_cpython_stdlib(path: &Path) -> Result<(), Box<dyn Error>> {
+    run_cpython_fixture(path, STDLIB_TEST_PREAMBLE)
+}
+
+/// Runs a CPython fixture, optionally with assertion helpers before its body.
+fn run_cpython_fixture(path: &Path, preamble: &str) -> Result<(), Box<dyn Error>> {
     // Joined onto the workspace rather than read relative to the process cwd:
     // the harness never changes directory, so a CPython fixture that calls
     // `os.chdir` cannot race another thread's fixture read.
@@ -2992,6 +3075,7 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
+    let code = prepend_fixture_code(code, preamble);
     let result = try_run_cpython_test(path, &code, &expectation, &config);
 
     if config.xfail_cpython {
@@ -3006,15 +3090,21 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-// Generate tests for all fixture files using datatest-stable harness macro
-datatest_stable::harness!(
-    run_test_cases_monty,
-    TEST_CASES_DIR,
-    r"^.*\.py$",
-    run_test_cases_cpython,
-    TEST_CASES_DIR,
-    r"^.*\.py$",
-);
+/// Puts the assertion helpers in the fixture's scope without registering a module.
+fn prepend_fixture_code(code: String, preamble: &str) -> String {
+    if preamble.is_empty() {
+        code
+    } else {
+        format!("{preamble}{code}")
+    }
+}
+
+datatest_stable::harness! {
+    { test = run_test_cases_monty, root = TEST_CASES_DIR, pattern = r"^.*\.py$" },
+    { test = run_test_cases_cpython, root = TEST_CASES_DIR, pattern = r"^.*\.py$" },
+    { test = run_test_cases_monty_stdlib, root = STDLIB_TESTS_DIR, pattern = r"^test_.*\.py$" },
+    { test = run_test_cases_cpython_stdlib, root = STDLIB_TESTS_DIR, pattern = r"^test_.*\.py$" },
+}
 
 #[cfg(test)]
 #[path = "../tests/units/create_exclusive.rs"]

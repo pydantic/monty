@@ -7,7 +7,7 @@
 use num_bigint::BigInt;
 
 use super::{CallArgs, MontyObject, NamedValues, ObjectRef};
-pub use crate::graph::{ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId};
+pub use crate::graph::{ClassEq, ClassHash, ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId};
 use crate::{file_mode::FileMode, os::TimeCaller};
 
 /// The owned arena, positional roots and keyword roots of a call.

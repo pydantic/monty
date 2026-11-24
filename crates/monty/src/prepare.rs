@@ -4,7 +4,7 @@ use ahash::{AHashMap, AHashSet, RandomState};
 use indexmap::IndexMap;
 
 use crate::{
-    args::{ArgExprs, CallArg, CallKwarg, Signature},
+    args::{ArgExprs, CallArg, CallKwarg, Kwarg, Signature},
     builtins::Builtins,
     expressions::{
         AssignTarget, Callable, CaptureSource, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName,
@@ -54,7 +54,9 @@ pub(crate) fn prepare_with_existing_names(
     interner: &CompileInterns<'_>,
     globals: &mut NameMap,
 ) -> Result<Vec<PreparedNode>, ParseError> {
-    let mut prepared_nodes = Prepare::new_module(globals, interner).prepare_nodes(nodes)?;
+    let mut prepare = Prepare::new_module(globals, interner);
+    prepare.has_star_import = has_star_import(&nodes);
+    let mut prepared_nodes = prepare.prepare_nodes(nodes)?;
 
     // In the root frame, the last expression is implicitly returned if it
     // is not `None`. This matches Python REPL behavior where the last
@@ -98,6 +100,7 @@ pub(crate) fn prepare_snippet(
     names: SnippetNames,
 ) -> Result<Vec<PreparedNode>, ParseError> {
     let mut prepare = Prepare::new_module(globals, interner);
+    prepare.has_star_import = has_star_import(&nodes);
     if names != SnippetNames::Slots {
         prepare.top_level_by_name = true;
         // `global x` at the top level binds in the globals (CPython emits
@@ -116,6 +119,32 @@ pub(crate) fn prepare_snippet(
     prepare.prepare_nodes(nodes)
 }
 
+/// Whether any module-level statement, however nested in control flow, is a
+/// `from m import *`. Function and class bodies are skipped: preparation
+/// rejects a star import there.
+fn has_star_import(nodes: &[ParseNode]) -> bool {
+    nodes.iter().any(|node| match node {
+        Node::ImportStar { .. } => true,
+        Node::For { body, or_else, .. } | Node::While { body, or_else, .. } | Node::If { body, or_else, .. } => {
+            has_star_import(body) || has_star_import(or_else)
+        }
+        Node::With { body, .. } => has_star_import(body),
+        Node::Try(Try {
+            body,
+            handlers,
+            or_else,
+            finally,
+        }) => {
+            has_star_import(body)
+                || handlers.iter().any(|handler| has_star_import(&handler.body))
+                || has_star_import(or_else)
+                || has_star_import(finally)
+        }
+        Node::Match { cases, .. } => cases.iter().any(|case| has_star_import(&case.body)),
+        _ => false,
+    })
+}
+
 /// State machine for the preparation phase that transforms parsed AST nodes into a prepared form.
 ///
 /// Resolves names to namespace slots and rewrites the AST so the bytecode
@@ -126,6 +155,10 @@ pub(crate) fn prepare_snippet(
 /// The interner is borrowed immutably — every `StringId` we need already
 /// arrived through the AST (parse-time interning), so no new strings are
 /// allocated during prepare.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent scope flags, not a state machine"
+)]
 struct Prepare<'i, 'g> {
     /// String interner for resolving names in error messages.
     interner: &'i CompileInterns<'i>,
@@ -192,6 +225,13 @@ struct Prepare<'i, 'g> {
     /// Names declared `global` at a by-name snippet's top level; they keep
     /// slot resolution. Empty otherwise.
     module_global_names: AHashSet<StringId>,
+    /// Whether the module runs a `from m import *`, which may rebind any
+    /// builtin name, so module-scope reads never substitute builtins.
+    has_star_import: bool,
+    /// True while preparing the nested portion of a comprehension in a class
+    /// body. The first iterable is evaluated in the class body itself; filters,
+    /// later iterables, and result expressions skip the class namespace.
+    skip_class_scope: bool,
     /// Class members whose binding statement has already been prepared, in
     /// source order (only populated when `is_class_scope`).
     ///
@@ -205,6 +245,9 @@ struct Prepare<'i, 'g> {
     /// (see [`Self::get_id_read`]). If class bodies ever allow conditional
     /// bindings this must become a runtime-fallback opcode instead.
     bound_class_members: AHashSet<StringId>,
+    /// Aliased class-body local slot holding the implicit `__class__` cell when a
+    /// method or nested closure in this class references `__class__`.
+    class_cell_slot: Option<NamespaceId>,
     /// Whether the annotation expressions of a synthesized `__annotate__` scope
     /// are being prepared: every name, even the scope's `format` parameter,
     /// resolves by name at run time (`NameScope::Name`), through the class
@@ -346,6 +389,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 let mut locals: AHashSet<StringId> = state.free_var_map.keys().copied().collect();
                 locals.extend(state.enclosing_locals.iter().copied());
                 locals.retain(|name| !state.global_names.contains(name));
+                if let Some(dunder_class_id) = self.interner.get_string_id_by_name("__class__") {
+                    locals.insert(dunder_class_id);
+                }
                 locals
             }
             PrepareState::Function(state) => {
@@ -386,6 +432,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 binding.captured = true;
                 return CaptureSource::CompVar(binding.slot);
             }
+        }
+        if self.is_class_scope
+            && self.interner.get_str(name_id) == "__class__"
+            && let Some(slot) = self.class_cell_slot
+        {
+            return CaptureSource::Namespace(slot);
         }
         if let PrepareState::Function(state) = &self.state {
             if let Some(&slot) = state.cell_var_map.get(&name_id) {
@@ -431,6 +483,14 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let PrepareState::Function(state) = &mut self.state else {
             return Ok(());
         };
+
+        if self.is_class_scope && self.interner.get_str(captured_name) == "__class__" {
+            if self.class_cell_slot.is_none() {
+                let slot = state.locals.push_aliased_slot(captured_name, position)?;
+                self.class_cell_slot = Some(slot);
+            }
+            return Ok(());
+        }
 
         if state.cell_var_map.contains_key(&captured_name) || state.free_var_map.contains_key(&captured_name) {
             return Ok(());
@@ -525,8 +585,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
             comp_name_scopes: Vec::new(),
             top_level_by_name: false,
             module_global_names: AHashSet::new(),
+            has_star_import: false,
             is_class_scope: false,
+            skip_class_scope: false,
             bound_class_members: AHashSet::new(),
+            class_cell_slot: None,
             is_annotate: false,
         }
     }
@@ -640,8 +703,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
             comp_name_scopes: Vec::new(),
             top_level_by_name: false,
             module_global_names: AHashSet::new(),
+            has_star_import: false,
             is_class_scope: false,
+            skip_class_scope: false,
             bound_class_members: AHashSet::new(),
+            class_cell_slot: None,
             is_annotate: false,
         })
     }
@@ -882,12 +948,16 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 }
                 Node::ClassDef {
                     name,
+                    bases,
+                    keywords,
                     body,
                     members,
                     decorators,
                     position,
                 } => {
-                    new_nodes.push(self.prepare_class_def(name, body, members, decorators, position)?);
+                    let prepared =
+                        self.prepare_class_def(name, bases, keywords, body, members, decorators, position)?;
+                    new_nodes.push(prepared);
                 }
                 Node::Global { names, position } => {
                     // At module level, `global` is a no-op since all variables are already global.
@@ -1046,6 +1116,27 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         submodules,
                         names: resolved_names,
                         position,
+                    });
+                }
+                // Binds names unknown until runtime, so it never reaches the slot
+                // resolution that function and class bodies depend on.
+                Node::ImportStar {
+                    module_name,
+                    submodules,
+                    position,
+                    star_position,
+                } => {
+                    if !self.is_module_scope() {
+                        return Err(ParseError::syntax(
+                            "import * only allowed at module level",
+                            star_position,
+                        ));
+                    }
+                    new_nodes.push(Node::ImportStar {
+                        module_name,
+                        submodules,
+                        position,
+                        star_position,
                     });
                 }
             }
@@ -1294,7 +1385,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
         //
         // A by-name snippet top level never has it either: its namespace dict
         // may shadow the builtin, so the read is deferred to runtime too.
-        if self.is_module_scope() && !self.top_level_by_name {
+        // A star import can bind any name. A later REPL snippet sees the slots it
+        // bound, but within this snippet nothing tells which names it binds.
+        if self.is_module_scope() && !self.top_level_by_name && !self.has_star_import {
             let name_str = self.interner.get_str(name.name_id);
             let already_bound =
                 self.names_assigned_in_order.contains(&name.name_id) || self.globals.globals.contains(name.name_id);
@@ -1360,7 +1453,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // Anchor any namespace-overflow error to the first generator's iter,
         // since the walrus statements themselves can be scattered through the
         // comprehension and don't have a single load-bearing position.
-        let comp_pos = generators.first().map(|g| g.iter.position).unwrap_or_default();
+        let comp_pos = generators.first().map_or_default(|g| g.iter.position);
         for &name in &walrus_targets {
             self.ensure_scope_slot(name, comp_pos)?;
             self.names_assigned_in_order.insert(name);
@@ -1404,6 +1497,14 @@ impl<'i, 'g> Prepare<'i, 'g> {
             remaining_targets.push(self.prepare_unpack_target_for_comprehension(generator.target.clone())?);
         }
 
+        // Everything after the first iterable executes in the comprehension's
+        // nested lexical scope. In a class body that scope can see comprehension
+        // targets and scopes enclosing the class, but not class members.
+        let saved_skip_class_scope = self.skip_class_scope;
+        if self.is_class_scope {
+            self.skip_class_scope = true;
+        }
+
         // Now prepare the first generator's filters (with full comp scope visible),
         // then the remaining generators' iter + filters, then the body element.
         let first_ifs = first_gen
@@ -1442,6 +1543,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             Some((k, v)) => Some((self.prepare_expression(k)?, self.prepare_expression(v)?)),
             None => None,
         };
+        self.skip_class_scope = saved_skip_class_scope;
 
         // The scope preserves lexical allocation order while keeping each name unique.
         let comp_scope = self.comp_name_scopes.pop().expect("comprehension scope was pushed");
@@ -1941,9 +2043,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
     ///   assembly) from the inner preparer's locals.
     ///
     /// The class name itself binds in the **enclosing** scope, exactly like a `def`.
+    #[expect(clippy::too_many_arguments)]
     fn prepare_class_def(
         &mut self,
         name: Identifier,
+        bases: Vec<SequenceItem>,
+        keywords: Vec<Kwarg>,
         body: RawFunctionDef,
         members: Vec<Identifier>,
         decorators: Vec<ExprLoc>,
@@ -1952,6 +2057,24 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // The class name binds in the enclosing scope, exactly like a `def`.
         self.names_assigned_in_order.insert(name.name_id);
         let name = self.get_id(name)?;
+
+        let bases = bases
+            .into_iter()
+            .map(|item| match item {
+                SequenceItem::Value(e) => Ok(SequenceItem::Value(self.prepare_expression(e)?)),
+                SequenceItem::Unpack(e) => Ok(SequenceItem::Unpack(self.prepare_expression(e)?)),
+            })
+            .collect::<Result<Vec<_>, ParseError>>()?;
+
+        let keywords = keywords
+            .into_iter()
+            .map(|kw| {
+                Ok(Kwarg {
+                    key: kw.key,
+                    value: self.prepare_expression(kw.value)?,
+                })
+            })
+            .collect::<Result<Vec<_>, ParseError>>()?;
 
         // Decorators evaluate in the enclosing scope, not the class body.
         let decorators = decorators
@@ -2014,6 +2137,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             ..
         } = *inner_state;
         let namespace_size = inner_locals.len();
+        let class_cell_slot = inner_prepare.class_cell_slot;
         drop(inner_prepare);
 
         // Resolve each member to its class-body-local slot. Every member is
@@ -2050,9 +2174,13 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let FinalizedScope {
             free_var_enclosing_slots,
             free_var_slots,
-            cell_var_slots,
-            cell_param_indices,
+            mut cell_var_slots,
+            mut cell_param_indices,
         } = self.finalize_child_scope(inner_free_var_map, inner_cell_var_map, &param_names, position)?;
+        if let Some(slot) = class_cell_slot {
+            cell_var_slots.push(slot);
+            cell_param_indices.push(None);
+        }
 
         // The class body is a synthetic, never-registered zero-arg function. Its
         // name reuses the class `name_id` (for tracebacks) with a placeholder slot.
@@ -2083,6 +2211,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
 
         Ok(Node::ClassDef {
             name,
+            bases,
+            keywords,
             body: body_def,
             members,
             decorators,
@@ -2330,6 +2460,33 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     NameScope::CompVar,
                 ));
             }
+        }
+
+        // The nested portion of a class-body comprehension skips the class
+        // namespace. Captures from a function enclosing the class have already
+        // been registered in `free_var_map` by the scope-analysis pass.
+        if is_read && self.is_class_scope && self.skip_class_scope {
+            let PrepareState::Function(fn_state) = &mut self.state else {
+                unreachable!("a class scope is represented by a function state");
+            };
+            if fn_state.global_names.contains(&name_id) {
+                let slot = self.globals.ensure_slot(name_id, position)?;
+                return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Global));
+            }
+            if let Some(&slot) = fn_state.free_var_map.get(&name_id) {
+                return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Cell));
+            }
+            if fn_state.enclosing_locals.contains(&name_id) {
+                let name = self.interner.get_str(name_id);
+                return Err(ParseError::not_implemented(
+                    format!(
+                        "class member '{name}' that shadows a captured variable of the same name from an enclosing scope"
+                    ),
+                    position,
+                ));
+            }
+            let slot = self.globals.ensure_slot(name_id, position)?;
+            return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Global));
         }
 
         // In a class body, a READ of a member that has not been bound yet
@@ -2728,10 +2885,26 @@ fn collect_scope_info_from_node(
                 collect_assigned_names_from_expr(default, assigned_names, interner);
             }
         }
-        Node::ClassDef { name, decorators, .. } => {
+        Node::ClassDef {
+            name,
+            bases,
+            keywords,
+            decorators,
+            ..
+        } => {
             // A class definition binds the class name in this scope, just like a `def`.
             // The class body is a separate scope (handled by the cell-var pass).
             assigned_names.insert(name.name_id);
+            for base in bases {
+                match base {
+                    SequenceItem::Value(e) | SequenceItem::Unpack(e) => {
+                        collect_assigned_names_from_expr(e, assigned_names, interner);
+                    }
+                }
+            }
+            for kw in keywords {
+                collect_assigned_names_from_expr(&kw.value, assigned_names, interner);
+            }
             // Decorators evaluate in *this* scope, so a walrus in one binds here.
             for decorator in decorators {
                 collect_assigned_names_from_expr(decorator, assigned_names, interner);
@@ -2791,6 +2964,8 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
+        // A star import is rejected in function scopes, which this walks.
+        Node::ImportStar { .. } => {}
         // Import creates bindings for each module name (or alias)
         Node::Import { names, .. } => {
             for import_name in names {
@@ -3043,7 +3218,23 @@ fn collect_cell_vars_from_node(
                 collect_cell_vars_from_expr(decorator, our_locals, cell_vars, interner);
             }
         }
-        Node::ClassDef { body, decorators, .. } => {
+        Node::ClassDef {
+            bases,
+            keywords,
+            body,
+            decorators,
+            ..
+        } => {
+            for base in bases {
+                match base {
+                    SequenceItem::Value(e) | SequenceItem::Unpack(e) => {
+                        collect_cell_vars_from_expr(e, our_locals, cell_vars, interner);
+                    }
+                }
+            }
+            for kw in keywords {
+                collect_cell_vars_from_expr(&kw.value, our_locals, cell_vars, interner);
+            }
             // The class body is a nested scope of *this* scope, like a `def`: any
             // of our locals referenced from the class-var values or (transitively)
             // the method bodies becomes a cell var. `collect_cell_vars_from_function`
@@ -3203,7 +3394,8 @@ fn collect_cell_vars_from_node(
         | Node::Global { .. }
         | Node::Nonlocal { .. }
         | Node::Import { .. }
-        | Node::ImportFrom { .. } => {}
+        | Node::ImportFrom { .. }
+        | Node::ImportStar { .. } => {}
     }
 }
 
@@ -3650,6 +3842,10 @@ fn collect_referenced_names_from_node(
             def: RawFunctionDef { signature, body, .. },
             decorators,
         } => {
+            // Default parameter expressions evaluate in *our* scope at function-definition time.
+            for default in signature.default_exprs() {
+                collect_referenced_names_from_expr(default, referenced, interner);
+            }
             // Recurse into the nested function's body so transitively-captured
             // names propagate out of it. Without this, an intermediate scope
             // that doesn't itself reference a deep capture would not see it
@@ -3660,7 +3856,22 @@ fn collect_referenced_names_from_node(
                 collect_referenced_names_from_expr(decorator, referenced, interner);
             }
         }
-        Node::ClassDef { decorators, .. } => {
+        Node::ClassDef {
+            bases,
+            keywords,
+            decorators,
+            ..
+        } => {
+            for base in bases {
+                match base {
+                    SequenceItem::Value(e) | SequenceItem::Unpack(e) => {
+                        collect_referenced_names_from_expr(e, referenced, interner);
+                    }
+                }
+            }
+            for kw in keywords {
+                collect_referenced_names_from_expr(&kw.value, referenced, interner);
+            }
             // The class body is a separate scope and the name is a binding, so
             // neither is a reference here — but decorators evaluate in *our*
             // scope, so their names are ours to collect.
@@ -3719,12 +3930,11 @@ fn collect_referenced_names_from_node(
             }
         }
         // Imports create bindings but don't reference names
-        Node::Import { .. } | Node::ImportFrom { .. } => {}
+        Node::Import { .. } | Node::ImportFrom { .. } | Node::ImportStar { .. } => {}
         Node::Pass | Node::Global { .. } | Node::Nonlocal { .. } | Node::Break { .. } | Node::Continue { .. } => {}
     }
 }
 
-/// Collects all names referenced in an expression.
 /// Adds the transitive free-name references of a nested function definition
 /// to `referenced`, after filtering out names that the nested function binds
 /// for itself (params, body-assigned, and `global` declarations).
@@ -3752,21 +3962,31 @@ fn collect_nested_function_references(
     // Anything the nested function binds for itself does NOT propagate out.
     // We treat `global X` the same way: the nested function explicitly
     // routes X to module scope, so we don't want to capture X in this scope's
-    // cell variables.
-    let param_names: Vec<StringId> = signature.param_names().collect();
-    let nested_scope = collect_function_scope_info(body, &param_names, interner);
-    let nested_params: AHashSet<StringId> = param_names.iter().copied().collect();
+    // cell variables. Only its own bindings are needed, so this uses the
+    // non-descending `collect_scope_info_from_node`: `collect_function_scope_info`
+    // would re-walk every deeper function and make this exponential in nesting depth.
+    let mut nested_global = AHashSet::new();
+    let mut nested_nonlocal = AHashSet::new();
+    let mut nested_assigned = AHashSet::new();
+    for n in body {
+        collect_scope_info_from_node(
+            n,
+            &mut nested_global,
+            &mut nested_nonlocal,
+            &mut nested_assigned,
+            interner,
+        );
+    }
+    let nested_params: AHashSet<StringId> = signature.param_names().collect();
     for name in nested_referenced {
-        if nested_scope.assigned_names.contains(&name)
-            || nested_params.contains(&name)
-            || nested_scope.global_names.contains(&name)
-        {
+        if nested_assigned.contains(&name) || nested_params.contains(&name) || nested_global.contains(&name) {
             continue;
         }
         referenced.insert(name);
     }
 }
 
+/// Collects all names referenced in an expression.
 fn collect_referenced_names_from_expr(
     expr: &ExprLoc,
     referenced: &mut AHashSet<StringId>,

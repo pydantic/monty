@@ -8,11 +8,13 @@ use std::{
 };
 
 use num_bigint::BigInt;
+use smallvec::smallvec;
 
 use crate::{
     annotations,
     args::ArgValues,
-    builtins::{Builtins, BuiltinsFunctions},
+    asyncio::TaskFutureState,
+    builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
@@ -23,14 +25,15 @@ use crate::{
     heap_data::heap_payloads,
     identity::Identity,
     intern::{FunctionId, StaticStrings},
-    modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
+    modules::{ModuleFunctions, asyncio::task_call_method, collections::defaultdict::defaultdict_missing},
     types::{
-        BuiltinType, GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, Union, allocate_string,
+        GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_string, allocate_tuple,
         bytes::PyBytes,
+        file::unloaded_iteration_error,
         long_int::{PyInt, arithmetic::float_binary},
-        numeric::{round_digits, round_float},
+        numeric::{float_as_integer_ratio, float_fromhex, float_hex, float_is_integer, round_digits, round_float},
         py_trait::PyObjectIdentity,
-        str::PyStr,
+        str::{PyStr, string_repr_fmt},
     },
     value::{EitherStr, Marker, Value, float_divmod_tuple, float_pow_value, py_float_divmod, py_float_mod},
 };
@@ -61,7 +64,7 @@ macro_rules! define_py_value {
         impl<'h> From<HeapReadOutput<'h>> for PyValue<'h> {
             fn from(value: HeapReadOutput<'h>) -> Self {
                 match value {
-                    HeapReadOutput::Str(value) => Self::Str(PyStr::Heap(value)),
+                    HeapReadOutput::Str(heap_string) => Self::Str(PyStr::Heap(heap_string)),
                     HeapReadOutput::Bytes(value) => Self::Bytes(PyBytes::Heap(value)),
                     HeapReadOutput::LongInt(value) => Self::Int(PyInt::Heap(value)),
                     $(HeapReadOutput::$variant(value) => Self::$variant(value),)*
@@ -142,6 +145,7 @@ macro_rules! forward_py_value {
             Self::DictValueIterator($value) => $body,
             Self::SetIterator($value) => $body,
             Self::CallableIterator($value) => $body,
+            Self::MapFilter($value) => $body,
             Self::Itertools($value) => $body,
             Self::DirScan($value) => $body,
             Self::Csv($value) => $body,
@@ -216,6 +220,45 @@ macro_rules! numeric_binary {
 }
 
 impl<'h> PyValue<'h> {
+    /// Borrows an iterator whose advancement never calls Python or suspends.
+    /// Select this path before consuming anything; other sources must use a continuation.
+    pub(crate) fn native_iterator(value: &Value, vm: &VM<'h>) -> Option<Self> {
+        value.read_heap(vm).map(PyValue::from).filter(|source| {
+            matches!(
+                source,
+                PyValue::ListIterator(_)
+                    | PyValue::DequeIterator(_)
+                    | PyValue::TupleIterator(_)
+                    | PyValue::StringIterator(_)
+                    | PyValue::BytesIterator(_)
+                    | PyValue::RangeIterator(_)
+                    | PyValue::DictKeyIterator(_)
+                    | PyValue::DictItemIterator(_)
+                    | PyValue::DictValueIterator(_)
+                    | PyValue::SetIterator(_)
+            )
+        })
+    }
+
+    /// Completes advancement for a native consumer that cannot retain a continuation.
+    pub(crate) fn next_sync(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        if let Self::OpenFile(file) = self
+            && file.needs_buffer_load(vm)
+        {
+            return Err(unloaded_iteration_error(file.get(vm.heap).file_type()));
+        }
+        let result = match self.py_next(vm) {
+            Ok(Some(CallResult::Value(value))) => return Ok(Some(value)),
+            Ok(None) => return Ok(None),
+            Ok(Some(call)) => call.require_synchronous(vm),
+            Err(error) => Err(error),
+        };
+        match result {
+            Err(error) if error.is_stop_iteration() => Ok(None),
+            result => result.map(Some),
+        }
+    }
+
     /// Reads a heap object once and opens its normalized Python-type view.
     #[inline]
     pub(crate) fn from_heap(id: HeapId, heap: &HeapReader<'h>) -> Self {
@@ -287,6 +330,18 @@ impl<'h> PyValue<'h> {
             }
             Self::GatherFuture(gather) => Ok(write!(f, "<gather({})>", gather.get(vm.heap).item_count())?),
             Self::ExternalFuture(fut) => Ok(write!(f, "<coroutine external_future({})>", fut.get(vm.heap).call_id.raw())?),
+            Self::Task(task) => {
+                let task = task.get(vm.heap);
+                let status = match &task.state {
+                    TaskFutureState::Pending => "pending",
+                    TaskFutureState::Completed(_) => "finished",
+                    TaskFutureState::Failed(_) => "finished",
+                };
+                write!(f, "<Task {status} name=")?;
+                string_repr_fmt(&task.name, f)?;
+                Ok(f.write_str(">")?)
+            }
+            Self::WaitFuture(_) => Ok(f.write_str("<coroutine object wait>")?),
         })
     }
 }
@@ -424,6 +479,9 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         forward_py_value!(self, |value| value.py_hash(vm), {
             Self::Cell(value) => Ok(Some(identity_hash(value.id()))),
             Self::Module(value) => Ok(Some(identity_hash(value.id()))),
+            Self::Task(value) => Ok(Some(identity_hash(value.id()))),
+            Self::GatherFuture(value) => Ok(Some(identity_hash(value.id()))),
+            Self::ExternalFuture(value) => Ok(Some(identity_hash(value.id()))),
             Self::Undefined => Value::Undefined.py_hash(vm),
             Self::Ellipsis => Value::Ellipsis.py_hash(vm),
             Self::NotImplemented => Value::NotImplemented.py_hash(vm),
@@ -444,28 +502,30 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             else Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         forward_py_value!(self, |value| value.py_next(vm),
             else Err(ExcType::type_error_not_iterator(&self.py_type_name(vm))))
     }
 
-    fn py_type(&self, vm: &VM<'h>) -> Type {
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
         forward_py_value!(self, |value| value.py_type(vm), {
             Self::Undefined => panic!("Cannot get type of undefined value"),
-            Self::Ellipsis => Type::Ellipsis,
-            Self::NotImplemented => Type::NotImplementedType,
-            Self::None => Type::NoneType,
-            Self::Bool(_) => Type::Bool,
-            Self::Float(_) => Type::Float,
-            Self::Builtin(value) => value.py_type(),
-            Self::ModuleFunction(_) => Type::BuiltinFunction,
-            Self::DefFunction(_) => Type::Function,
-            Self::Marker(value) => value.py_type(),
-            Self::Property(_) => Type::Property,
-            Self::Cell(_) => Type::Cell,
+            Self::Ellipsis => Type::Ellipsis.into(),
+            Self::NotImplemented => Type::NotImplementedType.into(),
+            Self::None => Type::NoneType.into(),
+            Self::Bool(_) => Type::Bool.into(),
+            Self::Float(_) => Type::Float.into(),
+            Self::Builtin(value) => value.py_type().into(),
+            Self::ModuleFunction(_) => Type::BuiltinFunction.into(),
+            Self::DefFunction(_) => Type::Function.into(),
+            Self::Marker(value) => value.py_type().into(),
+            Self::Property(_) => Type::Property.into(),
+            Self::Cell(_) => Type::Cell.into(),
             Self::Exception(e) => e.py_type(vm),
-            Self::Module(_) => Type::Module,
-            Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
+            Self::Module(_) => Type::Module.into(),
+            Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine.into(),
+            Self::Task(_) => Type::Task.into(),
+            Self::WaitFuture(_) => Type::Coroutine.into(),
         })
     }
 
@@ -775,11 +835,60 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
-            Self::Builtin(Builtins::Type(ty)) => Type::from(*ty).call_class_method(attr, args, vm),
+            Self::Task(value) => task_call_method(value, attr, args, vm),
+            Self::Builtin(Builtins::Type(ty)) => ty.call_class_method(attr, args, vm),
             Self::DefFunction(func_id) => {
                 match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
                     Some(result) => result,
                     None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
+                }
+            }
+            Self::Bool(value) => {
+                match attr.static_string(vm.interns) {
+                    Some(StaticStrings::BitLength) => {
+                        args.check_zero_args("int.bit_length", vm.heap)?;
+                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
+                    }
+                    Some(StaticStrings::BitCount) => {
+                        args.check_zero_args("int.bit_count", vm.heap)?;
+                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
+                    }
+                    Some(StaticStrings::AsIntegerRatio) => {
+                        args.check_zero_args("int.as_integer_ratio", vm.heap)?;
+                        Ok(CallResult::Value(allocate_tuple(
+                            smallvec![Value::Int(i64::from(*value)), Value::Int(1)],
+                            vm.heap,
+                        )))
+                    }
+                    Some(StaticStrings::IsInteger) => {
+                        args.check_zero_args("int.is_integer", vm.heap)?;
+                        Ok(CallResult::Value(Value::Bool(true)))
+                    }
+                    _ => {
+                        args.drop_with(vm);
+                        Err(ExcType::attribute_error("bool", attr.as_str(vm.interns)))
+                    }
+                }
+            }
+            Self::Float(value) => {
+                match attr.static_string(vm.interns) {
+                    Some(StaticStrings::AsIntegerRatio) => {
+                        args.check_zero_args("float.as_integer_ratio", vm.heap)?;
+                        float_as_integer_ratio(*value, vm.heap).map(CallResult::Value)
+                    }
+                    Some(StaticStrings::IsInteger) => {
+                        args.check_zero_args("float.is_integer", vm.heap)?;
+                        Ok(CallResult::Value(Value::Bool(float_is_integer(*value))))
+                    }
+                    Some(StaticStrings::Hex) => {
+                        args.check_zero_args("float.hex", vm.heap)?;
+                        Ok(CallResult::Value(allocate_string(float_hex(*value), vm.heap)))
+                    }
+                    Some(StaticStrings::Fromhex) => float_fromhex(args, vm).map(CallResult::Value),
+                    _ => {
+                        args.drop_with(vm);
+                        Err(ExcType::attribute_error("float", attr.as_str(vm.interns)))
+                    }
                 }
             }
             _ => {
@@ -791,9 +900,8 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         forward_py_value!(self, |value| value.py_getitem(key, vm), {
-            Self::Builtin(Builtins::Type(t)) if Type::from(*t).has_class_getitem() => Ok(GenericAlias::subscript(*t, key.clone_with_heap(vm), vm)),
-            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Ok(GenericAlias::subscript(BuiltinType::Type, key.clone_with_heap(vm), vm)),
-            Self::Builtin(Builtins::Type(BuiltinType::Union)) => Union::subscript(key.clone_with_heap(vm), vm),
+            Self::Builtin(Builtins::Type(t)) if t.has_class_getitem() => Ok(GenericAlias::subscript(*t, key.clone_with_heap(vm), vm)),
+            Self::Builtin(Builtins::Type(Type::Union)) => Union::subscript(key.clone_with_heap(vm), vm),
             Self::Marker(Marker(StaticStrings::Optional)) => Union::optional(key.clone_with_heap(vm), vm),
             Self::Marker(form) if form.is_generic_form() => GenericAlias::subscript_special(*form, key.clone_with_heap(vm), vm),
             // CPython's wording per kind of `typing` object: `Any` and `TypeVar`
@@ -807,8 +915,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Marker(form) if form.py_type() == Type::SpecialForm => {
                 Err(ExcType::type_error(format!("typing.{} is not subscriptable", <&str>::from(form.0))))
             }
-            Self::Builtin(Builtins::Type(t)) => Err(ExcType::type_error_type_not_subscriptable(&Type::from(*t).name(vm.heap, vm.interns))),
-            Self::Builtin(Builtins::ExcType(exc_type)) => Err(ExcType::type_error_type_not_subscriptable((*exc_type).into())),
+            Self::Builtin(Builtins::Type(t)) => Err(ExcType::type_error_type_not_subscriptable(t.name())),
             _ => Err(ExcType::type_error_not_sub(&self.py_type_name(vm))),
         })
     }
@@ -849,13 +956,18 @@ mod tests {
 
     use super::*;
     use crate::{
+        builtins::BuiltinsFunctions,
         defer_drop_mut,
         heap::{DropGuard, HeapReader},
         heap_data::CellValue,
         intern::{BytesId, CompileInterns, LongIntId, StringId},
         modules::math::MathFunctions,
         run::Executor,
-        types::{Bytes, List, inline_str::InlineStr, property::ZeroArgOsProperty, str::allocate_string_on_heap},
+        types::{
+            Bytes, List,
+            property::ZeroArgOsProperty,
+            str::{InlineStr, allocate_string_on_heap},
+        },
     };
 
     struct TestIds {
@@ -906,8 +1018,9 @@ mod tests {
                 Value::Bool(true),
                 Value::Float(1.25),
                 Value::Builtin(Builtins::Function(BuiltinsFunctions::Len)),
-                Value::Builtin(Builtins::ExcType(ExcType::ValueError)),
-                Value::Builtin(Builtins::Type(BuiltinType::List)),
+                Value::Builtin(Builtins::Type(Type::ValueError)),
+                Value::Builtin(Builtins::Type(Type::List)),
+                Value::Builtin(Builtins::Type(Type::Type)),
                 Value::ModuleFunction(ModuleFunctions::Math(MathFunctions::Sqrt)),
                 Value::DefFunction(ids.function),
                 Value::Marker(Marker(StaticStrings::Optional)),
@@ -984,7 +1097,7 @@ mod tests {
                 assert_eq!(iterator.py_type(vm), iterator_type);
                 assert!(iterator.py_is_iterator(vm));
                 let mut actual = Vec::new();
-                while let Some(item) = iterator.py_next(vm).unwrap() {
+                while let Some(item) = iterator.read(vm).py_next(vm).unwrap() {
                     defer_drop!(item, vm);
                     actual.push(if bytes {
                         let Value::Int(byte) = item else {

@@ -206,6 +206,7 @@ assert list(deque([1]) + deque([2])) == [1, 2], 'deque + deque concatenates'
 assert list(deque([1, 2]) * 2) == [1, 2, 1, 2], 'deque * int repeats'
 assert list(deque([1, 2]) * 0) == [], 'deque * 0 is empty'
 assert list(deque([1, 2]) * -1) == [], 'deque * negative is empty'
+assert list(deque() * 2**40) == []
 d = deque([1])
 d += deque([2])
 assert list(d) == [1, 2], 'deque += deque'
@@ -227,6 +228,7 @@ assert repr(deque([1, 2, 3], maxlen=5) * 4) == 'deque([2, 3, 1, 2, 3], maxlen=5)
 assert repr(deque([1, 2, 3], maxlen=5) * 1) == 'deque([1, 2, 3], maxlen=5)'
 assert repr(2 * deque([1, 2, 3], maxlen=5)) == 'deque([2, 3, 1, 2, 3], maxlen=5)'
 assert repr(deque([1, 2], maxlen=0) * 10**9) == 'deque([], maxlen=0)'
+assert repr(deque(maxlen=3) * 2**40) == 'deque([], maxlen=3)'
 # in-place repetition truncates the same way
 d = deque([1, 2, 3], maxlen=5)
 d *= 4
@@ -253,6 +255,12 @@ try:
     assert False, 'expected OverflowError'
 except OverflowError as exc:
     assert str(exc) == "cannot fit 'int' into an index-sized integer", str(exc)
+# the count is checked before the empty operand short-circuits
+try:
+    deque() * 2**63
+    assert False, 'expected deque() * 2**63 to raise'
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
 
 # === Construction errors ===
 try:

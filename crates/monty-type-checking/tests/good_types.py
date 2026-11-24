@@ -10,13 +10,14 @@ import json
 import os
 import random
 import re
+import statistics
 import sys
 import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from io import BufferedReader, BufferedWriter, TextIOWrapper
 from pathlib import Path
-from typing import Any, LiteralString, TextIO, assert_type, get_type_hints
+from typing import Any, LiteralString, TextIO, assert_type, cast, get_type_hints
 
 import annotationlib
 
@@ -714,7 +715,7 @@ assert_type(functools.lru_cache(get_list_int)(), list[int])
 # Loop variables keep their element type for every iterable, not just lists
 for x_list in get_list_int():
     assert_type(x_list, int)
-for k_dict, v_dict in {'a': 1}.items():
+for k_dict, v_dict in get_dict_str_int().items():
     assert_type(k_dict, str)
     assert_type(v_dict, int)
 assert_type([y_comp for y_comp in [1, 2]], list[int])
@@ -831,3 +832,20 @@ forward.evaluate(format=annotationlib.Format.STRING)
 annotationlib.get_annotations(annotated, format=annotationlib.Format.STRING)
 assert_type(annotationlib.get_annotations(annotated), dict[str, Any])
 assert_type(get_type_hints(annotated, format=annotationlib.Format.FORWARDREF), dict[str, Any])
+
+# === typing.cast ===
+assert_type(cast(int, 'x'), int)
+assert_type(cast('list[int]', get_type_hints(annotated)), list[int])
+
+# === statistics ===
+
+assert_type(statistics.mean([1, 2, 3]), float)
+assert_type(statistics.fmean([1, 2.5], weights=[1, 2]), float)
+assert_type(statistics.median([1.5, 2.5]), float)
+assert_type(statistics.median_low(['a', 'b']), str)
+assert_type(statistics.mode(['a', 'b']), str)
+assert_type(statistics.multimode([1, 1, 2]), list[int])
+assert_type(statistics.stdev([1.0, 2.0], xbar=1.5), float)
+assert_type(statistics.pvariance([1, 2]), float)
+assert_type(statistics.quantiles([1, 2, 3, 4], n=4, method='inclusive'), list[float])
+assert_type(statistics.StatisticsError('x'), statistics.StatisticsError)

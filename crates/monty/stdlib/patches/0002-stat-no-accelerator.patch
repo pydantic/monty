@@ -1,6 +1,5 @@
-stat: drop the optional `from _stat import *`.
-Monty rejects wildcard imports at parse time and has no _stat, so the pure-Python
-definitions above are the module; drop this patch once `from m import *` parses.
+Use the pure-Python stat implementation without importing _stat.
+Permanent: Importing stat must not ask the host for an optional accelerator.
 
 --- a/stat.py
 +++ b/stat.py

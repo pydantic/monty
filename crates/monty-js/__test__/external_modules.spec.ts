@@ -321,7 +321,7 @@ test('async factories are awaited together for a stubs ask', async () => {
 test('a module without stubs does not type-check', async () => {
   const unresolved = {
     instanceOf: MontyTypingError,
-    message: 'TypeError: main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`',
+    message: 'TypeError: main.py:1:8: error[import-not-found] Cannot resolve imported module `tools`',
   }
   let blob: Buffer
   {
@@ -360,6 +360,7 @@ test('an invalid module name is refused when a call reaches it', async () => {
     ['for', 'TypeError: externalModules.for is not a valid module name'],
     ['1tools', 'TypeError: externalModules.1tools is not a valid module name'],
     ['json', 'TypeError: externalModules.json is provided by the sandbox and cannot be replaced'],
+    ['_stat', 'TypeError: externalModules._stat is provided by the sandbox and cannot be replaced'],
   ]
   for (const [name, message] of cases) {
     const probe = () => 'hidden'

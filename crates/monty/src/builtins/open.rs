@@ -76,6 +76,9 @@ pub(crate) fn builtin_open(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRe
     if file_mode.is_binary() && newline.is_some() {
         return Err(ExcType::value_error("binary mode doesn't take a newline argument"));
     }
+    if vm.env.legacy_binary_writes && matches!(file_mode, FileMode::WriteUpdate(true)) {
+        return Err(ExcType::not_implemented("binary update mode requires positional filesystem writes").into());
+    }
 
     let name = if file.py_type(vm) == Type::Bytes {
         FileName::Bytes(path.as_bytes().to_vec())

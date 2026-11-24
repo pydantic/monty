@@ -36,7 +36,6 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::{check_mult_size, check_product_size},
@@ -45,6 +44,7 @@ use crate::{
 };
 
 mod aggregate;
+pub(crate) use aggregate::{fsum, sumprod};
 
 // ==========================
 // Shared constants and error helpers
@@ -110,85 +110,86 @@ fn check_gamma_pole(f: f64) -> RunResult<()> {
 }
 
 /// Math module functions — each variant corresponds to a Python-visible function.
+#[monty_macros::explicit_discriminants(checksum = 0x0fdd_acb7_255d_bb02)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum MathFunctions {
     // Rounding
-    Floor,
-    Ceil,
-    Trunc,
+    Floor = 0,
+    Ceil = 1,
+    Trunc = 2,
     // Roots & powers
-    Sqrt,
-    Isqrt,
-    Cbrt,
-    Pow,
-    Exp,
-    Exp2,
-    Expm1,
+    Sqrt = 3,
+    Isqrt = 4,
+    Cbrt = 5,
+    Pow = 6,
+    Exp = 7,
+    Exp2 = 8,
+    Expm1 = 9,
     // Logarithms
-    Log,
-    Log1p,
-    Log2,
-    Log10,
+    Log = 10,
+    Log1p = 11,
+    Log2 = 12,
+    Log10 = 13,
     // Float properties
-    Fabs,
-    Isnan,
-    Isinf,
-    Isfinite,
-    Copysign,
-    Isclose,
-    Nextafter,
-    Ulp,
+    Fabs = 14,
+    Isnan = 15,
+    Isinf = 16,
+    Isfinite = 17,
+    Copysign = 18,
+    Isclose = 19,
+    Nextafter = 20,
+    Ulp = 21,
     // Trigonometric
-    Sin,
-    Cos,
-    Tan,
-    Asin,
-    Acos,
-    Atan,
-    Atan2,
+    Sin = 22,
+    Cos = 23,
+    Tan = 24,
+    Asin = 25,
+    Acos = 26,
+    Atan = 27,
+    Atan2 = 28,
     // Hyperbolic
-    Sinh,
-    Cosh,
-    Tanh,
-    Asinh,
-    Acosh,
-    Atanh,
+    Sinh = 29,
+    Cosh = 30,
+    Tanh = 31,
+    Asinh = 32,
+    Acosh = 33,
+    Atanh = 34,
     // Angular conversion
-    Degrees,
-    Radians,
+    Degrees = 35,
+    Radians = 36,
     // Integer math
-    Factorial,
-    Gcd,
-    Lcm,
-    Comb,
-    Perm,
+    Factorial = 37,
+    Gcd = 38,
+    Lcm = 39,
+    Comb = 40,
+    Perm = 41,
     // Modular / decomposition
-    Fmod,
-    Remainder,
-    Modf,
-    Frexp,
-    Ldexp,
+    Fmod = 42,
+    Remainder = 43,
+    Modf = 44,
+    Frexp = 45,
+    Ldexp = 46,
     // Special functions
-    Gamma,
-    Lgamma,
-    Erf,
-    Erfc,
-    // Summation and products (append to preserve serialized variant indices).
-    Hypot,
-    Dist,
-    Fsum,
-    Prod,
-    Sumprod,
-    Fma,
+    Gamma = 47,
+    Lgamma = 48,
+    Erf = 49,
+    Erfc = 50,
+    // Summation and products
+    Hypot = 51,
+    Dist = 52,
+    Fsum = 53,
+    Prod = 54,
+    Sumprod = 55,
+    Fma = 56,
 }
 
-/// Creates the `math` module and allocates it on the heap.
+/// Creates the `math` module.
 ///
 /// Registers all math functions and constants (`pi`, `e`, `tau`, `inf`, `nan`)
 /// matching CPython's `math` module. Functions are registered as
 /// `ModuleFunctions::Math` variants.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Math, vm.interns);
 
     // Register all math functions
@@ -203,7 +204,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     module.set_attr(StaticStrings::MathInf, Value::Float(f64::INFINITY), vm);
     module.set_attr(StaticStrings::MathNan, Value::Float(f64::NAN), vm);
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Static mapping of attribute names to math functions for module creation.
@@ -438,7 +439,7 @@ fn math_isqrt(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let n = value_to_bigint(value, vm)?;
     if n.is_negative() {
-        Err(SimpleException::new_msg(ExcType::ValueError, "isqrt() argument must be nonnegative").into())
+        Err(ExcType::isqrt_negative_error())
     } else if let Some(n) = n.to_i64() {
         Ok(Value::Int(isqrt_i64(n)))
     } else {
@@ -984,7 +985,8 @@ fn math_atanh(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         )
         .into());
     }
-    Ok(Value::Float(f.atanh()))
+    // `f64::atanh` is a Rust std formula that loses most digits near -1.
+    Ok(Value::Float(libm::atanh(f)))
 }
 
 // ==========================

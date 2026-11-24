@@ -151,7 +151,7 @@ export interface DisconnectedTurn {
 
 /** The remote server refused to open the session's stream, so no session
  *  existed and nothing ran; the details are the status it refused with.
- *  Only produced by `enter`. Remote pools only. */
+ *  Produced by `enter`, and by `start` for a pre-warmed session. Remote pools only. */
 export interface RefusedTurn {
   kind: 'refused'
   message: string
@@ -168,7 +168,8 @@ export interface ConnectTurn extends Omit<DisconnectedTurn, 'kind'> {
   kind: 'connect'
 }
 
-/** The client configuration is incompatible with the remote server. */
+/** The client configuration is incompatible with the remote server; reported
+ *  by the session's first request, which carries its `Configure`. */
 export interface ConfigurationTurn {
   kind: 'configuration'
   message: string
@@ -203,7 +204,7 @@ export interface ExhaustedTurn {
 }
 
 /** What `NativePool.start` resolves to: started, or why not. */
-export type StartTurn = OkTurn | ProtocolTurn | ConnectTurn | ConfigurationTurn
+export type StartTurn = OkTurn | ProtocolTurn | ConnectTurn | ConfigurationTurn | RefusedTurn
 
 /** What `NativeSession.enter` resolves to: entered, or why not. */
 export type EnterTurn =
@@ -251,8 +252,22 @@ export type NativeTurn =
   | TypingErrorTurn
   | CrashedTurn
   | ProtocolTurn
+  | ConfigurationTurn
   | DisconnectedTurn
   | ShutdownTurn
+
+/**
+ * A call to an async host function the sandbox started without suspending.
+ * The sandbox already holds a pending future for `callId`, settled through
+ * `resolveFutures` once a `resolveFutures` turn names it.
+ */
+export interface NativeStreamedCall {
+  functionName: string
+  args: unknown[]
+  kwargs: [unknown, unknown][]
+  callId: number
+  position: NativeSourceRange
+}
 
 /** One settled promise outcome delivered to `resolveFutures`. */
 export interface NativeFutureResult {

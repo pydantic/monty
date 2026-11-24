@@ -18,12 +18,22 @@ This is the recommended way to run Monty from Rust. It is also the engine undern
 A `Pool` keeps an elastic set of workers (`min_processes` prewarmed, up to `max_processes`).
 Until it is closed, a subprocess pool replaces any worker that is recycled, crashes or is
 discarded in the background until `min_processes` workers are live again; a replacement that
-fails to spawn is retried with a doubling backoff. Remote pools never refill.
+fails to spawn is retried with a doubling backoff. `pre_warm` (0 by default) is a further floor,
+on ready workers and on either transport: each one a checkout takes is replaced the same
+way, up to `max_processes`. It is the only floor a remote pool has, since a checked-out
+session is never reused.
 `Pool::checkout` dedicates one worker to one REPL session: the caller feeds snippets of code
 and answers suspension events (`TurnEvent` — external function calls, OS calls, name lookups,
 async futures) until the snippet completes, then `Checkout::finish` returns the worker to the
 pool for reuse. A `Checkout` dropped without `finish` kills its worker instead — mid-execution
-state cannot be trusted back into the pool.
+state cannot be trusted back into the pool. The session's `Configure` carries its first `feed` /
+`restore` (`Configure.first`) rather than taking a turn of its own, so a worker refusing it (an
+invalid `os_policy`, a clock it cannot serve) replies `SessionRefused`: that request never runs,
+fails with `PoolError::Configuration`, and ends the session; a checkout that is finished without a
+request never configures its worker.
+`Checkout::open`, and a first `dump` or non-empty `install_dependencies`, send it alone and wait for
+the reply. The first request's duration backstop also covers a freshly spawned worker's start-up:
+the process is spawned before the checkout, but it may still be loading when the request goes out.
 
 Use `Checkout::terminate` when cleanup must wait for subprocess exit.
 It discards the worker and returns `Some(ExitStatus)` only after the OS confirms exit.
@@ -78,12 +88,27 @@ The flush interval batches `print()` output; `Duration::ZERO` sends one event pe
 Its `os_policy` sets the clock, timezone, initial random state and sleep policy for the session.
 `CallHost` delegates calls to the caller's OS handler through `TurnEvent::OsCall`.
 Every suspension variant of `TurnEvent` carries `position`, a `SourceRange` locating the suspending expression.
+
+With `PoolConfig::stream_async_calls` (on for `PoolConfig::remote`, off for `PoolConfig::subprocess`) and a handler
+passed to `Checkout::set_streamed_call_handler`, calls to async host functions (a `MontyObject::async_function` value,
+or a name given to `Checkout::set_async_functions`) that the sandbox does not await at once do not suspend: the worker
+sends them mid-turn and keeps running.
+Without a handler, or after `set_async_functions(None)`, they suspend like any call for the feeds that follow.
+A worker that predates `Configure.accepts_streamed_calls` ignores all of this and suspends at each call as before.
+The turn awaits the handler for each call as it awaits `on_print`, so calls and prints reach the host in the order the
+sandbox made them; start the call there, and settle it with `resume_futures` once a `TurnEvent::ResolveFutures` names it.
+Each started call counts against `max_suspensions`.
+Within a feed, calls whose results the host has not sent may hold at most a quarter of `PoolConfig::max_decode_bytes`
+(256 MiB by default) of arguments; past that the pool discards the worker and the session ends with a `MemoryError`.
+The count restarts with each feed, so a `StreamedCall` a handler keeps past its feed is the handler's to free.
 The default `SleepMode::System` sets `system_sleep` to the capped delay for the caller to await directly.
 `SleepMode::Zero` returns immediately.
 
 `Checkout::feed` accepts inputs exposed as sandbox globals and per-feed filesystem mounts (`MountSpec`); mounts that
 overlap on the host or repeat a virtual path fail the feed with a session-preserving `PoolError::Runtime`.
 `Checkout::feed_with_cwd` also changes the working directory, which defaults to the first feed's first mount and persists.
+`Checkout::feed_with` and `Checkout::restore_with` also take `TurnOptions`, whose `traceparent` names the span the
+turn was started under (see [trace context](#trace-context)).
 `Checkout::worker_id` identifies a worker within its pool independently of PID reuse, for either transport.
 It returns `None` after the worker is released or discarded; `Checkout::pid` remains the subprocess-only OS diagnostic.
 
@@ -98,18 +123,18 @@ Invalid snapshots have no correctness or availability guarantees.
 - **Crash isolation** — a segfault, stack-overflow abort, or allocator abort in the sandbox
   kills only the worker. The pool observes the death as `PoolError::Crashed`, discards the
   worker, and spawns a replacement; the parent process and every other session stay healthy.
-- **Hard timeouts** — a parent-side deadline kills any worker whose turn exceeds
+- **Hard timeouts** — a client-side deadline kills any worker whose turn exceeds
   `request_timeout` (`PoolError::Timeout`), backstopping the sandbox's own resource limits
   and catching hangs those limits cannot see. Synchronous host telemetry processors delay
   enforcement while they run because the timer cannot be polled. When a session has a
-  `max_feed_duration` or `max_turn_duration` budget, the default deadline also enforces it from outside the child,
+  `max_feed_duration` or `max_turn_duration` budget, the default deadline also enforces it from outside the worker,
   each with its own grace (`feed_duration_limit_grace`, `turn_duration_limit_grace`, 1s by default;
   `None` disables that backstop).
   A `max_suspensions` budget is enforced by the pool alone: it counts the suspensions it services
   and ends the feed past the budget with an uncatchable `RuntimeError` in the sandbox.
   `PoolConfig::subprocess` sets neither `request_timeout` nor `checkout_timeout` by
   default; set `request_timeout` yourself for untrusted code.
-- **Untrusted children** — the parent treats every frame from a (possibly compromised)
+- **Untrusted workers** — the client treats every frame from a (possibly compromised)
   worker as untrusted: wire decoding validates everything and never panics, and a worker
   that violates the protocol is discarded.
   `PoolConfig::max_decode_bytes` can lower the default 1 GiB per-frame decode
@@ -117,11 +142,17 @@ Invalid snapshots have no correctness or availability guarantees.
   process-memory limit. Exhaustion discards the worker without replaying the request.
   On the remote transport it also caps each message, clamped between 64 KiB and the
   256 MiB frame limit, so a larger one is refused before it is buffered.
-- **Worker recycling** — `max_checkouts_per_worker` recycles long-lived children to bound
+- **Worker recycling** — `max_checkouts_per_worker` recycles long-lived workers to bound
   how long a slow leak or a compromised worker survives. It defaults to
   `Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER)` (1000); `None` never recycles. With the
   subprocess transport, `Some(1)` runs every session in a fresh process, which with
   `min_processes > 0` the background refill has usually spawned before the checkout asks.
+- **Prewarmed type checker** — `prewarm_type_checker` has each worker build a type checker with
+  the builtins resolved at startup and between checkouts, so a session's first type-checked feed skips that
+  work; a checkout arriving mid-build waits for it. It costs
+  about 6 MiB of allocator-tracked memory per worker, added to the worker's baseline rather than any session's
+  `max_memory`; it is not an RSS figure, so cap process memory with OS or cgroup limits. It
+  is wasted when sessions do not type-check. Off by default; subprocess transport only.
 - **Memory limits** — a session's `max_memory` also caps the worker's live allocations,
   enforced in the worker's own global allocator
   ([`monty-alloc`](https://crates.io/crates/monty-alloc)) plus 4 MB of headroom (32 MB with
@@ -209,12 +240,24 @@ choices and its final flush/shutdown.
 
 Recording happens in the host process, which builds every request and decodes every event
 anyway, so both transports are covered and the workers stay uninstrumented. Each instrumented checkout
-becomes one session span; each feed is a nested span held across suspension round-trips, with
+becomes one session span; each feed is a span held across suspension round-trips, with
 a child span per suspension whose duration is the host round-trip. Fed code, inputs, call
 arguments and results, exceptions and `print` output are recorded in full — values encoded
 the way the Python logfire SDK encodes attributes, capped at 64KB per value — while
-`Load`/`Dump` snapshot blobs are recorded by size only. Supplying an SDK is therefore an
+snapshot blob contents are never recorded. Load and shutdown spans record only their byte counts.
+Supplying an SDK is therefore an
 explicit opt-in to recording potentially sensitive values.
+
+The `dump` and `restore` API spans cover the awaited snapshot call, including any initial session configuration and the relay response.
+Each API span uses the app context active at the call, or the checkout context if no app span is active.
+The `restore` span ends when the call returns, even if the restored execution is suspended.
+Its child `load` span stays open across any restored suspensions and parents their callback spans.
+Raw forwarding and automatic recovery do not create snapshot API spans.
+`monty.turn.duration` and `monty.snapshot.bytes` retain the wire timing and size measurements.
+The API spans use standard tracing and OpenTelemetry status. Monty records outcomes under `monty.*`.
+Dump failures include bounded error text. The restore API span uses the fixed error status
+`restore failed` so its status contains no host paths or snapshot contents.
+The configured provider owns vendor-specific metadata.
 
 The adapter configures a process-global Rust pipeline and returns a handle that creates each
 checkout's serialized parent context. Span and log records are emitted through
@@ -222,6 +265,32 @@ checkout's serialized parent context. Span and log records are emitted through
 the Rust pipeline or receive each raw measurement for aggregation by its native SDK. Python,
 Node, and third-party bindings retain ownership of their native SDK and exporter. Without the
 feature, workers contain no telemetry recorder or telemetry hot path.
+
+### Trace context
+
+The session span is a child of the span in `CheckoutOptions::telemetry`, the one current at checkout.
+A feed, restore, or dump started with `TurnOptions::traceparent` is a child of the span it names.
+The checkout supplies the fallback parent. Resume calls extend the existing run and suspension spans.
+A feed parented that way carries the session span's ID as `checkout_span_id`, when the session span's exported ID
+is known (see `TelemetryAdapter::exported_span_context` below).
+A remote stream's `traceparent` metadata still names the checkout-time span.
+
+The request the pool sends names the recorder's own span for the turn (the feed's, or a restore's `load`) when
+there is one, else the caller's `TurnOptions::traceparent`, so a server that records the session nests its spans under the right one.
+A foreign SDK assigns its own span IDs, so an adapter reports them through `TelemetryAdapter::exported_span_context`;
+an adapter that cannot, such as one that creates spans asynchronously, leaves the caller's value on the request.
+
+A peer that records spans names its span for each suspension in `WorkerEvent.traceparent`.
+The pool surfaces it as `traceparent` on `TurnEvent::FunctionCall`, `OsCall`, `NameLookup` and `ResolveFutures`, and on
+each `StreamedCall`.
+`Checkout::callback_context` and `StreamedCall::callback_context` return the recorder's suspension span, which is then a
+child of the peer's, or without a recorder the peer's span as a remote context.
+`telemetry::remote_suspension` reads the peer's span from either, for a host that cannot resolve the recorded span
+(one recording logs without a tracer).
+A pool recording without a `TelemetryAdapter` (`TelemetryContext::for_logfire`) sets the field on the events it
+returns, `Checkout::turn_raw`'s included, which is how a server built on the pool names its spans to its clients.
+A pool recording through an adapter answers the event itself, so it leaves the peer's value in place.
+A malformed value from a peer is dropped, as is any value from a subprocess worker, which never records spans.
 
 ### Metrics
 
@@ -267,10 +336,10 @@ input so adapters that do not support metrics continue to work.
 
 ## Transports
 
-- **Subprocess** (`PoolConfig::subprocess`) — spawn local `monty subprocess` children over
+- **Subprocess** (`PoolConfig::subprocess`) — spawn local `monty subprocess` workers over
   framed stdio. These are the poolable workers: prewarmed, reused across checkouts, and
   replaced on crash.
-- **Remote** (`PoolConfig::remote`) — reach a remote child through a relay over gRPC at an
+- **Remote** (`PoolConfig::remote`) — reach a remote worker through a relay over gRPC at an
   `http://`/`https://` URL (`ws://`/`wss://` are read as those two). The pool holds one
   HTTP/2 connection, dialed lazily and reconnected by tonic when it drops, and each
   checkout opens one `MontySession.Session` stream on it. An `https://` server's certificate
@@ -280,7 +349,14 @@ input so adapters that do not support metrics continue to work.
   revocation; a Linux host with no CA bundle cannot make an `https://` pool. A stream the server never took
   — it sent `GOAWAY` as it drained, refused the stream, or closed the connection before
   the stream was sent — is opened again, up to twice, within the same `request_timeout`. These workers are single-use:
-  a fresh stream per checkout, never prewarmed or returned to the pool. `finish` half-closes
+  a fresh stream per checkout, never returned to the pool. `pre_warm` (0 by default) keeps that many
+  open and ready, sharing `max_processes` with those checked out: `Pool::new` opens them, failing if
+  one cannot open (in the background when `pre_warm_wait` is off, where a failed open is retried with
+  the refill backoff), and each is replaced when a checkout takes it. One checkout per session already
+  dialing waits for it rather than dialing. The pool calls `pre_warm_metadata` for each one it dials,
+  and a checkout takes one only if it was dialed with that checkout's `CheckoutOptions::metadata`
+  (the trace metadata below aside); otherwise it closes the ready sessions unused and dials for
+  itself (at `max_processes`, after waiting for the server to end one of them). `finish` half-closes
   the stream and returns at once, but its `max_processes` slot is freed only when the server
   ends the stream (or after a second), so a full pool does not open its next stream while the
   server still counts the last one. At most `max_processes` closed streams wait like this;
@@ -291,7 +367,8 @@ input so adapters that do not support metrics continue to work.
   stream carries `user-agent: monty-pool/<version>` (tonic appends its own), and with the
   `telemetry` feature the `traceparent` (and `tracestate`) of `CheckoutOptions::telemetry`,
   so server-side spans join the caller's trace; a `metadata` entry replaces the
-  trace metadata and is put in front of the user agent. A `Ping` event from the server is
+  trace metadata and is put in front of the user agent. That metadata names the span current
+  at checkout; each feed and restore names its own span in the request (see [trace context](#trace-context)). A `Ping` event from the server is
   answered with a `Pong` request by the transport, even while the checkout sits idle, so a
   relay behind a proxy can tell a quiet client from a vanished one; the answer follows the
   events read before the ping, so a server pings between turns, where a slow host callback
@@ -313,7 +390,9 @@ Disconnect messages include the server's status, `RemoteCause` and message, or t
 Refusal messages include the server's status, `RemoteCause` and message.
 Refusal details include `retry_after`, parsed from `Retry-After` delay-seconds or an HTTP date and capped at one hour.
 `retryable()` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not credential errors.
-No automatic retry is performed.
+The pool retries checkout once before admission when the server sends a single valid `Retry-After` of at most two seconds.
+The wait is the greater of the server delay and 100 ms, plus up to 250 ms of jitter.
+The wait and retry share a five-second budget and respect the original checkout and dial deadlines. A retry timeout returns the original refusal.
 An incompatible CPU-mode server configuration returns `PoolError::Configuration`, naming `request_timeout`.
 Malformed request metadata names or values also return `PoolError::Configuration` before any connection attempt,
 as does `Pool::new` for an invalid pool size or an unusable local CPU-clock setting.
@@ -326,7 +405,8 @@ The interrupted request did not run, but restoring a suspended dump repeats its 
 had side effects; callbacks used this way should be idempotent.
 A local subprocess claiming shutdown is a protocol violation.
 
-A remote that supports persistence names sessions with an opaque ID, `Checkout::session_id`;
+A remote that supports persistence names sessions with an opaque ID, `Checkout::session_id`, set once the
+session opens (call `Checkout::open` to open it before any request);
 `ReplConfig::persistence` asks it to store the session or not, and subprocess workers ignore both.
 `ReplConfig::profile` names a server-side profile to run the session under; it is sent in `Configure` as-is, and
 subprocess workers ignore it too.
@@ -357,7 +437,7 @@ naming the function or the `ClassType` id; answer with a dict of hints, or `NotH
 - [`monty-fs`](https://crates.io/crates/monty-fs) — host-side filesystem mounts: maps virtual sandbox paths to real host directories.
 - [`monty-runtime`](https://crates.io/crates/monty-runtime) — the `monty` binary: REPL, file runner, and subprocess worker mode.
 - [`monty-pool`](https://crates.io/crates/monty-pool) — an elastic pool of crash-isolated `monty` worker subprocesses. **this crate**
-- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between pool parents and workers.
+- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between clients and workers.
 - [`monty-type-checking`](https://crates.io/crates/monty-type-checking) — type checking of sandboxed code, powered by [ty](https://docs.astral.sh/ty/).
 - [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
 - [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing.

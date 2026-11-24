@@ -32,7 +32,7 @@ use crate::{
     intern::StaticStrings,
     os_dispatch::value_as_path_str,
     types::{
-        LazyHeapSet, List, Path, PyTrait, Type, allocate_tuple,
+        LazyHeapSet, List, Path, PyTrait, Type, TypeRef, allocate_tuple,
         list::ListIterator,
         str::{allocate_string, string_repr_fmt},
     },
@@ -180,8 +180,8 @@ struct PendingDirnames {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).py_type()
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        self.get(vm.heap).py_type().into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -212,7 +212,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         }
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         match self.get_mut(vm.heap) {
             DirScan::Entry(_) => Err(ExcType::type_error_not_iterator(&self.py_type_name(vm))),
             DirScan::Scandir(iter) => {
@@ -226,6 +226,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
             }
             DirScan::Walk(_) => walk_next(self, vm),
         }
+        .map(|item| item.map(CallResult::Value))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -505,23 +506,21 @@ fn descend_into_dirnames<'h>(
     };
     // Each name is copied, then joined onto the directory and spelled for its
     // step; charged first, since a list can repeat one long name many times.
-    let mut total = 0_usize;
-    for item in list.as_slice() {
-        let Some(name) = value_as_path_str(item, vm.heap, vm.interns) else {
-            return Err(ExcType::type_error(format!(
-                "join() argument must be str, bytes, or os.PathLike object, not '{}'",
-                item.py_type_name_heap(vm.heap, vm.interns)
-            )));
-        };
-        let step = name.len() * 3 + relative.len() + spelled.len() + size_of::<WalkStep>();
-        total = total.saturating_add(step);
-    }
+    let items = list.items();
+    let total = items
+        .map(|item| {
+            let Some(name) = value_as_path_str(item, vm.heap, vm.interns) else {
+                return Err(ExcType::type_error(format!(
+                    "join() argument must be str, bytes, or os.PathLike object, not '{}'",
+                    item.py_type_name_heap(vm.heap, vm.interns)
+                )));
+            };
+            Ok(name.len() * 3 + relative.len() + spelled.len() + size_of::<WalkStep>())
+        })
+        .try_fold(0_usize, |total, size| size.map(|size| total.saturating_add(size)))?;
     vm.heap.tracker.check_allocation(total)?;
-    let names: Vec<String> = list
-        .as_slice()
-        .iter()
-        .filter_map(|item| value_as_path_str(item, vm.heap, vm.interns))
-        .map(str::to_owned)
+    let names: Vec<String> = items
+        .filter_map(|item| value_as_path_str(item, vm.heap, vm.interns).map(str::to_owned))
         .collect();
     let walk = walk_mut(this, vm);
     for name in names.iter().rev() {
@@ -760,7 +759,7 @@ impl ScanEffect {
     /// CPython does for its `scandir` failures. `os.scandir` raises.
     pub(crate) fn absorbs(&self, error: &RunError) -> bool {
         !matches!(self, Self::Scandir { .. })
-            && matches!(error, RunError::Exc(raise) if raise.exc.exc_type().is_subclass_of(ExcType::OSError))
+            && matches!(error, RunError::Exc(raise) if Type::from(raise.exc.exc_type()).is_subclass_of(Type::OSError))
     }
 
     /// Builds the result from the host's reply, or from an error [`Self::absorbs`] accepted.

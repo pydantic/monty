@@ -78,12 +78,12 @@ def S_ISSOCK(mode: int, /) -> bool: ...
 def S_ISWHT(mode: int, /) -> bool: ...
 def filemode(mode: int, /) -> str: ...
 
-if sys.platform == 'win32':
+if sys.platform == "win32":
     IO_REPARSE_TAG_SYMLINK: Final = 0xA000000C
     IO_REPARSE_TAG_MOUNT_POINT: Final = 0xA0000003
     IO_REPARSE_TAG_APPEXECLINK: Final = 0x8000001B
 
-if sys.platform == 'win32':
+if sys.platform == "win32":
     FILE_ATTRIBUTE_ARCHIVE: Final = 32
     FILE_ATTRIBUTE_COMPRESSED: Final = 2048
     FILE_ATTRIBUTE_DEVICE: Final = 64
@@ -110,7 +110,7 @@ if sys.version_info >= (3, 13):
     SF_FIRMLINK: Final = 0x00800000
     SF_DATALESS: Final = 0x40000000
 
-    if sys.platform == 'darwin':
+    if sys.platform == "darwin":
         SF_SUPPORTED: Final = 0x9F0000
         SF_SYNTHETIC: Final = 0xC0000000
 

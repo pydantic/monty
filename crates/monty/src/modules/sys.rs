@@ -25,7 +25,7 @@ use crate::{
 };
 use crate::{
     bytecode::VM,
-    heap::{HeapData, HeapId},
+    heap::HeapData,
     intern::StaticStrings,
     types::{List, Module, NamedTuple, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
     value::{EitherStr, Marker, Value},
@@ -83,16 +83,17 @@ const BUILTIN_MODULE_NAMES: &[StaticStrings] = &[
 /// (and only fixtures) can call back into Monty internals that production
 /// sandbox code must never reach.
 #[cfg(feature = "test-hooks")]
+#[monty_macros::explicit_discriminants(checksum = 0x93cf_5b81_e7e9_9376)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum SysFunctions {
     /// `sys.setrecursionlimit(n)` — tightens the live recursion ceiling to
     /// `n`. Only allows lowering; attempting to raise raises `ValueError`.
-    Setrecursionlimit,
+    Setrecursionlimit = 0,
 }
 
-/// Creates the `sys` module and allocates it on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `sys` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Sys, vm.interns);
 
     // Interpreter identity. `platform` is "monty" rather than the host OS, which
@@ -189,7 +190,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Builds `sys.version_info`: `(major=3, minor=14, micro=0, releaselevel='final', serial=0)`.

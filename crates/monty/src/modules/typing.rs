@@ -13,6 +13,8 @@
 //! though Monty doesn't perform static type checking. `Optional[X]` is the one
 //! marker that can be subscripted, producing `X | None`.
 
+use std::fmt;
+
 use monty_types::{OsFunctionCall, TypeHintsTarget};
 use smallvec::SmallVec;
 
@@ -22,21 +24,21 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions, eval_exec},
     bytecode::{CallResult, MissingNames, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     frozen::{FrozenFunction, FrozenFunctions},
     heap::{HeapData, HeapId},
     intern::{FunctionId, StaticStrings},
     modules::ModuleFunctions,
     types::{
-        BuiltinType, LazyHeapSet, Module, PyTrait, allocate_string, allocate_tuple, forward_ref::format_code,
+        LazyHeapSet, Module, PyTrait, Type, allocate_string, allocate_tuple, forward_ref::format_code,
         generic_alias::repr_type_arg,
     },
     value::{Marker, Value},
 };
 
-/// Creates the `typing` module and allocates it on the heap.
+/// Creates the `typing` module.
 ///
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Typing, vm.interns);
 
     // typing.TYPE_CHECKING - always False
@@ -46,13 +48,13 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     // `types.UnionType` since 3.14), so it is a real type rather than a marker.
     module.set_attr(
         StaticStrings::UnionType,
-        Value::Builtin(Builtins::Type(BuiltinType::Union)),
+        Value::Builtin(Builtins::Type(Type::Union)),
         vm,
     );
     // `typing.ForwardRef is annotationlib.ForwardRef` in CPython.
     module.set_attr(
         StaticStrings::ForwardRef,
-        Value::Builtin(Builtins::Type(BuiltinType::ForwardRef)),
+        Value::Builtin(Builtins::Type(Type::ForwardRef)),
         vm,
     );
 
@@ -67,7 +69,15 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    for (name, function) in [
+        (StaticStrings::Cast, TypingFunctions::Cast),
+        (StaticStrings::AssertType, TypingFunctions::AssertType),
+        (StaticStrings::AssertNever, TypingFunctions::AssertNever),
+    ] {
+        module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Typing(function)), vm);
+    }
+
+    module
 }
 
 /// Typing marker attributes exported by this module.
@@ -102,17 +112,118 @@ const MARKER_ATTRS: &[StaticStrings] = &[
 ];
 
 /// `typing` module functions, each a Python-visible callable.
+#[monty_macros::explicit_discriminants(checksum = 0x126e_e9f4_b5e0_813c)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum TypingFunctions {
-    GetTypeHints,
+    GetTypeHints = 0,
+    Cast = 1,
+    AssertType = 2,
+    AssertNever = 3,
 }
 
 /// Dispatches a `typing` module function call.
 pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) -> RunResult<CallResult> {
     match function {
         TypingFunctions::GetTypeHints => get_type_hints(vm, args),
+        TypingFunctions::Cast => cast(vm, args),
+        TypingFunctions::AssertType => assert_type(vm, args),
+        TypingFunctions::AssertNever => assert_never(vm, args),
     }
+}
+
+/// Arguments of `typing.cast(typ, val)`.
+#[derive(FromArgs)]
+#[from_args(name = "cast", style = def)]
+struct CastArgs {
+    typ: Value,
+    val: Value,
+}
+
+/// `typing.cast()`: returns `val`; `typ` is any object, a string forward reference included.
+fn cast(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let CastArgs { typ, val } = CastArgs::from_args(args, vm)?;
+    defer_drop!(typ, vm);
+    Ok(CallResult::Value(val))
+}
+
+/// Arguments of `typing.assert_type(val, typ, /)`.
+#[derive(FromArgs)]
+#[from_args(name = "assert_type", style = def)]
+struct AssertTypeArgs {
+    #[from_args(pos_only, static_string = "Val")]
+    val: Value,
+    #[from_args(pos_only, static_string = "Typ")]
+    typ: Value,
+}
+
+/// `typing.assert_type()`: returns `val`; only a static type checker looks at `typ`.
+fn assert_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let AssertTypeArgs { val, typ } = AssertTypeArgs::from_args(args, vm)?;
+    defer_drop!(typ, vm);
+    Ok(CallResult::Value(val))
+}
+
+/// Arguments of `typing.assert_never(arg, /)`.
+#[derive(FromArgs)]
+#[from_args(name = "assert_never", style = def)]
+struct AssertNeverArgs {
+    #[from_args(pos_only, static_string = "Arg")]
+    arg: Value,
+}
+
+/// Longest `repr` `typing.assert_never()` quotes before it truncates, in characters.
+const ASSERT_NEVER_REPR_MAX_LENGTH: usize = 100;
+
+/// A `fmt::Write` sink holding at most [`ASSERT_NEVER_REPR_MAX_LENGTH`] characters.
+///
+/// Once more text arrives it sets `truncated` and fails the write, which stops the repr walk early.
+#[derive(Default)]
+struct CappedRepr {
+    text: String,
+    chars: usize,
+    truncated: bool,
+}
+
+impl fmt::Write for CappedRepr {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let room = ASSERT_NEVER_REPR_MAX_LENGTH - self.chars;
+        let mut taken = 0;
+        for (idx, _) in s.char_indices() {
+            if taken == room {
+                self.text.push_str(&s[..idx]);
+                self.chars += taken;
+                self.truncated = true;
+                return Err(fmt::Error);
+            }
+            taken += 1;
+        }
+        self.text.push_str(s);
+        self.chars += taken;
+        Ok(())
+    }
+}
+
+/// `typing.assert_never()`: always raises `AssertionError` quoting a bounded `repr(arg)`.
+fn assert_never(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let AssertNeverArgs { arg } = AssertNeverArgs::from_args(args, vm)?;
+    defer_drop!(arg, vm);
+    // The repr is written into a capped buffer that refuses text past the limit, so a huge or
+    // deeply nested value never has its whole repr built in host memory.
+    let mut capped = CappedRepr::default();
+    let result = arg.py_repr_fmt(&mut capped, vm, &mut LazyHeapSet::default());
+    if !capped.truncated {
+        result?;
+    }
+    let mut shown = capped.text;
+    if capped.truncated {
+        shown.push_str("...");
+    }
+    Err(SimpleException::new_msg(
+        ExcType::AssertionError,
+        format!("Expected code to be unreachable, but got: {shown}"),
+    )
+    .into())
 }
 
 /// Evaluates annotations as CPython 3.14's `annotationlib.get_annotations` and
@@ -590,22 +701,22 @@ fn resolve_hints(
             cache,
             Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::EvalHint)),
             Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::AliasWith)),
-            Value::Builtin(Builtins::Type(BuiltinType::ForwardRef)),
+            Value::Builtin(Builtins::Type(Type::ForwardRef)),
             Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::TypeRepr)),
             Value::Builtin(Builtins::Function(BuiltinsFunctions::Isinstance)),
             Value::Builtin(Builtins::Function(BuiltinsFunctions::Len)),
-            Value::Builtin(Builtins::Type(BuiltinType::Str)),
-            Value::Builtin(Builtins::Type(BuiltinType::Tuple)),
-            Value::Builtin(Builtins::Type(BuiltinType::Dict)),
+            Value::Builtin(Builtins::Type(Type::Str)),
+            Value::Builtin(Builtins::Type(Type::Tuple)),
+            Value::Builtin(Builtins::Type(Type::Dict)),
             Value::Builtin(Builtins::Function(BuiltinsFunctions::Repr)),
-            Value::Builtin(Builtins::Type(BuiltinType::GenericAlias)),
+            Value::Builtin(Builtins::Type(Type::GenericAlias)),
             Value::Marker(Marker(StaticStrings::Literal)),
-            Value::Builtin(Builtins::Type(BuiltinType::Union)),
-            Value::Builtin(Builtins::Type(BuiltinType::NoneType)),
-            Value::Builtin(Builtins::ExcType(ExcType::Exception)),
-            Value::Builtin(Builtins::ExcType(ExcType::NotImplementedError)),
-            Value::Builtin(Builtins::ExcType(ExcType::SyntaxError)),
-            Value::Builtin(Builtins::ExcType(ExcType::ValueError)),
+            Value::Builtin(Builtins::Type(Type::Union)),
+            Value::Builtin(Builtins::Type(Type::NoneType)),
+            Value::Builtin(Builtins::Type(Type::Exception)),
+            Value::Builtin(Builtins::Type(Type::NotImplementedError)),
+            Value::Builtin(Builtins::Type(Type::SyntaxError)),
+            Value::Builtin(Builtins::Type(Type::ValueError)),
         ],
     )
 }
@@ -711,7 +822,7 @@ fn not_a_dict_error(class_id: HeapId, vm: &mut VM<'_>) -> RunError {
     match class.py_repr(vm) {
         Ok(repr) => {
             defer_drop!(repr, vm);
-            let repr = repr.as_str(vm).map(str::to_owned).unwrap_or_default();
+            let repr = repr.as_str(vm).map_or_default(str::to_owned);
             ExcType::value_error(format!("{repr}.__annotations__ is neither a dict nor None"))
         }
         Err(err) => err,

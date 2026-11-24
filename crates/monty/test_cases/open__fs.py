@@ -76,10 +76,9 @@ assert f != g
 f.close()
 g.close()
 
-# === '+' modes rejected on Monty (CPython accepts them; Monty's wrapper lacks
-# read-position tracking so they would silently destroy data on first write) ===
+# === Other update modes remain unsupported ===
 if is_monty:
-    for mode in ('r+', 'rb+', 'r+b', 'w+', 'wb+', 'a+', 'ab+'):
+    for mode in ('r+', 'rb+', 'r+b', 'w+', 'a+', 'ab+'):
         try:
             open(root / 'open_bytes.bin', mode)
             assert False, f'expected ValueError for + mode {mode!r}'
@@ -793,7 +792,7 @@ if is_monty:
     except NotImplementedError as exc:
         assert (
             str(exc)
-            == "iterating an unread _io.TextIOWrapper is only supported by 'for' loops and next(); call seek(0) first to load it"
+            == 'iterating an unread _io.TextIOWrapper cannot suspend in this synchronous context; call seek(0) first to load it'
         )
     f.seek(0)
     assert list(f) == ['first\n', 'second\n', 'third']
@@ -801,6 +800,17 @@ if is_monty:
 # generator expressions compile to `for` loops, so they can load an unread file
 with open(root / 'iter.txt') as f:
     assert list(line.strip() for line in f) == ['first', 'second', 'third']
+
+# Lazy adaptors can load an unread source when consumed by a comprehension.
+with open(root / 'iter.txt') as f:
+    mapped = map(lambda line: line.strip(), f)
+    assert [line for line in mapped] == ['first', 'second', 'third']
+with open(root / 'iter.txt') as f:
+    filtered = filter(lambda line: line.startswith('s'), f)
+    assert next(filtered) == 'second\n'
+    assert next(filtered, None) is None
+with open(root / 'iter_empty.txt') as f:
+    assert [line for line in map(str, f)] == []
 
 # closed and write-only files
 f = open(root / 'iter.txt')

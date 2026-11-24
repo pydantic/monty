@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -89,7 +90,17 @@ assert request.get() == 'outside'
     )
 
 
-@pytest.mark.parametrize('transport', ['subprocess', 'remote'])
+@pytest.mark.parametrize(
+    'transport',
+    [
+        'subprocess',
+        # the relay needs grpcio, from the `grpc` dependency group that free-threaded CI skips
+        pytest.param(
+            'remote',
+            marks=pytest.mark.skipif(importlib.util.find_spec('grpc') is None, reason='grpcio is not installed'),
+        ),
+    ],
+)
 def test_callback_contexts(transport: str):
     subprocess.run(
         [
@@ -184,12 +195,14 @@ with tracer.start_as_current_span('sync host') as host:
     request.set('sync')
     def callback(*args):
         assert request.get() == 'sync'
+        request.set('sync callback')
         with tracer.start_as_current_span('sync child'):
             pass
         return 42
     with Monty() as pool:
         with pool.checkout() as session:
             assert session.feed_run('callback()', external_lookup={'callback': callback}) == 42
+    assert request.get() == 'sync callback'
     assert trace.get_current_span() is host
 spans = exporter.get_finished_spans()
 child = next(s for s in spans if s.name == 'sync child')
@@ -203,7 +216,7 @@ assert next(s for s in spans if s.context.span_id == child.parent.span_id).name 
     )
 
 
-def test_uninstrumented_callback_context():
+def test_uninstrumented_callback_context_follows_task_semantics():
     subprocess.run(
         [
             sys.executable,
@@ -211,6 +224,7 @@ def test_uninstrumented_callback_context():
             """
 import asyncio
 from contextvars import ContextVar
+from opentelemetry import baggage, context
 from pydantic_monty import AsyncMonty, MontyRuntimeError
 
 request = ContextVar('request', default='outside')
@@ -221,23 +235,25 @@ async def main():
     def printed(stream, text):
         seen.append(request.get())
         request.set('callback only')
+        context.attach(baggage.set_baggage('printed', text))
     def fail():
-        assert request.get() == 'caller'
-        request.set('callback only')
+        assert request.get() == 'callback only'
+        request.set('failed callback')
         raise ValueError('callback failed')
     async with AsyncMonty() as pool:
         async with pool.checkout() as session:
             await session.feed_run("print('first')", print_callback=printed)
-            assert request.get() == 'caller'
+            assert request.get() == 'callback only'
+            assert baggage.get_baggage('printed') == 'first\\n'
             try:
                 await session.feed_run('fail()', external_lookup={'fail': fail})
             except MontyRuntimeError:
                 pass
             else:
                 raise AssertionError('expected callback failure')
-            assert request.get() == 'caller'
+            assert request.get() == 'failed callback'
             await session.feed_run("print('second')", print_callback=printed)
-    assert seen == ['caller', 'caller']
+    assert seen == ['caller', 'failed callback']
 
 asyncio.run(main())
 assert request.get() == 'outside'

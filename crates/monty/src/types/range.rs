@@ -18,7 +18,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
-    types::{LazyHeapSet, PyTrait, Type},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef},
     value::Value,
 };
 
@@ -217,8 +217,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Range> {
         Ok(Some(range.contains(n)))
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Range
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Range.into()
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -362,8 +362,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RangeIterator> {
         true
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::RangeIterator
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::RangeIterator.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
@@ -378,7 +378,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RangeIterator> {
         Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let iter = self.get_mut(vm.heap);
         if iter.remaining == 0 {
             Ok(None)
@@ -388,7 +388,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RangeIterator> {
             if iter.remaining > 0 {
                 iter.next += iter.step;
             }
-            Ok(Some(Value::Int(value)))
+            Ok(Some(CallResult::Value(Value::Int(value))))
         }
     }
 }

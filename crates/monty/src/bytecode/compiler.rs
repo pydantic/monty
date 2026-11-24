@@ -16,7 +16,10 @@ use super::{
     RESERVED_MODULE_DUNDERS,
     builder::{CodeBuilder, JumpLabel, JumpTarget, Offset},
     code::{Code, HandlerKind},
-    op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode, assert_flags},
+    op::{
+        FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, IMPORT_STAR_BIND, IMPORT_STAR_LOAD, IMPORT_STAR_NAMES,
+        NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode, assert_flags,
+    },
 };
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
@@ -184,11 +187,9 @@ fn collection_too_large(count: usize, position: CodeRange) -> CompileError {
     )
 }
 
-/// Converts the index of a newly-defined function into the `u16` operand used
-/// by `MakeFunction`/`MakeClosure`. The cap is the total number of
-/// `def`/`lambda`/comprehension function objects in the *whole module*, since
-/// `FunctionId`s are allocated linearly across nested scopes.
-fn check_function_count_u16(func_id: usize, position: CodeRange) -> Result<u16, CompileError> {
+/// Checks that an index in the interner's function table fits the `u16` bytecode operand.
+/// Nested definitions and frozen functions created at runtime share that table.
+pub(super) fn check_function_count_u16(func_id: usize, position: CodeRange) -> Result<u16, CompileError> {
     u16::try_from(func_id).map_err(|_| too_many_functions(func_id, position))
 }
 
@@ -292,12 +293,19 @@ pub struct Compiler<'a, 'i> {
     flags: ScopeFlags,
 }
 
-/// Compiler settings inherited by nested scopes, with await restrictions reset for functions.
+/// Scope-level permission for `await` expressions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AwaitScope {
+    /// `await` is permitted (in an `async def` body or top-level script).
+    Allowed,
+    /// In a synchronous function (`def`, `lambda`): raises "'await' outside async function".
+    OutsideAsyncFunction,
+    /// In a non-script snippet (`eval()`, `exec()`) or class body: raises "'await' outside function".
+    OutsideFunction,
+}
+
+/// Compiler settings inherited by nested scopes, with await restrictions updated for functions.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent switches copied into nested scopes"
-)]
 struct ScopeFlags {
     /// Whether to compile pytest-style assert failure annotations.
     assert_message_annotations: bool,
@@ -305,9 +313,8 @@ struct ScopeFlags {
     /// `NAME_GLOBAL_ONLY`) because the running frame's globals are an explicit
     /// `exec()` / `eval()` dict.
     globals_by_name: bool,
-    /// Rejects `await` at snippet top level and in its class bodies.
-    /// Nested function bodies reset this restriction.
-    forbid_await: bool,
+    /// Controls whether and how `await` expressions are rejected.
+    await_scope: AwaitScope,
     /// Whether the compile unit runs under `from __future__ import annotations`,
     /// stamped on every `Code` it produces.
     future_annotations: bool,
@@ -582,10 +589,15 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // Module frames have `locals_count = 0` at runtime (globals live in
         // `self.globals`), so comp-var offsets are emitted as plain operand-
         // stack indices.
+        let await_scope = if snippet.is_some() {
+            AwaitScope::OutsideFunction
+        } else {
+            AwaitScope::Allowed
+        };
         let flags = ScopeFlags {
             assert_message_annotations: options.assert_message_annotations.enabled(),
             globals_by_name: snippet.unwrap_or(false),
-            forbid_await: snippet.is_some(),
+            await_scope,
             future_annotations,
         };
         let mut compiler = Compiler::new(interns, true, 0, flags);
@@ -621,10 +633,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // Function frames have `locals_count = num_locals` at runtime, so
         // comp-var load/store opcodes use `num_locals + offset` to skip past
         // the locals region into the operand-stack region.
-        let flags = ScopeFlags {
-            forbid_await: false,
-            ..flags
+        let await_scope = if func_def.is_async {
+            AwaitScope::Allowed
+        } else {
+            AwaitScope::OutsideAsyncFunction
         };
+        let flags = ScopeFlags { await_scope, ..flags };
         let mut compiler = Compiler::new(interns, false, num_locals, flags);
         // Parameters, and the cells captured parameters live in, are named up
         // front: a body that never mentions one still reports it from `locals()`.
@@ -806,11 +820,13 @@ impl<'a, 'i> Compiler<'a, 'i> {
             Node::FunctionDef { def, decorators } => self.compile_function_def(def, decorators)?,
             Node::ClassDef {
                 name,
+                bases,
+                keywords,
                 body,
                 members,
                 decorators,
                 position,
-            } => self.compile_class_def(name, body, members, decorators, *position)?,
+            } => self.compile_class_def(name, bases, keywords, body, members, decorators, *position)?,
             Node::Try(try_block) => self.compile_try(try_block)?,
             Node::Match {
                 subject,
@@ -831,6 +847,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 names,
                 position,
             } => self.compile_import_from(*module_name, submodules, names, *position)?,
+            Node::ImportStar {
+                module_name,
+                submodules,
+                position,
+                ..
+            } => self.compile_import_star(*module_name, submodules, *position)?,
             Node::Break { position } => self.compile_break(*position)?,
             Node::Continue { position } => self.compile_continue(*position)?,
             // These are handled during the prepare phase and produce no bytecode
@@ -1040,12 +1062,16 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Modelled on CPython's class-body code object: the class body is compiled
     /// to a synthetic zero-arg function (via
     /// [`emit_make_class_body`](Self::emit_make_class_body)) that runs the class
-    /// statements in its own scope and returns the assembled `Class`. We emit
-    /// that function value, call it with zero args, and bind the result to the
-    /// class name.
+    /// statements in its own scope and returns the namespace `Dict`. We evaluate
+    /// decorator expressions, evaluate kwargs and bases, call the class body
+    /// function, build the `Class` object, invoke `__init_subclass__`, apply
+    /// decorators, and bind the result to the class name.
+    #[expect(clippy::too_many_arguments)]
     fn compile_class_def(
         &mut self,
         name: &Identifier,
+        bases: &[SequenceItem],
+        keywords: &[Kwarg],
         body: &PreparedFunctionDef,
         members: &[Identifier],
         decorators: &[ExprLoc],
@@ -1056,14 +1082,57 @@ impl<'a, 'i> Compiler<'a, 'i> {
         for decorator in decorators {
             self.compile_expr(decorator)?;
         }
-        // Build the class-body function/closure value on the stack...
-        self.emit_make_class_body(body, members, name, position)?;
-        // ...call it with zero args — it runs the body and returns the `Class`.
-        // Record the class statement as the call site so a traceback from inside
-        // the class body attributes this frame to the `class` statement (like
-        // CPython) rather than falling back to `CodeRange::default()`.
-        self.code.set_location(position, None);
-        self.code.emit_u8(Opcode::CallFunction, 0)?;
+
+        if keywords.is_empty() {
+            // Fast path: Arguments for type(name, bases, dict):
+            let class_name_const = self.code.add_const(Value::InternString(name.name_id))?;
+            self.code.emit_u16(Opcode::LoadConst, class_name_const)?;
+
+            // Evaluate bases in the enclosing scope in source order
+            self.compile_tuple_sequence(bases, position)?;
+
+            // Build the class-body function/closure value on the stack...
+            self.emit_make_class_body(body, members, position)?;
+            // ...call it with zero args — it runs the body and returns the namespace Dict.
+            // Record the class statement as the call site so a traceback from inside
+            // the class body attributes this frame to the `class` statement (like
+            // CPython) rather than falling back to `CodeRange::default()`.
+            self.code.set_location(position, None);
+            self.code.emit_u8(Opcode::CallFunction, 0)?;
+
+            // Call the 3-arg type() builtin, which constructs the Class object.
+            self.code.set_location(position, None);
+            self.code.emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
+        } else {
+            // Stack layout for CallFunctionKw: [callable, pos_0, pos_1, pos_2, kw_val_0, kw_val_1, ...]
+            let type_const = self.code.add_const(Value::Builtin(Builtins::Type(Type::Type)))?;
+            self.code.emit_u16(Opcode::LoadConst, type_const)?;
+
+            let class_name_const = self.code.add_const(Value::InternString(name.name_id))?;
+            self.code.emit_u16(Opcode::LoadConst, class_name_const)?;
+
+            self.compile_tuple_sequence(bases, position)?;
+
+            // Evaluate keyword arguments in the enclosing scope in source order before class body
+            let mut kwname_ids = Vec::with_capacity(keywords.len());
+            for kw in keywords {
+                self.compile_expr(&kw.value)?;
+                kwname_ids.push(check_name_index_u16(kw.key.name_id, position)?);
+            }
+
+            self.emit_make_class_body(body, members, position)?;
+            self.code.set_location(position, None);
+            self.code.emit_u8(Opcode::CallFunction, 0)?;
+
+            // Move the class namespace dict beneath the keyword arguments on the stack
+            let kw_count = u8::try_from(keywords.len())
+                .map_err(|_| CompileError::new("too many keyword arguments in class definition", position))?;
+            self.code.emit_u8(Opcode::SinkTop, kw_count)?;
+
+            self.code.set_location(position, None);
+            self.code.emit_call_function_kw(3, &kwname_ids)?;
+        }
+
         // Each call consumes the callable below the current value: `deco(value)`.
         // Reversed so the bottom-most (last pushed) applies first, and located at
         // its own decorator so a traceback pins the one that raised, like CPython.
@@ -1082,20 +1151,27 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Sibling of [`emit_make_function`](Self::emit_make_function): identical
     /// closure/cell handling, but compiles the body with
     /// [`compile_class_body`](Self::compile_class_body) so the emitted code ends
-    /// by assembling the namespace and returning the `Class`.
+    /// by assembling and returning the namespace `Dict`.
     fn emit_make_class_body(
         &mut self,
         body: &PreparedFunctionDef,
         members: &[Identifier],
-        class_name: &Identifier,
         position: CodeRange,
     ) -> Result<(), CompileError> {
-        let flags = self.flags;
+        let flags = ScopeFlags {
+            await_scope: AwaitScope::OutsideFunction,
+            ..self.flags
+        };
+        debug_assert!(
+            body.cell_var_slots.len() <= 1,
+            "class body owns at most the implicit __class__ cell"
+        );
+        let class_cell_slot = body.cell_var_slots.first().copied();
         self.emit_make_callable(body, "class body", |interns, namespace_size| {
             Self::compile_class_body(
                 &body.body,
                 members,
-                class_name,
+                class_cell_slot,
                 position,
                 interns,
                 namespace_size,
@@ -1104,13 +1180,44 @@ impl<'a, 'i> Compiler<'a, 'i> {
         })
     }
 
+    /// Compiles a sequence of elements into a tuple on top of the stack,
+    /// supporting `*unpack` elements via PEP 448 list conversion.
+    fn compile_tuple_sequence(&mut self, elements: &[SequenceItem], position: CodeRange) -> Result<(), CompileError> {
+        if has_unpack_seq(elements) {
+            // Generalized path: build via list then convert for PEP 448 *unpacks
+            self.code.emit_u16(Opcode::BuildList, 0)?;
+            for item in elements {
+                match item {
+                    SequenceItem::Value(e) => {
+                        self.compile_expr(e)?;
+                        self.code.emit_u8(Opcode::ListAppend, 0)?;
+                    }
+                    SequenceItem::Unpack(e) => {
+                        self.compile_expr(e)?;
+                        self.code.emit(Opcode::ListExtend)?;
+                    }
+                }
+            }
+            self.code.emit(Opcode::ListToTuple)?;
+        } else {
+            // Fast path: all values, single BuildTuple.
+            for item in elements {
+                if let SequenceItem::Value(e) = item {
+                    self.compile_expr(e)?;
+                }
+            }
+            let count = check_collection_size_u16(elements.len(), position)?;
+            self.code.emit_u16(Opcode::BuildTuple, count)?;
+        }
+        Ok(())
+    }
+
     /// Compiles a class body, mirroring
     /// [`compile_function_body`](Self::compile_function_body) but replacing the
-    /// implicit `LoadNone; ReturnValue` tail with a `type(name, (), {...})`
-    /// call: push the class name and an empty bases tuple, then for each member
-    /// (in source order) `LoadConst <name>` and the member's value from its
-    /// class-body slot, build the namespace dict, call the 3-arg `type()`
-    /// builtin (which builds the `Class`), then `ReturnValue`.
+    /// implicit `LoadNone; ReturnValue` tail with code that builds the namespace
+    /// `Dict` and returns it: for each member (in source order) push
+    /// `LoadConst <name>` and the member's value from its class-body slot, build
+    /// the namespace dict, then `ReturnValue`.
     ///
     /// Members are plain locals (the prepare phase forces class-body locals to
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
@@ -1119,7 +1226,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     fn compile_class_body(
         body: &[PreparedNode],
         members: &[Identifier],
-        class_name: &Identifier,
+        class_cell_slot: Option<NamespaceId>,
         position: CodeRange,
         interns: &mut CompileInterns<'_>,
         num_locals: u16,
@@ -1132,24 +1239,21 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // should point at the class statement, not the last member's line.
         compiler.code.set_location(position, None);
 
-        // type(name, (), {members...}): push the name and empty bases tuple...
-        let class_name_const = compiler.code.add_const(Value::InternString(class_name.name_id))?;
-        compiler.code.emit_u16(Opcode::LoadConst, class_name_const)?;
-        compiler.code.emit_u16(Opcode::BuildTuple, 0)?;
-
-        // ...then the namespace dict: (name, value) for each member in order.
+        // Build the namespace dict: (name, value) for each member in order.
         for member in members {
             let name_const = compiler.code.add_const(Value::InternString(member.name_id))?;
             compiler.code.emit_u16(Opcode::LoadConst, name_const)?;
             compiler.compile_name(member)?;
         }
-        let member_count = check_collection_size_u16(members.len(), position)?;
+        if let Some(cell_slot) = class_cell_slot {
+            let classcell_id = compiler.interns.intern_static(StaticStrings::DunderClasscell);
+            let name_const = compiler.code.add_const(Value::InternString(classcell_id))?;
+            compiler.code.emit_u16(Opcode::LoadConst, name_const)?;
+            compiler.code.emit_load_local(cell_slot.as_u16())?;
+        }
+        let dict_len = members.len() + usize::from(class_cell_slot.is_some());
+        let member_count = check_collection_size_u16(dict_len, position)?;
         compiler.code.emit_u16(Opcode::BuildDict, member_count)?;
-
-        // ...and call the 3-arg type() builtin, which builds the class object.
-        compiler
-            .code
-            .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
         Ok(compiler.finish())
@@ -1205,6 +1309,42 @@ impl<'a, 'i> Compiler<'a, 'i> {
             self.code.emit_u16(Opcode::LoadAttrImport, name_idx)?;
             self.compile_store(binding)?;
         }
+        Ok(())
+    }
+
+    /// Compiles `from m import *` as a loop over the names the module exports,
+    /// binding each by name since none is known at compile time:
+    ///
+    /// ```text
+    /// LoadModule m (+ LoadSubmodule ...)   [m]
+    /// ImportStar NAMES; GetIter            [m, iter]
+    /// loop: ForIter end                    [m, iter, name]
+    /// ImportStar LOAD                      [m, iter, name, value]  (may suspend)
+    /// ImportStar BIND; Jump loop           [m, iter]
+    /// end: Pop                             []
+    /// ```
+    ///
+    /// `LOAD` is separate from `BIND` so a property such as `os.environ` can
+    /// suspend for the host and resume with its value on the stack.
+    fn compile_import_star(
+        &mut self,
+        module_name: StringId,
+        submodules: &[Submodule],
+        position: CodeRange,
+    ) -> Result<(), CompileError> {
+        self.code.set_location(position, None);
+        let module_idx = check_name_index_u16(module_name, position)?;
+        self.code.emit_u16(Opcode::LoadModule, module_idx)?;
+        self.compile_submodules(submodules, position)?;
+        self.code.emit_u8(Opcode::ImportStar, IMPORT_STAR_NAMES)?;
+        self.code.emit(Opcode::GetIter)?;
+        let loop_start = self.code.current_jump_target();
+        let end_jump = self.code.emit_jump(Opcode::ForIter)?;
+        self.code.emit_u8(Opcode::ImportStar, IMPORT_STAR_LOAD)?;
+        self.code.emit_u8(Opcode::ImportStar, IMPORT_STAR_BIND)?;
+        self.code.emit_jump_to(Opcode::Jump, loop_start)?;
+        self.code.patch_jump(end_jump)?;
+        self.code.emit(Opcode::Pop)?;
         Ok(())
     }
 
@@ -1302,34 +1442,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             }
 
             Expr::Tuple(elements) => {
-                if has_unpack_seq(elements) {
-                    // Generalized path: build via list then convert for PEP 448 *unpacks
-                    self.code.emit_u16(Opcode::BuildList, 0)?;
-                    for item in elements {
-                        match item {
-                            SequenceItem::Value(e) => {
-                                self.compile_expr(e)?;
-                                self.code.emit_u8(Opcode::ListAppend, 0)?;
-                            }
-                            SequenceItem::Unpack(e) => {
-                                self.compile_expr(e)?;
-                                self.code.emit(Opcode::ListExtend)?;
-                            }
-                        }
-                    }
-                    self.code.emit(Opcode::ListToTuple)?;
-                } else {
-                    // Fast path: all values, single BuildTuple.
-                    // SAFETY: has_unpack_seq(elements) is false, so every item is Value.
-                    for item in elements {
-                        let SequenceItem::Value(e) = item else {
-                            unreachable!("tuple fast path: only Value items")
-                        };
-                        self.compile_expr(e)?;
-                    }
-                    let count = check_collection_size_u16(elements.len(), expr_loc.position)?;
-                    self.code.emit_u16(Opcode::BuildTuple, count)?;
-                }
+                self.compile_tuple_sequence(elements, expr_loc.position)?;
             }
 
             Expr::Dict(dict_items) => {
@@ -1478,8 +1591,14 @@ impl<'a, 'i> Compiler<'a, 'i> {
             }
 
             Expr::Await(value) => {
-                if self.flags.forbid_await {
-                    return Err(CompileError::new("'await' outside function", expr_loc.position));
+                match self.flags.await_scope {
+                    AwaitScope::OutsideAsyncFunction => {
+                        return Err(CompileError::new("'await' outside async function", expr_loc.position));
+                    }
+                    AwaitScope::OutsideFunction => {
+                        return Err(CompileError::new("'await' outside function", expr_loc.position));
+                    }
+                    AwaitScope::Allowed => {}
                 }
                 // Await expressions: compile the inner expression, then emit Await
                 // Await handles ExternalFuture, Coroutine, and GatherFuture
@@ -1903,7 +2022,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // - Callable must be a builtin type constructor (known at compile time)
         // - Arguments must be positional-only (Empty, One, Two, or Args)
         if let Callable::Builtin(Builtins::Type(t)) = callable
-            && let Some(type_id) = Type::from(*t).callable_to_u8()
+            && let Some(type_id) = t.callable_to_u8()
             && let Some(arg_count) = self.compile_builtin_call(args, call_pos)?
         {
             // Optimization applied - CallBuiltinType emitted
@@ -2364,11 +2483,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 let name: &'static str = function.into();
                 self.interns.get_string_id_by_name(name)?
             }
-            Builtins::ExcType(exc_type) => self.interns.get_string_id_by_name(&exc_type.to_string())?,
-            Builtins::Type(type_) => {
-                let name = Type::from(type_).builtin_name()?;
-                self.interns.get_string_id_by_name(name)?
-            }
+            Builtins::Type(type_) => self.interns.get_string_id_by_name(type_.builtin_name()?)?,
         };
 
         u16::try_from(name_id.index()).ok()
@@ -2707,7 +2822,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
             break_jumps: Vec::new(),
         }));
 
-        // ForIter: advance iterator or jump to end
         let end_jump = self.code.emit_jump(Opcode::ForIter)?;
 
         // Store current value to target (handles both single identifiers and tuple unpacking)
@@ -2718,7 +2832,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
         // Jump back to loop start
         self.code.emit_jump_to(Opcode::Jump, loop_start)?;
-        // End of loop - ForIter jumps here when iterator is exhausted
         self.code.patch_jump(end_jump)?;
 
         // Pop loop block before compiling else block
@@ -3190,7 +3303,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // Loop start
         let loop_start = self.code.current_jump_target();
 
-        // FOR_ITER: pushes value, or pops iter and jumps to end on exhaustion.
         let end_jump = self.code.emit_jump(Opcode::ForIter)?;
 
         // Unpack target and record each leaf's active storage.
@@ -3535,7 +3647,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // Raise AssertionError
         let exc_idx = self
             .code
-            .add_const(Value::Builtin(Builtins::ExcType(ExcType::AssertionError)))?;
+            .add_const(Value::Builtin(Builtins::Type(Type::AssertionError)))?;
         self.code.emit_u16(Opcode::LoadConst, exc_idx)?;
 
         if let Some(msg_expr) = msg {

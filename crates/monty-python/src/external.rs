@@ -4,7 +4,8 @@
 //! lazy attributes resolve through the session's [`InstanceStore`].
 
 use monty_proto::python::{
-    DecodedArena, InstanceStore, PyExternalModule, exc_py_to_monty, get_docstring, py_to_monty, py_to_monty_value,
+    CoroutineFunctionExt, DecodedArena, InstanceStore, PyExternalModule, exc_py_to_monty, get_docstring, py_to_monty,
+    py_to_monty_value,
 };
 use monty_types::{
     CallArgs, ExtFunctionResult, GET_TYPE_HINTS_CALL, IMPORT_CALL, IMPORT_STUBS_CALL, ImportArgs, MontyObject,
@@ -16,7 +17,7 @@ use pyo3::{
     exceptions::{PyAttributeError, PyKeyError, PyRuntimeError, PyTypeError, PyValueError},
     intern,
     prelude::*,
-    types::{PyDict, PyMapping, PyTuple, PyType},
+    types::{PyDict, PyMapping, PyString, PyTuple, PyType},
 };
 
 use crate::{
@@ -59,33 +60,28 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         dispatch_object_call_or_coroutine(self.py, function_name, object_id, args, self.instances)
     }
 
-    /// Resolves a bare-name lookup (a `NameLookup` event): a plain callable
-    /// becomes a host function proxy invoked on the eventual `FunctionCall`,
-    /// any other value is converted and returned directly, and an absent name
-    /// (or absent dict) yields `None` → the sandbox raises `NameError`.
-    ///
-    /// [`py_to_monty_value`] decides callable-vs-other (notably a type object
-    /// Monty models converts to `MontyNode::Type`, not a proxy); a function
-    /// proxy is renamed to the lookup *key* (not the callable's `__name__`) so
-    /// the `FunctionCall` hits the same dict entry. An unconvertible value
-    /// rejects the turn via [`MontyConversionError::value_conversion_err`] —
-    /// because `external_lookup` may hold untrusted values, an unrepresentable
-    /// type surfaces as the dedicated `MontyConversionError` (a `MontyError`),
-    /// not a masquerading `NameError`.
-    pub fn resolve_name(&self, name: &str) -> PyResult<Option<MontyObject>> {
+    /// Answers a bare-name or lazy-attribute lookup. An undefined name or attribute
+    /// raises in the sandbox; a bare-name value that cannot be converted fails the turn.
+    pub(crate) fn resolve_name(&self, name: &str, object_id: Option<&MontyUuid>) -> PyResult<NameLookupResult> {
+        if let Some(id) = object_id {
+            return Ok(resolve_object_attr(self.py, name, id, self.instances));
+        }
         let Some(lookup) = self.lookup else {
-            return Ok(None);
+            return Ok(NameLookupResult::Undefined);
         };
         let Some(value) = lookup.get_item(name)? else {
-            return Ok(None);
+            return Ok(NameLookupResult::Undefined);
         };
         let value = py_to_monty_value(&value, self.instances)
             .map_err(|exc| MontyConversionError::value_conversion_err(self.py, exc))?;
         let (mut graph, root) = unstable::into_graph_parts(value);
         if let MontyNode::Function { name: proxy_name, .. } = graph.node_mut(root) {
+            // Subsequent calls must use the lookup key, not the callable's __name__.
             name.clone_into(proxy_name);
         }
-        Ok(Some(unstable::object_from_graph(graph, root).expect("root unchanged")))
+        Ok(NameLookupResult::Value(
+            unstable::object_from_graph(graph, root).expect("root unchanged"),
+        ))
     }
 
     /// Calls an external function by name, converting args/kwargs from Monty
@@ -412,6 +408,8 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         for (name, value) in module.public_attrs(self.py) {
             let value = if let Ok(submodule) = value.cast::<PyExternalModule>() {
                 self.module_value(&format!("{path}.{name}"), submodule.get())?
+            } else if value.is_callable() && value.is_coroutine_function() {
+                MontyObject::async_function(format!("{path}.{name}"), get_docstring(&value))
             } else if value.is_callable() {
                 MontyObject::function(format!("{path}.{name}"), get_docstring(&value))
             } else {
@@ -433,14 +431,25 @@ pub(crate) struct HostNames {
     pub(crate) lookup: Option<Py<PyDict>>,
     /// The session's `external_modules=`.
     pub(crate) modules: Option<HostModules>,
+    /// `external_lookup=` keys holding coroutine functions, sent with a
+    /// `feed_run` so a bare call to one starts without waiting.
+    pub(crate) async_functions: Vec<String>,
 }
 
 impl HostNames {
     /// Pairs the lookup a feed was called with and the session's modules.
     pub(crate) fn capture(py: Python<'_>, lookup: Option<&Bound<'_, PyDict>>, modules: Option<&HostModules>) -> Self {
+        let async_functions = lookup.map_or_else(Vec::new, |lookup| {
+            lookup
+                .iter()
+                .filter(|(_, value)| value.is_coroutine_function())
+                .filter_map(|(key, _)| key.extract::<String>().ok())
+                .collect()
+        });
         Self {
             lookup: lookup.map(|d| d.clone().unbind()),
             modules: modules.map(|m| m.clone_ref(py)),
+            async_functions,
         }
     }
 
@@ -449,6 +458,7 @@ impl HostNames {
         Self {
             lookup: self.lookup.as_ref().map(|d| d.clone_ref(py)),
             modules: self.modules.as_ref().map(|m| m.clone_ref(py)),
+            async_functions: self.async_functions.clone(),
         }
     }
 }
@@ -613,7 +623,7 @@ fn call_object_method_raw<'py>(
 /// `__call__` is the one dunder the sandbox legitimately suspends on (calling
 /// a host object; the wrapper's own policy still gates it). Otherwise the
 /// sandbox never suspends on `_`-prefixed names, so seeing one here means the
-/// frame is forged; wire frames from a child are untrusted.
+/// frame is forged; wire frames from a worker are untrusted.
 fn validate_host_method_name(function_name: &str) -> PyResult<()> {
     if function_name.starts_with('_') && function_name != "__call__" {
         Err(PyAttributeError::new_err(format!(
@@ -626,6 +636,9 @@ fn validate_host_method_name(function_name: &str) -> PyResult<()> {
 
 /// Converts a call's arguments into the Python tuple/dict a host call needs.
 /// The arena is decoded once, so an object passed twice is one Python object.
+///
+/// Keyword names must be `str`, as the sandbox itself enforces: a forged frame's
+/// other keys could collide in CPython's hash outside the decoder's budget.
 pub(crate) fn wire_call_arguments<'py>(
     py: Python<'py>,
     args: &CallArgs,
@@ -636,7 +649,11 @@ pub(crate) fn wire_call_arguments<'py>(
     let py_args_tuple = PyTuple::new(py, arg_ids.iter().map(|id| arena.get(py, *id)))?;
     let py_kwargs = PyDict::new(py);
     for (key, value) in kwarg_ids {
-        py_kwargs.set_item(arena.get(py, *key), arena.get(py, *value))?;
+        let key = arena.get(py, *key);
+        if !key.bind(py).is_exact_instance_of::<PyString>() {
+            return Err(PyTypeError::new_err("keywords must be strings"));
+        }
+        py_kwargs.set_item(key, arena.get(py, *value))?;
     }
     Ok((py_args_tuple, py_kwargs))
 }
@@ -660,7 +677,7 @@ fn result_to_call_result(py: Python<'_>, result: &Bound<'_, PyAny>, instances: &
 /// `AttributeError` from the wrapper's policy — and the sandbox raises
 /// `AttributeError`. Any other exception, or a value that cannot convert, is
 /// raised inside the sandbox exactly as a failing method call would be.
-pub fn resolve_object_attr(
+fn resolve_object_attr(
     py: Python<'_>,
     name: &str,
     object_id: &MontyUuid,
@@ -668,7 +685,7 @@ pub fn resolve_object_attr(
 ) -> NameLookupResult {
     if name.starts_with('_') {
         // Defensive re-check of the sandbox's underscore rule; wire frames
-        // from a (possibly compromised) child are untrusted.
+        // from a (possibly compromised) worker are untrusted.
         NameLookupResult::Undefined
     } else {
         match callback_context::call(py, || instances.lookup_lazy_attr(py, object_id, name)) {

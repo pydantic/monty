@@ -243,6 +243,8 @@ fn frames_are_identical(a: &StackFrame, b: &StackFrame) -> bool {
 /// `PYTHON_EXC_NAMES` in `crates/monty-js/ts/errors.ts` and the `ExcType` literal in
 /// `pydantic_monty/__init__.py`. Both are hand-written, so `monty-proto`'s `exc_type_bridges` test
 /// reads them and pins them here — adding a variant without wiring the bridges fails that test.
+/// Explicit discriminants are permanent exception-class identity codes; never change or reuse them.
+#[monty_macros::explicit_discriminants(checksum = 0xd26e_f8bf_1120_6b3d)]
 #[derive(
     Debug,
     Clone,
@@ -259,105 +261,100 @@ fn frames_are_identical(a: &StackFrame, b: &StackFrame) -> bool {
     Deserialize,
 )]
 pub enum ExcType {
-    /// primary exception class - matches any exception in isinstance checks.
-    ///
-    /// Also the `Default` — required so `Type` (which embeds an `ExcType` in
-    /// its `Exception` variant) can derive `strum::EnumIter`.
+    /// The base of every ordinary exception; also the `Default`.
     #[default]
-    Exception,
+    Exception = 0,
 
     /// System exit exceptions
-    BaseException,
-    SystemExit,
-    KeyboardInterrupt,
+    BaseException = 1,
+    SystemExit = 2,
+    KeyboardInterrupt = 3,
 
     // --- ArithmeticError hierarchy ---
     /// Intermediate class for arithmetic errors.
-    ArithmeticError,
+    ArithmeticError = 4,
     /// Subclass of ArithmeticError.
-    OverflowError,
+    OverflowError = 5,
     /// Subclass of ArithmeticError.
-    ZeroDivisionError,
+    ZeroDivisionError = 6,
 
     // --- LookupError hierarchy ---
     /// Intermediate class for lookup errors.
-    LookupError,
+    LookupError = 7,
     /// Subclass of LookupError.
-    IndexError,
+    IndexError = 8,
     /// Subclass of LookupError.
-    KeyError,
+    KeyError = 9,
 
     // --- RuntimeError hierarchy ---
     /// Intermediate class for runtime errors.
-    RuntimeError,
+    RuntimeError = 10,
     /// Subclass of RuntimeError.
-    NotImplementedError,
+    NotImplementedError = 11,
     /// Subclass of RuntimeError.
-    RecursionError,
+    RecursionError = 12,
 
     // --- AttributeError hierarchy ---
-    AttributeError,
+    AttributeError = 13,
     /// Subclass of AttributeError (from dataclasses module).
-    FrozenInstanceError,
+    FrozenInstanceError = 14,
 
     // --- NameError hierarchy ---
-    NameError,
+    NameError = 15,
     /// Subclass of NameError - for accessing local variable before assignment.
-    UnboundLocalError,
+    UnboundLocalError = 16,
 
     // --- ValueError hierarchy ---
-    ValueError,
+    ValueError = 17,
     /// Subclass of ValueError - for encoding/decoding errors.
-    UnicodeDecodeError,
+    UnicodeDecodeError = 18,
     /// Subclass of ValueError - for encoding errors (e.g. `str.encode('ascii')`
     /// on a string containing non-ASCII characters).
-    UnicodeEncodeError,
+    UnicodeEncodeError = 19,
     /// Subclass of ValueError for invalid JSON syntax in `json.loads()`.
     #[strum(serialize = "json.JSONDecodeError")]
-    JsonDecodeError,
+    JsonDecodeError = 20,
     /// Subclass of ValueError for invalid TOML in `tomllib.loads()` / `tomllib.load()`.
     #[strum(serialize = "tomllib.TOMLDecodeError")]
-    TomlDecodeError,
+    TomlDecodeError = 21,
 
     // --- ImportError hierarchy ---
     /// Import-related errors (module not found, name not in module).
-    ImportError,
+    ImportError = 22,
     /// Subclass of ImportError - for when a module cannot be found.
-    ModuleNotFoundError,
+    ModuleNotFoundError = 23,
 
     // --- OSError hierarchy ---
     /// OS-related errors (file not found, permission denied, etc.)
-    OSError,
+    OSError = 24,
     /// Subclass of OSError - for when a file or directory cannot be found.
-    FileNotFoundError,
+    FileNotFoundError = 25,
     /// Subclass of OSError - for when a file already exists.
-    FileExistsError,
+    FileExistsError = 26,
     /// Subclass of OSError - for when a path is a directory but a file was expected.
-    IsADirectoryError,
+    IsADirectoryError = 27,
     /// Subclass of OSError - for when a path is not a directory but one was expected.
-    NotADirectoryError,
+    NotADirectoryError = 28,
     /// Subclass of OSError - for when an operation is not permitted (e.g., writing
     /// to a read-only mount, or attempting to access a path outside a mounted directory).
-    PermissionError,
+    PermissionError = 29,
     /// `io.UnsupportedOperation` - raised by file objects when a requested
     /// operation isn't allowed by the open mode (e.g. `read()` on `'w'`).
     ///
-    /// In CPython this inherits from both `OSError` and `ValueError`. Monty's
-    /// `ExcType` enum models single parents, but [`Self::is_subclass_of`]
-    /// matches `UnsupportedOperation` against both `OSError` and `ValueError`
-    /// so `except ValueError:` and `except OSError:` both catch it as in
-    /// CPython.
+    /// In CPython this inherits from both `OSError` and `ValueError`; the
+    /// interpreter's type table gives it both bases, so `except ValueError:`
+    /// and `except OSError:` both catch it as in CPython.
     #[strum(serialize = "io.UnsupportedOperation")]
-    UnsupportedOperation,
+    UnsupportedOperation = 30,
     /// Subclass of OSError since Python 3.3 (PEP 3151).
-    TimeoutError,
+    TimeoutError = 31,
 
     // --- Standalone exception types ---
-    AssertionError,
-    MemoryError,
-    StopIteration,
-    SyntaxError,
-    TypeError,
+    AssertionError = 32,
+    MemoryError = 33,
+    StopIteration = 34,
+    SyntaxError = 35,
+    TypeError = 36,
 
     // --- Module-specific exception types ---
 
@@ -372,14 +369,14 @@ pub enum ExcType {
     /// As per CPython's implementation, it would be hard to convert `fancy-regex`'s error
     /// representations into the required attributes.
     #[strum(serialize = "re.PatternError")]
-    RePatternError,
+    RePatternError = 37,
 
     // --- binascii module ---
     /// `binascii.Error` - raised by the `base64` codecs for malformed input.
     ///
     /// A `ValueError` subclass in CPython, so `except ValueError:` catches it.
     #[strum(serialize = "binascii.Error")]
-    BinasciiError,
+    BinasciiError = 38,
 
     /// `binascii.Incomplete` - a direct `Exception` subclass, not a `ValueError`.
     ///
@@ -387,7 +384,14 @@ pub enum ExcType {
     /// 3.11, so the class survives only for `except binascii.Incomplete:` in
     /// older code. Monty exposes it for the same reason.
     #[strum(serialize = "binascii.Incomplete")]
-    BinasciiIncomplete,
+    BinasciiIncomplete = 39,
+
+    // --- statistics module ---
+    /// `statistics.StatisticsError` - raised for empty or too-small data sets.
+    ///
+    /// A `ValueError` subclass in CPython, so `except ValueError:` catches it.
+    #[strum(serialize = "statistics.StatisticsError")]
+    StatisticsError = 40,
 
     // --- csv module ---
     /// `csv.Error` - raised by the `csv` readers and writers for malformed data
@@ -395,162 +399,59 @@ pub enum ExcType {
     ///
     /// A direct `Exception` subclass, named `_csv.Error` as in CPython.
     #[strum(serialize = "_csv.Error")]
-    CsvError,
+    CsvError = 41,
 
     // --- decimal module ---
     // CPython's decimal signals form a multiple-inheritance hierarchy under
-    // `ArithmeticError`; [`Self::decimal_ancestors`] lists each one's bases.
+    // `ArithmeticError`; the interpreter's type table records each one's bases.
     /// `decimal.DecimalException`, the base of every decimal signal.
     #[strum(serialize = "decimal.DecimalException")]
-    DecimalException,
+    DecimalException = 42,
     /// `decimal.Clamped`: an exponent was changed to fit the representation.
     #[strum(serialize = "decimal.Clamped")]
-    DecimalClamped,
+    DecimalClamped = 43,
     /// `decimal.InvalidOperation`: an operation with no meaningful result.
     #[strum(serialize = "decimal.InvalidOperation")]
-    DecimalInvalidOperation,
+    DecimalInvalidOperation = 44,
     /// `decimal.ConversionSyntax`: a malformed numeric string.
     #[strum(serialize = "decimal.ConversionSyntax")]
-    DecimalConversionSyntax,
+    DecimalConversionSyntax = 45,
     /// `decimal.DivisionByZero`: a finite non-zero dividend divided by zero.
     #[strum(serialize = "decimal.DivisionByZero")]
-    DecimalDivisionByZero,
+    DecimalDivisionByZero = 46,
     /// `decimal.DivisionImpossible`: an integer quotient too long for the precision.
     #[strum(serialize = "decimal.DivisionImpossible")]
-    DecimalDivisionImpossible,
+    DecimalDivisionImpossible = 47,
     /// `decimal.DivisionUndefined`: zero divided by zero.
     #[strum(serialize = "decimal.DivisionUndefined")]
-    DecimalDivisionUndefined,
+    DecimalDivisionUndefined = 48,
     /// `decimal.Inexact`: a result was rounded and lost non-zero digits.
     #[strum(serialize = "decimal.Inexact")]
-    DecimalInexact,
+    DecimalInexact = 49,
     /// `decimal.InvalidContext`: an invalid context setting was detected.
     #[strum(serialize = "decimal.InvalidContext")]
-    DecimalInvalidContext,
+    DecimalInvalidContext = 50,
     /// `decimal.Rounded`: a result was rounded, perhaps without losing digits.
     #[strum(serialize = "decimal.Rounded")]
-    DecimalRounded,
+    DecimalRounded = 51,
     /// `decimal.Subnormal`: a result's exponent fell below `Emin`.
     #[strum(serialize = "decimal.Subnormal")]
-    DecimalSubnormal,
+    DecimalSubnormal = 52,
     /// `decimal.Overflow`: a result's exponent exceeded `Emax`.
     #[strum(serialize = "decimal.Overflow")]
-    DecimalOverflow,
+    DecimalOverflow = 53,
     /// `decimal.Underflow`: a subnormal result was rounded.
     #[strum(serialize = "decimal.Underflow")]
-    DecimalUnderflow,
+    DecimalUnderflow = 54,
     /// `decimal.FloatOperation`: floats and Decimals were mixed.
     #[strum(serialize = "decimal.FloatOperation")]
-    DecimalFloatOperation,
-}
-impl ExcType {
-    /// Checks if this exception type is a subclass of another exception type.
-    ///
-    /// Implements Python's exception hierarchy for try/except matching:
-    /// - `Exception` is the base class for all standard exceptions
-    /// - `LookupError` is the base for `KeyError` and `IndexError`
-    /// - `ArithmeticError` is the base for `ZeroDivisionError` and `OverflowError`
-    /// - `RuntimeError` is the base for `RecursionError` and `NotImplementedError`
-    ///
-    /// Returns true if `self` would be caught by `except handler_type:`.
-    #[must_use]
-    pub fn is_subclass_of(self, handler_type: Self) -> bool {
-        if self == handler_type || self.decimal_ancestors().contains(&handler_type) {
-            return true;
-        }
-        match handler_type {
-            // BaseException catches all exceptions
-            Self::BaseException => true,
-            // Exception catches everything except BaseException, and direct subclasses: KeyboardInterrupt, SystemExit
-            Self::Exception => !matches!(self, Self::BaseException | Self::KeyboardInterrupt | Self::SystemExit),
-            // LookupError catches KeyError and IndexError
-            Self::LookupError => matches!(self, Self::KeyError | Self::IndexError),
-            // ArithmeticError catches ZeroDivisionError and OverflowError
-            Self::ArithmeticError => matches!(self, Self::ZeroDivisionError | Self::OverflowError),
-            // RuntimeError catches RecursionError and NotImplementedError
-            Self::RuntimeError => matches!(self, Self::RecursionError | Self::NotImplementedError),
-            // AttributeError catches FrozenInstanceError
-            Self::AttributeError => matches!(self, Self::FrozenInstanceError),
-            // NameError catches UnboundLocalError
-            Self::NameError => matches!(self, Self::UnboundLocalError),
-            // io.UnsupportedOperation is here because CPython gives it dual
-            // OSError + ValueError parentage
-            Self::ValueError => matches!(
-                self,
-                Self::UnicodeDecodeError
-                    | Self::UnicodeEncodeError
-                    | Self::JsonDecodeError
-                    | Self::TomlDecodeError
-                    | Self::BinasciiError
-                    | Self::UnsupportedOperation
-            ),
-            // ImportError catches ModuleNotFoundError
-            Self::ImportError => matches!(self, Self::ModuleNotFoundError),
-            // OSError catches FileNotFoundError, FileExistsError, IsADirectoryError,
-            // NotADirectoryError, PermissionError, io.UnsupportedOperation, and
-            // TimeoutError (an OSError subclass since Python 3.3)
-            Self::OSError => matches!(
-                self,
-                Self::FileNotFoundError
-                    | Self::FileExistsError
-                    | Self::IsADirectoryError
-                    | Self::NotADirectoryError
-                    | Self::PermissionError
-                    | Self::UnsupportedOperation
-                    | Self::TimeoutError
-            ),
-            // All other types only match exactly (handled by self == handler_type above)
-            _ => false,
-        }
-    }
+    DecimalFloatOperation = 55,
 
-    /// Every base of a `decimal` exception below `Exception`, in CPython's MRO order;
-    /// empty for every other type.
-    ///
-    /// The decimal signals inherit from several classes at once (`DivisionByZero` is
-    /// also a `ZeroDivisionError`, `Underflow` is `Inexact`, `Rounded` and `Subnormal`).
-    #[must_use]
-    pub fn decimal_ancestors(self) -> &'static [Self] {
-        const BASE: &[ExcType] = &[ExcType::DecimalException, ExcType::ArithmeticError];
-        const INVALID: &[ExcType] = &[
-            ExcType::DecimalInvalidOperation,
-            ExcType::DecimalException,
-            ExcType::ArithmeticError,
-        ];
-        match self {
-            Self::DecimalException => &[Self::ArithmeticError],
-            Self::DecimalClamped
-            | Self::DecimalInvalidOperation
-            | Self::DecimalInexact
-            | Self::DecimalRounded
-            | Self::DecimalSubnormal => BASE,
-            Self::DecimalConversionSyntax | Self::DecimalDivisionImpossible | Self::DecimalInvalidContext => INVALID,
-            Self::DecimalDivisionUndefined => &[
-                Self::DecimalInvalidOperation,
-                Self::DecimalException,
-                Self::ZeroDivisionError,
-                Self::ArithmeticError,
-            ],
-            Self::DecimalDivisionByZero => &[Self::DecimalException, Self::ZeroDivisionError, Self::ArithmeticError],
-            Self::DecimalOverflow => &[
-                Self::DecimalInexact,
-                Self::DecimalRounded,
-                Self::DecimalException,
-                Self::ArithmeticError,
-            ],
-            Self::DecimalUnderflow => &[
-                Self::DecimalInexact,
-                Self::DecimalRounded,
-                Self::DecimalSubnormal,
-                Self::DecimalException,
-                Self::ArithmeticError,
-            ],
-            Self::DecimalFloatOperation => &[Self::DecimalException, Self::ArithmeticError, Self::TypeError],
-            _ => &[],
-        }
-    }
+    /// `asyncio.InvalidStateError`, raised by `Task.result()` and
+    /// `Task.exception()` while the task is still pending.
+    #[strum(serialize = "asyncio.exceptions.InvalidStateError")]
+    InvalidStateError = 56,
 }
-
 /// Structured payload attached to exception types whose CPython counterparts
 /// carry more than a message. Currently unicode and json decode errors have
 /// one; the enum leaves room for future variants (e.g. `OSError`'s

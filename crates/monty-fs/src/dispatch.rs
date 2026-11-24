@@ -42,6 +42,12 @@ pub(super) enum FsRequest {
     AppendText { path: MontyPath, data: String },
     /// `Path.append_bytes(data)`
     AppendBytes { path: MontyPath, data: Vec<u8> },
+    /// Overwrite an existing file at a byte offset.
+    WriteBytesAt {
+        path: MontyPath,
+        offset: u64,
+        data: Vec<u8>,
+    },
     /// `Path.mkdir(parents=..., exist_ok=...)`
     Mkdir {
         /// Target path.
@@ -95,6 +101,7 @@ impl FsRequest {
             | Self::WriteBytes { path, .. }
             | Self::AppendText { path, .. }
             | Self::AppendBytes { path, .. }
+            | Self::WriteBytesAt { path, .. }
             | Self::Mkdir { path, .. }
             | Self::Unlink { path }
             | Self::Rmdir { path }
@@ -120,6 +127,7 @@ impl FsRequest {
             | Self::WriteBytes { .. }
             | Self::AppendText { .. }
             | Self::AppendBytes { .. }
+            | Self::WriteBytesAt { .. }
             | Self::Mkdir { .. }
             | Self::CreateExclusive { .. }
             | Self::Unlink { .. }
@@ -161,6 +169,11 @@ pub(super) fn fs_request_from_call(call: OsFunctionCall) -> FsRequest {
         },
         OsFunctionCall::AppendBytes(a) => FsRequest::AppendBytes {
             path: a.path,
+            data: a.data,
+        },
+        OsFunctionCall::WriteBytesAt(a) => FsRequest::WriteBytesAt {
+            path: a.path,
+            offset: a.offset,
             data: a.data,
         },
         OsFunctionCall::CreateExclusive(a) => FsRequest::CreateExclusive {

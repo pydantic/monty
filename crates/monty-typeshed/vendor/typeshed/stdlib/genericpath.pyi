@@ -1,29 +1,28 @@
 import os
 import sys
+from _typeshed import BytesPath, FileDescriptorOrPath, StrOrBytesPath, StrPath, SupportsRichComparisonT
 from collections.abc import Sequence
 from typing import Literal, NewType, overload
-
-from _typeshed import BytesPath, FileDescriptorOrPath, StrOrBytesPath, StrPath, SupportsRichComparisonT
 from typing_extensions import LiteralString
 
 __all__ = [
-    'commonprefix',
-    'exists',
-    'getatime',
-    'getctime',
-    'getmtime',
-    'getsize',
-    'isdir',
-    'isfile',
-    'samefile',
-    'sameopenfile',
-    'samestat',
-    'ALLOW_MISSING',
+    "commonprefix",
+    "exists",
+    "getatime",
+    "getctime",
+    "getmtime",
+    "getsize",
+    "isdir",
+    "isfile",
+    "samefile",
+    "sameopenfile",
+    "samestat",
+    "ALLOW_MISSING",
 ]
 if sys.version_info >= (3, 12):
-    __all__ += ['islink']
+    __all__ += ["islink"]
 if sys.version_info >= (3, 13):
-    __all__ += ['isjunction', 'isdevdrive', 'lexists']
+    __all__ += ["isjunction", "isdevdrive", "lexists"]
 
 # All overloads can return empty string. Ideally, Literal[""] would be a valid
 # Iterable[T], so that list[T] | Literal[""] could be used as a return
@@ -33,7 +32,7 @@ def commonprefix(m: Sequence[LiteralString]) -> LiteralString: ...
 @overload
 def commonprefix(m: Sequence[StrPath]) -> str: ...
 @overload
-def commonprefix(m: Sequence[BytesPath]) -> bytes | Literal['']: ...
+def commonprefix(m: Sequence[BytesPath]) -> bytes | Literal[""]: ...
 @overload
 def commonprefix(m: Sequence[list[SupportsRichComparisonT]]) -> Sequence[SupportsRichComparisonT]: ...
 @overload
@@ -61,5 +60,5 @@ if sys.version_info >= (3, 13):
     def lexists(path: StrOrBytesPath) -> bool: ...
 
 # Added in Python 3.9.23, 3.10.18, 3.11.13, 3.12.11, 3.13.4
-_AllowMissingType = NewType('_AllowMissingType', object)
+_AllowMissingType = NewType("_AllowMissingType", object)
 ALLOW_MISSING: _AllowMissingType

@@ -48,6 +48,8 @@ assert Path('/path/.bashrc').suffixes == []
 assert Path('/usr/local/bin').parts == ('/', 'usr', 'local', 'bin')
 assert Path('usr/local').parts == ('usr', 'local')
 assert Path('/').parts == ('/',)
+assert Path('.').parts == ()
+assert Path('.').name == ''
 
 # === is_absolute method ===
 assert Path('/usr/bin').is_absolute() == True
@@ -68,6 +70,67 @@ assert str(Path('file.txt').with_name('other.py')) == 'other.py'
 assert str(Path('/path/file.txt').with_suffix('.py')) == '/path/file.py'
 assert str(Path('/path/file.txt').with_suffix('')) == '/path/file'
 assert str(Path('/path/file').with_suffix('.txt')) == '/path/file.txt'
+assert str(Path('file.txt').with_suffix('.')) == 'file.'
+assert str(Path('..').with_suffix('.txt')) == '...txt'
+assert str(Path('a/..').with_suffix('')) == 'a/..'
+
+# === with_stem method ===
+assert str(Path('/path/file.txt').with_stem('other')) == '/path/other.txt'
+assert str(Path('..').with_stem('x')) == 'x'
+assert str(Path('a/..').with_stem('x')) == 'a/x'
+
+# === stem and suffix of dot names ===
+# the last dot starts a suffix only after a non-dot character, as in `posixpath.splitext`
+assert (Path('..').stem, Path('..').suffix) == ('..', '')
+assert (Path('a/..').stem, Path('a/..').suffix) == ('..', '')
+assert (Path('a.').stem, Path('a.').suffix) == ('a', '.')
+assert (Path('...').stem, Path('...').suffix) == ('...', '')
+assert (Path('a..b').stem, Path('a..b').suffix) == ('a.', '.b')
+# `suffixes` strips every leading dot before splitting
+assert Path('...').suffixes == []
+assert Path('..a.b').suffixes == ['.b']
+assert Path('a.').suffixes == ['.']
+assert Path('a..b').suffixes == ['.', '.b']
+
+# === with_name / with_stem / with_suffix errors ===
+# each case: (path, method, argument, expected ValueError message)
+with_errors = [
+    ('.', 'with_name', 'x', "PosixPath('.') has an empty name"),
+    ('.', 'with_stem', 'x', "PosixPath('.') has an empty name"),
+    ('/', 'with_suffix', '.txt', "PosixPath('/') has an empty name"),
+    ('.', 'with_suffix', '', "PosixPath('.') has an empty name"),
+    ('/', 'with_name', '', "Invalid name ''"),
+    ('a.py', 'with_name', '.', "Invalid name '.'"),
+    ('a.py', 'with_name', 'a/b', "Invalid name 'a/b'"),
+    ('.', 'with_stem', 'a/b', "Invalid name 'a/b'"),
+    ('a.py', 'with_stem', 'a/b', "Invalid name 'a/b.py'"),
+    ('a.py', 'with_stem', '', "PosixPath('a.py') has a non-empty suffix"),
+    ('file', 'with_stem', '', "Invalid name ''"),
+    ('a.py', 'with_suffix', 'txt', "Invalid suffix 'txt'"),
+    ('a.py', 'with_suffix', '.a/b', "Invalid name 'a.a/b'"),
+    ("it's", 'with_suffix', 'x', "Invalid suffix 'x'"),
+    ('/', 'with_stem', 'x', "PosixPath('/') has an empty name"),
+]
+for path, method, arg, expected in with_errors:
+    p = Path(path)
+    try:
+        if method == 'with_name':
+            p.with_name(arg)
+        elif method == 'with_stem':
+            p.with_stem(arg)
+        else:
+            p.with_suffix(arg)
+        assert False, f'expected ValueError for {path!r}.{method}({arg!r})'
+    except ValueError as exc:
+        assert str(exc) == expected
+
+# === with_* take only str ===
+# the message differs from CPython's (see limitations/pathlib.md)
+try:
+    Path('a.py').with_name(Path('.x'))
+    assert False, 'expected TypeError'
+except TypeError:
+    pass
 
 # === / operator ===
 assert str(Path('/usr') / 'local') == '/usr/local'
@@ -143,3 +206,118 @@ assert str(Path('/a///b')) == '/a/b'
 # === repr ===
 r = repr(Path('/usr/bin'))
 assert r == "PosixPath('/usr/bin')", f'repr should be PosixPath, got {r}'
+assert repr(Path("it's")) == 'PosixPath("it\'s")'
+
+# === drive property ===
+assert Path('/usr/bin').drive == ''
+assert Path('usr/bin').drive == ''
+assert Path('/').drive == ''
+assert Path('').drive == ''
+assert Path('.').drive == ''
+
+# === root property ===
+assert Path('/usr/bin').root == '/'
+assert Path('usr/bin').root == ''
+assert Path('/').root == '/'
+assert Path('').root == ''
+assert Path('.').root == ''
+
+# === anchor property ===
+assert Path('/usr/bin').anchor == '/'
+assert Path('usr/bin').anchor == ''
+assert Path('/').anchor == '/'
+assert Path('').anchor == ''
+assert Path('.').anchor == ''
+
+# === is_reserved method ===
+assert Path('/usr/bin').is_reserved() is False
+assert Path('usr/bin').is_reserved() is False
+assert Path('').is_reserved() is False
+assert Path('NUL').is_reserved() is False
+assert Path('CON').is_reserved() is False
+try:
+    Path('a').is_reserved(1)
+    assert False, 'expected TypeError'
+except TypeError:
+    pass
+
+# === match method ===
+assert Path('/a/b/c.py').match('*.py') is True
+assert Path('/a/b/c.py').match('b/*.py') is True
+assert Path('/a/b/c.py').match('a/b/*.py') is True
+assert Path('/a/b/c.py').match('/a/b/*.py') is True
+assert Path('/a/b/c.py').match('/b/*.py') is False
+assert Path('a/b/c.py').match('/a/b/*.py') is False
+assert Path('/a/b/c.py').match('c.py') is True
+assert Path('/a/b/c.py').match('b/c.py') is True
+assert Path('/a/b/c.py').match('*.txt') is False
+assert Path('file2.txt').match('file[1-3].txt') is True
+assert Path('file5.txt').match('file[1-3].txt') is False
+assert Path('a.py').match('?.py') is True
+assert Path('ab.py').match('?.py') is False
+assert Path('/').match('/') is True
+assert Path('/').match('*') is False
+assert Path('/').match('/*') is False
+assert Path('/a').match('/') is False
+assert Path('/a').match('/*') is True
+assert Path('/a').match('*') is True
+assert Path('/a/b').match('/*') is False
+assert Path('/a/b').match('*/b') is True
+assert Path('/a/b').match('/*/b') is True
+assert Path('a' * 50).match('*' + 'a' * 25 + 'b') is False
+
+# match with Path pattern
+assert Path('a/b/c.py').match(Path('*.py')) is True
+assert Path('a/b/c.py').match(Path('b/*.py')) is True
+
+# match keyword arguments
+assert Path('a/b.py').match(path_pattern='*.py') is True
+assert Path('a/b.py').match('*.py', case_sensitive=True) is True
+assert Path('a/b.PY').match('*.py') is False
+assert Path('a/b.PY').match('*.py', case_sensitive=True) is False
+assert Path('a/b.PY').match('*.py', case_sensitive=False) is True
+assert Path('a/b.PY').match('*.py', case_sensitive=0) is True
+assert Path('a/b.PY').match('*.py', case_sensitive=1) is False
+
+# match error cases
+try:
+    Path('a').match('')
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'empty pattern'
+
+try:
+    Path('a').match('.')
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'empty pattern'
+
+try:
+    Path('a').match(123)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "argument should be a str or an os.PathLike object where __fspath__ returns a str, not 'int'"
+
+try:
+    Path('a').match(b'*.py')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "argument should be a str or an os.PathLike object where __fspath__ returns a str, not 'bytes'"
+
+try:
+    Path('a').match()
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert "missing 1 required positional argument: 'path_pattern'" in str(e)
+
+try:
+    Path('a').match('*.py', 'extra')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert 'positional argument' in str(e) and 'were given' in str(e)
+
+try:
+    Path('a').match('*.py', extra=1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert "got an unexpected keyword argument 'extra'" in str(e)

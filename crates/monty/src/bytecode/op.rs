@@ -11,9 +11,9 @@
 //! - Compound (multiple operands): `CallFunctionKw` (u8 + u8), `MakeClosure` (u16 + u8 + u8),
 //!   `LoadName` (u16 + u16 + u8)
 
+use strum::FromRepr;
 #[cfg(test)]
 use strum::IntoEnumIterator;
-use strum::{EnumIter, FromRepr};
 
 use crate::{bytecode::builder::RelativeOffset, expressions::CmpOperator};
 
@@ -49,6 +49,18 @@ pub const MATCH_KEYS_VALUES: u8 = 0;
 /// entries the keys did not consume, for a `**rest` capture.
 pub const MATCH_KEYS_REST: u8 = 1;
 
+/// `ImportStar` mode: `[module] -> [module, names]`, the list of names
+/// `from module import *` binds: `module.__all__`, else its public names.
+pub const IMPORT_STAR_NAMES: u8 = 0;
+
+/// `ImportStar` mode: `[module, iter, name] -> [module, iter, name, value]`,
+/// reading the attribute. May suspend, for a property such as `os.environ`.
+pub const IMPORT_STAR_LOAD: u8 = 1;
+
+/// `ImportStar` mode: `[name, value] -> []`, binding the name in the frame's
+/// namespace (locals dict, globals dict or a global slot).
+pub const IMPORT_STAR_BIND: u8 = 2;
+
 /// Encodes an optional fused comparison into the `Assert`/`AssertFailed`
 /// flags operand: `ASSERT_CMP_FLAG | as_operand` when present, `0` when not.
 pub fn assert_flags(cmp_op: Option<CmpOperator>) -> u8 {
@@ -81,8 +93,10 @@ pub fn decode_assert_flags(flags: u8) -> Option<Option<CmpOperator>> {
 /// Opcode bytes are part of Monty's serialized `Code` format. Explicit
 /// discriminants prevent source reordering or removal from changing that format
 /// accidentally; intentional renumbering requires a dump-format version bump.
+#[monty_macros::explicit_discriminants(checksum = 0xcfa6_6168_5f74_b86e)]
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, FromRepr)]
+#[cfg_attr(test, derive(strum::EnumIter))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
 pub enum Opcode {
     // === Stack Operations (no operand) ===
     /// Discard top of stack.
@@ -600,6 +614,10 @@ pub enum Opcode {
     /// `raise exc from cause`: stack `[exc, cause] -> []`. The cause becomes the
     /// raised exception's `__cause__` and suppresses its `__context__`.
     RaiseFrom = 130,
+    /// One step of `from m import *`. Operand: u8 mode (`IMPORT_STAR_NAMES`,
+    /// `IMPORT_STAR_LOAD` or `IMPORT_STAR_BIND`); see `Compiler::compile_import_star`
+    /// for the loop the three modes form.
+    ImportStar = 131,
 }
 
 /// `LoadName` flag: the load is in call position, so an unresolved name under
@@ -726,7 +744,8 @@ impl Opcode {
             | Self::MatchKeys
             | Self::MatchClass
             | Self::MatchAttr
-            | Self::SinkTop => OperandShape::U8,
+            | Self::SinkTop
+            | Self::ImportStar => OperandShape::U8,
             Self::LoadSmallInt => OperandShape::I8,
             Self::LoadModule
             | Self::LoadConst
@@ -999,6 +1018,14 @@ impl Opcode {
             (MatchClass, Operand::U8(_)) => 1,
             // `MatchAttr` pushes `[value, bool]` above the subject, class and names.
             (MatchAttr, Operand::U8(_)) => 2,
+            // `ImportStar` pushes the names or a value, or pops a name and its value.
+            (ImportStar, Operand::U8(mode)) => {
+                if mode == IMPORT_STAR_BIND {
+                    -2
+                } else {
+                    1
+                }
+            }
 
             // === Fixed-effect, no operand (context managers) ===
             // `BeforeWith` pushes the `__enter__` result on top of the existing ctx.
@@ -1078,9 +1105,9 @@ impl Opcode {
     }
 }
 
-/// Computes an FNV-1a hash over the canonical opcode table.
+/// Pins the operand layout for each opcode byte independently of the discriminant check.
 #[cfg(test)]
-pub(crate) fn opcode_fingerprint() -> u64 {
+pub(crate) fn opcode_operand_shapes_fingerprint() -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0100_0000_01b3;
 
@@ -1088,12 +1115,7 @@ pub(crate) fn opcode_fingerprint() -> u64 {
     let mut opcodes = Opcode::iter().collect::<Vec<_>>();
     opcodes.sort_unstable_by_key(|opcode| *opcode as u8);
     for opcode in opcodes {
-        let byte = opcode as u8;
-        for value in [byte]
-            .into_iter()
-            .chain(format!("{opcode:?}").bytes())
-            .chain([0, opcode.operand_shape() as u8])
-        {
+        for value in [opcode as u8, opcode.operand_shape() as u8] {
             hash ^= u64::from(value);
             hash = hash.wrapping_mul(PRIME);
         }

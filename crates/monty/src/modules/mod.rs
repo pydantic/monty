@@ -10,7 +10,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::RunResult,
     frozen::{self, FrozenFunctions},
-    heap::HeapId,
+    heap::{HeapData, HeapId},
     intern::StaticStrings,
 };
 
@@ -19,7 +19,6 @@ pub(crate) mod asyncio;
 pub(crate) mod base64;
 pub(crate) mod binascii;
 pub(crate) mod bisect;
-pub(crate) mod bundled;
 pub(crate) mod collections;
 pub(crate) mod copy;
 pub(crate) mod csv;
@@ -39,11 +38,13 @@ pub(crate) mod os_path;
 pub(crate) mod pathlib;
 pub(crate) mod random;
 pub(crate) mod re;
+pub(crate) mod statistics;
 pub(crate) mod sys;
 pub(crate) mod time;
 pub(crate) mod tomllib;
 pub(crate) mod typing;
 pub(crate) mod unicodedata;
+pub(crate) mod vendored;
 
 /// Built-in modules that can be imported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +109,8 @@ pub(crate) enum StandardLib {
     Fnmatch,
     /// The `annotationlib` module: `Format`, `ForwardRef` and `get_annotations()`.
     Annotationlib,
+    /// The `statistics` module: means, medians, modes, variances and quantiles.
+    Statistics,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -146,6 +149,7 @@ impl StandardLib {
             StaticStrings::DecimalMod => Some(Self::Decimal),
             StaticStrings::Fnmatch => Some(Self::Fnmatch),
             StaticStrings::Annotationlib => Some(Self::Annotationlib),
+            StaticStrings::Statistics => Some(Self::Statistics),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -160,9 +164,10 @@ impl StandardLib {
             .filter_map(|name| Self::from_static(name).map(|_| <&'static str>::from(name)))
     }
 
-    /// Creates a new instance of this module on the heap.
+    /// Creates a new instance of this module on the heap, with an `__all__`
+    /// when CPython's module defines one.
     pub fn create(self, vm: &mut VM<'_>) -> HeapId {
-        match self {
+        let mut module = match self {
             Self::Sys => sys::create_module(vm),
             Self::Typing => typing::create_module(vm),
             Self::Asyncio => asyncio::create_module(vm),
@@ -190,8 +195,51 @@ impl StandardLib {
             Self::Decimal => decimal::create_module(vm),
             Self::Fnmatch => fnmatch::create_module(vm),
             Self::Annotationlib => annotationlib::create_module(vm),
+            Self::Statistics => statistics::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
+        };
+        if let Some(excluded) = self.excluded_from_all() {
+            module.set_dunder_all(excluded, vm);
+        }
+        vm.heap.allocate(HeapData::Module(Box::new(module)))
+    }
+
+    /// For a module whose CPython counterpart defines `__all__`, the public
+    /// names Monty's module has that CPython's `__all__` leaves out; `None`
+    /// when CPython defines none, so `from m import *` binds every public name.
+    fn excluded_from_all(self) -> Option<&'static [StaticStrings]> {
+        match self {
+            Self::Sys
+            | Self::Math
+            | Self::Unicodedata
+            | Self::Itertools
+            | Self::Binascii
+            | Self::Time
+            | Self::Bisect
+            | Self::Decimal => None,
+            #[cfg(feature = "test-hooks")]
+            Self::Gc => None,
+            Self::Base64 => Some(&[StaticStrings::MaxBinSize, StaticStrings::MaxLineSize]),
+            Self::Typing
+            | Self::Asyncio
+            | Self::Pathlib
+            | Self::Os
+            | Self::OsPath
+            | Self::Json
+            | Self::Re
+            | Self::Datetime
+            | Self::Dataclasses
+            | Self::Collections
+            | Self::Functools
+            | Self::Random
+            | Self::Copy
+            | Self::Hashlib
+            | Self::Csv
+            | Self::Tomllib
+            | Self::Fnmatch
+            | Self::Annotationlib
+            | Self::Statistics => Some(&[]),
         }
     }
 }
@@ -200,45 +248,48 @@ impl StandardLib {
 ///
 /// Every dump reaches these through `Value::ModuleFunction`, encoded by variant
 /// name, so renaming a variant needs `#[serde(alias)]` (see `DUMP_VERSION`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+/// Explicit discriminants are permanent module identity codes; never change or reuse them.
+#[monty_macros::explicit_discriminants(checksum = 0x372d_a81d_21f2_6e14)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::EnumDiscriminants)]
+#[repr(u8)]
 pub(crate) enum ModuleFunctions {
-    Asyncio(asyncio::AsyncioFunctions),
-    Collections(collections::CollectionsFunctions),
-    Json(json::JsonFunctions),
-    Math(math::MathFunctions),
-    Os(os::OsFunctions),
-    OsPath(os_path::OsPathFunctions),
-    Re(re::ReFunctions),
-    Unicodedata(unicodedata::UnicodedataFunctions),
-    Itertools(itertools::ItertoolsFunctions),
-    Dataclasses(dataclasses::DataclassesFunctions),
-    Functools(functools::FunctoolsFunctions),
-    Base64(base64::Base64Functions),
-    Binascii(binascii::BinasciiFunctions),
-    Random(random::RandomFunctions),
-    Copy(copy::CopyFunctions),
+    Asyncio(asyncio::AsyncioFunctions) = 0,
+    Collections(collections::CollectionsFunctions) = 1,
+    Json(json::JsonFunctions) = 2,
+    Math(math::MathFunctions) = 3,
+    Os(os::OsFunctions) = 4,
+    OsPath(os_path::OsPathFunctions) = 5,
+    Re(re::ReFunctions) = 6,
+    Unicodedata(unicodedata::UnicodedataFunctions) = 7,
+    Itertools(itertools::ItertoolsFunctions) = 8,
+    Dataclasses(dataclasses::DataclassesFunctions) = 9,
+    Functools(functools::FunctoolsFunctions) = 10,
+    Base64(base64::Base64Functions) = 11,
+    Binascii(binascii::BinasciiFunctions) = 12,
+    Random(random::RandomFunctions) = 13,
+    Copy(copy::CopyFunctions) = 14,
     /// Private primitives passed explicitly to frozen Python implementations.
-    Frozen(FrozenFunctions),
-    Time(time::TimeFunctions),
-    Hashlib(hashlib::HashlibFunctions),
-    Bisect(bisect::BisectFunctions),
-    Csv(csv::CsvFunctions),
-    Tomllib(tomllib::TomllibFunctions),
-    Decimal(decimal::DecimalFunctions),
-    Fnmatch(fnmatch::FnmatchFunctions),
-    Typing(typing::TypingFunctions),
-    Annotationlib(annotationlib::AnnotationlibFunctions),
+    Frozen(FrozenFunctions) = 15,
+    Time(time::TimeFunctions) = 16,
+    Hashlib(hashlib::HashlibFunctions) = 17,
+    Bisect(bisect::BisectFunctions) = 18,
+    Csv(csv::CsvFunctions) = 19,
+    Tomllib(tomllib::TomllibFunctions) = 20,
+    Decimal(decimal::DecimalFunctions) = 21,
+    Fnmatch(fnmatch::FnmatchFunctions) = 22,
+    Typing(typing::TypingFunctions) = 23,
+    Annotationlib(annotationlib::AnnotationlibFunctions) = 24,
+    Statistics(statistics::StatisticsFunctions) = 25,
     /// `gc` module functions — only present under the `test-hooks` feature.
-    /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
-    /// goes last and new variants are appended ahead of it.
+    /// See [`gc`] for why it is gated; test-only variants are grouped last.
     #[cfg(feature = "test-hooks")]
-    Gc(gc::GcFunctions),
+    Gc(gc::GcFunctions) = 26,
     /// `sys` module functions — only present under the `test-hooks` feature.
     /// Production `sys` is attribute-only; the test feature adds callables
     /// like `setrecursionlimit` that fixtures use to align behavior with
     /// CPython. See [`sys`] for the rationale.
     #[cfg(feature = "test-hooks")]
-    Sys(sys::SysFunctions),
+    Sys(sys::SysFunctions) = 27,
 }
 
 impl fmt::Display for ModuleFunctions {
@@ -269,6 +320,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Fnmatch(func) => write!(f, "{func}"),
             Self::Typing(func) => write!(f, "{func}"),
             Self::Annotationlib(func) => write!(f, "{func}"),
+            Self::Statistics(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -309,6 +361,7 @@ impl ModuleFunctions {
             Self::Fnmatch(functions) => fnmatch::call(vm, functions, args).map(CallResult::Value),
             Self::Typing(functions) => typing::call(vm, functions, args),
             Self::Annotationlib(functions) => annotationlib::call(vm, functions, args),
+            Self::Statistics(functions) => statistics::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

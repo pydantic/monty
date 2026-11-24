@@ -68,8 +68,8 @@ RULES: list[tuple[str, Category]] = [
     ('uv.lock', OTHER),
     ('clippy.toml', OTHER),
     ('Makefile', OTHER),
-    ('LICENSE', OTHER),
-    ('crates/monty/stdlib/LICENSE', OTHER),
+    ('**/LICENSE', OTHER),
+    ('**/NOTICE', OTHER),
     ('crates/monty/stdlib/vendor.toml', OTHER),
     ('crates/monty-proto/tests/oracle/**', OTHER),
     ('crates/monty-js/ts/worker/component/**', OTHER),
@@ -119,6 +119,7 @@ RULES: list[tuple[str, Category]] = [
     # vendored CPython stdlib modules and their patches, embedded in the interpreter
     ('crates/monty/stdlib/Lib/**', PRODUCTION),
     ('crates/monty/stdlib/patches/**', PRODUCTION),
+    ('crates/monty-datatest/vendor/cpython/**', TEST),
 ]
 
 

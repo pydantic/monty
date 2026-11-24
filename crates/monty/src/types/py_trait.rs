@@ -2,7 +2,7 @@ use std::{borrow::Cow, cmp::Ordering, fmt::Write, str};
 
 use ahash::AHashSet;
 
-use super::{Type, allocate_string};
+use super::{TypeRef, allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -107,13 +107,13 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// Used for error messages and the `type()` builtin.
     /// Takes heap reference for cases where nested Value lookups are needed.
-    fn py_type(&self, vm: &VM<'h>) -> Type;
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef;
 
     /// The type name used in error messages (`'list'`, `'MutablePoint'`).
     ///
-    /// Defaults to [`py_type`](Self::py_type)'s name; types whose [`Type`]
-    /// carries no class identity (host class instances, named tuples)
-    /// override it to name their real class rather than a placeholder.
+    /// Defaults to [`py_type`](Self::py_type)'s name; types whose [`TypeRef`]
+    /// is a native placeholder (host class instances, named tuples) override it
+    /// to name their real class.
     /// Borrows only `vm.interns`, so it survives heap cleanup.
     fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
         self.py_type(vm).name(vm.heap, vm.interns)
@@ -557,7 +557,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// - `Ok(CallResult::Value(v))` - Method completed synchronously with value `v`
     /// - `Ok(CallResult::OsCall(func, args))` - Method needs OS operation; VM yields to host
-    /// - `Ok(CallResult::External(name, args))` - Method needs external function call
+    /// - `Ok(CallResult::External { .. })` - Method needs external function call
     /// - `Ok(CallResult::MethodCall { .. })` - Host-class method call; VM yields to host
     /// - `Err(e)` - Method call failed with error
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
@@ -728,9 +728,10 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
     }
 
-    /// Advances an iterator synchronously for Rust consumers.
-    /// Public `next()` dispatches user methods separately so they can suspend.
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    /// Advances once. Native exhaustion returns `None`; a call may instead raise `StopIteration`.
+    /// VM callers dispatch the returned call. Synchronous consumers use [`ValueRead::py_next`](crate::value::ValueRead::py_next)
+    /// or [`PyValue::next_sync`](crate::py_value::PyValue::next_sync) to finish it and translate exhaustion to `None`.
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
     }
 }

@@ -2,14 +2,13 @@
 name = "monty"
 readme = "README.md"
 version = { workspace = true }
-license = { workspace = true }
+license = "MIT AND Python-2.0.1"
 rust-version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
 description = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
-homepage = { workspace = true }
 repository = { workspace = true }
 
 [lib]
@@ -29,35 +28,35 @@ ahash = { workspace = true }
 indexmap = { workspace = true }
 itoa = { workspace = true }
 serde = { workspace = true }
-postcard = { workspace = true }
 minicbor-serde = { workspace = true }
 serde_bytes = { workspace = true }
 strum = { workspace = true }
-hashbrown = "0.16"
+hashbrown = "0.17"
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 num-integer = { workspace = true }
 unicode-general-category = { workspace = true }
 # `unicodedata` backing tables; their Unicode version may differ from CPython's
-unicode_names2 = "1"
+unicode_names2 = "4"
+wide = "1.7.1"
 unicode-normalization = "0.1"
 memchr = { workspace = true }
+bytecount = { version = "0.6.9", features = ["runtime-dispatch-simd"] }
 # `union` keeps `Tuple` within `HeapData`'s 56-byte 32-bit limit (heap_data.rs);
 # without it wasm32 builds that do not also link ty fail that assert
 smallvec = { version = "1.13", features = ["serde", "union"] }
 fancy-regex = "0.20.0"
 # worker-side uuid generation for sandbox-defined classes/instances crossing the
 # boundary; supports native and wasm32-wasip1 (WASI random)
-getrandom = "0.3"
+getrandom = "0.4"
 libm = "0.2"
 # `hashlib`'s SHA-1 and SHA-2, for their hardware-accelerated compression; `sha2` also backs
 # `random.seed(str | bytes)`, which extends the seed with a SHA-512 digest as CPython does
 sha1 = { version = "0.11", default-features = false }
-sha2 = { version = "0.11", default-features = false }
-chrono = { workspace = true }
-speedate = "0.17.0"
-itertools = "0.14.0"
-jiter = { version = "0.17.0", features = ["num-bigint"] }
+sha2 = { workspace = true }
+jiff = { workspace = true }
+speedate = "0.18.0"
+jiter = { version = "0.19.0", features = ["num-bigint"] }
 
 [features]
 # ref-count-return changes behavior to return information on reference counts to check they're correct
@@ -74,7 +73,6 @@ test-hooks = ["monty-types/test-hooks"]
 
 [dev-dependencies]
 monty-types = { workspace = true, features = ["tzdb"] }
-tempfile = "3"
 insta = { workspace = true }
 serde_json = { workspace = true }
 

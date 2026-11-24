@@ -6,16 +6,14 @@ build-backend = "hatchling.build"
 name = "pydantic-monty"
 description = "Monty, the Python sandbox: bindings plus the worker binary"
 readme = "README.md"
-requires-python = ">=3.10"
-# SPDX expression only, no `license-files`: the maturin-built siblings carry the
-# licence the same way, from the Cargo workspace's `license` field
+requires-python = ">=3.11"
+# The metapackage does not bundle the worker or its third-party licences.
 license = "MIT"
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -34,10 +32,10 @@ classifiers = [
 ]
 # version and both pins are rewritten from the Cargo workspace version by
 # `crates/monty-python/build.rs` — don't edit them by hand
-version = "1.5.0"
+version = "1.7.0"
 dependencies = [
-    "pydantic-monty-client==1.5.0",
-    "pydantic-monty-runtime==1.5.0",
+    "pydantic-monty-client==1.7.0",
+    "pydantic-monty-runtime==1.7.0",
 ]
 
 [project.optional-dependencies]

@@ -51,6 +51,7 @@ from. CPython, where the same object is an ordinary instance, copies it.
 CPython raises the same error for most of these, but not all: it copies
 iterators whose type is picklable, so `copy.deepcopy(iter([1, 2]))` returns a
 fresh iterator in CPython and raises here.
+`map` and `filter` iterators are also rejected here rather than copied.
 
 The type named in the message is Monty's, so it can differ from CPython's name
 for the same object (see [classes.md](classes.md)).
@@ -121,5 +122,5 @@ copy grows the dict being walked. CPython also fails, with
 CPython copies a dict's hash table, so `copy.copy(d)` never calls a key's
 `__hash__`. Monty re-inserts each pair, so a key with a custom `__hash__` sees
 it called again, and one that raises makes the copy fail where CPython's
-succeeds. This is `dict.copy()`'s behaviour, which `copy` inherits — see
-[builtins.md](builtins.md).
+succeeds. `d.copy()` reuses stored hashes and avoids these callbacks;
+`copy.copy(d)` uses a separate implementation.

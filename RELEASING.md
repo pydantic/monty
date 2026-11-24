@@ -15,12 +15,12 @@ This will update `Cargo.lock`, sync `package.json`/`package-lock.json` (via `cra
 and sync the `pydantic-monty` metapackage's version and its exact pins on
 `pydantic-monty-client`/`pydantic-monty-runtime` (via `crates/monty-python/build.rs`).
 
-## 2. Commit and Push
+## 2. Commit and Push a new branch
 
 ```bash
 git checkout -b prepare-release-vX.Y.Z
 git commit -am "Bump version to vX.Y.Z"
-git push
+git push --set-upstream origin HEAD
 ```
 
 ## 3. Create Release via GitHub UI
@@ -41,6 +41,10 @@ Once the tag is pushed, CI will:
 and adds exact platform `optionalDependencies` there before packing.
 The development manifest and lockfile omit these dependencies so version bumps do not need unpublished packages.
 CI tests the assembled tarballs, then publishes the platform packages before the main package.
+
+Worker wheels and npm packages include the combined `crates/monty-runtime/LICENSE`.
+After a change to the upstream licences or `crates/monty/stdlib/NOTICE`, run `make update-licenses`.
+CI checks the licence files in the built runtime wheel and source archives, npm tarballs, and the affected crate archives.
 
 Monitor the workflow at https://github.com/pydantic/monty/actions
 

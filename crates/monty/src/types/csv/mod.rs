@@ -25,7 +25,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{LazyHeapSet, PyTrait, Type},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
 };
 
@@ -103,8 +103,8 @@ impl HeapItem for CsvObject {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).py_type()
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        self.get(vm.heap).py_type().into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
@@ -141,7 +141,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
         }
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         match self.get(vm.heap).kind() {
             Kind::Reader => reader::next(self, vm),
             Kind::DictReader => dict::reader_next(self, vm),
@@ -149,6 +149,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
                 Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
             }
         }
+        .map(|item| item.map(CallResult::Value))
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {

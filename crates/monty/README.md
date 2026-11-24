@@ -20,6 +20,10 @@ This crate is the pure-Rust core. Most users want one of the bindings built on t
 
 See the [documentation](https://pydantic.dev/docs/monty/) for the motivation, latency measurements, comparison to alternatives and the supported Python subset.
 
+Monty's code is MIT-licensed.
+The crate also includes selected CPython standard library modules under the upstream licence.
+See `stdlib/LICENSE` and `stdlib/NOTICE` in the crate archive.
+
 ## Basic usage
 
 `MontyRun` parses and compiles code once; `run` executes it with input values and returns the value of the final expression as a `MontyObject`:
@@ -95,6 +99,9 @@ assert_eq!(result, MontyObject::int(42));
 
 Serialize a REPL session with `dump()` and restore it with `Dump::load()` to continue in another process or machine.
 The dump includes the interpreter state and the supplied script name, type-check state and module stubs.
+Published releases with the same dump version can read and resume each other's dumps.
+This guarantee does not extend to unreleased Git revisions.
+A release that breaks compatibility in either direction uses a new dump version, even if it is a patch release.
 Loading checks the dump version:
 
 ```rust
@@ -168,7 +175,7 @@ answer is the call's result, and running without a host gives `{}`.
 - [`monty-fs`](https://crates.io/crates/monty-fs) — host-side filesystem mounts: maps virtual sandbox paths to real host directories.
 - [`monty-runtime`](https://crates.io/crates/monty-runtime) — the `monty` binary: REPL, file runner, and subprocess worker mode.
 - [`monty-pool`](https://crates.io/crates/monty-pool) — an elastic pool of crash-isolated `monty` worker subprocesses.
-- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between pool parents and workers.
+- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between clients and workers.
 - [`monty-type-checking`](https://crates.io/crates/monty-type-checking) — type checking of sandboxed code, powered by [ty](https://docs.astral.sh/ty/).
 - [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
 - [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing.

@@ -385,13 +385,6 @@ fn get_datetime_timezone_utc(py: Python<'_>) -> PyResult<&Py<PyAny>> {
     })
 }
 
-/// Cached import of `collections.namedtuple` function.
-pub(super) fn get_namedtuple(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
-    static NAMEDTUPLE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
-
-    NAMEDTUPLE.import(py, "collections", "namedtuple")
-}
-
 /// Cached import of `pathlib.PurePosixPath` class.
 pub(super) fn get_pure_posix_path(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static PUREPOSIX: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
@@ -501,6 +494,24 @@ pub fn get_name(f: &Bound<'_, PyAny>) -> String {
     f.getattr(intern!(f.py(), "__name__"))
         .and_then(|n| n.extract::<String>())
         .unwrap_or_else(|_| "<unknown>".to_string())
+}
+
+/// Classifies host callables for the sandbox, which must know a function is
+/// async before calling it so its calls can start without waiting for the host.
+pub trait CoroutineFunctionExt {
+    /// Whether this is a coroutine function by `inspect.iscoroutinefunction`
+    /// (an `async def`, or a `functools.partial` of one). A failing check counts as not async.
+    fn is_coroutine_function(&self) -> bool;
+}
+
+impl CoroutineFunctionExt for Bound<'_, PyAny> {
+    fn is_coroutine_function(&self) -> bool {
+        let py = self.py();
+        py.import(intern!(py, "inspect"))
+            .and_then(|inspect| inspect.call_method1(intern!(py, "iscoroutinefunction"), (self,)))
+            .and_then(|result| result.is_truthy())
+            .unwrap_or(false)
+    }
 }
 
 /// get the `__doc__` attribute from a (hopefully) function

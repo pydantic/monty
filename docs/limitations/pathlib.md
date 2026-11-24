@@ -17,6 +17,9 @@ give `PosixPath` / `<class 'PosixPath'>`, and `pathlib.Path.nonexistent` raises
 `Path(*segments)` works. Each segment may be a `str` or another `Path`.
 Bytes paths are rejected with `TypeError`.
 
+A backslash is read as a separator, so `Path('a\\b')` is `a/b` and `Path('a').with_name('b\\c')` is `b/c`.
+On POSIX, CPython keeps the backslash as part of the name.
+
 `Path.cwd()`, on the class or any instance, returns the sandbox's virtual working directory without a host
 round-trip; the host sets it per feed and relative paths are resolved against
 it before any I/O method reaches the host (see [os.md](os.md)). `Path.home()`
@@ -25,14 +28,19 @@ is **not** implemented: the sandbox has no home directory.
 ## Pure (no I/O) methods and attributes
 
 Implemented: `name`, `parent`, `stem`, `suffix`, `suffixes`, `parts`,
-`is_absolute()`, `joinpath(*other)`, `with_name(name)`, `with_stem(stem)`,
-`with_suffix(suffix)`, `as_posix()`, `__fspath__()`.
+`anchor`, `drive`, `root`, `is_absolute()`, `is_reserved()`, `joinpath(*other)`,
+`with_name(name)`, `with_stem(stem)`, `with_suffix(suffix)`,
+`match(path_pattern, *, case_sensitive=None)`, `as_posix()`, `__fspath__()`.
+
+`with_name`, `with_stem` and `with_suffix` take only a `str`.
+Any other argument raises `TypeError: expected string, not <type>`, where CPython's error depends on the method:
+`argument of type 'int' is not a container or iterable` from `with_name`, for example, or an `AttributeError` about
+`startswith` from `with_suffix`.
 
 The `/` operator works in both directions (`Path("a") / "b"`,
 `Path("a") / Path("b")`, `"a" / Path("b")`).
 
-Not implemented: `anchor`, `drive`, `root`, `relative_to`, `is_reserved`,
-`match`, `full_match`, `with_segments`.
+Not implemented: `relative_to`, `full_match`, `with_segments`.
 
 ## I/O methods (yield to host)
 
@@ -56,7 +64,7 @@ A relative target remains relative in the returned value; the host receives an a
 Both methods use the same host rename operation, so overwrite behavior depends on the backend
 (see [os.md](os.md)).
 
-`Path.glob()`, `Path.rglob()` and `Path.walk()` count only the visible parameters in arity errors, excluding bound `self`.
+`Path.glob()`, `Path.rglob()`, `Path.walk()` and `Path.match()` count only the visible parameters in arity errors, excluding bound `self`.
 
 Not implemented: `touch`, `chmod`, `lchmod`, `owner`,
 `group`, `symlink_to`, `hardlink_to`, `link_to`, `readlink`, `lstat`,

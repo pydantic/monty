@@ -19,19 +19,17 @@
 //! line for `readline`, etc.) is computed from the now-loaded buffer and
 //! pushed in its place. Subsequent reads and seeks slice that heap buffer in
 //! pure Monty with no further OS calls. The buffer lives in the heap and
-//! counts against the configured `max_memory`. With `newline=None`, `\r\n`
+//! counts against the configured `max_memory`; writes invalidate it. With `newline=None`, `\r\n`
 //! and `\r` become `\n` as the buffer is installed, so positions count
 //! translated chars.
 //!
 //! # Iteration
 //!
-//! `__next__` slices the next line from the loaded buffer and cannot yield to
-//! the host, so only the `ForIter` opcode and `next()` load an unread file:
-//! [`needs_buffer_load`] then [`buffer_load_call`] with a `BufferLoad`
-//! (re-dispatch) or `FileNext` (answer the call) effect. Any other caller of
-//! `py_next` on an unread file raises `NotImplementedError`.
+//! Suspendable advancement loads an unread file through [`buffer_load_call`]
+//! with a `FileNext` effect, then returns the first line. This applies to
+//! `next()`, loops and lazy `map`/`filter` consumers. For synchronous consumers,
+//! [`PyValue::next_sync`](crate::py_value::PyValue::next_sync) rejects an unread file with `NotImplementedError`.
 //!
-//! [`needs_buffer_load`]: HeapObjectRead::needs_buffer_load
 //! [`buffer_load_call`]: HeapObjectRead::buffer_load_call
 //!
 //! A buffered read that *fails* in the host leaves the file in a retry-safe
@@ -55,10 +53,7 @@
 //!   `__exit__` always returns `None` — it cannot suppress an in-flight
 //!   exception. The file is closed on exit on both the success and exception
 //!   paths.
-//! - `+` update modes (`r+`, `w+`, `a+`, and their `b` variants) are
-//!   rejected at parse time because Monty has no read-position tracking;
-//!   without it a write after a read would silently truncate the file via
-//!   the one-shot OS write.
+//! - Update modes other than binary `w+b` / `wb+` are rejected at parse time.
 //! - The `encoding` and `errors` arguments to `open()` are accepted only at
 //!   their CPython defaults (with `encoding="utf-8"` as a documented no-op).
 //!   Text I/O is whole-file UTF-8 with no error handlers; `newline` is
@@ -69,8 +64,7 @@
 //!   cookie. Round-trips through `seek()` correctly.
 //! - `seek(N)` in text mode accepts any char-index offset, where CPython
 //!   restricts it to `seek(0)`, `seek(0, 2)`, or a cookie from `tell()`.
-//! - Iterating an unread file works from `for` loops and `next()` only; a
-//!   builtin consuming it synchronously (`list(f)`, `enumerate(f)`) raises
+//! - Iterating an unread file through a synchronous consumer (`list(f)`, `enumerate(f)`) raises
 //!   `NotImplementedError` until a read or `seek()` has loaded the buffer.
 //!
 //! Any code path that needs one of these should be added explicitly
@@ -81,10 +75,13 @@ use std::{
     mem,
 };
 
-use monty_types::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs};
+use monty_types::{
+    MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, WriteBytesAtArgs,
+    unstable::MontyNode,
+};
 
 use super::{
-    LazyHeapSet, List, PyTrait, Type,
+    LazyHeapSet, List, PyTrait, Type, TypeRef,
     bytes::{Bytes, bytes_repr_fmt},
     str::{allocate_string, allocate_string_on_heap},
 };
@@ -95,7 +92,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReadOutput},
     intern::StaticStrings,
-    os_dispatch::PostConversionEffect,
+    os_dispatch::{PostConversionEffect, stat_result_field},
     py_value::PyValue,
     types::str::StringRepr,
     value::{EitherStr, Value},
@@ -264,10 +261,8 @@ pub(crate) struct OpenFile {
     /// ignore it (their lines end at `\n`), as do host-injected handles.
     #[serde(default)]
     newline: Newline,
-    /// Whether at least one write has been issued. For `w`/`wb` mode this
-    /// switches subsequent writes from truncating to appending so write #2
-    /// doesn't clobber write #1. Truncating modes start `true` because the
-    /// host already emptied the file at `open()` time.
+    /// Selects append after the first text write. Binary writes use their cursor.
+    /// Truncating modes start `true` because `open()` already emptied the file.
     first_write_done: bool,
     /// Whether `close()` has been called. Operations on a closed file raise
     /// `ValueError`.
@@ -312,6 +307,16 @@ pub(crate) struct OpenFile {
     /// buffer. For read-capable files, the loaded buffer metadata remains the
     /// source of truth for `SEEK_END`.
     file_length: u64,
+    /// A failed binary write may have extended the file without returning a count.
+    #[serde(default)]
+    length_state: FileLengthState,
+}
+
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+enum FileLengthState {
+    #[default]
+    Known,
+    Unknown,
 }
 
 /// Cached metadata about an [`OpenFile`]'s loaded buffer.
@@ -373,6 +378,7 @@ impl OpenFile {
             pending_read: None,
             eof: false,
             file_length: position,
+            length_state: FileLengthState::Known,
         }
     }
 
@@ -428,8 +434,8 @@ impl HeapItem for OpenFile {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).file_type()
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        self.get(vm.heap).file_type().into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -459,17 +465,21 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
         Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
-    /// The next line of the loaded buffer. An unread file cannot be loaded from
-    /// here (see the module docs): `for` and `next()` load it before calling this.
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let file = self.get(vm.heap);
         file.ensure_open()?;
         if !file.mode.readable() {
             Err(unsupported_operation("not readable"))
         } else if file.buffer.is_none() {
-            Err(unloaded_iteration_error(file.file_type()))
+            Ok(Some(self.buffer_load_call(
+                vm,
+                PostConversionEffect::FileNext {
+                    file_id: self.id(),
+                    default: None,
+                },
+            )))
         } else {
-            next_line(self, vm)
+            Ok(next_line(self, vm)?.map(CallResult::Value))
         }
     }
 
@@ -639,9 +649,19 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         if self.get(vm.heap).mode.readable() {
             self.read_with_spec(vm, ReadSpec::Seek { offset, whence })
         } else {
+            let file = self.get(vm.heap);
+            file.ensure_open()?;
+            if whence == 2 && matches!(file.length_state, FileLengthState::Unknown) {
+                let path = MontyPath::new(file.path().to_owned());
+                let file_id = self.id();
+                inc_ref_for_pending_oscall(vm, file_id);
+                return Ok(CallResult::OsCallWithEffect {
+                    call: OsFunctionCall::Stat(path),
+                    effect: PostConversionEffect::FileSeekEnd { file_id, offset }.into(),
+                });
+            }
             let (target, file_length) = {
                 let file = self.get(vm.heap);
-                file.ensure_open()?;
                 let position = i64::try_from(file.position).map_err(|_| ExcType::overflow_c_ssize_t())?;
                 let file_length = i64::try_from(file.file_length).map_err(|_| ExcType::overflow_c_ssize_t())?;
                 (
@@ -686,16 +706,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         effect: fn(HeapId) -> PostConversionEffect,
     ) -> RunResult<CallResult> {
         self.check_readable(vm)?;
-        // `eof` on a readable file is only ever flipped by a path that
-        // also populates `buffer`, so we never need to short-circuit on
-        // EOF without a loaded buffer here. Write-only files would be
-        // the only case where `eof=true && buffer=None` is possible, and
-        // they're rejected by the readable check above.
-        let buffer_loaded = {
-            let file = self.get(vm.heap);
-            debug_assert!(!file.eof || file.buffer.is_some());
-            file.buffer.is_some()
-        };
+        let buffer_loaded = self.get(vm.heap).buffer.is_some();
 
         if buffer_loaded {
             return compute_slice(self, spec, vm).map(CallResult::Value);
@@ -781,14 +792,14 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
             let text = extract_str_payload(data, vm).expect("validate_write_data accepted a str-shaped value");
             WritePayload::Text(text)
         };
-        Ok(self.dispatch_write(vm, payload, false))
+        self.dispatch_write(vm, payload, false)
     }
 
     /// `json.dump`'s `fp.write(text)`: the same host write as [`Self::write`],
     /// but the call answers `None` rather than the character count.
     pub(crate) fn write_text_discarding_count(&mut self, vm: &mut VM<'h>, text: String) -> RunResult<CallResult> {
         self.check_text_write(vm)?;
-        Ok(self.dispatch_write(vm, WritePayload::Text(text), true))
+        self.dispatch_write(vm, WritePayload::Text(text), true)
     }
 
     /// The checks `write(str)` makes before reaching the host, in the same
@@ -815,8 +826,8 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
 
     /// Builds the one-shot write or append for an already validated payload,
     /// with the position update armed for the host's reply.
-    fn dispatch_write(&mut self, vm: &mut VM<'h>, payload: WritePayload, result_none: bool) -> CallResult {
-        let (path, append, newline, previous_position, previous_length) = {
+    fn dispatch_write(&mut self, vm: &mut VM<'h>, payload: WritePayload, result_none: bool) -> RunResult<CallResult> {
+        let (path, append, positional, newline, previous_position, previous_length) = {
             let file = self.get(vm.heap);
             // `first_write_done` is flipped in `apply_write_position`, only once
             // the host confirms the write — a rejected or host-failed write must
@@ -825,20 +836,56 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
             (
                 MontyPath::new(file.path().to_owned()),
                 append,
+                file.mode.is_binary() && !file.mode.is_append(),
                 file.newline,
                 file.position,
                 file.file_length,
             )
         };
 
+        if positional && vm.env.legacy_binary_writes {
+            if self.get(vm.heap).mode.readable() {
+                return Err(
+                    ExcType::not_implemented("binary update mode requires positional filesystem writes").into(),
+                );
+            }
+            if matches!(&payload, WritePayload::Bytes(bytes) if bytes.is_empty()) {
+                return Ok(CallResult::Value(if result_none { Value::None } else { Value::Int(0) }));
+            }
+            if previous_position != previous_length
+                || matches!(self.get(vm.heap).length_state, FileLengthState::Unknown)
+            {
+                return Err(
+                    ExcType::not_implemented("writing away from EOF requires positional filesystem writes").into(),
+                );
+            }
+        } else if positional
+            && previous_position > previous_length
+            && matches!(self.get(vm.heap).length_state, FileLengthState::Known)
+            && !matches!(&payload, WritePayload::Bytes(bytes) if bytes.is_empty())
+        {
+            // Hosts refuse gaps so one sandbox byte cannot grow a host file by the whole offset;
+            // fail here with a clearer error than the host's.
+            return Err(ExcType::not_implemented("writing past the end of a file is not supported").into());
+        }
+
         let mut text_length = None;
+        let mut payload_length = None;
         let call = match payload {
             WritePayload::Bytes(bytes) => {
-                let args = PathBytesDataArgs { path, data: bytes };
-                if append {
-                    OsFunctionCall::AppendBytes(args)
+                payload_length = Some(bytes.len() as u64);
+                if positional && !vm.env.legacy_binary_writes {
+                    let args = WriteBytesAtArgs {
+                        path,
+                        offset: previous_position,
+                        data: bytes,
+                    };
+                    args.validate().map_err(ExcType::value_error)?;
+                    OsFunctionCall::WriteBytesAt(args)
+                } else if append {
+                    OsFunctionCall::AppendBytes(PathBytesDataArgs { path, data: bytes })
                 } else {
-                    OsFunctionCall::WriteBytes(args)
+                    OsFunctionCall::WriteBytes(PathBytesDataArgs { path, data: bytes })
                 }
             }
             WritePayload::Text(text) => {
@@ -853,6 +900,17 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
             }
         };
 
+        // A failed host write can still modify a prefix, so discard cached reads before dispatch.
+        let buffer = {
+            let file = self.get_mut(vm.heap);
+            file.buffer_meta = None;
+            file.eof = false;
+            file.buffer.take()
+        };
+        if let Some(buffer) = buffer {
+            vm.heap.dec_ref(buffer);
+        }
+
         let file_id = self.id();
         inc_ref_for_pending_oscall(vm, file_id);
         // The effect travels with the call and is armed at dispatch, so a
@@ -861,11 +919,12 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
             file_id,
             previous_position,
             previous_length,
+            payload_length,
             text_length,
             result_none,
         }
         .into();
-        CallResult::OsCallWithEffect { call, effect }
+        Ok(CallResult::OsCallWithEffect { call, effect })
     }
 
     /// Marks the file wrapper as closed and releases the cached read buffer.
@@ -952,6 +1011,9 @@ impl OpenFile {
         self.position = previous_position;
         self.file_length = previous_length;
         self.eof = previous_position >= previous_length;
+        if self.mode.is_binary() && !self.mode.is_append() {
+            self.length_state = FileLengthState::Unknown;
+        }
     }
 }
 
@@ -1051,9 +1113,8 @@ pub(crate) fn apply_buffer_store(file_id: HeapId, result: Value, vm: &mut VM<'_>
     compute_slice(&file, spec, vm)
 }
 
-/// `BufferLoad` resume: installs the host content so the `ForIter` that
-/// found the file unread can re-dispatch against the buffer. Produces no
-/// value; the pin on `file_id` is released here.
+/// Installs host content before replaying a consumer that required a loaded file.
+/// Consumes the pin on `file_id` and the host's result.
 pub(crate) fn apply_buffer_load(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<()> {
     let pin = Value::Ref(file_id);
     defer_drop!(pin, vm);
@@ -1066,10 +1127,8 @@ pub(crate) fn apply_buffer_load(file_id: HeapId, result: Value, vm: &mut VM<'_>)
     install_buffer(&file, result, vm)
 }
 
-/// `FileNext` resume: installs the host content, then answers the
-/// `next(file, default)` that triggered the load — the first line, `default`
-/// for an empty file, or `StopIteration`. Releases the pin on `file_id` and
-/// whichever of `default` / the line is not returned.
+/// Installs the host content, then returns the first line or raises `StopIteration`.
+/// A frozen caller handles exhaustion when the original operation supplied a default.
 pub(crate) fn apply_file_next(
     file_id: HeapId,
     default: Option<Value>,
@@ -1181,20 +1240,41 @@ fn next_line<'h>(file: &HeapReadMut<'h, OpenFile>, vm: &mut VM<'h>) -> RunResult
     }
 }
 
-/// `__next__` on an unread file from a caller that cannot suspend for the host
-/// read (`list(f)`, `enumerate(f)`, …); only `for` and `next()` issue it.
-///
-/// TODO: `enumerate`, `zip`, `map`, `filter` and `sorted` go away from this
-/// list once they are bytecode, since they then iterate through `ForIter`
-/// (<https://github.com/pydantic/monty/issues/1041>).
-/// The Rust-side consumers that remain (`list(f)`, `''.join(f)`, `sum(f)`, …)
-/// need the `LoadThenCall` effect `csv.reader(f)` uses: yield the load with
-/// the call stashed, replay the call on resume.
-fn unloaded_iteration_error(file_type: Type) -> RunError {
+/// Reports an unread file reached through a synchronous consumer such as `list` or `join`.
+/// Such callers must load the buffer first, or retain their call across the host read.
+pub(crate) fn unloaded_iteration_error(file_type: Type) -> RunError {
     ExcType::not_implemented(format!(
-        "iterating an unread {file_type} is only supported by 'for' loops and next(); call seek(0) first to load it"
+        "iterating an unread {file_type} cannot suspend in this synchronous context; call seek(0) first to load it"
     ))
     .into()
+}
+
+/// Completes a seek from EOF after a failed write made the tracked length unknown.
+pub(crate) fn apply_file_seek_end(
+    file_id: HeapId,
+    offset: i64,
+    result: &MontyObject,
+    vm: &mut VM<'_>,
+) -> RunResult<Value> {
+    let pin = Value::Ref(file_id);
+    defer_drop!(pin, vm);
+    let Some(MontyNode::Int(length)) = stat_result_field(result, "st_size") else {
+        return Err(RunError::internal(
+            "file.seek requires a stat result with an integer st_size",
+        ));
+    };
+    let file_length =
+        u64::try_from(*length).map_err(|_| RunError::internal("file.seek received a negative st_size"))?;
+    let target = resolve_seek_target(offset, 2, 0, *length)?;
+    let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
+        return Err(RunError::internal("file seek effect does not refer to an open file"));
+    };
+    let file = file.get_mut(vm.heap);
+    file.file_length = file_length;
+    file.length_state = FileLengthState::Known;
+    file.position = u64::try_from(target).map_err(|_| ExcType::overflow_c_ssize_t())?;
+    file.eof = file.position >= file_length;
+    Ok(Value::Int(target))
 }
 
 /// Applies a successful host write result to an [`OpenFile`]'s logical
@@ -1213,6 +1293,7 @@ fn unloaded_iteration_error(file_type: Type) -> RunError {
 /// is released by `defer_drop!` regardless of which path the function takes.
 pub(crate) fn apply_write_position(
     file_id: HeapId,
+    payload_length: Option<u64>,
     text_length: Option<u64>,
     result_none: bool,
     result: Value,
@@ -1225,11 +1306,12 @@ pub(crate) fn apply_write_position(
 
     let written = result_ref.as_int(vm)?;
     if written < 0 {
-        return Err(RunError::internal(
-            "apply_write_position: write count cannot be negative",
-        ));
+        return Err(RunError::internal("write count cannot be negative"));
     }
     let written = u64::try_from(written).map_err(|_| ExcType::overflow_c_ssize_t())?;
+    if payload_length.is_some_and(|length| written > length) {
+        return Err(RunError::internal("write count exceeds the supplied data length"));
+    }
 
     let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
         return Err(RunError::internal(
@@ -1242,7 +1324,9 @@ pub(crate) fn apply_write_position(
         .checked_add(written)
         .ok_or_else(ExcType::overflow_c_ssize_t)?;
     f.position = new_position;
-    f.file_length = f.file_length.max(new_position);
+    if written != 0 {
+        f.file_length = f.file_length.max(new_position);
+    }
     f.eof = new_position >= f.file_length;
     // The write is confirmed — subsequent writes append. Deliberately not set
     // at dispatch time so a rejected or host-failed write leaves the file in
@@ -1585,6 +1669,7 @@ fn update_file_state<'h>(
         buffer_total,
     });
     f.file_length = buffer_total;
+    f.length_state = FileLengthState::Known;
 }
 
 /// Populates [`OpenFile::buffer_meta`] from the just-loaded buffer.
@@ -1741,7 +1826,7 @@ fn is_bytes(data: &Value, heap: &Heap) -> bool {
 /// Builds the `io.UnsupportedOperation` used for file operations that the
 /// open mode forbids (e.g. `read()` on `'w'`, `write()` on `'r'`). In CPython
 /// this is a subclass of both `OSError` and `ValueError`; Monty matches both
-/// in `try`/`except` matching via [`ExcType::is_subclass_of`].
+/// in `try`/`except` matching through its two bases in the native type table.
 fn unsupported_operation(message: &'static str) -> RunError {
     SimpleException::new_msg(ExcType::UnsupportedOperation, message).into()
 }

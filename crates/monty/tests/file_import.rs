@@ -7,10 +7,13 @@
 //! dumps and REPL feeds. Python semantics, compared with CPython, are in
 //! `test_cases/import__files.py`.
 
+use std::time::Duration;
+
 use monty::{Dump, MontyRepl, MontyRun, ReplOsCall, ReplProgress, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, IMPORT_CALL, ImportArgs, MAX_SEARCH_DIRS, ModuleFile, ModuleRead,
-    MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker, find_module_file,
+    MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker,
+    find_module_file,
 };
 
 /// The files a test's host serves, by virtual path.
@@ -225,7 +228,10 @@ fn a_submodule_is_asked_with_the_package_path() {
         ("/proj/pkg/__init__.py", ""),
         ("/proj/pkg/sub.py", "value = 3\n"),
         ("/proj/pkg/other.py", "value = 4\n"),
-        ("/proj/far/__init__.py", "__path__ = ['elsewhere']\n"),
+        (
+            "/proj/far/__init__.py",
+            "from collections import namedtuple\n__path__ = namedtuple('SearchPath', 'directory')('elsewhere')\n",
+        ),
         ("/proj/elsewhere/mod.py", "value = 5\n"),
     ];
     let mut imports = Vec::new();
@@ -260,6 +266,15 @@ fn a_long_package_path_is_capped() {
     assert_eq!(search_path.len(), MAX_SEARCH_DIRS);
     assert_eq!(search_path[0], "/d0");
     assert_eq!(search_path.last().unwrap(), &format!("/d{}", MAX_SEARCH_DIRS - 1));
+}
+
+#[test]
+fn a_non_sequence_package_path_sends_no_search_directories() {
+    let files = &[("/proj/pkg/__init__.py", "__path__ = 42\n"), ("/proj/pkg/sub.py", "")];
+    let mut imports = Vec::new();
+    let (_, result) = feed_logged(repl(), "import pkg.sub", files, &mut imports);
+    assert_eq!(result.unwrap_err(), "ModuleNotFoundError: No module named 'pkg.sub'");
+    assert_eq!(asked(&imports), [("pkg", vec!["/proj"]), ("pkg.sub", vec![])]);
 }
 
 #[test]
@@ -468,6 +483,20 @@ fn an_abandoned_import_reads_the_file_again() {
         assert_eq!(asked(&imports), [("helpers", vec!["/proj"])]);
         assert_eq!(result.unwrap(), eval("(1, 2)", &[]));
     }
+}
+
+/// A star import reads `__all__` in a native loop whose `__getitem__` calls each
+/// restart the dispatch loop's checkpoint countdown, so the loop polls the clock.
+#[test]
+fn a_star_import_of_an_endless_all_times_out() {
+    let endless = "class Names:\n    def __getitem__(self, i):\n        return 'x'\n__all__ = Names()\nx = 1\n";
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let mut repl = MontyRepl::new("main.py", ResourceTracker::new(limits), CompileOptions::default());
+    repl.set_cwd("/proj");
+    let (_, result) = feed(repl, "from endless import *", &[("/proj/endless.py", endless)]);
+    // The message carries the measured time, so only its fixed start is compared.
+    let error = result.unwrap_err();
+    assert!(error.starts_with("TimeoutError: feed time limit exceeded: "), "{error}");
 }
 
 /// `import helpers`, suspended at a `Path.read_text` between its two assignments.

@@ -16,7 +16,8 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead},
     py_value::PyValue,
     sorting::{apply_permutation, sort_indices},
-    types::{Dict, PyTrait, Type, str::allocate_string},
+    string_builder::StringBuilder,
+    types::{Dict, PyTrait, TypeRef, sequence::SequenceItems, str::allocate_string},
     value::Value,
 };
 
@@ -352,9 +353,9 @@ fn apply_bool_flag(flags: u8, bit: u8, value: &Value, vm: &mut VM<'_>) -> RunRes
 fn parse_indent_value(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<String>> {
     match value.py_value(vm) {
         PyValue::None => Ok(None),
-        PyValue::Bool(value) => spaces_from_indent_count(i64::from(value)),
+        PyValue::Bool(value) => spaces_from_indent_count(i64::from(value), vm),
         PyValue::Int(integer) => {
-            spaces_from_indent_count(integer.to_i64(vm).ok_or_else(ExcType::overflow_index_sized_int)?)
+            spaces_from_indent_count(integer.to_i64(vm).ok_or_else(ExcType::overflow_index_sized_int)?, vm)
         }
         PyValue::Str(value) => Ok(Some(value.as_str(vm).to_owned())),
         _ => Err(ExcType::type_error_sequence_repeat(value.py_type_name(vm))),
@@ -362,29 +363,26 @@ fn parse_indent_value(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<String
 }
 
 /// Builds the `' ' * count` indent string.
-fn spaces_from_indent_count(count: i64) -> RunResult<Option<String>> {
+fn spaces_from_indent_count(count: i64, vm: &VM<'_>) -> RunResult<Option<String>> {
     // CPython repeats a negative count to the empty string.
     let count = if count < 0 {
         0
     } else {
         usize::try_from(count).map_err(|_| ExcType::overflow_index_sized_int())?
     };
-    Ok(Some(" ".repeat(count)))
+    let mut builder = StringBuilder::with_capacity(count, &vm.heap.tracker)?;
+    builder.push_repeated(' ', count)?;
+    Ok(Some(builder.finish_raw()?))
 }
 
 /// Raises the unpacking errors `JSONEncoder.__init__` gives `separators`,
 /// returning whether a pair was passed.
 fn check_separators_shape(value: &Value, vm: &VM<'_>) -> RunResult<bool> {
-    let len = match value {
-        Value::None => return Ok(false),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Tuple(tuple) => tuple.as_slice().len(),
-            HeapData::List(list) => list.as_slice().len(),
-            _ => return Err(separators_not_iterable(value, vm)),
-        },
-        _ => return Err(separators_not_iterable(value, vm)),
-    };
-    check_separators_length(len)?;
+    if matches!(value, Value::None) {
+        return Ok(false);
+    }
+    let items = SequenceItems::from_value(value, vm.heap).ok_or_else(|| separators_not_iterable(value, vm))?;
+    check_separators_length(items.len())?;
     Ok(true)
 }
 
@@ -396,17 +394,12 @@ fn separators_not_iterable(value: &Value, vm: &VM<'_>) -> RunError {
 /// Converts the `separators=` pair for the encoder, after
 /// [`check_separators_shape`] has accepted it; `None` keeps the defaults.
 fn parse_separators_value(value: &Value, vm: &VM<'_>) -> RunResult<Option<(String, String)>> {
-    let Value::Ref(heap_id) = value else {
+    let Some(items) = SequenceItems::from_value(value, vm.heap) else {
         return Ok(None);
     };
-    let items = match vm.heap.get(*heap_id) {
-        HeapData::Tuple(tuple) => tuple.as_slice(),
-        HeapData::List(list) => list.as_slice(),
-        _ => return Ok(None),
-    };
     Ok(Some((
-        json_separator_to_string(&items[0], "item_separator", vm)?,
-        json_separator_to_string(&items[1], "key_separator", vm)?,
+        items.map_item(0, |item| json_separator_to_string(item, "item_separator", vm))?,
+        items.map_item(1, |item| json_separator_to_string(item, "key_separator", vm))?,
     )))
 }
 
@@ -731,7 +724,7 @@ impl<'h> Encoder<'_, 'h> {
 /// `__name__` already, dots and all.
 fn not_serializable(value: &Value, vm: &VM<'_>) -> RunError {
     let type_name = value.py_type_name(vm);
-    let bare = if matches!(value.py_type(vm), Type::Instance(_)) {
+    let bare = if matches!(value.py_type(vm), TypeRef::Class(_)) {
         &*type_name
     } else {
         type_name.rsplit_once('.').map_or(&*type_name, |(_, bare)| bare)
