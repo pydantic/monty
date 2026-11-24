@@ -876,7 +876,13 @@ Key points:
 - The filename in the traceback should match the test file name (just the basename, not the full path)
 - Use `~` for caret markers (the test runner normalizes CPython's `^` to `~`)
 - The `<module>` frame name is used for top-level code
-- Tests run against both Monty and CPython, so the traceback must match both
+- Both interpreters check every untagged line. If the wording differs, label the expected lines inside the traceback
+  as in this example from `args__len_no_args.py`.
+
+```text
+[monty] TypeError: len() takes exactly 1 argument (0 given)
+[cpython] TypeError: len() takes exactly one argument (0 given)
+```
 
 If you don't care about the traceback or it intentionally differs from cpython (e.g. for `json`) and you want to test
 multiple cases in the same file, use this style

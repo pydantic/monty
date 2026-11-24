@@ -5,6 +5,6 @@ Traceback (most recent call last):
   File "slice__indices_no_args.py", line 1, in <module>
     slice(1).indices()
     ~~~~~~~~~~~~~~~~~~
-TypeError: slice.indices() takes exactly one argument (0 given)
+[monty] TypeError: slice.indices() takes exactly 1 argument (0 given)
+[cpython] TypeError: slice.indices() takes exactly one argument (0 given)
 """
-# Monty.Error=TypeError: slice.indices() takes exactly 1 argument (0 given)

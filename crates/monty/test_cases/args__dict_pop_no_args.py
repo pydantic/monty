@@ -1,4 +1,11 @@
 x = {}
 x.pop()
-# Raise=TypeError('pop expected at least 1 argument, got 0')
-# Monty.Error=TypeError('pop() takes at least 1 argument (0 given)')
+"""
+TRACEBACK:
+Traceback (most recent call last):
+  File "args__dict_pop_no_args.py", line 2, in <module>
+    x.pop()
+    ~~~~~~~
+[monty] TypeError: pop() takes at least 1 argument (0 given)
+[cpython] TypeError: pop expected at least 1 argument, got 0
+"""

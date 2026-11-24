@@ -4,6 +4,7 @@ import sys
 
 memoryview_prefix = '' if sys.platform == 'monty' else 'memoryview: '
 
+
 def _error_message(*, monty, cpython):
     return monty if sys.platform == 'monty' else cpython
 

@@ -1,4 +1,11 @@
 x = []
 x.insert(1)
-# Raise=TypeError('insert expected 2 arguments, got 1')
-# Monty.Error=TypeError('list.insert() takes exactly 2 arguments (1 given)')
+"""
+TRACEBACK:
+Traceback (most recent call last):
+  File "args__list_insert_too_few.py", line 2, in <module>
+    x.insert(1)
+    ~~~~~~~~~~~
+[monty] TypeError: list.insert() takes exactly 2 arguments (1 given)
+[cpython] TypeError: insert expected 2 arguments, got 1
+"""

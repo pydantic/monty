@@ -207,22 +207,10 @@ impl Expectation {
 /// """
 /// ```
 ///
-/// A final `# Monty.Error=...` line overrides the exception for Monty. With `# Raise=`
-/// it replaces the exception repr. With `TRACEBACK` it replaces the final exception line.
-///
 /// If no expectation comment is present, the test just verifies the code runs without exception.
 ///
 /// Panics on a malformed header: headers are author-controlled, so that's a test bug.
 fn parse_fixture(content: &str, interpreter: Interpreter) -> (String, Expectation, TestConfig) {
-    let (content, monty_error) = content
-        .trim_end()
-        .rsplit_once('\n')
-        .and_then(|(code, last)| {
-            last.strip_prefix("# Monty.Error=")
-                .map(|error| (code.strip_suffix('\r').unwrap_or(code), Some(error)))
-        })
-        .unwrap_or((content, None));
-    let monty_error = monty_error.filter(|_| matches!(interpreter, Interpreter::Monty));
     let lines: Vec<&str> = content.lines().collect();
 
     assert!(!lines.is_empty(), "Empty fixture file");
@@ -249,23 +237,12 @@ fn parse_fixture(content: &str, interpreter: Interpreter) -> (String, Expectatio
         config.timezone = Some(name);
     }
 
-    // Check for TRACEBACK expectation (triple-quoted string at end of file)
-    // Format: """TRACEBACK:\n...\n"""
-    if let Some((code, mut traceback)) = parse_traceback_expectation(content) {
-        if let Some(error) = monty_error {
-            let line = traceback.rfind('\n').expect("missing traceback frames");
-            traceback.truncate(line + 1);
-            traceback.push_str(error);
-        }
+    if let Some((code, traceback)) = parse_traceback_expectation(content, interpreter) {
         return (code, Expectation::Traceback(traceback), config);
     }
 
     // Get the last line and check if it's an expectation comment
     let last_line = lines.last().unwrap();
-    assert!(
-        monty_error.is_none() || last_line.starts_with("# Raise="),
-        "# Monty.Error= requires a traceback or # Raise= expectation"
-    );
 
     // Parse expectation from comment line if present
     // Note: Check more specific patterns first (Return.str, Return.type, ref-counts) before general Return
@@ -281,10 +258,7 @@ fn parse_fixture(content: &str, interpreter: Interpreter) -> (String, Expectatio
     } else if let Some(expected) = last_line.strip_prefix("# Return=") {
         (Expectation::Return(expected.to_string()), &lines[..lines.len() - 1])
     } else if let Some(expected) = last_line.strip_prefix("# Raise=") {
-        (
-            Expectation::Raise(monty_error.unwrap_or(expected).to_string()),
-            &lines[..lines.len() - 1],
-        )
+        (Expectation::Raise(expected.to_string()), &lines[..lines.len() - 1])
     } else {
         // No expectation comment - just run and check it doesn't raise
         (Expectation::NoException, &lines[..])
@@ -303,7 +277,7 @@ fn parse_fixture(content: &str, interpreter: Interpreter) -> (String, Expectatio
 ///
 /// The traceback string should contain the full expected output including the
 /// "Traceback (most recent call last):" header and the exception line.
-fn parse_traceback_expectation(content: &str) -> Option<(String, String)> {
+fn parse_traceback_expectation(content: &str, interpreter: Interpreter) -> Option<(String, String)> {
     const MARKER: &str = "\"\"\"\nTRACEBACK:\n";
 
     // Normalize \r\n to \n so this works on Windows where git may check out
@@ -323,9 +297,22 @@ fn parse_traceback_expectation(content: &str) -> Option<(String, String)> {
 
     // Find the closing triple quotes (preceded by newline)
     let end_pos = after_marker.find("\n\"\"\"")?;
-    let traceback_content = &after_marker[..end_pos];
+    // Untagged lines are shared. A tagged line is literal output for that interpreter.
+    let traceback = after_marker[..end_pos]
+        .split('\n')
+        .filter_map(|line| {
+            if let Some(text) = line.strip_prefix("[monty] ") {
+                (interpreter == Interpreter::Monty).then_some(text)
+            } else if let Some(text) = line.strip_prefix("[cpython] ") {
+                (interpreter == Interpreter::Cpython).then_some(text)
+            } else {
+                Some(line)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 
-    Some((code, traceback_content.to_string()))
+    Some((code, traceback))
 }
 
 /// Parses the ref-counts format: {'var': count, 'var2': count2}
@@ -3122,12 +3109,22 @@ mod fixture_tests {
     use super::{Expectation, Interpreter, parse_fixture};
 
     #[test]
-    fn crlf_error_override() {
-        let content = "len()\r\n# Raise=TypeError('CPython')\r\n# Monty.Error=TypeError('Monty')\r\n";
+    fn interpreter_tracebacks_with_crlf() {
+        let content = concat!(
+            "len()\r\n\"\"\"\r\nTRACEBACK:\r\n",
+            "Traceback (most recent call last):\r\n",
+            "[monty] TypeError: Monty\r\n[cpython] TypeError: CPython\r\n\"\"\"\r\n",
+        );
         for (interpreter, message) in [(Interpreter::Monty, "Monty"), (Interpreter::Cpython, "CPython")] {
             let (code, expectation, _) = parse_fixture(content, interpreter);
             assert_eq!(code, "len()");
-            assert!(matches!(expectation, Expectation::Raise(s) if s == format!("TypeError('{message}')")));
+            let Expectation::Traceback(traceback) = expectation else {
+                panic!("expected a traceback");
+            };
+            assert_eq!(
+                traceback,
+                format!("Traceback (most recent call last):\nTypeError: {message}")
+            );
         }
     }
 }
