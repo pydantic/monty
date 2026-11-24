@@ -2,7 +2,9 @@
 # call-external = true
 # run-async = true
 # ///
-# Native continuations inside concurrent tasks: each task suspends on host calls inside `__next__`.
+# Native continuations inside `asyncio` tasks: each consumer suspends on host calls inside `__next__`.
+# The host calls are synchronous, so a task finishes each consumer before it yields; tasks interleave only
+# at the awaits between consumers, never while a continuation is live.
 import asyncio
 
 

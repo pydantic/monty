@@ -211,13 +211,22 @@ impl VM<'_> {
 
     /// Completes a continuation parked on the current, just-pushed frame at a Rust boundary that
     /// cannot yield. Runs under the caller's re-entry reservation, like `finish_synchronously`.
+    ///
+    /// Polls the limits itself: each `__next__` is a nested run that may end before any dispatch
+    /// checkpoint, so an endless iterator would otherwise never see the clock.
     pub(super) fn finish_native_synchronously(&mut self, cont: NativeCont) -> RunResult<Value> {
         let first = CallResult::FramePushed.finish_synchronously(self);
         let mut step = cont.resume(first, self)?;
+        let mut steps = 0usize;
         loop {
             step = match step {
                 Step::Value(value) => return Ok(value),
                 Step::Next(cont) => {
+                    steps += 1;
+                    if let Err(error) = self.heap.tracker.check_memory_time_every(steps) {
+                        cont.drop_with(self);
+                        return Err(error.into());
+                    }
                     let result = cont.call_next(self).and_then(|call| call.finish_synchronously(self));
                     cont.resume(result, self)?
                 }
