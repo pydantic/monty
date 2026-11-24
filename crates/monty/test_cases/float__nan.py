@@ -70,6 +70,10 @@ assert Counter(first=a, second=a, third=a).most_common(2) == [('first', a), ('se
 produced = [
     float(b'nan'),
     float('-nan'),
+    float.fromhex('nan'),
+    float.fromhex('NaN'),
+    float.fromhex('-NaN'),
+    a.fromhex('nan'),
     -a,
     abs(a),
     round(a, 3),

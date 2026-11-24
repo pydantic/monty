@@ -871,7 +871,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                     }
                     Some(StaticStrings::Hex) => {
                         args.check_zero_args("float.hex", vm.heap)?;
-                        Ok(CallResult::Value(allocate_string(float_hex(*value), vm.heap)))
+                        Ok(CallResult::Value(allocate_string(float_hex(value.value()), vm.heap)))
                     }
                     Some(StaticStrings::Fromhex) => float_fromhex(args, vm).map(CallResult::Value),
                     _ => {

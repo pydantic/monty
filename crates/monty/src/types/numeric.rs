@@ -291,7 +291,7 @@ pub(crate) fn float_fromhex(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value
     let Some(s) = arg.as_str(vm) else {
         return Err(ExcType::type_error("bad argument type for built-in operation"));
     };
-    parse_float_fromhex(s).map(Value::Float)
+    parse_float_fromhex(s).map(|value| Value::float(value, vm.heap))
 }
 
 /// Returns `true` if `b` is an ASCII whitespace character recognized by CPython's `Py_ISSPACE`.
