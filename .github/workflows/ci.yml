@@ -95,6 +95,9 @@ jobs:
       - name: Check generated protobuf code is in sync
         run: make check-proto
 
+      - name: Test the shared vendoring tools
+        run: uv run python -m unittest discover -s scripts -p test_vendor_common.py
+
       - name: Check vendored typeshed stubs are in sync
         run: make check-typeshed
 

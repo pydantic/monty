@@ -2,7 +2,7 @@ Fold the implemented csv and _csv types into one stub.
 
 --- a/csv.pyi
 +++ b/csv.pyi
-@@ -1,62 +1,53 @@
+@@ -1,63 +1,56 @@
 -import sys
 -from _csv import (
 -    QUOTE_ALL as QUOTE_ALL,
@@ -36,13 +36,14 @@ Fold the implemented csv and _csv types into one stub.
 -else:
 -    from _csv import _reader as Reader, _writer as Writer
 +from collections.abc import Collection, Iterable, Mapping, Sequence
-+from typing import Any, Final, Generic, Literal, TypeVar
++from typing import Any, Final, Generic, Literal, TypeVar, final
  
  from _typeshed import SupportsWrite
 -from collections.abc import Collection, Iterable, Mapping, Sequence
 -from types import GenericAlias
 -from typing import Any, Generic, Literal, TypeVar, overload
 -from typing_extensions import Self
++from _typeshed._monty import _CsvReader, _CsvWriter
 +from typing_extensions import Self, TypeAlias
  
  __all__ = [
@@ -91,7 +92,7 @@ Fold the implemented csv and _csv types into one stub.
  
 -_T = TypeVar("_T")
 +_T = TypeVar('_T')
-+
+ 
 +__version__: Final[str]
 +
 +QUOTE_MINIMAL: Final = 0
@@ -105,10 +106,12 @@ Fold the implemented csv and _csv types into one stub.
 +_DialectLike: TypeAlias = str | Dialect | type | object
 +
 +class Error(Exception): ...
- 
++
++@final
  class Dialect:
      delimiter: str
-@@ -67,11 +58,68 @@
+     quotechar: str | None
+@@ -67,89 +60,107 @@
      lineterminator: str
      quoting: _QuotingType
      strict: bool
@@ -133,20 +136,7 @@ Fold the implemented csv and _csv types into one stub.
 +excel: Dialect
 +excel_tab: Dialect
 +unix_dialect: Dialect
-+
-+class Reader:
-+    @property
-+    def dialect(self) -> Dialect: ...
-+    line_num: int
-+    def __iter__(self) -> Self: ...
-+    def __next__(self) -> list[str]: ...
-+
-+class Writer:
-+    @property
-+    def dialect(self) -> Dialect: ...
-+    def writerow(self, row: Iterable[Any], /) -> Any: ...
-+    def writerows(self, rows: Iterable[Iterable[Any]], /) -> None: ...
-+
+ 
 +def reader(
 +    csvfile: Iterable[str],
 +    /,
@@ -160,7 +150,7 @@ Fold the implemented csv and _csv types into one stub.
 +    lineterminator: str = '\r\n',
 +    quoting: _QuotingType = 0,
 +    strict: bool = False,
-+) -> Reader: ...
++) -> _CsvReader: ...
 +def writer(
 +    csvfile: SupportsWrite[str],
 +    /,
@@ -174,15 +164,18 @@ Fold the implemented csv and _csv types into one stub.
 +    lineterminator: str = '\r\n',
 +    quoting: _QuotingType = 0,
 +    strict: bool = False,
-+) -> Writer: ...
++) -> _CsvWriter: ...
 +def get_dialect(name: str) -> Dialect: ...
 +def list_dialects() -> list[str]: ...
 +def field_size_limit() -> int: ...
- 
++
++@final
  class DictReader(Generic[_T]):
      fieldnames: Sequence[_T] | None
-@@ -80,76 +128,48 @@
-     reader: Reader
+     restkey: _T | None
+     restval: str | Any | None
+-    reader: Reader
++    reader: _CsvReader
      dialect: _DialectLike
      line_num: int
 -    @overload
@@ -230,12 +223,14 @@ Fold the implemented csv and _csv types into one stub.
 -    if sys.version_info >= (3, 12):
 -        def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
  
++@final
  class DictWriter(Generic[_T]):
      fieldnames: Collection[_T]
      restval: Any | None
 -    extrasaction: Literal["raise", "ignore"]
+-    writer: Writer
 +    extrasaction: Literal['raise', 'ignore']
-     writer: Writer
++    writer: _CsvWriter
      def __init__(
          self,
          f: SupportsWrite[str],

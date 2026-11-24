@@ -1,16 +1,15 @@
-Exclude parse_float because Monty does not implement that callback.
+Exclude the unsupported parse_float callback and require a binary file for load().
 
 --- a/tomllib.pyi
 +++ b/tomllib.pyi
-@@ -1,26 +1,15 @@
+@@ -1,26 +1,12 @@
 -import sys
-+# Modified from python/typeshed's stdlib/tomllib.pyi to exclude parse_float.
-+from typing import Any
-+
- from _typeshed import SupportsRead
+-from _typeshed import SupportsRead
 -from collections.abc import Callable
 -from typing import Any, overload
 -from typing_extensions import deprecated
++# Modified from python/typeshed's stdlib/tomllib.pyi to exclude parse_float.
++from typing import Any, BinaryIO
  
 -__all__ = ("loads", "load", "TOMLDecodeError")
 +__all__ = ('loads', 'load', 'TOMLDecodeError')
@@ -36,7 +35,6 @@ Exclude parse_float because Monty does not implement that callback.
 -
 -def load(fp: SupportsRead[bytes], /, *, parse_float: Callable[[str], Any] = ...) -> dict[str, Any]: ...
 -def loads(s: str, /, *, parse_float: Callable[[str], Any] = ...) -> dict[str, Any]: ...
-+# `parse_float` is not implemented, see limitations/tomllib.md. The runtime
-+# accepts only file objects from `open(..., 'rb')`, a subset of this protocol.
-+def load(fp: SupportsRead[bytes], /) -> dict[str, Any]: ...
++# `parse_float` is not implemented, see limitations/tomllib.md.
++def load(fp: BinaryIO, /) -> dict[str, Any]: ...
 +def loads(s: str, /) -> dict[str, Any]: ...

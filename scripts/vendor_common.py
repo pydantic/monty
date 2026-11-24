@@ -2,11 +2,13 @@
 
 import difflib
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.request
+from io import StringIO
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -97,7 +99,7 @@ def check_patch(patch: Path, allowed: set[str]) -> None:
     text = patch.read_text(encoding='utf-8')
     if text.lstrip().startswith(('--- ', 'diff ')) or not text.strip():
         raise PatchError(f'{patch.relative_to(REPO)} must start with the reason it is needed')
-    for line in text.splitlines():
+    for line in text.split('\n'):
         if line.startswith(('--- a/', '+++ b/')) and line[6:] not in allowed:
             raise PatchError(f'{patch.relative_to(REPO)} edits {line[6:]}, which vendor.toml does not list')
 
@@ -127,6 +129,8 @@ def make_patch(
     additions: tuple[str, ...] = (),
 ) -> None:
     """Save edits against the preceding patches; only the last patch can be replaced."""
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', name):
+        sys.exit('--make-patch needs a filename without directory components')
     target = patch_dir / f'{name}.patch'
     patches = sorted(patch_dir.glob('*.patch'))
     if later := [patch.name for patch in patches if patch.name > target.name]:
@@ -145,8 +149,8 @@ def make_patch(
             sys.exit(f'{source_dir.relative_to(REPO) / file} must end with a newline in both trees')
         hunks.extend(
             difflib.unified_diff(
-                (old or '').splitlines(keepends=True),
-                new.splitlines(keepends=True),
+                StringIO(old or '').readlines(),
+                StringIO(new).readlines(),
                 '/dev/null' if old is None else f'a/{file}',
                 f'b/{file}',
             )
@@ -159,4 +163,4 @@ def make_patch(
 
 def patched_files(patch: Path) -> set[str]:
     """Return the paths a patch creates or edits."""
-    return {line[6:] for line in patch.read_text(encoding='utf-8').splitlines() if line.startswith('+++ b/')}
+    return {line[6:] for line in patch.read_text(encoding='utf-8').split('\n') if line.startswith('+++ b/')}

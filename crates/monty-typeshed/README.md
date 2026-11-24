@@ -6,10 +6,10 @@ type checking in [Monty](https://github.com/pydantic/monty).
 Monty implements a deliberately small subset of Python's stdlib. Its type
 checker (the [`monty-type-checking`](https://crates.io/crates/monty-type-checking)
 crate, powered by [ty](https://docs.astral.sh/ty/)) therefore needs stubs that
-describe *Monty's* runtime surface rather than CPython's: code using an
-unsupported builtin or stdlib module should fail type checking up front, not
-pass the checker and then fail at runtime. This crate vendors only the stubs
-for what Monty supports, with unsupported functions and classes filtered out.
+describe Monty's runtime surface rather than CPython's, so the checker can
+flag unsupported functions and classes before execution. The stubs also
+include some dependencies used only for checking. Imports from omitted
+dependencies can resolve to `Unknown`.
 
 Originally derived from ruff's
 [`ty_vendored`](https://github.com/astral-sh/ruff/tree/main/crates/ty_vendored)

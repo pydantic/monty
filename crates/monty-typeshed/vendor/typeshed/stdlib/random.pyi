@@ -23,7 +23,7 @@ class Random:
         population: SupportsLenAndGetItem[_T],
         weights: Sequence[float] | None = None,
         *,
-        cum_weights: Sequence[float] | None = None,
+        cum_weights: Iterable[float] | None = None,
         k: int = 1,
     ) -> list[_T]: ...
     def shuffle(self, x: list[Any]) -> None: ...
@@ -55,7 +55,7 @@ def choices(
     population: SupportsLenAndGetItem[_T],
     weights: Sequence[float] | None = None,
     *,
-    cum_weights: Sequence[float] | None = None,
+    cum_weights: Iterable[float] | None = None,
     k: int = 1,
 ) -> list[_T]: ...
 def shuffle(x: list[Any]) -> None: ...

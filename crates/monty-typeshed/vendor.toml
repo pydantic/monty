@@ -1,10 +1,12 @@
-# Upstream stdlib paths selected for Monty's type checker, including stub-only dependencies.
+# Upstream stdlib paths selected for Monty's checker. This is not a transitive
+# closure: imports from omitted dependencies (e.g. contextlib, codecs and
+# importlib) can resolve to Unknown.
 commit = "0e16ea31d2e188fdc126cb31e7c4fcc6b5a8da96"
 # Review upstream licence changes before updating this hash.
 license_sha256 = "295f8538c94ae5c3043301cf7cff1c852dab6a786a8ddee471e061b40d5ecabe"
 
-# Monty has flat stubs for these modules; upstream uses packages.
-additions = ["asyncio.pyi", "sys.pyi"]
+# Stub-only helpers live in _typeshed; asyncio and sys replace upstream packages.
+additions = ["_typeshed/_monty.pyi", "asyncio.pyi", "sys.pyi"]
 
 files = [
     "VERSIONS",

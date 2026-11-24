@@ -41,16 +41,13 @@ The snippet does not run, and the session survives — fix the code and feed aga
 ## Why it matters more here than usual
 
 The Monty sandbox runs a [deliberately small subset](limitations/index.md) of Python.
-A model that writes `import statistics` produces code that is perfectly valid CPython and completely unrunnable here.
+For example, `import subprocess` works in CPython but not in Monty.
 
-Type checking closes that gap, because Monty does not check against CPython's typeshed.
-It checks against [`monty-typeshed`](https://crates.io/crates/monty-typeshed), a trimmed typeshed describing *Monty's*
-runtime surface: unsupported modules, builtins and methods are filtered out of the stubs entirely.
-Code reaching for something Monty does not implement usually fails the check up front, instead of failing at runtime
-halfway through.
-The exceptions are stubs vendored verbatim from upstream, such as `os.path`, which describe CPython's surface:
-`os.path.ALLOW_MISSING`, `sameopenfile` or a `bytes` path pass the check and fail at runtime, as
-[limitations/os.md](limitations/os.md) records.
+Monty checks against [`monty-typeshed`](https://crates.io/crates/monty-typeshed), a subset of typeshed patched to describe
+Monty's runtime surface.
+The checker uses `sys.platform == 'monty'` regardless of the host OS.
+Code reaching for something Monty does not implement can fail the check up front, instead of failing at runtime.
+Some stubs still describe more than the runtime implements; see the `os.path` examples in [limitations/os.md](limitations/os.md).
 
 For an LLM writing code, that turns a whole class of runtime failures into a diagnostic you can hand straight back to
 the model as a retry prompt.
@@ -278,4 +275,5 @@ the flag is `--type-check-format`.
     modelled.
     Modules the stubs need, such as `abc`, `io` and `collections.abc`, resolve during checking, then raise
     `ModuleNotFoundError` at runtime.
+    Other stub dependencies are omitted, so types imported from them can resolve to `Unknown`.
     See [`limitations/modules.md`](limitations/modules.md).

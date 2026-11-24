@@ -35,7 +35,7 @@ Expose Monty's clocks, calendar conversions and struct_time without unsupported 
 -    CLOCK_PROF: Final[int]  # FreeBSD, NetBSD, OpenBSD
 -    CLOCK_UPTIME: Final[int]  # FreeBSD, OpenBSD
 +@final
-+class _StructTime(tuple[int | str | None, ...]):
++class _StructTime(tuple[int, int, int, int, int, int, int, int, int, int | None, str | None]):
 +    """What `gmtime()`, `localtime()` and `strptime()` return.
  
 -if sys.platform != "win32":

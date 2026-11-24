@@ -80,7 +80,7 @@ Expose Monty's random generators and distributions rather than the full upstream
 +        weights: Sequence[float] | None = None,
          *,
 -        cum_weights: Sequence[float | Fraction] | None = None,
-+        cum_weights: Sequence[float] | None = None,
++        cum_weights: Iterable[float] | None = None,
          k: int = 1,
      ) -> list[_T]: ...
 -    if sys.version_info >= (3, 11):
@@ -174,7 +174,7 @@ Expose Monty's random generators and distributions rather than the full upstream
 +    population: SupportsLenAndGetItem[_T],
 +    weights: Sequence[float] | None = None,
 +    *,
-+    cum_weights: Sequence[float] | None = None,
++    cum_weights: Iterable[float] | None = None,
 +    k: int = 1,
 +) -> list[_T]: ...
 +def shuffle(x: list[Any]) -> None: ...
