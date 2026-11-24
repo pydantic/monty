@@ -1,6 +1,3 @@
-#[cfg(test)]
-use strum::IntoEnumIterator;
-
 use crate::{
     args::{ArgExprs, Kwarg, Signature},
     builtins::Builtins,
@@ -1053,7 +1050,9 @@ pub enum Operator {
 ///
 /// The strum `serialize` attribute on each variant is the source-level symbol,
 /// and drives both `Display` and [`as_str`](Self::as_str).
+#[monty_macros::explicit_discriminants(checksum = 0xd46b_2244_bab2_8bcb)]
 #[repr(u8)]
+#[cfg_attr(test, derive(strum::EnumIter))]
 #[derive(
     Clone,
     Copy,
@@ -1062,7 +1061,6 @@ pub enum Operator {
     serde::Serialize,
     serde::Deserialize,
     strum::Display,
-    strum::EnumIter,
     strum::FromRepr,
     strum::IntoStaticStr,
 )]
@@ -1103,37 +1101,4 @@ impl CmpOperator {
     pub const fn as_operand(self) -> u8 {
         self as u8
     }
-}
-
-/// Computes an FNV-1a hash over comparison-operator identities and legacy variant indices.
-#[cfg(test)]
-pub(crate) fn comparison_operators_fingerprint() -> u64 {
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0100_0000_01b3;
-
-    fn update(hash: &mut u64, bytes: &[u8]) {
-        for byte in u32::try_from(bytes.len())
-            .expect("fingerprint field length fits u32")
-            .to_le_bytes()
-        {
-            *hash ^= u64::from(byte);
-            *hash = hash.wrapping_mul(PRIME);
-        }
-        for byte in bytes {
-            *hash ^= u64::from(*byte);
-            *hash = hash.wrapping_mul(PRIME);
-        }
-    }
-
-    let mut operators = CmpOperator::iter().collect::<Vec<_>>();
-    operators.sort_unstable_by_key(|operator| *operator as u8);
-    let mut hash = OFFSET_BASIS;
-    for operator in operators {
-        update(&mut hash, &[operator as u8]);
-        update(&mut hash, format!("{operator:?}").as_bytes());
-        update(&mut hash, operator.as_str().as_bytes());
-        // Retain the former serialized-index field in the version fingerprint.
-        update(&mut hash, &[operator as u8]);
-    }
-    hash
 }
