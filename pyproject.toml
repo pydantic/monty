@@ -56,9 +56,9 @@ include = [
 # Exclude files with intentional syntax errors or special formatting requirements
 extend-exclude = [
     "crates/monty-bench/benches/python",
-    # CPython source, vendored by `make vendor-stdlib` with documented patches
+    # CPython sources with documented patches
     "crates/monty/stdlib",
-    "crates/monty-datatest/vendor/cpython",
+    "crates/monty-datatest/vendor/cpython/work",
     # Generated copies; lint the source overrides in `custom/` instead.
     "crates/monty-typeshed/vendor/typeshed",
     "crates/monty/test_cases/function__err_duplicate_param.py",
@@ -352,7 +352,7 @@ skip = [
 
     "crates/monty-typeshed/vendor/typeshed/stdlib/*",
     "crates/monty/stdlib/*",
-    "crates/monty-datatest/vendor/cpython/Lib/*",
+    "crates/monty-datatest/vendor/cpython/work/*",
     "crates/monty/src/types/str.rs",
 ]
 

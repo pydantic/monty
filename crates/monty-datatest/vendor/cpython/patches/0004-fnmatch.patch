@@ -1,0 +1,74 @@
+Defer imports used only by methods Monty cannot run.
+
+--- a/test/test_fnmatch.py
++++ b/test/test_fnmatch.py
+@@ -1,10 +1,8 @@
+ """Test cases for the fnmatch module."""
+ 
+ import os
+-import string
+ import unittest
+-import warnings
+-from fnmatch import fnmatch, fnmatchcase, translate, filter, filterfalse
++from fnmatch import fnmatch, fnmatchcase, translate, filter
+ 
+ 
+ IGNORECASE = os.path.normcase('P') == os.path.normcase('p')
+@@ -95,6 +93,8 @@
+         check('usr\\bin', 'usr\\bin')
+ 
+     def test_char_set(self):
++        import string
++
+         check = self.check_match
+         tescases = string.ascii_lowercase + string.digits + string.punctuation
+         for c in tescases:
+@@ -121,6 +121,8 @@
+         check('[!]', '[!]')
+ 
+     def test_range(self):
++        import string
++
+         check = self.check_match
+         tescases = string.ascii_lowercase + string.digits + string.punctuation
+         for c in tescases:
+@@ -203,6 +205,8 @@
+         check('a[Z-/]b', r'a[Z-\]b', False)
+ 
+     def test_warnings(self):
++        import warnings
++
+         with warnings.catch_warnings():
+             warnings.simplefilter('error', Warning)
+             check = self.check_match
+@@ -344,22 +348,30 @@
+ class FilterFalseTestCase(unittest.TestCase):
+ 
+     def test_filterfalse(self):
++        from fnmatch import filterfalse
++
+         actual = filterfalse(['Python', 'Ruby', 'Perl', 'Tcl'], 'P*')
+         self.assertListEqual(actual, ['Ruby', 'Tcl'])
+         actual = filterfalse([b'Python', b'Ruby', b'Perl', b'Tcl'], b'P*')
+         self.assertListEqual(actual, [b'Ruby', b'Tcl'])
+ 
+     def test_mix_bytes_str(self):
++        from fnmatch import filterfalse
++
+         self.assertRaises(TypeError, filterfalse, ['test'], b'*')
+         self.assertRaises(TypeError, filterfalse, [b'test'], '*')
+ 
+     def test_case(self):
++        from fnmatch import filterfalse
++
+         self.assertEqual(filterfalse(['Test.py', 'Test.rb', 'Test.PL'], '*.p*'),
+                          ['Test.rb'] if IGNORECASE else ['Test.rb', 'Test.PL'])
+         self.assertEqual(filterfalse(['Test.py', 'Test.rb', 'Test.PL'], '*.P*'),
+                          ['Test.rb'] if IGNORECASE else ['Test.py', 'Test.rb',])
+ 
+     def test_sep(self):
++        from fnmatch import filterfalse
++
+         self.assertEqual(filterfalse(['usr/bin', 'usr', 'usr\\lib'], 'usr/*'),
+                          ['usr'] if NORMSEP else ['usr', 'usr\\lib'])
+         self.assertEqual(filterfalse(['usr/bin', 'usr', 'usr\\lib'], 'usr\\*'),

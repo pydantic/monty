@@ -1,13 +1,14 @@
-Load unittest assertion helpers in the fixture namespace without running discovery or collecting TestResults.
+Load unittest assertion helpers from a mount without running discovery or collecting TestResults.
 Monty lacks generators, contextlib, ChainMap, exception subclassing, object(), classmethod, and super().
 Use a context manager that propagates subtest failures and leave unsupported class fixtures out.
-The fixture has no unittest package, so it shares util.py globals with case.py and uses absolute lazy log imports.
+Use optional method docstrings and store exceptions without calling with_traceback(), which Monty lacks.
+Use absolute imports for unittest submodules because Monty does not support relative imports.
 Guard optional imports: without difflib and pprint, assertion failures still raise without a detailed diff;
 without traceback or warnings, skip frame cleanup and reject warning assertions. Avoid the types dependency.
 
 --- a/unittest/case.py
 +++ b/unittest/case.py
-@@ -2,44 +2,36 @@
+@@ -2,44 +2,39 @@
  
  import sys
  import functools
@@ -24,6 +25,9 @@ without traceback or warnings, skip frame cleanup and reject warning assertions.
 -from . import result
 -from .util import (strclass, safe_repr, _count_diff_all_purpose,
 -                   _count_diff_hashable, _common_shorten_repr)
++
++from unittest.util import (strclass, safe_repr, _count_diff_all_purpose,
++                           _count_diff_hashable, _common_shorten_repr)
 +
 +try:
 +    import difflib
@@ -129,7 +133,7 @@ without traceback or warnings, skip frame cleanup and reject warning assertions.
          try:
              if not _is_subtype(self.expected, self._base_type):
                  raise TypeError('%s() arg 1 must be %s' %
-@@ -270,7 +235,7 @@
+@@ -270,12 +235,12 @@
                                                                  self.obj_name))
              else:
                  self._raiseFailure("{} not raised".format(exc_name))
@@ -138,6 +142,13 @@ without traceback or warnings, skip frame cleanup and reject warning assertions.
              traceback.clear_frames(tb)
          if not issubclass(exc_type, self.expected):
              # let unexpected exceptions pass through
+             return False
+-        # store exception, without traceback, for later retrieval
+-        self.exception = exc_value.with_traceback(None)
++        # Monty does not expose exception traceback objects.
++        self.exception = exc_value
+         if self.expected_regex is None:
+             return True
 @@ -286,13 +251,11 @@
                       expected_regex.pattern, str(exc_value)))
          return True
@@ -189,6 +200,14 @@ without traceback or warnings, skip frame cleanup and reject warning assertions.
      def __init__(self, methodName='runTest'):
          """Create an instance of the class that will use the named test
             method when executed. Raises a ValueError if the instance does
+@@ -434,6 +391,6 @@
+                 raise ValueError("no such test method in %s: %s" %
+                       (self.__class__, methodName))
+         else:
+-            self._testMethodDoc = testMethod.__doc__
++            self._testMethodDoc = getattr(testMethod, '__doc__', None)
+         self._cleanups = []
+         self._subtest = None
 @@ -480,17 +437,6 @@
          """
          return _enter_context(cm, self.addCleanup)
