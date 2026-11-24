@@ -1032,7 +1032,7 @@ mod tests {
                 Value::InlineString(InlineStr::new("aé🐍b").unwrap()),
                 allocate_string_on_heap("aé🐍b", vm.heap),
                 Value::InternBytes(ids.bytes),
-                Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b"a\0\xff".to_vec())))),
+                Value::allocate(Bytes::new(b"a\0\xff".to_vec()), vm.heap),
             ];
             defer_drop!(values, vm);
             for value in values {
@@ -1050,10 +1050,7 @@ mod tests {
             defer_drop!(cell, vm);
             assert_eq!(cell.py_value(vm).py_hash(vm).unwrap(), Some(identity_hash(cell_id)));
 
-            let exception = Value::Ref(
-                vm.heap
-                    .allocate(HeapData::Exception(SimpleException::new(ExcType::ValueError, None))),
-            );
+            let exception = Value::allocate(SimpleException::new(ExcType::ValueError, None), vm.heap);
             defer_drop!(exception, vm);
             assert_eq!(exception.py_value(vm).py_hash(vm).unwrap(), None);
         });
@@ -1067,7 +1064,7 @@ mod tests {
                 Value::InlineString(InlineStr::new("aé🐍b").unwrap()),
                 allocate_string_on_heap("aé🐍b", vm.heap),
                 Value::InternBytes(ids.bytes),
-                Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b"a\0\xff".to_vec())))),
+                Value::allocate(Bytes::new(b"a\0\xff".to_vec()), vm.heap),
             ];
             defer_drop_mut!(values, vm);
             while let Some(value) = values.pop() {

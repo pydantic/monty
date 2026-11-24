@@ -1386,8 +1386,7 @@ impl<'h> VM<'h> {
                 Opcode::LoadTrue => self.push(Value::Bool(true)),
                 Opcode::LoadFalse => self.push(Value::Bool(false)),
                 Opcode::BuildCell => {
-                    let cell_id = self.heap.allocate(HeapData::Cell(CellValue(Value::Undefined)));
-                    self.push(Value::Ref(cell_id));
+                    self.push(Value::allocate(CellValue(Value::Undefined), self.heap));
                 }
                 Opcode::LoadSmallInt => {
                     let n = self.current_frame.fetch_i8();
@@ -1810,12 +1809,14 @@ impl<'h> VM<'h> {
                         }
 
                         // Create FunctionDefaults on heap and push reference
-                        let heap_id = self.heap.allocate(HeapData::FunctionDefaults(FunctionDefaults {
-                            func_id,
-                            defaults,
-                            globals,
-                        }));
-                        self.push(Value::Ref(heap_id));
+                        self.push(Value::allocate(
+                            FunctionDefaults {
+                                func_id,
+                                defaults,
+                                globals,
+                            },
+                            self.heap,
+                        ));
                     }
                 }
                 Opcode::MakeClosure => {
@@ -1861,13 +1862,15 @@ impl<'h> VM<'h> {
                     }
 
                     // Create Closure on heap and push reference
-                    let heap_id = self.heap.allocate(HeapData::Closure(Closure {
-                        func_id,
-                        cells: cells.into_boxed_slice(),
-                        defaults: defaults.into_boxed_slice(),
-                        globals,
-                    }));
-                    self.push(Value::Ref(heap_id));
+                    self.push(Value::allocate(
+                        Closure {
+                            func_id,
+                            cells: cells.into_boxed_slice(),
+                            defaults: defaults.into_boxed_slice(),
+                            globals,
+                        },
+                        self.heap,
+                    ));
                 }
                 // Exception Handling
                 Opcode::Raise => {
@@ -2753,7 +2756,7 @@ impl<'h> VM<'h> {
             "__name__" => Value::InternString(self.interns.intern_static(StaticStrings::DunderMain)),
             "__debug__" => Value::Bool(true),
             "__file__" => allocate_string(self.env.file(), self.heap),
-            "__annotations__" => Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))),
+            "__annotations__" => Value::allocate(Dict::new(), self.heap),
             "__doc__" | "__spec__" | "__package__" => Value::None,
             _ => return None,
         };

@@ -41,7 +41,7 @@ use crate::{
 
 /// Allocates `decimal` on the heap.
 pub(crate) fn decimal_value(decimal: Decimal, vm: &VM<'_>) -> Value {
-    Value::Ref(vm.heap.allocate(HeapData::Decimal(decimal)))
+    Value::allocate(decimal, vm.heap)
 }
 
 /// The `Decimal` a value refers to, if it is one.
@@ -1005,7 +1005,7 @@ fn as_tuple(d: &Decimal, vm: &VM<'_>) -> Value {
     ];
     let name = EitherStr::Interned(vm.interns.intern_static(StaticStrings::DecimalTuple));
     let tuple = NamedTuple::new(name, fields, vec![Value::Int(i64::from(d.sign())), digits, exponent]);
-    Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(tuple))))
+    Value::allocate(tuple, vm.heap)
 }
 
 /// Arguments of the methods taking only `context=None`.

@@ -26,7 +26,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
-    types::{CmpOrder, Module, PyTrait, bytes::bytes_repr},
+    types::{Bytes, CmpOrder, Module, PyTrait, bytes::bytes_repr},
     value::Value,
 };
 
@@ -1340,7 +1340,7 @@ fn assertion_error(value: &Value, vm: &mut VM<'_>) -> RunResult<RunError> {
 /// No resource preflight: every result here is bounded by a small constant
 /// multiple of an input that the heap already accounts for.
 pub(super) fn allocate_bytes(data: Vec<u8>, heap: &Heap) -> Value {
-    Value::Ref(heap.allocate(HeapData::Bytes(data.into())))
+    Value::allocate(Bytes::from(data), heap)
 }
 
 /// `binascii.Error("Incorrect padding")` — shared by the base64 and base32

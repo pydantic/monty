@@ -210,8 +210,7 @@ impl Bytes {
                 }
             }
         };
-        let heap_id = vm.heap.allocate(HeapData::Bytes(Self::new(new_data)));
-        Ok(Value::Ref(heap_id))
+        Ok(Value::allocate(Self::new(new_data), vm.heap))
     }
 }
 
@@ -319,7 +318,7 @@ pub(crate) fn concat_bytes(lhs: &[u8], rhs: &[u8], heap: &Heap) -> Result<Value,
     let mut result = Vec::with_capacity(result_len);
     result.extend_from_slice(lhs);
     result.extend_from_slice(rhs);
-    Ok(Value::Ref(heap.allocate(HeapData::Bytes(result.into()))))
+    Ok(Value::allocate(Bytes::from(result), heap))
 }
 
 /// Repeats bytes after validating the allocation against resource limits.
@@ -336,7 +335,7 @@ fn repeat_bytes(value: &[u8], count: usize, vm: &VM<'_>) -> RunResult<Option<Val
             repeated.extend_from_within(..repeated.len().min(total - repeated.len()));
         }
     }
-    Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Bytes(repeated.into())))))
+    Ok(Some(Value::allocate(Bytes::from(repeated), vm.heap)))
 }
 
 /// An allocation-free bytes view retaining its interned or heap identity.
@@ -581,7 +580,7 @@ fn bytes_getitem<'h>(bytes: &impl HeapView<'h, [u8]>, key: &Value, vm: &mut VM<'
         && let HeapData::Slice(slice) = vm.heap.get(*id)
     {
         let result = slice_collect_iterator(vm, slice, bytes.get(vm.heap).iter(), |b| *b)?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(result)))))
+        Ok(Value::allocate(Bytes::new(result), vm.heap))
     } else {
         let index = key.as_index(vm, Type::Bytes)?;
         let byte = get_byte_at_index(bytes.get(vm.heap), index).ok_or_else(ExcType::bytes_index_error)?;
@@ -1513,8 +1512,7 @@ fn bytes_split<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
 
     let (list_items, vm) = items_guard.into_parts();
     let list = List::new(list_items);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::allocate(list, vm.heap))
 }
 
 /// Implements Python's `bytes.rsplit([sep[, maxsplit]])` method.
@@ -1563,8 +1561,7 @@ fn bytes_rsplit<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut V
 
     let (list_items, vm) = items_guard.into_parts();
     let list = List::new(list_items);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::allocate(list, vm.heap))
 }
 
 /// Coerces extracted `sep` / `maxsplit` `Value`s into the runtime shape used
@@ -1830,8 +1827,7 @@ fn bytes_splitlines<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &m
 
     let (lines, vm) = lines_guard.into_parts();
     let list = List::new(lines);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::allocate(list, vm.heap))
 }
 
 /// Parses arguments for bytes.splitlines method.
@@ -2524,8 +2520,7 @@ fn hex_char_to_value(c: char) -> Option<u8> {
 
 /// Allocates bytes on the heap.
 pub(crate) fn allocate_bytes(bytes: Vec<u8>, heap: &Heap) -> Value {
-    let heap_id = heap.allocate(HeapData::Bytes(Bytes::new(bytes)));
-    Value::Ref(heap_id)
+    Value::allocate(Bytes::new(bytes), heap)
 }
 
 /// Source representation retained by a bytes iterator.

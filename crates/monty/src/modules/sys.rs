@@ -25,7 +25,6 @@ use crate::{
 };
 use crate::{
     bytecode::VM,
-    heap::HeapData,
     intern::StaticStrings,
     types::{List, Module, NamedTuple, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
     value::{EitherStr, Marker, Value},
@@ -212,7 +211,7 @@ fn version_info(vm: &VM<'_>) -> Value {
             Value::Int(0),
         ],
     );
-    Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named_tuple))))
+    Value::allocate(named_tuple, vm.heap)
 }
 
 /// Builds `sys.argv`, holding the script name and nothing else.
@@ -225,7 +224,7 @@ fn version_info(vm: &VM<'_>) -> Value {
 /// `limitations/modules.md`).
 fn argv(vm: &VM<'_>) -> Value {
     let script = allocate_string(vm.env.script_basename(), vm.heap);
-    Value::Ref(vm.heap.allocate(HeapData::List(List::new(vec![script]))))
+    Value::allocate(List::new(vec![script]), vm.heap)
 }
 
 /// Builds `sys.float_info` from Rust's `f64` constants.
@@ -264,7 +263,7 @@ fn float_info(vm: &VM<'_>) -> Value {
             Value::Int(1),
         ],
     );
-    Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named_tuple))))
+    Value::allocate(named_tuple, vm.heap)
 }
 
 /// Builds `sys.flags` — the switches the interpreter was started with.
@@ -319,7 +318,7 @@ fn flags(vm: &VM<'_>) -> Value {
             int_max_str_digits(),
         ],
     );
-    Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named_tuple))))
+    Value::allocate(named_tuple, vm.heap)
 }
 
 /// `sys.flags.int_max_str_digits`, widened from the limit the runtime enforces.

@@ -36,7 +36,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
+    heap::{DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
     py_value::PyValue,
     types::{LazyHeapSet, PyTrait, Type, TypeRef, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity},
@@ -365,7 +365,7 @@ impl HashObject {
     }
 
     pub(crate) fn allocate(self, heap: &Heap) -> Value {
-        Value::Ref(heap.allocate(HeapData::HashObject(Box::new(self))))
+        Value::allocate(self, heap)
     }
 }
 

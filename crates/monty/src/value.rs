@@ -19,7 +19,10 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
     hash::{HashValue, hash_f64, hash_named, hash_one},
-    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
+    heap::{
+        ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapObjectRead, HeapPayload, HeapReadOutput,
+        HeapReader,
+    },
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
@@ -901,6 +904,11 @@ impl<C: ContainsHeap> DropWithContext<C> for Value {
 }
 
 impl Value {
+    /// Allocates a heap payload and transfers its initial reference to the returned value.
+    pub(crate) fn allocate<T: HeapPayload>(payload: T, heap: &Heap) -> Self {
+        Self::Ref(heap.allocate(payload.into_heap_data()))
+    }
+
     /// Opens a Python-type view without copying heap payloads or borrowing this owner.
     /// Drop the view before releasing the owning `Value`, so its heap readers are gone at cleanup.
     pub(crate) fn py_value<'h>(&self, vm: &VM<'h>) -> PyValue<'h> {
@@ -1189,11 +1197,13 @@ impl Value {
         }
     }
 
+    /// Opens a typed reader when this value references a heap object of type `T`.
+    pub(crate) fn read_as<'h, T: HeapPayload>(&self, heap: &HeapReader<'h>) -> Option<HeapObjectRead<'h, T>> {
+        heap.read_as::<T>(self.ref_id()?)
+    }
+
     /// Reads the heap entry this value references, or `None` if it is not a
     /// heap reference.
-    ///
-    /// Used by per-type [`PyTrait::py_eq_impl`] impls to resolve the other operand
-    /// to a heap object of their own type, returning `NotImplemented` otherwise.
     pub(crate) fn read_heap<'a>(&self, vm: &VM<'a>) -> Option<HeapReadOutput<'a>> {
         match self {
             Self::Ref(id) => Some(vm.heap.read(*id)),
@@ -2413,10 +2423,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        heap::HeapReader,
         run::{Program, SessionTables},
         types::{
-            LongInt,
+            Bytes, List, LongInt,
             str::{allocate_string_no_interning, allocate_string_on_heap},
         },
     };
@@ -2424,6 +2433,18 @@ mod tests {
     #[test]
     fn value_size_is_16_bytes() {
         assert_eq!(mem::size_of::<Value>(), 16);
+    }
+
+    #[test]
+    fn read_allocated_payload_by_type() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        HeapReader::with(&mut heap, &mut (), |heap, ()| {
+            let value = Value::allocate(Bytes::new(vec![1, 2]), heap);
+            assert_eq!(value.read_as::<Bytes>(heap).unwrap().get(heap).as_slice(), &[1, 2]);
+            assert!(value.read_as::<List>(heap).is_none());
+            assert!(Value::None.read_as::<Bytes>(heap).is_none());
+            value.drop_with(heap);
+        });
     }
 
     #[test]
