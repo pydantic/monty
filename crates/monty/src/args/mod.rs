@@ -1,3 +1,9 @@
+//! Python call arguments and their bindings for native handlers and Python functions.
+//!
+//! Native handlers use [`ArgValues`] to unpack positional-only calls. Pass the callable's Python
+//! name, such as `"list.insert"`, for use in binding errors. On success the handler owns the
+//! extracted values. For signatures with named keywords, use [`FromArgs`].
+
 mod bind_native;
 mod bind_python;
 mod from_value;
@@ -25,11 +31,9 @@ use crate::{
     value::{EitherStr, Value},
 };
 
-/// Type for method call arguments.
-///
-/// Uses specific variants for common cases (0-2 arguments).
-/// Most Python method calls have at most 2 arguments, so this optimization
-/// eliminates the Vec heap allocation overhead for the vast majority of calls.
+/// Evaluated arguments to a Python call. Calls with up to two positional arguments and no
+/// keywords can store their values inline. For `items.insert(0, item)`, the list handler
+/// receives `0` and `item` here and receives the list separately.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ArgValues {
     Empty,
@@ -40,6 +44,8 @@ pub(crate) enum ArgValues {
 }
 
 impl ArgValues {
+    /// Checks that the call supplies no arguments, as in `items.clear()`.
+    /// Calling `[].clear(1)` raises `TypeError: list.clear() takes no arguments (1 given)`.
     #[inline]
     pub fn check_zero_args(self, name: &str, heap: &mut Heap) -> RunResult<()> {
         if matches!(self, Self::Empty) {
@@ -75,6 +81,8 @@ impl ArgValues {
         }
     }
 
+    /// Extracts one positional argument. For `len(items)`, `args.get_one_arg("len", vm.heap)?`
+    /// returns `items`. Calling `len()` raises `TypeError: len() takes exactly 1 argument (0 given)`.
     #[inline]
     pub fn get_one_arg(self, name: &str, heap: &mut Heap) -> RunResult<Value> {
         if let Self::One(value) = self {
@@ -84,6 +92,8 @@ impl ArgValues {
         Ok(value)
     }
 
+    /// Extracts two positional arguments in call order. For `items.insert(0, item)`, the handler uses
+    /// `let (index, item) = args.get_two_args("list.insert", vm.heap)?;`.
     #[inline]
     pub fn get_two_args(self, name: &str, heap: &mut Heap) -> RunResult<(Value, Value)> {
         if let Self::Two(first, second) = self {
@@ -93,6 +103,8 @@ impl ArgValues {
         Ok((first, second))
     }
 
+    /// Extracts exactly `N` positional arguments into an array in call order. For `setattr(obj, name, value)`,
+    /// use `let [obj, name, value] = args.get_args::<3>("setattr", vm.heap)?;`.
     pub fn get_args<const N: usize>(self, name: &str, heap: &mut Heap) -> RunResult<[Value; N]> {
         let other = match self {
             Self::ArgsKargs {
@@ -111,6 +123,8 @@ impl ArgValues {
             .map(|slot| slot.expect("required positional argument")))
     }
 
+    /// Extracts a required positional argument and an optional second one. For `d.get(key)`, the
+    /// second slot is `None`. For `d.get(key, None)`, it is `Some(Value::None)`.
     #[inline]
     pub fn get_one_two_args(self, name: &str, heap: &mut Heap) -> RunResult<(Value, Option<Value>)> {
         match self {
@@ -124,6 +138,8 @@ impl ArgValues {
         }
     }
 
+    /// Extracts an optional positional argument. For `items.pop()` the handler receives `None`.
+    /// For `items.pop(0)` it receives `Some(Value::Int(0))`.
     #[inline]
     pub fn get_zero_one_arg(self, name: &str, heap: &mut Heap) -> RunResult<Option<Value>> {
         match self {
@@ -186,7 +202,9 @@ impl ArgValues {
         }
     }
 
-    /// Variant of [`into_parts()`](Self::into_parts) that accepts no kwargs, returning an error if any are present.
+    /// Transfers all positional arguments to an iterator, leaving arity checks to the caller.
+    /// For `math.gcd(12, 18, 24)` it yields the three integers in order. Calling `math.gcd(x=12)`
+    /// raises `TypeError: math.gcd() takes no keyword arguments`.
     pub fn into_pos_only(self, method_name: &str, heap: &mut Heap) -> RunResult<ArgPosIter> {
         match self {
             Self::Empty => Ok(ArgPosIter::Empty),
