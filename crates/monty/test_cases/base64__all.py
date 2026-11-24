@@ -1,5 +1,8 @@
 import base64
 import binascii
+import sys
+
+memoryview_prefix = '' if sys.platform == 'monty' else 'memoryview: '
 
 # === b64encode / b64decode ===
 assert base64.b64encode(b'') == b''
@@ -271,20 +274,20 @@ try:
 except binascii.Error as exc:
     assert str(exc) == 'Incorrect padding'
 
-# the base32 encoders coerce through `memoryview`, so their TypeError is prefixed
+# CPython prefixes the error for encoders that go through memoryview.
 try:
     base64.b32encode('abc')
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "memoryview: a bytes-like object is required, not 'str'"
+    assert str(exc) == memoryview_prefix + "a bytes-like object is required, not 'str'"
 
 try:
     base64.b32hexencode(5)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "memoryview: a bytes-like object is required, not 'int'"
+    assert str(exc) == memoryview_prefix + "a bytes-like object is required, not 'int'"
 
-# b16encode reaches binascii directly, so it keeps the unprefixed wording
+# Both interpreters use the same wording for b16encode.
 try:
     base64.b16encode('abc')
     assert False, 'expected TypeError'
@@ -356,7 +359,7 @@ try:
     base64.b85encode('abc')
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "memoryview: a bytes-like object is required, not 'str'"
+    assert str(exc) == memoryview_prefix + "a bytes-like object is required, not 'str'"
 
 try:
     base64.b85decode(5)
@@ -383,6 +386,12 @@ try:
     assert False, 'expected ValueError'
 except ValueError as exc:
     assert str(exc) == 'z85 overflow in hunk starting at byte 0'
+
+try:
+    base64.z85encode('abc')
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == memoryview_prefix + "a bytes-like object is required, not 'str'"
 
 # === a85encode / a85decode ===
 assert base64.a85encode(b'') == b''
@@ -441,7 +450,7 @@ try:
     base64.a85encode('abc')
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "memoryview: a bytes-like object is required, not 'str'"
+    assert str(exc) == memoryview_prefix + "a bytes-like object is required, not 'str'"
 
 try:
     base64.a85decode(5)

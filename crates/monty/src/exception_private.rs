@@ -1112,6 +1112,12 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::TypeError, msg).into()
     }
 
+    /// The buffer protocol's type error for an unsupported argument.
+    #[must_use]
+    fn type_error_bytes_like(type_name: impl fmt::Display) -> RunError {
+        Self::type_error(format_args!("a bytes-like object is required, not '{type_name}'"))
+    }
+
     /// Creates the TypeError raised when a `with` statement's context expression
     /// does not implement the context-manager protocol.
     ///

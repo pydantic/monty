@@ -1947,12 +1947,8 @@ impl Value {
 
     /// Borrows a bytes argument or raises the buffer protocol's type error.
     pub(crate) fn try_as_bytes<'a>(&self, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
-        self.as_bytes(vm).ok_or_else(|| {
-            ExcType::type_error(format!(
-                "a bytes-like object is required, not '{}'",
-                self.py_type_name(vm)
-            ))
-        })
+        self.as_bytes(vm)
+            .ok_or_else(|| ExcType::type_error_bytes_like(self.py_type_name(vm)))
     }
 
     /// Borrows string contents without allocating, or returns `None` for non-strings.

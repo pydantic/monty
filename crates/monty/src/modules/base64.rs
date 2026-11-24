@@ -258,7 +258,7 @@ fn call_urlsafe_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 fn call_b32encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let B32EncodeArgs { s } = B32EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let encoded = b32_encode(memoryview_input(s, vm)?, B32_ALPHABET, &vm.heap.tracker)?;
+    let encoded = b32_encode(s.try_as_bytes(vm)?, B32_ALPHABET, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -290,7 +290,7 @@ fn call_b32decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_b32hexencode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let B32HexEncodeArgs { s } = B32HexEncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let encoded = b32_encode(memoryview_input(s, vm)?, B32HEX_ALPHABET, &vm.heap.tracker)?;
+    let encoded = b32_encode(s.try_as_bytes(vm)?, B32HEX_ALPHABET, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -373,7 +373,7 @@ fn call_b85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(pad, vm);
 
     let pad = pad.py_bool(vm)?;
-    let encoded = b85_encode(memoryview_input(b, vm)?, B85_ALPHABET, pad, &vm.heap.tracker)?;
+    let encoded = b85_encode(b.try_as_bytes(vm)?, B85_ALPHABET, pad, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -391,7 +391,7 @@ fn call_z85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let Z85EncodeArgs { s } = Z85EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
 
-    let encoded = b85_encode(memoryview_input(s, vm)?, Z85_ALPHABET, false, &vm.heap.tracker)?;
+    let encoded = b85_encode(s.try_as_bytes(vm)?, Z85_ALPHABET, false, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -424,7 +424,7 @@ fn call_a85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(adobe, vm);
 
     // Coerce the input before testing flags. CPython only tests `pad` for a partial group.
-    let input = PyBytes::from_value(b, vm).ok_or_else(|| memoryview_error(b, vm))?;
+    let input = PyBytes::from_value(b, vm).ok_or_else(|| ExcType::type_error_bytes_like(b.py_type_name(vm)))?;
     let fold = foldspaces.py_bool(vm)?;
     let keep_padding = input.as_slice(vm).len() % 4 != 0 && pad.py_bool(vm)?;
     let adobe = adobe.py_bool(vm)?;
@@ -1205,20 +1205,6 @@ fn translate(data: &mut [u8], from: &[u8], to: &[u8]) {
     for byte in data {
         *byte = table[usize::from(*byte)];
     }
-}
-
-/// Borrows the bytes of an encoder that coerces with `memoryview(s).tobytes()`
-/// first — the base32 and base85 pair — whose `TypeError` is prefixed as a
-/// result. The base64 and base16 encoders reach `binascii` directly instead.
-fn memoryview_input<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
-    value.as_bytes(vm).ok_or_else(|| memoryview_error(value, vm))
-}
-
-fn memoryview_error(value: &Value, vm: &VM<'_>) -> RunError {
-    ExcType::type_error(format!(
-        "memoryview: a bytes-like object is required, not '{}'",
-        value.py_type_name(vm)
-    ))
 }
 
 /// Holds immutable input across Python calls without borrowing the VM.
