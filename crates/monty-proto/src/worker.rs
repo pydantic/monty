@@ -1319,7 +1319,9 @@ impl Worker {
     /// Drops all session state, returning to the unconfigured state ready for
     /// the next `Configure` (or `Load`).
     fn reset(&mut self) {
-        self.state = SessionState::Configured(None);
+        if let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) {
+            drop((*progress).into_repl());
+        }
         // Invalidating source files leaves Salsa caches and interned data allocated.
         self.type_checker = None;
         // A warm checker the session took was just dropped with it; release its cost
