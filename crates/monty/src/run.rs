@@ -12,9 +12,10 @@ pub use monty_types::{CompileOptions, OsPolicy};
 use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
-    bytecode::{Code, CodeBuilder, Compiler, ExecutionState, FrameExit, Opcode, VM},
+    bytecode::{Code, CodeBuilder, Compiler, ExecutionState, FrameExit, Opcode, SuspendedExecution, VM},
+    defer_drop_mut,
     exception_private::{ExcTypeExt, RunError, RunResult},
-    heap::{DropWithContext, Heap, HeapReader},
+    heap::{DropGuard, DropWithContext, Heap, HeapReader},
     intern::{CompileInterns, Interns, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
@@ -201,10 +202,11 @@ impl MontyRun {
 
         // Create heap and VM with empty globals, then populate inputs with VM alive
         let mut heap = Heap::new(executor.namespace_size(), resource_tracker);
-        let mut state = executor.execution_state();
-        let result = HeapReader::with(
-            &mut heap,
-            &mut (&mut executor, &mut state, print),
+        let mut state_guard = DropGuard::new(executor.execution_state(), &mut heap);
+        let (state, reader_heap) = state_guard.as_parts_mut();
+        let (converted, vm_state) = HeapReader::with(
+            reader_heap,
+            &mut (&mut executor, state, print),
             |reader, (executor, state, print)| {
                 let mut vm = VM::new(state, &mut executor.tables, &executor.program, reader, print.reborrow());
                 populate_inputs(inputs, &mut vm)?;
@@ -217,14 +219,12 @@ impl MontyRun {
                 let vm_state = check_snapshot_from_converted(&converted, vm);
                 Ok((converted, vm_state))
             },
-        );
-        match result {
-            Ok((converted, vm_state)) => build_run_progress(converted, vm_state, state, executor, heap),
-            Err(error) => {
-                state.drop_with(&mut heap);
-                Err(error)
-            }
-        }
+        )?;
+        let vm_state = vm_state.map(|snapshot| SuspendedExecution {
+            state: state_guard.into_inner(),
+            snapshot,
+        });
+        build_run_progress(converted, vm_state, executor, heap)
     }
 }
 
@@ -562,20 +562,20 @@ impl Executor {
     ) -> Result<MontyObject, MontyException> {
         let heap_capacity = self.heap_capacity;
         let mut heap = Heap::new(heap_capacity, resource_tracker);
-        let mut state = self.execution_state();
-
-        // Create VM first, then populate inputs with VM alive
-        let result = HeapReader::with(
-            &mut heap,
-            &mut (&mut *self, &mut state, print),
-            |reader, (executor, state, print)| {
-                let mut vm = VM::new(state, &mut executor.tables, &executor.program, reader, print.reborrow());
-                populate_inputs(inputs, &mut vm)?;
-                Program::run_to_completion(&mut vm)
-            },
-        );
-
-        state.drop_with(&mut heap);
+        let result = {
+            let state = self.execution_state();
+            let heap = &mut heap;
+            defer_drop_mut!(state, heap);
+            HeapReader::with(
+                heap,
+                &mut (&mut *self, state, print),
+                |reader, (executor, state, print)| {
+                    let mut vm = VM::new(state, &mut executor.tables, &executor.program, reader, print.reborrow());
+                    populate_inputs(inputs, &mut vm)?;
+                    Program::run_to_completion(&mut vm)
+                },
+            )
+        };
         if heap.size() > heap_capacity {
             self.heap_capacity = heap.size();
         }
@@ -610,9 +610,10 @@ impl Executor {
         resource_tracker: ResourceTracker,
     ) -> Result<RefCountOutput, MontyException> {
         let mut heap = Heap::new(self.namespace_size(), resource_tracker);
-        let mut state = self.execution_state();
-
-        let result = HeapReader::with(&mut heap, &mut (self, &mut state), |reader, (executor, state)| {
+        let state = self.execution_state();
+        let heap = &mut heap;
+        defer_drop_mut!(state, heap);
+        HeapReader::with(heap, &mut (self, state), |reader, (executor, state)| {
             // Create VM, populate inputs, and run
             let mut vm = VM::new(
                 state,
@@ -676,9 +677,7 @@ impl Executor {
                 heap_count,
                 allocations_since_gc,
             })
-        });
-        state.drop_with(&mut heap);
-        result
+        })
     }
 
     /// Creates turn-persistent state for a fresh execution of this program.
@@ -697,17 +696,12 @@ impl Program {
         tables: &mut SessionTables,
         test: impl for<'h> FnOnce(&mut VM<'h>) -> R,
     ) -> R {
-        let mut state = ExecutionState::new(Vec::new(), Arc::clone(&self.cwd));
-        let result = HeapReader::with(
-            heap,
-            &mut (self, tables, &mut state),
-            |reader, (program, tables, state)| {
-                let mut vm = VM::new(state, tables, program, reader, PrintWriter::Disabled);
-                test(&mut vm)
-            },
-        );
-        state.drop_with(heap);
-        result
+        let state = ExecutionState::new(Vec::new(), Arc::clone(&self.cwd));
+        defer_drop_mut!(state, heap);
+        HeapReader::with(heap, &mut (self, tables, state), |reader, (program, tables, state)| {
+            let mut vm = VM::new(state, tables, program, reader, PrintWriter::Disabled);
+            test(&mut vm)
+        })
     }
 
     /// Builds the [`VmEnv`] a VM run from this program starts with.

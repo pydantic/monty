@@ -1,6 +1,10 @@
 //! Tests for captured print output and callback errors.
 
-use std::{borrow::Cow, mem};
+use std::{
+    borrow::Cow,
+    mem,
+    panic::{AssertUnwindSafe, catch_unwind, panic_any},
+};
 
 use insta::assert_snapshot;
 use monty::MontyRun;
@@ -63,6 +67,64 @@ def outer():
 outer()
 ";
     assert_eq!(run_with_checkpoint_failure(code), MontyObject::int(42));
+}
+
+/// A host panic must unwind past heap-backed globals without a second panic.
+#[test]
+fn print_panic_unwinds_with_live_globals() {
+    let mut runner = MontyRun::new(
+        "items = []\nprint('panic')".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    assert_print_panic(|| {
+        runner.run(
+            vec![],
+            ResourceTracker::default(),
+            PrintWriter::Callback(&mut PanicOnPrint),
+        )
+    });
+    assert_print_panic(|| {
+        runner.start(
+            vec![],
+            ResourceTracker::default(),
+            PrintWriter::Callback(&mut PanicOnPrint),
+        )
+    });
+
+    let call = MontyRun::new(
+        "items = []\nhost_call()\nprint('panic')".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap()
+    .start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
+    .unwrap()
+    .into_function_call()
+    .unwrap();
+    assert_print_panic(|| call.resume(MontyObject::none(), PrintWriter::Callback(&mut PanicOnPrint)));
+}
+
+fn assert_print_panic<T>(run: impl FnOnce() -> T) {
+    let Err(panic) = catch_unwind(AssertUnwindSafe(run)) else {
+        panic!("expected the print callback to panic");
+    };
+    assert!(panic.is::<PanicOnPrint>());
+}
+
+struct PanicOnPrint;
+
+impl PrintWriterCallback for PanicOnPrint {
+    fn stdout_write(&mut self, _output: Cow<'_, str>) -> Result<(), MontyException> {
+        panic_any(Self);
+    }
+
+    fn stdout_push(&mut self, _end: char) -> Result<(), MontyException> {
+        Ok(())
+    }
 }
 
 /// Arms a single failure from Python so setup cannot consume it before synchronous re-entry.
