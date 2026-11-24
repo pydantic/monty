@@ -354,7 +354,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
     /// adaptor that answers from its own state never does. Charging it up front
     /// made a spent `batched`, a latched `takewhile` or an `accumulate` yielding
     /// its `initial` cost a level it never spent.
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         match self.get(vm.heap).kind() {
             Kind::Count => count::next(self, vm),
             Kind::Repeat => repeat::next(self, vm),
@@ -380,6 +380,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ItertoolsIter> {
             Kind::Tee => tee::next(self, vm),
             Kind::TeeBlock => Ok(tee::block_next()),
         }
+        .map(|item| item.map(CallResult::Value))
     }
 
     /// Only `count` and `repeat` carry a custom `repr`; every other adaptor

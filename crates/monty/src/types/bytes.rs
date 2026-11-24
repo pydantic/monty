@@ -2623,14 +2623,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIterator> {
         Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let byte = {
             let iter = self.get(vm.heap);
             iter.as_slice(vm).get(iter.index).copied()
         };
         if let Some(byte) = byte {
             self.get_mut(vm.heap).index += 1;
-            Ok(Some(Value::Int(i64::from(byte))))
+            Ok(Some(CallResult::Value(Value::Int(i64::from(byte)))))
         } else {
             Ok(None)
         }

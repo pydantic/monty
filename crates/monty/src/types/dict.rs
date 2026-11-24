@@ -2165,8 +2165,8 @@ macro_rules! impl_dict_iterator {
                 Ok(CallResult::Value(self.clone_value(vm.heap)))
             }
 
-            fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-                $next(self, vm)
+            fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+                $next(self, vm).map(|item| item.map(CallResult::Value))
             }
         }
     };

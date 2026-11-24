@@ -361,6 +361,7 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::DictValueIterator(_)
         | HeapReadOutput::SetIterator(_)
         | HeapReadOutput::CallableIterator(_)
+        | HeapReadOutput::MapFilter(_)
         | HeapReadOutput::DirScan(_)
         | HeapReadOutput::Itertools(_)
         | HeapReadOutput::Csv(_)

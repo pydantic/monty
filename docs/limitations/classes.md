@@ -153,7 +153,7 @@ order and error wording, but with these divergences:
     outcome, though not its exact depth), but a deep-but-finite chain that
     CPython's default 1000-frame limit would still render may raise
     `RecursionError` in Monty. The same cap applies to synchronous callback
-    evaluation such as `map()`, `filter()`, `sorted()`/`list.sort(key=...)`,
+    evaluation such as `list(map(f, xs))`, `list(filter(f, xs))`, `sorted()`/`list.sort(key=...)`,
     `min()`/`max(key=...)`, arithmetic and subscript dunders, and exotic `__init__` recursion.
     A chain of callable instances stored as class-level `__call__` members also has this cap;
     ordinary Python-function `__call__` recursion uses the normal frame limit
@@ -469,8 +469,8 @@ every construction request. Divergences:
     indexing is unaffected: `[1, 2, 3][10**30]` raises `IndexError` as CPython
     does.
 - `__contains__` cannot suspend on an external or OS call; it raises `NotImplementedError` inside the method.
-    `__iter__` and `__next__` have the same restriction in `for`, comprehensions, collection constructors,
-    and native iterator adaptors, but can suspend through direct `iter()`, `next()`, and `functools.reduce()` calls.
+    `__iter__` and `__next__` have the same restriction in collection constructors and synchronous native iterator
+    adaptors, but not in `for`, comprehensions, direct `iter()`/`next()`, or `functools.reduce()` calls.
     See [iter.md](iter.md) for other iteration restrictions.
     Two related protocols are still not dispatched:
     - the legacy `__getitem__`-only fallback: CPython iterates a class defining

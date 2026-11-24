@@ -236,8 +236,7 @@ result
     );
 }
 
-/// `map()` must contextually drop earlier heap results when a later callback
-/// raises instead of leaking the native output vector.
+/// Collecting a map must release earlier heap results when a later callback raises.
 #[test]
 #[cfg(feature = "ref-count-return")]
 fn map_callback_error_drops_prior_heap_results() {
@@ -248,9 +247,10 @@ def build(value):
     return [value]
 
 try:
-    map(build, [1, 2])
-except ValueError:
-    pass
+    list(map(build, [1, 2]))
+    assert False, 'expected callback error'
+except ValueError as exc:
+    assert str(exc) == 'stop'
 
 result = 'done'
 result
@@ -261,7 +261,7 @@ result
     assert_eq!(output.unreachable, Vec::<String>::new());
 }
 
-/// The two-iterable fast path owns the first argument while advancing the
+/// A two-source map owns the first argument while advancing the
 /// second iterator. If that iterator raises, the first value must be dropped.
 #[test]
 #[cfg(feature = "ref-count-return")]
@@ -278,9 +278,10 @@ def combine(a, b):
     return (a, b)
 
 try:
-    map(combine, [[1]], RaisingIterator())
-except ValueError:
-    pass
+    next(map(combine, [[1]], RaisingIterator()))
+    assert False, 'expected second iterator to raise'
+except ValueError as exc:
+    assert str(exc) == 'stop'
 
 result = 'done'
 result
@@ -291,8 +292,7 @@ result
     assert_eq!(output.unreachable, Vec::<String>::new());
 }
 
-/// The generic multi-iterable path accumulates arguments in a native vector.
-/// A later iterator error must drop every value already collected for the call.
+/// A later iterator error must release all arguments already collected for the callback.
 #[test]
 #[cfg(feature = "ref-count-return")]
 fn map_later_iterator_error_drops_current_arguments() {
@@ -308,9 +308,10 @@ def combine(a, b, c):
     return (a, b, c)
 
 try:
-    map(combine, [[1]], [[2]], RaisingIterator())
-except ValueError:
-    pass
+    next(map(combine, [[1]], [[2]], RaisingIterator()))
+    assert False, 'expected third iterator to raise'
+except ValueError as exc:
+    assert str(exc) == 'stop'
 
 result = 'done'
 result
@@ -330,7 +331,7 @@ fn map_later_iterator_exhaustion_drops_current_arguments() {
 def combine(a, b, c):
     return a[0] + b[0] + c[0]
 
-result = map(combine, [[1], [4]], [[2], [5]], [[3]])
+result = list(map(combine, [[1], [4]], [[2], [5]], [[3]]))
 result
 ";
     let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
@@ -2304,6 +2305,19 @@ const ITERTOOLS_INFINITE_LOOPS: &[&str] = &[
 fn timeout_in_itertools_adaptor_loops() {
     for expr in ITERTOOLS_INFINITE_LOOPS {
         assert_timeout_in_builtin(&format!("import itertools\n{expr}"), expr);
+    }
+}
+
+/// Native filtering must poll even when neither its source nor short predicates reach a VM checkpoint.
+#[test]
+fn timeout_in_native_filter_loops() {
+    for source in [
+        "import itertools\nlist(filter(None, itertools.repeat(0)))",
+        "import itertools\nlist(filter(lambda x: False, itertools.count()))",
+        "items = [0]\ndef reject(x):\n    items.append(x)\n    return False\nlist(filter(reject, items))",
+        "next(filter(None, bytes(20_000_000)))",
+    ] {
+        assert_timeout_in_builtin(source, "native filter rejection loop");
     }
 }
 

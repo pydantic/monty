@@ -1,63 +1,15 @@
-//! Implementation of the filter() builtin function.
-//!
-//! This module provides the filter() builtin which filters elements from an iterable
-//! based on a predicate function. The implementation supports:
-//! - `None` as predicate (filters falsy values)
-//! - Builtin functions (len, abs, etc.)
-//! - Type constructors (int, str, float, etc.)
-//! - User-defined functions (via `call_predicate`)
+//! Argument binding for the lazy filter iterator.
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
-    defer_drop,
+    bytecode::{CallResult, VM},
     exception_private::RunResult,
-    heap::{DropGuard, HeapData},
-    predicate::call_predicate,
-    types::{List, PyTrait},
-    value::Value,
+    types::map_filter::MapFilter,
 };
 
-/// Implementation of the filter() builtin function.
-///
-/// Filters elements from an iterable based on a predicate function.
-/// If the predicate is None, filters out falsy values.
-///
-/// Note: In Python this returns an iterator, but we return a list for simplicity.
-///
-/// Examples:
-/// ```python
-/// filter(lambda x: x > 0, [-1, 0, 1, 2])  # [1, 2]
-/// filter(None, [0, 1, False, True, ''])   # [1, True]
-/// ```
-pub fn builtin_filter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+/// Acquires the source iterator at construction, leaving predicate calls until advancement.
+pub fn builtin_filter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let args = args.reject_kwargs("filter", vm.heap)?;
     let (function, iterable) = args.get_two_args("filter", vm.heap)?;
-    defer_drop!(function, vm);
-
-    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
-    defer_drop!(iter, vm);
-    let mut iter = iter.read(vm);
-
-    let out: Vec<Value> = Vec::new();
-    let mut out_guard = DropGuard::new(out, vm);
-    let (out, vm) = out_guard.as_parts_mut();
-
-    while let Some(item) = iter.py_next(vm)? {
-        let mut item_guard = DropGuard::new(item, vm);
-        let (item, vm) = item_guard.as_parts_mut();
-        let should_include = if let Value::None = function {
-            // No predicate - use truthiness of element
-            item.py_bool(vm)?
-        } else {
-            call_predicate(function, item, vm)?
-        };
-
-        if should_include {
-            out.push(item_guard.into_inner());
-        }
-    }
-
-    let (out, vm) = out_guard.into_parts();
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(out)));
-    Ok(Value::Ref(heap_id))
+    MapFilter::new_filter(function, iterable, vm)
 }

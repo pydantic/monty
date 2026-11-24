@@ -1,9 +1,6 @@
-//! Python context restoration at host callback boundaries.
+//! OpenTelemetry activation at host callback boundaries.
 
-// PyO3 does not yet expose safe wrappers for entering and exiting contextvars contexts.
-#![allow(unsafe_code)]
-
-use pyo3::{ffi, prelude::*, types::PyDict};
+use pyo3::{prelude::*, types::PyDict};
 
 use crate::telemetry;
 
@@ -41,59 +38,42 @@ pub(crate) fn call<T>(py: Python<'_>, callback: impl FnOnce() -> PyResult<T>) ->
     result
 }
 
-#[derive(Debug)]
-pub(crate) struct CallbackContext(Py<PyAny>);
-
-impl CallbackContext {
-    pub(crate) fn capture(py: Python<'_>) -> PyResult<Self> {
-        // SAFETY: Python is attached; the API returns a new owned context reference.
-        unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyContext_CopyCurrent()) }.map(|context| Self(context.unbind()))
-    }
-
-    pub(crate) fn enter<'py>(&self, py: Python<'py>, native: &opentelemetry::Context) -> PyResult<CallbackGuard<'py>> {
-        // Each invocation gets its own copy: callbacks may re-enter Monty or run concurrently.
-        // SAFETY: self.0 is a context created by PyContext_CopyCurrent, and Python is attached.
-        let context = unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyContext_Copy(self.0.as_ptr())) }?;
-        // SAFETY: context is a fresh Python context and cannot already be entered.
-        if unsafe { ffi::PyContext_Enter(context.as_ptr()) } != 0 {
-            return Err(PyErr::fetch(py));
-        }
-        let mut guard = CallbackGuard { context, otel: None };
-        let parent = telemetry::callback_context(py, native).or_else(|| {
-            // Preserve caller context, but do not inherit an outer callback's private span selection.
-            py.import("opentelemetry.context")
-                .ok()?
+/// Activates the suspension's span without replacing the calling task's Python context.
+pub(crate) fn enter<'py>(py: Python<'py>, native: &opentelemetry::Context) -> CallbackGuard<'py> {
+    let parent = telemetry::callback_context(py, native).or_else(|| {
+        // Do not inherit an outer callback's private span selection when tracing is disabled.
+        let module = py.import("opentelemetry.context").ok()?;
+        if module.call_method1("get_value", (CALLBACK_SPAN_KEY,)).ok()?.is_none() {
+            None
+        } else {
+            module
                 .call_method1("set_value", (CALLBACK_SPAN_KEY, py.None()))
                 .ok()
                 .map(Bound::unbind)
-        });
-        if let Some(parent) = parent {
-            // Telemetry failure must not prevent execution of the user's callback.
-            guard.otel = (|| {
-                let module = py.import("opentelemetry.context")?;
-                let token = module.call_method1("attach", (parent,))?;
-                Ok::<_, PyErr>((module.getattr("detach")?.unbind(), token.unbind()))
-            })()
-            .ok();
         }
-        Ok(guard)
-    }
+    });
+    let otel = parent.and_then(|parent| {
+        // Telemetry failure must not prevent execution of the user's callback.
+        (|| {
+            let module = py.import("opentelemetry.context")?;
+            let token = module.call_method1("attach", (parent,))?;
+            Ok::<_, PyErr>((module.getattr("detach")?.unbind(), token.unbind()))
+        })()
+        .ok()
+    });
+    CallbackGuard { py, otel }
 }
 
+/// Restores only Monty's temporary OTel activation; callback context-variable changes persist.
 pub(crate) struct CallbackGuard<'py> {
-    context: Bound<'py, PyAny>,
+    py: Python<'py>,
     otel: Option<(Py<PyAny>, Py<PyAny>)>,
 }
 
 impl Drop for CallbackGuard<'_> {
     fn drop(&mut self) {
-        let py = self.context.py();
         if let Some((detach, token)) = &self.otel {
-            let _ = detach.bind(py).call1((token,));
-        }
-        // SAFETY: this guard exits the context it entered on this thread, while Python is attached.
-        if unsafe { ffi::PyContext_Exit(self.context.as_ptr()) } != 0 {
-            PyErr::fetch(py).write_unraisable(py, Some(&self.context));
+            let _ = detach.bind(self.py).call1((token,));
         }
     }
 }

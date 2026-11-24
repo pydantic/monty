@@ -186,7 +186,7 @@ pub(crate) fn bind_init_subclass(class: Value, hook: Value, heap: &Heap) -> Valu
 /// The types the `CallBuiltinType` opcode can name, indexed by operand.
 ///
 /// Append-only: the index is a bytecode operand persisted in dumps.
-const CALLABLE_TYPES: [Type; 15] = [
+const CALLABLE_TYPES: [Type; 17] = [
     Type::Bool,
     Type::Int,
     Type::Float,
@@ -202,6 +202,8 @@ const CALLABLE_TYPES: [Type; 15] = [
     Type::Iterator,
     Type::Path,
     Type::Complex,
+    Type::Map,
+    Type::Filter,
 ];
 
 /// `float(x=0.0, /)`: numeric coercion, then str/bytes parsing.

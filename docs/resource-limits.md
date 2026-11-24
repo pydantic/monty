@@ -273,8 +273,8 @@ Sandboxed code cannot raise the ceiling — `sys.setrecursionlimit` is not avail
 
 Each `await` boundary counts as one frame, so `await` chains do not amplify depth.
 
-Callbacks the interpreter evaluates synchronously — `map()`, `filter()`, `sorted(key=...)`, `min`/`max(key=...)`,
-recursive `__repr__`/`__str__` — re-enter on the native Rust stack rather than the heap-allocated frame stack.
+Synchronous consumers such as `list(map(f, xs))`, `sorted(key=...)`, `min`/`max(key=...)`, and recursive
+`__repr__`/`__str__` calls re-enter on the native Rust stack rather than the heap-allocated frame stack.
 Those are capped independently at a lower fixed depth, so Monty raises `RecursionError` before a native stack overflow
 could abort the process.
 

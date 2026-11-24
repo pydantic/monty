@@ -138,7 +138,7 @@ impl<'h> ValueRead<'h, '_> {
             Self::Heap { value, steps } => {
                 vm.heap.tracker.check_memory_time_every(*steps)?;
                 *steps += 1;
-                value.py_next(vm)
+                value.next_sync(vm)
             }
         }
     }
@@ -719,7 +719,7 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_next(&mut self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+    fn py_next(&mut self, vm: &mut VM<'_>) -> RunResult<Option<CallResult>> {
         if let Self::Ref(id) = self {
             PyValue::from_heap(*id, vm.heap).py_next(vm)
         } else {
@@ -943,11 +943,6 @@ impl Value {
     /// Rust consumers which cannot yield must explicitly require synchronous completion.
     pub fn py_iter(&self, vm: &mut VM<'_>) -> RunResult<CallResult> {
         <Self as PyTrait<'_>>::py_iter(self, vm)
-    }
-
-    /// Advances this value synchronously for native iterator consumers.
-    pub(crate) fn py_next(&mut self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        <Self as PyTrait<'_>>::py_next(self, vm)
     }
 
     /// Converts an owned value into its Python iterator and releases the original reference.
