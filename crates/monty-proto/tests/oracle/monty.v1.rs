@@ -754,7 +754,7 @@ pub struct ClientRequest {
     /// from. Purely additive context: the worker's execution of the request must
     /// not depend on it, and it is absent whenever the client is not tracing.
     #[prost(string, optional, tag = "20")]
-    pub trace_parent: ::core::option::Option<::prost::alloc::string::String>,
+    pub traceparent: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(oneof = "client_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub kind: ::core::option::Option<client_request::Kind>,
 }
@@ -1091,6 +1091,13 @@ pub struct WorkerEvent {
     /// reply, when it carries one). Local CPU-mode clients require this.
     #[prost(enumeration = "ExecutionClock", optional, tag = "30")]
     pub execution_clock: ::core::option::Option<i32>,
+    /// W3C `traceparent` of the sender's span for this suspension, set by a
+    /// server that exports its own telemetry on `FunctionCall`, `OsCall`,
+    /// `NameLookup` and `ResolveFutures`, so the host's work answering it joins
+    /// that span. Purely additive context: handling of the event must not depend
+    /// on it, a malformed value is ignored, and a worker never sets it.
+    #[prost(string, optional, tag = "31")]
+    pub traceparent: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(
         oneof = "worker_event::Kind",
         tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
@@ -1183,6 +1190,11 @@ pub struct FunctionCall {
     /// predates the field; the client then reports an empty range at offset 0.
     #[prost(message, optional, tag = "8")]
     pub position: ::core::option::Option<SourceRange>,
+    /// As `WorkerEvent.traceparent`, for one call in a `StreamedCalls` event,
+    /// which carries several. Unset on a suspending `FunctionCall`, whose event
+    /// names the span.
+    #[prost(string, optional, tag = "9")]
+    pub traceparent: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Mid-turn, like `Print`: calls to async host functions (`Function.is_async`)
 /// the sandbox has started without waiting. Each call already has an external

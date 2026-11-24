@@ -81,9 +81,12 @@ describe.skipIf(typeof window === 'undefined')('browser worker factory', () => {
     const policy = realm.trustedTypes.createPolicy('montyTest', { createScriptURL: (url) => url })
     const worker = new realm.Worker(policy.createScriptURL(workerUrl) as string, { type: 'module' })
     const stop = vi.spyOn(worker, 'terminate')
+    // In Chromium, worker error event and startup error message delivery race across the worker boundary.
     await expect(createWorkerPool({}, { createWorker: () => worker })).rejects.toMatchObject({
       timedOut: false,
-      message: 'worker initialization failed: component core module is missing: monty.component.core.wasm',
+      message: expect.stringMatching(
+        /^(?:worker initialization failed: component core module is missing: monty\.component\.core\.wasm|worker exited without a turn-ending event)$/,
+      ),
     })
     expect(stop.mock.calls).toEqual([[]])
   })

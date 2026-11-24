@@ -728,9 +728,10 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
     }
 
-    /// Advances an iterator synchronously for Rust consumers.
-    /// Public `next()` dispatches user methods separately so they can suspend.
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    /// Advances once. Native exhaustion returns `None`; a call may instead raise `StopIteration`.
+    /// VM callers dispatch the returned call. Synchronous consumers use [`ValueRead::py_next`](crate::value::ValueRead::py_next)
+    /// or [`PyValue::next_sync`](crate::py_value::PyValue::next_sync) to finish it and translate exhaustion to `None`.
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
     }
 }

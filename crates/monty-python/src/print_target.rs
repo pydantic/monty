@@ -2,7 +2,7 @@
 //!
 //! Python callers pass a `print_callback` argument which may be:
 //!
-//! - `None` — print fragments go to the process stdout (default).
+//! - `None` — print fragments go to the process stdout/stderr (default).
 //! - A callable `(stream, text) -> None` — each fragment is forwarded to the
 //!   callback. Used e.g. to tee output to a logger.
 //! - A `CollectStreams()` instance — fragments accumulate into a shared buffer
@@ -33,8 +33,9 @@ use pyo3::{
     prelude::*,
     types::{PyList, PyString},
 };
+use tokio::{sync::Semaphore, task::spawn_blocking};
 
-use crate::callback_context::{self, CallbackContext};
+use crate::callback_context;
 
 /// Shared collect-streams state: labelled fragments plus optional byte cap.
 #[derive(Debug)]
@@ -190,11 +191,11 @@ impl PyCollectString {
 ///   instead of `Clone` so the intent is explicit.
 #[derive(Debug, Default)]
 pub(crate) enum PrintTarget {
-    /// Print goes to process stdout — the default when no `print_callback` is set.
+    /// Print goes to process stdout/stderr by default.
     #[default]
     Stdout,
     /// Each fragment is forwarded to a Python callable as `(stream_name, text)`.
-    Callback(Py<PyAny>, Arc<CallbackContext>),
+    Callback(Py<PyAny>),
     /// Each fragment accumulates into a shared buffer of `(stream, text)`
     /// tuples, surfaced as `list[tuple[str, str]]` in Python.
     CollectStreams(CollectStreamsBuffer),
@@ -218,10 +219,7 @@ impl PrintTarget {
         } else if let Ok(collector) = obj.extract::<PyRef<'_, PyCollectString>>() {
             Ok(Self::CollectString(collector.buffer()))
         } else if obj.is_callable() {
-            Ok(Self::Callback(
-                obj.clone().unbind(),
-                Arc::new(CallbackContext::capture(obj.py())?),
-            ))
+            Ok(Self::Callback(obj.clone().unbind()))
         } else {
             Err(PyTypeError::new_err(
                 "print_callback must be a callable, CollectStreams(), CollectString(), or None",
@@ -238,17 +236,10 @@ impl PrintTarget {
     pub fn clone_handle(&self, py: Python<'_>) -> Self {
         match self {
             Self::Stdout => Self::Stdout,
-            Self::Callback(cb, context) => Self::Callback(cb.clone_ref(py), Arc::clone(context)),
+            Self::Callback(cb) => Self::Callback(cb.clone_ref(py)),
             Self::CollectStreams(arc) => Self::CollectStreams(arc.clone()),
             Self::CollectString(arc) => Self::CollectString(arc.clone()),
         }
-    }
-
-    pub(crate) fn capture_context(&mut self, py: Python<'_>) -> PyResult<()> {
-        if let Self::Callback(_, context) = self {
-            *context = Arc::new(CallbackContext::capture(py)?);
-        }
-        Ok(())
     }
 
     /// Delivers one already-formatted output fragment to this target.
@@ -257,22 +248,14 @@ impl PrintTarget {
     /// worker process as pre-rendered `(stream, text)` events rather than
     /// through a `PrintWriter`. Safe to call without the GIL held — the
     /// `Callback` variant attaches internally.
-    //
-    // TODO: support `async def` print callbacks under `AsyncMonty` by having
-    // this return the callback's coroutine as the turn's `PrintFuture`
-    // (converted via `into_future_with_locals`, with the drive's `TaskLocals`
-    // threaded through `run_turn`), instead of blocking a runtime thread.
     pub fn write_event(&self, stream: PrintStream, text: &str) -> Result<(), MontyException> {
         match self {
             Self::Stdout => {
-                match stream {
-                    PrintStream::Stdout => print!("{text}"),
-                    PrintStream::Stderr => eprint!("{text}"),
-                }
+                write_stdio(stream, text);
                 Ok(())
             }
-            Self::Callback(cb, context) => Python::attach(|py| {
-                let _guard = context.enter(py, &opentelemetry::Context::current())?;
+            Self::Callback(cb) => Python::attach(|py| {
+                let _guard = callback_context::enter(py, &opentelemetry::Context::current());
                 let stream_name = match stream {
                     PrintStream::Stdout => "stdout",
                     PrintStream::Stderr => "stderr",
@@ -296,5 +279,32 @@ impl PrintTarget {
                 Ok(())
             }
         }
+    }
+}
+
+/// Writes to built-in stdio without blocking asyncio, with at most one job per stream.
+pub(crate) async fn write_stdio_async(stream: PrintStream, text: String) {
+    static STDOUT: Semaphore = Semaphore::const_new(1);
+    static STDERR: Semaphore = Semaphore::const_new(1);
+
+    let slot = match stream {
+        PrintStream::Stdout => &STDOUT,
+        PrintStream::Stderr => &STDERR,
+    };
+    let permit = slot.acquire().await.expect("stdio semaphore is never closed");
+    spawn_blocking(move || {
+        // Keep the slot until the OS write returns, even if the turn was cancelled.
+        let _permit = permit;
+        write_stdio(stream, &text);
+    })
+    .await
+    .expect("stdio writer panicked");
+}
+
+/// Forwards one fragment using the process's usual stdout/stderr buffering.
+fn write_stdio(stream: PrintStream, text: &str) {
+    match stream {
+        PrintStream::Stdout => print!("{text}"),
+        PrintStream::Stderr => eprint!("{text}"),
     }
 }

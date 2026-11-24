@@ -98,6 +98,9 @@ jobs:
       - name: Check vendored typeshed stubs are in sync
         run: make check-typeshed
 
+      - name: Check vendored CPython stdlib and test sources are in sync
+        run: make check-stdlib
+
       # packaging resolves every crate's dependencies against crates.io, which
       # catches manifests that only break at release time (e.g. a versioned
       # path dependency on a crate that is not published yet)
@@ -107,6 +110,10 @@ jobs:
       # the str character-property tables are generated from the pinned CPython
       - name: Check generated str Unicode tables are in sync
         run: make check-unicode-type
+
+      # the type checker's warm-up snippet is generated from the vendored builtins stub
+      - name: Check the type checker warm-up snippet is in sync
+        run: make check-type-check-warm-up
 
       # rustdoc JSON is nightly-only and format-unstable, so the API reference
       # is generated with the exact nightly matching monty-apidoc's pinned
@@ -232,6 +239,10 @@ jobs:
       # real `monty` binary: build it plainly first (outside the llvm-cov
       # target dir) and point the tests at it explicitly.
       - run: cargo build -p monty-runtime
+      # a vendored CPython module whose test case passes unpatched no longer needs its patches;
+      # this rebuilds only `monty` (with the unpatched source embedded) and the datatest harness
+      - name: Check every vendored CPython stdlib patch is still needed
+        run: python3 scripts/vendor_stdlib.py --check-patches
       - run: cargo build -p monty-pool --example cpu-test-worker --target-dir target/llvm-cov-target
       - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool -p monty-pgo --features monty-pool/telemetry
         env:
@@ -398,6 +409,9 @@ jobs:
       - run: make install-py
       - name: Build runtime wheel
         run: uv run maturin build -m crates/monty-runtime/Cargo.toml --profile ${{ matrix.profile }} --out runtime-wheels
+
+      - name: Check runtime wheel licences
+        run: uv run --no-sync scripts/check_licenses.py --wheels runtime-wheels/*.whl
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -635,6 +649,7 @@ jobs:
       - build-python-worker
       - test-js
       - test-js-packages
+      - test-js-musl-packages
       - test-js-browser-package
       - test-browser
       - bench-test
@@ -647,7 +662,7 @@ jobs:
           jobs: ${{ toJSON(needs) }}
           # Match the full-build condition below; unexpected skips must still fail the check.
           allowed-skips: >-
-            ${{ (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)) && '[]' || '["test-js-packages", "test-js-browser-package"]' }}
+            ${{ (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)) && '[]' || '["test-js-packages", "test-js-musl-packages", "test-js-browser-package"]' }}
 
   # Publish the docs source read by pydantic/unified-docs: docs/, mkdocs.yml,
   # the Python package (for the `::: pydantic_monty` autodoc block) and the
@@ -1067,6 +1082,7 @@ jobs:
         run: |
           for whl in dist/*.whl; do unzip -qt "$whl"; done
           uv run --no-sync twine check --strict dist/*
+          uv run --no-sync scripts/check_licenses.py --sdist dist/pydantic_monty_runtime-*.tar.gz --wheels dist/pydantic_monty_runtime-*.whl
 
   # Release to PyPI
   release-python:
@@ -1233,9 +1249,17 @@ jobs:
             triple: linux-x64-gnu
             napi-cross: true
           - host: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            triple: linux-x64-musl
+            cross-compile: true
+          - host: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             triple: linux-arm64-gnu
             napi-cross: true
+          - host: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            triple: linux-arm64-musl
+            cross-compile: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1246,6 +1270,17 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.settings.target }}
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        if: matrix.settings.cross-compile
+        with:
+          version: 0.15.2
+          use-cache: false
+
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        if: matrix.settings.cross-compile
+        with:
+          tool: cargo-zigbuild@0.23.3
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: ${{ !startsWith(github.ref, 'refs/tags/') && !inputs.run_release }}
@@ -1267,7 +1302,9 @@ jobs:
 
       # `--use-napi-cross` downloads the napi-rs cross toolchain itself.
       - name: Build the napi shared library
-        run: npx napi build --platform --release --esm --target ${{ matrix.settings.target }} ${{ matrix.settings.napi-cross && '--use-napi-cross' || '' }}
+        run: >-
+          npx napi build --platform --release --esm --target ${{ matrix.settings.target }}
+          ${{ matrix.settings.napi-cross && '--use-napi-cross' || matrix.settings.cross-compile && '--cross-compile' || '' }}
         working-directory: crates/monty-js
 
       # If the toolchain download fails, the CLI only warns and builds with the host
@@ -1494,6 +1531,39 @@ jobs:
         run: npx playwright install --with-deps chromium && npm run test:browser
         working-directory: crates/monty-js/smoke-test
 
+  test-js-musl-packages:
+    name: test ${{ matrix.platform.triple }} JS package on node@${{ matrix.node }}
+    needs:
+      - assemble-js-packages
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24', '26']
+        platform:
+          - os: ubuntu-latest
+            triple: linux-x64-musl
+          - os: ubuntu-24.04-arm
+            triple: linux-arm64-musl
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download package tarballs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: js-package-tarballs
+          path: crates/monty-js/package-tarballs
+
+      - name: Install and run the Alpine package
+        run: |
+          docker run --rm \
+            --volume "${{ github.workspace }}:/workspace" \
+            --workdir /workspace/crates/monty-js/smoke-test \
+            node:${{ matrix.node }}-alpine \
+            sh -c 'npm install ../package-tarballs/monty-main.tgz ../package-tarballs/monty-${{ matrix.platform.triple }}.tgz --force --no-save --no-package-lock && npm run test:node'
+
   release-js:
     name: Release to NPM
     runs-on: ubuntu-latest
@@ -1501,6 +1571,7 @@ jobs:
       - check
       - test-js
       - test-js-packages
+      - test-js-musl-packages
       - test-js-browser-package
       - test-browser
       - release-python

@@ -30,6 +30,8 @@ export interface WasmPoolOptions extends MontyOptions {
   createWorker?: () => BrowserWorker
   /** Ignored by WASM, whose workers suspend at every host call. */
   streamAsyncCalls?: boolean
+  /** Ignored by WASM, which only prewarms `minProcesses`. */
+  preWarm?: number
 }
 
 /** Applies the same public pool options to both worker backends. */

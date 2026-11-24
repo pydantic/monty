@@ -1,11 +1,11 @@
 //! Resource limits: the [`ResourceTracker`] used by the interpreter heap/VM
 //! and its [`ResourceLimits`] configuration.
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use std::hint;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use std::thread;
-#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
+#[cfg(all(target_family = "wasm", not(target_os = "unknown")))]
 use std::time::Instant;
 use std::{
     cell::Cell,
@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(target_family = "wasm", target_os = "unknown"))]
 use web_time::Instant;
 
 mod execution_clock;
@@ -40,6 +40,16 @@ pub static BASELINE_MEMORY: AtomicUsize = AtomicUsize::new(usize::MAX);
 /// Only accurate while no other thread changes [`LIVE_MEMORY`]. An unset baseline is
 /// left alone: the first arming counts the structure anyway.
 pub fn allocate_into_baseline<T>(build: impl FnOnce() -> T) -> T {
+    measure_into_baseline(build).0
+}
+
+/// [`allocate_into_baseline`], also returning the bytes the structure cost.
+///
+/// For a structure the worker later frees: hand the cost to [`release_from_baseline`]
+/// when it goes, or the baseline keeps it and whatever leak fills the gap is never charged.
+/// The cost includes any process-lifetime data `build` initializes on first use, so releasing it
+/// undercounts the baseline by those (about 30 KB of typeshed for the prewarmed type checker).
+pub fn measure_into_baseline<T>(build: impl FnOnce() -> T) -> (T, usize) {
     let before = LIVE_MEMORY.load(Ordering::Relaxed);
     let value = build();
     let cost = LIVE_MEMORY.load(Ordering::Relaxed).saturating_sub(before);
@@ -47,7 +57,19 @@ pub fn allocate_into_baseline<T>(build: impl FnOnce() -> T) -> T {
     let _ = BASELINE_MEMORY.try_update(Ordering::Relaxed, Ordering::Relaxed, |baseline| {
         (baseline != usize::MAX).then(|| baseline.saturating_add(cost))
     });
-    value
+    (value, cost)
+}
+
+/// Takes `cost` back out of [`BASELINE_MEMORY`] once the structure
+/// [`measure_into_baseline`] measured is freed.
+///
+/// Call it before the next arming: `fetch_min` alone would settle on the floor plus
+/// any session residue, folding that residue into the baseline.
+pub fn release_from_baseline(cost: usize) {
+    // `Err` just means the baseline is still unset
+    let _ = BASELINE_MEMORY.try_update(Ordering::Relaxed, Ordering::Relaxed, |baseline| {
+        (baseline != usize::MAX).then(|| baseline.saturating_sub(cost))
+    });
 }
 
 /// Headroom for exception machinery and work between interpreter checkpoints.
@@ -828,7 +850,7 @@ fn probe_memory() -> usize {
         .saturating_sub(BASELINE_MEMORY.load(Ordering::Relaxed))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn block_for(duration: Duration) {
     thread::sleep(duration);
 }
@@ -837,7 +859,7 @@ fn block_for(duration: Duration) {
 /// `std::thread::sleep` needs `wasi:io/poll`, which a browser host serves
 /// only asynchronously. Only standard execution waits here; the wasm worker
 /// suspends its sleeps to the JavaScript host instead.
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn block_for(duration: Duration) {
     let started = Instant::now();
     while started.elapsed() < duration {

@@ -154,13 +154,15 @@ def test_standard_components_receive_session_tree():
     run, session = spans
     assert session.parent is not None
     assert (session.parent.trace_id, session.parent.span_id) == snapshot((1, 2))
+    # the feed is a child of the span it was called under, not of the session
     assert run.parent is not None
+    assert (run.parent.trace_id, run.parent.span_id) == snapshot((1, 2))
     assert session.context is not None
-    assert run.parent.span_id == session.context.span_id
     assert session.attributes is not None
     assert session.attributes['script_name'] == snapshot('calculation.py')
     assert run.attributes is not None
     assert run.attributes['code'] == snapshot("print('hello')\n1 + 2")
+    assert run.attributes['checkout_span_id'] == format(session.context.span_id, '016x')
     assert run.attributes['sandbox.execution.code.attribute'] == snapshot('code')
     assert run.attributes['sandbox.execution.language'] == snapshot('python')
     assert run.attributes['output'] == snapshot(3)
@@ -554,6 +556,31 @@ async def test_async_snapshot_trace_context(kind: str):
         handler = next(span for span in spans if span.name == f'handler {index}')
         assert (handler.parent == parent) == snapshot(True)
     assert (parents[0] != parents[1]) == snapshot(True)
+
+
+async def test_snapshot_calls_use_the_active_app_span():
+    install_telemetry()
+    tracer = _tracer_provider.get_tracer('request')
+    async with AsyncMonty() as pool:
+        with tracer.start_as_current_span('app checkout') as checkout:
+            async with pool.checkout() as session:
+                assert await session.feed_run('x = 42\nx') == 42
+                with tracer.start_as_current_span('app dump', context=Context()) as save:
+                    state = await session.dump()
+            async with pool.checkout() as session:
+                with tracer.start_as_current_span('app restore', context=Context()) as load:
+                    await session.load_session(state)
+                assert await session.feed_run('x') == 42
+    spans = _span_exporter.get_finished_spans()
+    [dump] = [span for span in spans if span.name == 'dump']
+    [restore] = [span for span in spans if span.name == 'restore']
+    [load_turn] = [span for span in spans if span.name == 'load']
+    assert dump.parent == save.get_span_context()
+    assert restore.parent == load.get_span_context()
+    assert load_turn.parent == restore.context
+    sessions = [span for span in spans if span.name == 'session {script_name}']
+    assert len(sessions) == 2
+    assert all(span.parent == checkout.get_span_context() for span in sessions)
 
 
 def test_restored_snapshot_trace_context():

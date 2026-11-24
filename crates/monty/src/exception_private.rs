@@ -4,7 +4,7 @@ use std::{
     mem,
 };
 
-use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData};
+use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject};
 use smallvec::smallvec;
 
 use crate::{
@@ -250,6 +250,38 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn cannot_reuse_already_awaited_coroutine() -> RunError {
         SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited coroutine").into()
+    }
+
+    /// Creates the canonical `RuntimeError: cannot reuse already awaited future`,
+    /// raised when an already-consumed future or task is awaited again.
+    #[must_use]
+    fn cannot_reuse_already_awaited_future() -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited future").into()
+    }
+
+    /// `RuntimeError: coroutine is being awaited already` — a second task
+    /// awaiting a coroutine-like awaitable that another await is still driving.
+    #[must_use]
+    fn coroutine_being_awaited_already() -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, "coroutine is being awaited already").into()
+    }
+
+    /// `ValueError: Set of Tasks/Futures is empty.` — `asyncio.wait` given no inputs.
+    #[must_use]
+    fn wait_empty_input() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "Set of Tasks/Futures is empty.").into()
+    }
+
+    /// `AttributeError: '<type>' object has no attribute 'add_done_callback'` —
+    /// an `asyncio.wait` input that is neither a task nor a future. CPython
+    /// fails on the first callback it tries to attach.
+    #[must_use]
+    fn wait_input_not_future(type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::AttributeError,
+            format!("'{type_name}' object has no attribute 'add_done_callback'"),
+        )
+        .into()
     }
 
     /// `ValueError: generator already executing` — a generator advanced from
@@ -1136,6 +1168,11 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, msg).into()
     }
 
+    /// A datetime or time component outside Python's non-leap-second range.
+    fn second_out_of_range(second: impl fmt::Display) -> RunError {
+        Self::value_error(format_args!("second must be in 0..59, not {second}"))
+    }
+
     /// Creates a generic `IndexError` with a custom message.
     fn index_error(msg: impl fmt::Display) -> RunError {
         SimpleException::new_msg(ExcType::IndexError, msg).into()
@@ -1174,6 +1211,27 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn mktime_out_of_range() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "mktime argument out of range").into()
+    }
+
+    /// `strptime()`'s `ValueError` for a directive missing from its table, quoted
+    /// with bare `'` as CPython does: `'{directive}' is a bad directive in format '{format}'`.
+    #[must_use]
+    fn strptime_bad_directive(directive: &str, format: &str) -> RunError {
+        Self::value_error(format_args!("'{directive}' is a bad directive in format '{format}'"))
+    }
+
+    /// `strptime()`'s `ValueError` for a `%` with nothing, or only whitespace,
+    /// after it: `stray % in format '{format}'`.
+    #[must_use]
+    fn strptime_stray_percent(format: &str) -> RunError {
+        Self::value_error(format_args!("stray % in format '{format}'"))
+    }
+
+    /// The `ValueError` the `time` conversion functions raise for a time tuple
+    /// field outside its range: `{field} out of range`.
+    #[must_use]
+    fn time_field_out_of_range(field: &str) -> RunError {
+        Self::value_error(format_args!("{field} out of range"))
     }
 
     /// The `TypeError` the `time` conversion functions raise for a time tuple of
@@ -2050,6 +2108,18 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn overflow_c_long() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "Python int too large to convert to C long").into()
+    }
+
+    /// CPython's `i` format for an `i64` outside a C `int`:
+    /// `signed integer is less than minimum` / `signed integer is greater than maximum`.
+    #[must_use]
+    fn overflow_signed_c_int(value: i64) -> RunError {
+        let msg = if value < 0 {
+            "signed integer is less than minimum"
+        } else {
+            "signed integer is greater than maximum"
+        };
+        SimpleException::new_msg(ExcType::OverflowError, msg).into()
     }
 
     /// `OverflowError: Python int too large for C unsigned long`, from Argument
@@ -3068,6 +3138,20 @@ impl From<MontyException> for ExceptionRaise {
 }
 
 impl ExceptionRaise {
+    /// Heap bytes a clone allocates for the message, structured payload, and frames.
+    fn clone_allocation_size(&self) -> usize {
+        self.exc
+            .arg()
+            .map_or(0, String::len)
+            .saturating_add(exc_data_clone_size(&self.exc.data))
+            .saturating_add(self.frame.as_ref().map_or(0, RawStackFrame::clone_allocation_size))
+            .saturating_add(self.snippet_frame.as_ref().map_or(0, |frame| {
+                mem::size_of::<StackFrame>()
+                    .saturating_add(frame.filename.len())
+                    .saturating_add(frame.frame_name.as_ref().map_or(0, String::len))
+            }))
+    }
+
     /// Adds a caller's frame as the outermost frame in the traceback chain.
     ///
     /// This is used when an exception propagates up through call frames.
@@ -3159,6 +3243,23 @@ impl ExceptionRaise {
     }
 }
 
+/// Heap bytes a clone of `data` allocates for its boxed structured payload.
+fn exc_data_clone_size(data: &ExcData) -> usize {
+    match data {
+        ExcData::None => 0,
+        ExcData::Unicode(data) => mem::size_of::<UnicodeErrorData>()
+            .saturating_add(data.encoding.len())
+            .saturating_add(data.reason.len())
+            .saturating_add(match &data.object {
+                UnicodeErrorObject::Bytes(bytes) => bytes.len(),
+                UnicodeErrorObject::Str(text) => text.len(),
+            }),
+        ExcData::Json(data) => mem::size_of::<JsonErrorData>()
+            .saturating_add(data.msg.len())
+            .saturating_add(data.doc.as_ref().map_or(0, String::len)),
+    }
+}
+
 /// A stack frame for traceback information.
 ///
 /// Stores position information and optional function name as StringId.
@@ -3178,6 +3279,11 @@ pub struct RawStackFrame {
 }
 
 impl RawStackFrame {
+    /// Heap bytes a clone allocates for this frame and its boxed parents.
+    fn clone_allocation_size(&self) -> usize {
+        mem::size_of::<Self>().saturating_add(self.parent.as_ref().map_or(0, |parent| parent.clone_allocation_size()))
+    }
+
     pub(crate) fn new(position: CodeRange, frame_name: StringId, parent: Option<&Self>) -> Self {
         Self {
             position,
@@ -3262,6 +3368,17 @@ impl From<fmt::Error> for RunError {
 }
 
 impl RunError {
+    /// Heap bytes a clone allocates for its exception payload, excluding the inline value.
+    pub(crate) fn clone_allocation_size(&self) -> usize {
+        match self {
+            Self::Internal(message) => match message {
+                Cow::Borrowed(_) => 0,
+                Cow::Owned(message) => message.len(),
+            },
+            Self::Exc(exc) | Self::UncatchableExc(exc) => exc.clone_allocation_size(),
+        }
+    }
+
     /// Whether this is a catchable `exc_type`, matching only `Exc` so an uncatchable
     /// host or resource error is never swallowed by a guard that expects one.
     pub(crate) fn is_catchable(&self, exc_type: ExcType) -> bool {

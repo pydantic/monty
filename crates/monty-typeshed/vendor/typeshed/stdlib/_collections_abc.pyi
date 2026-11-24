@@ -36,37 +36,37 @@ from typing import (  # noqa: Y022,Y038,UP035,Y057,RUF100
 )
 
 __all__ = [
-    'Awaitable',
-    'Coroutine',
-    'AsyncIterable',
-    'AsyncIterator',
-    'AsyncGenerator',
-    'Hashable',
-    'Iterable',
-    'Iterator',
-    'Generator',
-    'Reversible',
-    'Sized',
-    'Container',
-    'Callable',
-    'Collection',
-    'Set',
-    'MutableSet',
-    'Mapping',
-    'MutableMapping',
-    'MappingView',
-    'KeysView',
-    'ItemsView',
-    'ValuesView',
-    'Sequence',
-    'MutableSequence',
-    'ByteString',
+    "Awaitable",
+    "Coroutine",
+    "AsyncIterable",
+    "AsyncIterator",
+    "AsyncGenerator",
+    "Hashable",
+    "Iterable",
+    "Iterator",
+    "Generator",
+    "Reversible",
+    "Sized",
+    "Container",
+    "Callable",
+    "Collection",
+    "Set",
+    "MutableSet",
+    "Mapping",
+    "MutableMapping",
+    "MappingView",
+    "KeysView",
+    "ItemsView",
+    "ValuesView",
+    "Sequence",
+    "MutableSequence",
+    "ByteString",
 ]
 if sys.version_info >= (3, 12):
-    __all__ += ['Buffer']
+    __all__ += ["Buffer"]
 
-_KT_co = TypeVar('_KT_co', covariant=True)  # Key type covariant containers.
-_VT_co = TypeVar('_VT_co', covariant=True)  # Value type covariant containers.
+_KT_co = TypeVar("_KT_co", covariant=True)  # Key type covariant containers.
+_VT_co = TypeVar("_VT_co", covariant=True)  # Value type covariant containers.
 
 @final
 class dict_keys(KeysView[_KT_co], Generic[_KT_co, _VT_co]):  # undocumented

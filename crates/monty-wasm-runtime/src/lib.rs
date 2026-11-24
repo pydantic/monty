@@ -362,7 +362,7 @@ fn request_from_component(request: Request) -> Result<pb::ClientRequest, String>
     };
     Ok(pb::ClientRequest {
         kind: Some(kind),
-        trace_parent: None,
+        traceparent: None,
     })
 }
 

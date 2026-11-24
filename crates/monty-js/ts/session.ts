@@ -16,6 +16,7 @@ import { isAsyncFunction } from './asyncFunction.js'
 import {
   bindPrintCallback,
   bindStreamedCallCallback,
+  captureTraceparent,
   getCallbackContext,
   runWithCallbackContext,
 } from './callbackContext.js'
@@ -265,6 +266,7 @@ export class MontySession {
         asyncFunctions: asyncFunctionNames(options.externalLookup),
         // the native checkout keeps it for this feed's later turns and drops it with the session
         onStreamedCall,
+        traceparent: captureTraceparent(),
       },
       onPrint,
     )) as NativeTurn
@@ -342,6 +344,7 @@ export class MontySession {
         cwd: options.cwd,
         skipTypeCheck: options.skipTypeCheck ?? false,
         // no `asyncFunctions`: every call suspends, so each reaches a snapshot
+        traceparent: captureTraceparent(),
       },
       driver.onPrint,
     )) as NativeTurn
@@ -367,8 +370,12 @@ export class MontySession {
   async loadSession(state: Uint8Array): Promise<void> {
     this.claimFresh()
     const printTarget = new PrintTarget(undefined)
-    const turn = (await this.native.restore(bytesForNative(state), [], printTarget.write.bind(printTarget))) as
-      NativeTurn | LoadedTurn
+    const turn = (await this.native.restore(
+      bytesForNative(state),
+      [],
+      printTarget.write.bind(printTarget),
+      captureTraceparent(),
+    )) as NativeTurn | LoadedTurn
     switch (turn.kind) {
       case 'loaded':
         return
@@ -404,8 +411,12 @@ export class MontySession {
   async loadSnapshot(state: Uint8Array, options: LoadSnapshotOptions = {}): Promise<Snapshot> {
     this.claimFresh()
     const driver = this.newDriver(options)
-    const turn = (await this.native.restore(bytesForNative(state), mountsToNative(options.mount), driver.onPrint)) as
-      NativeTurn | LoadedTurn
+    const turn = (await this.native.restore(
+      bytesForNative(state),
+      mountsToNative(options.mount),
+      driver.onPrint,
+      captureTraceparent(),
+    )) as NativeTurn | LoadedTurn
     if (turn.kind === 'loaded') {
       throw await this.failedLoad(new Error('this dump is an idle session — use loadSession() to restore it'))
     }
@@ -1362,8 +1373,9 @@ class SingleUse {
 
   /**
    * Returns the suspension's OTel context without activating it or resuming execution.
-   * Preserves context entries captured at `feedStart` / `loadSnapshot`; without Monty tracing,
-   * returns that captured context unchanged. Access after resume throws; previously returned
+   * Preserves context entries captured at `feedStart` / `loadSnapshot`. Without Monty tracing, its
+   * span is the one a remote server named for the suspension, else the captured context is returned
+   * unchanged. Access after resume throws; previously returned
    * contexts remain usable but do not keep the suspension span open.
    */
   traceContext(): Context {
@@ -1937,7 +1949,7 @@ async function dumpSession(
   onPrint: PrintCallback,
   poison: (err: Error) => Error,
 ): Promise<Buffer> {
-  const turn = (await native.dump(onPrint)) as NativeTurn | DumpedTurn
+  const turn = (await native.dump(onPrint, captureTraceparent())) as NativeTurn | DumpedTurn
   switch (turn.kind) {
     case 'dumped':
       return bufferFrom(turn.state)

@@ -33,22 +33,25 @@ any code runs.
 
 - **Template strings (t-strings)** — PEP 750.
 
-## Starred unpacking
+## Unpacking
 
 Anything Monty can iterate may follow a `*`, matching CPython: `[*xs]`,
 `(*xs,)`, `{*xs}`, `f(*xs)`, `a, b = xs` and `a, *b = xs` all accept whatever
 `list(xs)` accepts.
 
-One message divergence: passing a non-iterable to a call, `f(*1)`, reports
+Passing a non-iterable to a call, `f(*1)`, reports
 `TypeError: Value after * must be an iterable, not int`, the same wording as a
 list literal. CPython instead names the callable by its module-qualified
 `__qualname__`: `__main__.f() argument after * must be an iterable, not int`,
 and correspondingly `__main__.C.m()`, `__main__.<lambda>()` or
 `__main__.outer.<locals>.inner()`. Monty has neither function `__qualname__`
 nor module-qualified names (see the class-name note in [collections.md](collections.md)), so
-it reports the generic form. Every other unpacking form matches CPython
-exactly, except for the comprehension target restriction in
-[comprehensions.md](comprehensions.md).
+it reports the generic form.
+
+Unpacking a named tuple into too few targets reports its total length, for example
+`ValueError: too many values to unpack (expected 1, got 2)`. CPython omits `got 2` for named tuples.
+
+See [comprehensions.md](comprehensions.md) for the comprehension target restriction.
 
 ## Source nesting depth
 

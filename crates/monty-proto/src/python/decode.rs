@@ -9,9 +9,10 @@ use std::{
 
 use monty_types::{
     BuiltinsFunctions, MontyException, MontyObject,
-    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+    unstable::{self, ClassEq, ClassHash, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use pyo3::{
+    exceptions::{PyRecursionError, PyValueError},
     prelude::*,
     sync::PyOnceLock,
     types::{PyBool, PyBytes, PyComplex, PyDate, PyDelta, PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple},
@@ -20,13 +21,41 @@ use pyo3::{
 use super::{
     class_instance::{ClassHeader, InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy},
     convert::{
-        PyMontyFileHandle, get_decimal_type, get_monty_namedtuple, get_pure_posix_path, host_type_object,
-        import_builtins, monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py,
+        PyMontyFileHandle, get_decimal_type, get_pure_posix_path, host_type_object, import_builtins,
+        monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py,
     },
     exceptions::exc_monty_to_py,
     external_module::PyExternalModule,
+    named_tuple::monty_named_tuple_type,
     std_type_proxy::{PyMontyStdTypeProxy, StdTypeRef},
 };
+
+/// The most key comparison work CPython may do while one arena's dicts and sets
+/// are built, about 10 ms of colliding `int` keys.
+///
+/// The sandbox hashes `int`s by their bits but CPython reduces them modulo
+/// `2**61 - 1`, so keys like `k * (2**61 - 1)` are free to build in the sandbox
+/// yet all collide on the host, where inserting n of them costs O(n²).
+/// Each comparison is weighted by the key's [`KeySize::compare`].
+const MAX_KEY_COLLISIONS: u64 = 1 << 20;
+
+/// The expanded key size every arena may hash, whatever its size (about 100 ms).
+///
+/// The arena keeps sharing, so `a = (a, a)` nested 40 deep is 41 tuple nodes, but
+/// CPython before 3.14 does not cache tuple hashes and walks all 2⁴⁰ leaves.
+const MIN_KEY_HASH_BUDGET: u64 = 1 << 24;
+
+/// Expanded key size each unit of the arena's own size (see [`own_size`]) adds to
+/// [`MIN_KEY_HASH_BUDGET`], so unshared keys, which expand to no more than the
+/// arena itself, always fit.
+const KEY_HASH_BUDGET_PER_UNIT: u64 = 4;
+
+/// How deeply a dict or set key may nest values that hashing recurses through.
+///
+/// CPython's tuple hash has no recursion guard, so a tuple nested ~100,000 deep
+/// overflows the host's native stack. The sandbox caches tuple hashes, and a
+/// leaf-first list exports each level before the next, so it can send one.
+const MAX_KEY_HASH_DEPTH: u32 = 1000;
 
 /// Converts one value to a native Python object. A class instance found in
 /// `store` resolves to the ORIGINAL wrapped object (identity preserved);
@@ -59,12 +88,18 @@ impl DecodedArena {
             classes: HashMap::new(),
             host_objects: Vec::with_capacity(graph.len()),
             from_store: false,
+            key_sizes: Vec::with_capacity(graph.len()),
+            key_collisions: 0,
+            key_hash_work: 0,
+            key_hash_budget: MIN_KEY_HASH_BUDGET.max(KEY_HASH_BUDGET_PER_UNIT.saturating_mul(arena_size(graph))),
         };
         for node in graph.nodes() {
             let obj = decoder.decode(node)?;
             decoder.built.push(obj);
             let holds = decoder.holds_host_objects(node);
             decoder.host_objects.push(holds);
+            let size = KeySize::of(node, graph, &decoder.key_sizes, &decoder.host_objects);
+            decoder.key_sizes.push(size);
         }
         Ok(Self { built: decoder.built })
     }
@@ -94,6 +129,14 @@ struct Decoder<'a, 'py> {
     host_objects: Vec<bool>,
     /// Set by `decode` when the node resolved to a registered host object.
     from_store: bool,
+    /// Each decoded node's [`KeySize`], by index.
+    key_sizes: Vec<KeySize>,
+    /// Key comparison work charged so far against [`MAX_KEY_COLLISIONS`].
+    key_collisions: u64,
+    /// Expanded size of the keys hashed so far, charged against `key_hash_budget`.
+    key_hash_work: u64,
+    /// The expanded key size this arena may hash: see [`MIN_KEY_HASH_BUDGET`].
+    key_hash_budget: u64,
 }
 
 /// A namedtuple's type name and field names, as passed to `MontyNamedTuple`.
@@ -125,10 +168,11 @@ impl<'a> Decoder<'a, '_> {
                 // type, so the sandbox cannot make the host build classes
                 let (type_name, field_names) = self.namedtuple_header(type_name, field_names)?;
                 let values = PyTuple::new(py, self.children(values))?;
-                let instance = get_monty_namedtuple(py)?.call1((type_name, field_names, values))?;
+                let instance = monty_named_tuple_type(py)?.call1((type_name, field_names, values))?;
                 Ok(instance.unbind())
             }
             MontyNode::Dict(pairs) => {
+                self.charge_key_collisions(pairs.iter().map(|(key, _)| *key))?;
                 let dict = PyDict::new(py);
                 for (key, value) in pairs {
                     dict.set_item(self.child(*key), self.child(*value))?;
@@ -136,13 +180,17 @@ impl<'a> Decoder<'a, '_> {
                 Ok(dict.into_any().unbind())
             }
             MontyNode::Set(items) => {
+                self.charge_key_collisions(items.iter().copied())?;
                 let set = PySet::empty(py)?;
                 for item in items {
                     set.add(self.child(*item))?;
                 }
                 Ok(set.into_any().unbind())
             }
-            MontyNode::FrozenSet(items) => Ok(PyFrozenSet::new(py, self.children(items))?.into_any().unbind()),
+            MontyNode::FrozenSet(items) => {
+                self.charge_key_collisions(items.iter().copied())?;
+                Ok(PyFrozenSet::new(py, self.children(items))?.into_any().unbind())
+            }
             // the exception instance as a value (not raised)
             MontyNode::Exception { exc_type, arg } => {
                 let exc = exc_monty_to_py(py, MontyException::new(*exc_type, arg.clone()));
@@ -246,6 +294,44 @@ impl<'a> Decoder<'a, '_> {
         ids.iter().map(|id| self.child(*id)).collect()
     }
 
+    /// Charges the work CPython does hashing `keys` and inserting them into one
+    /// dict or set, failing once the arena exceeds its budgets.
+    ///
+    /// A key nested past [`MAX_KEY_HASH_DEPTH`] is rejected before it is hashed.
+    /// Hashing a key is charged its [`KeySize::hash`], before it is hashed. Each
+    /// key is compared with every earlier key of the same hash, which costs at
+    /// most its [`KeySize::compare`], charged per earlier key. Each key is hashed
+    /// once more than the insertion does. Attr dicts are not charged: their keys
+    /// are `str`, whose hash is salted.
+    fn charge_key_collisions(&mut self, keys: impl Iterator<Item = NodeId>) -> PyResult<()> {
+        let mut seen: HashMap<isize, u64> = HashMap::new();
+        for key in keys {
+            let size = self.key_sizes[key.index()];
+            if size.hash_depth > MAX_KEY_HASH_DEPTH {
+                return Err(PyRecursionError::new_err(
+                    "maximum recursion depth exceeded while hashing a dict or set key",
+                ));
+            }
+            self.key_hash_work = self.key_hash_work.saturating_add(size.hash);
+            if self.key_hash_work > self.key_hash_budget {
+                return Err(PyValueError::new_err(
+                    "dict or set keys nest too many shared values to hash",
+                ));
+            }
+            // an unhashable key is left for the insertion to reject with its own message
+            let Ok(hash) = self.built[key.index()].bind(self.py).hash() else {
+                continue;
+            };
+            let earlier = seen.entry(hash).or_default();
+            self.key_collisions = self.key_collisions.saturating_add(earlier.saturating_mul(size.compare));
+            *earlier += 1;
+            if self.key_collisions > MAX_KEY_COLLISIONS {
+                return Err(PyValueError::new_err("too many hash collisions among dict or set keys"));
+            }
+        }
+        Ok(())
+    }
+
     /// Attr pairs as a Python dict, skipping non-string keys: hosts and the
     /// sandbox only produce string attr names, so anything else is not
     /// representable.
@@ -287,6 +373,106 @@ impl<'a> Decoder<'a, '_> {
         };
         Ok((name.clone_ref(py), fields.clone_ref(py)))
     }
+}
+
+/// The [`own_size`] of every node in `graph`: an unshared key expands to no more.
+fn arena_size(graph: &MontyGraph) -> u64 {
+    graph
+        .nodes()
+        .iter()
+        .fold(0, |size, node| size.saturating_add(own_size(node)))
+}
+
+/// How much CPython may walk to hash a key or to compare it with another, both
+/// counted with sharing undone (see [`own_size`] for each node's share).
+#[derive(Debug, Clone, Copy)]
+struct KeySize {
+    /// What hashing walks: tuples, frozensets and instance attrs. Hashing stops
+    /// at a list, dict or set, which are unhashable.
+    hash: u64,
+    /// What `==` walks, lists, dicts and sets included: a dataclass proxy's
+    /// `==` compares every field, while its hash may skip the unhashable ones.
+    compare: u64,
+    /// How deeply hashing recurses natively, checked against [`MAX_KEY_HASH_DEPTH`].
+    /// A frozenset hashes its items' stored hashes, so it does not recurse.
+    hash_depth: u32,
+}
+
+impl KeySize {
+    /// The size of `node`, given `sizes` of the nodes before it and
+    /// `host_objects` up to and including it. Class and module attrs are not
+    /// counted: their proxies compare and hash by id, as do instances whose
+    /// fields are not compared.
+    fn of(node: &MontyNode, graph: &MontyGraph, sizes: &[Self], host_objects: &[bool]) -> Self {
+        let own = own_size(node);
+        let leaf = Self {
+            hash: own,
+            compare: own,
+            hash_depth: 1,
+        };
+        let add = |size: Self, id: &NodeId| {
+            let child = sizes[id.index()];
+            Self {
+                hash: size.hash.saturating_add(child.hash),
+                compare: size.compare.saturating_add(child.compare),
+                hash_depth: size.hash_depth.max(child.hash_depth.saturating_add(1)),
+            }
+        };
+        match node {
+            MontyNode::Tuple(items) => items.iter().fold(leaf, add),
+            MontyNode::FrozenSet(items) => Self {
+                hash_depth: 1,
+                ..items.iter().fold(leaf, add)
+            },
+            MontyNode::NamedTuple { values, .. } => values.iter().fold(leaf, add),
+            MontyNode::ClassInstance { class_type, attrs, .. } => {
+                let MontyNode::ClassType(class) = graph.node(*class_type) else {
+                    unreachable!("the arena's validation makes class_type a ClassType node")
+                };
+                // mirrors `PyMontyClassProxy`: only a field-compared instance
+                // without host objects walks its fields, and only a hashable one hashes them
+                let holds_host_objects =
+                    host_objects[sizes.len()] || attrs.iter().any(|(_, value)| host_objects[value.index()]);
+                if holds_host_objects || !matches!(class.eq, ClassEq::Fields(_)) {
+                    leaf
+                } else {
+                    let fields = attrs.iter().fold(leaf, |size, (_, value)| add(size, value));
+                    if class.hash == ClassHash::Unhashable {
+                        Self {
+                            compare: fields.compare,
+                            ..leaf
+                        }
+                    } else {
+                        fields
+                    }
+                }
+            }
+            MontyNode::List(items) | MontyNode::Set(items) => Self {
+                compare: items.iter().fold(leaf, add).compare,
+                ..leaf
+            },
+            MontyNode::Dict(pairs) => Self {
+                compare: pairs
+                    .iter()
+                    .fold(leaf, |size, (key, value)| add(add(size, key), value))
+                    .compare,
+                ..leaf
+            },
+            _ => leaf,
+        }
+    }
+}
+
+/// One for the node plus one per 8 bytes of payload, since CPython hashes and
+/// compares a big `int` digit by digit and compares text byte by byte.
+fn own_size(node: &MontyNode) -> u64 {
+    let payload_bytes = match node {
+        MontyNode::BigInt(bi) => bi.bits().div_ceil(8),
+        MontyNode::String(s) | MontyNode::Decimal(s) | MontyNode::Path(s) => s.len() as u64,
+        MontyNode::Bytes(b) => b.len() as u64,
+        _ => 0,
+    };
+    1 + payload_bytes / 8
 }
 
 /// A [`PyMontyStdTypeProxy`] standing for `inner`, as a Python object.

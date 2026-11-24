@@ -2,9 +2,9 @@
 
 use std::{error::Error, fmt, time::Duration};
 
-use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Timelike, Utc};
 use jiff::{
-    Timestamp, civil,
+    SignedDuration, Timestamp,
+    civil::{self, DateTime},
     tz::{AmbiguousOffset, TimeZone},
 };
 use num_bigint::BigInt;
@@ -53,17 +53,20 @@ impl DateTimeSource {
     /// Reads the instant in UTC. Returns `None` for [`CallHost`](Self::CallHost)
     /// or a [`Fixed`](Self::Fixed) instant Python's `datetime` cannot represent.
     #[must_use]
-    pub fn read(self) -> Option<NaiveDateTime> {
+    pub fn read(self) -> Option<DateTime> {
         let utc = match self {
-            Self::System => Utc::now().naive_utc(),
+            Self::System => Timestamp::now().to_zoned_datetime(TimeZone::UTC).datetime(),
             Self::CallHost => return None,
             Self::Fixed {
                 unix_seconds,
                 microsecond,
             } => {
-                // Chrono accepts leap seconds; Python requires microseconds below 1_000_000.
-                let nanoseconds = microsecond.checked_mul(1_000).filter(|ns| *ns < 1_000_000_000)?;
-                DateTime::from_timestamp(unix_seconds, nanoseconds)?.naive_utc()
+                let nanoseconds =
+                    i32::try_from(microsecond.checked_mul(1_000).filter(|ns| *ns < 1_000_000_000)?).ok()?;
+                civil::date(1970, 1, 1)
+                    .at(0, 0, 0, 0)
+                    .checked_add(SignedDuration::new(unix_seconds, nanoseconds))
+                    .ok()?
             }
         };
         // Apply datetime's year range to time.time() too.
@@ -124,7 +127,7 @@ impl SandboxTimeZone {
     /// that `astimezone()` attaches and `%Z` prints. A fixed zone's name is
     /// `None` when it was not given one.
     #[must_use]
-    pub fn at(&self, utc: NaiveDateTime) -> MontyTimeZone {
+    pub fn at(&self, utc: DateTime) -> MontyTimeZone {
         match self {
             Self::Fixed { offset_seconds, name } => MontyTimeZone {
                 offset_seconds: *offset_seconds,
@@ -142,15 +145,14 @@ impl SandboxTimeZone {
 
     /// The offset in force for a naive wall-clock time in this zone. An ambiguous
     /// time (a DST fold) takes its first occurrence and a skipped time (a gap) the
-    /// offset from before it, CPython's `fold=0` reading. `None` only outside the
-    /// civil year range, which is wider than `datetime`'s.
+    /// offset from before it, CPython's `fold=0` reading.
     #[must_use]
-    pub fn offset_for_local(&self, local: NaiveDateTime) -> Option<i32> {
+    pub fn offset_for_local(&self, local: DateTime) -> Option<i32> {
         match self {
             Self::Fixed { offset_seconds, .. } => Some(*offset_seconds),
             // The offset rather than the instant: jiff's timestamps stop short of the
             // last day a `datetime` holds, and `timestamp()` reaches past it anyway.
-            Self::Named(zone) => match zone.zone.to_ambiguous_timestamp(civil_datetime(local)?).offset() {
+            Self::Named(zone) => match zone.zone.to_ambiguous_timestamp(local).offset() {
                 AmbiguousOffset::Unambiguous { offset }
                 | AmbiguousOffset::Gap { before: offset, .. }
                 | AmbiguousOffset::Fold { before: offset, .. } => Some(offset.seconds()),
@@ -161,7 +163,7 @@ impl SandboxTimeZone {
     /// The UTC instant a naive wall-clock time in this zone denotes, or `None`
     /// outside years 1..=9999.
     #[must_use]
-    pub fn utc_from_local(&self, local: NaiveDateTime) -> Option<NaiveDateTime> {
+    pub fn utc_from_local(&self, local: DateTime) -> Option<DateTime> {
         local_wall_clock(local, self.offset_for_local(local)?.checked_neg()?)
     }
 
@@ -172,12 +174,18 @@ impl SandboxTimeZone {
     pub fn constants(&self, year: Option<i32>) -> Option<ZoneConstants> {
         let (january, july) = match self {
             Self::Fixed { .. } => {
-                let zone = self.at(DateTime::UNIX_EPOCH.naive_utc());
+                let zone = self.at(civil::date(1970, 1, 1).at(0, 0, 0, 0));
                 (zone.clone(), zone)
             }
             Self::Named(_) => {
                 let year = year?;
-                let at = |month| Some(self.at(NaiveDate::from_ymd_opt(year, month, 1)?.and_time(NaiveTime::MIN)));
+                let at = |month| {
+                    Some(
+                        self.at(civil::Date::new(i16::try_from(year).ok()?, month, 1)
+                            .ok()?
+                            .at(0, 0, 0, 0)),
+                    )
+                };
                 (at(1)?, at(7)?)
             }
         };
@@ -271,40 +279,29 @@ pub struct ZoneConstants {
 /// day before `datetime`'s do, so that every offset still renders as a civil
 /// datetime. No zone changes offset on 31 December, so the clamp reports the
 /// same offset and name the instant itself would.
-fn timestamp(utc: NaiveDateTime) -> Timestamp {
-    let utc = utc.and_utc();
-    let seconds = utc.timestamp();
-    let nanoseconds = i32::try_from(utc.timestamp_subsec_nanos()).unwrap_or(0);
-    Timestamp::new(seconds, nanoseconds).unwrap_or(if seconds < 0 { Timestamp::MIN } else { Timestamp::MAX })
-}
-
-/// `local` as a jiff civil datetime, `None` outside jiff's year range.
-fn civil_datetime(local: NaiveDateTime) -> Option<civil::DateTime> {
-    civil::DateTime::new(
-        i16::try_from(local.year()).ok()?,
-        i8::try_from(local.month()).ok()?,
-        i8::try_from(local.day()).ok()?,
-        i8::try_from(local.hour()).ok()?,
-        i8::try_from(local.minute()).ok()?,
-        i8::try_from(local.second()).ok()?,
-        i32::try_from(local.nanosecond()).ok()?,
-    )
-    .ok()
+fn timestamp(utc: DateTime) -> Timestamp {
+    let duration = utc.duration_since(civil::date(1970, 1, 1).at(0, 0, 0, 0));
+    Timestamp::new(duration.as_secs(), duration.subsec_nanos()).unwrap_or(if duration.is_negative() {
+        Timestamp::MIN
+    } else {
+        Timestamp::MAX
+    })
 }
 
 /// The wall clock `offset_seconds` from UTC at `utc`, or `None` outside the
 /// 1..=9999 years Python's `datetime` can hold.
 #[must_use]
-pub fn local_wall_clock(utc: NaiveDateTime, offset_seconds: i32) -> Option<NaiveDateTime> {
-    let shifted = utc.checked_add_signed(TimeDelta::seconds(i64::from(offset_seconds)))?;
+pub fn local_wall_clock(utc: DateTime, offset_seconds: i32) -> Option<DateTime> {
+    let shifted = utc
+        .checked_add(SignedDuration::from_secs(i64::from(offset_seconds)))
+        .ok()?;
     (1..=9999).contains(&shifted.year()).then_some(shifted)
 }
 
 /// The instant as `time.time()` reports it: seconds since the Unix epoch.
 #[must_use]
-pub fn unix_seconds(utc: NaiveDateTime) -> f64 {
-    let epoch = utc.and_utc();
-    epoch.timestamp() as f64 + f64::from(epoch.timestamp_subsec_micros()) / 1_000_000.0
+pub fn unix_seconds(utc: DateTime) -> f64 {
+    utc.duration_since(civil::date(1970, 1, 1).at(0, 0, 0, 0)).as_secs_f64()
 }
 
 /// What the sleep calls do.

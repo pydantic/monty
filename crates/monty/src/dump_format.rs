@@ -66,7 +66,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// source-body changes do not require one; restored sessions retain their captured code.
 /// Older releases reject dumps with newer versions, and this build rejects dumps
 /// below [`MIN_SUPPORTED_DUMP_VERSION`].
-pub const DUMP_VERSION: u16 = 16;
+pub const DUMP_VERSION: u16 = 17;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.
@@ -359,29 +359,34 @@ impl Error for DumpEncodeError {
 mod tests {
     use std::str::FromStr;
 
-    use monty_types::{BuiltinsFunctions, ExcType, MontyType, TypeCheckingFormat};
+    use monty_types::{ExcType, MontyType, TypeCheckingFormat};
     use serde::Serialize;
-    use strum::VariantNames;
+    use strum::{IntoEnumIterator, VariantNames};
 
     use super::DUMP_VERSION;
-    use crate::{bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, types::Type};
+    use crate::{bytecode::opcode_operand_shapes_fingerprint, expressions::CmpOperator, types::Type};
 
     /// Flags changes to persisted components for review. Before updating a fingerprint,
     /// check compatibility in both directions and bump the dump version if required
     /// by the policy on `DUMP_VERSION`.
     #[test]
     fn serialized_components_match_dump_version() {
+        let operand_shapes = opcode_operand_shapes_fingerprint();
         assert_eq!(
-            opcode_fingerprint(),
-            0x4f1f_0e65_ba57_1672,
-            "opcodes changed for dump version {DUMP_VERSION}, actual: {}",
-            grouped_hex(opcode_fingerprint())
+            operand_shapes,
+            0x19e4_7bfc_4a4e_4af1,
+            "opcode operand shapes changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(operand_shapes)
         );
+
+        let comparison_names: Vec<String> = CmpOperator::iter()
+            .map(|op| encoded_variant_name(&minicbor_serde::to_vec(op).unwrap()))
+            .collect();
         assert_eq!(
-            comparison_operators_fingerprint(),
-            0x8ecc_d26b_160d_9c0b,
-            "comparison operators changed for dump version {DUMP_VERSION}, actual: {}",
-            grouped_hex(comparison_operators_fingerprint())
+            variant_name_fingerprint(&comparison_names),
+            0x763a_c25e_b7af_0536,
+            "CmpOperator variants changed for dump version {DUMP_VERSION}, actual: {}",
+            grouped_hex(variant_name_fingerprint(&comparison_names))
         );
         assert!(MontyType::VARIANTS.contains(&"exception"));
 
@@ -391,23 +396,16 @@ mod tests {
             .collect();
         assert_eq!(
             variant_name_fingerprint(&type_names),
-            0x8644_05e4_90d7_b768,
+            0x9ad0_e4fb_60c6_4bc7,
             "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&type_names))
         );
         let monty_type_names = serde_variant_names(MontyType::VARIANTS, &[MontyType::Exception(ExcType::ValueError)]);
         assert_eq!(
             variant_name_fingerprint(&monty_type_names),
-            0xa95a_cc16_8f6c_5e31,
+            0x4791_e0b4_5926_cccd,
             "MontyType variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&monty_type_names))
-        );
-        // Explicit builtin codes are `CallBuiltinFunction` operands; declaration order is free.
-        assert_eq!(
-            builtin_functions_fingerprint(),
-            0x23ab_4f4f_417a_b85c,
-            "BuiltinsFunctions codes changed for dump version {DUMP_VERSION}, actual: {}",
-            grouped_hex(builtin_functions_fingerprint())
         );
     }
 
@@ -420,23 +418,9 @@ mod tests {
         format!("0x{s}")
     }
 
-    /// Pins builtin names to their bytecode operands without constraining declaration order.
-    fn builtin_functions_fingerprint() -> u64 {
-        let mut codes = BuiltinsFunctions::VARIANTS
-            .iter()
-            .map(|name| {
-                let function: BuiltinsFunctions = name.parse().unwrap();
-                format!("{name}:{}", function as u8)
-            })
-            .collect::<Vec<_>>();
-        codes.sort_unstable();
-        fnv1a(&codes)
-    }
-
     /// FNV-1a over variant names in sorted order.
     ///
-    /// `Type` and `MontyType` are encoded by variant name, so reordering is compatible.
-    /// An older reader may reject a new variant; check both directions before updating the hash.
+    /// Reordering is compatible for enums encoded by name, but older readers may reject a new variant.
     fn variant_name_fingerprint(names: &[String]) -> u64 {
         let mut sorted = names.to_vec();
         sorted.sort_unstable();

@@ -1,5 +1,6 @@
 # The `time` module's conversion functions, with explicit times so nothing
 # depends on the clock. The zone-dependent halves live in datetime__zone_*.py.
+import sys
 import time
 
 
@@ -66,8 +67,42 @@ assert parsed.tm_isdst == -1
 timed = time.strptime('12:30', '%H:%M')
 assert (timed.tm_year, timed.tm_mon, timed.tm_mday) == (1900, 1, 1)
 assert (timed.tm_hour, timed.tm_min) == (12, 30)
+assert time.strptime('45', '%M')[:6] == (1900, 1, 1, 0, 45, 0)
+assert time.strptime('2024-06', '%Y-%m')[:6] == (2024, 6, 1, 0, 0, 0)
+assert time.strptime('120', '%H20')[:6] == (1900, 1, 1, 1, 0, 0)
+assert time.strptime('120', '%I20')[:6] == (1900, 1, 1, 1, 0, 0)
+assert time.strptime('120', '%S20')[:6] == (1900, 1, 1, 0, 0, 1)
+assert time.strptime('1120', '%H%I20')[:6] == (1900, 1, 1, 1, 0, 0)
+assert time.strptime(' 1', '%H').tm_hour == 1
+assert time.strptime(' 1', '%I').tm_hour == 1
 # the default format is asctime's own, so the two round-trip
 assert time.strptime(time.asctime(epoch))[:6] == epoch[:6]
+
+# === strptime preserves leap seconds and uses Python's hour rules ===
+for second in [60, 61]:
+    leap = time.strptime(f'2024-01-01 23:59:{second}', '%Y-%m-%d %H:%M:%S')
+    assert leap[:6] == (2024, 1, 1, 23, 59, second)
+    assert (leap.tm_wday, leap.tm_yday) == (0, 1)
+    assert time.asctime(leap) == f'Mon Jan  1 23:59:{second} 2024'
+    # Windows CPython rejects leap seconds in strftime; Monty reports 'monty'.
+    if sys.platform != 'win32':
+        assert time.strftime('%Y-%m-%d %H:%M:%S', leap) == f'2024-01-01 23:59:{second}'
+        assert time.strftime('%X', leap) == f'23:59:{second}'
+    assert time.strptime(f'23:59:{second}.1', '%H:%M:%S.%f')[:6] == (1900, 1, 1, 23, 59, second)
+    assert time.mktime(leap) == time.mktime((2024, 1, 2, 0, 0, second - 60, 1, 2, -1))
+assert time.strptime('13 AM', '%H %p').tm_hour == 13
+assert time.strptime('01 PM', '%H %p').tm_hour == 1
+assert time.strptime('12', '%I').tm_hour == 0
+assert time.strptime('PM 01', '%p %I').tm_hour == 13
+assert time.strptime('2024-01-01 UTC,', '%Y-%m-%d %Z,')[:6] == (2024, 1, 1, 0, 0, 0)
+check(
+    lambda: time.strptime('2024-01-01 ARBITRARY', '%Y-%m-%d %Z'),
+    "ValueError: time data '2024-01-01 ARBITRARY' does not match format '%Y-%m-%d %Z'",
+)
+check(
+    lambda: time.strptime('2024-01-01 UTCextra', '%Y-%m-%d %Z'),
+    'ValueError: unconverted data remains: extra',
+)
 
 # === round trips ===
 assert time.mktime(time.localtime(1718451000)) == 1718451000.0
@@ -117,3 +152,33 @@ check(lambda: time.strftime('%j', (2024, 1, 1, 0, 0, 0, 0, 367, -1)), 'ValueErro
 check(lambda: time.strftime('%Y', (2024, 1, 1, 0, 0, 0, 0, -5, -1)), 'ValueError: day of year out of range')
 assert time.mktime((2024, 1, 1, 0, 0, 0, -2, 367, -1)) == time.mktime((2024, 1, 1, 0, 0, 0, 0, 1, -1))
 check(lambda: time.strptime('nope', '%Y'), "ValueError: time data 'nope' does not match format '%Y'")
+check(lambda: time.strptime('12:30 extra', '%H:%M'), 'ValueError: unconverted data remains:  extra')
+check(lambda: time.strptime('120x', '%H20'), 'ValueError: unconverted data remains: x')
+check(lambda: time.strptime('122020', '%H20'), 'ValueError: unconverted data remains: 20')
+check(lambda: time.strptime(' 12', '%H'), 'ValueError: unconverted data remains: 2')
+check(lambda: time.strptime(' 1', '%S'), "ValueError: time data ' 1' does not match format '%S'")
+check(
+    lambda: time.strptime('2024-06-15 +0100 extra', '%Y-%m-%d %z'),
+    'ValueError: unconverted data remains:  extra',
+)
+
+# === strptime %j rolls into the next year ===
+assert time.strptime('2023 366', '%Y %j')[:3] == (2024, 1, 1)
+
+# === strftime leap seconds ===
+# Windows CPython has no `%-S` or `%s`
+if sys.platform != 'win32':
+    # flagged forms of a leap second keep the 60
+    assert time.strftime('%-S|%_S|%0S|%S', (2024, 1, 1, 23, 59, 60, 0, 1, 0)) == '60|60|60|60'
+    assert time.strftime('%-S|%-M', (2024, 1, 1, 23, 5, 7, 0, 1, 0)) == '7|5'
+    # and `%s` counts a leap second into the next minute, as `mktime` does
+    assert time.strftime('%s|%-s|%0s', (2024, 1, 1, 23, 59, 60, 0, 1, 0)) == '1704153600|1704153600|1704153600'
+
+# === a time tuple's year is a C int ===
+# Windows CPython's 32-bit C `long` overflows first, with a different message
+if sys.platform != 'win32':
+    for _year, _message in [(2**31, 'greater than maximum'), (-(2**31) - 1, 'less than minimum')]:
+        _tuple = (_year, 1, 1, 0, 0, 0, 0, 1, -1)
+        check(lambda: time.mktime(_tuple), 'OverflowError: signed integer is ' + _message)
+        check(lambda: time.asctime(_tuple), 'OverflowError: signed integer is ' + _message)
+        check(lambda: time.strftime('%Y', _tuple), 'OverflowError: signed integer is ' + _message)

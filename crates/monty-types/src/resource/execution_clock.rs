@@ -3,12 +3,12 @@
 #[cfg(target_os = "linux")]
 use std::thread::{ThreadId, current};
 use std::time::Duration;
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 use std::time::Instant;
 
 #[cfg(all(feature = "cpu-clock", target_os = "linux"))]
 use nix::{libc::CLOCK_THREAD_CPUTIME_ID, time::ClockId};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(target_family = "wasm", target_os = "unknown"))]
 use web_time::Instant;
 
 use super::ExecutionClock;

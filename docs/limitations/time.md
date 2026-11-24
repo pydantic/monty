@@ -81,6 +81,8 @@ host's zone.
 `mktime()` inverts `localtime()` in the same zone.
 Its `tm_isdst` argument is ignored: an ambiguous or skipped wall time takes CPython's `fold=0` reading, where CPython
 lets `tm_isdst=0` or `1` choose the half and guesses only for `-1`.
+A wall clock past year 9999, including a leap second carried over from 9999-12-31 23:59, raises
+`OverflowError: mktime argument out of range`, where 64-bit CPython returns a timestamp.
 
 Without an argument `gmtime()`, `localtime()` and `ctime()` read the clock, and so suspend under `'call_host'`,
 naming themselves as the caller.
@@ -91,19 +93,22 @@ An explicit `secs` outside the range a `datetime` can hold raises `OverflowError
 `time.strftime()` supports the directives `datetime.strftime()` does (see
 [datetime.md](datetime.md#formatting)), reading `%Z` and `%z` from the tuple's own zone when it has one and from the
 session zone's standard or daylight half (by `tm_isdst`) for a bare 9-tuple.
-Two divergences from CPython's platform `strftime`:
+Three divergences from CPython's platform `strftime`:
 
 - `%f` renders `000000`, since the shared formatter treats it as microseconds and a `struct_time` has none; glibc
     CPython emits `%f` verbatim.
 - Unknown directives pass through verbatim, matching glibc CPython rather than macOS (`%Q` is `'%Q'`, not `'Q'`).
+- A time tuple with a year past ±9999 raises `ValueError: year out of range`, here and in `asctime()`;
+    glibc and macOS CPython format it.
 
 Without a time argument it reads the clock, suspending under `'call_host'` with `time.strftime` as the caller.
 
 ## `strptime()`
 
 `time.strptime()` parses the directives `datetime.strptime()` does (see [datetime.md](datetime.md#datetime)).
-A `%z` in the format is parsed and validated but its offset is not recorded on the result, which has
-`tm_gmtoff`/`tm_zone` of `None`; CPython sets `tm_gmtoff` from it.
+Neither `%z` nor `%Z` is recorded in `tm_gmtoff` or `tm_zone`, which remain `None`;
+CPython retains the numeric offset and zone name when supplied.
+A `%Z` also leaves `tm_isdst` at `-1`, whereas CPython derives it from the matched abbreviation.
 
 ## Zone constants
 

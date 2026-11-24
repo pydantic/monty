@@ -1,3 +1,4 @@
+# Modified from python/typeshed's stdlib/sys/__init__.pyi for Monty's sys module.
 from typing import Any, Final, Literal, TextIO, final, type_check_only
 
 from _typeshed import MaybeNone, structseq

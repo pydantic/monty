@@ -19,13 +19,15 @@ use strum::VariantNames;
 
 use crate::{
     args::ArgValues,
-    builtins::{iter::builtin_iter, object::object_class_attr, type_::builtin_type},
+    builtins::{
+        filter::builtin_filter, iter::builtin_iter, map::builtin_map, object::object_class_attr, type_::builtin_type,
+    },
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, exc_new},
     modules::{collections, csv, hashlib, itertools},
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
-        bytes, complex, date, datetime, decimal, dict, path,
+        bytes, complex, date, datetime, decimal, dict, numeric, path,
         str::PyStr,
         time, timedelta, timezone,
         r#type::{bool_init, float_init, int_init, union_init},
@@ -435,6 +437,10 @@ impl Type {
             Self::DecimalUnderflow => 160,
             Self::DecimalFloatOperation => 161,
             Self::StatisticsError => 162,
+            Self::Map => 163,
+            Self::Filter => 164,
+            Self::Task => 165,
+            Self::InvalidStateError => 166,
         }
     }
 
@@ -600,7 +606,8 @@ native_types! {
     Float("float")
         .builtin()
         .basetype()
-        .ctor(Constructor::Value(float_init)),
+        .ctor(Constructor::Value(float_init))
+        .class_method(numeric::float_class_method),
     Complex("complex")
         .builtin()
         .basetype()
@@ -1156,6 +1163,14 @@ native_types! {
     /// `statistics.StatisticsError`, raised for empty or too-small data sets.
     StatisticsError("statistics.StatisticsError", ValueError)
         .exc(ExcType::StatisticsError),
+    Map("map").builtin().iterator().ctor(Constructor::Call(builtin_map)),
+    Filter("filter").builtin().iterator().ctor(Constructor::Call(builtin_filter)),
+    /// `asyncio.Task`, whose `tp_name` is `_asyncio.Task`. Monty builds tasks only
+    /// through `create_task`; calling the class directly is unsupported.
+    Task("_asyncio.Task"),
+    /// `asyncio.InvalidStateError`, raised by `Task.result()` / `Task.exception()` on a pending task.
+    InvalidStateError("asyncio.exceptions.InvalidStateError", Exception)
+        .exc(ExcType::InvalidStateError),
 }
 
 #[cfg(test)]
@@ -1280,6 +1295,6 @@ mod tests {
                 assert_eq!(Type::callable_from_u8(operand), Some(ty));
             }
         }
-        assert_eq!(Type::callable_from_u8(15), None);
+        assert_eq!(Type::callable_from_u8(17), None);
     }
 }

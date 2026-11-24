@@ -26,7 +26,7 @@ default-members = ["crates/monty-runtime"]
 
 [workspace.package]
 edition = "2024"
-version = "1.6.0"
+version = "1.7.0"
 rust-version = "1.98"
 license = "MIT"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]
@@ -68,15 +68,15 @@ strip = false
 # RELEASING.md. They are exact (`=`) because the crates' APIs change between
 # minor releases: a caret range lets a published `monty` resolve a newer,
 # incompatible `monty-types` (#981).
-monty = { path = "crates/monty", version = "=1.6.0" }
-monty-types = { path = "crates/monty-types", version = "=1.6.0" }
-monty-alloc = { path = "crates/monty-alloc", version = "=1.6.0" }
-monty-fs = { path = "crates/monty-fs", version = "=1.6.0" }
-monty-macros = { path = "crates/monty-macros", version = "=1.6.0" }
-monty-proto = { path = "crates/monty-proto", version = "=1.6.0" }
-monty-pool = { path = "crates/monty-pool", version = "=1.6.0" }
-monty-type-checking = { path = "crates/monty-type-checking", version = "=1.6.0" }
-monty-typeshed = { path = "crates/monty-typeshed", version = "=1.6.0" }
+monty = { path = "crates/monty", version = "=1.7.0" }
+monty-types = { path = "crates/monty-types", version = "=1.7.0" }
+monty-alloc = { path = "crates/monty-alloc", version = "=1.7.0" }
+monty-fs = { path = "crates/monty-fs", version = "=1.7.0" }
+monty-macros = { path = "crates/monty-macros", version = "=1.7.0" }
+monty-proto = { path = "crates/monty-proto", version = "=1.7.0" }
+monty-pool = { path = "crates/monty-pool", version = "=1.7.0" }
+monty-type-checking = { path = "crates/monty-type-checking", version = "=1.7.0" }
+monty-typeshed = { path = "crates/monty-typeshed", version = "=1.7.0" }
 # ruff, ty and related crates
 # TODO: we might wish to remove stacker and have custom protections against
 # stack overflow which don't rely on stack manipulation. (e.g. by limiting
@@ -119,13 +119,12 @@ pyo3 = "0.30.1"
 pyo3-async-runtimes = "0.30.0"
 pyo3-build-config = { version = "0.30.1", features = ["resolve-config"] }
 # others
-chrono = { version = "0.4", features = ["serde"] }
-# The zone rules for `SandboxTimeZone::Named`; database features are enabled per binary.
-jiff = { version = "0.2", default-features = false, features = [
+# Civil date/time arithmetic and zone rules; database features are enabled per binary.
+jiff = { version = "1.0", default-features = false, features = [
     "std",
     "serde",
 ] }
-# `phf` backs `#[strum(use_phf)]`, used only on large `EnumString` enums (see CLAUDE.md).
+# `phf` backs `#[strum(use_phf)]`, used only on large `EnumString` enums (see AGENTS.md).
 strum = { version = "0.28", features = ["derive", "phf"] }
 itoa = "1"
 ahash = { version = "0.8.0", features = ["serde"] }

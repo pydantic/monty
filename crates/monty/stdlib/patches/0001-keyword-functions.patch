@@ -1,0 +1,20 @@
+keyword: define iskeyword/issoftkeyword as functions.
+Monty cannot read a bound method off a builtin object (frozenset(...).__contains__);
+drop this patch once it can.
+
+--- a/keyword.py
++++ b/keyword.py
+@@ -60,5 +60,11 @@
+     'type'
+ ]
+ 
+-iskeyword = frozenset(kwlist).__contains__
+-issoftkeyword = frozenset(softkwlist).__contains__
++_kwset = frozenset(kwlist)
++_softkwset = frozenset(softkwlist)
++
++def iskeyword(s, /):
++    return s in _kwset
++
++def issoftkeyword(s, /):
++    return s in _softkwset

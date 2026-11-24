@@ -16,9 +16,9 @@ use monty_proto::{
     WireFunctionCall, exceeds_max_frame_len, ext_result_to_proto, named_values_to_proto, pb, write_frame,
 };
 use monty_types::{
-    CallArgs, DateTimeSource, ExtFunctionResult, FileMode, IMPORT_STUBS_CALL_ID, MontyDate, MontyDateTime,
-    MontyFileHandle, MontyObject, NameLookupResult, NamedValues, OsPolicy, RandomSeed, RandomStart, SandboxTimeZone,
-    SleepMode, SourceRange,
+    CallArgs, DateTimeSource, ExcType, ExtFunctionResult, FileMode, IMPORT_STUBS_CALL_ID, MontyDate, MontyDateTime,
+    MontyException, MontyFileHandle, MontyObject, NameLookupResult, NamedValues, OsPolicy, RandomSeed, RandomStart,
+    SandboxTimeZone, SleepMode, SourceRange,
     scan::{EntryInfo, ScanEntry, scan_reply},
     unstable::{self, MontyNode},
 };
@@ -61,18 +61,24 @@ impl ChildProc {
     /// Spawns the worker with its stderr inherited, so diagnostics show up in
     /// the test output.
     fn spawn() -> Self {
-        Self::spawn_with(Stdio::inherit())
+        Self::spawn_with(Stdio::inherit(), &[])
+    }
+
+    /// Spawns a child that builds its type checker while idle (`--prewarm-type-checker`).
+    fn spawn_warm() -> Self {
+        Self::spawn_with(Stdio::inherit(), &["--prewarm-type-checker"])
     }
 
     /// Spawns the worker with its stderr captured, for tests asserting on the
     /// diagnostics it prints before dying (see [`Self::reap_with_stderr`]).
     fn spawn_stderr_piped() -> Self {
-        Self::spawn_with(Stdio::piped())
+        Self::spawn_with(Stdio::piped(), &[])
     }
 
-    fn spawn_with(stderr: Stdio) -> Self {
+    fn spawn_with(stderr: Stdio, args: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_monty"))
             .arg("subprocess")
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(stderr)
@@ -88,7 +94,7 @@ impl ChildProc {
             &mut self.writer,
             &pb::ClientRequest {
                 kind: Some(kind),
-                trace_parent: None,
+                traceparent: None,
             },
         )
         .expect("failed to write request");
@@ -204,6 +210,35 @@ impl ChildProc {
         self.send(pb::client_request::Kind::ResumeCall(pb::ResumeCall {
             call_id,
             result: Some(result),
+            values,
+        }));
+        self.recv_turn()
+    }
+
+    /// Answers a suspended call with a future that the parent resolves later.
+    fn resume_future(&mut self, call_id: u32) -> (Vec<pb::Print>, pb::worker_event::Kind) {
+        let (result, values) = ext_result_to_proto(ExtFunctionResult::Future(call_id));
+        self.send(pb::client_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id,
+            result: Some(result),
+            values,
+        }));
+        self.recv_turn()
+    }
+
+    /// Answers one pending future after a `ResolveFutures` suspension.
+    fn resume_futures_one(
+        &mut self,
+        call_id: u32,
+        result: ExtFunctionResult,
+    ) -> (Vec<pb::Print>, pb::worker_event::Kind) {
+        let (result, values) = ext_result_to_proto(result);
+        self.send(pb::client_request::Kind::ResumeFutures(pb::ResumeFutures {
+            results: vec![pb::FutureResult {
+                call_id,
+                result: Some(result),
+            }]
+            .into(),
             values,
         }));
         self.recv_turn()
@@ -1067,6 +1102,85 @@ fn memory_errors_in_user_str_and_repr_are_uncatchable() {
     }
 }
 
+/// A host that rejects the wait timer call must time the wait out like a fired
+/// timer, not raise from the `await`: the timer already decided the wait's fate.
+#[test]
+fn rejected_wait_timer_completes_as_timeout() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let code = "import asyncio\n\nasync def done():\n    return 1\n\nasync def main():\n    t = asyncio.create_task(done())\n    done_set, pending = await asyncio.wait([t], timeout=1)\n    return len(done_set) + len(pending)\n\nasyncio.run(main())";
+    let (_, event) = child.feed(code);
+    let pb::worker_event::Kind::OsCall(call) = event else {
+        panic!("expected timer OsCall, got {event:?}");
+    };
+    let Some(pb::os_call::Call::AsyncSystemSleep(sleep)) = call.call else {
+        panic!("expected async sleep, got {:?}", call.call);
+    };
+    assert_eq!(sleep.delay.to_bits(), 1.0f64.to_bits());
+    let exc = pb::RaisedException {
+        exc_type: "RuntimeError".to_owned(),
+        message: Some("timer rejected".to_owned()),
+        traceback: BudgetVec::new(),
+        data: None,
+    };
+    let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::Error(exc));
+    assert_eq!(expect_complete(event), MontyObject::int(1));
+    child.shutdown();
+}
+
+/// The wait timer's host answer only signals that the timer fired, so an
+/// unconvertible value must not fail the wait. The host may answer it after
+/// the wait already has other pending futures, where the value is discarded.
+#[test]
+fn wait_timer_answer_is_not_converted_after_a_future() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = "import asyncio\n\nasync def main():\n    t = asyncio.create_task(asyncio.sleep(3600))\n    done, pending = await asyncio.wait([t], timeout=1)\n    return len(done) + len(pending)\n\nasyncio.run(main())";
+    let (_, event) = child.feed(code);
+    let first = match event {
+        pb::worker_event::Kind::OsCall(call) => call,
+        other => panic!("expected OsCall, got {other:?}"),
+    };
+    let (_, event) = child.resume_future(first.call_id);
+    let second = match event {
+        pb::worker_event::Kind::OsCall(call) => call,
+        other => panic!("expected second OsCall, got {other:?}"),
+    };
+    let delay = |call: &pb::OsCall| match &call.call {
+        Some(pb::os_call::Call::AsyncSystemSleep(sleep)) => sleep.delay,
+        other => panic!("expected async sleep, got {other:?}"),
+    };
+    let second_id = second.call_id;
+    let (timer, task) = if delay(&first).to_bits() == 1.0f64.to_bits() {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    assert_eq!(delay(&timer).to_bits(), 1.0f64.to_bits());
+    assert_eq!(delay(&task).to_bits(), 10.0f64.to_bits());
+    let (_, event) = child.resume_future(second_id);
+    let pb::worker_event::Kind::ResolveFutures(state) = event else {
+        panic!("expected ResolveFutures, got {event:?}");
+    };
+    assert_eq!(state.pending_call_ids.len(), 2);
+    let invalid = MontyObject::repr("discarded timer value".to_owned());
+    let (_, event) = child.resume_futures_one(timer.call_id, ExtFunctionResult::Return(invalid));
+    assert_eq!(expect_complete(event), MontyObject::int(1));
+    child.shutdown();
+}
+
+/// Queueing a used coroutine thousands of times makes every task fail at
+/// startup. Selecting the successor for each failure must not recurse on the
+/// native stack, or a normal program can overflow it before any limit fires.
+#[test]
+fn used_coroutines_do_not_recurse_while_starting_tasks() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let code = "import asyncio\n\nasync def c():\n    return 1\n\nasync def main():\n    coro = c()\n    await coro\n    tasks = [asyncio.create_task(coro) for _ in range(5000)]\n    return len(tasks)\n\nasyncio.run(main())";
+    assert_eq!(child.feed_complete(code), MontyObject::int(5000));
+    child.shutdown();
+}
+
 /// Async scheduler state is allocator-accounted even though it lives outside
 /// Monty's object heap, so recursive gathers reach the soft limit safely.
 #[test]
@@ -1523,21 +1637,162 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         child.shutdown();
     }
 
-    for code in [
-        "a = [None] * 1_000_000\na *= 2",
-        "a = [None] * 1_000_000\na += range(1_000_000)",
-        "from collections import deque\nd = deque([None] * 500_000)\nd *= 4",
+    for (code, max_memory) in [
+        ("a = [None] * 1_000_000\na *= 2", 24 * 1024 * 1024),
+        ("a = [None] * 1_000_000\na += range(1_000_000)", 24 * 1024 * 1024),
+        (
+            "from collections import deque\nd = deque([None] * 500_000)\nd *= 4",
+            24 * 1024 * 1024,
+        ),
         // The line buffer's next doubling would land past the hard headroom.
-        "('\\n' * 2_000_000).splitlines()",
+        ("('\\n' * 2_000_000).splitlines()", 24 * 1024 * 1024),
+        // Case methods and `re.escape` check their result before building it; a non-ASCII mapping that
+        // outgrows its input (`'ΐ'.upper()` is 6 bytes from 2) is checked as it grows.
+        ("s = 'x' * (16 * 1024 * 1024)\ns.lower()", 24 * 1024 * 1024),
+        ("s = 'x' * (16 * 1024 * 1024)\ns.title()", 24 * 1024 * 1024),
+        ("s = 'é' * (8 * 1024 * 1024)\ns.upper()", 24 * 1024 * 1024),
+        ("s = 'ΐ' * (4 * 1024 * 1024)\ns.upper()", 24 * 1024 * 1024),
+        ("import re\nre.escape(' ' * (10 * 1024 * 1024))", 24 * 1024 * 1024),
+        // Async cases carry storage the guest never sees: the wait input list,
+        // one wait slot per input, fanned-out exception copies and timer
+        // storage. Their payload is sized against their own budget so the
+        // preflight is what refuses, not the allocator's hard ceiling.
+        (
+            r"import asyncio
+
+async def immediate():
+    return 1
+
+async def main():
+    tasks = [asyncio.create_task(immediate()) for _ in range(10_000)]
+    await asyncio.wait(tasks, timeout=0)
+
+asyncio.run(main())",
+            9 * 1024 * 1024,
+        ),
+        (
+            r"import asyncio
+
+async def coro():
+    return 1
+
+async def main():
+    await asyncio.create_task(coro(), name='x' * (24 * 1024 * 1024))
+
+asyncio.run(main())",
+            32 * 1024 * 1024,
+        ),
+        (
+            r"import asyncio
+
+async def coro():
+    return 1
+
+async def main():
+    task = asyncio.create_task(coro(), name='x' * (12 * 1024 * 1024))
+    junk = 'y' * (2 * 1024 * 1024)
+    return task.get_name()
+
+asyncio.run(main())",
+            26 * 1024 * 1024,
+        ),
+        (
+            r"import asyncio
+
+async def fail():
+    raise ValueError('x' * (12 * 1024 * 1024))
+
+async def main():
+    task = asyncio.create_task(fail())
+    try:
+        await task
+    except ValueError:
+        pass
+    junk = 'y' * (32 * 1024 * 1024)
+    task.exception()
+    return 1
+
+asyncio.run(main())",
+            64 * 1024 * 1024,
+        ),
+        (
+            r"import asyncio
+
+async def main():
+    done = asyncio.create_task(asyncio.sleep(0))
+    await done
+    await asyncio.wait([done], return_when='x' * (24 * 1024 * 1024))
+
+asyncio.run(main())",
+            32 * 1024 * 1024,
+        ),
+        // A terminal error while committing `wait(...)` cannot be cached on the
+        // task `create_task` would return; it must abort the feed.
+        (
+            r"import asyncio
+
+class Alloc:
+    def __eq__(self, other):
+        'x' * 2_000_000
+        return False
+
+async def f():
+    return 1
+
+async def main():
+    t = asyncio.create_task(f())
+    w = asyncio.wait([t], return_when=Alloc())
+    asyncio.create_task(w)
+    return 'continued'
+
+asyncio.run(main())",
+            1024 * 1024,
+        ),
     ] {
         let mut child = ChildProc::spawn();
-        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        child.create_repl_with(configure_with_max_memory(max_memory));
         let (_, event) = child.feed(code);
         let error = expect_error(event);
         assert_eq!(error.exc_type, "MemoryError", "{code}");
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
         child.shutdown();
     }
+
+    // A failed task fans its exception out to every waiter in one batch, so the
+    // copies must be preflighted together. This case needs a host error to take
+    // that path: a sandbox `raise` hands the failure to one waiter at a time, so
+    // the copies are never live together.
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    let code = r"import asyncio
+
+async def waiter(task):
+    try:
+        await task
+    except ValueError:
+        pass
+
+async def main():
+    task = asyncio.create_task(external())
+    waiters = [asyncio.create_task(waiter(task)) for _ in range(1_000)]
+    await asyncio.gather(*waiters)
+
+asyncio.run(main())";
+    let (_, event) = child.feed(code);
+    let pb::worker_event::Kind::FunctionCall(call) = event else {
+        panic!("expected external FunctionCall, got {event:?}");
+    };
+    let call_id = call.call_id;
+    let (_, event) = child.resume_future(call_id);
+    let pb::worker_event::Kind::ResolveFutures(state) = event else {
+        panic!("expected ResolveFutures, got {event:?}");
+    };
+    assert!(state.pending_call_ids.contains(&call_id));
+    let exc = MontyException::new(ExcType::ValueError, Some("x".repeat(500_000)));
+    let (_, event) = child.resume_futures_one(call_id, ExtFunctionResult::Error(exc));
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
 
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
@@ -2920,7 +3175,18 @@ fn type_check_format_selects_the_rendering() {
 
 #[test]
 fn reset_releases_type_checker_memory() {
-    let mut child = ChildProc::spawn();
+    assert_reset_releases_type_checker_memory(ChildProc::spawn());
+}
+
+/// The warm checker is charged to the worker baseline, and rebuilt after each
+/// type-checked session, without ever counting against a session's `max_memory`.
+#[test]
+fn reset_releases_prewarm_type_checker_memory() {
+    assert_reset_releases_type_checker_memory(ChildProc::spawn_warm());
+}
+
+/// Alternates small-budget sessions with a type-checked one in a single child.
+fn assert_reset_releases_type_checker_memory(mut child: ChildProc) {
     let program = format!("def f(a: int, b: int) -> None:\n    pass\n{}", "f(1, 2)\n".repeat(900));
 
     for _ in 0..3 {
@@ -2963,6 +3229,41 @@ fn reset_releases_type_checker_memory() {
 /// Both sessions use the same worker so a fresh worker cannot hide retained state.
 #[test]
 fn reset_isolates_type_check_state_from_the_next_session() {
+    assert_reset_isolates_type_check_state(ChildProc::spawn());
+}
+
+/// A warm worker hands its checker to the first type-checked session and builds a fresh one
+/// after it, so the same isolation holds.
+#[test]
+fn reset_isolates_warm_type_check_state_from_the_next_session() {
+    assert_reset_isolates_type_check_state(ChildProc::spawn_warm());
+}
+
+/// A warm checker's builtins are charged to the worker baseline, so a type-checked
+/// session runs within a 2 MB budget, which still rejects a large allocation, for
+/// the rebuilt checker too.
+#[test]
+fn prewarm_type_checker_is_outside_session_memory() {
+    let mut child = ChildProc::spawn_warm();
+    for _ in 0..2 {
+        child.create_repl_with(pb::Configure {
+            type_check: true,
+            ..configure_with_max_memory(2_000_000)
+        });
+        assert_eq!(
+            child.feed_complete("x = 'a b'.split()\ny = 'x' * 500_000\nlen(x)"),
+            MontyObject::int(2)
+        );
+        let (_, event) = child.feed("z = 'x' * 3_000_000");
+        assert_eq!(expect_error(event).exc_type, "MemoryError");
+        child.send(pb::client_request::Kind::Reset(pb::Reset {}));
+        assert!(matches!(child.recv(), pb::worker_event::Kind::Ok(_)));
+    }
+    child.shutdown();
+}
+
+/// Probes, in one child, that each session's script and stubs are gone after `Reset`.
+fn assert_reset_isolates_type_check_state(mut child: ChildProc) {
     // (script_name of session A, module path session B tries to import)
     let cases = [
         ("a.py", "a"),
@@ -2970,7 +3271,6 @@ fn reset_isolates_type_check_state_from_the_next_session() {
         ("../escape.py", "escape"),
         ("/abs.py", "abs"),
     ];
-    let mut child = ChildProc::spawn();
     for (script_name, module) in cases {
         // Session A: commits one snippet and carries stubs.
         child.create_repl_with(pb::Configure {
@@ -2984,6 +3284,15 @@ fn reset_isolates_type_check_state_from_the_next_session() {
         });
         assert_eq!(child.feed_complete("LEAKY = 'hunter2'"), MontyObject::none());
 
+        child.send(pb::client_request::Kind::Reset(pb::Reset {}));
+        let pb::worker_event::Kind::Ok(_) = child.recv() else {
+            panic!("expected Ok for Reset");
+        };
+
+        // An untyped session in between: a warm worker keeps its checker across one,
+        // which must not carry session A's files along.
+        child.create_repl();
+        assert_eq!(child.feed_complete("x = 1"), MontyObject::none());
         child.send(pb::client_request::Kind::Reset(pb::Reset {}));
         let pb::worker_event::Kind::Ok(_) = child.recv() else {
             panic!("expected Ok for Reset");

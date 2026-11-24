@@ -10,6 +10,7 @@ import asyncio
 import inspect
 import time
 from collections.abc import AsyncIterator
+from contextvars import ContextVar
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -19,6 +20,7 @@ from inline_snapshot import snapshot
 from pydantic_monty import (
     AsyncMonty,
     AsyncMontySession,
+    ClassInstance,
     MemoryFile,
     Monty,
     MontyRuntimeError,
@@ -49,6 +51,22 @@ async def asession_call_host(apool: AsyncMonty) -> AsyncIterator[AsyncMontySessi
         yield session
 
 
+def test_async_pool_coroutine_can_be_created_without_a_running_loop():
+    """Async operations bind to the loop at await time, like Python coroutines."""
+    pool = AsyncMonty()
+    enter = pool.__aenter__()
+
+    async def run() -> None:
+        assert (await enter is pool) == snapshot(True)
+        try:
+            async with pool.checkout() as session:
+                assert await session.feed_run('1 + 1') == snapshot(2)
+        finally:
+            await pool.__aexit__(None, None, None)
+
+    asyncio.run(run())
+
+
 # === Basic async external function dispatch ===
 
 
@@ -72,20 +90,22 @@ async def test_external_lookup_value(asession: AsyncMontySession):
 
 
 async def test_asyncio_gather(asession: AsyncMontySession):
-    code = """
-import asyncio
+    """Concurrent callbacks inherit the caller's context, then keep their own changes."""
+    marker = ContextVar('marker', default='outside')
+    marker.set('caller')
 
-await asyncio.gather(foo(1), bar(2))
-"""
+    async def callback(value: str) -> tuple[str, str]:
+        before = marker.get()
+        marker.set(value)
+        await asyncio.sleep(0)
+        return before, marker.get()
 
-    async def foo(x: int) -> int:
-        return x + 2
-
-    async def bar(x: int) -> int:
-        return x + 2
-
-    result = await asession.feed_run(code, external_lookup={'foo': foo, 'bar': bar})
-    assert result == snapshot([3, 4])
+    result = await asession.feed_run(
+        "import asyncio\nawait asyncio.gather(foo('foo'), bar('bar'))",
+        external_lookup={'foo': callback, 'bar': callback},
+    )
+    assert result == snapshot([('caller', 'foo'), ('caller', 'bar')])
+    assert marker.get() == snapshot('caller')
 
 
 async def test_sync_function(asession: AsyncMontySession):
@@ -96,6 +116,66 @@ async def test_sync_function(asession: AsyncMontySession):
 
     result = await asession.feed_run('get_value()', external_lookup={'get_value': get_value})
     assert result == snapshot(42)
+
+
+@pytest.mark.parametrize('kind', ['function', 'print', 'os', 'method', 'attribute'])
+async def test_sync_callback_uses_awaiting_task(asession: AsyncMontySession, kind: str):
+    """Synchronous Python callbacks follow ordinary inline asyncio call semantics."""
+    task = asyncio.current_task()
+    marker = ContextVar('marker', default='caller')
+    seen: list[tuple[bool, str]] = []
+
+    def callback(*args: Any, **kwargs: Any) -> int:
+        seen.append((asyncio.current_task() is task, marker.get()))
+        marker.set('callback')
+        return 42
+
+    def printed(stream: str, text: str) -> None:
+        callback(stream, text)
+
+    class Host:
+        method = staticmethod(callback)
+        attribute = property(callback)
+
+    code = {
+        'function': 'callback()',
+        'print': "print('hello')",
+        'os': "from pathlib import Path\nPath('/file').exists()",
+        'method': 'obj.method()',
+        'attribute': 'obj.attribute',
+    }[kind]
+    awaitable = asession.feed_run(
+        code,
+        inputs={'obj': ClassInstance(Host(), allowed_methods='all', lazy_attrs='all')},
+        external_lookup={'callback': callback},
+        print_callback=printed,
+        os=callback,
+    )
+    marker.set('awaiting')
+    await awaitable
+    assert seen == snapshot([(True, 'awaiting')])
+    assert marker.get() == snapshot('callback')
+
+
+async def test_async_result_conversion_uses_event_loop(asession: AsyncMontySession):
+    """Converting concurrent host results may execute Python descriptors too."""
+    loop = asyncio.get_running_loop()
+    seen: list[bool] = []
+
+    class Answer(tuple[int]):
+        @property
+        def _fields(self) -> tuple[str]:
+            seen.append(asyncio.get_running_loop() is loop)
+            return ('value',)
+
+    async def callback() -> Answer:
+        return Answer((42,))
+
+    await asession.feed_run(
+        'import asyncio\nawait asyncio.gather(callback(), callback())',
+        external_lookup={'callback': callback},
+    )
+    assert seen == snapshot([True, True])
 
 
 async def test_async_function(asession: AsyncMontySession):
@@ -1023,19 +1103,11 @@ async def test_cancelled_feed_run_discards_the_worker(apool: AsyncMonty):
         return 0
 
     async with apool.checkout() as session:
-        # ensure_future: feed_run returns a Future, not a coroutine
-        task = asyncio.ensure_future(session.feed_run('await block()', external_lookup={'block': block}))
+        task = asyncio.create_task(session.feed_run('await block()', external_lookup={'block': block}))
         await started.wait()
-        # Let the drive loop wait for the host coroutine before cancelling.
-        await asyncio.sleep(0.05)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        # the Rust-side drive future is dropped asynchronously on the tokio
-        # runtime; give it a beat so the cancelled drive's guard has discarded
-        # the worker before we probe the session
-        await asyncio.sleep(0.1)
-
         with pytest.raises(RuntimeError) as exc_info:
             await session.feed_run('1 + 1')
         assert exc_info.value.args[0] == snapshot('this checkout has already been finished')
@@ -1043,6 +1115,27 @@ async def test_cancelled_feed_run_discards_the_worker(apool: AsyncMonty):
     # the discarded worker's capacity was released; a fresh session works
     async with apool.checkout() as session:
         assert await session.feed_run('1 + 1') == snapshot(2)
+
+
+async def test_streaming_prints_yield_to_event_loop(apool: AsyncMonty):
+    """An always-ready stream must allow asyncio to cancel its driver."""
+    started = asyncio.Event()
+
+    def printed(stream: str, text: str) -> None:
+        started.set()
+
+    async with apool.checkout(print_flush_interval=0) as session:
+        task = asyncio.create_task(
+            session.feed_run("for _ in range(100_000):\n print('hello')", print_callback=printed)
+        )
+        await started.wait()
+        assert task.done() == snapshot(False)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with pytest.raises(RuntimeError) as exc_info:
+            await session.feed_run('1 + 1')
+        assert str(exc_info.value) == snapshot('this checkout has already been finished')
 
 
 async def test_concurrent_feed_run_is_rejected_without_killing_the_first(apool: AsyncMonty):
@@ -1089,7 +1182,7 @@ async def test_cancelled_queued_feed_run_leaves_session_healthy(apool: AsyncMont
         assert await session.feed_run('1 + 1') == snapshot(2)
 
 
-# === Nested sync Monty inside AsyncMonty callbacks ===
+# === Nested Monty calls from callbacks ===
 
 
 def _nested_sync_run(code: str) -> object:
@@ -1100,8 +1193,7 @@ def _nested_sync_run(code: str) -> object:
 
 
 async def test_sync_monty_inside_async_external_function(asession: AsyncMontySession):
-    """The sync API from a sync external function under `AsyncMonty` must not
-    panic on the nested `block_on` (it runs on a tokio worker thread)."""
+    """A synchronous callback may use the sync API on the event-loop thread."""
 
     def run_sync_monty() -> object:
         return _nested_sync_run('1 + 1')
@@ -1122,6 +1214,22 @@ async def test_sync_monty_inside_print_callback(asession: AsyncMontySession):
 
     await asession.feed_run("print('hi')", print_callback=on_print)
     assert seen == snapshot([('hi\n', 4)])
+
+
+def test_async_monty_inside_sync_print_callback():
+    """The synchronous print callback runs inside Monty's Tokio runtime."""
+    seen: list[tuple[str, int]] = []
+
+    async def run() -> int:
+        async with AsyncMonty() as pool, pool.checkout() as session:
+            return len(await session.feed_run("'x' * 2_000_000"))
+
+    def on_print(stream: str, text: str) -> None:
+        seen.append((text, asyncio.run(run())))
+
+    with Monty() as pool, pool.checkout() as session:
+        session.feed_run("print('hi')", print_callback=on_print)
+    assert seen == snapshot([('hi\n', 2_000_000)])
 
 
 # =============================================================================

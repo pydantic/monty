@@ -39,6 +39,8 @@ It shares the mounts' lexical POSIX normalization; see [filesystem callbacks](..
 for validation order and access checks.
 
 Build inputs with [`MontyObject`](../api/rust/monty-types.md#montyobject) constructors and inspect them with `as_ref()`.
+Builtin type objects use `MontyObject::type_object`, including `MontyType::Map` and `MontyType::Filter` for the lazy
+iterator constructors; `MontyObject::builtin_function` represents functions, not constructors.
 The builders on [`CallArgs`](../api/rust/monty-types.md#callargs) and [`NamedValues`](../api/rust/monty-types.md#namedvalues)
 accept owned values; their iterators return [`ObjectRef`](../api/rust/monty-types.md#objectref) views.
 Representation APIs under [`monty_types::unstable`](../api/rust/monty-types.md#unstable)
@@ -145,6 +147,12 @@ A host module's `.pyi` reaches the checker through the `import_stubs` OS call be
 it returns `None` after the worker is released or discarded.
 `Checkout::pid()` is the subprocess-only OS diagnostic.
 
+[`Checkout::feed_with`](../api/rust/monty-pool.md#checkout) and [`Checkout::restore_with`](../api/rust/monty-pool.md#checkout)
+are `feed_with_cwd` and `restore` plus [`TurnOptions`](../api/rust/monty-pool.md#turnoptions), whose `traceparent` names the caller's span for the turn,
+so a remote server that records the session parents the turn's spans to it.
+A suspension the server named a span for carries it as `traceparent` on the `TurnEvent`.
+[`Checkout::dump_with`](../api/rust/monty-pool.md#checkout) uses the same options to parent the local dump span.
+
 [`Checkout::dump`](../api/rust/monty-pool.md#checkout) and [`Checkout::restore`](../api/rust/monty-pool.md#checkout) snapshot and restore a session, including onto a different worker or machine.
 Restore only unmodified snapshots whose provenance and integrity the caller has established;
 see [snapshot security](../security.md#deserializing-snapshots).
@@ -167,6 +175,9 @@ see [snapshot security](../security.md#deserializing-snapshots).
 - **Worker recycling** — `max_checkouts_per_worker` replaces a worker after [`DEFAULT_MAX_CHECKOUTS_PER_WORKER`](../api/rust/monty-pool.md#default_max_checkouts_per_worker) (1000) checkouts; `None` never recycles, and with `PoolConfig::subprocess` `Some(1)` gives every session a fresh process.
     Remote checkouts are single-use, so the setting does not apply to them.
     While a subprocess pool is open, recycled, crashed and discarded workers are replaced in the background until `min_processes` are live again, so checkouts usually find a warm worker.
+    `PoolConfig::pre_warm` also keeps that many idle workers ready beyond those checked out, replacing each one a checkout takes.
+- **Prewarmed type checker** — `prewarm_type_checker` has subprocess workers resolve the builtins between checkouts, ahead of
+    a session's first type check, at about 6 MiB per worker outside every session's `max_memory`.
 
 Runtime errors inside the sandbox ([`PoolError::Runtime`](../api/rust/monty-pool.md#poolerror)) are not crashes: the worker and its session stay alive and
 usable.
@@ -195,8 +206,16 @@ for the budget's scope.
 These are the poolable workers: prewarmed, reused across checkouts, replaced on crash.
 
 [`PoolConfig::remote`](../api/rust/monty-pool.md#poolconfig) reaches a remote worker over gRPC at an `http://`/`https://` URL: one HTTP/2 connection per pool, one `MontySession.Session` stream per checkout.
-Those workers are single-use, never prewarmed or returned to the pool, and isolation becomes the remote host's
-responsibility.
+Those workers are single-use, never returned to the pool, and isolation becomes the remote host's responsibility.
+On a remote pool `PoolConfig::pre_warm` (0 by default) keeps that many sessions open and ready, sharing `max_processes`
+with those checked out; a value above `max_processes` is a `PoolError::Configuration`.
+`Pool::new` opens them and fails if one cannot open; with `pre_warm_wait` off they open in the background, where a
+failed open is retried with a backoff.
+Each is replaced when a checkout takes it; one checkout per session already opening waits for it, and a checkout that
+finds none dials for itself.
+The pool calls `pre_warm_metadata` for each one it dials, and a checkout takes one only if it was dialed with that
+checkout's `CheckoutOptions::metadata`; otherwise it closes the ready sessions unused and dials for itself.
+Leave `pre_warm` at 0 when one pool's checkouts send different metadata, such as per-user credentials.
 See [the security model](../security.md#remote-workers) before using it.
 
 ### Host decode budget
@@ -274,6 +293,9 @@ assert!(year.as_ref().as_int().is_some_and(|y| y >= 2026));
 ```
 
 `with_os_policy` configures each operation.
+`DateTimeSource::read()` returns `Option<jiff::civil::DateTime>` containing UTC components.
+It returns `None` for `CallHost` or a fixed instant that Python's `datetime` cannot represent.
+The zone conversion helpers also use `jiff::civil::DateTime`.
 `DateTimeSource::Fixed` freezes the clock, `SandboxTimeZone::Fixed` sets the local UTC offset, `SandboxTimeZone::named` takes an IANA zone name, and
 `RandomStart::Seed` seeds `random` for reproducible runs.
 `named` needs a tz database, which is a `monty-types` feature: `tzdb` reads the OS copy (`TZDIR`, `/usr/share/zoneinfo`)
@@ -434,6 +456,9 @@ assert_eq!(result, MontyObject::int(42));
 The peer reason is unverified text, and a disconnect does not establish whether the request ran.
 The display text includes that reason.
 `PoolError::Refused` identifies a server refusal before a session exists.
-Its details provide `retryable()` and `retry_after` (a `Duration` from `Retry-After`, capped at one hour), with no automatic retry.
+Its details provide `retryable()` and `retry_after` (a `Duration` from `Retry-After`, capped at one hour).
+The pool retries a refused checkout once when the server sends a single valid `Retry-After` of at most two seconds, whether or not the refusal is `retryable()`.
+The wait and retry dial share a five-second budget and respect the checkout and dial deadlines.
+A retry timeout returns the original `PoolError::Refused`.
 `PoolError::Connect` retains the status or transport error for other connection failures.
 `PoolError::Configuration` identifies invalid or incompatible settings, such as no finite `request_timeout` for a CPU-mode pool or server.
