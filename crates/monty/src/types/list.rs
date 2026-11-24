@@ -262,34 +262,38 @@ impl<'h> HeapReadMut<'h, List> {
 
     fn try_extend_packed(&self, vm: &mut VM<'h>, source: &HeapRead<'h, List>) -> RunResult<bool> {
         let target = self.get(vm.heap);
-        let source = source.get(vm.heap);
-        if source.len() == 0 {
+        let source_list = source.get(vm.heap);
+        let additional = source_list.len();
+        if additional == 0 {
             return Ok(true);
         }
-        let ListStorage::Packed(items) = &source.storage else {
+        let ListStorage::Packed(items) = &source_list.storage else {
             return Ok(false);
         };
         let packing = items.packing();
-        if target.len() != 0 && target.storage.packing().merge(packing) == Packing::Generic {
+        let len = target.len();
+        if len != 0 && target.storage.packing().merge(packing) == Packing::Generic {
             return Ok(false);
         }
 
-        let additional = items.len();
-        if ptr::eq(target, source) {
-            self.reserve_bulk(vm, additional, packing)?;
-            let ListStorage::Packed(target) = &mut self.get_mut(vm.heap).storage else {
-                unreachable!("reserved packed storage");
-            };
-            target.extend_from_within(0..additional);
+        let extend_self = ptr::eq(target, source_list);
+        self.reserve_bulk(vm, additional, packing)?;
+        let ListStorage::Packed(mut target) = mem::take(&mut self.get_mut(vm.heap).storage) else {
+            unreachable!("reserved packed storage");
+        };
+        let result = if extend_self {
+            target.repeat_prefix(len + additional, &vm.heap.tracker)
         } else {
-            let snapshot = items.copy(&vm.heap.tracker)?;
-            // Finish fallible work before writing to the target.
-            self.reserve_bulk(vm, additional, packing)?;
-            let ListStorage::Packed(target) = &mut self.get_mut(vm.heap).storage else {
-                unreachable!("reserved packed storage");
+            let ListStorage::Packed(items) = &source.get(vm.heap).storage else {
+                unreachable!("distinct source retains its storage");
             };
-            target.append_range(&snapshot, 0..additional);
+            target.copy_range(items, 0..additional, &vm.heap.tracker)
+        };
+        if result.is_err() {
+            target.delete_range(len..target.len());
         }
+        self.get_mut(vm.heap).storage = ListStorage::Packed(target);
+        result?;
         Ok(true)
     }
 
@@ -1689,6 +1693,48 @@ mod tests {
                 assert_eq!(value.to_bits(), expected);
             }
         }
+    }
+
+    #[test]
+    fn packed_extension_checks_the_deadline_with_spare_capacity() {
+        use std::{thread, time::Duration};
+
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let flags = || {
+            List::from_values(
+                (0..2049)
+                    .map(|i| if i % 2 == 0 { Value::None } else { Value::Bool(true) })
+                    .collect(),
+                &heap,
+            )
+        };
+        let target_id = heap.allocate(HeapData::List(flags()));
+        let source_id = heap.allocate(HeapData::List(flags()));
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            let target = vm.heap.read_as::<List>(target_id).unwrap();
+            let len = target.get(vm.heap).len();
+            target
+                .reserve_bulk(&mut vm, len, Packing::Bool { nullable: true })
+                .unwrap();
+            vm.heap.tracker.set_max_feed_duration(Duration::ZERO);
+            vm.heap.tracker.on_execution_start();
+            thread::sleep(Duration::from_millis(1));
+            vm.heap.tracker.on_execution_stop();
+
+            for id in [target_id, source_id] {
+                let source = vm.heap.read_as::<List>(id).unwrap();
+                let result = target.try_extend_packed(&mut vm, &source);
+                assert!(
+                    matches!(result, Err(RunError::UncatchableExc(exc)) if exc.exc.exc_type() == ExcType::TimeoutError)
+                );
+                assert_eq!(target.get(vm.heap).len(), len);
+            }
+        });
+        Value::Ref(target_id).drop_with(&mut heap);
+        Value::Ref(source_id).drop_with(&mut heap);
     }
 
     #[test]

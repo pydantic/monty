@@ -137,4 +137,4 @@ for pattern in ([1, 2, 3], [True, None, False], [1.25, None, 2.5]):
         target = pattern * 110
         expected = target[:start] + source + target[stop:]
         target[start:stop] = source
-        assert target == expected
+        assert repr(target) == repr(expected)

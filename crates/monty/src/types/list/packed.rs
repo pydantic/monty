@@ -589,7 +589,7 @@ impl PackedList {
         }
     }
 
-    pub(super) fn extend_from_within(&mut self, range: Range<usize>) {
+    fn extend_from_within(&mut self, range: Range<usize>) {
         match self {
             Self::Empty => unreachable!("reserved storage before extending"),
             Self::Nones(items) => items.len += range.len(),
@@ -654,7 +654,7 @@ impl PackedList {
         Ok(())
     }
 
-    pub(super) fn append_range(&mut self, source: &Self, range: Range<usize>) {
+    fn append_range(&mut self, source: &Self, range: Range<usize>) {
         match (&mut *self, source) {
             (Self::Nones(dst), Self::Nones(_)) => dst.len += range.len(),
             (Self::ByteInts(dst), Self::ByteInts(src)) => dst.extend_from_slice(&src[range]),
