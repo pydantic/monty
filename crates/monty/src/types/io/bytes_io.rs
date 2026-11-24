@@ -4,11 +4,11 @@
 //! small ways: lower-case `negative seek value`, a full stop on the closed-file
 //! error, and `readlines(hint)` counting bytes up to the hint rather than past it.
 
-use std::fmt::Write;
+use std::{fmt::Write, ops::Range};
 
 use serde::{Deserialize, Serialize};
 
-use super::{buffer_growth, non_negative, optional_size, position_value, seek_args};
+use super::{buffer_growth, non_negative, optional_size, position_value, seek_args, stream_position};
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
@@ -59,8 +59,9 @@ impl BytesIo {
     }
 
     /// What `copy.copy` builds: the data and position; a closed stream refuses.
-    pub(crate) fn copy(&self) -> RunResult<Self> {
+    pub(crate) fn copy(&self, vm: &VM<'_>) -> RunResult<Self> {
         ensure_open(self)?;
+        vm.heap.tracker.check_allocation(self.buf.len())?;
         Ok(Self {
             buf: self.buf.clone(),
             ..*self
@@ -68,12 +69,19 @@ impl BytesIo {
     }
 
     /// The bytes [`Self::write`] will allocate for `data`, for callers to preflight.
-    fn write_growth(&self, data: &[u8]) -> usize {
+    ///
+    /// CPython's `OverflowError` if the write would end past `ssize_t`, which
+    /// also keeps [`Self::write`]'s arithmetic from wrapping on 32-bit targets.
+    fn write_growth(&self, data: &[u8]) -> RunResult<usize> {
         if data.is_empty() {
-            0
-        } else {
-            buffer_growth(self.pos.max(self.buf.len()) + data.len(), self.buf.capacity())
+            return Ok(0);
         }
+        let end = self
+            .pos
+            .checked_add(data.len())
+            .filter(|&end| isize::try_from(end).is_ok())
+            .ok_or_else(ExcType::overflow_new_buffer_size_too_large)?;
+        Ok(buffer_growth(end.max(self.buf.len()), self.buf.capacity()))
     }
 
     /// Writes `data` at the position, overwriting what is there and padding a
@@ -94,16 +102,17 @@ impl BytesIo {
         self.pos = end;
     }
 
-    /// Up to `size` bytes from the position (everything for `None`), advancing past them.
-    fn read(&mut self, size: Option<usize>) -> &[u8] {
+    /// The range of up to `size` bytes from the position (everything for `None`),
+    /// advancing past them.
+    fn read(&mut self, size: Option<usize>) -> Range<usize> {
         let start = self.pos.min(self.buf.len());
         let end = size.map_or(self.buf.len(), |size| start.saturating_add(size).min(self.buf.len()));
         self.pos = self.pos.max(end);
-        &self.buf[start..end]
+        start..end
     }
 
-    /// The next `\n`-terminated line, cut to `limit` bytes when given.
-    fn readline(&mut self, limit: Option<usize>) -> &[u8] {
+    /// The range of the next `\n`-terminated line, cut to `limit` bytes when given.
+    fn readline(&mut self, limit: Option<usize>) -> Range<usize> {
         let start = self.pos.min(self.buf.len());
         let tail = &self.buf[start..];
         let mut len = tail.iter().position(|&b| b == b'\n').map_or(tail.len(), |i| i + 1);
@@ -112,7 +121,7 @@ impl BytesIo {
         }
         let end = start + len;
         self.pos = self.pos.max(end);
-        &self.buf[start..end]
+        start..end
     }
 }
 
@@ -164,8 +173,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIo> {
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let stream = self.get_mut(vm.heap);
         ensure_open(stream)?;
-        let line = stream.readline(None).to_vec();
-        Ok((!line.is_empty()).then(|| CallResult::Value(allocate_bytes(line, vm.heap))))
+        let line = stream.readline(None);
+        Ok((!line.is_empty())
+            .then(|| self.copy_out(line, vm))
+            .transpose()?
+            .map(CallResult::Value))
     }
 
     fn py_is_context_manager(&self, _vm: &VM<'h>) -> bool {
@@ -200,16 +212,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIo> {
                 let size = optional_size(size.get_zero_one_arg(name, vm.heap)?, vm)?;
                 let stream = self.get_mut(vm.heap);
                 ensure_open(stream)?;
-                let data = stream.read(non_negative(size)).to_vec();
-                allocate_bytes(data, vm.heap)
+                let data = stream.read(non_negative(size));
+                self.copy_out(data, vm)?
             }
             Some(StaticStrings::Readline) => {
                 let size = args.reject_kwargs("BytesIO.readline", vm.heap)?;
                 let size = optional_size(size.get_zero_one_arg("readline", vm.heap)?, vm)?;
                 let stream = self.get_mut(vm.heap);
                 ensure_open(stream)?;
-                let line = stream.readline(non_negative(size)).to_vec();
-                allocate_bytes(line, vm.heap)
+                let line = stream.readline(non_negative(size));
+                self.copy_out(line, vm)?
             }
             Some(StaticStrings::Readlines) => self.readlines(args, vm)?,
             Some(StaticStrings::Write) => {
@@ -224,7 +236,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIo> {
                 args.check_zero_args("BytesIO.getvalue", vm.heap)?;
                 let stream = self.get(vm.heap);
                 ensure_open(stream)?;
-                allocate_bytes(stream.buf.clone(), vm.heap)
+                self.copy_out(0..stream.buf.len(), vm)?
             }
             Some(StaticStrings::Tell) => {
                 args.check_zero_args("BytesIO.tell", vm.heap)?;
@@ -262,13 +274,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIo> {
                 }
             }
             Some(method @ (StaticStrings::Fileno | StaticStrings::Detach)) => {
-                args.drop_with(vm);
                 let name = if method == StaticStrings::Fileno {
                     "fileno"
                 } else {
                     "detach"
                 };
-                return Err(ExcType::unsupported_operation(name));
+                if matches!(args, ArgValues::Empty) {
+                    return Err(ExcType::unsupported_operation(name));
+                }
+                args.drop_with(vm);
+                return Err(ExcType::type_error_takes_no_arguments(name));
             }
             _ => {
                 args.drop_with(vm);
@@ -280,6 +295,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIo> {
 }
 
 impl<'h> HeapObjectRead<'h, BytesIo> {
+    /// A new `bytes` of the buffer's `range`, preflighted since the stream can be most of the budget.
+    fn copy_out(&self, range: Range<usize>, vm: &VM<'h>) -> RunResult<Value> {
+        vm.heap.tracker.check_allocation(range.len())?;
+        Ok(allocate_bytes(self.get(vm.heap).buf[range].to_vec(), vm.heap))
+    }
+
     /// `readlines(hint=None, /)`: lines until their total reaches a positive
     /// `hint`. CPython checks for closure before converting the hint, and
     /// accepts only real `int`s, not `__index__` objects.
@@ -300,7 +321,7 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
         let mut total = 0usize;
         loop {
             vm.heap.tracker.check_memory_time_every(lines.len())?;
-            let line = self.get_mut(vm.heap).readline(None).to_vec();
+            let line = self.get_mut(vm.heap).readline(None);
             if line.is_empty() {
                 break;
             }
@@ -309,7 +330,7 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
             vm.heap
                 .tracker
                 .check_growth(lines.len(), lines.capacity(), VALUE_SIZE)?;
-            lines.push(allocate_bytes(line, vm.heap));
+            lines.push(self.copy_out(line, vm)?);
             if hint.is_some_and(|hint| hint > 0 && total >= hint) {
                 break;
             }
@@ -323,7 +344,7 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
         let data = bytes_payload(data, vm)?;
         let stream = self.get(vm.heap);
         ensure_open(stream)?;
-        vm.heap.tracker.check_pending_allocation(stream.write_growth(&data))?;
+        vm.heap.tracker.check_pending_allocation(stream.write_growth(&data)?)?;
         self.get_mut(vm.heap).write(&data);
         Ok(position_value(data.len()))
     }
@@ -366,7 +387,7 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
             .checked_add(pos)
             .ok_or_else(ExcType::overflow_new_position_too_large)?
             .max(0);
-        stream.pos = usize::try_from(target).map_err(|_| ExcType::overflow_c_ssize_t())?;
+        stream.pos = stream_position(target)?;
         Ok(Value::Int(target))
     }
 
@@ -380,7 +401,7 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
             None | Some(Value::None) => self.get(vm.heap).pos,
             Some(size) => match size.as_int_with_overflow(vm, ExcType::overflow_c_long)? {
                 size if size < 0 => return Err(ExcType::value_error(format!("negative size value {size}"))),
-                size => usize::try_from(size).map_err(|_| ExcType::overflow_c_ssize_t())?,
+                size => stream_position(size)?,
             },
         };
         let stream = self.get_mut(vm.heap);
@@ -394,7 +415,11 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
 /// A copy of a `bytes` value's data, or CPython's bytes-like `TypeError`.
 fn bytes_payload(value: &Value, vm: &VM<'_>) -> RunResult<Vec<u8>> {
     match value.py_value(vm) {
-        PyValue::Bytes(bytes) => Ok(bytes.as_slice(vm).to_vec()),
+        PyValue::Bytes(bytes) => {
+            let data = bytes.as_slice(vm);
+            vm.heap.tracker.check_allocation(data.len())?;
+            Ok(data.to_vec())
+        }
         _ => Err(ExcType::type_error_bytes_like_required(&value.py_type_name(vm))),
     }
 }

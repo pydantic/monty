@@ -10,14 +10,14 @@
 //! `newline=None` stores `\r\n` and `\r` as `\n`, `'\r'` / `'\r\n'` store
 //! `\n` as that terminator.
 
-use std::{fmt::Write, iter};
+use std::{fmt::Write, iter, ops::Range};
 
 use serde::{Deserialize, Serialize};
 
 use super::{
     buffer_growth,
     newline::{Newline, SeenNewlines, translate_newlines},
-    non_negative, optional_size, position_value, seek_args,
+    non_negative, optional_size, position_value, seek_args, stream_position,
 };
 use crate::{
     args::{ArgValues, FromArgs},
@@ -90,8 +90,10 @@ impl StringIo {
                         &value.py_type_name(vm),
                     ));
                 };
-                let text = stream.translate(text.as_str(vm).to_owned());
-                vm.heap.tracker.check_pending_allocation(stream.write_growth(&text))?;
+                let text = text.as_str(vm);
+                vm.heap.tracker.check_allocation(stream.translation_cost(text))?;
+                let text = stream.translate(text.to_owned());
+                vm.heap.tracker.check_pending_allocation(stream.write_growth(&text)?)?;
                 stream.write(&text);
                 stream.seek_to(0);
             }
@@ -103,8 +105,9 @@ impl StringIo {
     ///
     /// CPython's `__setstate__` re-runs `__init__` on the stored text, so the
     /// copy's `newlines` reports the endings of that text, not the writes seen.
-    pub(crate) fn copy(&self) -> RunResult<Self> {
+    pub(crate) fn copy(&self, vm: &VM<'_>) -> RunResult<Self> {
         ensure_open(self)?;
+        vm.heap.tracker.check_allocation(self.buf.len())?;
         let mut seen = SeenNewlines::default();
         if self.newline.is_universal() {
             seen.record(&self.buf);
@@ -169,15 +172,34 @@ impl StringIo {
         }
     }
 
+    /// The bytes the owned copy of `text` and its newline translation take before
+    /// [`Self::write`]: `'\r\n'` can double the text.
+    fn translation_cost(&self, text: &str) -> usize {
+        let translated = match self.newline {
+            Newline::Universal | Newline::Cr => text.len(),
+            Newline::CrLf => text.len().saturating_mul(2),
+            Newline::Lf | Newline::Passthrough => 0,
+        };
+        text.len().saturating_add(translated)
+    }
+
     /// The bytes [`Self::write`] will allocate for `text`, for callers to
     /// preflight; an overwrite is counted as if it appended.
-    fn write_growth(&self, text: &str) -> usize {
+    ///
+    /// CPython's `OverflowError` if the write would end past `ssize_t`, which
+    /// also keeps [`Self::write`]'s arithmetic from wrapping on 32-bit targets.
+    fn write_growth(&self, text: &str) -> RunResult<usize> {
         if text.is_empty() {
-            0
-        } else {
-            let needed = self.buf.len() + self.padding() + text.len();
-            buffer_growth(needed, self.buf.capacity())
+            return Ok(0);
         }
+        let needed = self
+            .pos
+            .checked_add(text.len())
+            .and_then(|_| self.buf.len().checked_add(self.padding()))
+            .and_then(|len| len.checked_add(text.len()))
+            .filter(|&needed| isize::try_from(needed).is_ok())
+            .ok_or_else(ExcType::overflow_new_position_too_large)?;
+        Ok(buffer_growth(needed, self.buf.capacity()))
     }
 
     /// Writes translated `text` at the position, overwriting what is there
@@ -206,21 +228,22 @@ impl StringIo {
         self.byte_pos += text.len();
     }
 
-    /// Up to `size` chars from the position (everything for `None`), advancing past them.
-    fn read(&mut self, size: Option<usize>) -> &str {
+    /// The byte range of up to `size` chars from the position (everything for
+    /// `None`), advancing past them.
+    fn read(&mut self, size: Option<usize>) -> Range<usize> {
         let start = self.byte_pos;
         let remaining = self.char_len.saturating_sub(self.pos);
         let chars = size.map_or(remaining, |size| size.min(remaining));
         let end = self.advance(start, chars);
         self.pos += chars;
         self.byte_pos = end;
-        &self.buf[start..end]
+        start..end
     }
 
-    /// The next line, cut to `limit` chars when given; empty at the end.
-    fn readline(&mut self, limit: Option<usize>) -> &str {
+    /// The byte range of the next line, cut to `limit` chars when given; empty at the end.
+    fn readline(&mut self, limit: Option<usize>) -> Range<usize> {
         if self.pos >= self.char_len {
-            return "";
+            return 0..0;
         }
         let start = self.byte_pos;
         let tail = &self.buf[start..];
@@ -238,7 +261,7 @@ impl StringIo {
         }
         self.pos += chars;
         self.byte_pos = end;
-        &self.buf[start..end]
+        start..end
     }
 
     /// Cuts the text to `size` chars, leaving the position where it was.
@@ -306,8 +329,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIo> {
         if stream.closed {
             return Err(ExcType::value_error_closed_string_io());
         }
-        let line = stream.readline(None).to_owned();
-        Ok((!line.is_empty()).then(|| CallResult::Value(allocate_string(line, vm.heap))))
+        let line = stream.readline(None);
+        Ok((!line.is_empty())
+            .then(|| self.copy_out(line, vm))
+            .transpose()?
+            .map(CallResult::Value))
     }
 
     fn py_is_context_manager(&self, _vm: &VM<'h>) -> bool {
@@ -357,7 +383,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIo> {
                 args.check_zero_args("StringIO.getvalue", vm.heap)?;
                 let stream = self.get(vm.heap);
                 ensure_open(stream)?;
-                allocate_string(stream.buf.clone(), vm.heap)
+                self.copy_out(0..stream.buf.len(), vm)?
             }
             Some(StaticStrings::Tell) => {
                 args.check_zero_args("StringIO.tell", vm.heap)?;
@@ -395,13 +421,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIo> {
                 Value::Bool(false)
             }
             Some(method @ (StaticStrings::Fileno | StaticStrings::Detach)) => {
-                args.drop_with(vm);
                 let name = if method == StaticStrings::Fileno {
                     "fileno"
                 } else {
                     "detach"
                 };
-                return Err(ExcType::unsupported_operation(name));
+                if matches!(args, ArgValues::Empty) {
+                    return Err(ExcType::unsupported_operation(name));
+                }
+                args.drop_with(vm);
+                return Err(ExcType::type_error_takes_no_arguments(name));
             }
             _ => {
                 args.drop_with(vm);
@@ -413,14 +442,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIo> {
 }
 
 impl<'h> HeapObjectRead<'h, StringIo> {
+    /// A new `str` of the buffer's byte `range`, preflighted since the stream can be most of the budget.
+    fn copy_out(&self, range: Range<usize>, vm: &VM<'h>) -> RunResult<Value> {
+        vm.heap.tracker.check_allocation(range.len())?;
+        Ok(allocate_string(self.get(vm.heap).buf[range].to_owned(), vm.heap))
+    }
+
     /// `read(size=-1, /)`: a negative or `None` size reads to the end.
     fn read(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let size = args.reject_kwargs("StringIO.read", vm.heap)?;
         let size = optional_size(size.get_zero_one_arg("read", vm.heap)?, vm)?;
         let stream = self.get_mut(vm.heap);
         ensure_open(stream)?;
-        let text = stream.read(non_negative(size)).to_owned();
-        Ok(allocate_string(text, vm.heap))
+        let text = stream.read(non_negative(size));
+        self.copy_out(text, vm)
     }
 
     /// `readline(size=-1, /)`.
@@ -429,8 +464,8 @@ impl<'h> HeapObjectRead<'h, StringIo> {
         let size = optional_size(size.get_zero_one_arg("readline", vm.heap)?, vm)?;
         let stream = self.get_mut(vm.heap);
         ensure_open(stream)?;
-        let line = stream.readline(non_negative(size)).to_owned();
-        Ok(allocate_string(line, vm.heap))
+        let line = stream.readline(non_negative(size));
+        self.copy_out(line, vm)
     }
 
     /// `readlines(hint=-1, /)`, `IOBase`'s: with a positive hint it stops
@@ -447,16 +482,16 @@ impl<'h> HeapObjectRead<'h, StringIo> {
         let mut total: i64 = 0;
         loop {
             vm.heap.tracker.check_memory_time_every(lines.len())?;
-            let line = self.get_mut(vm.heap).readline(None).to_owned();
+            let line = self.get_mut(vm.heap).readline(None);
             if line.is_empty() {
                 break;
             }
-            let length = i64::try_from(line.chars().count()).unwrap_or(i64::MAX);
+            let length = i64::try_from(self.get(vm.heap).buf[line.clone()].chars().count()).unwrap_or(i64::MAX);
             // Short lines cost no heap entry, so the poll alone misses the list's own doubling.
             vm.heap
                 .tracker
                 .check_growth(lines.len(), lines.capacity(), VALUE_SIZE)?;
-            lines.push(allocate_string(line, vm.heap));
+            lines.push(self.copy_out(line, vm)?);
             if hint > 0 {
                 if length > hint - total {
                     break;
@@ -482,11 +517,14 @@ impl<'h> HeapObjectRead<'h, StringIo> {
         let Some(text) = PyStr::from_value(text, vm) else {
             return Err(ExcType::type_error_string_argument_expected(&text.py_type_name(vm)));
         };
-        let text = text.as_str(vm).to_owned();
-        ensure_open(self.get(vm.heap))?;
+        let text = text.as_str(vm);
+        let stream = self.get(vm.heap);
+        ensure_open(stream)?;
+        vm.heap.tracker.check_allocation(stream.translation_cost(text))?;
+        let text = text.to_owned();
         let written = position_value(text.chars().count());
         let text = self.get_mut(vm.heap).translate(text);
-        let growth = self.get(vm.heap).write_growth(&text);
+        let growth = self.get(vm.heap).write_growth(&text)?;
         vm.heap.tracker.check_pending_allocation(growth)?;
         self.get_mut(vm.heap).write(&text);
         Ok(written)
@@ -519,7 +557,7 @@ impl<'h> HeapObjectRead<'h, StringIo> {
         ensure_open(stream)?;
         let target = match whence {
             0 if pos < 0 => return Err(ExcType::value_error(format!("Negative seek position {pos}"))),
-            0 => usize::try_from(pos).map_err(|_| ExcType::overflow_c_ssize_t())?,
+            0 => stream_position(pos)?,
             1 | 2 if pos != 0 => return Err(ExcType::os_error_nonzero_relative_seek()),
             1 => stream.pos,
             2 => stream.char_len,
@@ -538,7 +576,7 @@ impl<'h> HeapObjectRead<'h, StringIo> {
         let size = match size {
             None => stream.pos,
             Some(size) if size < 0 => return Err(ExcType::value_error(format!("Negative size value {size}"))),
-            Some(size) => usize::try_from(size).map_err(|_| ExcType::overflow_c_ssize_t())?,
+            Some(size) => stream_position(size)?,
         };
         stream.truncate(size);
         Ok(position_value(size))

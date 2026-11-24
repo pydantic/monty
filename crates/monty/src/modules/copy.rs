@@ -163,11 +163,11 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
             // CPython copies a stream through `__getstate__`, so its text and
             // position but not its line-ending history; a closed one refuses.
             HeapReadOutput::StringIo(stream) => {
-                let copy = stream.get(vm.heap).copy()?;
+                let copy = stream.get(vm.heap).copy(vm)?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::StringIo(Box::new(copy)))))
             }
             HeapReadOutput::BytesIo(stream) => {
-                let copy = stream.get(vm.heap).copy()?;
+                let copy = stream.get(vm.heap).copy(vm)?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::BytesIo(Box::new(copy)))))
             }
             // `Context.__copy__`: the same settings and flags in a new object.

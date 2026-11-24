@@ -1553,7 +1553,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ),
         (
             "import io\ns = 'x' * 300_000\nb = io.StringIO()\nfor _ in range(3):\n    print(s, file=b)",
-            1_846_678,
+            1_246_742,
         ),
         (
             "import io\ns = b'x' * 300_000\nb = io.BytesIO()\nfor _ in range(3):\n    b.write(s)",
@@ -1570,6 +1570,32 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         (
             "import io\nb = io.BytesIO()\nb.seek(10_000_000)\nb.write(b'x')",
             10_054_686,
+        ),
+        // Copying a stream's buffer out is preflighted: the copy can match the whole budget.
+        (
+            "import io\nb = io.BytesIO()\nb.seek(600_000)\nb.write(b'x')\nb.getvalue()",
+            1_254_769,
+        ),
+        (
+            "import io\nb = io.BytesIO()\nb.seek(600_000)\nb.write(b'x')\nb.seek(0)\nb.read()",
+            1_254_783,
+        ),
+        (
+            "import io, copy\nb = io.BytesIO()\nb.seek(600_000)\nb.write(b'x')\ncopy.copy(b)",
+            1_255_491,
+        ),
+        (
+            "import io\ns = io.StringIO()\ns.seek(600_000)\ns.write('x')\ns.getvalue()",
+            1_246_560,
+        ),
+        (
+            "import io\ns = io.StringIO()\ns.seek(600_000)\ns.write('x')\ns.seek(0)\ns.readline()",
+            1_246_578,
+        ),
+        // `newline='\r\n'` can double the text it translates, so the copy and its translation are preflighted.
+        (
+            "import io\nt = '\\n' * 400_000\nio.StringIO(newline='\\r\\n').write(t)",
+            1_646_558,
         ),
         // `itertools.batched` preflights one batch, capped at `n`.
         (

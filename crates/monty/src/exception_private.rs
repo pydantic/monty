@@ -2925,7 +2925,8 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, "I/O operation on closed file").into()
     }
 
-    /// `io.UnsupportedOperation: {message}`, e.g. `fileno` on an in-memory stream.
+    /// `io.UnsupportedOperation: {message}`, e.g. `fileno` on an in-memory stream or
+    /// `read()` on a write-only `open()` file.
     #[must_use]
     fn unsupported_operation(message: &str) -> RunError {
         SimpleException::new_msg(ExcType::UnsupportedOperation, message).into()
@@ -3000,10 +3001,23 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OSError, "Can't do nonzero cur-relative seeks").into()
     }
 
-    /// `OverflowError: new position too large` — `BytesIO.seek()` past `ssize_t`.
+    /// `OverflowError: new position too large` — `BytesIO.seek()` or a `StringIO`
+    /// write past `ssize_t`.
     #[must_use]
     fn overflow_new_position_too_large() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "new position too large").into()
+    }
+
+    /// `OverflowError: new buffer size too large` — a `BytesIO` write ending past `ssize_t`.
+    #[must_use]
+    fn overflow_new_buffer_size_too_large() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "new buffer size too large").into()
+    }
+
+    /// `TypeError: {name}() takes no arguments`, without the count `type_error_no_args` adds.
+    #[must_use]
+    fn type_error_takes_no_arguments(name: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("{name}() takes no arguments")).into()
     }
 }
 

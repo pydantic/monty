@@ -1,8 +1,9 @@
 # `print()`
 
-Output always goes to the host via a print callback (`vm.print_writer`). The
+Output to `sys.stdout` or `sys.stderr` goes to the host via a print callback (`vm.print_writer`). The
 host decides where it ends up; there is no real `sys.stdout` or `sys.stderr`
 underneath (see [sys.md](sys.md)).
+Output to an `io.StringIO` stays in the stream.
 
 ## Supported keyword arguments
 
@@ -13,8 +14,9 @@ underneath (see [sys.md](sys.md)).
 
 ## Rejected / ignored
 
-- `file=...` — only `sys.stdout`, `sys.stderr` and an `io.StringIO` or `io.BytesIO` are accepted.
-    The first two are opaque markers matched by identity (see [sys.md](sys.md)).
+- `file=...` — only `None` (stdout), `sys.stdout`, `sys.stderr` and an `io.StringIO` or `io.BytesIO` are accepted.
+    `sys.stdout` and `sys.stderr` are opaque markers matched by identity (see [sys.md](sys.md)).
+    A `BytesIO` raises CPython's `TypeError: a bytes-like object is required, not 'str'` from its `write()`.
     Anything else raises
     `TypeError: "print() 'file' argument must be sys.stdout, sys.stderr, io.StringIO or io.BytesIO, not {type}"`,
     including an `open()` file and an object defining `write()`, both of which CPython would write to.

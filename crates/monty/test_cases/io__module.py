@@ -88,6 +88,11 @@ closed = StringIO()
 closed.close()
 check(ValueError, 'I/O operation on closed file', lambda: json.dump([1], closed))
 check(ValueError, 'I/O operation on closed file', lambda: json.load(closed))
+# a container's first chunk meets the stream's checks before a bad element is encoded,
+# while a scalar is encoded whole first
+check(TypeError, "a bytes-like object is required, not 'str'", lambda: json.dump({'a': {1}}, BytesIO()))
+check(ValueError, 'I/O operation on closed file', lambda: json.dump([{1}], closed))
+check(TypeError, 'Object of type set is not JSON serializable', lambda: json.dump({1}, BytesIO()))
 
 # === csv ===
 out = StringIO()
@@ -103,6 +108,38 @@ dw.writeheader()
 dw.writerows([{'x': 1, 'y': 2}])
 assert out.getvalue() == 'x,y\r\n1,2\r\n'
 check(TypeError, "a bytes-like object is required, not 'str'", lambda: csv.writer(BytesIO()).writerow(['a']))
+assert csv.writer(BytesIO()).writerows([]) is None
+
+
+class FailingRows:
+    def __init__(self):
+        self.n = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.n += 1
+        if self.n > 2:
+            raise ValueError('boom')
+        return {'x': self.n, 'y': 0}
+
+
+# a stream is written row by row, so rows before a failure stay written
+out = StringIO()
+try:
+    csv.writer(out).writerows([[1], [2], 1])
+    assert False, 'expected csv.Error'
+except csv.Error:
+    pass
+assert out.getvalue() == '1\r\n2\r\n'
+out = StringIO()
+try:
+    csv.DictWriter(out, fieldnames=['x', 'y']).writerows(FailingRows())
+    assert False, 'expected ValueError'
+except ValueError:
+    pass
+assert out.getvalue() == '1,0\r\n2,0\r\n'
 
 # === print ===
 buf = StringIO()

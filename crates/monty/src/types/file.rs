@@ -402,7 +402,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
         let file = self.get(vm.heap);
         file.ensure_open()?;
         if !file.mode.readable() {
-            Err(unsupported_operation("not readable"))
+            Err(ExcType::unsupported_operation("not readable"))
         } else if file.buffer.is_none() {
             Ok(Some(self.buffer_load_call(
                 vm,
@@ -500,7 +500,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
                 let file = self.get(vm.heap);
                 file.ensure_open()?;
                 if !file.mode.readable() {
-                    return Err(unsupported_operation("not readable"));
+                    return Err(ExcType::unsupported_operation("not readable"));
                 }
                 file.mode.is_binary()
             };
@@ -638,7 +638,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         if file.mode.readable() {
             Ok(())
         } else {
-            Err(unsupported_operation("not readable"))
+            Err(ExcType::unsupported_operation("not readable"))
         }
     }
 
@@ -722,7 +722,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
             Ok(())
         } else {
             let message = if file.mode.is_binary() { "write" } else { "not writable" };
-            Err(unsupported_operation(message))
+            Err(ExcType::unsupported_operation(message))
         }
     }
 
@@ -1704,14 +1704,6 @@ fn is_bytes(data: &Value, heap: &Heap) -> bool {
         Value::Ref(id) => matches!(heap.get(*id), HeapData::Bytes(_)),
         _ => false,
     }
-}
-
-/// Builds the `io.UnsupportedOperation` used for file operations that the
-/// open mode forbids (e.g. `read()` on `'w'`, `write()` on `'r'`). In CPython
-/// this is a subclass of both `OSError` and `ValueError`; Monty matches both
-/// in `try`/`except` matching through its two bases in the native type table.
-fn unsupported_operation(message: &'static str) -> RunError {
-    SimpleException::new_msg(ExcType::UnsupportedOperation, message).into()
 }
 
 pub(crate) struct PyFileImpl;

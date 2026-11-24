@@ -124,6 +124,15 @@ assert ''.join(StringIO('x\ny')) == 'x\ny'
 assert [(i, line) for i, line in enumerate(StringIO('p\nq'))] == [(0, 'p\n'), (1, 'q')]
 check(StopIteration, '', lambda: next(StringIO()))
 
+
+# a stream is an iterator, so `__iter__` may return one
+class Lines:
+    def __iter__(self):
+        return StringIO('x\ny')
+
+
+assert list(Lines()) == ['x\n', 'y']
+
 # === write ===
 s = StringIO()
 assert s.write('hello') == 5
@@ -189,6 +198,10 @@ check(TypeError, 'seek expected at least 1 argument, got 0', lambda: StringIO('a
 check(TypeError, 'seek expected at most 2 arguments, got 3', lambda: StringIO('a').seek(1, 0, 0))
 check(TypeError, 'StringIO.seek() takes no keyword arguments', lambda: StringIO('a').seek(pos=1))
 check(TypeError, 'StringIO.tell() takes no arguments (1 given)', lambda: StringIO().tell(1))
+s = StringIO()
+s.seek(2**63 - 1)
+check(OverflowError, 'new position too large', lambda: s.write('x'))
+assert s.write('') == 0
 
 # === truncate ===
 s = StringIO('hello')
@@ -262,6 +275,13 @@ assert s.errors is None
 assert s.flush() is None
 check(io.UnsupportedOperation, 'fileno', lambda: StringIO().fileno())
 check(io.UnsupportedOperation, 'detach', lambda: StringIO().detach())
+check(TypeError, 'fileno() takes no arguments', lambda: StringIO().fileno(1))
+check(TypeError, 'detach() takes no arguments', lambda: StringIO().detach(x=1))
+check(
+    TypeError,
+    'object.__init__() takes exactly one argument (the instance to initialize)',
+    lambda: object.__init__(StringIO(), 1),
+)
 check(AttributeError, "'_io.StringIO' object has no attribute 'buffer'", lambda: StringIO().buffer)
 check(AttributeError, "'_io.StringIO' object has no attribute 'name'", lambda: StringIO().name)
 check(AttributeError, "'_io.StringIO' object has no attribute 'nope'", lambda: StringIO().nope())

@@ -731,10 +731,12 @@ native_types! {
     /// `io.StringIO`, an in-memory text stream.
     StringIo("_io.StringIO")
         .basetype()
+        .iterator()
         .ctor(Constructor::Value(StringIo::init)),
     /// `io.BytesIO`, an in-memory binary stream.
     BytesIo("_io.BytesIO")
         .basetype()
+        .iterator()
         .ctor(Constructor::Value(BytesIo::init)),
     /// typing module special forms (Any, Optional, Union, etc.) - displays as "typing._SpecialForm"
     SpecialForm("typing._SpecialForm"),

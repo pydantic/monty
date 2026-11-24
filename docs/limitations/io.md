@@ -18,8 +18,8 @@ Monty's `io` module provides `StringIO`, `BytesIO`, the file classes `open()` re
 
 - `TextIOWrapper`, `BufferedReader`, `BufferedWriter` and `BufferedRandom` are the types of `open()` files,
     for `type()` and `isinstance()` checks.
-    Calling one raises `TypeError: cannot create '_io.TextIOWrapper' instances`, where CPython wraps the buffer or
-    raw stream it is given.
+    Calling one raises `TypeError: cannot create '_io.{name}' instances` (e.g. `'_io.BufferedReader'`), where
+    CPython wraps the buffer or raw stream it is given.
 
 ## `StringIO` and `BytesIO`
 
@@ -34,16 +34,15 @@ Monty's `io` module provides `StringIO`, `BytesIO`, the file classes `open()` re
     `copy.copy()` and `copy.deepcopy()` work without the last two.
 - **`BytesIO` takes only `bytes`.** The constructor, `write()` and `writelines()` reject `bytearray` and
     `memoryview`, which Monty does not have.
-- **`fileno()` and `detach()` ignore their arguments.** Both always raise `io.UnsupportedOperation`, where
-    CPython first rejects an argument with `TypeError`.
 
 ## Streams as file arguments
 
 `json.load()`, `json.dump()`, `csv.reader()`, `csv.writer()`, `csv.DictReader()`, `csv.DictWriter()` and
-`print(file=...)` accept a `StringIO` or `BytesIO`.
-The writers make fewer `write()` calls than CPython: `json.dump()` writes the whole document once
-(see [json.md](json.md)), and `writerows()` writes all its rows once (see [csv.md](csv.md)).
-A stream's `write()` returns the length written, so the visible results are the same.
+`print(file=...)` take a `StringIO` or `BytesIO` and call its `read()` or `write()` as CPython does.
+Only `json.load()` can use a `BytesIO`: the writers pass `str` to `BytesIO.write()`, which raises `TypeError`, and
+the CSV readers raise `csv.Error` on its `bytes` lines, both as in CPython.
+`json.dump()` makes fewer `write()` calls than CPython, writing the whole document once (see [json.md](json.md)).
+A stream's `write()` returns the length written, so the visible result is the same.
 
 ## `text_encoding()` and `open_code()`
 

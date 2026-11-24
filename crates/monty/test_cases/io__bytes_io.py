@@ -142,6 +142,10 @@ check(TypeError, 'BytesIO.seek() takes no keyword arguments', lambda: BytesIO().
 b = BytesIO(b'a')
 b.seek(1)
 check(OverflowError, 'new position too large', lambda: b.seek(2**63 - 1, 1))
+b = BytesIO()
+b.seek(2**63 - 1)
+check(OverflowError, 'new buffer size too large', lambda: b.write(b'x'))
+assert b.write(b'') == 0
 
 # === truncate ===
 b = BytesIO(b'hello')
@@ -174,6 +178,13 @@ assert b.flush() is None
 assert b.closed is False
 check(io.UnsupportedOperation, 'fileno', lambda: BytesIO().fileno())
 check(io.UnsupportedOperation, 'detach', lambda: BytesIO().detach())
+check(TypeError, 'fileno() takes no arguments', lambda: BytesIO().fileno(1))
+check(TypeError, 'detach() takes no arguments', lambda: BytesIO().detach(x=1))
+check(
+    TypeError,
+    'object.__init__() takes exactly one argument (the instance to initialize)',
+    lambda: object.__init__(BytesIO(), 1),
+)
 check(AttributeError, "'_io.BytesIO' object has no attribute 'raw'", lambda: BytesIO().raw)
 check(AttributeError, "'_io.BytesIO' object has no attribute 'encoding'", lambda: BytesIO().encoding)
 check(TypeError, 'BytesIO.getvalue() takes no arguments (1 given)', lambda: BytesIO().getvalue(1))

@@ -118,7 +118,7 @@ Each covers only part of its CPython surface — often a small part. `colorsys`,
 `itertools`, `hashlib`, `tomllib` and `fnmatch` are the other exceptions: `itertools` implements every name it exports, `hashlib` every
 guaranteed algorithm, and `tomllib` and `fnmatch` their whole three- and four-name surfaces.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
-raising `AttributeError` at runtime.
+raising `AttributeError` at runtime, except in `io`, whose typeshed stubs declare them (see [io.md](io.md)).
 
 Notably absent: `enum`, `contextlib`, `string`, `struct`, `operator`,
 `inspect`, `logging`, `traceback`, `uuid`, `urllib`.

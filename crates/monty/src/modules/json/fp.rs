@@ -46,7 +46,12 @@ impl FileTarget {
                 }
                 Ok(Self::OpenFile(file_id))
             }
-            Self::Stream(id) => Ok(Self::Stream(id)),
+            Self::Stream(id) => {
+                // An empty write runs the stream's type and closed checks and stores nothing.
+                let empty = allocate_string(String::new(), vm.heap);
+                Self::call_stream(id, StaticStrings::Write, ArgValues::One(empty), vm)?.drop_with(vm);
+                Ok(Self::Stream(id))
+            }
             Self::Method(write) if write.is_callable(vm) => Ok(Self::Method(write)),
             Self::Method(write) => {
                 defer_drop!(write, vm);

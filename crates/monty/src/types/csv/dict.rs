@@ -323,9 +323,10 @@ pub(super) fn writer_writerows<'h>(
     defer_drop!(rowdicts, vm);
     let writer = dict_writer_part(obj, vm, |writer| writer.writer.clone_with_heap(vm.heap));
     defer_drop!(writer, vm);
-    let Some((targets_file, write, dialect)) = writer_parts(writer, vm) else {
+    let Some((targets_file, target, write, dialect)) = writer_parts(writer, vm) else {
         return Err(RunError::internal("DictWriter: writer is not a _csv.writer"));
     };
+    defer_drop!(target, vm);
     defer_drop!(write, vm);
     // Filled by the first row and refreshed whenever an attribute changes between rows.
     let spec: Option<RowSpec> = None;
@@ -357,7 +358,7 @@ pub(super) fn writer_writerows<'h>(
             defer_drop!(rowdict, vm);
             let items = dict_to_list(obj, spec, rowdict, vm)?;
             defer_drop!(items, vm);
-            writerow_now(write, &dialect, &terminator_chars, items, &mut line, vm)?;
+            writerow_now(target, write, &dialect, &terminator_chars, items, &mut line, vm)?;
         }
         Ok(CallResult::Value(Value::None))
     }
@@ -600,17 +601,14 @@ fn with_writer<'h, T>(
     call(&mut writer_obj, vm)
 }
 
-/// Whether the wrapped `_csv.writer` targets a file, with its bound `write` and dialect;
-/// `None` if `writer` is not one.
-fn writer_parts(writer: &Value, vm: &VM<'_>) -> Option<(bool, Value, Arc<Dialect>)> {
+/// Whether the wrapped `_csv.writer` targets a file, with its target, bound `write` and
+/// dialect; `None` if `writer` is not one.
+fn writer_parts(writer: &Value, vm: &VM<'_>) -> Option<(bool, Value, Value, Arc<Dialect>)> {
     let CsvObject::Writer(writer) = writer.get_as::<CsvObject>(vm.heap)? else {
         return None;
     };
-    Some((
-        writer.targets_file(vm),
-        writer.write_method(vm.heap),
-        Arc::clone(&writer.dialect),
-    ))
+    let (target, write) = writer.target_and_write(vm.heap);
+    Some((writer.targets_file(vm), target, write, Arc::clone(&writer.dialect)))
 }
 
 /// Reads one field of the `DictWriter` under a short borrow.

@@ -85,6 +85,15 @@ pub(crate) fn seek_args(args: ArgValues, kw_name: &str, vm: &mut VM<'_>) -> RunR
     Ok((pos, whence))
 }
 
+/// A non-negative position or size as a stream offset: CPython's `OverflowError`
+/// past `ssize_t`, which on 32-bit targets is below `i64::MAX`.
+pub(crate) fn stream_position(pos: i64) -> RunResult<usize> {
+    isize::try_from(pos)
+        .ok()
+        .and_then(|pos| usize::try_from(pos).ok())
+        .ok_or_else(ExcType::overflow_c_ssize_t)
+}
+
 /// A size argument as a limit: negative means unlimited, as `-1` does in CPython.
 pub(crate) fn non_negative(size: Option<i64>) -> Option<usize> {
     size.and_then(|size| usize::try_from(size).ok())

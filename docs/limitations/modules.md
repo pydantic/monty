@@ -88,6 +88,7 @@ and `collections` only the four types above; `tomllib` all three of its names, w
 The absent names are missing from
 the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime; see each module's page for the specifics.
+`io` is the exception: its stubs are typeshed's, so its absent names pass type checking (see [io.md](io.md)).
 
 ## Modules the type checker resolves but the runtime does not
 
