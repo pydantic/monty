@@ -199,7 +199,7 @@ assert base64.b32decode('MFRGG===') == b'abc'
 assert base64.b32decode(base64.b32encode(every_byte)) == every_byte
 
 # === b32 casefold and map01 ===
-assert base64.b32decode(b'mfrggzdf', casefold=True) == b'abcde'
+assert base64.b32decode(b'mFrGgZdF', casefold=True) == b'abcde'
 assert base64.b32decode(b'MFRGG0DF', map01=b'L') == base64.b32decode(b'MFRGGODF')
 assert base64.b32decode(b'MFRGG1DF', map01=b'L') == base64.b32decode(b'MFRGGLDF')
 
@@ -283,7 +283,7 @@ assert base64.b16encode(b'abc') == b'616263'
 assert base64.b16encode(b'\xde\xad') == b'DEAD'
 assert base64.b16decode(b'DEAD') == b'\xde\xad'
 assert base64.b16decode('616263') == b'abc'
-assert base64.b16decode(b'dead', casefold=True) == b'\xde\xad'
+assert base64.b16decode(b'dEaD', casefold=True) == b'\xde\xad'
 assert base64.b16decode(base64.b16encode(every_byte)) == every_byte
 
 try:
@@ -297,6 +297,14 @@ try:
     assert False, 'expected binascii.Error'
 except binascii.Error as exc:
     assert str(exc) == 'Odd-length string'
+
+# An invalid digit takes precedence over odd length, even in the trailing nibble.
+for data, casefold in [(b'ABf', False), (b'Abg', True), (b'!AB', True)]:
+    try:
+        base64.b16decode(data, casefold=casefold)
+        assert False, 'expected binascii.Error'
+    except binascii.Error as exc:
+        assert str(exc) == 'Non-base16 digit found'
 
 # === b85encode / b85decode ===
 assert base64.b85encode(b'') == b''

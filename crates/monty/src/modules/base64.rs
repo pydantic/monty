@@ -13,7 +13,7 @@
 //! Encoders take bytes only; decoders also take ASCII `str` (CPython's
 //! `_bytes_from_decode_data`).
 
-use std::{borrow::Cow, cmp::Ordering};
+use std::cmp::Ordering;
 
 use monty_types::ResourceTracker;
 
@@ -800,26 +800,22 @@ fn b32_encode(data: &[u8], alphabet: &[u8; 32], tracker: &ResourceTracker) -> Ru
 /// eight and applied any `map01` translation — CPython performs both before
 /// this point and the resulting error ordering is observable.
 fn b32_decode(data: &[u8], alphabet: &[u8; 32], casefold: bool) -> RunResult<Vec<u8>> {
-    let folded: Cow<'_, [u8]> = if casefold {
-        Cow::Owned(data.to_ascii_uppercase())
-    } else {
-        Cow::Borrowed(data)
-    };
     let stripped = {
-        let mut end = folded.len();
-        while end > 0 && folded[end - 1] == b'=' {
+        let mut end = data.len();
+        while end > 0 && data[end - 1] == b'=' {
             end -= 1;
         }
-        &folded[..end]
+        &data[..end]
     };
-    let pad_chars = folded.len() - stripped.len();
+    let pad_chars = data.len() - stripped.len();
 
     let mut out = Vec::with_capacity(stripped.len() / 8 * 5 + 5);
     let mut last_acc: u64 = 0;
     for group in stripped.chunks(8) {
         let mut acc: u64 = 0;
-        for byte in group {
-            let Some(value) = alphabet.iter().position(|c| c == byte) else {
+        for &byte in group {
+            let digit = if casefold { byte.to_ascii_uppercase() } else { byte };
+            let Some(value) = alphabet.iter().position(|&c| c == digit) else {
                 return Err(binascii_error("Non-base32 digit found"));
             };
             acc = (acc << 5) | u64::try_from(value).expect("alphabet index fits u64");
@@ -857,35 +853,27 @@ fn b16_encode(data: &[u8], tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
     Ok(out)
 }
 
-/// Decodes uppercase hex, folding case first when asked.
+/// Decodes hex digits, accepting lowercase when case folding is enabled.
 ///
 /// CPython screens the whole input for non-`[0-9A-F]` bytes before
 /// `binascii.unhexlify` sees it, so a bad digit outranks an odd length.
 fn b16_decode(data: &[u8], casefold: bool) -> RunResult<Vec<u8>> {
-    let folded: Cow<'_, [u8]> = if casefold {
-        Cow::Owned(data.to_ascii_uppercase())
-    } else {
-        Cow::Borrowed(data)
+    let digit = |byte| match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        b'a'..=b'f' if casefold => Ok(byte - b'a' + 10),
+        _ => Err(binascii_error("Non-base16 digit found")),
     };
-    if folded.iter().any(|b| !matches!(b, b'0'..=b'9' | b'A'..=b'F')) {
-        return Err(binascii_error("Non-base16 digit found"));
+    let (pairs, trailing) = data.as_chunks::<2>();
+    let mut out = Vec::with_capacity(pairs.len());
+    for &[high, low] in pairs {
+        out.push((digit(high)? << 4) | digit(low)?);
     }
-    if !folded.len().is_multiple_of(2) {
+    if let [last] = trailing {
+        digit(*last)?;
         return Err(binascii_error("Odd-length string"));
     }
-    Ok(folded
-        .chunks(2)
-        .map(|pair| (hex_value(pair[0]) << 4) | hex_value(pair[1]))
-        .collect())
-}
-
-/// Maps a validated uppercase hex digit to its value.
-fn hex_value(byte: u8) -> u8 {
-    if byte.is_ascii_digit() {
-        byte - b'0'
-    } else {
-        byte - b'A' + 10
-    }
+    Ok(out)
 }
 
 /// Encodes bytes as base85 over `alphabet`, five characters per four bytes.
