@@ -10,6 +10,10 @@
 //! Lives here (rather than in `pydantic-monty`) so consumers depend on one
 //! leaf crate instead of linking the whole extension module as an rlib.
 //!
+//! It must not import from `pydantic_monty`, which depends on this crate: a Python class it converts
+//! to or checks for, such as `MontyNamedTuple` (`named_tuple.rs`), is defined here and re-exported
+//! by `pydantic_monty`. Other imports come only from the Python standard library.
+//!
 //! pyo3's `extension-module` feature is deliberately NOT enabled by this crate:
 //! the top-level crate decides how libpython is linked (e.g. maturin enables
 //! it for wheels).

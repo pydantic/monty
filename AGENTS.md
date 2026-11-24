@@ -226,8 +226,7 @@ subprocesses:
     Its `python` feature (`monty_proto::python`, PyO3 value conversion) serves `monty-python` and also
     `monty-cpython`, an embedded-CPython worker in the private `monty-private` repository, so keep shared
     conversion there and host-only binding logic in `monty-python`.
-    That interpreter has no `pydantic_monty` package, so conversion imports only the standard library:
-    a class values decode to, such as `MontyNamedTuple` (`named_tuple.rs`), is built in `monty-proto`.
+    `monty_proto::python` must not import from `pydantic_monty`, which is built on it (see its module docs).
     `monty-private`'s crates (`monty-cpython`, `monty-relay`, `monty-server`, ...) also consume the wire
     protocol: check them before changing `monty_proto::python`'s API or the `OsCall` arms, which
     `monty-relay` scans by field number.
