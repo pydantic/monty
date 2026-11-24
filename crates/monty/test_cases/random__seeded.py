@@ -178,3 +178,14 @@ assert r3.random() == random.Random(7).random()
 # a list outer state works as well as a tuple
 r3.setstate([3, state[1], 0.5])
 assert r3.getstate()[2] == 0.5
+
+
+# Use the same permutation for packed nullable elements and generic heap references.
+for original in ([True, None, False] * 43, [[i] for i in range(129)]):
+    indices = list(range(len(original)))
+    random.seed(19)
+    random.shuffle(indices)
+    shuffled = original[:]
+    random.seed(19)
+    random.shuffle(shuffled)
+    assert all(shuffled[i] is original[j] for i, j in enumerate(indices))

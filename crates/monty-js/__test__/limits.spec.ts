@@ -80,7 +80,7 @@ test('an allocation refused at an interpreter checkpoint leaves the session usab
   const maxMemory = 1024 * 1024
   await using session = await pool().checkout({ limits: { maxMemory } })
   const error = await t.throwsAsync(() => session.feedRun('[str(i) for i in range(131_072)]'), isRuntimeError)
-  assertMemoryError(error, isWasm ? 1_081_440 : 1_093_053, maxMemory)
+  assertMemoryError(error, maxMemory + 80, maxMemory)
   t.is(await session.feedRun('1 + 1'), 2)
 })
 

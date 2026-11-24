@@ -128,3 +128,13 @@ try:
 except TypeError as exc:
     assert str(exc) == 'must assign iterable to extended slice'
 assert a == [[1], [2]]
+
+
+# Grow and shrink across bitmap words while both ends of the list stay live.
+for pattern in ([1, 2, 3], [True, None, False], [1.25, None, 2.5]):
+    source = pattern * 47
+    for start, stop in [(7, 11), (61, 229), (150, 150), (300, 314)]:
+        target = pattern * 110
+        expected = target[:start] + source + target[stop:]
+        target[start:stop] = source
+        assert repr(target) == repr(expected)

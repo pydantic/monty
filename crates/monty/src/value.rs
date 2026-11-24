@@ -1,3 +1,8 @@
+//! Python values held on the VM stack and in generic containers.
+//!
+//! [`Value`] holds immediate data, interned IDs, or an owned heap reference. Its Python
+//! operations use these representations directly or dispatch through a scoped [`PyValue`].
+
 use std::{
     borrow::Cow,
     cmp::Ordering,
@@ -775,7 +780,18 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    #[inline]
     fn py_getitem(&self, key: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+        if let Self::Ref(id) = self {
+            let receiver = vm.heap.read(*id);
+            if let HeapReadOutput::List(list) = receiver {
+                if let Self::Int(index) = key {
+                    return list.get(vm.heap).getitem_int(*index, vm.heap);
+                }
+                return list.py_getitem(key, vm);
+            }
+            return PyValue::from(receiver).subscript(key, vm);
+        }
         self.py_value(vm).subscript(key, vm)
     }
 

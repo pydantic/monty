@@ -25,6 +25,10 @@ dl['x'].append(1)
 dl['x'].append(2)
 assert dict(dl) == {'x': [1, 2]}, 'list factory builds per-key lists'
 
+by_index = defaultdict(list)
+by_index[0].append(7)
+assert by_index[0] == [7] and dict(by_index) == {0: [7]}
+
 assert defaultdict(lambda: 42)['q'] == 42, 'arbitrary callable factory'
 
 # === default_factory attribute ===

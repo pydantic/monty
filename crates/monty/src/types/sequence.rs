@@ -1,3 +1,13 @@
+//! Borrowed element access for built-in lists, tuples, and named tuples.
+//!
+//! VM operations such as unpacking can read these sequences without invoking Python iteration.
+//! [`SequenceItems::map_item`] lends the callback an existing `Value` slot or materializes one
+//! packed element for the duration of the call.
+
+use monty_types::ResourceTracker;
+use serde::{Serialize, Serializer};
+
+use super::list::PackedView;
 use crate::{
     exception_private::RunResult,
     heap::{Heap, HeapData},
@@ -6,11 +16,14 @@ use crate::{
 
 /// Read-only access to built-in sequence elements while the heap is borrowed.
 #[derive(Clone, Copy)]
-pub(crate) struct SequenceItems<'a>(&'a [Value]);
+pub(crate) enum SequenceItems<'a> {
+    Values(&'a [Value]),
+    Packed(PackedView<'a>),
+}
 
 impl<'a> SequenceItems<'a> {
     pub(crate) fn from_slice(items: &'a [Value]) -> Self {
-        Self(items)
+        Self::Values(items)
     }
 
     /// Borrows list, tuple, and named tuple elements without invoking Python iteration.
@@ -31,12 +44,18 @@ impl<'a> SequenceItems<'a> {
     }
 
     pub(crate) fn len(self) -> usize {
-        self.0.len()
+        match self {
+            Self::Values(items) => items.len(),
+            Self::Packed(items) => items.len(),
+        }
     }
 
     /// The callback's element reference cannot escape, so compact storage can materialize a value on demand.
     pub(crate) fn map_item<T>(self, index: usize, f: impl FnOnce(&Value) -> T) -> T {
-        f(&self.0[index])
+        match self {
+            Self::Values(items) => f(&items[index]),
+            Self::Packed(items) => f(&items.get(index).expect("checked list index")),
+        }
     }
 
     /// Returns an owned clone and retains any heap reference held by the element.
@@ -45,21 +64,34 @@ impl<'a> SequenceItems<'a> {
         self.map_item(index, |item| item.clone_with_heap(heap))
     }
 
-    pub(crate) fn map<T>(self, f: impl FnMut(&Value) -> T) -> impl DoubleEndedIterator<Item = T> + ExactSizeIterator {
-        self.0.iter().map(f)
+    pub(crate) fn map<T>(
+        self,
+        mut f: impl FnMut(&Value) -> T,
+    ) -> impl DoubleEndedIterator<Item = T> + ExactSizeIterator {
+        (0..self.len()).map(move |index| self.map_item(index, &mut f))
     }
 
-    pub(crate) fn filter_map<T>(self, f: impl FnMut(&Value) -> Option<T>) -> impl Iterator<Item = T> {
-        self.0.iter().filter_map(f)
+    pub(crate) fn filter_map<T>(self, mut f: impl FnMut(&Value) -> Option<T>) -> impl Iterator<Item = T> {
+        (0..self.len()).filter_map(move |index| self.map_item(index, &mut f))
     }
 
     pub(crate) fn to_vec(self, heap: &Heap) -> RunResult<Vec<Value>> {
         heap.tracker.check_allocation(self.len().saturating_mul(VALUE_SIZE))?;
-        Ok(self.cloned(heap).collect())
+        Ok(match self {
+            Self::Values(items) => items.iter().map(|item| item.clone_with_heap(heap)).collect(),
+            Self::Packed(items) => items.iter().collect(),
+        })
     }
 
     /// Appends clones with deadline checks. The caller owns the partial copy on error.
     pub(crate) fn extend_cloned(self, output: &mut Vec<Value>, heap: &Heap) -> RunResult<()> {
+        if let Self::Values(items) = self {
+            for chunk in items.chunks(ResourceTracker::LOOP_CHECK_INTERVAL) {
+                output.extend(chunk.iter().map(|item| item.clone_with_heap(heap)));
+                heap.tracker.check_time_every(chunk.len() - 1)?;
+            }
+            return Ok(());
+        }
         for (index, item) in self.cloned(heap).enumerate() {
             output.push(item);
             heap.tracker.check_time_every(index)?;
@@ -67,7 +99,23 @@ impl<'a> SequenceItems<'a> {
         Ok(())
     }
 
+    pub(crate) fn extend_cloned_reversed(self, output: &mut Vec<Value>, heap: &Heap) {
+        match self {
+            Self::Values(items) => output.extend(items.iter().rev().map(|item| item.clone_with_heap(heap))),
+            Self::Packed(items) => items.extend_reversed(output),
+        }
+    }
+
     pub(crate) fn cloned(self, heap: &Heap) -> impl DoubleEndedIterator<Item = Value> + ExactSizeIterator {
         self.map(|item| item.clone_with_heap(heap))
+    }
+}
+
+impl Serialize for SequenceItems<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Values(items) => items.serialize(serializer),
+            Self::Packed(items) => serializer.collect_seq(items.iter()),
+        }
     }
 }
