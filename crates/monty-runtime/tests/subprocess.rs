@@ -1516,8 +1516,8 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             16_044_735,
         ),
         // `re.finditer` preflights the matches it builds from its scanned spans as a whole.
-        ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_217_199),
-        ("import re\nre.finditer('(a)(b)', 'ab ' * 10_000)", 4_596_045),
+        ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_218_319),
+        ("import re\nre.finditer('(a)(b)', 'ab ' * 10_000)", 4_597_165),
         // A split's piece buffer is grown under the same checks as `re.split`'s.
         ("('ab,' * 100_000).split(',')", 1_392_992),
         ("('ab,' * 100_000).rsplit(',')", 1_392_993),
@@ -1525,6 +1525,11 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("(b'ab,' * 100_000).rsplit(b',')", 1_401_217),
         // Empty lines allocate no heap entry, so only the line buffer's growth check sees them.
         ("('\\n' * 200_000).splitlines()", 1_292_858),
+        // `str.translate` grows its output through a builder on lookup misses too, not only for mapped values.
+        (
+            "s = 'a' + 'b' * 240_000\nlen(s.translate({97: 'x' * 240_000}))",
+            1_245_188,
+        ),
         // The json encoder preflights each doubling of its output buffer.
         ("import json\njson.dumps(['x' * 1000] * 2000)", 1_168_792),
         // `randbytes` charges its word buffer and the byte buffer it fills.

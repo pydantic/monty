@@ -137,8 +137,8 @@ Each links to the page that owns it, which is where the full account lives:
     So `enumerate(itertools.count())` runs until a resource limit trips ([builtins.md](builtins.md)).
     `map` and `filter` are lazy, but synchronous consumers such as `list()` cannot suspend in their callbacks
     ([iter.md](iter.md)).
-- **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `re.VERBOSE` constant, and some
-    error messages differ ([re.md](re.md)).
+- **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, and some error messages
+    differ ([re.md](re.md)).
 - **Only the class dunders listed above are dispatched.** `__lt__` and `__len__` raise
     `TypeError` as if undefined, while in-place arithmetic dunders are skipped in favor of binary arithmetic
     (`@=` is rejected at compile time).

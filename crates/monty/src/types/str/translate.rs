@@ -55,17 +55,18 @@ pub(super) fn str_translate(text: &str, args: ArgValues, vm: &mut VM<'_>) -> Run
     for (i, c) in text.chars().enumerate() {
         vm.heap.tracker.check_time_every(i)?;
         let key = Value::Int(i64::from(u32::from(c)));
+        // `None` is a lookup miss, which keeps the character.
         let mapped = match table.py_getitem(&key, vm) {
-            Ok(mapped) => mapped,
-            Err(RunError::Exc(raise)) if Type::from(raise.exc.exc_type()).is_subclass_of(Type::LookupError) => {
-                out.push(c);
-                continue;
-            }
+            Ok(mapped) => Some(mapped),
+            Err(RunError::Exc(raise)) if Type::from(raise.exc.exc_type()).is_subclass_of(Type::LookupError) => None,
             Err(error) => return Err(error),
         };
         defer_drop!(mapped, vm);
         let mut builder = StringBuilder::from_existing(out, &vm.heap.tracker);
-        push_mapped(&mut builder, mapped, vm)?;
+        match mapped {
+            Some(mapped) => push_mapped(&mut builder, mapped, vm)?,
+            None => builder.push(c)?,
+        }
         out = builder.finish_raw()?;
     }
     Ok(allocate_string(out, vm.heap))
