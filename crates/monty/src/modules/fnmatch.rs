@@ -16,7 +16,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, HeapData},
+    heap::DropGuard,
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::{value_as_bytes, value_as_path_str},
@@ -145,7 +145,7 @@ fn filter(names: Value, pat: Value, vm: &mut VM<'_>) -> RunResult<Value> {
         }
     }
     let (out, vm) = out_guard.into_parts();
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(out)))))
+    Ok(Value::allocate(List::new(out), vm.heap))
 }
 
 /// `fnmatchcase(name, pat)` on converted arguments.

@@ -4,7 +4,7 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, Heap, HeapData},
+    heap::{DropGuard, DropWithContext, Heap},
     resource_checks::check_estimated_size,
     sorting::parse_and_sort,
     types::{List, iter::collect_owned_iterable, sequence::SequenceItems},
@@ -75,6 +75,5 @@ pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     parse_and_sort(items, sort_args, vm)?;
 
     let (items, vm) = items_guard.into_parts();
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(items)));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::allocate(List::new(items), vm.heap))
 }

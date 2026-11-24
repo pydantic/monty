@@ -111,7 +111,7 @@ impl FileName {
     fn to_value(&self, heap: &Heap) -> Value {
         match self {
             Self::Str(name) => allocate_string(name.as_str(), heap),
-            Self::Bytes(name) => Value::Ref(heap.allocate(HeapData::Bytes(Bytes::new(name.clone())))),
+            Self::Bytes(name) => Value::allocate(Bytes::new(name.clone()), heap),
         }
     }
 }
@@ -1174,7 +1174,7 @@ fn install_buffer<'h>(file: &HeapReadMut<'h, OpenFile>, result: Value, vm: &mut 
         }
         Value::InternBytes(bytes_id) => {
             let bytes = vm.interns.get_bytes(*bytes_id).to_vec();
-            Some(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)))))
+            Some(Value::allocate(Bytes::new(bytes), vm.heap))
         }
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Str(text) if translate && text.as_str().contains('\r') => {
@@ -1532,8 +1532,7 @@ fn compute_slice_binary<'h>(
                     vm.heap.inc_ref(buffer_id);
                     Value::Ref(buffer_id)
                 } else {
-                    let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(tail.to_vec())));
-                    Value::Ref(id)
+                    Value::allocate(Bytes::new(tail.to_vec()), vm.heap)
                 };
                 // Preserve `position` if it was already past `buffer_total`
                 // (set there by `seek()`) — CPython's read-at-EOF leaves the
@@ -1768,7 +1767,7 @@ fn parse_read_size_arg(size_arg: Option<Value>, vm: &mut VM<'_>) -> RunResult<Re
 /// Text mode reuses the canonical empty string without a heap allocation.
 fn empty_result(binary: bool, vm: &VM<'_>) -> Value {
     if binary {
-        Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(Vec::new()))))
+        Value::allocate(Bytes::new(Vec::new()), vm.heap)
     } else {
         allocate_string("", vm.heap)
     }

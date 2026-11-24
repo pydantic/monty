@@ -18,7 +18,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::{Interns, StaticStrings},
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
@@ -92,7 +92,7 @@ impl TimeZone {
         }
 
         let tz = Self::new(offset_seconds, name_str)?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::TimeZone(tz))))
+        Ok(Value::allocate(tz, vm.heap))
     }
 }
 
@@ -245,7 +245,7 @@ pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
 /// from user input must go through [`TimeZone::new`] so the bounds are checked.
 pub(crate) fn allocate_offset(offset_seconds: i32, heap: &Heap) -> Value {
     let tz = TimeZone::new(offset_seconds, None).expect("caller guarantees an in-range offset");
-    Value::Ref(heap.allocate(HeapData::TimeZone(tz)))
+    Value::allocate(tz, heap)
 }
 
 /// Validates the `dt` argument every `tzinfo` method takes.
@@ -305,7 +305,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::TimeZone(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<TimeZone>(vm.heap) else {
             return Ok(None);
         };
         Ok(Some(
