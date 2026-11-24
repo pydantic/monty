@@ -309,6 +309,114 @@ assert list(enumerate(['x'])) == [(0, 'x')]
 assert list(enumerate(['a', 'b'], 1)) == [(1, 'a'), (2, 'b')]
 assert list(enumerate(['a', 'b'], 10)) == [(10, 'a'), (11, 'b')]
 
+# enumerate across the native integer boundary
+max_index = 2**63 - 1
+assert list(enumerate('a', max_index)) == [(max_index, 'a')]
+assert list(enumerate('abc', max_index - 1)) == [
+    (max_index - 1, 'a'),
+    (max_index, 'b'),
+    (9223372036854775808, 'c'),
+]
+assert list(enumerate('ab', 2**80)) == [(2**80, 'a'), (2**80 + 1, 'b')]
+assert list(enumerate('ab', -(2**80))) == [(-(2**80), 'a'), (-(2**80) + 1, 'b')]
+assert list(enumerate([], 2**80)) == []
+assert list(enumerate('a', 9223372036854775808)) == [(9223372036854775808, 'a')]
+assert list(enumerate('ab', -(2**63) - 1)) == [(-(2**63) - 1, 'a'), (-(2**63), 'b')]
+
+
+class EnumerateStart:
+    def __index__(self):
+        return 2**80
+
+
+assert list(enumerate('ab', EnumerateStart())) == [(2**80, 'a'), (2**80 + 1, 'b')]
+assert type(list(enumerate('a', True))[0][0]) is int
+
+try:
+    enumerate(['a'], start=1.5)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "'float' object cannot be interpreted as an integer"
+
+
+class FailingEnumerateItems:
+    def __init__(self):
+        self.calls = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.calls += 1
+        if self.calls == 1:
+            return 'heap-backed item'.split()[0]
+        raise ValueError('enumerate source failed')
+
+
+try:
+    list(enumerate(FailingEnumerateItems(), start=2**80))
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'enumerate source failed'
+
+# Convert start before constructing the iterator, including failure paths.
+enumerate_events = []
+
+
+class OrderedEnumerateStart:
+    def __index__(self):
+        enumerate_events.append('index')
+        return 2**80
+
+
+class OrderedEnumerateItems:
+    def __init__(self):
+        self.items = ['heap-backed item'.split()[0]]
+
+    def __iter__(self):
+        enumerate_events.append('iter')
+        return iter(self.items)
+
+
+assert list(enumerate(OrderedEnumerateItems(), OrderedEnumerateStart())) == [(2**80, 'heap-backed')]
+assert enumerate_events == ['index', 'iter']
+
+
+class FailingEnumerateStart:
+    def __index__(self):
+        enumerate_events.append('index failed')
+        raise ValueError('enumerate start failed')
+
+
+enumerate_events.clear()
+try:
+    enumerate(OrderedEnumerateItems(), FailingEnumerateStart())
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'enumerate start failed'
+assert enumerate_events == ['index failed']
+
+
+class FailingEnumerateIterator:
+    def __iter__(self):
+        enumerate_events.append('iter failed')
+        raise ValueError('enumerate iterator failed')
+
+
+enumerate_events.clear()
+try:
+    enumerate(FailingEnumerateIterator(), OrderedEnumerateStart())
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'enumerate iterator failed'
+assert enumerate_events == ['index', 'iter failed']
+
+try:
+    enumerate(1, start=1.5)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "'float' object cannot be interpreted as an integer"
+
 # a non-iterable errors out of iterator construction without leaking a
 # heap-backed start=
 try:
