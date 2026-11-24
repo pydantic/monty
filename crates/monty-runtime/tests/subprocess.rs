@@ -2717,6 +2717,31 @@ fn refused_findall_leaves_no_partial_result() {
     }
 }
 
+/// `str.translate` validates its arguments before copying the receiver, so an
+/// invalid call on a string too large to copy raises `TypeError`, not `MemoryError`.
+#[test]
+fn translate_checks_args_before_copying_receiver() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    assert_eq!(
+        child.feed_complete("s = 'x' * 600_000\nlen(s)"),
+        MontyObject::int(600_000)
+    );
+    for (code, message) in [
+        ("s.translate()", "str.translate() takes exactly one argument (0 given)"),
+        ("s.translate(table={})", "str.translate() takes no keyword arguments"),
+    ] {
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(
+            (error.exc_type.as_str(), error.message.as_deref()),
+            ("TypeError", Some(message)),
+            "{code}"
+        );
+    }
+    child.shutdown();
+}
+
 /// Assert a `memory limit exceeded` message reports roughly `expected` bytes
 /// used against a 1 MiB limit.
 ///

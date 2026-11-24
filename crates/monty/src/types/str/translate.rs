@@ -6,7 +6,7 @@
 
 use std::mem;
 
-use super::allocate_string;
+use super::{PyStr, allocate_string, copy_format_template};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::VM,
@@ -40,9 +40,9 @@ struct MaketransArgs {
 /// an int is replaced by that code point and a str is inserted. A str mapping can amplify the input,
 /// so every append goes through a [`StringBuilder`].
 ///
-/// `text` is the caller's resource-checked copy of the receiver: the lookups can run user code that re-enters
-/// the heap, so the receiver cannot stay borrowed from it.
-pub(super) fn str_translate(text: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
+/// The receiver is copied once the arguments are valid: the lookups can run user code that re-enters the heap,
+/// so it cannot stay borrowed from it.
+pub(super) fn str_translate<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     // A `METH_O` function in CPython: keywords are rejected before the argument count is checked.
     if args.has_kwargs() {
         args.drop_with(vm);
@@ -50,6 +50,7 @@ pub(super) fn str_translate(text: &str, args: ArgValues, vm: &mut VM<'_>) -> Run
     }
     let table = args.get_one_arg("str.translate", vm.heap)?;
     defer_drop!(table, vm);
+    let text = copy_format_template(s.as_str(vm), &vm.heap.tracker)?;
     // The builder borrows the tracker, which the lookups need `vm` for, so it only lives within one append.
     let mut out = StringBuilder::with_capacity(text.len(), &vm.heap.tracker)?.finish_raw()?;
     for (i, c) in text.chars().enumerate() {

@@ -660,17 +660,7 @@ fn call_str_method_impl<'h>(
         StaticStrings::Rjust => str_rjust(s, args, vm),
         StaticStrings::Zfill => str_zfill(s, args, vm),
         StaticStrings::Expandtabs => str_expandtabs(s, args, vm),
-        StaticStrings::Translate => {
-            // Copied once here: the table lookups can run user code that re-enters the heap.
-            let text = match copy_format_template(s.as_str(vm), &vm.heap.tracker) {
-                Ok(text) => text,
-                Err(error) => {
-                    args.drop_with(vm);
-                    return Err(error);
-                }
-            };
-            str_translate(&text, args, vm)
-        }
+        StaticStrings::Translate => str_translate(s, args, vm),
         // A static method, also reachable on instances.
         StaticStrings::Maketrans => str_maketrans(args, vm),
         StaticStrings::Format => {
