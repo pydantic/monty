@@ -24,9 +24,9 @@ struct ProdArgs {
 
 The handler calls `ProdArgs::from_args(args, vm)?` and owns the values in the returned struct.
 The `name` attribute supplies the callable name in error messages.
-When several handlers share one signature, omit `name` and call `Args::from_args("module.function", args, vm)?`
-with each handler's name.
-For a fixed pair of positional arguments, a handler can use `args.get_two_args("list.insert", vm.heap)?` directly.
+When several handlers share one signature, omit `name` and pass the callable name to the derived method.
+For example, the [CSV reader](../monty/src/modules/csv.rs) calls `FmtParamArgs::from_args("reader", args, vm)?`.
+For a fixed pair of positional arguments, use `let (index, item) = args.get_two_args("list.insert", vm.heap)?;`.
 
 ### Parameter declarations
 
@@ -84,9 +84,10 @@ Supplying any keyword then raises `NotImplementedError`.
 For example, [`MkdirCallArgs`](../monty-types/src/os.rs) sends `path` as its sole positional argument and sends
 `parents` and `exist_ok` as named keywords, including when their values are `false`.
 
-Ordinary fields and `pos_only` fields become positional arguments in declaration order.
+Fields marked `pos_only` and ordinary fields before `varargs` become positional arguments in declaration order.
 A `varargs` field contributes one positional argument per element.
-Keyword-only fields use their Rust field names. A unit struct produces an empty call.
+Ordinary fields after `varargs` and fields marked `kw_only` become keyword arguments using their Rust field names.
+A unit struct produces an empty call.
 The derive rejects `varkwargs` fields.
 
 ## `#[pyattrs]`
@@ -130,10 +131,10 @@ Use this attribute on an enum whose numeric codes must stay stable, such as
 [`ExcType`](../monty-types/src/exceptions.rs).
 Assign each variant a distinct integer literal and place the attribute before any derives so the check includes
 conditionally compiled variants.
-When adding a variant, choose an unused code. Keep removed codes reserved.
+Keep each existing variant's code fixed. Use an unused code for each new variant and reserve removed codes.
 
 Start with `#[monty_macros::explicit_discriminants]` and compile to get the attribute with its checksum.
-When the mapping changes, review the name and code changes before copying the replacement checksum from the diagnostic.
+Review the mapping diff before copying a replacement checksum from the diagnostic.
 The checksum is FNV-1a over sorted, NUL-terminated `name:code` pairs with codes written in decimal.
 Reordering variants or changing their payloads preserves the checksum.
 
