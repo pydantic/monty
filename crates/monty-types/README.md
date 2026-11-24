@@ -10,6 +10,8 @@ implementation**.
 - `MontyObject` / `MontyType` — Python values and their types at the host
   boundary, including the `datetime` family (`MontyDate`, `MontyDateTime`,
   `MontyTimeDelta`, `MontyTimeZone`) and `MontyFileHandle`.
+  Builtin constructor values such as `map` and `filter` use `MontyObject::type_object` with `MontyType::Map` or
+  `MontyType::Filter`, not `MontyObject::builtin_function`.
 - `ObjectRef` — a borrowed value, with typed accessors (`as_int`, `as_str`, `items`, `pairs`).
   `MontyObject::as_ref()` borrows a value for inspection.
 - `CallArgs` / `NamedValues` — the arguments or inputs of one message.

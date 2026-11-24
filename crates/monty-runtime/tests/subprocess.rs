@@ -1535,6 +1535,13 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         "from collections import deque\nd = deque([None] * 500_000)\nd *= 4",
         // The line buffer's next doubling would land past the hard headroom.
         "('\\n' * 2_000_000).splitlines()",
+        // Case methods and `re.escape` check their result before building it; a non-ASCII mapping that
+        // outgrows its input (`'ΐ'.upper()` is 6 bytes from 2) is checked as it grows.
+        "s = 'x' * (16 * 1024 * 1024)\ns.lower()",
+        "s = 'x' * (16 * 1024 * 1024)\ns.title()",
+        "s = 'é' * (8 * 1024 * 1024)\ns.upper()",
+        "s = 'ΐ' * (4 * 1024 * 1024)\ns.upper()",
+        "import re\nre.escape(' ' * (10 * 1024 * 1024))",
     ] {
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));

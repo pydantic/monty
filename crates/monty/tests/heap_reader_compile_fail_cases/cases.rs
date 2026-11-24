@@ -40,7 +40,7 @@ use crate::types::str::allocate_string;
 
 /// Must not compile: allocating on the heap while holding a reference derived from `HeapRead::get`.
 ///
-/// `a.get(heap)` borrows `heap` immutably, and the resulting slice keeps that borrow alive.
+/// `a.get(heap)` borrows `heap` immutably, and the sequence view keeps that borrow alive.
 /// `heap.heap_mut().allocate(...)` requires mutable access to `heap`, which
 /// conflicts with the live immutable borrow.
 ///
@@ -52,9 +52,9 @@ fn heap_mutation_while_reading(list_id: HeapId, heap: &mut Heap) {
             HeapReadOutput::List(list) => list,
             _ => unreachable!(),
         };
-        let slice = a.get(heap).as_slice();
+        let items = a.get(heap).items();
         let _ = allocate_string("boom", heap.heap_mut());
-        let _ = slice.len();
+        let _ = items.len();
     });
 }
 
@@ -96,7 +96,7 @@ fn dec_ref_while_reading(list_id: HeapId, heap: &mut Heap) {
         };
         let list_ref = a.get(heap);
         heap.heap_mut().dec_ref(list_id);
-        let _ = list_ref.as_slice().len();
+        let _ = list_ref.len();
     });
 }
 
@@ -122,7 +122,7 @@ fn smuggle_heap_read(list_id: HeapId, heap: &mut Heap) {
 /// Must not compile: heap mutation inside a `.map()` closure while iterating over
 /// data derived from `HeapRead::get`.
 ///
-/// The iterator borrows the slice (which keeps `heap` immutably borrowed), and the
+/// The iterator borrows the list (which keeps `heap` immutably borrowed), and the
 /// closure attempts to capture `heap` for mutable access.
 ///
 /// Expected: E0500 (closure requires unique access to `*heap` but it is already borrowed)
@@ -133,10 +133,9 @@ fn mutation_in_map_closure(list_id: HeapId, other_id: HeapId, heap: &mut Heap) {
             HeapReadOutput::List(list) => list,
             _ => unreachable!(),
         };
-        let result: Vec<bool> = a
-            .get(heap)
-            .as_slice()
-            .iter()
+        let items = a.get(heap).items();
+
+        let result: Vec<bool> = items
             .map(|_v| {
                 heap.heap_mut().dec_ref(other_id);
                 true

@@ -15,12 +15,17 @@ Originally derived from ruff's
 [`ty_vendored`](https://github.com/astral-sh/ruff/tree/main/crates/ty_vendored)
 crate.
 
+Monty's code is MIT-licensed.
+`vendor/typeshed/LICENSE` contains the upstream Apache-2.0 licence and the MIT notice for parts of typeshed.
+Modified upstream stubs identify the changes in their source.
+
 ## Layout
 
 - `vendor/typeshed/` — the vendored stubs, derived from upstream typeshed at
   the commit recorded in `vendor/typeshed/source_commit.txt` (exposed as
-  `SOURCE_COMMIT`). **Do not edit these files manually** — they are
-  overwritten wholesale by the update script.
+  `SOURCE_COMMIT`). The update script copies upstream files verbatim except
+  for the filtered `builtins.pyi` and the `custom/` overrides. Repository-wide
+  Ruff checks skip this directory; edit the sources instead.
 - `custom/` — hand-written stubs that override or supplement upstream files
   where Monty's surface intentionally differs (e.g. `asyncio`, `os`, `sys`,
   `unicodedata`). The update script copies them into `vendor/typeshed/stdlib`.

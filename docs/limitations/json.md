@@ -79,6 +79,8 @@ has its `write` attribute called synchronously, under the same restrictions as
 Supported kwargs, with CPython semantics: `indent`, `sort_keys`,
 `ensure_ascii`, `allow_nan`, `separators`, `skipkeys`, `default`.
 
+Monty accepts a list, tuple, or named tuple for `separators`. CPython can unpack other iterables as well.
+
 `default` is called synchronously, with the restrictions of a synchronous call (see [classes.md](classes.md)): a
 callback that calls an external function or does host I/O raises `NotImplementedError`.
 A `default` that returns its own argument raises `ValueError: Circular reference detected` for a heap value, as in

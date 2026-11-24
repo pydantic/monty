@@ -26,12 +26,6 @@ use crate::{
 /// Rust stack between steps, and is released with `drop_with` wherever a frame is discarded.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum NativeCont {
-    /// A `for` loop over a user iterator, which stays on the caller's operand stack.
-    /// Lands on the `ForIter` that started it: pushes the item, or pops the iterator and jumps.
-    ForIter {
-        /// The `ForIter` jump offset, relative to the instruction after it.
-        offset: i16,
-    },
     /// `list()` or `tuple()` draining a user iterator.
     Collect {
         iterator: Value,
@@ -59,8 +53,6 @@ pub(crate) enum CollectKind {
 pub(super) enum Step {
     /// Finished with the consumer's result, which lands on the caller's operand stack.
     Value(Value),
-    /// Finished, having already updated the caller frame itself (`for` loops).
-    Landed,
     /// Needs the next item: call the iterator's `__next__` again.
     Next(NativeCont),
 }
@@ -69,8 +61,6 @@ pub(super) enum Step {
 pub(super) enum NativeExit {
     /// The consumer finished with this result.
     Value(Value),
-    /// The consumer finished and updated the caller frame itself.
-    Landed,
     /// A `__next__` frame is now current and carries the continuation.
     Parked,
 }
@@ -96,10 +86,7 @@ impl NativeCont {
 
     /// Calls the iterator's `__next__` without completing it: a user method returns `FramePushed`.
     fn call_next(&self, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        let iterator = match self {
-            Self::ForIter { .. } => vm.peek(),
-            Self::Collect { iterator, .. } | Self::Sum { iterator, .. } => iterator,
-        };
+        let (Self::Collect { iterator, .. } | Self::Sum { iterator, .. }) = self;
         let &Value::Ref(id) = iterator else {
             return Err(RunError::internal("native continuation iterator is not a heap value"));
         };
@@ -114,10 +101,6 @@ impl NativeCont {
     /// Consumes one item produced by `__next__`.
     fn next_item(self, item: Value, vm: &mut VM<'_>) -> RunResult<Step> {
         match self {
-            Self::ForIter { .. } => {
-                vm.push(item);
-                Ok(Step::Landed)
-            }
             Self::Collect {
                 iterator,
                 mut items,
@@ -154,15 +137,6 @@ impl NativeCont {
     /// Finishes after the iterator raised `StopIteration`.
     fn exhausted(self, vm: &mut VM<'_>) -> Step {
         match self {
-            Self::ForIter { offset } => {
-                vm.pop().drop_with(vm);
-                let frame = vm.current_frame_mut();
-                frame.ip = frame
-                    .ip
-                    .checked_add_signed(offset.into())
-                    .expect("jump resulted in negative or overflowing IP");
-                Step::Landed
-            }
             Self::Collect { iterator, items, kind } => {
                 iterator.drop_with(vm);
                 Step::Value(match kind {
@@ -186,7 +160,6 @@ impl NativeCont {
 impl<C: ContainsHeap> DropWithContext<C> for NativeCont {
     fn drop_with(self, heap: &mut C) {
         match self {
-            Self::ForIter { .. } => {}
             Self::Collect { iterator, items, .. } => {
                 iterator.drop_with(heap);
                 items.drop_with(heap);
@@ -214,15 +187,7 @@ impl VM<'_> {
         Ok(match self.run_native(Ok(Step::Next(cont)))? {
             NativeExit::Value(value) => CallResult::Value(value),
             NativeExit::Parked => CallResult::FramePushed,
-            NativeExit::Landed => return Err(RunError::internal("builtin native continuation landed on a frame")),
         })
-    }
-
-    /// Advances a `for` loop whose iterator, on top of the stack, is a user instance.
-    pub(super) fn for_iter_native(&mut self, offset: i16) -> RunResult<()> {
-        let exit = self.run_native(Ok(Step::Next(NativeCont::ForIter { offset })))?;
-        self.land_native(exit);
-        Ok(())
     }
 
     /// Hands a finished `__next__` frame's outcome to the continuation it carried.
@@ -252,8 +217,6 @@ impl VM<'_> {
         loop {
             step = match step {
                 Step::Value(value) => return Ok(value),
-                // `for` loops attach only in the main loop, never under a synchronous boundary.
-                Step::Landed => return Err(RunError::internal("native continuation landed synchronously")),
                 Step::Next(cont) => {
                     let result = cont.call_next(self).and_then(|call| call.finish_synchronously(self));
                     cont.resume(result, self)?
@@ -273,7 +236,6 @@ impl VM<'_> {
         loop {
             let cont = match step {
                 Step::Value(value) => return Ok(NativeExit::Value(value)),
-                Step::Landed => return Ok(NativeExit::Landed),
                 Step::Next(cont) => cont,
             };
             // Only frameless items repeat this loop, and they reach no dispatch checkpoint.

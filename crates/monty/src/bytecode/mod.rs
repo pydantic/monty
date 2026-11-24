@@ -27,7 +27,7 @@ pub(crate) use op::opcode_fingerprint;
 pub(crate) use op::{IMPORT_STAR_LOAD, IMPORT_STAR_NAMES, NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode};
 pub(crate) use vm::{
     CallResult, CollectKind, ContainsVM, FrameGlobals, FrameNamespace, MissingNames, ModuleCache, NativeCont,
-    PendingImport, PendingLookupEffect, RecursionToken, RunReentryGuard, unpack_exact,
+    PendingImport, PendingLookupEffect, RecursionToken, RunReentryGuard, compile_iteration_catcher, unpack_exact,
 };
 pub use vm::{FrameExit, VM, VMSnapshot};
 

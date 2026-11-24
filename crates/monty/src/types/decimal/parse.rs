@@ -12,7 +12,10 @@ use super::{
 };
 use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    types::unicode_type::{decimal_value, is_space},
+    types::{
+        numeric::float_as_ratio,
+        unicode_type::{decimal_value, is_space},
+    },
 };
 
 /// Parses a numeric string as `Decimal(str)` does.
@@ -144,31 +147,6 @@ pub(crate) fn from_float(value: f64) -> Decimal {
         let (numerator, k) = float_as_ratio(value.abs());
         let coeff = numerator * num_traits::Pow::pow(BigInt::from(5u8), k);
         Decimal::from_bigint_triple(sign, &coeff, -i64::from(k))
-    }
-}
-
-/// `abs(f).as_integer_ratio()` as `(n, k)` with denominator `2**k`, lowest terms.
-fn float_as_ratio(value: f64) -> (BigInt, u32) {
-    if value == 0.0 {
-        return (BigInt::from(0u8), 0);
-    }
-    let bits = value.to_bits();
-    let exponent = i32::try_from((bits >> 52) & 0x7ff).expect("11-bit field");
-    let fraction = bits & ((1 << 52) - 1);
-    let (mut mantissa, mut exp2) = if exponent == 0 {
-        (fraction, -1074)
-    } else {
-        (fraction | (1 << 52), exponent - 1075)
-    };
-    // Reduce to lowest terms: strip the factors of two the denominator shares.
-    while exp2 < 0 && mantissa & 1 == 0 {
-        mantissa >>= 1;
-        exp2 += 1;
-    }
-    if exp2 >= 0 {
-        (BigInt::from(mantissa) << exp2.unsigned_abs(), 0)
-    } else {
-        (BigInt::from(mantissa), exp2.unsigned_abs())
     }
 }
 

@@ -1,16 +1,11 @@
 """Update vendored typeshed files from the upstream repository.
 
-This script:
-1. Clones the typeshed repository to crates/monty-typeshed/typeshed-repo (or updates if it exists)
-2. Records the HEAD commit hash
-3. Filters builtins.pyi to keep only supported classes and functions
-4. Writes the filtered file to the vendor directory
-
-Usage:
-    python crates/monty-typeshed/update.py
+Regenerate the pinned typeshed subset, including its upstream licence.
+Run `make update-typeshed` to also refresh the worker licence bundle.
 """
 
 import ast
+import hashlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -159,6 +154,11 @@ COPY_FILES = [
     # the host-backed functions from `genericpath`
     'posixpath.pyi',
     'genericpath.pyi',
+    # vendored from CPython's source (crates/monty/stdlib); `stat` re-exports from `_stat`
+    'colorsys.pyi',
+    'keyword.pyi',
+    'stat.pyi',
+    '_stat.pyi',
 ]
 # content for typeshed's `VERSIONS` file
 VERSIONS = """\
@@ -169,6 +169,7 @@ VERSIONS = """\
 
 _collections_abc: 3.3-
 _io: 3.0-  # not importable at runtime, only for type checking
+_stat: 3.0-  # not importable at runtime, only for type checking (stat re-exports from it)
 _typeshed: 3.0-  # not present at runtime, only for type checking
 abc: 3.0-  # not importable at runtime, only for type checking
 annotationlib: 3.14-  # narrowed to Monty's surface by custom/annotationlib.pyi
@@ -178,6 +179,7 @@ binascii: 3.0-
 bisect: 3.0-
 builtins: 3.0-
 collections: 3.0-
+colorsys: 3.0-
 copy: 3.0-
 csv: 3.0-
 dataclasses: 3.7-
@@ -190,6 +192,7 @@ hashlib: 3.0-
 io: 3.0-  # not importable at runtime, only for type checking
 itertools: 3.0-
 json: 3.0-
+keyword: 3.0-
 math: 3.0-
 os: 3.0-
 os.path: 3.0-
@@ -198,6 +201,7 @@ pathlib.types: 3.14-
 posixpath: 3.0-
 random: 3.0-
 re: 3.0-
+stat: 3.0-
 statistics: 3.4-
 sys: 3.0-
 time: 3.0-
@@ -217,15 +221,17 @@ TYPESHED_REPO_DIR = CRATE_DIR / 'typeshed-repo'
 
 TYPESHED_REPO_URL = 'git@github.com:python/typeshed.git'
 COMMIT = '0e16ea31d2e188fdc126cb31e7c4fcc6b5a8da96'
+# Update with the pin if the upstream licence changes; `check.py` verifies it offline.
+LICENSE_SHA256 = '295f8538c94ae5c3043301cf7cff1c852dab6a786a8ddee471e061b40d5ecabe'
+BUILTINS_NOTICE = '# Modified from python/typeshed: Monty removes unsupported builtins.\n'
 
 
 def clone_or_update_typeshed() -> None:
     """Clone or update the typeshed repository to be at COMMIT.
 
     If the repository already exists at TYPESHED_REPO_DIR, fetches the target
-    commit. Otherwise, clones the repository. In both cases, checks out COMMIT
-    and then refuses to continue if the working tree is dirty — local edits
-    would otherwise be vendored while source_commit.txt still claims COMMIT.
+    commit. Otherwise, clones the repository. Rejects a dirty working tree
+    so the checkout can switch pins on subsequent updates.
     """
     if TYPESHED_REPO_DIR.exists():
         # Check if already at the right commit
@@ -277,7 +283,7 @@ def clone_or_update_typeshed() -> None:
     )
     if status.stdout.strip():
         raise ValueError(
-            f'{TYPESHED_REPO_DIR} has local modifications that would leak into the vendored stubs;'
+            f'{TYPESHED_REPO_DIR} has local modifications;'
             f' discard them (or delete the directory to re-clone) and re-run:\n{status.stdout}'
         )
 
@@ -368,40 +374,38 @@ def main() -> int:
     # there must leave the existing vendor directory untouched
     clone_or_update_typeshed()
     print(f'At python/typeshed commit {COMMIT}')
+    license_text = read_upstream('LICENSE')
+    if hashlib.sha256(license_text).hexdigest() != LICENSE_SHA256:
+        raise ValueError('the upstream typeshed LICENSE changed; review it and update LICENSE_SHA256')
 
     # Clean up any stale files from previous runs
     if VENDOR_DIR.exists():
         print(f'Removing existing {VENDOR_DIR}...')
         shutil.rmtree(VENDOR_DIR)
 
-    # Read source file
-    src_stdlib = TYPESHED_REPO_DIR / 'stdlib'
-    builtins_path = src_stdlib / 'builtins.pyi'
-    source = builtins_path.read_text()
-
-    # Filter
-    filtered = filter_builtins(source)
+    filtered = filter_builtins(read_upstream('stdlib/builtins.pyi').decode())
 
     # Write output files
     STDLIB_DIR.mkdir(parents=True, exist_ok=True)
 
-    (STDLIB_DIR / 'builtins.pyi').write_text(filtered)
-    print(f'Wrote {(STDLIB_DIR / "builtins.pyi").relative_to(REPO_ROOT)}')
+    (VENDOR_DIR / 'LICENSE').write_bytes(license_text)
+    builtins = STDLIB_DIR / 'builtins.pyi'
+    builtins.write_bytes(f'{BUILTINS_NOTICE}\n{filtered}\n'.encode())
+    # Normalize the AST-generated stub without reformatting the upstream copies.
+    subprocess.run(['ruff', 'format', builtins], cwd=REPO_ROOT, check=True)
+    subprocess.run(['ruff', 'check', '--fix-only', '--ignore', 'F403,F821', builtins], cwd=REPO_ROOT, check=True)
+    print(f'Wrote {builtins.relative_to(REPO_ROOT)}')
 
-    (STDLIB_DIR / 'VERSIONS').write_text(VERSIONS)
+    (STDLIB_DIR / 'VERSIONS').write_bytes(VERSIONS.encode())
     print(f'Wrote {(STDLIB_DIR / "VERSIONS").relative_to(REPO_ROOT)}')
 
-    (VENDOR_DIR / 'source_commit.txt').write_text(f'{COMMIT}\n')
+    (VENDOR_DIR / 'source_commit.txt').write_bytes(f'{COMMIT}\n'.encode())
     print(f'Wrote {(VENDOR_DIR / "source_commit.txt").relative_to(REPO_ROOT)}')
 
     for file_path in COPY_FILES:
-        src_file = src_stdlib / file_path
-        if src_file.exists():
-            dest_file = STDLIB_DIR / file_path
-            dest_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_file, dest_file)
-        else:
-            raise ValueError(f'{file_path} not found in typeshed')
+        dest_file = STDLIB_DIR / file_path
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
+        dest_file.write_bytes(read_upstream(f'stdlib/{file_path}'))
     print(f'Copied {len(COPY_FILES)} stdlib typeshed files')
 
     # Copy Monty's narrowed stubs from CUSTOM_DIR over the upstream copies,
@@ -417,6 +421,11 @@ def main() -> int:
     print(f'Copied {custom_count} custom typeshed files')
 
     return 0
+
+
+def read_upstream(path: str) -> bytes:
+    """Read pinned bytes without checkout filters or line ending conversion."""
+    return subprocess.check_output(['git', 'cat-file', 'blob', f'{COMMIT}:{path}'], cwd=TYPESHED_REPO_DIR)
 
 
 if __name__ == '__main__':

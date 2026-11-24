@@ -138,22 +138,20 @@ Everything else raises `AttributeError`, including: `truncate()`,
     It can still change the file on storage.
     A subsequent seek from EOF in `wb` refreshes the file length with a host stat call;
     readable files reload their buffer as usual.
-- Iterating a file that has not been read yet needs that host load, which
-    only the `for` statement and the `next()` builtin can issue. Any other
-    consumer of the iterator protocol (`list(f)`, `enumerate(f)`, `zip(f, …)`,
-    `sorted(f)`, `''.join(f)`, …)
-    raises `NotImplementedError: iterating an unread _io.TextIOWrapper is only supported by 'for' loops and next(); call seek(0) first to load it`
+- Synchronous consumers of an unread file (`list(f)`, `enumerate(f)`, `zip(f, …)`, `sorted(f)`, `''.join(f)`, …)
+    cannot issue its host load.
+    They raise `NotImplementedError: iterating an unread _io.TextIOWrapper cannot suspend in this synchronous context; call seek(0) first to load it`
     (`_io.BufferedReader` in binary mode).
-    Once any read, `seek()` or iteration step has loaded the buffer, every
-    consumer works. Comprehensions and generator expressions compile to `for`
-    loops and are unaffected, so `list(x for x in f)` reads an unread file.
+    This also applies when they consume the file through `map` or `filter`.
+    Load the buffer first with a read or `seek()`, or use `next()`, a loop or a comprehension.
 - `close()` releases the cached buffer (matching CPython), returning its memory
     when no other value, such as `data = f.read()`, retains it.
 - Reading a closed file always raises `ValueError: I/O operation on closed file.`,
     CPython's text-mode wording; CPython's binary files say `read of closed file`.
 - File I/O is rejected inside callbacks the interpreter evaluates in a
     synchronous context that cannot suspend to the host — the `key` of
-    `sorted()`/`list.sort()`/`min()`/`max()`, `map()`/`filter()` functions,
+    `sorted()`/`list.sort()`/`min()`/`max()`, `map` or `filter` callbacks driven by a synchronous consumer
+    (such as `list(map(...))` or `sorted(filter(...))`),
     `iter(callable, sentinel)`, `defaultdict`'s `default_factory`, and dunder
     methods that cannot suspend (see [classes.md](classes.md)).
     The first read that needs the host raises

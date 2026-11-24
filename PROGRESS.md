@@ -6,26 +6,53 @@ Implements step 1 of the plan in pydantic/monty#1374 ("serializable native conti
 ## What was done
 
 A user `__next__` that calls an external or OS function used to fail with
-`NotImplementedError: ... cannot suspend in this synchronous context` under `for`, `list()`, `tuple()` and `sum()`.
+`NotImplementedError: ... cannot suspend in this synchronous context` under `list()`, `tuple()` and `sum()`.
 These consumers now park a serializable Rust continuation on the `__next__` frame instead of running it in a nested
 `vm.run()`, so the suspension leaves only the main loop on the Rust stack and the session can be dumped.
 
-- `crates/monty/src/bytecode/vm/native_cont.rs` (new): `NativeCont` (`ForIter`, `Collect`, `Sum`), the trampoline
-    `run_native`, `start_native` for builtins, `for_iter_native` for the opcode, `resume_native` for the return/unwind
-    hooks, and `finish_native_synchronously` for Rust callers that cannot yield.
+`for` loops and comprehensions were part of this branch at first. Upstream #1384 (merged 2026-11-23) made them
+suspend with its own mechanism (a stepping `py_next` returning `CallResult`, plus a frozen catcher frame), so this
+branch now uses that and keeps only the consumers #1384 left synchronous. See "Rework onto #1384" below.
+
+- `crates/monty/src/bytecode/vm/native_cont.rs` (new): `NativeCont` (`Collect`, `Sum`), the trampoline
+    `run_native`, `start_native` for builtins, `resume_native` for the return/unwind hooks, and
+    `finish_native_synchronously` for Rust callers that cannot yield.
 - `CallFrame.continuation: Option<Box<NativeCont>>`, serialized as `K` on `SerializedFrame` (and on
-    `SerializedTaskFrame`) with `#[serde(default, skip_serializing_if)]`: old dumps load and dumps with no live
-    continuation are byte-identical to before, so no `DUMP_VERSION` bump.
+    `SerializedTaskFrame`) with `#[serde(default, skip_serializing_if)]`, so dumps with no live continuation are
+    byte-identical to before. Upstream already bumped `DUMP_VERSION` to 17 for #1384 in this release cycle, which
+    also covers this field: a v16 release refuses these dumps rather than silently dropping a continuation.
 - Hooks: `ReturnValue` and `handle_exception_step` hand the popped frame's outcome to its continuation. Only
     `StopIteration` is intercepted; any other exception keeps unwinding with the same exception object. Released in
     `cleanup_frame_state`, `cleanup_current_task`, `Task::drop_with` and `VMSnapshot::abandon`.
 - `CallResult::finish_synchronously` takes a continuation off a just-pushed frame and drives it synchronously, so
     `evaluate_function`/`require_synchronous` callers (`map(tuple, ...)`, `sorted(key=...)`) keep working.
-- Consumers: the `ForIter` opcode (so `for` loops and comprehensions), `list()` and `tuple()` (now
-    `Constructor::Call`), and `sum()` (now returns `CallResult`).
+- Consumers: `list()` and `tuple()` (now `Constructor::Call`), and `sum()` (now returns `CallResult`).
 - Docs: `limitations/iter.md` and `limitations/classes.md` say which consumers can now suspend.
 
-## Merge with upstream (2026-11-23)
+## Rework onto #1384 (2026-11-24)
+
+Merged upstream `cfa9cec8`, which includes #1384 "make iteration suspendable".
+
+- Dropped our `NativeCont::ForIter` and the `ForIter` opcode hook; the opcode is upstream's version unchanged.
+    The `for` and comprehension sections of `ext_call__native_continuation.py` stay as regression tests and pass on
+    upstream's mechanism, including the dump/reload at every host call.
+- Dropped the local `DUMP_VERSION` bump: upstream is already at 17.
+- Regenerated the native-continuation fixture as `native_continuations_v17_suspended.bin`: the old one held a
+    `ForIter` continuation, which no longer exists. Only this unmerged branch ever wrote it. The same scenario now
+    dumps #1384's catcher frame (`for`) between two `NativeCont`s (`sum`, `list`).
+- `resource_limits::max_turn_duration_restarts_each_resume` failed in 2 of 4 runs while other cargo builds were
+    running, and passed 10/10 on an idle machine. It is a wall-clock test with a 50 ms per-turn budget; I treat it
+    as a load flake, but it runs `sum(range(1_000))`, which goes through the refactored `sum.rs`.
+- `tests/main.rs`: kept upstream's `external_function_in_next_suspends` (`for`) and our `set()` version of
+    `external_function_in_next_raises_not_implemented` side by side.
+- Limitations pages merged and re-checked against a probe run (Monty vs CPython): `list()`/`tuple()`/`sum()` over a
+    user iterator suspend; `set()`, `list(map(...))`, `sum(map(...))` and `list()` over a suspending `__iter__` still
+    raise `NotImplementedError`; `for` over `map(...)` and over a suspending `__iter__` suspend (#1384).
+- Open design question for the maintainers: the interpreter now has two continuation mechanisms, #1384's catcher
+    frame for `ForIter` and `NativeCont` for builtins that return a value. Whether builtins can reuse #1384's
+    mechanism, or whether `NativeCont` should absorb `ForIter`, is raised in the upstream PR rather than decided here.
+
+## Earlier merge with upstream (2026-11-23)
 
 The fork's `main` was fast-forwarded to upstream `5f4a3dfc` (v1.7.0-beta.1), and that was merged into this
 branch. The only textual conflict was `builtins/sum.rs`, but it hid a semantic one. Upstream #1386 switched
@@ -38,7 +65,7 @@ plain `+`. After the merge, `sum()` over a suspending user iterator of floats wo
     `Phase` and `CompensatedSum` became `Serialize`/`Deserialize`, so their variant names are now dump format.
 - New differential cases sum floats, complex numbers, mixed numbers, lists, and a float sum interrupted by a
     `str`, all from a suspending iterator.
-- `native_continuations_v16_suspended.bin` was regenerated, since `phase` is a required field. Only this
+- `native_continuations_v17_suspended.bin` was regenerated, since `phase` is a required field. Only this
     unmerged branch had ever written that fixture, so no released dump has the old shape.
 
 ## Tests
@@ -61,12 +88,12 @@ suspension inside a continuation goes through the serialized format.
 - `dump_compat.rs::native_continuations_fixture_loads_and_resumes`: a checked-in dump suspended three
     continuations deep (`sum` → `for` → `list`) loads and finishes, and is re-dumped at each later suspension.
 
-### Results (macOS, after the upstream merge, 2026-11-23)
+### Results (macOS, after the #1384 rework, 2026-11-24)
 
 | Suite                                                                            | Result                            |
 | -------------------------------------------------------------------------------- | --------------------------------- |
 | `make lint-rs` (clippy + import check), `make lint-py`                           | clean                             |
-| `cargo run -p monty-datatest` (all test_cases, CPython and Monty)                | 1582 passed, 0 failed             |
+| `cargo run -p monty-datatest` (all test_cases, CPython and Monty)                | 1598 passed, 0 failed             |
 | `cargo test -p monty` (every binary except `heap_reader_compile_fail`)           | all pass                          |
 | `cargo test -p monty --test heap_reader_compile_fail`                            | 3 fail, toolchain only: see below |
 | `memory-model-checks`: native-continuation test_cases (4 files × 2 interpreters) | 8 passed                          |
@@ -138,14 +165,8 @@ caused by this branch:
 
 Nothing blocked the step-1 scope. These need a decision from you:
 
-1. **Bump `DUMP_VERSION` to 17? (recommended; upstream policy now requires it.)** `K` is optional and skipped when
-    empty, so old dumps load and dumps without a live continuation are byte-identical. But a dump written while
-    suspended inside a continuation, loaded by a release at version 16 (such as v1.7.0-beta.1), loads without
-    error: serde ignores the unknown `K`. That release then drops the continuation and resumes with wrong results.
-    Upstream #1336 (merged in) now says releases with the same dump version must read each other's dumps in both
-    directions, and to "bump for the first incompatible change since the last published release". That makes
-    this a required bump to 17 (keeping `MIN_SUPPORTED_DUMP_VERSION`), plus regenerating the current-version
-    fixtures. I have not done it yet, because it rewrites shared fixtures; say the word and I will.
+1. **`DUMP_VERSION` (resolved).** Upstream bumped it to 17 for #1384 in the same release cycle, which also makes
+    dumps with a live `K` continuation unreadable by v16 releases, as the dump policy requires. No extra bump.
 1. **Pre-existing traceback bug found (not fixed, out of scope).** When an exception passes through an `except`
     that does not match it, Monty reports the frame at the handler's last line rather than where the exception
     was raised. It reproduces on plain code with no continuation:

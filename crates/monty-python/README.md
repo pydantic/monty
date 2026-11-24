@@ -17,6 +17,10 @@ uv add pydantic-monty-client
 pip install pydantic-monty-client
 ```
 
+The client wheel does not contain the worker, vendored CPython modules, or typeshed stubs.
+The client source distribution contains the `monty` and `monty-typeshed` crates with their upstream licences and notices,
+but not `monty-runtime`.
+
 ## Usage with a remote monty server
 
 You can use this library alone to connect to a remote monty server over gRPC: one HTTP/2 connection per pool, one
@@ -65,6 +69,10 @@ Malformed request metadata also raises `MontyConfigurationError` before any conn
 Creating a pool with invalid settings raises it too: `min_processes` (or `pre_warm`) above `max_processes`, or a local CPU clock
 off Linux or without a finite `request_timeout`.
 
+Operations under `AsyncMonty` or `AsyncMontyRemote` return coroutines, not eagerly started `asyncio.Future` objects.
+Await them directly or schedule them with `asyncio.create_task()` if you need a task to cancel.
+Blocking callbacks block the event loop; see [async host functions](https://pydantic.dev/docs/monty/concepts/host-functions/#async-host-functions).
+
 ## Host decode budget
 
 `AsyncMontyRemote(max_decode_bytes=...)` can lower the default 1 GiB allocation budget for each decoded protocol frame.
@@ -76,6 +84,7 @@ Separately, the transport refuses any message larger than the budget, clamped be
 
 ## Usage with a local monty worker
 
+Async snapshot resume operations claim the snapshot when they start running, not when the coroutine is created.
 `AsyncFutureSnapshot.resume_auto()` raises without consuming the snapshot when no host coroutines remain to await,
 including after `load_snapshot()`.
 Resolve the pending calls manually with `await snapshot.resume({call_id: {'return_value': value}})` instead.

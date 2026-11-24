@@ -11,7 +11,7 @@ mod chr;
 mod divmod;
 mod enumerate;
 pub(crate) mod eval_exec;
-mod filter;
+pub(crate) mod filter;
 mod format;
 mod getattr;
 mod hasattr;
@@ -23,7 +23,7 @@ pub(crate) mod issubclass;
 pub(crate) mod iter;
 mod len;
 mod locals;
-mod map;
+pub(crate) mod map;
 mod min_max; // min and max share implementation
 pub(crate) use min_max::candidate_wins;
 pub(crate) use sum::Phase as SumPhase;
@@ -162,7 +162,8 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Chr => chr::builtin_chr(vm, args),
             Self::Divmod => divmod::builtin_divmod(vm, args),
             Self::Enumerate => enumerate::builtin_enumerate(vm, args),
-            Self::Filter => filter::builtin_filter(vm, args),
+            Self::Filter => return filter::builtin_filter(vm, args),
+            Self::Map => return map::builtin_map(vm, args),
             Self::Format => format::builtin_format(vm, args),
             // `getattr()` / `hasattr()` may suspend a lazy host attribute lookup.
             Self::Getattr => return getattr::builtin_getattr(vm, args),
@@ -173,7 +174,6 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Isinstance => isinstance::builtin_isinstance(vm, args),
             Self::Issubclass => issubclass::builtin_issubclass(vm, args),
             Self::Len => len::builtin_len(vm, args),
-            Self::Map => map::builtin_map(vm, args),
             Self::Max => min_max::builtin_max(vm, args),
             Self::Min => min_max::builtin_min(vm, args),
             // `next()` on an unread file yields the read that loads it.

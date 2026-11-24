@@ -352,6 +352,45 @@ fn external_function_in_next_raises_not_implemented() {
     "#);
 }
 
+/// A loop can suspend inside `__next__`; host errors retain both user traceback frames.
+#[test]
+fn external_function_in_next_suspends() {
+    let code = "class Foo:\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        return ext_fn()\n\nfor _x in Foo():\n    pass";
+    let runner = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(
+            vec![MontyObject::function("ext_fn", None)],
+            ResourceTracker::default(),
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    let RunProgress::FunctionCall(call) = progress else {
+        panic!("expected iterator callback")
+    };
+    let err = call
+        .resume(
+            ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("host failed".to_owned()))),
+            PrintWriter::Disabled,
+        )
+        .unwrap_err();
+    assert_snapshot!(err.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 8, in <module>
+        for _x in Foo():
+                  ~~~~~
+      File "test.py", line 6, in __next__
+        return ext_fn()
+               ~~~~~~~~
+    ValueError: host failed
+    "#);
+}
+
 /// Iterator acquisition reports both the synchronous consumer and the suspended method in its traceback.
 #[test]
 fn synchronous_sum_acquisition_has_traceback() {
@@ -424,6 +463,16 @@ for _ in range(3):
         assert False, 'expected synchronous advancement to fail'
     except NotImplementedError as exc:
         assert str(exc) == "external function 'ext_fn' cannot suspend in this synchronous context"
+    for constructor in (map, filter):
+        for callback in (ext_fn, lambda item: ext_fn(item)):
+            source = iter([['owned'], ['remaining']])
+            adapted = constructor(callback, source)
+            try:
+                list(adapted)
+                assert False, 'expected synchronous callback to fail'
+            except NotImplementedError as exc:
+                assert str(exc) == "external function 'ext_fn' cannot suspend in this synchronous context"
+            assert next(source) == ['remaining']
     assert list(RecoverIter()) == [1, 2]
 42
 "#;

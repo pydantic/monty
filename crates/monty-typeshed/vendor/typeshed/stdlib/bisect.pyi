@@ -1,3 +1,4 @@
+# Modified from python/typeshed's stdlib/bisect.pyi for Monty's bisect implementation.
 from collections.abc import Callable, MutableSequence
 from typing import SupportsIndex, TypeVar, overload
 

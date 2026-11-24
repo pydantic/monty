@@ -944,6 +944,8 @@ assert threw
 # === math.atanh() ===
 assert math.atanh(0) == 0.0
 assert math.isclose(math.atanh(0.5), 0.5493061443340549)
+assert math.isclose(math.atanh(-0.9999999999999999), -18.714973875118524, rel_tol=1e-15)
+assert math.isclose(math.atanh(-0.9999999999999994), -17.910254918901472, rel_tol=1e-15)
 assert math.isnan(math.atanh(float('nan')))
 
 threw = False

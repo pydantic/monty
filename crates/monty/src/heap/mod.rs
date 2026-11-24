@@ -1871,17 +1871,7 @@ impl Drop for Heap {
 /// freeing/decref paths; the two must stay in sync.
 fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
     match data {
-        HeapData::List(list) => {
-            // Skip iteration if no refs - major GC optimization for lists of primitives
-            if !list.contains_refs() {
-                return;
-            }
-            for value in list.as_slice() {
-                if let Value::Ref(id) = value {
-                    on_child(*id);
-                }
-            }
-        }
+        HeapData::List(list) => list.for_each_child_id(on_child),
         // MUST report exactly the same ids as `Deque::py_dec_ref_ids` — reporting
         // fewer leaks, reporting more is a use-after-free.
         HeapData::Deque(deque) => {
@@ -2109,6 +2099,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::DictValueIterator(iter) => on_child(iter.source_id()),
         HeapData::SetIterator(iter) => on_child(iter.source_id()),
         HeapData::CallableIterator(iter) => iter.for_each_child_id(on_child),
+        HeapData::MapFilter(iter) => iter.for_each_child_id(on_child),
         HeapData::DirScan(scan) => scan.for_each_child_id(on_child),
         HeapData::Itertools(iter) => iter.for_each_child_id(on_child),
         HeapData::Csv(csv) => csv.for_each_child_id(on_child),
@@ -2264,6 +2255,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::DictValueIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::SetIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::CallableIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::MapFilter(iter) => iter.py_dec_ref_ids(stack),
         HeapData::DirScan(scan) => scan.py_dec_ref_ids(stack),
         HeapData::Itertools(iter) => iter.py_dec_ref_ids(stack),
         HeapData::Csv(csv) => csv.py_dec_ref_ids(stack),
@@ -2407,8 +2399,7 @@ mod tests {
         let data = unsafe { &mut *entry.data.0.get() };
         match data {
             HeapData::List(list) => {
-                list.set_contains_refs();
-                list.as_vec_mut().push(Value::Ref(id));
+                list.extend_owned([Value::Ref(id)]);
             }
             _ => unreachable!(),
         }
@@ -2444,10 +2435,7 @@ mod tests {
             let data = unsafe { &mut *entry.data.0.get() };
             match data {
                 HeapData::List(list) => {
-                    list.set_contains_refs();
-                    for r in refs {
-                        list.as_vec_mut().push(Value::Ref(*r));
-                    }
+                    list.extend_owned(refs.iter().copied().map(Value::Ref));
                 }
                 _ => unreachable!(),
             }
@@ -2563,7 +2551,7 @@ mod tests {
             heap.dec_ref(id);
             // Read through the now-invalidated `SharedReadWrite` raw pointer.
             // Miri's aliasing model fails here.
-            let _ = list.get(heap).as_slice().len();
+            let _ = list.get(heap).len();
         });
     }
 
@@ -2758,8 +2746,7 @@ mod tests {
                 unreachable!("just allocated a list")
             };
             let l = l.get_mut(reader);
-            l.set_contains_refs();
-            l.as_vec_mut().push(Value::Ref(iter));
+            l.extend_owned([Value::Ref(iter)]);
         });
         // list.rc = 2, iter.rc = 2, sentinel.rc = 2.
 

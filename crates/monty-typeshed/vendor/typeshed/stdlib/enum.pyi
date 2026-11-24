@@ -1,46 +1,45 @@
+import _typeshed
 import sys
 import types
+from _typeshed import SupportsKeysAndGetItem, Unused
 from builtins import property as _builtins_property
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Any, Final, Generic, Literal, SupportsIndex, TypeVar, overload
-
-import _typeshed
-from _typeshed import SupportsKeysAndGetItem, Unused
 from typing_extensions import Self, TypeAlias, disjoint_base
 
-__all__ = ['EnumMeta', 'Enum', 'IntEnum', 'Flag', 'IntFlag', 'auto', 'unique']
+__all__ = ["EnumMeta", "Enum", "IntEnum", "Flag", "IntFlag", "auto", "unique"]
 
 if sys.version_info >= (3, 11):
     __all__ += [
-        'CONFORM',
-        'CONTINUOUS',
-        'EJECT',
-        'EnumCheck',
-        'EnumType',
-        'FlagBoundary',
-        'KEEP',
-        'NAMED_FLAGS',
-        'ReprEnum',
-        'STRICT',
-        'StrEnum',
-        'UNIQUE',
-        'global_enum',
-        'global_enum_repr',
-        'global_flag_repr',
-        'global_str',
-        'member',
-        'nonmember',
-        'property',
-        'verify',
-        'pickle_by_enum_name',
-        'pickle_by_global_name',
+        "CONFORM",
+        "CONTINUOUS",
+        "EJECT",
+        "EnumCheck",
+        "EnumType",
+        "FlagBoundary",
+        "KEEP",
+        "NAMED_FLAGS",
+        "ReprEnum",
+        "STRICT",
+        "StrEnum",
+        "UNIQUE",
+        "global_enum",
+        "global_enum_repr",
+        "global_flag_repr",
+        "global_str",
+        "member",
+        "nonmember",
+        "property",
+        "verify",
+        "pickle_by_enum_name",
+        "pickle_by_global_name",
     ]
 
 if sys.version_info >= (3, 13):
-    __all__ += ['EnumDict']
+    __all__ += ["EnumDict"]
 
-_EnumMemberT = TypeVar('_EnumMemberT')
-_EnumerationT = TypeVar('_EnumerationT', bound=type[Enum])
+_EnumMemberT = TypeVar("_EnumMemberT")
+_EnumerationT = TypeVar("_EnumerationT", bound=type[Enum])
 
 # The following all work:
 # >>> from enum import Enum
@@ -284,9 +283,9 @@ if sys.version_info >= (3, 11):
         def _generate_next_value_(name: str, start: int, count: int, last_values: list[str]) -> str: ...
 
     class EnumCheck(StrEnum):
-        CONTINUOUS = 'no skipped integer values'
-        NAMED_FLAGS = 'multi-flag aliases may not contain unnamed flags'
-        UNIQUE = 'one name per value'
+        CONTINUOUS = "no skipped integer values"
+        NAMED_FLAGS = "multi-flag aliases may not contain unnamed flags"
+        UNIQUE = "one name per value"
 
     CONTINUOUS: Final = EnumCheck.CONTINUOUS
     NAMED_FLAGS: Final = EnumCheck.NAMED_FLAGS
@@ -297,10 +296,10 @@ if sys.version_info >= (3, 11):
         def __call__(self, enumeration: _EnumerationT) -> _EnumerationT: ...
 
     class FlagBoundary(StrEnum):
-        STRICT = 'strict'
-        CONFORM = 'conform'
-        EJECT = 'eject'
-        KEEP = 'keep'
+        STRICT = "strict"
+        CONFORM = "conform"
+        EJECT = "eject"
+        KEEP = "keep"
 
     STRICT: Final = FlagBoundary.STRICT
     CONFORM: Final = FlagBoundary.CONFORM
@@ -371,6 +370,4 @@ class auto:
 
 if sys.version_info >= (3, 11):
     def pickle_by_global_name(self: Enum, proto: int) -> str: ...
-    def pickle_by_enum_name(
-        self: _EnumMemberT, proto: int
-    ) -> tuple[Callable[..., Any], tuple[type[_EnumMemberT], str]]: ...
+    def pickle_by_enum_name(self: _EnumMemberT, proto: int) -> tuple[Callable[..., Any], tuple[type[_EnumMemberT], str]]: ...
