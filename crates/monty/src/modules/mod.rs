@@ -31,6 +31,7 @@ pub(crate) mod functools;
 #[cfg(feature = "test-hooks")]
 pub(crate) mod gc;
 pub(crate) mod hashlib;
+pub(crate) mod io;
 pub(crate) mod itertools;
 pub(crate) mod json;
 pub(crate) mod math;
@@ -114,6 +115,8 @@ pub(crate) enum StandardLib {
     Annotationlib,
     /// The `statistics` module: means, medians, modes, variances and quantiles.
     Statistics,
+    /// The `io` module: `StringIO`, `BytesIO`, the file classes and constants.
+    Io,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -154,6 +157,7 @@ impl StandardLib {
             StaticStrings::Fnmatch => Some(Self::Fnmatch),
             StaticStrings::Annotationlib => Some(Self::Annotationlib),
             StaticStrings::Statistics => Some(Self::Statistics),
+            StaticStrings::Io => Some(Self::Io),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -201,6 +205,7 @@ impl StandardLib {
             Self::Fnmatch => fnmatch::create_module(vm),
             Self::Annotationlib => annotationlib::create_module(vm),
             Self::Statistics => statistics::create_module(vm),
+            Self::Io => io::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         };
@@ -245,7 +250,8 @@ impl StandardLib {
             | Self::Tomllib
             | Self::Fnmatch
             | Self::Annotationlib
-            | Self::Statistics => Some(&[]),
+            | Self::Statistics
+            | Self::Io => Some(&[]),
         }
     }
 }
@@ -255,7 +261,7 @@ impl StandardLib {
 /// Every dump reaches these through `Value::ModuleFunction`, encoded by variant
 /// name, so renaming a variant needs `#[serde(alias)]` (see `DUMP_VERSION`).
 /// Explicit discriminants are permanent module identity codes; never change or reuse them.
-#[monty_macros::explicit_discriminants(checksum = 0x372d_a81d_21f2_6e14)]
+#[monty_macros::explicit_discriminants(checksum = 0xb5cd_b4d0_73ca_9edc)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::EnumDiscriminants)]
 #[repr(u8)]
 pub(crate) enum ModuleFunctions {
@@ -286,6 +292,7 @@ pub(crate) enum ModuleFunctions {
     Typing(typing::TypingFunctions) = 23,
     Annotationlib(annotationlib::AnnotationlibFunctions) = 24,
     Statistics(statistics::StatisticsFunctions) = 25,
+    Io(io::IoFunctions) = 28,
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; test-only variants are grouped last.
     #[cfg(feature = "test-hooks")]
@@ -327,6 +334,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Typing(func) => write!(f, "{func}"),
             Self::Annotationlib(func) => write!(f, "{func}"),
             Self::Statistics(func) => write!(f, "{func}"),
+            Self::Io(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -368,6 +376,7 @@ impl ModuleFunctions {
             Self::Typing(functions) => typing::call(vm, functions, args),
             Self::Annotationlib(functions) => annotationlib::call(vm, functions, args),
             Self::Statistics(functions) => statistics::call(vm, functions, args).map(CallResult::Value),
+            Self::Io(functions) => io::call(vm, functions, args),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

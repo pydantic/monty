@@ -2910,6 +2910,101 @@ pub(crate) trait ExcTypeExt: Sized {
         )
         .into()
     }
+
+    /// `ValueError: I/O operation on closed file.` — the wording of `IOBase`
+    /// methods and of `BytesIO`, `open()` files and text-mode reads.
+    #[must_use]
+    fn value_error_closed_file() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "I/O operation on closed file.").into()
+    }
+
+    /// `ValueError: I/O operation on closed file` — no full stop, as
+    /// `StringIO`'s own methods word it.
+    #[must_use]
+    fn value_error_closed_string_io() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "I/O operation on closed file").into()
+    }
+
+    /// `io.UnsupportedOperation: {message}`, e.g. `fileno` on an in-memory stream.
+    #[must_use]
+    fn unsupported_operation(message: &str) -> RunError {
+        SimpleException::new_msg(ExcType::UnsupportedOperation, message).into()
+    }
+
+    /// `TypeError: argument should be integer or None, not 'X'` — CPython's
+    /// `_Py_convert_optional_to_ssize_t`, behind the io `size` arguments.
+    #[must_use]
+    fn type_error_integer_or_none(type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("argument should be integer or None, not '{type_}'"),
+        )
+        .into()
+    }
+
+    /// `TypeError: integer argument expected, got 'X'` — `BytesIO.readlines(hint)`.
+    #[must_use]
+    fn type_error_integer_argument_expected(type_: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("integer argument expected, got '{type_}'")).into()
+    }
+
+    /// `TypeError: a bytes-like object is required, not 'X'`.
+    #[must_use]
+    fn type_error_bytes_like_required(type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("a bytes-like object is required, not '{type_}'"),
+        )
+        .into()
+    }
+
+    /// `TypeError: string argument expected, got 'X'` — `StringIO.write()`.
+    #[must_use]
+    fn type_error_string_argument_expected(type_: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("string argument expected, got '{type_}'")).into()
+    }
+
+    /// `TypeError: {arg} must be str or None, not X` — `StringIO()`'s
+    /// `initial_value` and `newline`.
+    #[must_use]
+    fn type_error_str_or_none(arg: &str, type_: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("{arg} must be str or None, not {type_}")).into()
+    }
+
+    /// `ValueError: illegal newline value: 'x'`.
+    #[must_use]
+    fn value_error_illegal_newline(value: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("illegal newline value: {}", StringRepr(value)),
+        )
+        .into()
+    }
+
+    /// `ValueError: Invalid whence (N, should be 0, 1 or 2)` (`StringIO`), or
+    /// the lower-case `invalid whence` `BytesIO` uses.
+    #[must_use]
+    fn value_error_invalid_whence(whence: i64, capitalised: bool) -> RunError {
+        let word = if capitalised { "Invalid" } else { "invalid" };
+        SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("{word} whence ({whence}, should be 0, 1 or 2)"),
+        )
+        .into()
+    }
+
+    /// `OSError: Can't do nonzero cur-relative seeks` — a text stream's
+    /// `seek()` with a nonzero offset from the current position or the end.
+    #[must_use]
+    fn os_error_nonzero_relative_seek() -> RunError {
+        SimpleException::new_msg(ExcType::OSError, "Can't do nonzero cur-relative seeks").into()
+    }
+
+    /// `OverflowError: new position too large` — `BytesIO.seek()` past `ssize_t`.
+    #[must_use]
+    fn overflow_new_position_too_large() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "new position too large").into()
+    }
 }
 
 /// The constructor of every native exception class, for the native type table.

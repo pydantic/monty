@@ -63,6 +63,7 @@ pub(super) fn module_function(value: ModuleFunctions) -> u128 {
         ModuleFunctions::Typing(function) => function as u32,
         ModuleFunctions::Annotationlib(function) => function as u32,
         ModuleFunctions::Statistics(function) => function as u32,
+        ModuleFunctions::Io(function) => function as u32,
         #[cfg(feature = "test-hooks")]
         ModuleFunctions::Gc(function) => function as u32,
         #[cfg(feature = "test-hooks")]

@@ -41,10 +41,11 @@ from the notes below.
     When the reader's file is loaded at construction, a host read error is reported before a bad
     dialect, format parameter or keyword would be; CPython validates the arguments first and never reads
     there.
-- **`writer.writerows()` on a file issues one write.**
-    The rows are formatted and written to the file in a single host call, where CPython calls `write()`
-    once per row, so a row that fails to format leaves the file untouched instead of partly written.
-    `DictWriter.writerows()` on a file flattens every dict before writing for the same reason.
+- **`writer.writerows()` on a file or io stream issues one write.**
+    The rows are formatted and written to an `open()` file, `io.StringIO` or `io.BytesIO` in a single
+    `write()` call, where CPython calls `write()` once per row, so a row that fails to format leaves the
+    file or stream untouched instead of partly written.
+    `DictWriter.writerows()` on one flattens every dict before writing for the same reason.
     Any other target (an object with a `write()` method) is called once per row as the rows arrive, but
     synchronously: a `write()` that reaches an external function or host call raises `NotImplementedError`
     (see [classes.md](classes.md) for this restriction).

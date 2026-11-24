@@ -13,11 +13,12 @@ underneath (see [sys.md](sys.md)).
 
 ## Rejected / ignored
 
-- `file=...` — only `sys.stdout` and `sys.stderr` are accepted; both are
-    opaque markers matched by identity (see [sys.md](sys.md)). Anything else
-    raises `TypeError: "print() 'file' argument must be sys.stdout or sys.stderr, not {type}"`,
-    including an object defining `write()`, which CPython would call. CPython
-    instead raises `AttributeError: '{type}' object has no attribute 'write'`
+- `file=...` — only `sys.stdout`, `sys.stderr` and an `io.StringIO` or `io.BytesIO` are accepted.
+    The first two are opaque markers matched by identity (see [sys.md](sys.md)).
+    Anything else raises
+    `TypeError: "print() 'file' argument must be sys.stdout, sys.stderr, io.StringIO or io.BytesIO, not {type}"`,
+    including an `open()` file and an object defining `write()`, both of which CPython would write to.
+    CPython instead raises `AttributeError: '{type}' object has no attribute 'write'`
     for an object without one.
 - `flush=...` — accepted and ignored. Output is delivered to the host through
     the subprocess protocol on its own schedule (see "Chunk boundaries" below);

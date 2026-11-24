@@ -37,6 +37,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `fnmatch`       | [fnmatch.md](fnmatch.md)              |
 | `functools`     | [functools.md](functools.md)          |
 | `hashlib`       | [hashlib.md](hashlib.md)              |
+| `io`            | [io.md](io.md)                        |
 | `itertools`     | [itertools.md](itertools.md)          |
 | `json`          | [json.md](json.md)                    |
 | `keyword`       | [vendored](#vendored-cpython-modules) |
@@ -69,7 +70,7 @@ production sandboxes never see it.
 Common modules that are *not* importable in Monty (non-exhaustive):
 `abc`, `argparse`, `array`, `contextlib`,
 `ctypes`, `enum`, `fractions`,
-`heapq`, `hmac`, `http`, `inspect`, `io`,
+`heapq`, `hmac`, `http`, `inspect`,
 `logging`, `multiprocessing`, `operator`, `pickle`, `queue`,
 `socket`, `string`, `struct`, `subprocess`, `tempfile`, `threading`,
 `traceback`, `unittest`, `urllib`, `uuid`, `warnings`, `weakref`,
@@ -82,6 +83,7 @@ are unimplemented and may appear over time.
 Some available modules cover only part of their CPython surface: `functools`
 implements only `reduce`, `partial`, `lru_cache`, and `cache`, `copy` only `copy()` and `deepcopy()`,
 `time` everything but `tzset` and the `clock_*` family, `hashlib` everything but `file_digest()` and `scrypt()`,
+`io` the in-memory streams, `open()` and its constants but not the ABCs or `FileIO` (see [io.md](io.md)),
 and `collections` only the four types above; `tomllib` all three of its names, with the argument and exception differences listed in [tomllib.md](tomllib.md).
 The absent names are missing from
 the module namespace rather than stubbed, so they fail type checking as well as
@@ -89,9 +91,9 @@ raising `AttributeError` at runtime; see each module's page for the specifics.
 
 ## Modules the type checker resolves but the runtime does not
 
-`abc`, `enum`, `io`, `_io`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed` support the
-vendored stubs, so their imports pass type checking.
-`io` and `_io` declare the file objects `open()` returns.
+`abc`, `enum`, `_io`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed` support the vendored
+stubs, so their imports pass type checking.
+`_io` declares the classes `io` re-exports, including the file objects `open()` returns.
 At runtime, the host must provide them or the import raises `ModuleNotFoundError`.
 The worker never requests host stubs for vendored typeshed modules: a host-provided `abc` is checked against
 typeshed's `abc` declarations.

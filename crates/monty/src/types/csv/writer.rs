@@ -16,7 +16,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     fstring::FormatFloat,
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapRead},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapId, HeapRead},
     intern::StaticStrings,
     os_dispatch::{PendingEffect, PostConversionEffect},
     string_builder::StringBuilder,
@@ -24,6 +24,7 @@ use crate::{
         CsvObject, PyTrait, Type, TypeRef,
         csv::dialect::{Dialect, Quoting},
         instance,
+        io::is_native_stream,
         iter::collect_owned_iterable,
         sequence::SequenceItems,
         str::allocate_string,
@@ -37,8 +38,8 @@ pub(crate) struct Writer {
     /// The `csvfile` argument. Owned.
     target: Value,
     /// `csvfile.write`, bound at construction as CPython does, so rebinding the attribute
-    /// later does not redirect writes. `None` for a file target, whose write is a host call
-    /// through `target`. Owned.
+    /// later does not redirect writes. `None` for a file or io stream target, whose `write`
+    /// is called by name through `target`. Owned.
     write: Value,
     /// Shared with each record written, so a row costs no copy of the dialect's strings.
     pub(crate) dialect: Arc<Dialect>,
@@ -53,7 +54,7 @@ impl Writer {
         }
     }
 
-    /// Whether the target is an `open()` file, whose `write()` yields a host call.
+    /// Whether the target is an `open()` file or io stream, whose `write()` is called by name.
     pub(crate) fn targets_file(&self, vm: &VM<'_>) -> bool {
         is_file(&self.target, vm)
     }
@@ -124,8 +125,8 @@ pub(super) fn write_fields<'h>(
 
 /// `writer.writerows(rows)`: writes every row and returns `None`.
 ///
-/// A file target receives all the lines in one host write, since a Rust loop cannot suspend
-/// once per row; any other target's `write()` is called synchronously as each row arrives.
+/// A file or io stream target receives all the lines in one write, since a Rust loop cannot
+/// suspend once per row; any other target's `write()` is called synchronously as each row arrives.
 pub(super) fn writerows<'h>(obj: &HeapRead<'h, CsvObject>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
     let rows = args.get_one_arg("writer.writerows", vm.heap)?;
     defer_drop!(rows, vm);
@@ -146,7 +147,8 @@ pub(super) fn writerows<'h>(obj: &HeapRead<'h, CsvObject>, args: ArgValues, vm: 
             Ok(CallResult::Value(Value::None))
         } else {
             let lines = StringBuilder::from_existing(lines, &vm.heap.tracker).finish(vm.heap)?;
-            write_line(target, write, lines, vm).map(discard_write_result)
+            let result = write_line(target, write, lines, vm)?;
+            Ok(discard_write_result(result, vm))
         }
     } else {
         let iterator = rows.py_iter(vm)?.require_synchronous(vm)?;
@@ -393,9 +395,10 @@ fn is_number(value: &Value, vm: &VM<'_>) -> bool {
     }
 }
 
-/// Whether `value` is an `open()` file, whose `write()` yields a host call.
+/// Whether `value` is an `open()` file or an io stream, whose `write()` is called by name:
+/// a file's yields a host call, and neither has a `write` Monty can bind as a value.
 fn is_file(value: &Value, vm: &VM<'_>) -> bool {
-    matches!(value, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::OpenFile(_)))
+    is_native_stream(value, vm.heap)
 }
 
 /// Copies the row before field formatting can call Python. A non-iterable row raises `_csv.Error`.
@@ -433,14 +436,16 @@ fn write_line(target: &Value, write: &Value, line: Value, vm: &mut VM<'_>) -> Ru
     }
 }
 
-/// Marks a file write's pending result as `None`, which `writerows` returns.
-fn discard_write_result(mut result: CallResult) -> CallResult {
-    if let CallResult::OsCallWithEffect {
-        effect: PendingEffect::Post(PostConversionEffect::WritePosition { result_none, .. }),
-        ..
-    } = &mut result
-    {
-        *result_none = true;
+/// Makes a write's result `None`, which `writerows` returns: a file write's pending
+/// result is marked, an io stream's count is dropped.
+fn discard_write_result(mut result: CallResult, vm: &mut VM<'_>) -> CallResult {
+    match &mut result {
+        CallResult::OsCallWithEffect {
+            effect: PendingEffect::Post(PostConversionEffect::WritePosition { result_none, .. }),
+            ..
+        } => *result_none = true,
+        CallResult::Value(value) => mem::replace(value, Value::None).drop_with(vm),
+        _ => {}
     }
     result
 }

@@ -148,6 +148,10 @@ macro_rules! heap_payloads {
             Path(inline $crate::types::Path),
             /// A path-backed file object returned by `open()`.
             OpenFile(boxed $crate::types::OpenFile),
+            /// An `io.StringIO` in-memory text stream.
+            StringIo(boxed $crate::types::io::StringIo),
+            /// An `io.BytesIO` in-memory binary stream.
+            BytesIo(boxed $crate::types::io::BytesIo),
             /// A compiled regular-expression pattern.
             RePattern(boxed $crate::types::RePattern),
             /// A regular-expression match result.
@@ -303,6 +307,8 @@ impl HeapData {
             | Self::Complex(_)
             | Self::Path(_)
             | Self::OpenFile(_)
+            | Self::StringIo(_)
+            | Self::BytesIo(_)
             | Self::RePattern(_)
             | Self::ReMatch(_)
             | Self::ExtFunction(_)
@@ -393,6 +399,8 @@ impl HeapData {
             Self::WaitFuture(_) => Type::Coroutine,
             Self::Path(_) => Type::Path,
             Self::OpenFile(file) => file.file_type(),
+            Self::StringIo(_) => Type::StringIo,
+            Self::BytesIo(_) => Type::BytesIo,
             Self::RePattern(_) => Type::RePattern,
             Self::ReMatch(_) => Type::ReMatch,
             Self::Date(_) => Type::Date,
